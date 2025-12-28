@@ -18,6 +18,7 @@ import SQLValidator from './sqlValidator';
 import { PerfettoSqlSkill } from './perfettoSqlSkill';
 import { SessionPersistenceService } from './sessionPersistenceService';
 import { StoredSession, StoredMessage } from '../models/sessionSchema';
+import PromptTemplateService from './promptTemplateService';
 import {
   AnalysisState,
   OrchestratorConfig,
@@ -654,20 +655,14 @@ Note: SQL queries couldn't be generated for this question. Please provide genera
     schemaContext: string,
     session: any
   ): ChatCompletionMessageParam[] {
-    const basePrompt = `You are a Perfetto SQL expert. Generate accurate SQL queries to analyze trace data.
+    // Use PromptTemplateService for unified template management
+    const templateService = PromptTemplateService.getInstance();
+    const schemaWithTables = `${schemaContext}\n\n${PERFETTO_TABLES_SCHEMA}`;
 
-IMPORTANT RULES:
-1. ONLY use tables listed in the schema below
-2. All timestamps are in NANOSECONDS - convert to ms with /1e6 or seconds with /1e9
-3. Use proper JOIN conditions with foreign keys (track_id, utid, upid)
-4. Use thread_track for thread tracks, not track directly
-
-${schemaContext}
-
-Example queries:
-${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
-
-Respond with the SQL query wrapped in \`\`\`sql ... \`\`\` code blocks, followed by a brief explanation.`;
+    const basePrompt = templateService.formatTemplate('sql-generation', {
+      schema: schemaWithTables,
+      examples: JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2),
+    });
 
     const messages: ChatCompletionMessageParam[] = [
       { role: 'system', content: basePrompt },
@@ -738,21 +733,21 @@ Respond with the SQL query wrapped in \`\`\`sql ... \`\`\` code blocks, followed
   }
 
   private buildFixPrompt(sql: string, error: string): string {
-    return `The previous SQL query failed:
-${sql}
-
-Error: ${error}
-
-Please fix the SQL query and provide a corrected version.`;
+    // Use PromptTemplateService for unified template management
+    const templateService = PromptTemplateService.getInstance();
+    return templateService.formatTemplate('sql-fix', {
+      sql,
+      error,
+    });
   }
 
   private buildAdjustPrompt(sql: string, explanation: string): string {
-    return `The previous SQL query returned no results:
-${sql}
-
-${explanation}
-
-Please try a different approach to find the relevant data.`;
+    // Use PromptTemplateService for unified template management
+    const templateService = PromptTemplateService.getInstance();
+    return templateService.formatTemplate('sql-adjust', {
+      sql,
+      explanation,
+    });
   }
 
   private buildEmptyResultAnswer(sql: string, explanation: string): string {
