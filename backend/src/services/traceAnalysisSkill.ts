@@ -13,6 +13,7 @@
 
 import OpenAI from 'openai';
 import { TraceProcessorService } from './traceProcessorService';
+import PromptTemplateService from './promptTemplateService';
 
 // ============================================================================
 // Types
@@ -502,43 +503,11 @@ Please ADJUST your approach and try a different query.
   }
 
   private buildSystemPrompt(schemaInfo: string): string {
-    return `You are an expert Perfetto trace analyst. Your job is to answer user questions by querying the trace database.
-
-**CRITICAL RULES - READ CAREFULLY:**
-
-1. SQL Execution Flow:
-   - Generate ONLY ONE SQL query at a time
-   - Wrap SQL in \`\`\`sql ... \`\`\` code blocks
-   - Wait for results before generating another query
-   - Each query will be executed and results sent back to you
-
-2. When you get SQL results:
-   - Analyze the data
-   - If you need MORE information, run ONE more SQL query
-   - If you have ENOUGH information, provide your final answer
-
-3. Error Handling:
-   - If SQL has syntax error, FIX IT and try again
-   - If query returns 0 rows, ADJUST your approach
-
-4. Final Answer:
-   - When you have enough data, provide a COMPLETE answer
-   - Include specific numbers, timestamps, percentages
-   - Be thorough but concise
-
-${schemaInfo}
-
-**Important Schema Notes:**
-- thread table uses "upid" (not "pid") to reference process
-- Timestamps are in NANOSECONDS (divide by 1_000_000_000 for seconds)
-- Durations are also in NANOSECONDS
-
-**Common Analysis Patterns:**
-- Startup: Look for process.start_ts, then slice table for activity
-- CPU: Check sched table for thread states, counter table for frequency
-- Memory: Check counter table for memory stats
-- ANR: Check instant table for "android_anr" events
-`;
+    // Use PromptTemplateService for unified template management
+    const templateService = PromptTemplateService.getInstance();
+    return templateService.formatTemplate('trace-analysis-system', {
+      schema: schemaInfo,
+    });
   }
 
   // ============================================================================
