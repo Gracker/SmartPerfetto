@@ -688,6 +688,171 @@ router.post('/analyze/memory', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/trace-analysis/analyze/network
+ *
+ * Network analysis endpoint
+ * Analyzes network traffic and HTTP requests
+ *
+ * Body: { traceId, packageName? }
+ * Response: { success: true, result: { ... } }
+ */
+router.post('/analyze/network', async (req, res) => {
+  try {
+    const { traceId, packageName } = req.body;
+
+    if (!traceId) {
+      return res.status(400).json({
+        success: false,
+        error: 'traceId is required',
+      });
+    }
+
+    // Verify trace exists
+    const trace = s().traceProcessorService.getTrace(traceId);
+    if (!trace) {
+      return res.status(404).json({
+        success: false,
+        error: 'Trace not found in backend',
+        hint: 'Please upload the trace to the backend first using the upload button',
+        code: 'TRACE_NOT_UPLOADED',
+      });
+    }
+
+    // Run network analysis
+    const result = await s().perfettoSqlSkill.analyzeNetwork(traceId, packageName);
+
+    res.json({
+      success: true,
+      result: {
+        analysisType: result.analysisType,
+        sql: result.sql,
+        rows: result.rows,
+        rowCount: result.rowCount,
+        summary: result.summary,
+        metrics: result.metrics,
+        details: result.details,
+      },
+    });
+  } catch (error: any) {
+    console.error('[TraceAnalysis] Network analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Network analysis failed',
+    });
+  }
+});
+
+/**
+ * POST /api/trace-analysis/analyze/database
+ *
+ * Database analysis endpoint
+ * Analyzes SQLite/Room query performance
+ *
+ * Body: { traceId, packageName? }
+ * Response: { success: true, result: { ... } }
+ */
+router.post('/analyze/database', async (req, res) => {
+  try {
+    const { traceId, packageName } = req.body;
+
+    if (!traceId) {
+      return res.status(400).json({
+        success: false,
+        error: 'traceId is required',
+      });
+    }
+
+    // Verify trace exists
+    const trace = s().traceProcessorService.getTrace(traceId);
+    if (!trace) {
+      return res.status(404).json({
+        success: false,
+        error: 'Trace not found in backend',
+        hint: 'Please upload the trace to the backend first using the upload button',
+        code: 'TRACE_NOT_UPLOADED',
+      });
+    }
+
+    // Run database analysis
+    const result = await s().perfettoSqlSkill.analyzeDatabase(traceId, packageName);
+
+    res.json({
+      success: true,
+      result: {
+        analysisType: result.analysisType,
+        sql: result.sql,
+        rows: result.rows,
+        rowCount: result.rowCount,
+        summary: result.summary,
+        metrics: result.metrics,
+        details: result.details,
+      },
+    });
+  } catch (error: any) {
+    console.error('[TraceAnalysis] Database analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Database analysis failed',
+    });
+  }
+});
+
+/**
+ * POST /api/trace-analysis/analyze/file-io
+ *
+ * File I/O analysis endpoint
+ * Analyzes read/write operations and file system performance
+ *
+ * Body: { traceId, packageName? }
+ * Response: { success: true, result: { ... } }
+ */
+router.post('/analyze/file-io', async (req, res) => {
+  try {
+    const { traceId, packageName } = req.body;
+
+    if (!traceId) {
+      return res.status(400).json({
+        success: false,
+        error: 'traceId is required',
+      });
+    }
+
+    // Verify trace exists
+    const trace = s().traceProcessorService.getTrace(traceId);
+    if (!trace) {
+      return res.status(404).json({
+        success: false,
+        error: 'Trace not found in backend',
+        hint: 'Please upload the trace to the backend first using the upload button',
+        code: 'TRACE_NOT_UPLOADED',
+      });
+    }
+
+    // Run file I/O analysis
+    const result = await s().perfettoSqlSkill.analyzeFileIO(traceId, packageName);
+
+    res.json({
+      success: true,
+      result: {
+        analysisType: result.analysisType,
+        sql: result.sql,
+        rows: result.rows,
+        rowCount: result.rowCount,
+        summary: result.summary,
+        metrics: result.metrics,
+        details: result.details,
+      },
+    });
+  } catch (error: any) {
+    console.error('[TraceAnalysis] File I/O analysis error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'File I/O analysis failed',
+    });
+  }
+});
+
 
 // Export for use in other parts of the app
 export { s, getServices };

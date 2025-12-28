@@ -132,6 +132,30 @@ const SKILL_PATTERNS: SkillPattern[] = [
       /慢函数|函数耗时|耗时.*函数/i,
     ],
   },
+  {
+    skillType: PerfettoSkillType.NETWORK,
+    keywords: ['network', 'http', 'request', 'response', 'url', '网络', '网络请求'],
+    patterns: [
+      /network|http.*request|url/i,
+      /网络|网络请求|http/i,
+    ],
+  },
+  {
+    skillType: PerfettoSkillType.DATABASE,
+    keywords: ['database', 'db', 'sql', 'sqlite', 'room', 'query', '数据库', '数据库查询'],
+    patterns: [
+      /database|sqlite|room.*query|db.*query/i,
+      /数据库|sqlite|room/i,
+    ],
+  },
+  {
+    skillType: PerfettoSkillType.FILE_IO,
+    keywords: ['file', 'io', 'read', 'write', 'storage', 'fs', '文件', '读写', '文件读写'],
+    patterns: [
+      /file.*io|file.*read|file.*write|storage/i,
+      /文件|读写|文件读写|磁盘/i,
+    ],
+  },
 ];
 
 // ============================================================================
@@ -209,6 +233,15 @@ export class PerfettoSqlSkill {
         break;
       case PerfettoSkillType.SLOW_FUNCTIONS:
         result = await this.analyzeSlowFunctions(traceId, packageName);
+        break;
+      case PerfettoSkillType.NETWORK:
+        result = await this.analyzeNetwork(traceId, packageName);
+        break;
+      case PerfettoSkillType.DATABASE:
+        result = await this.analyzeDatabase(traceId, packageName);
+        break;
+      case PerfettoSkillType.FILE_IO:
+        result = await this.analyzeFileIO(traceId, packageName);
         break;
       default:
         // Fallback to generic SQL generation
@@ -342,6 +375,18 @@ export class PerfettoSqlSkill {
       case PerfettoSkillType.SLOW_FUNCTIONS:
         sql = this.getSlowFunctionsSql(packageName);
         summary = `Execute this SQL to analyze slow functions. Look for slices > 16ms (missed frame threshold).`;
+        break;
+      case PerfettoSkillType.NETWORK:
+        sql = this.getNetworkSql(packageName);
+        summary = `Execute this SQL to analyze network traffic. Look for request/response durations and URLs.`;
+        break;
+      case PerfettoSkillType.DATABASE:
+        sql = this.getDatabaseSql(packageName);
+        summary = `Execute this SQL to analyze database queries. Look for SQLite/Room operations and their durations.`;
+        break;
+      case PerfettoSkillType.FILE_IO:
+        sql = this.getFileIOSql(packageName);
+        summary = `Execute this SQL to analyze file I/O operations. Look for read/write operations and their durations.`;
         break;
       default:
         // Generic query - suggest exploring tables
@@ -592,6 +637,70 @@ ${processFilter.replace('WHERE', 'AND')} AND s.dur > 16000000
 GROUP BY s.name, p.name
 ORDER BY total_dur_ms DESC
 LIMIT 50;
+    `;
+  }
+
+  private getNetworkSql(packageName?: string): string {
+    const processFilter = packageName ? `AND p.name GLOB '${packageName}*'` : '';
+    return `
+-- Network Traffic Analysis
+SELECT
+  net.name,
+  net.slice_id,
+  net.ts / 1e6 as ts_ms,
+  net.dur / 1e6 as dur_ms,
+  t.name as thread_name,
+  p.name as process_name
+FROM network_traffic_slice net
+JOIN thread_track tt ON net.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE 1=1
+  ${processFilter}
+ORDER BY net.dur DESC
+LIMIT 100;
+    `;
+  }
+
+  private getDatabaseSql(packageName?: string): string {
+    const processFilter = packageName ? `AND p.name GLOB '${packageName}*'` : '';
+    return `
+-- Database Query Analysis (SQLite/Room)
+SELECT
+  s.name,
+  s.ts / 1e6 as ts_ms,
+  s.dur / 1e6 as dur_ms,
+  t.name as thread_name,
+  p.name as process_name
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE s.name GLOB '*sqlite*%' OR s.name GLOB '*room*%'
+  ${processFilter}
+ORDER BY s.dur DESC
+LIMIT 100;
+    `;
+  }
+
+  private getFileIOSql(packageName?: string): string {
+    const processFilter = packageName ? `AND p.name GLOB '${packageName}*'` : '';
+    return `
+-- File I/O Analysis
+SELECT
+  s.name,
+  s.ts / 1e6 as ts_ms,
+  s.dur / 1e6 as dur_ms,
+  t.name as thread_name,
+  p.name as process_name
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE s.name GLOB '*read*%' OR s.name GLOB '*write*%' OR s.name GLOB '*fs_*%'
+  ${processFilter}
+ORDER BY s.dur DESC
+LIMIT 100;
     `;
   }
 
@@ -1907,6 +2016,238 @@ LIMIT 50;
     };
   }
 
+  /**
+   * Analyze network request performance
+   * Uses network_traffic_slice table to track HTTP requests
+   */
+  async analyzeNetwork(traceId: string, packageName?: string): Promise<PerfettoSqlResponse> {
+    let processFilter = '';
+    if (packageName) {
+      processFilter = `AND p.name GLOB '${packageName}*'`;
+    }
+
+    const sql = `
+      SELECT
+        net.name,
+        net.slice_id,
+        net.ts / 1e6 as ts_ms,
+        net.dur / 1e6 as dur_ms,
+        t.name as thread_name,
+        p.name as process_name
+      FROM network_traffic_slice net
+      JOIN thread_track tt ON net.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE 1=1
+        ${processFilter}
+      ORDER BY net.dur DESC
+      LIMIT 100
+    `;
+
+    const queryResult = await this.traceProcessor.query(traceId, sql);
+
+    if (queryResult.error) {
+      return {
+        analysisType: 'network',
+        sql,
+        rows: [],
+        rowCount: 0,
+        summary: `Error analyzing network traffic: ${queryResult.error}`,
+      };
+    }
+
+    const rows = queryResult.rows as any[];
+
+    // Get aggregate statistics
+    const statsSql = `
+      SELECT
+        COUNT(*) as total_requests,
+        AVG(net.dur) / 1e6 as avg_dur_ms,
+        MAX(net.dur) / 1e6 as max_dur_ms,
+        MIN(net.dur) / 1e6 as min_dur_ms,
+        SUM(CASE WHEN net.dur > 1000000000 THEN 1 ELSE 0 END) as slow_requests
+      FROM network_traffic_slice net
+      JOIN thread_track tt ON net.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE 1=1
+        ${processFilter}
+    `;
+
+    const statsResult = await this.traceProcessor.query(traceId, statsSql);
+    const stats = statsResult.rows && statsResult.rows.length > 0 ? statsResult.rows[0] as any : null;
+
+    const summary = this.formatNetworkSummary(rows, stats);
+
+    return {
+      analysisType: 'network',
+      sql,
+      rows,
+      rowCount: rows.length,
+      summary,
+      metrics: stats ? {
+        totalRequests: stats.total_requests,
+        avgDurationMs: stats.avg_dur_ms,
+        maxDurationMs: stats.max_dur_ms,
+        slowRequests: stats.slow_requests,
+      } : undefined,
+    };
+  }
+
+  /**
+   * Analyze database query performance
+   * Uses slice table to find SQLite/Room operations
+   */
+  async analyzeDatabase(traceId: string, packageName?: string): Promise<PerfettoSqlResponse> {
+    let processFilter = '';
+    if (packageName) {
+      processFilter = `AND p.name GLOB '${packageName}*'`;
+    }
+
+    const sql = `
+      SELECT
+        s.name,
+        s.ts / 1e6 as ts_ms,
+        s.dur / 1e6 as dur_ms,
+        t.name as thread_name,
+        p.name as process_name
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE s.name GLOB '*sqlite*%' OR s.name GLOB '*room*%'
+        ${processFilter}
+      ORDER BY s.dur DESC
+      LIMIT 100
+    `;
+
+    const queryResult = await this.traceProcessor.query(traceId, sql);
+
+    if (queryResult.error) {
+      return {
+        analysisType: 'database',
+        sql,
+        rows: [],
+        rowCount: 0,
+        summary: `Error analyzing database queries: ${queryResult.error}`,
+      };
+    }
+
+    const rows = queryResult.rows as any[];
+
+    // Get aggregate statistics by query type
+    const statsSql = `
+      SELECT
+        COUNT(*) as total_queries,
+        AVG(s.dur) / 1e6 as avg_dur_ms,
+        MAX(s.dur) / 1e6 as max_dur_ms,
+        SUM(CASE WHEN s.dur > 16000000 THEN 1 ELSE 0 END) as slow_queries
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE s.name GLOB '*sqlite*%' OR s.name GLOB '*room*%'
+        ${processFilter}
+    `;
+
+    const statsResult = await this.traceProcessor.query(traceId, statsSql);
+    const stats = statsResult.rows && statsResult.rows.length > 0 ? statsResult.rows[0] as any : null;
+
+    const summary = this.formatDatabaseSummary(rows, stats);
+
+    return {
+      analysisType: 'database',
+      sql,
+      rows,
+      rowCount: rows.length,
+      summary,
+      metrics: stats ? {
+        totalQueries: stats.total_queries,
+        avgDurationMs: stats.avg_dur_ms,
+        maxDurationMs: stats.max_dur_ms,
+        slowQueries: stats.slow_queries,
+      } : undefined,
+    };
+  }
+
+  /**
+   * Analyze file I/O performance
+   * Uses slice table to find read/write operations
+   */
+  async analyzeFileIO(traceId: string, packageName?: string): Promise<PerfettoSqlResponse> {
+    let processFilter = '';
+    if (packageName) {
+      processFilter = `AND p.name GLOB '${packageName}*'`;
+    }
+
+    const sql = `
+      SELECT
+        s.name,
+        s.ts / 1e6 as ts_ms,
+        s.dur / 1e6 as dur_ms,
+        t.name as thread_name,
+        p.name as process_name
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE s.name GLOB '*read*%' OR s.name GLOB '*write*%' OR s.name GLOB '*fs_*%'
+        ${processFilter}
+      ORDER BY s.dur DESC
+      LIMIT 100
+    `;
+
+    const queryResult = await this.traceProcessor.query(traceId, sql);
+
+    if (queryResult.error) {
+      return {
+        analysisType: 'file_io',
+        sql,
+        rows: [],
+        rowCount: 0,
+        summary: `Error analyzing file I/O: ${queryResult.error}`,
+      };
+    }
+
+    const rows = queryResult.rows as any[];
+
+    // Get aggregate statistics
+    const statsSql = `
+      SELECT
+        COUNT(*) as total_operations,
+        AVG(s.dur) / 1e6 as avg_dur_ms,
+        MAX(s.dur) / 1e6 as max_dur_ms,
+        SUM(CASE WHEN s.name GLOB '*read*' THEN 1 ELSE 0 END) as read_ops,
+        SUM(CASE WHEN s.name GLOB '*write*' THEN 1 ELSE 0 END) as write_ops
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE s.name GLOB '*read*%' OR s.name GLOB '*write*%' OR s.name GLOB '*fs_*%'
+        ${processFilter}
+    `;
+
+    const statsResult = await this.traceProcessor.query(traceId, statsSql);
+    const stats = statsResult.rows && statsResult.rows.length > 0 ? statsResult.rows[0] as any : null;
+
+    const summary = this.formatFileIOSummary(rows, stats);
+
+    return {
+      analysisType: 'file_io',
+      sql,
+      rows,
+      rowCount: rows.length,
+      summary,
+      metrics: stats ? {
+        totalOperations: stats.total_operations,
+        avgDurationMs: stats.avg_dur_ms,
+        maxDurationMs: stats.max_dur_ms,
+        readOps: stats.read_ops,
+        writeOps: stats.write_ops,
+      } : undefined,
+    };
+  }
+
   // ========================================================================
   // Summary Formatting Methods
   // ========================================================================
@@ -2237,6 +2578,83 @@ LIMIT 50;
       const slowest = topSlowest[0] as any;
       summary += ` Slowest instance: ${slowest.function_name} at ${slowest.dur_ms.toFixed(2)}ms ` +
         `in ${slowest.thread_name} thread (${slowest.process_name}).`;
+    }
+
+    return summary;
+  }
+
+  private formatNetworkSummary(
+    rows: Record<string, unknown>[],
+    stats: Record<string, unknown> | null
+  ): string {
+    if (rows.length === 0) {
+      return 'No network traffic found in trace.';
+    }
+
+    let summary = `Found ${rows.length} network requests.`;
+
+    if (stats) {
+      const avgDur = stats.avg_dur_ms as number;
+      const minDur = stats.min_dur_ms as number;
+      const maxDur = stats.max_dur_ms as number;
+      const slowRequests = stats.slow_requests as number;
+
+      summary += ` Average duration: ${avgDur?.toFixed(2)}ms. `;
+      summary += `Min: ${minDur?.toFixed(2)}ms, Max: ${maxDur?.toFixed(2)}ms.`;
+
+      if (slowRequests > 0) {
+        summary += ` Slow requests (>1s): ${slowRequests}.`;
+      }
+    }
+
+    return summary;
+  }
+
+  private formatDatabaseSummary(
+    rows: Record<string, unknown>[],
+    stats: Record<string, unknown> | null
+  ): string {
+    if (rows.length === 0) {
+      return 'No database queries found in trace.';
+    }
+
+    let summary = `Found ${rows.length} database queries (SQLite/Room).`;
+
+    if (stats) {
+      const avgDur = stats.avg_dur_ms as number;
+      const maxDur = stats.max_dur_ms as number;
+      const slowQueries = stats.slow_queries as number;
+
+      summary += ` Average duration: ${avgDur?.toFixed(2)}ms. `;
+      summary += `Max: ${maxDur?.toFixed(2)}ms.`;
+
+      if (slowQueries > 0) {
+        summary += ` Slow queries (>16ms): ${slowQueries}.`;
+      }
+    }
+
+    return summary;
+  }
+
+  private formatFileIOSummary(
+    rows: Record<string, unknown>[],
+    stats: Record<string, unknown> | null
+  ): string {
+    if (rows.length === 0) {
+      return 'No file I/O operations found in trace.';
+    }
+
+    let summary = `Found ${rows.length} file I/O operations.`;
+
+    if (stats) {
+      const avgDur = stats.avg_dur_ms as number;
+      const maxDur = stats.max_dur_ms as number;
+      const readOps = stats.read_ops as number;
+      const writeOps = stats.write_ops as number;
+
+      summary += ` Average duration: ${avgDur?.toFixed(2)}ms. `;
+      summary += `Max: ${maxDur?.toFixed(2)}ms. `;
+      summary += `Read ops: ${readOps}, Write ops: ${writeOps}.`;
     }
 
     return summary;
