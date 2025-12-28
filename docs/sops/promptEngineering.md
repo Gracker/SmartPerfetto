@@ -20,7 +20,7 @@ SmartPerfetto uses a centralized prompt engineering system to generate AI-powere
 
 3. **Template Variables**
    - Dynamic placeholder system
-   - Supports schema, question, SQL, error, examples, and custom variables
+   - Supports schema, question, context, SQL, error, explanation, examples, and custom variables
    - Type-safe variable substitution
 
 ## Prompt Categories
@@ -478,10 +478,20 @@ const temp = service.getTemperature('your-template-name');
 4. **Constraints** - What NOT to do
 
 ### Variables
-1. **Use consistent naming** - `{schema}`, `{question}`, `{sql}`
+1. **Use consistent naming** - `{schema}`, `{question}`, `{sql}`, `{context}`, `{explanation}`
 2. **Document variables** - List required vs optional
 3. **Provide defaults** - Handle missing variables gracefully
 4. **Type safety** - Use TypeScript interfaces
+
+**Available Template Variables:**
+- `{schema}`: Database schema (tables and columns)
+- `{question}`: User's natural language question
+- `{context}`: Additional context (query results, analysis history, previous steps)
+- `{sql}`: SQL query (for error fixing or adjustment)
+- `{error}`: Error message from trace processor
+- `{explanation}`: SQL explanation or analysis summary
+- `{examples}`: Example queries or patterns
+- Custom variables: Any key-value pair needed for specific templates
 
 ### Temperature Settings
 - **0.0-0.2**: Highly deterministic (error fixing, SQL generation)

@@ -70,8 +70,11 @@ The skill system supports 15 specialized analysis types, each optimized for spec
 - **Trigger Words**: navigation, activity, switch, 切换, 界面切换, 页面跳转
 - **Patterns**: `/navigation|activity.*switch/i`, `/界面切换|页面跳转|activity.*切换/i`
 - **Analysis Content**: Activity navigation performance, transition timing
-- **SQL Pattern**: `activity_manager_transitions` table or slice filtering for `perform*`, `*Activity*`
+- **SQL Pattern**:
+  - Backend mode: Uses `slice` table with filtering for `perform*` and `*Activity*` patterns
+  - WASM mode: Uses dedicated `activity_manager_transitions` table
 - **Metrics**: Count, avg/min/max duration per navigation type
+- **Important Note**: The backend implementation queries the `slice` table filtering for activity lifecycle events, while WASM mode uses the specialized `activity_manager_transitions` table which provides more structured navigation data.
 
 ### 4. Click Response Analysis (CLICK_RESPONSE)
 - **Trigger Words**: click, tap, response, latency, 点击, 响应, 点击响应
@@ -79,6 +82,7 @@ The skill system supports 15 specialized analysis types, each optimized for spec
 - **Analysis Content**: Click/tap response latency, input event timing
 - **SQL Pattern**: Filter slice table for `*Input*`, `*Click*`, `*Touch*`
 - **Metrics**: Event count, avg/min/max response time
+- **Important Note**: Backend mode uses `GLOB '*Click*'` pattern, while WASM mode uses `LIKE '%Click%'`. Both achieve the same filtering but use different SQL syntax due to implementation differences.
 
 ### 5. Memory Analysis (MEMORY)
 - **Trigger Words**: memory, heap, oom, leak, gc, 内存, 内存泄漏, OOM
