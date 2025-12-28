@@ -9,6 +9,7 @@ import { AnalysisSessionService, getSessionService } from '../services/analysisS
 import { PerfettoAnalysisOrchestrator } from '../services/perfettoAnalysisOrchestrator';
 import { PerfettoSqlSkill } from '../services/perfettoSqlSkill';
 import { getTraceProcessorService } from '../services/traceProcessorService';
+import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
   CreateAnalysisRequest,
   FollowupRequest,
@@ -23,6 +24,7 @@ let _traceProcessorService: any = null;
 let _sessionService: any = null;
 let _perfettoSqlSkill: any = null;
 let _orchestrator: any = null;
+let _sessionPersistenceService: any = null;
 
 function getServices() {
   if (!_orchestrator) {
@@ -37,12 +39,14 @@ function getServices() {
       undefined,
       _perfettoSqlSkill
     );
+    _sessionPersistenceService = SessionPersistenceService.getInstance();
     console.log('[TraceAnalysisRoutes] Services initialized, AI configured:', _orchestrator.isConfigured);
   }
   return {
     traceProcessorService: _traceProcessorService,
     sessionService: _sessionService,
     orchestrator: _orchestrator,
+    sessionPersistenceService: _sessionPersistenceService,
   };
 }
 
@@ -629,6 +633,113 @@ router.get('/sessions', (req, res) => {
       success: false,
       error: error.message || 'Failed to get sessions',
     });
+  }
+});
+
+// ============================================================================
+// Session Persistence Routes
+// ============================================================================
+
+/**
+ * GET /api/trace-analysis/sessions
+ *
+ * List all sessions with pagination
+ *
+ * Query params:
+ * - traceId: Filter by trace ID
+ * - limit: Number of sessions to return (default: 20)
+ * - offset: Number of sessions to skip (default: 0)
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "sessions": [...],
+ *   "totalCount": 100,
+ *   "hasMore": true
+ * }
+ */
+router.get('/sessions', async (req, res) => {
+  try {
+    const { traceId, limit, offset } = req.query;
+
+    const result = s().sessionPersistenceService.listSessions({
+      traceId: traceId as string | undefined,
+      limit: limit ? parseInt(limit as string) : 20,
+      offset: offset ? parseInt(offset as string) : 0,
+    });
+
+    res.json({ success: true, ...result });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/trace-analysis/sessions/:id
+ *
+ * Get specific session by ID
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "session": {...}
+ * }
+ */
+router.get('/sessions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const session = s().sessionPersistenceService.getSession(id);
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Session not found' });
+    }
+
+    res.json({ success: true, session });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/trace-analysis/sessions/:id
+ *
+ * Delete a session
+ *
+ * Response:
+ * {
+ *   "success": true,
+ *   "deleted": true
+ * }
+ */
+router.delete('/sessions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deleted = s().sessionPersistenceService.deleteSession(id);
+    res.json({ success: true, deleted });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+/**
+ * GET /api/trace-analysis/sessions/export/:traceId?
+ *
+ * Export sessions as JSON
+ *
+ * Response: JSON file download
+ */
+router.get('/sessions/export/:traceId?', async (req, res) => {
+  try {
+    const { traceId } = req.params;
+
+    const jsonData = s().sessionPersistenceService.exportSessions(traceId);
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="sessions-${Date.now()}.json"`);
+    res.send(jsonData);
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

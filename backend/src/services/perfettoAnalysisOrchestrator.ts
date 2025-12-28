@@ -16,6 +16,8 @@ import { TraceProcessorService } from './traceProcessorService';
 import { AnalysisSessionService } from './analysisSessionService';
 import SQLValidator from './sqlValidator';
 import { PerfettoSqlSkill } from './perfettoSqlSkill';
+import { SessionPersistenceService } from './sessionPersistenceService';
+import { StoredSession, StoredMessage } from '../models/sessionSchema';
 import {
   AnalysisState,
   OrchestratorConfig,
@@ -254,6 +256,9 @@ export class PerfettoAnalysisOrchestrator {
     const finalAnswer = await this.generateFinalAnswer(sessionId);
     this.sessionService.completeSession(sessionId, finalAnswer);
     this.emitCompleted(sessionId, finalAnswer, startTime);
+
+    // Persist session to database
+    this.persistSession(sessionId);
   }
 
   /**
@@ -594,6 +599,49 @@ Note: SQL queries couldn't be generated for this question. Please provide genera
       return completion.choices[0]?.message?.content || 'Unable to generate answer.';
     } catch (error) {
       return 'I was unable to analyze the trace. Please try rephrasing your question.';
+    }
+  }
+
+  /**
+   * Persist session to long-term storage
+   */
+  private persistSession(sessionId: string): void {
+    try {
+      const session = this.sessionService.getSession(sessionId);
+      if (!session) return;
+
+      const persistenceService = SessionPersistenceService.getInstance();
+
+      const storedSession: StoredSession = {
+        id: sessionId,
+        traceId: session.traceId,
+        traceName: session.traceId, // Can be enhanced with actual trace name
+        question: session.question,
+        createdAt: session.createdAt.getTime(),
+        updatedAt: Date.now(),
+        metadata: {
+          totalIterations: session.currentIteration,
+          sqlQueriesCount: session.collectedResults.length,
+          totalDuration: Date.now() - session.createdAt.getTime(),
+        },
+        messages: session.messages.map(m => ({
+          id: `msg-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          role: m.role,
+          content: m.content,
+          timestamp: m.timestamp.getTime(),
+          sqlResult: m.queryResult ? {
+            columns: m.queryResult.columns,
+            rows: m.queryResult.rows,
+            rowCount: m.queryResult.rowCount,
+            query: m.sql,
+          } : undefined,
+        })),
+      };
+
+      persistenceService.saveSession(storedSession);
+      console.log(`[Orchestrator] Session ${sessionId} persisted to database`);
+    } catch (error) {
+      console.error('[Orchestrator] Failed to persist session:', error);
     }
   }
 
