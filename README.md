@@ -1,267 +1,413 @@
-# SmartPerfetto - AI驱动的Perfetto分析平台
+# SmartPerfetto - AI 驱动的 Perfetto 分析平台
 
-SmartPerfetto 是一个基于 AI 技术的 Perfetto 性能分析平台，帮助 Android 开发者更轻松地分析和优化应用性能。
+SmartPerfetto 是一个基于 AI 的 Perfetto 性能分析平台，通过 AI 助手帮助开发者更轻松地分析 Android 性能数据。
 
 ## 功能特性
 
-### 🔮 AI SQL 生成器
-- 用自然语言描述查询需求，AI 自动生成 Perfetto SQL 查询语句
-- 支持复杂的关联查询和分析
-- 提供详细的查询解释和使用说明
+- 🤖 **AI 智能分析**：使用自然语言提问，AI 自动生成 SQL 并分析 Trace 数据
+- 📊 **多轮对话分析**：AI 会根据分析结果继续深入，直到完整回答你的问题
+- ⚡ **实时进度反馈**：通过 SSE 展示 AI 分析过程，了解每一步在做什么
+- 🎯 **集成 Perfetto UI**：基于官方 Perfetto UI，保留完整的可视化能力
+- 🚀 **简单易用**：无需复杂配置，上传 Trace 即可开始分析
 
-### 📊 Trace 智能分析
-- 上传 Perfetto trace 文件进行智能分析
-- AI 对话式分析，快速定位性能问题
-- 自动生成优化建议和 SQL 查询
+## 架构设计
 
-### ⚙️ 配置指南
-- 详细的 Perfetto Config 配置说明
-- 常用场景的配置模板
-- 最佳实践和优化建议
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Perfetto UI (Local)                       │
+│                      http://localhost:10000                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────┬──────────────────────────────────────┐    │
+│  │   Timeline  │          AI Assistant Panel          │    │
+│  │             │  ┌─────────────────────────────────┐ │    │
+│  │   [Trace]   │  │ > 帮我分析这段 Trace 的 ANR      │ │    │
+│  │             │  │                                 │ │    │
+│  │   [Panels]  │  │ ⏳ 🤔 正在生成查询...            │ │    │
+│  │             │  │ ⏳ ⏳ 正在执行查询...            │ │    │
+│  │             │  │ ⏳ 📊 正在分析结果...            │ │    │
+│  │             │  │                                 │ │    │
+│  │             │  │ 📝 [分析结果...]                │ │    │
+│  │             │  │                                 │ │    │
+│  │             │  │ [上传到后端]                    │ │    │
+│  │             │  └─────────────────────────────────┘ │    │
+│  └─────────────┴──────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ SSE (Server-Sent Events)
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Backend API Server                        │
+│                      http://localhost:3000                  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │         PerfettoAnalysisOrchestrator                │   │
+│  │  • 理解用户提问                                      │   │
+│  │  • 生成 SQL 查询                                     │   │
+│  │  • 执行查询并分析结果                                │   │
+│  │  • 判断是否需要继续查询                              │   │
+│  │  • 生成最终答案                                      │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          │                                  │
+│  ┌───────────────┐  ┌──────────────────┐  ┌────────────┐ │
+│  │ TraceProcessor│  │ AnalysisSession  │  │  AI SDK    │ │
+│  │   Service     │  │     Service      │  │ (DeepSeek) │ │
+│  └───────────────┘  └──────────────────┘  └────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
 
-### 📚 文章聚合
-- 收集最新的 Perfetto 和 Android 性能优化文章
-- 技术分享和案例分析
-- 定期更新的知识库
+### 职责分离
 
-## 技术栈
-
-### 前端
-- React 18 + TypeScript
-- Vite
-- Tailwind CSS
-- React Router
-- React Query
-
-### 后端
-- Node.js + Express
-- TypeScript
-- AI Service: OpenAI / Claude
-- Multer (文件上传)
+| 层级 | 职责 |
+|------|------|
+| **前端** | UI 显示、进度展示、用户交互 |
+| **后端** | 完整的分析闭环：理解 → 生成SQL → 执行 → 分析 → 判断 → 继续或回答 |
 
 ## 快速开始
 
 ### 环境要求
-- Node.js >= 20.19.0 (前端需要)
-- Node.js >= 18.0.0 (后端)
-- npm 或 yarn
+
+- Node.js >= 18.0.0
+- npm
+- Python 3.x (用于 Perfetto 构建)
 
 ### 安装依赖
 
 ```bash
-# 安装根目录依赖
-npm install
-
-# 安装前端依赖
-cd frontend
-npm install
-
 # 安装后端依赖
-cd ../backend
+cd backend
 npm install
-```
 
-### 配置环境变量
-
-在后端目录创建 `.env` 文件：
-
-```env
-# Server Configuration
-PORT=3001
-NODE_ENV=development
-
-# AI Service Configuration
-AI_SERVICE=openai  # 或 claude
-
-# OpenAI Configuration
-OPENAI_API_KEY=your_openai_api_key_here
-OPENAI_MODEL=gpt-4
-
-# Claude Configuration
-ANTHROPIC_API_KEY=your_claude_api_key_here
-CLAUDE_MODEL=claude-3-5-sonnet-20241022
-
-# File Upload
-MAX_FILE_SIZE=2147483648  # 2GB
-UPLOAD_DIR=./uploads
-
-# CORS
-FRONTEND_URL=http://localhost:5173
+# Perfetto UI 依赖（首次运行时自动安装）
+cd ../perfetto/ui
+npm install
 ```
 
 ### 启动开发服务器
 
 ```bash
-# 启动后端服务
+# 终端 1 - 启动后端
 cd backend
 npm run dev
 
-# 启动前端服务
-cd ../frontend
-npm run dev
+# 终端 2 - 启动 Perfetto UI
+cd perfetto/ui
+./run-dev-server
 ```
 
-或者使用根目录的并发脚本：
+### 访问应用
 
-```bash
-npm run dev
+- **Perfetto UI**: http://localhost:10000
+- **Backend API**: http://localhost:3000
+
+## 使用指南
+
+### 1. 打开 Perfetto UI
+
+访问 http://localhost:10000
+
+### 2. 打开 Trace 文件
+
+- 点击 "Open trace file" 或拖拽 `.perfetto-trace` 文件到页面
+- 等待文件加载完成
+
+### 3. 打开 AI 助手
+
+- 点击左侧边栏的 AI 助手图标
+- AI 面板将在右侧展开
+
+### 4. 上传 Trace 到后端
+
+- 点击 AI 面板中的 **"上传到后端"** 按钮
+- 等待上传完成（状态会显示为 "ready"）
+
+### 5. 开始提问
+
+在输入框中输入问题，例如：
+
+```
+> 帮我分析这段 Trace 中的 ANR 问题
+> 找出所有耗时超过 100ms 的主线程操作
+> 分析这段 Trace 中的内存分配情况
+> 有没有明显的卡顿问题？
+> 统计一下 CPU 使用情况
 ```
 
-访问 http://localhost:5173 查看应用
+### 6. 查看分析过程
+
+AI 会实时显示分析进度：
+
+```
+⏳ 🤔 正在生成查询...
+⏳ ⏳ 正在执行查询...
+⏳ 📊 正在分析结果...
+📝 [最终分析结果]
+```
+
+### 可用命令
+
+| 命令 | 说明 |
+|------|------|
+| `/help` | 显示帮助信息 |
+| `/sql <query>` | 执行 SQL 查询 |
+| `/goto <timestamp>` | 跳转到指定时间戳 |
+| `/analyze` | 分析当前选中区域 |
+| `/anr` | 快速检测 ANR |
+| `/jank` | 快速检测掉帧 |
+| `/clear` | 清除对话历史 |
+| `/settings` | 打开设置 |
+
+### 示例 Trace 文件
+
+你可以从以下位置下载示例 Trace：
+
+- [Perfetto BigTrace](https://storage.googleapis.com/perfetto.ui/bigtrace/)
+- [Android Trace Examples](https://perfetto.dev/docs/quickstart/trace-viewer)
+
+## 项目结构
+
+```
+SmartPerfetto/
+├── perfetto/                 # Perfetto 官方 UI (Git Submodule)
+│   └── ui/
+│       ├── src/
+│       │   └── plugins/
+│       │       └── com.smartperfetto.AIAssistant/  # AI 助手插件
+│       │           ├── ai_panel.ts                  # 主面板组件
+│       │           ├── commands.ts                  # 命令处理
+│       │           └── plugin.ts                    # 插件入口
+│       ├── run-dev-server                            # 启动脚本
+│       └── build.js                                  # 构建脚本
+│
+├── backend/                 # 后端 API 服务
+│   ├── src/
+│   │   ├── routes/
+│   │   │   ├── traceAnalysisRoutes.ts          # 分析 API 路由
+│   │   │   └── simpleTraceRoutes.ts            # Trace 上传路由
+│   │   ├── services/
+│   │   │   ├── traceProcessorService.ts        # Trace 处理服务
+│   │   │   ├── perfettoAnalysisOrchestrator.ts # 分析编排器
+│   │   │   ├── analysisSessionService.ts       # 会话管理
+│   │   │   └── perfettoSqlSkill.ts             # SQL 生成技能
+│   │   ├── types/
+│   │   │   └── analysis.ts                     # 类型定义
+│   │   └── index.ts                            # 入口文件
+│   └── .env                                      # 环境变量
+│
+└── docs/                    # 文档
+    └── plans/               # 设计文档
+```
+
+## 技术栈
+
+### 前端 (Perfetto UI Plugin)
+
+- **TypeScript** - 类型安全
+- **Mithril.js** - Perfetto UI 使用的框架
+- **SSE** - Server-Sent Events 用于实时更新
+
+### 后端
+
+- **Node.js + Express** - API 服务
+- **TypeScript** - 类型安全
+- **TraceProcessor WASM** - Perfetto Trace 处理引擎
+- **OpenAI SDK** - 兼容 DeepSeek API
+- **Multer** - 文件上传
+
+### AI 服务
+
+- **DeepSeek API** - SQL 生成和结果分析
+
+## 环境变量
+
+在 `backend/.env` 中配置：
+
+```env
+# API 服务
+PORT=3000
+NODE_ENV=development
+
+# AI 服务配置
+AI_SERVICE=deepseek
+DEEPSEEK_API_KEY=your-deepseek-api-key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+
+# 文件上传配置
+MAX_FILE_SIZE=500MB
+UPLOAD_DIR=./uploads
+```
 
 ## API 文档
 
-### SQL 生成
+### 上传 Trace
 
-**POST** `/api/sql/generate`
-
-请求体：
-```json
-{
-  "query": "查找所有耗时超过 100ms 的 slice",
-  "context": "分析主线程性能"
-}
-```
-
-### Trace 上传
-
-**POST** `/api/trace/upload`
+**POST** `/api/traces/upload`
 
 Content-Type: `multipart/form-data`
 
-Body: 文件字段名 `file`
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| file | File | Trace 文件 |
 
-### Trace 分析
-
-**POST** `/api/trace/analyze`
-
-请求体：
+**响应**:
 ```json
 {
-  "fileId": "uploaded-file-id",
-  "query": "找出所有的卡顿点",
-  "analysisType": "performance"
+  "success": true,
+  "traceId": "uuid",
+  "filename": "example.perfetto-trace",
+  "size": 1234567
 }
 ```
 
-## 盈利模式
+### 开始分析
 
-### 订阅制
-- **免费版**: 基础 SQL 生成，每月 5 次 trace 分析
-- **专业版**: ¥99/月，无限 SQL 生成，高级分析功能
-- **企业版**: ¥499/月，团队协作，API 访问，定制功能
+**POST** `/api/trace-analysis/start`
 
-### API 服务
-- 按次计费：¥0.1/次 SQL 生成
-- 批量包：1000 次 ¥80
+Headers: `Content-Type: application/json`
 
-### 增值服务
-- 性能优化咨询
-- 定制化解决方案
-- 培训服务
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| traceId | string | Trace ID |
+| question | string | 用户问题 |
 
-## 部署
+**响应**: SSE 流式事件
 
-### 使用 Docker Compose（推荐）
+```typescript
+// 进度事件
+type: 'progress'
+data: {
+  step: 'generating_sql' | 'executing_sql' | 'analyzing',
+  message: '🤔 正在生成查询...'
+}
 
-1. **克隆项目**
-```bash
-git clone https://github.com/yourusername/smart-perfetto.git
-cd smart-perfetto
+// 分析完成
+type: 'analysis_completed'
+data: {
+  answer: '分析结果...'
+}
 ```
 
-2. **配置环境变量**
-```bash
-cp .env.example .env
-# 编辑 .env 文件，填入你的配置
+### 查询 Trace 状态
+
+**GET** `/api/traces/:traceId`
+
+**响应**:
+```json
+{
+  "success": true,
+  "trace": {
+    "id": "uuid",
+    "filename": "example.perfetto-trace",
+    "status": "ready" | "uploading" | "error",
+    "size": 1234567
+  }
+}
 ```
 
-3. **启动服务**
-```bash
-# 开发环境
-docker-compose up -d
+## 已完成功能
 
-# 生产环境
-docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+- ✅ Perfetto UI AI 助手插件
+- ✅ Trace 文件上传到后端
+- ✅ 基于 WASM 的 TraceProcessor 集成
+- ✅ AI SQL 生成（DeepSeek）
+- ✅ 多轮分析编排器
+- ✅ SSE 实时进度推送
+- ✅ 中文进度提示
+
+## 待实现功能
+
+- [ ] 更多预定义分析命令 (`/anr`, `/jank`, `/memory`)
+- [ ] 分析结果的可视化增强
+- [ ] 会话历史持久化
+- [ ] 多 AI 模型支持
+- [ ] 分析报告导出
+
+## 开发说明
+
+### 添加新的分析命令
+
+编辑 `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/commands.ts`：
+
+```typescript
+export const COMMANDS = {
+  // ... 现有命令
+  '/mycommand': {
+    description: '我的自定义命令',
+    handler: async (args, state) => {
+      // 实现命令逻辑
+    }
+  }
+};
 ```
 
-### 使用部署脚本
+### 修改 AI 分析逻辑
 
-我们提供了自动化部署脚本：
+编辑 `backend/src/services/perfettoAnalysisOrchestrator.ts`：
 
-```bash
-# 部署到测试环境
-./scripts/deploy.sh staging
-
-# 部署到生产环境
-./scripts/deploy.sh production
-
-# 回滚生产环境
-./scripts/deploy.sh production rollback
-
-# 清理 Docker 资源
-./scripts/deploy.sh staging cleanup
+```typescript
+class PerfettoAnalysisOrchestrator {
+  // 修改分析循环逻辑
+  private async runAnalysisLoop(...) {
+    // ...
+  }
+}
 ```
 
-### 环境变量说明
+### 修改 AI Prompt
 
-| 变量名 | 说明 | 必需 |
-|--------|------|------|
-| `OPENAI_API_KEY` | OpenAI API 密钥 | 是（使用 OpenAI 时） |
-| `ANTHROPIC_API_KEY` | Claude API 密钥 | 是（使用 Claude 时） |
-| `JWT_SECRET` | JWT 签名密钥 | 是 |
-| `STRIPE_SECRET_KEY` | Stripe 私钥 | 是（订阅功能） |
-| `DATABASE_URL` | PostgreSQL 数据库 URL | 是（生产环境） |
-| `REDIS_URL` | Redis 连接 URL | 是（生产环境） |
+编辑 `backend/src/services/perfettoSqlSkill.ts`：
 
-### 服务器要求
-
-**最低配置**：
-- CPU: 2 核
-- 内存: 4GB
-- 存储: 20GB SSD
-- 系统: Ubuntu 20.04+ / CentOS 8+
-
-**推荐配置**：
-- CPU: 4 核
-- 内存: 8GB
-- 存储: 50GB SSD
-- 系统: Ubuntu 22.04 LTS
-
-### SSL 证书配置
-
-1. 使用 Let's Encrypt（推荐）：
-```bash
-sudo apt install certbot
-sudo certbot certonly --nginx -d yourdomain.com
+```typescript
+private getSystemPrompt(): string {
+  return `你的自定义 Prompt...`;
+}
 ```
 
-2. 将证书复制到项目目录：
+## 故障排除
+
+### Perfetto UI 无法启动
+
 ```bash
-sudo cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem ./ssl/cert.pem
-sudo cp /etc/letsencrypt/live/yourdomain.com/privkey.pem ./ssl/key.pem
+# 检查端口占用
+lsof -ti:10000 | xargs kill -9
+
+# 重新构建
+cd perfetto/ui
+node build.js --only-wasm-memory64
 ```
 
-### 监控和日志
+### Backend 无法启动
 
-- 应用日志：`docker-compose logs -f`
-- Nginx 访问日志：`/var/log/nginx/access.log`
-- Nginx 错误日志：`/var/log/nginx/error.log`
-
-### 备份
-
-自动备份脚本已包含在部署中：
-- 数据库备份：`./backups/db-backup-*.sql`
-- 文件备份：`./backups/uploads-backup-*.tar.gz`
-
-手动备份数据库：
 ```bash
-docker-compose exec postgres pg_dump -U postgres smartperfetto > backup.sql
+# 检查环境变量
+cat backend/.env
+
+# 检查日志
+tail -f /tmp/backend.log
 ```
 
-## 贡献指南
+### AI 分析无响应
 
-欢迎提交 Issue 和 Pull Request！
+```bash
+# 检查 API 配置
+curl http://localhost:3000/debug
+
+# 查看 orchestrator 日志
+grep "Orchestrator" /tmp/backend.log
+```
+
+### 构建失败
+
+如果 Perfetto UI 构建失败：
+
+```bash
+cd perfetto/ui
+# 清理并重新构建
+rm -rf out/ node_modules/.cache
+node build.js --only-wasm-memory64
+```
 
 ## 许可证
 

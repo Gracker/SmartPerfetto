@@ -17,6 +17,18 @@ export const authenticate = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
+  // Skip authentication in development
+  if (process.env.NODE_ENV === 'development') {
+    // Add a mock user for development
+    req.user = {
+      id: 'dev-user-123',
+      email: 'dev@example.com',
+      subscription: 'pro', // Give pro access in development
+    };
+    next();
+    return;
+  }
+
   try {
     const authHeader = req.headers.authorization;
 
@@ -50,6 +62,12 @@ export const authenticate = async (
 
 export const checkUsage = (isTraceAnalysis: boolean = false) => {
   return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
+    // Skip usage check in development
+    if (process.env.NODE_ENV === 'development') {
+      next();
+      return;
+    }
+
     try {
       if (!req.user) {
         const error: ErrorResponse = {

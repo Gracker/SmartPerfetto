@@ -1,361 +1,363 @@
-# SmartPerfetto CLI Assistant Design
+# SmartPerfetto AI Assistant Design
 
 **Date**: 2025-12-26
-**Status**: Design Approved
-
-## Overview
-
-An AI-powered command-line assistant embedded in Perfetto UI as a sidebar panel. Similar to how Claude Code complements IDEs, SmartPerfetto complements Perfetto UI — not replacing it, but enhancing it with AI capabilities.
-
-### Core Insight
-
-- **Perfetto UI ≈ IDE** (irreplaceable visualization)
-- **SmartPerfetto ≈ Claude Code** (AI assistant for understanding and navigation)
-
-### User Workflow
-
-1. Open Trace file in Perfetto UI (local mode)
-2. Open SmartPerfetto sidebar (aware of current Trace)
-3. Switch between UI and CLI:
-   - **UI**: Visual exploration, manual inspection
-   - **CLI**: Ask questions, execute SQL, get explanations
-4. AI can operate UI (execute SQL, highlight regions, navigate)
+**Last Updated**: 2025-12-28
+**Status**: ✅ Implemented (Backend AI Architecture)
 
 ---
 
-## Architecture
+## 实现概述
 
-```
-┌─────────────────────────────────────────────────────┐
-│                   Perfetto UI                        │
-├─────────────┬───────────────────────────────────────┤
-│   Timeline  │          AI Sidebar                    │
-│             │  ┌─────────────────────────────────┐  │
-│   [Trace]   │  │ > /help                         │  │
-│             │  │                                 │  │
-│   [Panels]  │  │ [AI Response...]                │  │
-│             │  │                                 │  │
-│             │  └─────────────────────────────────┘  │
-└─────────────┴───────────────────────────────────────┘
-         │                              │
-         │          Engine API           │
-         └──────────  ┌──────────────────┘
-                      │
-         ┌────────────▼─────────────┐
-         │    AI Service             │
-         │  • Local (Ollama)         │
-         │  • Remote (OpenAI API)    │
-         └───────────────────────────┘
-```
+原始设计采用本地 Ollama AI 方案，实际实现时改为**后端 AI 服务架构**：
 
-### Components
+| 原始设计 | 实际实现 |
+|---------|---------|
+| 本地 Ollama (localhost:11434) | DeepSeek API (后端) |
+| 前端直接调用 AI | 前端通过 SSE 调用后端 API |
+| 简单命令执行 | 多轮分析编排器 |
+| 无进度反馈 | 实时 SSE 进度推送 |
 
-1. **Perfetto UI Extension** (sidebar panel)
-   - Integrated via Perfetto plugin system
-   - Toggleable panel next to Mega button
-   - Uses Perfetto's `Engine` API for queries
-
-2. **Local AI Service**
-   - User runs Ollama locally (localhost:11434)
-   - Direct frontend calls (no backend needed)
-   - Support multiple models (Llama 3.4, Qwen, DeepSeek)
-
-3. **Remote AI Option**
-   - User-configured API endpoint
-   - OpenAI-compatible接口
-   - Fallback option when local unavailable
-
-4. **Bridge Layer**
-   - Converts user input to Perfetto API calls
-   - Injects Trace context into AI prompts
-   - Manages conversation history and state
+**变更原因**：
+- 本地 AI 模型质量不稳定
+- 需要更强的分析能力
+- 前后端职责更清晰
 
 ---
 
-## Interaction Mode
-
-### Hybrid Command Interface
+## 最终架构
 
 ```
-> 什么是 Binder？
-[AI] Binder 是 Android 的进程间通信机制...
-
-> /sql SELECT * FROM slice WHERE name = 'binder_transaction'
-[Result] 23 rows found, highlighted on Timeline
-
-> /goto 123456789
-[Navigate] Jumped to timestamp 123456789
-
-> 帮我分析这段卡顿
-[AI] 根据当前选中区域，主线程阻塞 500ms，原因是...
+┌─────────────────────────────────────────────────────────────┐
+│                   Perfetto UI (Local)                       │
+│                      http://localhost:10000                 │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────┬──────────────────────────────────────┐    │
+│  │   Timeline  │          AI Assistant Panel          │    │
+│  │             │  ┌─────────────────────────────────┐ │    │
+│  │   [Trace]   │  │ > 帮我分析 ANR 问题             │ │    │
+│  │             │  │                                 │ │    │
+│  │   [Panels]  │  │ ⏳ 🤔 正在生成查询...            │ │    │
+│  │             │  │ ⏳ ⏳ 正在执行查询...            │ │    │
+│  │             │  │ ⏳ 📊 正在分析结果...            │ │    │
+│  │             │  │                                 │ │    │
+│  │             │  │ 📝 [分析结果...]                │ │    │
+│  │             │  └─────────────────────────────────┘ │    │
+│  └─────────────┴──────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              │ POST /api/trace-analysis/start
+                              │ SSE (进度事件)
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Backend API Server                        │
+│                      http://localhost:3000                  │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │         PerfettoAnalysisOrchestrator                │   │
+│  │                                                     │   │
+│  │  runAnalysisLoop(question, traceId):               │   │
+│  │    while (!isComplete && iterations < max):        │   │
+│  │      1. emitProgress('生成查询...')                │   │
+│  │      2. sql = generateSQL(question, context)       │   │
+│  │      3. emitProgress('执行查询...')                │   │
+│  │      4. result = executeSQL(sql, traceId)          │   │
+│  │      5. emitProgress('分析结果...')                │   │
+│  │      6. insight = analyzeResult(sql, result)       │   │
+│  │      7. isComplete = shouldContinue(insight)       │   │
+│  │    8. answer = generateFinalAnswer(allInsights)    │   │
+│  └─────────────────────────────────────────────────────┘   │
+│                          │                                  │
+│  ┌───────────────┐  ┌──────────────────┐  ┌────────────┐ │
+│  │ TraceProcessor│  │ AnalysisSession  │  │  AI SDK    │ │
+│  │   Service     │  │     Service      │  │ (DeepSeek) │ │
+│  │               │  │                  │  │            │ │
+│  │ - WASM引擎    │  │ - SSE推送        │  │ - SQL生成  │ │
+│  │ - Trace管理   │  │ - 会话状态       │  │ - 结果分析 │ │
+│  └───────────────┘  └──────────────────┘  └────────────┘ │
+└─────────────────────────────────────────────────────────────┘
 ```
-
-### Commands
-
-| Command | Description |
-|---------|-------------|
-| `/sql <query>` | Execute SQL and display results |
-| `/goto <ts>` | Jump to timestamp |
-| `/select <id>` | Select a slice/track |
-| `/analyze` | Analyze current selection |
-| `/anr` | Quick ANR detection |
-| `/jank` | Quick jank detection |
-| `/help` | Show all commands |
-| `/model <name>` | Switch AI model |
-| `/settings` | Open settings panel |
-
-### AI Context Awareness
-
-- Current Trace metadata (device, Android version, duration)
-- User's selected time range
-- User's selected slice/track
-- Recent SQL queries
-- Conversation history (configurable, default 10 rounds)
 
 ---
 
-## Core Components
+## 核心组件
 
-### AIPanel Component
+### 1. PerfettoAnalysisOrchestrator
 
+分析编排器，负责完整的分析闭环。
+
+**职责**：
+- 理解用户提问
+- 生成 SQL 查询
+- 执行查询并分析结果
+- 判断是否需要继续查询
+- 生成最终答案
+
+**文件位置**：`backend/src/services/perfettoAnalysisOrchestrator.ts`
+
+**关键方法**：
 ```typescript
-interface AIPanelProps {
-  engine: Engine;           // Perfetto Engine
-  traceInfo: TraceInfo;     // Current Trace info
-}
+async analyzeQuestion(traceId: string, question: string, sessionId: string): Promise<void>
 
-interface AIPanelState {
-  messages: Message[];      // Conversation history
-  inputMode: 'command' | 'chat';
-  context: TraceContext;    // Current selection context
-}
+private async runAnalysisLoop(
+  question: string,
+  traceId: string,
+  sessionId: string
+): Promise<void>
+
+private async generateSQL(question: string): Promise<{sql: string, reasoning: string}>
+private async executeSQL(sql: string, traceId: string): Promise<QueryResult>
+private async analyzeQueryResult(sql: string, result: QueryResult): Promise<string>
+private async evaluateResultCompleteness(insight: string): Promise<boolean>
+private async generateFinalAnswer(insights: string[]): Promise<string>
 ```
 
-### CommandParser Module
+### 2. TraceProcessorService
 
-- Parse user input, distinguish commands vs chat
-- Validate command syntax
-- Extract parameters
+Trace 处理服务，管理 WASM TraceProcessor 实例。
 
-### TraceContextTracker Module
+**职责**：
+- 管理 Trace 文件存储
+- 创建/销毁 TraceProcessor 实例
+- 执行 SQL 查询
+- 单例模式确保全局唯一
 
-- Listen to Perfetto UI events (selection changes, time range changes)
-- Maintain current context state
-- Generate context string for AI injection
+**文件位置**：`backend/src/services/traceProcessorService.ts`
 
-### AIService Interface
-
+**关键方法**：
 ```typescript
-interface AIService {
-  chat(messages: Message[], context: TraceContext): Promise<string>;
-  supports(model: string): boolean;
-}
-
-class OllamaService implements AIService { }
-class OpenAIService implements AIService { }
+async createProcessor(traceId: string): Promise<WasmBridgeProxy>
+async executeQuery(traceId: string, sql: string): Promise<QueryResult>
+async deleteProcessor(traceId: string): Promise<void>
 ```
 
-### ResultRenderer Component
+### 3. AnalysisSessionService
 
-- Render different AI response types:
-  - Plain text (Markdown)
-  - SQL results (table + chart options)
-  - Action suggestions (execute, navigate, copy)
+会话管理服务，负责 SSE 推送。
 
----
+**职责**：
+- 管理分析会话状态
+- SSE 事件推送
+- 进度消息分发
 
-## Data Flow
+**文件位置**：`backend/src/services/analysisSessionService.ts`
 
-```
-User Input
-    │
-    ▼
-CommandParser
-    │
-    ├── Is Command? ─Yes──→ CommandExecutor → Perfetto API → Result
-    │                      No
-    ▼
-Build AI Prompt
-    │
-    ├→ System Prompt (role + available tools)
-    ├→ Trace Context (device, selection, recent queries)
-    ├→ Conversation History (last N rounds)
-    └→ User Question
-    │
-    ▼
-AIService (local or remote)
-    │
-    ▼
-AI Response
-    │
-    ├→ Contains SQL? → Auto-execute → Render results
-    ├→ Contains action? → Execute (jump/select)
-    └→ Plain text → Markdown render
-```
-
-### System Prompt Template
-
-```
-你是 Android 性能分析专家助手，帮助用户分析 Perfetto Trace。
-
-可用工具：
-- /sql <query> - 执行 SQL 查询
-- /goto <timestamp> - 跳转时间戳
-- /analyze - 分析当前选中区域
-
-当前 Trace 上下文：
-{{deviceInfo}}, {{androidVersion}}, {{traceDuration}}
-用户选中：{{selectedSlice}} / {{timeRange}}
-
-根据用户水平自动调整解释深度。
-```
-
----
-
-## Settings & Configuration
-
-### Settings Panel
-
-```
-┌─ AI Settings ──────────────────────┐
-│                                      │
-│ AI Provider                          │
-│ ○ Local AI (Ollama)                 │
-│ ○ Remote API (OpenAI compatible)    │
-│                                      │
-│ Endpoint: http://localhost:11434     │
-│ Model: llama3.4                      │
-│                                      │
-│ [Test Connection]                    │
-│                                      │
-│ Interaction Settings                 │
-│ Max history rounds: [10]             │
-│ Auto-detect issues: ✓                │
-│                                      │
-└──────────────────────────────────────┘
-```
-
-### Configuration
-
-- Stored in `localStorage`
-- Support export/import config
-- Default: Try local Ollama, fallback to setup wizard
-
-### First-Time Flow
-
-1. User opens AI panel
-2. Detect local AI connection
-3. If available, use directly; else show setup wizard
-4. Provide quick test command (`/test`) to verify
-
----
-
-## Perfetto Integration Points
-
-### Utilized Perfetto APIs
-
-| API | Usage |
-|-----|-------|
-| `engine.runQuery(sql)` | Execute SQL queries |
-| `engine.queryResultAsTables(result)` | Get table data |
-| `SelectionManager` | Get user selection |
-| `navigateToTimestamp(ts)` | Jump navigation |
-| `focusOnSlice(id)` | Focus on slice |
-| `zoomToRange(start, end)` | Zoom timeline |
-
-### Plugin Registration
-
+**SSE 事件类型**：
 ```typescript
-// perfetto/ui/src/plugins/com.smartperfetto.ai/
-export const plugin = {
-  onActivate(ctx: PluginContext) {
-    const engine = ctx.engine;
-    const sidebar = ctx.createSidebarPanel({
-      icon: 'terminal',
-      title: 'AI Assistant',
-      component: AIPanel,
-      props: { engine }
-    });
+// 进度事件
+{
+  type: 'progress',
+  timestamp: number,
+  data: {
+    step: 'generating_sql' | 'executing_sql' | 'analyzing',
+    message: '🤔 正在生成查询...'
   }
-};
+}
+
+// 分析完成
+{
+  type: 'analysis_completed',
+  timestamp: number,
+  data: {
+    answer: string
+  }
+}
 ```
 
-### Event Subscriptions
+### 4. AIPanel (Frontend)
 
-- `selectionChanged` - Update context when user selects
-- `traceLoaded` - Reset on new trace
-- `queryExecuted` - Track for context
+前端 AI 面板组件。
 
----
+**职责**：
+- UI 显示
+- 用户交互
+- SSE 事件监听
+- 进度展示
 
-## Error Handling
+**文件位置**：`perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/ai_panel.ts`
 
-| Error Type | Handling |
-|------------|----------|
-| AI service unavailable | Show error + diagnostic steps + offer switch |
-| SQL execution failed | Send error to AI for correction, retry (max 3) |
-| Query timeout | Suggest narrowing time range, stream partial results |
-| Context window exceeded | Auto-trim history, prompt user for larger model |
-
-### Edge Cases
-
-| Situation | Response |
-|-----------|----------|
-| No trace loaded | "请先打开 Trace 文件" |
-| No user selection | Analyze full trace |
-| Empty SQL result | AI explains "当前条件下无数据" |
-| Non-Perfetto question | Politely redirect to performance analysis |
+**关键方法**：
+```typescript
+async handleChatMessage(message: string): Promise<void>
+private async listenToSSE(analysisId: string): Promise<void>
+private handleSSEEvent(eventType: string, data?: any): void
+```
 
 ---
 
-## Implementation Priority
+## 数据流
 
-### Phase 1 - Foundation
-- [ ] Perfetto plugin registration + sidebar UI
-- [ ] Command parser (`/sql`, `/goto`, `/help`)
-- [ ] Basic message display (plain text)
-- [ ] Local AI connection (Ollama)
+### 分析请求流程
 
-### Phase 2 - Core Interaction
-- [ ] AI Q&A (without context)
-- [ ] Trace context injection (device info, time range)
-- [ ] SQL execution + result display
-- [ ] Command history (up/down arrow)
-
-### Phase 3 - Intelligence
-- [ ] AI aware of user selection
-- [ ] Auto issue detection (ANR, Jank)
-- [ ] Quick commands (`/anr`, `/jank`)
-- [ ] Markdown rendering (code, tables)
-
-### Phase 4 - Polish
-- [ ] Remote AI support
-- [ ] Settings panel
-- [ ] Conversation history persistence
-- [ ] Auto SQL correction on error
-
-### Out of Scope (Deferred)
-
-- Multi-language support
-- Custom prompt templates
-- Share/export conversations
-- Team collaboration
-
----
-
-## Target Users
-
-All levels of Android developers - AI adjusts explanation depth based on question complexity:
-
-- **Beginners**: Detailed concept explanations
-- **Intermediate**: Quick problem identification
-- **Experts**: Deep data analysis and complex queries
+```
+1. 用户输入问题
+   │
+   ▼
+2. 前端: handleChatMessage()
+   │   检查 Trace 是否已上传
+   │
+   ▼
+3. POST /api/trace-analysis/start
+   │   { traceId, question }
+   │
+   ▼
+4. 后端: analyzeQuestion()
+   │   创建 SSE 会话
+   │
+   ▼
+5. 分析循环
+   │
+   ├→ 生成 SQL (AI)
+   │  emitProgress('🤔 正在生成查询...')
+   │
+   ├→ 执行 SQL (WASM)
+   │  emitProgress('⏳ 正在执行查询...')
+   │
+   ├→ 分析结果 (AI)
+   │  emitProgress('📊 正在分析结果...')
+   │
+   └→ 判断是否继续
+      │
+      ├→ 需要继续 → 下一轮
+      │
+      └→ 完成 → 生成最终答案
+              emit('analysis_completed')
+```
 
 ---
 
-## Success Metrics
+## AI Prompt 策略
 
-1. User can open Perfetto UI and start asking questions within 30 seconds
-2. AI provides accurate SQL for common queries (90%+ success rate)
-3. Context awareness works correctly (selection, time range)
-4. Local AI works offline after initial model download
+### System Prompt
+
+```
+You are an expert in Android performance analysis using Perfetto.
+
+Your task is to help users analyze Perfetto trace files by:
+1. Generating SQL queries to answer specific questions
+2. Analyzing query results to extract insights
+3. Determining if more information is needed
+4. Providing comprehensive final answers
+
+Available tables:
+- slice: Timing information for schedulable slices
+- thread: Thread information
+- process: Process information
+- thread_track: Per-thread tracks
+- sched: Kernel scheduling information
+
+Focus on:
+- ANR (Application Not Responding) detection
+- Frame jank analysis
+- Main thread blocking
+- CPU usage patterns
+- Memory allocations
+
+When generating SQL:
+- Use precise WHERE clauses
+- Limit results when appropriate
+- Join tables when needed
+- Consider performance implications
+```
+
+### Context 注入
+
+每次 AI 调用时注入的上下文：
+- 用户原始问题
+- 当前 Trace 的元数据（如果可用）
+- 之前几轮的查询和分析结果
+- 当前查询的 SQL 和结果
+
+---
+
+## 技术决策记录
+
+### 1. 为什么选择后端 AI 而非本地 Ollama？
+
+| 方面 | 本地 Ollama | 后端 DeepSeek |
+|------|------------|--------------|
+| 模型质量 | 不稳定 | 高质量 |
+| 分析能力 | 有限 | 强大 |
+| 部署复杂度 | 高 | 低 |
+| 网络依赖 | 无 | 需要 |
+| 成本 | 免费 | 按量计费 |
+
+**决策**：选择后端 AI，优先保证分析质量。
+
+### 2. 为什么使用 SSE 而非 WebSocket？
+
+| 方面 | SSE | WebSocket |
+|------|-----|-----------|
+| 实现复杂度 | 低 | 中 |
+| 单向通信 | ✅ | ❌ |
+| 自动重连 | ✅ | 需要实现 |
+| 浏览器支持 | 广泛 | 广泛 |
+
+**决策**：SSE 足够满足单向进度推送需求。
+
+### 3. 为什么需要多轮分析循环？
+
+单次 SQL 查询往往无法完整回答复杂问题。例如：
+- "分析 ANR 问题" 需要先找到长阻塞，再分析原因
+- "统计 CPU 使用" 需要分进程、分线程统计
+
+多轮循环让 AI 可以：
+1. 先得到初步结果
+2. 判断是否需要更多信息
+3. 继续深入分析
+4. 最终给出完整答案
+
+---
+
+## 实现状态
+
+### ✅ 已完成
+
+- [x] Perfetto UI AI 助手插件
+- [x] 后端分析 API
+- [x] TraceProcessor WASM 集成
+- [x] 多轮分析编排器
+- [x] SSE 实时进度推送
+- [x] DeepSeek API 集成
+- [x] 中文进度提示
+- [x] 超时保护机制
+
+### 🚧 进行中
+
+- [ ] PerfettoSqlSkill SOP 完善
+
+### 📋 待实现
+
+- [ ] 预定义命令 (`/anr`, `/jank`, `/memory`)
+- [ ] 分析结果可视化增强
+- [ ] 会话历史持久化
+- [ ] 多 AI 模型支持
+
+---
+
+## 相关文件
+
+### 后端
+- `backend/src/services/perfettoAnalysisOrchestrator.ts` - 分析编排器
+- `backend/src/services/traceProcessorService.ts` - Trace 处理服务
+- `backend/src/services/analysisSessionService.ts` - 会话管理
+- `backend/src/services/perfettoSqlSkill.ts` - SQL 生成技能
+- `backend/src/routes/traceAnalysisRoutes.ts` - 分析 API 路由
+- `backend/src/routes/simpleTraceRoutes.ts` - Trace 上传路由
+
+### 前端
+- `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/ai_panel.ts` - 主面板
+- `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/commands.ts` - 命令定义
+- `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/plugin.ts` - 插件入口
+
+### 类型定义
+- `backend/src/types/analysis.ts` - 分析相关类型
+
+---
+
+## 参考资料
+
+- [Perfetto Documentation](https://perfetto.dev/docs/)
+- [Perfetto SQL Reference](https://perfetto.dev/docs/analysis/sql-queries)
+- [DeepSeek API](https://platform.deepseek.com/docs)

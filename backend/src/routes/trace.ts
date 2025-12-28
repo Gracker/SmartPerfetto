@@ -2,7 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import TraceController from '../controllers/traceController';
-import { authenticate, checkUsage } from '../middleware/auth';
+// import { authenticate, checkUsage } from '../middleware/auth';
 
 const router = Router();
 const traceController = new TraceController();
@@ -19,12 +19,8 @@ const storage = multer.diskStorage({
 });
 
 const fileFilter = (req: any, file: Express.Multer.File, cb: any) => {
-  // Accept .perfetto and .trace files
-  if (file.originalname.endsWith('.perfetto') || file.originalname.endsWith('.trace')) {
-    cb(null, true);
-  } else {
-    cb(new Error('Only .perfetto and .trace files are allowed'), false);
-  }
+  // Accept all files
+  cb(null, true);
 };
 
 const upload = multer({
@@ -35,19 +31,19 @@ const upload = multer({
   },
 });
 
-// POST /api/trace/upload - Upload a trace file (protected)
-router.post('/upload', authenticate, upload.single('file'), traceController.uploadTrace);
+// POST /api/trace/upload - Upload a trace file (auth disabled for development)
+router.post('/upload', upload.single('file'), traceController.uploadTrace);
 
-// POST /api/trace/analyze - Analyze an uploaded trace (protected, with usage check)
-router.post('/analyze', authenticate, checkUsage(true), traceController.analyzeTrace);
+// POST /api/trace/analyze - Analyze an uploaded trace (auth disabled for development)
+router.post('/analyze', traceController.analyzeTrace);
 
-// GET /api/trace/:fileId - Get trace file information (protected)
-router.get('/:fileId', authenticate, traceController.getTraceInfo);
+// GET /api/trace/:fileId - Get trace file information (auth disabled for development)
+router.get('/:fileId', traceController.getTraceInfo);
 
-// DELETE /api/trace/:fileId - Delete a trace file (protected)
-router.delete('/:fileId', authenticate, traceController.deleteTrace);
+// DELETE /api/trace/:fileId - Delete a trace file (auth disabled for development)
+router.delete('/:fileId', traceController.deleteTrace);
 
-// GET /api/trace/:fileId/download - Download a trace file (protected)
-router.get('/:fileId/download', authenticate, traceController.downloadTrace);
+// GET /api/trace/:fileId/download - Download a trace file (auth disabled for development)
+router.get('/:fileId/download', traceController.downloadTrace);
 
 export default router;

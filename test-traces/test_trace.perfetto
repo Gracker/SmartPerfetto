@@ -1,0 +1,4 @@
+# This is a placeholder for a real trace file
+# In a real scenario, you would place actual .trace files here
+# You can download sample traces from: https://storage.googleapis.com/perfetto.ui/bigtrace/android_trace_30s.perfetto-trace
+Test Trace File Placeholder

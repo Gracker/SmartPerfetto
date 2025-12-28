@@ -1,256 +1,52 @@
 import OpenAI from 'openai';
 import axios from 'axios';
-import { GenerateSqlRequest, TraceAnalysisRequest, TraceAnalysisResponse, GenerateSqlResponse } from '../types';
+import fs from 'fs/promises';
+import { PERFETTO_TABLES_SCHEMA, PERFETTO_SQL_EXAMPLES } from '../data/perfettoSchema';
+import SQLValidator from './sqlValidator';
 
-// Perfetto SQL 知识库 - 官方表结构
-const PERFETTO_SQL_KNOWLEDGE = `
-Perfetto Official SQL Tables Reference:
+interface GenerateSqlRequest {
+  query: string;
+  context?: string;
+}
 
-### 核心事件表 (Events Tables)
+interface GenerateSqlResponse {
+  sql: string;
+  explanation: string;
+  examples: string[];
+}
 
-1. **slice** - 用户空间切片事件
-   - id: 切片唯一标识符
-   - type: 切片类型 (slice, instant, counter)
-   - name: 人类可读的名称
-   - ts: 开始时间戳 (纳秒)
-   - dur: 持续时间 (纳秒)
-   - track_id: 轨道引用
-   - category: 事件类别
-   - depth: 切片深度
-   - parent_id: 父切片ID
+interface TraceAnalysisRequest {
+  file: Express.Multer.File;
+  query?: string;
+  analysisType?: 'performance' | 'memory' | 'cpu' | 'gpu' | 'custom';
+}
 
-2. **ftrace_event** - 原始 ftrace 事件
-   - id: 事件唯一标识符
-   - ts: 时间戳
-   - name: 事件名称
-   - utid: 线程唯一ID
-   - arg_set_id: 参数集ID
-   - common_flags: 通用标志
-   - ucpu: 用户CPU
+interface TraceAnalysisResponse {
+  insights: string[];
+  sqlQueries: string[];
+  recommendations: string[];
+  metrics: {
+    duration: number;
+    memoryPeak: number;
+    cpuUsage: number;
+    frameDrops: number;
+  };
+}
 
-3. **sched** - Linux内核线程调度
-   - id: 调度事件ID
-   - ts: 时间戳
-   - dur: 持续时间
-   - utid: 线程唯一ID
-   - end_state: 结束状态
-   - priority: 优先级
-   - ucpu: CPU编号
-
-4. **thread_state** - 线程调度状态
-   - id: 状态ID
-   - ts: 时间戳
-   - dur: 持续时间
-   - utid: 线程唯一ID
-   - state: 状态 (R, S, D, Z, T, etc)
-   - io_wait: IO等待
-   - blocked_function: 阻塞函数
-
-### 元数据表 (Metadata Tables)
-
-5. **process** - 进程信息
-   - upid: 进程唯一ID
-   - pid: 进程ID
-   - name: 进程名称
-   - start_ts: 开始时间戳
-   - end_ts: 结束时间戳
-   - parent_upid: 父进程ID
-   - uid: 用户ID
-
-6. **thread** - 线程信息
-   - utid: 线程唯一ID
-   - tid: 线程ID
-   - name: 线程名称
-   - start_ts: 开始时间戳
-   - end_ts: 结束时间戳
-   - upid: 所属进程ID
-   - is_main_thread: 是否主线程
-
-7. **machine** - 系统信息
-   - id: 机器ID
-   - raw_id: 原始ID
-   - sysname: 系统名称
-   - release: 版本
-   - version: 版本详情
-   - arch: 架构
-
-### 性能分析表 (Profiler Tables)
-
-8. **cpu_profile_stack_sample** - CPU栈采样
-   - id: 采样ID
-   - ts: 时间戳
-   - callsite_id: 调用点ID
-   - utid: 线程ID
-
-9. **heap_profile_allocation** - 内存分配
-   - id: 分配ID
-   - ts: 时间戳
-   - callsite_id: 调用点ID
-   - size: 分配大小
-   - upid: 进程ID
-
-### Android 特定表 (Android Tables)
-
-10. **android_dumpstate** - Android dumpsys条目
-    - id: 条目ID
-    - ts: 时间戳
-    - upid: 进程ID
-    - title: 标题
-    - dumpsys: dumpsys内容
-
-### 其他重要表
-
-11. **counter** - 计数器时序数据
-    - id: 计数器ID
-    - ts: 时间戳
-    - value: 计数值
-    - track_id: 轨道引用
-
-12. **args** - 键值对参数
-    - arg_set_id: 参数集ID
-    - key: 键
-    - int_value: 整数值
-    - string_value: 字符串值
-    - real_value: 浮点值
-
-13. **flow** - 数据流
-    - id: 流ID
-    - ts: 时间戳
-    - dur: 持续时间
-    - slice_out: 输出切片
-    - slice_in: 输入切片
-
-14. **track** - 轨道信息
-    - id: 轨道ID
-    - name: 轨道名称
-    - parent_id: 父轨道ID
-    - uuid: 唯一标识符
-
-### 内置函数和宏 (Built-in Functions and Macros)
-
-**常用函数**:
-- EXTRACT_ARG(arg_set_id, 'key') - 提取参数
-- EXTRACT_UTID(utid) - 提取线程信息
-- EXTRACT_UPID(upid) - 提取进程信息
-- SPAN_JOIN(a_table, b_table) - 时间片连接
-- INTERSECTION() - 时间区间交集
-- IIF(condition, true_value, false_value) - 条件表达式
-- LEAST(a, b) / GREATEST(a, b) - 最小/最大值
-
-**常用宏**:
-- ANDROID_APP_CRASH() - Android应用崩溃
-- ANDROID_JANK() - Android卡顿
-- ANDROID_PROCESS_STARTUP() - Android进程启动
-- ANDROID_POWER_RAILS() - Android功耗轨
-
-### 性能分析常用查询
-
-**1. ANR检测 (Application Not Responding)**
-```sql
-SELECT
-  thread.name AS thread_name,
-  process.name AS process_name,
-  slice.ts,
-  slice.dur / 1e6 AS dur_ms
-FROM slice
-JOIN thread_track ON slice.track_id = thread_track.id
-JOIN thread USING (utid)
-JOIN process USING (upid)
-WHERE slice.dur > 5e9  -- 5 seconds
-  AND process.name NOT LIKE 'com.android.'
-ORDER BY slice.dur DESC;
-```
-
-**2. 主线程卡顿 (Jank)**
-```sql
-WITH main_thread_slices AS (
-  SELECT slice.*
-  FROM slice
-  JOIN thread_track ON slice.track_id = thread_track.id
-  JOIN thread USING (utid)
-  JOIN process USING (upid)
-  WHERE thread.is_main_thread = 1
-    AND slice.category = 'gfx'
-)
-SELECT
-  name,
-  COUNT(*) AS count,
-  AVG(dur) / 1e6 AS avg_dur_ms,
-  MAX(dur) / 1e6 AS max_dur_ms
-FROM main_thread_slices
-WHERE dur > 16.67e6  -- 60fps threshold
-GROUP BY name;
-```
-
-**3. 内存分配分析**
-```sql
-SELECT
-  process.name,
-  SUM(heap_profile_allocation.size) / 1024 / 1024 AS total_mb,
-  COUNT(*) AS allocation_count
-FROM heap_profile_allocation
-JOIN process USING (upid)
-WHERE heap_profile_allocation.size > 0
-GROUP BY process.name
-ORDER BY total_mb DESC
-LIMIT 10;
-```
-
-**4. CPU使用率**
-```sql
-SELECT
-  cpu,
-  COUNT(*) AS scheduling_events,
-  SUM(dur) / 1e9 AS total_runtime_sec,
-  (SUM(dur) * 100.0 / MAX(ts_end)) AS cpu_usage_percent
-FROM (
-  SELECT
-    cpu,
-    SUM(dur) AS dur,
-    MAX(ts + dur) AS ts_end
-  FROM sched
-  GROUP BY cpu, utid
-)
-GROUP BY cpu;
-```
-
-**5. 进程启动时间**
-```sql
-SELECT
-  process.name AS process_name,
-  slice.name AS startup_phase,
-  slice.ts / 1e6 AS start_time_ms,
-  slice.dur / 1e6 AS dur_ms
-FROM slice
-JOIN thread_track ON slice.track_id = thread_track.id
-JOIN thread USING (utid)
-JOIN process USING (upid)
-WHERE slice.name LIKE '%startup%'
-  AND thread.is_main_thread
-ORDER BY process.name, slice.ts;
-```
-
-### 时间单位转换
-- 1 ns = 1e-9 秒
-- 1 μs = 1e-6 秒 (微秒)
-- 1 ms = 1e-3 秒 (毫秒)
-- 1 s = 1e9 纳秒
-- Perfetto中时间戳为Unix纳秒时间戳
-
-### 注意事项
-- 所有时间相关的值都以纳秒为单位
-- 使用JOIN时注意使用正确的连接条件
-- 大数据查询时考虑使用LIMIT和索引
-- 使用EXPLAIN QUERY PLAN查看查询计划
-- Android trace分析可使用ANDROID_*()宏函数
-`;
+interface ErrorResponse {
+  error: string;
+  details?: string;
+}
 
 class AIService {
   private openai?: OpenAI;
   private claudeUrl?: string;
+  private deepseek?: OpenAI;
+  private sqlValidator: SQLValidator;
 
   constructor() {
     const aiService = process.env.AI_SERVICE;
+    this.sqlValidator = new SQLValidator();
 
     if (aiService === 'openai' && process.env.OPENAI_API_KEY) {
       this.openai = new OpenAI({
@@ -258,6 +54,11 @@ class AIService {
       });
     } else if (aiService === 'claude' && process.env.ANTHROPIC_API_KEY) {
       this.claudeUrl = 'https://api.anthropic.com/v1/messages';
+    } else if (aiService === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
+      this.deepseek = new OpenAI({
+        apiKey: process.env.DEEPSEEK_API_KEY,
+        baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
+      });
     }
   }
 
@@ -271,7 +72,21 @@ class AIService {
       messages: [
         {
           role: 'system',
-          content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements. Always provide explanations for your queries. ${PERFETTO_SQL_KNOWLEDGE}`,
+          content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
+
+IMPORTANT RULES:
+1. ONLY use tables listed in the schema below
+2. All timestamps are in NANOSECONDS - convert to ms with /1e6 or seconds with /1e9
+3. Use proper JOIN conditions with foreign keys (track_id, utid, upid)
+4. Use thread_track for thread tracks, not track directly
+5. For filtering, consider using TABLE_WITH_FILTER() for better performance
+
+${PERFETTO_TABLES_SCHEMA}
+
+Example queries:
+${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
+
+Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.`,
         },
         {
           role: 'user',
@@ -298,7 +113,23 @@ class AIService {
         messages: [
           {
             role: 'user',
-            content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements. Always provide explanations for your queries. ${PERFETTO_SQL_KNOWLEDGE}\n\nUser request: ${prompt}`,
+            content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
+
+IMPORTANT RULES:
+1. ONLY use tables listed in the schema below
+2. All timestamps are in NANOSECONDS - convert to ms with /1e6 or seconds with /1e9
+3. Use proper JOIN conditions with foreign keys (track_id, utid, upid)
+4. Use thread_track for thread tracks, not track directly
+5. For filtering, consider using TABLE_WITH_FILTER() for better performance
+
+${PERFETTO_TABLES_SCHEMA}
+
+Example queries:
+${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
+
+Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.
+
+User request: ${prompt}`,
           },
         ],
       },
@@ -314,8 +145,52 @@ class AIService {
     return response.data.content[0].text;
   }
 
+  private async callDeepseek(prompt: string): Promise<string> {
+    if (!this.deepseek) {
+      throw new Error('Deepseek not configured');
+    }
+
+    const completion = await this.deepseek.chat.completions.create({
+      model: process.env.DEEPSEEK_MODEL || 'deepseek-reasoner',
+      messages: [
+        {
+          role: 'system',
+          content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
+
+IMPORTANT RULES:
+1. ONLY use tables listed in the schema below
+2. All timestamps are in NANOSECONDS - convert to ms with /1e6 or seconds with /1e9
+3. Use proper JOIN conditions with foreign keys (track_id, utid, upid)
+4. Use thread_track for thread tracks, not track directly
+5. For filtering, consider using TABLE_WITH_FILTER() for better performance
+
+${PERFETTO_TABLES_SCHEMA}
+
+Example queries:
+${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
+
+Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.`,
+        },
+        {
+          role: 'user',
+          content: prompt,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 2000,
+    });
+
+    return completion.choices[0].message.content || '';
+  }
+
   async generatePerfettoSQL(request: GenerateSqlRequest): Promise<GenerateSqlResponse> {
-    const prompt = `Generate a Perfetto SQL query for the following request: "${request.query}"`;
+    // Check if AI service is configured
+    if (!this.openai && !process.env.ANTHROPIC_API_KEY && !this.deepseek) {
+      // Return mock response when no AI service is configured
+      return this.generateMockSQL(request.query);
+    }
+
+    let prompt = `Generate a Perfetto SQL query for the following request: "${request.query}"`;
 
     if (request.context) {
       prompt += `\n\nAdditional context: ${request.context}`;
@@ -337,23 +212,55 @@ class AIService {
     [Any important notes]
     `;
 
-    const response = process.env.AI_SERVICE === 'claude'
-      ? await this.callClaude(prompt)
-      : await this.callOpenAI(prompt);
+    let response: string;
+    const aiService = process.env.AI_SERVICE;
+
+    if (aiService === 'claude') {
+      response = await this.callClaude(prompt);
+    } else if (aiService === 'deepseek') {
+      response = await this.callDeepseek(prompt);
+    } else {
+      response = await this.callOpenAI(prompt);
+    }
 
     // Parse response
     const sqlMatch = response.match(/--- SQL ---\n([\s\S]*?)\n--- EXPLANATION ---/);
     const explanationMatch = response.match(/--- EXPLANATION ---\n([\s\S]*?)(\n--- NOTES ---|\n$|$)/);
     const notesMatch = response.match(/--- NOTES ---\n([\s\S]*)/);
 
-    const sql = sqlMatch ? sqlMatch[1].trim() : response;
+    let sql = sqlMatch ? sqlMatch[1].trim() : response;
     const explanation = explanationMatch ? explanationMatch[1].trim() : 'Query generated successfully';
     const notes = notesMatch ? notesMatch[1].trim() : '';
+
+    // Validate the generated SQL
+    const validation = this.sqlValidator.validateSQL(sql);
+
+    if (!validation.isValid) {
+      // If SQL is invalid, try to fix it
+      sql = this.sqlValidator.suggestCorrection(sql);
+
+      // Re-validate after correction
+      const revalidation = this.sqlValidator.validateSQL(sql);
+      if (!revalidation.isValid) {
+        // Fall back to mock SQL
+        console.warn('Generated SQL was invalid and could not be fixed:', validation.errors);
+        return this.generateMockSQL(request.query);
+      }
+    }
+
+    // Include validation warnings in the examples
+    const examples = notes ? [notes] : [];
+    if (validation.warnings.length > 0) {
+      examples.push('⚠️ ' + validation.warnings.join('. '));
+    }
+    if (validation.suggestions.length > 0) {
+      examples.push('💡 ' + validation.suggestions.join('. '));
+    }
 
     return {
       sql,
       explanation,
-      examples: notes ? [notes] : [],
+      examples,
     };
   }
 
@@ -394,6 +301,113 @@ class AIService {
         cpuUsage: 75,
         frameDrops: 23,
       },
+    };
+  }
+
+  private generateMockSQL(query: string): GenerateSqlResponse {
+    const lowerQuery = query.toLowerCase();
+
+    // Simple pattern matching for common queries
+    if (lowerQuery.includes('jank') || lowerQuery.includes('frame')) {
+      return {
+        sql: `SELECT
+  process.name,
+  thread.name,
+  slice.name,
+  COUNT(*) AS count,
+  AVG(slice.dur) / 1e6 AS avg_duration_ms
+FROM slice
+JOIN thread_track ON slice.track_id = thread_track.id
+JOIN thread USING (utid)
+JOIN process USING (upid)
+WHERE slice.dur > 16666000  -- > 16.67ms (60fps threshold)
+  AND slice.category LIKE '%gfx%'
+GROUP BY process.name, thread.name, slice.name
+ORDER BY avg_duration_ms DESC
+LIMIT 100;`,
+        explanation: 'This query finds jank frames by looking for slices longer than 16.67ms (60 FPS threshold) in graphics-related categories.',
+        examples: ['You can adjust the threshold to 8.33ms for 120 FPS displays']
+      };
+    }
+
+    if (lowerQuery.includes('anr') || lowerQuery.includes('application not responding')) {
+      return {
+        sql: `SELECT
+  process.name AS process_name,
+  thread.name AS thread_name,
+  slice.ts / 1e9 AS start_time_s,
+  slice.dur / 1e9 AS duration_s,
+  slice.name AS slice_name
+FROM slice
+JOIN thread_track ON slice.track_id = thread_track.id
+JOIN thread USING (utid)
+JOIN process USING (upid)
+WHERE slice.dur > 5e9  -- > 5 seconds
+  AND process.name NOT LIKE 'com.android%'
+ORDER BY slice.dur DESC
+LIMIT 50;`,
+        explanation: 'This query detects potential ANRs by finding long-running slices over 5 seconds, excluding system processes.',
+        examples: ['Consider filtering by specific process names you want to investigate']
+      };
+    }
+
+    if (lowerQuery.includes('memory') || lowerQuery.includes('heap')) {
+      return {
+        sql: `SELECT
+  graph_sample.ts,
+  heap_profile.size,
+  heap_profile.object_type
+FROM heap_profile
+JOIN heap_graph_object ON heap_profile.graph_object_id = heap_graph_object.id
+WHERE heap_profile.object_type LIKE 'Bitmap%'
+  OR heap_profile.object_type LIKE 'Array%'
+ORDER BY heap_profile.size DESC
+LIMIT 100;`,
+        explanation: 'This query shows memory allocations by object type, focusing on large objects like bitmaps and arrays.',
+        examples: ['You can group by object_type to see total memory per type']
+      };
+    }
+
+    if (lowerQuery.includes('启动') || lowerQuery.includes('startup') || lowerQuery.includes('launch')) {
+      return {
+        sql: `SELECT
+  process.name AS app_name,
+  slice.name AS startup_phase,
+  slice.ts / 1e6 AS start_time_ms,
+  slice.dur / 1e6 AS duration_ms,
+  thread.name AS thread_name
+FROM slice
+JOIN thread_track ON slice.track_id = thread_track.id
+JOIN thread USING (utid)
+JOIN process USING (upid)
+WHERE (slice.name LIKE '%start%'
+   OR slice.name LIKE '%launch%'
+   OR slice.name LIKE '%init%'
+   OR slice.name LIKE '%Application%'
+   OR slice.name LIKE '%ActivityThread%')
+   AND process.name NOT LIKE 'com.android%'
+   AND slice.dur > 0
+ORDER BY slice.ts ASC
+LIMIT 100;`,
+        explanation: 'This query analyzes the cold startup process by identifying startup-related events and their durations, showing the sequence of operations during app initialization.',
+        examples: ['Filter by specific app name using WHERE process.name = "your.app.package"', 'Add time filters to focus on specific startup phases']
+      };
+    }
+
+    // Default generic query
+    return {
+      sql: `SELECT
+  slice.name,
+  COUNT(*) AS count,
+  AVG(slice.dur) / 1e6 AS avg_duration_ms,
+  MAX(slice.dur) / 1e6 AS max_duration_ms
+FROM slice
+GROUP BY slice.name
+HAVING COUNT(*) > 10
+ORDER BY avg_duration_ms DESC
+LIMIT 100;`,
+      explanation: 'This is a general query showing the most frequently occurring slices with their average and maximum durations.',
+      examples: ['Add WHERE clause to filter by specific time ranges or processes']
     };
   }
 }

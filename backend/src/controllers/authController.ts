@@ -5,7 +5,7 @@ import stripe from 'stripe';
 
 class AuthController {
   private authService: AuthService;
-  private stripeInstance: stripe;
+  private stripeInstance?: stripe;
 
   constructor() {
     this.authService = new AuthService();
@@ -175,7 +175,7 @@ class AuthController {
         const userId = session.metadata?.userId;
 
         if (userId) {
-          const subscriptionType = session.display_items?.[0]?.price?.lookup_key === 'pro' ? 'pro' : 'enterprise';
+          const subscriptionType = (session as any).display_items?.[0]?.price?.lookup_key === 'pro' ? 'pro' : 'enterprise';
           await this.authService.updateUserSubscription(userId, subscriptionType as 'pro' | 'enterprise');
         }
       }

@@ -1,3 +1,5 @@
+import { Request } from 'express';
+
 export interface User {
   id: string;
   email: string;
@@ -32,4 +34,17 @@ export interface JwtPayload {
   userId: string;
   email: string;
   subscription: string;
+}
+
+export interface ErrorResponse {
+  error: string;
+  details?: string;
+}
+
+export interface AuthenticatedRequest extends Request {
+  user?: {
+    id: string;
+    email: string;
+    subscription: string;
+  };
 }

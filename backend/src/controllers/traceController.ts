@@ -34,14 +34,8 @@ class TraceController {
 
       const file = req.file;
 
-      // Validate file extension
-      if (!file.originalname.endsWith('.perfetto') && !file.originalname.endsWith('.trace')) {
-        const error: ErrorResponse = {
-          error: 'Invalid file format',
-          details: 'Only .perfetto and .trace files are supported',
-        };
-        return res.status(400).json(error);
-      }
+      // Removed file extension validation - accept all files
+      console.log(`Uploading file: ${file.originalname}, size: ${file.size} bytes`);
 
       // Validate file size (default 2GB)
       const maxSize = parseInt(process.env.MAX_FILE_SIZE || '2147483648');
