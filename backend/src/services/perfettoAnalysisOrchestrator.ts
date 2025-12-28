@@ -63,7 +63,7 @@ export class PerfettoAnalysisOrchestrator {
     this.config = {
       maxIterations: config?.maxIterations ?? 10,
       sqlTimeout: config?.sqlTimeout ?? 30000,
-      aiService: config?.aiService ?? (process.env.AI_SERVICE as any) ?? 'deepseek',
+      aiService: config?.aiService ?? (process.env.AI_SERVICE as 'deepseek' | 'openai' | undefined) ?? 'deepseek',
       enableRetry: config?.enableRetry ?? true,
       enableAutoEvaluation: config?.enableAutoEvaluation ?? true,
     };
@@ -125,10 +125,11 @@ export class PerfettoAnalysisOrchestrator {
 
     try {
       await this.runAnalysisLoop(sessionId);
-    } catch (error: any) {
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       console.error(`[Orchestrator] Analysis failed for session ${sessionId}:`, error);
-      this.emitError(sessionId, error.message, false);
-      this.sessionService.failSession(sessionId, error.message);
+      this.emitError(sessionId, errorMessage, false);
+      this.sessionService.failSession(sessionId, errorMessage);
     }
   }
 
@@ -290,8 +291,9 @@ export class PerfettoAnalysisOrchestrator {
             explanation: perfettoResult.summary,
           };
         }
-      } catch (error: any) {
-        console.log('[Orchestrator] Perfetto SQL Skill failed, falling back to AI:', error.message);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        console.log('[Orchestrator] Perfetto SQL Skill failed, falling back to AI:', errorMessage);
       }
     }
 
@@ -316,8 +318,9 @@ export class PerfettoAnalysisOrchestrator {
 
       const response = completion.choices[0]?.message?.content || '';
       return this.parseSQLResponse(response);
-    } catch (error: any) {
-      console.error('[Orchestrator] AI call failed:', error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('[Orchestrator] AI call failed:', errorMessage);
       // Fallback to mock SQL
       return this.generateMockSQL(question);
     }
@@ -352,13 +355,14 @@ export class PerfettoAnalysisOrchestrator {
         error: result.error,
         status: result.error ? SQLResultStatus.RUNTIME_ERROR : SQLResultStatus.SUCCESS,
       };
-    } catch (error: any) {
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
       return {
         columns: [],
         rows: [],
         rowCount: 0,
         durationMs: 0,
-        error: error.message,
+        error: errorMessage,
         status: SQLResultStatus.RUNTIME_ERROR,
       };
     }
@@ -410,8 +414,9 @@ export class PerfettoAnalysisOrchestrator {
 
       console.log(`[Orchestrator] DeepSeek API response received`);
       return completion.choices[0]?.message?.content || `Query returned ${result.rowCount} rows.`;
-    } catch (error: any) {
-      console.error(`[Orchestrator] DeepSeek API error:`, error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Orchestrator] DeepSeek API error:`, errorMessage);
       return `Query returned ${result.rowCount} rows.`;
     }
   }
@@ -488,8 +493,9 @@ Is this sufficient to answer the question?`,
         needsMoreData: parsed.needsMoreData ?? !parsed.isSufficient,
         suggestedNextSteps: parsed.suggestedNextSteps || [],
       };
-    } catch (error: any) {
-      console.error(`[Orchestrator] Evaluation error:`, error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Orchestrator] Evaluation error:`, errorMessage);
       return {
         completeness: CompletenessLevel.UNCERTAIN,
         confidence: 0.5,
@@ -559,8 +565,9 @@ Provide a final answer that directly addresses the user's question. Include spec
 
       console.log(`[Orchestrator] Final answer generated successfully`);
       return completion.choices[0]?.message?.content || 'Unable to generate final answer.';
-    } catch (error: any) {
-      console.error(`[Orchestrator] Final answer generation error:`, error.message);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`[Orchestrator] Final answer generation error:`, errorMessage);
       return session.collectedResults.map((cr) => cr.insight).join('\n\n');
     }
   }
