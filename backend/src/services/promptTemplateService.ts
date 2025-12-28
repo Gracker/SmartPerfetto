@@ -29,7 +29,7 @@ export interface TemplateVariables {
   error?: string;
   explanation?: string;
   examples?: string;
-  [key: string]: any;
+  [key: string]: string | number | boolean | undefined;
 }
 
 // ============================================================================

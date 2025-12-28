@@ -403,10 +403,10 @@ export class PerfettoAnalysisOrchestrator {
           temperature: 0.3,
           max_tokens: 500,
         }),
-        new Promise((_, reject) =>
+        new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('AI API timeout after 30s')), 30000)
         )
-      ]) as any;
+      ]);
 
       console.log(`[Orchestrator] DeepSeek API response received`);
       return completion.choices[0]?.message?.content || `Query returned ${result.rowCount} rows.`;
@@ -474,10 +474,10 @@ Is this sufficient to answer the question?`,
           max_tokens: 300,
           response_format: { type: 'json_object' },
         }),
-        new Promise((_, reject) =>
+        new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('AI API timeout after 20s')), 20000)
         )
-      ]) as any;
+      ]);
 
       const response = completion.choices[0]?.message?.content || '{}';
       const parsed = JSON.parse(response);
@@ -552,10 +552,10 @@ Provide a final answer that directly addresses the user's question. Include spec
           temperature: 0.5,
           max_tokens: 2000,
         }),
-        new Promise((_, reject) =>
+        new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error('AI API timeout after 60s')), 60000)
         )
-      ]) as any;
+      ]);
 
       console.log(`[Orchestrator] Final answer generated successfully`);
       return completion.choices[0]?.message?.content || 'Unable to generate final answer.';
