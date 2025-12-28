@@ -134,15 +134,15 @@ const SKILL_PATTERNS: SkillPattern[] = [
   },
   {
     skillType: PerfettoSkillType.NETWORK,
-    keywords: ['network', 'http', 'request', 'response', 'url', '网络', '网络请求'],
+    keywords: ['network', 'http', 'request', 'socket', '网络', '请求', 'HTTP'],
     patterns: [
-      /network|http.*request|url/i,
-      /网络|网络请求|http/i,
+      /network|http.*request|socket/i,
+      /网络|网络请求|HTTP/i,
     ],
   },
   {
     skillType: PerfettoSkillType.DATABASE,
-    keywords: ['database', 'db', 'sql', 'sqlite', 'room', 'query', '数据库', '数据库查询'],
+    keywords: ['database', 'sqlite', 'room', 'db', '数据库', 'SQL'],
     patterns: [
       /database|sqlite|room.*query|db.*query/i,
       /数据库|sqlite|room/i,
@@ -150,7 +150,7 @@ const SKILL_PATTERNS: SkillPattern[] = [
   },
   {
     skillType: PerfettoSkillType.FILE_IO,
-    keywords: ['file', 'io', 'read', 'write', 'storage', 'fs', '文件', '读写', '文件读写'],
+    keywords: ['file', 'io', 'read', 'write', '文件', '读写'],
     patterns: [
       /file.*io|file.*read|file.*write|storage/i,
       /文件|读写|文件读写|磁盘/i,
