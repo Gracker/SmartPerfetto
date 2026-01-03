@@ -21,6 +21,7 @@ import { SkillEventCollector, createEventCollector } from './skillEngine/eventCo
 import { SkillEvent } from './skillEngine/types_v2';
 import { SessionPersistenceService } from './sessionPersistenceService';
 import { StoredSession, StoredMessage } from '../models/sessionSchema';
+import { getHTMLReportGenerator } from './htmlReportGenerator';
 import PromptTemplateService from './promptTemplateService';
 import {
   AnalysisState,
@@ -264,6 +265,9 @@ export class PerfettoAnalysisOrchestrator {
           // Handle for_each steps: array of {itemIndex, item, data, rowCount}
           let tableData: { columns: string[]; rows: any[][]; rowCount: number } | null = null;
           let sectionTitle = sectionId;
+          // 提取 expandableData 和 summary（来自 skillExecutorV2 的输出）
+          const expandableData = (sectionData as any).expandableData;
+          const summary = (sectionData as any).summary;
 
           if (Array.isArray(sectionData)) {
             // Collect all data from for_each iterations
@@ -305,7 +309,9 @@ export class PerfettoAnalysisOrchestrator {
               columns: tableData.columns,
               rows: tableData.rows,
               rowCount: tableData.rowCount,
-              sql: sectionData.sql || undefined,
+              sql: (sectionData as any).sql || undefined,
+              expandableData,
+              summary,
             });
           }
         }
@@ -1506,6 +1512,10 @@ LIMIT 50;`,
     console.log(`[Orchestrator] emitCompleted called for session ${sessionId}`);
     console.log(`[Orchestrator] Answer length: ${answer?.length || 0}`);
     const session = this.sessionService.getSession(sessionId);
+
+    // Generate HTML report URL (direct view endpoint)
+    const reportUrl = `/api/reports/view/${sessionId}`;
+
     const event: AnalysisCompletedEvent = {
       type: 'analysis_completed',
       timestamp: Date.now(),
@@ -1517,9 +1527,10 @@ LIMIT 50;`,
           iterationsCount: session?.currentIteration || 0,
           sqlQueriesCount: session?.collectedResults.length || 0,
         },
+        reportUrl,
       },
     };
-    console.log(`[Orchestrator] Emitting analysis_completed event`);
+    console.log(`[Orchestrator] Emitting analysis_completed event with reportUrl: ${reportUrl}`);
     this.sessionService.emitSSE(sessionId, event);
     console.log(`[Orchestrator] analysis_completed event emitted`);
   }
@@ -1544,6 +1555,18 @@ LIMIT 50;`,
       rows: any[][];
       rowCount: number;
       sql?: string;
+      expandableData?: Array<{
+        item: Record<string, any>;
+        result: {
+          success: boolean;
+          sections?: Record<string, any>;
+          error?: string;
+        };
+      }>;
+      summary?: {
+        title: string;
+        content: string;
+      };
     }
   ): void {
     this.sessionService.emitSSE(sessionId, {

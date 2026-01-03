@@ -240,6 +240,7 @@ export interface AnalysisCompletedEvent extends SSEEvent {
       iterationsCount: number;
       sqlQueriesCount: number;
     };
+    reportUrl?: string;  // URL to detailed HTML report
   };
 }
 
