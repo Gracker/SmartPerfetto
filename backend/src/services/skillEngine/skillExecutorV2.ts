@@ -1135,6 +1135,7 @@ export class SkillExecutorV2 {
       stepId,
       title: config.title || title,
       level: config.level || 'summary',
+      layer: config.layer,         // 新增：返回分层层级
       format: config.format || 'table',
       data: displayData,
       highlight: config.highlight,

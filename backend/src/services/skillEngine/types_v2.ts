@@ -19,6 +19,8 @@ export type DisplayLevel = 'none' | 'debug' | 'detail' | 'summary' | 'key';
 
 export type DisplayFormat = 'table' | 'chart' | 'text' | 'timeline' | 'summary';
 
+export type DisplayLayer = 'L1' | 'L2' | 'L3' | 'L4';
+
 export type ConfidenceLevel = 'high' | 'medium' | 'low';
 
 // =============================================================================
@@ -46,6 +48,7 @@ export interface SkillOutput {
 export interface DisplayConfig {
   show?: boolean;
   level?: DisplayLevel;
+  layer?: DisplayLayer;         // 新增：分层展示层级
   title?: string;
   format?: DisplayFormat;
   columns?: string[];           // 指定展示哪些列
@@ -346,6 +349,7 @@ export interface DisplayResult {
   stepId: string;
   title: string;
   level: DisplayLevel;
+  layer?: DisplayLayer;         // 新增：分层展示层级
   format: DisplayFormat;
   data: {
     columns?: string[];
