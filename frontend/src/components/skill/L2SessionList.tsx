@@ -8,8 +8,8 @@ interface Props {
 }
 
 const L2SessionList: React.FC<Props> = ({ data, expandedSessions, onToggleSession }) => {
-  const sessions = data.scroll_sessions?.data || [];
-  const sessionJank = data.session_jank_analysis?.data || [];
+  const sessions = data.scroll_sessions?.data ?? [];
+  const sessionJank = data.session_jank_analysis?.data ?? [];
 
   const getJankRateColor = (rate: number) => {
     if (rate > 15) return 'red';

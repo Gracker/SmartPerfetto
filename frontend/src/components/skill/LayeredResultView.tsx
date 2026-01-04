@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Collapse, Button } from 'antd';
 import L1OverviewCard from './L1OverviewCard';
 import L2SessionList from './L2SessionList';
@@ -34,49 +34,55 @@ const LayeredResultView: React.FC<Props> = ({ result }) => {
   const [expandedSessions, setExpandedSessions] = useState<Set<string>>(new Set());
   const [expandedFrames, setExpandedFrames] = useState<Set<string>>(new Set());
 
-  const toggleLayer = (layer: string) => {
-    const newExpanded = new Set(expandedLayers);
-    if (newExpanded.has(layer)) {
-      newExpanded.delete(layer);
-    } else {
-      newExpanded.add(layer);
-    }
-    setExpandedLayers(newExpanded);
-  };
+  const toggleLayer = useCallback((layer: string) => {
+    setExpandedLayers(prev => {
+      const newExpanded = new Set(prev);
+      if (newExpanded.has(layer)) {
+        newExpanded.delete(layer);
+      } else {
+        newExpanded.add(layer);
+      }
+      return newExpanded;
+    });
+  }, []);
 
-  const toggleSession = (sessionId: string) => {
-    const newExpanded = new Set(expandedSessions);
-    if (newExpanded.has(sessionId)) {
-      newExpanded.delete(sessionId);
-    } else {
-      newExpanded.add(sessionId);
-    }
-    setExpandedSessions(newExpanded);
-  };
+  const toggleSession = useCallback((sessionId: string) => {
+    setExpandedSessions(prev => {
+      const newExpanded = new Set(prev);
+      if (newExpanded.has(sessionId)) {
+        newExpanded.delete(sessionId);
+      } else {
+        newExpanded.add(sessionId);
+      }
+      return newExpanded;
+    });
+  }, []);
 
-  const toggleFrame = (frameId: string) => {
-    const newExpanded = new Set(expandedFrames);
-    if (newExpanded.has(frameId)) {
-      newExpanded.delete(frameId);
-    } else {
-      newExpanded.add(frameId);
-    }
-    setExpandedFrames(newExpanded);
-  };
+  const toggleFrame = useCallback((frameId: string) => {
+    setExpandedFrames(prev => {
+      const newExpanded = new Set(prev);
+      if (newExpanded.has(frameId)) {
+        newExpanded.delete(frameId);
+      } else {
+        newExpanded.add(frameId);
+      }
+      return newExpanded;
+    });
+  }, []);
 
-  const expandAll = () => {
+  const expandAll = useCallback(() => {
     setExpandedLayers(new Set(['L1', 'L2', 'L3', 'L4']));
     const allSessions = Object.keys(result.layers.L3 || {});
     const allFrames = Object.keys(result.layers.L4 || {});
     setExpandedSessions(new Set(allSessions));
     setExpandedFrames(new Set(allFrames));
-  };
+  }, [result.layers]);
 
-  const collapseAll = () => {
+  const collapseAll = useCallback(() => {
     setExpandedLayers(new Set(['L1', 'L2']));
     setExpandedSessions(new Set());
     setExpandedFrames(new Set());
-  };
+  }, []);
 
   return (
     <div className="layered-result-view">
@@ -113,7 +119,7 @@ const LayeredResultView: React.FC<Props> = ({ result }) => {
               forceRender
             >
               <L3SessionDetail
-                data={result.layers.L3![sessionId] || {}}
+                data={(result.layers.L3?.[sessionId]) ?? {}}
                 expandedFrames={expandedFrames}
                 onToggleFrame={toggleFrame}
               />
@@ -131,7 +137,7 @@ const LayeredResultView: React.FC<Props> = ({ result }) => {
               key={frameId}
               forceRender
             >
-              <L4FrameAnalysis data={result.layers.L4![frameId]} />
+              <L4FrameAnalysis data={(result.layers.L4?.[frameId]) ?? {}} />
             </Panel>
           ))}
         </Collapse>

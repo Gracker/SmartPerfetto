@@ -50,7 +50,10 @@ const L4FrameAnalysis: React.FC<Props> = ({ data }) => {
               {fullAnalysis.binder_calls.filter((c: any) => c.is_sync).length}
             </Descriptions.Item>
             <Descriptions.Item label="最大耗时">
-              {Math.max(...fullAnalysis.binder_calls.map((c: any) => c.dur_ms)).toFixed(1)} ms
+              {(fullAnalysis.binder_calls && fullAnalysis.binder_calls.length > 0
+                ? Math.max(...fullAnalysis.binder_calls.map((c: any) => c.dur_ms))
+                : 0
+              ).toFixed(1)} ms
             </Descriptions.Item>
           </Descriptions>
         )}
