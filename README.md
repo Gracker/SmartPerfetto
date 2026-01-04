@@ -200,6 +200,50 @@ git checkout smartperfetto
 | **独立更新** | main 分支跟踪上游，smartperfetto 分支存储定制 |
 | **协作友好** | 团队成员可以向 fork 提交 PR 来贡献定制 |
 
+### 便捷脚本
+
+为了简化日常操作，项目提供了两个便捷脚本：
+
+#### 一键推送两个仓库
+
+`./scripts/push-all.sh` - 同时推送主项目和 perfetto 子模块的更新
+
+```bash
+# 使用场景：当你修改了代码后，想一键推送到远程
+./scripts/push-all.sh
+```
+
+**功能**：
+- ✅ 检查主项目和子模块的工作区状态
+- ✅ 推送 perfetto 子模块到 fork 的 smartperfetto 分支
+- ✅ 推送主项目到 origin 的 main 分支
+- ✅ 友好的错误提示和交互确认
+
+#### 一键合并上游更新
+
+`./scripts/sync-perfetto-upstream.sh` - 自动合并官方 perfetto 最新代码
+
+```bash
+# 使用场景：定期同步上游更新（建议每月一次）
+./scripts/sync-perfetto-upstream.sh
+```
+
+**功能**：
+- ✅ 自动获取上游最新代码
+- ✅ 统计需要合并的提交数量
+- ✅ 自动合并上游更新到 smartperfetto 分支
+- ✅ 推送到 fork 仓库
+- ✅ 更新主项目子模块指针
+- ✅ 冲突时提供解决指引
+- ✅ 友好的交互确认
+
+**脚本特性**：
+- 🎨 彩色输出，清晰易读
+- 🔍 执行前检查工作区状态
+- ⚠️ 未提交更改时给出警告
+- 🚀 遇到错误立即退出
+- 📝 详细的步骤提示和错误信息
+
 ## 已完成功能
 
 - ✅ Perfetto UI AI 助手插件
