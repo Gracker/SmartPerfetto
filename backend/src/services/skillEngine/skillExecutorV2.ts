@@ -347,20 +347,26 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
       case 'L3':
         // L3 数据需要按 session_id 组织
         // 从 step.data 中提取 session_id
-        const sessionId3 = extractSessionId(step);
-        if (!layers.L3![sessionId3]) {
-          layers.L3![sessionId3] = {};
+        const l3 = layers.L3;
+        if (l3) {
+          const sessionId3 = extractSessionId(step);
+          if (!l3[sessionId3]) {
+            l3[sessionId3] = {};
+          }
+          l3[sessionId3][step.stepId] = step;
         }
-        layers.L3![sessionId3][step.stepId] = step;
         break;
       case 'L4':
         // L4 数据需要按 session_id 和 frame_id 组织
-        const sessionId4 = extractSessionId(step);
-        const frameId = extractFrameId(step);
-        if (!layers.L4![sessionId4]) {
-          layers.L4![sessionId4] = {};
+        const l4 = layers.L4;
+        if (l4) {
+          const sessionId4 = extractSessionId(step);
+          const frameId = extractFrameId(step);
+          if (!l4[sessionId4]) {
+            l4[sessionId4] = {};
+          }
+          l4[sessionId4][frameId] = step;
         }
-        layers.L4![sessionId4][frameId] = step;
         break;
     }
   }
@@ -592,6 +598,23 @@ export class SkillExecutorV2 {
     context: Partial<SkillExecutionContextV2>
   ): Promise<LayeredResult> {
     const startTime = Date.now();
+
+    // Validate input
+    if (!skill) {
+      throw new Error('Skill definition is required');
+    }
+
+    if (!skill.steps || skill.steps.length === 0) {
+      return {
+        layers: { L1: {}, L2: {}, L3: {}, L4: {} },
+        defaultExpanded: ['L1', 'L2'],
+        metadata: {
+          skillName: 'unknown',
+          version: 'unknown',
+          executedAt: new Date().toISOString()
+        }
+      };
+    }
 
     // Create execution context
     const execContext: SkillExecutionContextV2 = {
