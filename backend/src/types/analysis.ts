@@ -114,6 +114,25 @@ export interface AnalysisSession {
   // Progress tracking
   stepsCompleted: number;
   totalSteps?: number;
+
+  // Skill Engine result (for HTML report generation)
+  skillEngineResult?: {
+    skillId: string;
+    skillName: string;
+    sections: Record<string, any>;
+    diagnostics: Array<{
+      id: string;
+      severity: string;
+      message: string;
+      suggestions?: string[];
+    }>;
+    vendor?: string;
+    executionTimeMs: number;
+    directAnswer?: string;
+    summary?: string;
+    questionType?: string;
+    answerConfidence?: 'high' | 'medium' | 'low';
+  };
 }
 
 /**

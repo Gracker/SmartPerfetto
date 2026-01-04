@@ -62,10 +62,10 @@ export class HTMLReportGenerator {
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-      line-height: 1.6;
+      line-height: 1.5;
       color: #333;
       background: #f5f7fa;
-      padding: 20px;
+      padding: 15px;
     }
 
     .container {
@@ -80,7 +80,7 @@ export class HTMLReportGenerator {
     .header {
       background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
       color: white;
-      padding: 30px;
+      padding: 20px;
     }
 
     .header h1 {
@@ -98,7 +98,7 @@ export class HTMLReportGenerator {
     }
 
     .section {
-      padding: 30px;
+      padding: 20px;
       border-bottom: 1px solid #eaeaea;
     }
 
@@ -126,10 +126,10 @@ export class HTMLReportGenerator {
 
     .question-box {
       background: #f8f9fa;
-      padding: 20px;
+      padding: 15px;
       border-radius: 8px;
       border-left: 4px solid #667eea;
-      margin-bottom: 20px;
+      margin-bottom: 15px;
     }
 
     .question-box .label {
@@ -145,10 +145,10 @@ export class HTMLReportGenerator {
 
     .answer-box {
       background: #f0f9ff;
-      padding: 25px;
+      padding: 15px;
       border-radius: 8px;
       border-left: 4px solid #3b82f6;
-      line-height: 1.8;
+      line-height: 1.6;
     }
 
     .metrics {
@@ -160,7 +160,7 @@ export class HTMLReportGenerator {
 
     .metric-card {
       background: #f8f9fa;
-      padding: 20px;
+      padding: 15px;
       border-radius: 8px;
       text-align: center;
     }
@@ -291,14 +291,53 @@ export class HTMLReportGenerator {
     }
 
     .query-body {
-      padding: 20px;
+      padding: 15px;
       background: #fafafa;
     }
 
     .table-container {
       border-radius: 8px;
       border: 1px solid #eaeaea;
-      overflow: hidden;
+      overflow-x: auto;
+      overflow-y: hidden;
+      position: relative;
+    }
+
+    /* 水平滚动条样式 */
+    .table-container::-webkit-scrollbar {
+      height: 8px;
+    }
+
+    .table-container::-webkit-scrollbar-track {
+      background: #f1f1f1;
+      border-radius: 4px;
+    }
+
+    .table-container::-webkit-scrollbar-thumb {
+      background: #c1c1c1;
+      border-radius: 4px;
+    }
+
+    .table-container::-webkit-scrollbar-thumb:hover {
+      background: #a1a1a1;
+    }
+
+    /* 表格右侧渐变提示（表示可滚动） */
+    .table-container.scrollable::after {
+      content: '';
+      position: absolute;
+      right: 0;
+      top: 0;
+      bottom: 8px;
+      width: 30px;
+      background: linear-gradient(to right, transparent, rgba(255,255,255,0.9));
+      pointer-events: none;
+      opacity: 1;
+      transition: opacity 0.3s;
+    }
+
+    .table-container.scrolled-right::after {
+      opacity: 0;
     }
 
     .table-header {
@@ -335,7 +374,7 @@ export class HTMLReportGenerator {
     }
 
     .table-wrapper {
-      max-height: 400px;
+      max-height: 300px;
       overflow-y: auto;
       overflow-x: auto;
       transition: max-height 0.3s ease;
@@ -377,9 +416,11 @@ export class HTMLReportGenerator {
     }
 
     table {
-      width: 100%;
+      width: auto;
+      min-width: 100%;
       border-collapse: collapse;
       font-size: 14px;
+      table-layout: auto;
     }
 
     table thead {
@@ -389,14 +430,32 @@ export class HTMLReportGenerator {
 
     table th,
     table td {
-      padding: 12px 15px;
+      padding: 8px 12px;
       text-align: left;
       border-bottom: 1px solid #eaeaea;
+      min-width: 80px;
+      max-width: 400px;
     }
 
     table th {
       font-weight: 600;
       white-space: nowrap;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      background: #2d2d2d;
+    }
+
+    table td {
+      word-break: break-word;
+    }
+
+    /* 序号列固定宽度 */
+    table th:first-child,
+    table td:first-child {
+      min-width: 50px;
+      max-width: 60px;
+      width: 50px;
     }
 
     table tbody tr:hover {
@@ -408,9 +467,9 @@ export class HTMLReportGenerator {
     }
 
     .diagnostic {
-      padding: 15px 20px;
+      padding: 10px 15px;
       border-radius: 8px;
-      margin-bottom: 15px;
+      margin-bottom: 10px;
       border-left: 4px solid;
     }
 
@@ -453,8 +512,8 @@ export class HTMLReportGenerator {
     .skill-section {
       background: #fafafa;
       border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 20px;
+      padding: 15px;
+      margin-bottom: 15px;
     }
 
     .skill-section .section-header {
@@ -694,6 +753,46 @@ export class HTMLReportGenerator {
       }
     }
 
+    // Toggle expandable row details (for iterator results)
+    function toggleExpandableRow(rowId) {
+      const detailsRow = document.getElementById(rowId + '_details');
+      const btn = document.querySelector('[onclick="toggleExpandableRow(\\'' + rowId + '\\')"]');
+
+      if (detailsRow) {
+        const isHidden = detailsRow.style.display === 'none';
+        detailsRow.style.display = isHidden ? 'table-row' : 'none';
+
+        if (btn) {
+          const icon = btn.querySelector('.expand-icon');
+          if (icon) {
+            icon.textContent = isHidden ? '▲' : '▼';
+          }
+          btn.innerHTML = isHidden
+            ? '<span class="expand-icon">▲</span> 收起'
+            : '<span class="expand-icon">▼</span> 展开';
+        }
+      }
+    }
+
+    // Expand/collapse all rows in a section
+    function toggleAllExpandableRows(sectionId, expand) {
+      const section = document.getElementById(sectionId);
+      if (!section) return;
+
+      const detailRows = section.querySelectorAll('.detail-row');
+      const buttons = section.querySelectorAll('.expand-btn');
+
+      detailRows.forEach(row => {
+        row.style.display = expand ? 'table-row' : 'none';
+      });
+
+      buttons.forEach(btn => {
+        btn.innerHTML = expand
+          ? '<span class="expand-icon">▲</span> 收起'
+          : '<span class="expand-icon">▼</span> 展开';
+      });
+    }
+
     // Legacy copy button handler for backward compatibility
     document.querySelectorAll('.copy-btn').forEach(btn => {
       btn.addEventListener('click', function() {
@@ -709,6 +808,53 @@ export class HTMLReportGenerator {
         }
       });
     });
+
+    // 检测表格是否可滚动，添加滚动提示
+    function initTableScroll() {
+      document.querySelectorAll('.table-container').forEach(container => {
+        const table = container.querySelector('table');
+        if (!table) return;
+
+        // 检查是否需要滚动
+        function checkScrollable() {
+          if (container.scrollWidth > container.clientWidth) {
+            container.classList.add('scrollable');
+          } else {
+            container.classList.remove('scrollable');
+          }
+        }
+
+        // 检查是否滚动到最右边
+        function checkScrollPosition() {
+          const scrollRight = container.scrollWidth - container.clientWidth - container.scrollLeft;
+          if (scrollRight <= 5) {
+            container.classList.add('scrolled-right');
+          } else {
+            container.classList.remove('scrolled-right');
+          }
+        }
+
+        // 初始化
+        checkScrollable();
+        checkScrollPosition();
+
+        // 监听滚动事件
+        container.addEventListener('scroll', checkScrollPosition);
+
+        // 监听窗口大小变化
+        window.addEventListener('resize', () => {
+          checkScrollable();
+          checkScrollPosition();
+        });
+      });
+    }
+
+    // 页面加载完成后初始化
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initTableScroll);
+    } else {
+      initTableScroll();
+    }
   </script>
 </body>
 </html>`;
@@ -765,7 +911,7 @@ export class HTMLReportGenerator {
       for (const [sectionId, sectionData] of Object.entries(skillResult.sections)) {
         const data = sectionData as any;
 
-        // Handle for_each results (array)
+        // Handle for_each results (array) - 这是旧格式，保留兼容性
         if (Array.isArray(data)) {
           const allRows: any[] = [];
           let columns: string[] = [];
@@ -791,9 +937,13 @@ export class HTMLReportGenerator {
             `;
           }
         }
+        // Handle new format with expandableData (iterator results)
+        else if (data?.expandableData && Array.isArray(data.expandableData)) {
+          html += this.generateExpandableSection(sectionId, data);
+        }
         // Handle regular step results
         else if (data?.data && Array.isArray(data.data) && data.data.length > 0) {
-          const columns = Object.keys(data.data[0]);
+          const columns = data.columns || Object.keys(data.data[0]);
           html += `
             <div class="skill-section">
               <div class="section-header">
@@ -813,6 +963,229 @@ export class HTMLReportGenerator {
                 </div>
               ` : ''}
               ${this.generateTable(columns, data.data)}
+            </div>
+          `;
+        }
+        // Handle text format
+        else if (data?.format === 'text' && data?.data?.[0]?.text) {
+          html += `
+            <div class="skill-section">
+              <div class="section-header">
+                <h3>${data.title || sectionId}</h3>
+              </div>
+              <div class="answer-box">
+                ${this.formatAnswer(data.data[0].text)}
+              </div>
+            </div>
+          `;
+        }
+      }
+    }
+
+    html += `</div>`;
+    return html;
+  }
+
+  /**
+   * Generate expandable section for iterator results
+   * 生成可展开的迭代器结果区块，包含主表格和每行的详细数据
+   */
+  private generateExpandableSection(sectionId: string, data: any): string {
+    const title = data.title || sectionId;
+    const expandableData = data.expandableData as Array<{
+      item: Record<string, any>;
+      result: {
+        success: boolean;
+        sections?: Record<string, any>;
+        error?: string;
+      };
+    }>;
+
+    // 生成唯一的 section ID 用于 JavaScript 操作
+    const sectionUniqueId = `expandable_${sectionId}_${Date.now()}`;
+
+    let html = `
+      <div class="skill-section expandable-section" id="${sectionUniqueId}">
+        <div class="section-header">
+          <h3>${title}</h3>
+          <span class="count">${expandableData.length} 条记录</span>
+        </div>
+    `;
+
+    // 显示汇总报告（如果存在）
+    if (data.summary) {
+      html += `
+        <div class="summary-box" style="margin-bottom: 20px; padding: 15px; background: #f0f9ff; border-radius: 8px; border-left: 4px solid #3b82f6;">
+          <strong>${this.escapeHtml(data.summary.title || '汇总')}</strong><br>
+          ${this.formatAnswer(data.summary.content || '')}
+        </div>
+      `;
+    }
+
+    // 生成主表格（使用 data.columns 和 data.data）
+    if (data.columns && data.data && data.data.length > 0) {
+      // Filter out absolute timestamp columns when relative timestamp columns exist
+      const absoluteTimestampCols = new Set<string>();
+      const filteredColumns = data.columns.filter((col: string) => {
+        if (col.endsWith('_ts') && col !== 'perfetto_start' && col !== 'perfetto_end') {
+          const relCol = col + '_rel';
+          if (data.columns.includes(relCol)) {
+            absoluteTimestampCols.add(col);
+            return false;  // Skip absolute timestamp column
+          }
+        }
+        return true;
+      });
+
+      // Detect constant columns (like process_name, layer_name)
+      const constantColumns: Record<string, any> = {};
+      const variableColumns: string[] = [];
+
+      for (const col of filteredColumns) {
+        const firstValue = data.data[0][col];
+        const isConstant = data.data.every((row: any) => row[col] === firstValue);
+
+        if (isConstant && firstValue !== undefined && firstValue !== null) {
+          constantColumns[col] = firstValue;
+        } else {
+          variableColumns.push(col);
+        }
+      }
+
+      // Build the constant column info for the table header
+      const constantColumnLabels = Object.entries(constantColumns)
+        .filter(([col]) => col === 'process_name' || col === 'layer_name' || col === 'Process Name' || col === 'Layer Name')
+        .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(String(value))}</strong></span>`)
+        .join('');
+
+      // 主表格但行可点击展开
+      html += `
+        <div class="table-container expandable-table">
+          ${constantColumnLabels ? `
+            <div class="table-header-info" style="padding: 8px 12px; background: #f8f9fa; border-bottom: 1px solid #eaeaea; font-size: 13px;">
+              ${constantColumnLabels}
+            </div>
+          ` : ''}
+          <table>
+            <thead>
+              <tr>
+                ${variableColumns.map((col: string) => `<th>${this.escapeHtml(col)}</th>`).join('')}
+                <th style="width: 80px;">详情</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+
+      data.data.forEach((row: any, idx: number) => {
+        const hasDetails = expandableData[idx]?.result?.sections &&
+                          Object.keys(expandableData[idx].result.sections || {}).length > 0;
+        const rowId = `${sectionUniqueId}_row_${idx}`;
+
+        html += `
+              <tr class="expandable-row" data-row-id="${rowId}" ${hasDetails ? 'style="cursor: pointer;"' : ''}>
+                ${variableColumns.map((col: string) => {
+                  const value = Array.isArray(row) ? row[data.columns.indexOf(col)] : row[col];
+                  return `<td>${this.formatCellValue(value)}</td>`;
+                }).join('')}
+                <td>
+                  ${hasDetails ? `
+                    <button class="expand-btn" onclick="toggleExpandableRow('${rowId}')" style="background: #667eea; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px;">
+                      <span class="expand-icon">▼</span> 展开
+                    </button>
+                  ` : '<span style="color: #999;">-</span>'}
+                </td>
+              </tr>
+        `;
+
+        // 添加隐藏的详情行
+        if (hasDetails) {
+          html += `
+              <tr class="detail-row" id="${rowId}_details" style="display: none;">
+                <td colspan="${variableColumns.length + 1}" style="padding: 0; background: #fafafa;">
+                  ${this.generateDetailContent(expandableData[idx])}
+                </td>
+              </tr>
+          `;
+        }
+      });
+
+      html += `
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    html += `</div>`;
+    return html;
+  }
+
+  /**
+   * Generate detail content for a single expandable row
+   * 生成单行展开后的详细内容
+   */
+  private generateDetailContent(itemData: {
+    item: Record<string, any>;
+    result: {
+      success: boolean;
+      sections?: Record<string, any>;
+      error?: string;
+    };
+  }): string {
+    const { item, result } = itemData;
+
+    let html = `<div class="detail-content" style="padding: 15px; border-left: 4px solid #667eea;">`;
+
+    // 显示原始项信息
+    html += `
+      <div style="margin-bottom: 10px; padding: 8px; background: #f8f9fa; border-radius: 6px;">
+        <strong style="color: #666;">原始数据：</strong>
+        <code style="font-size: 12px; color: #333;">${this.escapeHtml(JSON.stringify(item, null, 2).substring(0, 500))}</code>
+      </div>
+    `;
+
+    if (!result.success) {
+      html += `
+        <div class="diagnostic critical">
+          <div class="severity">❌ 分析失败</div>
+          <div>${this.escapeHtml(result.error || '未知错误')}</div>
+        </div>
+      `;
+    } else if (result.sections) {
+      // 遍历所有 sections 生成表格
+      for (const [subSectionId, subSectionData] of Object.entries(result.sections)) {
+        const subData = subSectionData as any;
+        const subTitle = subData.title || subSectionId;
+
+        if (subData.data && Array.isArray(subData.data) && subData.data.length > 0) {
+          const columns = subData.columns || Object.keys(subData.data[0]);
+          html += `
+            <div style="margin-bottom: 10px;">
+              <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 8px; color: #2c3e50;">
+                ${this.escapeHtml(subTitle)}
+                <span style="font-weight: normal; color: #666; margin-left: 8px;">(${subData.data.length} 条)</span>
+              </h4>
+              ${this.generateTable(columns, subData.data)}
+            </div>
+          `;
+        } else if (subData.diagnostics && Array.isArray(subData.diagnostics)) {
+          // 显示诊断结果
+          html += `
+            <div style="margin-bottom: 10px;">
+              <h4 style="font-size: 14px; font-weight: 600; margin-bottom: 8px; color: #2c3e50;">
+                ${this.escapeHtml(subTitle)}
+              </h4>
+              ${subData.diagnostics.map((diag: any) => `
+                <div class="diagnostic ${diag.severity || 'info'}" style="margin-bottom: 6px;">
+                  <div class="severity">${this.getSeverityLabel(diag.severity || 'info')}</div>
+                  <div>${this.escapeHtml(diag.message || diag.diagnosis || '')}</div>
+                  ${diag.suggestions ? `
+                    <ul class="suggestions">
+                      ${diag.suggestions.map((s: string) => `<li>${this.escapeHtml(s)}</li>`).join('')}
+                    </ul>
+                  ` : ''}
+                </div>
+              `).join('')}
             </div>
           `;
         }
@@ -889,30 +1262,75 @@ export class HTMLReportGenerator {
     const defaultVisibleRows = 10;
     const hasMore = totalRows > defaultVisibleRows;
 
+    // Filter out absolute timestamp columns when relative timestamp columns exist
+    // This makes the report more readable by showing relative times instead of raw nanoseconds
+    const absoluteTimestampCols = new Set<string>();
+    const relativeTimestampCols = new Set<string>();
+
+    for (const col of columns) {
+      if (col.endsWith('_ts') && col !== 'perfetto_start' && col !== 'perfetto_end') {
+        const relCol = col + '_rel';
+        if (columns.includes(relCol)) {
+          absoluteTimestampCols.add(col);
+          relativeTimestampCols.add(relCol);
+        }
+      }
+    }
+
+    // Filter out absolute timestamp columns that have relative counterparts
+    const filteredColumns = columns.filter(col => !absoluteTimestampCols.has(col));
+
+    // Detect columns with constant values (like process_name, layer_name)
+    // These should be moved to the table header instead of repeating in every row
+    const constantColumns: Record<string, any> = {};
+    const variableColumns: string[] = [];
+
+    for (const col of filteredColumns) {
+      const firstValue = rows[0][col];
+      const isConstant = rows.every(row => row[col] === firstValue);
+
+      if (isConstant && firstValue !== undefined && firstValue !== null) {
+        constantColumns[col] = firstValue;
+      } else {
+        variableColumns.push(col);
+      }
+    }
+
     // Always render all rows, but hide extra rows via CSS class
     const visibleRows = rows.slice(0, defaultVisibleRows);
     const hiddenRows = hasMore ? rows.slice(defaultVisibleRows) : [];
 
+    // Build the constant column info for the table header
+    const constantColumnLabels = Object.entries(constantColumns)
+      .filter(([col]) => col === 'process_name' || col === 'layer_name' || col === 'Process Name' || col === 'Layer Name')
+      .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(String(value))}</strong></span>`)
+      .join('');
+
     return `
       <div class="table-container">
+        ${constantColumnLabels ? `
+          <div class="table-header-info" style="padding: 8px 12px; background: #f8f9fa; border-bottom: 1px solid #eaeaea; font-size: 13px;">
+            ${constantColumnLabels}
+          </div>
+        ` : ''}
         <table>
           <thead>
             <tr>
               <th>#</th>
-              ${columns.map(col => `<th>${this.escapeHtml(col)}</th>`).join('')}
+              ${variableColumns.map(col => `<th>${this.escapeHtml(col)}</th>`).join('')}
             </tr>
           </thead>
           <tbody>
             ${visibleRows.map((row, idx) => `
               <tr>
                 <td style="color: #666; font-weight: 500;">${idx + 1}</td>
-                ${columns.map(col => `<td>${this.formatCellValue(row[col])}</td>`).join('')}
+                ${variableColumns.map(col => `<td>${this.formatCellValue(row[col])}</td>`).join('')}
               </tr>
             `).join('')}
             ${hiddenRows.map((row, idx) => `
               <tr class="hidden-row" style="display: none;">
                 <td style="color: #666; font-weight: 500;">${defaultVisibleRows + idx + 1}</td>
-                ${columns.map(col => `<td>${this.formatCellValue(row[col])}</td>`).join('')}
+                ${variableColumns.map(col => `<td>${this.formatCellValue(row[col])}</td>`).join('')}
               </tr>
             `).join('')}
           </tbody>
@@ -1021,6 +1439,7 @@ export class HTMLReportGenerator {
         sqlQueriesCount: session.collectedResults.length,
       },
       collectedResults: session.collectedResults,
+      skillEngineResult: session.skillEngineResult,
       timestamp: Date.now(),
     };
     return this.generateHTML(data);

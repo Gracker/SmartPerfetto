@@ -378,6 +378,23 @@ export class PerfettoAnalysisOrchestrator {
         };
         this.sessionService.addCollectedResult(sessionId, summaryResult);
 
+        // Store skillEngineResult to session for HTML report generation
+        console.log('[Orchestrator] Storing Skill Engine result to session...');
+        this.sessionService.updateState(sessionId, AnalysisState.GENERATING_SQL, {
+          skillEngineResult: {
+            skillId: skillResult.skillId,
+            skillName: skillResult.skillName,
+            sections: skillResult.sections,
+            diagnostics: skillResult.diagnostics || [],
+            vendor: skillResult.vendor,
+            executionTimeMs: skillResult.executionTimeMs,
+            directAnswer: skillResult.directAnswer,
+            summary: skillResult.summary,
+            questionType: skillResult.questionType,
+            answerConfidence: skillResult.answerConfidence,
+          },
+        });
+
         // Generate final answer from skill results
         console.log('[Orchestrator] Generating final answer from Skill Engine results...');
         this.emitProgress(sessionId, 'generating_answer', '✍️ 正在生成分析报告...');

@@ -131,15 +131,14 @@ steps:
         f.frame_id,
         f.ts,
         f.dur,
+        f.ts / 1e6 as ts_ms,
         f.dur / 1e6 as dur_ms,
         f.process_name,
         f.upid,
         f.do_frame_id,
         f.draw_frame_id,
         f.actual_frame_timeline_id,
-        f.expected_frame_timeline_id,
-        printf('%d', f.ts) as ts_str,
-        printf('%d', f.dur) as dur_str
+        f.expected_frame_timeline_id
       FROM android_frames f
       WHERE (f.process_name GLOB '${package}*' OR '${package}' = '')
         AND f.dur > 0
@@ -161,6 +160,7 @@ steps:
         a.display_frame_token as frame_id,
         a.ts,
         a.dur,
+        a.ts / 1e6 as ts_ms,
         a.dur / 1e6 as dur_ms,
         a.jank_type,
         a.jank_severity_type,
@@ -170,8 +170,6 @@ steps:
         a.prediction_type,
         a.jank_tag,
         p.name as process_name,
-        printf('%d', a.ts) as ts_str,
-        printf('%d', a.dur) as dur_str,
         -- 掉帧分类
         CASE
           WHEN a.jank_type = 'None' THEN 'normal'
@@ -268,6 +266,145 @@ steps:
         END as rating
       FROM frame_stats
     save_as: performance_summary
+    condition: environment.data[0]?.frame_data_status === 'available'
+
+  # ========== FPS 计算（区分 touch 和 fling 阶段）==========
+  - id: calculate_fps_by_phase
+    type: atomic
+    name: "计算 FPS"
+    display:
+      level: key
+      title: "FPS 指标（SurfaceFlinger 消费端）"
+    sql: |
+      -- 区分 touch 和 fling 阶段计算 FPS
+      -- Touch 阶段：有 input 事件（触摸、滑动）
+      -- Fling 阶段：连续帧渲染但无 input 事件
+      WITH frames_with_input AS (
+        -- 获取所有帧，并标记每个帧是否有 input 事件
+        SELECT
+          f.frame_id,
+          f.ts,
+          f.ts + f.dur as frame_end,
+          f.dur,
+          f.upid,
+          p.name as process_name,
+          -- 检查该帧前 16ms 内是否有 input 事件（触摸或滑动）
+          EXISTS (
+            SELECT 1
+            FROM slice s
+            JOIN thread_track tt ON s.track_id = tt.id
+            JOIN thread t ON tt.utid = t.utid
+            WHERE t.upid = f.upid
+              AND s.name IN ('InputDispatcher', 'deliverInputEvent', 'finishInputEvent')
+              AND s.ts >= f.ts - 16000000
+              AND s.ts < f.ts + f.dur
+          ) as has_input
+        FROM android_frames f
+        JOIN process p ON f.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND f.dur > 0
+      ),
+      -- 标记连续帧区间
+      frame_gaps AS (
+        SELECT
+          *,
+          LAG(frame_end) OVER (PARTITION BY upid ORDER BY ts) as prev_end,
+          ts - LAG(frame_end) OVER (PARTITION BY upid ORDER BY ts) as gap_ns
+        FROM frames_with_input
+      ),
+      session_markers AS (
+        SELECT
+          *,
+          CASE WHEN gap_ns IS NULL OR gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
+        FROM frame_gaps
+      ),
+      sessions AS (
+        SELECT
+          *,
+          SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) as session_id
+        FROM session_markers
+      ),
+      -- 识别每个区间内的 touch 和 fling 子区间
+      phase_transitions AS (
+        SELECT
+          session_id,
+          upid,
+          process_name,
+          ts,
+          frame_end,
+          dur,
+          has_input,
+          -- 标记 phase 变化点（touch → fling 或 fling → touch）
+          CASE
+            WHEN LAG(has_input) OVER (PARTITION BY session_id ORDER BY ts) IS NULL THEN has_input
+            WHEN LAG(has_input) OVER (PARTITION BY session_id ORDER BY ts) != has_input THEN 1
+            ELSE 0
+          END as phase_change
+        FROM sessions
+      ),
+      phase_markers AS (
+        SELECT
+          *,
+          SUM(phase_change) OVER (PARTITION BY session_id ORDER BY ts) as phase_id
+        FROM phase_transitions
+      ),
+      phases AS (
+        SELECT
+          session_id,
+          phase_id,
+          upid,
+          process_name,
+          CASE WHEN MIN(has_input) = 1 THEN 'touch' ELSE 'fling' END as phase_type,
+          MIN(ts) as phase_start,
+          MAX(frame_end) as phase_end,
+          COUNT(*) as frame_count,
+          SUM(dur) as total_dur_ns,
+          ROUND(SUM(dur) / 1e6, 1) as total_dur_ms,
+          -- 计算 FPS
+          CASE
+            WHEN SUM(dur) > 0 THEN ROUND(1000000000.0 * COUNT(*) / SUM(dur), 1)
+            ELSE NULL
+          END as fps
+        FROM phase_markers
+        GROUP BY session_id, phase_id, upid, process_name
+        HAVING COUNT(*) >= 3  -- 至少 3 帧才计算 FPS
+      )
+      -- 汇总：整体 FPS（touch + fling）和纯 fling FPS
+      SELECT
+        'touch_fling' as phase,
+        '包含按压滑动和 fling 滑动' as description,
+        SUM(frame_count) as frame_count,
+        ROUND(SUM(total_dur_ms), 1) as total_dur_ms,
+        ROUND(SUM(total_dur_ns) * 1.0 / NULLIF(SUM(frame_count), 0) / 1e6, 2) as avg_frame_ms,
+        ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) as fps,
+        -- 评级
+        CASE
+          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.9} THEN '优秀'
+          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.8} THEN '良好'
+          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.6} THEN '一般'
+          ELSE '较差'
+        END as rating
+      FROM phases
+      WHERE phase_type IN ('touch', 'fling')
+
+      UNION ALL
+
+      SELECT
+        'fling_only' as phase,
+        '只包含 fling 滑动' as description,
+        SUM(frame_count) as frame_count,
+        ROUND(SUM(total_dur_ms), 1) as total_dur_ms,
+        ROUND(SUM(total_dur_ns) * 1.0 / NULLIF(SUM(frame_count), 0) / 1e6, 2) as avg_frame_ms,
+        ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) as fps,
+        CASE
+          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.9} THEN '优秀'
+          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.8} THEN '良好'
+          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.6} THEN '一般'
+          ELSE '较差'
+        END as rating
+      FROM phases
+      WHERE phase_type = 'fling'
+    save_as: fps_metrics
     condition: environment.data[0]?.frame_data_status === 'available'
 
   # ========== 识别滑动区间（基于连续帧渲染）==========
@@ -533,6 +670,7 @@ steps:
       render_dur_ms: render_dur_ms
       # 帧信息
       package: process_name
+      layer_name: layer_name
       pid: pid
       frame_id: frame_id
       frame_index: frame_index

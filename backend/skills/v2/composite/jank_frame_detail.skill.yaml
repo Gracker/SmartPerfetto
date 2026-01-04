@@ -104,6 +104,10 @@ inputs:
     type: timestamp
     required: false
     description: "Perfetto 跳转结束时间"
+  - name: layer_name
+    type: string
+    required: false
+    description: "图层名称"
 
 steps:
   # ========== 帧基本信息 ==========
@@ -123,14 +127,21 @@ steps:
         ROUND(COALESCE(${main_dur_ms}, 0), 2) as main_dur_ms,
         -- RenderThread 耗时
         ROUND(COALESCE(${render_dur_ms}, 0), 2) as render_dur_ms,
-        -- 时间戳
+        -- 绝对时间戳（纳秒，用于 Perfetto 跳转链接）
         printf('%d', ${start_ts}) as start_ts,
         printf('%d', ${end_ts}) as end_ts,
         printf('%d', COALESCE(${main_start_ts}, ${start_ts})) as main_start_ts,
         printf('%d', COALESCE(${main_end_ts}, ${end_ts})) as main_end_ts,
         printf('%d', COALESCE(${render_start_ts}, ${start_ts})) as render_start_ts,
         printf('%d', COALESCE(${render_end_ts}, ${end_ts})) as render_end_ts,
-        -- Perfetto 跳转链接参数
+        -- 相对时间（毫秒，以帧开始时间为 0，用于显示）
+        ROUND((${start_ts} - ${start_ts}) / 1e6, 2) as start_ts_rel,
+        ROUND((${end_ts} - ${start_ts}) / 1e6, 2) as end_ts_rel,
+        ROUND((COALESCE(${main_start_ts}, ${start_ts}) - ${start_ts}) / 1e6, 2) as main_start_ts_rel,
+        ROUND((COALESCE(${main_end_ts}, ${end_ts}) - ${start_ts}) / 1e6, 2) as main_end_ts_rel,
+        ROUND((COALESCE(${render_start_ts}, ${start_ts}) - ${start_ts}) / 1e6, 2) as render_start_ts_rel,
+        ROUND((COALESCE(${render_end_ts}, ${end_ts}) - ${start_ts}) / 1e6, 2) as render_end_ts_rel,
+        -- Perfetto 跳转链接参数（绝对时间戳，单位纳秒）
         printf('%d', COALESCE(${perfetto_start}, ${start_ts})) as perfetto_start,
         printf('%d', COALESCE(${perfetto_end}, ${end_ts})) as perfetto_end,
         '${package}' as process_name,
@@ -632,97 +643,31 @@ steps:
           AND c.ts >= ${start_ts}
           AND c.ts < ${end_ts}
       )
-      -- 只输出频率变化的点（前后值不同）
+      -- 输出所有频率变化点，包括初始点
       SELECT
         core_type,
         cpu,
         offset_ms,
         freq_ghz,
-        freq_mhz,
-        -- 计算频率变化量
+        -- 计算频率变化量（使用 GHz 单位）
         CASE
-          WHEN prev_freq IS NOT NULL THEN ROUND((freq_khz - prev_freq) / 1000, 0)
+          WHEN prev_freq IS NOT NULL THEN ROUND((freq_khz - prev_freq) / 1000000, 2)
           ELSE NULL
-        END as delta_from_prev_mhz,
+        END as delta_from_prev_ghz,
         CASE
-          WHEN next_freq IS NOT NULL THEN ROUND((next_freq - freq_khz) / 1000, 0)
+          WHEN next_freq IS NOT NULL THEN ROUND((next_freq - freq_khz) / 1000000, 2)
           ELSE NULL
-        END as delta_to_next_mhz,
+        END as delta_to_next_ghz,
         -- 计算持续时间（到下一个变化点）
         CASE
           WHEN next_ts IS NOT NULL THEN ROUND((next_ts - ts) / 1e6, 2)
           ELSE NULL
-        END as duration_ms
+        END as duration_ms,
+        -- 标记初始点
+        CASE WHEN prev_freq IS NULL THEN 1 ELSE 0 END as is_initial
       FROM freq_changes
-      WHERE prev_freq IS NULL  -- 第一个记录
-         OR prev_freq != freq_khz  -- 频率发生了变化
       ORDER BY offset_ms, cpu
     save_as: freq_timeline_detail
-
-  # ========== 频率爬升分析 ==========
-  - id: freq_ramp_analysis
-    type: atomic
-    name: "频率爬升分析"
-    display:
-      level: key
-      title: "CPU频率爬升速度分析"
-    sql: |
-      -- 分析 CPU 频率爬升速度，用于诊断是否因频率爬升太慢导致掉帧
-      -- 优化：使用窗口函数，避免复杂的时间窗口 JOIN
-      WITH main_thread AS (
-        SELECT t.utid
-        FROM thread t
-        JOIN process p ON t.upid = p.upid
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
-          AND t.tid = p.pid
-      ),
-      -- 获取主线程运行的 CPU
-      active_cpus AS (
-        SELECT DISTINCT ts.cpu
-        FROM thread_state ts
-        WHERE ts.utid IN (SELECT utid FROM main_thread)
-          AND ts.ts >= ${start_ts}
-          AND ts.ts < ${end_ts}
-          AND ts.state = 'Running'
-          AND ts.cpu IS NOT NULL
-      ),
-      -- 获取频率数据并计算变化
-      freq_with_changes AS (
-        SELECT
-          t.cpu,
-          c.ts,
-          c.value as freq_khz,
-          ROUND((c.ts - ${start_ts}) / 1e6, 2) as offset_ms,
-          ROUND(c.value / 1000000, 2) as freq_ghz,
-          -- 计算与下一个采样点的差值和时间差
-          LEAD(c.value) OVER (PARTITION BY t.cpu ORDER BY c.ts) - c.value as freq_delta,
-          LEAD(c.ts) OVER (PARTITION BY t.cpu ORDER BY c.ts) - c.ts as time_delta_ns
-        FROM counter c
-        JOIN cpu_counter_track t ON c.track_id = t.id
-        WHERE t.name = 'cpufreq'
-          AND t.cpu IN (SELECT cpu FROM active_cpus)
-          AND c.ts >= ${start_ts}
-          AND c.ts < ${end_ts}
-      )
-      -- 只分析频率上升的时刻
-      SELECT
-        cpu,
-        ROUND(freq_khz / 1000, 0) as start_freq_mhz,
-        ROUND((freq_khz + freq_delta) / 1000, 0) as end_freq_mhz,
-        ROUND(freq_delta / 1000, 0) as ramp_amount_mhz,
-        offset_ms as start_offset_ms,
-        -- 爬升持续时间
-        ROUND(time_delta_ns / 1e6, 2) as ramp_duration_ms,
-        -- 爬升速率 (MHz/ms)
-        CASE
-          WHEN time_delta_ns > 0 THEN ROUND(freq_delta / time_delta_ns / 1000, 1)
-          ELSE NULL
-        END as ramp_rate_mhz_per_ms,
-        freq_ghz as start_freq_ghz
-      FROM freq_with_changes
-      WHERE freq_delta > 0  -- 只关注频率上升
-      ORDER BY cpu, offset_ms
-    save_as: freq_ramp
 
   # ========== 主线程操作与对应频率 ==========
   - id: main_slice_with_freq
@@ -827,10 +772,8 @@ steps:
           ELSE 'little'
         END as core_type,
         ROUND(sf.start_freq_khz / 1000000, 2) as start_freq_ghz,
-        ROUND(sf.start_freq_khz / 1000, 0) as start_freq_mhz,
         ROUND(ef.end_freq_khz / 1000000, 2) as end_freq_ghz,
-        ROUND(ef.end_freq_khz / 1000, 0) as end_freq_mhz,
-        ROUND((ef.end_freq_khz - sf.start_freq_khz) / 1000, 0) as freq_delta_mhz
+        ROUND((ef.end_freq_khz - sf.start_freq_khz) / 1000000, 2) as freq_delta_ghz
       FROM start_freq_match sf
       LEFT JOIN end_freq_match ef ON sf.slice_name = ef.slice_name AND sf.cpu = ef.cpu
       ORDER BY sf.offset_ms
@@ -919,7 +862,7 @@ steps:
     display:
       level: key
       title: "掉帧原因诊断"
-    inputs: [frame_basic, main_slices, binder_analysis, scheduling, locks, core_analysis, quadrant, freq_analysis, slice_freq, freq_ramp]
+    inputs: [frame_basic, main_slices, binder_analysis, scheduling, locks, core_analysis, quadrant, freq_analysis, slice_freq]
     rules:
       # Binder 调用耗时过长
       - condition: "${binder_analysis.data[0]?.total_ms > 5}"
@@ -978,11 +921,11 @@ steps:
           - "检查温控是否限频"
           - "确保性能模式已开启"
 
-      # ========== 新增：频率爬升过慢诊断 ==========
+      # ========== 频率相关诊断 ==========
       # 操作开始时频率过低
-      - condition: "${slice_freq.data[0]?.start_freq_mhz < 1000}"
+      - condition: "${slice_freq.data[0]?.start_freq_ghz < 1.0}"
         severity: warning
-        diagnosis: "'${slice_freq.data[0].slice_name}' 开始时 CPU 频率仅 ${slice_freq.data[0].start_freq_mhz}MHz（${slice_freq.data[0].core_type}核）"
+        diagnosis: "'${slice_freq.data[0].slice_name}' 开始时 CPU 频率仅 ${slice_freq.data[0].start_freq_ghz}GHz（${slice_freq.data[0].core_type}核）"
         confidence: high
         suggestions:
           - "频率爬升太慢可能导致操作执行时间延长"
@@ -990,24 +933,14 @@ steps:
           - "考虑使用 performance 模式"
 
       # 操作期间频率变化为负（下降）
-      - condition: "${slice_freq.data[0]?.freq_delta_mhz < -300}"
+      - condition: "${slice_freq.data[0]?.freq_delta_ghz < -0.3}"
         severity: warning
-        diagnosis: "'${slice_freq.data[0].slice_name}' 执行期间频率下降 ${Math.abs(slice_freq.data[0].freq_delta_mhz)}MHz"
+        diagnosis: "'${slice_freq.data[0].slice_name}' 执行期间频率下降 ${Math.abs(slice_freq.data[0].freq_delta_ghz)}GHz"
         confidence: medium
         suggestions:
           - "操作执行过程中频率下降严重影响性能"
           - "检查温控策略是否过于激进"
           - "避免在负载高时触发温控降频"
-
-      # 频率爬升速率过慢（新增）
-      - condition: "${freq_ramp.data.length > 0 && freq_ramp.data[0]?.ramp_rate_mhz_per_ms < 5}"
-        severity: warning
-        diagnosis: "CPU${freq_ramp.data[0].cpu} 频率爬升速率仅 ${freq_ramp.data[0].ramp_rate_mhz_per_ms}MHz/ms（从${freq_ramp.data[0].start_freq_mhz}MHz爬升到${freq_ramp.data[0].end_freq_mhz}MHz）"
-        confidence: high
-        suggestions:
-          - "频率爬升太慢是导致掉帧的常见原因"
-          - "建议调整 Governor 的 sampling_rate 和 up_threshold"
-          - "考虑使用性能模式锁定高频"
 
       # ========== 其他诊断规则 ==========
 
@@ -1033,3 +966,4 @@ output:
   display:
     level: key
     format: detail
+    title: "帧 #${frame_id} - ${package} - ${layer_name}"

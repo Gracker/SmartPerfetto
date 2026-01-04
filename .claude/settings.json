@@ -1,12 +1,10 @@
 {
-  "outputStyle": "Explanatory",
   "enabledPlugins": {
     "superpowers@superpowers-marketplace": true,
     "wechat-article-writer@happy-claude-skills": true,
     "ralph-wiggum@claude-plugins-official": true,
     "frontend-design@claude-plugins-official": true,
     "feature-dev@claude-plugins-official": true,
-    "claude-mem@thedotmack": true,
     "double-shot-latte@superpowers-marketplace": true,
     "elements-of-style@superpowers-marketplace": true,
     "superpowers-chrome@superpowers-marketplace": true,
@@ -16,7 +14,8 @@
     "video-processor@happy-claude-skills": true,
     "playwright@claude-plugins-official": true,
     "browser@happy-claude-skills": true,
-    "claude-hud@claude-hud": true
+    "claude-hud@claude-hud": true,
+    "github@claude-plugins-official": true
   },
   "extraKnownMarketplaces": {
     "claude-plugins-official": {
@@ -55,5 +54,6 @@
         "repo": "jarrodwatts/claude-hud"
       }
     }
-  }
+  },
+  "outputStyle": "Explanatory"
 }
