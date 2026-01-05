@@ -433,8 +433,7 @@ export class HTMLReportGenerator {
       padding: 8px 12px;
       text-align: left;
       border-bottom: 1px solid #eaeaea;
-      min-width: 80px;
-      max-width: 400px;
+      white-space: nowrap;
     }
 
     table th {
@@ -450,12 +449,26 @@ export class HTMLReportGenerator {
       word-break: break-word;
     }
 
-    /* 序号列固定宽度 */
+    /* Row number column */
     table th:first-child,
     table td:first-child {
-      min-width: 50px;
-      max-width: 60px;
-      width: 50px;
+      min-width: 40px;
+      max-width: 50px;
+      width: 40px;
+      text-align: center;
+    }
+
+    /* Text columns need more width */
+    table td.col-text {
+      min-width: 120px;
+      max-width: 400px;
+      white-space: normal;
+    }
+
+    /* Number columns should be compact */
+    table td.col-number {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
     }
 
     table tbody tr:hover {
@@ -855,6 +868,60 @@ export class HTMLReportGenerator {
     } else {
       initTableScroll();
     }
+
+    // L4 滑动区间折叠功能
+    function toggleL4Session(sessionId) {
+      const content = document.getElementById(sessionId + '_content');
+      const header = content.previousElementSibling;
+      const icon = header.querySelector('.session-toggle-icon');
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.textContent = '▼';
+      } else {
+        content.style.display = 'none';
+        icon.textContent = '▶';
+      }
+    }
+
+    // L4 单帧折叠功能
+    function toggleL4Frame(frameId) {
+      const content = document.getElementById(frameId + '_content');
+      const header = content.previousElementSibling;
+      const icon = header.querySelector('.frame-toggle-icon');
+      const hint = header.querySelector('span[style*="color: #94a3b8"]');
+      if (content.style.display === 'none') {
+        content.style.display = 'block';
+        icon.textContent = '▼';
+        if (hint) hint.textContent = '点击收起';
+      } else {
+        content.style.display = 'none';
+        icon.textContent = '▶';
+        if (hint) hint.textContent = '点击展开详情';
+      }
+    }
+
+    // L4 展开/折叠某个session下所有帧
+    function toggleAllFramesInL4Session(sessionId) {
+      const sessionContent = document.getElementById(sessionId + '_content');
+      if (!sessionContent) return;
+      const frameContents = sessionContent.querySelectorAll('.l4-frame-content');
+      const allCollapsed = Array.from(frameContents).every(f => f.style.display === 'none');
+      
+      frameContents.forEach(content => {
+        const header = content.previousElementSibling;
+        const icon = header.querySelector('.frame-toggle-icon');
+        const hint = header.querySelector('span[style*="color: #94a3b8"]');
+        if (allCollapsed) {
+          content.style.display = 'block';
+          if (icon) icon.textContent = '▼';
+          if (hint) hint.textContent = '点击收起';
+        } else {
+          content.style.display = 'none';
+          if (icon) icon.textContent = '▶';
+          if (hint) hint.textContent = '点击展开详情';
+        }
+      });
+    }
   </script>
 </body>
 </html>`;
@@ -886,6 +953,11 @@ export class HTMLReportGenerator {
       </div>
     `;
 
+    //优先处理分层结果（L1/L2/L3/L4）
+    if (skillResult.layeredResult) {
+      html += this.generateLayeredResultSection(skillResult.layeredResult);
+    }
+
     // Diagnostics
     if (skillResult.diagnostics && skillResult.diagnostics.length > 0) {
       html += `
@@ -904,8 +976,8 @@ export class HTMLReportGenerator {
       `;
     }
 
-    // Sections
-    if (skillResult.sections) {
+    // Sections (仅在没有 layeredResult 时渲染)
+    if (!skillResult.layeredResult && skillResult.sections) {
       html += `<h3 style="margin: 30px 0 15px; font-size: 16px;">详细分析数据</h3>`;
 
       for (const [sectionId, sectionData] of Object.entries(skillResult.sections)) {
@@ -1282,17 +1354,23 @@ export class HTMLReportGenerator {
 
     // Detect columns with constant values (like process_name, layer_name)
     // These should be moved to the table header instead of repeating in every row
+    // BUT: Only do this for tables with multiple rows - single row tables should show all columns
     const constantColumns: Record<string, any> = {};
     const variableColumns: string[] = [];
 
-    for (const col of filteredColumns) {
-      const firstValue = rows[0][col];
-      const isConstant = rows.every(row => row[col] === firstValue);
+    // For single-row tables, show all columns (no point in hiding "constant" columns)
+    if (rows.length === 1) {
+      variableColumns.push(...filteredColumns);
+    } else {
+      for (const col of filteredColumns) {
+        const firstValue = rows[0][col];
+        const isConstant = rows.every(row => row[col] === firstValue);
 
-      if (isConstant && firstValue !== undefined && firstValue !== null) {
-        constantColumns[col] = firstValue;
-      } else {
-        variableColumns.push(col);
+        if (isConstant && firstValue !== undefined && firstValue !== null) {
+          constantColumns[col] = firstValue;
+        } else {
+          variableColumns.push(col);
+        }
       }
     }
 
@@ -1324,13 +1402,13 @@ export class HTMLReportGenerator {
             ${visibleRows.map((row, idx) => `
               <tr>
                 <td style="color: #666; font-weight: 500;">${idx + 1}</td>
-                ${variableColumns.map(col => `<td>${this.formatCellValue(row[col])}</td>`).join('')}
+                ${variableColumns.map(col => `<td class="${this.getCellClass(row[col])}">${this.formatCellValue(row[col])}</td>`).join('')}
               </tr>
             `).join('')}
             ${hiddenRows.map((row, idx) => `
               <tr class="hidden-row" style="display: none;">
                 <td style="color: #666; font-weight: 500;">${defaultVisibleRows + idx + 1}</td>
-                ${variableColumns.map(col => `<td>${this.formatCellValue(row[col])}</td>`).join('')}
+                ${variableColumns.map(col => `<td class="${this.getCellClass(row[col])}">${this.formatCellValue(row[col])}</td>`).join('')}
               </tr>
             `).join('')}
           </tbody>
@@ -1372,21 +1450,31 @@ export class HTMLReportGenerator {
       return '<span style="color: #999;">NULL</span>';
     }
     if (typeof value === 'number') {
-      return value.toLocaleString('zh-CN');
+      const formatted = value.toLocaleString('zh-CN');
+      console.log(`[formatCellValue] Number: ${value} -> ${formatted}`);
+      return formatted;
     }
     if (typeof value === 'boolean') {
       return value ? '<span style="color: #10b981;">✓</span>' : '<span style="color: #ef4444;">✗</span>';
     }
     const str = String(value);
+    console.log(`[formatCellValue] String: "${str}" (length=${str.length})`);
     if (str.length > 200) {
       return `<span title="${this.escapeHtml(str)}">${this.escapeHtml(str.substring(0, 200))}...</span>`;
     }
     return this.escapeHtml(str);
   }
 
-  /**
-   * Get severity label in Chinese
-   */
+  private getCellClass(value: any): string {
+    if (typeof value === 'number') {
+      return 'col-number';
+    }
+    if (typeof value === 'string' && value.length > 20) {
+      return 'col-text';
+    }
+    return '';
+  }
+
   private getSeverityLabel(severity: string): string {
     const labels: Record<string, string> = {
       'critical': '🔴 严重问题',
@@ -1411,8 +1499,505 @@ export class HTMLReportGenerator {
   }
 
   /**
-   * Escape HTML special characters
+   * Generate layered result section (L1/L2/L3/L4)
+   * 生成分层结果区块，支持 L1/L2/L3/L4 各层展示
    */
+  private generateLayeredResultSection(layeredResult: any): string {
+    let html = '';
+
+    const { layers, metadata } = layeredResult;
+
+    // 添加元数据信息
+    if (metadata) {
+      html += `
+        <div style="margin: 20px 0; padding: 15px; background: #f8f9fa; border-radius: 8px; font-size: 14px; color: #666;">
+          <strong>Skill:</strong> ${this.escapeHtml(metadata.skillName || 'Unknown')}
+          ${metadata.version ? `<span style="margin-left: 15px;"><strong>版本:</strong> ${metadata.version}</span>` : ''}
+          ${metadata.executedAt ? `<span style="margin-left: 15px;"><strong>执行时间:</strong> ${new Date(metadata.executedAt).toLocaleString('zh-CN')}</span>` : ''}
+        </div>
+      `;
+    }
+
+    // L1 - 概览层
+    if (layers.L1 && Object.keys(layers.L1).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">📊 L1 - 概览层</h3>`;
+      html += this.generateLayerContent(layers.L1, 'L1');
+    }
+
+    // L2 - 区间层
+    if (layers.L2 && Object.keys(layers.L2).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">📋 L2 - 区间层</h3>`;
+      html += this.generateLayerContent(layers.L2, 'L2');
+    }
+
+    // L3 - 区间详情层
+    if (layers.L3 && Object.keys(layers.L3).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">🔍 L3 - 区间详情层</h3>`;
+      html += this.generateLayerContent(layers.L3, 'L3');
+    }
+
+    // L4 - 帧分析层
+    if (layers.L4 && Object.keys(layers.L4).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">🎯 L4 - 帧分析层</h3>`;
+      html += this.generateLayerContent(layers.L4, 'L4');
+    }
+
+    return html;
+  }
+
+  /**
+   * Generate content for a specific layer
+   */
+  private generateLayerContent(layerData: any, layerType: string): string {
+    let html = '';
+
+    // L1 和 L2 是平铺结构：Record<string, StepResult>
+    if (layerType === 'L1' || layerType === 'L2') {
+      for (const [stepId, stepResult] of Object.entries(layerData)) {
+        const result = stepResult as any;
+        html += this.renderStepResult(stepId, result);
+      }
+    }
+    // L3 是嵌套结构：Record<string, Record<string, StepResult>>
+    else if (layerType === 'L3') {
+      for (const [sessionId, sessionSteps] of Object.entries(layerData)) {
+        html += `
+          <div style="margin-bottom: 20px;">
+            <h4 style="font-size: 15px; font-weight: 600; margin-bottom: 10px; color: #34495e;">
+              📁 ${this.escapeHtml(sessionId)}
+            </h4>
+        `;
+        for (const [stepId, stepResult] of Object.entries(sessionSteps as Record<string, any>)) {
+          const result = stepResult as any;
+          html += this.renderStepResult(stepId, result);
+        }
+        html += `</div>`;
+      }
+    }
+    // L4 是嵌套结构：Record<string, Record<string, StepResult>>
+    else if (layerType === 'L4') {
+      // 获取L2数据以显示区间信息
+      let sessionIndex = 0;
+      for (const [sessionId, frames] of Object.entries(layerData)) {
+        sessionIndex++;
+        const frameEntries = Object.entries(frames as Record<string, any>);
+        const frameCount = frameEntries.length;
+        const sessionNum = sessionId.replace('session_', '');
+
+        html += `
+          <div class="l4-session-container" style="margin-bottom: 24px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+            <div class="l4-session-header" style="padding: 12px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleL4Session('${sessionId}')">
+              <div>
+                <span class="session-toggle-icon" style="margin-right: 8px;">▼</span>
+                <strong>滑动区间 ${sessionNum}</strong>
+                <span style="margin-left: 12px; opacity: 0.9;">${frameCount} 个掉帧</span>
+              </div>
+              <button onclick="event.stopPropagation(); toggleAllFramesInL4Session('${sessionId}')" style="padding: 4px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; cursor: pointer; font-size: 12px;">
+                全部展开
+              </button>
+            </div>
+            <div class="l4-session-content" id="${sessionId}_content" style="padding: 12px;">
+        `;
+
+        frameEntries.forEach(([frameId, stepResult], idx) => {
+          const result = stepResult as any;
+          const frameTitle = result.display?.title || frameId;
+          const uniqueFrameId = `${sessionId}_${frameId}`;
+
+          html += `
+              <div class="l4-frame-item" style="margin-bottom: 8px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
+                <div class="l4-frame-header" style="padding: 10px 12px; background: #f8fafc; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleL4Frame('${uniqueFrameId}')">
+                  <div>
+                    <span class="frame-toggle-icon" style="margin-right: 8px; color: #64748b;">▶</span>
+                    <span style="font-weight: 500; color: #334155;">${this.escapeHtml(frameTitle)}</span>
+                  </div>
+                  <span style="font-size: 12px; color: #94a3b8;">点击展开详情</span>
+                </div>
+                <div class="l4-frame-content" id="${uniqueFrameId}_content" style="display: none; padding: 12px; background: white;">
+                  ${this.renderL4FrameAnalysis(result.data)}
+                </div>
+              </div>
+          `;
+        });
+
+        html += `
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    return html;
+  }
+
+  /**
+   * Render a single step result from layered output
+   */
+  private renderStepResult(stepId: string, stepResult: any): string {
+    if (!stepResult || !stepResult.data) {
+      console.log(`[renderStepResult] ${stepId}: No data available`);
+      return '';
+    }
+
+    console.log(`[renderStepResult] ${stepId}: data type=${typeof stepResult.data}, isArray=${Array.isArray(stepResult.data)}, length=${stepResult.data?.length || 'N/A'}`);
+
+    let html = `
+      <div class="skill-section" style="margin-bottom: 15px;">
+        <div class="section-header">
+          <h3>${this.escapeHtml(stepResult.display?.title || stepId)}</h3>
+          ${Array.isArray(stepResult.data) ? `<span class="count">${stepResult.data.length} 条记录</span>` : ''}
+          ${stepResult.success === false ? `<span class="error-badge" style="margin-left: 10px; padding: 2px 8px; background: #ef4444; color: white; border-radius: 4px; font-size: 12px;">失败</span>` : ''}
+        </div>
+    `;
+
+    // 显示错误信息（如果有）
+    if (stepResult.error) {
+      console.log(`[renderStepResult] ${stepId}: Step failed with error:`, stepResult.error);
+      html += `
+        <div style="padding: 12px; background: #fef2f2; border-left: 4px solid #ef4444; border-radius: 4px; margin-bottom: 10px;">
+          <div style="font-weight: 600; color: #dc2626; margin-bottom: 4px;">错误信息:</div>
+          <div style="font-family: monospace; font-size: 13px; color: #991b1b; white-space: pre-wrap;">${this.escapeHtml(String(stepResult.error))}</div>
+        </div>
+      `;
+    }
+
+    // 处理 displayResults 格式（来自 L4 iterator 结果）
+    if (Array.isArray(stepResult.data) && stepResult.data.length > 0) {
+      const firstItem = stepResult.data[0];
+
+      console.log(`[renderStepResult] ${stepId}: First item:`, JSON.stringify({
+        keys: Object.keys(firstItem || {}),
+        hasStepId: !!firstItem?.stepId,
+        hasTitle: !!firstItem?.title,
+        sample: firstItem
+      }, null, 2));
+
+      // 如果是 displayResults 格式，渲染为子区块
+      if (firstItem.stepId || firstItem.title) {
+        console.log(`[renderStepResult] ${stepId}: Using displayResult format (has stepId or title)`);
+        for (const displayResult of stepResult.data) {
+          html += this.renderDisplayResult(displayResult);
+        }
+      }
+      // 如果是普通数据数组，渲染为表格
+      else {
+        const columns = Object.keys(firstItem);
+        console.log(`[renderStepResult] ${stepId}: Using table format, columns:`, columns);
+        html += this.generateTable(columns, stepResult.data);
+      }
+    }
+    // 处理空数组（失败的 SQL 查询或无结果）
+    else if (Array.isArray(stepResult.data)) {
+      console.log(`[renderStepResult] ${stepId}: Empty array, showing 'No data' message`);
+      const message = stepResult.error ? '查询失败' : '无数据';
+      html += `<div class="empty-state" style="padding: 20px; background: #f8f9fa; border-radius: 8px; color: #666;">${message}</div>`;
+    }
+    // 处理文本格式
+    else if (stepResult.data?.text) {
+      console.log(`[renderStepResult] ${stepId}: Using text format`);
+      html += `
+        <div class="answer-box">
+          ${this.formatAnswer(stepResult.data.text)}
+        </div>
+      `;
+    }
+    // 处理 L4 帧分析格式 (transformed data with diagnosis_summary and full_analysis)
+    else if (stepResult.data?.diagnosis_summary !== undefined || stepResult.data?.full_analysis) {
+      console.log(`[renderStepResult] ${stepId}: Using L4 frame analysis format`);
+      html += this.renderL4FrameAnalysis(stepResult.data);
+    }
+    else {
+      console.log(`[renderStepResult] ${stepId}: Unknown format, data:`, typeof stepResult.data, stepResult.data);
+    }
+
+    html += `</div>`;
+    return html;
+  }
+
+  /**
+   * Render a single displayResult from layered output
+   */
+  private renderDisplayResult(displayResult: any): string {
+    console.log(`[renderDisplayResult] displayResult:`, JSON.stringify({
+      hasStepId: !!displayResult.stepId,
+      hasTitle: !!displayResult.title,
+      hasData: !!displayResult.data,
+      dataType: typeof displayResult.data,
+      dataIsArray: Array.isArray(displayResult.data),
+      dataHasRows: !!displayResult.data?.rows,
+      dataHasText: !!displayResult.data?.text,
+      dataKeys: displayResult.data ? Object.keys(displayResult.data) : [],
+    }, null, 2));
+
+    let html = `
+      <div style="margin: 10px 0; padding: 12px; background: #fafbfc; border-radius: 6px; border-left: 3px solid #3498db;">
+        <h5 style="margin: 0 0 8px 0; font-size: 14px; color: #2c3e50;">
+          ${this.escapeHtml(displayResult.title || displayResult.stepId || '详情')}
+        </h5>
+    `;
+
+    if (displayResult.data) {
+      // 如果有 rows，渲染为表格
+      if (displayResult.data.rows && Array.isArray(displayResult.data.rows)) {
+        const columns = displayResult.data.columns || [];
+        const tableData = this.rowsToObjects(columns, displayResult.data.rows);
+        html += this.generateTable(columns, tableData);
+      }
+      // 如果有 text，渲染为文本
+      else if (displayResult.data.text) {
+        html += `<div style="font-size: 13px; line-height: 1.6;">${this.formatAnswer(displayResult.data.text)}</div>`;
+      }
+      else {
+        console.log(`[renderDisplayResult] No matching format for data:`, typeof displayResult.data, displayResult.data);
+      }
+    }
+    else {
+      console.log(`[renderDisplayResult] No data in displayResult`);
+    }
+
+    html += `</div>`;
+    return html;
+  }
+
+  private renderL4FrameAnalysis(data: { diagnosis_summary?: string; full_analysis?: any }): string {
+    const diagnosis = data.diagnosis_summary || '暂无诊断';
+    const analysis = data.full_analysis || {};
+    const quadrants = analysis.quadrants || {};
+    const binderCalls = analysis.binder_calls || [];
+    const cpuFreq = analysis.cpu_frequency || {};
+    const mainSlices = analysis.main_thread_slices || [];
+    const renderSlices = analysis.render_thread_slices || [];
+    const freqTimeline = analysis.cpu_freq_timeline || [];
+
+    let html = '';
+
+    html += `
+      <div style="padding: 12px; background: #fef3c7; border-left: 4px solid #f59e0b; border-radius: 4px; margin-bottom: 12px;">
+        <div style="font-weight: 600; color: #92400e; margin-bottom: 4px;">诊断结论</div>
+        <div style="color: #78350f;">${this.escapeHtml(diagnosis)}</div>
+      </div>
+    `;
+
+    if (quadrants.main_thread || quadrants.render_thread) {
+      html += `<div style="margin-bottom: 16px;">`;
+      
+      if (quadrants.main_thread) {
+        const mt = quadrants.main_thread;
+        const runningPct = ((mt.q1 || 0) + (mt.q2 || 0)).toFixed(1);
+        const waitingPct = ((mt.q3 || 0) + (mt.q4 || 0)).toFixed(1);
+        html += `
+          <div style="margin-bottom: 12px;">
+            <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">
+              主线程状态分布 
+              <span style="font-weight: 400; font-size: 12px; color: #64748b;">(运行 ${runningPct}% | 等待 ${waitingPct}%)</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+              <div style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="padding: 6px 10px; background: #f1f5f9; font-size: 12px; font-weight: 600; color: #475569; text-align: center; border-bottom: 1px solid #e2e8f0;">Running (运行中)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e2e8f0;">
+                  <div style="padding: 12px 8px; background: #dcfce7; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #166534;">${mt.q1?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #166534;">大核</div>
+                  </div>
+                  <div style="padding: 12px 8px; background: #dbeafe; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #1e40af;">${mt.q2?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #1e40af;">小核</div>
+                  </div>
+                </div>
+              </div>
+              <div style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="padding: 6px 10px; background: #f1f5f9; font-size: 12px; font-weight: 600; color: #475569; text-align: center; border-bottom: 1px solid #e2e8f0;">Waiting (等待中)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e2e8f0;">
+                  <div style="padding: 12px 8px; background: #fef9c3; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #854d0e;">${mt.q3?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #854d0e;">Runnable</div>
+                  </div>
+                  <div style="padding: 12px 8px; background: #f3e8ff; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #6b21a8;">${mt.q4?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #6b21a8;">Sleeping</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
+      if (quadrants.render_thread) {
+        const rt = quadrants.render_thread;
+        const runningPct = ((rt.q1 || 0) + (rt.q2 || 0)).toFixed(1);
+        const waitingPct = ((rt.q3 || 0) + (rt.q4 || 0)).toFixed(1);
+        html += `
+          <div style="margin-bottom: 12px;">
+            <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">
+              RenderThread 状态分布
+              <span style="font-weight: 400; font-size: 12px; color: #64748b;">(运行 ${runningPct}% | 等待 ${waitingPct}%)</span>
+            </div>
+            <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+              <div style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="padding: 6px 10px; background: #f1f5f9; font-size: 12px; font-weight: 600; color: #475569; text-align: center; border-bottom: 1px solid #e2e8f0;">Running (运行中)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e2e8f0;">
+                  <div style="padding: 12px 8px; background: #dcfce7; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #166534;">${rt.q1?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #166534;">大核</div>
+                  </div>
+                  <div style="padding: 12px 8px; background: #dbeafe; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #1e40af;">${rt.q2?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #1e40af;">小核</div>
+                  </div>
+                </div>
+              </div>
+              <div style="border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+                <div style="padding: 6px 10px; background: #f1f5f9; font-size: 12px; font-weight: 600; color: #475569; text-align: center; border-bottom: 1px solid #e2e8f0;">Waiting (等待中)</div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: #e2e8f0;">
+                  <div style="padding: 12px 8px; background: #fef9c3; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #854d0e;">${rt.q3?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #854d0e;">Runnable</div>
+                  </div>
+                  <div style="padding: 12px 8px; background: #f3e8ff; text-align: center;">
+                    <div style="font-size: 20px; font-weight: 700; color: #6b21a8;">${rt.q4?.toFixed(1) || 0}%</div>
+                    <div style="font-size: 11px; color: #6b21a8;">Sleeping</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      
+      html += `</div>`;
+    }
+
+    if (binderCalls.length > 0) {
+      html += `
+        <div style="margin-bottom: 12px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">Binder 调用</div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead style="background: #f1f5f9;">
+              <tr>
+                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0;">目标进程</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">调用次数</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">总耗时</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">最大耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${binderCalls.map((b: any) => `
+                <tr>
+                  <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${this.escapeHtml(b.server_process || '')}</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${b.call_count || 0}</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${(b.total_ms || 0).toFixed(2)} ms</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${(b.max_ms || 0).toFixed(2)} ms</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    if (cpuFreq.big_avg_mhz || cpuFreq.little_avg_mhz) {
+      html += `
+        <div style="margin-bottom: 12px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">CPU 频率</div>
+          <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px;">
+            <div style="padding: 10px; background: #fee2e2; border-radius: 6px; text-align: center;">
+              <div style="font-size: 18px; font-weight: 700; color: #991b1b;">${cpuFreq.big_avg_mhz || 0} MHz</div>
+              <div style="font-size: 12px; color: #991b1b;">大核平均频率</div>
+            </div>
+            <div style="padding: 10px; background: #e0e7ff; border-radius: 6px; text-align: center;">
+              <div style="font-size: 18px; font-weight: 700; color: #3730a3;">${cpuFreq.little_avg_mhz || 0} MHz</div>
+              <div style="font-size: 12px; color: #3730a3;">小核平均频率</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (mainSlices.length > 0) {
+      html += `
+        <div style="margin-bottom: 12px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">主线程耗时操作</div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead style="background: #f1f5f9;">
+              <tr>
+                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0;">操作名称</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">总耗时</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">次数</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${mainSlices.slice(0, 5).map((s: any) => `
+                <tr>
+                  <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${this.escapeHtml(s.name || '')}</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${(s.total_ms || 0).toFixed(2)} ms</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${s.count || 1}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    if (renderSlices.length > 0) {
+      html += `
+        <div style="margin-bottom: 12px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">RenderThread 耗时操作</div>
+          <table style="width: 100%; border-collapse: collapse; font-size: 13px;">
+            <thead style="background: #f1f5f9;">
+              <tr>
+                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #e2e8f0;">操作名称</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">总耗时</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">次数</th>
+                <th style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">最大耗时</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${renderSlices.slice(0, 5).map((s: any) => `
+                <tr>
+                  <td style="padding: 8px; border-bottom: 1px solid #e2e8f0;">${this.escapeHtml(s.name || '')}</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${(s.total_ms || 0).toFixed(2)} ms</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${s.count || 1}</td>
+                  <td style="padding: 8px; text-align: right; border-bottom: 1px solid #e2e8f0;">${(s.max_ms || 0).toFixed(2)} ms</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    }
+
+    if (freqTimeline.length > 0) {
+      html += `
+        <div style="margin-bottom: 12px;">
+          <div style="font-weight: 600; font-size: 14px; margin-bottom: 8px; color: #2c3e50;">
+            CPU 频率变化
+            <span style="font-weight: 400; font-size: 12px; color: #64748b;">(${freqTimeline.length} 次变化)</span>
+          </div>
+          <div style="font-size: 12px; line-height: 1.6; background: #f8fafc; padding: 10px; border-radius: 6px; max-height: 150px; overflow-y: auto;">
+            ${freqTimeline.slice(0, 20).map((f: any) => {
+              const changeIcon = f.change_direction === 'up' ? '↑' : (f.change_direction === 'down' ? '↓' : '→');
+              const changeColor = f.change_direction === 'up' ? '#16a34a' : (f.change_direction === 'down' ? '#dc2626' : '#64748b');
+              const coreColor = f.core_type === 'big' ? '#991b1b' : '#3730a3';
+              return `
+                <div style="margin-bottom: 4px;">
+                  <span style="color: #64748b;">+${(f.relative_ms || 0).toFixed(1)}ms</span>
+                  <span style="margin-left: 8px; color: ${coreColor}; font-weight: 500;">C${f.cpu}</span>
+                  <span style="color: ${changeColor}; margin-left: 4px;">${changeIcon}</span>
+                  <span style="margin-left: 4px;">${f.prev_freq_mhz || f.freq_mhz}→${f.freq_mhz} MHz</span>
+                </div>
+              `;
+            }).join('')}
+            ${freqTimeline.length > 20 ? `<div style="color: #64748b; font-style: italic;">... 还有 ${freqTimeline.length - 20} 次变化</div>` : ''}
+          </div>
+        </div>
+      `;
+    }
+
+    return html;
+  }
+
   private escapeHtml(text: string): string {
     const map: Record<string, string> = {
       '&': '&amp;',

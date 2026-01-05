@@ -101,7 +101,7 @@ analysis_steps:
                  THEN process_name GLOB '*{{process_name}}*'
                  ELSE 1 END
         AND CASE WHEN {{oom_adj_threshold}} IS NOT NULL
-                 THEN oom_score_adj <= {{oom_adj_threshold}}
+                 THEN oom_score_adj <= {{oom_adj_threshold}
                  ELSE 1 END
       ORDER BY ts;
     interpretation:
@@ -270,19 +270,19 @@ analysis_steps:
       请基于以下 LMK 分析数据，提供专业的内存压力分析：
 
       ## LMK 概览
-      {{lmk_overview}}
+      {{lmk_overview}
 
       ## LMK 时间线
-      {{lmk_timeline}}
+      {{lmk_timeline}
 
       ## 高优先级进程被杀
-      {{high_priority_kills}}
+      {{high_priority_kills}
 
       ## LMK 频率
-      {{lmk_frequency}}
+      {{lmk_frequency}
 
       ## 进程重启分析
-      {{process_restart_after_lmk}}
+      {{process_restart_after_lmk}
 
       请分析：
       1. 内存压力程度评估
@@ -299,13 +299,13 @@ output:
     - title: "LMK 分析总结"
       content: |
         ## LMK 概览
-        {{lmk_overview}}
+        {{lmk_overview}
 
         ## 高优先级进程被杀
-        {{high_priority_kills}}
+        {{high_priority_kills}
 
         ## LMK 频率
-        {{lmk_frequency}}
+        {{lmk_frequency}
 
         ## AI 综合分析
-        {{lmk_ai_summary}}
+        {{lmk_ai_summary}

@@ -74,7 +74,7 @@ steps:
     sql: |
       SELECT
         '${process_name}' as process_name,
-        ${pid} as pid,
+          pid} as pid,
         '${anr_type}' as anr_type,
         ROUND(COALESCE(${anr_dur_ms}, 0), 2) as anr_dur_ms,
         ROUND(${timeout_ns} / 1e6, 2) as timeout_ms,
@@ -108,8 +108,8 @@ steps:
       ),
       anr_window AS (
         SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
+          anr_ts} - ${timeout_ns} as start_ts,
+          anr_ts} as end_ts
       ),
       cpu_time AS (
         SELECT
@@ -158,8 +158,8 @@ steps:
       ),
       anr_window AS (
         SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
+          anr_ts} - ${timeout_ns} as start_ts,
+          anr_ts} as end_ts
       ),
       thread_states AS (
         SELECT
@@ -221,8 +221,8 @@ steps:
       ),
       anr_window AS (
         SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
+          anr_ts} - ${timeout_ns} as start_ts,
+          anr_ts} as end_ts
       )
       SELECT
         ts.state,
@@ -259,8 +259,8 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
+          anr_ts} - ${timeout_ns} as start_ts,
+          anr_ts} as end_ts
       )
       SELECT
         bt.server_process,
@@ -298,8 +298,8 @@ steps:
       ),
       anr_window AS (
         SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
+          anr_ts} - ${timeout_ns} as start_ts,
+          anr_ts} as end_ts
       )
       SELECT
         waker_thread.name AS waker_thread_name,
@@ -331,7 +331,7 @@ steps:
     inputs: [anr_basic, cpu_core, quadrant, blocking, binder_calls]
     rules:
       # Sleeping 占比过高（ANR 典型特征）
-      - condition: "${quadrant.data[0]?.sleeping_pct > 80}"
+      - condition: "quadrant.data[0]?.sleeping_pct > 80"
         severity: critical
         diagnosis: "主线程 Sleeping 占比 ${quadrant.data[0].sleeping_pct}%，严重阻塞"
         confidence: high
@@ -340,7 +340,7 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # Running 占比过低
-      - condition: "${cpu_core.data[0]?.running_pct < 10}"
+      - condition: "cpu_core.data[0]?.running_pct < 10"
         severity: critical
         diagnosis: "主线程 Running 占比仅 ${cpu_core.data[0].running_pct}%，几乎完全阻塞"
         confidence: high
@@ -349,7 +349,7 @@ steps:
           - "检查是否有死锁或长时间等待"
 
       # Binder 调用耗时过长
-      - condition: "${binder_calls.data[0]?.total_ms > 1000}"
+      - condition: "binder_calls.data[0]?.total_ms > 1000"
         severity: critical
         diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 耗时 ${binder_calls.data[0].total_ms}ms"
         confidence: high
@@ -358,7 +358,7 @@ steps:
           - "使用异步 Binder 或减少调用频率"
 
       # Runnable 等待过长
-      - condition: "${quadrant.data[0]?.q3_runnable_ms > 500}"
+      - condition: "quadrant.data[0]?.q3_runnable_ms > 500"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms"
         confidence: medium
@@ -367,7 +367,7 @@ steps:
           - "检查后台进程 CPU 占用"
 
       # 大核占比过低
-      - condition: "${cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 100}"
+      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 100"
         severity: warning
         diagnosis: "主线程大核占比仅 ${cpu_core.data[0].big_core_pct}%"
         confidence: medium

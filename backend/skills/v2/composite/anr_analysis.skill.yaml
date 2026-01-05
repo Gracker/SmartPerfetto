@@ -218,7 +218,7 @@ steps:
     inputs: [overview, anr_events, cpu_load, top_processes]
     rules:
       # 多个 ANR
-      - condition: "${overview.data.reduce((sum, r) => sum + r.anr_count, 0) > 3}"
+      - condition: "overview.data.reduce((sum, r) => sum + r.anr_count, 0) > 3"
         severity: critical
         diagnosis: "检测到多个 ANR 事件，系统严重异常"
         confidence: high
@@ -227,7 +227,7 @@ steps:
           - "检查是否有内存压力导致的 LMK"
 
       # 输入超时
-      - condition: "${overview.data.find(r => r.anr_type === 'INPUT_DISPATCHING_TIMEOUT')}"
+      - condition: "overview.data.find(r => r.anr_type === 'INPUT_DISPATCHING_TIMEOUT')"
         severity: critical
         diagnosis: "输入事件超时，用户操作无响应"
         confidence: high
@@ -236,7 +236,7 @@ steps:
           - "检查是否有 Binder 调用阻塞"
 
       # 广播超时
-      - condition: "${overview.data.find(r => r.anr_type === 'BROADCAST_OF_INTENT')}"
+      - condition: "overview.data.find(r => r.anr_type === 'BROADCAST_OF_INTENT')"
         severity: critical
         diagnosis: "广播处理超时"
         confidence: high
@@ -245,7 +245,7 @@ steps:
           - "将耗时操作移到 Service"
 
       # CPU 负载过高
-      - condition: "${cpu_load.data.filter(r => r.util_pct > 90).length > 4}"
+      - condition: "cpu_load.data.filter(r => r.util_pct > 90).length > 4"
         severity: warning
         diagnosis: "ANR 期间 CPU 负载过高"
         confidence: medium
@@ -265,22 +265,22 @@ steps:
       请基于以下 ANR 分析结果，生成专业的根因分析总结。
 
       ## ANR 概览
-      ${overview}
+          overview
 
       ## ANR 事件列表
-      ${anr_events}
+          anr_events
 
       ## CPU 负载情况
-      ${cpu_load}
+          cpu_load
 
       ## Top CPU 进程
-      ${top_processes}
+          top_processes
 
       ## 逐个 ANR 详细分析（大小核、四象限、阻塞原因）
-      ${analyze_anr_events}
+          analyze_anr_events
 
       ## 诊断结果
-      ${anr_diagnosis}
+          anr_diagnosis
 
       ## 专业分析要求
 

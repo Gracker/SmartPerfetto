@@ -235,19 +235,19 @@ analysis_steps:
       请基于以下休眠唤醒分析数据，提供专业的分析：
 
       ## 休眠概览
-      {{suspend_overview}}
+      {{suspend_overview}
 
       ## 唤醒事件概览
-      {{wakeup_overview}}
+      {{wakeup_overview}
 
       ## 唤醒源排行
-      {{wakeup_source_ranking}}
+      {{wakeup_source_ranking}
 
       ## Suspend Backoff
-      {{suspend_backoff}}
+      {{suspend_backoff}
 
       ## 休眠质量
-      {{suspend_quality_assessment}}
+      {{suspend_quality_assessment}
 
       请分析：
       1. 系统休眠效率评估
@@ -264,13 +264,13 @@ output:
     - title: "休眠唤醒分析总结"
       content: |
         ## 休眠概览
-        {{suspend_overview}}
+        {{suspend_overview}
 
         ## 唤醒源排行
-        {{wakeup_source_ranking}}
+        {{wakeup_source_ranking}
 
         ## 休眠质量
-        {{suspend_quality_assessment}}
+        {{suspend_quality_assessment}
 
         ## AI 综合分析
-        {{suspend_ai_summary}}
+        {{suspend_ai_summary}

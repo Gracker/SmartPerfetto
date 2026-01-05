@@ -6,7 +6,7 @@ interface Props {
 }
 
 const L1OverviewCard: React.FC<Props> = ({ data }) => {
-  const performanceSummary = data.performance_summary?.data?.[0];
+  const performanceSummary = data.frame_performance_summary?.data?.[0];
   const jankStats = data.jank_type_stats?.data ?? [];
 
   const getRatingColor = (rating: string) => {

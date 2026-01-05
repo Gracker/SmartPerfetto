@@ -12,7 +12,9 @@
     "test:coverage": "jest --coverage",
     "skill:validate": "tsx src/cli/index.ts validate",
     "skill:test": "tsx src/cli/index.ts test",
-    "skill:list": "tsx src/cli/index.ts list"
+    "skill:list": "tsx src/cli/index.ts list",
+    "test:scrolling": "tsx src/scripts/runScrollingTest.ts",
+    "test:scrolling:real": "tsx src/scripts/runScrollingTestRealData.ts"
   },
   "keywords": [
     "perfetto",

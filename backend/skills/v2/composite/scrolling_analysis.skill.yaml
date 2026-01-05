@@ -1,64 +1,35 @@
 # =============================================================================
-# 滑动性能分析 v2.3（组合 Skill）- 专家优化版
+# 滑动性能分析 v3.0 - 清晰分层架构
 # =============================================================================
-# 基于 Perfetto 标准库的专业滑动分析
+# 
+# 分层设计:
+#   L1 - 全局概览: 一屏展示核心指标 (FPS、掉帧率、评级)
+#   L2 - 区间列表: 每个滑动区间的概要信息
+#   L4 - 帧详情: 单帧的深度分析 (四象限、Binder、CPU频率)
 #
-# 核心改进：
-# 1. 使用 android_frames 表代替手动帧检测
-# 2. 使用 actual_frame_timeline_slice.jank_type 进行精确掉帧分类
-# 3. 使用 expected/actual frame timeline 计算准确的帧延迟
-# 4. 基于 input 事件区分 touch/fling 阶段
-# 5. 【新增】每个掉帧帧的详细分析，包含：
-#    - 大小核占比分析（big/little core ratio）
-#    - 大小核频率分析
-#    - 四大象限分析（针对主线程和渲染线程）
+# 数据流:
+#   1. 环境检测 (内部)
+#   2. 帧性能汇总 → L1
+#   3. 掉帧类型统计 → L1  
+#   4. 滑动区间识别 → L2
+#   5. 区间掉帧统计 → L2
+#   6. 获取掉帧帧列表 (内部)
+#   7. 逐帧详细分析 → L4 (iterator)
 #
-# 掉帧类型（jank_type）：
-# - None: 无掉帧
-# - Self Jank: 应用自身导致
-# - Buffer Stuffing: 缓冲区堆积
-# - SurfaceFlinger CPU/GPU Deadline Missed: SF 问题
-# - App Deadline Missed: 应用超时
-# - Prediction Error: 预测错误
-# - Display HAL: 显示硬件问题
-#
-# 四大象限说明：
-# ┌─────────────────┬─────────────────┐
-# │  Q1: 大核运行    │  Q2: 小核运行   │
-# │  (性能最优)      │  (可能不足)     │
-# ├─────────────────┼─────────────────┤
-# │  Q3: Runnable   │  Q4: Sleeping   │
-# │  (等待CPU调度)   │  (阻塞/睡眠)    │
-# └─────────────────┴─────────────────┘
-#
-# 分析流程：
-# 1. 环境检测 → 刷新率、帧数据可用性
-# 2. 帧数据概览 → 所有帧基本信息
-# 3. 掉帧检测 → 使用 FrameTimeline jank_type
-# 4. 掉帧类型统计 → 分类统计
-# 5. 帧性能汇总 → 总体指标
-# 6. 滑动区间识别 → 基于连续帧渲染
-# 7. 应用掉帧帧获取 → 准备迭代分析
-# 8. 【迭代】逐帧详细分析：
-#    - 主线程耗时操作
-#    - Binder 调用
-#    - CPU 调度
-#    - 锁竞争
-#    - 大小核占比
-#    - CPU 频率
-#    - 四大象限（主线程 + RenderThread）
-# 9. 问题诊断 → 规则匹配
-# 10. AI 总结 → 智能分析
+# 前端数据键映射:
+#   L1: performance_summary, jank_type_stats
+#   L2: scroll_sessions, session_jank
+#   L4: [session_id][frame_id] → { diagnosis_summary, full_analysis }
 
 name: scrolling_analysis
-version: "2.3"
+version: "3.0"
 type: composite
 
 meta:
   display_name: "滑动性能分析"
-  description: "基于 Perfetto 标准库的专业滑动分析，精确识别掉帧原因，含大小核和四象限分析"
+  description: "基于 Perfetto FrameTimeline 的滑动分析，分层展示：概览 → 区间 → 帧详情"
   icon: "swipe"
-  tags: [scrolling, jank, fps, fling, touch, composite, frames, cpu, core, quadrant]
+  tags: [scrolling, jank, fps, frames, layered]
 
 triggers:
   keywords:
@@ -68,12 +39,10 @@ triggers:
     - ".*滑动.*卡.*"
     - ".*scroll.*jank.*"
     - ".*帧率.*"
-    - ".*fling.*"
 
 prerequisites:
   modules:
     - android.frames.timeline
-    - android.frames.jank_type
 
 inputs:
   - name: package
@@ -82,22 +51,19 @@ inputs:
     description: "应用包名（可选，不填则分析所有应用）"
 
 steps:
-  # ========== 环境检测 ==========
+  # ==========================================================================
+  # 内部步骤：环境检测
+  # ==========================================================================
   - id: detect_environment
     type: atomic
     name: "检测环境"
-    display:
-      level: summary
-      layer: L1
-      title: "环境信息"
     sql: |
-      -- 检测刷新率和帧数据可用性
       WITH frame_info AS (
-        SELECT
-          COUNT(*) as total_frames,
-          COUNT(DISTINCT upid) as app_count
-        FROM android_frames
-        WHERE process_name GLOB '${package}*' OR '${package}' = ''
+        SELECT COUNT(*) as total_frames
+        FROM actual_frame_timeline_slice a
+        JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.surface_frame_token IS NOT NULL
       ),
       vsync_info AS (
         SELECT
@@ -105,133 +71,25 @@ steps:
             WHEN AVG(dur) < 9000000 THEN 120
             WHEN AVG(dur) < 12000000 THEN 90
             ELSE 60
-          END AS refresh_rate_hz,
-          ROUND(AVG(dur) / 1e6, 2) AS vsync_period_ms
-        FROM android_frames
+          END AS refresh_rate_hz
+        FROM actual_frame_timeline_slice
         WHERE dur > 0
         LIMIT 1000
       )
       SELECT
         COALESCE((SELECT refresh_rate_hz FROM vsync_info), 60) as refresh_rate_hz,
-        COALESCE((SELECT vsync_period_ms FROM vsync_info), 16.67) as vsync_period_ms,
         (SELECT total_frames FROM frame_info) as total_frames,
-        (SELECT app_count FROM frame_info) as app_count,
-        CASE WHEN (SELECT total_frames FROM frame_info) > 0 THEN 'available' ELSE 'unavailable' END as frame_data_status
+        CASE WHEN (SELECT total_frames FROM frame_info) > 0 THEN 1 ELSE 0 END as has_data
     save_as: environment
 
-  # ========== 使用 android_frames 获取帧数据 ==========
-  - id: get_frames_from_stdlib
-    type: atomic
-    name: "获取帧数据"
-    display:
-      level: detail
-      title: "帧数据概览"
-    sql: |
-      -- 使用 Perfetto 标准库的 android_frames 表
-      SELECT
-        f.frame_id,
-        f.ts,
-        f.dur,
-        f.ts / 1e6 as ts_ms,
-        f.dur / 1e6 as dur_ms,
-        f.process_name,
-        f.upid,
-        f.do_frame_id,
-        f.draw_frame_id,
-        f.actual_frame_timeline_id,
-        f.expected_frame_timeline_id
-      FROM android_frames f
-      WHERE (f.process_name GLOB '${package}*' OR '${package}' = '')
-        AND f.dur > 0
-      ORDER BY f.ts
-      LIMIT 5000
-    save_as: all_frames
-    condition: environment.data[0]?.frame_data_status === 'available'
-
-  # ========== 使用 actual_frame_timeline_slice 获取掉帧信息 ==========
-  - id: get_jank_frames
-    type: atomic
-    name: "获取掉帧信息"
-    display:
-      level: key
-      layer: L3
-      title: "掉帧详情（基于 FrameTimeline）"
-    sql: |
-      -- 使用 actual_frame_timeline_slice 获取精确的掉帧类型
-      SELECT
-        a.display_frame_token as frame_id,
-        a.ts,
-        a.dur,
-        a.ts / 1e6 as ts_ms,
-        a.dur / 1e6 as dur_ms,
-        a.jank_type,
-        a.jank_severity_type,
-        a.present_type,
-        a.on_time_finish,
-        a.gpu_composition,
-        a.prediction_type,
-        a.jank_tag,
-        p.name as process_name,
-        -- 掉帧分类
-        CASE
-          WHEN a.jank_type = 'None' THEN 'normal'
-          WHEN a.jank_type GLOB '*App*' THEN 'app_jank'
-          WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'sf_jank'
-          WHEN a.jank_type GLOB '*Buffer*' THEN 'buffer_jank'
-          WHEN a.jank_type GLOB '*Prediction*' THEN 'prediction_error'
-          ELSE 'other_jank'
-        END as jank_category
-      FROM actual_frame_timeline_slice a
-      LEFT JOIN process p ON a.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
-        AND a.jank_type != 'None'
-        AND a.surface_frame_token IS NOT NULL  -- 只看 surface frames
-      ORDER BY a.dur DESC
-      LIMIT 100
-    save_as: jank_frames
-    condition: environment.data[0]?.frame_data_status === 'available'
-
-  # ========== 掉帧类型统计 ==========
-  - id: jank_type_stats
-    type: atomic
-    name: "掉帧类型统计"
-    display:
-      level: key
-      layer: L3
-      title: "掉帧类型分布"
-    sql: |
-      -- 按掉帧类型统计
-      SELECT
-        a.jank_type,
-        a.jank_severity_type,
-        COUNT(*) as count,
-        ROUND(AVG(a.dur) / 1e6, 2) as avg_dur_ms,
-        ROUND(MAX(a.dur) / 1e6, 2) as max_dur_ms,
-        SUM(a.dur) / 1e6 as total_dur_ms,
-        -- 责任归属
-        CASE
-          WHEN a.jank_type GLOB '*App*' OR a.jank_type = 'Self Jank' THEN '应用责任'
-          WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF责任'
-          WHEN a.jank_type GLOB '*Buffer*' THEN '缓冲区问题'
-          WHEN a.jank_type GLOB '*Display*' THEN '显示硬件'
-          ELSE '其他'
-        END as responsibility
-      FROM actual_frame_timeline_slice a
-      LEFT JOIN process p ON a.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
-        AND a.jank_type != 'None'
-        AND a.surface_frame_token IS NOT NULL
-      GROUP BY a.jank_type, a.jank_severity_type
-      ORDER BY count DESC
-    save_as: jank_stats
-    condition: environment.data[0]?.frame_data_status === 'available'
-
-  # ========== 帧性能汇总 ==========
-  - id: frame_performance_summary
+  # ==========================================================================
+  # L1: 帧性能汇总
+  # ==========================================================================
+  - id: performance_summary
     type: atomic
     name: "帧性能汇总"
     display:
-      level: key
+      level: summary
       layer: L1
       title: "帧性能汇总"
     sql: |
@@ -242,9 +100,7 @@ steps:
           SUM(CASE WHEN a.jank_type GLOB '*App*' OR a.jank_type = 'Self Jank' THEN 1 ELSE 0 END) as app_janky_frames,
           SUM(CASE WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 1 ELSE 0 END) as sf_janky_frames,
           AVG(a.dur) / 1e6 as avg_frame_ms,
-          MAX(a.dur) / 1e6 as max_frame_ms,
-          -- 计算 FPS（基于平均帧时间）
-          1000.0 / NULLIF(AVG(a.dur) / 1e6, 0) as avg_fps
+          MAX(a.dur) / 1e6 as max_frame_ms
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
@@ -260,8 +116,7 @@ steps:
         ROUND(100.0 * sf_janky_frames / NULLIF(total_frames, 0), 2) as sf_jank_rate,
         ROUND(avg_frame_ms, 2) as avg_frame_ms,
         ROUND(max_frame_ms, 2) as max_frame_ms,
-        ROUND(avg_fps, 1) as avg_fps,
-        -- 评级
+        ROUND(1000.0 / NULLIF(avg_frame_ms, 0), 1) as avg_fps,
         CASE
           WHEN 100.0 * janky_frames / NULLIF(total_frames, 0) < 1 THEN '优秀'
           WHEN 100.0 * janky_frames / NULLIF(total_frames, 0) < 5 THEN '良好'
@@ -269,236 +124,125 @@ steps:
           ELSE '较差'
         END as rating
       FROM frame_stats
-    save_as: performance_summary
-    condition: environment.data[0]?.frame_data_status === 'available'
+    save_as: perf_summary
+    condition: "environment.data[0]?.has_data === 1"
 
-  # ========== FPS 计算（区分 touch 和 fling 阶段）==========
-  - id: calculate_fps_by_phase
+  # ==========================================================================
+  # L1: 掉帧类型统计
+  # ==========================================================================
+  - id: jank_type_stats
     type: atomic
-    name: "计算 FPS"
-    display:
-      level: key
-      layer: L3
-      title: "FPS 指标（SurfaceFlinger 消费端）"
-    sql: |
-      -- 区分 touch 和 fling 阶段计算 FPS
-      -- Touch 阶段：有 input 事件（触摸、滑动）
-      -- Fling 阶段：连续帧渲染但无 input 事件
-      WITH frames_with_input AS (
-        -- 获取所有帧，并标记每个帧是否有 input 事件
-        SELECT
-          f.frame_id,
-          f.ts,
-          f.ts + f.dur as frame_end,
-          f.dur,
-          f.upid,
-          p.name as process_name,
-          -- 检查该帧前 16ms 内是否有 input 事件（触摸或滑动）
-          EXISTS (
-            SELECT 1
-            FROM slice s
-            JOIN thread_track tt ON s.track_id = tt.id
-            JOIN thread t ON tt.utid = t.utid
-            WHERE t.upid = f.upid
-              AND s.name IN ('InputDispatcher', 'deliverInputEvent', 'finishInputEvent')
-              AND s.ts >= f.ts - 16000000
-              AND s.ts < f.ts + f.dur
-          ) as has_input
-        FROM android_frames f
-        JOIN process p ON f.upid = p.upid
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
-          AND f.dur > 0
-      ),
-      -- 标记连续帧区间
-      frame_gaps AS (
-        SELECT
-          *,
-          LAG(frame_end) OVER (PARTITION BY upid ORDER BY ts) as prev_end,
-          ts - LAG(frame_end) OVER (PARTITION BY upid ORDER BY ts) as gap_ns
-        FROM frames_with_input
-      ),
-      session_markers AS (
-        SELECT
-          *,
-          CASE WHEN gap_ns IS NULL OR gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
-        FROM frame_gaps
-      ),
-      sessions AS (
-        SELECT
-          *,
-          SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) as session_id
-        FROM session_markers
-      ),
-      -- 识别每个区间内的 touch 和 fling 子区间
-      phase_transitions AS (
-        SELECT
-          session_id,
-          upid,
-          process_name,
-          ts,
-          frame_end,
-          dur,
-          has_input,
-          -- 标记 phase 变化点（touch → fling 或 fling → touch）
-          CASE
-            WHEN LAG(has_input) OVER (PARTITION BY session_id ORDER BY ts) IS NULL THEN has_input
-            WHEN LAG(has_input) OVER (PARTITION BY session_id ORDER BY ts) != has_input THEN 1
-            ELSE 0
-          END as phase_change
-        FROM sessions
-      ),
-      phase_markers AS (
-        SELECT
-          *,
-          SUM(phase_change) OVER (PARTITION BY session_id ORDER BY ts) as phase_id
-        FROM phase_transitions
-      ),
-      phases AS (
-        SELECT
-          session_id,
-          phase_id,
-          upid,
-          process_name,
-          CASE WHEN MIN(has_input) = 1 THEN 'touch' ELSE 'fling' END as phase_type,
-          MIN(ts) as phase_start,
-          MAX(frame_end) as phase_end,
-          COUNT(*) as frame_count,
-          SUM(dur) as total_dur_ns,
-          ROUND(SUM(dur) / 1e6, 1) as total_dur_ms,
-          -- 计算 FPS
-          CASE
-            WHEN SUM(dur) > 0 THEN ROUND(1000000000.0 * COUNT(*) / SUM(dur), 1)
-            ELSE NULL
-          END as fps
-        FROM phase_markers
-        GROUP BY session_id, phase_id, upid, process_name
-        HAVING COUNT(*) >= 3  -- 至少 3 帧才计算 FPS
-      )
-      -- 汇总：整体 FPS（touch + fling）和纯 fling FPS
-      SELECT
-        'touch_fling' as phase,
-        '包含按压滑动和 fling 滑动' as description,
-        SUM(frame_count) as frame_count,
-        ROUND(SUM(total_dur_ms), 1) as total_dur_ms,
-        ROUND(SUM(total_dur_ns) * 1.0 / NULLIF(SUM(frame_count), 0) / 1e6, 2) as avg_frame_ms,
-        ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) as fps,
-        -- 评级
-        CASE
-          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.9} THEN '优秀'
-          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.8} THEN '良好'
-          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.6} THEN '一般'
-          ELSE '较差'
-        END as rating
-      FROM phases
-      WHERE phase_type IN ('touch', 'fling')
-
-      UNION ALL
-
-      SELECT
-        'fling_only' as phase,
-        '只包含 fling 滑动' as description,
-        SUM(frame_count) as frame_count,
-        ROUND(SUM(total_dur_ms), 1) as total_dur_ms,
-        ROUND(SUM(total_dur_ns) * 1.0 / NULLIF(SUM(frame_count), 0) / 1e6, 2) as avg_frame_ms,
-        ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) as fps,
-        CASE
-          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.9} THEN '优秀'
-          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.8} THEN '良好'
-          WHEN ROUND(1000.0 * SUM(frame_count) / NULLIF(SUM(total_dur_ms), 0), 1) >= ${environment.data[0].refresh_rate_hz * 0.6} THEN '一般'
-          ELSE '较差'
-        END as rating
-      FROM phases
-      WHERE phase_type = 'fling'
-    save_as: fps_metrics
-    condition: environment.data[0]?.frame_data_status === 'available'
-
-  # ========== 识别滑动区间（基于连续帧渲染）==========
-  - id: find_scroll_sessions
-    type: atomic
-    name: "识别滑动区间"
+    name: "掉帧类型统计"
     display:
       level: summary
+      layer: L1
+      title: "掉帧类型分布"
+    sql: |
+      SELECT
+        a.jank_type,
+        COUNT(*) as count,
+        ROUND(SUM(a.dur) / 1e6, 2) as total_dur_ms,
+        ROUND(AVG(a.dur) / 1e6, 2) as avg_dur_ms,
+        CASE
+          WHEN a.jank_type GLOB '*App*' OR a.jank_type = 'Self Jank' THEN '应用'
+          WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
+          WHEN a.jank_type GLOB '*Buffer*' THEN '缓冲区'
+          ELSE '其他'
+        END as responsibility
+      FROM actual_frame_timeline_slice a
+      LEFT JOIN process p ON a.upid = p.upid
+      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        AND a.jank_type != 'None'
+        AND a.surface_frame_token IS NOT NULL
+      GROUP BY a.jank_type
+      ORDER BY count DESC
+      LIMIT 10
+    save_as: jank_stats
+    condition: "environment.data[0]?.has_data === 1"
+
+  # ==========================================================================
+  # L2: 滑动区间列表
+  # ==========================================================================
+  - id: scroll_sessions
+    type: atomic
+    name: "滑动区间列表"
+    display:
+      level: detail
       layer: L2
       title: "滑动区间"
     sql: |
-      -- 基于 android_frames 识别连续渲染区间
       WITH frame_gaps AS (
         SELECT
-          frame_id,
-          ts,
-          dur,
-          upid,
-          process_name,
-          LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts) as prev_end,
-          ts - LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts) as gap_ns
-        FROM android_frames
-        WHERE (process_name GLOB '${package}*' OR '${package}' = '')
-          AND dur > 0
+          a.display_frame_token as frame_id,
+          a.ts,
+          a.dur,
+          a.upid,
+          p.name as process_name,
+          LAG(a.ts + a.dur) OVER (PARTITION BY a.upid ORDER BY a.ts) as prev_end,
+          a.ts - LAG(a.ts + a.dur) OVER (PARTITION BY a.upid ORDER BY a.ts) as gap_ns
+        FROM actual_frame_timeline_slice a
+        JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.dur > 0
+          AND a.surface_frame_token IS NOT NULL
       ),
       session_markers AS (
-        SELECT
-          *,
+        SELECT *,
           CASE WHEN gap_ns IS NULL OR gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
         FROM frame_gaps
       ),
       sessions AS (
-        SELECT
-          *,
+        SELECT *,
           SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) as session_id
         FROM session_markers
       )
       SELECT
         session_id,
         process_name,
-        MIN(ts) as start_ts,
-        MAX(ts + dur) as end_ts,
+        printf('%d', MIN(ts)) as start_ts,
+        printf('%d', MAX(ts + dur)) as end_ts,
         COUNT(*) as frame_count,
         ROUND((MAX(ts + dur) - MIN(ts)) / 1e6, 1) as duration_ms,
         ROUND(AVG(dur) / 1e6, 2) as avg_frame_ms,
-        ROUND(MAX(dur) / 1e6, 2) as max_frame_ms,
-        printf('%d', MIN(ts)) as start_ts_str,
-        printf('%d', MAX(ts + dur)) as end_ts_str
+        ROUND(MAX(dur) / 1e6, 2) as max_frame_ms
       FROM sessions
       GROUP BY upid, session_id
-      HAVING COUNT(*) >= 10  -- 至少10帧
-        AND (MAX(ts + dur) - MIN(ts)) > 200000000  -- 至少200ms
-      ORDER BY start_ts
+      HAVING COUNT(*) >= 10
+        AND (MAX(ts + dur) - MIN(ts)) > 200000000
+      ORDER BY MIN(ts)
       LIMIT 20
-    save_as: scroll_sessions
-    condition: environment.data[0]?.frame_data_status === 'available'
+    save_as: sessions
+    condition: "environment.data[0]?.has_data === 1"
 
-  # ========== 每个区间的掉帧分析 ==========
-  - id: session_jank_analysis
+  # ==========================================================================
+  # L2: 区间掉帧统计
+  # ==========================================================================
+  - id: session_jank
     type: atomic
-    name: "区间掉帧分析"
+    name: "区间掉帧统计"
     display:
       level: detail
       layer: L2
-      title: "各区间掉帧分析"
+      title: "区间掉帧"
     sql: |
-      -- 分析每个滑动区间的掉帧情况
       WITH frame_gaps AS (
         SELECT
-          frame_id,
-          ts,
-          dur,
-          upid,
-          process_name,
-          LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts) as prev_end,
-          ts - LAG(ts + dur) OVER (PARTITION BY upid ORDER BY ts) as gap_ns
-        FROM android_frames
-        WHERE (process_name GLOB '${package}*' OR '${package}' = '')
-          AND dur > 0
+          a.ts, a.dur, a.upid,
+          p.name as process_name,
+          a.ts - LAG(a.ts + a.dur) OVER (PARTITION BY a.upid ORDER BY a.ts) as gap_ns
+        FROM actual_frame_timeline_slice a
+        JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.dur > 0
+          AND a.surface_frame_token IS NOT NULL
       ),
       session_markers AS (
-        SELECT
-          *,
+        SELECT *,
           CASE WHEN gap_ns IS NULL OR gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
         FROM frame_gaps
       ),
       sessions_raw AS (
-        SELECT
-          *,
+        SELECT *,
           SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) as session_id
         FROM session_markers
       ),
@@ -508,8 +252,7 @@ steps:
           process_name,
           MIN(ts) as start_ts,
           MAX(ts + dur) as end_ts,
-          COUNT(*) as frame_count,
-          ROUND((MAX(ts + dur) - MIN(ts)) / 1e6, 1) as duration_ms
+          COUNT(*) as frame_count
         FROM sessions_raw
         GROUP BY upid, session_id
         HAVING COUNT(*) >= 10
@@ -517,9 +260,7 @@ steps:
       )
       SELECT
         s.session_id,
-        s.process_name,
         s.frame_count,
-        s.duration_ms,
         COUNT(a.id) as janky_count,
         ROUND(100.0 * COUNT(a.id) / NULLIF(s.frame_count, 0), 2) as jank_rate,
         GROUP_CONCAT(DISTINCT a.jank_type) as jank_types
@@ -531,276 +272,179 @@ steps:
       LEFT JOIN process p ON a.upid = p.upid AND p.name = s.process_name
       GROUP BY s.session_id
       ORDER BY s.session_id
-    save_as: session_jank
-    optional: true  # Skip if no sessions found
+    save_as: session_jank_data
+    optional: true
 
-  # ========== 获取应用掉帧帧列表（用于详细分析） ==========
+  # ==========================================================================
+  # 内部步骤：获取应用掉帧帧列表
+  # ==========================================================================
   - id: get_app_jank_frames
     type: atomic
     name: "获取应用掉帧帧"
-    display:
-      level: detail
-      layer: L4
-      title: "应用掉帧帧列表"
     sql: |
-      -- 基于 Perfetto FrameTimeline 获取掉帧帧
-      -- actual_frame_timeline_slice 包含完整的帧生命周期：
-      --   ts = 帧开始时间（主线程开始处理）
-      --   ts + dur = 帧结束时间（GPU/SF 完成）
-      --
-      -- 关联 expected_frame_timeline_slice 获取预期时间
-      -- 使用字符串格式保持 64 位时间戳精度
-      WITH frame_slices AS (
-        -- 获取主线程和 RenderThread 的 slice 信息
+      WITH all_frames AS (
+        SELECT
+          a.ts,
+          a.upid,
+          a.ts - LAG(a.ts + a.dur) OVER (PARTITION BY a.upid ORDER BY a.ts) as gap_ns
+        FROM actual_frame_timeline_slice a
+        WHERE a.surface_frame_token IS NOT NULL
+      ),
+      session_markers AS (
+        SELECT 
+          ts, 
+          upid,
+          CASE WHEN gap_ns IS NULL OR gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
+        FROM all_frames
+      ),
+      sessions_map AS (
+        SELECT 
+          ts, 
+          upid,
+          SUM(new_session) OVER (PARTITION BY upid ORDER BY ts) as session_id
+        FROM session_markers
+      ),
+      jank_frames AS (
         SELECT
           a.display_frame_token as frame_id,
           a.upid,
           a.ts as actual_start,
           a.ts + a.dur as actual_end,
           a.dur as actual_dur,
-          e.ts as expected_start,
-          e.ts + e.dur as expected_end,
           a.jank_type,
           a.jank_severity_type,
-          a.layer_name
+          a.layer_name,
+          sm.session_id
         FROM actual_frame_timeline_slice a
-        LEFT JOIN expected_frame_timeline_slice e
-          ON a.display_frame_token = e.display_frame_token
-          AND a.upid = e.upid
+        JOIN sessions_map sm ON a.ts = sm.ts AND a.upid = sm.upid
         WHERE a.surface_frame_token IS NOT NULL
+          AND (a.jank_type GLOB '*App*' OR a.jank_type = 'Self Jank' 
+               OR a.jank_type GLOB '*Buffer*' OR a.jank_type GLOB '*Deadline*')
       ),
       frame_thread_info AS (
-        -- 获取每帧的主线程和 RenderThread 时间
         SELECT
-          fs.frame_id,
-          fs.upid,
-          fs.actual_start,
-          fs.actual_end,
-          fs.actual_dur,
-          fs.expected_start,
-          fs.expected_end,
-          fs.jank_type,
-          fs.jank_severity_type,
-          fs.layer_name,
-          -- 从 slice 表获取主线程 doFrame 信息
+          jf.frame_id,
+          jf.upid,
+          jf.actual_start,
+          jf.actual_end,
+          jf.actual_dur,
+          jf.jank_type,
+          jf.jank_severity_type,
+          jf.layer_name,
+          jf.session_id,
           (SELECT MIN(s.ts) FROM slice s
            JOIN thread_track tt ON s.track_id = tt.id
            JOIN thread t ON tt.utid = t.utid
            JOIN process p ON t.upid = p.upid
-           WHERE p.upid = fs.upid AND t.tid = p.pid
-             AND s.ts >= fs.actual_start - 5000000
-             AND s.ts <= fs.actual_end
+           WHERE p.upid = jf.upid AND t.tid = p.pid
+             AND s.ts >= jf.actual_start - 5000000
+             AND s.ts <= jf.actual_end
              AND s.name LIKE 'Choreographer#doFrame%'
           ) as main_start_ts,
           (SELECT MAX(s.ts + s.dur) FROM slice s
            JOIN thread_track tt ON s.track_id = tt.id
            JOIN thread t ON tt.utid = t.utid
            JOIN process p ON t.upid = p.upid
-           WHERE p.upid = fs.upid AND t.tid = p.pid
-             AND s.ts >= fs.actual_start - 5000000
-             AND s.ts <= fs.actual_end
-             AND (s.name LIKE 'Choreographer#doFrame%' OR s.name LIKE 'draw%' OR s.name = 'traversal')
+           WHERE p.upid = jf.upid AND t.tid = p.pid
+             AND s.ts >= jf.actual_start - 5000000
+             AND s.ts <= jf.actual_end
           ) as main_end_ts,
-          -- RenderThread syncFrameState/draw 信息
           (SELECT MIN(s.ts) FROM slice s
            JOIN thread_track tt ON s.track_id = tt.id
            JOIN thread t ON tt.utid = t.utid
            JOIN process p ON t.upid = p.upid
-           WHERE p.upid = fs.upid AND t.name = 'RenderThread'
-             AND s.ts >= fs.actual_start
-             AND s.ts <= fs.actual_end
-             AND (s.name LIKE 'syncFrameState%' OR s.name LIKE 'DrawFrame%')
+           WHERE p.upid = jf.upid AND t.name = 'RenderThread'
+             AND s.ts >= jf.actual_start
+             AND s.ts <= jf.actual_end
           ) as render_start_ts,
           (SELECT MAX(s.ts + s.dur) FROM slice s
            JOIN thread_track tt ON s.track_id = tt.id
            JOIN thread t ON tt.utid = t.utid
            JOIN process p ON t.upid = p.upid
-           WHERE p.upid = fs.upid AND t.name = 'RenderThread'
-             AND s.ts >= fs.actual_start
-             AND s.ts <= fs.actual_end
+           WHERE p.upid = jf.upid AND t.name = 'RenderThread'
+             AND s.ts >= jf.actual_start
+             AND s.ts <= jf.actual_end
           ) as render_end_ts
-        FROM frame_slices fs
+        FROM jank_frames jf
+      )
+      ,
+      ranked_frames AS (
+        SELECT
+          fti.frame_id,
+          fti.actual_start,
+          fti.actual_end,
+          fti.main_start_ts,
+          fti.main_end_ts,
+          fti.render_start_ts,
+          fti.render_end_ts,
+          fti.actual_dur,
+          fti.jank_type,
+          fti.jank_severity_type,
+          fti.layer_name,
+          fti.session_id,
+          p.name as process_name,
+          p.pid,
+          p.upid,
+          ROW_NUMBER() OVER (PARTITION BY fti.session_id ORDER BY fti.actual_dur DESC) as rank_in_session
+        FROM frame_thread_info fti
+        JOIN process p ON fti.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
       )
       SELECT
-        fti.frame_id,
-        -- 完整区间（FrameTimeline 的实际区间）
-        printf('%d', fti.actual_start) as start_ts,
-        printf('%d', fti.actual_end) as end_ts,
-        -- 主线程区间
-        printf('%d', COALESCE(fti.main_start_ts, fti.actual_start)) as main_start_ts,
-        printf('%d', COALESCE(fti.main_end_ts, fti.actual_start + fti.actual_dur/2)) as main_end_ts,
-        ROUND(COALESCE(fti.main_end_ts - fti.main_start_ts, 0) / 1e6, 2) as main_dur_ms,
-        -- RenderThread 区间
-        printf('%d', COALESCE(fti.render_start_ts, fti.actual_start + fti.actual_dur/2)) as render_start_ts,
-        printf('%d', COALESCE(fti.render_end_ts, fti.actual_end)) as render_end_ts,
-        ROUND(COALESCE(fti.render_end_ts - fti.render_start_ts, 0) / 1e6, 2) as render_dur_ms,
-        -- 帧信息
-        fti.actual_dur as dur,
-        fti.actual_dur / 1e6 as dur_ms,
-        fti.jank_type,
-        fti.jank_severity_type,
-        fti.layer_name,
-        p.name as process_name,
-        p.pid,
-        ROW_NUMBER() OVER (ORDER BY fti.actual_start) as frame_index,
-        -- Perfetto 跳转参数（前端可用于生成链接，前后各加 1ms 余量）
-        printf('%d', fti.actual_start - 1000000) as perfetto_start,
-        printf('%d', fti.actual_end + 1000000) as perfetto_end
-      FROM frame_thread_info fti
-      JOIN process p ON fti.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
-        AND (fti.jank_type GLOB '*App*' OR fti.jank_type = 'Self Jank')
-      ORDER BY fti.actual_start
+        frame_id,
+        printf('%d', actual_start) as start_ts,
+        printf('%d', actual_end) as end_ts,
+        printf('%d', COALESCE(main_start_ts, actual_start)) as main_start_ts,
+        printf('%d', COALESCE(main_end_ts, actual_end)) as main_end_ts,
+        ROUND(COALESCE(main_end_ts - main_start_ts, 0) / 1e6, 2) as main_dur_ms,
+        printf('%d', COALESCE(render_start_ts, actual_start)) as render_start_ts,
+        printf('%d', COALESCE(render_end_ts, actual_end)) as render_end_ts,
+        ROUND(COALESCE(render_end_ts - render_start_ts, 0) / 1e6, 2) as render_dur_ms,
+        actual_dur / 1e6 as dur_ms,
+        jank_type,
+        jank_severity_type,
+        layer_name,
+        process_name,
+        pid,
+        session_id,
+        ROW_NUMBER() OVER (ORDER BY session_id, actual_start) as frame_index
+      FROM ranked_frames
+      WHERE rank_in_session <= 15
+      ORDER BY session_id, actual_start
     save_as: app_jank_frames
-    condition: "${performance_summary.data[0]?.app_janky_frames > 0}"
+    condition: "perf_summary.data[0]?.app_janky_frames > 0"
 
-  # ========== 迭代分析每个掉帧帧 ==========
+  # ==========================================================================
+  # L4: 逐帧详细分析 (Iterator)
+  # ==========================================================================
   - id: analyze_jank_frames
     type: iterator
     name: "逐帧详细分析"
     display:
       level: key
       layer: L4
-      title: "掉帧帧详细分析"
+      title: "帧详细分析"
     source: app_jank_frames
-    # 不限制数量，分析所有掉帧帧
+    max_items: 50
     item_skill: jank_frame_detail
     item_params:
-      # 完整区间（主线程开始 → RenderThread 结束）
       start_ts: start_ts
       end_ts: end_ts
-      # 主线程区间
       main_start_ts: main_start_ts
       main_end_ts: main_end_ts
       main_dur_ms: main_dur_ms
-      # RenderThread 区间
       render_start_ts: render_start_ts
       render_end_ts: render_end_ts
       render_dur_ms: render_dur_ms
-      # 帧信息
       package: process_name
-      layer_name: layer_name
       pid: pid
       frame_id: frame_id
       frame_index: frame_index
       jank_type: jank_type
       dur_ms: dur_ms
-      # Perfetto 跳转参数
-      perfetto_start: perfetto_start
-      perfetto_end: perfetto_end
-
-  # ========== 掉帧诊断 ==========
-  - id: jank_diagnosis
-    type: diagnostic
-    name: "掉帧诊断"
-    display:
-      level: key
-      title: "问题诊断"
-    inputs: [performance_summary, jank_stats, jank_frames]
-    rules:
-      # 应用掉帧严重
-      - condition: "${performance_summary.data[0]?.app_jank_rate > 10}"
-        severity: critical
-        diagnosis: "应用掉帧率过高 (${performance_summary.data[0].app_jank_rate}%)"
-        confidence: high
-        suggestions:
-          - "检查主线程耗时操作（Binder、IO、计算）"
-          - "优化 onDraw/onLayout 方法"
-          - "使用 RenderThread 减轻主线程负担"
-
-      - condition: "${performance_summary.data[0]?.app_jank_rate > 5}"
-        severity: warning
-        diagnosis: "应用掉帧率偏高 (${performance_summary.data[0].app_jank_rate}%)"
-        confidence: medium
-        suggestions:
-          - "检查 RecyclerView 的 onBindViewHolder 耗时"
-          - "避免滑动时加载大图"
-
-      # SurfaceFlinger 掉帧
-      - condition: "${performance_summary.data[0]?.sf_jank_rate > 5}"
-        severity: warning
-        diagnosis: "SurfaceFlinger 掉帧率较高 (${performance_summary.data[0].sf_jank_rate}%)"
-        confidence: medium
-        suggestions:
-          - "可能是系统合成问题"
-          - "检查是否有过多图层叠加"
-          - "考虑减少透明度和阴影使用"
-
-      # 最大帧耗时过长
-      - condition: "${performance_summary.data[0]?.max_frame_ms > 100}"
-        severity: critical
-        diagnosis: "存在严重卡顿帧 (${performance_summary.data[0].max_frame_ms}ms)"
-        confidence: high
-        suggestions:
-          - "检查是否有主线程 IO 操作"
-          - "检查是否有同步 Binder 调用"
-          - "分析该帧期间的 CPU 和调度情况"
-
-      # Buffer Stuffing
-      - condition: "${jank_stats.data.find(j => j.jank_type.includes('Buffer'))?.count > 5}"
-        severity: warning
-        diagnosis: "存在 Buffer Stuffing 问题"
-        confidence: medium
-        suggestions:
-          - "应用渲染过快导致缓冲区堆积"
-          - "检查是否有不必要的 invalidate 调用"
-
-  # ========== AI 总结 ==========
-  - id: global_summary
-    type: ai_summary
-    name: "分析总结"
-    display:
-      level: key
-      layer: L1
-      title: "滑动分析总结"
-    inputs: [environment, performance_summary, jank_stats, scroll_sessions, jank_diagnosis]
-    prompt: |
-      请基于以下滑动分析结果，生成专业的性能评估总结。
-
-      ## 环境信息
-      刷新率: ${environment.data[0].refresh_rate_hz}Hz
-      帧数据状态: ${environment.data[0].frame_data_status}
-
-      ## 帧性能汇总
-      ${performance_summary}
-
-      ## 掉帧类型分布
-      ${jank_stats}
-
-      ## 滑动区间
-      ${scroll_sessions}
-
-      ## 诊断结果
-      ${jank_diagnosis}
-
-      ## 专业分析要求
-
-      如果帧数据不可用或为空，请输出：
-      "未检测到帧数据。
-
-      可能原因：
-      - Trace 未包含 FrameTimeline 数据（需要 Android 12+）
-      - 应用未进行滑动操作
-      - 包名不匹配
-
-      建议：请确保在 Android 12+ 设备上采集 Trace，并包含 android.frames 数据源。"
-
-      如果有数据，请分析并输出：
-      1. **整体评价**：
-         - 掉帧率：<1%优秀，1-5%良好，5-15%一般，>15%较差
-         - 区分应用掉帧和 SurfaceFlinger 掉帧
-      2. **掉帧原因分析**：
-         - 哪种 jank_type 最多
-         - 责任归属（应用 vs 系统）
-      3. **关键指标**：总帧数、掉帧数、掉帧率、平均帧耗时、最大帧耗时
-      4. **优化建议**：基于 jank_type 给出1-3条具体建议
-
-      ## 严格要求
-      - 只基于提供的实际数据分析
-      - 使用 Perfetto 标准的 jank_type 术语
-      - 格式清晰，不超过300字
+      session_id: session_id
+      layer_name: layer_name
 
 output:
-  display:
-    level: key
-    format: summary
+  format: layered
+  default_expanded: [L1, L2]

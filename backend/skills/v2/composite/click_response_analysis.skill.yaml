@@ -358,7 +358,7 @@ steps:
     inputs: [latency_overview, slow_events, input_thread_state, input_binder]
     rules:
       # 平均延迟过高
-      - condition: "${latency_overview.data[0]?.avg_total_ms > 100}"
+      - condition: "latency_overview.data[0]?.avg_total_ms > 100"
         severity: critical
         diagnosis: "平均输入延迟过高 (${latency_overview.data[0].avg_total_ms}ms)"
         confidence: high
@@ -368,7 +368,7 @@ steps:
           - "将耗时操作移到后台线程"
 
       # 应用处理延迟高
-      - condition: "${latency_overview.data[0]?.avg_handling_ms > 50}"
+      - condition: "latency_overview.data[0]?.avg_handling_ms > 50"
         severity: warning
         diagnosis: "应用处理延迟偏高 (${latency_overview.data[0].avg_handling_ms}ms)"
         confidence: high
@@ -377,7 +377,7 @@ steps:
           - "避免在事件处理中进行 IO 操作"
 
       # 系统分发延迟高
-      - condition: "${latency_overview.data[0]?.avg_dispatch_ms > 20}"
+      - condition: "latency_overview.data[0]?.avg_dispatch_ms > 20"
         severity: warning
         diagnosis: "系统分发延迟偏高 (${latency_overview.data[0].avg_dispatch_ms}ms)"
         confidence: medium
@@ -386,7 +386,7 @@ steps:
           - "检查输入系统是否有瓶颈"
 
       # 存在严重慢事件
-      - condition: "${slow_events.data[0]?.total_ms > 200}"
+      - condition: "slow_events.data[0]?.total_ms > 200"
         severity: critical
         diagnosis: "存在严重慢输入事件 (${slow_events.data[0].total_ms}ms)"
         confidence: high
@@ -395,7 +395,7 @@ steps:
           - "检查是否有 Binder/IO 阻塞"
 
       # Binder 阻塞
-      - condition: "${input_binder.data[0]?.total_dur_ms > 30}"
+      - condition: "input_binder.data[0]?.total_dur_ms > 30"
         severity: warning
         diagnosis: "输入期间存在 Binder 阻塞 (${input_binder.data[0].total_dur_ms}ms)"
         confidence: high
@@ -415,25 +415,25 @@ steps:
       请基于以下点击响应分析结果，生成专业的性能评估总结。
 
       ## 数据检查
-      ${input_check}
+          input_check
 
       ## 输入延迟概览
-      ${latency_overview}
+          latency_overview
 
       ## 各事件类型延迟
-      ${latency_by_type}
+          latency_by_type
 
       ## 慢输入事件
-      ${slow_events}
+          slow_events
 
       ## 逐个慢输入事件详细分析（大小核、四象限）
-      ${analyze_slow_events}
+          analyze_slow_events
 
       ## 延迟分布
-      ${latency_distribution}
+          latency_distribution
 
       ## 诊断结果
-      ${click_diagnosis}
+          click_diagnosis
 
       ## 专业分析要求
 

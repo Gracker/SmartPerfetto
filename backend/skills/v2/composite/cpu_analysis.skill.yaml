@@ -384,7 +384,7 @@ steps:
     rules:
       # 大核使用率低
       - condition: |
-          ${core_stats.data.find(c => c.core_type.includes('big') || c.core_type.includes('prime'))?.percent || 0} < 30
+          core_stats.data.find(c => c.core_type.includes('big') || c.core_type.includes('prime'))?.percent || 0 < 30
         severity: warning
         diagnosis: "大核使用率偏低 (<30%)"
         confidence: medium
@@ -395,7 +395,7 @@ steps:
 
       # 主线程 Running 比例低
       - condition: |
-          ${main_thread_states.data.find(s => s.state === 'Running')?.percent || 0} < 50
+          main_thread_states.data.find(s => s.state === 'Running')?.percent || 0 < 50
         severity: warning
         diagnosis: "主线程 CPU 利用率偏低 (Running ${main_thread_states.data.find(s => s.state === 'Running')?.percent}%)"
         confidence: medium
@@ -404,7 +404,7 @@ steps:
           - "分析 Sleeping/IO 等待原因"
 
       # 严重调度延迟
-      - condition: "${runnable_delays.data[0]?.wait_ms > 16}"
+      - condition: "runnable_delays.data[0]?.wait_ms > 16"
         severity: critical
         diagnosis: "存在严重调度延迟 (${runnable_delays.data[0].wait_ms}ms)"
         confidence: high
@@ -414,7 +414,7 @@ steps:
           - "检查是否有高优先级任务抢占"
 
       # 频繁调度延迟
-      - condition: "${runnable_delays.data.length} > 10"
+      - condition: "runnable_delays.data.length} > 10"
         severity: warning
         diagnosis: "调度延迟频繁发生 (${runnable_delays.data.length} 次 >1ms)"
         confidence: medium
@@ -423,7 +423,7 @@ steps:
           - "合并短任务，减少调度开销"
 
       # 阻塞函数问题
-      - condition: "${blocked_functions.data[0]?.total_dur_ms > 50}"
+      - condition: "blocked_functions.data[0]?.total_dur_ms > 50"
         severity: warning
         diagnosis: "主线程阻塞在 ${blocked_functions.data[0].blocked_function} 上 ${blocked_functions.data[0].total_dur_ms}ms"
         confidence: high
@@ -443,25 +443,25 @@ steps:
       请基于以下 CPU 分析结果，生成专业的性能评估总结。
 
       ## 目标进程
-      ${target_process}
+          target_process
 
       ## 大小核分布（基于 capacity）
-      ${core_stats}
+          core_stats
 
       ## 线程 CPU 使用
-      ${thread_usage}
+          thread_usage
 
       ## 主线程状态
-      ${main_thread_states}
+          main_thread_states
 
       ## 调度延迟
-      ${runnable_delays}
+          runnable_delays
 
       ## 阻塞函数
-      ${blocked_functions}
+          blocked_functions
 
       ## 诊断结果
-      ${cpu_diagnosis}
+          cpu_diagnosis
 
       ## 专业分析要求
 

@@ -549,51 +549,71 @@ diagnostics:
     suggestions: ["优化 Application.onCreate"]
 ```
 
-#### 滑动分析 Skill (Expert Edition v3.0)
+#### 滑动分析 Skill (Expert Edition v3.1)
 
 滑动分析 Skill 采用**分层递进式分析**架构，模拟专家分析流程：
 
 ```yaml
 name: scrolling_analysis
-version: "3.0.0"
+version: "3.1.0"
 analysis_mode: hierarchical  # 分层递进
 
 # 分层分析流程
 layers:
-  # Layer 1: 环境检测 & 滑动区间识别
+  # Layer 1: 环境检测 & 全局帧统计
   - id: layer1_detection
     steps:
-      - detect_refresh_rate      # 检测刷新率 (60/90/120Hz)
-      - identify_scroll_sessions # 识别滑动区间 (通过Input事件)
-      - identify_fling_sessions  # 识别 Fling 区间
-      - build_complete_scroll_sessions  # 构建完整滑动区间
+      - detect_refresh_rate           # 检测刷新率 (60/90/120Hz)
+      - detect_package                # 检测应用包名
+      - get_global_frame_stats        # 全局帧统计
+      - identify_janky_frames         # 识别所有掉帧帧
+      - count_janky_frames_by_type    # 按类型统计掉帧
 
-  # Layer 2: 区间级分析（对每个滑动区间迭代）
+  # Layer 2: 滑动区间识别与统计（直接包含 L4 帧数据）
   - id: layer2_session_analysis
     iterate_over: complete_scroll_sessions
     steps:
-      - get_session_frames      # 获取区间内所有帧
-      - identify_janky_frames   # 识别掉帧帧
-      - calculate_session_fps   # 计算区间 FPS
+      - identify_scroll_sessions      # 识别滑动区间 (通过Input事件)
+      - identify_fling_sessions       # 识别 Fling 区间
+      - build_complete_scroll_sessions  # 构建完整滑动区间
+      - get_session_frames            # 获取区间内所有帧
+      - calculate_session_fps         # 计算区间 FPS
+      - session_jank_analysis         # 区间掉帧分析
+      # L4 帧分析（深度分析每个掉帧）
+      - analyze_janky_frames          # 对严重掉帧执行 L4 深度分析
 
-  # Layer 3: 帧级深度分析（对每个掉帧迭代）
-  - id: layer3_frame_analysis
-    iterate_over: janky_frames
+  # Layer 4: 单帧深度分析（由 L2 触发，非独立层）
+  - id: layer4_frame_analysis
     steps:
-      - analyze_main_thread     # 分析主线程活动
-      - analyze_render_thread   # 分析 RenderThread
-      - analyze_cpu_scheduling  # 分析 CPU 调度状态
-      - analyze_binder_calls    # 分析 Binder 调用
-      - analyze_buffer_ops      # 分析 Buffer 操作
-      - diagnose_frame_jank_cause  # 诊断掉帧原因
-
-  # Layer 4: 汇总报告
-  - id: layer4_summary
-    steps:
-      - summarize_all_sessions  # 所有区间 FPS 汇总
-      - summarize_jank_causes   # 掉帧原因汇总
-      - list_all_janky_frames   # 所有掉帧详情
+      - analyze_main_thread           # 分析主线程活动
+      - analyze_render_thread         # 分析 RenderThread
+      - analyze_cpu_scheduling        # 分析 CPU 调度状态
+      - analyze_binder_calls          # 分析 Binder 调用
+      - analyze_buffer_ops            # 分析 Buffer 操作
+      - diagnose_frame_jank_cause     # 诊断掉帧原因
 ```
+
+**架构说明 (L1/L2/L4)**：
+- **L1 (Layer 1)**: 环境检测 + 全局帧性能汇总
+  - 刷新率、包名、总帧数、掉帧率、掉帧类型统计
+  - 数据路径: `data.frame_performance_summary`, `data.jank_type_stats`
+
+- **L2 (Layer 2)**: 滑动区间列表 + 直接展开 L4 帧
+  - 显示每个滑动区间的关键指标（时长、帧数、FPS、掉帧率）
+  - 点击"展开"显示该区间的 L4 帧详情
+  - 数据路径: `data.find_scroll_sessions`, `data.session_jank_analysis`
+
+- **L4 (Layer 4)**: 单帧深度分析（由 L2 的 iterator 步骤触发）
+  - 主线程四大象限 (Q1/Q2/Q3/Q4)
+  - Binder 调用详情
+  - CPU 频率分析
+  - 诊断结论
+  - 数据路径: `L4Data[sessionId][frameId].data`
+
+**关键设计决策**：
+1. **移除 L3**: 原 L3 (Session Detail) 数据与 L2 重复，直接移除
+2. **L2 直接展示 L4**: 扩展 L2 会话时，直接显示该会话的 L4 帧列表
+3. **数据组织方式**: L4 数据按 session_id 组织，前端可快速定位到特定会话的帧
 
 **滑动区间划分**：
 - **按压滑动 (Touch/Scroll)**：手指在屏幕上，View 根据 input 报点更新

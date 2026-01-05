@@ -56,6 +56,9 @@ export interface SkillAnalysisResponseV2 {
   /** 回答置信度 */
   answerConfidence?: 'high' | 'medium' | 'low';
 
+  /** 分层结果（L1/L2/L3/L4）- 用于交互式分层视图 */
+  layeredResult?: LayeredResult;
+
   /** 执行事件列表（用于前端进度展示） */
   executionEvents?: SkillEvent[];
   /** 事件摘要 */
@@ -178,6 +181,19 @@ export class SkillAnalysisAdapterV2 {
   }
 
   /**
+   * 检测 skill 是否使用分层输出（L1/L2/L3/L4）
+   */
+  private hasLayeredOutput(skill: SkillDefinitionV2): boolean {
+    if (!skill.steps || skill.steps.length === 0) {
+      return false;
+    }
+    // 检查是否有任何 step 定义了 layer 属性
+    return skill.steps.some(step =>
+      step.display && typeof step.display === 'object' && 'layer' in step.display
+    );
+  }
+
+  /**
    * 执行 skill 分析
    * 这是主要的入口点
    */
@@ -253,21 +269,78 @@ export class SkillAnalysisAdapterV2 {
     };
     (this.executor as any).eventEmitter = combinedHandler;
 
-    // 执行 skill
-    const result = await this.executor.execute(
-      targetSkillId,
-      traceId,
-      params,
-      { vendor: vendorResult.vendor }
-    );
+    // 检测是否使用分层输出
+    const useLayeredOutput = this.hasLayeredOutput(skill);
+    console.log(`[SkillAnalysisAdapterV2] Skill ${targetSkillId} has layered output:`, useLayeredOutput);
+
+    let result: any;
+    let layeredResult: LayeredResult | undefined;
+
+    if (useLayeredOutput) {
+      // 使用分层输出模式（executeCompositeSkill）
+      console.log('[SkillAnalysisAdapterV2] Using layered output mode for skill', targetSkillId);
+      try {
+        layeredResult = await (this.executor as any).executeCompositeSkill(
+          skill,
+          params,
+          { traceId, vendor: vendorResult.vendor }
+        );
+        console.log('[SkillAnalysisAdapterV2] executeCompositeSkill completed. layeredResult:', JSON.stringify({
+          hasLayers: !!layeredResult?.layers,
+          layerKeys: layeredResult?.layers ? Object.keys(layeredResult.layers) : [],
+          L1Count: layeredResult?.layers?.L1 ? Object.keys(layeredResult.layers.L1).length : 0,
+          L2Count: layeredResult?.layers?.L2 ? Object.keys(layeredResult.layers.L2).length : 0,
+          L3Count: layeredResult?.layers?.L3 ? Object.keys(layeredResult.layers.L3).length : 0,
+          L4SessionCount: layeredResult?.layers?.L4 ? Object.keys(layeredResult.layers.L4).length : 0,
+          hasMetadata: !!layeredResult?.metadata,
+        }, null, 2));
+
+        // 将 LayeredResult 转换为 displayResults 格式
+        console.log('[SkillAnalysisAdapterV2] Calling convertLayeredResultToDisplayResults...');
+        const displayResults = this.convertLayeredResultToDisplayResults(layeredResult!);
+        console.log('[SkillAnalysisAdapterV2] convertLayeredResultToDisplayResults completed with', displayResults.length, 'items');
+
+        result = {
+          success: true,
+          displayResults,
+          diagnostics: [],
+          executionTimeMs: 0,
+        };
+      } catch (error) {
+        console.error('[SkillAnalysisAdapterV2] executeCompositeSkill failed:', error);
+        throw error;
+      }
+    } else {
+      // 使用传统输出模式（execute）
+      console.log('[SkillAnalysisAdapterV2] Using traditional output mode for skill', targetSkillId);
+      result = await this.executor.execute(
+        targetSkillId,
+        traceId,
+        params,
+        { vendor: vendorResult.vendor }
+      );
+    }
 
     // 收集事件信息
     const executionEvents = eventCollector.getEvents();
     const eventSummary = eventCollector.getSummary();
 
     // 转换结果格式
+    console.log('[SkillAnalysisAdapterV2] displayResults count:', result.displayResults.length);
+    console.log('[SkillAnalysisAdapterV2] displayResults:', JSON.stringify(result.displayResults.map((dr: any) => ({
+      stepId: dr.stepId,
+      title: dr.title,
+      hasData: !!dr.data,
+      dataKeys: dr.data ? Object.keys(dr.data) : [],
+    })), null, 2));
+
     const sections = this.convertDisplayResultsToSections(result.displayResults);
-    const diagnostics = result.diagnostics.map(d => ({
+
+    console.log('[SkillAnalysisAdapterV2] sections count:', Object.keys(sections).length);
+    console.log('[SkillAnalysisAdapterV2] sections keys:', Object.keys(sections));
+    console.log('[SkillAnalysisAdapterV2] result.success:', result.success);
+
+    const diagnostics = result.diagnostics.map((d: any) => ({
       id: d.id,
       severity: d.severity,
       message: d.diagnosis,
@@ -314,10 +387,130 @@ export class SkillAnalysisAdapterV2 {
       directAnswer: answer.answer,
       questionType: answer.questionType,
       answerConfidence: answer.confidence,
+      // Include layeredResult for frontend display
+      layeredResult,
       // 事件流
       executionEvents,
       eventSummary,
     };
+  }
+
+  /**
+   * 将 LayeredResult 转换为 displayResults 格式
+   * 用于处理分层输出模式（L1/L2/L3/L4）
+   */
+  private convertLayeredResultToDisplayResults(layeredResult: LayeredResult): Array<{
+    stepId: string;
+    title: string;
+    level: DisplayLevel;
+    format: string;
+    data: any;
+    sql?: string;
+  }> {
+    console.log('[convertLayeredResultToDisplayResults] Starting conversion. Input:', JSON.stringify({
+      hasL1: !!layeredResult?.layers?.L1,
+      hasL2: !!layeredResult?.layers?.L2,
+      hasL3: !!layeredResult?.layers?.L3,
+      hasL4: !!layeredResult?.layers?.L4,
+    }, null, 2));
+
+    const displayResults: Array<{
+      stepId: string;
+      title: string;
+      level: DisplayLevel;
+      format: string;
+      data: any;
+      sql?: string;
+    }> = [];
+
+    // 处理 L1 和 L2 层（直接是 stepId -> StepResult 的映射）
+    for (const layerKey of ['L1', 'L2'] as const) {
+      const layer = layeredResult.layers[layerKey];
+      if (!layer) {
+        console.log(`[convertLayeredResultToDisplayResults] Layer ${layerKey} is empty, skipping`);
+        continue;
+      }
+
+      console.log(`[convertLayeredResultToDisplayResults] Processing ${layerKey} with ${Object.keys(layer).length} steps`);
+      for (const [stepId, stepResult] of Object.entries(layer)) {
+        if (!stepResult.display?.show && stepResult.display?.show !== undefined) {
+          console.log(`[convertLayeredResultToDisplayResults] Skipping ${stepId} (show=false)`);
+          continue;
+        }
+        if (stepResult.display?.level === 'none') {
+          console.log(`[convertLayeredResultToDisplayResults] Skipping ${stepId} (level=none)`);
+          continue;
+        }
+
+        const dr = {
+          stepId,
+          title: stepResult.display?.title || stepId,
+          level: stepResult.display?.level || 'detail',
+          format: stepResult.display?.format || 'table',
+          data: stepResult.data || {},
+        };
+        console.log(`[convertLayeredResultToDisplayResults] Adding ${layerKey} item:`, JSON.stringify({
+          stepId,
+          hasData: !!dr.data,
+          dataType: Array.isArray(dr.data) ? 'array' : typeof dr.data,
+          dataLength: Array.isArray(dr.data) ? dr.data.length : 'N/A',
+        }));
+        displayResults.push(dr);
+      }
+    }
+
+    // 处理 L3 层（按 session_id 组织）
+    const l3 = layeredResult.layers.L3;
+    if (l3) {
+      console.log(`[convertLayeredResultToDisplayResults] Processing L3 with ${Object.keys(l3).length} sessions`);
+      for (const [sessionId, sessionSteps] of Object.entries(l3)) {
+        console.log(`[convertLayeredResultToDisplayResults] Processing L3 session ${sessionId} with ${Object.keys(sessionSteps).length} steps`);
+        for (const [stepId, stepResult] of Object.entries(sessionSteps)) {
+          if (!stepResult.display?.show && stepResult.display?.show !== undefined) continue;
+          if (stepResult.display?.level === 'none') continue;
+
+          displayResults.push({
+            stepId: `${sessionId}_${stepId}`,
+            title: stepResult.display?.title || `[${sessionId}] ${stepId}`,
+            level: stepResult.display?.level || 'detail',
+            format: stepResult.display?.format || 'table',
+            data: stepResult.data || {},
+          });
+        }
+      }
+    }
+
+    // 处理 L4 层（按 session_id -> frame_id 组织）
+    const l4 = layeredResult.layers.L4;
+    if (l4) {
+      console.log(`[convertLayeredResultToDisplayResults] Processing L4 with ${Object.keys(l4).length} sessions`);
+      for (const [sessionId, frames] of Object.entries(l4)) {
+        console.log(`[convertLayeredResultToDisplayResults] Processing L4 session ${sessionId} with ${Object.keys(frames).length} frames`);
+        for (const [frameId, stepResult] of Object.entries(frames)) {
+          if (!stepResult.display?.show && stepResult.display?.show !== undefined) continue;
+          if (stepResult.display?.level === 'none') continue;
+
+          const dr = {
+            stepId: `${sessionId}_${frameId}`,
+            title: stepResult.display?.title || `[${sessionId}] ${frameId}`,
+            level: stepResult.display?.level || 'detail',
+            format: stepResult.display?.format || 'table',
+            data: stepResult.data || {},
+          };
+          console.log(`[convertLayeredResultToDisplayResults] Adding L4 frame:`, JSON.stringify({
+            stepId: dr.stepId,
+            title: dr.title,
+            hasData: !!dr.data,
+            dataType: Array.isArray(dr.data) ? 'array' : typeof dr.data,
+            dataLength: Array.isArray(dr.data) ? dr.data.length : 'N/A',
+          }));
+          displayResults.push(dr);
+        }
+      }
+    }
+
+    console.log(`[convertLayeredResultToDisplayResults] Completed. Converted to ${displayResults.length} displayResults`);
+    return displayResults;
   }
 
   /**
@@ -335,22 +528,84 @@ export class SkillAnalysisAdapterV2 {
   ): Record<string, any> {
     const sections: Record<string, any> = {};
 
+    console.log('[convertDisplayResultsToSections] Input displayResults count:', displayResults.length);
+    console.log('[convertDisplayResultsToSections] Input displayResults:', JSON.stringify(displayResults.map(dr => ({
+      stepId: dr.stepId,
+      title: dr.title,
+      dataKeys: Object.keys(dr.data || {}),
+      hasExpandableData: !!dr.data?.expandableData,
+      expandableDataCount: dr.data?.expandableData?.length || 0,
+    })), null, 2));
+
     for (const result of displayResults) {
+      console.log(`[convertDisplayResultsToSections] Processing ${result.stepId}:`, JSON.stringify({
+        hasData: !!result.data,
+        dataType: typeof result.data,
+        dataIsArray: Array.isArray(result.data),
+        dataHasRows: !!result.data?.rows,
+        dataHasText: !!result.data?.text,
+        dataLength: Array.isArray(result.data) ? result.data.length : 'N/A',
+        dataSample: Array.isArray(result.data) && result.data.length > 0 ? result.data[0] : result.data,
+      }, null, 2));
+
+      // 处理不同类型的 data 格式
+      let sectionData: any;
+      let rowCount: number;
+      let columns: string[] | undefined;
+
+      // 1. 标准 {columns, rows} 格式
+      if (result.data.rows && Array.isArray(result.data.rows)) {
+        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using {columns, rows} format`);
+        sectionData = this.rowsToObjects(result.data.columns, result.data.rows);
+        rowCount = result.data.rows.length;
+        columns = result.data.columns;
+      }
+      // 2. 文本格式
+      else if (result.data.text) {
+        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using text format`);
+        sectionData = [{ text: result.data.text }];
+        rowCount = 1;
+      }
+      // 3. 对象数组格式（直接来自 SQL 查询）
+      else if (Array.isArray(result.data)) {
+        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using array format, length=${result.data.length}`);
+        sectionData = result.data;
+        rowCount = result.data.length;
+        // 从第一个对象提取列名
+        if (result.data.length > 0 && typeof result.data[0] === 'object') {
+          columns = Object.keys(result.data[0]);
+          console.log(`[convertDisplayResultsToSections] ${result.stepId}: Extracted columns:`, columns);
+        }
+      }
+      // 4. 其他情况
+      else {
+        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Unknown format, using empty array`);
+        sectionData = [];
+        rowCount = 0;
+      }
+
       const section: any = {
         title: result.title,
         level: result.level,
         format: result.format,
-        data: result.data.rows
-          ? this.rowsToObjects(result.data.columns, result.data.rows)
-          : result.data.text ? [{ text: result.data.text }] : [],
-        rowCount: result.data.rows ? result.data.rows.length : 0,
-        columns: result.data.columns,
+        data: sectionData,
+        rowCount,
+        columns,
         sql: result.sql,  // 保存 SQL
       };
+
+      console.log(`[convertDisplayResultsToSections] ${result.stepId}: Final sectionData:`, JSON.stringify({
+        dataType: typeof sectionData,
+        dataLength: Array.isArray(sectionData) ? sectionData.length : 'N/A',
+        hasColumns: !!columns,
+        columnsCount: columns?.length || 0,
+        sampleData: Array.isArray(sectionData) && sectionData.length > 0 ? sectionData[0] : sectionData,
+      }, null, 2));
 
       // 包含可展开数据和汇总（用于 iterator 类型的结果）
       if (result.data.expandableData) {
         section.expandableData = result.data.expandableData;
+        console.log(`[convertDisplayResultsToSections] Step ${result.stepId} has expandableData with ${result.data.expandableData.length} items`);
       }
       if (result.data.summary) {
         section.summary = result.data.summary;
@@ -358,6 +613,9 @@ export class SkillAnalysisAdapterV2 {
 
       sections[result.stepId] = section;
     }
+
+    console.log('[convertDisplayResultsToSections] Output sections count:', Object.keys(sections).length);
+    console.log('[convertDisplayResultsToSections] Output sections keys:', Object.keys(sections));
 
     return sections;
   }

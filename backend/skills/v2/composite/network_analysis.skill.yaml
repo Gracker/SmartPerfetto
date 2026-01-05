@@ -265,22 +265,22 @@ analysis_steps:
       请基于以下网络分析数据，提供专业的分析：
 
       ## 流量概览
-      {{network_overview}}
+      {{network_overview}
 
       ## 应用流量排行
-      {{app_traffic_ranking}}
+      {{app_traffic_ranking}
 
       ## 传输协议分布
-      {{transport_distribution}}
+      {{transport_distribution}
 
       ## 端口使用
-      {{port_analysis}}
+      {{port_analysis}
 
       ## 流量时间分布
-      {{traffic_timeline}}
+      {{traffic_timeline}
 
       ## 功耗影响
-      {{network_uptime_cost}}
+      {{network_uptime_cost}
 
       请分析：
       1. 网络流量使用模式
@@ -297,13 +297,13 @@ output:
     - title: "网络分析总结"
       content: |
         ## 流量概览
-        {{network_overview}}
+        {{network_overview}
 
         ## 应用流量排行
-        {{app_traffic_ranking}}
+        {{app_traffic_ranking}
 
         ## 功耗影响
-        {{network_uptime_cost}}
+        {{network_uptime_cost}
 
         ## AI 综合分析
-        {{network_ai_summary}}
+        {{network_ai_summary}

@@ -256,63 +256,72 @@ export class PerfettoAnalysisOrchestrator {
         // Emit skill_started event
         this.emitProgress(sessionId, 'skill_started', `🚀 正在执行 ${skillResult.skillName} 分析...`);
 
-        // Emit each section as a separate event with data for frontend display
-        let sectionIndex = 0;
-        for (const [sectionId, sectionData] of Object.entries(skillResult.sections)) {
-          sectionIndex++;
-          if (!sectionData) continue;
+        // 优先处理分层结果（L1/L2/L3/L4）
+        if (skillResult.layeredResult) {
+          console.log(`[Orchestrator] Layered result detected, emitting skill_layered_result event`);
+          this.emitSkillLayeredResult(sessionId, {
+            result: skillResult.layeredResult,
+            summary: skillResult.summary,
+          });
+        } else {
+          // 传统模式：Emit each section as a separate event with data for frontend display
+          let sectionIndex = 0;
+          for (const [sectionId, sectionData] of Object.entries(skillResult.sections)) {
+            sectionIndex++;
+            if (!sectionData) continue;
 
-          // Handle for_each steps: array of {itemIndex, item, data, rowCount}
-          let tableData: { columns: string[]; rows: any[][]; rowCount: number } | null = null;
-          let sectionTitle = sectionId;
-          // 提取 expandableData 和 summary（来自 skillExecutorV2 的输出）
-          const expandableData = (sectionData as any).expandableData;
-          const summary = (sectionData as any).summary;
+            // Handle for_each steps: array of {itemIndex, item, data, rowCount}
+            let tableData: { columns: string[]; rows: any[][]; rowCount: number } | null = null;
+            let sectionTitle = sectionId;
+            // 提取 expandableData 和 summary（来自 skillExecutorV2 的输出）
+            const expandableData = (sectionData as any).expandableData;
+            const summary = (sectionData as any).summary;
 
-          if (Array.isArray(sectionData)) {
-            // Collect all data from for_each iterations
-            const allRows: any[][] = [];
-            let columns: string[] = [];
+            if (Array.isArray(sectionData)) {
+              // Collect all data from for_each iterations
+              const allRows: any[][] = [];
+              let columns: string[] = [];
 
-            for (const itemResult of sectionData) {
-              if (itemResult && itemResult.data && Array.isArray(itemResult.data)) {
-                // Get columns from first row with data
-                if (columns.length === 0 && itemResult.data.length > 0) {
-                  columns = Object.keys(itemResult.data[0]);
-                }
-                // Add rows
-                for (const row of itemResult.data) {
-                  allRows.push(columns.map(col => row[col]));
+              for (const itemResult of sectionData) {
+                if (itemResult && itemResult.data && Array.isArray(itemResult.data)) {
+                  // Get columns from first row with data
+                  if (columns.length === 0 && itemResult.data.length > 0) {
+                    columns = Object.keys(itemResult.data[0]);
+                  }
+                  // Add rows
+                  for (const row of itemResult.data) {
+                    allRows.push(columns.map(col => row[col]));
+                  }
                 }
               }
+
+              if (allRows.length > 0) {
+                tableData = { columns, rows: allRows, rowCount: allRows.length };
+              }
+            }
+            // Handle regular steps: {title, data, rowCount, sql}
+            else if (sectionData.data && Array.isArray(sectionData.data) && sectionData.data.length > 0) {
+              sectionTitle = sectionData.title || sectionId;
+              const columns = Object.keys(sectionData.data[0]);
+              const rows = sectionData.data.map((row: any) => columns.map(col => row[col]));
+              tableData = { columns, rows, rowCount: rows.length };
             }
 
-            if (allRows.length > 0) {
-              tableData = { columns, rows: allRows, rowCount: allRows.length };
+            // Emit section data event
+            if (tableData) {
+              this.emitSkillSection(sessionId, {
+                sectionId,
+                sectionTitle,
+                sectionIndex,
+                totalSections: Object.keys(skillResult.sections).length,
+                columns: tableData.columns,
+                rows: tableData.rows,
+                rowCount: tableData.rowCount,
+                sql: (sectionData as any).sql || undefined,
+                expandableData,
+                summary,
+              });
             }
-          }
-          // Handle regular steps: {title, data, rowCount, sql}
-          else if (sectionData.data && Array.isArray(sectionData.data) && sectionData.data.length > 0) {
-            sectionTitle = sectionData.title || sectionId;
-            const columns = Object.keys(sectionData.data[0]);
-            const rows = sectionData.data.map((row: any) => columns.map(col => row[col]));
-            tableData = { columns, rows, rowCount: rows.length };
-          }
-
-          // Emit section data event
-          if (tableData) {
-            this.emitSkillSection(sessionId, {
-              sectionId,
-              sectionTitle,
-              sectionIndex,
-              totalSections: Object.keys(skillResult.sections).length,
-              columns: tableData.columns,
-              rows: tableData.rows,
-              rowCount: tableData.rowCount,
-              sql: (sectionData as any).sql || undefined,
-              expandableData,
-              summary,
-            });
           }
         }
 
@@ -392,6 +401,8 @@ export class PerfettoAnalysisOrchestrator {
             summary: skillResult.summary,
             questionType: skillResult.questionType,
             answerConfidence: skillResult.answerConfidence,
+            // Include layeredResult for HTML report generation
+            layeredResult: skillResult.layeredResult,
           },
         });
 
@@ -669,6 +680,7 @@ export class PerfettoAnalysisOrchestrator {
                 summary: skillResult.summary,
                 questionType: skillResult.questionType,
                 answerConfidence: skillResult.answerConfidence,
+                layeredResult: skillResult.layeredResult,
               },
             };
           } else {
@@ -1643,6 +1655,37 @@ LIMIT 50;`,
       type: 'skill_diagnostics',
       timestamp: Date.now(),
       data: { diagnostics },
+    });
+  }
+
+  /**
+   * Emit skill layered result event for interactive layered view
+   * This is used when a skill has L1/L2/L3/L4 layer specifications
+   */
+  private emitSkillLayeredResult(
+    sessionId: string,
+    layeredData: {
+      result: {
+        layers: {
+          L1?: Record<string, any>;
+          L2?: Record<string, any>;
+          L3?: Record<string, Record<string, any>>;
+          L4?: Record<string, Record<string, any>>;
+        };
+        defaultExpanded: ('L1' | 'L2' | 'L3' | 'L4')[];
+        metadata: {
+          skillName: string;
+          version: string;
+          executedAt: string;
+        };
+      };
+      summary?: string;
+    }
+  ): void {
+    this.sessionService.emitSSE(sessionId, {
+      type: 'skill_layered_result',
+      timestamp: Date.now(),
+      data: layeredData,
     });
   }
 }

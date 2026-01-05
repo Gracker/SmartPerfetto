@@ -269,19 +269,19 @@ analysis_steps:
       请基于以下 GPU 分析数据，提供专业的性能分析：
 
       ## GPU 频率分布
-      {{gpu_frequency_distribution}}
+      {{gpu_frequency_distribution}
 
       ## 频率变化统计
-      {{gpu_frequency_changes}}
+      {{gpu_frequency_changes}
 
       ## GPU 内存使用
-      {{gpu_memory_by_process}}
+      {{gpu_memory_by_process}
 
       ## 帧渲染关联
-      {{gpu_frame_correlation}}
+      {{gpu_frame_correlation}
 
       ## 高负载时段
-      {{gpu_high_load_periods}}
+      {{gpu_high_load_periods}
 
       请分析：
       1. GPU 整体负载水平评估
@@ -298,13 +298,13 @@ output:
     - title: "GPU 分析总结"
       content: |
         ## GPU 频率分析
-        {{gpu_frequency_distribution}}
+        {{gpu_frequency_distribution}
 
         ## GPU 内存分析
-        {{gpu_memory_by_process}}
+        {{gpu_memory_by_process}
 
         ## GPU-帧渲染关联
-        {{gpu_frame_correlation}}
+        {{gpu_frame_correlation}
 
         ## AI 综合分析
-        {{gpu_ai_summary}}
+        {{gpu_ai_summary}

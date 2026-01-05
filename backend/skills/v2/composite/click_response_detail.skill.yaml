@@ -272,7 +272,7 @@ steps:
     inputs: [event_basic, cpu_core, quadrant, blocking, binder_calls]
     rules:
       # Runnable 等待过长
-      - condition: "${quadrant.data[0]?.q3_runnable_ms > 20}"
+      - condition: "quadrant.data[0]?.q3_runnable_ms > 20"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms"
         confidence: high
@@ -281,7 +281,7 @@ steps:
           - "减少并发任务"
 
       # Sleeping 占比过高
-      - condition: "${quadrant.data[0]?.sleeping_pct > 50}"
+      - condition: "quadrant.data[0]?.sleeping_pct > 50"
         severity: warning
         diagnosis: "主线程 Sleeping 占比 ${quadrant.data[0].sleeping_pct}%"
         confidence: medium
@@ -290,7 +290,7 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # 大核占比过低
-      - condition: "${cpu_core.data[0]?.big_core_pct < 30 && cpu_core.data[0]?.total_running_ms > 20}"
+      - condition: "cpu_core.data[0]?.big_core_pct < 30 && cpu_core.data[0]?.total_running_ms > 20"
         severity: warning
         diagnosis: "主线程大核占比仅 ${cpu_core.data[0].big_core_pct}%"
         confidence: medium
@@ -299,7 +299,7 @@ steps:
           - "检查大核占用情况"
 
       # Binder 阻塞
-      - condition: "${binder_calls.data[0]?.total_ms > 30}"
+      - condition: "binder_calls.data[0]?.total_ms > 30"
         severity: warning
         diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 耗时 ${binder_calls.data[0].total_ms}ms"
         confidence: high

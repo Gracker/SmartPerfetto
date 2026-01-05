@@ -96,6 +96,7 @@ export interface AtomicStep {
   save_as?: string;
   optional?: boolean;
   on_empty?: string;
+  condition?: string;  // 执行条件，不满足时跳过此步骤
 }
 
 /**

@@ -364,7 +364,7 @@ steps:
     inputs: [gc_overview, gc_stats, main_thread_gc, long_gc, gc_intervals]
     rules:
       # GC 频率过高
-      - condition: "${gc_overview.data[0]?.total_gc_count > 100}"
+      - condition: "gc_overview.data[0]?.total_gc_count > 100"
         severity: critical
         diagnosis: "GC 频率过高 (${gc_overview.data[0].total_gc_count} 次)"
         confidence: high
@@ -373,7 +373,7 @@ steps:
           - "使用对象池重用对象"
           - "避免在循环中创建对象"
 
-      - condition: "${gc_overview.data[0]?.total_gc_count > 50}"
+      - condition: "gc_overview.data[0]?.total_gc_count > 50"
         severity: warning
         diagnosis: "GC 频率较高 (${gc_overview.data[0].total_gc_count} 次)"
         confidence: medium
@@ -382,7 +382,7 @@ steps:
           - "优化临时对象使用"
 
       # GC 总耗时过长
-      - condition: "${gc_overview.data[0]?.total_gc_time_ms > 2000}"
+      - condition: "gc_overview.data[0]?.total_gc_time_ms > 2000"
         severity: critical
         diagnosis: "GC 总耗时过长 (${gc_overview.data[0].total_gc_time_ms}ms)"
         confidence: high
@@ -392,7 +392,7 @@ steps:
           - "考虑调整堆大小"
 
       # 主线程 GC 导致掉帧
-      - condition: "${gc_overview.data[0]?.main_thread_gc_count > 10}"
+      - condition: "gc_overview.data[0]?.main_thread_gc_count > 10"
         severity: critical
         diagnosis: "主线程发生 ${gc_overview.data[0].main_thread_gc_count} 次 GC"
         confidence: high
@@ -401,7 +401,7 @@ steps:
           - "避免在 UI 线程分配大量内存"
 
       # 单次 GC 暂停过长
-      - condition: "${long_gc.data[0]?.dur_ms > 50}"
+      - condition: "long_gc.data[0]?.dur_ms > 50"
         severity: warning
         diagnosis: "单次 GC 暂停过长 (${long_gc.data[0].dur_ms}ms)"
         confidence: medium
@@ -410,7 +410,7 @@ steps:
           - "考虑调整堆大小"
 
       # 内存抖动
-      - condition: "${gc_intervals.data.find(i => i.interval_bucket === '<100ms (频繁)')?.count > 10}"
+      - condition: "gc_intervals.data.find(i => i.interval_bucket === '<100ms (频繁)')?.count > 10"
         severity: critical
         diagnosis: "检测到内存抖动（GC 间隔 <100ms）"
         confidence: high
@@ -431,22 +431,22 @@ steps:
       请基于以下内存分析结果，生成专业的性能评估总结。
 
       ## 目标进程
-      ${target_process}
+          target_process
 
       ## GC 概览
-      ${gc_overview}
+          gc_overview
 
       ## GC 类型分布
-      ${gc_stats}
+          gc_stats
 
       ## 主线程 GC
-      ${main_thread_gc}
+          main_thread_gc
 
       ## GC 间隔分布
-      ${gc_intervals}
+          gc_intervals
 
       ## 诊断结果
-      ${memory_diagnosis}
+          memory_diagnosis
 
       ## 专业分析要求
 

@@ -225,22 +225,22 @@ analysis_steps:
       请基于以下中断分析数据，提供专业的分析：
 
       ## 中断概览
-      {{irq_overview}}
+      {{irq_overview}
 
       ## 硬中断排行
-      {{hard_irq_ranking}}
+      {{hard_irq_ranking}
 
       ## 软中断排行
-      {{soft_irq_ranking}}
+      {{soft_irq_ranking}
 
       ## 长耗时中断
-      {{long_irq_events}}
+      {{long_irq_events}
 
       ## 时间分布
-      {{irq_timeline}}
+      {{irq_timeline}
 
       ## 中断嵌套
-      {{irq_nesting}}
+      {{irq_nesting}
 
       请分析：
       1. 中断负载评估
@@ -257,13 +257,13 @@ output:
     - title: "中断分析总结"
       content: |
         ## 中断概览
-        {{irq_overview}}
+        {{irq_overview}
 
         ## 硬中断排行
-        {{hard_irq_ranking}}
+        {{hard_irq_ranking}
 
         ## 软中断排行
-        {{soft_irq_ranking}}
+        {{soft_irq_ranking}
 
         ## AI 综合分析
-        {{irq_ai_summary}}
+        {{irq_ai_summary}

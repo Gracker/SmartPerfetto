@@ -288,10 +288,25 @@ class ExpressionEvaluator {
 
   /**
    * 评估条件表达式，返回 boolean
+   * 条件表达式始终作为 JavaScript 表达式求值（不需要 ${} 包裹）
+   * 例如: environment.data[0]?.frame_data_status === 'available'
    */
   static evaluateCondition(condition: string, context: SkillExecutionContextV2): boolean {
-    const result = this.evaluate(condition, context);
-    return Boolean(result);
+    try {
+      // 条件表达式始终作为 JavaScript 表达式求值
+      const result = this.evaluateJsExpression(condition, context);
+
+      // 如果求值失败（返回 undefined），默认为 false
+      if (result === undefined) {
+        console.warn(`[ExpressionEvaluator] Condition evaluated to undefined: ${condition}`);
+        return false;
+      }
+
+      return Boolean(result);
+    } catch (e: any) {
+      console.error(`[ExpressionEvaluator] Condition evaluation failed: ${condition}`, e.message);
+      return false;
+    }
   }
 }
 
@@ -321,8 +336,162 @@ function substituteVariables(sql: string, context: SkillExecutionContextV2): str
 }
 
 // =============================================================================
+// Display 配置处理（支持模板变量替换）
+// =============================================================================
+
+/**
+ * 处理 display 配置，对字符串值进行模板变量替换
+ * 支持 ${variable} 格式的变量替换
+ */
+function processDisplayConfig(
+  display: any,
+  context: SkillExecutionContextV2
+): DisplayConfig {
+  const processed: DisplayConfig = { ...display };
+
+  // 处理 title 字段（字符串类型）
+  if (processed.title && typeof processed.title === 'string') {
+    processed.title = substituteVariables(processed.title, context);
+  }
+
+  // 如果未来需要处理其他字符串字段（如 description），可以在这里添加
+  // if (processed.description && typeof processed.description === 'string') {
+  //   processed.description = substituteVariables(processed.description, context);
+  // }
+
+  return processed;
+}
+
+// =============================================================================
 // Layer Organization Functions
 // =============================================================================
+
+function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: string; full_analysis: any } {
+  const fullAnalysis: any = {
+    quadrants: {},
+    binder_calls: [],
+    cpu_frequency: { big_avg_mhz: 0, little_avg_mhz: 0 },
+    main_thread_slices: [],
+    render_thread_slices: [],
+    cpu_freq_timeline: [],
+  };
+  let diagnosisSummary = '';
+
+  for (const dr of displayResults) {
+    const stepId = dr.stepId;
+    const rawData = dr.data;
+    
+    // Handle both array data and table format { columns, rows }
+    let dataArray: any[] = [];
+    if (Array.isArray(rawData)) {
+      dataArray = rawData;
+    } else if (rawData?.rows && rawData?.columns) {
+      // Convert table format to object array
+      dataArray = rawData.rows.map((row: any[]) => {
+        const obj: any = {};
+        rawData.columns.forEach((col: string, idx: number) => {
+          obj[col] = row[idx];
+        });
+        return obj;
+      });
+    }
+
+    switch (stepId) {
+      case 'quadrant_analysis':
+      case 'quadrant_data':
+        const mainThread = dataArray.find((d: any) => d.thread_type === 'MainThread');
+        const renderThread = dataArray.find((d: any) => d.thread_type === 'RenderThread');
+        if (mainThread) {
+          fullAnalysis.quadrants.main_thread = {
+            q1: mainThread.q1_pct || 0,
+            q2: mainThread.q2_pct || 0,
+            q3: mainThread.q3_pct || 0,
+            q4: mainThread.q4_pct || 0,
+          };
+        }
+        if (renderThread) {
+          fullAnalysis.quadrants.render_thread = {
+            q1: renderThread.q1_pct || 0,
+            q2: renderThread.q2_pct || 0,
+            q3: renderThread.q3_pct || 0,
+            q4: renderThread.q4_pct || 0,
+          };
+        }
+        break;
+
+      case 'binder_calls':
+      case 'binder_data':
+        fullAnalysis.binder_calls = dataArray.map((b: any) => ({
+          server_process: b.server_process || b.client_process || '',
+          call_count: b.call_count || 0,
+          total_ms: b.total_ms || 0,
+          max_ms: b.max_ms || 0,
+          sync_count: b.sync_count || 0,
+        }));
+        break;
+
+      case 'cpu_freq_analysis':
+      case 'freq_data':
+        const bigCore = dataArray.find((d: any) => d.core_type === 'big');
+        const littleCore = dataArray.find((d: any) => d.core_type === 'little');
+        fullAnalysis.cpu_frequency = {
+          big_avg_mhz: bigCore?.avg_freq_mhz || 0,
+          little_avg_mhz: littleCore?.avg_freq_mhz || 0,
+        };
+        break;
+
+      case 'main_thread_slices':
+      case 'main_slices':
+        fullAnalysis.main_thread_slices = dataArray.map((s: any) => ({
+          name: s.name || s.display_name || '',
+          total_ms: s.total_ms || s.dur_ms || 0,
+          count: s.count || 1,
+          max_ms: s.max_ms || 0,
+        }));
+        break;
+
+      case 'render_thread_slices':
+      case 'render_slices':
+        fullAnalysis.render_thread_slices = dataArray.map((s: any) => ({
+          name: s.name || s.display_name || '',
+          total_ms: s.total_ms || s.dur_ms || 0,
+          count: s.count || 1,
+          max_ms: s.max_ms || 0,
+          avg_ms: s.avg_ms || 0,
+        }));
+        break;
+
+      case 'cpu_freq_timeline':
+      case 'freq_timeline':
+        fullAnalysis.cpu_freq_timeline = dataArray.map((f: any) => ({
+          ts: f.ts || '',
+          relative_ms: f.relative_ms || 0,
+          cpu: f.cpu || 0,
+          core_type: f.core_type || '',
+          freq_mhz: f.freq_mhz || 0,
+          prev_freq_mhz: f.prev_freq_mhz || 0,
+          change_direction: f.change_direction || 'stable',
+        }));
+        break;
+
+      case 'frame_diagnosis':
+        // diagnostic step returns { diagnostics: [...], inputs: {...} }
+        const diagnostics = rawData?.diagnostics || [];
+        if (Array.isArray(diagnostics) && diagnostics.length > 0) {
+          diagnosisSummary = diagnostics
+            .filter((d: any) => d.diagnosis)
+            .map((d: any) => d.diagnosis)
+            .join('; ');
+        }
+        break;
+    }
+  }
+
+  return {
+    diagnosis_summary: diagnosisSummary || '暂无明显问题',
+    full_analysis: fullAnalysis,
+  };
+}
 
 function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
   const layers: LayeredResult['layers'] = {
@@ -332,44 +501,167 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
     L4: {}
   };
 
+  console.log('[organizeByLayer] Processing', steps.length, 'steps');
   for (const step of steps) {
     const layer = step.display?.layer;
-    if (!layer) continue;
+    console.log(`[organizeByLayer] Step ${step.stepId}: type=${step.stepType}, layer=${layer}, hasDisplay=${!!step.display}, dataLength=${Array.isArray(step.data) ? step.data.length : 'N/A'}`);
+    if (!layer) {
+      console.log(`[organizeByLayer] Skipping step ${step.stepId} (no layer)`);
+      continue;
+    }
+
+    // Ensure failed steps have empty array data for consistent handling
+    const normalizedStep: StepResult = step.success ? step : {
+      ...step,
+      data: [],  // Default to empty array for failed steps
+      error: step.error,
+    };
 
     switch (layer) {
       case 'L1':
       case 'L2':
         const targetLayer = layers[layer];
         if (targetLayer) {
-          targetLayer[step.stepId] = step;
+          targetLayer[normalizedStep.stepId] = normalizedStep;
+          console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to ${layer}`);
         }
         break;
       case 'L3':
         // L3 数据需要按 session_id 组织
-        // 从 step.data 中提取 session_id
+        // 从 normalizedStep.data 中提取 session_id
         const l3 = layers.L3;
         if (l3) {
-          const sessionId3 = extractSessionId(step);
+          const sessionId3 = extractSessionId(normalizedStep);
           if (!l3[sessionId3]) {
             l3[sessionId3] = {};
           }
-          l3[sessionId3][step.stepId] = step;
+          l3[sessionId3][normalizedStep.stepId] = normalizedStep;
+          console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to L3 session ${sessionId3}`);
         }
         break;
       case 'L4':
         // L4 数据需要按 session_id 和 frame_id 组织
         const l4 = layers.L4;
         if (l4) {
-          const sessionId4 = extractSessionId(step);
-          const frameId = extractFrameId(step);
-          if (!l4[sessionId4]) {
-            l4[sessionId4] = {};
+          // 特殊处理 iterator 结果：每个迭代项都是单独的 L4 条目
+          if (normalizedStep.stepType === 'iterator' && Array.isArray(normalizedStep.data)) {
+            console.log(`[organizeByLayer] Expanding iterator step ${normalizedStep.stepId} with ${normalizedStep.data.length} items`);
+            // Iterator 返回 { itemIndex, item, result }[] 数组
+            for (let i = 0; i < normalizedStep.data.length; i++) {
+              const iterItem: any = normalizedStep.data[i];
+              console.log(`[organizeByLayer] Processing iterator item ${i}:`, JSON.stringify({
+                hasItem: !!iterItem?.item,
+                hasResult: !!iterItem?.result,
+                itemKeys: iterItem?.item ? Object.keys(iterItem.item) : [],
+                resultDisplayResultsCount: iterItem?.result?.displayResults?.length || 0,
+              }));
+
+              const item: any = iterItem?.item;
+              if (!item) {
+                console.warn(`[organizeByLayer] Iterator item ${i} has no item data, skipping`);
+                continue;
+              }
+
+              const frameId = `frame_${item.frame_id || item.frame_index || i}`;
+              const sessionId = `session_${item.session_id ?? 0}`;
+
+              if (!l4[sessionId]) {
+                l4[sessionId] = {};
+              }
+
+              // Transform displayResults into format expected by frontend
+              // Convert array of DisplayResult to { diagnosis_summary, full_analysis }
+              const displayResults = iterItem.result?.displayResults || [];
+              const transformedData = transformL4FrameAnalysis(displayResults);
+
+              // 创建一个新的 StepResult，包含该帧的详细分析结果
+              const frameStepResult: StepResult = {
+                stepId: frameId,
+                stepType: 'atomic',  // Use 'atomic' for individual frame results
+                success: iterItem.result?.success ?? false,
+                data: transformedData,
+                executionTimeMs: iterItem.result?.executionTimeMs || 0,
+                display: {
+                  title: `帧 #${item.frame_id || item.frame_index || i} - ${item.jank_type || 'Unknown'}`,
+                  level: 'key',
+                  layer: 'L4',
+                  format: 'table',  // Table format for structured frame data
+                },
+              };
+
+              l4[sessionId][frameId] = frameStepResult;
+              console.log(`[organizeByLayer] Added frame ${frameId} to L4 ${sessionId}`);
+            }
+            console.log(`[organizeByLayer] Finished expanding iterator step ${normalizedStep.stepId}`);
+          } else if (normalizedStep.stepType === 'atomic' && Array.isArray(normalizedStep.data) && normalizedStep.data.length > 0) {
+            // 检查是否是 L4 列表数据（如 get_app_jank_frames）
+            // 如果 data 是数组且每个元素都有 frame_id 或 frame_index，展开为多个帧
+            const firstItem = normalizedStep.data[0];
+            const hasFrameId = firstItem && typeof firstItem === 'object' && ('frame_id' in firstItem || 'frame_index' in firstItem);
+
+            if (hasFrameId) {
+              console.log(`[organizeByLayer] Expanding atomic L4 step ${normalizedStep.stepId} with ${normalizedStep.data.length} frame items`);
+              // 将每一行作为一个单独的帧条目
+              for (let i = 0; i < normalizedStep.data.length; i++) {
+                const item: any = normalizedStep.data[i];
+                if (!item || typeof item !== 'object') continue;
+
+                const frameId = `frame_${item.frame_id || item.frame_index || i}`;
+                const sessionId = `session_${item.session_id ?? 0}`;
+
+                if (!l4[sessionId]) {
+                  l4[sessionId] = {};
+                }
+
+                // 创建一个新的 StepResult，包含该帧的数据
+                const frameStepResult: StepResult = {
+                  stepId: frameId,
+                  stepType: 'atomic',
+                  success: normalizedStep.success,
+                  data: [item],  // 单个帧对象作为数组
+                  executionTimeMs: normalizedStep.executionTimeMs / normalizedStep.data.length,  // 分摊执行时间
+                  display: {
+                    title: `帧 #${item.frame_id || item.frame_index || i} - ${item.jank_type || 'Unknown'}`,
+                    level: 'key',
+                    layer: 'L4',
+                    format: 'table',
+                  },
+                };
+
+                l4[sessionId][frameId] = frameStepResult;
+                console.log(`[organizeByLayer] Added atomic frame ${frameId} to L4 ${sessionId}`);
+              }
+            } else {
+              // 普通的 L4 步骤（不是帧列表）
+              const sessionId4 = extractSessionId(normalizedStep);
+              const frameId = extractFrameId(normalizedStep);
+              if (!l4[sessionId4]) {
+                l4[sessionId4] = {};
+              }
+              l4[sessionId4][frameId] = normalizedStep;
+              console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to L4 ${sessionId4}/${frameId}`);
+            }
+          } else {
+            // 普通的 L4 步骤
+            const sessionId4 = extractSessionId(normalizedStep);
+            const frameId = extractFrameId(normalizedStep);
+            if (!l4[sessionId4]) {
+              l4[sessionId4] = {};
+            }
+            l4[sessionId4][frameId] = normalizedStep;
+            console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to L4 ${sessionId4}/${frameId}`);
           }
-          l4[sessionId4][frameId] = step;
         }
         break;
     }
   }
+
+  console.log('[organizeByLayer] Completed. Final layers:', {
+    L1: Object.keys(layers.L1 || {}).length,
+    L2: Object.keys(layers.L2 || {}).length,
+    L3: Object.keys(layers.L3 || {}).length,
+    L4: Object.keys(layers.L4 || {}).length,
+  });
 
   return layers;
 }
@@ -497,6 +789,8 @@ export class SkillExecutorV2 {
       const diagnostics: DiagnosticResult[] = [];
       let aiSummary: string | undefined;
 
+      console.log(`[SkillExecutorV2] Executing skill: ${skillId}, type: ${skill.type}, steps count: ${skill.steps?.length || 0}`);
+
       // 根据 skill 类型执行
       switch (skill.type) {
         case 'atomic':
@@ -512,6 +806,8 @@ export class SkillExecutorV2 {
           if (skill.steps) {
             for (const step of skill.steps) {
               const stepResult = await this.executeStep(step, context, skillId);
+
+              console.log(`[SkillExecutorV2] Step ${step.id} completed: success=${stepResult.success}, hasDisplay=${'display' in step}, shouldDisplay=${this.shouldDisplay(step)}`);
 
               if (stepResult.success) {
                 // 保存结果
@@ -557,6 +853,9 @@ export class SkillExecutorV2 {
           diagnosticsCount: diagnostics.length,
         },
       });
+
+      console.log(`[SkillExecutorV2] Skill ${skillId} completed. displayResults count: ${displayResults.length}`);
+      console.log(`[SkillExecutorV2] displayResults step IDs:`, displayResults.map(dr => dr.stepId));
 
       return {
         skillId,
@@ -627,9 +926,13 @@ export class SkillExecutorV2 {
 
     // Execute all steps
     const stepResults: StepResult[] = [];
+    console.log('[executeCompositeSkill] Starting to execute', skill.steps?.length || 0, 'steps');
     if (skill.steps) {
-      for (const step of skill.steps) {
+      for (let i = 0; i < skill.steps.length; i++) {
+        const step = skill.steps[i];
+        console.log(`[executeCompositeSkill] Executing step ${i + 1}/${skill.steps.length}: ${step.id} (${step.type})`);
         const stepResult = await this.executeStep(step, execContext, skill.name);
+        console.log(`[executeCompositeSkill] Step ${step.id} completed: success=${stepResult.success}, stepType=${stepResult.stepType}`);
 
         // Save result to context
         if (stepResult.success) {
@@ -641,20 +944,52 @@ export class SkillExecutorV2 {
           }
         }
 
+        // IMPORTANT: Add display config from step definition to stepResult
+        // This is needed for organizeByLayer to correctly place results in L1/L2/L3/L4
+        // Process display config with template variable substitution (e.g., ${frame_id})
+        if ('display' in step && typeof step.display === 'object') {
+          stepResult.display = processDisplayConfig(step.display, execContext);
+        }
+
         stepResults.push(stepResult);
       }
     }
 
+    console.log('[executeCompositeSkill] All steps executed. Calling organizeByLayer with', stepResults.length, 'stepResults');
+    console.log('[executeCompositeSkill] stepResults:', JSON.stringify(stepResults.map(sr => ({
+      stepId: sr.stepId,
+      stepType: sr.stepType,
+      success: sr.success,
+      hasDisplay: !!sr.display,
+      displayLayer: sr.display?.layer,
+      dataIsArray: Array.isArray(sr.data),
+      dataLength: Array.isArray(sr.data) ? sr.data.length : 'N/A',
+    })), null, 2));
+
     // Return layered structure
-    return {
-      layers: organizeByLayer(stepResults),
-      defaultExpanded: ['L1', 'L2'],
-      metadata: {
-        skillName: skill.name,
-        version: skill.version || '1.0.0',
-        executedAt: new Date().toISOString()
-      }
-    };
+    try {
+      const layers = organizeByLayer(stepResults);
+      console.log('[executeCompositeSkill] organizeByLayer completed successfully');
+
+      const result: LayeredResult = {
+        layers,
+        defaultExpanded: ['L1', 'L2'],
+        metadata: {
+          skillName: skill.name,
+          version: skill.version || '1.0.0',
+          executedAt: new Date().toISOString()
+        }
+      };
+      console.log('[executeCompositeSkill] Returning LayeredResult with layers:', Object.keys(layers).filter(k => {
+        const layer = layers[k as keyof typeof layers];
+        return layer && Object.keys(layer).length > 0;
+      }));
+
+      return result;
+    } catch (error) {
+      console.error('[executeCompositeSkill] organizeByLayer failed:', error);
+      throw error;
+    }
   }
 
   /**
@@ -697,7 +1032,7 @@ export class SkillExecutorV2 {
         success: true,
         data: this.rowsToObjects(result.columns, result.rows),
         executionTimeMs: Date.now() - startTime,
-        display: skill.output?.display,
+        display: skill.output?.display ? processDisplayConfig(skill.output.display, context) : undefined,
       };
 
     } catch (error: any) {
@@ -720,6 +1055,27 @@ export class SkillExecutorV2 {
     parentSkillId: string
   ): Promise<StepResult> {
     const startTime = Date.now();
+
+    // 检查步骤的条件限制
+    if ('condition' in step && typeof (step as any).condition === 'string') {
+      const conditionResult = ExpressionEvaluator.evaluateCondition((step as any).condition, context);
+      if (!conditionResult) {
+        console.log(`[SkillExecutorV2] Step ${step.id} condition not met, skipping`);
+        this.emit({
+          type: 'step_completed',
+          skillId: parentSkillId,
+          stepId: step.id,
+          data: { skipped: true, reason: 'condition_not_met' },
+        });
+        return {
+          stepId: step.id,
+          stepType: step.type,
+          success: false,
+          error: 'Condition not met',
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+    }
 
     this.emit({
       type: 'step_started',

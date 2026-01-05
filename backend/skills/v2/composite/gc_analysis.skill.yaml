@@ -269,22 +269,22 @@ analysis_steps:
       请基于以下 GC 分析数据，提供专业的分析：
 
       ## GC 概览
-      {{gc_overview}}
+      {{gc_overview}
 
       ## 耗时分解
-      {{gc_time_breakdown}}
+      {{gc_time_breakdown}
 
       ## 长耗时 GC
-      {{long_gc_events}}
+      {{long_gc_events}
 
       ## 帧影响
-      {{gc_frame_impact}}
+      {{gc_frame_impact}
 
       ## 进程统计
-      {{process_gc_stats}}
+      {{process_gc_stats}
 
       ## 频率分析
-      {{gc_frequency}}
+      {{gc_frequency}
 
       请分析：
       1. GC 负载评估
@@ -301,13 +301,13 @@ output:
     - title: "GC 分析总结"
       content: |
         ## GC 概览
-        {{gc_overview}}
+        {{gc_overview}
 
         ## 耗时分解
-        {{gc_time_breakdown}}
+        {{gc_time_breakdown}
 
         ## 帧影响
-        {{gc_frame_impact}}
+        {{gc_frame_impact}
 
         ## AI 综合分析
-        {{gc_ai_summary}}
+        {{gc_ai_summary}

@@ -268,19 +268,19 @@ analysis_steps:
       请基于以下 DMA Buffer 分析数据，提供专业的分析：
 
       ## DMA Buffer 概览
-      {{dmabuf_overview}}
+      {{dmabuf_overview}
 
       ## 累积使用
-      {{dmabuf_cumulative}}
+      {{dmabuf_cumulative}
 
       ## 大型 Buffer
-      {{large_buffer_allocs}}
+      {{large_buffer_allocs}
 
       ## 分配频率
-      {{dmabuf_frequency}}
+      {{dmabuf_frequency}
 
       ## 生命周期
-      {{buffer_lifecycle}}
+      {{buffer_lifecycle}
 
       请分析：
       1. DMA Buffer 使用是否正常
@@ -297,13 +297,13 @@ output:
     - title: "DMA Buffer 分析总结"
       content: |
         ## 概览
-        {{dmabuf_overview}}
+        {{dmabuf_overview}
 
         ## 累积使用
-        {{dmabuf_cumulative}}
+        {{dmabuf_cumulative}
 
         ## 生命周期分析
-        {{buffer_lifecycle}}
+        {{buffer_lifecycle}
 
         ## AI 综合分析
-        {{dmabuf_ai_summary}}
+        {{dmabuf_ai_summary}

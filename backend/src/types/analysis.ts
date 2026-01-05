@@ -132,6 +132,7 @@ export interface AnalysisSession {
     summary?: string;
     questionType?: string;
     answerConfidence?: 'high' | 'medium' | 'low';
+    layeredResult?: any;
   };
 }
 
@@ -320,6 +321,30 @@ export interface SkillDiagnosticsEvent extends SSEEvent {
   };
 }
 
+/**
+ * Skill layered result event - emits interactive layered view results
+ */
+export interface SkillLayeredResultEvent extends SSEEvent {
+  type: 'skill_layered_result';
+  data: {
+    result: {
+      layers: {
+        L1?: Record<string, any>;
+        L2?: Record<string, any>;
+        L3?: Record<string, Record<string, any>>;
+        L4?: Record<string, Record<string, any>>;
+      };
+      defaultExpanded: ('L1' | 'L2' | 'L3' | 'L4')[];
+      metadata: {
+        skillName: string;
+        version: string;
+        executedAt: string;
+      };
+    };
+    summary?: string;
+  };
+}
+
 export type AnalysisSSEEvent =
   | SQLGeneratedEvent
   | SQLExecutedEvent
@@ -328,7 +353,8 @@ export type AnalysisSSEEvent =
   | ErrorEvent
   | ProgressEvent
   | SkillSectionEvent
-  | SkillDiagnosticsEvent;
+  | SkillDiagnosticsEvent
+  | SkillLayeredResultEvent;
 
 // ============================================================================
 // Orchestrator Types
@@ -387,6 +413,21 @@ export interface AISQLResponse {
     directAnswer?: string;
     summary?: string;
     questionType?: string;
+    // 分层结果（L1/L2/L3/L4）
+    layeredResult?: {
+      layers: {
+        L1?: Record<string, any>;
+        L2?: Record<string, any>;
+        L3?: Record<string, Record<string, any>>;
+        L4?: Record<string, Record<string, any>>;
+      };
+      defaultExpanded: ('L1' | 'L2' | 'L3' | 'L4')[];
+      metadata: {
+        skillName: string;
+        version: string;
+        executedAt: string;
+      };
+    };
     answerConfidence?: 'high' | 'medium' | 'low';
     // 事件流
     executionEvents?: Array<{

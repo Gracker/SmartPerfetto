@@ -307,7 +307,7 @@ steps:
     inputs: [binder_overview, main_thread_binder, binder_blocking, server_response]
     rules:
       # 主线程慢 Binder
-      - condition: "${main_thread_binder.data[0]?.dur_ms > 50}"
+      - condition: "main_thread_binder.data[0]?.dur_ms > 50"
         severity: critical
         diagnosis: "主线程存在严重慢 Binder 调用 (${main_thread_binder.data[0].dur_ms}ms)"
         confidence: high
@@ -316,7 +316,7 @@ steps:
           - "检查服务 ${main_thread_binder.data[0].server_process} 响应延迟"
           - "考虑使用异步 Binder 接口"
 
-      - condition: "${main_thread_binder.data[0]?.dur_ms > 16}"
+      - condition: "main_thread_binder.data[0]?.dur_ms > 16"
         severity: warning
         diagnosis: "主线程 Binder 调用超过一帧时间 (${main_thread_binder.data[0].dur_ms}ms)"
         confidence: high
@@ -325,7 +325,7 @@ steps:
           - "优化服务端处理时间"
 
       # 主线程 Binder 调用过多
-      - condition: "${binder_overview.data[0]?.main_thread_txns > 50}"
+      - condition: "binder_overview.data[0]?.main_thread_txns > 50"
         severity: warning
         diagnosis: "主线程发起 ${binder_overview.data[0].main_thread_txns} 次 Binder 调用"
         confidence: medium
@@ -335,7 +335,7 @@ steps:
           - "将非必要调用移到后台线程"
 
       # 服务端响应慢
-      - condition: "${server_response.data[0]?.avg_server_dur_ms > 20}"
+      - condition: "server_response.data[0]?.avg_server_dur_ms > 20"
         severity: warning
         diagnosis: "服务端平均处理时间较长 (${server_response.data[0].avg_server_dur_ms}ms)"
         confidence: medium
@@ -344,7 +344,7 @@ steps:
           - "考虑缓存服务调用结果"
 
       # 阻塞状态分析
-      - condition: "${binder_blocking.data.find(b => b.state === 'D')?.state_percent > 50}"
+      - condition: "binder_blocking.data.find(b => b.state === 'D')?.state_percent > 50"
         severity: warning
         diagnosis: "Binder 阻塞期间存在大量 IO 等待"
         confidence: medium
@@ -364,25 +364,25 @@ steps:
       请基于以下 Binder 分析结果，生成专业的性能评估总结。
 
       ## 数据检查
-      ${binder_check}
+          binder_check
 
       ## Binder 概览
-      ${binder_overview}
+          binder_overview
 
       ## 发出的调用（按接口）
-      ${outgoing_by_interface}
+          outgoing_by_interface
 
       ## 主线程 Binder 调用
-      ${main_thread_binder}
+          main_thread_binder
 
       ## 逐个慢 Binder 详细分析（大小核、四象限）
-      ${analyze_slow_binder}
+          analyze_slow_binder
 
       ## Binder 阻塞分析
-      ${binder_blocking}
+          binder_blocking
 
       ## 诊断结果
-      ${binder_diagnosis}
+          binder_diagnosis
 
       ## 专业分析要求
 

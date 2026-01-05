@@ -86,7 +86,7 @@ steps:
       title: "启动 #${startup_id} 详情"
     sql: |
       SELECT
-        ${startup_id} as startup_id,
+          startup_id} as startup_id,
         '${package}' as package,
         '${startup_type}' as startup_type,
         CASE '${startup_type}'
@@ -375,7 +375,7 @@ steps:
     inputs: [startup_basic, cpu_core, quadrant, main_slices, binder_calls, sched_delay]
     rules:
       # 大核占比过低
-      - condition: "${cpu_core.data[0]?.big_core_pct < 30}"
+      - condition: "cpu_core.data[0]?.big_core_pct < 30"
         severity: warning
         diagnosis: "主线程大核占比仅 ${cpu_core.data[0].big_core_pct}%，性能受限"
         confidence: high
@@ -384,7 +384,7 @@ steps:
           - "考虑调整进程优先级或使用 setThreadPriority"
 
       # Runnable 等待过长
-      - condition: "${quadrant.data[0]?.q3_runnable_ms > 50}"
+      - condition: "quadrant.data[0]?.q3_runnable_ms > 50"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms"
         confidence: high
@@ -393,7 +393,7 @@ steps:
           - "减少启动期间的并发线程数"
 
       # Sleeping 占比过高
-      - condition: "${quadrant.data[0]?.q4_pct > 50}"
+      - condition: "quadrant.data[0]?.q4_pct > 50"
         severity: warning
         diagnosis: "主线程 Sleeping 占比 ${quadrant.data[0].q4_pct}%"
         confidence: medium
@@ -402,7 +402,7 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # Binder 调用耗时过长
-      - condition: "${binder_calls.data[0]?.total_ms > 100}"
+      - condition: "binder_calls.data[0]?.total_ms > 100"
         severity: warning
         diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 耗时 ${binder_calls.data[0].total_ms}ms"
         confidence: high
@@ -411,7 +411,7 @@ steps:
           - "使用异步 Binder 或延迟调用"
 
       # 严重调度延迟
-      - condition: "${sched_delay.data[0]?.severe_count > 5}"
+      - condition: "sched_delay.data[0]?.severe_count > 5"
         severity: warning
         diagnosis: "存在 ${sched_delay.data[0].severe_count} 次严重调度延迟 (>8ms)"
         confidence: medium
@@ -420,7 +420,7 @@ steps:
           - "考虑使用 SCHED_FIFO 策略"
 
       # 单个 Slice 耗时过长
-      - condition: "${main_slices.data[0]?.max_ms > 100}"
+      - condition: "main_slices.data[0]?.max_ms > 100"
         severity: warning
         diagnosis: "主线程操作 '${main_slices.data[0].slice_name}' 最长耗时 ${main_slices.data[0].max_ms}ms"
         confidence: high

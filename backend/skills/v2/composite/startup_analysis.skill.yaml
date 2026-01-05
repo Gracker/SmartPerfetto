@@ -386,7 +386,7 @@ steps:
     inputs: [startups, breakdown, main_thread_slices, startup_binder, main_thread_states, gc_during_startup]
     rules:
       # 冷启动时间过长
-      - condition: "${startups.data[0]?.dur_ms > 2000 && startups.data[0]?.startup_type === 'cold'}"
+      - condition: "startups.data[0]?.dur_ms > 2000 && startups.data[0]?.startup_type === 'cold'"
         severity: critical
         diagnosis: "冷启动时间过长 (${startups.data[0].dur_ms}ms)"
         confidence: high
@@ -396,7 +396,7 @@ steps:
           - "将耗时操作移到后台线程"
 
       # Binder 调用占比过高
-      - condition: "${startup_binder.data[0]?.percent_of_startup > 20}"
+      - condition: "startup_binder.data[0]?.percent_of_startup > 20"
         severity: warning
         diagnosis: "Binder 调用占启动时间 ${startup_binder.data[0].percent_of_startup}%"
         confidence: high
@@ -406,7 +406,7 @@ steps:
           - "使用异步 Binder 调用"
 
       # 主线程 Running 比例低
-      - condition: "${main_thread_states.data.find(s => s.state === 'Running')?.percent < 50}"
+      - condition: "main_thread_states.data.find(s => s.state === 'Running')?.percent < 50"
         severity: warning
         diagnosis: "主线程 Running 比例偏低"
         confidence: medium
@@ -415,7 +415,7 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # GC 影响
-      - condition: "${gc_during_startup.data[0]?.percent_of_startup > 5}"
+      - condition: "gc_during_startup.data[0]?.percent_of_startup > 5"
         severity: warning
         diagnosis: "GC 占启动时间 ${gc_during_startup.data[0].percent_of_startup}%"
         confidence: medium
@@ -424,7 +424,7 @@ steps:
           - "避免在启动时创建大量临时对象"
 
       # 类加载耗时
-      - condition: "${breakdown.data.find(b => b.category === 'ClassLoading')?.percent > 15}"
+      - condition: "breakdown.data.find(b => b.category === 'ClassLoading')?.percent > 15"
         severity: info
         diagnosis: "类加载占比较高"
         confidence: medium
@@ -445,25 +445,25 @@ steps:
 
       ## 启动事件
       共检测到 ${startups.data.length} 个启动事件：
-      ${startups}
+          startups
 
       ## 延迟归因分析
-      ${breakdown}
+          breakdown
 
       ## 主线程耗时操作
-      ${main_thread_slices}
+          main_thread_slices
 
       ## Binder 调用
-      ${startup_binder}
+          startup_binder
 
       ## 主线程状态
-      ${main_thread_states}
+          main_thread_states
 
       ## 逐个启动详细分析（大小核、四象限）
-      ${analyze_startups}
+          analyze_startups
 
       ## 诊断结果
-      ${startup_diagnosis}
+          startup_diagnosis
 
       ## 专业分析要求
 

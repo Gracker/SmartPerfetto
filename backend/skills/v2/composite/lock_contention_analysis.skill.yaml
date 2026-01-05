@@ -279,22 +279,22 @@ analysis_steps:
       请基于以下锁竞争分析数据，提供专业的分析：
 
       ## 锁竞争概览
-      {{contention_overview}}
+      {{contention_overview}
 
       ## 主线程锁竞争
-      {{main_thread_contentions}}
+      {{main_thread_contentions}
 
       ## 热点锁
-      {{hot_locks}}
+      {{hot_locks}
 
       ## 锁链分析
-      {{lock_chain_analysis}}
+      {{lock_chain_analysis}
 
       ## 持锁线程状态
-      {{blocking_thread_state}}
+      {{blocking_thread_state}
 
       ## 阻塞函数分析
-      {{blocking_functions}}
+      {{blocking_functions}
 
       请分析：
       1. 锁竞争严重程度评估
@@ -311,13 +311,13 @@ output:
     - title: "锁竞争分析总结"
       content: |
         ## 锁竞争概览
-        {{contention_overview}}
+        {{contention_overview}
 
         ## 主线程锁竞争
-        {{main_thread_contentions}}
+        {{main_thread_contentions}
 
         ## 热点锁
-        {{hot_locks}}
+        {{hot_locks}
 
         ## AI 综合分析
-        {{contention_ai_summary}}
+        {{contention_ai_summary}

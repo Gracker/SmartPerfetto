@@ -1,0 +1,57 @@
+name: render_thread_slices
+version: "1.0"
+type: atomic
+
+meta:
+  display_name: "RenderThread 耗时操作"
+  description: "分析指定时间范围内 RenderThread 的耗时操作"
+  icon: "brush"
+  tags: [render, thread, slices, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+  - name: end_ts
+    type: timestamp
+    required: true
+  - name: package
+    type: string
+    required: false
+    description: "应用包名"
+
+steps:
+  - id: render_slices
+    type: atomic
+    name: "RenderThread 耗时操作"
+    display:
+      level: key
+      title: "RenderThread 耗时操作"
+    sql: |
+      WITH render_thread AS (
+        SELECT t.utid
+        FROM thread t
+        JOIN process p ON t.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND t.name = 'RenderThread'
+      )
+      SELECT
+        s.name,
+        ROUND(SUM(s.dur) / 1e6, 2) as total_ms,
+        COUNT(*) as count,
+        ROUND(MAX(s.dur) / 1e6, 2) as max_ms,
+        ROUND(AVG(s.dur) / 1e6, 2) as avg_ms
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      WHERE tt.utid IN (SELECT utid FROM render_thread)
+        AND s.ts >= ${start_ts}
+        AND s.ts < ${end_ts}
+        AND s.dur >= 500000
+      GROUP BY s.name
+      HAVING total_ms > 0.5
+      ORDER BY total_ms DESC
+      LIMIT 10
+    save_as: render_slices
+
+output:
+  format: structured

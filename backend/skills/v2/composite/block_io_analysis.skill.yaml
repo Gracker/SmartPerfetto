@@ -226,19 +226,19 @@ analysis_steps:
       请基于以下 IO 分析数据，提供专业的分析：
 
       ## IO 概览
-      {{io_overview}}
+      {{io_overview}
 
       ## 设备 IO 统计
-      {{device_io_stats}}
+      {{device_io_stats}
 
       ## 队列深度
-      {{io_queue_depth}}
+      {{io_queue_depth}
 
       ## 长耗时 IO
-      {{long_io_operations}}
+      {{long_io_operations}
 
       ## 线程阻塞分析
-      {{io_thread_blocking}}
+      {{io_thread_blocking}
 
       请分析：
       1. IO 负载评估
@@ -255,13 +255,13 @@ output:
     - title: "IO 分析总结"
       content: |
         ## IO 概览
-        {{io_overview}}
+        {{io_overview}
 
         ## 队列深度
-        {{io_queue_depth}}
+        {{io_queue_depth}
 
         ## 线程阻塞
-        {{io_thread_blocking}}
+        {{io_thread_blocking}
 
         ## AI 综合分析
-        {{io_ai_summary}}
+        {{io_ai_summary}

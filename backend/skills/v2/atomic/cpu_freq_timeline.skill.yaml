@@ -1,0 +1,90 @@
+name: cpu_freq_timeline
+version: "1.0"
+type: atomic
+
+meta:
+  display_name: "CPU 频率变化时间线"
+  description: "分析指定时间范围内各 CPU 核心的频率变化"
+  icon: "speed"
+  tags: [cpu, frequency, timeline, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "开始时间戳 (纳秒)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "结束时间戳 (纳秒)"
+
+steps:
+  - id: cpu_freq_changes
+    type: atomic
+    name: "CPU 频率变化"
+    display:
+      level: detail
+      title: "CPU 频率变化"
+    sql: |
+      WITH freq_events AS (
+        SELECT
+          c.ts,
+          t.cpu,
+          c.value as freq_khz,
+          CASE WHEN t.cpu >= 4 THEN 'big' ELSE 'little' END as core_type,
+          LAG(c.value) OVER (PARTITION BY t.cpu ORDER BY c.ts) as prev_freq_khz
+        FROM counter c
+        JOIN cpu_counter_track t ON c.track_id = t.id
+        WHERE t.name = 'cpufreq'
+          AND c.ts >= ${start_ts}
+          AND c.ts < ${end_ts}
+      )
+      SELECT
+        printf('%d', ts) as ts,
+        ROUND((ts - ${start_ts}) / 1e6, 2) as relative_ms,
+        cpu,
+        core_type,
+        ROUND(freq_khz / 1000, 0) as freq_mhz,
+        ROUND(COALESCE(prev_freq_khz, freq_khz) / 1000, 0) as prev_freq_mhz,
+        CASE 
+          WHEN freq_khz > COALESCE(prev_freq_khz, freq_khz) THEN 'up'
+          WHEN freq_khz < COALESCE(prev_freq_khz, freq_khz) THEN 'down'
+          ELSE 'stable'
+        END as change_direction
+      FROM freq_events
+      WHERE freq_khz != COALESCE(prev_freq_khz, 0)
+      ORDER BY ts, cpu
+    save_as: freq_changes
+
+  - id: cpu_freq_summary
+    type: atomic
+    name: "CPU 频率汇总"
+    display:
+      level: summary
+      title: "频率汇总"
+    sql: |
+      WITH freq_data AS (
+        SELECT
+          t.cpu,
+          CASE WHEN t.cpu >= 4 THEN 'big' ELSE 'little' END as core_type,
+          c.value as freq_khz
+        FROM counter c
+        JOIN cpu_counter_track t ON c.track_id = t.id
+        WHERE t.name = 'cpufreq'
+          AND c.ts >= ${start_ts}
+          AND c.ts < ${end_ts}
+      )
+      SELECT
+        core_type,
+        COUNT(DISTINCT cpu) as cpu_count,
+        ROUND(AVG(freq_khz) / 1000, 0) as avg_freq_mhz,
+        ROUND(MAX(freq_khz) / 1000, 0) as max_freq_mhz,
+        ROUND(MIN(freq_khz) / 1000, 0) as min_freq_mhz,
+        COUNT(*) as sample_count
+      FROM freq_data
+      GROUP BY core_type
+      ORDER BY core_type DESC
+    save_as: freq_summary
+
+output:
+  format: structured

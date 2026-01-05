@@ -8,8 +8,8 @@ interface Props {
 }
 
 const L3SessionDetail: React.FC<Props> = ({ data, expandedFrames, onToggleFrame }) => {
-  const fpsMetrics = data.fps_metrics?.data || [];
-  const jankFrames = data.jank_frames?.data || [];
+  const fpsMetrics = data.calculate_fps_by_phase?.data || [];
+  const jankFrames = data.get_jank_frames?.data || [];
 
   // 处理 FPS 指标
   const touchFling = fpsMetrics.find((m: any) => m.phase === 'touch_fling');

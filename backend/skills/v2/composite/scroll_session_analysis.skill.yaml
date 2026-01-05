@@ -85,7 +85,7 @@ steps:
           AND ts <= ${end_ts}
       )
       SELECT
-        ${session_id} AS session_id,
+          session_id} AS session_id,
         COUNT(*) AS total_frames,
         SUM(is_janky) AS janky_frames,
         ROUND(100.0 * SUM(is_janky) / NULLIF(COUNT(*), 0), 2) AS jank_rate,
@@ -245,7 +245,7 @@ steps:
     inputs: [full_stats, touch_stats, fling_stats, janky_frames]
     rules:
       # 整体掉帧率诊断
-      - condition: "${full_stats.data[0].jank_rate} > 15"
+      - condition: "full_stats.data[0].jank_rate > 15"
         severity: critical
         diagnosis: "滑动掉帧率过高 (${full_stats.data[0].jank_rate}%)"
         confidence: high
@@ -254,7 +254,7 @@ steps:
           - "优化列表项布局复杂度"
           - "使用 RecyclerView 的 setHasFixedSize 和 setItemViewCacheSize"
 
-      - condition: "${full_stats.data[0].jank_rate} > 5"
+      - condition: "full_stats.data[0].jank_rate > 5"
         severity: warning
         diagnosis: "滑动存在掉帧 (${full_stats.data[0].jank_rate}%)"
         confidence: medium
@@ -263,7 +263,7 @@ steps:
           - "避免在滑动时加载图片"
 
       # 严重卡顿诊断
-      - condition: "${full_stats.data[0].max_frame_ms} > 100"
+      - condition: "full_stats.data[0].max_frame_ms > 100"
         severity: critical
         diagnosis: "存在严重卡顿帧 (最大 ${full_stats.data[0].max_frame_ms}ms)"
         confidence: high
@@ -273,7 +273,7 @@ steps:
           - "分析可能的 ANR 风险"
 
       # 按压阶段 vs Fling 阶段对比
-      - condition: "${touch_stats.data[0].jank_rate} > ${fling_stats.data[0].jank_rate} * 2"
+      - condition: "touch_stats.data[0].jank_rate > ${fling_stats.data[0].jank_rate} * 2"
         severity: warning
         diagnosis: "按压滑动阶段掉帧更严重"
         confidence: medium
@@ -281,7 +281,7 @@ steps:
           - "检查 dispatchTouchEvent 链路"
           - "优化手势响应代码"
 
-      - condition: "${fling_stats.data[0].jank_rate} > ${touch_stats.data[0].jank_rate} * 2"
+      - condition: "fling_stats.data[0].jank_rate > ${touch_stats.data[0].jank_rate} * 2"
         severity: warning
         diagnosis: "Fling 阶段掉帧更严重"
         confidence: medium
@@ -290,7 +290,7 @@ steps:
           - "优化滑动曲线计算逻辑"
 
       # 帧率诊断
-      - condition: "${full_stats.data[0].estimated_fps} < 50"
+      - condition: "full_stats.data[0].estimated_fps < 50"
         severity: warning
         diagnosis: "帧率偏低 (${full_stats.data[0].estimated_fps} fps)"
         confidence: medium
