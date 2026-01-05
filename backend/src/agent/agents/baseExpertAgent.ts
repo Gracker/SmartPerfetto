@@ -245,15 +245,17 @@ Result: ${JSON.stringify(result.data, null, 2)}
 
 Context: ${state.context.package ? `Analyzing package ${state.context.package}` : 'General analysis'}
 
-Extract findings in JSON format:
+Extract findings in JSON format. IMPORTANT: If the result contains timestamp values (ts, start_ts, end_ts columns in nanoseconds), include them in timestampsNs array. Format timestamps in description using [[ts:NANOSECONDS]] syntax for clickable links.
+
 {
   "findings": [
     {
       "category": "performance|error|warning|info",
       "severity": "info|warning|critical",
       "title": "brief title",
-      "description": "detailed description",
-      "evidence": ["relevant data points"]
+      "description": "detailed description with [[ts:123456789]] for timestamps",
+      "evidence": ["relevant data points"],
+      "timestampsNs": [123456789, 234567890]
     }
   ]
 }`;
@@ -266,12 +268,18 @@ Extract findings in JSON format:
           title: string;
           description: string;
           evidence: any[];
+          timestampsNs?: number[];
         }>;
       }>(prompt);
 
       return (response.findings || []).map((f, i) => ({
         id: `${toolName}_finding_${i}`,
-        ...f,
+        category: f.category,
+        severity: f.severity,
+        title: f.title,
+        description: f.description,
+        evidence: f.evidence,
+        timestampsNs: f.timestampsNs,
       }));
     } catch {
       return [];

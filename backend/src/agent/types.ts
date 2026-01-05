@@ -117,6 +117,7 @@ export interface Finding {
   description: string;
   evidence: any[];
   relatedTimestamps?: string[];
+  timestampsNs?: number[];
 }
 
 export interface Diagnostic {
