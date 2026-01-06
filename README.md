@@ -14,6 +14,8 @@ SmartPerfetto 是一个基于 AI 的 Perfetto 性能分析平台，通过 AI 助
 - **Backend API**: http://localhost:3000
 
 > 首次运行前需配置 `backend/.env`（参考 `.env.example`）
+>
+> 📖 首次安装？请查看 [详细安装指南](#详细安装指南)
 
 ## 功能特性
 
@@ -256,8 +258,9 @@ git checkout smartperfetto
 - ✅ 动态 AI 模型切换（根据问题复杂度自动选择 deepseek-chat 或 deepseek-reasoner）
 - ✅ 空结果智能诊断（自动分析 trace 内容帮助 AI 调整查询策略）
 - ✅ SQL 结果表格优化（时间戳跳转、bigint 支持、显示限制 50 行）
-- ✅ **YAML 驱动的 Skill Engine**
-  - 8 个基础分析 Skills (startup, scrolling, memory, cpu, binder, surfaceflinger, navigation, click_response)
+- ✅ **YAML 驱动的 Skill Engine V2**
+  - 35+ 个分析 Skills (11 atomic + 24 composite)
+  - 8 种步骤类型 (atomic, skill, iterator, parallel, diagnostic, ai_decision, ai_summary, conditional)
   - 6 个厂商定制 (oppo, vivo, xiaomi, honor, mtk, qualcomm)
   - CLI 工具 (`npm run skill:list/validate/test`)
   - 管理 API (`/api/admin/skills`)
@@ -282,19 +285,50 @@ git checkout smartperfetto
   - 前端 Skill/Agent 模式切换
   - Agent API 端点 (`/api/agent/analyze`, `/api/agent/:id/stream`)
   - Agent 分析 HTML 报告生成
+- ✅ **一键还原场景 (v3.2)**
+  - 智能场景还原按钮（AI 面板）
+  - 多数据源聚合分析（屏幕状态、手势、App 切换、启动、系统事件、掉帧）
+  - 可视化时间线组件（SceneTimeline）
+  - AI 生成场景摘要报告
+  - 事件点击跳转到 Timeline
 
-## 待实现功能
-
-- [ ] 分析结果的可视化增强
-- [ ] 会话历史持久化
-- [ ] 分析报告导出（PDF/HTML）
-- [ ] 自定义 AI 模型配置界面
-- [ ] Skill Web 管理界面（前端）
-- [ ] Analysis in Tace（即把分析结果，重新展示在 Trace 里面，相当于把 Trace 拆开，在合适的地方加上分析的结果，然后再重新打包 Trace）
+> 📋 **待实现功能**: 请查看 [TODO.md](./TODO.md) 获取完整的待办事项列表
 
 ## 架构设计
 
 ### HTTP RPC 共享架构 (v2.0)
+
+关键文件路径对照表
+
+| 功能 | 前端位置 | 后端位置 |
+|------|---------|---------|
+| 主UI面板 | `perfetto/ui/src/plugins/.../ai_panel.ts` | - |
+| Skill执行 | - | `backend/src/services/skillEngine/skillExecutorV2.ts` |
+| Agent执行 | - | `backend/src/agent/orchestrator.ts` |
+| Skill定义 | - | `backend/skills/v2/composite/*.skill.yaml` |
+| 场景还原 | `perfetto/ui/src/components/skill/scene_timeline.ts` | `backend/skills/v2/composite/scene_reconstruction.skill.yaml` |
+| Skill路由 | - | `backend/src/routes/skillRoutes.ts` |
+| Agent路由 | - | `backend/src/routes/agentRoutes.ts` |
+| 分析路由 | - | `backend/src/routes/traceAnalysisRoutes.ts` |
+| 分层显示 | `perfetto/ui/src/components/skill/layered_result_view.ts` | - |
+| Expert Agent | - | `backend/src/agent/agents/scrollingExpertAgent.ts` |
+| Tool系统 | - | `backend/src/agent/tools/*.ts` |
+
+---
+
+Skill 组件位置
+
+前端 skill 相关组件：
+```
+perfetto/ui/src/components/skill/
+├── layered_result_view.ts    # 分层结果主组件
+├── l1_overview_card.ts       # L1 概览卡片
+├── l2_session_list.ts        # L2 区间列表
+├── l4_frame_analysis.ts      # L4 帧分析
+├── scene_timeline.ts         # 场景时间线组件 (v3.2)
+└── [其他组件]
+```
+
 
 SmartPerfetto 采用 **HTTP RPC 共享架构**，前端和后端共享同一个 trace_processor 实例，实现数据一致性和资源高效利用：
 
@@ -476,12 +510,12 @@ SmartPerfetto 使用 YAML 驱动的 Skill 系统 V2，支持组合式分析、AI
 ├─────────────────────────────────────────────────────────────────────┤
 │  skills/                                                             │
 │  ├── v2/                          # V2 Skills                       │
-│  │   ├── atomic/                  # 3 个原子 Skills                 │
+│  │   ├── atomic/                  # 11 个原子 Skills                │
 │  │   │   ├── binder_in_range.skill.yaml                             │
 │  │   │   ├── cpu_slice_analysis.skill.yaml                          │
 │  │   │   └── scheduling_analysis.skill.yaml                         │
 │  │   │                                                               │
-│  │   └── composite/               # 18 个组合 Skills                │
+│  │   └── composite/               # 24 个组合 Skills                │
 │  │       ├── scrolling_analysis.skill.yaml  # 滑动分析              │
 │  │       ├── startup_analysis.skill.yaml    # 启动分析              │
 │  │       ├── anr_analysis.skill.yaml        # ANR 分析              │
@@ -1054,7 +1088,94 @@ const summary = evalSystem.runEvaluation(traces);
 // { passedCases: 8, failedCases: 2, avgScore: 0.82, ... }
 ```
 
-## 快速开始
+### 一键还原场景 (v3.2)
+
+SmartPerfetto 提供"一键还原场景"功能，通过聚合多个数据源，智能还原用户在 Trace 期间的操作行为：
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          用户点击 "还原场景" 按钮                             │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    scene_reconstruction.skill.yaml                          │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  数据收集阶段 (7 个并行步骤):                                           │  │
+│  │  ├── trace_time_range       → Trace 时间范围                          │  │
+│  │  ├── screen_state_changes   → 屏幕状态变化 (亮屏/熄屏)                  │  │
+│  │  ├── top_app_changes        → Top App 切换                            │  │
+│  │  ├── user_gestures          → 用户手势 (滑动/点击/长按)                 │  │
+│  │  ├── app_launches           → App 启动事件                            │  │
+│  │  ├── system_events          → 系统事件 (解锁/通知栏)                   │  │
+│  │  └── jank_events            → 性能事件 (掉帧)                          │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  merged_timeline → 聚合所有事件，按时间排序                             │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                    │                                        │
+│                                    ▼                                        │
+│  ┌───────────────────────────────────────────────────────────────────────┐  │
+│  │  scene_summary (ai_summary) → AI 生成场景描述报告                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+└───────────────────────────────────┬─────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           前端展示                                           │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  SceneTimeline 组件:                                                 │   │
+│  │  ├── 可视化时间线 (颜色编码: 屏幕/手势/App切换/启动/系统/性能)         │   │
+│  │  ├── 事件列表 (点击跳转到 Perfetto Timeline)                         │   │
+│  │  └── AI 场景摘要 (Markdown 渲染)                                     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 事件类别与颜色
+
+| 类别 | 颜色 | 说明 |
+|------|------|------|
+| `screen` | 🟢 绿色 | 屏幕状态变化 (亮屏/熄屏) |
+| `gesture` | 🔵 蓝色 | 用户手势 (滑动/点击/长按) |
+| `app_switch` | 🟣 靛蓝 | App 切换 |
+| `app_launch` | 🟠 橙色 | App 启动 |
+| `system` | 🟣 紫色 | 系统事件 (解锁/通知栏) |
+| `performance` | 🔴 红色 | 性能问题 (掉帧) |
+
+#### 输出示例
+
+```
+## 场景概述
+用户在 3.2 秒的 Trace 期间，主要在微信中浏览聊天列表，期间发生了 2 次滑动和 1 次点击操作，有 3 次轻微掉帧。
+
+## 操作时间线
+1. 0.0s - 屏幕点亮
+2. 0.2s - 解锁屏幕
+3. 0.5s - 切换到 微信
+4. 0.8s - 滑动 [微信] (查看聊天列表)
+5. 1.2s - 掉帧 App掉帧 [18ms]
+...
+
+## 性能问题
+- 滑动过程中出现 2 次 App 掉帧
+
+## 使用意图推断
+用户正在微信中查找某个联系人或群聊
+```
+
+#### 相关文件
+
+| 文件 | 说明 |
+|------|------|
+| `backend/skills/v2/composite/scene_reconstruction.skill.yaml` | 场景还原 Skill 定义 |
+| `perfetto/ui/src/components/skill/scene_timeline.ts` | 时间线可视化组件 |
+| `perfetto/ui/src/components/skill/layered_result_view.ts` | 结果展示集成 |
+| `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/ai_panel.ts` | 按钮入口 |
+
+## 详细安装指南
 
 ### 环境要求
 
@@ -1175,11 +1296,18 @@ SmartPerfetto/
 ├── perfetto/                 # Perfetto 官方 UI (Git Submodule)
 │   ├── ui/
 │   │   ├── src/
-│   │   │   └── plugins/
-│   │   │       └── com.smartperfetto.AIAssistant/  # AI 助手插件
-│   │   │           ├── ai_panel.ts                  # 主面板组件
-│   │   │           ├── commands.ts                  # 命令处理
-│   │   │           └── plugin.ts                    # 插件入口
+│   │   │   ├── plugins/
+│   │   │   │   └── com.smartperfetto.AIAssistant/  # AI 助手插件
+│   │   │   │       ├── ai_panel.ts                  # 主面板组件
+│   │   │   │       ├── commands.ts                  # 命令处理
+│   │   │   │       ├── styles.scss                  # 样式文件
+│   │   │   │       └── plugin.ts                    # 插件入口
+│   │   │   └── components/skill/                    # Skill 结果展示组件
+│   │   │       ├── layered_result_view.ts           # 分层结果主组件
+│   │   │       ├── l1_overview_card.ts              # L1 概览卡片
+│   │   │       ├── l2_session_list.ts               # L2 区间列表
+│   │   │       ├── l4_frame_analysis.ts             # L4 帧分析
+│   │   │       └── scene_timeline.ts                # 场景时间线组件 (v3.2)
 │   │   ├── run-dev-server                           # 启动脚本
 │   │   └── build.js                                 # 构建脚本
 │   │
@@ -1243,14 +1371,15 @@ SmartPerfetto/
 │   │   │   └── analysis.ts                     # 类型定义
 │   │   └── index.ts                            # 入口文件
 │   ├── skills/                                 # Skill 定义文件 (V2)
-│   │   ├── v2/                                 # V2 Skills (21 个)
-│   │   │   ├── atomic/                         # 原子 Skills (3 个)
+│   │   ├── v2/                                 # V2 Skills (35+ 个)
+│   │   │   ├── atomic/                         # 原子 Skills (11 个)
 │   │   │   │   ├── binder_in_range.skill.yaml
 │   │   │   │   ├── cpu_slice_analysis.skill.yaml
 │   │   │   │   └── scheduling_analysis.skill.yaml
-│   │   │   └── composite/                      # 组合 Skills (18 个)
+│   │   │   └── composite/                      # 组合 Skills (24 个)
 │   │   │       ├── scrolling_analysis.skill.yaml   # 滑动分析
 │   │   │       ├── startup_analysis.skill.yaml     # 启动分析
+│   │   │       ├── scene_reconstruction.skill.yaml # 场景还原 (v3.2)
 │   │   │       ├── anr_analysis.skill.yaml         # ANR 分析
 │   │   │       ├── memory_analysis.skill.yaml      # 内存分析
 │   │   │       ├── cpu_analysis.skill.yaml         # CPU 分析

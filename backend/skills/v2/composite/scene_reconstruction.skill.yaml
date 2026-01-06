@@ -1,0 +1,534 @@
+name: scene_reconstruction
+version: "1.0"
+type: composite
+
+meta:
+  display_name: "场景还原"
+  description: "还原 Trace 期间用户的完整操作场景，智能推断用户行为"
+  icon: "movie"
+  tags: [scene, reconstruction, user-action, timeline]
+
+triggers:
+  keywords:
+    zh: [场景还原, 还原场景, 发生了什么, 用户操作, 操作场景, 用户行为, 操作记录]
+    en: [scene, reconstruct, what happened, user action, user behavior]
+  patterns:
+    - ".*场景.*还原.*"
+    - ".*发生.*什么.*"
+    - ".*用户.*操作.*"
+
+inputs:
+  - name: trace_id
+    type: string
+    required: true
+
+steps:
+  # ==========================================================================
+  # L1: Trace 时间范围
+  # ==========================================================================
+  - id: trace_time_range
+    type: atomic
+    name: "Trace 时间范围"
+    display:
+      level: summary
+      layer: L1
+      title: "Trace 概览"
+    sql: |
+      SELECT
+        MIN(ts) AS start_ts,
+        MAX(ts) AS end_ts,
+        printf('%d', MIN(ts)) AS start_ts_str,
+        printf('%d', MAX(ts)) AS end_ts_str,
+        ROUND((MAX(ts) - MIN(ts)) / 1e9, 2) AS duration_sec
+      FROM (
+        SELECT ts FROM slice WHERE dur > 0
+        UNION ALL
+        SELECT ts FROM counter WHERE value IS NOT NULL
+      )
+    save_as: time_range
+
+  # ==========================================================================
+  # L2: 屏幕状态变化
+  # ==========================================================================
+  - id: screen_state_changes
+    type: atomic
+    name: "屏幕状态变化"
+    display:
+      level: detail
+      layer: L2
+      title: "屏幕状态"
+    sql: |
+      WITH RECURSIVE screen_data AS (
+        SELECT 1 AS dummy WHERE EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_screen_state')
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        CASE screen_state
+          WHEN 1 THEN '屏幕熄灭'
+          WHEN 2 THEN '屏幕点亮'
+          WHEN 3 THEN '屏幕休眠'
+          ELSE '屏幕状态 ' || screen_state
+        END AS event,
+        'screen' AS category
+      FROM android_screen_state
+      WHERE dur > 0
+      ORDER BY ts
+      LIMIT 100
+    save_as: screen_events
+    optional: true
+
+  # ==========================================================================
+  # L2: Top App 切换
+  # ==========================================================================
+  - id: top_app_changes
+    type: atomic
+    name: "Top App 切换"
+    display:
+      level: detail
+      layer: L2
+      title: "应用切换"
+    sql: |
+      WITH RECURSIVE battery_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_battery_stats_event_slices'
+        )
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', safe_dur) AS dur,
+        '切换到 ' || REPLACE(REPLACE(str_value, 'com.', ''), 'android.', '') AS event,
+        str_value AS app_package,
+        'app_switch' AS category
+      FROM android_battery_stats_event_slices
+      WHERE track_name = 'battery_stats.top'
+        AND safe_dur > 50000000
+      ORDER BY ts
+      LIMIT 100
+    save_as: app_switches
+    optional: true
+
+  # ==========================================================================
+  # L2: 用户手势识别 (点击/滑动/长按)
+  # ==========================================================================
+  - id: user_gestures
+    type: atomic
+    name: "用户手势识别"
+    display:
+      level: detail
+      layer: L2
+      title: "用户操作"
+    sql: |
+      WITH RECURSIVE input_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_input_events'
+        )
+      ),
+      gesture_events AS (
+        SELECT
+          read_time AS ts,
+          event_action,
+          process_name,
+          CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END AS is_start
+        FROM android_input_events
+        WHERE event_type = 'MOTION'
+      ),
+      gesture_groups AS (
+        SELECT ts, event_action, process_name,
+               SUM(is_start) OVER (ORDER BY ts) AS gesture_id
+        FROM gesture_events
+      ),
+      gestures AS (
+        SELECT
+          gesture_id,
+          MIN(ts) AS ts,
+          MAX(ts) - MIN(ts) AS dur,
+          COUNT(*) AS event_count,
+          COUNT(CASE WHEN event_action = 'MOVE' THEN 1 END) AS move_count,
+          MAX(process_name) AS app
+        FROM gesture_groups
+        WHERE gesture_id > 0
+        GROUP BY gesture_id
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        CASE
+          WHEN move_count > 5 THEN '滑动'
+          WHEN dur > 500000000 AND move_count <= 2 THEN '长按'
+          ELSE '点击'
+        END ||
+        CASE
+          WHEN app IS NOT NULL AND app != ''
+          THEN ' [' || REPLACE(REPLACE(app, 'com.', ''), 'android.', '') || ']'
+          ELSE ''
+        END AS event,
+        CASE
+          WHEN move_count > 5 THEN 'scroll'
+          WHEN dur > 500000000 AND move_count <= 2 THEN 'long_press'
+          ELSE 'tap'
+        END AS gesture_type,
+        'gesture' AS category
+      FROM gestures
+      WHERE event_count >= 2
+      ORDER BY ts
+      LIMIT 200
+    save_as: gestures
+    optional: true
+
+  # ==========================================================================
+  # L2: App 启动事件
+  # ==========================================================================
+  - id: app_launches
+    type: atomic
+    name: "App 启动事件"
+    display:
+      level: detail
+      layer: L2
+      title: "App 启动"
+    sql: |
+      WITH RECURSIVE startup_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_startups'
+        )
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        CASE startup_type
+          WHEN 'cold' THEN '冷启动'
+          WHEN 'warm' THEN '温启动'
+          WHEN 'hot' THEN '热启动'
+          ELSE '启动'
+        END || ' ' ||
+        REPLACE(REPLACE(package, 'com.', ''), 'android.', '') ||
+        ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event,
+        startup_type,
+        package,
+        'app_launch' AS category
+      FROM android_startups
+      WHERE dur > 0
+      ORDER BY ts
+      LIMIT 50
+    save_as: launches
+    optional: true
+
+  # ==========================================================================
+  # L2: 系统事件 (解锁/通知栏/分屏等)
+  # ==========================================================================
+  - id: system_events
+    type: atomic
+    name: "系统事件"
+    display:
+      level: detail
+      layer: L2
+      title: "系统事件"
+    sql: |
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        CASE
+          WHEN name GLOB '*Keyguard*dismiss*' OR name GLOB '*unlock*' THEN '解锁屏幕'
+          WHEN name GLOB '*NotificationPanel*expand*' THEN '下拉通知栏'
+          WHEN name GLOB '*NotificationPanel*collapse*' THEN '收起通知栏'
+          WHEN name GLOB '*SplitScreen*' THEN '分屏操作'
+          WHEN name GLOB '*enterPictureInPicture*' THEN '进入画中画'
+          WHEN name GLOB '*exitPictureInPicture*' THEN '退出画中画'
+          WHEN name GLOB '*LaunchActivity*' THEN '启动 Activity'
+          WHEN name GLOB '*activityResume*' THEN 'Activity 恢复'
+          ELSE NULL
+        END AS event,
+        'system' AS category
+      FROM slice
+      WHERE (
+        name GLOB '*Keyguard*dismiss*'
+        OR name GLOB '*unlock*'
+        OR name GLOB '*NotificationPanel*expand*'
+        OR name GLOB '*NotificationPanel*collapse*'
+        OR name GLOB '*SplitScreen*'
+        OR name GLOB '*enterPictureInPicture*'
+        OR name GLOB '*exitPictureInPicture*'
+      )
+      AND dur > 0
+      ORDER BY ts
+      LIMIT 100
+    save_as: sys_events
+    optional: true
+
+  # ==========================================================================
+  # L2: 性能事件 (掉帧)
+  # ==========================================================================
+  - id: jank_events
+    type: atomic
+    name: "掉帧事件"
+    display:
+      level: detail
+      layer: L2
+      title: "性能事件"
+    sql: |
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        CASE
+          WHEN jank_type LIKE '%App Deadline%' OR jank_type = 'Self Jank' THEN 'App掉帧'
+          WHEN jank_type LIKE '%SurfaceFlinger%' THEN '合成器掉帧'
+          WHEN jank_type LIKE '%Buffer Stuffing%' THEN '缓冲区积压'
+          ELSE '掉帧'
+        END ||
+        CASE jank_severity_type
+          WHEN 'Partial' THEN ' (轻微)'
+          WHEN 'Full' THEN ' (严重)'
+          ELSE ''
+        END ||
+        ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event,
+        jank_type,
+        jank_severity_type,
+        'performance' AS category
+      FROM actual_frame_timeline_slice
+      WHERE jank_type IS NOT NULL
+        AND jank_type != 'None'
+        AND jank_type != ''
+      ORDER BY ts
+      LIMIT 200
+    save_as: janks
+    optional: true
+
+  # ==========================================================================
+  # 合并所有事件生成时间线
+  # ==========================================================================
+  - id: merged_timeline
+    type: atomic
+    name: "合并时间线"
+    display:
+      level: detail
+      layer: L2
+      title: "操作时间线"
+    sql: |
+      WITH all_events AS (
+        -- 屏幕状态
+        SELECT
+          CAST(ts AS INTEGER) AS ts,
+          CAST(dur AS INTEGER) AS dur,
+          event,
+          'screen' AS category,
+          1 AS priority
+        FROM (
+          SELECT
+            printf('%d', ts) AS ts,
+            printf('%d', dur) AS dur,
+            CASE screen_state
+              WHEN 1 THEN '屏幕熄灭'
+              WHEN 2 THEN '屏幕点亮'
+              WHEN 3 THEN '屏幕休眠'
+              ELSE '屏幕状态 ' || screen_state
+            END AS event
+          FROM android_screen_state
+          WHERE dur > 0
+          LIMIT 50
+        )
+
+        UNION ALL
+
+        -- Top App 切换
+        SELECT
+          CAST(ts AS INTEGER) AS ts,
+          CAST(dur AS INTEGER) AS dur,
+          event,
+          'app_switch' AS category,
+          2 AS priority
+        FROM (
+          SELECT
+            printf('%d', ts) AS ts,
+            printf('%d', safe_dur) AS dur,
+            '切换到 ' || REPLACE(REPLACE(str_value, 'com.', ''), 'android.', '') AS event
+          FROM android_battery_stats_event_slices
+          WHERE track_name = 'battery_stats.top' AND safe_dur > 100000000
+          LIMIT 50
+        )
+
+        UNION ALL
+
+        -- 用户手势
+        SELECT
+          ts, dur, event, 'gesture' AS category, 3 AS priority
+        FROM (
+          WITH gesture_events AS (
+            SELECT
+              read_time AS ts,
+              event_action,
+              process_name,
+              CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END AS is_start
+            FROM android_input_events
+            WHERE event_type = 'MOTION'
+          ),
+          gesture_groups AS (
+            SELECT ts, event_action, process_name,
+                   SUM(is_start) OVER (ORDER BY ts) AS gesture_id
+            FROM gesture_events
+          ),
+          gestures AS (
+            SELECT
+              gesture_id,
+              MIN(ts) AS ts,
+              MAX(ts) - MIN(ts) AS dur,
+              COUNT(*) AS event_count,
+              COUNT(CASE WHEN event_action = 'MOVE' THEN 1 END) AS move_count,
+              MAX(process_name) AS app
+            FROM gesture_groups
+            WHERE gesture_id > 0
+            GROUP BY gesture_id
+            HAVING COUNT(*) >= 2
+          )
+          SELECT
+            CAST(ts AS INTEGER) AS ts,
+            CAST(dur AS INTEGER) AS dur,
+            CASE
+              WHEN move_count > 5 THEN '滑动'
+              WHEN dur > 500000000 AND move_count <= 2 THEN '长按'
+              ELSE '点击'
+            END ||
+            CASE
+              WHEN app IS NOT NULL AND app != ''
+              THEN ' [' || REPLACE(REPLACE(app, 'com.', ''), 'android.', '') || ']'
+              ELSE ''
+            END AS event
+          FROM gestures
+          LIMIT 100
+        )
+
+        UNION ALL
+
+        -- App 启动
+        SELECT
+          CAST(ts AS INTEGER) AS ts,
+          CAST(dur AS INTEGER) AS dur,
+          event,
+          'app_launch' AS category,
+          4 AS priority
+        FROM (
+          SELECT
+            printf('%d', ts) AS ts,
+            printf('%d', dur) AS dur,
+            CASE startup_type
+              WHEN 'cold' THEN '冷启动'
+              WHEN 'warm' THEN '温启动'
+              WHEN 'hot' THEN '热启动'
+              ELSE '启动'
+            END || ' ' ||
+            REPLACE(REPLACE(package, 'com.', ''), 'android.', '') ||
+            ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event
+          FROM android_startups
+          WHERE dur > 0
+          LIMIT 30
+        )
+
+        UNION ALL
+
+        -- 掉帧事件
+        SELECT
+          CAST(ts AS INTEGER) AS ts,
+          CAST(dur AS INTEGER) AS dur,
+          event,
+          'performance' AS category,
+          5 AS priority
+        FROM (
+          SELECT
+            printf('%d', ts) AS ts,
+            printf('%d', dur) AS dur,
+            CASE
+              WHEN jank_type LIKE '%App Deadline%' OR jank_type = 'Self Jank' THEN 'App掉帧'
+              WHEN jank_type LIKE '%SurfaceFlinger%' THEN '合成器掉帧'
+              ELSE '掉帧'
+            END || ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event
+          FROM actual_frame_timeline_slice
+          WHERE jank_type IS NOT NULL AND jank_type != 'None' AND jank_type != ''
+          LIMIT 50
+        )
+      ),
+      time_range AS (
+        SELECT MIN(ts) AS start_ts FROM all_events
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        ROUND((ts - (SELECT start_ts FROM time_range)) / 1e9, 2) AS time_offset_sec,
+        event,
+        category,
+        priority
+      FROM all_events
+      ORDER BY ts, priority
+      LIMIT 300
+    save_as: timeline
+    optional: true
+
+  # ==========================================================================
+  # AI 场景综合分析
+  # ==========================================================================
+  - id: scene_summary
+    type: ai_summary
+    name: "场景还原报告"
+    display:
+      level: summary
+      layer: L1
+      title: "场景还原报告"
+    inputs:
+      - trace_time_range
+      - screen_state_changes
+      - top_app_changes
+      - user_gestures
+      - app_launches
+      - system_events
+      - jank_events
+    prompt: |
+      你是一位 Android 性能分析专家。请基于以下 Trace 数据，还原用户的完整操作场景。
+
+      ## Trace 时间范围
+      ${trace_time_range}
+
+      ## 屏幕状态变化
+      ${screen_state_changes}
+
+      ## 应用切换记录
+      ${top_app_changes}
+
+      ## 用户手势操作
+      ${user_gestures}
+
+      ## App 启动事件
+      ${app_launches}
+
+      ## 系统事件
+      ${system_events}
+
+      ## 掉帧/性能事件
+      ${jank_events}
+
+      请按以下格式输出分析报告：
+
+      ## 场景概述
+      用一段自然、流畅的中文描述用户在这段 Trace 期间做了什么。描述应该像讲故事一样，让读者能够清晰地想象用户的操作过程。
+
+      ## 操作时间线
+      按时间顺序列出关键操作，格式：
+      1. **0.0s** - 事件描述
+      2. **1.2s** - 事件描述
+      ...
+      （请合并相近的同类事件，避免过于琐碎）
+
+      ## 性能问题诊断
+      如果发现掉帧或性能问题，请分析：
+      - 问题发生在什么场景下
+      - 可能的原因是什么
+      - 对用户体验的影响
+
+      如果没有明显性能问题，请说明"整体流畅度良好"。
+
+      ## 使用意图推断
+      基于以上分析，推断用户可能的使用意图和目的。例如：
+      - 用户可能在浏览社交媒体
+      - 用户可能在查找某个联系人
+      - 用户可能在切换应用完成某个任务
+
+output:
+  format: layered
+  default_expanded: [L1, L2]
