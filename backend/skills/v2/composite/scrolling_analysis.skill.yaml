@@ -1,28 +1,5 @@
-# =============================================================================
-# 滑动性能分析 v3.0 - 清晰分层架构
-# =============================================================================
-# 
-# 分层设计:
-#   L1 - 全局概览: 一屏展示核心指标 (FPS、掉帧率、评级)
-#   L2 - 区间列表: 每个滑动区间的概要信息
-#   L4 - 帧详情: 单帧的深度分析 (四象限、Binder、CPU频率)
-#
-# 数据流:
-#   1. 环境检测 (内部)
-#   2. 帧性能汇总 → L1
-#   3. 掉帧类型统计 → L1  
-#   4. 滑动区间识别 → L2
-#   5. 区间掉帧统计 → L2
-#   6. 获取掉帧帧列表 (内部)
-#   7. 逐帧详细分析 → L4 (iterator)
-#
-# 前端数据键映射:
-#   L1: performance_summary, jank_type_stats
-#   L2: scroll_sessions, session_jank
-#   L4: [session_id][frame_id] → { diagnosis_summary, full_analysis }
-
 name: scrolling_analysis
-version: "3.0"
+version: "3.1"
 type: composite
 
 meta:
@@ -52,38 +29,56 @@ inputs:
 
 steps:
   # ==========================================================================
-  # 内部步骤：环境检测
+  # L1: 环境配置检测 - Vsync/刷新率
   # ==========================================================================
-  - id: detect_environment
+  - id: vsync_config
     type: atomic
-    name: "检测环境"
+    name: "Vsync 配置"
+    display:
+      level: summary
+      layer: L1
+      title: "显示配置"
     sql: |
-      WITH frame_info AS (
+      WITH
+      frame_slice_vsync AS (
+        SELECT
+          vsync_interval as vsync_period_ns,
+          'frame_slice' as source
+        FROM frame_slice
+        WHERE vsync_interval > 0
+        LIMIT 1
+      ),
+      expected_frame_vsync AS (
+        SELECT
+          CAST(AVG(dur) AS INTEGER) as vsync_period_ns,
+          'expected_frame' as source
+        FROM expected_frame_timeline_slice
+        WHERE dur > 5000000 AND dur < 20000000
+        LIMIT 1000
+      ),
+      combined AS (
+        SELECT vsync_period_ns, source FROM frame_slice_vsync WHERE vsync_period_ns > 0
+        UNION ALL
+        SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
+      ),
+      frame_count AS (
         SELECT COUNT(*) as total_frames
         FROM actual_frame_timeline_slice a
         JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
           AND a.surface_frame_token IS NOT NULL
-      ),
-      vsync_info AS (
-        SELECT
-          CASE
-            WHEN AVG(dur) < 9000000 THEN 120
-            WHEN AVG(dur) < 12000000 THEN 90
-            ELSE 60
-          END AS refresh_rate_hz
-        FROM actual_frame_timeline_slice
-        WHERE dur > 0
-        LIMIT 1000
       )
       SELECT
-        COALESCE((SELECT refresh_rate_hz FROM vsync_info), 60) as refresh_rate_hz,
-        (SELECT total_frames FROM frame_info) as total_frames,
-        CASE WHEN (SELECT total_frames FROM frame_info) > 0 THEN 1 ELSE 0 END as has_data
+        COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666) as vsync_period_ns,
+        ROUND(1e9 / COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666), 0) as refresh_rate_hz,
+        ROUND(COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666) / 1e6, 2) as vsync_period_ms,
+        COALESCE((SELECT source FROM combined LIMIT 1), 'default') as vsync_source,
+        (SELECT total_frames FROM frame_count) as total_frames,
+        CASE WHEN (SELECT total_frames FROM frame_count) > 0 THEN 1 ELSE 0 END as has_data
     save_as: environment
 
   # ==========================================================================
-  # L1: 帧性能汇总
+  # L1: 帧性能汇总 (基于 SF 消费端计算 FPS)
   # ==========================================================================
   - id: performance_summary
     type: atomic
@@ -91,39 +86,80 @@ steps:
     display:
       level: summary
       layer: L1
-      title: "帧性能汇总"
+      title: "滑动性能概览"
     sql: |
-      WITH frame_stats AS (
+      WITH 
+      time_range AS (
+        SELECT 
+          MIN(a.ts) as start_ts,
+          MAX(a.ts + a.dur) as end_ts,
+          MAX(a.ts + a.dur) - MIN(a.ts) as duration_ns
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.surface_frame_token IS NOT NULL
+      ),
+      frame_stats AS (
         SELECT
           COUNT(*) as total_frames,
           SUM(CASE WHEN a.jank_type != 'None' THEN 1 ELSE 0 END) as janky_frames,
           SUM(CASE WHEN a.jank_type GLOB '*App*' OR a.jank_type = 'Self Jank' THEN 1 ELSE 0 END) as app_janky_frames,
           SUM(CASE WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 1 ELSE 0 END) as sf_janky_frames,
-          AVG(a.dur) / 1e6 as avg_frame_ms,
-          MAX(a.dur) / 1e6 as max_frame_ms
+          SUM(CASE WHEN a.jank_type GLOB '*Buffer*' THEN 1 ELSE 0 END) as buffer_janky_frames,
+          AVG(a.dur) / 1e6 as avg_frame_dur_ms,
+          MAX(a.dur) / 1e6 as max_frame_dur_ms,
+          PERCENTILE(a.dur, 0.5) / 1e6 as median_frame_dur_ms,
+          PERCENTILE(a.dur, 0.95) / 1e6 as p95_frame_dur_ms,
+          PERCENTILE(a.dur, 0.99) / 1e6 as p99_frame_dur_ms
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
           AND a.surface_frame_token IS NOT NULL
+      ),
+      frame_intervals AS (
+        SELECT
+          a.ts - LAG(a.ts) OVER (ORDER BY a.ts) as interval_ns
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.surface_frame_token IS NOT NULL
+          AND a.jank_type = 'None'
+      ),
+      fps_stats AS (
+        SELECT
+          AVG(interval_ns) as avg_interval_ns,
+          PERCENTILE(interval_ns, 0.5) as median_interval_ns
+        FROM frame_intervals
+        WHERE interval_ns IS NOT NULL
+          AND interval_ns > 5000000
+          AND interval_ns < 100000000
       )
       SELECT
-        total_frames,
-        janky_frames,
-        app_janky_frames,
-        sf_janky_frames,
-        ROUND(100.0 * janky_frames / NULLIF(total_frames, 0), 2) as jank_rate,
-        ROUND(100.0 * app_janky_frames / NULLIF(total_frames, 0), 2) as app_jank_rate,
-        ROUND(100.0 * sf_janky_frames / NULLIF(total_frames, 0), 2) as sf_jank_rate,
-        ROUND(avg_frame_ms, 2) as avg_frame_ms,
-        ROUND(max_frame_ms, 2) as max_frame_ms,
-        ROUND(1000.0 / NULLIF(avg_frame_ms, 0), 1) as avg_fps,
+        (SELECT total_frames FROM frame_stats) as total_frames,
+        (SELECT janky_frames FROM frame_stats) as janky_frames,
+        (SELECT app_janky_frames FROM frame_stats) as app_janky_frames,
+        (SELECT sf_janky_frames FROM frame_stats) as sf_janky_frames,
+        (SELECT buffer_janky_frames FROM frame_stats) as buffer_janky_frames,
+        ROUND(100.0 * (SELECT janky_frames FROM frame_stats) / NULLIF((SELECT total_frames FROM frame_stats), 0), 2) as jank_rate,
+        ROUND(100.0 * (SELECT app_janky_frames FROM frame_stats) / NULLIF((SELECT total_frames FROM frame_stats), 0), 2) as app_jank_rate,
+        ROUND(100.0 * (SELECT sf_janky_frames FROM frame_stats) / NULLIF((SELECT total_frames FROM frame_stats), 0), 2) as sf_jank_rate,
+        ROUND((SELECT avg_frame_dur_ms FROM frame_stats), 2) as avg_frame_dur_ms,
+        ROUND((SELECT max_frame_dur_ms FROM frame_stats), 2) as max_frame_dur_ms,
+        ROUND((SELECT median_frame_dur_ms FROM frame_stats), 2) as median_frame_dur_ms,
+        ROUND((SELECT p95_frame_dur_ms FROM frame_stats), 2) as p95_frame_dur_ms,
+        ROUND((SELECT p99_frame_dur_ms FROM frame_stats), 2) as p99_frame_dur_ms,
+        ROUND((SELECT duration_ns FROM time_range) / 1e9, 2) as duration_sec,
+        ROUND(1e9 * (SELECT total_frames FROM frame_stats) / NULLIF((SELECT duration_ns FROM time_range), 0), 1) as actual_fps,
+        ROUND(1e9 / NULLIF((SELECT median_interval_ns FROM fps_stats), 0), 1) as smooth_fps,
         CASE
-          WHEN 100.0 * janky_frames / NULLIF(total_frames, 0) < 1 THEN '优秀'
-          WHEN 100.0 * janky_frames / NULLIF(total_frames, 0) < 5 THEN '良好'
-          WHEN 100.0 * janky_frames / NULLIF(total_frames, 0) < 15 THEN '一般'
+          WHEN 100.0 * (SELECT janky_frames FROM frame_stats) / NULLIF((SELECT total_frames FROM frame_stats), 0) < 1 THEN '优秀'
+          WHEN 100.0 * (SELECT janky_frames FROM frame_stats) / NULLIF((SELECT total_frames FROM frame_stats), 0) < 5 THEN '良好'
+          WHEN 100.0 * (SELECT janky_frames FROM frame_stats) / NULLIF((SELECT total_frames FROM frame_stats), 0) < 15 THEN '一般'
           ELSE '较差'
-        END as rating
+        END as rating,
+        'sf_consumption' as fps_source
       FROM frame_stats
+      LIMIT 1
     save_as: perf_summary
     condition: "environment.data[0]?.has_data === 1"
 
@@ -204,7 +240,8 @@ steps:
         COUNT(*) as frame_count,
         ROUND((MAX(ts + dur) - MIN(ts)) / 1e6, 1) as duration_ms,
         ROUND(AVG(dur) / 1e6, 2) as avg_frame_ms,
-        ROUND(MAX(dur) / 1e6, 2) as max_frame_ms
+        ROUND(MAX(dur) / 1e6, 2) as max_frame_ms,
+        ROUND(1e9 * COUNT(*) / NULLIF(MAX(ts + dur) - MIN(ts), 0), 1) as session_fps
       FROM sessions
       GROUP BY upid, session_id
       HAVING COUNT(*) >= 10
