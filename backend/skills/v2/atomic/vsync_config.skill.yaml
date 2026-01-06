@@ -1,0 +1,135 @@
+# =============================================================================
+# Vsync 配置检测 Skill
+# =============================================================================
+# 从 trace 中解析实际的 Vsync 周期和刷新率设置
+# 
+# 数据来源:
+#   1. frame_slice 表的 vsync_interval 字段 (最准确)
+#   2. actual_frame_timeline_slice 表的帧间隔
+#   3. SurfaceFlinger 的 VSYNC 相关 slice
+#
+# 输出:
+#   - vsync_period_ns: Vsync 周期（纳秒）
+#   - refresh_rate_hz: 刷新率（Hz）
+#   - vsync_source: 数据来源
+# =============================================================================
+
+name: vsync_config
+version: "1.0"
+type: atomic
+
+meta:
+  display_name: "Vsync 配置检测"
+  description: "检测当前的 Vsync 周期和刷新率设置"
+  icon: "refresh"
+  tags: [vsync, refresh_rate, environment]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间（可选）"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间（可选）"
+
+steps:
+  - id: detect_vsync_config
+    type: atomic
+    name: "检测 Vsync 配置"
+    sql: |
+      WITH
+      -- 方法1: 从 frame_slice 表获取 vsync_interval（最准确）
+      frame_slice_vsync AS (
+        SELECT
+          vsync_interval as vsync_period_ns,
+          'frame_slice.vsync_interval' as source
+        FROM frame_slice
+        WHERE vsync_interval > 0
+        LIMIT 1
+      ),
+      -- 方法2: 从 expected_frame_timeline_slice 获取 vsync 周期
+      expected_frame_vsync AS (
+        SELECT
+          -- expected frame 的 dur 就是 vsync 周期
+          CAST(AVG(dur) AS INTEGER) as vsync_period_ns,
+          'expected_frame_timeline_slice.dur' as source
+        FROM expected_frame_timeline_slice
+        WHERE dur > 5000000 AND dur < 20000000  -- 5ms-20ms 的合理范围
+        LIMIT 1000
+      ),
+      -- 方法3: 从 actual_frame_timeline_slice 帧间隔推算
+      actual_frame_vsync AS (
+        SELECT
+          CAST(PERCENTILE(dur, 0.5) AS INTEGER) as vsync_period_ns,
+          'actual_frame_timeline_slice.dur_median' as source
+        FROM actual_frame_timeline_slice
+        WHERE dur > 5000000 AND dur < 20000000
+        AND jank_type = 'None'  -- 只看正常帧
+      ),
+      -- 方法4: 从 SurfaceFlinger vsync-app slice 获取
+      sf_vsync AS (
+        SELECT
+          CAST(AVG(s.dur) AS INTEGER) as vsync_period_ns,
+          'sf_vsync_slice' as source
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (s.name GLOB '*vsync*' OR s.name GLOB '*VSYNC*')
+          AND s.dur > 5000000 AND s.dur < 20000000
+        LIMIT 500
+      ),
+      -- 合并结果，按优先级选择
+      combined AS (
+        SELECT vsync_period_ns, source FROM frame_slice_vsync WHERE vsync_period_ns > 0
+        UNION ALL
+        SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
+        UNION ALL
+        SELECT vsync_period_ns, source FROM actual_frame_vsync WHERE vsync_period_ns > 0
+        UNION ALL
+        SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
+      )
+      SELECT
+        COALESCE(
+          (SELECT vsync_period_ns FROM combined LIMIT 1),
+          16666666  -- 默认 60Hz
+        ) as vsync_period_ns,
+        ROUND(1e9 / COALESCE(
+          (SELECT vsync_period_ns FROM combined LIMIT 1),
+          16666666
+        ), 0) as refresh_rate_hz,
+        ROUND(COALESCE(
+          (SELECT vsync_period_ns FROM combined LIMIT 1),
+          16666666
+        ) / 1e6, 2) as vsync_period_ms,
+        COALESCE(
+          (SELECT source FROM combined LIMIT 1),
+          'default_60hz'
+        ) as vsync_source,
+        CASE
+          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666) < 9000000 THEN 120
+          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666) < 12000000 THEN 90
+          ELSE 60
+        END as detected_refresh_rate
+    save_as: vsync_config
+
+output:
+  format: single_row
+  fields:
+    - name: vsync_period_ns
+      type: integer
+      description: "Vsync 周期（纳秒）"
+    - name: refresh_rate_hz
+      type: number
+      description: "刷新率（Hz）"
+    - name: vsync_period_ms
+      type: number
+      description: "Vsync 周期（毫秒）"
+    - name: vsync_source
+      type: string
+      description: "数据来源"
+    - name: detected_refresh_rate
+      type: integer
+      description: "检测到的刷新率"

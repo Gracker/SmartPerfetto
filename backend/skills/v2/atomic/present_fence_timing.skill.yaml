@@ -1,0 +1,91 @@
+name: present_fence_timing
+version: "1.0"
+type: atomic
+
+meta:
+  display_name: "Present Fence 时序分析"
+  description: "分析 Present Fence 的时序，检测实际显示延迟"
+  icon: "fence"
+  tags: [present, fence, timing, display]
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+
+steps:
+  - id: present_fence_stats
+    type: atomic
+    name: "Present Fence 统计"
+    sql: |
+      WITH
+      time_bounds AS (
+        SELECT
+          COALESCE(${start_ts}, MIN(ts)) as start_ts,
+          COALESCE(${end_ts}, MAX(ts + dur)) as end_ts
+        FROM actual_frame_timeline_slice
+      ),
+      fence_data AS (
+        SELECT
+          s.ts,
+          s.dur,
+          s.name,
+          p.name as process_name
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (s.name GLOB '*PresentFence*' 
+               OR s.name GLOB '*present*fence*'
+               OR s.name GLOB '*GPU completion*'
+               OR s.name GLOB '*waiting for GPU*')
+          AND s.ts >= (SELECT start_ts FROM time_bounds)
+          AND s.ts <= (SELECT end_ts FROM time_bounds)
+      ),
+      fence_stats AS (
+        SELECT
+          COUNT(*) as total_fences,
+          AVG(dur) as avg_wait_ns,
+          MAX(dur) as max_wait_ns,
+          MIN(dur) as min_wait_ns,
+          COUNT(CASE WHEN dur > 1000000 THEN 1 END) as slow_fences_1ms,
+          COUNT(CASE WHEN dur > 5000000 THEN 1 END) as slow_fences_5ms,
+          COUNT(CASE WHEN dur > 16666666 THEN 1 END) as slow_fences_vsync
+        FROM fence_data
+      )
+      SELECT
+        total_fences,
+        ROUND(avg_wait_ns / 1e6, 2) as avg_wait_ms,
+        ROUND(max_wait_ns / 1e6, 2) as max_wait_ms,
+        ROUND(min_wait_ns / 1e6, 2) as min_wait_ms,
+        slow_fences_1ms,
+        slow_fences_5ms,
+        slow_fences_vsync,
+        ROUND(100.0 * slow_fences_vsync / NULLIF(total_fences, 0), 2) as slow_rate_pct,
+        CASE
+          WHEN avg_wait_ns > 8000000 THEN 'GPU_BOUND'
+          WHEN slow_fences_vsync > total_fences * 0.1 THEN 'GPU_OCCASIONAL_SLOW'
+          ELSE 'NORMAL'
+        END as gpu_status
+      FROM fence_stats
+    save_as: fence_stats
+    optional: true
+
+output:
+  format: single_row
+  fields:
+    - name: total_fences
+      type: integer
+      description: "总 fence 数量"
+    - name: avg_wait_ms
+      type: number
+      description: "平均等待时间 (ms)"
+    - name: gpu_status
+      type: string
+      description: "GPU 状态"
