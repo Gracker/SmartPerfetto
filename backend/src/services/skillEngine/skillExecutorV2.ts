@@ -588,10 +588,9 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
               const displayResults = iterItem.result?.displayResults || [];
               const transformedData = transformL4FrameAnalysis(displayResults);
 
-              // 创建一个新的 StepResult，包含该帧的详细分析结果
               const frameStepResult: StepResult = {
                 stepId: frameId,
-                stepType: 'atomic',  // Use 'atomic' for individual frame results
+                stepType: 'atomic',
                 success: iterItem.result?.success ?? false,
                 data: transformedData,
                 executionTimeMs: iterItem.result?.executionTimeMs || 0,
@@ -599,9 +598,11 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                   title: `帧 #${item.frame_id || item.frame_index || i} - ${item.jank_type || 'Unknown'}`,
                   level: 'key',
                   layer: 'L4',
-                  format: 'table',  // Table format for structured frame data
+                  format: 'table',
                 },
               };
+
+              (frameStepResult as any).item = item;
 
               l4[sessionId][frameId] = frameStepResult;
               console.log(`[organizeByLayer] Added frame ${frameId} to L4 ${sessionId}`);
@@ -627,13 +628,12 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                   l4[sessionId] = {};
                 }
 
-                // 创建一个新的 StepResult，包含该帧的数据
                 const frameStepResult: StepResult = {
                   stepId: frameId,
                   stepType: 'atomic',
                   success: normalizedStep.success,
-                  data: [item],  // 单个帧对象作为数组
-                  executionTimeMs: normalizedStep.executionTimeMs / normalizedStep.data.length,  // 分摊执行时间
+                  data: [item],
+                  executionTimeMs: normalizedStep.executionTimeMs / normalizedStep.data.length,
                   display: {
                     title: `帧 #${item.frame_id || item.frame_index || i} - ${item.jank_type || 'Unknown'}`,
                     level: 'key',
@@ -641,6 +641,8 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                     format: 'table',
                   },
                 };
+
+                (frameStepResult as any).item = item;
 
                 l4[sessionId][frameId] = frameStepResult;
                 console.log(`[organizeByLayer] Added atomic frame ${frameId} to L4 ${sessionId}`);
