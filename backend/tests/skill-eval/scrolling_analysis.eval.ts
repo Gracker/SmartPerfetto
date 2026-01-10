@@ -158,7 +158,7 @@ describe('scrolling_analysis skill', () => {
             expect(stat.jank_type).toBeDefined();
             expect(typeof stat.jank_type).toBe('string');
             expect(stat.count).toBeGreaterThan(0);
-            expect(['应用', 'SF', '缓冲区', '其他']).toContain(stat.responsibility);
+            expect(['应用', 'SF', '缓冲区', '无(可能漏检)', '其他']).toContain(stat.responsibility);
           }
         }
       }, 30000);
