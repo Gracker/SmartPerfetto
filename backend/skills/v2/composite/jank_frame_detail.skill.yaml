@@ -64,6 +64,8 @@ inputs:
     required: false
 
 steps:
+  # 四象限分析：输出格式直接匹配前端展示需求
+  # 前端期望: [{ quadrant, name, dur_ms, percentage }]
   - id: quadrant_analysis
     type: atomic
     name: "四象限分析"
@@ -100,29 +102,46 @@ steps:
           ts.cpu,
           ts.dur,
           CASE
-            WHEN ts.state = 'Running' AND ts.cpu >= 4 THEN 'Q1_BigCore'
-            WHEN ts.state = 'Running' AND ts.cpu < 4 THEN 'Q2_LittleCore'
-            WHEN ts.state = 'R' THEN 'Q3_Runnable'
-            WHEN ts.state IN ('S', 'D', 'I') THEN 'Q4_Sleeping'
+            WHEN ts.state = 'Running' AND ts.cpu >= 4 THEN 'Q1_大核运行'
+            WHEN ts.state = 'Running' AND ts.cpu < 4 THEN 'Q2_小核运行'
+            WHEN ts.state = 'R' THEN 'Q3_等待调度'
+            WHEN ts.state IN ('S', 'D', 'I') THEN 'Q4_休眠阻塞'
             ELSE 'Other'
-          END as quadrant
+          END as quadrant_name
         FROM thread_state ts
         JOIN target_threads tt ON ts.utid = tt.utid
         WHERE ts.ts >= tt.thread_start_ts
           AND ts.ts < tt.thread_end_ts
+      ),
+      quadrant_sums AS (
+        SELECT
+          thread_type,
+          quadrant_name,
+          SUM(dur) as dur_ns
+        FROM thread_states
+        WHERE quadrant_name != 'Other'
+        GROUP BY thread_type, quadrant_name
+      ),
+      thread_totals AS (
+        SELECT
+          thread_type,
+          SUM(dur_ns) as total_ns
+        FROM quadrant_sums
+        GROUP BY thread_type
       )
       SELECT
-        thread_type,
-        ROUND(SUM(dur) / 1e6, 2) as total_ms,
-        ROUND(100.0 * SUM(CASE WHEN quadrant = 'Q1_BigCore' THEN dur ELSE 0 END) / NULLIF(SUM(dur), 0), 1) as q1_pct,
-        ROUND(100.0 * SUM(CASE WHEN quadrant = 'Q2_LittleCore' THEN dur ELSE 0 END) / NULLIF(SUM(dur), 0), 1) as q2_pct,
-        ROUND(100.0 * SUM(CASE WHEN quadrant = 'Q3_Runnable' THEN dur ELSE 0 END) / NULLIF(SUM(dur), 0), 1) as q3_pct,
-        ROUND(100.0 * SUM(CASE WHEN quadrant = 'Q4_Sleeping' THEN dur ELSE 0 END) / NULLIF(SUM(dur), 0), 1) as q4_pct
-      FROM thread_states
-      GROUP BY thread_type
-      ORDER BY thread_type
+        qs.thread_type || ' ' || qs.quadrant_name as quadrant,
+        qs.thread_type || ' ' || qs.quadrant_name as name,
+        ROUND(qs.dur_ns / 1e6, 2) as dur_ms,
+        ROUND(100.0 * qs.dur_ns / NULLIF(tt.total_ns, 0), 1) as percentage
+      FROM quadrant_sums qs
+      JOIN thread_totals tt ON qs.thread_type = tt.thread_type
+      WHERE qs.dur_ns > 0
+      ORDER BY qs.thread_type, qs.quadrant_name
     save_as: quadrant_data
 
+  # Binder 调用：输出格式直接匹配前端展示需求
+  # 前端期望: [{ interface, dur_ms, count }]
   - id: binder_calls
     type: atomic
     name: "Binder 调用"
@@ -131,9 +150,9 @@ steps:
       title: "Binder 调用"
     sql: |
       SELECT
-        server_process,
-        COUNT(*) as call_count,
-        ROUND(SUM(client_dur) / 1e6, 2) as total_ms,
+        server_process as interface,
+        COUNT(*) as count,
+        ROUND(SUM(client_dur) / 1e6, 2) as dur_ms,
         ROUND(MAX(client_dur) / 1e6, 2) as max_ms,
         SUM(CASE WHEN is_sync = 1 THEN 1 ELSE 0 END) as sync_count
       FROM android_binder_txns
@@ -141,8 +160,8 @@ steps:
         AND client_ts < ${end_ts}
         AND (client_process GLOB '${package}*' OR '${package}' = '')
       GROUP BY server_process
-      HAVING total_ms > 0.5
-      ORDER BY total_ms DESC
+      HAVING dur_ms > 0.5
+      ORDER BY dur_ms DESC
       LIMIT 5
     save_as: binder_data
     optional: true
@@ -176,6 +195,8 @@ steps:
     save_as: freq_data
     optional: true
 
+  # 主线程耗时操作：输出格式直接匹配前端展示需求
+  # 前端期望: [{ name, dur_ms, ts }]
   - id: main_thread_slices
     type: atomic
     name: "主线程耗时操作"
@@ -192,9 +213,10 @@ steps:
       )
       SELECT
         s.name,
-        ROUND(SUM(s.dur) / 1e6, 2) as total_ms,
+        ROUND(SUM(s.dur) / 1e6, 2) as dur_ms,
         COUNT(*) as count,
-        ROUND(MAX(s.dur) / 1e6, 2) as max_ms
+        ROUND(MAX(s.dur) / 1e6, 2) as max_ms,
+        printf('%d', MIN(s.ts)) as ts
       FROM slice s
       JOIN thread_track tt ON s.track_id = tt.id
       WHERE tt.utid IN (SELECT utid FROM main_thread)
@@ -202,11 +224,13 @@ steps:
         AND s.ts < COALESCE(${main_end_ts}, ${end_ts})
         AND s.dur >= 1000000
       GROUP BY s.name
-      HAVING total_ms > 1
-      ORDER BY total_ms DESC
+      HAVING dur_ms > 1
+      ORDER BY dur_ms DESC
       LIMIT 10
     save_as: main_slices
 
+  # RenderThread 耗时操作：输出格式直接匹配前端展示需求
+  # 前端期望: [{ name, dur_ms, ts }]
   - id: render_thread_slices
     type: atomic
     name: "RenderThread 耗时操作"
@@ -223,10 +247,11 @@ steps:
       )
       SELECT
         s.name,
-        ROUND(SUM(s.dur) / 1e6, 2) as total_ms,
+        ROUND(SUM(s.dur) / 1e6, 2) as dur_ms,
         COUNT(*) as count,
         ROUND(MAX(s.dur) / 1e6, 2) as max_ms,
-        ROUND(AVG(s.dur) / 1e6, 2) as avg_ms
+        ROUND(AVG(s.dur) / 1e6, 2) as avg_ms,
+        printf('%d', MIN(s.ts)) as ts
       FROM slice s
       JOIN thread_track tt ON s.track_id = tt.id
       WHERE tt.utid IN (SELECT utid FROM render_thread)
@@ -234,8 +259,8 @@ steps:
         AND s.ts < COALESCE(${render_end_ts}, ${end_ts})
         AND s.dur >= 500000
       GROUP BY s.name
-      HAVING total_ms > 0.5
-      ORDER BY total_ms DESC
+      HAVING dur_ms > 0.5
+      ORDER BY dur_ms DESC
       LIMIT 10
     save_as: render_slices
     optional: true

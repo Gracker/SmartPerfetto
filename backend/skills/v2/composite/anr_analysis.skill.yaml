@@ -1,38 +1,44 @@
 # =============================================================================
-# ANR 分析 v2.2（组合 Skill）- 基于 Perfetto stdlib 优化版
+# ANR 分析 v3.0（组合 Skill）- 基于三篇专业文章重构
 # =============================================================================
-# 使用 Perfetto stdlib 的 android_anrs 表进行全链路根因分析
-#
-# v2.2 新增：
-# - Iterator 模式：逐个 ANR 事件详细分析
-# - 大小核分析：ANR 期间 CPU 大小核占比
-# - 四大象限分析：Running/Runnable/Sleeping 状态分布
-# - Perfetto 跳转链接：点击跳转到 ANR 区间
+# 核心原则：
+# 1. 先定性再定量 - 首先判断是系统问题还是应用问题
+# 2. 分类处理 - 不同 ANR 类型使用不同分析路径
+# 3. 优雅降级 - 数据缺失时仍能完成部分分析
 #
 # ANR 类型：
-# - INPUT_DISPATCHING_TIMEOUT: 输入超时
-# - BROADCAST_OF_INTENT: 广播超时
-# - EXECUTING_SERVICE: 服务执行超时
+# - INPUT_DISPATCHING_TIMEOUT: 输入超时（5s 无响应）
+# - BROADCAST_OF_INTENT: 广播超时（前台10s/后台60s）
+# - EXECUTING_SERVICE: 服务执行超时（前台20s/后台200s）
 # - CONTENT_PROVIDER_NOT_RESPONDING: ContentProvider 超时
+# - NO_FOCUSED_WINDOW: 无焦点窗口（特殊情况）
+#
+# 分析流程：
+# 1. 系统健康检查 → 判断系统 vs 应用问题
+# 2. ANR 概览 → 分类统计
+# 3. 逐个 ANR 详细分析 → 主线程状态/Binder/死锁
+# 4. 诊断规则 → 自动识别问题模式
+# 5. AI 总结 → 专业根因分析
 
 name: anr_analysis
-version: "2.2"
+version: "3.0"
 type: composite
 
 meta:
   display_name: "ANR 分析"
-  description: "Application Not Responding 全链路根因分析，包含 ANR 类型分类、阻塞线程状态、Binder 依赖分析"
+  description: "先定性再定量的 ANR 全链路根因分析：系统健康检查 → ANR 分类 → 深度分析 → 根因定位"
   icon: "error"
-  tags: [anr, timeout, block, composite]
+  tags: [anr, timeout, block, composite, system, app]
 
 triggers:
   keywords:
-    zh: [ANR, 无响应, 卡死, 超时, 广播超时, 输入超时, 服务超时]
-    en: [ANR, not responding, timeout, broadcast timeout, input timeout]
+    zh: [ANR, 无响应, 卡死, 超时, 广播超时, 输入超时, 服务超时, 应用无响应]
+    en: [ANR, not responding, timeout, broadcast timeout, input timeout, application hang]
   patterns:
     - ".*ANR.*"
     - ".*无响应.*"
     - ".*timeout.*"
+    - ".*卡死.*"
 
 prerequisites:
   modules:
@@ -50,7 +56,217 @@ inputs:
     description: "ANR 类型过滤"
 
 steps:
-  # ========== ANR 概览统计 ==========
+  # ============================================================================
+  # 第一阶段：系统健康检查（先定性）
+  # ============================================================================
+
+  # Step 1.1: 检测 ANR 是否存在
+  - id: anr_detection
+    type: atomic
+    name: "ANR 检测"
+    display:
+      level: key
+      title: "ANR 检测"
+    sql: |
+      SELECT
+        COUNT(*) as total_anr_count,
+        COUNT(DISTINCT process_name) as affected_process_count,
+        MIN(ts) as first_anr_ts,
+        MAX(ts) as last_anr_ts,
+        ROUND((MAX(ts) - MIN(ts)) / 1e9, 2) as anr_span_seconds
+      FROM android_anrs
+      WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+        AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
+    save_as: detection
+    on_empty: "未检测到 ANR 事件。请确认 Trace 包含 ANR 数据。"
+
+  # Step 1.2: 系统 CPU 负载（判断系统繁忙程度）
+  - id: system_cpu_health
+    type: atomic
+    name: "系统 CPU 健康状况"
+    display:
+      level: key
+      title: "系统 CPU 状况"
+    sql: |
+      WITH first_anr AS (
+        SELECT
+          ts as anr_ts,
+          CAST(default_anr_dur_ms * 1e6 AS INTEGER) as timeout_ns
+        FROM android_anrs
+        WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+        ORDER BY ts ASC
+        LIMIT 1
+      ),
+      cpu_time AS (
+        SELECT
+          ss.cpu,
+          CASE WHEN ss.cpu >= 4 THEN 'big' ELSE 'little' END as core_type,
+          SUM(
+            CASE
+              WHEN ss.ts < fa.anr_ts AND ss.ts + ss.dur > fa.anr_ts - fa.timeout_ns
+              THEN MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
+              ELSE 0
+            END
+          ) as active_ns
+        FROM sched_slice ss
+        CROSS JOIN first_anr fa
+        WHERE ss.ts < fa.anr_ts
+          AND ss.ts + ss.dur > fa.anr_ts - fa.timeout_ns
+        GROUP BY ss.cpu
+      ),
+      totals AS (
+        SELECT
+          core_type,
+          COUNT(*) as core_count,
+          SUM(active_ns) as total_active_ns,
+          (SELECT timeout_ns FROM first_anr) as window_ns
+        FROM cpu_time
+        GROUP BY core_type
+      )
+      SELECT
+        core_type,
+        core_count,
+        ROUND(total_active_ns / 1e6, 2) as total_active_ms,
+        ROUND(100.0 * total_active_ns / (window_ns * core_count), 1) as avg_util_pct,
+        CASE
+          WHEN 100.0 * total_active_ns / (window_ns * core_count) > 90 THEN 'overloaded'
+          WHEN 100.0 * total_active_ns / (window_ns * core_count) > 70 THEN 'busy'
+          ELSE 'normal'
+        END as status
+      FROM totals
+      ORDER BY core_type DESC
+    save_as: cpu_health
+    condition: detection.data[0]?.total_anr_count > 0
+    optional: true
+
+  # Step 1.3: 系统内存压力检测（LMK 事件）
+  - id: memory_pressure
+    type: atomic
+    name: "内存压力检测"
+    display:
+      level: detail
+      title: "内存压力"
+    sql: |
+      WITH first_anr AS (
+        SELECT
+          ts as anr_ts,
+          CAST(default_anr_dur_ms * 1e6 AS INTEGER) as timeout_ns
+        FROM android_anrs
+        WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+        ORDER BY ts ASC
+        LIMIT 1
+      )
+      SELECT
+        oom_score_adj,
+        COUNT(*) as kill_count,
+        GROUP_CONCAT(DISTINCT process_name) as killed_processes
+      FROM android_lmk_events
+      CROSS JOIN first_anr fa
+      WHERE ts >= fa.anr_ts - fa.timeout_ns
+        AND ts <= fa.anr_ts
+      GROUP BY oom_score_adj
+      ORDER BY kill_count DESC
+    save_as: memory_pressure
+    condition: detection.data[0]?.total_anr_count > 0
+    optional: true
+
+  # Step 1.4: IO 负载检测
+  - id: io_load
+    type: atomic
+    name: "IO 负载检测"
+    display:
+      level: detail
+      title: "IO 负载"
+    sql: |
+      WITH first_anr AS (
+        SELECT
+          ts as anr_ts,
+          CAST(default_anr_dur_ms * 1e6 AS INTEGER) as timeout_ns
+        FROM android_anrs
+        WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+        ORDER BY ts ASC
+        LIMIT 1
+      ),
+      io_states AS (
+        SELECT
+          p.name as process_name,
+          SUM(CASE WHEN ts.state = 'D' THEN ts.dur ELSE 0 END) as io_wait_ns,
+          COUNT(CASE WHEN ts.state = 'D' THEN 1 END) as io_wait_count
+        FROM thread_state ts
+        JOIN thread t ON ts.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        CROSS JOIN first_anr fa
+        WHERE ts.ts >= fa.anr_ts - fa.timeout_ns
+          AND ts.ts < fa.anr_ts
+          AND ts.state = 'D'
+        GROUP BY p.name
+      )
+      SELECT
+        process_name,
+        ROUND(io_wait_ns / 1e6, 2) as io_wait_ms,
+        io_wait_count
+      FROM io_states
+      WHERE io_wait_ns > 10000000  -- > 10ms
+      ORDER BY io_wait_ns DESC
+      LIMIT 10
+    save_as: io_load
+    condition: detection.data[0]?.total_anr_count > 0
+    optional: true
+
+  # Step 1.5: 系统冻结检测（所有应用都卡住）
+  - id: system_freeze_check
+    type: atomic
+    name: "系统冻结检测"
+    display:
+      level: key
+      title: "系统冻结检测"
+    sql: |
+      WITH first_anr AS (
+        SELECT
+          ts as anr_ts,
+          CAST(default_anr_dur_ms * 1e6 AS INTEGER) as timeout_ns,
+          process_name as anr_process
+        FROM android_anrs
+        WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+        ORDER BY ts ASC
+        LIMIT 1
+      ),
+      app_activity AS (
+        SELECT
+          p.name as process_name,
+          SUM(CASE WHEN ts.state = 'Running' THEN ts.dur ELSE 0 END) as running_ns,
+          SUM(ts.dur) as total_ns
+        FROM thread_state ts
+        JOIN thread t ON ts.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        CROSS JOIN first_anr fa
+        WHERE ts.ts >= fa.anr_ts - fa.timeout_ns
+          AND ts.ts < fa.anr_ts
+          AND t.tid = p.pid  -- 主线程
+          AND p.name NOT LIKE 'com.android.systemui'
+          AND p.name NOT LIKE 'system_server'
+        GROUP BY p.name
+      )
+      SELECT
+        COUNT(*) as total_apps,
+        SUM(CASE WHEN 100.0 * running_ns / NULLIF(total_ns, 0) < 5 THEN 1 ELSE 0 END) as frozen_apps,
+        ROUND(100.0 * SUM(CASE WHEN 100.0 * running_ns / NULLIF(total_ns, 0) < 5 THEN 1 ELSE 0 END) /
+              NULLIF(COUNT(*), 0), 1) as frozen_pct,
+        CASE
+          WHEN 100.0 * SUM(CASE WHEN 100.0 * running_ns / NULLIF(total_ns, 0) < 5 THEN 1 ELSE 0 END) /
+               NULLIF(COUNT(*), 0) > 50 THEN 'system_freeze'
+          ELSE 'app_specific'
+        END as freeze_verdict
+      FROM app_activity
+    save_as: freeze_check
+    condition: detection.data[0]?.total_anr_count > 0
+    optional: true
+
+  # ============================================================================
+  # 第二阶段：ANR 分类统计
+  # ============================================================================
+
+  # Step 2.1: ANR 概览统计（按类型分组）
   - id: anr_overview
     type: atomic
     name: "ANR 概览统计"
@@ -65,24 +281,33 @@ steps:
         ROUND(AVG(anr_dur_ms), 2) AS avg_anr_dur_ms,
         ROUND(AVG(default_anr_dur_ms), 2) AS default_timeout_ms,
         CASE anr_type
-          WHEN 'INPUT_DISPATCHING_TIMEOUT' THEN '输入超时'
-          WHEN 'BROADCAST_OF_INTENT' THEN '广播超时'
-          WHEN 'EXECUTING_SERVICE' THEN '服务执行超时'
+          WHEN 'INPUT_DISPATCHING_TIMEOUT' THEN '输入超时 (5s无响应)'
+          WHEN 'BROADCAST_OF_INTENT' THEN '广播超时 (前台10s/后台60s)'
+          WHEN 'EXECUTING_SERVICE' THEN '服务执行超时 (前台20s/后台200s)'
           WHEN 'CONTENT_PROVIDER_NOT_RESPONDING' THEN 'ContentProvider 超时'
+          WHEN 'NO_FOCUSED_WINDOW' THEN '无焦点窗口'
           ELSE anr_type
-        END as type_display
+        END as type_display,
+        CASE anr_type
+          WHEN 'INPUT_DISPATCHING_TIMEOUT' THEN '检查主线程是否在处理耗时操作'
+          WHEN 'BROADCAST_OF_INTENT' THEN '检查 BroadcastReceiver.onReceive() 是否耗时'
+          WHEN 'EXECUTING_SERVICE' THEN '检查 Service 生命周期方法是否耗时'
+          WHEN 'CONTENT_PROVIDER_NOT_RESPONDING' THEN '检查 ContentProvider 查询是否耗时'
+          WHEN 'NO_FOCUSED_WINDOW' THEN '检查 Window 焦点获取是否异常'
+          ELSE '检查主线程阻塞原因'
+        END as quick_hint
       FROM android_anrs
       WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
         AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
       GROUP BY anr_type
       ORDER BY anr_count DESC
     save_as: overview
-    on_empty: "未检测到 ANR 事件。请确认 Trace 包含 ANR 数据。"
+    condition: detection.data[0]?.total_anr_count > 0
 
-  # ========== ANR 事件列表 ==========
+  # Step 2.2: ANR 事件列表（用于迭代分析）
   - id: get_anr_events
     type: atomic
-    name: "获取 ANR 事件"
+    name: "获取 ANR 事件列表"
     display:
       level: key
       title: "ANR 事件列表"
@@ -98,15 +323,16 @@ steps:
         printf('%d', CAST(default_anr_dur_ms * 1e6 AS INTEGER)) as timeout_ns,
         intent,
         component,
-        SUBSTR(subject, 1, 100) AS subject_preview,
-        -- Perfetto 跳转参数（ANR 前 timeout 时间到 ANR 发生时间）
+        SUBSTR(subject, 1, 150) AS subject_preview,
+        -- Perfetto 跳转参数
         printf('%d', CAST(ts - default_anr_dur_ms * 1e6 AS INTEGER)) as perfetto_start,
         printf('%d', ts) as perfetto_end,
         CASE anr_type
           WHEN 'INPUT_DISPATCHING_TIMEOUT' THEN '输入超时'
           WHEN 'BROADCAST_OF_INTENT' THEN '广播超时'
-          WHEN 'EXECUTING_SERVICE' THEN '服务执行超时'
-          WHEN 'CONTENT_PROVIDER_NOT_RESPONDING' THEN 'ContentProvider 超时'
+          WHEN 'EXECUTING_SERVICE' THEN '服务超时'
+          WHEN 'CONTENT_PROVIDER_NOT_RESPONDING' THEN 'CP超时'
+          WHEN 'NO_FOCUSED_WINDOW' THEN '无焦点窗口'
           ELSE anr_type
         END as type_display
       FROM android_anrs
@@ -114,44 +340,9 @@ steps:
         AND (anr_type = '${anr_type}' OR '${anr_type}' = '')
       ORDER BY ts ASC
     save_as: anr_events
-    condition: overview.data.length > 0
+    condition: detection.data[0]?.total_anr_count > 0
 
-  # ========== 系统 CPU 负载分析 ==========
-  - id: system_cpu_load
-    type: atomic
-    name: "系统 CPU 负载"
-    display:
-      level: detail
-      title: "系统 CPU 负载"
-    sql: |
-      WITH first_anr AS (
-        SELECT
-          ts as anr_ts,
-          CAST(default_anr_dur_ms * 1e6 AS INTEGER) as timeout_ns
-        FROM android_anrs
-        WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
-        ORDER BY ts ASC
-        LIMIT 1
-      )
-      SELECT
-        ss.cpu,
-        CASE WHEN ss.cpu >= 4 THEN 'big' ELSE 'little' END as core_type,
-        ROUND(SUM(
-          MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
-        ) / 1e6, 2) as active_ms,
-        ROUND(100.0 * SUM(
-          MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
-        ) / fa.timeout_ns, 1) as util_pct
-      FROM sched_slice ss
-      CROSS JOIN first_anr fa
-      WHERE ss.ts < fa.anr_ts
-        AND ss.ts + ss.dur > fa.anr_ts - fa.timeout_ns
-      GROUP BY ss.cpu
-      ORDER BY ss.cpu
-    save_as: cpu_load
-    condition: anr_events.data.length > 0
-
-  # ========== Top 进程 CPU 占用 ==========
+  # Step 2.3: Top CPU 进程（ANR 期间）
   - id: top_cpu_processes
     type: atomic
     name: "Top CPU 进程"
@@ -171,10 +362,18 @@ steps:
       SELECT
         p.name as process_name,
         ROUND(SUM(
-          MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
+          CASE
+            WHEN ss.ts < fa.anr_ts AND ss.ts + ss.dur > fa.anr_ts - fa.timeout_ns
+            THEN MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
+            ELSE 0
+          END
         ) / 1e6, 2) as cpu_ms,
         ROUND(100.0 * SUM(
-          MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
+          CASE
+            WHEN ss.ts < fa.anr_ts AND ss.ts + ss.dur > fa.anr_ts - fa.timeout_ns
+            THEN MIN(ss.ts + ss.dur, fa.anr_ts) - MAX(ss.ts, fa.anr_ts - fa.timeout_ns)
+            ELSE 0
+          END
         ) / fa.timeout_ns, 1) as cpu_pct
       FROM sched_slice ss
       CROSS JOIN first_anr fa
@@ -186,15 +385,19 @@ steps:
       ORDER BY cpu_ms DESC
       LIMIT 15
     save_as: top_processes
-    condition: anr_events.data.length > 0
+    condition: detection.data[0]?.total_anr_count > 0
+    optional: true
 
-  # ========== 逐个 ANR 事件详细分析 ==========
+  # ============================================================================
+  # 第三阶段：逐个 ANR 详细分析
+  # ============================================================================
+
   - id: analyze_anr_events
     type: iterator
     name: "ANR 事件详细分析"
     display:
       level: key
-      title: "ANR 事件详细分析"
+      title: "ANR 深度分析"
     source: anr_events
     skill: anr_detail
     item_params:
@@ -206,104 +409,196 @@ steps:
       anr_dur_ms: anr_dur_ms
       perfetto_start: perfetto_start
       perfetto_end: perfetto_end
-    condition: anr_events.data.length > 0
+    condition: detection.data[0]?.total_anr_count > 0
 
-  # ========== ANR 诊断 ==========
+  # ============================================================================
+  # 第四阶段：诊断规则
+  # ============================================================================
+
   - id: anr_diagnosis
     type: diagnostic
     name: "ANR 诊断"
     display:
       level: key
       title: "问题诊断"
-    inputs: [overview, anr_events, cpu_load, top_processes]
+    inputs: [detection, cpu_health, memory_pressure, io_load, freeze_check, overview, anr_events, top_processes]
     rules:
-      # 多个 ANR
-      - condition: "overview.data.reduce((sum, r) => sum + r.anr_count, 0) > 3"
+      # === 系统级问题判定 ===
+
+      # 系统冻结（多个应用同时卡住）
+      - condition: "freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: critical
-        diagnosis: "检测到多个 ANR 事件，系统严重异常"
+        diagnosis: "系统级冻结：${freeze_check.data[0].frozen_apps}/${freeze_check.data[0].total_apps} 个应用主线程几乎无运行"
         confidence: high
         suggestions:
-          - "检查系统整体负载"
-          - "检查是否有内存压力导致的 LMK"
+          - "这是系统级问题，非单个应用问题"
+          - "检查系统服务是否正常"
+          - "检查是否有内核级阻塞（内存/IO/锁）"
+
+      # 多个 ANR 同时发生
+      - condition: "detection.data[0]?.total_anr_count > 3 && detection.data[0]?.anr_span_seconds < 10"
+        severity: critical
+        diagnosis: "短时间内发生 ${detection.data[0].total_anr_count} 个 ANR，间隔仅 ${detection.data[0].anr_span_seconds}s"
+        confidence: high
+        suggestions:
+          - "多个 ANR 集中发生通常指向系统级问题"
+          - "检查系统是否过载或有资源争抢"
+
+      # 内存压力导致
+      - condition: "memory_pressure.data?.length > 0"
+        severity: critical
+        diagnosis: "ANR 期间发生 LMK 杀进程，系统内存压力大"
+        confidence: high
+        suggestions:
+          - "内存不足导致系统繁忙，影响应用响应"
+          - "检查内存占用大户"
+          - "考虑减少内存使用"
+
+      # CPU 过载
+      - condition: "cpu_health.data?.find(r => r.status === 'overloaded')"
+        severity: critical
+        diagnosis: "CPU ${cpu_health.data.find(r => r.status === 'overloaded').core_type} 核过载 (${cpu_health.data.find(r => r.status === 'overloaded').avg_util_pct}%)"
+        confidence: high
+        suggestions:
+          - "CPU 资源严重不足"
+          - "检查后台进程 CPU 占用"
+          - "top_processes 显示的进程可能是罪魁祸首"
+
+      # IO 阻塞
+      - condition: "io_load.data[0]?.io_wait_ms > 500"
+        severity: warning
+        diagnosis: "进程 ${io_load.data[0].process_name} IO 等待 ${io_load.data[0].io_wait_ms}ms"
+        confidence: medium
+        suggestions:
+          - "大量 IO 等待可能影响系统响应"
+          - "检查是否有大量文件/数据库操作"
+
+      # === 应用级问题判定 ===
 
       # 输入超时
-      - condition: "overview.data.find(r => r.anr_type === 'INPUT_DISPATCHING_TIMEOUT')"
+      - condition: "overview.data?.find(r => r.anr_type === 'INPUT_DISPATCHING_TIMEOUT')"
         severity: critical
-        diagnosis: "输入事件超时，用户操作无响应"
+        diagnosis: "输入事件超时 (INPUT_DISPATCHING_TIMEOUT)"
         confidence: high
         suggestions:
+          - "主线程 5 秒未处理输入事件"
           - "检查主线程是否执行耗时操作"
           - "检查是否有 Binder 调用阻塞"
 
       # 广播超时
-      - condition: "overview.data.find(r => r.anr_type === 'BROADCAST_OF_INTENT')"
+      - condition: "overview.data?.find(r => r.anr_type === 'BROADCAST_OF_INTENT')"
         severity: critical
-        diagnosis: "广播处理超时"
+        diagnosis: "广播处理超时 (BROADCAST_OF_INTENT)"
         confidence: high
         suggestions:
-          - "优化 onReceive 处理逻辑"
-          - "将耗时操作移到 Service"
+          - "BroadcastReceiver.onReceive() 执行超时"
+          - "前台广播超时时间为 10 秒"
+          - "将耗时操作移到 Service 或 IntentService"
 
-      # CPU 负载过高
-      - condition: "cpu_load.data.filter(r => r.util_pct > 90).length > 4"
-        severity: warning
-        diagnosis: "ANR 期间 CPU 负载过高"
-        confidence: medium
+      # 服务超时
+      - condition: "overview.data?.find(r => r.anr_type === 'EXECUTING_SERVICE')"
+        severity: critical
+        diagnosis: "服务执行超时 (EXECUTING_SERVICE)"
+        confidence: high
         suggestions:
-          - "检查后台进程 CPU 占用"
-          - "考虑减少并发任务"
+          - "Service 生命周期方法执行超时"
+          - "前台服务超时时间为 20 秒"
+          - "检查 onCreate/onStartCommand/onBind 是否耗时"
 
-  # ========== AI 总结 ==========
+      # ContentProvider 超时
+      - condition: "overview.data?.find(r => r.anr_type === 'CONTENT_PROVIDER_NOT_RESPONDING')"
+        severity: critical
+        diagnosis: "ContentProvider 超时 (CONTENT_PROVIDER_NOT_RESPONDING)"
+        confidence: high
+        suggestions:
+          - "ContentProvider 查询或操作超时"
+          - "检查数据库查询是否耗时"
+          - "考虑使用异步查询"
+
+  # ============================================================================
+  # 第五阶段：AI 总结
+  # ============================================================================
+
   - id: global_summary
     type: ai_summary
     name: "分析总结"
     display:
       level: key
       title: "ANR 分析总结"
-    inputs: [overview, anr_events, cpu_load, top_processes, analyze_anr_events, anr_diagnosis]
+    inputs: [detection, cpu_health, memory_pressure, io_load, freeze_check, overview, anr_events, top_processes, analyze_anr_events, anr_diagnosis]
     prompt: |
       请基于以下 ANR 分析结果，生成专业的根因分析总结。
 
-      ## ANR 概览
+      ## ANR 检测
+          detection
+
+      ## 系统健康检查（先定性）
+
+      ### CPU 状况
+          cpu_health
+
+      ### 内存压力
+          memory_pressure
+
+      ### IO 负载
+          io_load
+
+      ### 系统冻结检测
+          freeze_check
+
+      ## ANR 概览（按类型分类）
           overview
 
       ## ANR 事件列表
           anr_events
 
-      ## CPU 负载情况
-          cpu_load
-
       ## Top CPU 进程
           top_processes
 
-      ## 逐个 ANR 详细分析（大小核、四象限、阻塞原因）
+      ## 逐个 ANR 详细分析
           analyze_anr_events
 
       ## 诊断结果
           anr_diagnosis
 
-      ## 专业分析要求
+      ## 分析要求
 
       如果 ANR 数量为 0，请输出：
       "未检测到 ANR 事件。
 
       可能原因：
       - Trace 采集期间未发生 ANR
-      - ANR 数据未被记录
+      - ANR 数据未被记录到 Perfetto
 
-      建议：请在 ANR 发生后尽快采集 Trace。"
+      建议：请在 ANR 发生后尽快采集 Trace，确保包含 ANR 时间窗口。"
 
-      如果检测到 ANR，请分析并输出：
-      1. **ANR 类型和数量**：分类说明各类型 ANR
-      2. **直接原因**：主线程在 ANR 期间做了什么（Running/Sleeping/Runnable）
-      3. **根本原因**：为什么会阻塞（Binder/IO/Lock/CPU竞争）
-      4. **四象限分析**：大核/小核 Running 占比，Runnable 等待时间
-      5. **修复建议**：基于实际数据给出 1-3 条具体建议
+      如果检测到 ANR，请按以下结构分析：
+
+      ### 1. 定性判断：系统问题 vs 应用问题
+      首先判断：
+      - 如果 freeze_check 显示 system_freeze，或多个 ANR 同时发生，或有 LMK，则是**系统级问题**
+      - 否则是**应用级问题**
+
+      ### 2. ANR 类型和数量
+      按类型说明各 ANR，重点关注:
+      - INPUT_DISPATCHING_TIMEOUT: 用户操作无响应
+      - BROADCAST_OF_INTENT: 广播处理超时
+      - EXECUTING_SERVICE: 服务执行超时
+
+      ### 3. 根因分析
+      基于 analyze_anr_events 的详细分析，说明：
+      - 主线程状态分布（Running/Runnable/Sleeping 占比）
+      - 最主要的阻塞原因（Binder/IO/Lock）
+      - 是否有死锁或长时间等待
+
+      ### 4. 修复建议
+      给出 2-3 条具体、可执行的建议，基于实际数据。
 
       ## 严格要求
-      - 只基于提供的实际数据分析，不要编造数据
-      - 重点分析主线程阻塞原因和 Binder 调用
-      - 格式清晰，不超过 400 字
+      - 只基于提供的实际数据分析，不要编造
+      - 使用 Markdown 格式
+      - 格式清晰，重点突出
+      - 不超过 500 字
 
 output:
   display:

@@ -1,494 +1,164 @@
-# SmartPerfetto Development Guide for AI Agents
+# SmartPerfetto Development Guide
 
-This document provides essential context for developing SmartPerfetto, explaining the project structure, frontend-backend relationship, and key architectural decisions.
+AI-driven Perfetto analysis platform for Android performance data.
 
-## Project Overview
-
-**SmartPerfetto** is an AI-driven Perfetto analysis platform that helps developers analyze Android performance data through natural language queries.
+## Architecture
 
 ```
-SmartPerfetto
-├── Frontend: Perfetto UI (TypeScript + Mithril.js) @ localhost:10000
-├── Backend:  Node.js/Express API @ localhost:3000
-└── Shared:   trace_processor (HTTP RPC) @ localhost:9100-9900
+SmartPerfetto/
+├── perfetto/ui/     Frontend (TypeScript + Mithril.js) @ localhost:10000
+├── backend/         Node.js/Express API @ localhost:3000
+└── trace_processor  HTTP RPC @ localhost:9100-9900 (shared by frontend & backend)
 ```
 
-### Key Architecture Principles
+**Key Principles:**
+- Frontend and backend share the same `trace_processor_shell` via HTTP RPC
+- Analysis logic defined in YAML Skills (`backend/skills/v2/`)
+- Results organized into layers: L1 (summary) → L2 (sessions) → L4 (frames)
 
-1. **HTTP RPC Shared Architecture**: Frontend and backend share the same trace_processor instance via HTTP RPC
-2. **YAML-Driven Skill Engine V2**: Analysis logic is defined in YAML files, not hardcoded
-3. **Layered Result Organization**: Results are organized into layers (L1/L2/L4) for progressive disclosure
-4. **stepId-Based Data Keys**: Backend uses YAML `id:` field as key; frontend must match exactly
+## Agent Architecture (v4.0 - New)
 
-## Quick Reference: Where to Make Changes
-
-| Change Type | Frontend Location | Backend Location |
-|-------------|-------------------|------------------|
-| **Add new analysis** | `perfetto/ui/src/components/skill/` | `backend/skills/v2/composite/` |
-| **Modify result display** | `perfetto/ui/src/components/skill/l*.ts` | `backend/src/services/skillEngine/skillExecutorV2.ts` |
-| **Fix data key mismatch** | `perfetto/ui/src/components/skill/` | N/A (frontend must match backend stepId) |
-| **Add new Skill** | N/A | `backend/skills/v2/composite/*.skill.yaml` |
-| **Modify Skill logic** | N/A | `backend/skills/v2/**/*.skill.yaml` |
-| **HTTP RPC endpoints** | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` | `backend/src/routes/` |
-| **Agent analysis** | `ai_panel.ts` (mode toggle, SSE handler) | `backend/src/agent/`, `backend/src/routes/agentRoutes.ts` |
-
-## Frontend-Backend Data Flow
-
-### Critical: stepId Matching
-
-The most common source of bugs is **data key mismatch** between frontend and backend.
-
-**Backend (YAML):**
-```yaml
-steps:
-  - id: frame_performance_summary  # <-- This becomes the data key
-    sql: "SELECT ..."
+```
+MasterOrchestrator
+  ├── PipelineExecutor (stages with checkpoints)
+  ├── CircuitBreaker (max iterations, user intervention)
+  ├── ModelRouter (Anthropic/DeepSeek/OpenAI)
+  ├── SessionLogger (per-session JSONL logs)
+  └── SubAgents
+      ├── PlannerAgent (task decomposition)
+      ├── EvaluatorAgent (quality assessment)
+      └── WorkerAgents (ScrollingExpert, etc.)
 ```
 
-**Frontend (TypeScript):**
-```typescript
-// MUST use exact stepId value
-const data = result.data.frame_performance_summary?.data;
-//     ^^^^^^^^^^^^^^^^^^^^^^^^ matches YAML id:
+**Core Components:**
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| MasterOrchestrator | `backend/src/agent/core/masterOrchestrator.ts` | Main coordinator |
+| PipelineExecutor | `backend/src/agent/core/pipelineExecutor.ts` | Stage execution |
+| CircuitBreaker | `backend/src/agent/core/circuitBreaker.ts` | Loop protection |
+| ModelRouter | `backend/src/agent/core/modelRouter.ts` | Multi-model routing |
+| SessionLogger | `backend/src/services/sessionLogger.ts` | Debug logging |
+
+## Quick Start
+
+```bash
+# Start everything (auto-builds trace_processor_shell if missing)
+./scripts/start-dev.sh
+
+# Or manually:
+cd backend && npm run dev      # Backend @ :3000
+cd perfetto/ui && ./run-dev-server  # Frontend @ :10000
 ```
 
-**Example Bug Pattern:**
-```typescript
-// ❌ WRONG - uses different key
-const data = result.data.performance_summary;
+**Test:** Open http://localhost:10000, load a `.pftrace` file, ask AI to analyze.
 
-// ✅ CORRECT - matches YAML id:
-const data = result.data.frame_performance_summary;
+## Key Locations
+
+| Task | Location |
+|------|----------|
+| Add/modify analysis | `backend/skills/v2/composite/*.skill.yaml` |
+| Result display | `perfetto/ui/src/components/skill/l*.ts` |
+| AI chat panel | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/ai_panel.ts` |
+| Agent system | `backend/src/agent/` |
+| Agent routes | `backend/src/routes/agentRoutes.ts` |
+| Session logs | `backend/logs/sessions/*.jsonl` |
+
+## Debugging with Session Logs
+
+Session logs persist to `backend/logs/sessions/` in JSONL format.
+
+**Query logs via API:**
+```bash
+# List all sessions
+curl http://localhost:3000/api/agent/logs
+
+# Get logs for session
+curl http://localhost:3000/api/agent/logs/{sessionId}
+
+# Get only errors/warnings
+curl http://localhost:3000/api/agent/logs/{sessionId}/errors
+
+# Search in logs
+curl "http://localhost:3000/api/agent/logs/{sessionId}?search=error&component=Analysis"
 ```
 
-### Result Organization by Layers
-
-Results from composite Skills are organized into layers based on the `display.level` field in YAML:
-
-| Layer | Purpose | YAML `display.level` | Frontend Component |
-|-------|---------|---------------------|-------------------|
-| **L1** | Global summary | `summary` | `l1_overview_card.ts` |
-| **L2** | Session list | `detail` (session-level) | `l2_session_list.ts` |
-| ~~L3~~ | ~~(Removed)~~ | ~~(Was: `detail`)~~ | ~~(Deprecated)~~ |
-| **L4** | Frame analysis | `key` (frame-level) | `l4_frame_analysis.ts` |
-
-### Layer 4 Data Structure
-
-L4 data is special - it's organized by session and frame:
-
-```typescript
-// Backend organizes L4 data as:
-L4Data: {
-  [sessionId: string]: {
-    [frameId: string]: {
-      stepId: string,
-      data: {
-        diagnosis_summary: string,
-        full_analysis: {
-          quadrants: { main_thread: { q1, q2, q3, q4 } },
-          binder_calls: Array<any>,
-          cpu_frequency: { big_avg_mhz, little_avg_mhz }
-        }
-      },
-      display: { title: string }
-    }
-  }
-}
-
-// Frontend access pattern:
-const frameData = L4Data[`session_${sessionId}`][`frame_${frameId}`];
-const diagnosis = frameData.data.diagnosis_summary;
-const quadrants = frameData.data.full_analysis.quadrants;
+**Log format (JSONL):**
+```json
+{"timestamp":"2024-01-01T00:00:00.000Z","level":"info","sessionId":"xxx","component":"Analysis","message":"Starting analysis","data":{}}
 ```
 
-## Frontend Components (Mithril.js)
-
-### Component Location
-
-All skill-related components are in:
-```
-perfetto/ui/src/components/skill/
-├── layered_result_view.ts      # Main layer manager
-├── l1_overview_card.ts          # L1: Global summary
-├── l2_session_list.ts           # L2: Session list (includes L4 frames)
-├── l3_session_detail.ts         # (Deprecated - no longer used)
-└── l4_frame_analysis.ts         # L4: Frame details
-```
-
-### Mithril.js Basics
-
-SmartPerfetto uses Mithril.js (not React/Vue). Key patterns:
+## Frontend (Mithril.js)
 
 ```typescript
-// Component class
-export class L2SessionList implements m.ClassComponent<L2SessionListAttrs> {
-  view(vnode: m.Vnode<L2SessionListAttrs>) {
-    const {data, expandedSessions, onToggleSession} = vnode.attrs;
-
-    // Return VDOM tree
-    return m('div.l2-session-list', [
-      m('h3', 'Title'),
-      m('ul', data.map(item => m('li', item.name)))
+// Component pattern
+export class MyComponent implements m.ClassComponent<Attrs> {
+  view(vnode: m.Vnode<Attrs>) {
+    return m('div', [
+      m('span', vnode.attrs.title),
+      m('button', {onclick: () => handler()}, 'Click')
     ]);
   }
 }
-
-// Event handlers
-m('button', {
-  onclick: () => onToggleSession(id)  // No binding needed
-}, 'Click me')
-
-// Conditional rendering
-isExpanded ? m('div.details', [...]) : null
-
-// List rendering
-data.map((item: any) => m('div.item', {key: item.id}, [
-  m('span', item.name),
-  m('button', {onclick: () => handleClick(item.id)}, 'Delete')
-]))
 ```
 
-### Rebuilding Frontend
+Rebuild: `cd perfetto/ui && node build.js`
 
-After modifying frontend code:
-
-```bash
-cd perfetto/ui
-npm run dev        # Dev mode (auto-rebuild)
-# OR
-node build.js      # Production build
-```
-
-Then reload Perfetto UI at http://localhost:10000
-
-## Backend Services
-
-### Skill Engine V2 Execution Flow
-
-```
-User Request (AI chat or API)
-    ↓
-PerfettoAnalysisOrchestrator
-    ↓
-SkillAnalysisAdapterV2 (intent detection)
-    ↓
-SkillExecutorV2 (YAML execution)
-    ├─→ executeStep() for each step
-    ├─→ substituteVars() (template variables)
-    ├─→ execute SQL queries
-    └─→ organizeByLayer() (result organization)
-    ↓
-LayeredResult {
-  layers: { L1, L2, L4 },
-  defaultExpanded: ['L1', 'L2']
-}
-```
-
-### Skill File Structure
+## Backend Skills (YAML)
 
 ```yaml
-# backend/skills/v2/composite/scrolling_analysis.skill.yaml
-name: scrolling_analysis
-version: "2.0"
-type: composite
-
-inputs:
-  - name: trace_id
-    type: string
-    required: true
-
-steps:
-  - id: detect_refresh_rate          # <-- Becomes data key
-    type: atomic
-    sql: "SELECT ..."
-    display:
-      level: summary                 # --> L1 layer
-
-  - id: find_scroll_sessions         # <-- Becomes data key
-    type: iterator
-    source: scroll_sessions
-    item_skill: scroll_session_analysis
-    display:
-      level: detail                  # --> L2 layer
-```
-
-### SQL Template Syntax
-
-**Variables in SQL:**
-```sql
--- Use ${variable} syntax
-SELECT * FROM slice
-WHERE ts >= ${start_ts}
-  AND ts < ${end_ts}
-  AND name GLOB '${package}*'
-```
-
-**Conditions (NOT SQL):**
-```yaml
-# Condition field uses JavaScript (no ${...} wrapper)
-condition: "performance_summary.data[0]?.jank_rate > 10"
-#          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-#          Raw JavaScript, NOT template syntax
-```
-
-## Common Tasks
-
-### Adding a New Display Field
-
-1. **Backend (YAML):** Add field to SQL SELECT
-2. **Frontend (TS):** Access via `data.{stepId}.data[0].{fieldName}`
-
-```yaml
-# Backend
-steps:
-  - id: frame_performance_summary
-    sql: |
-      SELECT
-        COUNT(*) as total_frames,
-        SUM(is_janky) as janky_frames,
-        AVG(dur_ms) as avg_dur_ms      # <-- New field
-      FROM frames
-```
-
-```typescript
-// Frontend
-const avgDurMs = data.frame_performance_summary?.data?.[0]?.avg_dur_ms;
-```
-
-### Creating a New Skill
-
-1. Create YAML file in `backend/skills/v2/composite/`
-2. Define `triggers.keywords` for intent detection
-3. Use `type: composite` with multiple steps
-4. Set `display.level` to organize results into layers
-
-```yaml
+# backend/skills/v2/composite/my_analysis.skill.yaml
 name: my_analysis
-version: "1.0"
 type: composite
 
-meta:
-  display_name: "My Analysis"
-  description: "Analyzes X performance"
-  tags: [custom, analysis]
-
-triggers:
-  keywords: [analyze X, X performance, X issue]
-
 steps:
-  - id: get_x_data
-    type: atomic
+  - id: summary_data        # <-- This ID becomes the frontend data key
     sql: "SELECT ..."
     display:
-      level: summary
+      level: summary        # L1 layer
 ```
 
-### Debugging Data Flow
+**Frontend access:** `result.data.summary_data?.data`
 
-**Backend logging:**
-```typescript
-console.log('[SkillExecutorV2] Result:', JSON.stringify(result, null, 2));
-```
+## API Endpoints
 
-**Frontend logging:**
-```typescript
-// In component view() method
-console.log('[L2SessionList] Data:', {
-  sessions: data.find_scroll_sessions?.data,
-  jank: data.session_jank_analysis?.data
-});
-```
+### Analysis
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/agent/analyze` | Start analysis |
+| GET | `/api/agent/:id/stream` | SSE updates |
+| GET | `/api/agent/:id/status` | Get status |
+| POST | `/api/agent/:id/respond` | Respond to circuit breaker |
+| POST | `/api/agent/resume` | Resume from checkpoint |
 
-**Check browser console for:**
-- `[L4FrameAnalysis] Received data:` - Shows data structure reaching L4 component
-- `[L2SessionList] First frame data:` - Shows frame data being passed to L4
-
-## Important Files Reference
-
-### Backend Core Files
-
-| File | Purpose |
-|------|---------|
-| `skillExecutorV2.ts` | Main Skill execution engine |
-| `skillAnalysisAdapterV2.ts` | API adapter, intent detection |
-| `skillLoaderV2.ts` | YAML Skill loader |
-| `perfettoAnalysisOrchestrator.ts` | AI analysis orchestration |
-| `workingTraceProcessor.ts` | TraceProcessor process management |
-| `portPool.ts` | Port allocation (9100-9900) |
-
-### Frontend Core Files
-
-| File | Purpose |
-|------|---------|
-| `layered_result_view.ts` | Main layer manager |
-| `ai_panel.ts` | AI assistant panel (supports Skill/Agent mode) |
-| `plugin.ts` | Plugin entry point |
-| `commands.ts` | Slash command handlers |
-
-### Agent System Files
-
-| File | Purpose |
-|------|---------|
-| `backend/src/agent/orchestrator.ts` | Main orchestrator agent |
-| `backend/src/agent/agents/scrollingExpertAgent.ts` | Scrolling analysis expert |
-| `backend/src/agent/agents/baseExpertAgent.ts` | Base expert with Think-Act loop |
-| `backend/src/agent/tools/*.ts` | SQL executor, frame analyzer, stats tools |
-| `backend/src/agent/llmAdapter.ts` | LLM client (DeepSeek, OpenAI, Mock) |
-| `backend/src/routes/agentRoutes.ts` | Agent API endpoints |
-
-## HTTP RPC Details
-
-### Port Allocation
-
-Each trace gets a unique port from 9100-9900:
-
-```bash
-# Check allocated ports
-curl http://localhost:3000/api/traces/stats
-
-# Response
-{
-  "stats": {
-    "portPool": {
-      "total": 800,
-      "allocated": 1,
-      "allocations": [
-        {"port": 9100, "traceId": "abc-123"}
-      ]
-    }
-  }
-}
-```
-
-### CORS Configuration
-
-Frontend connects to backend trace_processor via CORS:
-
-```typescript
-// Frontend (ai_panel.ts)
-const rpcUrl = `http://127.0.0.1:${port}`;
-
-// Backend adds CORS headers to trace_processor responses
-```
-
-## Development Workflow
-
-### 1. Make Changes
-
-**Frontend:**
-```bash
-cd perfetto/ui
-# Edit component files
-npm run dev    # Auto-rebuilds
-```
-
-**Backend:**
-```bash
-cd backend
-# Edit YAML files or TypeScript
-npm run dev    # Auto-restarts
-```
-
-### 2. Test Changes
-
-1. Open Perfetto UI: http://localhost:10000
-2. Load a test trace: `./test-traces/app_aosp_scrolling_heavy_jank.pftrace`
-3. Click "上传 Trace" button
-4. Ask AI: "请分析这段 Trace 的滑动性能"
-5. Check browser console for errors
-
-### 3. Verify Data Flow
-
-**Check browser console:**
-```
-[L2SessionList] Sessions: Array(2)
-[L4FrameAnalysis] Received data: {diagnosis_summary: "...", full_analysis: {...}}
-```
-
-**Check backend logs:**
-```
-[SkillExecutorV2] Executing step: frame_performance_summary
-[SkillExecutorV2] Result organized into layer: L1
-```
+### Logs
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/agent/logs` | List sessions |
+| GET | `/api/agent/logs/:sessionId` | Get session logs |
+| GET | `/api/agent/logs/:sessionId/errors` | Get errors only |
 
 ## Troubleshooting
 
-### Issue: Frontend shows empty data
+| Issue | Solution |
+|-------|----------|
+| "AI backend not connected" | Ensure `trace_processor_shell` exists: `./scripts/start-dev.sh` |
+| Empty data in frontend | Check browser console; verify stepId matches YAML `id:` |
+| Port conflict | `pkill -f trace_processor_shell` or restart backend |
+| Debug analysis issue | Check `backend/logs/sessions/*.jsonl` for session logs |
 
-**Check:**
-1. Browser console for data structure
-2. Backend logs for step execution
-3. Data key matches stepId exactly
+## Environment
 
-```typescript
-// Add debug logging
-console.log('[Component] Data keys:', Object.keys(data));
-console.log('[Component] Full data:', JSON.stringify(data, null, 2));
+Backend `.env`:
 ```
-
-### Issue: L4 frames show no details
-
-**Check:**
-1. `transformL4FrameAnalysis()` in `skillExecutorV2.ts`
-2. Frame data structure: `L4Data[session][frame].data`
-3. Browser console for L4 data logging
-
-### Issue: SQL syntax errors
-
-**Check:**
-1. All template variables closed: `${start_ts}` not `${start_ts`
-2. Condition expressions use raw JS: `data[0].value > 10` not `${data[0].value > 10}`
-
-### Issue: Port already in use
-
-```bash
-# Kill all trace_processor processes
-pkill -f trace_processor_shell
-
-# Or cleanup via API
-curl -X POST http://localhost:3000/api/traces/cleanup
-```
-
-## Project-Specific Patterns
-
-### Skill Naming Convention
-
-- Atomic skills: `binder_in_range`, `cpu_slice_analysis`
-- Composite skills: `scrolling_analysis`, `startup_analysis`
-- Step IDs: `snake_case` (becomes data keys)
-
-### Import Paths
-
-```typescript
-// Frontend (relative to perfetto/ui/src/)
-import {L1OverviewCard} from './components/skill/l1_overview_card';
-
-// Backend (relative to backend/src/)
-import {SkillExecutorV2} from './services/skillEngine/skillExecutorV2';
-```
-
-### Environment Variables
-
-Backend `.env` file:
-```env
 PORT=3000
+AI_SERVICE=deepseek
 DEEPSEEK_API_KEY=sk-xxx
-MAX_FILE_SIZE=500MB
+DEEPSEEK_MODEL=deepseek-chat
 ```
 
-## Additional Resources
+## Dependencies
 
-- **Perfetto SQL Docs**: https://perfetto.dev/docs/analysis/sql-queries
-- **Skill Development Guide**: `backend/skills/README.md`
-- **Main README**: Project overview and architecture details
-
-## Before Making Changes
-
-1. **Read existing code** - Find similar patterns before writing new code
-2. **Check data flow** - Trace how data flows from YAML → Backend → Frontend
-3. **Match stepIds** - Ensure frontend data keys match backend YAML `id:` fields
-4. **Test with sample trace** - Use `./test-traces/app_aosp_scrolling_heavy_jank.pftrace`
-
-## Contact
-
-For questions or issues, refer to the project README or contact the maintainers.
+- `trace_processor_shell`: Auto-built by `start-dev.sh`, or manually:
+  ```bash
+  cd perfetto && tools/ninja -C out/ui trace_processor_shell
+  ```

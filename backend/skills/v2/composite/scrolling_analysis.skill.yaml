@@ -40,14 +40,27 @@ steps:
       title: "显示配置"
     sql: |
       WITH
-      frame_slice_vsync AS (
+      -- 方法1: 从 SurfaceFlinger 的 VSYNC slice 推算周期 (最可靠)
+      sf_vsync_intervals AS (
         SELECT
-          vsync_interval as vsync_period_ns,
-          'frame_slice' as source
-        FROM frame_slice
-        WHERE vsync_interval > 0
-        LIMIT 1
+          s.ts,
+          LEAD(s.ts) OVER (ORDER BY s.ts) - s.ts AS interval_ns
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (p.name = 'surfaceflinger' OR p.name LIKE '%surfaceflinger%')
+          AND (s.name GLOB '*VSYNC*' OR s.name GLOB '*vsync-sf*' OR s.name GLOB '*vsync-app*')
+        LIMIT 500
       ),
+      sf_vsync AS (
+        SELECT
+          CAST(AVG(interval_ns) AS INTEGER) as vsync_period_ns,
+          'sf_vsync_slice' as source
+        FROM sf_vsync_intervals
+        WHERE interval_ns > 5000000 AND interval_ns < 30000000
+      ),
+      -- 方法2: 从 expected_frame_timeline_slice 推算 vsync 周期
       expected_frame_vsync AS (
         SELECT
           CAST(AVG(dur) AS INTEGER) as vsync_period_ns,
@@ -57,14 +70,14 @@ steps:
         LIMIT 1000
       ),
       combined AS (
-        SELECT vsync_period_ns, source FROM frame_slice_vsync WHERE vsync_period_ns > 0
+        SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
         UNION ALL
         SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
       ),
       frame_count AS (
         SELECT COUNT(*) as total_frames
         FROM actual_frame_timeline_slice a
-        JOIN process p ON a.upid = p.upid
+        LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
           AND a.surface_frame_token IS NOT NULL
       )

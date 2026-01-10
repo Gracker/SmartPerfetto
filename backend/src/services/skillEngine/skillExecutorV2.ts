@@ -125,6 +125,15 @@ class ExpressionEvaluator {
         }
       }
 
+      // Debug: Log scope for condition evaluation
+        'scope values:', JSON.stringify(Object.fromEntries(
+          Object.entries(scope).map(([k, v]) => [k, {
+            hasData: 'data' in v,
+            dataLength: Array.isArray(v?.data) ? v.data.length : 'N/A',
+            firstDataItem: Array.isArray(v?.data) && v.data.length > 0 ? v.data[0] : null
+          }])
+        )));
+
       // 构建并执行函数
       const varNames = Object.keys(scope);
       const varValues = Object.values(scope);
@@ -366,9 +375,21 @@ function processDisplayConfig(
 // Layer Organization Functions
 // =============================================================================
 
+/**
+ * Transform L4 frame analysis results from displayResults format to frontend-expected format.
+ *
+ * This function is a generic data pass-through that:
+ * 1. Maps step IDs to output property names (e.g., 'quadrant_analysis' → 'quadrants')
+ * 2. Converts table format { columns, rows } to object array
+ * 3. Passes through data without field-level transformations
+ *
+ * Field naming is the responsibility of the Skill YAML, not this function.
+ * The Skill YAML should output data with field names that match frontend expectations.
+ */
 function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: string; full_analysis: any } {
+
   const fullAnalysis: any = {
-    quadrants: {},
+    quadrants: [],
     binder_calls: [],
     cpu_frequency: { big_avg_mhz: 0, little_avg_mhz: 0 },
     main_thread_slices: [],
@@ -378,16 +399,33 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
   };
   let diagnosisSummary = '';
 
+  // Step ID to output property mapping
+  // This configuration defines which step output goes to which analysis property
+  const stepIdMapping: Record<string, string> = {
+    'quadrant_analysis': 'quadrants',
+    'quadrant_data': 'quadrants',
+    'binder_calls': 'binder_calls',
+    'binder_data': 'binder_calls',
+    'main_thread_slices': 'main_thread_slices',
+    'main_slices': 'main_thread_slices',
+    'render_thread_slices': 'render_thread_slices',
+    'render_slices': 'render_thread_slices',
+    'cpu_freq_timeline': 'cpu_freq_timeline',
+    'freq_timeline': 'cpu_freq_timeline',
+    'lock_contention': 'lock_contentions',
+    'lock_data': 'lock_contentions',
+  };
+
   for (const dr of displayResults) {
     const stepId = dr.stepId;
     const rawData = dr.data;
-    
+
     // Handle both array data and table format { columns, rows }
     let dataArray: any[] = [];
     if (Array.isArray(rawData)) {
       dataArray = rawData;
     } else if (rawData?.rows && rawData?.columns) {
-      // Convert table format to object array
+      // Convert table format to object array (generic transformation)
       dataArray = rawData.rows.map((row: any[]) => {
         const obj: any = {};
         rawData.columns.forEach((col: string, idx: number) => {
@@ -397,107 +435,33 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
       });
     }
 
-    switch (stepId) {
-      case 'quadrant_analysis':
-      case 'quadrant_data':
-        const mainThread = dataArray.find((d: any) => d.thread_type === 'MainThread');
-        const renderThread = dataArray.find((d: any) => d.thread_type === 'RenderThread');
-        if (mainThread) {
-          fullAnalysis.quadrants.main_thread = {
-            q1: mainThread.q1_pct || 0,
-            q2: mainThread.q2_pct || 0,
-            q3: mainThread.q3_pct || 0,
-            q4: mainThread.q4_pct || 0,
-          };
-        }
-        if (renderThread) {
-          fullAnalysis.quadrants.render_thread = {
-            q1: renderThread.q1_pct || 0,
-            q2: renderThread.q2_pct || 0,
-            q3: renderThread.q3_pct || 0,
-            q4: renderThread.q4_pct || 0,
-          };
-        }
-        break;
+    // Handle diagnostic step specially (extracts diagnosis text)
+    if (stepId === 'frame_diagnosis') {
+      const diagnostics = rawData?.diagnostics || [];
+      if (Array.isArray(diagnostics) && diagnostics.length > 0) {
+        diagnosisSummary = diagnostics
+          .filter((d: any) => d.diagnosis)
+          .map((d: any) => d.diagnosis)
+          .join('; ');
+      }
+      continue;
+    }
 
-      case 'binder_calls':
-      case 'binder_data':
-        fullAnalysis.binder_calls = dataArray.map((b: any) => ({
-          server_process: b.server_process || b.client_process || '',
-          call_count: b.call_count || 0,
-          total_ms: b.total_ms || 0,
-          max_ms: b.max_ms || 0,
-          sync_count: b.sync_count || 0,
-        }));
-        break;
+    // Handle cpu_freq_analysis specially (converts rows to single object)
+    if (stepId === 'cpu_freq_analysis' || stepId === 'freq_data') {
+      const bigCore = dataArray.find((d: any) => d.core_type === 'big');
+      const littleCore = dataArray.find((d: any) => d.core_type === 'little');
+      fullAnalysis.cpu_frequency = {
+        big_avg_mhz: bigCore?.avg_freq_mhz || 0,
+        little_avg_mhz: littleCore?.avg_freq_mhz || 0,
+      };
+      continue;
+    }
 
-      case 'cpu_freq_analysis':
-      case 'freq_data':
-        const bigCore = dataArray.find((d: any) => d.core_type === 'big');
-        const littleCore = dataArray.find((d: any) => d.core_type === 'little');
-        fullAnalysis.cpu_frequency = {
-          big_avg_mhz: bigCore?.avg_freq_mhz || 0,
-          little_avg_mhz: littleCore?.avg_freq_mhz || 0,
-        };
-        break;
-
-      case 'main_thread_slices':
-      case 'main_slices':
-        fullAnalysis.main_thread_slices = dataArray.map((s: any) => ({
-          name: s.name || s.display_name || '',
-          total_ms: s.total_ms || s.dur_ms || 0,
-          count: s.count || 1,
-          max_ms: s.max_ms || 0,
-        }));
-        break;
-
-      case 'render_thread_slices':
-      case 'render_slices':
-        fullAnalysis.render_thread_slices = dataArray.map((s: any) => ({
-          name: s.name || s.display_name || '',
-          total_ms: s.total_ms || s.dur_ms || 0,
-          count: s.count || 1,
-          max_ms: s.max_ms || 0,
-          avg_ms: s.avg_ms || 0,
-        }));
-        break;
-
-      case 'cpu_freq_timeline':
-      case 'freq_timeline':
-        fullAnalysis.cpu_freq_timeline = dataArray.map((f: any) => ({
-          ts: f.ts || '',
-          relative_ms: f.relative_ms || 0,
-          cpu: f.cpu || 0,
-          core_type: f.core_type || '',
-          freq_mhz: f.freq_mhz || 0,
-          prev_freq_mhz: f.prev_freq_mhz || 0,
-          change_direction: f.change_direction || 'stable',
-        }));
-        break;
-
-      case 'lock_contention':
-      case 'lock_data':
-        fullAnalysis.lock_contentions = dataArray.map((l: any) => ({
-          blocking_method: l.blocking_method || '',
-          blocking_thread_name: l.blocking_thread_name || '',
-          blocked_method: l.blocked_method || '',
-          blocked_thread_name: l.blocked_thread_name || '',
-          main_blocked: l.main_blocked || 0,
-          wait_ms: l.wait_ms || 0,
-          waiter_count: l.waiter_count || 0,
-        }));
-        break;
-
-      case 'frame_diagnosis':
-        // diagnostic step returns { diagnostics: [...], inputs: {...} }
-        const diagnostics = rawData?.diagnostics || [];
-        if (Array.isArray(diagnostics) && diagnostics.length > 0) {
-          diagnosisSummary = diagnostics
-            .filter((d: any) => d.diagnosis)
-            .map((d: any) => d.diagnosis)
-            .join('; ');
-        }
-        break;
+    // Generic pass-through: map step ID to property and assign data directly
+    const outputProperty = stepIdMapping[stepId];
+    if (outputProperty && dataArray.length > 0) {
+      fullAnalysis[outputProperty] = dataArray;
     }
   }
 
@@ -515,12 +479,9 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
     L4: {}
   };
 
-  console.log('[organizeByLayer] Processing', steps.length, 'steps');
   for (const step of steps) {
     const layer = step.display?.layer;
-    console.log(`[organizeByLayer] Step ${step.stepId}: type=${step.stepType}, layer=${layer}, hasDisplay=${!!step.display}, dataLength=${Array.isArray(step.data) ? step.data.length : 'N/A'}`);
     if (!layer) {
-      console.log(`[organizeByLayer] Skipping step ${step.stepId} (no layer)`);
       continue;
     }
 
@@ -537,7 +498,6 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
         const targetLayer = layers[layer];
         if (targetLayer) {
           targetLayer[normalizedStep.stepId] = normalizedStep;
-          console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to ${layer}`);
         }
         break;
       case 'L3':
@@ -550,7 +510,6 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
             l3[sessionId3] = {};
           }
           l3[sessionId3][normalizedStep.stepId] = normalizedStep;
-          console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to L3 session ${sessionId3}`);
         }
         break;
       case 'L4':
@@ -559,11 +518,9 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
         if (l4) {
           // 特殊处理 iterator 结果：每个迭代项都是单独的 L4 条目
           if (normalizedStep.stepType === 'iterator' && Array.isArray(normalizedStep.data)) {
-            console.log(`[organizeByLayer] Expanding iterator step ${normalizedStep.stepId} with ${normalizedStep.data.length} items`);
             // Iterator 返回 { itemIndex, item, result }[] 数组
             for (let i = 0; i < normalizedStep.data.length; i++) {
               const iterItem: any = normalizedStep.data[i];
-              console.log(`[organizeByLayer] Processing iterator item ${i}:`, JSON.stringify({
                 hasItem: !!iterItem?.item,
                 hasResult: !!iterItem?.result,
                 itemKeys: iterItem?.item ? Object.keys(iterItem.item) : [],
@@ -605,9 +562,7 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
               (frameStepResult as any).item = item;
 
               l4[sessionId][frameId] = frameStepResult;
-              console.log(`[organizeByLayer] Added frame ${frameId} to L4 ${sessionId}`);
             }
-            console.log(`[organizeByLayer] Finished expanding iterator step ${normalizedStep.stepId}`);
           } else if (normalizedStep.stepType === 'atomic' && Array.isArray(normalizedStep.data) && normalizedStep.data.length > 0) {
             // 检查是否是 L4 列表数据（如 get_app_jank_frames）
             // 如果 data 是数组且每个元素都有 frame_id 或 frame_index，展开为多个帧
@@ -615,7 +570,6 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
             const hasFrameId = firstItem && typeof firstItem === 'object' && ('frame_id' in firstItem || 'frame_index' in firstItem);
 
             if (hasFrameId) {
-              console.log(`[organizeByLayer] Expanding atomic L4 step ${normalizedStep.stepId} with ${normalizedStep.data.length} frame items`);
               // 将每一行作为一个单独的帧条目
               for (let i = 0; i < normalizedStep.data.length; i++) {
                 const item: any = normalizedStep.data[i];
@@ -645,7 +599,6 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                 (frameStepResult as any).item = item;
 
                 l4[sessionId][frameId] = frameStepResult;
-                console.log(`[organizeByLayer] Added atomic frame ${frameId} to L4 ${sessionId}`);
               }
             } else {
               // 普通的 L4 步骤（不是帧列表）
@@ -655,7 +608,6 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                 l4[sessionId4] = {};
               }
               l4[sessionId4][frameId] = normalizedStep;
-              console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to L4 ${sessionId4}/${frameId}`);
             }
           } else {
             // 普通的 L4 步骤
@@ -665,14 +617,12 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
               l4[sessionId4] = {};
             }
             l4[sessionId4][frameId] = normalizedStep;
-            console.log(`[organizeByLayer] Added ${normalizedStep.stepId} to L4 ${sessionId4}/${frameId}`);
           }
         }
         break;
     }
   }
 
-  console.log('[organizeByLayer] Completed. Final layers:', {
     L1: Object.keys(layers.L1 || {}).length,
     L2: Object.keys(layers.L2 || {}).length,
     L3: Object.keys(layers.L3 || {}).length,
@@ -805,7 +755,6 @@ export class SkillExecutorV2 {
       const diagnostics: DiagnosticResult[] = [];
       let aiSummary: string | undefined;
 
-      console.log(`[SkillExecutorV2] Executing skill: ${skillId}, type: ${skill.type}, steps count: ${skill.steps?.length || 0}`);
 
       // 根据 skill 类型执行
       switch (skill.type) {
@@ -823,7 +772,6 @@ export class SkillExecutorV2 {
             for (const step of skill.steps) {
               const stepResult = await this.executeStep(step, context, skillId);
 
-              console.log(`[SkillExecutorV2] Step ${step.id} completed: success=${stepResult.success}, hasDisplay=${'display' in step}, shouldDisplay=${this.shouldDisplay(step)}`);
 
               if (stepResult.success) {
                 // 保存结果
@@ -870,8 +818,6 @@ export class SkillExecutorV2 {
         },
       });
 
-      console.log(`[SkillExecutorV2] Skill ${skillId} completed. displayResults count: ${displayResults.length}`);
-      console.log(`[SkillExecutorV2] displayResults step IDs:`, displayResults.map(dr => dr.stepId));
 
       return {
         skillId,
@@ -942,13 +888,10 @@ export class SkillExecutorV2 {
 
     // Execute all steps
     const stepResults: StepResult[] = [];
-    console.log('[executeCompositeSkill] Starting to execute', skill.steps?.length || 0, 'steps');
     if (skill.steps) {
       for (let i = 0; i < skill.steps.length; i++) {
         const step = skill.steps[i];
-        console.log(`[executeCompositeSkill] Executing step ${i + 1}/${skill.steps.length}: ${step.id} (${step.type})`);
         const stepResult = await this.executeStep(step, execContext, skill.name);
-        console.log(`[executeCompositeSkill] Step ${step.id} completed: success=${stepResult.success}, stepType=${stepResult.stepType}`);
 
         // Save result to context
         if (stepResult.success) {
@@ -971,8 +914,6 @@ export class SkillExecutorV2 {
       }
     }
 
-    console.log('[executeCompositeSkill] All steps executed. Calling organizeByLayer with', stepResults.length, 'stepResults');
-    console.log('[executeCompositeSkill] stepResults:', JSON.stringify(stepResults.map(sr => ({
       stepId: sr.stepId,
       stepType: sr.stepType,
       success: sr.success,
@@ -985,7 +926,6 @@ export class SkillExecutorV2 {
     // Return layered structure
     try {
       const layers = organizeByLayer(stepResults);
-      console.log('[executeCompositeSkill] organizeByLayer completed successfully');
 
       const result: LayeredResult = {
         layers,
@@ -996,7 +936,6 @@ export class SkillExecutorV2 {
           executedAt: new Date().toISOString()
         }
       };
-      console.log('[executeCompositeSkill] Returning LayeredResult with layers:', Object.keys(layers).filter(k => {
         const layer = layers[k as keyof typeof layers];
         return layer && Object.keys(layer).length > 0;
       }));
@@ -1074,9 +1013,9 @@ export class SkillExecutorV2 {
 
     // 检查步骤的条件限制
     if ('condition' in step && typeof (step as any).condition === 'string') {
-      const conditionResult = ExpressionEvaluator.evaluateCondition((step as any).condition, context);
+      const conditionStr = (step as any).condition;
+      const conditionResult = ExpressionEvaluator.evaluateCondition(conditionStr, context);
       if (!conditionResult) {
-        console.log(`[SkillExecutorV2] Step ${step.id} condition not met, skipping`);
         this.emit({
           type: 'step_completed',
           skillId: parentSkillId,
@@ -1178,11 +1117,17 @@ export class SkillExecutorV2 {
     const startTime = Date.now();
     const sql = substituteVariables(step.sql, context);
 
-    console.log(`[SkillExecutorV2] Executing atomic step: ${step.id}`);
-    console.log(`[SkillExecutorV2] SQL: ${sql.substring(0, 200)}...`);
 
     try {
       const result = await this.traceProcessor.query(context.traceId, sql);
+
+      // Debug: Log exactly what trace_processor returns
+        hasError: !!result.error,
+        errorMsg: result.error,
+        columns: result.columns,
+        rowCount: result.rows?.length ?? 'undefined',
+        firstRow: result.rows?.[0] ?? 'none',
+      }));
 
       if (result.error) {
         if (step.optional) {
@@ -1204,7 +1149,8 @@ export class SkillExecutorV2 {
       }
 
       const data = this.rowsToObjects(result.columns, result.rows);
-      console.log(`[SkillExecutorV2] Step ${step.id} returned ${data.length} rows`);
+      if (data.length > 0) {
+      }
 
       return {
         stepId: step.id,
@@ -1289,7 +1235,6 @@ export class SkillExecutorV2 {
       };
     }
 
-    console.log(`[SkillExecutorV2] Iterator step ${step.id}: ${source.length} items`);
 
     const results: any[] = [];
     const maxItems = step.max_items || 100;  // 性能保护

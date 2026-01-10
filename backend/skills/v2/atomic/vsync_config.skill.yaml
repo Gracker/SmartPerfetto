@@ -2,11 +2,11 @@
 # Vsync 配置检测 Skill
 # =============================================================================
 # 从 trace 中解析实际的 Vsync 周期和刷新率设置
-# 
-# 数据来源:
-#   1. frame_slice 表的 vsync_interval 字段 (最准确)
-#   2. actual_frame_timeline_slice 表的帧间隔
-#   3. SurfaceFlinger 的 VSYNC 相关 slice
+#
+# 数据来源 (按优先级):
+#   1. SurfaceFlinger 的 VSYNC-sf/vsync-app slice 间隔 (最可靠)
+#   2. expected_frame_timeline_slice 的帧 duration
+#   3. 默认 60Hz (16.67ms)
 #
 # 输出:
 #   - vsync_period_ns: Vsync 周期（纳秒）
@@ -15,7 +15,7 @@
 # =============================================================================
 
 name: vsync_config
-version: "1.0"
+version: "1.1"
 type: atomic
 
 meta:
@@ -40,56 +40,41 @@ steps:
     name: "检测 Vsync 配置"
     sql: |
       WITH
-      -- 方法1: 从 frame_slice 表获取 vsync_interval（最准确）
-      frame_slice_vsync AS (
+      -- 方法1: 从 SurfaceFlinger 的 VSYNC slice 间隔推算周期 (最可靠)
+      sf_vsync_intervals AS (
         SELECT
-          vsync_interval as vsync_period_ns,
-          'frame_slice.vsync_interval' as source
-        FROM frame_slice
-        WHERE vsync_interval > 0
-        LIMIT 1
+          s.ts,
+          LEAD(s.ts) OVER (ORDER BY s.ts) - s.ts AS interval_ns
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (p.name = 'surfaceflinger' OR p.name LIKE '%surfaceflinger%')
+          AND (s.name GLOB '*VSYNC*' OR s.name GLOB '*vsync-sf*' OR s.name GLOB '*vsync-app*')
+        LIMIT 500
+      ),
+      sf_vsync AS (
+        SELECT
+          CAST(AVG(interval_ns) AS INTEGER) as vsync_period_ns,
+          'sf_vsync_interval' as source
+        FROM sf_vsync_intervals
+        WHERE interval_ns > 5000000 AND interval_ns < 30000000
       ),
       -- 方法2: 从 expected_frame_timeline_slice 获取 vsync 周期
       expected_frame_vsync AS (
         SELECT
           -- expected frame 的 dur 就是 vsync 周期
           CAST(AVG(dur) AS INTEGER) as vsync_period_ns,
-          'expected_frame_timeline_slice.dur' as source
+          'expected_frame_dur' as source
         FROM expected_frame_timeline_slice
         WHERE dur > 5000000 AND dur < 20000000  -- 5ms-20ms 的合理范围
         LIMIT 1000
       ),
-      -- 方法3: 从 actual_frame_timeline_slice 帧间隔推算
-      actual_frame_vsync AS (
-        SELECT
-          CAST(PERCENTILE(dur, 0.5) AS INTEGER) as vsync_period_ns,
-          'actual_frame_timeline_slice.dur_median' as source
-        FROM actual_frame_timeline_slice
-        WHERE dur > 5000000 AND dur < 20000000
-        AND jank_type = 'None'  -- 只看正常帧
-      ),
-      -- 方法4: 从 SurfaceFlinger vsync-app slice 获取
-      sf_vsync AS (
-        SELECT
-          CAST(AVG(s.dur) AS INTEGER) as vsync_period_ns,
-          'sf_vsync_slice' as source
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE (s.name GLOB '*vsync*' OR s.name GLOB '*VSYNC*')
-          AND s.dur > 5000000 AND s.dur < 20000000
-        LIMIT 500
-      ),
       -- 合并结果，按优先级选择
       combined AS (
-        SELECT vsync_period_ns, source FROM frame_slice_vsync WHERE vsync_period_ns > 0
+        SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
         UNION ALL
         SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
-        UNION ALL
-        SELECT vsync_period_ns, source FROM actual_frame_vsync WHERE vsync_period_ns > 0
-        UNION ALL
-        SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
       )
       SELECT
         COALESCE(

@@ -31,6 +31,44 @@ lsof -ti:3000 | xargs kill -9 2>/dev/null || true
 lsof -ti:10000 | xargs kill -9 2>/dev/null || true
 sleep 1
 
+# Check and build trace_processor_shell if needed
+TRACE_PROCESSOR="$PROJECT_ROOT/perfetto/out/ui/trace_processor_shell"
+if [ ! -f "$TRACE_PROCESSOR" ]; then
+  echo "=============================================="
+  echo "trace_processor_shell not found. Building..."
+  echo "=============================================="
+
+  cd "$PROJECT_ROOT/perfetto"
+
+  # Generate build config if needed
+  if [ ! -f "out/ui/build.ninja" ]; then
+    echo "Generating build configuration..."
+    tools/gn gen out/ui --args='is_debug=false'
+  fi
+
+  # Build trace_processor_shell
+  echo "Compiling trace_processor_shell (this may take a few minutes)..."
+  if ! tools/ninja -C out/ui trace_processor_shell; then
+    echo "=============================================="
+    echo "ERROR: Failed to build trace_processor_shell"
+    echo ""
+    echo "You can try building manually:"
+    echo "  cd $PROJECT_ROOT/perfetto"
+    echo "  tools/ninja -C out/ui trace_processor_shell"
+    echo ""
+    echo "Or download a pre-built binary:"
+    echo "  curl -LOk https://get.perfetto.dev/trace_processor"
+    echo "  chmod +x trace_processor"
+    echo "  mv trace_processor $TRACE_PROCESSOR"
+    echo "=============================================="
+    exit 1
+  fi
+
+  echo "trace_processor_shell built successfully!"
+else
+  echo "trace_processor_shell found: $TRACE_PROCESSOR"
+fi
+
 # Build backend
 echo "Building backend..."
 cd "$PROJECT_ROOT/backend"
