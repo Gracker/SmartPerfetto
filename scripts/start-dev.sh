@@ -78,6 +78,13 @@ if [ $? -ne 0 ]; then
   exit 1
 fi
 
+# Update UI build dependencies (needed after git sync from upstream)
+echo "Checking UI build dependencies..."
+cd "$PROJECT_ROOT/perfetto"
+if ! tools/install-build-deps --ui 2>&1 | tee -a "$FRONTEND_LOG"; then
+  echo "Warning: install-build-deps failed, trying to continue..."
+fi
+
 # Build frontend
 echo "Building frontend..."
 cd "$PROJECT_ROOT/perfetto/ui"
