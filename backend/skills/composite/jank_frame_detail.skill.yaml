@@ -62,6 +62,18 @@ inputs:
   - name: layer_name
     type: string
     required: false
+  - name: token_gap
+    type: integer
+    required: false
+    description: "display_frame_token 跳跃值 (>1 表示消费端掉帧)"
+  - name: vsync_missed
+    type: integer
+    required: false
+    description: "跳过的 VSync 数量 (token_gap - 1)"
+  - name: jank_responsibility
+    type: string
+    required: false
+    description: "掉帧责任归属: APP（BufferTX=0）或 SF（BufferTX>0）"
 
 steps:
   # 四象限分析：输出格式直接匹配前端展示需求
@@ -337,77 +349,122 @@ steps:
       title: "诊断结果"
     inputs: [quadrant_data, binder_data, freq_data, main_slices, render_slices, freq_timeline, lock_data]
     rules:
-      - condition: "lock_data.data[0]?.wait_ms > 2"
-        severity: warning
+      # ===== 高优先级：锁竞争 =====
+      - condition: "lock_data.data?.length > 0 && lock_data.data[0]?.wait_ms > 1"
+        severity: critical
         diagnosis: "锁竞争等待 ${lock_data.data[0].wait_ms}ms (${lock_data.data[0].blocking_method})"
         confidence: high
         suggestions:
           - "检查持锁线程是否在做耗时操作"
           - "考虑减少锁粒度或使用无锁数据结构"
 
-      - condition: "lock_data.data[0]?.main_blocked === 1"
-        severity: warning
+      - condition: "lock_data.data?.length > 0 && lock_data.data[0]?.main_blocked === 1"
+        severity: critical
         diagnosis: "主线程被锁阻塞 (等待 ${lock_data.data[0].blocking_thread_name})"
         confidence: high
         suggestions:
           - "避免在持锁时做 Binder/IO 操作"
           - "考虑使用异步锁或拆分锁"
 
-      - condition: "binder_data.data[0]?.total_ms > 5"
+      # ===== 高优先级：Binder 调用 =====
+      - condition: "binder_data.data?.length > 0 && binder_data.data[0]?.dur_ms > 2"
         severity: warning
-        diagnosis: "Binder 调用耗时过长 (${binder_data.data[0].total_ms}ms)"
+        diagnosis: "Binder 调用耗时 ${binder_data.data[0].dur_ms}ms (${binder_data.data[0].interface})"
         confidence: high
         suggestions:
           - "检查是否可以异步调用"
           - "考虑使用缓存减少调用次数"
 
-      - condition: "quadrant_data.data[0]?.q3_pct > 20"
+      # ===== 四象限分析（使用 .find() 查找特定象限）=====
+      # Q3 等待调度 - 说明 CPU 繁忙
+      - condition: "quadrant_data.data?.find(q => q.quadrant?.includes('Q3'))?.percentage > 15"
         severity: warning
-        diagnosis: "主线程 Runnable 等待过长 (${quadrant_data.data[0].q3_pct}%)"
+        diagnosis: "主线程 Runnable 等待 ${quadrant_data.data.find(q => q.quadrant?.includes('Q3'))?.percentage}%"
         confidence: high
         suggestions:
           - "CPU 资源争抢，检查后台任务"
           - "考虑提高线程优先级"
 
-      - condition: "quadrant_data.data[0]?.q1_pct < 30 && quadrant_data.data[0]?.q2_pct > 50"
+      # Q4 休眠阻塞 - 说明在等待 IO 或锁
+      - condition: "quadrant_data.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q4'))?.percentage > 40"
         severity: warning
-        diagnosis: "主线程主要运行在小核 (大核占比 ${quadrant_data.data[0].q1_pct}%)"
+        diagnosis: "主线程休眠/阻塞时间占比 ${quadrant_data.data.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q4'))?.percentage}%"
+        confidence: high
+        suggestions:
+          - "检查是否有 IO 操作或锁等待"
+          - "考虑使用异步 IO"
+
+      # Q2 小核运行占比高 - 说明调度可能有问题
+      - condition: "quadrant_data.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage > 60"
+        severity: info
+        diagnosis: "主线程主要运行在小核 (${quadrant_data.data.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage}%)"
         confidence: medium
         suggestions:
           - "检查系统温控是否限制大核"
           - "考虑提高线程优先级"
 
-      - condition: "main_slices.data[0]?.total_ms > 10"
+      # ===== 主线程耗时操作 =====
+      - condition: "main_slices.data?.length > 0 && main_slices.data[0]?.dur_ms > 5"
         severity: warning
-        diagnosis: "主线程操作 '${main_slices.data[0].name}' 耗时 ${main_slices.data[0].total_ms}ms"
+        diagnosis: "主线程操作 '${main_slices.data[0].name}' 耗时 ${main_slices.data[0].dur_ms}ms"
         confidence: high
         suggestions:
           - "考虑将耗时操作移到后台线程"
           - "优化该操作的执行效率"
 
-      - condition: "render_slices.data[0]?.total_ms > 5"
+      # ===== RenderThread 耗时操作 =====
+      - condition: "render_slices.data?.length > 0 && render_slices.data[0]?.dur_ms > 3"
         severity: warning
-        diagnosis: "RenderThread 操作 '${render_slices.data[0].name}' 耗时 ${render_slices.data[0].total_ms}ms"
+        diagnosis: "RenderThread 操作 '${render_slices.data[0].name}' 耗时 ${render_slices.data[0].dur_ms}ms"
         confidence: high
         suggestions:
           - "检查是否有复杂的自定义绘制"
           - "考虑减少绘制复杂度或使用硬件加速"
 
-      - condition: "freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
+      # ===== CPU 频率分析 =====
+      - condition: "freq_data.data?.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
         severity: info
-        diagnosis: "大核频率偏低 (${freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz || 0}MHz)"
+        diagnosis: "大核频率偏低 (${freq_data.data?.find(f => f.core_type === 'big')?.avg_freq_mhz || 0}MHz)"
         confidence: medium
         suggestions:
           - "系统可能处于省电模式"
           - "检查温控策略"
 
-      - condition: "freq_timeline.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length > 3"
+      # ===== CPU 频率变化 =====
+      - condition: "freq_timeline.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length > 2"
         severity: info
-        diagnosis: "大核频率频繁降频 (${freq_timeline.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length || 0}次)"
+        diagnosis: "大核频率降频 ${freq_timeline.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length || 0}次"
         confidence: medium
         suggestions:
           - "可能触发了温控降频"
           - "检查系统负载和温度"
+
+      # ===== 严重掉帧检测：基于消费端 vsync_missed =====
+      - condition: "${vsync_missed} >= 3"
+        severity: critical
+        diagnosis: "严重卡顿: SF 跳过 ${vsync_missed} 帧 VSync (约 ${vsync_missed * 16.7}ms)"
+        confidence: high
+        suggestions:
+          - "检查此时系统是否有大量后台活动"
+          - "查看主线程和 RenderThread 的阻塞原因"
+
+      - condition: "${vsync_missed} >= 1"
+        severity: warning
+        diagnosis: "掉帧: SF 跳过 ${vsync_missed} 帧 VSync"
+        confidence: high
+        suggestions:
+          - "查看上方各项数据分析原因"
+          - "可能是多个因素共同导致"
+
+      # ===== 基础诊断：帧耗时本身 =====
+      # 如果没有其他诊断，至少提供帧耗时信息
+      - condition: "true"
+        severity: info
+        diagnosis: "帧耗时超过 Vsync 周期"
+        confidence: low
+        suggestions:
+          - "查看上方各项数据分析原因"
+          - "可能是多个因素共同导致"
 
 output:
   format: structured

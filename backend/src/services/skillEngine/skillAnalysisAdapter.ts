@@ -554,8 +554,15 @@ export class SkillAnalysisAdapter {
       let rowCount: number;
       let columns: string[] | undefined;
 
+      // 0. 诊断数据格式 {diagnostics, inputs} - 保持原样
+      if (result.data.diagnostics && Array.isArray(result.data.diagnostics)) {
+        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using diagnostic format`);
+        // 保持诊断结构，前端需要这个格式
+        sectionData = result.data;
+        rowCount = result.data.diagnostics.length;
+      }
       // 1. 标准 {columns, rows} 格式
-      if (result.data.rows && Array.isArray(result.data.rows)) {
+      else if (result.data.rows && Array.isArray(result.data.rows)) {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using {columns, rows} format`);
         sectionData = this.rowsToObjects(result.data.columns, result.data.rows);
         rowCount = result.data.rows.length;

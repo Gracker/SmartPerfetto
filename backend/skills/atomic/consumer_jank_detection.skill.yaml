@@ -1,0 +1,265 @@
+# =============================================================================
+# 消费端掉帧检测 (Consumer-Side Jank Detection)
+# =============================================================================
+# 从 SurfaceFlinger 消费端角度检测真正的掉帧
+#
+# 核心原理：
+# - display_frame_token 是 SF 的全局帧序号
+# - 如果连续两帧的 token 差值 > 1，说明 SF 在中间的 VSync 没有消费该 App 的 Buffer
+# - 这才是用户真正看到的卡顿
+#
+# 与传统 jank_type 的区别：
+# - Buffer Stuffing + gap=1: 不是真正掉帧（帧连续呈现，只是延迟增加）
+# - jank_type=None + gap>1: 是真正掉帧（SF 跳过了多个 VSync）
+
+name: consumer_jank_detection
+version: "1.0"
+type: atomic
+
+meta:
+  display_name: "消费端掉帧检测"
+  description: "从 SurfaceFlinger 消费端角度检测真正的掉帧（基于 display_frame_token 跳跃）"
+  icon: "visibility"
+  tags: [jank, consumer, surfaceflinger, frames]
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "应用包名"
+  - name: layer_name
+    type: string
+    required: false
+    description: "Layer 名称（可选，用于精确匹配）"
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+
+steps:
+  # Step 1: 检测 VSync 周期
+  - id: vsync_config
+    type: atomic
+    name: "VSync 配置"
+    sql: |
+      SELECT
+        COALESCE(
+          (SELECT CAST(AVG(dur) AS INTEGER)
+           FROM expected_frame_timeline_slice
+           WHERE dur > 5000000 AND dur < 20000000
+           LIMIT 1000),
+          16666666
+        ) as vsync_period_ns,
+        ROUND(1e9 / COALESCE(
+          (SELECT AVG(dur)
+           FROM expected_frame_timeline_slice
+           WHERE dur > 5000000 AND dur < 20000000
+           LIMIT 1000),
+          16666666
+        ), 0) as refresh_rate_hz
+    save_as: vsync_config
+
+  # Step 2: 检测真正的掉帧（基于 display_frame_token 跳跃）
+  - id: consumer_jank_frames
+    type: atomic
+    name: "消费端掉帧检测"
+    display:
+      level: detail
+      title: "真正的掉帧帧（SF 消费端视角）"
+    sql: |
+      WITH
+      -- 获取目标 App 的所有帧
+      app_frames AS (
+        SELECT
+          a.display_frame_token,
+          a.surface_frame_token,
+          a.ts,
+          a.dur,
+          a.layer_name,
+          a.jank_type,
+          a.present_type,
+          a.upid,
+          LAG(a.display_frame_token) OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_display_token,
+          LAG(a.ts) OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_ts
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE a.surface_frame_token IS NOT NULL
+          AND (
+            a.layer_name LIKE 'TX - ${package}%'
+            OR a.layer_name = '${layer_name}'
+            OR ('${package}' = '' AND '${layer_name}' = '')
+          )
+          AND ('${start_ts}' = '' OR a.ts >= CAST('${start_ts}' AS INTEGER))
+          AND ('${end_ts}' = '' OR a.ts <= CAST('${end_ts}' AS INTEGER))
+      ),
+      -- 计算每帧的消费端状态
+      jank_analysis AS (
+        SELECT
+          display_frame_token,
+          surface_frame_token,
+          ts,
+          dur,
+          layer_name,
+          jank_type as app_jank_type,
+          present_type,
+          prev_display_token,
+          prev_ts,
+          display_frame_token - prev_display_token as token_gap,
+          ts - prev_ts as interval_ns,
+          CASE
+            -- Gap > 1 表示 SF 跳过了 VSync，用户看到卡顿
+            WHEN display_frame_token - prev_display_token > 1 THEN 1
+            ELSE 0
+          END as is_consumer_jank,
+          CASE
+            WHEN display_frame_token - prev_display_token = 1 THEN 'SMOOTH'
+            WHEN display_frame_token - prev_display_token <= 2 THEN 'MINOR_JANK'
+            WHEN display_frame_token - prev_display_token <= 4 THEN 'JANK'
+            WHEN display_frame_token - prev_display_token <= 8 THEN 'SEVERE_JANK'
+            ELSE 'FROZEN'
+          END as jank_severity
+        FROM app_frames
+        WHERE prev_display_token IS NOT NULL
+      )
+      SELECT
+        display_frame_token as frame_id,
+        layer_name,
+        printf('%d', ts) as ts_str,
+        ROUND(ts / 1e9, 3) as ts_sec,
+        ROUND(dur / 1e6, 2) as dur_ms,
+        token_gap,
+        token_gap - 1 as vsync_missed,
+        ROUND(interval_ns / 1e6, 2) as interval_ms,
+        app_jank_type,
+        present_type,
+        jank_severity,
+        is_consumer_jank
+      FROM jank_analysis
+      WHERE is_consumer_jank = 1
+      ORDER BY ts
+    save_as: consumer_jank_frames
+
+  # Step 3: 消费端掉帧统计汇总
+  - id: consumer_jank_summary
+    type: atomic
+    name: "消费端掉帧汇总"
+    display:
+      level: summary
+      title: "消费端掉帧统计"
+    sql: |
+      WITH
+      app_frames AS (
+        SELECT
+          a.display_frame_token,
+          a.ts,
+          a.jank_type,
+          a.layer_name,
+          LAG(a.display_frame_token) OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_display_token
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE a.surface_frame_token IS NOT NULL
+          AND (
+            a.layer_name LIKE 'TX - ${package}%'
+            OR a.layer_name = '${layer_name}'
+            OR ('${package}' = '' AND '${layer_name}' = '')
+          )
+          AND ('${start_ts}' = '' OR a.ts >= CAST('${start_ts}' AS INTEGER))
+          AND ('${end_ts}' = '' OR a.ts <= CAST('${end_ts}' AS INTEGER))
+      ),
+      jank_stats AS (
+        SELECT
+          COUNT(*) as total_frames,
+          SUM(CASE WHEN display_frame_token - prev_display_token > 1 THEN 1 ELSE 0 END) as consumer_jank_frames,
+          SUM(CASE WHEN display_frame_token - prev_display_token = 1 THEN 1 ELSE 0 END) as smooth_frames,
+          SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) as app_reported_jank,
+          SUM(CASE WHEN jank_type LIKE '%Buffer%' AND display_frame_token - prev_display_token = 1 THEN 1 ELSE 0 END) as false_positive_buffer_stuffing,
+          SUM(CASE WHEN jank_type = 'None' AND display_frame_token - prev_display_token > 1 THEN 1 ELSE 0 END) as missed_jank_frames,
+          MAX(display_frame_token - prev_display_token) as max_token_gap,
+          AVG(display_frame_token - prev_display_token) as avg_token_gap
+        FROM app_frames
+        WHERE prev_display_token IS NOT NULL
+      )
+      SELECT
+        total_frames,
+        consumer_jank_frames,
+        smooth_frames,
+        ROUND(100.0 * consumer_jank_frames / NULLIF(total_frames, 0), 2) as consumer_jank_rate,
+        app_reported_jank as old_logic_jank_count,
+        ROUND(100.0 * app_reported_jank / NULLIF(total_frames, 0), 2) as old_logic_jank_rate,
+        false_positive_buffer_stuffing as false_positives,
+        missed_jank_frames as false_negatives,
+        max_token_gap - 1 as max_vsync_missed,
+        ROUND(avg_token_gap, 2) as avg_token_gap,
+        CASE
+          WHEN 100.0 * consumer_jank_frames / NULLIF(total_frames, 0) < 1 THEN '优秀'
+          WHEN 100.0 * consumer_jank_frames / NULLIF(total_frames, 0) < 5 THEN '良好'
+          WHEN 100.0 * consumer_jank_frames / NULLIF(total_frames, 0) < 15 THEN '一般'
+          ELSE '较差'
+        END as rating
+      FROM jank_stats
+    save_as: consumer_jank_summary
+
+  # Step 4: 严重程度分布
+  - id: jank_severity_distribution
+    type: atomic
+    name: "掉帧严重程度分布"
+    display:
+      level: detail
+      title: "掉帧严重程度分布"
+    sql: |
+      WITH
+      app_frames AS (
+        SELECT
+          a.display_frame_token,
+          LAG(a.display_frame_token) OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_display_token
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE a.surface_frame_token IS NOT NULL
+          AND (
+            a.layer_name LIKE 'TX - ${package}%'
+            OR a.layer_name = '${layer_name}'
+            OR ('${package}' = '' AND '${layer_name}' = '')
+          )
+          AND ('${start_ts}' = '' OR a.ts >= CAST('${start_ts}' AS INTEGER))
+          AND ('${end_ts}' = '' OR a.ts <= CAST('${end_ts}' AS INTEGER))
+      ),
+      gap_analysis AS (
+        SELECT
+          display_frame_token - prev_display_token as token_gap,
+          CASE
+            WHEN display_frame_token - prev_display_token = 1 THEN 'SMOOTH (gap=1)'
+            WHEN display_frame_token - prev_display_token = 2 THEN 'MINOR_JANK (gap=2, 跳1帧)'
+            WHEN display_frame_token - prev_display_token <= 4 THEN 'JANK (gap=3-4, 跳2-3帧)'
+            WHEN display_frame_token - prev_display_token <= 8 THEN 'SEVERE_JANK (gap=5-8, 跳4-7帧)'
+            ELSE 'FROZEN (gap>8, 跳8+帧)'
+          END as severity
+        FROM app_frames
+        WHERE prev_display_token IS NOT NULL
+      )
+      SELECT
+        severity,
+        COUNT(*) as count,
+        ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage
+      FROM gap_analysis
+      GROUP BY severity
+      ORDER BY
+        CASE severity
+          WHEN 'SMOOTH (gap=1)' THEN 1
+          WHEN 'MINOR_JANK (gap=2, 跳1帧)' THEN 2
+          WHEN 'JANK (gap=3-4, 跳2-3帧)' THEN 3
+          WHEN 'SEVERE_JANK (gap=5-8, 跳4-7帧)' THEN 4
+          ELSE 5
+        END
+    save_as: jank_severity_distribution
+
+output:
+  format: structured
+  fields:
+    - name: consumer_jank_frames
+      description: "真正的掉帧帧列表"
+    - name: consumer_jank_summary
+      description: "消费端掉帧统计汇总"
+    - name: jank_severity_distribution
+      description: "掉帧严重程度分布"

@@ -107,11 +107,31 @@ class ExpressionEvaluator {
       return this.evaluateJsExpression(fullExprMatch[1], context);
     }
 
-    // 否则，做简单的变量替换
+    // 否则，做变量替换（支持嵌入的 JavaScript 表达式）
     let result = expression;
 
     // 替换 ${xxx} 格式的变量
+    // 检测是否包含 JavaScript 方法调用（如 .find(), .filter(), .map() 等）
     result = result.replace(/\$\{([^}]+)\}/g, (match, path) => {
+      // 检测是否包含 JS 方法调用或复杂表达式
+      const hasJsMethodCall = /\.\s*(find|filter|map|reduce|some|every|includes|indexOf)\s*\(/.test(path);
+      const hasArrowFunction = /=>/.test(path);
+      const hasTernary = /\?.*:/.test(path) && !/\?\.\s*\w/.test(path); // 排除可选链 ?.
+
+      if (hasJsMethodCall || hasArrowFunction || hasTernary) {
+        // 使用完整的 JS 表达式求值
+        try {
+          const value = this.evaluateJsExpression(path, context);
+          if (value === undefined || value === null) return '';
+          if (typeof value === 'object') return JSON.stringify(value);
+          return String(value);
+        } catch (e) {
+          console.warn(`[ExpressionEvaluator] Failed to evaluate embedded JS: ${path}`, e);
+          return '';
+        }
+      }
+
+      // 简单路径，使用 resolvePath
       const value = this.resolvePath(path, context);
       if (value === undefined) return match;
       if (typeof value === 'object') return JSON.stringify(value);
@@ -423,7 +443,7 @@ function processDisplayConfig(
 function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: string; full_analysis: any } {
 
   const fullAnalysis: any = {
-    quadrants: [],
+    quadrants: { main_thread: {}, render_thread: {} },
     binder_calls: [],
     cpu_frequency: { big_avg_mhz: 0, little_avg_mhz: 0 },
     main_thread_slices: [],
@@ -436,8 +456,6 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
   // Step ID to output property mapping
   // This configuration defines which step output goes to which analysis property
   const stepIdMapping: Record<string, string> = {
-    'quadrant_analysis': 'quadrants',
-    'quadrant_data': 'quadrants',
     'binder_calls': 'binder_calls',
     'binder_data': 'binder_calls',
     'main_thread_slices': 'main_thread_slices',
@@ -488,6 +506,38 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
       fullAnalysis.cpu_frequency = {
         big_avg_mhz: bigCore?.avg_freq_mhz || 0,
         little_avg_mhz: littleCore?.avg_freq_mhz || 0,
+      };
+      continue;
+    }
+
+    // Handle quadrant_analysis specially - convert flat array to nested object
+    // Input format: [{ quadrant: "MainThread Q1_大核运行", dur_ms, percentage }, ...]
+    // Output format: { main_thread: { q1, q2, q3, q4 }, render_thread: { q1, q2, q3, q4 } }
+    if (stepId === 'quadrant_analysis' || stepId === 'quadrant_data') {
+      const mainThread: Record<string, number> = { q1: 0, q2: 0, q3: 0, q4: 0 };
+      const renderThread: Record<string, number> = { q1: 0, q2: 0, q3: 0, q4: 0 };
+
+      for (const item of dataArray) {
+        const quadrant = item.quadrant || item.name || '';
+        const percentage = item.percentage || 0;
+
+        // Parse quadrant name: "MainThread Q1_大核运行" -> thread=MainThread, q=1
+        if (quadrant.includes('MainThread')) {
+          if (quadrant.includes('Q1')) mainThread.q1 = percentage;
+          else if (quadrant.includes('Q2')) mainThread.q2 = percentage;
+          else if (quadrant.includes('Q3')) mainThread.q3 = percentage;
+          else if (quadrant.includes('Q4')) mainThread.q4 = percentage;
+        } else if (quadrant.includes('RenderThread')) {
+          if (quadrant.includes('Q1')) renderThread.q1 = percentage;
+          else if (quadrant.includes('Q2')) renderThread.q2 = percentage;
+          else if (quadrant.includes('Q3')) renderThread.q3 = percentage;
+          else if (quadrant.includes('Q4')) renderThread.q4 = percentage;
+        }
+      }
+
+      fullAnalysis.quadrants = {
+        main_thread: mainThread,
+        render_thread: renderThread,
       };
       continue;
     }
@@ -1770,7 +1820,12 @@ export class SkillExecutor {
     // 根据数据类型确定展示格式
     let displayData: DisplayResult['data'];
 
-    if (Array.isArray(data) && data.length > 0) {
+    // Special handling for diagnostic step data - preserve the structure
+    // so that transformL4FrameAnalysis can extract diagnostics
+    if (typeof data === 'object' && data !== null && 'diagnostics' in data && Array.isArray(data.diagnostics)) {
+      // Preserve diagnostic structure for later extraction
+      displayData = data;
+    } else if (Array.isArray(data) && data.length > 0) {
       // 检查是否是 iterator 结果（包含 itemIndex, item, result）
       if (this.isIteratorResult(data)) {
         displayData = this.flattenIteratorResults(data, stepResult.stepType === 'iterator');
