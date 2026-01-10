@@ -2458,6 +2458,10 @@ export class HTMLReportGenerator {
       </div>
     </div>
 
+    ${this.renderMethodologySection(intent, plan)}
+
+    ${stageResults && stageResults.length > 0 ? this.renderReasoningTimeline(stageResults) : ''}
+
     <div class="section">
       <h2 class="section-title">分析结论</h2>
       <div class="answer-box">
@@ -2467,7 +2471,7 @@ export class HTMLReportGenerator {
 
     ${stageResults && stageResults.length > 0 ? `
     <div class="section">
-      <h2 class="section-title">分析阶段结果</h2>
+      <h2 class="section-title">分析阶段详情</h2>
       ${stageResults.map((stage, idx) => this.renderStageResult(stage, idx)).join('')}
     </div>
     ` : ''}
@@ -2533,6 +2537,154 @@ export class HTMLReportGenerator {
   </div>
 </body>
 </html>`;
+  }
+
+  /**
+   * Render methodology section for beginners to understand the analysis approach
+   */
+  private renderMethodologySection(intent: any, plan: any): string {
+    if (!intent && !plan) {
+      return '';
+    }
+
+    const aspects = intent?.aspects || [];
+    const complexity = plan?.complexity || intent?.complexity || 'medium';
+    const complexityLabel = complexity === 'simple' ? '简单' :
+                           complexity === 'medium' ? '中等' :
+                           complexity === 'complex' ? '复杂' : '复杂';
+    const complexityColor = complexity === 'simple' ? '#10b981' :
+                           complexity === 'medium' ? '#f59e0b' : '#ef4444';
+
+    return `
+    <div class="section">
+      <h2 class="section-title">📖 分析方法论</h2>
+      <div style="display: grid; gap: 16px;">
+        <div style="background: #f0fdf4; padding: 16px; border-radius: 8px; border-left: 4px solid #10b981;">
+          <div style="font-weight: 600; color: #166534; margin-bottom: 8px;">🎯 分析目标</div>
+          <div style="color: #166534;">${this.escapeHtml(intent?.primaryGoal || '性能分析')}</div>
+          ${aspects.length > 0 ? `
+            <ul style="margin-top: 8px; padding-left: 20px; color: #166534;">
+              ${aspects.map((a: string) => `<li>${this.escapeHtml(a)}</li>`).join('')}
+            </ul>
+          ` : ''}
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;">
+          <div style="background: #f8fafc; padding: 16px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 24px; font-weight: 700; color: ${complexityColor};">${complexityLabel}</div>
+            <div style="font-size: 13px; color: #64748b; margin-top: 4px;">分析复杂度</div>
+          </div>
+          ${plan?.stages ? `
+          <div style="background: #f8fafc; padding: 16px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 24px; font-weight: 700; color: #3b82f6;">${plan.stages.length}</div>
+            <div style="font-size: 13px; color: #64748b; margin-top: 4px;">分析阶段</div>
+          </div>
+          ` : ''}
+          ${intent?.suggestedSkills?.length > 0 ? `
+          <div style="background: #f8fafc; padding: 16px; border-radius: 8px; text-align: center;">
+            <div style="font-size: 24px; font-weight: 700; color: #8b5cf6;">${intent.suggestedSkills.length}</div>
+            <div style="font-size: 13px; color: #64748b; margin-top: 4px;">分析技能</div>
+          </div>
+          ` : ''}
+        </div>
+
+        ${intent?.suggestedSkills?.length > 0 ? `
+        <div style="background: #faf5ff; padding: 16px; border-radius: 8px;">
+          <div style="font-weight: 600; color: #7c3aed; margin-bottom: 8px;">🛠️ 使用的分析技能</div>
+          <div style="display: flex; flex-wrap: wrap; gap: 8px;">
+            ${intent.suggestedSkills.map((skill: string) => `
+              <span style="background: #ede9fe; color: #6d28d9; padding: 4px 12px; border-radius: 16px; font-size: 13px;">
+                ${this.escapeHtml(skill)}
+              </span>
+            `).join('')}
+          </div>
+          <div style="margin-top: 12px; font-size: 12px; color: #8b5cf6; font-style: italic;">
+            💡 这些技能是 AI 根据您的问题自动选择的，每个技能专门分析特定类型的性能数据
+          </div>
+        </div>
+        ` : ''}
+      </div>
+    </div>
+    `;
+  }
+
+  /**
+   * Render AI reasoning timeline for beginners to understand the analysis flow
+   */
+  private renderReasoningTimeline(stageResults: StageResult[]): string {
+    if (!stageResults || stageResults.length === 0) {
+      return '';
+    }
+
+    // Calculate total duration
+    const firstStart = Math.min(...stageResults.map(s => s.startTime));
+    const lastEnd = Math.max(...stageResults.map(s => s.endTime));
+    const totalDuration = lastEnd - firstStart;
+
+    return `
+    <div class="section">
+      <h2 class="section-title">🧠 AI 推理过程</h2>
+      <div style="padding: 8px 16px; background: #f0f9ff; border-radius: 8px; margin-bottom: 16px; font-size: 13px; color: #0369a1;">
+        💡 <strong>学习要点:</strong> 以下时间线展示了 AI 是如何一步步分析您的问题的。每个阶段都有特定的目的，帮助您理解分析过程。
+      </div>
+
+      <div style="position: relative; padding-left: 32px;">
+        <!-- Timeline line -->
+        <div style="position: absolute; left: 12px; top: 0; bottom: 0; width: 2px; background: linear-gradient(180deg, #10b981 0%, #3b82f6 100%);"></div>
+
+        ${stageResults.map((stage, idx) => {
+          const duration = stage.endTime - stage.startTime;
+          const findingsCount = stage.findings?.length || 0;
+          const stageIcon = stage.stageId.includes('planner') ? '📋' :
+                           stage.stageId.includes('worker') ? '⚙️' :
+                           stage.stageId.includes('evaluator') ? '✅' :
+                           stage.stageId.includes('synthesis') ? '📝' : '🔍';
+          const stageExplanation = stage.stageId.includes('planner') ? '制定分析计划' :
+                                  stage.stageId.includes('worker') ? '执行数据分析' :
+                                  stage.stageId.includes('evaluator') ? '评估结果质量' :
+                                  stage.stageId.includes('synthesis') ? '综合生成报告' : '分析处理';
+
+          return `
+          <div style="position: relative; margin-bottom: 20px;">
+            <!-- Timeline dot -->
+            <div style="position: absolute; left: -26px; top: 4px; width: 16px; height: 16px; border-radius: 50%; background: ${stage.success ? '#10b981' : '#ef4444'}; border: 3px solid white; box-shadow: 0 1px 3px rgba(0,0,0,0.2);"></div>
+
+            <div style="background: ${stage.success ? '#f0fdf4' : '#fef2f2'}; border-radius: 8px; padding: 16px; border-left: 3px solid ${stage.success ? '#10b981' : '#ef4444'};">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <div style="font-weight: 600; color: #1f2937;">
+                  ${stageIcon} 步骤 ${idx + 1}: ${this.escapeHtml(stage.stageId)}
+                </div>
+                <div style="font-size: 12px; color: #6b7280;">
+                  ${stage.success ? '✅' : '❌'} ${(duration / 1000).toFixed(1)}s
+                </div>
+              </div>
+
+              <div style="font-size: 13px; color: #4b5563; margin-bottom: 8px;">
+                ${stageExplanation}
+              </div>
+
+              ${findingsCount > 0 ? `
+              <div style="font-size: 12px; color: #059669; background: #ecfdf5; padding: 8px 12px; border-radius: 4px; margin-top: 8px;">
+                📊 发现 ${findingsCount} 条问题
+              </div>
+              ` : ''}
+
+              ${stage.error ? `
+              <div style="font-size: 12px; color: #dc2626; background: #fef2f2; padding: 8px 12px; border-radius: 4px; margin-top: 8px;">
+                ⚠️ ${this.escapeHtml(stage.error)}
+              </div>
+              ` : ''}
+            </div>
+          </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div style="margin-top: 16px; padding: 12px 16px; background: #f8fafc; border-radius: 8px; font-size: 12px; color: #64748b; text-align: center;">
+        总耗时 ${(totalDuration / 1000).toFixed(1)} 秒 | 共 ${stageResults.length} 个分析阶段 | ${stageResults.filter(s => s.success).length}/${stageResults.length} 阶段成功
+      </div>
+    </div>
+    `;
   }
 
   private renderStageResult(stage: StageResult, idx: number): string {

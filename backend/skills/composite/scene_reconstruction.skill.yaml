@@ -153,9 +153,10 @@ steps:
       SELECT
         printf('%d', ts) AS ts,
         printf('%d', dur) AS dur,
+        -- 手势类型 + 详细信息（面向初学者）
         CASE
-          WHEN move_count > 5 THEN '滑动'
-          WHEN dur > 500000000 AND move_count <= 2 THEN '长按'
+          WHEN move_count >= 3 THEN '滑动 (' || move_count || '次移动, ' || CAST(dur / 1000000 AS INT) || 'ms)'
+          WHEN dur > 500000000 AND move_count <= 2 THEN '长按 (' || CAST(dur / 1000000 AS INT) || 'ms)'
           ELSE '点击'
         END ||
         CASE
@@ -164,16 +165,86 @@ steps:
           ELSE ''
         END AS event,
         CASE
-          WHEN move_count > 5 THEN 'scroll'
+          WHEN move_count >= 3 THEN 'scroll'
           WHEN dur > 500000000 AND move_count <= 2 THEN 'long_press'
           ELSE 'tap'
         END AS gesture_type,
+        -- 检测置信度（帮助初学者理解检测可靠性）
+        CASE
+          WHEN move_count >= 10 THEN '高'
+          WHEN move_count >= 5 THEN '中'
+          WHEN move_count >= 3 THEN '低'
+          ELSE '高'
+        END AS confidence,
+        move_count,
         'gesture' AS category
       FROM gestures
       WHERE event_count >= 2
       ORDER BY ts
       LIMIT 200
     save_as: gestures
+    optional: true
+
+  # ==========================================================================
+  # L2: 滑动启动检测 (面向初学者：精确定位滑动开始时刻)
+  # ==========================================================================
+  - id: scroll_initiation
+    type: atomic
+    name: "滑动启动时刻"
+    display:
+      level: detail
+      layer: list
+      title: "滑动启动"
+    sql: |
+      -- 此 step 检测滑动开始的精确时刻
+      -- 原理：当手指 DOWN 后连续出现 2 个 MOVE 事件时，认为滑动启动
+      WITH RECURSIVE input_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_input_events'
+        )
+      ),
+      motion_with_seq AS (
+        SELECT
+          event_action,
+          read_time AS ts,
+          process_name,
+          -- 为每个 DOWN 事件分配一个 gesture_id
+          SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END)
+            OVER (ORDER BY read_time) AS gesture_id,
+          -- 在每个手势内部的事件序号
+          ROW_NUMBER() OVER (
+            PARTITION BY SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END)
+              OVER (ORDER BY read_time)
+            ORDER BY read_time
+          ) AS event_seq
+        FROM android_input_events
+        WHERE event_type = 'MOTION'
+      ),
+      scroll_starts AS (
+        SELECT
+          ts AS scroll_start_ts,
+          gesture_id,
+          process_name AS app
+        FROM motion_with_seq
+        -- 第 3 个事件 = DOWN + 2 MOVE = 滑动启动点
+        WHERE event_seq = 3 AND event_action = 'MOVE'
+      )
+      SELECT
+        printf('%d', scroll_start_ts) AS ts,
+        '0' AS dur,
+        '滑动启动' ||
+        CASE
+          WHEN app IS NOT NULL AND app != ''
+          THEN ' [' || REPLACE(REPLACE(app, 'com.', ''), 'android.', '') || ']'
+          ELSE ''
+        END AS event,
+        gesture_id,
+        'scroll_start' AS category,
+        '💡 此时刻手指已移动足够距离，系统开始响应滑动' AS explanation
+      FROM scroll_starts
+      ORDER BY scroll_start_ts
+      LIMIT 100
+    save_as: scroll_starts
     optional: true
 
   # ==========================================================================
@@ -383,7 +454,7 @@ steps:
             CAST(ts AS INTEGER) AS ts,
             CAST(dur AS INTEGER) AS dur,
             CASE
-              WHEN move_count > 5 THEN '滑动'
+              WHEN move_count >= 3 THEN '滑动 (' || move_count || '次移动)'
               WHEN dur > 500000000 AND move_count <= 2 THEN '长按'
               ELSE '点击'
             END ||
@@ -476,11 +547,13 @@ steps:
       - screen_state_changes
       - top_app_changes
       - user_gestures
+      - scroll_initiation
       - app_launches
       - system_events
       - jank_events
     prompt: |
-      你是一位 Android 性能分析专家。请基于以下 Trace 数据，还原用户的完整操作场景。
+      你是一位 Android 性能分析专家，你的任务是帮助初学者理解 Trace 数据。
+      请基于以下数据还原用户的完整操作场景，并用通俗易懂的语言解释。
 
       ## Trace 时间范围
       ${trace_time_range}
@@ -493,6 +566,10 @@ steps:
 
       ## 用户手势操作
       ${user_gestures}
+
+      ## 滑动启动时刻
+      ${scroll_initiation}
+      说明：这里记录了每次滑动开始的精确时刻（手指按下后移动到第2个点时）
 
       ## App 启动事件
       ${app_launches}
