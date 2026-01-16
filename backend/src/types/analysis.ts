@@ -286,6 +286,9 @@ export interface ProgressEvent extends SSEEvent {
     total?: number;
     step?: string;      // Step name (e.g., 'generating_sql', 'executing_sql')
     message: string;
+    // Extended fields for agent/worker thought events
+    agent?: string;     // Agent name (e.g., 'AnalysisWorker', 'planner', 'evaluator')
+    skillId?: string;   // Skill being executed
   };
 }
 
@@ -346,6 +349,15 @@ export interface SkillLayeredResultEvent extends SSEEvent {
         skillName: string;
         version: string;
         executedAt: string;
+      };
+      /** Root cause conclusion (Phase 4) */
+      conclusion?: {
+        category: 'APP' | 'SYSTEM' | 'MIXED' | 'UNKNOWN';
+        component: string;
+        confidence: number;
+        summary: string;
+        evidence: string[];
+        suggestion?: string;
       };
     };
     summary?: string;
@@ -469,4 +481,75 @@ export interface AIEvaluationResponse {
   confidence: string;
   reasoning: string;
   needsMoreData: boolean;
+}
+
+// ============================================================================
+// Root Cause Classification Types (Phase 4)
+// ============================================================================
+
+/**
+ * Problem category classification
+ */
+export type ProblemCategory = 'APP' | 'SYSTEM' | 'MIXED' | 'UNKNOWN';
+
+/**
+ * Problem component classification
+ */
+export type ProblemComponent =
+  | 'MAIN_THREAD'
+  | 'RENDER_THREAD'
+  | 'SURFACE_FLINGER'
+  | 'BINDER'
+  | 'CPU_SCHEDULING'
+  | 'CPU_AFFINITY'
+  | 'GPU'
+  | 'MEMORY'
+  | 'IO'
+  | 'MAIN_THREAD_BLOCKING'
+  | 'UNKNOWN';
+
+/**
+ * Root cause conclusion from analysis
+ * This is the structured output from root_cause_classification steps
+ */
+export interface RootCauseConclusion {
+  /** Problem category: APP / SYSTEM / MIXED */
+  category: ProblemCategory;
+  /** Specific component responsible for the issue */
+  component: ProblemComponent;
+  /** Confidence score 0-1 */
+  confidence: number;
+  /** Human-readable summary of the root cause */
+  summary: string;
+  /** Evidence supporting the conclusion */
+  evidence: string[];
+  /** Suggested optimization or fix */
+  suggestion?: string;
+}
+
+/**
+ * Layered result with optional conclusion
+ * Enhanced to support Phase 4 root cause classification
+ */
+export interface LayeredResultWithConclusion {
+  layers: {
+    // Semantic names
+    overview?: Record<string, any>;
+    list?: Record<string, any>;
+    session?: Record<string, Record<string, any>>;
+    deep?: Record<string, Record<string, any>>;
+    // Legacy names (@deprecated)
+    L1?: Record<string, any>;
+    L2?: Record<string, any>;
+    L3?: Record<string, Record<string, any>>;
+    L4?: Record<string, Record<string, any>>;
+  };
+  defaultExpanded: ('overview' | 'list' | 'session' | 'deep' | 'L1' | 'L2' | 'L3' | 'L4')[];
+  metadata: {
+    skillName: string;
+    version: string;
+    executedAt: string;
+  };
+  /** Root cause conclusion from analysis (Phase 4) */
+  conclusion?: RootCauseConclusion;
 }

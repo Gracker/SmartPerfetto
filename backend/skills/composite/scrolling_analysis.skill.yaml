@@ -689,6 +689,194 @@ steps:
       vsync_missed: vsync_missed
       jank_responsibility: jank_responsibility
 
+  # ==========================================================================
+  # Root Cause Classification - Aggregate analysis for final conclusion
+  # ==========================================================================
+  # 综合所有分析数据，给出最终的根因分类和结论
+  # 输出: problem_category, problem_component, confidence, evidence
+  - id: root_cause_classification
+    type: atomic
+    name: "根因分类"
+    display:
+      level: summary
+      layer: overview
+      title: "🎯 分析结论"
+    sql: |
+      WITH
+      -- 从 performance_summary 获取掉帧统计
+      jank_stats AS (
+        SELECT
+          COUNT(*) as total_frames,
+          SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) as app_reported_jank,
+          -- 基于 BufferTX 判断的真实责任归属（来自 get_app_jank_frames 的逻辑）
+          SUM(CASE WHEN jank_type GLOB '*App*' OR jank_type = 'Self Jank' THEN 1 ELSE 0 END) as app_jank,
+          SUM(CASE WHEN jank_type GLOB '*SurfaceFlinger*' THEN 1 ELSE 0 END) as sf_jank,
+          SUM(CASE WHEN jank_type GLOB '*Buffer*' THEN 1 ELSE 0 END) as buffer_jank,
+          AVG(dur) / 1e6 as avg_dur_ms,
+          MAX(dur) / 1e6 as max_dur_ms
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.surface_frame_token IS NOT NULL
+      ),
+      -- 主线程四象限分析
+      main_thread_analysis AS (
+        SELECT
+          SUM(CASE WHEN ts.state = 'Running' AND ts.cpu >= 4 THEN ts.dur ELSE 0 END) as q1_big_core_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND ts.cpu < 4 THEN ts.dur ELSE 0 END) as q2_small_core_ns,
+          SUM(CASE WHEN ts.state = 'R' THEN ts.dur ELSE 0 END) as q3_runnable_ns,
+          SUM(CASE WHEN ts.state IN ('S', 'D', 'I') THEN ts.dur ELSE 0 END) as q4_sleep_ns,
+          SUM(ts.dur) as total_dur_ns
+        FROM thread_state ts
+        JOIN thread t ON ts.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND t.tid = p.pid
+      ),
+      -- RenderThread 分析
+      render_thread_analysis AS (
+        SELECT
+          SUM(CASE WHEN ts.state = 'Running' AND ts.cpu >= 4 THEN ts.dur ELSE 0 END) as q1_big_core_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND ts.cpu < 4 THEN ts.dur ELSE 0 END) as q2_small_core_ns,
+          SUM(CASE WHEN ts.state = 'R' THEN ts.dur ELSE 0 END) as q3_runnable_ns,
+          SUM(CASE WHEN ts.state IN ('S', 'D', 'I') THEN ts.dur ELSE 0 END) as q4_sleep_ns,
+          SUM(ts.dur) as total_dur_ns
+        FROM thread_state ts
+        JOIN thread t ON ts.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND t.name = 'RenderThread'
+      ),
+      -- 计算主线程各象限百分比
+      main_pct AS (
+        SELECT
+          ROUND(100.0 * q1_big_core_ns / NULLIF(total_dur_ns, 0), 1) as q1_pct,
+          ROUND(100.0 * q2_small_core_ns / NULLIF(total_dur_ns, 0), 1) as q2_pct,
+          ROUND(100.0 * q3_runnable_ns / NULLIF(total_dur_ns, 0), 1) as q3_pct,
+          ROUND(100.0 * q4_sleep_ns / NULLIF(total_dur_ns, 0), 1) as q4_pct
+        FROM main_thread_analysis
+      ),
+      -- 计算 RenderThread 各象限百分比
+      render_pct AS (
+        SELECT
+          ROUND(100.0 * q1_big_core_ns / NULLIF(total_dur_ns, 0), 1) as q1_pct,
+          ROUND(100.0 * q2_small_core_ns / NULLIF(total_dur_ns, 0), 1) as q2_pct,
+          ROUND(100.0 * q3_runnable_ns / NULLIF(total_dur_ns, 0), 1) as q3_pct,
+          ROUND(100.0 * q4_sleep_ns / NULLIF(total_dur_ns, 0), 1) as q4_pct
+        FROM render_thread_analysis
+      ),
+      -- Binder 调用统计
+      binder_stats AS (
+        SELECT
+          COUNT(*) as total_calls,
+          SUM(client_dur) / 1e6 as total_dur_ms,
+          MAX(client_dur) / 1e6 as max_dur_ms,
+          AVG(client_dur) / 1e6 as avg_dur_ms
+        FROM android_binder_txns
+        WHERE (client_process GLOB '${package}*' OR '${package}' = '')
+      ),
+      -- 综合分析
+      analysis AS (
+        SELECT
+          (SELECT total_frames FROM jank_stats) as total_frames,
+          (SELECT app_jank FROM jank_stats) as app_jank,
+          (SELECT sf_jank FROM jank_stats) as sf_jank,
+          (SELECT buffer_jank FROM jank_stats) as buffer_jank,
+          (SELECT avg_dur_ms FROM jank_stats) as avg_dur_ms,
+          (SELECT max_dur_ms FROM jank_stats) as max_dur_ms,
+          (SELECT q3_pct FROM main_pct) as main_q3_pct,
+          (SELECT q4_pct FROM main_pct) as main_q4_pct,
+          (SELECT q2_pct FROM main_pct) as main_q2_pct,
+          (SELECT q4_pct FROM render_pct) as render_q4_pct,
+          (SELECT total_dur_ms FROM binder_stats) as binder_total_ms,
+          (SELECT max_dur_ms FROM binder_stats) as binder_max_ms
+      )
+      SELECT
+        -- 问题分类: APP / SYSTEM / MIXED
+        CASE
+          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN 'SYSTEM'
+          WHEN (SELECT app_jank FROM analysis) > (SELECT sf_jank FROM analysis) * 2 THEN 'APP'
+          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN 'SYSTEM'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN 'MIXED'
+          WHEN (SELECT app_jank FROM analysis) > 0 THEN 'APP'
+          ELSE 'UNKNOWN'
+        END as problem_category,
+        -- 问题组件
+        CASE
+          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN 'SURFACE_FLINGER'
+          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN 'CPU_SCHEDULING'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN 'BINDER'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 THEN 'MAIN_THREAD_BLOCKING'
+          WHEN (SELECT render_q4_pct FROM analysis) > 50 THEN 'RENDER_THREAD'
+          WHEN (SELECT main_q2_pct FROM analysis) > 50 THEN 'CPU_AFFINITY'
+          WHEN (SELECT avg_dur_ms FROM analysis) > 16 THEN 'MAIN_THREAD'
+          ELSE 'UNKNOWN'
+        END as problem_component,
+        -- 置信度 (0-1)
+        CASE
+          WHEN (SELECT total_frames FROM analysis) < 10 THEN 0.3
+          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN 0.9
+          WHEN (SELECT app_jank FROM analysis) > (SELECT sf_jank FROM analysis) * 2 THEN 0.85
+          WHEN (SELECT main_q3_pct FROM analysis) > 20 THEN 0.8
+          WHEN (SELECT main_q4_pct FROM analysis) > 40 THEN 0.8
+          ELSE 0.6
+        END as confidence,
+        -- 根因总结
+        CASE
+          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN
+            '系统级问题: SurfaceFlinger 处理异常，导致 ' || (SELECT sf_jank FROM analysis) || ' 帧掉帧'
+          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN
+            '系统级问题: CPU 调度拥堵，主线程 ' || (SELECT main_q3_pct FROM analysis) || '% 时间在等待调度'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN
+            '跨进程阻塞: Binder 调用最大耗时 ' || ROUND((SELECT binder_max_ms FROM analysis), 1) || 'ms'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 THEN
+            '主线程阻塞: ' || (SELECT main_q4_pct FROM analysis) || '% 时间在休眠/等待'
+          WHEN (SELECT render_q4_pct FROM analysis) > 50 THEN
+            'RenderThread 等待: ' || (SELECT render_q4_pct FROM analysis) || '% 时间在休眠'
+          WHEN (SELECT main_q2_pct FROM analysis) > 50 THEN
+            'CPU 亲和性问题: 主线程 ' || (SELECT main_q2_pct FROM analysis) || '% 时间运行在小核'
+          WHEN (SELECT app_jank FROM analysis) > 0 THEN
+            '应用级问题: ' || (SELECT app_jank FROM analysis) || ' 帧因应用原因掉帧，平均帧耗时 ' || ROUND((SELECT avg_dur_ms FROM analysis), 1) || 'ms'
+          ELSE
+            '分析数据不足，建议查看详细帧数据'
+        END as root_cause_summary,
+        -- 证据列表 (JSON 数组)
+        '[' ||
+          '"总帧数: ' || (SELECT total_frames FROM analysis) || '",' ||
+          '"App 掉帧: ' || (SELECT app_jank FROM analysis) || '",' ||
+          '"SF 掉帧: ' || (SELECT sf_jank FROM analysis) || '",' ||
+          '"主线程 Q3 (等待调度): ' || COALESCE((SELECT main_q3_pct FROM analysis), 0) || '%",' ||
+          '"主线程 Q4 (休眠阻塞): ' || COALESCE((SELECT main_q4_pct FROM analysis), 0) || '%",' ||
+          '"Binder 最大耗时: ' || COALESCE(ROUND((SELECT binder_max_ms FROM analysis), 1), 0) || 'ms"' ||
+        ']' as evidence,
+        -- 优化建议
+        CASE
+          WHEN (SELECT sf_jank FROM analysis) > (SELECT app_jank FROM analysis) * 2 THEN
+            '检查系统负载和 SurfaceFlinger 状态'
+          WHEN (SELECT main_q3_pct FROM analysis) > 15 THEN
+            '减少后台任务，考虑提高主线程优先级'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 AND (SELECT binder_max_ms FROM analysis) > 5 THEN
+            '优化 Binder 调用，考虑异步化或缓存'
+          WHEN (SELECT main_q4_pct FROM analysis) > 30 THEN
+            '检查主线程阻塞原因 (IO/锁/Binder)'
+          WHEN (SELECT render_q4_pct FROM analysis) > 50 THEN
+            '优化绘制流程，减少主线程耗时操作'
+          WHEN (SELECT main_q2_pct FROM analysis) > 50 THEN
+            '考虑使用 setThreadAffinity 或提高线程优先级'
+          ELSE
+            '查看详细帧分析，定位具体问题'
+        END as suggestion
+    save_as: conclusion
+    condition: "perf_summary.data[0]?.total_frames > 0"
+
 output:
   format: layered
   default_expanded: [L1, L2]
+  # 结论输出映射
+  conclusion:
+    category: $conclusion.problem_category
+    component: $conclusion.problem_component
+    confidence: $conclusion.confidence
+    summary: $conclusion.root_cause_summary
+    evidence: $conclusion.evidence
+    suggestion: $conclusion.suggestion
