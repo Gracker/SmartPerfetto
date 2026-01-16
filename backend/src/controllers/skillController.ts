@@ -111,7 +111,7 @@ class SkillController {
   executeSkill = async (req: Request, res: Response) => {
     try {
       const { skillId } = req.params;
-      const { traceId, packageName } = req.body;
+      const { traceId, packageName, params } = req.body;
 
       if (!skillId) {
         return res.status(400).json({
@@ -133,6 +133,7 @@ class SkillController {
         traceId,
         skillId,
         packageName,
+        params,  // Pass custom skill parameters
       };
 
       const result = await adapter.analyze(request);
