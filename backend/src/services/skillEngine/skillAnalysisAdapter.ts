@@ -22,6 +22,7 @@ export interface SkillAnalysisRequest {
   skillId?: string;
   question?: string;
   packageName?: string;
+  params?: Record<string, any>;  // Custom skill parameters
 }
 
 export interface SkillAnalysisResponse {
@@ -250,10 +251,12 @@ export class SkillAnalysisAdapter {
     // 检测厂商
     const vendorResult = await this.detectVendor(traceId);
 
-    // 构建参数
-    const params: Record<string, any> = {};
+    // 构建参数 - 合并 request.params 和 packageName
+    const params: Record<string, any> = {
+      ...request.params,  // 先展开用户提供的参数
+    };
     if (packageName) {
-      params.package = packageName;
+      params.package = packageName;  // packageName 会覆盖 params.package (如果有)
     }
 
     // 创建事件收集器

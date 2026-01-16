@@ -37,6 +37,18 @@ class SkillRegistry {
       await this.loadSkillsFromDir(compositeDir);
     }
 
+    // 加载深度分析 skills (Phase 6)
+    const deepDir = path.join(skillsDir, 'deep');
+    if (fs.existsSync(deepDir)) {
+      await this.loadSkillsFromDir(deepDir);
+    }
+
+    // 加载系统分析 skills (Phase 6)
+    const systemDir = path.join(skillsDir, 'system');
+    if (fs.existsSync(systemDir)) {
+      await this.loadSkillsFromDir(systemDir);
+    }
+
     this.initialized = true;
     console.log(`[SkillLoader] Loaded ${this.skills.size} skills`);
   }
