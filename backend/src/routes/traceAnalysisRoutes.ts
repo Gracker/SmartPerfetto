@@ -9,12 +9,16 @@ import { AnalysisSessionService, getSessionService } from '../services/analysisS
 import { PerfettoAnalysisOrchestrator } from '../services/perfettoAnalysisOrchestrator';
 import { PerfettoSqlSkill } from '../services/perfettoSqlSkill';
 import { getTraceProcessorService } from '../services/traceProcessorService';
+import { OrchestratorBridge, createOrchestratorBridge } from '../services/orchestratorBridge';
 import {
   CreateAnalysisRequest,
   FollowupRequest,
   AnalysisSSEEvent,
   AnalysisState,
 } from '../types/analysis';
+
+// Environment flag to enable MasterOrchestrator with enhanced features
+const USE_MASTER_ORCHESTRATOR = process.env.USE_MASTER_ORCHESTRATOR === 'true';
 
 const router = express.Router();
 
@@ -23,11 +27,13 @@ let _traceProcessorService: any = null;
 let _sessionService: any = null;
 let _perfettoSqlSkill: any = null;
 let _orchestrator: any = null;
+let _orchestratorBridge: OrchestratorBridge | null = null;
 
 function getServices() {
   if (!_orchestrator) {
     console.log('[TraceAnalysisRoutes] Initializing services...');
     console.log('[TraceAnalysisRoutes] DEEPSEEK_API_KEY exists:', !!process.env.DEEPSEEK_API_KEY);
+    console.log('[TraceAnalysisRoutes] USE_MASTER_ORCHESTRATOR:', USE_MASTER_ORCHESTRATOR);
     _traceProcessorService = getTraceProcessorService();
     _sessionService = getSessionService();
     _perfettoSqlSkill = new PerfettoSqlSkill(_traceProcessorService);
@@ -38,22 +44,41 @@ function getServices() {
       _perfettoSqlSkill
     );
     console.log('[TraceAnalysisRoutes] Services initialized, AI configured:', _orchestrator.isConfigured);
+
+    // Create OrchestratorBridge if MasterOrchestrator is enabled
+    if (USE_MASTER_ORCHESTRATOR) {
+      _orchestratorBridge = createOrchestratorBridge(_sessionService, _traceProcessorService, {
+        enableHooks: true,
+        enableContextIsolation: true,
+        enableContextCompaction: true,
+        enableSessionFork: false,  // Fork is experimental
+      });
+      console.log('[TraceAnalysisRoutes] OrchestratorBridge initialized with enhanced features');
+    }
   }
   return {
     traceProcessorService: _traceProcessorService,
     sessionService: _sessionService,
     orchestrator: _orchestrator,
     perfettoSqlSkill: _perfettoSqlSkill,
+    orchestratorBridge: _orchestratorBridge,
   };
 }
 
-// Clean up old analyses every 10 minutes
+// Smart cleanup: run every 15 minutes
+// Only cleans traces that are BOTH:
+// - Older than 2 hours (maxAge)
+// - Idle for more than 30 minutes (idleTimeout)
+// This prevents active traces from being cleaned up while still
+// removing truly abandoned traces.
 setInterval(() => {
   const { traceProcessorService } = getServices();
   if (traceProcessorService) {
-    traceProcessorService.cleanup(10 * 60 * 1000);
+    const TWO_HOURS = 2 * 60 * 60 * 1000;
+    const THIRTY_MINUTES = 30 * 60 * 1000;
+    traceProcessorService.cleanup(TWO_HOURS, THIRTY_MINUTES);
   }
-}, 10 * 60 * 1000);
+}, 15 * 60 * 1000); // Run every 15 minutes
 
 // Helper to get services for use in route handlers
 const s = () => getServices();
@@ -162,9 +187,18 @@ router.post('/:sessionId/start', async (req, res) => {
     }
 
     // Start analysis in background
-    s().orchestrator.startAnalysis(sessionId).catch((error: any) => {
-      console.error(`[TraceAnalysis] Start error for session ${sessionId}:`, error);
-    });
+    // Use OrchestratorBridge (MasterOrchestrator) if enabled
+    const services = s();
+    const bridge = services.orchestratorBridge;
+    if (USE_MASTER_ORCHESTRATOR && bridge) {
+      bridge.startAnalysis(sessionId).catch((error: any) => {
+        console.error(`[TraceAnalysis] MasterOrchestrator error for session ${sessionId}:`, error);
+      });
+    } else {
+      services.orchestrator.startAnalysis(sessionId).catch((error: any) => {
+        console.error(`[TraceAnalysis] Start error for session ${sessionId}:`, error);
+      });
+    }
 
     res.json({
       success: true,
@@ -349,9 +383,18 @@ router.post('/:sessionId/followup', async (req, res) => {
     });
 
     // Start analysis in background
-    s().orchestrator.startAnalysis(sessionId).catch((error: any) => {
-      console.error(`[TraceAnalysis] Followup error for session ${sessionId}:`, error);
-    });
+    // Use OrchestratorBridge (MasterOrchestrator) if enabled
+    const followupServices = s();
+    const followupBridge = followupServices.orchestratorBridge;
+    if (USE_MASTER_ORCHESTRATOR && followupBridge) {
+      followupBridge.startAnalysis(sessionId).catch((error: any) => {
+        console.error(`[TraceAnalysis] MasterOrchestrator followup error for session ${sessionId}:`, error);
+      });
+    } else {
+      followupServices.orchestrator.startAnalysis(sessionId).catch((error: any) => {
+        console.error(`[TraceAnalysis] Followup error for session ${sessionId}:`, error);
+      });
+    }
 
     res.json({
       success: true,
@@ -507,13 +550,27 @@ router.post('/analyze', async (req, res) => {
     }
 
     // Start analysis in background
+    // Use OrchestratorBridge (MasterOrchestrator) if enabled, otherwise use PerfettoAnalysisOrchestrator
     console.log('[TraceAnalysis] Starting analysis for session:', createdSession.id);
-    s().orchestrator.startAnalysis(createdSession.id).catch((error: any) => {
-      console.error(`[TraceAnalysis] Start error for session ${createdSession.id}:`, error);
-      s().sessionService.updateState(createdSession.id, AnalysisState.FAILED, {
-        error: error.message,
+    console.log('[TraceAnalysis] Using MasterOrchestrator:', USE_MASTER_ORCHESTRATOR);
+
+    const analyzeServices = s();
+    const analyzeBridge = analyzeServices.orchestratorBridge;
+    if (USE_MASTER_ORCHESTRATOR && analyzeBridge) {
+      analyzeBridge.startAnalysis(createdSession.id).catch((error: any) => {
+        console.error(`[TraceAnalysis] MasterOrchestrator error for session ${createdSession.id}:`, error);
+        analyzeServices.sessionService.updateState(createdSession.id, AnalysisState.FAILED, {
+          error: error.message,
+        });
       });
-    });
+    } else {
+      analyzeServices.orchestrator.startAnalysis(createdSession.id).catch((error: any) => {
+        console.error(`[TraceAnalysis] Start error for session ${createdSession.id}:`, error);
+        analyzeServices.sessionService.updateState(createdSession.id, AnalysisState.FAILED, {
+          error: error.message,
+        });
+      });
+    }
 
     // Return analysisId (same as sessionId)
     res.json({

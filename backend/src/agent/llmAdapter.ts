@@ -1,6 +1,6 @@
 /**
  * LLM Client Adapter for Agent System
- * 
+ *
  * Bridges the agent's LLMClient interface with existing AI services (DeepSeek, OpenAI, etc.)
  */
 
@@ -8,12 +8,28 @@ import OpenAI from 'openai';
 import { LLMClient } from './agents/baseExpertAgent';
 
 export interface LLMAdapterConfig {
-  provider: 'deepseek' | 'openai' | 'mock';
+  provider: 'deepseek' | 'openai';
   apiKey?: string;
   baseUrl?: string;
   model?: string;
   temperature?: number;
   maxTokens?: number;
+}
+
+/**
+ * Error thrown when LLM API key is not configured
+ */
+export class LLMConfigurationError extends Error {
+  constructor(provider: string) {
+    super(
+      `LLM API key not configured for provider '${provider}'. ` +
+      `Please set the appropriate environment variable:\n` +
+      `  - DeepSeek: DEEPSEEK_API_KEY\n` +
+      `  - OpenAI: OPENAI_API_KEY\n` +
+      `Or specify the API key in the configuration.`
+    );
+    this.name = 'LLMConfigurationError';
+  }
 }
 
 /**
@@ -27,8 +43,7 @@ export function createDeepSeekLLMClient(config?: Partial<LLMAdapterConfig>): LLM
   const maxTokens = config?.maxTokens ?? 4000;
 
   if (!apiKey) {
-    console.warn('[LLMAdapter] DeepSeek API key not found, using mock client');
-    return createMockLLMClient();
+    throw new LLMConfigurationError('deepseek');
   }
 
   const client = new OpenAI({
@@ -83,8 +98,7 @@ export function createOpenAILLMClient(config?: Partial<LLMAdapterConfig>): LLMCl
   const maxTokens = config?.maxTokens ?? 4000;
 
   if (!apiKey) {
-    console.warn('[LLMAdapter] OpenAI API key not found, using mock client');
-    return createMockLLMClient();
+    throw new LLMConfigurationError('openai');
   }
 
   const client = new OpenAI({ apiKey });
@@ -127,111 +141,6 @@ export function createOpenAILLMClient(config?: Partial<LLMAdapterConfig>): LLMCl
   };
 }
 
-export function createMockLLMClient(): LLMClient {
-  return {
-    async complete(prompt: string): Promise<string> {
-      console.log('[MockLLM] Received prompt:', prompt.substring(0, 100) + '...');
-      
-      if (prompt.includes('synthesize') || prompt.includes('conclusion')) {
-        return `Based on the analysis, the trace shows moderate scrolling performance with some jank frames detected. 
-The main issues appear to be:
-1. Main thread blocking during list scrolling
-2. Some binder calls taking longer than expected
-3. CPU frequency throttling during sustained scrolling
-
-Recommendations:
-- Consider moving heavy operations to background threads
-- Optimize RecyclerView binding operations
-- Review binder transaction frequency`;
-      }
-
-      if (prompt.includes('think') || prompt.includes('next step')) {
-        return `I should analyze the frame data to identify the root cause of jank. 
-The most important metrics are main thread utilization and binder call patterns.`;
-      }
-
-      return 'Analysis complete. No significant issues detected.';
-    },
-
-    async completeJSON<T>(prompt: string): Promise<T> {
-      console.log('[MockLLM] Received JSON prompt:', prompt.substring(0, 100) + '...');
-      
-      if (prompt.includes('Plan the analysis') || prompt.includes('Create an analysis plan')) {
-        return {
-          tasks: [
-            {
-              id: 'task_1',
-              expertAgent: 'ScrollingExpert',
-              objective: 'Analyze frame performance and identify jank causes',
-              dependencies: [],
-              priority: 1,
-            },
-          ],
-          estimatedDuration: 5000,
-          parallelizable: false,
-        } as T;
-      }
-
-      if (prompt.includes('Analyze this user query') || prompt.includes('primaryGoal')) {
-        return {
-          primaryGoal: 'analyze scrolling performance',
-          aspects: ['scrolling', 'jank', 'frame_drops'],
-          expectedOutputType: 'diagnosis',
-          complexity: 'moderate',
-        } as T;
-      }
-
-      if (prompt.includes('Select which tool') || prompt.includes('Available tools')) {
-        return {
-          toolCalls: [
-            { toolName: 'execute_sql', params: { sql: 'SELECT COUNT(*) as total_frames FROM actual_frame_timeline_slice' } }
-          ],
-        } as T;
-      }
-
-      if (prompt.includes('Analyze this tool result') || prompt.includes('Extract findings')) {
-        return {
-          findings: [
-            {
-              category: 'performance',
-              severity: 'warning',
-              title: 'Jank frames detected',
-              description: 'Analysis found jank frames in the trace',
-              evidence: ['mock evidence'],
-            },
-          ],
-        } as T;
-      }
-
-      if (prompt.includes('generate actionable suggestions') || prompt.includes('Generate conclusion')) {
-        return {
-          suggestions: ['Optimize main thread operations', 'Review binder call patterns'],
-          diagnostics: [
-            {
-              id: 'diag_jank',
-              condition: 'jank_rate > 5%',
-              matched: true,
-              message: 'Jank rate exceeds acceptable threshold',
-              suggestions: ['Profile main thread', 'Check for blocking operations'],
-            },
-          ],
-        } as T;
-      }
-
-      if (prompt.includes('decide what to do next') || prompt.includes('what should be the next action')) {
-        return {
-          observation: 'Initial analysis state, need to gather frame data',
-          reasoning: 'Should query frame statistics to understand jank severity',
-          decision: 'tool_call',
-          confidence: 0.3,
-        } as T;
-      }
-
-      return {} as T;
-    },
-  };
-}
-
 /**
  * Creates the appropriate LLMClient based on configuration or environment
  */
@@ -243,11 +152,8 @@ export function createLLMClient(config?: LLMAdapterConfig): LLMClient {
       return createDeepSeekLLMClient(config);
     case 'openai':
       return createOpenAILLMClient(config);
-    case 'mock':
-      return createMockLLMClient();
     default:
-      console.warn(`[LLMAdapter] Unknown provider '${provider}', using mock client`);
-      return createMockLLMClient();
+      throw new LLMConfigurationError(provider);
   }
 }
 

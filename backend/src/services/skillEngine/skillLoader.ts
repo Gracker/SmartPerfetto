@@ -183,15 +183,3 @@ export function getSkillsDir(): string {
   return path.resolve(__dirname, '../../../skills');
 }
 
-// =============================================================================
-// 向后兼容别名 (deprecated)
-// =============================================================================
-
-/** @deprecated Use SkillRegistry instead */
-export const SkillRegistryV2 = SkillRegistry;
-
-/** @deprecated Use skillRegistry instead */
-export const skillRegistryV2 = skillRegistry;
-
-/** @deprecated Use ensureSkillRegistryInitialized instead */
-export const ensureSkillRegistryV2Initialized = ensureSkillRegistryInitialized;

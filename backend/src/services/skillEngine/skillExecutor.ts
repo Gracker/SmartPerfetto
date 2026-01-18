@@ -34,16 +34,85 @@ import {
 // Layered Result Types
 // =============================================================================
 
-import { LAYER_MAPPING, LegacyDisplayLayer, DisplayLayer } from './types';
+import { DisplayLayer } from './types';
+
+/**
+ * Synthesize 配置 - 定义步骤数据如何贡献到最终摘要
+ *
+ * YAML 示例:
+ * ```yaml
+ * synthesize:
+ *   role: overview
+ *   fields:
+ *     - key: total_frames
+ *       label: 总帧数
+ *     - key: janky_frames
+ *       label: 掉帧数
+ *       format: "{{value}} ({{jank_rate}}%)"
+ *   insights:
+ *     - condition: "jank_rate > 10"
+ *       template: "掉帧率 {{jank_rate}}% 较高"
+ * ```
+ */
+export interface SynthesizeConfig {
+  /** 数据角色: overview(概览指标), list(列表统计), clusters(聚类分析), conclusion(结论) */
+  role: 'overview' | 'list' | 'clusters' | 'conclusion';
+  /** 字段映射 - 定义如何从数据中提取指标 */
+  fields?: Array<{
+    /** 源字段名 */
+    key: string;
+    /** 显示标签 */
+    label: string;
+    /** 格式化模板，支持 {{field}} 插值 */
+    format?: string;
+  }>;
+  /** 分组统计配置 - 用于 list 角色 */
+  groupBy?: Array<{
+    /** 分组字段名 */
+    field: string;
+    /** 分组标题 */
+    title: string;
+  }>;
+  /** 聚类配置 - 用于 clusters 角色 */
+  clusterBy?: string;
+  /** 洞察条件 - 自动生成的分析结论 */
+  insights?: Array<{
+    /** 条件表达式，如 "jank_rate > 10" */
+    condition?: string;
+    /** 洞察模板，支持 {{field}} 插值 */
+    template: string;
+  }>;
+}
+
+/**
+ * Synthesize Data - 标记为 synthesize 的步骤数据
+ * 用于最终总结时的数据聚合
+ */
+export interface SynthesizeData {
+  /** 步骤 ID */
+  stepId: string;
+  /** 步骤名称 */
+  stepName?: string;
+  /** 步骤类型 */
+  stepType: string;
+  /** 数据层级 */
+  layer?: string;
+  /** 步骤数据 */
+  data: any;
+  /** 执行是否成功 */
+  success: boolean;
+  /** YAML 中定义的 synthesize 配置（数据驱动）*/
+  config?: SynthesizeConfig;
+}
 
 /**
  * 分层结果结构
  *
  * 语义层级：
- * - overview: 顶层概览（原 L1）
- * - list: 列表数据（原 L2）
- * - session: 会话详情（原 L3）
- * - deep: 深度分析（原 L4）
+ * - overview: 顶层概览（聚合指标如 FPS、掉帧率）
+ * - list: 列表数据（会话/事件列表）
+ * - session: 会话详情（单个会话的详情）
+ * - deep: 深度分析（帧级/调用级分析）
  */
 export interface LayeredResult {
   layers: {
@@ -55,16 +124,6 @@ export interface LayeredResult {
     session?: Record<string, Record<string, StepResult>>;
     /** 深度层 - 帧级/调用级分析 */
     deep?: Record<string, Record<string, StepResult>>;
-
-    // 向后兼容别名（@deprecated）
-    /** @deprecated Use 'overview' instead */
-    L1?: Record<string, StepResult>;
-    /** @deprecated Use 'list' instead */
-    L2?: Record<string, StepResult>;
-    /** @deprecated Use 'session' instead */
-    L3?: Record<string, Record<string, StepResult>>;
-    /** @deprecated Use 'deep' instead */
-    L4?: Record<string, Record<string, StepResult>>;
   };
   defaultExpanded: DisplayLayer[];
   metadata: {
@@ -72,6 +131,8 @@ export interface LayeredResult {
     version: string;
     executedAt: string;
   };
+  /** YAML 中标记为 synthesize: true 的步骤数据，用于最终总结 */
+  synthesizeData?: SynthesizeData[];
 }
 
 /**
@@ -79,13 +140,9 @@ export interface LayeredResult {
  */
 export function normalizeLayer(layer: string | undefined): DisplayLayer | undefined {
   if (!layer) return undefined;
-  // 如果已经是语义名称，直接返回
+  // 只接受语义名称
   if (['overview', 'list', 'session', 'deep'].includes(layer)) {
     return layer as DisplayLayer;
-  }
-  // 转换旧的 L1/L2/L3/L4 名称
-  if (layer in LAYER_MAPPING) {
-    return LAYER_MAPPING[layer as LegacyDisplayLayer];
   }
   return undefined;
 }
@@ -430,7 +487,7 @@ function processDisplayConfig(
 // =============================================================================
 
 /**
- * Transform L4 frame analysis results from displayResults format to frontend-expected format.
+ * Transform deep layer frame analysis results from displayResults format to frontend-expected format.
  *
  * This function is a generic data pass-through that:
  * 1. Maps step IDs to output property names (e.g., 'quadrant_analysis' → 'quadrants')
@@ -440,7 +497,19 @@ function processDisplayConfig(
  * Field naming is the responsibility of the Skill YAML, not this function.
  * The Skill YAML should output data with field names that match frontend expectations.
  */
-function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: string; full_analysis: any } {
+function transformDeepFrameAnalysis(displayResults: any[]): { diagnosis_summary: string; full_analysis: any } {
+  console.log('[transformDeepFrameAnalysis] Input displayResults:', {
+    count: displayResults.length,
+    stepIds: displayResults.map(dr => dr.stepId),
+    // 打印每个步骤的数据结构概要
+    stepDataSummary: displayResults.map(dr => ({
+      stepId: dr.stepId,
+      hasData: !!dr.data,
+      dataType: dr.data ? (Array.isArray(dr.data) ? 'array' : typeof dr.data) : 'null',
+      isTableFormat: !!(dr.data?.columns && dr.data?.rows),
+      rowCount: dr.data?.rows?.length || (Array.isArray(dr.data) ? dr.data.length : 0),
+    })),
+  });
 
   const fullAnalysis: any = {
     quadrants: { main_thread: {}, render_thread: {} },
@@ -489,12 +558,45 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
 
     // Handle diagnostic step specially (extracts diagnosis text)
     if (stepId === 'frame_diagnosis') {
+      console.log('[transformDeepFrameAnalysis] Processing frame_diagnosis step:', {
+        hasRawData: !!rawData,
+        rawDataKeys: rawData ? Object.keys(rawData) : [],
+        hasDiagnostics: !!rawData?.diagnostics,
+        diagnosticsLength: rawData?.diagnostics?.length || 0,
+        diagnosticsPreview: rawData?.diagnostics?.slice(0, 2),
+      });
       const diagnostics = rawData?.diagnostics || [];
       if (Array.isArray(diagnostics) && diagnostics.length > 0) {
         diagnosisSummary = diagnostics
           .filter((d: any) => d.diagnosis)
           .map((d: any) => d.diagnosis)
           .join('; ');
+        console.log('[transformDeepFrameAnalysis] Extracted diagnosisSummary:', diagnosisSummary);
+      } else {
+        console.log('[transformDeepFrameAnalysis] No diagnostics found in frame_diagnosis');
+      }
+      continue;
+    }
+
+    // Handle root_cause_summary step - extract primary_cause as diagnosis
+    // stepId is 'root_cause_summary' (from skill step id), not 'root_cause' (save_as variable name)
+    if (stepId === 'root_cause_summary') {
+      console.log('[transformDeepFrameAnalysis] Processing root_cause_summary step:', {
+        hasData: !!rawData,
+        dataLength: Array.isArray(rawData) ? rawData.length : (Array.isArray(dataArray) ? dataArray.length : 'not array'),
+        firstRow: dataArray.length > 0 ? dataArray[0] : null,
+      });
+      // Extract primary_cause as the main diagnosis
+      if (dataArray.length > 0) {
+        const rootCause = dataArray[0];
+        if (rootCause?.primary_cause) {
+          // Use root_cause as primary diagnosis (more reliable than frame_diagnosis rules)
+          diagnosisSummary = rootCause.primary_cause;
+          if (rootCause.secondary_info) {
+            diagnosisSummary += ` (${rootCause.secondary_info})`;
+          }
+          console.log('[transformDeepFrameAnalysis] Extracted diagnosis from root_cause_summary:', diagnosisSummary);
+        }
       }
       continue;
     }
@@ -545,7 +647,30 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
     // Generic pass-through: map step ID to property and assign data directly
     const outputProperty = stepIdMapping[stepId];
     if (outputProperty && dataArray.length > 0) {
-      fullAnalysis[outputProperty] = dataArray;
+      // Map field names to match what renderDeepFrameAnalysis expects
+      if (outputProperty === 'binder_calls') {
+        // Skill outputs: interface, count, dur_ms, max_ms, sync_count
+        // Renderer expects: server_process, call_count, total_ms, max_ms
+        fullAnalysis[outputProperty] = dataArray.map((item: any) => ({
+          server_process: item.interface || item.server_process || '',
+          call_count: item.count || item.call_count || 0,
+          total_ms: item.dur_ms || item.total_ms || 0,
+          max_ms: item.max_ms || 0,
+          sync_count: item.sync_count || 0,
+        }));
+      } else if (outputProperty === 'main_thread_slices' || outputProperty === 'render_thread_slices') {
+        // Skill outputs: name, dur_ms, count, max_ms, ts
+        // Renderer expects: name, total_ms, count, max_ms
+        fullAnalysis[outputProperty] = dataArray.map((item: any) => ({
+          name: item.name || '',
+          total_ms: item.dur_ms || item.total_ms || 0,
+          count: item.count || 1,
+          max_ms: item.max_ms || 0,
+          ts: item.ts,
+        }));
+      } else {
+        fullAnalysis[outputProperty] = dataArray;
+      }
     }
   }
 
@@ -557,16 +682,10 @@ function transformL4FrameAnalysis(displayResults: any[]): { diagnosis_summary: s
 
 function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
   const layers: LayeredResult['layers'] = {
-    // 语义名称（主要）
     overview: {},
     list: {},
     session: {},
     deep: {},
-    // 向后兼容别名
-    L1: {},
-    L2: {},
-    L3: {},
-    L4: {}
   };
 
   for (const step of steps) {
@@ -575,7 +694,7 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
       continue;
     }
 
-    // 规范化 layer 名称（支持 L1/L2/L3/L4 和 overview/list/session/deep）
+    // 规范化 layer 名称为语义名称（overview/list/session/deep）
     const layer = normalizeLayer(rawLayer) || rawLayer as DisplayLayer;
 
     // Ensure failed steps have empty array data for consistent handling
@@ -586,48 +705,38 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
     };
 
     switch (layer) {
-      case 'overview':  // 原 L1
-      case 'list':      // 原 L2
+      case 'overview':
+      case 'list':
         const targetLayer = layers[layer];
-        const legacyLayer = layer === 'overview' ? layers.L1 : layers.L2;
         if (targetLayer) {
           targetLayer[normalizedStep.stepId] = normalizedStep;
         }
-        // 同时写入向后兼容的 L1/L2
-        if (legacyLayer) {
-          legacyLayer[normalizedStep.stepId] = normalizedStep;
-        }
         break;
-      case 'session':  // 原 L3
+      case 'session':
         // session 数据需要按 session_id 组织
         const sessionLayer = layers.session;
-        const l3 = layers.L3;
         if (sessionLayer) {
-          const sessionId3 = extractSessionId(normalizedStep);
-          if (!sessionLayer[sessionId3]) {
-            sessionLayer[sessionId3] = {};
+          const sessionId = extractSessionId(normalizedStep);
+          if (!sessionLayer[sessionId]) {
+            sessionLayer[sessionId] = {};
           }
-          sessionLayer[sessionId3][normalizedStep.stepId] = normalizedStep;
-        }
-        // 向后兼容
-        if (l3) {
-          const sessionId3 = extractSessionId(normalizedStep);
-          if (!l3[sessionId3]) {
-            l3[sessionId3] = {};
-          }
-          l3[sessionId3][normalizedStep.stepId] = normalizedStep;
+          sessionLayer[sessionId][normalizedStep.stepId] = normalizedStep;
         }
         break;
-      case 'deep':  // 原 L4
-        // L4 数据需要按 session_id 和 frame_id 组织
-        const l4 = layers.L4;
-        if (l4) {
-          // 特殊处理 iterator 结果：每个迭代项都是单独的 L4 条目
+      case 'deep':
+        // deep 数据需要按 session_id 和 frame_id 组织
+        const deepLayer = layers.deep;
+        if (deepLayer) {
+          // 特殊处理 iterator 结果：每个迭代项都是单独的 deep 条目
           if (normalizedStep.stepType === 'iterator' && Array.isArray(normalizedStep.data)) {
+            console.log('[organizeByLayer] Processing iterator step for deep layer:', {
+              stepId: normalizedStep.stepId,
+              dataLength: normalizedStep.data.length,
+            });
+
             // Iterator 返回 { itemIndex, item, result }[] 数组
             for (let i = 0; i < normalizedStep.data.length; i++) {
               const iterItem: any = normalizedStep.data[i];
-              // Debug log removed for cleaner output
 
               const item: any = iterItem?.item;
               if (!item) {
@@ -638,14 +747,13 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
               const frameId = `frame_${item.frame_id || item.frame_index || i}`;
               const sessionId = `session_${item.session_id ?? 0}`;
 
-              if (!l4[sessionId]) {
-                l4[sessionId] = {};
+              if (!deepLayer[sessionId]) {
+                deepLayer[sessionId] = {};
               }
 
               // Transform displayResults into format expected by frontend
-              // Convert array of DisplayResult to { diagnosis_summary, full_analysis }
               const displayResults = iterItem.result?.displayResults || [];
-              const transformedData = transformL4FrameAnalysis(displayResults);
+              const transformedData = transformDeepFrameAnalysis(displayResults);
 
               const frameStepResult: StepResult = {
                 stepId: frameId,
@@ -663,10 +771,21 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
 
               (frameStepResult as any).item = item;
 
-              l4[sessionId][frameId] = frameStepResult;
+              deepLayer[sessionId][frameId] = frameStepResult;
+
+              if (i < 3) {
+                console.log(`[organizeByLayer] Added deep frame ${i}:`, {
+                  sessionId,
+                  frameId,
+                  hasData: !!transformedData,
+                  dataKeys: transformedData ? Object.keys(transformedData) : [],
+                  displayResultsCount: displayResults.length,
+                });
+              }
             }
+            console.log('[organizeByLayer] Deep layer after iterator:', Object.keys(deepLayer));
           } else if (normalizedStep.stepType === 'atomic' && Array.isArray(normalizedStep.data) && normalizedStep.data.length > 0) {
-            // 检查是否是 L4 列表数据（如 get_app_jank_frames）
+            // 检查是否是帧列表数据（如 get_app_jank_frames）
             // 如果 data 是数组且每个元素都有 frame_id 或 frame_index，展开为多个帧
             const firstItem = normalizedStep.data[0];
             const hasFrameId = firstItem && typeof firstItem === 'object' && ('frame_id' in firstItem || 'frame_index' in firstItem);
@@ -680,8 +799,8 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                 const frameId = `frame_${item.frame_id || item.frame_index || i}`;
                 const sessionId = `session_${item.session_id ?? 0}`;
 
-                if (!l4[sessionId]) {
-                  l4[sessionId] = {};
+                if (!deepLayer[sessionId]) {
+                  deepLayer[sessionId] = {};
                 }
 
                 const frameStepResult: StepResult = {
@@ -700,45 +819,29 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
 
                 (frameStepResult as any).item = item;
 
-                l4[sessionId][frameId] = frameStepResult;
+                deepLayer[sessionId][frameId] = frameStepResult;
               }
             } else {
-              // 普通的 L4 步骤（不是帧列表）
-              const sessionId4 = extractSessionId(normalizedStep);
+              // 普通的 deep 步骤（不是帧列表）
+              const sessionId = extractSessionId(normalizedStep);
               const frameId = extractFrameId(normalizedStep);
-              if (!l4[sessionId4]) {
-                l4[sessionId4] = {};
+              if (!deepLayer[sessionId]) {
+                deepLayer[sessionId] = {};
               }
-              l4[sessionId4][frameId] = normalizedStep;
+              deepLayer[sessionId][frameId] = normalizedStep;
             }
           } else {
-            // 普通的 L4 步骤
-            const sessionId4 = extractSessionId(normalizedStep);
+            // 普通的 deep 步骤
+            const sessionId = extractSessionId(normalizedStep);
             const frameId = extractFrameId(normalizedStep);
-            if (!l4[sessionId4]) {
-              l4[sessionId4] = {};
+            if (!deepLayer[sessionId]) {
+              deepLayer[sessionId] = {};
             }
-            l4[sessionId4][frameId] = normalizedStep;
+            deepLayer[sessionId][frameId] = normalizedStep;
           }
         }
         break;
     }
-  }
-
-  // 同步语义名称和向后兼容名称的数据
-  // deep 和 L4 应该包含相同的数据
-  if (layers.L4 && Object.keys(layers.L4).length > 0) {
-    layers.deep = { ...layers.deep, ...layers.L4 };
-  }
-  if (layers.deep && Object.keys(layers.deep).length > 0) {
-    layers.L4 = { ...layers.L4, ...layers.deep };
-  }
-  // session 和 L3 应该包含相同的数据
-  if (layers.L3 && Object.keys(layers.L3).length > 0) {
-    layers.session = { ...layers.session, ...layers.L3 };
-  }
-  if (layers.session && Object.keys(layers.session).length > 0) {
-    layers.L3 = { ...layers.L3, ...layers.session };
   }
 
   return layers;
@@ -963,7 +1066,7 @@ export class SkillExecutor {
 
   /**
    * Execute composite skill and return layered results
-   * This is an alternative execution path that organizes output by layers (L1/L2/L3/L4)
+   * This is an alternative execution path that organizes output by layers (overview/list/session/deep)
    */
   async executeCompositeSkill(
     skill: SkillDefinition,
@@ -981,7 +1084,6 @@ export class SkillExecutor {
       return {
         layers: {
           overview: {}, list: {}, session: {}, deep: {},
-          L1: {}, L2: {}, L3: {}, L4: {}  // 向后兼容
         },
         defaultExpanded: ['overview', 'list'],
         metadata: {
@@ -1001,8 +1103,10 @@ export class SkillExecutor {
       variables: {},
     };
 
-    // Execute all steps
+    // Execute all steps and collect synthesize-marked data
     const stepResults: StepResult[] = [];
+    const synthesizeData: SynthesizeData[] = [];
+
     if (skill.steps) {
       for (let i = 0; i < skill.steps.length; i++) {
         const step = skill.steps[i];
@@ -1025,6 +1129,34 @@ export class SkillExecutor {
           stepResult.display = processDisplayConfig(step.display, execContext);
         }
 
+        // 收集标记为 synthesize 的步骤数据
+        // 支持两种格式：
+        // 1. synthesize: true (旧格式，向后兼容)
+        // 2. synthesize: { role: ..., fields: ... } (新格式，数据驱动)
+        if ('synthesize' in step && (step as any).synthesize) {
+          const synthesizeValue = (step as any).synthesize;
+          const displayConfig = step.display && typeof step.display === 'object' ? step.display : {};
+
+          // 解析 synthesize 配置
+          let config: SynthesizeConfig | undefined;
+          if (typeof synthesizeValue === 'object' && synthesizeValue.role) {
+            // 新格式：完整的配置对象
+            config = synthesizeValue as SynthesizeConfig;
+          }
+          // 旧格式 (synthesize: true) 不设置 config，由 analysisWorker 使用默认处理
+
+          synthesizeData.push({
+            stepId: step.id,
+            stepName: ('name' in step ? step.name : step.id) || step.id,
+            stepType: step.type,
+            layer: (displayConfig as DisplayConfig).layer,
+            data: stepResult.data,
+            success: stepResult.success,
+            config,  // 包含 YAML 中定义的配置（如果有）
+          });
+          console.log(`[executeCompositeSkill] Collected synthesize data from step: ${step.id}, config: ${config ? config.role : 'legacy'}`);
+        }
+
         stepResults.push(stepResult);
       }
     }
@@ -1042,10 +1174,14 @@ export class SkillExecutor {
           skillName: skill.name,
           version: skill.version || '1.0.0',
           executedAt: new Date().toISOString()
-        }
+        },
+        // 添加收集的 synthesize 数据
+        synthesizeData: synthesizeData.length > 0 ? synthesizeData : undefined,
       };
 
-      // Debug log removed for cleaner output
+      if (synthesizeData.length > 0) {
+        console.log(`[executeCompositeSkill] Collected ${synthesizeData.length} synthesize data items for final summary`);
+      }
 
       return result;
     } catch (error) {
@@ -1821,7 +1957,7 @@ export class SkillExecutor {
     let displayData: DisplayResult['data'];
 
     // Special handling for diagnostic step data - preserve the structure
-    // so that transformL4FrameAnalysis can extract diagnostics
+    // so that transformDeepFrameAnalysis can extract diagnostics
     if (typeof data === 'object' && data !== null && 'diagnostics' in data && Array.isArray(data.diagnostics)) {
       // Preserve diagnostic structure for later extraction
       displayData = data;
@@ -2121,12 +2257,3 @@ export function createSkillExecutor(
   return new SkillExecutor(traceProcessor, aiService, eventEmitter);
 }
 
-// =============================================================================
-// 向后兼容别名 (deprecated)
-// =============================================================================
-
-/** @deprecated Use SkillExecutor instead */
-export const SkillExecutorV2 = SkillExecutor;
-
-/** @deprecated Use createSkillExecutor instead */
-export const createSkillExecutorV2 = createSkillExecutor;

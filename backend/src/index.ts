@@ -6,6 +6,9 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 
+// Import configuration
+import { serverConfig } from './config';
+
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
 import traceRoutes from './routes/trace';
@@ -30,26 +33,17 @@ import { TraceProcessorFactory, killOrphanProcessors } from './services/workingT
 import { getPortPool, resetPortPool } from './services/portPool';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
-const NODE_ENV = process.env.NODE_ENV || 'development';
+const PORT = serverConfig.port;
+const NODE_ENV = serverConfig.nodeEnv;
 
 // Middleware
 app.use(cors({
-  origin: [
-    'http://localhost:8080',
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:10000', // Perfetto UI
-    'http://127.0.0.1:8080',
-    'http://127.0.0.1:5173',
-    'http://127.0.0.1:5174',
-    'http://127.0.0.1:10000', // Perfetto UI
-  ],
+  origin: serverConfig.corsOrigins,
   credentials: true,
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: serverConfig.bodyLimit }));
+app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {

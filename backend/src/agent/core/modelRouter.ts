@@ -262,20 +262,26 @@ export class ModelRouter extends EventEmitter {
     const fallbacks = this.getFallbackChain(primary.id);
 
     const modelsToTry = [primary, ...fallbacks.map(id => this.models.get(id)!).filter(Boolean)];
+    console.log(`[ModelRouter.callWithFallback] Task: ${taskType}, Models to try: ${modelsToTry.map(m => m.id).join(', ')}`);
 
     for (const model of modelsToTry) {
       try {
+        console.log(`[ModelRouter.callWithFallback] Trying model: ${model.id} (${model.provider})`);
         const result = await this.callModel(model, prompt, options);
         if (result.success) {
+          console.log(`[ModelRouter.callWithFallback] Model ${model.id} succeeded`);
           return result;
         }
+        console.log(`[ModelRouter.callWithFallback] Model ${model.id} returned unsuccessfully: ${result.error}`);
       } catch (error: any) {
+        console.log(`[ModelRouter.callWithFallback] Model ${model.id} threw error: ${error.message}`);
         this.recordFailure(model.id, error.message);
         this.emit('modelError', { modelId: model.id, error: error.message });
         continue;
       }
     }
 
+    console.log(`[ModelRouter.callWithFallback] All models failed for task: ${taskType}`);
     throw new AllModelsFailedError(
       `All models failed for task type: ${taskType}`,
       modelsToTry.map(m => m.id)

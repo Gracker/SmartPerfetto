@@ -171,16 +171,16 @@ async function analyzeComprehensive() {
     question: '分析滑动性能',
   });
 
-  const env = result.layeredResult?.layers?.L1?.detect_environment?.data?.[0];
+  const env = result.layeredResult?.layers?.overview?.detect_environment?.data?.[0];
   console.log('Environment Detection:');
   console.log(`  Frame Data Status: ${env?.frame_data_status || 'N/A'}`);
   console.log(`  Total Frames: ${env?.total_frames || 0}`);
   console.log(`  App Count: ${env?.app_count || 0}`);
 
-  const L1 = result.layeredResult?.layers?.L1 || {};
-  const jankFrames = L1.get_jank_frames as any;
-  const jankStats = L1.jank_type_stats as any;
-  const perfSummary = L1.frame_performance_summary as any;
+  const overview = result.layeredResult?.layers?.overview || {};
+  const jankFrames = overview.get_jank_frames as any;
+  const jankStats = overview.jank_type_stats as any;
+  const perfSummary = overview.frame_performance_summary as any;
 
   console.log('\nAnalysis Results:');
   console.log(`  get_jank_frames: ${jankFrames?.success ? '✅' : '❌'} (${jankFrames?.error || jankFrames?.data?.length || 0} rows)`);

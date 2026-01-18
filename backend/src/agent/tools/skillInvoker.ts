@@ -53,9 +53,8 @@ const definition: ToolDefinition = {
   name: 'invoke_skill',
   description: `调用已注册的 YAML Skill 进行专业分析。可用的 Skills 包括：
 - startup_analysis: 应用启动分析（冷启动/温启动/热启动）
-- scrolling_analysis: 滑动性能分析（FPS、掉帧率、卡顿原因）
+- scrolling_analysis: 滑动性能分析（FPS、掉帧率、卡顿原因、帧级别详细分析）
 - click_response_analysis: 点击响应分析（输入延迟、处理耗时）
-- janky_frame_analysis: 掉帧分析（帧级别详细分析）
 - cpu_analysis: CPU 使用分析
 - binder_analysis: Binder IPC 分析
 - memory_analysis: 内存分析
@@ -119,11 +118,11 @@ export const skillInvokerTool: Tool<SkillInvokerParams, SkillInvokerResult> = {
     }
 
     // 验证已知的 skill IDs
+    // NOTE: janky_frame_analysis removed - functionality merged into scrolling_analysis
     const knownSkills = [
       'startup_analysis',
       'scrolling_analysis',
       'click_response_analysis',
-      'janky_frame_analysis',
       'jank_frame_detail',
       'cpu_analysis',
       'binder_analysis',
@@ -206,39 +205,38 @@ export const skillInvokerTool: Tool<SkillInvokerParams, SkillInvokerResult> = {
       };
 
       // 提取关键数据用于 Agent 分析
-      // 同时支持语义名称 (overview/list/deep) 和旧名称 (L1/L2/L4)
       if (response.layeredResult?.layers) {
         const layers = response.layeredResult.layers;
 
-        // 扁平化 overview/L1 数据
-        const overviewData = layers.overview || layers.L1;
-        if (overviewData) {
+        // 扁平化 overview 数据
+        if (layers.overview) {
           const flattened: Record<string, any> = {};
-          for (const [key, value] of Object.entries(overviewData)) {
+          for (const [key, value] of Object.entries(layers.overview)) {
             flattened[key] = value;
           }
-          // 同时写入语义名称和兼容名称
           result.data.overview = flattened;
-          result.data.L1 = flattened;
         }
 
-        // 扁平化 list/L2 数据
-        const listData = layers.list || layers.L2;
-        if (listData) {
+        // 扁平化 list 数据
+        if (layers.list) {
           const flattened: Record<string, any> = {};
-          for (const [key, value] of Object.entries(listData)) {
+          for (const [key, value] of Object.entries(layers.list)) {
             flattened[key] = value;
           }
           result.data.list = flattened;
-          result.data.L2 = flattened;
         }
 
-        // deep/L4 数据（如果有）
-        const deepData = layers.deep || layers.L4;
-        if (deepData && Object.keys(deepData).length > 0) {
-          result.data.deep = deepData;
-          result.data.L4 = deepData;
+        // deep 数据（如果有）
+        if (layers.deep && Object.keys(layers.deep).length > 0) {
+          result.data.deep = layers.deep;
         }
+      }
+
+      // 传递 YAML 中标记为 synthesize: true 的数据
+      // 这些数据来自 Skill 定义中标记的步骤，用于最终总结
+      if (response.layeredResult?.synthesizeData) {
+        result.data.synthesizeData = response.layeredResult.synthesizeData;
+        console.log(`[SkillInvoker] Passing ${response.layeredResult.synthesizeData.length} synthesize data items`);
       }
 
       return {
@@ -269,11 +267,11 @@ export const skillInvokerTool: Tool<SkillInvokerParams, SkillInvokerResult> = {
  * 获取所有可用的 Skill IDs
  */
 export function getAvailableSkillIds(): string[] {
+  // NOTE: janky_frame_analysis removed - functionality merged into scrolling_analysis
   return [
     'startup_analysis',
     'scrolling_analysis',
     'click_response_analysis',
-    'janky_frame_analysis',
     'jank_frame_detail',
     'cpu_analysis',
     'binder_analysis',
@@ -300,7 +298,7 @@ export function getSkillIdForSceneType(
     scroll: 'scrolling_analysis',
     navigation: 'click_response_analysis',
     tap: 'click_response_analysis',
-    jank: 'janky_frame_analysis',
+    jank: 'scrolling_analysis',  // Use scrolling_analysis for jank detection
     anr: 'anr_analysis',
     memory: 'memory_analysis',
     cpu: 'cpu_analysis',

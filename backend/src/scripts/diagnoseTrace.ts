@@ -64,10 +64,10 @@ async function diagnose() {
     question: '分析滑动性能',
   });
 
-  const env = result.layeredResult?.layers?.L1?.detect_environment?.data?.[0];
+  const env = result.layeredResult?.layers?.overview?.detect_environment?.data?.[0];
   console.log('Environment from result:', env);
 
-  const getFrames = result.layeredResult?.layers?.L1?.get_frames_from_stdlib;
+  const getFrames = result.layeredResult?.layers?.overview?.get_frames_from_stdlib;
   console.log('\nget_frames_from_stdlib:');
   console.log('  success:', getFrames?.success);
   console.log('  data length:', getFrames?.data?.length || 0);

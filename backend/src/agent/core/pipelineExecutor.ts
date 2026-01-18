@@ -35,8 +35,9 @@ import {
   getContextBuilder,
   IsolatedContext,
 } from '../context';
+import { pipelineConfig as pipeConfig } from '../../config';
 
-// 默认阶段定义
+// 默认阶段定义 (从统一配置文件获取 timeouts 和 retries)
 const DEFAULT_STAGES: PipelineStage[] = [
   {
     id: 'plan',
@@ -45,8 +46,8 @@ const DEFAULT_STAGES: PipelineStage[] = [
     agentType: 'planner',
     dependencies: [],
     canParallelize: false,
-    timeout: 30000,
-    maxRetries: 2,
+    timeout: pipeConfig.stageTimeouts.planner,
+    maxRetries: pipeConfig.stageMaxRetries.planner,
   },
   {
     id: 'execute',
@@ -55,8 +56,8 @@ const DEFAULT_STAGES: PipelineStage[] = [
     agentType: 'worker',
     dependencies: ['plan'],
     canParallelize: true,
-    timeout: 60000,
-    maxRetries: 2,
+    timeout: pipeConfig.stageTimeouts.analysis,
+    maxRetries: pipeConfig.stageMaxRetries.analysis,
   },
   {
     id: 'evaluate',
@@ -65,8 +66,8 @@ const DEFAULT_STAGES: PipelineStage[] = [
     agentType: 'evaluator',
     dependencies: ['execute'],
     canParallelize: false,
-    timeout: 30000,
-    maxRetries: 1,
+    timeout: pipeConfig.stageTimeouts.evaluation,
+    maxRetries: pipeConfig.stageMaxRetries.evaluation,
   },
   {
     id: 'refine',
@@ -75,8 +76,8 @@ const DEFAULT_STAGES: PipelineStage[] = [
     agentType: 'worker',
     dependencies: ['evaluate'],
     canParallelize: false,
-    timeout: 60000,
-    maxRetries: 2,
+    timeout: pipeConfig.stageTimeouts.synthesis,
+    maxRetries: pipeConfig.stageMaxRetries.synthesis,
   },
   {
     id: 'conclude',
@@ -85,15 +86,15 @@ const DEFAULT_STAGES: PipelineStage[] = [
     agentType: 'synthesizer',
     dependencies: ['refine'],
     canParallelize: false,
-    timeout: 30000,
-    maxRetries: 1,
+    timeout: pipeConfig.stageTimeouts.decision,
+    maxRetries: pipeConfig.stageMaxRetries.decision,
   },
 ];
 
-// 默认配置
+// 默认配置 (从统一配置文件获取)
 const DEFAULT_CONFIG: Partial<PipelineConfig> = {
-  maxTotalDuration: 300000, // 5 分钟
-  enableParallelization: true,
+  maxTotalDuration: pipeConfig.maxTotalDurationMs,
+  enableParallelization: pipeConfig.enableParallelization,
 };
 
 /**

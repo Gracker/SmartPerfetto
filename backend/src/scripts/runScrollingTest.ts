@@ -77,18 +77,18 @@ async function runScrollingSkillTest() {
     if (result.layeredResult) {
       console.log('2. LayeredResult Structure:');
       const layers = result.layeredResult.layers;
-      console.log('   L1 steps:', Object.keys(layers.L1 || {}).length);
-      console.log('     ', Object.keys(layers.L1 || {}));
-      console.log('   L2 steps:', Object.keys(layers.L2 || {}).length);
-      console.log('     ', Object.keys(layers.L2 || {}));
-      console.log('   L3 sessions:', Object.keys(layers.L3 || {}).length);
-      console.log('   L4 sessions:', Object.keys(layers.L4 || {}).length);
+      console.log('   overview steps:', Object.keys(layers.overview || {}).length);
+      console.log('     ', Object.keys(layers.overview || {}));
+      console.log('   list steps:', Object.keys(layers.list || {}).length);
+      console.log('     ', Object.keys(layers.list || {}));
+      console.log('   session entries:', Object.keys(layers.session || {}).length);
+      console.log('   deep entries:', Object.keys(layers.deep || {}).length);
       console.log('');
 
-      // 3. L1 data validation
-      console.log('3. L1 Data Validation:');
-      if (layers.L1 && layers.L1.detect_environment) {
-        const envData = layers.L1.detect_environment.data;
+      // 3. Overview data validation
+      console.log('3. Overview Data Validation:');
+      if (layers.overview && layers.overview.detect_environment) {
+        const envData = layers.overview.detect_environment.data;
         console.log('   detect_environment:');
         console.log('     Type:', Array.isArray(envData) ? 'array' : typeof envData);
         console.log('     Length:', Array.isArray(envData) ? envData.length : 'N/A');
@@ -123,14 +123,14 @@ async function runScrollingSkillTest() {
       }
       console.log('');
 
-      // 5. L4 structure
-      console.log('5. L4 Frame Structure:');
-      if (layers.L4) {
-        const sessionIds = Object.keys(layers.L4);
+      // 5. Deep structure
+      console.log('5. Deep Frame Structure:');
+      if (layers.deep) {
+        const sessionIds = Object.keys(layers.deep);
         console.log('   Sessions:', sessionIds.length);
         if (sessionIds.length > 0) {
           const firstSession = sessionIds[0];
-          const frames = layers.L4[firstSession];
+          const frames = layers.deep[firstSession];
           console.log('   First session:', firstSession);
           console.log('   Frames:', Object.keys(frames).length);
           const firstFrameId = Object.keys(frames)[0];

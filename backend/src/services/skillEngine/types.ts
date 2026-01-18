@@ -30,31 +30,6 @@ export type DisplayFormat = 'table' | 'chart' | 'text' | 'timeline' | 'summary';
  */
 export type DisplayLayer = 'overview' | 'list' | 'session' | 'deep';
 
-/**
- * @deprecated 使用语义化的 DisplayLayer 值代替
- * - L1 → 'overview'
- * - L2 → 'list'
- * - L3 → 'session'
- * - L4 → 'deep'
- */
-export type LegacyDisplayLayer = 'L1' | 'L2' | 'L3' | 'L4';
-
-/** Layer 名称映射（用于 YAML 兼容） */
-export const LAYER_MAPPING: Record<LegacyDisplayLayer, DisplayLayer> = {
-  L1: 'overview',
-  L2: 'list',
-  L3: 'session',
-  L4: 'deep',
-};
-
-/** 反向映射（用于调试输出） */
-export const LAYER_REVERSE_MAPPING: Record<DisplayLayer, LegacyDisplayLayer> = {
-  overview: 'L1',
-  list: 'L2',
-  session: 'L3',
-  deep: 'L4',
-};
-
 export type ConfidenceLevel = 'high' | 'medium' | 'low';
 
 // =============================================================================
@@ -131,6 +106,7 @@ export interface AtomicStep {
   optional?: boolean;
   on_empty?: string;
   condition?: string;  // 执行条件，不满足时跳过此步骤
+  synthesize?: boolean; // 标记此步骤数据用于最终总结
 }
 
 /**
@@ -159,6 +135,7 @@ export interface IteratorStep {
   display?: DisplayConfig | boolean;
   save_as?: string;
   max_items?: number;   // 最大迭代数量（性能保护）
+  synthesize?: boolean; // 标记此步骤数据用于最终总结
 }
 
 /**
@@ -512,27 +489,3 @@ export interface SimplifiedSkillResult {
   aiSummary?: string;
 }
 
-// =============================================================================
-// Legacy Aliases (for backward compatibility during migration)
-// =============================================================================
-
-/** @deprecated Use SkillMeta instead */
-export type SkillMetaV2 = SkillMeta;
-
-/** @deprecated Use SkillTriggers instead */
-export type SkillTriggersV2 = SkillTriggers;
-
-/** @deprecated Use SkillPrerequisites instead */
-export type SkillPrerequisitesV2 = SkillPrerequisites;
-
-/** @deprecated Use SkillOutputConfig instead */
-export type SkillOutputConfigV2 = SkillOutputConfig;
-
-/** @deprecated Use SkillDefinition instead */
-export type SkillDefinitionV2 = SkillDefinition;
-
-/** @deprecated Use SkillExecutionContext instead */
-export type SkillExecutionContextV2 = SkillExecutionContext;
-
-/** @deprecated Use SkillExecutionResult instead */
-export type SkillExecutionResultV2 = SkillExecutionResult;

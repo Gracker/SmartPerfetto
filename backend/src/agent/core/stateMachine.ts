@@ -34,7 +34,7 @@ const STATE_TRANSITIONS: Record<AgentPhase, AgentPhase[]> = {
   planning: ['executing', 'awaiting_user', 'failed'],
   executing: ['evaluating', 'awaiting_user', 'failed'],
   evaluating: ['refining', 'completed', 'awaiting_user', 'failed'],
-  refining: ['executing', 'evaluating', 'awaiting_user', 'failed'],  // 添加 executing，允许重新执行
+  refining: ['executing', 'evaluating', 'completed', 'awaiting_user', 'failed'],  // 添加 completed，允许从 refining 直接完成
   awaiting_user: ['planning', 'executing', 'evaluating', 'refining', 'completed', 'failed'],
   completed: [], // 终态
   failed: ['idle'], // 可以重新开始

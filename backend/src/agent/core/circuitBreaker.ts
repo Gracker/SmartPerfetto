@@ -16,15 +16,16 @@ import {
   CircuitDiagnostics,
   CircuitBreakerState,
 } from '../types';
+import { circuitBreakerConfig as cbConfig } from '../../config';
 
-// 默认配置
+// 默认配置 (从统一配置文件获取)
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
-  maxRetriesPerAgent: 3,
-  maxIterationsPerStage: 5,
-  cooldownMs: 30000, // 30 秒冷却
-  halfOpenAttempts: 1,
-  failureThreshold: 3,
-  successThreshold: 2,
+  maxRetriesPerAgent: cbConfig.maxRetriesPerAgent,
+  maxIterationsPerStage: cbConfig.maxIterationsPerStage,
+  cooldownMs: cbConfig.cooldownMs,
+  halfOpenAttempts: cbConfig.halfOpenAttempts,
+  failureThreshold: cbConfig.failureThreshold,
+  successThreshold: cbConfig.successThreshold,
 };
 
 /**
@@ -217,9 +218,9 @@ export class CircuitBreaker extends EventEmitter {
    * 计算指数退避延迟
    */
   private calculateBackoff(attemptNumber: number): number {
-    // 指数退避：基础 1000ms，最大 30000ms
-    const baseDelay = 1000;
-    const maxDelay = 30000;
+    // 指数退避：使用配置的基础延迟和最大延迟
+    const baseDelay = cbConfig.backoffBaseDelayMs;
+    const maxDelay = cbConfig.backoffMaxDelayMs;
     const delay = Math.min(baseDelay * Math.pow(2, attemptNumber - 1), maxDelay);
 
     // 添加抖动 (±20%)

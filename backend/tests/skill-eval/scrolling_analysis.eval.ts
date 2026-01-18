@@ -42,6 +42,8 @@ describe('scrolling_analysis skill', () => {
 
   afterAll(async () => {
     await evaluator.cleanup();
+    // Wait for trace processor port release (destroy() has a 2s setTimeout)
+    await new Promise(resolve => setTimeout(resolve, 2500));
   });
 
   // ===========================================================================

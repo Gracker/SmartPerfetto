@@ -53,7 +53,7 @@ async function runScrollingTestWithRealData() {
     console.log(`✓ Skill execution completed in ${duration}ms\n`);
 
     // Check if frame data was detected
-    const envData = result.layeredResult?.layers?.L1?.detect_environment?.data;
+    const envData = result.layeredResult?.layers?.overview?.detect_environment?.data;
     if (envData && envData.length > 0) {
       const frameStatus = envData[0].frame_data_status;
       const totalFrames = envData[0].total_frames;
@@ -68,7 +68,7 @@ async function runScrollingTestWithRealData() {
         console.log('✅ Frame data detected - analysis should have run successfully\n');
 
         // Check condition-dependent steps
-        const L1 = result.layeredResult?.layers?.L1 || {};
+        const overview = result.layeredResult?.layers?.overview || {};
         const conditionSteps = [
           'get_jank_frames',
           'jank_type_stats',
@@ -79,7 +79,7 @@ async function runScrollingTestWithRealData() {
         console.log('Condition-Dependent Steps Execution:');
         let allExecuted = true;
         for (const stepId of conditionSteps) {
-          const step = L1[stepId];
+          const step = overview[stepId];
           const executed = step?.success === true;
           const status = executed ? '✅ Executed' : '❌ Skipped/Failed';
           const dataCount = step?.data?.length || 0;
