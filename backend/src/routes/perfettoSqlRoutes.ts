@@ -5,8 +5,8 @@
  * All SQL patterns are based on official Perfetto documentation.
  *
  * Architecture:
- * - Uses SkillExecutor (YAML-based) for skills that have YAML definitions
- * - Falls back to PerfettoSqlSkill (hardcoded) for legacy endpoints
+ * - Uses SkillExecutor (YAML-based) for all supported analysis types
+ * - Legacy PerfettoSqlSkill only used for endpoints without YAML skills
  */
 
 import express from 'express';
@@ -22,6 +22,8 @@ import { getTraceProcessorService } from '../services/traceProcessorService';
 
 // Get the shared TraceProcessorService instance
 const traceProcessorService = getTraceProcessorService();
+
+// Legacy skill for endpoints without YAML definitions (deprecated, will be removed)
 const perfettoSqlSkill = new PerfettoSqlSkill(traceProcessorService);
 
 // Skill Engine adapter (uses YAML-based skills from skills/)
@@ -45,66 +47,55 @@ const SKILL_ID_MAP: Record<string, string> = {
   'click-response': 'click_response_analysis',
 };
 
-// Flag to enable/disable Skill Engine (can be controlled via env var)
-const USE_SKILL_ENGINE = process.env.USE_SKILL_ENGINE !== 'false';
-
 /**
  * Execute analysis using the Skill Engine
- * Returns null if skill not found (will fallback to legacy)
+ * Returns null only if skill not found (no YAML definition)
+ * Throws error if skill exists but execution fails
  */
 async function executeWithSkillEngine(
   skillId: string,
   traceId: string,
   packageName?: string
 ): Promise<any | null> {
-  if (!USE_SKILL_ENGINE) {
+  const adapter = getSkillAdapter();
+  await adapter.ensureInitialized();
+
+  const skill = await adapter.getSkillDetail(skillId);
+  if (!skill) {
+    // Skill not found - caller should handle (legacy endpoint or error)
     return null;
   }
 
-  try {
-    const adapter = getSkillAdapter();
-    await adapter.ensureInitialized();
+  console.log(`[PerfettoSql] Using Skill Engine for: ${skillId}`);
+  const startTime = Date.now();
 
-    const skill = await adapter.getSkillDetail(skillId);
-    if (!skill) {
-      console.log(`[PerfettoSql] Skill ${skillId} not found in YAML, using legacy`);
-      return null;
-    }
+  // Execute skill - let errors propagate (no silent fallback)
+  const result = await adapter.analyze({
+    traceId,
+    skillId,
+    packageName,
+  });
 
-    console.log(`[PerfettoSql] Using Skill Engine for: ${skillId}`);
-    const startTime = Date.now();
+  console.log(`[PerfettoSql] Skill ${skillId} completed in ${Date.now() - startTime}ms`);
 
-    const result = await adapter.analyze({
-      traceId,
-      skillId,
-      packageName,
-    });
-
-    console.log(`[PerfettoSql] Skill ${skillId} completed in ${Date.now() - startTime}ms`);
-
-    // Convert to response format with v2 enhanced data
-    return {
-      analysisType: skillId,
-      skillEngine: true,
-      skillEngineVersion: 'v2',
-      skillName: result.skillName,
-      vendor: result.vendor,
-      sections: result.sections,
-      diagnostics: result.diagnostics,
-      summary: result.summary,
-      executionTimeMs: result.executionTimeMs,
-      success: result.success,
-      // v2 新增字段
-      displayResults: result.displayResults,
-      aiSummary: result.aiSummary,
-      directAnswer: result.directAnswer,
-      questionType: result.questionType,
-      answerConfidence: result.answerConfidence,
-    };
-  } catch (error: any) {
-    console.error(`[PerfettoSql] Skill Engine error for ${skillId}:`, error.message);
-    return null; // Fallback to legacy
-  }
+  // Convert to response format with v2 enhanced data
+  return {
+    analysisType: skillId,
+    skillEngine: true,
+    skillEngineVersion: 'v2',
+    skillName: result.skillName,
+    vendor: result.vendor,
+    sections: result.sections,
+    diagnostics: result.diagnostics,
+    summary: result.summary,
+    executionTimeMs: result.executionTimeMs,
+    success: result.success,
+    displayResults: result.displayResults,
+    aiSummary: result.aiSummary,
+    directAnswer: result.directAnswer,
+    questionType: result.questionType,
+    answerConfidence: result.answerConfidence,
+  };
 }
 
 // ============================================================================

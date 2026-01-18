@@ -39,15 +39,22 @@ router.post('/chat', async (req, res) => {
   try {
     const { messages, provider = 'deepseek', model } = req.body;
 
-    // Support both old format (message) and new format (messages array)
-    const userMessages = messages || [{ role: 'user', content: req.body.message || '' }];
-
-    if (!userMessages.length || !userMessages[userMessages.length - 1]?.content) {
+    if (!messages || !Array.isArray(messages) || messages.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'No message provided'
+        error: 'messages array is required'
       });
     }
+
+    const lastMessage = messages[messages.length - 1];
+    if (!lastMessage?.content) {
+      return res.status(400).json({
+        success: false,
+        error: 'Last message must have content'
+      });
+    }
+
+    const userMessages = messages;
 
     // Get DeepSeek client (lazy initialization)
     const client = getDeepSeekClient();

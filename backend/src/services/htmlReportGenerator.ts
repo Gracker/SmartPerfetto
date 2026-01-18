@@ -884,8 +884,8 @@ export class HTMLReportGenerator {
       initTableScroll();
     }
 
-    // L4 滑动区间折叠功能
-    function toggleL4Session(sessionId) {
+    // Deep 层滑动区间折叠功能
+    function toggleDeepSession(sessionId) {
       const content = document.getElementById(sessionId + '_content');
       const header = content.previousElementSibling;
       const icon = header.querySelector('.session-toggle-icon');
@@ -898,8 +898,8 @@ export class HTMLReportGenerator {
       }
     }
 
-    // L4 单帧折叠功能
-    function toggleL4Frame(frameId) {
+    // Deep 层单帧折叠功能
+    function toggleDeepFrame(frameId) {
       const content = document.getElementById(frameId + '_content');
       const header = content.previousElementSibling;
       const icon = header.querySelector('.frame-toggle-icon');
@@ -915,13 +915,13 @@ export class HTMLReportGenerator {
       }
     }
 
-    // L4 展开/折叠某个session下所有帧
-    function toggleAllFramesInL4Session(sessionId) {
+    // Deep 层展开/折叠某个session下所有帧
+    function toggleAllFramesInDeepSession(sessionId) {
       const sessionContent = document.getElementById(sessionId + '_content');
       if (!sessionContent) return;
-      const frameContents = sessionContent.querySelectorAll('.l4-frame-content');
+      const frameContents = sessionContent.querySelectorAll('.deep-frame-content');
       const allCollapsed = Array.from(frameContents).every(f => f.style.display === 'none');
-      
+
       frameContents.forEach(content => {
         const header = content.previousElementSibling;
         const icon = header.querySelector('.frame-toggle-icon');
@@ -968,7 +968,7 @@ export class HTMLReportGenerator {
       </div>
     `;
 
-    //优先处理分层结果（L1/L2/L3/L4）
+    // 优先处理分层结果
     if (skillResult.layeredResult) {
       html += this.generateLayeredResultSection(skillResult.layeredResult);
     }
@@ -1439,22 +1439,10 @@ export class HTMLReportGenerator {
 
   /**
    * Format answer with markdown-like syntax
+   * Now delegates to markdownToHtml for full support including tables
    */
   private formatAnswer(answer: string): string {
-    if (!answer) return '';
-
-    return answer
-      // Bold
-      .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-      // Headers
-      .replace(/^### (.*$)/gm, '<h4>$1</h4>')
-      .replace(/^## (.*$)/gm, '<h3>$1</h3>')
-      // Lists
-      .replace(/^- (.*$)/gm, '<li>$1</li>')
-      .replace(/^(\d+)\. (.*$)/gm, '<li>$2</li>')
-      // Line breaks
-      .replace(/\n\n/g, '</p><p>')
-      .replace(/\n/g, '<br>');
+    return this.markdownToHtml(answer);
   }
 
   /**
@@ -1514,8 +1502,8 @@ export class HTMLReportGenerator {
   }
 
   /**
-   * Generate layered result section (L1/L2/L3/L4)
-   * 生成分层结果区块，支持 L1/L2/L3/L4 各层展示
+   * Generate layered result section (overview/list/session/deep)
+   * 生成分层结果区块
    */
   private generateLayeredResultSection(layeredResult: any): string {
     let html = '';
@@ -1533,28 +1521,28 @@ export class HTMLReportGenerator {
       `;
     }
 
-    // L1 - 概览层
-    if (layers.L1 && Object.keys(layers.L1).length > 0) {
-      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">📊 L1 - 概览层</h3>`;
-      html += this.generateLayerContent(layers.L1, 'L1');
+    // overview - 概览层
+    if (layers.overview && Object.keys(layers.overview).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">📊 概览层 (Overview)</h3>`;
+      html += this.generateLayerContent(layers.overview, 'overview');
     }
 
-    // L2 - 区间层
-    if (layers.L2 && Object.keys(layers.L2).length > 0) {
-      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">📋 L2 - 区间层</h3>`;
-      html += this.generateLayerContent(layers.L2, 'L2');
+    // list - 列表层
+    if (layers.list && Object.keys(layers.list).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">📋 列表层 (List)</h3>`;
+      html += this.generateLayerContent(layers.list, 'list');
     }
 
-    // L3 - 区间详情层
-    if (layers.L3 && Object.keys(layers.L3).length > 0) {
-      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">🔍 L3 - 区间详情层</h3>`;
-      html += this.generateLayerContent(layers.L3, 'L3');
+    // session - 会话详情层
+    if (layers.session && Object.keys(layers.session).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">🔍 会话详情层 (Session)</h3>`;
+      html += this.generateLayerContent(layers.session, 'session');
     }
 
-    // L4 - 帧分析层
-    if (layers.L4 && Object.keys(layers.L4).length > 0) {
-      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">🎯 L4 - 帧分析层</h3>`;
-      html += this.generateLayerContent(layers.L4, 'L4');
+    // deep - 深度分析层
+    if (layers.deep && Object.keys(layers.deep).length > 0) {
+      html += `<h3 style="margin: 30px 0 15px; font-size: 18px; color: #2c3e50;">🎯 深度分析层 (Deep)</h3>`;
+      html += this.generateLayerContent(layers.deep, 'deep');
     }
 
     return html;
@@ -1566,15 +1554,15 @@ export class HTMLReportGenerator {
   private generateLayerContent(layerData: any, layerType: string): string {
     let html = '';
 
-    // L1 和 L2 是平铺结构：Record<string, StepResult>
-    if (layerType === 'L1' || layerType === 'L2') {
+    // overview 和 list 是平铺结构：Record<string, StepResult>
+    if (layerType === 'overview' || layerType === 'list') {
       for (const [stepId, stepResult] of Object.entries(layerData)) {
         const result = stepResult as any;
         html += this.renderStepResult(stepId, result);
       }
     }
-    // L3 是嵌套结构：Record<string, Record<string, StepResult>>
-    else if (layerType === 'L3') {
+    // session 是嵌套结构：Record<string, Record<string, StepResult>>
+    else if (layerType === 'session') {
       for (const [sessionId, sessionSteps] of Object.entries(layerData)) {
         html += `
           <div style="margin-bottom: 20px;">
@@ -1589,9 +1577,9 @@ export class HTMLReportGenerator {
         html += `</div>`;
       }
     }
-    // L4 是嵌套结构：Record<string, Record<string, StepResult>>
-    else if (layerType === 'L4') {
-      // 获取L2数据以显示区间信息
+    // deep 是嵌套结构：Record<string, Record<string, StepResult>>
+    else if (layerType === 'deep') {
+      // 显示会话和帧信息
       let sessionIndex = 0;
       for (const [sessionId, frames] of Object.entries(layerData)) {
         sessionIndex++;
@@ -1600,18 +1588,18 @@ export class HTMLReportGenerator {
         const sessionNum = sessionId.replace('session_', '');
 
         html += `
-          <div class="l4-session-container" style="margin-bottom: 24px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
-            <div class="l4-session-header" style="padding: 12px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleL4Session('${sessionId}')">
+          <div class="deep-session-container" style="margin-bottom: 24px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+            <div class="deep-session-header" style="padding: 12px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleDeepSession('${sessionId}')">
               <div>
                 <span class="session-toggle-icon" style="margin-right: 8px;">▼</span>
                 <strong>滑动区间 ${sessionNum}</strong>
                 <span style="margin-left: 12px; opacity: 0.9;">${frameCount} 个掉帧</span>
               </div>
-              <button onclick="event.stopPropagation(); toggleAllFramesInL4Session('${sessionId}')" style="padding: 4px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; cursor: pointer; font-size: 12px;">
+              <button onclick="event.stopPropagation(); toggleAllFramesInDeepSession('${sessionId}')" style="padding: 4px 12px; background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3); border-radius: 4px; cursor: pointer; font-size: 12px;">
                 全部展开
               </button>
             </div>
-            <div class="l4-session-content" id="${sessionId}_content" style="padding: 12px;">
+            <div class="deep-session-content" id="${sessionId}_content" style="padding: 12px;">
         `;
 
         frameEntries.forEach(([frameId, stepResult], idx) => {
@@ -1620,16 +1608,16 @@ export class HTMLReportGenerator {
           const uniqueFrameId = `${sessionId}_${frameId}`;
 
           html += `
-              <div class="l4-frame-item" style="margin-bottom: 8px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
-                <div class="l4-frame-header" style="padding: 10px 12px; background: #f8fafc; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleL4Frame('${uniqueFrameId}')">
+              <div class="deep-frame-item" style="margin-bottom: 8px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
+                <div class="deep-frame-header" style="padding: 10px 12px; background: #f8fafc; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="toggleDeepFrame('${uniqueFrameId}')">
                   <div>
                     <span class="frame-toggle-icon" style="margin-right: 8px; color: #64748b;">▶</span>
                     <span style="font-weight: 500; color: #334155;">${this.escapeHtml(frameTitle)}</span>
                   </div>
                   <span style="font-size: 12px; color: #94a3b8;">点击展开详情</span>
                 </div>
-                <div class="l4-frame-content" id="${uniqueFrameId}_content" style="display: none; padding: 12px; background: white;">
-                  ${this.renderL4FrameAnalysis(result.data)}
+                <div class="deep-frame-content" id="${uniqueFrameId}_content" style="display: none; padding: 12px; background: white;">
+                  ${this.renderDeepFrameAnalysis(result.data)}
                 </div>
               </div>
           `;
@@ -1656,27 +1644,23 @@ export class HTMLReportGenerator {
 
     console.log(`[renderStepResult] ${stepId}: data type=${typeof stepResult.data}, isArray=${Array.isArray(stepResult.data)}, length=${stepResult.data?.length || 'N/A'}`);
 
-    let html = `
-      <div class="skill-section" style="margin-bottom: 15px;">
-        <div class="section-header">
-          <h3>${this.escapeHtml(stepResult.display?.title || stepId)}</h3>
-          ${Array.isArray(stepResult.data) ? `<span class="count">${stepResult.data.length} 条记录</span>` : ''}
-          ${stepResult.success === false ? `<span class="error-badge" style="margin-left: 10px; padding: 2px 8px; background: #ef4444; color: white; border-radius: 4px; font-size: 12px;">失败</span>` : ''}
-        </div>
-    `;
+    // 先判断数据格式，确定是否有可渲染的内容
+    let contentHtml = '';
+    let hasRenderableContent = false;
 
     // 显示错误信息（如果有）
     if (stepResult.error) {
       console.log(`[renderStepResult] ${stepId}: Step failed with error:`, stepResult.error);
-      html += `
+      contentHtml += `
         <div style="padding: 12px; background: #fef2f2; border-left: 4px solid #ef4444; border-radius: 4px; margin-bottom: 10px;">
           <div style="font-weight: 600; color: #dc2626; margin-bottom: 4px;">错误信息:</div>
           <div style="font-family: monospace; font-size: 13px; color: #991b1b; white-space: pre-wrap;">${this.escapeHtml(String(stepResult.error))}</div>
         </div>
       `;
+      hasRenderableContent = true;
     }
 
-    // 处理 displayResults 格式（来自 L4 iterator 结果）
+    // 处理 displayResults 格式（来自 deep 层 iterator 结果）
     if (Array.isArray(stepResult.data) && stepResult.data.length > 0) {
       const firstItem = stepResult.data[0];
 
@@ -1691,42 +1675,61 @@ export class HTMLReportGenerator {
       if (firstItem.stepId || firstItem.title) {
         console.log(`[renderStepResult] ${stepId}: Using displayResult format (has stepId or title)`);
         for (const displayResult of stepResult.data) {
-          html += this.renderDisplayResult(displayResult);
+          contentHtml += this.renderDisplayResult(displayResult);
         }
+        hasRenderableContent = true;
       }
       // 如果是普通数据数组，渲染为表格
       else {
         const columns = Object.keys(firstItem);
         console.log(`[renderStepResult] ${stepId}: Using table format, columns:`, columns);
-        html += this.generateTable(columns, stepResult.data);
+        contentHtml += this.generateTable(columns, stepResult.data);
+        hasRenderableContent = true;
       }
     }
     // 处理空数组（失败的 SQL 查询或无结果）
     else if (Array.isArray(stepResult.data)) {
       console.log(`[renderStepResult] ${stepId}: Empty array, showing 'No data' message`);
       const message = stepResult.error ? '查询失败' : '无数据';
-      html += `<div class="empty-state" style="padding: 20px; background: #f8f9fa; border-radius: 8px; color: #666;">${message}</div>`;
+      contentHtml += `<div class="empty-state" style="padding: 20px; background: #f8f9fa; border-radius: 8px; color: #666;">${message}</div>`;
+      hasRenderableContent = true;
     }
     // 处理文本格式
     else if (stepResult.data?.text) {
       console.log(`[renderStepResult] ${stepId}: Using text format`);
-      html += `
+      contentHtml += `
         <div class="answer-box">
           ${this.formatAnswer(stepResult.data.text)}
         </div>
       `;
+      hasRenderableContent = true;
     }
-    // 处理 L4 帧分析格式 (transformed data with diagnosis_summary and full_analysis)
+    // 处理 deep 层帧分析格式 (transformed data with diagnosis_summary and full_analysis)
     else if (stepResult.data?.diagnosis_summary !== undefined || stepResult.data?.full_analysis) {
-      console.log(`[renderStepResult] ${stepId}: Using L4 frame analysis format`);
-      html += this.renderL4FrameAnalysis(stepResult.data);
+      console.log(`[renderStepResult] ${stepId}: Using deep frame analysis format`);
+      contentHtml += this.renderDeepFrameAnalysis(stepResult.data);
+      hasRenderableContent = true;
     }
     else {
-      console.log(`[renderStepResult] ${stepId}: Unknown format, data:`, typeof stepResult.data, stepResult.data);
+      console.log(`[renderStepResult] ${stepId}: Unknown format, skipping empty section. data:`, typeof stepResult.data, stepResult.data);
+      // 不渲染空容器
     }
 
-    html += `</div>`;
-    return html;
+    // 只有在有可渲染内容时才创建容器
+    if (!hasRenderableContent) {
+      return '';
+    }
+
+    return `
+      <div class="skill-section" style="margin-bottom: 15px;">
+        <div class="section-header">
+          <h3>${this.escapeHtml(stepResult.display?.title || stepId)}</h3>
+          ${Array.isArray(stepResult.data) ? `<span class="count">${stepResult.data.length} 条记录</span>` : ''}
+          ${stepResult.success === false ? `<span class="error-badge" style="margin-left: 10px; padding: 2px 8px; background: #ef4444; color: white; border-radius: 4px; font-size: 12px;">失败</span>` : ''}
+        </div>
+        ${contentHtml}
+      </div>
+    `;
   }
 
   /**
@@ -1744,37 +1747,44 @@ export class HTMLReportGenerator {
       dataKeys: displayResult.data ? Object.keys(displayResult.data) : [],
     }, null, 2));
 
-    let html = `
-      <div style="margin: 10px 0; padding: 12px; background: #fafbfc; border-radius: 6px; border-left: 3px solid #3498db;">
-        <h5 style="margin: 0 0 8px 0; font-size: 14px; color: #2c3e50;">
-          ${this.escapeHtml(displayResult.title || displayResult.stepId || '详情')}
-        </h5>
-    `;
+    // 先判断是否有可渲染的内容
+    let contentHtml = '';
 
     if (displayResult.data) {
       // 如果有 rows，渲染为表格
       if (displayResult.data.rows && Array.isArray(displayResult.data.rows)) {
         const columns = displayResult.data.columns || [];
         const tableData = this.rowsToObjects(columns, displayResult.data.rows);
-        html += this.generateTable(columns, tableData);
+        contentHtml = this.generateTable(columns, tableData);
       }
       // 如果有 text，渲染为文本
       else if (displayResult.data.text) {
-        html += `<div style="font-size: 13px; line-height: 1.6;">${this.formatAnswer(displayResult.data.text)}</div>`;
+        contentHtml = `<div style="font-size: 13px; line-height: 1.6;">${this.formatAnswer(displayResult.data.text)}</div>`;
       }
       else {
-        console.log(`[renderDisplayResult] No matching format for data:`, typeof displayResult.data, displayResult.data);
+        console.log(`[renderDisplayResult] No matching format for data, skipping:`, typeof displayResult.data, displayResult.data);
       }
     }
     else {
-      console.log(`[renderDisplayResult] No data in displayResult`);
+      console.log(`[renderDisplayResult] No data in displayResult, skipping`);
     }
 
-    html += `</div>`;
-    return html;
+    // 如果没有可渲染的内容，返回空字符串
+    if (!contentHtml) {
+      return '';
+    }
+
+    return `
+      <div style="margin: 10px 0; padding: 12px; background: #fafbfc; border-radius: 6px; border-left: 3px solid #3498db;">
+        <h5 style="margin: 0 0 8px 0; font-size: 14px; color: #2c3e50;">
+          ${this.escapeHtml(displayResult.title || displayResult.stepId || '详情')}
+        </h5>
+        ${contentHtml}
+      </div>
+    `;
   }
 
-  private renderL4FrameAnalysis(data: { diagnosis_summary?: string; full_analysis?: any }): string {
+  private renderDeepFrameAnalysis(data: { diagnosis_summary?: string; full_analysis?: any }): string {
     const diagnosis = data.diagnosis_summary || '暂无诊断';
     const analysis = data.full_analysis || {};
     const quadrants = analysis.quadrants || {};
@@ -2053,6 +2063,126 @@ export class HTMLReportGenerator {
     return text.replace(/[&<>"']/g, m => map[m]);
   }
 
+  /**
+   * Convert Markdown to HTML
+   * Supports: tables, headers, bold, lists, line breaks
+   */
+  private markdownToHtml(text: string): string {
+    if (!text) return '';
+
+    let result = text;
+
+    // First, convert tables (must be done before other transformations)
+    // Store tables as placeholders to protect them from newline conversion
+    const tablePlaceholders: string[] = [];
+    result = this.convertMarkdownTables(result);
+
+    // Replace tables with placeholders
+    result = result.replace(/<table[\s\S]*?<\/table>/g, (match) => {
+      const idx = tablePlaceholders.length;
+      // Remove internal newlines from table HTML
+      const cleanTable = match.replace(/\n\s*/g, '');
+      tablePlaceholders.push(cleanTable);
+      return `__TABLE_PLACEHOLDER_${idx}__`;
+    });
+
+    // Blockquotes (must be before header conversion)
+    result = result.replace(/^> (.*$)/gm, '<blockquote style="margin: 10px 0; padding: 10px 15px; background: #f0f9ff; border-left: 4px solid #3b82f6; color: #1e40af; font-style: italic;">$1</blockquote>');
+
+    // Headers (must be before line break conversion)
+    result = result.replace(/^#### (.*$)/gm, '<h5 style="margin: 12px 0 8px; font-size: 14px; color: #374151;">$1</h5>');
+    result = result.replace(/^### (.*$)/gm, '<h4 style="margin: 16px 0 10px; font-size: 15px; color: #1f2937;">$1</h4>');
+    result = result.replace(/^## (.*$)/gm, '<h3 style="margin: 20px 0 12px; font-size: 16px; color: #111827;">$1</h3>');
+
+    // Bold
+    result = result.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+
+    // Inline code
+    result = result.replace(/`([^`]+)`/g, '<code style="background: #f3f4f6; padding: 2px 6px; border-radius: 4px; font-size: 13px;">$1</code>');
+
+    // Unordered lists
+    result = result.replace(/^- (.*$)/gm, '<li style="margin: 4px 0;">$1</li>');
+
+    // Ordered lists
+    result = result.replace(/^\d+\. (.*$)/gm, '<li style="margin: 4px 0;">$1</li>');
+
+    // Wrap consecutive <li> elements in <ul>
+    result = result.replace(/(<li[^>]*>.*?<\/li>\s*)+/g, (match) => {
+      return `<ul style="margin: 8px 0; padding-left: 20px;">${match}</ul>`;
+    });
+
+    // Paragraphs (double newlines) - but not before/after HTML tags
+    result = result.replace(/([^>])\n\n([^<])/g, '$1</p><p style="margin: 10px 0;">$2');
+
+    // Single line breaks (but not after HTML tags or before opening tags)
+    result = result.replace(/([^>])\n([^<])/g, '$1<br>$2');
+
+    // Clean up extra newlines around HTML tags
+    result = result.replace(/>\n+</g, '><');
+    result = result.replace(/\n+>/g, '>');
+    result = result.replace(/<\n+/g, '<');
+
+    // Restore tables from placeholders
+    tablePlaceholders.forEach((table, idx) => {
+      result = result.replace(`__TABLE_PLACEHOLDER_${idx}__`, table);
+    });
+
+    // Wrap in paragraph if not already wrapped and not starting with block element
+    if (!result.startsWith('<h') && !result.startsWith('<table') && !result.startsWith('<ul') && !result.startsWith('<blockquote')) {
+      result = `<p style="margin: 10px 0;">${result}</p>`;
+    }
+
+    return result;
+  }
+
+  /**
+   * Convert Markdown tables to HTML tables
+   */
+  private convertMarkdownTables(text: string): string {
+    // Match Markdown table pattern
+    // Header row | col1 | col2 | col3 |
+    // Separator  |------|------|------|
+    // Data rows  | val1 | val2 | val3 |
+    const tableRegex = /(\|[^\n]+\|\n)(\|[-:\s|]+\|\n)((?:\|[^\n]+\|\n?)+)/g;
+
+    return text.replace(tableRegex, (match, headerRow, separatorRow, bodyRows) => {
+      // Parse header
+      const headers = this.parseTableRow(headerRow);
+
+      // Parse body rows
+      const rows = bodyRows.trim().split('\n').map((row: string) => this.parseTableRow(row));
+
+      // Generate HTML table
+      return `
+<table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;">
+  <thead>
+    <tr style="background: #f8fafc;">
+      ${headers.map((h: string) => `<th style="padding: 10px 12px; border: 1px solid #e2e8f0; text-align: left; font-weight: 600; color: #374151;">${this.escapeHtml(h)}</th>`).join('')}
+    </tr>
+  </thead>
+  <tbody>
+    ${rows.map((row: string[]) => `
+    <tr>
+      ${row.map((cell: string) => `<td style="padding: 8px 12px; border: 1px solid #e2e8f0;">${this.escapeHtml(cell)}</td>`).join('')}
+    </tr>`).join('')}
+  </tbody>
+</table>
+`;
+    });
+  }
+
+  /**
+   * Parse a single table row into cells
+   */
+  private parseTableRow(row: string): string[] {
+    // Remove leading/trailing pipes and split by pipe
+    return row.trim()
+      .replace(/^\|/, '')
+      .replace(/\|$/, '')
+      .split('|')
+      .map(cell => cell.trim());
+  }
+
   generateAgentHTML(data: AgentReportData): string {
     const { traceId, query, result, timestamp } = data;
     const { intent, plan, expertResults, synthesizedAnswer, confidence, executionTimeMs, trace } = result;
@@ -2313,7 +2443,7 @@ export class HTMLReportGenerator {
     return `
       <div class="finding ${finding.severity}">
         <div class="title">${this.escapeHtml(finding.title)}</div>
-        <div>${this.escapeHtml(finding.description)}</div>
+        <div class="finding-description">${this.markdownToHtml(finding.description)}</div>
         ${(finding.evidence?.length || 0) > 0 ? `
           <div style="margin-top: 8px; font-size: 12px; color: #666;">
             证据: ${finding.evidence!.length} 项
@@ -2691,10 +2821,10 @@ export class HTMLReportGenerator {
     const findings = stage.findings || [];
     const data = stage.data || {};
 
-    // Extract layered data (support both semantic names and legacy L1/L2/L4)
-    const overviewData = data.overview || data.L1 || {};
-    const listData = data.list || data.L2 || {};
-    const deepData = data.deep || data.L4 || {};
+    // Extract layered data
+    const overviewData = data.overview || {};
+    const listData = data.list || {};
+    const deepData = data.deep || {};
     const hasLayeredData = Object.keys(overviewData).length > 0 ||
                           Object.keys(listData).length > 0 ||
                           Object.keys(deepData).length > 0;
@@ -2726,22 +2856,22 @@ export class HTMLReportGenerator {
   }
 
   /**
-   * Render layered data (L1 Overview, L2 List, L4 Deep Analysis)
+   * Render layered data (overview, list, deep)
    */
   private renderLayeredData(overview: any, list: any, deep: any, stageId: string): string {
     let html = '';
 
-    // L1 Overview Data - Render as metric cards
+    // Overview Data - Render as metric cards
     if (Object.keys(overview).length > 0) {
       html += this.renderOverviewData(overview);
     }
 
-    // L2 List Data - Render as collapsible tables
+    // List Data - Render as collapsible tables
     if (Object.keys(list).length > 0) {
       html += this.renderListData(list, stageId);
     }
 
-    // L4 Deep Analysis Data - Render as detailed sections
+    // Deep Analysis Data - Render as detailed sections
     if (Object.keys(deep).length > 0) {
       html += this.renderDeepAnalysisData(deep, stageId);
     }
@@ -2750,14 +2880,42 @@ export class HTMLReportGenerator {
   }
 
   /**
-   * Render L1 Overview data as metric cards
+   * Render overview data as metric cards or tables
+   * Supports both:
+   * 1. Simple key-value format: { key: value }
+   * 2. StepResult format: { stepId: { stepId, data: [...], display } }
    */
   private renderOverviewData(overview: any): string {
+    let html = '';
     const metrics: Array<{label: string; value: string; color: string}> = [];
 
     for (const [key, value] of Object.entries(overview)) {
       if (value === null || value === undefined) continue;
 
+      // Check if this is a StepResult format (from AnalysisWorker)
+      if (typeof value === 'object' && !Array.isArray(value) && 'data' in value && Array.isArray((value as any).data)) {
+        const stepResult = value as any;
+        const items = stepResult.data;
+        const displayTitle = stepResult.display?.title || this.formatMetricLabel(key);
+
+        if (items.length > 0) {
+          // Render StepResult as a table
+          const tableId = `overview-table-${key}`.replace(/[^a-zA-Z0-9-]/g, '-');
+          html += `
+            <div style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+              <div style="background: #ecfdf5; padding: 10px 16px; font-weight: 600; color: #065f46;">
+                📊 ${this.escapeHtml(displayTitle)}
+              </div>
+              <div id="${tableId}" style="max-height: 300px; overflow: auto;">
+                ${this.renderDataTable(items.slice(0, 10), items.length > 10 ? items.slice(10) : [])}
+              </div>
+            </div>
+          `;
+        }
+        continue;
+      }
+
+      // Simple value format
       const label = this.formatMetricLabel(key);
       let displayValue: string;
       let color = '#10b981';
@@ -2782,51 +2940,67 @@ export class HTMLReportGenerator {
       metrics.push({ label, value: displayValue, color });
     }
 
-    if (metrics.length === 0) return '';
+    // Render simple metrics as cards
+    if (metrics.length > 0) {
+      html += `
+        <div style="margin-bottom: 20px;">
+          <div style="font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center;">
+            📊 概览指标
+            <span style="margin-left: 8px; font-size: 12px; color: #9ca3af; font-weight: normal;">
+              (${metrics.length} 项)
+            </span>
+          </div>
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
+            ${metrics.map(m => `
+              <div style="background: #f9fafb; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #e5e7eb;">
+                <div style="font-size: 22px; font-weight: 700; color: ${m.color};">${m.value}</div>
+                <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">${m.label}</div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
 
-    return `
-      <div style="margin-bottom: 20px;">
-        <div style="font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center;">
-          📊 概览指标
-          <span style="margin-left: 8px; font-size: 12px; color: #9ca3af; font-weight: normal;">
-            (${metrics.length} 项)
-          </span>
-        </div>
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;">
-          ${metrics.map(m => `
-            <div style="background: #f9fafb; padding: 12px; border-radius: 8px; text-align: center; border: 1px solid #e5e7eb;">
-              <div style="font-size: 22px; font-weight: 700; color: ${m.color};">${m.value}</div>
-              <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">${m.label}</div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
+    return html;
   }
 
   /**
-   * Render L2 List data as collapsible tables
+   * Render list data as collapsible tables
+   * Supports both:
+   * 1. Direct array format: { key: [...] }
+   * 2. StepResult format: { stepId: { stepId, data: [...], display } }
    */
   private renderListData(list: any, stageId: string): string {
-    let html = `
-      <div style="margin-bottom: 20px;">
-        <div style="font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center;">
-          📋 数据列表
-        </div>
-    `;
+    // 先收集所有表格内容
+    const tableContents: string[] = [];
 
     for (const [key, value] of Object.entries(list)) {
-      if (!Array.isArray(value) || value.length === 0) continue;
+      if (value === null || value === undefined) continue;
 
-      const items = value as any[];
+      let items: any[] = [];
+      let displayName = this.formatMetricLabel(key);
+
+      // Check if this is a StepResult format (from AnalysisWorker)
+      if (typeof value === 'object' && !Array.isArray(value) && 'data' in value && Array.isArray((value as any).data)) {
+        const stepResult = value as any;
+        items = stepResult.data;
+        displayName = stepResult.display?.title || displayName;
+      } else if (Array.isArray(value)) {
+        items = value;
+      } else {
+        continue;
+      }
+
+      if (items.length === 0) continue;
+
       const tableId = `table-${stageId}-${key}`.replace(/[^a-zA-Z0-9-]/g, '-');
-      const displayName = this.formatMetricLabel(key);
       const previewCount = Math.min(5, items.length);
 
-      html += `
+      tableContents.push(`
         <div style="margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
           <div style="background: #f3f4f6; padding: 10px 16px; font-weight: 600; display: flex; justify-content: space-between; align-items: center;">
-            <span>${displayName} (${items.length} 条)</span>
+            <span>${this.escapeHtml(displayName)} (${items.length} 条)</span>
             ${items.length > previewCount ? `
               <button onclick="document.getElementById('${tableId}').classList.toggle('expanded'); this.textContent = this.textContent.includes('展开') ? '收起' : '展开全部 (${items.length})';"
                       style="background: #10b981; color: white; border: none; padding: 4px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">
@@ -2839,11 +3013,22 @@ export class HTMLReportGenerator {
             ${this.renderDataTable(items.slice(0, previewCount), items.length > previewCount ? items.slice(previewCount) : [])}
           </div>
         </div>
-      `;
+      `);
     }
 
-    html += '</div>';
-    return html;
+    // 只有在有内容时才渲染容器
+    if (tableContents.length === 0) {
+      return '';
+    }
+
+    return `
+      <div style="margin-bottom: 20px;">
+        <div style="font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center;">
+          📋 数据列表
+        </div>
+        ${tableContents.join('')}
+      </div>
+    `;
   }
 
   /**
@@ -2945,15 +3130,63 @@ export class HTMLReportGenerator {
   }
 
   /**
-   * Render L4 Deep Analysis data
+   * Render a nested object as a formatted HTML string
+   * Used for displaying complex nested structures in a readable format
+   */
+  private renderNestedObject(obj: any): string {
+    if (obj === null || obj === undefined) {
+      return '<span style="color: #9ca3af;">-</span>';
+    }
+
+    if (typeof obj !== 'object') {
+      return this.escapeHtml(String(obj));
+    }
+
+    if (Array.isArray(obj)) {
+      if (obj.length === 0) {
+        return '<span style="color: #9ca3af;">[]</span>';
+      }
+      // Render array items
+      return `
+        <div style="padding-left: 12px; border-left: 2px solid #e2e8f0;">
+          ${obj.slice(0, 5).map((item, idx) => `
+            <div style="margin-bottom: 4px;">
+              <span style="color: #6b7280; font-size: 11px;">[${idx}]</span>
+              ${typeof item === 'object' ? this.renderNestedObject(item) : this.escapeHtml(String(item))}
+            </div>
+          `).join('')}
+          ${obj.length > 5 ? `<div style="color: #9ca3af; font-size: 12px;">... 还有 ${obj.length - 5} 项</div>` : ''}
+        </div>
+      `;
+    }
+
+    // Render object key-value pairs
+    const entries = Object.entries(obj);
+    if (entries.length === 0) {
+      return '<span style="color: #9ca3af;">{}</span>';
+    }
+
+    return `
+      <div style="padding-left: 12px; border-left: 2px solid #e2e8f0;">
+        ${entries.slice(0, 10).map(([key, value]) => `
+          <div style="margin-bottom: 4px;">
+            <span style="color: #7c3aed; font-weight: 500; font-size: 12px;">${this.formatMetricLabel(key)}:</span>
+            <span style="color: #4b5563; margin-left: 4px;">
+              ${typeof value === 'object' ? this.renderNestedObject(value) : this.escapeHtml(String(value))}
+            </span>
+          </div>
+        `).join('')}
+        ${entries.length > 10 ? `<div style="color: #9ca3af; font-size: 12px;">... 还有 ${entries.length - 10} 项</div>` : ''}
+      </div>
+    `;
+  }
+
+  /**
+   * Render deep analysis data
    */
   private renderDeepAnalysisData(deep: any, stageId: string): string {
-    let html = `
-      <div style="margin-bottom: 20px;">
-        <div style="font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center;">
-          🔬 深度分析
-        </div>
-    `;
+    // 先收集所有内容
+    const sectionContents: string[] = [];
 
     for (const [key, value] of Object.entries(deep)) {
       if (!value) continue;
@@ -2963,7 +3196,7 @@ export class HTMLReportGenerator {
 
       if (Array.isArray(value) && value.length > 0) {
         // Render as expandable cards for frame details
-        html += `
+        sectionContents.push(`
           <div style="margin-bottom: 16px;">
             <div style="font-weight: 500; color: #4b5563; margin-bottom: 8px;">${displayName} (${value.length} 条)</div>
             <div id="${sectionId}" style="display: grid; gap: 12px;">
@@ -2979,27 +3212,91 @@ export class HTMLReportGenerator {
               ` : ''}
             </div>
           </div>
-        `;
+        `);
       } else if (typeof value === 'object') {
-        // Render as key-value pairs
-        html += `
-          <div style="margin-bottom: 16px; background: #faf5ff; border-radius: 8px; padding: 16px; border-left: 3px solid #8b5cf6;">
-            <div style="font-weight: 500; color: #6d28d9; margin-bottom: 8px;">${displayName}</div>
-            <div style="font-size: 13px;">
-              ${Object.entries(value).map(([k, v]) => `
-                <div style="display: flex; gap: 8px; margin-bottom: 4px;">
-                  <span style="color: #7c3aed; font-weight: 500;">${this.formatMetricLabel(k)}:</span>
-                  <span style="color: #4b5563;">${this.formatLayeredCellValue(v, k)}</span>
+        // Check if this is a nested session -> frame structure (deep analysis)
+        const valueEntries = Object.entries(value);
+        const isNestedFrameStructure = valueEntries.length > 0 &&
+          valueEntries.every(([k, v]) =>
+            typeof v === 'object' && v !== null &&
+            (k.startsWith('frame_') || k.includes('frame') ||
+             (v as any).diagnosis_summary !== undefined ||
+             (v as any).full_analysis !== undefined)
+          );
+
+        if (isNestedFrameStructure) {
+          // Render as expandable frame sections (like generateLayerContent does for 'deep' type)
+          const sessionId = `deep-${stageId}-${key}`.replace(/[^a-zA-Z0-9-]/g, '-');
+          let frameHtml = `
+            <div style="margin-bottom: 16px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
+              <div style="padding: 12px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.querySelector('.toggle-icon').textContent = this.nextElementSibling.style.display === 'none' ? '▶' : '▼';">
+                <div>
+                  <span class="toggle-icon" style="margin-right: 8px;">▼</span>
+                  <strong>${displayName}</strong>
+                  <span style="margin-left: 12px; opacity: 0.9;">${valueEntries.length} 个帧</span>
                 </div>
-              `).join('')}
+              </div>
+              <div style="padding: 12px;">
+          `;
+
+          valueEntries.forEach(([frameId, frameData], idx) => {
+            const fData = frameData as any;
+            const frameTitle = fData.display?.title || frameId;
+            const uniqueFrameId = `${sessionId}_${frameId}`.replace(/[^a-zA-Z0-9-_]/g, '-');
+
+            frameHtml += `
+              <div style="margin-bottom: 8px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
+                <div style="padding: 10px 12px; background: #f8fafc; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="const content = this.nextElementSibling; content.style.display = content.style.display === 'none' ? 'block' : 'none'; this.querySelector('.frame-toggle-icon').textContent = content.style.display === 'none' ? '▶' : '▼'; this.querySelector('.frame-hint').textContent = content.style.display === 'none' ? '点击展开详情' : '点击收起';">
+                  <div>
+                    <span class="frame-toggle-icon" style="margin-right: 8px; color: #64748b;">▶</span>
+                    <span style="font-weight: 500; color: #334155;">${this.escapeHtml(String(frameTitle))}</span>
+                  </div>
+                  <span class="frame-hint" style="font-size: 12px; color: #94a3b8;">点击展开详情</span>
+                </div>
+                <div style="display: none; padding: 12px; background: white;">
+                  ${this.renderDeepFrameAnalysis(fData)}
+                </div>
+              </div>
+            `;
+          });
+
+          frameHtml += `
+              </div>
             </div>
-          </div>
-        `;
+          `;
+          sectionContents.push(frameHtml);
+        } else {
+          // Render as simple key-value pairs
+          sectionContents.push(`
+            <div style="margin-bottom: 16px; background: #faf5ff; border-radius: 8px; padding: 16px; border-left: 3px solid #8b5cf6;">
+              <div style="font-weight: 500; color: #6d28d9; margin-bottom: 8px;">${displayName}</div>
+              <div style="font-size: 13px;">
+                ${Object.entries(value).map(([k, v]) => `
+                  <div style="display: flex; gap: 8px; margin-bottom: 4px;">
+                    <span style="color: #7c3aed; font-weight: 500;">${this.formatMetricLabel(k)}:</span>
+                    <span style="color: #4b5563;">${typeof v === 'object' ? this.renderNestedObject(v) : this.formatLayeredCellValue(v, k)}</span>
+                  </div>
+                `).join('')}
+              </div>
+            </div>
+          `);
+        }
       }
     }
 
-    html += '</div>';
-    return html;
+    // 只有在有内容时才渲染容器
+    if (sectionContents.length === 0) {
+      return '';
+    }
+
+    return `
+      <div style="margin-bottom: 20px;">
+        <div style="font-weight: 600; color: #374151; margin-bottom: 12px; display: flex; align-items: center;">
+          🔬 深度分析
+        </div>
+        ${sectionContents.join('')}
+      </div>
+    `;
   }
 
   /**

@@ -256,7 +256,7 @@ export class PerfettoAnalysisOrchestrator {
         // Emit skill_started event
         this.emitProgress(sessionId, 'skill_started', `🚀 正在执行 ${skillResult.skillName} 分析...`);
 
-        // 优先处理分层结果（L1/L2/L3/L4）
+        // 优先处理分层结果
         if (skillResult.layeredResult) {
           console.log(`[Orchestrator] Layered result detected, emitting skill_layered_result event`);
           this.emitSkillLayeredResult(sessionId, {
@@ -1661,25 +1661,18 @@ LIMIT 50;`,
   /**
    * Emit skill layered result event for interactive layered view
    * This is used when a skill has layer specifications
-   * 支持语义名称 (overview/list/session/deep) 和旧名称 (L1/L2/L3/L4)
    */
   private emitSkillLayeredResult(
     sessionId: string,
     layeredData: {
       result: {
         layers: {
-          // 语义名称
           overview?: Record<string, any>;
           list?: Record<string, any>;
           session?: Record<string, Record<string, any>>;
           deep?: Record<string, Record<string, any>>;
-          // 向后兼容名称 (@deprecated)
-          L1?: Record<string, any>;
-          L2?: Record<string, any>;
-          L3?: Record<string, Record<string, any>>;
-          L4?: Record<string, Record<string, any>>;
         };
-        defaultExpanded: ('overview' | 'list' | 'session' | 'deep' | 'L1' | 'L2' | 'L3' | 'L4')[];
+        defaultExpanded: ('overview' | 'list' | 'session' | 'deep')[];
         metadata: {
           skillName: string;
           version: string;

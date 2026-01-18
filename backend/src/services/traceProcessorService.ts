@@ -9,6 +9,7 @@ export interface TraceInfo {
   filename: string;
   size: number;
   uploadTime: Date;
+  lastAccessTime?: Date; // Track last query/access time for smart cleanup
   status: 'uploading' | 'processing' | 'ready' | 'error';
   error?: string;
   metadata?: {
@@ -242,7 +243,21 @@ export class TraceProcessorService extends EventEmitter {
       throw new Error(`No processor for trace ${traceId}`);
     }
 
+    // Update last access time for smart cleanup
+    this.touchTrace(traceId);
+
     return await processor.query(sql);
+  }
+
+  /**
+   * Update the last access time for a trace (called on any activity)
+   * This prevents active traces from being cleaned up prematurely
+   */
+  public touchTrace(traceId: string): void {
+    const trace = this.traces.get(traceId);
+    if (trace) {
+      trace.lastAccessTime = new Date();
+    }
   }
 
   /**
@@ -260,11 +275,17 @@ export class TraceProcessorService extends EventEmitter {
   public getProcessorPort(traceId: string): number | undefined {
     const processor = this.processors.get(traceId) as WorkingTraceProcessor | undefined;
     // Only return port if processor is ready
-    return (processor?.status === 'ready') ? processor.httpPort : undefined;
+    if (processor?.status === 'ready') {
+      // Touch trace to prevent cleanup while frontend is using it
+      this.touchTrace(traceId);
+      return processor.httpPort;
+    }
+    return undefined;
   }
 
   /**
    * Get trace info with processor port for frontend
+   * Also updates last access time to prevent cleanup
    */
   public getTraceWithPort(traceId: string): (TraceInfo & { port?: number; processor?: { status: string } }) | undefined {
     const trace = this.traces.get(traceId);
@@ -273,6 +294,12 @@ export class TraceProcessorService extends EventEmitter {
     const processor = this.processors.get(traceId) as WorkingTraceProcessor | undefined;
     // Only return port if processor is actually ready (not in error state)
     const port = (processor?.status === 'ready') ? processor.httpPort : undefined;
+
+    // Touch trace to prevent cleanup while frontend is accessing it
+    if (port) {
+      this.touchTrace(traceId);
+    }
+
     return {
       ...trace,
       port,
@@ -290,12 +317,14 @@ export class TraceProcessorService extends EventEmitter {
   public async registerExternalRpc(traceId: string, port: number, traceName: string): Promise<void> {
     console.log(`[TraceProcessorService] Registering external RPC: ${traceId} on port ${port}`);
 
+    const now = new Date();
     // Create a trace info entry for this external connection
     const traceInfo: TraceInfo = {
       id: traceId,
       filename: traceName,
       size: 0, // Unknown size for external traces
-      uploadTime: new Date(),
+      uploadTime: now,
+      lastAccessTime: now, // Set initial access time
       status: 'ready', // Assume it's ready since frontend is already connected
     };
 
@@ -456,21 +485,51 @@ export class TraceProcessorService extends EventEmitter {
   }
 
   /**
-   * Cleanup old traces (older than maxAge)
-   * Note: This only cleans up old traces, not all processors
+   * Cleanup old traces with smart activity detection
+   *
+   * A trace is only cleaned up when BOTH conditions are met:
+   * 1. Upload time exceeds maxAge (how old the trace is)
+   * 2. Last access time exceeds idleTimeout (how long since last activity)
+   *
+   * This prevents active traces from being cleaned up prematurely while
+   * still cleaning up truly abandoned traces.
+   *
+   * @param maxAge - Maximum age since upload before trace becomes eligible for cleanup (default: 2 hours)
+   * @param idleTimeout - Minimum idle time (no queries) before trace can be cleaned (default: 30 minutes)
    */
-  public async cleanup(maxAge = 7 * 24 * 60 * 60 * 1000): Promise<void> {
+  public async cleanup(
+    maxAge = 2 * 60 * 60 * 1000,      // 2 hours since upload
+    idleTimeout = 30 * 60 * 1000       // 30 minutes since last access
+  ): Promise<void> {
     const now = Date.now();
     const tracesToDelete: string[] = [];
+    const skippedDueToActivity: string[] = [];
 
     for (const [traceId, trace] of this.traces) {
-      if (now - trace.uploadTime.getTime() > maxAge) {
-        tracesToDelete.push(traceId);
+      const uploadAge = now - trace.uploadTime.getTime();
+
+      // Only consider traces older than maxAge
+      if (uploadAge > maxAge) {
+        // Check if trace has been accessed recently
+        const lastAccess = trace.lastAccessTime?.getTime() ?? trace.uploadTime.getTime();
+        const idleTime = now - lastAccess;
+
+        if (idleTime > idleTimeout) {
+          // Trace is old AND idle - safe to clean up
+          tracesToDelete.push(traceId);
+        } else {
+          // Trace is old but still active - skip cleanup
+          skippedDueToActivity.push(traceId);
+        }
       }
     }
 
+    if (skippedDueToActivity.length > 0) {
+      console.log(`[TraceProcessorService] Skipping ${skippedDueToActivity.length} active trace(s) (recently accessed)`);
+    }
+
     if (tracesToDelete.length > 0) {
-      console.log(`[TraceProcessorService] Cleaning up ${tracesToDelete.length} old traces`);
+      console.log(`[TraceProcessorService] Cleaning up ${tracesToDelete.length} old and idle trace(s)`);
       for (const traceId of tracesToDelete) {
         await this.deleteTrace(traceId);
       }
@@ -478,6 +537,18 @@ export class TraceProcessorService extends EventEmitter {
     // Note: Don't call TraceProcessorFactory.cleanup() here as it would
     // destroy ALL processors, not just those for deleted traces.
     // The deleteTrace() method already handles processor cleanup for each trace.
+  }
+
+  /**
+   * Check if a trace is considered active (recently accessed)
+   */
+  public isTraceActive(traceId: string, idleTimeout = 30 * 60 * 1000): boolean {
+    const trace = this.traces.get(traceId);
+    if (!trace) return false;
+
+    const now = Date.now();
+    const lastAccess = trace.lastAccessTime?.getTime() ?? trace.uploadTime.getTime();
+    return (now - lastAccess) <= idleTimeout;
   }
 }
 

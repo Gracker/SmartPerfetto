@@ -6,6 +6,7 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { encodeQueryArgs, decodeQueryResult } from './traceProcessorProtobuf';
 import { getPortPool } from './portPool';
+import { traceProcessorConfig } from '../config';
 
 // Path to the trace_processor_shell binary
 // Use the locally built version from perfetto/out/ui which has the viz stdlib modules
@@ -149,11 +150,13 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
    */
   private async startHttpServer(): Promise<void> {
     return new Promise((resolve, reject) => {
+      // Build CORS origins string from config
+      const corsOrigins = `${traceProcessorConfig.perfettoUiOrigin},${traceProcessorConfig.perfettoUiOrigin.replace('localhost', '127.0.0.1')}`;
       const args = [
         '--httpd',
         '--http-port', String(this.httpPort),
         // Allow CORS from the Perfetto UI origin
-        '--http-additional-cors-origins', 'http://localhost:10000,http://127.0.0.1:10000',
+        '--http-additional-cors-origins', corsOrigins,
         this.tracePath
       ];
 
@@ -174,7 +177,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
           resolved = true;
           reject(new Error(`Server startup timeout. stdout: ${stdout}, stderr: ${stderr}`));
         }
-      }, 30000);
+      }, traceProcessorConfig.startupTimeoutMs);
 
       this.process.stdout?.on('data', (data) => {
         const text = data.toString();
@@ -285,7 +288,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
           'Content-Type': 'application/x-protobuf',
           'Content-Length': requestBody.length,
         },
-        timeout: 60000,
+        timeout: traceProcessorConfig.queryTimeoutMs,
       };
 
       const req = http.request(options, (res) => {
@@ -372,7 +375,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
           }
           // Release port after process is killed
           getPortPool().release(this.traceId);
-        }, 2000);
+        }, traceProcessorConfig.killTimeoutMs);
       } catch (e) {
         // Process may already be dead, still release port
         getPortPool().release(this.traceId);

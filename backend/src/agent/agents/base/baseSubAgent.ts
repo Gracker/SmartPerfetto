@@ -6,6 +6,7 @@
  * 2. 工具注册和调用
  * 3. 与 ModelRouter 的集成
  * 4. 结果提取和格式化
+ * 5. 生命周期钩子支持
  */
 
 import { EventEmitter } from 'events';
@@ -21,6 +22,14 @@ import {
 } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
 import { StageExecutor } from '../../core/pipelineExecutor';
+import {
+  HookRegistry,
+  getHookRegistry,
+  HookContext,
+  createHookContext,
+  ToolUseEventData,
+  IterationEventData,
+} from '../../hooks';
 
 /**
  * 工具接口
@@ -50,12 +59,15 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
   protected modelRouter: ModelRouter;
   protected tools: Map<string, AgentTool>;
   protected currentIteration: number = 0;
+  protected hookRegistry: HookRegistry;
+  protected hookContext: HookContext | null = null;
 
-  constructor(config: SubAgentConfig, modelRouter: ModelRouter) {
+  constructor(config: SubAgentConfig, modelRouter: ModelRouter, hookRegistry?: HookRegistry) {
     super();
     this.config = config;
     this.modelRouter = modelRouter;
     this.tools = new Map();
+    this.hookRegistry = hookRegistry || getHookRegistry();
   }
 
   // ==========================================================================
@@ -88,6 +100,16 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
     const startTime = Date.now();
     this.currentIteration = 0;
 
+    // 初始化 hook context
+    this.hookContext = createHookContext(
+      context.sessionId,
+      context.traceId || '',
+      stage.id  // phase 使用 stageId
+    );
+    // 存储 agent 信息到 metadata
+    this.hookContext.set('agentId', this.config.id);
+    this.hookContext.set('stageId', stage.id);
+
     try {
       // 发射开始事件
       this.emit('start', { agentId: this.config.id, stage: stage.id });
@@ -114,6 +136,9 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
         executionTimeMs: Date.now() - startTime,
         error: error.message,
       };
+    } finally {
+      // 清理 hook context
+      this.hookContext = null;
     }
   }
 
@@ -128,6 +153,23 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
     while (this.currentIteration < this.config.maxIterations) {
       this.currentIteration++;
 
+      // === Iteration Pre-Hook ===
+      const iterationData: IterationEventData = {
+        iterationNumber: this.currentIteration,
+        maxIterations: this.config.maxIterations,
+        currentFindings: findings,
+      };
+      const iterPreResult = await this.hookRegistry.executePre(
+        'iteration:start',
+        context.sessionId,
+        iterationData,
+        this.hookContext || undefined
+      );
+      if (!iterPreResult.continue) {
+        // Hook 要求中止迭代
+        break;
+      }
+
       // Think: 思考下一步
       const thought = await this.think(context, findings);
       this.emit('thought', { agentId: this.config.id, thought });
@@ -135,6 +177,13 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
       // 检查是否应该结束
       if (thought.decision === 'conclude' || thought.confidence >= this.config.confidenceThreshold) {
         confidence = thought.confidence;
+        // === Iteration Post-Hook (结束) ===
+        await this.hookRegistry.executePost(
+          'iteration:end',
+          context.sessionId,
+          { ...iterationData, thought, decision: 'conclude' },
+          this.hookContext || undefined
+        );
         break;
       }
 
@@ -148,6 +197,14 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
           this.emit('finding', { agentId: this.config.id, findings: newFindings });
         }
       }
+
+      // === Iteration Post-Hook ===
+      await this.hookRegistry.executePost(
+        'iteration:end',
+        context.sessionId,
+        { ...iterationData, thought, decision: 'continue' },
+        this.hookContext || undefined
+      );
 
       // 检查是否有足够的发现
       if (findings.length >= 3) {
@@ -195,12 +252,59 @@ export abstract class BaseSubAgent extends EventEmitter implements StageExecutor
       return null;
     }
 
+    let params: Record<string, any>;
     try {
-      const params = paramsStr ? JSON.parse(paramsStr) : {};
-      const result = await tool.execute(params, context);
-      this.emit('toolCall', { toolName, params, result });
+      params = paramsStr ? JSON.parse(paramsStr) : {};
+    } catch {
+      params = {};
+    }
+
+    // === Tool Use Pre-Hook ===
+    const toolUseData: ToolUseEventData = {
+      toolName,
+      params,
+      agentId: this.config.id,
+    };
+    const preResult = await this.hookRegistry.executePre(
+      'tool:use',
+      context.sessionId,
+      toolUseData,
+      this.hookContext || undefined
+    );
+
+    if (!preResult.continue) {
+      // Hook 要求中止此工具调用
+      this.emit('toolSkipped', { toolName, reason: 'Hook prevented execution' });
+      return preResult.substituteResult as ToolResult | null ?? null;
+    }
+
+    // 应用可能被 hook 修改的参数
+    const finalParams = preResult.modifiedData
+      ? (preResult.modifiedData as ToolUseEventData).params ?? params
+      : params;
+
+    try {
+      const result = await tool.execute(finalParams, context);
+
+      // === Tool Use Post-Hook ===
+      await this.hookRegistry.executePost(
+        'tool:use',
+        context.sessionId,
+        { ...toolUseData, params: finalParams, result },
+        this.hookContext || undefined
+      );
+
+      this.emit('toolCall', { toolName, params: finalParams, result });
       return result;
     } catch (error: any) {
+      // === Tool Use Error - 也触发 post hook ===
+      await this.hookRegistry.executePost(
+        'tool:use',
+        context.sessionId,
+        { ...toolUseData, params: finalParams, error: error.message },
+        this.hookContext || undefined
+      );
+
       this.emit('error', { message: `Tool ${toolName} failed: ${error.message}` });
       return null;
     }

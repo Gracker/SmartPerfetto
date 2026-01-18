@@ -71,16 +71,3 @@ export {
   ProgressInfo,
 } from './eventCollector';
 
-// =============================================================================
-// Legacy Aliases (for backwards compatibility during migration)
-// =============================================================================
-
-// @deprecated - These aliases will be removed in a future version
-export { skillRegistry as skillRegistryV2 } from './skillLoader';
-export { ensureSkillRegistryInitialized as ensureSkillRegistryV2Initialized } from './skillLoader';
-export { ensureSkillRegistryInitialized as initializeSkills } from './skillLoader';
-export { SkillAnalysisAdapter as SkillAnalysisAdapterV2 } from './skillAnalysisAdapter';
-export { createSkillAnalysisAdapter as createSkillAnalysisAdapterV2 } from './skillAnalysisAdapter';
-export { getSkillAnalysisAdapter as getSkillAnalysisAdapterV2 } from './skillAnalysisAdapter';
-export { SkillExecutor as SkillExecutorV2 } from './skillExecutor';
-export { createSkillExecutor as createSkillExecutorV2 } from './skillExecutor';

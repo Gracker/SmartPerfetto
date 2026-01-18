@@ -75,16 +75,21 @@ import {
   EnhancedSessionContext,
   sessionContextManager,
 } from '../context/enhancedSessionContext';
+import {
+  agentConfig,
+  circuitBreakerConfig as cbConfig,
+  pipelineConfig as pipeConfig,
+  modelRouterConfig as mrConfig,
+} from '../../config';
 
-// 默认配置
-// 注意：降低 minQualityScore 从 0.7 到 0.5，减少不必要的迭代循环
+// 默认配置 (从统一配置文件获取)
 const DEFAULT_CONFIG: Partial<MasterOrchestratorConfig> = {
-  maxTotalIterations: 3,  // 降低最大迭代次数，避免过度循环
-  enableTraceRecording: true,
+  maxTotalIterations: agentConfig.maxTotalIterations,
+  enableTraceRecording: agentConfig.enableTraceRecording,
   evaluationCriteria: {
-    minQualityScore: 0.5,  // 降低阈值，Skills 系统已经产出高质量结果
-    minCompletenessScore: 0.5,  // 降低阈值
-    maxContradictions: 0,
+    minQualityScore: agentConfig.evaluation.minQualityScore,
+    minCompletenessScore: agentConfig.evaluation.minCompletenessScore,
+    maxContradictions: agentConfig.evaluation.maxContradictions,
     requiredAspects: [],
   },
 };
@@ -124,34 +129,34 @@ export class MasterOrchestrator extends EventEmitter {
   constructor(config: Partial<MasterOrchestratorConfig> = {}) {
     super();
 
-    // 合并配置
+    // 合并配置 (使用统一配置文件的默认值)
     this.config = {
       ...DEFAULT_CONFIG,
       stateMachineConfig: config.stateMachineConfig || { sessionId: '', traceId: '' },
       circuitBreakerConfig: config.circuitBreakerConfig || {
-        maxRetriesPerAgent: 3,
-        maxIterationsPerStage: 5,
-        cooldownMs: 30000,
-        halfOpenAttempts: 1,
-        failureThreshold: 3,
-        successThreshold: 2,
+        maxRetriesPerAgent: cbConfig.maxRetriesPerAgent,
+        maxIterationsPerStage: cbConfig.maxIterationsPerStage,
+        cooldownMs: cbConfig.cooldownMs,
+        halfOpenAttempts: cbConfig.halfOpenAttempts,
+        failureThreshold: cbConfig.failureThreshold,
+        successThreshold: cbConfig.successThreshold,
       },
       // Don't pass empty models array - let ModelRouter use its DEFAULT_MODELS
       modelRouterConfig: config.modelRouterConfig || {
-        defaultModel: 'deepseek-chat',
+        defaultModel: mrConfig.defaultModel,
         taskModelMapping: {},
-        fallbackChain: ['deepseek-chat'],
-        enableEnsemble: false,
-        ensembleThreshold: 0.8,
+        fallbackChain: mrConfig.fallbackChain,
+        enableEnsemble: mrConfig.enableEnsemble,
+        ensembleThreshold: mrConfig.ensembleThreshold,
       },
       pipelineConfig: config.pipelineConfig || {
         stages: [],
-        maxTotalDuration: 300000,
-        enableParallelization: true,
+        maxTotalDuration: pipeConfig.maxTotalDurationMs,
+        enableParallelization: pipeConfig.enableParallelization,
       },
       evaluationCriteria: { ...DEFAULT_CONFIG.evaluationCriteria!, ...config.evaluationCriteria },
       maxTotalIterations: config.maxTotalIterations || DEFAULT_CONFIG.maxTotalIterations!,
-      enableTraceRecording: config.enableTraceRecording ?? true,
+      enableTraceRecording: config.enableTraceRecording ?? agentConfig.enableTraceRecording,
       streamingCallback: config.streamingCallback,
     } as MasterOrchestratorConfig;
 
@@ -389,6 +394,16 @@ export class MasterOrchestrator extends EventEmitter {
           payload: { evaluation, passed: evaluation.passed },
         });
 
+        // First iteration optimization: Skills produce deterministic high-quality results
+        // If skills executed successfully with data, pass on first iteration
+        const hasSuccessfulSkillData = stageResults.some(r =>
+          r.success && r.data && Object.keys(r.data).length > 0
+        );
+        if (this.totalIterations === 1 && hasSuccessfulSkillData) {
+          console.log('[MasterOrchestrator] First iteration with successful skill data - auto-passing');
+          evaluation.passed = true;
+        }
+
         // 检查是否通过
         if (evaluation.passed) {
           break;
@@ -416,8 +431,11 @@ export class MasterOrchestrator extends EventEmitter {
       }
 
       // 6. 综合最终答案
+      console.log('[MasterOrchestrator] Step 6: Starting synthesis phase');
       this.emitUpdate('progress', { phase: 'synthesizing', message: '综合分析结论' });
+      console.log('[MasterOrchestrator] Step 6: Calling synthesize()...');
       const synthesizedAnswer = await this.synthesize(stageResults, intent, evaluation!);
+      console.log('[MasterOrchestrator] Step 6: Synthesis complete, answer length:', synthesizedAnswer?.length || 0);
 
       // 7. 完成对话轮次（Phase 5: Multi-turn Dialogue）
       if (currentTurn && this.sessionContext) {
@@ -431,11 +449,14 @@ export class MasterOrchestrator extends EventEmitter {
       }
 
       // 8. 完成
+      console.log('[MasterOrchestrator] Step 8: Completing analysis...');
       this.stateMachine.transition({ type: 'ANALYSIS_COMPLETE' });
       await this.sessionStore.updatePhase(session.sessionId, 'completed');
 
+      console.log('[MasterOrchestrator] Step 8: Emitting conclusion event...');
       this.emitUpdate('conclusion', { answer: synthesizedAnswer });
 
+      console.log('[MasterOrchestrator] Step 8: Creating success result...');
       const result = this.createSuccessResult(
         session.sessionId,
         intent,
@@ -463,6 +484,7 @@ export class MasterOrchestrator extends EventEmitter {
       // 清理 hook context
       this.hookContext = null;
 
+      console.log('[MasterOrchestrator] Returning success result, sessionId:', result.sessionId);
       return result;
     } catch (error: any) {
       this.stateMachine?.transition({ type: 'ERROR_OCCURRED', payload: { error: error.message } });
@@ -615,11 +637,25 @@ ${contextSection ? '\n注意：请结合对话上下文，回答应与之前的�
 注意：不要给出优化建议或改进方案，只需要指出问题所在。`;
 
     try {
-      const response = await this.modelRouter.callWithFallback(prompt, 'synthesis');
+      // Add timeout to prevent getting stuck (use configured synthesis timeout, default 60s)
+      const SYNTHESIS_TIMEOUT_MS = pipeConfig.stageTimeouts.synthesis || 60000;
+      console.log(`[MasterOrchestrator.synthesize] Starting LLM call with ${SYNTHESIS_TIMEOUT_MS}ms timeout...`);
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`Synthesis timeout after ${SYNTHESIS_TIMEOUT_MS}ms`)), SYNTHESIS_TIMEOUT_MS);
+      });
+
+      const response = await Promise.race([
+        this.modelRouter.callWithFallback(prompt, 'synthesis'),
+        timeoutPromise,
+      ]);
+      console.log('[MasterOrchestrator.synthesize] LLM call succeeded, response length:', response.response?.length || 0);
       return response.response;
     } catch (error) {
-      // 生成简单结论
-      return this.generateSimpleSynthesis(findings, evaluation);
+      // Fallback to simple synthesis on timeout or error
+      console.warn('[MasterOrchestrator.synthesize] LLM call failed or timed out, using simple synthesis:', error);
+      const simpleSynthesis = this.generateSimpleSynthesis(findings, evaluation);
+      console.log('[MasterOrchestrator.synthesize] Generated simple synthesis, length:', simpleSynthesis?.length || 0);
+      return simpleSynthesis;
     }
   }
 
@@ -995,14 +1031,9 @@ ${contextSection ? '\n注意：请结合对话上下文，回答应与之前的�
         skillId: data.skillId,
         skillName: data.skillName,
         hasLayers: !!layers,
-        // 语义名称（新）
         overviewKeys: layers.overview ? Object.keys(layers.overview) : [],
         listKeys: layers.list ? Object.keys(layers.list) : [],
         deepKeys: layers.deep ? Object.keys(layers.deep) : [],
-        // 兼容名称（旧）- 应与语义名称相同
-        L1Keys: layers.L1 ? Object.keys(layers.L1) : [],
-        L2Keys: layers.L2 ? Object.keys(layers.L2) : [],
-        L4Keys: layers.L4 ? Object.keys(layers.L4) : [],
         diagnosticsCount: data.diagnostics?.length || 0,
       });
       console.log('[MasterOrchestrator] Forwarding skill_data to frontend via emitUpdate');

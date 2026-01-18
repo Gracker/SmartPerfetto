@@ -3,8 +3,8 @@ import {
   createOrchestrator,
   createScrollingExpertAgent,
   registerCoreTools,
-  createMockLLMClient,
   createLLMClient,
+  LLMConfigurationError,
   StreamingUpdate,
   getAgentTraceRecorder,
   createEvalSystem,
@@ -31,8 +31,12 @@ async function runAgentTest() {
   console.log('✓ Test trace found:', path.basename(testTracePath));
   console.log('  Size:', (fs.statSync(testTracePath).size / 1024 / 1024).toFixed(2), 'MB\n');
 
-  const useMockLLM = process.argv.includes('--mock');
-  console.log('LLM Mode:', useMockLLM ? 'Mock (no API calls)' : 'Real (DeepSeek API)');
+  if (process.argv.includes('--mock')) {
+    console.error('❌ Mock mode has been removed. Please configure a real LLM API key.');
+    console.error('   Set DEEPSEEK_API_KEY or OPENAI_API_KEY environment variable.');
+    process.exit(1);
+  }
+  console.log('LLM Mode: Real (DeepSeek/OpenAI API)');
   console.log('');
 
   try {
@@ -44,7 +48,7 @@ async function runAgentTest() {
 
     console.log('⏳ Initializing Agent System...');
     
-    const llm = useMockLLM ? createMockLLMClient() : createLLMClient();
+    const llm = createLLMClient();
     registerCoreTools();
     
     const orchestrator = createOrchestrator(llm);
@@ -141,7 +145,6 @@ async function runAgentTest() {
       timestamp: new Date().toISOString(),
       traceId,
       tracePath: testTracePath,
-      useMockLLM,
     }, null, 2));
     console.log('✓ Test metadata saved to:', jsonPath);
     console.log('');

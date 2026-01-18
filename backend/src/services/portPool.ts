@@ -6,6 +6,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { traceProcessorConfig } from '../config';
 
 export interface PortAllocation {
   port: number;
@@ -20,7 +21,10 @@ export class PortPool extends EventEmitter {
   private allocations: Map<string, PortAllocation>; // traceId -> allocation
   private portToTraceId: Map<number, string>; // port -> traceId (reverse lookup)
 
-  constructor(minPort: number = 9100, maxPort: number = 9900) {
+  constructor(
+    minPort: number = traceProcessorConfig.portRange.min,
+    maxPort: number = traceProcessorConfig.portRange.max
+  ) {
     super();
     this.minPort = minPort;
     this.maxPort = maxPort;
@@ -180,7 +184,7 @@ export class PortPool extends EventEmitter {
    * @param maxAgeMs Maximum age in milliseconds
    * @returns Number of stale allocations cleaned
    */
-  cleanupStale(maxAgeMs: number = 30 * 60 * 1000): number {
+  cleanupStale(maxAgeMs: number = traceProcessorConfig.staleAllocationMaxAgeMs): number {
     const now = Date.now();
     let cleaned = 0;
 

@@ -8,7 +8,7 @@
 import { TraceProcessorService } from '../traceProcessorService';
 import { SkillExecutor, createSkillExecutor, LayeredResult } from './skillExecutor';
 import { skillRegistry, ensureSkillRegistryInitialized, getSkillsDir } from './skillLoader';
-import { SkillDefinition, SkillEvent, DisplayLevel, DisplayLayer, LegacyDisplayLayer } from './types';
+import { SkillDefinition, SkillEvent, DisplayLevel, DisplayLayer } from './types';
 import { smartSummaryGenerator } from './smartSummaryGenerator';
 import { answerGenerator, GeneratedAnswer } from './answerGenerator';
 import { SkillEventCollector, createEventCollector, EventSummary, ProgressInfo } from './eventCollector';
@@ -57,7 +57,7 @@ export interface SkillAnalysisResponse {
   /** 回答置信度 */
   answerConfidence?: 'high' | 'medium' | 'low';
 
-  /** 分层结果（L1/L2/L3/L4）- 用于交互式分层视图 */
+  /** 分层结果（overview/list/session/deep）- 用于交互式分层视图 */
   layeredResult?: LayeredResult;
 
   /** 执行事件列表（用于前端进度展示） */
@@ -79,8 +79,7 @@ export interface SkillListItem {
 export interface AdaptedResult {
   format: 'layered';
   layers: LayeredResult['layers'];
-  // 支持语义名称和旧名称
-  defaultExpanded: (DisplayLayer | LegacyDisplayLayer)[];
+  defaultExpanded: DisplayLayer[];
   metadata: LayeredResult['metadata'];
 }
 
@@ -183,7 +182,7 @@ export class SkillAnalysisAdapter {
   }
 
   /**
-   * 检测 skill 是否使用分层输出（L1/L2/L3/L4）
+   * 检测 skill 是否使用分层输出（overview/list/session/deep）
    */
   private hasLayeredOutput(skill: SkillDefinition): boolean {
     if (!skill.steps || skill.steps.length === 0) {
@@ -292,10 +291,10 @@ export class SkillAnalysisAdapter {
         console.log('[SkillAnalysisAdapter] executeCompositeSkill completed. layeredResult:', JSON.stringify({
           hasLayers: !!layeredResult?.layers,
           layerKeys: layeredResult?.layers ? Object.keys(layeredResult.layers) : [],
-          L1Count: layeredResult?.layers?.L1 ? Object.keys(layeredResult.layers.L1).length : 0,
-          L2Count: layeredResult?.layers?.L2 ? Object.keys(layeredResult.layers.L2).length : 0,
-          L3Count: layeredResult?.layers?.L3 ? Object.keys(layeredResult.layers.L3).length : 0,
-          L4SessionCount: layeredResult?.layers?.L4 ? Object.keys(layeredResult.layers.L4).length : 0,
+          overviewCount: layeredResult?.layers?.overview ? Object.keys(layeredResult.layers.overview).length : 0,
+          listCount: layeredResult?.layers?.list ? Object.keys(layeredResult.layers.list).length : 0,
+          sessionCount: layeredResult?.layers?.session ? Object.keys(layeredResult.layers.session).length : 0,
+          deepSessionCount: layeredResult?.layers?.deep ? Object.keys(layeredResult.layers.deep).length : 0,
           hasMetadata: !!layeredResult?.metadata,
         }, null, 2));
 
@@ -401,7 +400,7 @@ export class SkillAnalysisAdapter {
 
   /**
    * 将 LayeredResult 转换为 displayResults 格式
-   * 用于处理分层输出模式（L1/L2/L3/L4）
+   * 用于处理分层输出模式（overview/list/session/deep）
    */
   private convertLayeredResultToDisplayResults(layeredResult: LayeredResult): Array<{
     stepId: string;
@@ -412,10 +411,10 @@ export class SkillAnalysisAdapter {
     sql?: string;
   }> {
     console.log('[convertLayeredResultToDisplayResults] Starting conversion. Input:', JSON.stringify({
-      hasL1: !!layeredResult?.layers?.L1,
-      hasL2: !!layeredResult?.layers?.L2,
-      hasL3: !!layeredResult?.layers?.L3,
-      hasL4: !!layeredResult?.layers?.L4,
+      hasOverview: !!layeredResult?.layers?.overview,
+      hasList: !!layeredResult?.layers?.list,
+      hasSession: !!layeredResult?.layers?.session,
+      hasDeep: !!layeredResult?.layers?.deep,
     }, null, 2));
 
     const displayResults: Array<{
@@ -427,8 +426,8 @@ export class SkillAnalysisAdapter {
       sql?: string;
     }> = [];
 
-    // 处理 L1 和 L2 层（直接是 stepId -> StepResult 的映射）
-    for (const layerKey of ['L1', 'L2'] as const) {
+    // 处理 overview 和 list 层（直接是 stepId -> StepResult 的映射）
+    for (const layerKey of ['overview', 'list'] as const) {
       const layer = layeredResult.layers[layerKey];
       if (!layer) {
         console.log(`[convertLayeredResultToDisplayResults] Layer ${layerKey} is empty, skipping`);
@@ -463,12 +462,12 @@ export class SkillAnalysisAdapter {
       }
     }
 
-    // 处理 L3 层（按 session_id 组织）
-    const l3 = layeredResult.layers.L3;
-    if (l3) {
-      console.log(`[convertLayeredResultToDisplayResults] Processing L3 with ${Object.keys(l3).length} sessions`);
-      for (const [sessionId, sessionSteps] of Object.entries(l3)) {
-        console.log(`[convertLayeredResultToDisplayResults] Processing L3 session ${sessionId} with ${Object.keys(sessionSteps).length} steps`);
+    // 处理 session 层（按 session_id 组织）
+    const sessionLayer = layeredResult.layers.session;
+    if (sessionLayer) {
+      console.log(`[convertLayeredResultToDisplayResults] Processing session layer with ${Object.keys(sessionLayer).length} sessions`);
+      for (const [sessionId, sessionSteps] of Object.entries(sessionLayer)) {
+        console.log(`[convertLayeredResultToDisplayResults] Processing session ${sessionId} with ${Object.keys(sessionSteps).length} steps`);
         for (const [stepId, stepResult] of Object.entries(sessionSteps)) {
           if (!stepResult.display?.show && stepResult.display?.show !== undefined) continue;
           if (stepResult.display?.level === 'none') continue;
@@ -484,12 +483,12 @@ export class SkillAnalysisAdapter {
       }
     }
 
-    // 处理 L4 层（按 session_id -> frame_id 组织）
-    const l4 = layeredResult.layers.L4;
-    if (l4) {
-      console.log(`[convertLayeredResultToDisplayResults] Processing L4 with ${Object.keys(l4).length} sessions`);
-      for (const [sessionId, frames] of Object.entries(l4)) {
-        console.log(`[convertLayeredResultToDisplayResults] Processing L4 session ${sessionId} with ${Object.keys(frames).length} frames`);
+    // 处理 deep 层（按 session_id -> frame_id 组织）
+    const deepLayer = layeredResult.layers.deep;
+    if (deepLayer) {
+      console.log(`[convertLayeredResultToDisplayResults] Processing deep layer with ${Object.keys(deepLayer).length} sessions`);
+      for (const [sessionId, frames] of Object.entries(deepLayer)) {
+        console.log(`[convertLayeredResultToDisplayResults] Processing deep session ${sessionId} with ${Object.keys(frames).length} frames`);
         for (const [frameId, stepResult] of Object.entries(frames)) {
           if (!stepResult.display?.show && stepResult.display?.show !== undefined) continue;
           if (stepResult.display?.level === 'none') continue;
@@ -501,7 +500,7 @@ export class SkillAnalysisAdapter {
             format: stepResult.display?.format || 'table',
             data: stepResult.data || {},
           };
-          console.log(`[convertLayeredResultToDisplayResults] Adding L4 frame:`, JSON.stringify({
+          console.log(`[convertLayeredResultToDisplayResults] Adding deep frame:`, JSON.stringify({
             stepId: dr.stepId,
             title: dr.title,
             hasData: !!dr.data,
@@ -722,24 +721,3 @@ export function createSkillAnalysisAdapter(
   return new SkillAnalysisAdapter(traceProcessor, eventHandler);
 }
 
-// =============================================================================
-// 向后兼容别名 (deprecated)
-// =============================================================================
-
-/** @deprecated Use SkillAnalysisRequest instead */
-export type SkillAnalysisRequestV2 = SkillAnalysisRequest;
-
-/** @deprecated Use SkillAnalysisResponse instead */
-export type SkillAnalysisResponseV2 = SkillAnalysisResponse;
-
-/** @deprecated Use SkillListItem instead */
-export type SkillListItemV2 = SkillListItem;
-
-/** @deprecated Use SkillAnalysisAdapter instead */
-export const SkillAnalysisAdapterV2 = SkillAnalysisAdapter;
-
-/** @deprecated Use getSkillAnalysisAdapter instead */
-export const getSkillAnalysisAdapterV2 = getSkillAnalysisAdapter;
-
-/** @deprecated Use createSkillAnalysisAdapter instead */
-export const createSkillAnalysisAdapterV2 = createSkillAnalysisAdapter;

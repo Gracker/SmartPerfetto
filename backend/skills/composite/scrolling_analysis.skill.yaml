@@ -102,6 +102,28 @@ steps:
   - id: performance_summary
     type: atomic
     name: "帧性能汇总"
+    synthesize:
+      role: overview
+      fields:
+        - key: total_frames
+          label: 总帧数
+        - key: janky_frames
+          label: 掉帧数
+          format: "{{value}} ({{jank_rate}}%)"
+        - key: avg_fps
+          label: 平均 FPS
+        - key: duration_ms
+          label: 持续时间
+          format: "{{value}} ms"
+        - key: app_jank
+          label: App 侧掉帧
+        - key: sf_jank
+          label: SF 侧掉帧
+      insights:
+        - condition: "jank_rate > 10"
+          template: "掉帧率 {{jank_rate}}% 较高，需要优化"
+        - condition: "app_jank > sf_jank"
+          template: "App 侧掉帧 ({{app_jank}}) 多于 SF 侧 ({{sf_jank}})"
     display:
       level: summary
       layer: overview
@@ -446,6 +468,18 @@ steps:
   - id: get_app_jank_frames
     type: atomic
     name: "获取真正掉帧帧"
+    synthesize:
+      role: list
+      groupBy:
+        - field: jank_responsibility
+          title: 责任归属分布
+        - field: jank_type
+          title: 掉帧类型分布
+    display:
+      level: detail
+      layer: list
+      title: "掉帧列表"
+      expandable: true  # 支持展开查看详细分析
     sql: |
       WITH
       -- VSync 周期
@@ -661,6 +695,9 @@ steps:
   - id: analyze_jank_frames
     type: iterator
     name: "逐帧详细分析"
+    synthesize:
+      role: clusters
+      clusterBy: cause_type
     display:
       level: key
       layer: deep
@@ -697,6 +734,18 @@ steps:
   - id: root_cause_classification
     type: atomic
     name: "根因分类"
+    synthesize:
+      role: conclusion
+      fields:
+        - key: problem_category
+          label: 问题类别
+        - key: problem_component
+          label: 问题组件
+        - key: confidence
+          label: 置信度
+          format: "{{value}}%"
+      insights:
+        - template: "根因分类：{{problem_category}} - {{problem_component}}"
     display:
       level: summary
       layer: overview

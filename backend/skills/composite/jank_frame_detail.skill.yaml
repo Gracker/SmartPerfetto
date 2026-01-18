@@ -151,6 +151,13 @@ steps:
       WHERE qs.dur_ns > 0
       ORDER BY qs.thread_type, qs.quadrant_name
     save_as: quadrant_data
+    output_schema:
+      type: array
+      items:
+        quadrant: { type: string, description: "象限标识 (如 MainThread Q1_大核运行)" }
+        name: { type: string, description: "象限名称" }
+        dur_ms: { type: number, description: "持续时间(ms)" }
+        percentage: { type: number, description: "百分比" }
 
   # Binder 调用：输出格式直接匹配前端展示需求
   # 前端期望: [{ interface, dur_ms, count }]
@@ -177,6 +184,14 @@ steps:
       LIMIT 5
     save_as: binder_data
     optional: true
+    output_schema:
+      type: array
+      items:
+        interface: { type: string, description: "服务端进程名" }
+        count: { type: number, description: "调用次数" }
+        dur_ms: { type: number, description: "总耗时(ms)" }
+        max_ms: { type: number, description: "最大单次耗时(ms)" }
+        sync_count: { type: number, description: "同步调用次数" }
 
   - id: cpu_freq_analysis
     type: atomic
@@ -206,6 +221,13 @@ steps:
       ORDER BY core_type DESC
     save_as: freq_data
     optional: true
+    output_schema:
+      type: array
+      items:
+        core_type: { type: string, description: "核心类型 (big/little)" }
+        avg_freq_mhz: { type: number, description: "平均频率(MHz)" }
+        max_freq_mhz: { type: number, description: "最大频率(MHz)" }
+        min_freq_mhz: { type: number, description: "最小频率(MHz)" }
 
   # 主线程耗时操作：输出格式直接匹配前端展示需求
   # 前端期望: [{ name, dur_ms, ts }]
@@ -240,6 +262,14 @@ steps:
       ORDER BY dur_ms DESC
       LIMIT 10
     save_as: main_slices
+    output_schema:
+      type: array
+      items:
+        name: { type: string, description: "操作名称" }
+        dur_ms: { type: number, description: "总耗时(ms)" }
+        count: { type: number, description: "执行次数" }
+        max_ms: { type: number, description: "最大单次耗时(ms)" }
+        ts: { type: string, description: "首次时间戳(ns字符串)" }
 
   # RenderThread 耗时操作：输出格式直接匹配前端展示需求
   # 前端期望: [{ name, dur_ms, ts }]
@@ -276,6 +306,15 @@ steps:
       LIMIT 10
     save_as: render_slices
     optional: true
+    output_schema:
+      type: array
+      items:
+        name: { type: string, description: "操作名称" }
+        dur_ms: { type: number, description: "总耗时(ms)" }
+        count: { type: number, description: "执行次数" }
+        max_ms: { type: number, description: "最大单次耗时(ms)" }
+        avg_ms: { type: number, description: "平均耗时(ms)" }
+        ts: { type: string, description: "首次时间戳(ns字符串)" }
 
   - id: cpu_freq_timeline
     type: atomic

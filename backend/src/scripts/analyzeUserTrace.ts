@@ -82,9 +82,9 @@ async function analyzeUserTrace() {
   // Check layered result
   const layers = result.layeredResult?.layers;
   if (layers) {
-    console.log('L1 (Summary Layer):');
-    const L1 = layers.L1 || {};
-    for (const [stepId, stepResult] of Object.entries(L1)) {
+    console.log('Overview Layer:');
+    const overview = layers.overview || {};
+    for (const [stepId, stepResult] of Object.entries(overview)) {
       const r = stepResult as any;
       const dataLen = r.data?.length || 0;
       const success = r.success ? '✅' : '❌';
@@ -92,33 +92,33 @@ async function analyzeUserTrace() {
       console.log(`  ${success} ${stepId}: ${dataLen} rows${error}`);
     }
 
-    console.log('\nL2 (Session Layer):');
-    const L2 = layers.L2 || {};
-    for (const [stepId, stepResult] of Object.entries(L2)) {
+    console.log('\nList Layer:');
+    const list = layers.list || {};
+    for (const [stepId, stepResult] of Object.entries(list)) {
       const r = stepResult as any;
       const dataLen = r.data?.length || 0;
       const success = r.success ? '✅' : '❌';
       console.log(`  ${success} ${stepId}: ${dataLen} rows`);
     }
 
-    console.log('\nL3 (Session Detail Layer):');
-    const L3 = layers.L3 || {};
-    const sessionIds = Object.keys(L3);
+    console.log('\nSession Detail Layer:');
+    const session = layers.session || {};
+    const sessionIds = Object.keys(session);
     console.log(`  Sessions: ${sessionIds.length}`);
     if (sessionIds.length > 0) {
       sessionIds.slice(0, 3).forEach(sid => {
-        const steps = Object.keys(L3[sid] || {});
+        const steps = Object.keys(session[sid] || {});
         console.log(`    ${sid}: ${steps.length} steps`);
       });
     }
 
-    console.log('\nL4 (Frame Analysis Layer):');
-    const L4 = layers.L4 || {};
-    const l4SessionIds = Object.keys(L4);
-    console.log(`  Sessions: ${l4SessionIds.length}`);
-    if (l4SessionIds.length > 0) {
-      l4SessionIds.slice(0, 2).forEach(sid => {
-        const frames = L4[sid] || {};
+    console.log('\nDeep Analysis Layer:');
+    const deep = layers.deep || {};
+    const deepSessionIds = Object.keys(deep);
+    console.log(`  Sessions: ${deepSessionIds.length}`);
+    if (deepSessionIds.length > 0) {
+      deepSessionIds.slice(0, 2).forEach(sid => {
+        const frames = deep[sid] || {};
         const frameIds = Object.keys(frames);
         console.log(`    ${sid}: ${frameIds.length} frames`);
         frameIds.slice(0, 3).forEach(fid => {

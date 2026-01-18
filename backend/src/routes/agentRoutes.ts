@@ -132,7 +132,7 @@ function ensureToolsRegistered() {
  */
 router.post('/analyze', async (req, res) => {
   try {
-    const { traceId, query, options = {} } = req.body;
+    const { traceId, query, sessionId: requestedSessionId, options = {} } = req.body;
 
     if (!traceId) {
       return res.status(400).json({
@@ -163,37 +163,68 @@ router.post('/analyze', async (req, res) => {
     // Initialize tools
     ensureToolsRegistered();
 
-    // Generate session ID
-    const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    // Check if we can reuse an existing session (multi-turn dialogue support)
+    let sessionId: string;
+    let orchestrator: MasterOrchestrator;
+    let logger: ReturnType<typeof createSessionLogger>;
+    let isNewSession = true;
 
-    // Create MasterOrchestrator with configuration
-    const orchestrator = createMasterOrchestrator({
-      maxTotalIterations: options.maxIterations || 5,
-      stateMachineConfig: { sessionId, traceId },
-      evaluationCriteria: {
-        minQualityScore: options.qualityThreshold || 0.7,
-        minCompletenessScore: 0.6,
-        maxContradictions: 0,
-        requiredAspects: [],
-      },
-      enableTraceRecording: true,
-    });
+    if (requestedSessionId) {
+      const existingSession = sessions.get(requestedSessionId);
+      if (existingSession && existingSession.traceId === traceId) {
+        // Reuse existing session for multi-turn dialogue
+        sessionId = requestedSessionId;
+        orchestrator = existingSession.orchestrator;
+        logger = existingSession.logger;
+        isNewSession = false;
+        logger.info('AgentRoutes', 'Continuing multi-turn dialogue', {
+          turnQuery: query,
+          previousQuery: existingSession.query,
+        });
+        // Update the query for this turn
+        existingSession.query = query;
+        existingSession.status = 'pending';
+        console.log(`[AgentRoutes] Reusing session ${sessionId} for multi-turn dialogue`);
+      } else {
+        // Session not found or different trace, create new session
+        console.log(`[AgentRoutes] Requested session ${requestedSessionId} not found or trace mismatch, creating new session`);
+        sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+      }
+    } else {
+      // Generate new session ID
+      sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+    }
 
-    // Create logger for this session
-    const logger = createSessionLogger(sessionId);
-    logger.setMetadata({ traceId, query });
-    logger.info('AgentRoutes', 'Analysis session created', { options });
+    if (isNewSession) {
+      // Create new MasterOrchestrator with configuration
+      orchestrator = createMasterOrchestrator({
+        maxTotalIterations: options.maxIterations || 5,
+        stateMachineConfig: { sessionId, traceId },
+        evaluationCriteria: {
+          minQualityScore: options.qualityThreshold || 0.7,
+          minCompletenessScore: 0.6,
+          maxContradictions: 0,
+          requiredAspects: [],
+        },
+        enableTraceRecording: true,
+      });
 
-    sessions.set(sessionId, {
-      orchestrator,
-      sessionId,
-      sseClients: [],
-      status: 'pending',
-      traceId,
-      query,
-      createdAt: Date.now(),
-      logger,
-    });
+      // Create logger for this session
+      logger = createSessionLogger(sessionId);
+      logger.setMetadata({ traceId, query });
+      logger.info('AgentRoutes', 'Analysis session created', { options });
+
+      sessions.set(sessionId, {
+        orchestrator,
+        sessionId,
+        sseClients: [],
+        status: 'pending',
+        traceId,
+        query,
+        createdAt: Date.now(),
+        logger,
+      });
+    }
 
     // Start analysis in background - pass traceProcessorService for Skill execution
     runAnalysis(sessionId, query, traceId, { ...options, traceProcessorService }).catch((error) => {
@@ -213,8 +244,8 @@ router.post('/analyze', async (req, res) => {
     res.json({
       success: true,
       sessionId,
-      analysisId: sessionId, // Alias for frontend compatibility
-      message: 'Analysis started',
+      message: isNewSession ? 'Analysis started' : 'Continuing analysis (multi-turn)',
+      isNewSession,
     });
   } catch (error: any) {
     console.error('[AgentRoutes] Analyze error:', error);
@@ -640,7 +671,6 @@ router.post('/resume', async (req, res) => {
     res.json({
       success: true,
       sessionId,
-      analysisId: sessionId, // Alias for frontend compatibility
       message: 'Resuming analysis from checkpoint',
     });
   } catch (error: any) {
@@ -1006,6 +1036,7 @@ async function runAnalysis(
 
   // Set up streaming via event listener on orchestrator
   const handleUpdate = (update: StreamingUpdate) => {
+    console.log(`[AgentRoutes.handleUpdate] Received event: ${update.type}`);
     logger.debug('Stream', `Update: ${update.type}`, update.content);
     broadcastToClients(sessionId, update);
 
@@ -1020,9 +1051,11 @@ async function runAnalysis(
   session.orchestrator.on('update', handleUpdate);
 
   try {
+    console.log('[AgentRoutes] Starting orchestrator.handleQuery...');
     const result = await logger.timed('Analysis', 'handleQuery', async () => {
       return session.orchestrator.handleQuery(query, traceId, options);
     });
+    console.log('[AgentRoutes] handleQuery completed, result sessionId:', result?.sessionId);
 
     session.result = result;
 
@@ -1044,17 +1077,35 @@ async function runAnalysis(
     });
 
     // Send final result
+    const clientCount = session.sseClients.length;
+    logger.info('AgentRoutes', 'Sending final result', { clientCount, hasResult: !!result });
+    console.log('[AgentRoutes] Preparing to send final result to', clientCount, 'clients');
+
+    if (clientCount === 0) {
+      logger.warn('AgentRoutes', 'No SSE clients connected - result will not be sent!', {
+        sessionId,
+        status: session.status,
+      });
+    }
+
     const sendContext = {
       sessionId: session.sessionId,
       traceId: session.traceId,
       query: session.query,
     };
-    session.sseClients.forEach((client) => {
+    session.sseClients.forEach((client, index) => {
       try {
+        logger.info('AgentRoutes', `Sending result to client ${index + 1}/${clientCount}`);
+        console.log('[AgentRoutes] Calling sendResult for client...');
         sendResult(client, result, sendContext);
         client.write(`event: end\n`);
         client.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
-      } catch {}
+        logger.info('AgentRoutes', `Result sent successfully to client ${index + 1}`);
+        console.log('[AgentRoutes] sendResult completed');
+      } catch (e: any) {
+        logger.error('AgentRoutes', `Error sending result to client ${index + 1}`, e);
+        console.error('[AgentRoutes] Error sending result to client:', e);
+      }
     });
 
     logger.close();
@@ -1165,9 +1216,9 @@ function broadcastToClients(sessionId: string, update: StreamingUpdate) {
       clientCount: session.sseClients.length,
       contentKeys: update.content ? Object.keys(update.content) : [],
       hasLayers: !!(update.content as any)?.layers,
-      L1Keys: (update.content as any)?.layers?.L1 ? Object.keys((update.content as any).layers.L1) : [],
-      L2Keys: (update.content as any)?.layers?.L2 ? Object.keys((update.content as any).layers.L2) : [],
-      L4Keys: (update.content as any)?.layers?.L4 ? Object.keys((update.content as any).layers.L4) : [],
+      overviewKeys: (update.content as any)?.layers?.overview ? Object.keys((update.content as any).layers.overview) : [],
+      listKeys: (update.content as any)?.layers?.list ? Object.keys((update.content as any).layers.list) : [],
+      deepKeys: (update.content as any)?.layers?.deep ? Object.keys((update.content as any).layers.deep) : [],
     });
   }
 
@@ -1186,12 +1237,15 @@ interface SendResultContext {
 }
 
 function sendResult(res: express.Response, result: MasterOrchestratorResult, context: SendResultContext) {
+  console.log('[AgentRoutes.sendResult] Starting, sessionId:', context.sessionId);
   const findings = extractFindings(result);
   const suggestions = extractSuggestions(result);
+  console.log('[AgentRoutes.sendResult] Extracted', findings.length, 'findings and', suggestions.length, 'suggestions');
 
   // Generate HTML report
   let reportUrl: string | undefined;
   try {
+    console.log('[AgentRoutes.sendResult] Generating HTML report...');
     const generator = getHTMLReportGenerator();
     const html = generator.generateMasterAgentHTML({
       traceId: context.traceId,
@@ -1230,6 +1284,12 @@ function sendResult(res: express.Response, result: MasterOrchestratorResult, con
         severity: f.severity,
         title: f.title,
         description: f.description,
+        // Include full data for timeline navigation
+        timestampsNs: f.timestampsNs,
+        evidence: f.evidence,
+        details: f.details,
+        recommendations: f.recommendations,
+        confidence: f.confidence,
       })),
       suggestions,
       evaluation: result.evaluation ? {
@@ -1245,6 +1305,7 @@ function sendResult(res: express.Response, result: MasterOrchestratorResult, con
     },
     timestamp: Date.now(),
   })}\n\n`);
+  console.log('[AgentRoutes.sendResult] Wrote analysis_completed event with reportUrl:', reportUrl);
 }
 
 // ============================================================================

@@ -91,10 +91,9 @@ export class SkillExecutorAdapter implements SkillExecutorInterface {
     if (response.layeredResult?.layers) {
       const layers = response.layeredResult.layers;
 
-      // Merge overview/L1 data into result
-      const overviewData = layers.overview || layers.L1;
-      if (overviewData) {
-        for (const [key, value] of Object.entries(overviewData)) {
+      // Merge overview data into result
+      if (layers.overview) {
+        for (const [key, value] of Object.entries(layers.overview)) {
           if (typeof value === 'object' && value !== null && 'data' in (value as any)) {
             result[key] = (value as any).data;
           } else {
@@ -103,21 +102,19 @@ export class SkillExecutorAdapter implements SkillExecutorInterface {
         }
       }
 
-      // Merge list/L2 data into result
-      const listData = layers.list || layers.L2;
-      if (listData) {
-        result.sessions = listData;
-        for (const [key, value] of Object.entries(listData)) {
+      // Merge list data into result
+      if (layers.list) {
+        result.sessions = layers.list;
+        for (const [key, value] of Object.entries(layers.list)) {
           if (typeof value === 'object' && value !== null && 'data' in (value as any)) {
             result[`list_${key}`] = (value as any).data;
           }
         }
       }
 
-      // Include deep/L4 data
-      const deepData = layers.deep || layers.L4;
-      if (deepData) {
-        result.frameDetails = deepData;
+      // Include deep data
+      if (layers.deep) {
+        result.frameDetails = layers.deep;
       }
     }
 

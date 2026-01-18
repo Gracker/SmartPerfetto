@@ -28,8 +28,8 @@ export {
   createLLMClient,
   createDeepSeekLLMClient,
   createOpenAILLMClient,
-  createMockLLMClient,
-  LLMAdapterConfig
+  LLMAdapterConfig,
+  LLMConfigurationError,
 } from './llmAdapter';
 export {
   AgentTraceRecorder,
