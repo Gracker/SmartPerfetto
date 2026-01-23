@@ -1,40 +1,19 @@
 # SmartPerfetto 完整流程图
 
 > 本文档详细描述从用户输入到最终呈现的完整数据流程
+> 
+> ⚠️ 说明：当前仅保留 AgentDrivenOrchestrator 主链路，历史内容若涉及 Master/PerfettoAnalysisOrchestrator 已不再适用。
 
 ## 0. 重要架构说明
 
-### 双系统并存问题
+当前已统一为单一主链路：
 
-```
-                        ┌─────────────────────────────────────────────────────┐
-                        │         SmartPerfetto 分析系统架构现状               │
-                        └─────────────────────────────────────────────────────┘
-
-┌───────────────────────────────────────┐    ┌───────────────────────────────────────┐
-│     系统 A: 前端实际使用               │    │     系统 B: 新版本 (待整合)            │
-│                                       │    │                                       │
-│  路由: /api/trace-analysis/*          │    │  路由: /api/agent/*                   │
-│  Orchestrator: PerfettoAnalysis       │    │  Orchestrator: MasterOrchestrator     │
-│  会话管理: AnalysisSessionService     │    │  会话管理: 本地 sessions Map          │
-│                                       │    │                                       │
-│  ┌─────────────────────────────────┐  │    │  ┌─────────────────────────────────┐  │
-│  │ 特点:                           │  │    │  │ 特点:                           │  │
-│  │ - 直接 OpenAI 调用              │  │    │  │ - Hooks 系统                    │  │
-│  │ - Skill Engine 支持             │  │    │  │ - Context 隔离                  │  │
-│  │ - SSE 事件流                    │  │    │  │ - Context 压缩                  │  │
-│  │ - SQL 重试机制                  │  │    │  │ - Session Fork                  │  │
-│  │ - 分层结果 (L1/L2/L4)           │  │    │  │ - Pipeline 执行                 │  │
-│  │                                 │  │    │  │ - Circuit Breaker               │  │
-│  └─────────────────────────────────┘  │    │  │ - Agent 模式                    │  │
-│                                       │    │  └─────────────────────────────────┘  │
-│  状态: ✅ 生产使用中                  │    │  状态: ⚠️ 功能完备但未集成           │
-└───────────────────────────────────────┘    └───────────────────────────────────────┘
-```
-
-**待整合计划**: 将 MasterOrchestrator 的增强功能集成到前端调用路径。
+- 路由: /api/agent/*
+- Orchestrator: AgentDrivenOrchestrator
+- 会话管理: 内存 sessions Map + SSE 流
 
 ---
+
 
 ## 1. 总体流程概览 (当前系统 A)
 
@@ -116,7 +95,7 @@
 │  │  - backendTraceId 必须存在 (trace 已上传到后端)                      │    │
 │  │                                                                      │    │
 │  │  API 调用:                                                          │    │
-│  │  POST ${backendUrl}/api/trace-analysis/analyze                      │    │
+│  │  POST ${backendUrl}/api/agent/analyze                      │    │
 │  │  {                                                                  │    │
 │  │    traceId: "trace-abc123",                                         │    │
 │  │    question: "分析这个 trace 的滑动性能问题",                         │    │
@@ -135,7 +114,7 @@
 │  │                                                                      │    │
 │  │  await this.listenToSSE(analysisId)                                 │    │
 │  │                                                                      │    │
-│  │  GET ${backendUrl}/api/trace-analysis/${analysisId}/stream          │    │
+│  │  GET ${backendUrl}/api/agent/${analysisId}/stream          │    │
 │  │                                                                      │    │
 │  │  开始监听服务器推送的事件...                                          │    │
 │  │                                                                      │    │
@@ -154,7 +133,7 @@
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │  Step 2.1: 接收分析请求                                              │    │
 │  │                                                                      │    │
-│  │  POST /api/trace-analysis/analyze                                   │    │
+│  │  POST /api/agent/analyze                                   │    │
 │  │                                                                      │    │
 │  │  router.post('/analyze', async (req, res) => {                      │    │
 │  │    const { traceId, question, maxIterations = 10 } = req.body       │    │
@@ -207,7 +186,7 @@
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │  Step 2.5: SSE 流连接处理                                            │    │
 │  │                                                                      │    │
-│  │  GET /api/trace-analysis/:sessionId/stream                          │    │
+│  │  GET /api/agent/:sessionId/stream                          │    │
 │  │                                                                      │    │
 │  │  router.get('/:sessionId/stream', (req, res) => {                   │    │
 │  │    // 设置 SSE headers                                              │    │
@@ -700,13 +679,13 @@
 
 ### 目标
 
-将 MasterOrchestrator 的增强功能集成到前端实际使用的 `/api/trace-analysis/analyze` 路径。
+将 MasterOrchestrator 的增强功能集成到前端实际使用的 `/api/agent/analyze` 路径。
 
 ### 方案
 
 **方案 A: 路由转发 (推荐)**
 
-修改 `traceAnalysisRoutes.ts`，让 `/api/trace-analysis/analyze` 内部调用 `MasterOrchestrator`：
+修改 `traceAnalysisRoutes.ts`，让 `/api/agent/analyze` 内部调用 `MasterOrchestrator`：
 
 ```typescript
 // traceAnalysisRoutes.ts

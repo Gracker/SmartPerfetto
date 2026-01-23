@@ -32,6 +32,7 @@ import {
   ExpertConclusion,
   DialogueContext,
   CrossDomainEvent,
+  AIService,
 } from './types';
 import { ModuleExpertInvoker, createModuleExpertInvoker } from './moduleExpertInvoker';
 import {
@@ -52,6 +53,8 @@ export abstract class BaseCrossDomainExpert extends EventEmitter {
   protected invoker: ModuleExpertInvoker | null = null;
   protected catalog: ModuleCatalog;
   protected hypothesisManager: HypothesisManager;
+  /** AI service for analysis and synthesis - set during analyze() */
+  protected aiService: AIService | null = null;
 
   constructor(config: CrossDomainExpertConfig) {
     super();
@@ -103,12 +106,23 @@ export abstract class BaseCrossDomainExpert extends EventEmitter {
   async analyze(input: CrossDomainInput): Promise<CrossDomainOutput> {
     const startTime = Date.now();
 
+    // Store AI service for use in subclasses (analyzeAndDecide, synthesizeConclusion)
+    this.aiService = input.aiService || null;
+    if (this.aiService) {
+      this.log('AI service available for analysis and synthesis');
+    } else {
+      this.log('No AI service - will use rule-based analysis only');
+    }
+
     // Initialize invoker with trace processor
     // NOTE: createModuleExpertInvoker is now async to ensure skill registry is initialized
     this.invoker = await createModuleExpertInvoker(
       input.traceProcessorService,
-      undefined, // AI service optional
-      { emitEvents: true }
+      this.aiService ? { chat: async (prompt: string) => {
+        const result = await this.aiService!.callWithFallback(prompt, 'general');
+        return result.response;
+      }} : undefined,
+      { emitEvents: true, useDataEnvelopeFormat: true }
     );
 
     // Forward invoker events - also emit as 'event' for masterOrchestrator compatibility

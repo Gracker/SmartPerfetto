@@ -290,8 +290,10 @@ export interface StreamingUpdate {
    * - 'synthesis_complete': Feedback synthesis complete
    * - 'strategy_decision': Next iteration strategy decided
    */
-  type: 'data' | 'thought' | 'tool_call' | 'finding' | 'progress' | 'conclusion' | 'error' | 'scene_detected' | 'track_data' | 'skill_data' | 'worker_thought' | 'architecture_detected'
-    | 'hypothesis_generated' | 'agent_task_dispatched' | 'agent_dialogue' | 'agent_response' | 'round_start' | 'synthesis_complete' | 'strategy_decision';
+  type: 'data' | 'thought' | 'tool_call' | 'finding' | 'progress' | 'conclusion' | 'error' | 'scene_detected' | 'track_data' | 'skill_layered_result' | 'worker_thought' | 'architecture_detected'
+    | 'hypothesis_generated' | 'agent_task_dispatched' | 'agent_dialogue' | 'agent_response' | 'round_start' | 'synthesis_complete' | 'strategy_decision'
+    /** @deprecated Use 'skill_layered_result' instead. Will be removed in v3.0 */
+    | 'skill_data';
   content: any;
   timestamp: number;
   /**
@@ -305,29 +307,44 @@ export interface StreamingUpdate {
 // State Machine Types (新架构)
 // =============================================================================
 
-export type AgentPhase =
-  | 'idle'
-  | 'planning'
-  | 'executing'
-  | 'evaluating'
-  | 'refining'
-  | 'awaiting_user'
-  | 'completed'
-  | 'failed';
+/**
+ * Agent execution phase enum
+ *
+ * Provides type-safe state values for the agent state machine.
+ * @see STATE_TRANSITIONS in stateMachine.ts for valid transitions
+ */
+export enum AgentPhase {
+  IDLE = 'idle',
+  PLANNING = 'planning',
+  EXECUTING = 'executing',
+  EVALUATING = 'evaluating',
+  REFINING = 'refining',
+  AWAITING_USER = 'awaiting_user',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+}
+
+/**
+ * State machine event type enum
+ *
+ * Provides type-safe event names for state transitions.
+ */
+export enum StateEventType {
+  START_ANALYSIS = 'START_ANALYSIS',
+  INTENT_UNDERSTOOD = 'INTENT_UNDERSTOOD',
+  PLAN_CREATED = 'PLAN_CREATED',
+  STAGE_STARTED = 'STAGE_STARTED',
+  STAGE_COMPLETED = 'STAGE_COMPLETED',
+  EVALUATION_COMPLETE = 'EVALUATION_COMPLETE',
+  NEEDS_REFINEMENT = 'NEEDS_REFINEMENT',
+  CIRCUIT_TRIPPED = 'CIRCUIT_TRIPPED',
+  USER_RESPONDED = 'USER_RESPONDED',
+  ANALYSIS_COMPLETE = 'ANALYSIS_COMPLETE',
+  ERROR_OCCURRED = 'ERROR_OCCURRED',
+}
 
 export interface StateEvent {
-  type:
-    | 'START_ANALYSIS'
-    | 'INTENT_UNDERSTOOD'
-    | 'PLAN_CREATED'
-    | 'STAGE_STARTED'
-    | 'STAGE_COMPLETED'
-    | 'EVALUATION_COMPLETE'
-    | 'NEEDS_REFINEMENT'
-    | 'CIRCUIT_TRIPPED'
-    | 'USER_RESPONDED'
-    | 'ANALYSIS_COMPLETE'
-    | 'ERROR_OCCURRED';
+  type: StateEventType;
   payload?: any;
   timestamp?: number;
 }
@@ -446,7 +463,19 @@ export interface PipelineProgress {
 // Circuit Breaker Types (新架构)
 // =============================================================================
 
-export type CircuitState = 'closed' | 'open' | 'half-open';
+/**
+ * Circuit breaker state enum
+ *
+ * Provides type-safe state values for the circuit breaker pattern.
+ * - CLOSED: Normal operation, requests pass through
+ * - OPEN: Circuit tripped, requests are blocked
+ * - HALF_OPEN: Testing recovery, limited requests allowed
+ */
+export enum CircuitState {
+  CLOSED = 'closed',
+  OPEN = 'open',
+  HALF_OPEN = 'half-open',
+}
 
 export interface CircuitBreakerConfig {
   maxRetriesPerAgent: number;
@@ -566,6 +595,8 @@ export interface SubAgentContext {
   intent?: Intent;
   plan?: AnalysisPlan;
   previousResults?: StageResult[];
+  /** 当前迭代编号（用于去重与多轮分析） */
+  iteration?: number;
   feedback?: EvaluationFeedback;
   traceProcessor?: any;
   traceProcessorService?: any;

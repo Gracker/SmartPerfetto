@@ -62,17 +62,8 @@ class AIService {
     }
   }
 
-  private async callOpenAI(prompt: string): Promise<string> {
-    if (!this.openai) {
-      throw new Error('OpenAI not configured');
-    }
-
-    const completion = await this.openai.chat.completions.create({
-      model: process.env.OPENAI_MODEL || 'gpt-4',
-      messages: [
-        {
-          role: 'system',
-          content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
+  private buildSqlSystemPrompt(): string {
+    return `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
 
 IMPORTANT RULES:
 1. ONLY use tables listed in the schema below
@@ -86,7 +77,26 @@ ${PERFETTO_TABLES_SCHEMA}
 Example queries:
 ${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
 
-Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.`,
+Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.`;
+  }
+
+  private buildDefaultChatSystemPrompt(): string {
+    return `You are an Android performance analyst.
+Provide concise, evidence-driven explanations and practical next steps.
+If data is missing, say what is needed.`;
+  }
+
+  private async callOpenAI(prompt: string, systemPrompt?: string): Promise<string> {
+    if (!this.openai) {
+      throw new Error('OpenAI not configured');
+    }
+
+    const completion = await this.openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: systemPrompt || this.buildSqlSystemPrompt(),
         },
         {
           role: 'user',
@@ -100,11 +110,12 @@ Remember: Use only the tables and columns listed in the schema. Never invent tab
     return completion.choices[0].message.content || '';
   }
 
-  private async callClaude(prompt: string): Promise<string> {
+  private async callClaude(prompt: string, systemPrompt?: string): Promise<string> {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error('Claude not configured');
     }
 
+    const systemContent = systemPrompt || this.buildSqlSystemPrompt();
     const response = await axios.post(
       this.claudeUrl!,
       {
@@ -113,23 +124,7 @@ Remember: Use only the tables and columns listed in the schema. Never invent tab
         messages: [
           {
             role: 'user',
-            content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
-
-IMPORTANT RULES:
-1. ONLY use tables listed in the schema below
-2. All timestamps are in NANOSECONDS - convert to ms with /1e6 or seconds with /1e9
-3. Use proper JOIN conditions with foreign keys (track_id, utid, upid)
-4. Use thread_track for thread tracks, not track directly
-5. For filtering, consider using TABLE_WITH_FILTER() for better performance
-
-${PERFETTO_TABLES_SCHEMA}
-
-Example queries:
-${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
-
-Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.
-
-User request: ${prompt}`,
+            content: `${systemContent}\n\nUser request: ${prompt}`,
           },
         ],
       },
@@ -145,7 +140,7 @@ User request: ${prompt}`,
     return response.data.content[0].text;
   }
 
-  private async callDeepseek(prompt: string): Promise<string> {
+  private async callDeepseek(prompt: string, systemPrompt?: string): Promise<string> {
     if (!this.deepseek) {
       throw new Error('Deepseek not configured');
     }
@@ -155,21 +150,7 @@ User request: ${prompt}`,
       messages: [
         {
           role: 'system',
-          content: `You are a Perfetto SQL expert. Generate accurate Perfetto SQL queries based on user requirements.
-
-IMPORTANT RULES:
-1. ONLY use tables listed in the schema below
-2. All timestamps are in NANOSECONDS - convert to ms with /1e6 or seconds with /1e9
-3. Use proper JOIN conditions with foreign keys (track_id, utid, upid)
-4. Use thread_track for thread tracks, not track directly
-5. For filtering, consider using TABLE_WITH_FILTER() for better performance
-
-${PERFETTO_TABLES_SCHEMA}
-
-Example queries:
-${JSON.stringify(PERFETTO_SQL_EXAMPLES, null, 2)}
-
-Remember: Use only the tables and columns listed in the schema. Never invent tables or columns.`,
+          content: systemPrompt || this.buildSqlSystemPrompt(),
         },
         {
           role: 'user',
@@ -181,6 +162,23 @@ Remember: Use only the tables and columns listed in the schema. Never invent tab
     });
 
     return completion.choices[0].message.content || '';
+  }
+
+  async chat(prompt: string, options?: { systemPrompt?: string }): Promise<string> {
+    if (!this.openai && !process.env.ANTHROPIC_API_KEY && !this.deepseek) {
+      return '';
+    }
+
+    const systemPrompt = options?.systemPrompt || this.buildDefaultChatSystemPrompt();
+    const aiService = process.env.AI_SERVICE;
+
+    if (aiService === 'claude') {
+      return await this.callClaude(prompt, systemPrompt);
+    }
+    if (aiService === 'deepseek') {
+      return await this.callDeepseek(prompt, systemPrompt);
+    }
+    return await this.callOpenAI(prompt, systemPrompt);
   }
 
   async generatePerfettoSQL(request: GenerateSqlRequest): Promise<GenerateSqlResponse> {

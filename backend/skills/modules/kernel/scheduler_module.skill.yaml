@@ -161,7 +161,7 @@ steps:
       LEFT JOIN cpu_info ci ON cct.cpu = ci.cpu
       WHERE cct.name = 'cpufreq'
       GROUP BY cct.cpu
-      ORDER BY cpu
+      ORDER BY cct.cpu
     display:
       level: detail
       layer: overview

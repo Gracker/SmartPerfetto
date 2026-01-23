@@ -168,7 +168,8 @@ class ExpressionEvaluator {
   static evaluate(expression: string, context: SkillExecutionContext): any {
     // 检查是否是完整的 ${...} 表达式（整个字符串被包裹）
     const fullExprMatch = expression.match(/^\$\{(.+)\}$/s);
-    if (fullExprMatch) {
+    // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
+    if (fullExprMatch && !fullExprMatch[1].includes('${')) {
       // 这是一个 JavaScript 表达式，需要完整求值
       return this.evaluateJsExpression(fullExprMatch[1], context);
     }
@@ -177,29 +178,32 @@ class ExpressionEvaluator {
     let result = expression;
 
     // 替换 ${xxx} 格式的变量
-    // 检测是否包含 JavaScript 方法调用（如 .find(), .filter(), .map() 等）
-    result = result.replace(/\$\{([^}]+)\}/g, (match, path) => {
-      // 检测是否包含 JS 方法调用或复杂表达式
-      const hasJsMethodCall = /\.\s*(find|filter|map|reduce|some|every|includes|indexOf)\s*\(/.test(path);
-      const hasArrowFunction = /=>/.test(path);
-      const hasTernary = /\?.*:/.test(path) && !/\?\.\s*\w/.test(path); // 排除可选链 ?.
+    // 简单路径走 resolvePath；复杂表达式走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
+    const isSimplePath = (path: string): boolean => {
+      const p = path.trim();
+      // 仅允许：标识符 + ".prop" + "[0]" 组合（不支持 ?. / 函数调用 / 算术运算等）
+      return /^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$/.test(p);
+    };
 
-      if (hasJsMethodCall || hasArrowFunction || hasTernary) {
-        // 使用完整的 JS 表达式求值
+    result = result.replace(/\$\{([^}]+)\}/g, (match, path) => {
+      const rawPath = String(path ?? '').trim();
+
+      // 复杂表达式：使用完整的 JS 表达式求值
+      if (!isSimplePath(rawPath)) {
         try {
-          const value = this.evaluateJsExpression(path, context);
+          const value = this.evaluateJsExpression(rawPath, context);
           if (value === undefined || value === null) return '';
           if (typeof value === 'object') return JSON.stringify(value);
           return String(value);
         } catch (e) {
-          console.warn(`[ExpressionEvaluator] Failed to evaluate embedded JS: ${path}`, e);
+          console.warn(`[ExpressionEvaluator] Failed to evaluate embedded JS: ${rawPath}`, e);
           return '';
         }
       }
 
-      // 简单路径，使用 resolvePath
-      const value = this.resolvePath(path, context);
-      if (value === undefined) return match;
+      // 简单路径：使用 resolvePath
+      const value = this.resolvePath(rawPath, context);
+      if (value === undefined || value === null) return '';
       if (typeof value === 'object') return JSON.stringify(value);
       return String(value);
     });
@@ -249,6 +253,10 @@ class ExpressionEvaluator {
         // 当前迭代项
         else if (varName === 'item' && context.currentItem) {
           scope[varName] = context.currentItem;
+        }
+        // 未找到时也显式注入 undefined，避免 ReferenceError（例如 expr: "package" 或 "frame_ts"）
+        else {
+          scope[varName] = undefined;
         }
       }
 
@@ -422,8 +430,37 @@ class ExpressionEvaluator {
    */
   static evaluateCondition(condition: string, context: SkillExecutionContext): boolean {
     try {
-      // 条件表达式始终作为 JavaScript 表达式求值
-      const result = this.evaluateJsExpression(condition, context);
+      // 允许 condition 中混用 ${...} 模板（如 "${vsync_missed} >= 3" 或 "cpu.data[0] > ${frame_dur} ...")
+      // 先做模板替换/简单表达式求值，再作为 JS 表达式执行。
+      let prepared: any = condition;
+      if (typeof condition === 'string' && condition.includes('${')) {
+        prepared = this.evaluate(condition, context);
+      }
+
+      // evaluate 可能直接返回 boolean/number（例如 "3 >= 1"）
+      if (prepared === undefined || prepared === null) {
+        console.warn(`[ExpressionEvaluator] Condition evaluated to undefined: ${condition}`);
+        return false;
+      }
+      if (typeof prepared === 'boolean') {
+        return prepared;
+      }
+      if (typeof prepared === 'number') {
+        return prepared !== 0;
+      }
+      if (typeof prepared !== 'string') {
+        return Boolean(prepared);
+      }
+
+      const expr = prepared.trim();
+      if (!expr) return false;
+      if (expr.includes('${')) {
+        console.warn(`[ExpressionEvaluator] Condition still contains template placeholders: ${expr}`);
+        return false;
+      }
+
+      // 条件表达式作为 JavaScript 表达式求值
+      const result = this.evaluateJsExpression(expr, context);
 
       // 如果求值失败（返回 undefined），默认为 false
       if (result === undefined) {
@@ -446,18 +483,47 @@ class ExpressionEvaluator {
 function substituteVariables(sql: string, context: SkillExecutionContext): string {
   let result = sql;
 
-  // 替换所有 ${xxx} 格式的变量
-  result = result.replace(/\$\{([^}]+)\}/g, (match, path) => {
-    const value = ExpressionEvaluator.resolvePath(path, context);
-    if (value === undefined) {
-      // 对于简单变量名（如 package），默认返回空字符串
-      // 这样 WHERE 子句中的 '${package}' = '' 会正确匹配
-      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(path)) {
-        return '';
+  // 判断 offset 位置是否处于 SQL 单引号字符串常量内部（用于决定缺省值是 '' 还是 NULL）
+  // 注：这里只做轻量扫描，足够覆盖 skill SQL 模板中常见的 '${package}*' / '%${name}%' 等模式。
+  const isInsideSingleQuotes = (s: string, offset: number): boolean => {
+    let inSingle = false;
+    for (let i = 0; i < offset; i++) {
+      const ch = s[i];
+      if (ch !== '\'') continue;
+
+      // SQL 中单引号转义使用 ''（两个单引号）。
+      if (inSingle && s[i + 1] === '\'') {
+        i++; // skip escaped quote
+        continue;
       }
-      console.warn(`[SkillExecutor] Variable not found: ${path}`);
-      return match;
+      inSingle = !inSingle;
     }
+    return inSingle;
+  };
+
+  // 替换所有 ${xxx} 格式的变量
+  result = result.replace(/\$\{([^}]+)\}/g, (match, path, offset, full) => {
+    const rawPath = String(path ?? '').trim();
+    const insideQuotes = typeof offset === 'number' && typeof full === 'string'
+      ? isInsideSingleQuotes(full, offset)
+      : false;
+
+    const value = ExpressionEvaluator.resolvePath(rawPath, context);
+
+    // 缺省值：
+    // - 字符串常量内部：用 ''（避免把 NULL 注入到 '...${x}...' 里变成字面量 "NULL"）
+    // - 其它位置：用 NULL（避免 COALESCE(, 0) 这类语法错误）
+    if (value === undefined || value === null) {
+      if (insideQuotes) return '';
+      // 对于可选参数缺失是常态，不要把 ${...} 留在 SQL 里，否则会导致解析错误。
+      return 'NULL';
+    }
+
+    // 如果值被插入到单引号字符串中，必须转义单引号，避免 SQL 解析错误
+    if (insideQuotes && typeof value === 'string') {
+      return value.replace(/'/g, '\'\'');
+    }
+
     return String(value);
   });
 
@@ -926,9 +992,41 @@ export class SkillExecutor {
 
     // 加载必要的模块
     if (skill.prerequisites?.modules) {
-      for (const module of skill.prerequisites.modules) {
+      // 兼容旧/简写模块名，避免 "INCLUDE: unknown module 'sched'" 这类噪声
+      const expandModules = (modules: string[]): string[] => {
+        const expanded: string[] = [];
+        for (const m of modules) {
+          switch (m) {
+            case 'sched':
+              // stdlib/sched/ 下不存在 sched.sql；常用能力在 states/runnable 等文件里
+              expanded.push('sched.states', 'sched.runnable');
+              break;
+            case 'stack_profile':
+              // stdlib/callstacks/stack_profile.sql
+              expanded.push('callstacks.stack_profile');
+              break;
+            case 'android.frames':
+              // stdlib/android/frames/ 目录下没有 frames.sql；常见能力来自 timeline/jank_type
+              expanded.push('android.frames.timeline', 'android.frames.jank_type');
+              break;
+            case 'android.frames.jank':
+              // 实际模块名为 jank_type.sql
+              expanded.push('android.frames.jank_type');
+              break;
+            default:
+              expanded.push(m);
+          }
+        }
+        // 去重并保持顺序
+        return Array.from(new Set(expanded));
+      };
+
+      for (const module of expandModules(skill.prerequisites.modules)) {
         try {
-          await this.traceProcessor.query(traceId, `INCLUDE PERFETTO MODULE ${module};`);
+          const includeResult = await this.traceProcessor.query(traceId, `INCLUDE PERFETTO MODULE ${module};`);
+          if ((includeResult as any)?.error) {
+            console.warn(`[SkillExecutor] Module not available: ${module}`);
+          }
         } catch (e: any) {
           console.warn(`[SkillExecutor] Module not available: ${module}`);
         }
@@ -1437,16 +1535,25 @@ export class SkillExecutor {
       const result = await this.traceProcessor.query(traceId, query);
       const existingTables = new Set<string>();
 
-      // 处理查询结果
-      if (result && result.numRecords > 0) {
-        // 兼容不同的查询结果格式 (columns/rows 或 object array)
-        if (result.columns && result.rows) {
+      // 处理查询结果（兼容多种返回结构）
+      if (result) {
+        if (result.columns && Array.isArray(result.rows)) {
           const nameIdx = result.columns.indexOf('name');
           if (nameIdx >= 0) {
-            result.rows.forEach((row: any[]) => existingTables.add(row[nameIdx] as string));
+            for (const row of result.rows) {
+              if (Array.isArray(row) && row[nameIdx]) {
+                existingTables.add(String(row[nameIdx]));
+              } else if (row && typeof row === 'object' && row['name']) {
+                existingTables.add(String(row['name']));
+              }
+            }
           }
         } else if (Array.isArray(result)) {
-          result.forEach((row: any) => existingTables.add(row.name));
+          result.forEach((row: any) => {
+            if (row?.name) {
+              existingTables.add(String(row.name));
+            }
+          });
         }
       }
 
@@ -1541,7 +1648,9 @@ export class SkillExecutor {
       const params: Record<string, any> = {};
       if (step.item_params) {
         for (const [key, path] of Object.entries(step.item_params)) {
-          params[key] = item[path] ?? path;
+          // 仅在字段不存在(=== undefined)时才回退为常量字符串；保留 null（常用于 SQL NULL）
+          const v = (item as any)?.[path];
+          params[key] = v !== undefined ? v : path;
         }
       } else {
         // 默认将 item 的所有字段作为参数
@@ -1962,9 +2071,14 @@ export class SkillExecutor {
     }
 
     try {
-      // TODO: 实现实际的 AI 调用
-      const response = await this.aiService.chat(prompt);
-      return response;
+      if (typeof this.aiService.chat === 'function') {
+        return await this.aiService.chat(prompt);
+      }
+      if (typeof this.aiService.callWithFallback === 'function') {
+        const result = await this.aiService.callWithFallback(prompt, 'general');
+        return result?.response || result?.content || '';
+      }
+      throw new Error('AI service does not implement chat');
     } catch (error: any) {
       console.error('[SkillExecutor] AI call failed:', error.message);
       return '';
@@ -2051,11 +2165,14 @@ export class SkillExecutor {
       stepId,
       title: config.title || title,
       level: config.level || 'summary',
-      layer: config.layer,         // 新增：返回分层层级
+      layer: config.layer,         // 分层展示层级
       format: config.format || 'table',
       data: displayData,
       highlight: config.highlight,
       sql,  // 保存原始 SQL
+      expandable: config.expandable,           // 是否支持展开查看详细分析
+      metadataFields: config.metadataFields,   // 提取到元数据的字段
+      hidden_columns: config.hidden_columns,   // 隐藏的列
     };
   }
 
@@ -2661,4 +2778,3 @@ export function createSkillExecutor(
 ): SkillExecutor {
   return new SkillExecutor(traceProcessor, aiService, eventEmitter);
 }
-

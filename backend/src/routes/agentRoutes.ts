@@ -1,11 +1,7 @@
 /**
  * Agent Analysis Routes
  *
- * API endpoints for Agent-based trace analysis using the new architecture:
- * - MasterOrchestrator with Pipeline + Circuit Breaker
- * - State Machine for session persistence and recovery
- * - Multi-model routing
- * - Evaluator-Optimizer loop
+ * API endpoints for Agent-based trace analysis using the agent-driven architecture
  */
 
 import express from 'express';
@@ -20,12 +16,6 @@ import { reportStore } from './reportRoutes';
 import {
   registerCoreTools,
   StreamingUpdate,
-  // New architecture imports
-  createMasterOrchestrator,
-  MasterOrchestrator,
-  SessionStore,
-  MasterOrchestratorResult,
-  Finding,
   // Scene reconstruction (separate feature)
   createLLMClient,
   createSceneReconstructionAgent,
@@ -41,58 +31,19 @@ import {
 } from '../agent';
 // DataEnvelope types for v2.0 data contract
 import {
-  DataEnvelope,
   generateEventId,
   isDataEvent,
   isLegacySkillEvent,
   validateDataEnvelope,
 } from '../types/dataContract';
 
-// Helper to extract findings from MasterOrchestratorResult
-function extractFindings(result: MasterOrchestratorResult): Finding[] {
-  const findings: Finding[] = [];
-  const stageCount = (result.stageResults || []).length;
-  console.log(`[AgentRoutes.extractFindings] Processing ${stageCount} stages`);
-
-  for (const stage of result.stageResults || []) {
-    const stageFindings = stage.findings || [];
-    console.log(`[AgentRoutes.extractFindings] Stage ${stage.stageId}: ${stageFindings.length} findings`);
-    findings.push(...stageFindings);
-  }
-  return findings;
-}
-
-// Helper to extract suggestions from evaluation
-function extractSuggestions(result: MasterOrchestratorResult): string[] {
-  return result.evaluation?.feedback?.improvementSuggestions || [];
-}
-
 const router = express.Router();
 
 // ============================================================================
-// Session Tracking
+// Session Tracking (Agent-Driven)
 // ============================================================================
 
 interface AnalysisSession {
-  orchestrator: MasterOrchestrator;
-  sessionId: string;
-  sseClients: express.Response[];
-  result?: MasterOrchestratorResult;
-  status: 'pending' | 'running' | 'awaiting_user' | 'completed' | 'failed';
-  error?: string;
-  traceId: string;
-  query: string;
-  createdAt: number;
-  logger: SessionLogger;
-}
-
-const sessions = new Map<string, AnalysisSession>();
-
-// ============================================================================
-// Agent-Driven Analysis Sessions (Phase 2-4)
-// ============================================================================
-
-interface AgentDrivenSession {
   orchestrator: AgentDrivenOrchestrator;
   sessionId: string;
   sseClients: express.Response[];
@@ -110,9 +61,15 @@ interface AgentDrivenSession {
     content: any;
     timestamp: number;
   }>;
+  dataEnvelopes: any[];
+  agentResponses: Array<{
+    taskId: string;
+    agentId: string;
+    response: any;
+    timestamp: number;
+  }>;
 }
-
-const agentDrivenSessions = new Map<string, AgentDrivenSession>();
+const sessions = new Map<string, AnalysisSession>();
 
 // ModelRouter instance for agent-driven orchestrator
 let modelRouterInstance: ModelRouter | null = null;
@@ -122,16 +79,6 @@ function getModelRouter(): ModelRouter {
     modelRouterInstance = new ModelRouter();
   }
   return modelRouterInstance;
-}
-
-// Session store for persistence and recovery
-let sessionStore: SessionStore | null = null;
-
-function getSessionStore(): SessionStore {
-  if (!sessionStore) {
-    sessionStore = new SessionStore();
-  }
-  return sessionStore;
 }
 
 // Scene Reconstruction Sessions (separate feature)
@@ -165,23 +112,24 @@ function ensureToolsRegistered() {
 /**
  * POST /api/agent/analyze
  *
- * Start analysis using MasterOrchestrator architecture
+ * Start analysis using AgentDrivenOrchestrator
  *
  * Features:
- * - Pipeline execution with checkpoints
- * - Circuit breaker protection
- * - Multi-model routing
- * - Session persistence and recovery
- * - Evaluator-Optimizer loop
+ * - Agent-driven task graph planning
+ * - Domain agent evidence collection
+ * - Multi-round analysis with strategy planning
+ * - DataEnvelope streaming
  *
  * Body:
  * {
  *   "traceId": "uuid-of-trace",
  *   "query": "分析这个 trace 的滑动性能",
  *   "options": {
- *     "maxIterations": 5,
- *     "qualityThreshold": 0.7,
- *     "enableEvaluation": true
+ *     "maxRounds": 5,
+ *     "confidenceThreshold": 0.7,
+ *     "maxNoProgressRounds": 2,
+ *     "maxFailureRounds": 2,
+ *     "maxConcurrentTasks": 3
  *   }
  * }
  */
@@ -220,14 +168,13 @@ router.post('/analyze', async (req, res) => {
 
     // Check if we can reuse an existing session (multi-turn dialogue support)
     let sessionId: string;
-    let orchestrator: MasterOrchestrator;
+    let orchestrator: AgentDrivenOrchestrator;
     let logger: ReturnType<typeof createSessionLogger>;
     let isNewSession = true;
 
     if (requestedSessionId) {
       const existingSession = sessions.get(requestedSessionId);
       if (existingSession && existingSession.traceId === traceId) {
-        // Reuse existing session for multi-turn dialogue
         sessionId = requestedSessionId;
         orchestrator = existingSession.orchestrator;
         logger = existingSession.logger;
@@ -236,38 +183,31 @@ router.post('/analyze', async (req, res) => {
           turnQuery: query,
           previousQuery: existingSession.query,
         });
-        // Update the query for this turn
         existingSession.query = query;
         existingSession.status = 'pending';
-        console.log(`[AgentRoutes] Reusing session ${sessionId} for multi-turn dialogue`);
+        console.log(`[AgentRoutes] Reusing agent session ${sessionId} for multi-turn dialogue`);
       } else {
-        // Session not found or different trace, create new session
         console.log(`[AgentRoutes] Requested session ${requestedSessionId} not found or trace mismatch, creating new session`);
-        sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+        sessionId = `agent-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
       }
     } else {
-      // Generate new session ID
-      sessionId = `session-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+      sessionId = `agent-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
     }
 
     if (isNewSession) {
-      // Create new MasterOrchestrator with configuration
-      orchestrator = createMasterOrchestrator({
-        maxTotalIterations: options.maxIterations || 5,
-        stateMachineConfig: { sessionId, traceId },
-        evaluationCriteria: {
-          minQualityScore: options.qualityThreshold || 0.7,
-          minCompletenessScore: 0.6,
-          maxContradictions: 0,
-          requiredAspects: [],
-        },
-        enableTraceRecording: true,
+      const modelRouter = getModelRouter();
+      orchestrator = createAgentDrivenOrchestrator(modelRouter, {
+        maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
+        maxConcurrentTasks: options.maxConcurrentTasks || 3,
+        confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
+        maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
+        maxFailureRounds: options.maxFailureRounds ?? 2,
+        enableLogging: true,
       });
 
-      // Create logger for this session
       logger = createSessionLogger(sessionId);
-      logger.setMetadata({ traceId, query });
-      logger.info('AgentRoutes', 'Analysis session created', { options });
+      logger.setMetadata({ traceId, query, architecture: 'agent-driven' });
+      logger.info('AgentRoutes', 'Agent-driven analysis session created', { options });
 
       sessions.set(sessionId, {
         orchestrator,
@@ -278,143 +218,15 @@ router.post('/analyze', async (req, res) => {
         query,
         createdAt: Date.now(),
         logger,
+        hypotheses: [],
+        agentDialogue: [],
+        dataEnvelopes: [],
+        agentResponses: [],
       });
     }
 
-    // Start analysis in background - pass traceProcessorService for Skill execution
-    runAnalysis(sessionId, query, traceId, { ...options, traceProcessorService }).catch((error) => {
+    runAgentDrivenAnalysis(sessionId, query, traceId, { ...options, traceProcessorService }).catch((error) => {
       const session = sessions.get(sessionId);
-      if (session) {
-        session.logger.error('AgentRoutes', 'Analysis failed', error);
-        session.status = 'failed';
-        session.error = error.message;
-        broadcastToClients(sessionId, {
-          type: 'error',
-          content: { message: error.message },
-          timestamp: Date.now(),
-        });
-      }
-    });
-
-    res.json({
-      success: true,
-      sessionId,
-      message: isNewSession ? 'Analysis started' : 'Continuing analysis (multi-turn)',
-      isNewSession,
-    });
-  } catch (error: any) {
-    console.error('[AgentRoutes] Analyze error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Agent analysis failed',
-    });
-  }
-});
-
-// ============================================================================
-// Agent-Driven Analysis Endpoints (Phase 2-4)
-// ============================================================================
-
-/**
- * POST /api/agent/analyze-v2
- *
- * Start analysis using AgentDrivenOrchestrator (AI Agents architecture)
- *
- * Features:
- * - AI-driven task dispatch to domain agents
- * - Hypothesis generation and validation
- * - Inter-agent communication
- * - Multi-round analysis with strategy planning
- * - Evidence chain tracking
- *
- * Body:
- * {
- *   "traceId": "uuid-of-trace",
- *   "query": "分析这个 trace 的滑动性能",
- *   "options": {
- *     "maxRounds": 5,
- *     "confidenceThreshold": 0.7
- *   }
- * }
- *
- * SSE Events (via /v2/:sessionId/stream):
- * - agent_task_dispatched: Task sent to domain agent
- * - agent_response: Agent completed task
- * - hypothesis_updated: Hypothesis confidence changed
- * - evidence_found: New evidence added
- * - round_complete: Analysis round finished
- * - conclusion: Final analysis conclusion
- */
-router.post('/analyze-v2', async (req, res) => {
-  try {
-    const { traceId, query, options = {} } = req.body;
-
-    if (!traceId) {
-      return res.status(400).json({
-        success: false,
-        error: 'traceId is required',
-      });
-    }
-
-    if (!query) {
-      return res.status(400).json({
-        success: false,
-        error: 'query is required',
-      });
-    }
-
-    // Verify trace exists
-    const traceProcessorService = getTraceProcessorService();
-    const trace = traceProcessorService.getTrace(traceId);
-    if (!trace) {
-      return res.status(404).json({
-        success: false,
-        error: 'Trace not found in backend',
-        hint: 'Please upload the trace to the backend first',
-        code: 'TRACE_NOT_UPLOADED',
-      });
-    }
-
-    // Initialize tools
-    ensureToolsRegistered();
-
-    // Generate session ID
-    const sessionId = `agent-v2-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
-
-    // Create AgentDrivenOrchestrator
-    const modelRouter = getModelRouter();
-    const orchestrator = createAgentDrivenOrchestrator(modelRouter, {
-      maxRounds: options.maxRounds || 5,
-      maxConcurrentTasks: options.maxConcurrentTasks || 3,
-      confidenceThreshold: options.confidenceThreshold || 0.7,
-      enableLogging: true,
-    });
-
-    // Create logger for this session
-    const logger = createSessionLogger(sessionId);
-    logger.setMetadata({ traceId, query, version: 'v2-agent-driven' });
-    logger.info('AgentRoutes', 'Agent-driven analysis session created', { options });
-
-    // Store session
-    agentDrivenSessions.set(sessionId, {
-      orchestrator,
-      sessionId,
-      sseClients: [],
-      status: 'pending',
-      traceId,
-      query,
-      createdAt: Date.now(),
-      logger,
-      hypotheses: [],
-      agentDialogue: [],
-    });
-
-    // Start analysis in background
-    runAgentDrivenAnalysis(sessionId, query, traceId, {
-      ...options,
-      traceProcessorService,
-    }).catch((error) => {
-      const session = agentDrivenSessions.get(sessionId);
       if (session) {
         session.logger.error('AgentRoutes', 'Agent-driven analysis failed', error);
         session.status = 'failed';
@@ -430,253 +242,17 @@ router.post('/analyze-v2', async (req, res) => {
     res.json({
       success: true,
       sessionId,
-      message: 'Agent-driven analysis started',
-      architecture: 'v2-agent-driven',
+      message: isNewSession ? 'Analysis started' : 'Continuing analysis (multi-turn)',
+      isNewSession,
+      architecture: 'agent-driven',
     });
   } catch (error: any) {
-    console.error('[AgentRoutes] Analyze-v2 error:', error);
+    console.error('[AgentRoutes] Analyze error:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Agent-driven analysis failed',
+      error: error.message || 'Agent analysis failed',
     });
   }
-});
-
-/**
- * GET /api/agent/v2/:sessionId/stream
- *
- * SSE endpoint for agent-driven analysis updates
- *
- * Events specific to agent-driven architecture:
- * - hypothesis_generated: Initial hypotheses created
- * - agent_task_dispatched: Task sent to domain agent
- * - agent_dialogue: Agent communication event
- * - hypothesis_updated: Hypothesis confidence/status changed
- * - evidence_chain: Evidence supporting/contradicting hypothesis
- * - round_complete: Analysis round completed
- * - strategy_decision: Next iteration strategy decided
- * - conclusion: Final analysis conclusion
- */
-router.get('/v2/:sessionId/stream', (req, res) => {
-  const { sessionId } = req.params;
-
-  const session = agentDrivenSessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Agent-driven session not found',
-    });
-  }
-
-  // Set SSE headers
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-
-  // Send initial connection message
-  res.write(`event: connected\n`);
-  res.write(`data: ${JSON.stringify({
-    sessionId,
-    status: session.status,
-    traceId: session.traceId,
-    query: session.query,
-    architecture: 'v2-agent-driven',
-    timestamp: Date.now(),
-  })}\n\n`);
-
-  // Add client to session
-  session.sseClients.push(res);
-  console.log(`[AgentRoutes] Agent-driven SSE client connected for ${sessionId}`);
-
-  // If analysis is already completed, send the result
-  if (session.status === 'completed' && session.result) {
-    sendAgentDrivenResult(res, session);
-    res.write(`event: end\n`);
-    res.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
-    res.end();
-    return;
-  }
-
-  // If analysis failed, send error
-  if (session.status === 'failed') {
-    res.write(`event: error\n`);
-    res.write(`data: ${JSON.stringify({ error: session.error, timestamp: Date.now() })}\n\n`);
-    res.write(`event: end\n`);
-    res.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
-    res.end();
-    return;
-  }
-
-  // Handle client disconnect
-  req.on('close', () => {
-    console.log(`[AgentRoutes] Agent-driven SSE client disconnected for ${sessionId}`);
-    const idx = session.sseClients.indexOf(res);
-    if (idx !== -1) {
-      session.sseClients.splice(idx, 1);
-    }
-  });
-
-  // Keep-alive ping
-  const keepAlive = setInterval(() => {
-    try {
-      res.write(`: keep-alive\n\n`);
-    } catch {
-      clearInterval(keepAlive);
-    }
-  }, 30000);
-
-  req.on('close', () => {
-    clearInterval(keepAlive);
-  });
-});
-
-/**
- * GET /api/agent/v2/:sessionId/status
- *
- * Get agent-driven analysis status
- */
-router.get('/v2/:sessionId/status', (req, res) => {
-  const { sessionId } = req.params;
-
-  const session = agentDrivenSessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Agent-driven session not found',
-    });
-  }
-
-  const response: any = {
-    success: true,
-    sessionId,
-    status: session.status,
-    traceId: session.traceId,
-    query: session.query,
-    createdAt: session.createdAt,
-    architecture: 'v2-agent-driven',
-  };
-
-  if (session.hypotheses.length > 0) {
-    response.hypotheses = session.hypotheses.map(h => ({
-      id: h.id,
-      description: h.description,
-      status: h.status,
-      confidence: h.confidence,
-    }));
-  }
-
-  if (session.agentDialogue.length > 0) {
-    response.dialogueCount = session.agentDialogue.length;
-    response.recentDialogue = session.agentDialogue.slice(-5);
-  }
-
-  if (session.status === 'completed' && session.result) {
-    response.result = {
-      conclusion: session.result.conclusion,
-      confidence: session.result.confidence,
-      rounds: session.result.rounds,
-      totalDurationMs: session.result.totalDurationMs,
-      findingsCount: session.result.findings.length,
-    };
-  }
-
-  if (session.status === 'failed') {
-    response.error = session.error;
-  }
-
-  res.json(response);
-});
-
-/**
- * GET /api/agent/v2/:sessionId/dialogue
- *
- * Get full agent dialogue history
- */
-router.get('/v2/:sessionId/dialogue', (req, res) => {
-  const { sessionId } = req.params;
-
-  const session = agentDrivenSessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Agent-driven session not found',
-    });
-  }
-
-  res.json({
-    success: true,
-    sessionId,
-    dialogue: session.agentDialogue,
-    count: session.agentDialogue.length,
-  });
-});
-
-/**
- * GET /api/agent/v2/:sessionId/evidence
- *
- * Get evidence chain for hypotheses
- */
-router.get('/v2/:sessionId/evidence', (req, res) => {
-  const { sessionId } = req.params;
-
-  const session = agentDrivenSessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Agent-driven session not found',
-    });
-  }
-
-  // Build evidence chain from hypotheses
-  const evidenceChain = session.hypotheses.map(h => ({
-    hypothesis: {
-      id: h.id,
-      description: h.description,
-      status: h.status,
-      confidence: h.confidence,
-    },
-    supportingEvidence: h.supportingEvidence,
-    contradictingEvidence: h.contradictingEvidence,
-  }));
-
-  res.json({
-    success: true,
-    sessionId,
-    evidenceChain,
-    hypothesesCount: session.hypotheses.length,
-  });
-});
-
-/**
- * DELETE /api/agent/v2/:sessionId
- *
- * Clean up an agent-driven session
- */
-router.delete('/v2/:sessionId', (req, res) => {
-  const { sessionId } = req.params;
-
-  const session = agentDrivenSessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Agent-driven session not found',
-    });
-  }
-
-  // Close all SSE connections
-  session.sseClients.forEach((client) => {
-    try {
-      client.end();
-    } catch {}
-  });
-
-  // Reset orchestrator
-  session.orchestrator.reset();
-
-  agentDrivenSessions.delete(sessionId);
-
-  res.json({ success: true });
 });
 
 /**
@@ -686,14 +262,13 @@ router.delete('/v2/:sessionId', (req, res) => {
  *
  * Events:
  * - connected: SSE connection established
- * - phase_change: Pipeline phase changed
- * - stage_start: Pipeline stage started
- * - stage_complete: Pipeline stage completed
- * - finding: Analysis finding discovered
- * - thought: Agent reasoning
- * - evaluation: Evaluator feedback
- * - circuit_breaker: Circuit breaker tripped (needs user input)
- * - conclusion: Final answer
+ * - progress: Progress updates (task graph, rounds, strategy)
+ * - data: DataEnvelope(s) from skill execution
+ * - agent_task_dispatched: Task sent to domain agent
+ * - agent_response: Agent completed task
+ * - synthesis_complete: Feedback synthesis complete
+ * - strategy_decision: Next iteration strategy decided
+ * - analysis_completed: Final analysis result
  * - error: Error occurred
  * - end: Stream ended
  */
@@ -721,6 +296,7 @@ router.get('/:sessionId/stream', (req, res) => {
     status: session.status,
     traceId: session.traceId,
     query: session.query,
+    architecture: 'agent-driven',
     timestamp: Date.now(),
   })}\n\n`);
 
@@ -730,11 +306,7 @@ router.get('/:sessionId/stream', (req, res) => {
 
   // If analysis is already completed, send the result
   if (session.status === 'completed' && session.result) {
-    sendResult(res, session.result, {
-      sessionId: session.sessionId,
-      traceId: session.traceId,
-      query: session.query,
-    });
+    sendAgentDrivenResult(res, session);
     res.write(`event: end\n`);
     res.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
     res.end();
@@ -800,20 +372,13 @@ router.get('/:sessionId/status', (req, res) => {
   };
 
   if (session.status === 'completed' && session.result) {
-    const findings = extractFindings(session.result);
     response.result = {
-      answer: session.result.synthesizedAnswer,
+      conclusion: session.result.conclusion,
       confidence: session.result.confidence,
-      executionTimeMs: session.result.totalDuration,
-      iterationsUsed: session.result.iterationCount,
-      findingsCount: findings.length,
-      evaluationPassed: session.result.evaluation?.passed,
+      totalDurationMs: session.result.totalDurationMs,
+      rounds: session.result.rounds,
+      findingsCount: session.result.findings.length,
     };
-  }
-
-  if (session.status === 'awaiting_user') {
-    // Pending action info is now in evaluation.suggestedActions
-    response.pendingAction = session.result?.evaluation?.suggestedActions?.[0];
   }
 
   if (session.status === 'failed') {
@@ -821,79 +386,6 @@ router.get('/:sessionId/status', (req, res) => {
   }
 
   res.json(response);
-});
-
-/**
- * POST /api/agent/:sessionId/respond
- *
- * Respond to a pending user action (circuit breaker trip, clarification, etc.)
- *
- * Body:
- * {
- *   "action": "continue" | "abort" | "retry",
- *   "input": "optional user input"
- * }
- */
-router.post('/:sessionId/respond', async (req, res) => {
-  const { sessionId } = req.params;
-  const { action, input } = req.body;
-
-  const session = sessions.get(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
-
-  if (session.status !== 'awaiting_user') {
-    return res.status(400).json({
-      success: false,
-      error: 'Session is not awaiting user input',
-      currentStatus: session.status,
-    });
-  }
-
-  if (!['continue', 'abort', 'retry'].includes(action)) {
-    return res.status(400).json({
-      success: false,
-      error: 'Invalid action. Must be: continue, abort, or retry',
-    });
-  }
-
-  try {
-    // Resume the orchestrator with user response
-    session.status = 'running';
-
-    if (action === 'abort') {
-      session.status = 'failed';
-      session.error = 'User aborted the analysis';
-      broadcastToClients(sessionId, {
-        type: 'error',
-        content: { message: 'Analysis aborted by user' },
-        timestamp: Date.now(),
-      });
-    } else {
-      // Continue or retry - resume from checkpoint
-      // Note: User input is currently not passed through as the MasterOrchestrator
-      // resumes from the last checkpoint. Future enhancement could pass context.
-      const traceProcessorService = getTraceProcessorService();
-      resumeAnalysis(sessionId, session.traceId, traceProcessorService).catch((err) => {
-        session.logger.error('Respond', 'Resume after user response failed', err);
-      });
-    }
-
-    res.json({
-      success: true,
-      sessionId,
-      status: session.status,
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
 });
 
 /**
@@ -919,12 +411,57 @@ router.delete('/:sessionId', (req, res) => {
     } catch {}
   });
 
+  session.orchestrator.reset();
   sessions.delete(sessionId);
 
-  // Also clean up from session store
-  getSessionStore().deleteSession(sessionId);
-
   res.json({ success: true });
+});
+
+/**
+ * POST /api/agent/:sessionId/respond
+ *
+ * Respond to an interactive session (e.g. continue/abort).
+ *
+ * Note: AgentDrivenOrchestrator currently does not pause for user input in v2;
+ * this endpoint mainly exists for API compatibility and future multi-turn UX.
+ */
+router.post('/:sessionId/respond', async (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found',
+    });
+  }
+
+  const action = req.body?.action;
+  const allowedActions = new Set(['continue', 'abort']);
+
+  if (!action || typeof action !== 'string' || !allowedActions.has(action)) {
+    return res.status(400).json({
+      success: false,
+      error: `Invalid action: ${String(action)}. Allowed: continue, abort`,
+    });
+  }
+
+  if (action === 'abort') {
+    session.status = 'failed';
+    session.error = 'Aborted by user';
+    return res.json({ success: true, sessionId, status: session.status });
+  }
+
+  // continue
+  if (session.status !== 'awaiting_user') {
+    return res.status(400).json({
+      success: false,
+      error: `Session is not awaiting user input (current status: ${session.status})`,
+    });
+  }
+
+  session.status = 'running';
+  return res.json({ success: true, sessionId, status: session.status });
 });
 
 /**
@@ -934,12 +471,6 @@ router.delete('/:sessionId', (req, res) => {
  */
 router.get('/sessions', async (req, res) => {
   try {
-    const store = getSessionStore();
-
-    // Get all sessions from store
-    const allSessions = await store.listSessions();
-
-    // Get active in-memory sessions
     const activeSessions: any[] = [];
     for (const [sessionId, session] of sessions.entries()) {
       activeSessions.push({
@@ -952,26 +483,12 @@ router.get('/sessions', async (req, res) => {
       });
     }
 
-    // Get recoverable sessions from store
-    const recoverableSessions = allSessions
-      .filter((s: any) => s.phase !== 'completed' && s.phase !== 'failed')
-      .filter((s: any) => !sessions.has(s.sessionId))
-      .map((s: any) => ({
-        sessionId: s.sessionId,
-        status: s.phase,
-        traceId: s.metadata?.traceId,
-        query: s.metadata?.query,
-        createdAt: s.startedAt,
-        isActive: false,
-        canResume: true,
-      }));
-
     res.json({
       success: true,
       activeSessions,
-      recoverableSessions,
       totalActive: activeSessions.length,
-      totalRecoverable: recoverableSessions.length,
+      recoverableSessions: [],
+      totalRecoverable: 0,
     });
   } catch (error: any) {
     res.status(500).json({
@@ -984,125 +501,34 @@ router.get('/sessions', async (req, res) => {
 /**
  * POST /api/agent/resume
  *
- * Resume a session from checkpoint
+ * Resume a recoverable session.
  *
- * Body:
- * {
- *   "sessionId": "session-xxx"
- * }
+ * Note: Agent-driven sessions are currently in-memory only; this endpoint
+ * returns structured errors for compatibility and can be extended later.
  */
 router.post('/resume', async (req, res) => {
-  try {
-    const { sessionId } = req.body;
-
-    if (!sessionId) {
-      return res.status(400).json({
-        success: false,
-        error: 'sessionId is required',
-      });
-    }
-
-    // Check if session is already active
-    if (sessions.has(sessionId)) {
-      return res.status(400).json({
-        success: false,
-        error: 'Session is already active',
-        hint: 'Use the stream endpoint to monitor progress',
-      });
-    }
-
-    // Try to recover session from store
-    const store = getSessionStore();
-    const sessionData = await store.getSession(sessionId);
-
-    if (!sessionData) {
-      return res.status(404).json({
-        success: false,
-        error: 'Session not found in store',
-      });
-    }
-
-    const traceId = sessionData.metadata?.traceId;
-    const query = sessionData.metadata?.query;
-
-    if (!traceId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Session metadata missing traceId',
-      });
-    }
-
-    // Verify trace still exists
-    const traceProcessorService = getTraceProcessorService();
-    const trace = traceProcessorService.getTrace(traceId);
-    if (!trace) {
-      return res.status(404).json({
-        success: false,
-        error: 'Trace no longer available',
-        hint: 'Please re-upload the trace and start a new analysis',
-      });
-    }
-
-    // Initialize tools
-    ensureToolsRegistered();
-
-    // Create new orchestrator and resume
-    const orchestrator = createMasterOrchestrator({
-      maxTotalIterations: 5,
-      stateMachineConfig: { sessionId, traceId }, // Reuse the same session ID
-      evaluationCriteria: {
-        minQualityScore: 0.7,
-        minCompletenessScore: 0.6,
-        maxContradictions: 0,
-        requiredAspects: [],
-      },
-      enableTraceRecording: true,
-    });
-
-    // Create logger for resumed session
-    const logger = createSessionLogger(sessionId);
-    logger.setMetadata({ traceId, query, resumed: true });
-    logger.info('AgentRoutes', 'Resuming session from checkpoint');
-
-    // Store session
-    sessions.set(sessionId, {
-      orchestrator,
-      sessionId,
-      sseClients: [],
-      status: 'pending',
-      traceId,
-      query: query || 'Resumed analysis',
-      createdAt: Date.now(),
-      logger,
-    });
-
-    // Resume analysis in background - pass traceProcessorService for Skill execution
-    resumeAnalysis(sessionId, traceId, traceProcessorService).catch((error) => {
-      const session = sessions.get(sessionId);
-      if (session) {
-        session.logger.error('AgentRoutes', 'Resume failed', error);
-        session.status = 'failed';
-        session.error = error.message;
-        broadcastToClients(sessionId, {
-          type: 'error',
-          content: { message: error.message },
-          timestamp: Date.now(),
-        });
-      }
-    });
-
-    res.json({
-      success: true,
-      sessionId,
-      message: 'Resuming analysis from checkpoint',
-    });
-  } catch (error: any) {
-    console.error('[AgentRoutes] Resume error:', error);
-    res.status(500).json({
+  const sessionId = req.body?.sessionId;
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({
       success: false,
-      error: error.message || 'Failed to resume session',
+      error: 'sessionId is required',
     });
   }
+
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session not found',
+    });
+  }
+
+  return res.json({
+    success: true,
+    sessionId,
+    status: session.status,
+    message: 'Session resume acknowledged',
+  });
 });
 
 // ============================================================================
@@ -1391,9 +817,6 @@ router.get('/:sessionId/report', (req, res) => {
   }
 
   const result = session.result;
-  const findings = extractFindings(result);
-  const suggestions = extractSuggestions(result);
-
   // Generate simplified report data
   const report = {
     sessionId,
@@ -1403,13 +826,13 @@ router.get('/:sessionId/report', (req, res) => {
     completedAt: Date.now(),
 
     summary: {
-      answer: result.synthesizedAnswer,
+      conclusion: result.conclusion,
       confidence: result.confidence,
-      executionTimeMs: result.totalDuration,
-      iterationsUsed: result.iterationCount,
+      totalDurationMs: result.totalDurationMs,
+      rounds: result.rounds,
     },
 
-    findings: findings.map((f) => ({
+    findings: result.findings.map((f) => ({
       id: f.id,
       category: f.category,
       severity: f.severity,
@@ -1417,18 +840,12 @@ router.get('/:sessionId/report', (req, res) => {
       description: f.description,
     })),
 
-    suggestions,
-
-    evaluation: result.evaluation ? {
-      passed: result.evaluation.passed,
-      qualityScore: result.evaluation.qualityScore,
-      completenessScore: result.evaluation.completenessScore,
-    } : null,
-
-    pipeline: {
-      stagesCompleted: result.stageResults?.length || 0,
-      totalStages: result.plan?.tasks?.length || 0,
-    },
+    hypotheses: result.hypotheses.map((h) => ({
+      id: h.id,
+      description: h.description,
+      status: h.status,
+      confidence: h.confidence,
+    })),
 
     // Log file path for debugging
     logFile: session.logger.getLogFilePath(),
@@ -1439,349 +856,6 @@ router.get('/:sessionId/report', (req, res) => {
     report,
   });
 });
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-async function runAnalysis(
-  sessionId: string,
-  query: string,
-  traceId: string,
-  options: any = {}
-) {
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  const { logger } = session;
-  session.status = 'running';
-  logger.info('Analysis', 'Starting analysis', { query, traceId, options });
-
-  // Set up streaming via event listener on orchestrator
-  const handleUpdate = (update: StreamingUpdate) => {
-    console.log(`[AgentRoutes.handleUpdate] Received event: ${update.type}`);
-    logger.debug('Stream', `Update: ${update.type}`, update.content);
-    broadcastToClients(sessionId, update);
-
-    // Check for error type with awaiting_user context
-    if (update.type === 'error' && update.content?.type === 'circuit_tripped') {
-      session.status = 'awaiting_user';
-      logger.warn('Analysis', 'Awaiting user input (circuit breaker)', update.content);
-    }
-  };
-
-  // Listen to orchestrator events
-  session.orchestrator.on('update', handleUpdate);
-
-  try {
-    console.log('[AgentRoutes] Starting orchestrator.handleQuery...');
-    const result = await logger.timed('Analysis', 'handleQuery', async () => {
-      return session.orchestrator.handleQuery(query, traceId, options);
-    });
-    console.log('[AgentRoutes] handleQuery completed, result sessionId:', result?.sessionId);
-
-    session.result = result;
-
-    // Check if result indicates awaiting user input
-    if (result.canResume && result.evaluation?.suggestedActions?.length > 0) {
-      session.status = 'awaiting_user';
-    } else {
-      session.status = 'completed';
-    }
-
-    const findings = extractFindings(result);
-
-    // Log completion details
-    logger.info('Analysis', 'Analysis completed', {
-      confidence: result.confidence,
-      iterationsUsed: result.iterationCount,
-      findingsCount: findings.length,
-      evaluationPassed: result.evaluation?.passed,
-    });
-
-    // Send final result
-    const clientCount = session.sseClients.length;
-    logger.info('AgentRoutes', 'Sending final result', { clientCount, hasResult: !!result });
-    console.log('[AgentRoutes] Preparing to send final result to', clientCount, 'clients');
-
-    if (clientCount === 0) {
-      logger.warn('AgentRoutes', 'No SSE clients connected - result will not be sent!', {
-        sessionId,
-        status: session.status,
-      });
-    }
-
-    const sendContext = {
-      sessionId: session.sessionId,
-      traceId: session.traceId,
-      query: session.query,
-    };
-    session.sseClients.forEach((client, index) => {
-      try {
-        logger.info('AgentRoutes', `Sending result to client ${index + 1}/${clientCount}`);
-        console.log('[AgentRoutes] Calling sendResult for client...');
-        sendResult(client, result, sendContext);
-        client.write(`event: end\n`);
-        client.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
-        logger.info('AgentRoutes', `Result sent successfully to client ${index + 1}`);
-        console.log('[AgentRoutes] sendResult completed');
-      } catch (e: any) {
-        logger.error('AgentRoutes', `Error sending result to client ${index + 1}`, e);
-        console.error('[AgentRoutes] Error sending result to client:', e);
-      }
-    });
-
-    logger.close();
-  } catch (error: any) {
-    session.status = 'failed';
-    session.error = error.message;
-    logger.error('Analysis', 'Analysis failed', error);
-
-    broadcastToClients(sessionId, {
-      type: 'error',
-      content: { message: error.message },
-      timestamp: Date.now(),
-    });
-
-    logger.close();
-    throw error;
-  }
-}
-
-async function resumeAnalysis(sessionId: string, traceId: string, traceProcessorService?: any) {
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  const { logger } = session;
-  session.status = 'running';
-  logger.info('Analysis', 'Resuming analysis from checkpoint', { traceId });
-
-  // Set up streaming via event listener on orchestrator
-  const handleUpdate = (update: StreamingUpdate) => {
-    logger.debug('Stream', `Resume update: ${update.type}`, update.content);
-    broadcastToClients(sessionId, update);
-
-    if (update.type === 'error' && update.content?.type === 'circuit_tripped') {
-      session.status = 'awaiting_user';
-      logger.warn('Analysis', 'Awaiting user input during resume', update.content);
-    }
-  };
-
-  session.orchestrator.on('update', handleUpdate);
-
-  try {
-    const result = await logger.timed('Analysis', 'resumeFromCheckpoint', async () => {
-      return session.orchestrator.resumeFromCheckpoint(sessionId, { traceProcessorService });
-    });
-
-    session.result = result;
-
-    // Check if result indicates awaiting user input
-    if (result.canResume && result.evaluation?.suggestedActions?.length > 0) {
-      session.status = 'awaiting_user';
-    } else {
-      session.status = 'completed';
-    }
-
-    const findings = extractFindings(result);
-
-    logger.info('Analysis', 'Resumed analysis completed', {
-      confidence: result.confidence,
-      iterationsUsed: result.iterationCount,
-      findingsCount: findings.length,
-    });
-
-    const sendContext = {
-      sessionId: session.sessionId,
-      traceId: session.traceId,
-      query: session.query,
-    };
-    session.sseClients.forEach((client) => {
-      try {
-        sendResult(client, result, sendContext);
-        client.write(`event: end\n`);
-        client.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
-      } catch {}
-    });
-
-    logger.close();
-  } catch (error: any) {
-    session.status = 'failed';
-    session.error = error.message;
-    logger.error('Analysis', 'Resume failed', error);
-
-    broadcastToClients(sessionId, {
-      type: 'error',
-      content: { message: error.message },
-      timestamp: Date.now(),
-    });
-
-    logger.close();
-    throw error;
-  }
-}
-
-/**
- * Broadcast update to all SSE clients for a session
- *
- * Supports both v2.0 unified 'data' events and legacy 'skill_data' events.
- * The frontend should handle both formats for backward compatibility.
- */
-function broadcastToClients(sessionId: string, update: StreamingUpdate) {
-  const session = sessions.get(sessionId);
-  if (!session) return;
-
-  const eventType = update.type;
-
-  // Build event data based on event type
-  let eventData: string;
-
-  if (isDataEvent(eventType)) {
-    // v2.0 unified data event format
-    // { id, envelope: DataEnvelope | DataEnvelope[], timestamp }
-
-    // Runtime validation of DataEnvelope(s)
-    const envelopes = Array.isArray(update.content) ? update.content : [update.content];
-    for (let i = 0; i < envelopes.length; i++) {
-      const envelope = envelopes[i];
-      const validationErrors = validateDataEnvelope(envelope);
-      if (validationErrors.length > 0) {
-        console.warn(`[AgentRoutes.broadcastToClients] DataEnvelope validation warning (envelope ${i}):`, {
-          sessionId,
-          errors: validationErrors.slice(0, 5),  // Limit to first 5 errors
-          totalErrors: validationErrors.length,
-          envelope: {
-            metaType: envelope?.meta?.type,
-            metaSource: envelope?.meta?.source,
-            displayLayer: envelope?.display?.layer,
-            displayFormat: envelope?.display?.format,
-          },
-        });
-      }
-    }
-
-    eventData = JSON.stringify({
-      id: update.id || generateEventId('sse', sessionId),
-      envelope: update.content,
-      timestamp: update.timestamp,
-    });
-    console.log(`[AgentRoutes.broadcastToClients] Broadcasting v2.0 data event:`, {
-      sessionId,
-      clientCount: session.sseClients.length,
-      id: update.id,
-      envelopeCount: Array.isArray(update.content) ? update.content.length : 1,
-    });
-  } else if (isLegacySkillEvent(eventType)) {
-    // Legacy skill_data event format (backward compatibility)
-    eventData = JSON.stringify({
-      type: update.type,
-      data: update.content,
-      timestamp: update.timestamp,
-    });
-    // Debug logging for skill_data events
-    console.log(`[AgentRoutes.broadcastToClients] Broadcasting legacy skill_data event:`, {
-      sessionId,
-      clientCount: session.sseClients.length,
-      contentKeys: update.content ? Object.keys(update.content) : [],
-      hasLayers: !!(update.content as any)?.layers,
-      overviewKeys: (update.content as any)?.layers?.overview ? Object.keys((update.content as any).layers.overview) : [],
-      listKeys: (update.content as any)?.layers?.list ? Object.keys((update.content as any).layers.list) : [],
-      deepKeys: (update.content as any)?.layers?.deep ? Object.keys((update.content as any).layers.deep) : [],
-    });
-  } else {
-    // Other event types (progress, error, finding, etc.)
-    eventData = JSON.stringify({
-      type: update.type,
-      data: update.content,
-      timestamp: update.timestamp,
-    });
-  }
-
-  session.sseClients.forEach((client) => {
-    try {
-      client.write(`event: ${eventType}\n`);
-      client.write(`data: ${eventData}\n\n`);
-    } catch {}
-  });
-}
-
-interface SendResultContext {
-  sessionId: string;
-  traceId: string;
-  query: string;
-}
-
-function sendResult(res: express.Response, result: MasterOrchestratorResult, context: SendResultContext) {
-  console.log('[AgentRoutes.sendResult] Starting, sessionId:', context.sessionId);
-  const findings = extractFindings(result);
-  const suggestions = extractSuggestions(result);
-  console.log('[AgentRoutes.sendResult] Extracted', findings.length, 'findings and', suggestions.length, 'suggestions');
-
-  // Generate HTML report
-  let reportUrl: string | undefined;
-  try {
-    console.log('[AgentRoutes.sendResult] Generating HTML report...');
-    const generator = getHTMLReportGenerator();
-    const html = generator.generateMasterAgentHTML({
-      traceId: context.traceId,
-      query: context.query,
-      result,
-      timestamp: Date.now(),
-    });
-
-    // Store report
-    const reportId = `agent-report-${context.sessionId}`;
-    reportStore.set(reportId, {
-      html,
-      generatedAt: Date.now(),
-      sessionId: context.sessionId,
-    });
-
-    // Generate report URL (relative path that works with any host)
-    reportUrl = `/api/reports/${reportId}`;
-    console.log(`[AgentRoutes] Generated HTML report: ${reportId}`);
-  } catch (error) {
-    console.error('[AgentRoutes] Failed to generate HTML report:', error);
-  }
-
-  // Send analysis_completed event with full result
-  res.write(`event: analysis_completed\n`);
-  res.write(`data: ${JSON.stringify({
-    type: 'analysis_completed',
-    data: {
-      answer: result.synthesizedAnswer,
-      confidence: result.confidence,
-      executionTimeMs: result.totalDuration,
-      iterationsUsed: result.iterationCount,
-      findings: findings.map((f) => ({
-        id: f.id,
-        category: f.category,
-        severity: f.severity,
-        title: f.title,
-        description: f.description,
-        // Include full data for timeline navigation
-        timestampsNs: f.timestampsNs,
-        evidence: f.evidence,
-        details: f.details,
-        recommendations: f.recommendations,
-        confidence: f.confidence,
-      })),
-      suggestions,
-      evaluation: result.evaluation ? {
-        passed: result.evaluation.passed,
-        qualityScore: result.evaluation.qualityScore,
-        completenessScore: result.evaluation.completenessScore,
-      } : null,
-      pipeline: {
-        stagesCompleted: result.stageResults?.length || 0,
-        totalStages: result.plan?.tasks?.length || 0,
-      },
-      reportUrl,
-    },
-    timestamp: Date.now(),
-  })}\n\n`);
-  console.log('[AgentRoutes.sendResult] Wrote analysis_completed event with reportUrl:', reportUrl);
-}
 
 // ============================================================================
 // Scene Reconstruction Helper Functions
@@ -1909,7 +983,7 @@ async function runAgentDrivenAnalysis(
   traceId: string,
   options: any = {}
 ) {
-  const session = agentDrivenSessions.get(sessionId);
+  const session = sessions.get(sessionId);
   if (!session) return;
 
   const { logger } = session;
@@ -1929,18 +1003,16 @@ async function runAgentDrivenAnalysis(
         content: update.content,
         timestamp: update.timestamp,
       });
-    }
 
-    // Track hypothesis updates
-    if (update.content?.phase === 'hypotheses_generated' && update.content?.hypotheses) {
-      // Initial hypotheses
-      broadcastToAgentDrivenClients(sessionId, {
-        type: 'hypothesis_generated',
-        content: {
-          hypotheses: update.content.hypotheses,
-        },
-        timestamp: update.timestamp,
-      });
+      // Collect full agent responses for HTML report enrichment
+      if (update.content.phase === 'task_completed') {
+        session.agentResponses.push({
+          taskId: update.content.taskId || '',
+          agentId: update.content.agentId || 'unknown',
+          response: update.content.response || update.content,
+          timestamp: update.timestamp,
+        });
+      }
     }
 
     // Broadcast specialized events for frontend visualization
@@ -1949,6 +1021,7 @@ async function runAgentDrivenAnalysis(
       type: eventType,
       content: update.content,
       timestamp: update.timestamp,
+      id: update.id,
     });
   };
 
@@ -2045,15 +1118,60 @@ function mapToAgentDrivenEventType(update: StreamingUpdate): StreamingUpdate['ty
  * Broadcast update to all SSE clients for an agent-driven session
  */
 function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdate) {
-  const session = agentDrivenSessions.get(sessionId);
+  const session = sessions.get(sessionId);
   if (!session) return;
 
   const eventType = update.type;
-  const eventData = JSON.stringify({
-    type: update.type,
-    data: update.content,
-    timestamp: update.timestamp,
-  });
+  let eventData: string;
+
+  if (isDataEvent(eventType)) {
+    const envelopes = Array.isArray(update.content) ? update.content : [update.content];
+    for (let i = 0; i < envelopes.length; i++) {
+      const envelope = envelopes[i];
+      const validationErrors = validateDataEnvelope(envelope);
+      if (validationErrors.length > 0) {
+        console.warn(`[AgentRoutes.broadcastToAgentDrivenClients] DataEnvelope validation warning (envelope ${i}):`, {
+          sessionId,
+          errors: validationErrors.slice(0, 5),
+          totalErrors: validationErrors.length,
+          envelope: {
+            metaType: envelope?.meta?.type,
+            metaSource: envelope?.meta?.source,
+            displayLayer: envelope?.display?.layer,
+            displayFormat: envelope?.display?.format,
+          },
+        });
+      }
+    }
+
+    console.log(`[AgentRoutes.broadcastToAgentDrivenClients] Sending ${envelopes.length} DataEnvelope(s) for session ${sessionId}`);
+
+    // Collect DataEnvelopes for HTML report generation
+    for (const envelope of envelopes) {
+      if (envelope && envelope.data) {
+        session.dataEnvelopes.push(envelope);
+      }
+    }
+
+    eventData = JSON.stringify({
+      type: 'data',  // Fallback type for SSE chunk boundary resilience
+      id: update.id || generateEventId('sse', sessionId),
+      envelope: update.content,
+      timestamp: update.timestamp,
+    });
+  } else if (isLegacySkillEvent(eventType)) {
+    eventData = JSON.stringify({
+      type: update.type,
+      data: update.content,
+      timestamp: update.timestamp,
+    });
+  } else {
+    eventData = JSON.stringify({
+      type: update.type,
+      data: update.content,
+      timestamp: update.timestamp,
+    });
+  }
 
   session.sseClients.forEach((client) => {
     try {
@@ -2066,25 +1184,39 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
 /**
  * Send agent-driven analysis result to SSE client
  */
-function sendAgentDrivenResult(res: express.Response, session: AgentDrivenSession) {
+function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) {
   const result = session.result;
   if (!result) return;
 
   // Generate HTML report
   let reportUrl: string | undefined;
+  let reportError: string | undefined;
   try {
     const generator = getHTMLReportGenerator();
-    const html = generator.generateAgentDrivenHTML({
+    const reportData = {
       traceId: session.traceId,
       query: session.query,
       result,
       hypotheses: session.hypotheses,
       dialogue: session.agentDialogue,
+      dataEnvelopes: session.dataEnvelopes,
+      agentResponses: session.agentResponses,
       timestamp: Date.now(),
+    };
+    console.log(`[AgentRoutes] Generating HTML report, data keys:`, {
+      hasResult: !!result,
+      conclusionLength: result.conclusion?.length || 0,
+      findingsCount: result.findings?.length || 0,
+      hypothesesCount: session.hypotheses?.length || 0,
+      dialogueCount: session.agentDialogue?.length || 0,
+      dataEnvelopesCount: session.dataEnvelopes?.length || 0,
+      agentResponsesCount: session.agentResponses?.length || 0,
     });
 
+    const html = generator.generateAgentDrivenHTML(reportData);
+
     // Store report
-    const reportId = `agent-v2-report-${session.sessionId}`;
+    const reportId = `agent-report-${session.sessionId}`;
     reportStore.set(reportId, {
       html,
       generatedAt: Date.now(),
@@ -2092,16 +1224,20 @@ function sendAgentDrivenResult(res: express.Response, session: AgentDrivenSessio
     });
 
     reportUrl = `/api/reports/${reportId}`;
-    console.log(`[AgentRoutes] Generated agent-driven HTML report: ${reportId}`);
-  } catch (error) {
-    console.error('[AgentRoutes] Failed to generate agent-driven HTML report:', error);
+    console.log(`[AgentRoutes] Generated agent-driven HTML report: ${reportId} (${html.length} bytes)`);
+  } catch (error: any) {
+    reportError = error.message || 'Unknown error';
+    console.error('[AgentRoutes] Failed to generate agent-driven HTML report:', {
+      error: reportError,
+      stack: error.stack?.split('\n').slice(0, 3).join('\n'),
+    });
   }
 
   // Send analysis_completed event with full result
   res.write(`event: analysis_completed\n`);
   res.write(`data: ${JSON.stringify({
     type: 'analysis_completed',
-    architecture: 'v2-agent-driven',
+    architecture: 'agent-driven',
     data: {
       conclusion: result.conclusion,
       confidence: result.confidence,
@@ -2129,6 +1265,7 @@ function sendAgentDrivenResult(res: express.Response, session: AgentDrivenSessio
       })),
       agentDialogueCount: session.agentDialogue.length,
       reportUrl,
+      reportError,
     },
     timestamp: Date.now(),
   })}\n\n`);
@@ -2284,7 +1421,7 @@ setInterval(() => {
   }
 
   // Clean up agent-driven sessions (Phase 2-4)
-  for (const [id, session] of agentDrivenSessions.entries()) {
+  for (const [id, session] of sessions.entries()) {
     const age = now - session.createdAt;
     if (age > maxAge && (session.status === 'completed' || session.status === 'failed')) {
       console.log(`[AgentRoutes] Cleaning up stale agent-driven session: ${id}`);
@@ -2294,7 +1431,7 @@ setInterval(() => {
         } catch {}
       });
       session.orchestrator.reset();
-      agentDrivenSessions.delete(id);
+      sessions.delete(id);
     }
   }
 

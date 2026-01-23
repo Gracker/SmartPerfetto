@@ -120,6 +120,8 @@ export class CpuCoreAnalyzer {
       .filter(b => b.coreType === 'big')
       .reduce((sum, b) => sum + b.totalMs, 0);
 
+    const frequencyDistribution = await this.analyzeFrequency(traceId, threadId, startTs, endTs);
+
     return {
       summary: {
         totalMs,
@@ -138,8 +140,7 @@ export class CpuCoreAnalyzer {
           color: this.getCoreColor(b.coreType),
         })),
       },
-      // 频率分布分析（可选，如果trace中有频率数据）
-      // frequencyDistribution: await this.analyzeFrequency(traceId, threadId, timeCondition),
+      frequencyDistribution: frequencyDistribution || undefined,
     };
   }
 
@@ -230,13 +231,127 @@ export class CpuCoreAnalyzer {
   private async analyzeFrequency(
     traceId: string,
     threadId: number,
-    timeCondition: string
-  ): Promise<FrequencyDistribution> {
-    // TODO: 实现频率分布分析
-    // 需要关联 sched_slice 和 cpufreq counter
+    startTs?: number,
+    endTs?: number
+  ): Promise<FrequencyDistribution | null> {
+    const bounds = await this.resolveThreadTimeRange(traceId, threadId, startTs, endTs);
+    if (!bounds) {
+      return null;
+    }
+
+    const { start, end } = bounds;
+    const timeCondition = this.buildTimeCondition(start, end);
+
+    const query = `
+      WITH freq AS (
+        SELECT
+          t.cpu AS cpu,
+          c.ts AS ts,
+          COALESCE(
+            LEAD(c.ts) OVER (PARTITION BY t.cpu ORDER BY c.ts),
+            ${end}
+          ) - c.ts AS dur,
+          c.value AS freq_khz
+        FROM counter c
+        JOIN cpu_counter_track t ON c.track_id = t.id
+        WHERE t.name = 'cpufreq'
+      ),
+      sched AS (
+        SELECT
+          ts,
+          dur,
+          cpu
+        FROM sched_slice
+        WHERE utid = ${threadId}
+          ${timeCondition}
+      ),
+      overlap AS (
+        SELECT
+          f.freq_khz AS freq_khz,
+          MAX(0, MIN(s.ts + s.dur, f.ts + f.dur) - MAX(s.ts, f.ts)) AS overlap_dur
+        FROM sched s
+        JOIN freq f
+          ON s.cpu = f.cpu
+         AND f.dur > 0
+         AND s.ts < f.ts + f.dur
+         AND f.ts < s.ts + s.dur
+      )
+      SELECT
+        freq_khz,
+        SUM(overlap_dur) AS total_dur_ns
+      FROM overlap
+      WHERE overlap_dur > 0
+      GROUP BY freq_khz
+      ORDER BY freq_khz
+    `;
+
+    const result = await this.traceProcessor.query(traceId, query);
+    const rows = this.resultToRows(result);
+    if (rows.length === 0) {
+      return null;
+    }
+
+    const totalDurNs = rows.reduce((sum, row) => sum + Number(row.total_dur_ns || 0), 0);
+    if (totalDurNs <= 0) {
+      return null;
+    }
+
+    const timeByFrequency = rows.map(row => {
+      const freqMhz = Number(row.freq_khz) / 1000;
+      const durationMs = Number(row.total_dur_ns) / 1e6;
+      return {
+        frequencyMhz: freqMhz,
+        durationMs,
+        percentage: (Number(row.total_dur_ns) / totalDurNs) * 100,
+      };
+    });
+
+    const avgFrequencyMhz = rows.reduce((sum, row) => {
+      const freqMhz = Number(row.freq_khz) / 1000;
+      return sum + freqMhz * (Number(row.total_dur_ns) / totalDurNs);
+    }, 0);
+
     return {
-      avgFrequencyMhz: 0,
-      timeByFrequency: [],
+      avgFrequencyMhz,
+      timeByFrequency,
     };
+  }
+
+  private async resolveThreadTimeRange(
+    traceId: string,
+    threadId: number,
+    startTs?: number,
+    endTs?: number
+  ): Promise<{ start: number; end: number } | null> {
+    if (startTs !== undefined && endTs !== undefined) {
+      return { start: startTs, end: endTs };
+    }
+
+    try {
+      const query = `
+        SELECT
+          MIN(ts) AS start_ts,
+          MAX(ts + dur) AS end_ts
+        FROM sched_slice
+        WHERE utid = ${threadId}
+      `;
+      const result = await this.traceProcessor.query(traceId, query);
+      if (result && result.rows && result.rows.length > 0) {
+        const row = result.rows[0];
+        const start = startTs ?? (row[0] as number);
+        const end = endTs ?? (row[1] as number);
+        if (start !== null && end !== null && start !== undefined && end !== undefined) {
+          return { start, end };
+        }
+      }
+    } catch (error) {
+      console.warn('Failed to resolve thread time range:', error);
+    }
+
+    if (startTs !== undefined && endTs === undefined) {
+      return { start: startTs, end: startTs + 1 };
+    }
+
+    return null;
   }
 }

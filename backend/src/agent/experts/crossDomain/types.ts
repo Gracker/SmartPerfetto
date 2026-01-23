@@ -292,6 +292,18 @@ export interface UserQuestion {
 // =============================================================================
 
 /**
+ * AI Service interface for cross-domain experts
+ */
+export interface AIService {
+  /** Call AI model with prompt and get response */
+  callWithFallback: (
+    prompt: string,
+    taskType: 'reasoning' | 'synthesis' | 'evaluation' | 'general',
+    options?: { jsonMode?: boolean; maxTokens?: number }
+  ) => Promise<{ success: boolean; response: string; error?: string }>;
+}
+
+/**
  * Input to a cross-domain expert
  */
 export interface CrossDomainInput {
@@ -313,6 +325,8 @@ export interface CrossDomainInput {
   traceProcessorService: any;
   /** Previous findings from other phases */
   previousFindings?: Finding[];
+  /** AI service for expert analysis and synthesis (optional but recommended) */
+  aiService?: AIService;
 }
 
 /**
@@ -401,6 +415,8 @@ export type CrossDomainEventType =
   | 'conclusion_reached'
   | 'user_intervention_needed'
   | 'dialogue_completed'
+  | 'skill_layered_result'
+  /** @deprecated Use 'skill_layered_result' instead. Will be removed in v3.0 */
   | 'skill_data'
   | 'error';
 

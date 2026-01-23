@@ -28,6 +28,7 @@ export type {
   ModuleCapability,
   CrossDomainEventType,
   CrossDomainEvent,
+  AIService,
 } from './types';
 
 // Re-export with alias to avoid conflict with base ExpertConclusion

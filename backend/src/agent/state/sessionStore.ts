@@ -72,7 +72,7 @@ export class SessionStore extends EventEmitter {
       sessionId,
       traceId,
       query,
-      phase: 'idle',
+      phase: AgentPhase.IDLE,
       createdAt: now,
       updatedAt: now,
       startTime: now,
@@ -169,7 +169,7 @@ export class SessionStore extends EventEmitter {
     }
 
     session.error = error;
-    session.phase = 'failed';
+    session.phase = AgentPhase.FAILED;
     session.updatedAt = Date.now();
     session.endTime = Date.now();
 

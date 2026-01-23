@@ -136,6 +136,7 @@ export class AgentMessageBus extends EventEmitter {
   private sharedContext: SharedAgentContext | null = null;
   private isProcessing: boolean = false;
   private taskSemaphore: Semaphore;
+  private perAgentSemaphore: Map<string, Semaphore> = new Map();
 
   constructor(config?: Partial<MessageBusConfig>) {
     super();
@@ -152,6 +153,7 @@ export class AgentMessageBus extends EventEmitter {
    */
   registerAgent(agent: BaseAgent): void {
     this.agents.set(agent.config.id, agent);
+    this.perAgentSemaphore.set(agent.config.id, new Semaphore(1));
     this.log(`Registered agent: ${agent.config.id}`);
 
     // Listen to agent events
@@ -172,6 +174,7 @@ export class AgentMessageBus extends EventEmitter {
     if (agent) {
       agent.removeAllListeners();
       this.agents.delete(agentId);
+      this.perAgentSemaphore.delete(agentId);
       this.log(`Unregistered agent: ${agentId}`);
     }
   }
@@ -263,6 +266,9 @@ export class AgentMessageBus extends EventEmitter {
 
     // Wait for semaphore (proper async concurrency limiting)
     await this.taskSemaphore.acquire();
+    const agentSemaphore = this.perAgentSemaphore.get(task.targetAgentId) || new Semaphore(1);
+    this.perAgentSemaphore.set(task.targetAgentId, agentSemaphore);
+    await agentSemaphore.acquire();
     this.log(`Dispatching task ${task.id} to ${task.targetAgentId}`);
 
     try {
@@ -281,6 +287,7 @@ export class AgentMessageBus extends EventEmitter {
 
       return response;
     } finally {
+      agentSemaphore.release();
       this.taskSemaphore.release();
     }
   }
@@ -494,6 +501,9 @@ export class AgentMessageBus extends EventEmitter {
 
     // Reset semaphore
     this.taskSemaphore.reset(this.config.maxConcurrentTasks);
+    for (const sem of this.perAgentSemaphore.values()) {
+      sem.reset(1);
+    }
     this.isProcessing = false;
 
     this.log('Message bus reset');

@@ -92,9 +92,7 @@ dialogue:
         package: package
       priority: 2
 
-prerequisites:
-  modules:
-    - android.heap_profile
+prerequisites: {}
 
 inputs:
   - name: package

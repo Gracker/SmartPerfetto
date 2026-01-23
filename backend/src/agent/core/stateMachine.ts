@@ -14,6 +14,7 @@ import { EventEmitter } from 'events';
 import {
   AgentPhase,
   StateEvent,
+  StateEventType,
   Checkpoint,
   SerializedAgentState,
   StateMachineConfig,
@@ -30,14 +31,14 @@ const DEFAULT_PERSIST_PATH = path.join(process.cwd(), 'agent-state');
 
 // 状态转换规则定义
 const STATE_TRANSITIONS: Record<AgentPhase, AgentPhase[]> = {
-  idle: ['planning', 'failed'],
-  planning: ['executing', 'awaiting_user', 'failed'],
-  executing: ['evaluating', 'awaiting_user', 'failed'],
-  evaluating: ['refining', 'completed', 'awaiting_user', 'failed'],
-  refining: ['executing', 'evaluating', 'completed', 'awaiting_user', 'failed'],  // 添加 completed，允许从 refining 直接完成
-  awaiting_user: ['planning', 'executing', 'evaluating', 'refining', 'completed', 'failed'],
-  completed: [], // 终态
-  failed: ['idle'], // 可以重新开始
+  [AgentPhase.IDLE]: [AgentPhase.PLANNING, AgentPhase.FAILED],
+  [AgentPhase.PLANNING]: [AgentPhase.EXECUTING, AgentPhase.AWAITING_USER, AgentPhase.FAILED],
+  [AgentPhase.EXECUTING]: [AgentPhase.EVALUATING, AgentPhase.AWAITING_USER, AgentPhase.FAILED],
+  [AgentPhase.EVALUATING]: [AgentPhase.REFINING, AgentPhase.COMPLETED, AgentPhase.AWAITING_USER, AgentPhase.FAILED],
+  [AgentPhase.REFINING]: [AgentPhase.EXECUTING, AgentPhase.EVALUATING, AgentPhase.COMPLETED, AgentPhase.AWAITING_USER, AgentPhase.FAILED],  // 添加 completed，允许从 refining 直接完成
+  [AgentPhase.AWAITING_USER]: [AgentPhase.PLANNING, AgentPhase.EXECUTING, AgentPhase.EVALUATING, AgentPhase.REFINING, AgentPhase.COMPLETED, AgentPhase.FAILED],
+  [AgentPhase.COMPLETED]: [], // 终态
+  [AgentPhase.FAILED]: [AgentPhase.IDLE], // 可以重新开始
 };
 
 /**
@@ -67,7 +68,7 @@ export class AgentStateMachine extends EventEmitter {
     this.state = {
       sessionId: config.sessionId,
       traceId: config.traceId,
-      phase: 'idle',
+      phase: AgentPhase.IDLE,
       checkpoints: new Map(),
       iterationCounters: new Map(),
       currentStageIndex: 0,
@@ -107,21 +108,21 @@ export class AgentStateMachine extends EventEmitter {
   }
 
   get isCompleted(): boolean {
-    return this.state.phase === 'completed';
+    return this.state.phase === AgentPhase.COMPLETED;
   }
 
   get isFailed(): boolean {
-    return this.state.phase === 'failed';
+    return this.state.phase === AgentPhase.FAILED;
   }
 
   get isAwaitingUser(): boolean {
-    return this.state.phase === 'awaiting_user';
+    return this.state.phase === AgentPhase.AWAITING_USER;
   }
 
   get canResume(): boolean {
     return (
-      this.state.phase !== 'completed' &&
-      this.state.phase !== 'idle' &&
+      this.state.phase !== AgentPhase.COMPLETED &&
+      this.state.phase !== AgentPhase.IDLE &&
       this.state.checkpoints.size > 0
     );
   }
@@ -171,26 +172,26 @@ export class AgentStateMachine extends EventEmitter {
    */
   private getNextPhase(event: StateEvent): AgentPhase {
     switch (event.type) {
-      case 'START_ANALYSIS':
-        return 'planning';
-      case 'INTENT_UNDERSTOOD':
-      case 'PLAN_CREATED':
-        return 'executing';
-      case 'STAGE_COMPLETED':
-        return 'evaluating';
-      case 'EVALUATION_COMPLETE':
-        return event.payload?.passed ? 'completed' : 'refining';
-      case 'NEEDS_REFINEMENT':
+      case StateEventType.START_ANALYSIS:
+        return AgentPhase.PLANNING;
+      case StateEventType.INTENT_UNDERSTOOD:
+      case StateEventType.PLAN_CREATED:
+        return AgentPhase.EXECUTING;
+      case StateEventType.STAGE_COMPLETED:
+        return AgentPhase.EVALUATING;
+      case StateEventType.EVALUATION_COMPLETE:
+        return event.payload?.passed ? AgentPhase.COMPLETED : AgentPhase.REFINING;
+      case StateEventType.NEEDS_REFINEMENT:
         // 从 refining 转回 executing 进行下一轮迭代
-        return this.state.phase === 'refining' ? 'executing' : 'refining';
-      case 'CIRCUIT_TRIPPED':
-        return 'awaiting_user';
-      case 'USER_RESPONDED':
-        return event.payload?.nextPhase || 'executing';
-      case 'ANALYSIS_COMPLETE':
-        return 'completed';
-      case 'ERROR_OCCURRED':
-        return 'failed';
+        return this.state.phase === AgentPhase.REFINING ? AgentPhase.EXECUTING : AgentPhase.REFINING;
+      case StateEventType.CIRCUIT_TRIPPED:
+        return AgentPhase.AWAITING_USER;
+      case StateEventType.USER_RESPONDED:
+        return event.payload?.nextPhase || AgentPhase.EXECUTING;
+      case StateEventType.ANALYSIS_COMPLETE:
+        return AgentPhase.COMPLETED;
+      case StateEventType.ERROR_OCCURRED:
+        return AgentPhase.FAILED;
       default:
         return this.state.phase;
     }
@@ -493,7 +494,7 @@ export class AgentStateMachine extends EventEmitter {
     this.state = {
       sessionId: this.config.sessionId,
       traceId: this.config.traceId,
-      phase: 'idle',
+      phase: AgentPhase.IDLE,
       checkpoints: new Map(),
       iterationCounters: new Map(),
       currentStageIndex: 0,

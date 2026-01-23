@@ -16,7 +16,7 @@ import {
   QueryResult,
   AnalysisCompletedEvent,
 } from '../types/analysis';
-import { OrchestratorResult, Finding, Diagnostic, ExpertResult, MasterOrchestratorResult, StageResult } from '../agent/types';
+import { OrchestratorResult, MasterOrchestratorResult, Finding, Diagnostic, ExpertResult, StageResult } from '../agent/types';
 import {
   DataEnvelope,
   ColumnDefinition,
@@ -95,6 +95,13 @@ export interface AgentDrivenReportData {
     agentId: string;
     type: 'task' | 'response' | 'question';
     content: any;
+    timestamp: number;
+  }>;
+  dataEnvelopes?: DataEnvelope[];
+  agentResponses?: Array<{
+    taskId: string;
+    agentId: string;
+    response: any;
     timestamp: number;
   }>;
   timestamp: number;
@@ -2748,7 +2755,7 @@ export class HTMLReportGenerator {
     ${stageResults && stageResults.length > 0 ? `
     <div class="section">
       <h2 class="section-title">分析阶段详情</h2>
-      ${stageResults.map((stage, idx) => this.renderStageResult(stage, idx)).join('')}
+      ${stageResults.map((stage: any, idx: number) => this.renderStageResult(stage, idx)).join('')}
     </div>
     ` : ''}
 
@@ -3297,10 +3304,21 @@ export class HTMLReportGenerator {
     if (value === null || value === undefined) return '<span style="color: #9ca3af;">-</span>';
 
     if (typeof value === 'number') {
-      if (key.toLowerCase().includes('duration') || key.toLowerCase().includes('time') || key.toLowerCase().includes('ms')) {
+      const lowerKey = key.toLowerCase();
+      if (lowerKey.includes('ns') || lowerKey.includes('_ns')) {
+        if (value > 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}s`;
+        if (value > 1_000_000) return `${(value / 1_000_000).toFixed(2)}ms`;
+        if (value > 1000) return `${(value / 1000).toFixed(2)}µs`;
+        return `${value}ns`;
+      }
+      if (lowerKey.includes('duration') || lowerKey.includes('time') || lowerKey.includes('ms')) {
         return value > 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(1)}ms`;
       }
-      if (key.toLowerCase().includes('rate') || key.toLowerCase().includes('percent')) {
+      if (lowerKey.includes('rate') || lowerKey.includes('percent')) {
+        // If value is already a percentage (e.g., 6.07), don't multiply
+        if (value > 1) {
+          return `${value.toFixed(2)}%`;
+        }
         return `${(value * 100).toFixed(1)}%`;
       }
       return value.toLocaleString();
@@ -3569,6 +3587,8 @@ export class HTMLReportGenerator {
    */
   generateAgentDrivenHTML(data: AgentDrivenReportData): string {
     const { traceId, query, result, hypotheses, dialogue, timestamp } = data;
+    const dataEnvelopes = data.dataEnvelopes || [];
+    const agentResponses = data.agentResponses || [];
 
     return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -3632,11 +3652,41 @@ export class HTMLReportGenerator {
     .dialogue-item.response { background: #f0fdf4; border-left: 3px solid #10b981; }
     .dialogue-agent { font-weight: 600; color: #6d28d9; min-width: 120px; }
     .dialogue-content { flex: 1; font-size: 13px; }
-    .finding { margin-bottom: 10px; padding: 10px; border-radius: 6px; border-left: 3px solid; }
+    .dialogue-findings { margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.03); border-radius: 4px; }
+    .dialogue-findings .finding-tag {
+      display: inline-block; padding: 2px 8px; margin: 2px; border-radius: 4px;
+      font-size: 11px; font-weight: 500;
+    }
+    .finding { margin-bottom: 12px; padding: 15px; border-radius: 8px; border-left: 4px solid; }
     .finding.critical { background: #fef2f2; border-color: #dc2626; }
     .finding.warning { background: #fff7ed; border-color: #ea580c; }
     .finding.info { background: #eff6ff; border-color: #2563eb; }
+    .finding.high { background: #fef2f2; border-color: #dc2626; }
+    .finding.medium { background: #fff7ed; border-color: #ea580c; }
+    .finding.low { background: #f0fdf4; border-color: #10b981; }
     .finding .title { font-weight: 600; margin-bottom: 5px; }
+    .finding .description { font-size: 13px; color: #555; margin-bottom: 8px; line-height: 1.6; }
+    .finding .evidence-list { margin-top: 8px; }
+    .finding .evidence-item { font-size: 12px; color: #555; padding: 4px 0; padding-left: 16px; position: relative; }
+    .finding .evidence-item::before { content: '•'; position: absolute; left: 4px; color: #8b5cf6; }
+    .finding .recommendations { margin-top: 10px; padding: 10px; background: rgba(139,92,246,0.05); border-radius: 6px; }
+    .finding .recommendations .rec-item {
+      font-size: 12px; color: #4c1d95; padding: 3px 0; padding-left: 20px; position: relative;
+    }
+    .finding .recommendations .rec-item::before { content: '💡'; position: absolute; left: 0; font-size: 11px; }
+    .finding .details-grid { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+    .finding .details-grid .detail-key { color: #666; font-weight: 500; }
+    .finding .details-grid .detail-value { color: #333; font-family: monospace; font-size: 11px; }
+    .envelope-card {
+      margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;
+    }
+    .envelope-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px 16px; background: #f9fafb; border-bottom: 1px solid #e5e7eb;
+    }
+    .envelope-title { font-weight: 600; font-size: 14px; color: #374151; }
+    .envelope-meta { font-size: 11px; color: #9ca3af; }
+    .envelope-body { padding: 0; }
     .evidence-section { margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 6px; }
     .evidence-item { font-size: 12px; color: #666; margin-bottom: 4px; }
     .evidence-support { color: #10b981; }
@@ -3645,6 +3695,33 @@ export class HTMLReportGenerator {
       background: #f8f9fa; padding: 20px; border-radius: 8px;
       white-space: pre-wrap; font-size: 15px; line-height: 1.8;
     }
+    .table-container { overflow-x: auto; }
+    .table-container table {
+      width: 100%; border-collapse: collapse; font-size: 12px;
+    }
+    .table-container th {
+      padding: 8px 10px; background: #f1f5f9; border-bottom: 2px solid #e2e8f0;
+      text-align: left; font-weight: 600; color: #475569; white-space: nowrap;
+    }
+    .table-container td {
+      padding: 6px 10px; border-bottom: 1px solid #f1f5f9; color: #334155;
+    }
+    .table-container tr:hover td { background: #f8fafc; }
+    .table-metadata { padding: 8px 10px; font-size: 12px; color: #666; }
+    .table-rows-more {
+      padding: 8px; text-align: center; cursor: pointer;
+      color: #8b5cf6; font-size: 12px; font-weight: 500;
+      border-top: 1px solid #f1f5f9;
+    }
+    .table-rows-more:hover { background: #faf5ff; }
+    .cell-duration { font-family: monospace; color: #7c3aed; }
+    .cell-timestamp { font-family: monospace; color: #2563eb; }
+    .cell-number { font-family: monospace; text-align: right; }
+    .cell-percentage { font-family: monospace; color: #059669; }
+    .cell-bytes { font-family: monospace; color: #d97706; }
+    .cell-warning { color: #ea580c; font-weight: 500; }
+    .cell-critical { color: #dc2626; font-weight: 600; }
+    .empty-state { padding: 20px; text-align: center; color: #9ca3af; font-size: 13px; }
     .footer { padding: 20px; text-align: center; color: #999; font-size: 13px; background: #f8f9fa; }
   </style>
 </head>
@@ -3683,8 +3760,8 @@ export class HTMLReportGenerator {
           <div class="label">假设数</div>
         </div>
         <div class="metric-card">
-          <div class="value">${dialogue.length}</div>
-          <div class="label">Agent 对话</div>
+          <div class="value">${dataEnvelopes.length}</div>
+          <div class="label">数据表</div>
         </div>
       </div>
     </div>
@@ -3724,31 +3801,20 @@ export class HTMLReportGenerator {
     </div>
     ` : ''}
 
+    ${this.renderDataEnvelopesSection(dataEnvelopes)}
+
     ${dialogue.length > 0 ? `
     <div class="section">
       <h2 class="section-title">Agent 对话历史</h2>
-      ${dialogue.slice(0, 20).map((d) => `
-        <div class="dialogue-item ${d.type}">
-          <div class="dialogue-agent">[${this.escapeHtml(d.agentId)}]</div>
-          <div class="dialogue-content">
-            <strong>${d.type === 'task' ? '任务派发' : d.type === 'response' ? '任务完成' : '问询'}:</strong>
-            ${d.content?.message || d.content?.phase || JSON.stringify(d.content).substring(0, 200)}
-          </div>
-        </div>
-      `).join('')}
-      ${dialogue.length > 20 ? `<div style="text-align: center; color: #666; padding: 10px;">... 还有 ${dialogue.length - 20} 条对话记录</div>` : ''}
+      ${dialogue.slice(0, 30).map((d) => this.renderEnhancedDialogue(d, agentResponses)).join('')}
+      ${dialogue.length > 30 ? `<div style="text-align: center; color: #666; padding: 10px;">... 还有 ${dialogue.length - 30} 条对话记录</div>` : ''}
     </div>
     ` : ''}
 
     ${result.findings.length > 0 ? `
     <div class="section">
       <h2 class="section-title">发现的问题</h2>
-      ${result.findings.map((f) => `
-        <div class="finding ${f.severity}">
-          <div class="title">[${this.escapeHtml(f.severity)}] ${this.escapeHtml(f.title)}</div>
-          <div style="font-size: 13px; color: #666;">${this.escapeHtml(f.description || '')}</div>
-        </div>
-      `).join('')}
+      ${result.findings.map((f) => this.renderEnhancedFinding(f)).join('')}
     </div>
     ` : ''}
 
@@ -3764,8 +3830,197 @@ export class HTMLReportGenerator {
       <p style="margin-top: 5px; font-size: 12px;">Powered by AI Agents + Hypothesis-Driven Architecture</p>
     </div>
   </div>
+  <script>
+    function toggleTableRows(btn, hiddenCount) {
+      var tableContainer = btn.parentElement;
+      var table = tableContainer.querySelector('table');
+      var hiddenRows = table.querySelectorAll('.hidden-row');
+      if (hiddenRows.length > 0) {
+        var isHidden = hiddenRows[0].style.display === 'none';
+        hiddenRows.forEach(function(row) {
+          row.style.display = isHidden ? '' : 'none';
+        });
+        var span = btn.querySelector('span');
+        if (isHidden) {
+          span.innerHTML = '▲ 收起更多';
+        } else {
+          span.innerHTML = '▼ 显示更多 ' + hiddenCount + ' 条记录';
+        }
+      }
+    }
+  </script>
 </body>
 </html>`;
+  }
+
+  /**
+   * Render the DataEnvelopes section with all collected SQL result tables
+   */
+  private renderDataEnvelopesSection(envelopes: DataEnvelope[]): string {
+    if (!envelopes || envelopes.length === 0) return '';
+
+    return `
+    <div class="section">
+      <h2 class="section-title">📊 数据详情</h2>
+      ${envelopes.map((envelope, index) => this.renderSingleEnvelope(envelope, index)).join('')}
+    </div>
+    `;
+  }
+
+  /**
+   * Render a single DataEnvelope as a card with table
+   */
+  private renderSingleEnvelope(envelope: DataEnvelope, index: number): string {
+    if (!envelope || !envelope.data) return '';
+
+    const title = envelope.display?.title || `数据表 ${index + 1}`;
+    const source = envelope.meta?.source || '';
+    const skillId = envelope.meta?.skillId || '';
+    const stepId = envelope.meta?.stepId || '';
+
+    const metaParts: string[] = [];
+    if (skillId) metaParts.push(this.escapeHtml(skillId));
+    if (stepId) metaParts.push(this.escapeHtml(stepId));
+    if (source && source !== skillId) metaParts.push(this.escapeHtml(source));
+
+    const tableHtml = this.generateTableFromEnvelope(envelope);
+
+    return `
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">${this.escapeHtml(title)}</div>
+          <div class="envelope-meta">${metaParts.join(' / ')}</div>
+        </div>
+        <div class="envelope-body">
+          ${tableHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  /**
+   * Render a finding with evidence, details, and recommendations
+   */
+  private renderEnhancedFinding(finding: Finding): string {
+    const severityClass = finding.severity || 'info';
+
+    let detailsHtml = '';
+    if (finding.details && Object.keys(finding.details).length > 0) {
+      const entries = Object.entries(finding.details).slice(0, 10);
+      detailsHtml = `
+        <div class="details-grid">
+          ${entries.map(([key, value]) => `
+            <div class="detail-key">${this.escapeHtml(key)}</div>
+            <div class="detail-value">${this.escapeHtml(typeof value === 'object' ? JSON.stringify(value) : String(value))}</div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    let evidenceHtml = '';
+    if (finding.evidence && finding.evidence.length > 0) {
+      evidenceHtml = `
+        <div class="evidence-list">
+          ${finding.evidence.slice(0, 8).map((e: any) => `
+            <div class="evidence-item">${this.escapeHtml(typeof e === 'string' ? e : (e.description || e.message || JSON.stringify(e)))}</div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    let recommendationsHtml = '';
+    if (finding.recommendations && finding.recommendations.length > 0) {
+      recommendationsHtml = `
+        <div class="recommendations">
+          ${finding.recommendations.map((r) => `
+            <div class="rec-item">${this.escapeHtml(r.text)}</div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="finding ${severityClass}">
+        <div class="title">[${this.escapeHtml(finding.severity)}] ${this.escapeHtml(finding.title)}</div>
+        ${finding.description ? `<div class="description">${this.escapeHtml(finding.description)}</div>` : ''}
+        ${finding.confidence !== undefined ? `<div style="font-size: 11px; color: #888; margin-bottom: 4px;">置信度: ${(finding.confidence * 100).toFixed(0)}%</div>` : ''}
+        ${detailsHtml}
+        ${evidenceHtml}
+        ${recommendationsHtml}
+      </div>
+    `;
+  }
+
+  /**
+   * Render enhanced dialogue item with meaningful content extraction from agent responses
+   */
+  private renderEnhancedDialogue(
+    d: { agentId: string; type: string; content: any; timestamp: number },
+    agentResponses: Array<{ taskId: string; agentId: string; response: any; timestamp: number }>
+  ): string {
+    const typeLabel = d.type === 'task' ? '任务派发' : d.type === 'response' ? '任务完成' : '问询';
+
+    // Extract meaningful content from the dialogue
+    let contentHtml = '';
+
+    if (d.type === 'task') {
+      // For task dispatch, show the objective/message
+      const message = d.content?.message || d.content?.objective || d.content?.description || '';
+      const agentId = d.content?.agentId || '';
+      contentHtml = `<strong>${typeLabel}${agentId ? ` → ${this.escapeHtml(agentId)}` : ''}:</strong> ${this.escapeHtml(message || d.content?.phase || '')}`;
+    } else if (d.type === 'response') {
+      // For responses, extract findings/confidence from the matching agentResponse
+      const matchingResponse = agentResponses.find(
+        r => r.agentId === d.agentId && Math.abs(r.timestamp - d.timestamp) < 5000
+      );
+
+      const response = matchingResponse?.response || d.content?.response || d.content;
+      const findings = response?.findings || response?.result?.findings || [];
+      const confidence = response?.confidence || response?.result?.confidence;
+
+      contentHtml = `<strong>${typeLabel}:</strong>`;
+
+      if (findings.length > 0) {
+        contentHtml += ` ${findings.length} 条发现`;
+        contentHtml += `<div class="dialogue-findings">`;
+        contentHtml += findings.slice(0, 5).map((f: any) => {
+          const severity = f.severity || 'info';
+          const colors: Record<string, string> = {
+            critical: '#fef2f2; color: #dc2626',
+            high: '#fef2f2; color: #dc2626',
+            warning: '#fff7ed; color: #ea580c',
+            medium: '#fff7ed; color: #ea580c',
+            info: '#eff6ff; color: #2563eb',
+            low: '#f0fdf4; color: #059669',
+          };
+          const color = colors[severity] || colors.info;
+          return `<span class="finding-tag" style="background: ${color}">[${severity}] ${this.escapeHtml((f.title || '').substring(0, 60))}</span>`;
+        }).join('');
+        if (findings.length > 5) {
+          contentHtml += `<span class="finding-tag" style="background: #f3f4f6; color: #6b7280">+${findings.length - 5} more</span>`;
+        }
+        contentHtml += `</div>`;
+      } else {
+        // Fallback to showing the phase/message
+        const message = d.content?.message || d.content?.phase || '';
+        if (message) {
+          contentHtml += ` ${this.escapeHtml(String(message).substring(0, 200))}`;
+        }
+      }
+
+      if (confidence !== undefined) {
+        contentHtml += `<div style="margin-top: 4px; font-size: 11px; color: #888;">置信度: ${(Number(confidence) * 100).toFixed(0)}%</div>`;
+      }
+    } else {
+      contentHtml = `<strong>${typeLabel}:</strong> ${this.escapeHtml(String(d.content?.message || d.content?.phase || JSON.stringify(d.content)).substring(0, 200))}`;
+    }
+
+    return `
+      <div class="dialogue-item ${d.type}">
+        <div class="dialogue-agent">[${this.escapeHtml(d.agentId)}]</div>
+        <div class="dialogue-content">${contentHtml}</div>
+      </div>
+    `;
   }
 
   generateFromSession(session: AnalysisSession, answer: string): string {

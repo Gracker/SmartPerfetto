@@ -46,25 +46,25 @@ steps:
       - id: cpu
         skill: cpu_slice_analysis
         params:
-          start_ts: "${frame_ts"
-          end_ts: "${frame_ts} + ${frame_dur"
-          package: "${package"
+          start_ts: "${frame_ts}"
+          end_ts: "${frame_ts} + ${frame_dur}"
+          package: "${package}"
         display: false
 
       - id: scheduling
         skill: scheduling_analysis
         params:
-          start_ts: "${frame_ts"
-          end_ts: "${frame_ts} + ${frame_dur"
-          package: "${package"
+          start_ts: "${frame_ts}"
+          end_ts: "${frame_ts} + ${frame_dur}"
+          package: "${package}"
         display: false
 
       - id: binder
         skill: binder_in_range
         params:
-          start_ts: "${frame_ts"
-          end_ts: "${frame_ts} + ${frame_dur"
-          package: "${package"
+          start_ts: "${frame_ts}"
+          end_ts: "${frame_ts} + ${frame_dur}"
+          package: "${package}"
         display: false
 
   # 诊断推理
@@ -78,7 +78,7 @@ steps:
     ai_assist: true
     rules:
       # CPU 密集型
-      - condition: "cpu.data[0].total_cpu_ms > ${frame_dur} / 1e6 * 0.8"
+      - condition: "cpu.data?.[0]?.total_cpu_ms > ${frame_dur} / 1e6 * 0.8"
         diagnosis: "主线程CPU密集"
         confidence: high
         suggestions:
@@ -86,7 +86,7 @@ steps:
           - "考虑将耗时操作移至后台线程"
 
       # Binder 阻塞
-      - condition: "binder.data[0].max_delay_ms > 10"
+      - condition: "binder.data?.[0]?.max_delay_ms > 10"
         diagnosis: "Binder调用阻塞"
         confidence: high
         suggestions:
@@ -94,7 +94,7 @@ steps:
           - "考虑使用异步IPC"
 
       # 调度延迟
-      - condition: "scheduling.data[0].max_runnable_ms > 5"
+      - condition: "scheduling.data?.[0]?.max_runnable_ms > 5"
         diagnosis: "线程调度延迟"
         confidence: medium
         suggestions:
@@ -102,7 +102,7 @@ steps:
           - "考虑调整线程优先级"
 
       # 睡眠等待
-      - condition: "scheduling.data[0].sleeping_ms > ${frame_dur} / 1e6 * 0.5"
+      - condition: "scheduling.data?.[0]?.sleeping_ms > ${frame_dur} / 1e6 * 0.5"
         diagnosis: "线程睡眠等待"
         confidence: medium
         suggestions:

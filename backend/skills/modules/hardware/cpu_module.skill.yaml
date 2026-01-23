@@ -129,7 +129,7 @@ steps:
         FROM cpu
       )
       SELECT
-        c.cpu,
+        cct.cpu as cpu,
         COALESCE(ci.cluster, 'unknown') AS cluster,
         CAST(AVG(c.value) / 1000 AS INTEGER) AS avg_freq_mhz,
         CAST(MAX(c.value) / 1000 AS INTEGER) AS max_freq_mhz,
@@ -138,8 +138,8 @@ steps:
       JOIN cpu_counter_track cct ON c.track_id = cct.id
       LEFT JOIN cpu_info ci ON cct.cpu = ci.cpu
       WHERE cct.name = 'cpufreq'
-      GROUP BY c.cpu, ci.cluster
-      ORDER BY c.cpu
+      GROUP BY cct.cpu, ci.cluster
+      ORDER BY cct.cpu
     display:
       level: key
       layer: overview
@@ -158,13 +158,13 @@ steps:
     sql: |
       WITH freq_changes AS (
         SELECT
-          cpu,
-          ts,
-          freq,
-          LAG(freq) OVER (PARTITION BY cpu ORDER BY ts) AS prev_freq
-        FROM cpu_counter_track
-        JOIN counter ON cpu_counter_track.id = counter.track_id
-        WHERE cpu_counter_track.name = 'cpufreq'
+          cct.cpu as cpu,
+          c.ts as ts,
+          c.value as freq,
+          LAG(c.value) OVER (PARTITION BY cct.cpu ORDER BY c.ts) AS prev_freq
+        FROM cpu_counter_track cct
+        JOIN counter c ON cct.id = c.track_id
+        WHERE cct.name = 'cpufreq'
       )
       SELECT
         cpu,
@@ -173,7 +173,8 @@ steps:
         CAST(prev_freq / 1000 AS INTEGER) AS prev_freq_mhz,
         CASE WHEN freq < prev_freq THEN 'throttle_down' ELSE 'throttle_up' END AS direction
       FROM freq_changes
-      WHERE ABS(freq - prev_freq) > 200000
+      WHERE prev_freq IS NOT NULL
+        AND ABS(freq - prev_freq) > 200000
       ORDER BY ts DESC
       LIMIT 50
     display:
@@ -228,16 +229,36 @@ steps:
             ELSE 'little'
           END as cluster
         FROM cpu
+      ),
+      freq_samples AS (
+        SELECT
+          cct.cpu as cpu,
+          COALESCE(ci.cluster, 'unknown') AS cluster,
+          c.ts as ts,
+          c.value as freq_khz,
+          LEAD(c.ts) OVER (PARTITION BY cct.cpu ORDER BY c.ts) as next_ts
+        FROM counter c
+        JOIN cpu_counter_track cct ON c.track_id = cct.id
+        LEFT JOIN cpu_info ci ON cct.cpu = ci.cpu
+        WHERE cct.name = 'cpufreq'
+      ),
+      freq_intervals AS (
+        SELECT
+          cluster,
+          CAST(freq_khz / 100000 AS INTEGER) * 100 AS freq_bucket_mhz,
+          CASE
+            WHEN next_ts IS NULL THEN 0
+            WHEN next_ts > ts THEN next_ts - ts
+            ELSE 0
+          END as dur_ns
+        FROM freq_samples
       )
       SELECT
-        COALESCE(ci.cluster, 'unknown') AS cluster,
-        CAST(c.value / 100000 AS INTEGER) * 100 AS freq_bucket_mhz,
+        cluster,
+        freq_bucket_mhz,
         COUNT(*) AS sample_count,
-        CAST(SUM(LEAD(c.ts, 1, c.ts) OVER (PARTITION BY c.cpu ORDER BY c.ts) - c.ts) / 1e9 AS REAL) AS time_sec
-      FROM counter c
-      JOIN cpu_counter_track cct ON c.track_id = cct.id
-      LEFT JOIN cpu_info ci ON cct.cpu = ci.cpu
-      WHERE cct.name = 'cpufreq'
+        CAST(SUM(dur_ns) / 1e9 AS REAL) AS time_sec
+      FROM freq_intervals
       GROUP BY cluster, freq_bucket_mhz
       ORDER BY cluster, freq_bucket_mhz
     display:

@@ -21,6 +21,7 @@
 
 import {
   BaseAgent,
+  SkillDefinitionForAgent,
   TaskUnderstanding,
   ExecutionPlan,
   ExecutionResult,
@@ -29,235 +30,108 @@ import {
   AgentConfig,
   AgentTask,
   AgentTaskContext,
-  AgentTool,
-  AgentToolContext,
-  AgentToolResult,
   Hypothesis,
   Evidence,
-  createHypothesisId,
 } from '../../types/agentProtocol';
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
-import {
-  SkillExecutor,
-  createSkillExecutor,
-  skillRegistry,
-  ensureSkillRegistryInitialized,
-  SkillExecutionResult,
-  DiagnosticResult,
-} from '../../../services/skillEngine';
+import { SkillExecutionResult } from '../../../services/skillEngine';
 
 // =============================================================================
 // Frame Agent Configuration
 // =============================================================================
 
 /**
- * Skills that FrameAgent wraps as tools
+ * Skills that FrameAgent wraps as tools (lazy-loaded at executeTask time)
  */
-const FRAME_SKILLS = [
-  {
-    skillId: 'janky_frame_analysis',
-    toolName: 'analyze_jank_frames',
-    description: '分析卡顿帧，返回超时帧列表和分布统计',
-  },
+const FRAME_SKILLS: SkillDefinitionForAgent[] = [
   {
     skillId: 'jank_frame_detail',
     toolName: 'get_frame_detail',
     description: '获取单帧详细信息，包括每个阶段的耗时',
+    category: 'frame',
   },
   {
     skillId: 'scrolling_analysis',
     toolName: 'analyze_scrolling',
     description: '分析滑动性能，包括会话检测、FPS、掉帧率',
+    category: 'frame',
   },
   {
     skillId: 'consumer_jank_detection',
     toolName: 'detect_consumer_jank',
     description: '检测 Consumer 侧卡顿，分析 GPU/合成层问题',
+    category: 'frame',
   },
   {
     skillId: 'sf_frame_consumption',
     toolName: 'analyze_sf_frames',
     description: '分析 SurfaceFlinger 帧消费情况',
+    category: 'frame',
   },
   {
     skillId: 'app_frame_production',
     toolName: 'analyze_app_frames',
     description: '分析应用帧生产情况，包括 Choreographer 回调',
+    category: 'frame',
   },
   {
     skillId: 'present_fence_timing',
     toolName: 'analyze_present_fence',
     description: '分析 Present Fence 时序，检测显示延迟',
+    category: 'frame',
   },
 ];
 
-/**
- * Create Frame Agent configuration
- */
-function createFrameAgentConfig(modelRouter: ModelRouter): AgentConfig {
-  const tools: AgentTool[] = [];
-
-  // Ensure skill registry is initialized
-  ensureSkillRegistryInitialized();
-
-  // Create tools from skills
-  for (const skillInfo of FRAME_SKILLS) {
-    const skill = skillRegistry.getSkill(skillInfo.skillId);
-    if (!skill) {
-      console.warn(`[FrameAgent] Skill not found: ${skillInfo.skillId}`);
-      continue;
-    }
-
-    const tool: AgentTool = {
-      name: skillInfo.toolName,
-      description: skillInfo.description,
-      skillId: skillInfo.skillId,
-      category: 'frame',
-      parameters: skill.inputs?.map((input: any) => ({
-        name: input.name,
-        type: input.type as any,
-        required: input.required,
-        description: input.description || input.name,
-        default: input.default,
-      })),
-      execute: createToolExecutorForSkill(skillInfo.skillId),
-    };
-
-    tools.push(tool);
-  }
-
-  return {
-    id: 'frame_agent',
-    name: 'Frame Analysis Agent',
-    domain: 'frame',
-    description: 'AI agent specialized in frame timing, jank detection, and scrolling performance analysis',
-    tools,
-    maxIterations: 3,
-    confidenceThreshold: 0.7,
-    canDelegate: true,
-    delegateTo: ['cpu_agent', 'binder_agent', 'memory_agent'],
-  };
+function toNumber(value: any): number {
+  if (value === null || value === undefined || value === '') return 0;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
 }
 
-/**
- * Create a tool executor function for a given skill ID
- * This wraps a skill as an agent tool
- */
-function createToolExecutorForSkill(skillId: string): (params: Record<string, any>, context: AgentToolContext) => Promise<AgentToolResult> {
-  return async (params: Record<string, any>, context: AgentToolContext): Promise<AgentToolResult> => {
-    const startTime = Date.now();
-
-    try {
-      if (!context.traceProcessorService) {
-        return {
-          success: false,
-          error: 'TraceProcessorService not available',
-          executionTimeMs: Date.now() - startTime,
-        };
-      }
-
-      // Create skill executor with traceProcessorService and aiService
-      const executor = createSkillExecutor(
-        context.traceProcessorService,
-        context.aiService
-      );
-
-      // Build params with package and time range
-      const execParams: Record<string, any> = {
-        ...params,
-        package: context.packageName,
-      };
-
-      if (context.timeRange) {
-        execParams.start_ts = context.timeRange.start;
-        execParams.end_ts = context.timeRange.end;
-      }
-
-      // Execute skill with the correct signature: (skillId, traceId, params, inherited)
-      const result = await executor.execute(skillId, context.traceId, execParams, {});
-
-      // Extract findings from result
-      const findings = extractFindingsFromResult(result, skillId);
-
-      // Extract data from displayResults or rawResults
-      const data = extractDataFromResult(result);
-
-      return {
-        success: result.success,
-        data,
-        findings,
-        error: result.error,
-        executionTimeMs: Date.now() - startTime,
-      };
-    } catch (error: any) {
-      return {
-        success: false,
-        error: error.message,
-        executionTimeMs: Date.now() - startTime,
-      };
-    }
-  };
-}
-
-/**
- * Extract findings from skill execution result
- */
-function extractFindingsFromResult(result: SkillExecutionResult, skillId: string): Finding[] {
-  const findings: Finding[] = [];
-
-  // Extract from diagnostics - DiagnosticResult always contains valid diagnostics
-  if (result.diagnostics && result.diagnostics.length > 0) {
-    for (const diag of result.diagnostics) {
-      findings.push({
-        id: `${skillId}_${Date.now()}_${findings.length}`,
-        category: 'frame',
-        type: 'diagnostic',
-        severity: mapDiagnosticSeverity(diag.severity),
-        title: diag.diagnosis,
-        description: diag.suggestions?.join('; ') || diag.diagnosis,
-        source: skillId,
-        confidence: typeof diag.confidence === 'number' ? diag.confidence : 0.8,
-        details: diag.evidence,
-      });
+function extractSummaryRow(rawResults: Record<string, any>, keys: string[]): Record<string, any> | null {
+  for (const key of keys) {
+    const step = rawResults[key] as any;
+    if (step && Array.isArray(step.data) && step.data.length > 0) {
+      return step.data[0] as Record<string, any>;
     }
   }
-
-  return findings;
-}
-
-/**
- * Extract data from skill execution result
- */
-function extractDataFromResult(result: SkillExecutionResult): any {
-  // Prefer displayResults for structured data
-  if (result.displayResults && result.displayResults.length > 0) {
-    // Return merged data from all display results
-    const data: Record<string, any> = {};
-    for (const dr of result.displayResults) {
-      data[dr.stepId] = dr.data;
-    }
-    return data;
-  }
-
-  // Fallback to rawResults
-  if (result.rawResults) {
-    const data: Record<string, any> = {};
-    for (const [stepId, stepResult] of Object.entries(result.rawResults)) {
-      data[stepId] = stepResult.data;
-    }
-    return data;
-  }
-
   return null;
 }
 
-/**
- * Map diagnostic severity to Finding severity
- */
-function mapDiagnosticSeverity(severity: DiagnosticResult['severity']): Finding['severity'] {
-  // DiagnosticResult severity is already 'info' | 'warning' | 'critical'
-  return severity;
+function extractListRows(rawResults: Record<string, any>, keys: string[]): any[] | null {
+  for (const key of keys) {
+    const step = rawResults[key] as any;
+    if (step && Array.isArray(step.data) && step.data.length > 0) {
+      return step.data as any[];
+    }
+  }
+  return null;
+}
+
+function buildJankFinding(
+  skillId: string,
+  titlePrefix: string,
+  jankCount: number,
+  jankRate: number,
+  details: Record<string, any>
+): Finding {
+  const rate = jankRate > 0 ? jankRate : (jankCount > 0 ? (jankCount / Math.max(details.total_frames || 1, 1)) * 100 : 0);
+  let severity: Finding['severity'] = 'info';
+  if (rate >= 15 || jankCount >= 30) severity = 'critical';
+  else if (rate >= 5 || jankCount >= 10) severity = 'warning';
+
+  return {
+    id: `${skillId}_${Date.now()}`,
+    category: 'frame',
+    type: 'issue',
+    severity,
+    title: `${titlePrefix}: ${jankCount} 帧 (${rate.toFixed(1)}%)`,
+    description: '滑动存在明显掉帧',
+    source: skillId,
+    confidence: 0.75,
+    details: { jankCount, jankRate: rate, summary: details },
+  };
 }
 
 // =============================================================================
@@ -269,7 +143,72 @@ function mapDiagnosticSeverity(severity: DiagnosticResult['severity']): Finding[
  */
 export class FrameAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {
-    super(createFrameAgentConfig(modelRouter), modelRouter);
+    super(
+      {
+        id: 'frame_agent',
+        name: 'Frame Analysis Agent',
+        domain: 'frame',
+        description: 'AI agent specialized in frame timing, jank detection, and scrolling performance analysis',
+        tools: [], // Loaded lazily via ensureToolsLoaded()
+        maxIterations: 3,
+        confidenceThreshold: 0.7,
+        canDelegate: true,
+        delegateTo: ['cpu_agent', 'binder_agent', 'memory_agent'],
+      },
+      modelRouter,
+      FRAME_SKILLS
+    );
+  }
+
+  // ==========================================================================
+  // Domain-Specific Finding Extraction (Override)
+  // ==========================================================================
+
+  /**
+   * Frame agent extracts additional findings from raw results beyond diagnostics,
+   * including jank summaries, consumer jank, and jank frame lists.
+   */
+  protected extractFindingsFromResult(result: SkillExecutionResult, skillId: string, category: string): Finding[] {
+    // Start with base diagnostic findings
+    const findings = super.extractFindingsFromResult(result, skillId, category);
+
+    // Add domain-specific extraction from raw results
+    const rawResults = result.rawResults || {};
+    const perfSummary = extractSummaryRow(rawResults, ['performance_summary', 'perf_summary']);
+    const consumerSummary = extractSummaryRow(rawResults, ['consumer_jank_summary']);
+    const jankList = extractListRows(rawResults, ['get_app_jank_frames', 'app_jank_frames', 'consumer_jank_frames']);
+
+    if (perfSummary) {
+      const jankCount = toNumber(perfSummary.janky_frames ?? perfSummary.jank_frames ?? perfSummary.jank_count);
+      const jankRate = toNumber(perfSummary.jank_rate ?? perfSummary.consumer_jank_rate ?? perfSummary.app_jank_rate);
+      if (jankCount > 0 || jankRate > 0) {
+        findings.push(buildJankFinding(skillId, '滑动卡顿检测', jankCount, jankRate, perfSummary));
+      }
+    }
+
+    if (consumerSummary) {
+      const jankCount = toNumber(consumerSummary.consumer_jank_frames ?? consumerSummary.jank_frames);
+      const jankRate = toNumber(consumerSummary.consumer_jank_rate);
+      if (jankCount > 0 || jankRate > 0) {
+        findings.push(buildJankFinding(skillId, 'Consumer 侧掉帧', jankCount, jankRate, consumerSummary));
+      }
+    }
+
+    if (jankList && jankList.length > 0) {
+      findings.push({
+        id: `${skillId}_${Date.now()}_${findings.length}`,
+        category: 'frame',
+        type: 'issue',
+        severity: jankList.length > 20 ? 'critical' : 'warning',
+        title: `检测到 ${jankList.length} 个卡顿帧`,
+        description: '存在明显掉帧，建议进一步查看帧级详细分析',
+        source: skillId,
+        confidence: 0.7,
+        details: { sample: jankList.slice(0, 5) },
+      });
+    }
+
+    return findings;
   }
 
   // ==========================================================================
@@ -286,9 +225,12 @@ ${task.description}
 - 用户查询: ${task.context.query}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${task.context.relevantFindings?.length ? `- 相关发现: ${task.context.relevantFindings.map(f => f.title).join(', ')}` : ''}
+${this.formatTaskContext(task)}
 
-## 你的工具
+## 可用工具（只能使用以下工具）
 ${this.getToolDescriptionsForLLM()}
+
+重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
 
 ## 任务
 分析这个任务，返回你的理解：
@@ -313,8 +255,10 @@ ${understanding.objective}
 ## 关键问题
 ${understanding.questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}
 
-## 可用工具
+## 可用工具（只能使用以下工具）
 ${this.getToolDescriptionsForLLM()}
+
+重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
 
 ## 推荐工具
 ${understanding.recommendedTools.join(', ')}
@@ -326,16 +270,17 @@ ${understanding.recommendedTools.join(', ')}
 {
   "steps": [
     {
-      "toolName": "工具名称",
+      "toolName": "工具名称（必须是上方列出的工具之一）",
       "params": {},
-      "purpose": "这一步的目的",
-      "dependsOn": [依赖的步骤序号，可选]
+      "purpose": "这一步的目的"
     }
   ],
   "expectedOutcomes": ["预期结果1", "预期结果2"],
   "estimatedTimeMs": 预计执行时间毫秒,
   "confidence": 0.0-1.0
-}`;
+}
+
+注意：每个步骤独立执行，不需要指定步骤依赖。`;
   }
 
   protected buildReflectionPrompt(result: ExecutionResult, task: AgentTask): string {
@@ -468,14 +413,19 @@ ${findings || '无'}
 
   protected getRecommendedTools(context: AgentTaskContext): string[] {
     const query = context.query?.toLowerCase() || '';
+    const enableFrameDetails = (context.additionalData as any)?.enableFrameDetails === true;
     const tools: string[] = [];
+
+    // Staged analysis: deep frame details are enabled explicitly by the orchestrator.
+    if (enableFrameDetails) {
+      return ['analyze_scrolling'];
+    }
 
     // Always start with overview analysis
     tools.push('analyze_scrolling');
 
     // Add specific tools based on query
     if (query.includes('卡顿') || query.includes('jank') || query.includes('掉帧')) {
-      tools.push('analyze_jank_frames');
       tools.push('detect_consumer_jank');
     }
 
@@ -486,15 +436,16 @@ ${findings || '无'}
 
     if (query.includes('滑动') || query.includes('scroll') || query.includes('列表')) {
       tools.push('analyze_scrolling');
+      tools.push('detect_consumer_jank');
     }
 
     if (query.includes('vsync') || query.includes('fence') || query.includes('延迟')) {
       tools.push('analyze_present_fence');
     }
 
-    // Default: use jank analysis
+    // Default: use scrolling analysis
     if (tools.length === 0) {
-      tools.push('analyze_jank_frames');
+      tools.push('analyze_scrolling');
     }
 
     // Remove duplicates

@@ -80,9 +80,7 @@ dialogue:
         package: package
       priority: 1
 
-prerequisites:
-  modules:
-    - gpu_counter
+prerequisites: {}
 
 inputs:
   - name: package

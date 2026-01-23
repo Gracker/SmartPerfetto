@@ -18,6 +18,7 @@ export class PortPool extends EventEmitter {
   private readonly minPort: number;
   private readonly maxPort: number;
   private availablePorts: Set<number>;
+  private blockedPorts: Set<number>; // ports known to be unusable (e.g. already in use by another process)
   private allocations: Map<string, PortAllocation>; // traceId -> allocation
   private portToTraceId: Map<number, string>; // port -> traceId (reverse lookup)
 
@@ -29,6 +30,7 @@ export class PortPool extends EventEmitter {
     this.minPort = minPort;
     this.maxPort = maxPort;
     this.availablePorts = new Set();
+    this.blockedPorts = new Set();
     this.allocations = new Map();
     this.portToTraceId = new Map();
 
@@ -93,7 +95,10 @@ export class PortPool extends EventEmitter {
     // Return port to available pool
     this.allocations.delete(traceId);
     this.portToTraceId.delete(port);
-    this.availablePorts.add(port);
+    // If a port is known-bad, keep it blocked even after release.
+    if (!this.blockedPorts.has(port)) {
+      this.availablePorts.add(port);
+    }
 
     console.log(`[PortPool] Released port ${port} from trace ${traceId} (${this.availablePorts.size} available)`);
     this.emit('released', { port, traceId });
@@ -110,7 +115,7 @@ export class PortPool extends EventEmitter {
     const traceId = this.portToTraceId.get(port);
     if (!traceId) {
       // Port might not be tracked, just add it back to available
-      if (port >= this.minPort && port <= this.maxPort && !this.availablePorts.has(port)) {
+      if (port >= this.minPort && port <= this.maxPort && !this.availablePorts.has(port) && !this.blockedPorts.has(port)) {
         this.availablePorts.add(port);
         console.log(`[PortPool] Force-released untracked port ${port}`);
         return true;
@@ -118,6 +123,25 @@ export class PortPool extends EventEmitter {
       return false;
     }
     return this.release(traceId);
+  }
+
+  /**
+   * Mark a port as unusable for the remainder of this process.
+   * This is used when trace_processor_shell reports "Address already in use".
+   */
+  blockPort(port: number): void {
+    if (port < this.minPort || port > this.maxPort) return;
+
+    // If the port is currently allocated, release it first (will try to add back, but we will keep it blocked).
+    const traceId = this.portToTraceId.get(port);
+    if (traceId) {
+      this.release(traceId);
+    }
+
+    this.availablePorts.delete(port);
+    this.blockedPorts.add(port);
+    console.log(`[PortPool] Blocked port ${port} (marked unusable)`);
+    this.emit('blocked', { port });
   }
 
   /**
@@ -158,12 +182,14 @@ export class PortPool extends EventEmitter {
     total: number;
     available: number;
     allocated: number;
+    blocked: number;
     allocations: PortAllocation[];
   } {
     return {
       total: this.maxPort - this.minPort + 1,
       available: this.availablePorts.size,
       allocated: this.allocations.size,
+      blocked: this.blockedPorts.size,
       allocations: Array.from(this.allocations.values()),
     };
   }

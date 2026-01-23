@@ -18,7 +18,6 @@ import simpleTraceRoutes from './routes/simpleTraceRoutes';
 import perfettoLocalRoutes from './routes/perfettoLocalRoutes';
 import aiChatRoutes from './routes/aiChatRoutes';
 import autoAnalysisRoutes from './routes/autoAnalysis';
-import traceAnalysisRouter from './routes/traceAnalysisRoutes';
 import sessionRoutes from './routes/sessionRoutes';
 import perfettoSqlRoutes from './routes/perfettoSqlRoutes';
 import exportRoutes from './routes/exportRoutes';
@@ -75,7 +74,6 @@ app.use('/chat', aiChatRoutes); // Separate endpoint for AI chat without auth
 app.use('/api/ai', advancedAIRoutes);
 app.use('/api/perfetto', perfettoLocalRoutes);
 app.use('/api/auto-analysis', autoAnalysisRoutes);
-app.use('/api/trace-analysis', traceAnalysisRouter);
 app.use('/api/sessions', sessionRoutes);
 app.use('/api/perfetto-sql', perfettoSqlRoutes);
 app.use('/api/export', exportRoutes);

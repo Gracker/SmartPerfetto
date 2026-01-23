@@ -29,7 +29,7 @@ import {
   PipelineCallbacks,
   Finding,
 } from '../../types';
-import { HookRegistry, getHookRegistry } from '../../hooks';
+import { HookRegistry } from '../../hooks';
 
 // =============================================================================
 // Mock Setup
@@ -437,7 +437,37 @@ describe('PipelineExecutor', () => {
     });
 
     it('应该能够从暂停点恢复', async () => {
-      // TODO: 测试 resumeFrom 方法
+      const stages = createStages();
+      executor = new PipelineExecutor({ stages });
+
+      const planExecutor = createMockExecutor({ data: { planned: true } });
+      const executeExecutor = createMockExecutor({ data: { executed: true } });
+      const evaluateExecutor = createMockExecutor({ data: { evaluated: true } });
+
+      executor.registerExecutor('planner', planExecutor);
+      executor.registerExecutor('worker', executeExecutor);
+      executor.registerExecutor('evaluator', evaluateExecutor);
+
+      const context = createMockContext();
+
+      const previousResults: StageResult[] = [
+        {
+          stageId: 'plan',
+          success: true,
+          data: { planned: true },
+          findings: [],
+          startTime: Date.now() - 2000,
+          endTime: Date.now() - 1500,
+          retryCount: 0,
+        },
+      ];
+
+      const result = await executor.resumeFrom('execute', context, previousResults);
+
+      expect(planExecutor.execute).not.toHaveBeenCalled();
+      expect(executeExecutor.execute).toHaveBeenCalled();
+      expect(evaluateExecutor.execute).toHaveBeenCalled();
+      expect(result.stageResults.some(r => r.stageId === 'plan')).toBe(true);
     });
   });
 
@@ -520,15 +550,80 @@ describe('PipelineExecutor', () => {
 
   describe('钩子系统', () => {
     it('应该执行 subagent:start 钩子', async () => {
-      // TODO: 验证钩子执行
+      const stages = createStages();
+      const hookRegistry = new HookRegistry();
+      const startHook = jest.fn(async () => ({ continue: true }));
+
+      hookRegistry.register('subagent:start', 'pre', {
+        name: 'start-hook',
+        priority: 0,
+        handler: startHook,
+      });
+
+      executor = new PipelineExecutor({ stages }, hookRegistry);
+      executor.registerExecutor('planner', createMockExecutor());
+      executor.registerExecutor('worker', createMockExecutor());
+      executor.registerExecutor('evaluator', createMockExecutor());
+
+      const context = createMockContext();
+      await executor.execute(context);
+
+      expect(startHook).toHaveBeenCalled();
     });
 
     it('应该执行 subagent:complete 钩子', async () => {
-      // TODO: 验证钩子执行
+      const stages = createStages();
+      const hookRegistry = new HookRegistry();
+      const completeHook = jest.fn(async () => ({ continue: true }));
+
+      hookRegistry.register('subagent:complete', 'post', {
+        name: 'complete-hook',
+        priority: 0,
+        handler: completeHook,
+      });
+
+      executor = new PipelineExecutor({ stages }, hookRegistry);
+      executor.registerExecutor('planner', createMockExecutor());
+      executor.registerExecutor('worker', createMockExecutor());
+      executor.registerExecutor('evaluator', createMockExecutor());
+
+      const context = createMockContext();
+      await executor.execute(context);
+
+      expect(completeHook).toHaveBeenCalled();
     });
 
     it('应该执行 subagent:error 钩子', async () => {
-      // TODO: 验证钩子执行
+      const stages: PipelineStage[] = [
+        {
+          id: 'failing',
+          name: 'Failing',
+          description: 'Failing stage',
+          agentType: 'worker',
+          dependencies: [],
+          timeout: 5000,
+          maxRetries: 0,
+          canParallelize: false,
+        },
+      ];
+
+      const hookRegistry = new HookRegistry();
+      const errorHook = jest.fn(async () => ({ continue: true }));
+
+      hookRegistry.register('subagent:error', 'post', {
+        name: 'error-hook',
+        priority: 0,
+        handler: errorHook,
+      });
+
+      executor = new PipelineExecutor({ stages }, hookRegistry);
+      executor.registerExecutor('worker', createFailingExecutor('Test error'));
+
+      const context = createMockContext();
+      const result = await executor.execute(context);
+
+      expect(result.stageResults[0]?.success).toBe(false);
+      expect(errorHook).toHaveBeenCalled();
     });
   });
 

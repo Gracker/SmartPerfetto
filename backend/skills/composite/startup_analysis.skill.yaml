@@ -46,6 +46,7 @@ triggers:
 prerequisites:
   modules:
     - android.startup.startups
+    - android.startup.time_to_display
     - android.binder
 
 inputs:

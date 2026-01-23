@@ -234,11 +234,108 @@ export class PerformanceExpert extends BaseCrossDomainExpert {
       }
     }
 
+    // NEW: If no suggestions but have findings and AI service, ask AI for deeper analysis decision
+    if (suggestions.length === 0 && findings.length > 0 && this.aiService && context.turnNumber < 3) {
+      const aiDecision = await this.getAIAnalysisDecision(context, findings);
+      if (aiDecision) {
+        this.log(`AI suggests: ${aiDecision.reasoning}`);
+        return aiDecision;
+      }
+    }
+
     // No more leads - conclude with what we have
     return {
       action: 'conclude',
       reasoning: 'No more suggestions to follow, concluding with available evidence',
     };
+  }
+
+  /**
+   * Ask AI to analyze findings and decide if deeper analysis is needed
+   */
+  private async getAIAnalysisDecision(
+    context: DialogueContext,
+    findings: ModuleFinding[]
+  ): Promise<AnalysisDecision | null> {
+    if (!this.aiService) return null;
+
+    const findingsSummary = findings.slice(0, 10).map(f => ({
+      title: f.title,
+      severity: f.severity,
+      source: f.sourceModule,
+      evidence: Object.entries(f.evidence).slice(0, 5).map(([k, v]) => `${k}: ${v}`).join(', '),
+    }));
+
+    const availableModules = [
+      { id: 'binder_analysis', desc: '分析 Binder IPC 调用阻塞' },
+      { id: 'cpu_analysis', desc: '分析 CPU 调度和抢占' },
+      { id: 'lock_contention_analysis', desc: '分析锁竞争' },
+      { id: 'gc_analysis', desc: '分析 GC 暂停' },
+      { id: 'io_pressure', desc: '分析 IO 阻塞' },
+    ];
+
+    const prompt = `你是 Android 性能分析专家。根据当前分析结果，决定是否需要继续深入分析。
+
+## 当前分析意图
+${this.currentIntent}
+
+## 已收集的发现 (${findings.length} 个)
+${JSON.stringify(findingsSummary, null, 2)}
+
+## 可用的深入分析模块
+${availableModules.map(m => `- ${m.id}: ${m.desc}`).join('\n')}
+
+## 决策要求
+分析上述发现，判断：
+1. 根因是否已经清晰？如果是，返回 {"action": "conclude", "reason": "原因"}
+2. 是否需要进一步分析？如果是，指定需要调用的模块
+
+请以 JSON 格式返回你的决策：
+{
+  "action": "conclude" | "continue",
+  "reason": "决策原因",
+  "modules": ["module_id"] // 仅当 action=continue 时需要
+}`;
+
+    try {
+      const result = await this.aiService.callWithFallback(prompt, 'reasoning', { jsonMode: true });
+      if (!result.success) {
+        this.log(`AI decision failed: ${result.error}`);
+        return null;
+      }
+
+      const decision = JSON.parse(result.response);
+
+      if (decision.action === 'conclude') {
+        return {
+          action: 'conclude',
+          reasoning: `AI 判断: ${decision.reason}`,
+        };
+      }
+
+      if (decision.action === 'continue' && decision.modules?.length > 0) {
+        // Build queries for suggested modules
+        const nextQueries = decision.modules.slice(0, 2).map((moduleId: string) =>
+          buildModuleQuery(
+            moduleId,
+            `ai_suggested_${moduleId}`,
+            { package: context.packageName },
+            context
+          )
+        );
+
+        return {
+          action: 'continue',
+          nextQueries,
+          reasoning: `AI 建议深入分析: ${decision.reason}`,
+        };
+      }
+
+      return null;
+    } catch (error: any) {
+      this.log(`AI decision error: ${error.message}`);
+      return null;
+    }
   }
 
   /**
@@ -249,10 +346,11 @@ export class PerformanceExpert extends BaseCrossDomainExpert {
   ): Promise<ExpertConclusion> {
     const context = session.getContext();
     const topHypothesis = session.getTopHypothesis();
+    const allFindings = context.collectedFindings;
 
-    // If we have a confident hypothesis, use it
+    // If we have a confident hypothesis, use it as base
     if (topHypothesis && topHypothesis.confidence >= 0.5) {
-      return {
+      const baseConclusion = {
         category: topHypothesis.category,
         component: topHypothesis.component,
         summary: topHypothesis.title,
@@ -262,10 +360,19 @@ export class PerformanceExpert extends BaseCrossDomainExpert {
         confidence: topHypothesis.confidence,
         confirmedHypothesis: topHypothesis,
       };
+
+      // Enhance with AI synthesis if available
+      if (this.aiService) {
+        const aiEnhanced = await this.getAISynthesis(context, allFindings, baseConclusion);
+        if (aiEnhanced) {
+          return { ...baseConclusion, ...aiEnhanced };
+        }
+      }
+
+      return baseConclusion;
     }
 
     // Otherwise, synthesize from findings
-    const allFindings = context.collectedFindings;
     const criticalFindings = allFindings.filter(f => f.severity === 'critical');
     const warningFindings = allFindings.filter(f => f.severity === 'warning');
 
@@ -273,7 +380,7 @@ export class PerformanceExpert extends BaseCrossDomainExpert {
     const category = this.determineCategory(allFindings);
     const component = this.determineComponent(allFindings);
 
-    return {
+    const baseConclusion = {
       category,
       component,
       summary: this.buildSummary(criticalFindings, warningFindings),
@@ -282,6 +389,81 @@ export class PerformanceExpert extends BaseCrossDomainExpert {
       suggestions: this.generateSuggestionsFromFindings(allFindings),
       confidence: this.calculateOverallConfidence(allFindings),
     };
+
+    // Use AI to generate better synthesis if available
+    if (this.aiService && allFindings.length > 0) {
+      const aiEnhanced = await this.getAISynthesis(context, allFindings, baseConclusion);
+      if (aiEnhanced) {
+        return { ...baseConclusion, ...aiEnhanced };
+      }
+    }
+
+    return baseConclusion;
+  }
+
+  /**
+   * Use AI to synthesize findings into a coherent conclusion
+   */
+  private async getAISynthesis(
+    context: DialogueContext,
+    findings: ModuleFinding[],
+    baseConclusion: Partial<ExpertConclusion>
+  ): Promise<Partial<ExpertConclusion> | null> {
+    if (!this.aiService) return null;
+
+    const findingsSummary = findings.slice(0, 15).map(f => ({
+      title: f.title,
+      severity: f.severity,
+      source: f.sourceModule,
+      confidence: f.confidence,
+      evidence: Object.entries(f.evidence).slice(0, 3).map(([k, v]) => `${k}: ${v}`).join(', '),
+    }));
+
+    const prompt = `你是 Android 性能分析专家。请综合分析以下发现，生成诊断结论。
+
+## 分析意图
+${this.currentIntent} 性能分析
+
+## 当前判断
+- 问题类别: ${baseConclusion.category || 'UNKNOWN'}
+- 问题组件: ${baseConclusion.component || 'Unknown'}
+- 置信度: ${((baseConclusion.confidence || 0) * 100).toFixed(0)}%
+
+## 发现列表 (${findings.length} 个)
+${JSON.stringify(findingsSummary, null, 2)}
+
+## 任务
+请基于以上发现，生成：
+1. **summary**: 一句话总结根本原因（不超过 50 字）
+2. **explanation**: 详细解释问题原因和影响（100-200 字）
+3. **suggestions**: 3-5 条具体可操作的优化建议
+
+请以 JSON 格式返回：
+{
+  "summary": "根因总结",
+  "explanation": "详细解释",
+  "suggestions": ["建议1", "建议2", "建议3"]
+}`;
+
+    try {
+      const result = await this.aiService.callWithFallback(prompt, 'synthesis', { jsonMode: true });
+      if (!result.success) {
+        this.log(`AI synthesis failed: ${result.error}`);
+        return null;
+      }
+
+      const synthesis = JSON.parse(result.response);
+      this.log(`AI synthesis generated: ${synthesis.summary}`);
+
+      return {
+        summary: synthesis.summary || baseConclusion.summary,
+        explanation: synthesis.explanation || baseConclusion.explanation,
+        suggestions: synthesis.suggestions || baseConclusion.suggestions,
+      };
+    } catch (error: any) {
+      this.log(`AI synthesis error: ${error.message}`);
+      return null;
+    }
   }
 
   // ===========================================================================

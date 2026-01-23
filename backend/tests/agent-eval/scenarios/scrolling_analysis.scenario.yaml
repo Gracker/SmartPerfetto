@@ -70,7 +70,7 @@ scenarios:
         requiredLayers:
           - L2
         requiredFields:
-          - layers.L2.scroll_sessions
+          - layers.list.scroll_sessions
 
       model:
         shouldMention:
@@ -199,9 +199,9 @@ scenarios:
           - L1
           - L2
         requiredFields:
-          - layers.L1.vsync_config
-          - layers.L1.performance_summary
-          - layers.L2.scroll_sessions
+          - layers.overview.vsync_config
+          - layers.overview.performance_summary
+          - layers.list.scroll_sessions
 
       model:
         answerCriteria:

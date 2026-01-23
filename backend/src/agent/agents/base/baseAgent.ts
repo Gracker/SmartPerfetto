@@ -36,10 +36,30 @@ import {
 } from '../../types/agentProtocol';
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
+import {
+  SkillExecutor,
+  createSkillExecutor,
+  skillRegistry,
+  ensureSkillRegistryInitialized,
+  SkillExecutionResult,
+} from '../../../services/skillEngine';
 
 // =============================================================================
 // Types
 // =============================================================================
+
+/**
+ * Skill definition for lazy tool initialization in agents.
+ * Agents declare which skills they use at construction time, but actual
+ * tool creation is deferred to executeTask() when the async skill registry
+ * is guaranteed to be initialized.
+ */
+export interface SkillDefinitionForAgent {
+  skillId: string;
+  toolName: string;
+  description: string;
+  category: AgentTool['category'];
+}
 
 /**
  * Understanding of a task
@@ -144,6 +164,18 @@ export abstract class BaseAgent extends EventEmitter {
   protected modelRouter: ModelRouter;
   /** Available tools */
   protected tools: Map<string, AgentTool>;
+  /** Skill definitions for lazy tool initialization */
+  protected skillDefinitions: SkillDefinitionForAgent[] = [];
+  /** Whether tools have been lazily loaded from skill definitions */
+  private toolsLoaded: boolean = false;
+  /** Cached SkillExecutor with registered skills */
+  private skillExecutorCache:
+    | {
+        traceProcessorService: any;
+        aiService: any;
+        executor: SkillExecutor;
+      }
+    | null = null;
   /** Current shared context */
   protected sharedContext: SharedAgentContext | null = null;
   /** Reasoning trace */
@@ -151,15 +183,20 @@ export abstract class BaseAgent extends EventEmitter {
   /** Current iteration */
   protected currentIteration: number = 0;
 
-  constructor(config: AgentConfig, modelRouter: ModelRouter) {
+  constructor(config: AgentConfig, modelRouter: ModelRouter, skillDefs?: SkillDefinitionForAgent[]) {
     super();
     this.config = config;
     this.modelRouter = modelRouter;
     this.tools = new Map();
 
-    // Register tools
+    // Register any tools already in config (non-skill tools)
     for (const tool of config.tools) {
       this.tools.set(tool.name, tool);
+    }
+
+    // Store skill definitions for lazy loading
+    if (skillDefs) {
+      this.skillDefinitions = skillDefs;
     }
   }
 
@@ -204,6 +241,9 @@ export abstract class BaseAgent extends EventEmitter {
     this.sharedContext = sharedContext;
     this.reasoningTrace = [];
     this.currentIteration = 0;
+
+    // Ensure skill-based tools are loaded (lazy initialization)
+    await this.ensureToolsLoaded();
 
     this.emit('task_started', { agentId: this.config.id, taskId: task.id });
 
@@ -301,13 +341,40 @@ export abstract class BaseAgent extends EventEmitter {
       const jsonMatch = response.response.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          steps: (parsed.steps || []).map((s: any, i: number) => ({
+        const plannedSteps = (parsed.steps || [])
+          .map((s: any, i: number) => ({
             stepNumber: i + 1,
             toolName: s.toolName || s.tool,
             params: s.params || {},
             purpose: s.purpose || `Execute ${s.toolName || s.tool}`,
-            dependsOn: s.dependsOn,
+            // Note: dependsOn is intentionally stripped — domain agent tools are
+            // independent analysis units. The LLM-generated dependencies cause
+            // cascade failures when tool names are filtered out, as step numbers
+            // get re-assigned but dependsOn values aren't updated.
+          }))
+          .filter((step: any) => step.toolName && this.tools.has(step.toolName));
+
+        if (plannedSteps.length === 0) {
+          const fallbackTools = understanding.recommendedTools.length > 0
+            ? understanding.recommendedTools
+            : this.getRecommendedTools(task.context);
+          return {
+            steps: fallbackTools.map((toolName, i) => ({
+              stepNumber: i + 1,
+              toolName,
+              params: {},
+              purpose: `Execute ${toolName}`,
+            })),
+            expectedOutcomes: parsed.expectedOutcomes || [],
+            estimatedTimeMs: parsed.estimatedTimeMs || 30000,
+            confidence: parsed.confidence || 0.5,
+          };
+        }
+
+        return {
+          steps: plannedSteps.map((step: any, i: number) => ({
+            ...step,
+            stepNumber: i + 1,
           })),
           expectedOutcomes: parsed.expectedOutcomes || [],
           estimatedTimeMs: parsed.estimatedTimeMs || 30000,
@@ -338,7 +405,7 @@ export abstract class BaseAgent extends EventEmitter {
   protected async execute(plan: ExecutionPlan, task: AgentTask): Promise<ExecutionResult> {
     const stepResults: ExecutionStepResult[] = [];
     const allFindings: Finding[] = [];
-    let success = true;
+    let anyStepSucceeded = false;
 
     // Build tool context
     const toolContext: AgentToolContext = {
@@ -348,6 +415,11 @@ export abstract class BaseAgent extends EventEmitter {
       packageName: task.context.additionalData?.packageName,
       timeRange: task.context.timeRange,
       aiService: task.context.additionalData?.aiService,
+      additionalContext: {
+        ...(task.context.additionalData || {}),
+        taskId: task.id,
+        agentId: this.config.id,
+      },
     };
 
     // Execute each step
@@ -398,10 +470,14 @@ export abstract class BaseAgent extends EventEmitter {
         observations,
       });
 
-      if (!result.success) {
-        success = false;
+      if (result.success) {
+        anyStepSucceeded = true;
       }
     }
+
+    // Agent execution succeeds if at least one tool returned data successfully.
+    // Individual tool failures (e.g., missing tables) don't invalidate the whole analysis.
+    const success = anyStepSucceeded || stepResults.length === 0;
 
     return {
       steps: stepResults,
@@ -472,19 +548,259 @@ export abstract class BaseAgent extends EventEmitter {
     // Add reflection hypothesis updates
     hypothesisUpdates.push(...reflection.hypothesisUpdates);
 
+    const questionsForAgents: InterAgentQuestion[] = (reflection.questionsForOthers || [])
+      .map((q: any) => {
+        // LLMs sometimes return strings or partial objects; normalize to InterAgentQuestion
+        if (typeof q === 'string') {
+          return {
+            fromAgent: this.config.id,
+            toAgent: 'system_admin',
+            question: q,
+            priority: 5,
+          } as InterAgentQuestion;
+        }
+
+        if (!q || typeof q !== 'object') return null;
+
+        const question = typeof q.question === 'string' ? q.question : undefined;
+        if (!question) return null;
+
+        const toAgent = typeof q.toAgent === 'string' ? q.toAgent : 'system_admin';
+        const priority = typeof q.priority === 'number' ? q.priority : 5;
+        const context = q.context && typeof q.context === 'object' ? q.context : undefined;
+
+        return {
+          fromAgent: this.config.id,
+          toAgent,
+          question,
+          context,
+          priority,
+        } as InterAgentQuestion;
+      })
+      .filter(Boolean) as InterAgentQuestion[];
+
     return {
       agentId: this.config.id,
       taskId: task.id,
       success: result.success,
       findings: result.findings,
       hypothesisUpdates,
-      questionsForAgents: reflection.questionsForOthers,
+      questionsForAgents,
       suggestions: reflection.nextSteps,
       confidence: reflection.findingsConfidence,
       executionTimeMs: Date.now() - startTime,
       toolResults: result.steps.map(s => s.result),
       reasoning: this.reasoningTrace,
     };
+  }
+
+  // ==========================================================================
+  // Lazy Tool Loading
+  // ==========================================================================
+
+  /**
+   * Ensure skill-based tools are loaded.
+   * Called at the start of executeTask() — by this time the skill registry
+   * is guaranteed to be initialized (the orchestrator awaits it before dispatching).
+   */
+  protected async ensureToolsLoaded(): Promise<void> {
+    if (this.toolsLoaded) return;
+    if (this.skillDefinitions.length === 0) {
+      this.toolsLoaded = true;
+      return;
+    }
+
+    await ensureSkillRegistryInitialized();
+
+    for (const skillDef of this.skillDefinitions) {
+      if (this.tools.has(skillDef.toolName)) continue;
+
+      const skill = skillRegistry.getSkill(skillDef.skillId);
+      if (!skill) {
+        console.warn(`[${this.config.id}] Skill not found after init: ${skillDef.skillId}`);
+        continue;
+      }
+
+      const tool: AgentTool = {
+        name: skillDef.toolName,
+        description: skillDef.description,
+        skillId: skillDef.skillId,
+        category: skillDef.category,
+        parameters: skill.inputs?.map((input: any) => ({
+          name: input.name,
+          type: input.type as any,
+          required: input.required,
+          description: input.description || input.name,
+          default: input.default,
+        })),
+        execute: this.createSkillToolExecutor(skillDef.skillId, skillDef.category),
+      };
+
+      this.tools.set(tool.name, tool);
+    }
+
+    this.toolsLoaded = true;
+    if (this.tools.size > 0) {
+      console.log(`[${this.config.id}] Loaded ${this.tools.size} tools from skills`);
+    }
+  }
+
+  /**
+   * Create a tool executor function for a given skill ID.
+   * Shared across all domain agents — eliminates code duplication.
+   */
+  protected createSkillToolExecutor(
+    skillId: string,
+    category: string
+  ): (params: Record<string, any>, context: AgentToolContext) => Promise<AgentToolResult> {
+    return async (params: Record<string, any>, context: AgentToolContext): Promise<AgentToolResult> => {
+      const startTime = Date.now();
+
+      try {
+        if (!context.traceProcessorService) {
+          return {
+            success: false,
+            error: 'TraceProcessorService not available',
+            executionTimeMs: Date.now() - startTime,
+          };
+        }
+
+        // SkillExecutor instances have their own registry; ensure skills are registered
+        // before executing (otherwise every tool call will fail with "Skill not found").
+        const executor = await this.getOrCreateSkillExecutor(
+          context.traceProcessorService,
+          context.aiService
+        );
+
+        const execParams: Record<string, any> = {
+          ...params,
+          package: context.packageName,
+        };
+
+        if (context.timeRange) {
+          execParams.start_ts = context.timeRange.start;
+          execParams.end_ts = context.timeRange.end;
+        }
+
+        // Allow orchestrators to control skill behavior without relying on LLM-generated params
+        // (e.g., staged scrolling analysis where deep frame details are only enabled in later stages).
+        const additional = (context.additionalContext || {}) as Record<string, any>;
+        if (skillId === 'scrolling_analysis') {
+          if (additional.enableFrameDetails === true) {
+            execParams.enable_frame_details = true;
+          }
+          if (typeof additional.maxFramesPerSession === 'number' && Number.isFinite(additional.maxFramesPerSession)) {
+            execParams.max_frames_per_session = additional.maxFramesPerSession;
+          }
+        }
+
+        const result = await executor.execute(skillId, context.traceId, execParams, {});
+
+        const findings = this.extractFindingsFromResult(result, skillId, category);
+        const data = this.extractDataFromResult(result);
+        const dataEnvelopes = SkillExecutor.toDataEnvelopes(result).map((env) => {
+          const scopeLabel = typeof additional.scopeLabel === 'string' ? additional.scopeLabel.trim() : '';
+          const executionId =
+            typeof additional.executionId === 'string' ? additional.executionId :
+            typeof additional.taskId === 'string' ? additional.taskId :
+            `${skillId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+          // Make envelope source unique per execution so frontend can render repeated analyses
+          // (e.g., per-scroll-session deep dives) without deduping them away.
+          env.meta.source = `${env.meta.source}#${executionId}`;
+
+          if (scopeLabel) {
+            env.display.title = `${scopeLabel} · ${env.display.title}`;
+          }
+
+          return env;
+        });
+
+        console.log(`[${this.config.id}] Skill ${skillId} executed: success=${result.success}, displayResults=${result.displayResults?.length || 0}, dataEnvelopes=${dataEnvelopes.length}`);
+
+        return {
+          success: result.success,
+          data,
+          findings,
+          dataEnvelopes: dataEnvelopes.length > 0 ? dataEnvelopes : undefined,
+          error: result.error,
+          executionTimeMs: Date.now() - startTime,
+        };
+      } catch (error: any) {
+        return {
+          success: false,
+          error: error.message,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
+    };
+  }
+
+  private async getOrCreateSkillExecutor(traceProcessorService: any, aiService: any): Promise<SkillExecutor> {
+    await ensureSkillRegistryInitialized();
+
+    if (
+      this.skillExecutorCache &&
+      this.skillExecutorCache.traceProcessorService === traceProcessorService &&
+      this.skillExecutorCache.aiService === aiService
+    ) {
+      return this.skillExecutorCache.executor;
+    }
+
+    const executor = createSkillExecutor(traceProcessorService, aiService);
+    executor.registerSkills(skillRegistry.getAllSkills());
+
+    this.skillExecutorCache = {
+      traceProcessorService,
+      aiService,
+      executor,
+    };
+
+    return executor;
+  }
+
+  /**
+   * Extract findings from skill execution result.
+   * Subclasses can override for domain-specific extraction logic.
+   */
+  protected extractFindingsFromResult(result: SkillExecutionResult, skillId: string, category: string): Finding[] {
+    const findings: Finding[] = [];
+    if (result.diagnostics && result.diagnostics.length > 0) {
+      for (const diag of result.diagnostics) {
+        findings.push({
+          id: `${skillId}_${Date.now()}_${findings.length}`,
+          category,
+          severity: diag.severity,
+          title: diag.diagnosis,
+          description: diag.suggestions?.join('; ') || diag.diagnosis,
+          source: skillId,
+          confidence: typeof diag.confidence === 'number' ? diag.confidence : 0.8,
+          details: diag.evidence,
+        });
+      }
+    }
+    return findings;
+  }
+
+  /**
+   * Extract data from skill execution result
+   */
+  protected extractDataFromResult(result: SkillExecutionResult): any {
+    if (result.displayResults && result.displayResults.length > 0) {
+      const data: Record<string, any> = {};
+      for (const dr of result.displayResults) {
+        data[dr.stepId] = dr.data;
+      }
+      return data;
+    }
+    if (result.rawResults) {
+      const data: Record<string, any> = {};
+      for (const [stepId, stepResult] of Object.entries(result.rawResults)) {
+        data[stepId] = stepResult.data;
+      }
+      return data;
+    }
+    return null;
   }
 
   // ==========================================================================
@@ -572,11 +888,38 @@ export abstract class BaseAgent extends EventEmitter {
 
   /**
    * Get tool descriptions for LLM
+   * Falls back to skill definitions if tools haven't been loaded yet
    */
   getToolDescriptionsForLLM(): string {
-    return this.getAllTools()
-      .map(t => `- ${t.name}: ${t.description}`)
-      .join('\n');
+    if (this.tools.size > 0) {
+      return this.getAllTools()
+        .map(t => `- ${t.name}: ${t.description}`)
+        .join('\n');
+    }
+    // Fallback: use skill definitions even before tools are loaded
+    if (this.skillDefinitions.length > 0) {
+      return this.skillDefinitions
+        .map(s => `- ${s.toolName}: ${s.description}`)
+        .join('\n');
+    }
+    return '（无可用工具）';
+  }
+
+  /**
+   * Format common task context fields for prompts
+   */
+  protected formatTaskContext(task: AgentTask): string {
+    const lines: string[] = [];
+    if (task.context.domain) {
+      lines.push(`- 任务领域: ${task.context.domain}`);
+    }
+    if (task.context.timeRange) {
+      lines.push(`- 时间范围: ${task.context.timeRange.start} ~ ${task.context.timeRange.end}`);
+    }
+    if (task.context.evidenceNeeded && task.context.evidenceNeeded.length > 0) {
+      lines.push(`- 需输出证据: ${task.context.evidenceNeeded.join(', ')}`);
+    }
+    return lines.length > 0 ? lines.join('\n') : '';
   }
 
   /**

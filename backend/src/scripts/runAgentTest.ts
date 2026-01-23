@@ -1,13 +1,10 @@
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import {
-  createOrchestrator,
-  createScrollingExpertAgent,
   registerCoreTools,
-  createLLMClient,
-  LLMConfigurationError,
   StreamingUpdate,
+  ModelRouter,
+  createAgentDrivenOrchestrator,
   getAgentTraceRecorder,
-  createEvalSystem,
 } from '../agent';
 import fs from 'fs';
 import path from 'path';
@@ -46,22 +43,23 @@ async function runAgentTest() {
     const traceId = await traceProcessor.loadTraceFromFilePath(testTracePath);
     console.log('✓ Trace loaded. ID:', traceId, '\n');
 
-    console.log('⏳ Initializing Agent System...');
-    
-    const llm = createLLMClient();
+    console.log('⏳ Initializing Agent-Driven System...');
+
     registerCoreTools();
-    
-    const orchestrator = createOrchestrator(llm);
-    
-    const scrollingExpert = createScrollingExpertAgent(llm);
-    scrollingExpert.setTraceProcessorService(traceProcessor, traceId);
-    orchestrator.registerExpert(scrollingExpert);
-    orchestrator.setTraceProcessorService(traceProcessor, traceId);
-    
+    const modelRouter = new ModelRouter();
+    const orchestrator = createAgentDrivenOrchestrator(modelRouter, {
+      maxRounds: 3,
+      maxConcurrentTasks: 3,
+      confidenceThreshold: 0.7,
+      maxNoProgressRounds: 2,
+      maxFailureRounds: 2,
+      enableLogging: true,
+    });
+
     console.log('✓ Agent system initialized');
-    console.log('  - Orchestrator: PerfettoOrchestratorAgent');
-    console.log('  - Experts: ScrollingExpertAgent');
-    console.log('  - Tools: execute_sql, analyze_frame, calculate_stats');
+    console.log('  - Orchestrator: AgentDrivenOrchestrator');
+    console.log('  - Domain Agents: Frame/CPU/Binder/Memory/Startup/Interaction/ANR/System');
+    console.log('  - Tools: skills-as-tools + DataEnvelope streaming');
     console.log('');
 
     const testQueries = [
@@ -81,10 +79,12 @@ async function runAgentTest() {
         console.log(`${prefix} ${formatUpdateContent(update)}`);
       };
 
-      const result = await orchestrator.handleQuery(query, traceId, {
-        streamingCallback,
-        maxExpertIterations: 3,
-        confidenceThreshold: 0.7,
+      orchestrator.removeAllListeners('update');
+      orchestrator.on('update', streamingCallback);
+
+      const sessionId = `agent-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const result = await orchestrator.analyze(query, sessionId, traceId, {
+        traceProcessorService: traceProcessor,
       });
 
       const duration = Date.now() - startTime;
@@ -94,44 +94,19 @@ async function runAgentTest() {
       console.log('Confidence:', (result.confidence * 100).toFixed(1) + '%');
       console.log('');
 
-      console.log('Intent:');
-      console.log('  Goal:', result.intent.primaryGoal);
-      console.log('  Aspects:', result.intent.aspects.join(', '));
-      console.log('  Complexity:', result.intent.complexity);
-      console.log('');
-
-      console.log('Plan:');
-      const tasks = result.plan.tasks || [];
-      if (tasks.length === 0) {
-        console.log('  (No tasks planned)');
-      } else {
-        tasks.forEach((task, i) => {
-          console.log(`  ${i + 1}. [${task.expertAgent}] ${task.objective}`);
-        });
+      console.log('Findings:', result.findings.length);
+      result.findings.slice(0, 3).forEach(f => {
+        console.log(`  - [${f.severity}] ${f.title}`);
+      });
+      if (result.findings.length > 3) {
+        console.log(`  ... and ${result.findings.length - 3} more findings`);
       }
       console.log('');
 
-      console.log('Expert Results:', result.expertResults.length);
-      result.expertResults.forEach((er, i) => {
-        console.log(`  Expert ${i + 1}: ${er.findings.length} findings, confidence ${(er.confidence * 100).toFixed(1)}%`);
-        er.findings.slice(0, 3).forEach(f => {
-          console.log(`    - [${f.severity}] ${f.title}`);
-        });
-        if (er.findings.length > 3) {
-          console.log(`    ... and ${er.findings.length - 3} more findings`);
-        }
-      });
-      console.log('');
-
-      console.log('Synthesized Answer:');
+      console.log('Conclusion:');
       console.log('─'.repeat(60));
-      console.log(result.synthesizedAnswer);
+      console.log(result.conclusion);
       console.log('─'.repeat(60));
-      console.log('');
-
-      console.log('Trace Summary:');
-      console.log('  Total Duration:', result.trace.totalDuration + 'ms');
-      console.log('  Expert Traces:', result.trace.expertTraces.length);
       console.log('');
     }
 

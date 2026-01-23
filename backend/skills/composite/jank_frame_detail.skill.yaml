@@ -10,11 +10,10 @@ meta:
   tags: [jank, detail, composite]
 
 prerequisites:
-  required_tables:
-    - actual_frame_timeline
   modules:
     - android.binder
     - android.slices
+    - android.monitor_contention
 
 inputs:
   - name: start_ts
@@ -79,6 +78,22 @@ inputs:
     description: "掉帧责任归属: APP（BufferTX=0）或 SF（BufferTX>0）"
 
 steps:
+  # ===== 数据源检测：Monitor contention 表是否可用（可选）=====
+  - id: monitor_contention_check
+    type: atomic
+    name: "Monitor Contention 数据源检测"
+    display: false
+    sql: |
+      SELECT
+        CASE
+          WHEN EXISTS (
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'android_monitor_contention'
+          ) THEN 1
+          ELSE 0
+        END as has_monitor_contention
+    save_as: monitor_contention
+
   # 四象限分析：输出格式直接匹配前端展示需求
   # 前端期望: [{ quadrant, name, dur_ms, percentage }]
   - id: quadrant_analysis
@@ -526,6 +541,7 @@ steps:
       LIMIT 5
     save_as: lock_data
     optional: true
+    condition: "monitor_contention.data[0]?.has_monitor_contention === 1"
 
   # ===== 根因分析总结：综合所有数据给出明确结论 =====
   - id: root_cause_summary
@@ -719,7 +735,7 @@ steps:
     inputs: [quadrant_data, binder_data, freq_data, main_slices, render_slices, freq_timeline, lock_data, root_cause]
     rules:
       # ===== 最高优先级：根因分析总结 =====
-      - condition: "root_cause.data?.[0]?.primary_cause"
+      - condition: "root_cause?.data?.[0]?.primary_cause"
         severity: critical
         diagnosis: "${root_cause.data[0].primary_cause}"
         confidence: "${root_cause.data[0].confidence === '高' ? 'high' : root_cause.data[0].confidence === '中' ? 'medium' : 'low'}"
@@ -727,7 +743,7 @@ steps:
           - "${root_cause.data[0].secondary_info || '查看下方详细数据分析具体原因'}"
 
       # ===== 高优先级：锁竞争 =====
-      - condition: "lock_data.data?.length > 0 && lock_data.data[0]?.wait_ms > 1"
+      - condition: "lock_data?.data?.length > 0 && lock_data.data[0]?.wait_ms > 1"
         severity: critical
         diagnosis: "锁竞争等待 ${lock_data.data[0].wait_ms}ms (${lock_data.data[0].blocking_method})"
         confidence: high
@@ -735,7 +751,7 @@ steps:
           - "检查持锁线程是否在做耗时操作"
           - "考虑减少锁粒度或使用无锁数据结构"
 
-      - condition: "lock_data.data?.length > 0 && lock_data.data[0]?.main_blocked === 1"
+      - condition: "lock_data?.data?.length > 0 && lock_data.data[0]?.main_blocked === 1"
         severity: critical
         diagnosis: "主线程被锁阻塞 (等待 ${lock_data.data[0].blocking_thread_name})"
         confidence: high
@@ -744,7 +760,7 @@ steps:
           - "考虑使用异步锁或拆分锁"
 
       # ===== 高优先级：Binder 调用 =====
-      - condition: "binder_data.data?.length > 0 && binder_data.data[0]?.dur_ms > 2"
+      - condition: "binder_data?.data?.length > 0 && binder_data.data[0]?.dur_ms > 2"
         severity: warning
         diagnosis: "Binder 调用耗时 ${binder_data.data[0].dur_ms}ms (${binder_data.data[0].interface})"
         confidence: high
@@ -754,7 +770,7 @@ steps:
 
       # ===== 四象限分析（使用 .find() 查找特定象限）=====
       # Q3 等待调度 - 说明 CPU 繁忙
-      - condition: "quadrant_data.data?.find(q => q.quadrant?.includes('Q3'))?.percentage > 15"
+      - condition: "quadrant_data?.data?.find(q => q.quadrant?.includes('Q3'))?.percentage > 15"
         severity: warning
         diagnosis: "主线程 Runnable 等待 ${quadrant_data.data.find(q => q.quadrant?.includes('Q3'))?.percentage}%"
         confidence: high
@@ -763,7 +779,7 @@ steps:
           - "考虑提高线程优先级"
 
       # Q4 休眠阻塞 - 说明在等待 IO 或锁
-      - condition: "quadrant_data.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q4'))?.percentage > 40"
+      - condition: "quadrant_data?.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q4'))?.percentage > 40"
         severity: warning
         diagnosis: "主线程休眠/阻塞时间占比 ${quadrant_data.data.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q4'))?.percentage}%"
         confidence: high
@@ -772,7 +788,7 @@ steps:
           - "考虑使用异步 IO"
 
       # Q2 小核运行占比高 - 说明调度可能有问题
-      - condition: "quadrant_data.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage > 60"
+      - condition: "quadrant_data?.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage > 60"
         severity: info
         diagnosis: "主线程主要运行在小核 (${quadrant_data.data.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage}%)"
         confidence: medium
@@ -781,7 +797,7 @@ steps:
           - "考虑提高线程优先级"
 
       # ===== 主线程耗时操作 =====
-      - condition: "main_slices.data?.length > 0 && main_slices.data[0]?.dur_ms > 5"
+      - condition: "main_slices?.data?.length > 0 && main_slices.data[0]?.dur_ms > 5"
         severity: warning
         diagnosis: "主线程操作 '${main_slices.data[0].name}' 耗时 ${main_slices.data[0].dur_ms}ms"
         confidence: high
@@ -790,7 +806,7 @@ steps:
           - "优化该操作的执行效率"
 
       # ===== RenderThread 耗时操作 =====
-      - condition: "render_slices.data?.length > 0 && render_slices.data[0]?.dur_ms > 3"
+      - condition: "render_slices?.data?.length > 0 && render_slices.data[0]?.dur_ms > 3"
         severity: warning
         diagnosis: "RenderThread 操作 '${render_slices.data[0].name}' 耗时 ${render_slices.data[0].dur_ms}ms"
         confidence: high
@@ -799,7 +815,7 @@ steps:
           - "考虑减少绘制复杂度或使用硬件加速"
 
       # ===== CPU 频率分析 =====
-      - condition: "freq_data.data?.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
+      - condition: "freq_data?.data?.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
         severity: info
         diagnosis: "大核频率偏低 (${freq_data.data?.find(f => f.core_type === 'big')?.avg_freq_mhz || 0}MHz)"
         confidence: medium
@@ -808,7 +824,7 @@ steps:
           - "检查温控策略"
 
       # ===== CPU 频率变化 =====
-      - condition: "freq_timeline.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length > 2"
+      - condition: "freq_timeline?.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length > 2"
         severity: info
         diagnosis: "大核频率降频 ${freq_timeline.data?.filter(f => f.change_direction === 'down' && f.core_type === 'big').length || 0}次"
         confidence: medium

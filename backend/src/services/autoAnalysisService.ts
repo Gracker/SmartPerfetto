@@ -167,6 +167,60 @@ class AutoAnalysisService {
   }
 
   /**
+   * 返回可用的分析模式
+   */
+  getPatterns(): Pattern[] {
+    return this.patterns.map((pattern) => ({ ...pattern }));
+  }
+
+  /**
+   * 增强分析结果（可选 AI）
+   */
+  async enhanceAnalysis(
+    analysis: UserScene,
+    query?: string,
+    aiService?: { chat: (prompt: string, options?: { systemPrompt?: string }) => Promise<string> }
+  ): Promise<any> {
+    const issueTypes = (analysis.issues || []).reduce<Record<string, number>>((acc, issue) => {
+      acc[issue.type] = (acc[issue.type] || 0) + 1;
+      return acc;
+    }, {});
+
+    const enhancementSummary = {
+      eventCount: analysis.events?.length || 0,
+      issueCount: analysis.issues?.length || 0,
+      issueTypes,
+      timeRangeNs: analysis.endTime - analysis.startTime,
+    };
+
+    let aiSummary = '';
+    if (aiService) {
+      try {
+        const prompt = `请根据以下分析结果生成简明的总结和优化建议。
+用户问题: ${query || '未提供'}
+应用: ${analysis.appName || analysis.packageName || '未知'}
+事件数: ${enhancementSummary.eventCount}
+问题数: ${enhancementSummary.issueCount}
+问题类型统计: ${JSON.stringify(issueTypes)}
+概要: ${analysis.summary}
+已有建议: ${analysis.recommendations?.join('；') || '无'}
+输出要求: 总结 3-5 句，建议 3-5 条。`;
+        aiSummary = await aiService.chat(prompt, {
+          systemPrompt: '你是 Android 性能分析专家，请给出可执行的优化建议。',
+        });
+      } catch (error) {
+        console.warn('[AutoAnalysisService] AI enhancement failed:', error);
+      }
+    }
+
+    return {
+      ...analysis,
+      enhancement: enhancementSummary,
+      aiSummary: aiSummary || undefined,
+    };
+  }
+
+  /**
    * 分析 Trace 并还原用户场景
    */
   async analyzeTrace(traceFile: string): Promise<UserScene> {

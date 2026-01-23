@@ -44,6 +44,14 @@ inputs:
     type: string
     required: false
     description: "应用包名（可选）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳（纳秒，可选）"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳（纳秒，可选）"
 
 steps:
   # ========== 获取目标进程 ==========
@@ -106,6 +114,8 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         WHERE p.name GLOB '${package}*'
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts < ${end_ts})
           AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
       )
       SELECT
@@ -160,13 +170,13 @@ steps:
     sql: |
       SELECT
         CASE
-          WHEN name GLOB '*ConcurrentCopying*' THEN 'ConcurrentCopying (并发GC)'
-          WHEN name GLOB '*MarkSweep*' THEN 'MarkSweep (标记清除)'
-          WHEN name GLOB '*Explicit*' THEN 'Explicit (显式GC)'
-          WHEN name GLOB '*Alloc*' THEN 'Alloc (分配触发)'
-          WHEN name GLOB '*Background*' THEN 'Background (后台GC)'
-          WHEN name GLOB '*young*' OR name GLOB '*Young*' THEN 'Young Gen (新生代)'
-          WHEN name GLOB '*full*' OR name GLOB '*Full*' THEN 'Full GC (全局)'
+          WHEN s.name GLOB '*ConcurrentCopying*' THEN 'ConcurrentCopying (并发GC)'
+          WHEN s.name GLOB '*MarkSweep*' THEN 'MarkSweep (标记清除)'
+          WHEN s.name GLOB '*Explicit*' THEN 'Explicit (显式GC)'
+          WHEN s.name GLOB '*Alloc*' THEN 'Alloc (分配触发)'
+          WHEN s.name GLOB '*Background*' THEN 'Background (后台GC)'
+          WHEN s.name GLOB '*young*' OR s.name GLOB '*Young*' THEN 'Young Gen (新生代)'
+          WHEN s.name GLOB '*full*' OR s.name GLOB '*Full*' THEN 'Full GC (全局)'
           ELSE 'Other'
         END as gc_type,
         COUNT(*) as count,
@@ -180,6 +190,8 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       WHERE p.name GLOB '${package}*'
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts < ${end_ts})
         AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
       GROUP BY gc_type
       ORDER BY total_dur_ms DESC
@@ -220,6 +232,8 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         WHERE p.name GLOB '${package}*'
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts < ${end_ts})
           AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
           AND t.tid = p.pid  -- 主线程 GC
       )
@@ -272,6 +286,8 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       WHERE p.name GLOB '${package}*'
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts < ${end_ts})
         AND t.tid = p.pid  -- Main thread
         AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
         AND s.dur > 1000000  -- > 1ms
@@ -304,6 +320,8 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE p.name GLOB '${package}*'
           AND t.tid = p.pid
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts < ${end_ts})
           AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*')
           AND s.dur > 5000000  -- > 5ms
         ORDER BY s.dur DESC
@@ -351,6 +369,8 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         WHERE p.name GLOB '${package}*'
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts < ${end_ts})
           AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
       )
       SELECT
@@ -400,6 +420,8 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       WHERE p.name GLOB '${package}*'
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts < ${end_ts})
         AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
       ORDER BY s.dur DESC
       LIMIT 15

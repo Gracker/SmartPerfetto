@@ -104,7 +104,8 @@ dialogue:
 
 prerequisites:
   modules:
-    - android.startup
+    - android.startup.startups
+    - android.startup.time_to_display
     - android.broadcasts
 
 inputs:
@@ -124,15 +125,16 @@ steps:
     name: "启动时序分析"
     sql: |
       SELECT
-        package_name,
-        startup_type AS launch_type,
-        CAST(dur / 1e6 AS INTEGER) AS total_ms,
-        CAST(time_to_initial_display / 1e6 AS INTEGER) AS ttid_ms,
-        CAST(time_to_full_display / 1e6 AS INTEGER) AS ttfd_ms,
-        ts AS start_ts
-      FROM android_startups
-      WHERE package_name LIKE '%${package}%'
-      ORDER BY ts DESC
+        s.package AS package_name,
+        s.startup_type AS launch_type,
+        CAST(s.dur / 1e6 AS INTEGER) AS total_ms,
+        CAST(ttd.time_to_initial_display / 1e6 AS INTEGER) AS ttid_ms,
+        CAST(ttd.time_to_full_display / 1e6 AS INTEGER) AS ttfd_ms,
+        s.ts AS start_ts
+      FROM android_startups s
+      LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
+      WHERE s.package LIKE '%${package}%'
+      ORDER BY s.ts DESC
       LIMIT 10
     display:
       level: key
@@ -157,7 +159,7 @@ steps:
     name: "启动阶段分解"
     sql: |
       SELECT
-        slice_name,
+        name AS slice_name,
         CAST(dur / 1e6 AS REAL) AS dur_ms,
         ts
       FROM slice
@@ -182,9 +184,9 @@ steps:
         intent_action AS broadcast_action,
         CAST(dur / 1e6 AS REAL) AS dur_ms,
         ts
-      FROM android_broadcasts
-      WHERE ts >= (SELECT ts FROM android_startups WHERE package_name LIKE '%${package}%' ORDER BY ts DESC LIMIT 1)
-        AND ts <= (SELECT ts + dur FROM android_startups WHERE package_name LIKE '%${package}%' ORDER BY ts DESC LIMIT 1)
+      FROM _android_broadcasts_minsdk_u
+      WHERE ts >= (SELECT ts FROM android_startups WHERE package LIKE '%${package}%' ORDER BY ts DESC LIMIT 1)
+        AND ts <= (SELECT ts + dur FROM android_startups WHERE package LIKE '%${package}%' ORDER BY ts DESC LIMIT 1)
       ORDER BY dur DESC
       LIMIT 10
     display:

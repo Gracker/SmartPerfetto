@@ -3,7 +3,7 @@
  *
  * Phase 2.4: AI Agent for Binder IPC analysis
  *
- * Skills wrapped as tools:
+ * Skills wrapped as tools (lazy-loaded at executeTask time):
  * - binder_analysis
  * - binder_detail
  * - binder_in_range
@@ -11,130 +11,48 @@
  * - lock_contention_in_range
  */
 
-import { BaseAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
+import { BaseAgent, SkillDefinitionForAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
 import {
-  AgentConfig,
   AgentTask,
   AgentTaskContext,
-  AgentTool,
-  AgentToolContext,
-  AgentToolResult,
   Hypothesis,
 } from '../../types/agentProtocol';
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
-import {
-  createSkillExecutor,
-  skillRegistry,
-  ensureSkillRegistryInitialized,
-  SkillExecutionResult,
-  DiagnosticResult,
-} from '../../../services/skillEngine';
 
-const BINDER_SKILLS = [
-  { skillId: 'binder_analysis', toolName: 'analyze_binder_overview', description: '分析 Binder IPC 通信概况，找出慢调用' },
-  { skillId: 'binder_detail', toolName: 'get_binder_detail', description: '获取单个 Binder 调用的详细信息' },
-  { skillId: 'binder_in_range', toolName: 'analyze_binder_range', description: '分析指定时间范围内的 Binder 调用' },
-  { skillId: 'lock_contention_analysis', toolName: 'analyze_lock_contention', description: '分析锁竞争情况' },
-  { skillId: 'lock_contention_in_range', toolName: 'analyze_lock_range', description: '分析指定时间范围内的锁竞争' },
+// =============================================================================
+// Binder Agent Configuration
+// =============================================================================
+
+const BINDER_SKILLS: SkillDefinitionForAgent[] = [
+  { skillId: 'binder_analysis', toolName: 'analyze_binder_overview', description: '分析 Binder IPC 通信概况，找出慢调用', category: 'binder' },
+  { skillId: 'binder_detail', toolName: 'get_binder_detail', description: '获取单个 Binder 调用的详细信息', category: 'binder' },
+  { skillId: 'binder_in_range', toolName: 'analyze_binder_range', description: '分析指定时间范围内的 Binder 调用', category: 'binder' },
+  { skillId: 'lock_contention_analysis', toolName: 'analyze_lock_contention', description: '分析锁竞争情况', category: 'binder' },
+  { skillId: 'lock_contention_in_range', toolName: 'analyze_lock_range', description: '分析指定时间范围内的锁竞争', category: 'binder' },
 ];
 
-function createToolExecutorForSkill(skillId: string): (params: Record<string, any>, context: AgentToolContext) => Promise<AgentToolResult> {
-  return async (params, context): Promise<AgentToolResult> => {
-    const startTime = Date.now();
-    try {
-      if (!context.traceProcessorService) {
-        return { success: false, error: 'TraceProcessorService not available', executionTimeMs: Date.now() - startTime };
-      }
-
-      const executor = createSkillExecutor(context.traceProcessorService, context.aiService);
-      const execParams: Record<string, any> = { ...params, package: context.packageName };
-
-      const result = await executor.execute(skillId, context.traceId, execParams, {});
-      const findings = extractFindingsFromResult(result, skillId);
-      const data = extractDataFromResult(result);
-
-      return { success: result.success, data, findings, error: result.error, executionTimeMs: Date.now() - startTime };
-    } catch (error: any) {
-      return { success: false, error: error.message, executionTimeMs: Date.now() - startTime };
-    }
-  };
-}
-
-function extractFindingsFromResult(result: SkillExecutionResult, skillId: string): Finding[] {
-  const findings: Finding[] = [];
-  if (result.diagnostics && result.diagnostics.length > 0) {
-    for (const diag of result.diagnostics) {
-      findings.push({
-        id: `${skillId}_${Date.now()}_${findings.length}`,
-        category: 'binder',
-        severity: diag.severity,
-        title: diag.diagnosis,
-        description: diag.suggestions?.join('; ') || diag.diagnosis,
-        source: skillId,
-        confidence: typeof diag.confidence === 'number' ? diag.confidence : 0.8,
-        details: diag.evidence,
-      });
-    }
-  }
-  return findings;
-}
-
-function extractDataFromResult(result: SkillExecutionResult): any {
-  if (result.displayResults && result.displayResults.length > 0) {
-    const data: Record<string, any> = {};
-    for (const dr of result.displayResults) {
-      data[dr.stepId] = dr.data;
-    }
-    return data;
-  }
-  if (result.rawResults) {
-    const data: Record<string, any> = {};
-    for (const [stepId, stepResult] of Object.entries(result.rawResults)) {
-      data[stepId] = stepResult.data;
-    }
-    return data;
-  }
-  return null;
-}
-
-function createBinderAgentConfig(modelRouter: ModelRouter): AgentConfig {
-  const tools: AgentTool[] = [];
-  ensureSkillRegistryInitialized();
-
-  for (const skillInfo of BINDER_SKILLS) {
-    const skill = skillRegistry.getSkill(skillInfo.skillId);
-    if (!skill) continue;
-
-    tools.push({
-      name: skillInfo.toolName,
-      description: skillInfo.description,
-      skillId: skillInfo.skillId,
-      category: 'binder',
-      parameters: skill.inputs?.map((input: any) => ({
-        name: input.name, type: input.type as any, required: input.required,
-        description: input.description || input.name, default: input.default,
-      })),
-      execute: createToolExecutorForSkill(skillInfo.skillId),
-    });
-  }
-
-  return {
-    id: 'binder_agent',
-    name: 'Binder Analysis Agent',
-    domain: 'binder',
-    description: 'AI agent specialized in Binder IPC and lock contention analysis',
-    tools,
-    maxIterations: 3,
-    confidenceThreshold: 0.7,
-    canDelegate: true,
-    delegateTo: ['cpu_agent', 'frame_agent'],
-  };
-}
+// =============================================================================
+// Binder Agent Implementation
+// =============================================================================
 
 export class BinderAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {
-    super(createBinderAgentConfig(modelRouter), modelRouter);
+    super(
+      {
+        id: 'binder_agent',
+        name: 'Binder Analysis Agent',
+        domain: 'binder',
+        description: 'AI agent specialized in Binder IPC and lock contention analysis',
+        tools: [], // Loaded lazily via ensureToolsLoaded()
+        maxIterations: 3,
+        confidenceThreshold: 0.7,
+        canDelegate: true,
+        delegateTo: ['cpu_agent', 'frame_agent'],
+      },
+      modelRouter,
+      BINDER_SKILLS
+    );
   }
 
   protected buildUnderstandingPrompt(task: AgentTask): string {
@@ -143,8 +61,15 @@ export class BinderAgent extends BaseAgent {
 ## 任务
 ${task.description}
 
-## 你的工具
+## 上下文
+- 用户查询: ${task.context.query}
+${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
+${this.formatTaskContext(task)}
+
+## 可用工具（只能使用以下工具）
 ${this.getToolDescriptionsForLLM()}
+
+重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
 
 请以 JSON 格式返回：{"objective":"","questions":[],"relevantAreas":[],"recommendedTools":[],"constraints":[],"confidence":0.7}`;
   }
@@ -152,7 +77,11 @@ ${this.getToolDescriptionsForLLM()}
   protected buildPlanningPrompt(understanding: TaskUnderstanding, task: AgentTask): string {
     return `规划 Binder 分析：
 目标: ${understanding.objective}
-工具: ${this.getToolDescriptionsForLLM()}
+
+## 可用工具（只能使用以下工具）
+${this.getToolDescriptionsForLLM()}
+
+重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
 
 请以 JSON 返回：{"steps":[{"toolName":"","params":{},"purpose":""}],"expectedOutcomes":[],"estimatedTimeMs":30000,"confidence":0.7}`;
   }
@@ -181,10 +110,22 @@ ${this.getToolDescriptionsForLLM()}
 
   protected getRecommendedTools(context: AgentTaskContext): string[] {
     const query = context.query?.toLowerCase() || '';
-    const tools: string[] = ['analyze_binder_overview'];
+    const hasTimeRange = !!context.timeRange;
+    const tools: string[] = [];
 
-    if (query.includes('锁') || query.includes('lock') || query.includes('contention')) {
-      tools.push('analyze_lock_contention');
+    // Prefer in-range binder analysis when time range is provided (e.g. jank interval).
+    tools.push(hasTimeRange ? 'analyze_binder_range' : 'analyze_binder_overview');
+
+    const evidenceText = (context.evidenceNeeded || []).join(' ').toLowerCase();
+    if (
+      query.includes('锁') ||
+      query.includes('lock') ||
+      query.includes('contention') ||
+      evidenceText.includes('lock') ||
+      evidenceText.includes('contention') ||
+      evidenceText.includes('锁')
+    ) {
+      tools.push(hasTimeRange ? 'analyze_lock_range' : 'analyze_lock_contention');
     }
 
     return [...new Set(tools)];

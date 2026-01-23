@@ -116,10 +116,10 @@ describe('scrolling_analysis skill', () => {
         const result = await evaluator.executeStep('performance_summary');
         const summary = result.data[0];
 
-        // actual_fps 应该是正数，通常在 30-144 之间
+        // actual_fps 应该是正数；高刷设备/trace 可能超过 200
         if (summary.actual_fps !== null) {
           expect(summary.actual_fps).toBeGreaterThan(0);
-          expect(summary.actual_fps).toBeLessThanOrEqual(200);
+          expect(summary.actual_fps).toBeLessThanOrEqual(240);
         }
       }, 30000);
 
@@ -242,11 +242,11 @@ describe('scrolling_analysis skill', () => {
 
       expect(result.success).toBe(true);
       expect(result.skillId).toBe('scrolling_analysis');
-    }, 120000); // 2 分钟超时，因为完整执行包括 iterator
+    }, 120000);
 
     it('should have overview layer results', async () => {
       const result = await evaluator.executeSkill();
-      const overview = result.layers.overview || result.layers.L1;
+      const overview = result.layers.overview;
 
       // 应该有 vsync_config 和 performance_summary
       expect(overview).toBeDefined();
@@ -255,11 +255,22 @@ describe('scrolling_analysis skill', () => {
 
     it('should have list layer results', async () => {
       const result = await evaluator.executeSkill();
-      const list = result.layers.list || result.layers.L2;
+      const list = result.layers.list;
 
       // 应该有 scroll_sessions
       expect(list).toBeDefined();
       expect(Object.keys(list!).length).toBeGreaterThan(0);
+    }, 120000);
+
+    it('should support deep frame details when enabled', async () => {
+      const result = await evaluator.executeSkill({
+        enable_frame_details: true,
+        max_frames_per_session: 2,
+      });
+
+      expect(result.success).toBe(true);
+      // In heavy-jank traces, deep layer should contain per-frame iterator results.
+      expect(result.layers.deep).toBeDefined();
     }, 120000);
 
     it('should produce consistent normalized output', async () => {

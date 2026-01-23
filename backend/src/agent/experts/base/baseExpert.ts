@@ -35,7 +35,13 @@ import {
   getDecisionTree,
 } from '../../decision';
 import { ArchitectureInfo } from '../../detectors';
-import { Finding } from '../../types';
+import { AgentPhase, Finding, StageResult } from '../../types';
+import { CheckpointManager } from '../../state';
+import {
+  createForkManager,
+  getForkManager,
+  setForkManager,
+} from '../../fork';
 
 /**
  * Abstract base class for domain experts
@@ -253,13 +259,87 @@ export abstract class BaseExpert extends EventEmitter implements BaseExpertInter
     this.log(`Forking session for: ${request.reason}`);
     this.emit('fork:start', { request, input });
 
-    // TODO: Implement actual session forking via ForkManager
-    // For now, return a placeholder
-    return {
-      forkSessionId: `fork_${Date.now()}`,
-      success: true,
-      findings: [],
-    };
+    try {
+      let forkManager = getForkManager();
+      const checkpointManager = new CheckpointManager();
+
+      if (!forkManager) {
+        forkManager = createForkManager(checkpointManager);
+        setForkManager(forkManager);
+      }
+
+      forkManager.initializeSession(input.sessionId, 'main');
+      forkManager.registerContext(input.sessionId, {
+        sessionId: input.sessionId,
+        traceId: input.traceId,
+        query: input.query,
+        intent: input.intent as any,
+        previousResults: [],
+        traceProcessorService: input.traceProcessorService,
+        package: input.packageName,
+        timeRange: input.timeRange,
+      });
+
+      let checkpointId: string | undefined;
+      if (request.context && typeof request.context.checkpointId === 'string') {
+        checkpointId = request.context.checkpointId;
+      } else {
+        const latest = await checkpointManager.getLatestCheckpoint(input.sessionId);
+        if (latest) {
+          checkpointId = latest.id;
+        }
+      }
+
+      if (!checkpointId) {
+        const checkpoint = await checkpointManager.createCheckpoint(
+          input.sessionId,
+          'expert_fork',
+          AgentPhase.EXECUTING,
+          [] as StageResult[],
+          input.previousFindings || [],
+          {
+            query: input.query,
+            traceId: input.traceId,
+            metadata: {
+              forkReason: request.reason,
+              forkFocus: request.focus,
+              forkHypothesis: request.hypothesis,
+            },
+          }
+        );
+        checkpointId = checkpoint.id;
+      }
+
+      const forkResult = await forkManager.fork(input.sessionId, {
+        checkpointId,
+        branchName: request.focus || request.reason || 'fork',
+        description: request.reason,
+        hypothesis: request.hypothesis,
+        inheritConfig: true,
+      });
+
+      if (!forkResult.success) {
+        return {
+          forkSessionId: '',
+          success: false,
+          findings: [],
+          error: forkResult.error || 'Fork failed',
+        };
+      }
+
+      return {
+        forkSessionId: forkResult.forkedSessionId,
+        success: true,
+        findings: [],
+      };
+    } catch (error: any) {
+      return {
+        forkSessionId: '',
+        success: false,
+        findings: [],
+        error: error.message || 'Fork failed',
+      };
+    }
   }
 
   /**

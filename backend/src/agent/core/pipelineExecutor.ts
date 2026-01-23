@@ -33,7 +33,6 @@ import {
 import {
   ContextBuilder,
   getContextBuilder,
-  IsolatedContext,
 } from '../context';
 import { pipelineConfig as pipeConfig } from '../../config';
 
@@ -114,6 +113,7 @@ export class PipelineExecutor extends EventEmitter {
   private executors: Map<string, StageExecutor>;
   private isRunning: boolean = false;
   private isPaused: boolean = false;
+  private isCancelled: boolean = false;
   private startTime: number = 0;
   private hookRegistry: HookRegistry;
   private hookContext: HookContext | null = null;
@@ -126,7 +126,9 @@ export class PipelineExecutor extends EventEmitter {
   ) {
     super();
 
-    const stages = (config.stages && config.stages.length > 0) ? config.stages : DEFAULT_STAGES;
+    // Honor an explicitly provided stage list (including an empty list), and fall back to defaults
+    // only when stages are omitted.
+    const stages = (config.stages !== undefined) ? config.stages : DEFAULT_STAGES;
 
     this.config = {
       stages,
@@ -155,8 +157,11 @@ export class PipelineExecutor extends EventEmitter {
   /**
    * 注册阶段执行器
    */
-  registerExecutor(stageId: string, executor: StageExecutor): void {
-    this.executors.set(stageId, executor);
+  registerExecutor(key: string, executor: StageExecutor): void {
+    // `key` can be either:
+    // - a concrete stage id (e.g. "plan", "execute") for stage-specific executors, or
+    // - an agentType (e.g. "planner", "worker") for reusable executors.
+    this.executors.set(key, executor);
   }
 
   /**
@@ -186,6 +191,7 @@ export class PipelineExecutor extends EventEmitter {
 
     this.isRunning = true;
     this.isPaused = false;
+    this.isCancelled = false;
     this.startTime = Date.now();
 
     // 初始化 hook context
@@ -201,9 +207,15 @@ export class PipelineExecutor extends EventEmitter {
     try {
       // 获取执行顺序
       const executionOrder = this.getExecutionOrder(startFromStage);
+      const totalStages = executionOrder.length;
+      let startedStageCount = 0;
 
-      for (let i = 0; i < executionOrder.length; i++) {
+      for (let i = 0; i < executionOrder.length;) {
         const stage = executionOrder[i];
+
+        if (this.isCancelled) {
+          return this.createErrorResult(completedStages, failedStages, 'Pipeline cancelled');
+        }
 
         // 检查是否暂停
         if (this.isPaused) {
@@ -217,26 +229,90 @@ export class PipelineExecutor extends EventEmitter {
           );
         }
 
-        // 检查依赖
-        const dependenciesMet = await this.waitForDependencies(stage);
-        if (!dependenciesMet) {
-          failedStages.push(stage.id);
+        // 并行执行：将连续可并行阶段聚合为一组并发执行
+        if (this.config.enableParallelization && stage.canParallelize) {
+          const group: PipelineStage[] = [];
+          let j = i;
+
+          while (j < executionOrder.length && executionOrder[j].canParallelize) {
+            const candidate = executionOrder[j];
+
+            // 如果候选阶段依赖于当前 group 内阶段，则不能并行，结束本组，留给下一轮执行
+            if (group.some(s => candidate.dependencies.includes(s.id))) {
+              break;
+            }
+
+            const dependenciesMet = await this.waitForDependencies(candidate);
+            if (!dependenciesMet) {
+              // 依赖不满足（缺失/失败）则跳过该阶段
+              failedStages.push(candidate.id);
+              j++;
+              continue;
+            }
+
+            callbacks?.onStageStart?.(candidate);
+            this.emit('stageStart', candidate);
+
+            const progress = this.calculateProgress(startedStageCount, totalStages, candidate.id);
+            startedStageCount++;
+            callbacks?.onProgress?.(progress);
+            this.emit('progress', progress);
+
+            group.push(candidate);
+            j++;
+          }
+
+          const results = await this.executeParallel(group, context, callbacks);
+
+          for (let k = 0; k < results.length; k++) {
+            const result = results[k];
+            const stageForResult = group[k];
+
+            this.stageResults.set(result.stageId, result);
+
+            if (result.success) {
+              completedStages.push(result.stageId);
+              callbacks?.onStageComplete?.(stageForResult, result);
+              this.config.onStageComplete?.(stageForResult, result);
+              this.emit('stageComplete', { stage: stageForResult, result });
+            } else {
+              failedStages.push(result.stageId);
+
+              const decision = await this.handleStageError(stageForResult, result.error!, callbacks);
+
+              if (decision === 'abort') {
+                throw new PipelineAbortError(`Pipeline aborted at stage: ${result.stageId}`);
+              } else if (decision === 'ask_user') {
+                return this.createPausedResult(completedStages, failedStages, result.stageId);
+              }
+            }
+          }
+
+          if (this.isCancelled) {
+            return this.createErrorResult(completedStages, failedStages, 'Pipeline cancelled');
+          }
+
+          i = j;
           continue;
         }
 
-        // 触发开始事件
+        // 串行执行单个阶段
+        const dependenciesMet = await this.waitForDependencies(stage);
+        if (!dependenciesMet) {
+          failedStages.push(stage.id);
+          i++;
+          continue;
+        }
+
         callbacks?.onStageStart?.(stage);
         this.emit('stageStart', stage);
 
-        // 报告进度
-        const progress = this.calculateProgress(i, executionOrder.length);
+        const progress = this.calculateProgress(startedStageCount, totalStages, stage.id);
+        startedStageCount++;
         callbacks?.onProgress?.(progress);
         this.emit('progress', progress);
 
-        // 执行阶段
         const result = await this.executeStage(stage, context, callbacks);
-
-        // 保存结果
         this.stageResults.set(stage.id, result);
 
         if (result.success) {
@@ -247,7 +323,6 @@ export class PipelineExecutor extends EventEmitter {
         } else {
           failedStages.push(stage.id);
 
-          // 处理错误
           const decision = await this.handleStageError(stage, result.error!, callbacks);
 
           if (decision === 'abort') {
@@ -255,8 +330,13 @@ export class PipelineExecutor extends EventEmitter {
           } else if (decision === 'ask_user') {
             return this.createPausedResult(completedStages, failedStages, stage.id);
           }
-          // 'retry' 和 'skip' 继续执行
         }
+
+        if (this.isCancelled) {
+          return this.createErrorResult(completedStages, failedStages, 'Pipeline cancelled');
+        }
+
+        i++;
       }
 
       return this.createSuccessResult(completedStages, failedStages);
@@ -298,12 +378,6 @@ export class PipelineExecutor extends EventEmitter {
     const startTime = Date.now();
     let retryCount = 0;
 
-    // Debug: Log incoming context
-    console.log(`[PipelineExecutor] executeStage(${stage.id}) called`);
-    console.log(`[PipelineExecutor] input context keys: ${Object.keys(context).join(', ')}`);
-    console.log(`[PipelineExecutor] input context.traceProcessorService: ${!!context.traceProcessorService}`);
-    console.log(`[PipelineExecutor] input context.traceId: ${context.traceId}`);
-
     // === SubAgent Start Pre-Hook ===
     const subAgentEventData: SubAgentEventData = {
       agentId: stage.id,
@@ -335,9 +409,13 @@ export class PipelineExecutor extends EventEmitter {
     while (retryCount <= stage.maxRetries) {
       try {
         // 获取执行器
-        const executor = this.executors.get(stage.id);
+        const executor =
+          this.executors.get(stage.id) ??
+          this.executors.get(stage.agentType);
         if (!executor) {
-          throw new Error(`No executor registered for stage: ${stage.id}`);
+          throw new Error(
+            `No executor registered for stage: ${stage.id} (type: ${stage.agentType})`
+          );
         }
 
         // 准备上下文，包含之前阶段的结果
@@ -349,12 +427,7 @@ export class PipelineExecutor extends EventEmitter {
         // 应用 Context 隔离
         const isolatedContext = this.contextBuilder.buildContext(enrichedContext, stage);
 
-        // Debug: Log enriched context
-        console.log(`[PipelineExecutor] enrichedContext keys: ${Object.keys(enrichedContext).join(', ')}`);
-        console.log(`[PipelineExecutor] enrichedContext.traceProcessorService: ${!!enrichedContext.traceProcessorService}`);
-        if ((isolatedContext as IsolatedContext).isIsolated) {
-          console.log(`[PipelineExecutor] Context isolated with policy: ${(isolatedContext as IsolatedContext).appliedPolicy}`);
-        }
+        // Keep execution output quiet in production/test runs; tracing should be done via events/hooks.
 
         // 创建超时 Promise
         const timeoutPromise = new Promise<never>((_, reject) => {
@@ -618,7 +691,7 @@ export class PipelineExecutor extends EventEmitter {
    * 取消执行
    */
   cancel(): void {
-    this.isRunning = false;
+    this.isCancelled = true;
     this.emit('cancelled');
   }
 
@@ -661,16 +734,18 @@ export class PipelineExecutor extends EventEmitter {
   /**
    * 计算进度
    */
-  private calculateProgress(currentIndex: number, totalStages: number): PipelineProgress {
+  private calculateProgress(
+    currentIndex: number,
+    totalStages: number,
+    stageId?: string
+  ): PipelineProgress {
     const elapsedMs = Date.now() - this.startTime;
     const avgStageTime = currentIndex > 0 ? elapsedMs / currentIndex : 10000;
     const remainingStages = totalStages - currentIndex;
     const estimatedRemainingMs = remainingStages * avgStageTime;
 
-    const stage = Array.from(this.stages.values())[currentIndex];
-
     return {
-      currentStage: stage?.id || 'unknown',
+      currentStage: stageId || 'unknown',
       completedStages: currentIndex,
       totalStages,
       elapsedMs,
@@ -754,6 +829,7 @@ export class PipelineExecutor extends EventEmitter {
     this.stageResults.clear();
     this.isRunning = false;
     this.isPaused = false;
+    this.isCancelled = false;
     this.emit('reset');
   }
 }

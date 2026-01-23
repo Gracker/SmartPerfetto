@@ -118,14 +118,24 @@ steps:
     type: atomic
     name: "帧统计概览"
     sql: |
+      WITH frames AS (
+        SELECT
+          a.ts,
+          a.dur,
+          a.jank_type
+        FROM actual_frame_timeline_slice a
+        JOIN process p ON a.upid = p.upid
+        WHERE
+          a.surface_frame_token IS NOT NULL
+          AND (p.name GLOB '${package}*' OR '${package}' = '')
+      )
       SELECT
         COUNT(*) AS total_frames,
         SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) AS jank_count,
         ROUND(SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) AS jank_rate,
-        ROUND(1000.0 * COUNT(*) / ((MAX(ts_end) - MIN(ts)) / 1e9), 1) AS avg_fps,
-        ROUND(AVG(dur_frame_ms), 1) AS avg_frame_ms
-      FROM android_frames_overrun_timeline_metrics
-      WHERE package_name LIKE '%${package}%'
+        ROUND(1e9 * COUNT(*) / NULLIF((MAX(ts + dur) - MIN(ts)), 0), 1) AS avg_fps,
+        ROUND(AVG(dur) / 1e6, 1) AS avg_frame_ms
+      FROM frames
     display:
       level: key
       layer: overview
@@ -150,15 +160,29 @@ steps:
     type: atomic
     name: "卡顿类型分布"
     sql: |
+      WITH janky AS (
+        SELECT
+          a.jank_type,
+          a.dur
+        FROM actual_frame_timeline_slice a
+        JOIN process p ON a.upid = p.upid
+        WHERE
+          a.surface_frame_token IS NOT NULL
+          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.jank_type != 'None'
+      )
       SELECT
         jank_type,
-        jank_cause,
+        CASE
+          WHEN android_is_sf_jank_type(jank_type) THEN 'SurfaceFlinger'
+          WHEN android_is_app_jank_type(jank_type) THEN 'App'
+          WHEN jank_type GLOB '*Buffer Stuffing*' THEN 'Buffer'
+          ELSE 'Other'
+        END AS jank_cause,
         COUNT(*) AS count,
-        ROUND(AVG(dur_frame_ms), 1) AS avg_dur_ms,
-        ROUND(MAX(dur_frame_ms), 1) AS max_dur_ms
-      FROM android_frames_overrun_timeline_metrics
-      WHERE package_name LIKE '%${package}%'
-        AND jank_type != 'None'
+        ROUND(AVG(dur) / 1e6, 1) AS avg_dur_ms,
+        ROUND(MAX(dur) / 1e6, 1) AS max_dur_ms
+      FROM janky
       GROUP BY jank_type, jank_cause
       ORDER BY count DESC
     display:
@@ -179,17 +203,21 @@ steps:
     sql: |
       SELECT
         'MainThread' AS thread,
-        ROUND(AVG(dur_ui_thread_ms), 1) AS avg_ms,
-        SUM(CASE WHEN dur_ui_thread_ms > 8 THEN 1 ELSE 0 END) AS overrun_count
-      FROM android_frames_overrun_timeline_metrics
-      WHERE package_name LIKE '%${package}%'
+        ROUND(AVG(s.dur) / 1e6, 1) AS avg_ms,
+        SUM(CASE WHEN s.dur > 8e6 THEN 1 ELSE 0 END) AS overrun_count
+      FROM android_frames_choreographer_do_frame f
+      JOIN slice s ON f.id = s.id
+      JOIN process p ON f.upid = p.upid
+      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
       UNION ALL
       SELECT
         'RenderThread' AS thread,
-        ROUND(AVG(dur_render_thread_ms), 1) AS avg_ms,
-        SUM(CASE WHEN dur_render_thread_ms > 8 THEN 1 ELSE 0 END) AS overrun_count
-      FROM android_frames_overrun_timeline_metrics
-      WHERE package_name LIKE '%${package}%'
+        ROUND(AVG(s.dur) / 1e6, 1) AS avg_ms,
+        SUM(CASE WHEN s.dur > 8e6 THEN 1 ELSE 0 END) AS overrun_count
+      FROM android_frames_draw_frame f
+      JOIN slice s ON f.id = s.id
+      JOIN process p ON f.upid = p.upid
+      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
     display:
       level: detail
       layer: overview
@@ -202,18 +230,56 @@ steps:
     type: atomic
     name: "最差帧列表"
     sql: |
+      WITH janky AS (
+        SELECT
+          CAST(a.name AS INTEGER) AS frame_id,
+          a.ts,
+          a.dur / 1e6 AS dur_ms,
+          a.jank_type,
+          CASE
+            WHEN android_is_sf_jank_type(a.jank_type) THEN 'SurfaceFlinger'
+            WHEN android_is_app_jank_type(a.jank_type) THEN 'App'
+            WHEN a.jank_type GLOB '*Buffer Stuffing*' THEN 'Buffer'
+            ELSE 'Other'
+          END AS jank_cause,
+          a.upid
+        FROM actual_frame_timeline_slice a
+        JOIN process p ON a.upid = p.upid
+        WHERE
+          a.surface_frame_token IS NOT NULL
+          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND a.jank_type != 'None'
+      ),
+      main_ms AS (
+        SELECT
+          frame_id,
+          upid,
+          MIN(s.dur) / 1e6 AS main_ms
+        FROM android_frames_choreographer_do_frame f
+        JOIN slice s ON f.id = s.id
+        GROUP BY frame_id, upid
+      ),
+      render_ms AS (
+        SELECT
+          frame_id,
+          upid,
+          MIN(s.dur) / 1e6 AS render_ms
+        FROM android_frames_draw_frame f
+        JOIN slice s ON f.id = s.id
+        GROUP BY frame_id, upid
+      )
       SELECT
-        frame_id,
-        ts,
-        jank_type,
-        jank_cause,
-        ROUND(dur_frame_ms, 1) AS dur_ms,
-        ROUND(dur_ui_thread_ms, 1) AS main_ms,
-        ROUND(dur_render_thread_ms, 1) AS render_ms
-      FROM android_frames_overrun_timeline_metrics
-      WHERE package_name LIKE '%${package}%'
-        AND jank_type != 'None'
-      ORDER BY dur_frame_ms DESC
+        j.frame_id,
+        j.ts,
+        j.jank_type,
+        j.jank_cause,
+        ROUND(j.dur_ms, 1) AS dur_ms,
+        ROUND(COALESCE(m.main_ms, 0), 1) AS main_ms,
+        ROUND(COALESCE(r.render_ms, 0), 1) AS render_ms
+      FROM janky j
+      LEFT JOIN main_ms m ON m.frame_id = j.frame_id AND m.upid = j.upid
+      LEFT JOIN render_ms r ON r.frame_id = j.frame_id AND r.upid = j.upid
+      ORDER BY j.dur_ms DESC
       LIMIT 20
     display:
       level: detail

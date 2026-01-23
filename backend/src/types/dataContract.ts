@@ -3,7 +3,7 @@
  *
  * This file defines the SINGLE SOURCE OF TRUTH for data structures
  * shared between:
- * - Backend (SkillExecutor, MasterOrchestrator, SSE streaming)
+ * - Backend (SkillExecutor, AgentDrivenOrchestrator, SSE streaming)
  * - Frontend (AIPanel, SqlResultTable)
  * - HTML Report Generator
  *

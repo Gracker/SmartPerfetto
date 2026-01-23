@@ -423,18 +423,53 @@ export class TraceProcessorFactory {
       }
     }
 
-    // Create new processor
-    console.log(`[TraceProcessorFactory] Creating new HTTP-mode processor for trace ${traceId}`);
-    const processor = new WorkingTraceProcessor(traceId, tracePath);
+    const maxAttempts = 8;
+    let lastError: any;
 
-    processor.on('error', () => {
-      this.processors.delete(traceId);
-    });
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      // Create new processor (allocates a port from the pool)
+      console.log(`[TraceProcessorFactory] Creating new HTTP-mode processor for trace ${traceId} (attempt ${attempt}/${maxAttempts})`);
+      const processor = new WorkingTraceProcessor(traceId, tracePath);
 
-    this.processors.set(traceId, processor);
-    await processor.initialize();
+      processor.on('error', () => {
+        this.processors.delete(traceId);
+      });
 
-    return processor;
+      this.processors.set(traceId, processor);
+
+      try {
+        await processor.initialize();
+        return processor;
+      } catch (error: any) {
+        lastError = error;
+
+        // Ensure we don't keep a failed processor around.
+        try {
+          processor.destroy();
+        } catch {
+          // ignore
+        }
+        this.processors.delete(traceId);
+
+        // Retry with a different port if the chosen port is already in use by another process.
+        const msg = String(error?.message || '');
+        if (msg.startsWith('PORT_IN_USE:')) {
+          const portStr = msg.split(':')[1];
+          const port = Number(portStr);
+          if (Number.isFinite(port)) {
+            getPortPool().blockPort(port);
+          } else {
+            // Fallback: release any allocation for this traceId so next attempt can allocate again.
+            getPortPool().release(traceId);
+          }
+          continue;
+        }
+
+        throw error;
+      }
+    }
+
+    throw lastError || new Error('Failed to create trace processor');
   }
 
   static get(traceId: string): WorkingTraceProcessor | undefined {

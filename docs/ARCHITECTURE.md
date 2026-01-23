@@ -1,6 +1,8 @@
 # SmartPerfetto 系统架构图
 
 > 本文档详细描述 SmartPerfetto AI 分析平台的完整系统架构
+> 
+> ⚠️ 说明：当前仅保留 AgentDrivenOrchestrator 主链路，历史内容若涉及 Master/PerfettoAnalysisOrchestrator 已不再适用。
 
 ## 1. 系统总览
 
@@ -105,69 +107,13 @@ AIPanel (ai_panel.ts)
 
 ### 3.0 Orchestrator 集成架构
 
-SmartPerfetto 包含两套编排系统，通过 OrchestratorBridge 统一集成：
+已统一为单一主链路（Agent-Driven Orchestrator）：
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Orchestrator Integration                            │
-│                                                                              │
-│  Frontend (AIPanel)                                                          │
-│      │                                                                       │
-│      │ POST /api/trace-analysis/analyze                                      │
-│      ▼                                                                       │
-│  ┌─────────────────────────────────────────────────────────────────────────┐│
-│  │  traceAnalysisRoutes.ts                                                 ││
-│  │      │                                                                  ││
-│  │      ▼                                                                  ││
-│  │  ┌─────────────────────────────────────────────────────────────────┐   ││
-│  │  │  USE_MASTER_ORCHESTRATOR = process.env.USE_MASTER_ORCHESTRATOR  │   ││
-│  │  └──────────────────────┬─────────────────────┬────────────────────┘   ││
-│  │                         │                     │                         ││
-│  │              false (默认)│                     │ true                    ││
-│  │                         ▼                     ▼                         ││
-│  │  ┌──────────────────────────────┐  ┌────────────────────────────────┐  ││
-│  │  │ PerfettoAnalysisOrchestrator │  │     OrchestratorBridge         │  ││
-│  │  │                              │  │                                │  ││
-│  │  │  功能:                       │  │  1. 会话适配                   │  ││
-│  │  │  - Skill Engine (YAML)       │  │  2. 事件桥接 (EventEmitter→SSE)│  ││
-│  │  │  - SQL 生成与重试            │  │  3. 结果转换                   │  ││
-│  │  │  - SSE 分层结果              │  │                                │  ││
-│  │  │  - 诊断规则                  │  │         │                      │  ││
-│  │  │  - HTML 报告                 │  │         ▼                      │  ││
-│  │  │                              │  │  ┌──────────────────────────┐  │  ││
-│  │  └──────────────────────────────┘  │  │   MasterOrchestrator     │  │  ││
-│  │                                    │  │                          │  │  ││
-│  │                                    │  │   增强功能:              │  │  ││
-│  │                                    │  │   - Hooks System ✨      │  │  ││
-│  │                                    │  │   - Context Isolation ✨ │  │  ││
-│  │                                    │  │   - Context Compaction ✨│  │  ││
-│  │                                    │  │   - Session Fork ✨      │  │  ││
-│  │                                    │  └──────────────────────────┘  │  ││
-│  │                                    └────────────────────────────────┘  ││
-│  └─────────────────────────────────────────────────────────────────────────┘│
-│                                                                              │
-│  两套系统共享:                                                                │
-│  - AnalysisSessionService (会话管理)                                         │
-│  - TraceProcessorService (Trace 查询)                                        │
-│  - SSE 事件格式 (前端兼容)                                                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+- 路由：`/api/agent/analyze`
+- SSE：`/api/agent/:sessionId/stream`
+- 任务编排：Task Graph（domain/time_range/evidence_needed）
+- 子 Agent：仅产出证据与指标，父 Agent 汇总归因
 
-**切换方式:**
-```bash
-# 使用旧架构 (默认)
-npm run dev
-
-# 使用新架构 (MasterOrchestrator + 增强功能)
-USE_MASTER_ORCHESTRATOR=true npm run dev
-```
-
-**关键文件:**
-| 组件 | 文件 |
-|------|------|
-| OrchestratorBridge | `backend/src/services/orchestratorBridge.ts` |
-| PerfettoAnalysisOrchestrator | `backend/src/services/perfettoAnalysisOrchestrator.ts` |
-| 路由分流逻辑 | `backend/src/routes/traceAnalysisRoutes.ts` |
 
 ### 3.1 API 路由层
 
@@ -182,7 +128,7 @@ USE_MASTER_ORCHESTRATOR=true npm run dev
 │  │  │ traceAnalysisRoutes │  │ agentRoutes │  │ traceRoutes          │ │    │
 │  │  │ (前端主要使用)       │  │ (直接Agent) │  │                      │ │    │
 │  │  │                     │  │             │  │                      │ │    │
-│  │  │ /api/trace-analysis │  │ /api/agent  │  │ /api/trace           │ │    │
+│  │  │ /api/agent │  │ /api/agent  │  │ /api/trace           │ │    │
 │  │  │ - /analyze ⭐       │  │ - /analyze  │  │ - /upload            │ │    │
 │  │  │ - /sessions/:id/    │  │ - /stream   │  │ - /status            │ │    │
 │  │  │   stream            │  │ - /respond  │  │                      │ │    │

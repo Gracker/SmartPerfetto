@@ -63,6 +63,9 @@ export interface DisplayConfig {
   columns?: string[];           // 指定展示哪些列
   aggregate?: boolean;          // 是否汇总迭代结果
   highlight?: HighlightRule[];  // 高亮规则
+  expandable?: boolean;         // 是否支持展开查看详细分析（用于 L2 列表关联 L4 deep 数据）
+  metadataFields?: string[];    // 提取到元数据的字段（这些字段从列表移到标题显示）
+  hidden_columns?: string[];    // 隐藏的列（保留数据但不显示）
 }
 
 export interface HighlightRule {
@@ -404,6 +407,12 @@ export interface DisplayResult {
   highlight?: HighlightRule[];
   /** 原始 SQL 查询（用于 HTML 报告生成） */
   sql?: string;
+  /** 是否支持展开查看详细分析（用于 L2 列表关联 L4 deep 数据） */
+  expandable?: boolean;
+  /** 提取到元数据的字段（这些字段从列表移到标题显示） */
+  metadataFields?: string[];
+  /** 隐藏的列（保留数据但不显示） */
+  hidden_columns?: string[];
 }
 
 export interface DiagnosticResult {

@@ -1,6 +1,8 @@
 # SmartPerfetto Agent 系统改进计划
 
 > 本文档基于 `INTELLIGENT_AGENT_DESIGN.md` 的目标设计，结合现有 `ARCHITECTURE.md` 和 `FLOW.md` 的实现，制定从"指令执行器"到"智能分析专家"的改进路线图。
+> 
+> ⚠️ 说明：当前仅保留 AgentDrivenOrchestrator 主链路，文档中的 Master/OrchestratorBridge 相关内容已过时。
 
 ## 1. 差距分析 (Gap Analysis)
 

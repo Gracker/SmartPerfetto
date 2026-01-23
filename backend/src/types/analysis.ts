@@ -203,10 +203,76 @@ export interface AnalysisResult {
 // ============================================================================
 
 /**
+ * SSE Event Type Enum
+ *
+ * Centralized definition of all SSE event types to avoid string literals
+ * scattered across the codebase. This improves type safety and makes
+ * refactoring easier.
+ *
+ * Usage:
+ *   import { SSEEventType } from '../types/analysis';
+ *   emitSSE(sessionId, { type: SSEEventType.PROGRESS, ... });
+ */
+export enum SSEEventType {
+  // === Connection Events ===
+  CONNECTED = 'connected',
+
+  // === Progress Events ===
+  PROGRESS = 'progress',
+
+  // === SQL Events ===
+  SQL_GENERATED = 'sql_generated',
+  SQL_EXECUTED = 'sql_executed',
+
+  // === Step Events ===
+  STEP_COMPLETED = 'step_completed',
+
+  // === Skill Events ===
+  SKILL_SECTION = 'skill_section',
+  SKILL_DIAGNOSTICS = 'skill_diagnostics',
+  SKILL_LAYERED_RESULT = 'skill_layered_result',
+  /** @deprecated Use SKILL_LAYERED_RESULT instead */
+  SKILL_DATA = 'skill_data',
+
+  // === Agent Events ===
+  WORKER_THOUGHT = 'worker_thought',
+  THOUGHT = 'thought',
+  FINDING = 'finding',
+  CONCLUSION = 'conclusion',
+
+  // === Circuit Breaker Events ===
+  CIRCUIT_BREAKER = 'circuit_breaker',
+
+  // === Terminal Events ===
+  ANALYSIS_COMPLETED = 'analysis_completed',
+  ERROR = 'error',
+
+  // === v2.0 DataEnvelope Events ===
+  DATA = 'data',
+}
+
+/**
+ * Streaming update types from AgentDrivenOrchestrator
+ * These are internal event types before SSE conversion
+ */
+export enum StreamingUpdateType {
+  PROGRESS = 'progress',
+  FINDING = 'finding',
+  SKILL_LAYERED_RESULT = 'skill_layered_result',
+  /** @deprecated Use SKILL_LAYERED_RESULT instead. Will be removed in v3.0 */
+  SKILL_DATA = 'skill_data',
+  DATA = 'data',
+  CONCLUSION = 'conclusion',
+  ERROR = 'error',
+  WORKER_THOUGHT = 'worker_thought',
+  THOUGHT = 'thought',
+}
+
+/**
  * Base SSE event
  */
 export interface SSEEvent {
-  type: string;
+  type: SSEEventType | string;  // Allow string for backward compatibility
   timestamp: number;
   data: any;
 }
@@ -357,6 +423,15 @@ export interface SkillLayeredResultEvent extends SSEEvent {
   };
 }
 
+export interface DataEvent extends SSEEvent {
+  type: SSEEventType.DATA | 'data';
+  data: {
+    id?: string;
+    envelope: any;
+    timestamp?: number;
+  };
+}
+
 export type AnalysisSSEEvent =
   | SQLGeneratedEvent
   | SQLExecutedEvent
@@ -366,7 +441,8 @@ export type AnalysisSSEEvent =
   | ProgressEvent
   | SkillSectionEvent
   | SkillDiagnosticsEvent
-  | SkillLayeredResultEvent;
+  | SkillLayeredResultEvent
+  | DataEvent;
 
 // ============================================================================
 // Orchestrator Types

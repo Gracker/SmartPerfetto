@@ -48,6 +48,10 @@ export class CircuitBreaker extends EventEmitter {
   private lastForceCloseTime: number = 0;
   private readonly FORCE_CLOSE_COOLDOWN_MS = 30 * 1000; // 30 秒冷却期
 
+  // 【P2 Fix】forceClose 次数限制 - 防止用户无限循环选择 'continue'
+  private forceCloseCount: number = 0;
+  private readonly MAX_FORCE_CLOSE_COUNT = 5; // 单个会话最多允许 5 次 forceClose
+
   // 【P1 Fix】半开状态成功计数（用于渐进式恢复）
   private halfOpenSuccessCount: number = 0;
   private readonly HALF_OPEN_SUCCESS_THRESHOLD = 3; // 需要 3 次成功才完全关闭
@@ -60,7 +64,7 @@ export class CircuitBreaker extends EventEmitter {
 
   private createInitialState(): CircuitBreakerState {
     return {
-      state: 'closed',
+      state: CircuitState.CLOSED,
       retryCounters: new Map(),
       iterationCounters: new Map(),
       failureHistory: new Map(),
@@ -78,19 +82,33 @@ export class CircuitBreaker extends EventEmitter {
   }
 
   get isTripped(): boolean {
-    return this.state.state === 'open';
+    return this.state.state === CircuitState.OPEN;
   }
 
   get isHalfOpen(): boolean {
-    return this.state.state === 'half-open';
+    return this.state.state === CircuitState.HALF_OPEN;
   }
 
   get isClosed(): boolean {
-    return this.state.state === 'closed';
+    return this.state.state === CircuitState.CLOSED;
   }
 
   get tripReason(): string | undefined {
     return this.state.tripReason;
+  }
+
+  /**
+   * 【P2 Fix】获取当前 forceClose 调用次数
+   */
+  get forceCloseCallCount(): number {
+    return this.forceCloseCount;
+  }
+
+  /**
+   * 【P2 Fix】检查是否已达到 forceClose 次数上限
+   */
+  get isForceCloseLimitReached(): boolean {
+    return this.forceCloseCount >= this.MAX_FORCE_CLOSE_COUNT;
   }
 
   // ==========================================================================
@@ -153,7 +171,7 @@ export class CircuitBreaker extends EventEmitter {
     this.state.retryCounters.set(agentId, 0);
 
     // 如果处于半开状态，检查是否可以关闭断路器
-    if (this.state.state === 'half-open') {
+    if (this.state.state === CircuitState.HALF_OPEN) {
       this.checkHalfOpenRecovery();
     }
 
@@ -168,7 +186,7 @@ export class CircuitBreaker extends EventEmitter {
    * 触发熔断
    */
   private trip(reason: string): CircuitDecision {
-    this.state.state = 'open';
+    this.state.state = CircuitState.OPEN;
     this.state.tripReason = reason;
     this.state.lastStateChange = Date.now();
 
@@ -219,7 +237,7 @@ export class CircuitBreaker extends EventEmitter {
    * 进入半开状态
    */
   private halfOpen(): void {
-    this.state.state = 'half-open';
+    this.state.state = CircuitState.HALF_OPEN;
     this.state.lastStateChange = Date.now();
     this.emit('halfOpen');
   }
@@ -228,7 +246,7 @@ export class CircuitBreaker extends EventEmitter {
    * 关闭断路器（恢复正常）
    */
   private close(): void {
-    this.state.state = 'closed';
+    this.state.state = CircuitState.CLOSED;
     this.state.tripReason = undefined;
     this.state.lastStateChange = Date.now();
     this.emit('closed');
@@ -255,7 +273,7 @@ export class CircuitBreaker extends EventEmitter {
    */
   private scheduleCooldown(): void {
     setTimeout(() => {
-      if (this.state.state === 'open') {
+      if (this.state.state === CircuitState.OPEN) {
         this.halfOpen();
       }
     }, this.config.cooldownMs);
@@ -359,10 +377,10 @@ export class CircuitBreaker extends EventEmitter {
    */
   canExecute(): CircuitDecision {
     switch (this.state.state) {
-      case 'closed':
+      case CircuitState.CLOSED:
         return { action: 'continue' };
 
-      case 'open':
+      case CircuitState.OPEN:
         // 检查是否已过冷却期
         const elapsed = Date.now() - this.state.lastStateChange;
         if (elapsed >= this.config.cooldownMs) {
@@ -375,7 +393,7 @@ export class CircuitBreaker extends EventEmitter {
           context: this.getAllDiagnostics(),
         };
 
-      case 'half-open':
+      case CircuitState.HALF_OPEN:
         return { action: 'continue', reason: '断路器半开状态，测试中' };
 
       default:
@@ -405,6 +423,8 @@ export class CircuitBreaker extends EventEmitter {
     this.clearUserResponseTimeout();
     this.lastForceCloseTime = 0;
     this.halfOpenSuccessCount = 0;
+    // 【P2 Fix】重置 forceClose 计数
+    this.forceCloseCount = 0;
     this.state = this.createInitialState();
     this.emit('reset');
   }
@@ -412,8 +432,20 @@ export class CircuitBreaker extends EventEmitter {
   /**
    * 手动关闭断路器（用户干预后）
    * 【P1 Fix】添加冷却期检查，防止用户快速连续选择 'continue'
+   * 【P2 Fix】添加次数限制，防止用户无限循环选择 'continue'
    */
   forceClose(): boolean {
+    // 【P2 Fix】检查是否超过最大 forceClose 次数
+    if (this.forceCloseCount >= this.MAX_FORCE_CLOSE_COUNT) {
+      console.warn(`[CircuitBreaker] forceClose limit reached (${this.forceCloseCount}/${this.MAX_FORCE_CLOSE_COUNT})`);
+      this.emit('forceCloseLimitReached', {
+        count: this.forceCloseCount,
+        maxCount: this.MAX_FORCE_CLOSE_COUNT,
+        reason: `已达到最大继续次数 (${this.MAX_FORCE_CLOSE_COUNT} 次)，请检查分析配置或手动中止`,
+      });
+      return false;
+    }
+
     // 检查是否在冷却期内
     const timeSinceLastForceClose = Date.now() - this.lastForceCloseTime;
     if (this.lastForceCloseTime > 0 && timeSinceLastForceClose < this.FORCE_CLOSE_COOLDOWN_MS) {
@@ -429,10 +461,14 @@ export class CircuitBreaker extends EventEmitter {
     // 清理用户响应超时计时器
     this.clearUserResponseTimeout();
 
+    // 更新计数和时间
+    this.forceCloseCount++;
     this.lastForceCloseTime = Date.now();
     this.halfOpenSuccessCount = 0; // 重置半开成功计数
+
+    console.log(`[CircuitBreaker] forceClose executed (${this.forceCloseCount}/${this.MAX_FORCE_CLOSE_COUNT})`);
     this.close();
-    this.emit('forceClosed');
+    this.emit('forceClosed', { count: this.forceCloseCount, maxCount: this.MAX_FORCE_CLOSE_COUNT });
     return true;
   }
 
@@ -450,6 +486,7 @@ export class CircuitBreaker extends EventEmitter {
   /**
    * 处理用户响应
    * 【P1 Fix】清理超时计时器，处理冷却期
+   * 【P2 Fix】处理 forceClose 次数限制
    */
   handleUserResponse(decision: 'continue' | 'abort' | 'skip'): CircuitDecision {
     // 清理用户响应超时计时器
@@ -457,6 +494,14 @@ export class CircuitBreaker extends EventEmitter {
 
     switch (decision) {
       case 'continue':
+        // 【P2 Fix】先检查是否达到次数限制
+        if (this.isForceCloseLimitReached) {
+          return {
+            action: 'abort',
+            reason: `已达到最大继续次数 (${this.MAX_FORCE_CLOSE_COUNT} 次)，分析自动中止。请检查分析配置或 Trace 文件。`,
+          };
+        }
+
         const forceCloseSuccess = this.forceClose();
         if (!forceCloseSuccess) {
           // 在冷却期内，返回特殊响应

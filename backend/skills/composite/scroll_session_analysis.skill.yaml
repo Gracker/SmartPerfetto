@@ -91,7 +91,7 @@ steps:
           AND ts <= ${end_ts}
       )
       SELECT
-          session_id} AS session_id,
+        ${session_id} AS session_id,
         COUNT(*) AS total_frames,
         SUM(is_janky) AS janky_frames,
         ROUND(100.0 * SUM(is_janky) / NULLIF(COUNT(*), 0), 2) AS jank_rate,
@@ -235,11 +235,23 @@ steps:
       title: "掉帧原因分析 (区间 ${session_id})"
       format: table
       columns:
-        - frame_number
-        - phase
-        - dur_ms
-        - diagnosis
-        - confidence
+        - name: frame_number
+          label: "帧号"
+          type: number
+        - name: phase
+          label: "阶段"
+          type: string
+        - name: dur_ms
+          label: "帧耗时"
+          type: duration
+          format: duration_ms
+        - name: diagnosis
+          label: "诊断"
+          type: string
+        - name: confidence
+          label: "置信度"
+          type: percentage
+          format: percentage
     save_as: frame_diagnostics
     max_items: 10
     # 仅分析严重掉帧

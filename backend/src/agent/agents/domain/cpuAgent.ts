@@ -9,7 +9,7 @@
  * - CPU load analysis
  * - Callstack profiling
  *
- * Skills wrapped as tools:
+ * Skills wrapped as tools (lazy-loaded at executeTask time):
  * - cpu_analysis
  * - scheduling_analysis
  * - cpu_freq_timeline
@@ -19,180 +19,28 @@
  * - callstack_analysis
  */
 
-import { BaseAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
+import { BaseAgent, SkillDefinitionForAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
 import {
-  AgentConfig,
   AgentTask,
   AgentTaskContext,
-  AgentTool,
-  AgentToolContext,
-  AgentToolResult,
   Hypothesis,
 } from '../../types/agentProtocol';
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
-import {
-  createSkillExecutor,
-  skillRegistry,
-  ensureSkillRegistryInitialized,
-  SkillExecutionResult,
-  DiagnosticResult,
-} from '../../../services/skillEngine';
 
 // =============================================================================
 // CPU Agent Configuration
 // =============================================================================
 
-const CPU_SKILLS = [
-  {
-    skillId: 'cpu_analysis',
-    toolName: 'analyze_cpu_overview',
-    description: '分析 CPU 整体使用情况，包括各核心负载分布',
-  },
-  {
-    skillId: 'scheduling_analysis',
-    toolName: 'analyze_scheduling',
-    description: '分析线程调度情况，检测调度延迟和抢占',
-  },
-  {
-    skillId: 'cpu_freq_timeline',
-    toolName: 'get_cpu_freq_timeline',
-    description: '获取 CPU 频率时间线，分析降频情况',
-  },
-  {
-    skillId: 'cpu_load_in_range',
-    toolName: 'analyze_cpu_load',
-    description: '分析指定时间范围内的 CPU 负载',
-  },
-  {
-    skillId: 'cpu_slice_analysis',
-    toolName: 'analyze_cpu_slices',
-    description: '分析 CPU 时间片，找出 CPU 密集型操作',
-  },
-  {
-    skillId: 'cpu_profiling',
-    toolName: 'profile_cpu_hotspots',
-    description: 'CPU 热点分析，找出最耗 CPU 的函数',
-  },
-  {
-    skillId: 'callstack_analysis',
-    toolName: 'analyze_callstacks',
-    description: '分析调用栈，定位性能瓶颈',
-  },
+const CPU_SKILLS: SkillDefinitionForAgent[] = [
+  { skillId: 'cpu_analysis', toolName: 'analyze_cpu_overview', description: '分析 CPU 整体使用情况，包括各核心负载分布', category: 'cpu' },
+  { skillId: 'scheduling_analysis', toolName: 'analyze_scheduling', description: '分析线程调度情况，检测调度延迟和抢占', category: 'cpu' },
+  { skillId: 'cpu_freq_timeline', toolName: 'get_cpu_freq_timeline', description: '获取 CPU 频率时间线，分析降频情况', category: 'cpu' },
+  { skillId: 'cpu_load_in_range', toolName: 'analyze_cpu_load', description: '分析指定时间范围内的 CPU 负载', category: 'cpu' },
+  { skillId: 'cpu_slice_analysis', toolName: 'analyze_cpu_slices', description: '分析 CPU 时间片，找出 CPU 密集型操作', category: 'cpu' },
+  { skillId: 'cpu_profiling', toolName: 'profile_cpu_hotspots', description: 'CPU 热点分析，找出最耗 CPU 的函数', category: 'cpu' },
+  { skillId: 'callstack_analysis', toolName: 'analyze_callstacks', description: '分析调用栈，定位性能瓶颈', category: 'cpu' },
 ];
-
-function createToolExecutorForSkill(skillId: string): (params: Record<string, any>, context: AgentToolContext) => Promise<AgentToolResult> {
-  return async (params: Record<string, any>, context: AgentToolContext): Promise<AgentToolResult> => {
-    const startTime = Date.now();
-    try {
-      if (!context.traceProcessorService) {
-        return { success: false, error: 'TraceProcessorService not available', executionTimeMs: Date.now() - startTime };
-      }
-
-      const executor = createSkillExecutor(context.traceProcessorService, context.aiService);
-      const execParams: Record<string, any> = {
-        ...params,
-        package: context.packageName,
-      };
-      if (context.timeRange) {
-        execParams.start_ts = context.timeRange.start;
-        execParams.end_ts = context.timeRange.end;
-      }
-
-      const result = await executor.execute(skillId, context.traceId, execParams, {});
-      const findings = extractFindingsFromResult(result, skillId);
-      const data = extractDataFromResult(result);
-
-      return {
-        success: result.success,
-        data,
-        findings,
-        error: result.error,
-        executionTimeMs: Date.now() - startTime,
-      };
-    } catch (error: any) {
-      return { success: false, error: error.message, executionTimeMs: Date.now() - startTime };
-    }
-  };
-}
-
-function extractFindingsFromResult(result: SkillExecutionResult, skillId: string): Finding[] {
-  const findings: Finding[] = [];
-  if (result.diagnostics && result.diagnostics.length > 0) {
-    for (const diag of result.diagnostics) {
-      findings.push({
-        id: `${skillId}_${Date.now()}_${findings.length}`,
-        category: 'cpu',
-        type: 'diagnostic',
-        severity: diag.severity,
-        title: diag.diagnosis,
-        description: diag.suggestions?.join('; ') || diag.diagnosis,
-        source: skillId,
-        confidence: typeof diag.confidence === 'number' ? diag.confidence : 0.8,
-        details: diag.evidence,
-      });
-    }
-  }
-  return findings;
-}
-
-function extractDataFromResult(result: SkillExecutionResult): any {
-  if (result.displayResults && result.displayResults.length > 0) {
-    const data: Record<string, any> = {};
-    for (const dr of result.displayResults) {
-      data[dr.stepId] = dr.data;
-    }
-    return data;
-  }
-  if (result.rawResults) {
-    const data: Record<string, any> = {};
-    for (const [stepId, stepResult] of Object.entries(result.rawResults)) {
-      data[stepId] = stepResult.data;
-    }
-    return data;
-  }
-  return null;
-}
-
-function createCPUAgentConfig(modelRouter: ModelRouter): AgentConfig {
-  const tools: AgentTool[] = [];
-  ensureSkillRegistryInitialized();
-
-  for (const skillInfo of CPU_SKILLS) {
-    const skill = skillRegistry.getSkill(skillInfo.skillId);
-    if (!skill) {
-      console.warn(`[CPUAgent] Skill not found: ${skillInfo.skillId}`);
-      continue;
-    }
-
-    tools.push({
-      name: skillInfo.toolName,
-      description: skillInfo.description,
-      skillId: skillInfo.skillId,
-      category: 'cpu',
-      parameters: skill.inputs?.map((input: any) => ({
-        name: input.name,
-        type: input.type as any,
-        required: input.required,
-        description: input.description || input.name,
-        default: input.default,
-      })),
-      execute: createToolExecutorForSkill(skillInfo.skillId),
-    });
-  }
-
-  return {
-    id: 'cpu_agent',
-    name: 'CPU Analysis Agent',
-    domain: 'cpu',
-    description: 'AI agent specialized in CPU scheduling, frequency, and load analysis',
-    tools,
-    maxIterations: 3,
-    confidenceThreshold: 0.7,
-    canDelegate: true,
-    delegateTo: ['frame_agent', 'binder_agent'],
-  };
-}
 
 // =============================================================================
 // CPU Agent Implementation
@@ -200,7 +48,21 @@ function createCPUAgentConfig(modelRouter: ModelRouter): AgentConfig {
 
 export class CPUAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {
-    super(createCPUAgentConfig(modelRouter), modelRouter);
+    super(
+      {
+        id: 'cpu_agent',
+        name: 'CPU Analysis Agent',
+        domain: 'cpu',
+        description: 'AI agent specialized in CPU scheduling, frequency, and load analysis',
+        tools: [], // Loaded lazily via ensureToolsLoaded()
+        maxIterations: 3,
+        confidenceThreshold: 0.7,
+        canDelegate: true,
+        delegateTo: ['frame_agent', 'binder_agent'],
+      },
+      modelRouter,
+      CPU_SKILLS
+    );
   }
 
   protected buildUnderstandingPrompt(task: AgentTask): string {
@@ -212,9 +74,12 @@ ${task.description}
 ## 上下文
 - 用户查询: ${task.context.query}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
+${this.formatTaskContext(task)}
 
-## 你的工具
+## 可用工具（只能使用以下工具）
 ${this.getToolDescriptionsForLLM()}
+
+重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
 
 请以 JSON 格式返回你的理解：
 {
@@ -233,8 +98,10 @@ ${this.getToolDescriptionsForLLM()}
 ## 目标
 ${understanding.objective}
 
-## 可用工具
+## 可用工具（只能使用以下工具）
 ${this.getToolDescriptionsForLLM()}
+
+重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
 
 请以 JSON 格式返回执行计划：
 {
@@ -292,7 +159,27 @@ ${findings || '无'}
 
   protected getRecommendedTools(context: AgentTaskContext): string[] {
     const query = context.query?.toLowerCase() || '';
-    const tools: string[] = ['analyze_cpu_overview'];
+    const hasTimeRange = !!context.timeRange;
+    const wantsGlobalOverview =
+      query.includes('整体') ||
+      query.includes('全局') ||
+      query.includes('整个') ||
+      query.includes('overall') ||
+      query.includes('global') ||
+      query.includes('whole trace') ||
+      query.includes('full trace');
+
+    const tools: string[] = [];
+
+    // Prefer in-range analysis when a focus time range exists (e.g. scrolling jank interval).
+    if (hasTimeRange && !wantsGlobalOverview) {
+      tools.push('analyze_cpu_load');
+      tools.push('analyze_scheduling');
+      tools.push('get_cpu_freq_timeline');
+      tools.push('analyze_cpu_slices');
+    } else {
+      tools.push('analyze_cpu_overview');
+    }
 
     if (query.includes('调度') || query.includes('schedule')) {
       tools.push('analyze_scheduling');

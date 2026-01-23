@@ -83,7 +83,7 @@ dialogue:
 
 prerequisites:
   modules:
-    - android.input_events
+    - android.input
 
 inputs:
   - name: package

@@ -10,7 +10,7 @@ export {
   getSkillIdForSceneType,
 } from './tools';
 
-// Legacy architecture exports (保持向后兼容)
+// Legacy utilities still used by scene reconstruction and tooling
 export {
   BaseExpertAgent,
   LLMClient,
@@ -23,7 +23,6 @@ export {
   SceneReconstructionResult,
   SceneCategory,
 } from './agents';
-export { PerfettoOrchestratorAgent, createOrchestrator } from './orchestrator';
 export {
   createLLMClient,
   createDeepSeekLLMClient,
@@ -49,35 +48,13 @@ export {
 } from './evalSystem';
 
 // =============================================================================
-// New Architecture Exports (新架构导出)
+// Core exports (Agent-Driven)
 // =============================================================================
 
-// Core components
-export {
-  AgentStateMachine,
-  CircuitBreaker,
-  ModelRouter,
-  PipelineExecutor,
-} from './core';
-
-// State management
-export {
-  CheckpointManager,
-  SessionStore,
-} from './state';
-
-// New SubAgent architecture
-export {
-  BaseSubAgent,
-  PlannerAgent,
-  EvaluatorAgent,
-} from './agents';
-
-// Master Orchestrator (新的主编排者)
-export { MasterOrchestrator, createMasterOrchestrator } from './core/masterOrchestrator';
+export { ModelRouter } from './core';
 
 // =============================================================================
-// Agent-Driven Architecture (Phase 2-4 新架构)
+// Agent-Driven Architecture (唯一主链路)
 // =============================================================================
 
 // Agent-Driven Orchestrator (假设驱动分析)

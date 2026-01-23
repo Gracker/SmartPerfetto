@@ -12,6 +12,12 @@ meta:
 prerequisites:
   required_tables:
     - android_input_events
+  modules:
+    - android.input
+    - android.screen_state
+    - android.battery_stats
+    - android.startup.startups
+    - android.frames.timeline
 
 triggers:
   keywords:
@@ -208,22 +214,29 @@ steps:
           SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_input_events'
         )
       ),
-      motion_with_seq AS (
+      motion_base AS (
         SELECT
           event_action,
           read_time AS ts,
           process_name,
           -- 为每个 DOWN 事件分配一个 gesture_id
           SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END)
-            OVER (ORDER BY read_time) AS gesture_id,
-          -- 在每个手势内部的事件序号
-          ROW_NUMBER() OVER (
-            PARTITION BY SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END)
-              OVER (ORDER BY read_time)
-            ORDER BY read_time
-          ) AS event_seq
+            OVER (ORDER BY read_time) AS gesture_id
         FROM android_input_events
         WHERE event_type = 'MOTION'
+      ),
+      motion_with_seq AS (
+        SELECT
+          event_action,
+          ts,
+          process_name,
+          gesture_id,
+          -- 在每个手势内部的事件序号
+          ROW_NUMBER() OVER (
+            PARTITION BY gesture_id
+            ORDER BY ts
+          ) AS event_seq
+        FROM motion_base
       ),
       scroll_starts AS (
         SELECT

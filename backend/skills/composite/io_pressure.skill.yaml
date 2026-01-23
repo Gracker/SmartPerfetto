@@ -122,6 +122,10 @@ steps:
           AND ts.dur > ${min_duration_ms} * 1e6
           AND ('${package}' = '' OR p.name GLOB '${package}*')
         GROUP BY p.upid
+      ),
+      totals AS (
+        SELECT SUM(io_wait_ms) as total_io_wait_ms
+        FROM io_by_process
       )
       SELECT
         process_name,
@@ -129,7 +133,7 @@ steps:
         ROUND(io_wait_ms, 2) as io_wait_ms,
         io_events,
         ROUND(avg_wait_ms, 2) as avg_wait_ms,
-        ROUND(io_wait_ms * 100.0 / NULLIF((SELECT total_io_wait_ms FROM (${io_overview})), 0), 1) as pct_of_total
+        ROUND(io_wait_ms * 100.0 / NULLIF((SELECT total_io_wait_ms FROM totals), 0), 1) as pct_of_total
       FROM io_by_process
       ORDER BY io_wait_ms DESC
       LIMIT 15
@@ -267,15 +271,64 @@ steps:
       title: "IO 分析结论"
     sql: |
       WITH
-      overview AS (SELECT * FROM (${io_overview})),
+      io_wait_states AS (
+        SELECT
+          ts.utid,
+          ts.ts,
+          ts.dur,
+          ts.state,
+          ts.blocked_function
+        FROM thread_state ts
+        JOIN thread t ON ts.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE
+          (ts.state IN ('D', 'DK', 'x')
+           OR ts.blocked_function LIKE '%io%'
+           OR ts.blocked_function LIKE '%read%'
+           OR ts.blocked_function LIKE '%write%'
+           OR ts.blocked_function LIKE '%sync%'
+           OR ts.blocked_function LIKE '%f2fs%'
+           OR ts.blocked_function LIKE '%ext4%'
+           OR ts.blocked_function LIKE '%binder%')
+          AND ts.dur > ${min_duration_ms} * 1e6
+          AND ('${package}' = '' OR p.name GLOB '${package}*')
+      ),
+      overview AS (
+        SELECT
+          SUM(dur) / 1e6 as total_io_wait_ms,
+          COUNT(DISTINCT utid) as affected_threads
+        FROM io_wait_states
+      ),
       top_blocker AS (
-        SELECT blocked_function, total_block_ms
-        FROM (${blocking_functions})
+        SELECT
+          COALESCE(blocked_function, 'unknown') as blocked_function,
+          SUM(dur) / 1e6 as total_block_ms
+        FROM io_wait_states
+        WHERE blocked_function IS NOT NULL AND blocked_function != ''
+        GROUP BY blocked_function
+        ORDER BY total_block_ms DESC
         LIMIT 1
       ),
       top_process AS (
-        SELECT process_name, io_wait_ms
-        FROM (${process_io})
+        SELECT
+          p.name as process_name,
+          SUM(ts.dur) / 1e6 as io_wait_ms
+        FROM thread_state ts
+        JOIN thread t ON ts.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE
+          (ts.state IN ('D', 'DK', 'x')
+           OR ts.blocked_function LIKE '%io%'
+           OR ts.blocked_function LIKE '%read%'
+           OR ts.blocked_function LIKE '%write%'
+           OR ts.blocked_function LIKE '%sync%'
+           OR ts.blocked_function LIKE '%f2fs%'
+           OR ts.blocked_function LIKE '%ext4%'
+           OR ts.blocked_function LIKE '%binder%')
+          AND ts.dur > ${min_duration_ms} * 1e6
+          AND ('${package}' = '' OR p.name GLOB '${package}*')
+        GROUP BY p.upid
+        ORDER BY io_wait_ms DESC
         LIMIT 1
       )
       SELECT

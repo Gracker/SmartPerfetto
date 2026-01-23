@@ -8,7 +8,8 @@
  */
 
 import { Finding } from '../types';
-import { SkillDefinition, SkillExecutionResult } from '../../services/skillEngine';
+import { SkillDefinition, SkillExecutionResult, SkillExecutor } from '../../services/skillEngine';
+import { DataEnvelope } from '../../types/dataContract';
 
 // =============================================================================
 // Agent Tool Types
@@ -79,6 +80,8 @@ export interface AgentToolResult {
   executionTimeMs: number;
   /** Layered result data from skill execution */
   layeredResult?: any;
+  /** DataEnvelope(s) for SSE data events */
+  dataEnvelopes?: DataEnvelope[];
 }
 
 // =============================================================================
@@ -118,6 +121,10 @@ export interface AgentTaskContext {
     primaryGoal: string;
     aspects: string[];
   };
+  /** Domain of the task */
+  domain?: string;
+  /** Evidence or metrics required */
+  evidenceNeeded?: string[];
   /** Hypothesis to investigate */
   hypothesis?: Hypothesis;
   /** Time range to focus on */
@@ -153,6 +160,8 @@ export interface Hypothesis {
   contradictingEvidence: Evidence[];
   /** Agent that proposed this hypothesis */
   proposedBy: string;
+  /** Agents relevant to investigating this hypothesis */
+  relevantAgents?: string[];
   /** Timestamp */
   createdAt: number;
   /** Last updated timestamp */
@@ -416,10 +425,13 @@ export function createToolFromSkill(
           }
         }
 
+        const dataEnvelopes = SkillExecutor.toDataEnvelopes(result);
+
         return {
           success: result.success,
           data,
           findings,
+          dataEnvelopes: dataEnvelopes.length > 0 ? dataEnvelopes : undefined,
           error: result.error,
           executionTimeMs: Date.now() - startTime,
         };

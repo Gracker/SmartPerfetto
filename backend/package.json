@@ -17,6 +17,7 @@
     "test:all": "jest --runInBand --forceExit",
     "skill:validate": "tsx src/cli/index.ts validate",
     "skill:test": "tsx src/cli/index.ts test",
+    "skill:smoke": "tsx src/cli/index.ts smoke",
     "skill:list": "tsx src/cli/index.ts list",
     "test:scrolling": "tsx src/scripts/runScrollingTest.ts",
     "test:scrolling:real": "tsx src/scripts/runScrollingTestRealData.ts",

@@ -1,12 +1,15 @@
 import { Request, Response } from 'express';
 import AutoAnalysisService from '../services/autoAnalysisService';
+import AIService from '../services/aiService';
 import { ErrorResponse } from '../types';
 
 class AutoAnalysisController {
   private autoAnalysisService: AutoAnalysisService;
+  private aiService: AIService;
 
   constructor() {
     this.autoAnalysisService = new AutoAnalysisService();
+    this.aiService = new AIService();
   }
 
   // 分析 Trace 文件
@@ -68,8 +71,7 @@ class AutoAnalysisController {
   // 获取分析模式
   getPatterns = async (req: Request, res: Response): Promise<void> => {
     try {
-      // TODO: Implement getPatterns in service
-      const patterns: any[] = [];
+      const patterns = this.autoAnalysisService.getPatterns();
 
       res.json({
         success: true,
@@ -129,13 +131,16 @@ class AutoAnalysisController {
         return;
       }
 
-      // TODO: 使用 AI 服务增强分析结果
-      // const enhancedResult = await aiService.enhanceAnalysis(analysis, query);
+      const enhancedResult = await this.autoAnalysisService.enhanceAnalysis(
+        analysis,
+        query,
+        this.aiService
+      );
 
       res.json({
         success: true,
-        data: analysis, // 暂时返回原始分析
-        message: 'AI enhancement not implemented yet',
+        data: enhancedResult,
+        message: enhancedResult.aiSummary ? 'AI enhancement applied' : 'AI enhancement unavailable',
       });
     } catch (error) {
       console.error('Error enhancing analysis:', error);

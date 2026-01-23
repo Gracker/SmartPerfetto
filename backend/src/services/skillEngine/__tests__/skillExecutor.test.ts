@@ -411,6 +411,60 @@ describe('Atomic Step 执行', () => {
     expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT * FROM table WHERE id = 42');
   });
 
+  it('缺失变量在 SQL 表达式中应替换为 NULL（避免 COALESCE(, 0) 语法错误）', async () => {
+    const skill: SkillDefinition = {
+      name: 'null_fallback',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('NULL Fallback'),
+      sql: 'SELECT COALESCE(${start_ts}, 0) as start_ts',
+    };
+    executor.registerSkill(skill);
+
+    await executor.execute('null_fallback', 'trace-1');
+
+    expect(mockTraceProcessor.query).toHaveBeenCalledWith(
+      'trace-1',
+      'SELECT COALESCE(NULL, 0) as start_ts'
+    );
+  });
+
+  it('缺失变量在单引号字符串中应替换为空串（避免注入字面量 \"NULL\"）', async () => {
+    const skill: SkillDefinition = {
+      name: 'string_fallback',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('String Fallback'),
+      sql: "SELECT '${package}*' as pat, '${package}' as pkg",
+    };
+    executor.registerSkill(skill);
+
+    await executor.execute('string_fallback', 'trace-1');
+
+    expect(mockTraceProcessor.query).toHaveBeenCalledWith(
+      'trace-1',
+      "SELECT '*' as pat, '' as pkg"
+    );
+  });
+
+  it('单引号字符串中的变量应进行转义（避免 SQL 解析错误）', async () => {
+    const skill: SkillDefinition = {
+      name: 'escape_single_quote',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Escape Single Quote'),
+      sql: "SELECT '${package}' as pkg",
+    };
+    executor.registerSkill(skill);
+
+    await executor.execute('escape_single_quote', 'trace-1', { package: "a'b" });
+
+    expect(mockTraceProcessor.query).toHaveBeenCalledWith(
+      'trace-1',
+      "SELECT 'a''b' as pkg"
+    );
+  });
+
   it('应该正确处理查询结果', async () => {
     mockTraceProcessor.query.mockResolvedValue({
       columns: ['name', 'value'],
@@ -705,6 +759,38 @@ describe('Diagnostic Step 执行', () => {
     expect(result.success).toBe(true);
     expect(result.diagnostics.length).toBeGreaterThan(0);
     expect(result.diagnostics[0].diagnosis).toContain('严重卡顿');
+  });
+
+  it('应该支持在 condition 中使用 ${...} 模板并在 diagnosis 中计算表达式', async () => {
+    const tmplConditionSkill: SkillDefinition = {
+      name: 'tmpl_condition',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Template Condition'),
+      steps: [
+        {
+          id: 'diagnose',
+          type: 'diagnostic',
+          inputs: [],
+          rules: [
+            {
+              condition: '${vsync_missed} >= 3',
+              confidence: 0.9,
+              diagnosis: '严重卡顿: 跳过 ${vsync_missed} 帧 (约 ${vsync_missed * 16.7}ms)',
+              suggestions: [],
+            },
+          ],
+        },
+      ],
+    };
+    executor.registerSkill(tmplConditionSkill);
+
+    const result = await executor.execute('tmpl_condition', 'trace-1', { vsync_missed: 4 });
+
+    expect(result.success).toBe(true);
+    expect(result.diagnostics.length).toBe(1);
+    expect(result.diagnostics[0].diagnosis).toContain('跳过 4 帧');
+    expect(result.diagnostics[0].diagnosis).toContain('66.8');
   });
 
   it('应该返回正确的 severity', async () => {
@@ -1249,16 +1335,140 @@ describe('AI Summary Step 执行', () => {
 // =============================================================================
 
 describe('Skill Reference Step 执行', () => {
+  let executor: SkillExecutor;
+  let mockTraceProcessor: any;
+
+  beforeEach(() => {
+    mockTraceProcessor = createMockTraceProcessorService();
+    executor = createSkillExecutor(mockTraceProcessor);
+  });
+
   it('应该加载并执行引用的 skill', async () => {
-    // TODO: 验证 skill 引用
+    mockTraceProcessor.query.mockResolvedValue({
+      columns: ['value'],
+      rows: [[1]],
+    });
+
+    const childSkill: SkillDefinition = {
+      name: 'child_skill',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Child Skill'),
+      sql: 'SELECT 1 as value',
+    };
+
+    const parentSkill: SkillDefinition = {
+      name: 'parent_skill',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Parent Skill'),
+      steps: [
+        {
+          id: 'child_step',
+          skill: 'child_skill',
+        },
+      ],
+    };
+
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    const result = await executor.execute('parent_skill', 'trace-1');
+
+    expect(result.success).toBe(true);
+    expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT 1 as value');
+    expect(result.rawResults?.child_step).toBeDefined();
+    expect(result.rawResults?.child_step?.data?.skillId).toBe('child_skill');
   });
 
   it('应该正确传递参数', async () => {
-    // TODO: 验证参数传递
+    mockTraceProcessor.query.mockResolvedValue({
+      columns: ['value'],
+      rows: [[7]],
+    });
+
+    const childSkill: SkillDefinition = {
+      name: 'child_param_skill',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Child Param Skill'),
+      sql: 'SELECT ${target} as value',
+    };
+
+    const parentSkill: SkillDefinition = {
+      name: 'parent_param_skill',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Parent Param Skill'),
+      steps: [
+        {
+          id: 'child_step',
+          skill: 'child_param_skill',
+          params: { target: 7 },
+        },
+      ],
+    };
+
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    await executor.execute('parent_param_skill', 'trace-1');
+
+    expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT 7 as value');
   });
 
   it('应该正确合并结果', async () => {
-    // TODO: 验证结果合并
+    mockTraceProcessor.query
+      .mockResolvedValueOnce({
+        columns: ['value'],
+        rows: [[42]],
+      })
+      .mockResolvedValueOnce({
+        columns: ['value'],
+        rows: [[84]],
+      });
+
+    const childSkill: SkillDefinition = {
+      name: 'child_merge_skill',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Child Merge Skill'),
+      steps: [
+        {
+          id: 'step_a',
+          type: 'atomic',
+          sql: 'SELECT 42 as value',
+        },
+        {
+          id: 'step_b',
+          type: 'atomic',
+          sql: 'SELECT 84 as value',
+        },
+      ],
+    };
+
+    const parentSkill: SkillDefinition = {
+      name: 'parent_merge_skill',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Parent Merge Skill'),
+      steps: [
+        {
+          id: 'child_step',
+          skill: 'child_merge_skill',
+        },
+      ],
+    };
+
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    const result = await executor.execute('parent_merge_skill', 'trace-1');
+    const childResult = result.rawResults?.child_step?.data;
+
+    expect(childResult).toBeDefined();
+    expect(childResult.rawResults?.step_a).toBeDefined();
+    expect(childResult.rawResults?.step_b).toBeDefined();
   });
 });
 
@@ -1382,10 +1592,10 @@ describe('表达式评估', () => {
     executor.registerSkill(skill);
 
     await executor.execute('undefined_var', 'trace-1', {}); // 没有传 package 参数
-    // 未定义的简单变量应该变成空字符串
+    // 未定义变量在 SQL 表达式中应替换为 NULL（避免产生语法错误）
     expect(mockTraceProcessor.query).toHaveBeenCalledWith(
       'trace-1',
-      'SELECT * FROM t WHERE pkg = '
+      'SELECT * FROM t WHERE pkg = NULL'
     );
   });
 

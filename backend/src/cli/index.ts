@@ -9,6 +9,7 @@ import { Command } from 'commander';
 import { validateCommand } from './commands/validate';
 import { testCommand } from './commands/test';
 import { listCommand } from './commands/list';
+import { smokeCommand } from './commands/smoke';
 
 const program = new Command();
 
@@ -20,5 +21,6 @@ program
 program.addCommand(validateCommand);
 program.addCommand(testCommand);
 program.addCommand(listCommand);
+program.addCommand(smokeCommand);
 
 program.parse();

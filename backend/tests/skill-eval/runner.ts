@@ -239,41 +239,21 @@ export class SkillEvaluator {
    * 从分层结果中查找步骤
    */
   private findStepInLayers(layers: LayeredResult['layers'], stepId: string): StepResult | null {
-    // 检查 overview (L1)
-    if (layers.overview?.[stepId]) {
-      return layers.overview[stepId];
-    }
-    if (layers.L1?.[stepId]) {
-      return layers.L1[stepId];
-    }
+    // 检查 overview
+    if (layers.overview?.[stepId]) return layers.overview[stepId];
 
-    // 检查 list (L2)
-    if (layers.list?.[stepId]) {
-      return layers.list[stepId];
-    }
-    if (layers.L2?.[stepId]) {
-      return layers.L2[stepId];
-    }
+    // 检查 list
+    if (layers.list?.[stepId]) return layers.list[stepId];
 
-    // 检查 session (L3)
+    // 检查 session
     for (const sessionData of Object.values(layers.session || {})) {
       if (sessionData[stepId]) {
         return sessionData[stepId];
       }
     }
-    for (const sessionData of Object.values(layers.L3 || {})) {
-      if (sessionData[stepId]) {
-        return sessionData[stepId];
-      }
-    }
 
-    // 检查 deep (L4)
+    // 检查 deep
     for (const sessionData of Object.values(layers.deep || {})) {
-      if (sessionData[stepId]) {
-        return sessionData[stepId];
-      }
-    }
-    for (const sessionData of Object.values(layers.L4 || {})) {
       if (sessionData[stepId]) {
         return sessionData[stepId];
       }
@@ -310,7 +290,7 @@ export class SkillEvaluator {
       return {
         success: false,
         skillId: this.skillId,
-        layers: { overview: {}, list: {}, session: {}, deep: {}, L1: {}, L2: {}, L3: {}, L4: {} },
+        layers: { overview: {}, list: {}, session: {}, deep: {} },
         displayResults: [],
         executionTimeMs: Date.now() - startTime,
         error: error.message,
@@ -379,10 +359,10 @@ export class SkillEvaluator {
 
     return {
       layers: {
-        overview: normalize(result.layers.overview || result.layers.L1),
-        list: normalize(result.layers.list || result.layers.L2),
-        session: normalizeNested(result.layers.session || result.layers.L3),
-        deep: normalizeNested(result.layers.deep || result.layers.L4),
+        overview: normalize(result.layers.overview),
+        list: normalize(result.layers.list),
+        session: normalizeNested(result.layers.session),
+        deep: normalizeNested(result.layers.deep),
       },
       stepCount,
     };
