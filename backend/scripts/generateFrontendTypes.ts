@@ -250,6 +250,26 @@ export interface DataEnvelopeDisplay {
 
   /** Level of detail (key, summary, detail, debug) */
   level?: DisplayLevel;
+
+  // === Output Structure Optimization ===
+
+  /** Rendering priority (0 = highest). Used by frontend to order envelopes within a group. */
+  priority?: number;
+
+  /** Group identifier for grouping related envelopes (e.g. "interval_1"). */
+  group?: string;
+
+  /** Data severity level. Frontend uses this to sort (critical first) and style. */
+  severity?: 'critical' | 'warning' | 'info' | 'normal';
+
+  /** Whether this envelope's table is collapsible in the UI. */
+  collapsible?: boolean;
+
+  /** Whether this envelope should be collapsed by default (requires collapsible=true). */
+  defaultCollapsed?: boolean;
+
+  /** Maximum number of visible rows before "show more" truncation. */
+  maxVisibleRows?: number;
 }
 
 /**
@@ -516,6 +536,11 @@ export interface SqlQueryResult {
   layer?: DisplayLayer;
   metadataFields?: string[];
   expandableData?: ExpandableRowData[];
+  // Grouping/collapse metadata (from DataEnvelope.display)
+  group?: string;
+  collapsible?: boolean;
+  defaultCollapsed?: boolean;
+  maxVisibleRows?: number;
   // Summary report data
   summaryReport?: {
     title: string;
@@ -552,7 +577,7 @@ const DEFAULT_COLUMN_PATTERNS: Array<{
   { pattern: /size$|bytes$|memory$|_kb$|_mb$|_gb$/i,
     definition: { type: 'bytes', format: 'bytes_human' } },
   // Count/ID columns
-  { pattern: /^id$|_id$|^count$|_count$|^num_|_num$/i,
+  { pattern: /^id$|_id$|^count$|_count$|^num_|_num$|^pid$|^tid$|^upid$|^utid$|^session_id$|^frame_id$|^track_id$|^slice_id$|^arg_set_id$|_index$|^frame_index$/i,
     definition: { type: 'number', format: 'compact' } },
   // Boolean columns
   { pattern: /^is_|^has_|^can_|_flag$/i,

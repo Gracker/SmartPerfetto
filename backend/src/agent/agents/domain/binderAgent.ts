@@ -66,10 +66,7 @@ ${task.description}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 格式返回：{"objective":"","questions":[],"relevantAreas":[],"recommendedTools":[],"constraints":[],"confidence":0.7}`;
   }
@@ -78,10 +75,7 @@ ${this.getToolDescriptionsForLLM()}
     return `规划 Binder 分析：
 目标: ${understanding.objective}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"steps":[{"toolName":"","params":{},"purpose":""}],"expectedOutcomes":[],"estimatedTimeMs":30000,"confidence":0.7}`;
   }

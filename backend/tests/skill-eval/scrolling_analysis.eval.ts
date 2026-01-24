@@ -134,13 +134,13 @@ describe('scrolling_analysis skill', () => {
         const result = await evaluator.executeStep('performance_summary');
         const summary = result.data[0];
 
-        // 帧时长应该在合理范围内
-        expect(summary.avg_frame_dur_ms).toBeGreaterThan(0);
-        expect(summary.p95_frame_dur_ms).toBeGreaterThan(0);
-        expect(summary.p99_frame_dur_ms).toBeGreaterThan(0);
+        // 帧时长应该在合理范围内（值为纳秒）
+        expect(summary.avg_frame_dur).toBeGreaterThan(0);
+        expect(summary.p95_frame_dur).toBeGreaterThan(0);
+        expect(summary.p99_frame_dur).toBeGreaterThan(0);
         // 注意：avg 可能大于 p95，因为有极端慢帧会大幅拉高平均值
         // 只验证 p99 >= p95
-        expect(summary.p99_frame_dur_ms).toBeGreaterThanOrEqual(summary.p95_frame_dur_ms);
+        expect(summary.p99_frame_dur).toBeGreaterThanOrEqual(summary.p95_frame_dur);
       }, 30000);
     });
 

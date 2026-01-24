@@ -14,6 +14,7 @@ export type {
   StageDefinition,
   StagedAnalysisStrategy,
   StrategyExecutionState,
+  DirectSkillTask,
 } from './types';
 
 export {

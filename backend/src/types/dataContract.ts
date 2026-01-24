@@ -144,7 +144,7 @@ export const DEFAULT_COLUMN_PATTERNS: Array<{
   { pattern: /size$|bytes$|memory$|_kb$|_mb$|_gb$/i,
     definition: { type: 'bytes', format: 'bytes_human' } },
   // Count/ID columns
-  { pattern: /^id$|_id$|^count$|_count$|^num_|_num$/i,
+  { pattern: /^id$|_id$|^count$|_count$|^num_|_num$|^pid$|^tid$|^upid$|^utid$|^session_id$|^frame_id$|^track_id$|^slice_id$|^arg_set_id$|_index$|^frame_index$/i,
     definition: { type: 'number', format: 'compact' } },
   // Boolean columns
   { pattern: /^is_|^has_|^can_|_flag$/i,

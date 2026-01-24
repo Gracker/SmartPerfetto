@@ -1,6 +1,8 @@
 /**
  * SmartPerfetto Pipeline Executor
  *
+ * @deprecated Not used in Agent-Driven architecture (v5.0). See executors/strategyExecutor.ts.
+ *
  * 流水线执行器，负责：
  * 1. 按阶段顺序执行分析任务
  * 2. 管理阶段依赖关系
@@ -105,6 +107,11 @@ export interface StageExecutor {
 
 /**
  * 流水线执行器实现
+ *
+ * @deprecated This class is no longer used in the Agent-Driven architecture (v5.0).
+ * The new architecture uses StrategyExecutor for deterministic stage pipelines and
+ * HypothesisExecutor for adaptive multi-round analysis. Retained for reference.
+ * Will be removed in v6.0.
  */
 export class PipelineExecutor extends EventEmitter {
   private config: PipelineConfig;

@@ -227,10 +227,7 @@ ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.descripti
 ${task.context.relevantFindings?.length ? `- 相关发现: ${task.context.relevantFindings.map(f => f.title).join(', ')}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 ## 任务
 分析这个任务，返回你的理解：
@@ -255,10 +252,7 @@ ${understanding.objective}
 ## 关键问题
 ${understanding.questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 ## 推荐工具
 ${understanding.recommendedTools.join(', ')}

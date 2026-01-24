@@ -52,23 +52,48 @@ export function isLikelyAppProcessName(name: string): boolean {
 }
 
 /**
- * Format a nanosecond time range as a human-readable "Xs–Ys" label.
+ * Format a nanosecond time range as a human-readable label.
+ * If referenceNs is provided, shows relative times (e.g., "2.03s–4.82s").
+ * Otherwise computes duration (e.g., "持续 2.79s").
+ *
  * Uses BigInt division for precision-safe conversion from ns to seconds.
  */
-export function formatNsRangeLabel(startTs: string | number, endTs: string | number): string {
+export function formatNsRangeLabel(
+  startTs: string | number,
+  endTs: string | number,
+  referenceNs?: string | number
+): string {
   try {
     const startBi = BigInt(String(startTs));
     const endBi = BigInt(String(endTs));
+    const refBi = referenceNs !== undefined ? BigInt(String(referenceNs)) : startBi;
+
     // ns → ms (BigInt) → s (Number, safe range)
-    const startS = Number(startBi / 1000000n) / 1000;
-    const endS = Number(endBi / 1000000n) / 1000;
-    return `${startS.toFixed(2)}s–${endS.toFixed(2)}s`;
+    const relStartS = Number((startBi - refBi) / 1000000n) / 1000;
+    const relEndS = Number((endBi - refBi) / 1000000n) / 1000;
+
+    return `${formatTimeValue(relStartS)}–${formatTimeValue(relEndS)}`;
   } catch {
-    // Fallback for non-BigInt-compatible values
-    const startS = (Number(startTs) / 1e9).toFixed(2);
-    const endS = (Number(endTs) / 1e9).toFixed(2);
-    return `${startS}s–${endS}s`;
+    // Fallback: show duration
+    const startN = Number(startTs);
+    const endN = Number(endTs);
+    const durS = (endN - startN) / 1e9;
+    return `持续 ${formatTimeValue(durS)}`;
   }
+}
+
+/**
+ * Format a time value in seconds to a human-readable format.
+ * Examples: "2.034s", "1m23.456s", "0.123s"
+ */
+function formatTimeValue(seconds: number): string {
+  if (seconds < 0) return `-${formatTimeValue(-seconds)}`;
+  if (seconds >= 60) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds - m * 60;
+    return `${m}m${s.toFixed(3)}s`;
+  }
+  return `${seconds.toFixed(3)}s`;
 }
 
 /**

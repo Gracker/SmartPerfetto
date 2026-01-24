@@ -48,8 +48,8 @@ export interface IntervalHelpers {
   payloadToObjectRows: (payload: any) => Array<Record<string, any>>;
   /** Heuristic: does this look like an app process (not system daemon)? */
   isLikelyAppProcessName: (name: string) => boolean;
-  /** Format ns range as human-readable "Xs–Ys" label */
-  formatNsRangeLabel: (startTs: string | number, endTs: string | number) => string;
+  /** Format ns range as human-readable relative time label */
+  formatNsRangeLabel: (startTs: string | number, endTs: string | number, referenceNs?: string | number) => string;
 }
 
 // =============================================================================
@@ -79,6 +79,38 @@ export interface StageTaskTemplate {
   skillParams?: Record<string, any>;
   /** Task description template. Supports {{scopeLabel}} placeholder */
   descriptionTemplate: string;
+
+  /**
+   * Execution mode for this task:
+   * - 'agent' (default): dispatches to full agent LLM loop
+   * - 'direct_skill': bypasses agent, executes skill directly (zero LLM overhead for deterministic SQL)
+   */
+  executionMode?: 'agent' | 'direct_skill';
+  /** Skill ID to execute when executionMode is 'direct_skill' */
+  directSkillId?: string;
+  /**
+   * Maps interval fields to skill parameter names.
+   * Keys are skill param names, values are interval field names or special values:
+   * - 'startTs' / 'endTs' / 'processName': from FocusInterval
+   * - 'duration': computed as endTs - startTs
+   */
+  paramMapping?: Record<string, string>;
+}
+
+// =============================================================================
+// Direct Skill Task (built from per_interval templates with executionMode: 'direct_skill')
+// =============================================================================
+
+/**
+ * A concrete task for DirectSkillExecutor - one per (template × interval) pair.
+ */
+export interface DirectSkillTask {
+  /** The template that generated this task */
+  template: StageTaskTemplate;
+  /** The focus interval this task targets */
+  interval: FocusInterval;
+  /** Pre-built scope label for display */
+  scopeLabel: string;
 }
 
 // =============================================================================

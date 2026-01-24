@@ -53,13 +53,17 @@ steps:
         COALESCE(
           (SELECT CAST(AVG(dur) AS INTEGER)
            FROM expected_frame_timeline_slice
-           WHERE dur > 5000000 AND dur < 35000000),
+           WHERE dur > 5000000 AND dur < 35000000
+             AND (${start_ts} IS NULL OR ts >= ${start_ts})
+             AND (${end_ts} IS NULL OR ts < ${end_ts})),
           8333333
         ) as vsync_period_ns,
         ROUND(1e9 / COALESCE(
           (SELECT AVG(dur)
            FROM expected_frame_timeline_slice
-           WHERE dur > 5000000 AND dur < 35000000),
+           WHERE dur > 5000000 AND dur < 35000000
+             AND (${start_ts} IS NULL OR ts >= ${start_ts})
+             AND (${end_ts} IS NULL OR ts < ${end_ts})),
           8333333
         ), 0) as refresh_rate_hz
     save_as: vsync_config

@@ -4,9 +4,9 @@
 # 从 trace 中解析实际的 Vsync 周期和刷新率设置
 #
 # 数据来源 (按优先级):
-#   1. SurfaceFlinger 的 VSYNC-sf/vsync-app slice 间隔 (最可靠)
-#   2. expected_frame_timeline_slice 的帧 duration
-#   3. 默认 60Hz (16.67ms)
+#   1. expected_frame_timeline_slice 的帧 duration (最可靠，直接反映帧调度周期)
+#   2. VSYNC-sf counter track 间隔的中位数 (counter 值 0/1 交替，每次变化=vsync tick)
+#   3. 默认 120Hz (8.33ms)
 #
 # 输出:
 #   - vsync_period_ns: Vsync 周期（纳秒）
@@ -45,68 +45,71 @@ steps:
     name: "检测 Vsync 配置"
     sql: |
       WITH
-      -- 方法1: 从 SurfaceFlinger 的 VSYNC slice 间隔推算周期 (最可靠)
-      sf_vsync_intervals AS (
-        SELECT
-          s.ts,
-          LEAD(s.ts) OVER (ORDER BY s.ts) - s.ts AS interval_ns
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE (p.name = 'surfaceflinger' OR p.name LIKE '%surfaceflinger%')
-          AND (s.name GLOB '*VSYNC*' OR s.name GLOB '*vsync-sf*' OR s.name GLOB '*vsync-app*')
-      ),
-      sf_vsync AS (
-        SELECT
-          CAST(AVG(interval_ns) AS INTEGER) as vsync_period_ns,
-          'sf_vsync_interval' as source
-        FROM sf_vsync_intervals
-        WHERE interval_ns > 5000000 AND interval_ns < 30000000
-      ),
-      -- 方法2: 从 expected_frame_timeline_slice 获取 vsync 周期
+      -- 方法1: 从 expected_frame_timeline_slice 获取 vsync 周期 (最可靠，直接反映帧调度周期)
+      -- 当提供 start_ts/end_ts 时，只看该区间内的帧（避免 VRR 省电时段干扰）
       expected_frame_vsync AS (
         SELECT
-          -- expected frame 的 dur 就是 vsync 周期
           CAST(AVG(dur) AS INTEGER) as vsync_period_ns,
           'expected_frame_dur' as source
         FROM expected_frame_timeline_slice
         WHERE dur > 5000000 AND dur < 35000000  -- 5ms-35ms 覆盖 30Hz VRR
+          AND (${start_ts} IS NULL OR ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ts < ${end_ts})
       ),
-      -- 合并结果，按优先级选择
+      -- 方法2: 从 VSYNC-sf counter track 推算周期 (备选)
+      -- counter 值在 0/1 间交替，每次变化代表一个 vsync tick
+      sf_vsync_intervals AS (
+        SELECT
+          c.ts,
+          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      ),
+      sf_vsync AS (
+        SELECT
+          CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) as vsync_period_ns,
+          'sf_vsync_counter' as source
+        FROM sf_vsync_intervals
+        WHERE interval_ns > 4000000 AND interval_ns < 20000000
+      ),
+      -- 合并结果，按优先级选择 (expected_frame 优先)
       combined AS (
-        SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
-        UNION ALL
         SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
+        UNION ALL
+        SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
+      ),
+      -- 将原始周期 snap 到最近的标准刷新率（边界为相邻标准率周期的几何均值）
+      raw_period AS (
+        SELECT
+          COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) as period_ns,
+          COALESCE((SELECT source FROM combined LIMIT 1), 'default_120hz') as source
+      ),
+      snapped AS (
+        SELECT
+          CASE
+            WHEN period_ns < 4880000 THEN 240   -- < sqrt(4.17ms * 5.71ms)
+            WHEN period_ns < 6300000 THEN 175   -- < sqrt(5.71ms * 6.94ms)
+            WHEN period_ns < 7610000 THEN 144   -- < sqrt(6.94ms * 8.33ms)
+            WHEN period_ns < 9620000 THEN 120   -- < sqrt(8.33ms * 11.11ms)
+            WHEN period_ns < 13610000 THEN 90   -- < sqrt(11.11ms * 16.67ms)
+            WHEN period_ns < 23570000 THEN 60   -- < sqrt(16.67ms * 33.33ms)
+            WHEN period_ns < 37270000 THEN 30   -- < sqrt(33.33ms * 41.67ms)
+            WHEN period_ns < 52700000 THEN 24   -- < sqrt(41.67ms * 66.67ms)
+            ELSE 15
+          END as refresh_rate_hz,
+          source
+        FROM raw_period
       )
       SELECT
-        COALESCE(
-          (SELECT vsync_period_ns FROM combined LIMIT 1),
-          8333333  -- 默认 120Hz
-        ) as vsync_period_ns,
-        ROUND(1e9 / COALESCE(
-          (SELECT vsync_period_ns FROM combined LIMIT 1),
-          8333333
-        ), 0) as refresh_rate_hz,
-        ROUND(COALESCE(
-          (SELECT vsync_period_ns FROM combined LIMIT 1),
-          8333333
-        ) / 1e6, 2) as vsync_period_ms,
-        COALESCE(
-          (SELECT source FROM combined LIMIT 1),
-          'default_120hz'
-        ) as vsync_source,
-        CASE
-          -- 支持更多刷新率档位（含 240Hz 游戏模式和 48/30Hz VRR 省电模式）
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 4500000 THEN 240
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 6500000 THEN 165
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 7500000 THEN 144
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 9000000 THEN 120
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 12000000 THEN 90
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 18000000 THEN 60
-          WHEN COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) < 25000000 THEN 48
-          ELSE 30
-        END as detected_refresh_rate
+        CAST(ROUND(1e9 / refresh_rate_hz, 0) AS INTEGER) as vsync_period_ns,
+        refresh_rate_hz,
+        ROUND(1e9 / refresh_rate_hz / 1e6, 2) as vsync_period_ms,
+        source as vsync_source,
+        refresh_rate_hz as detected_refresh_rate
+      FROM snapped
     save_as: vsync_config
 
 output:

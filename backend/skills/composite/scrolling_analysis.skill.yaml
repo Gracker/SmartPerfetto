@@ -91,24 +91,28 @@ steps:
           format: compact
     sql: |
       WITH
-      -- 方法1: 从 SurfaceFlinger 的 VSYNC slice 推算周期 (最可靠)
+      -- 方法1: 从 VSYNC-sf counter track 推算周期
+      -- counter 值在 0/1 间交替，每次变化代表一个 vsync tick
+      -- 当提供 start_ts/end_ts 时，只看滑动区间内的 VSync（避免 VRR 省电时段干扰）
       sf_vsync_intervals AS (
         SELECT
-          s.ts,
-          LEAD(s.ts) OVER (ORDER BY s.ts) - s.ts AS interval_ns
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE (p.name = 'surfaceflinger' OR p.name LIKE '%surfaceflinger%')
-          AND (s.name GLOB '*VSYNC*' OR s.name GLOB '*vsync-sf*' OR s.name GLOB '*vsync-app*')
+          c.ts,
+          c.value,
+          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
+      -- 只取连续变化段的间隔（过滤掉 idle 时的长间隔和异常短间隔）
+      -- 120Hz=8.33ms, 90Hz=11.1ms, 60Hz=16.7ms → 范围 4ms-20ms 覆盖 240Hz-50Hz
       sf_vsync AS (
         SELECT
-          CAST(AVG(interval_ns) AS INTEGER) as vsync_period_ns,
-          'sf_vsync_slice' as source
+          CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) as vsync_period_ns,
+          'sf_vsync_counter' as source
         FROM sf_vsync_intervals
-        WHERE interval_ns > 5000000 AND interval_ns < 30000000
+        WHERE interval_ns > 4000000 AND interval_ns < 20000000
       ),
       -- 方法2: 从 expected_frame_timeline_slice 推算 vsync 周期
       expected_frame_vsync AS (
@@ -117,6 +121,8 @@ steps:
           'expected_frame' as source
         FROM expected_frame_timeline_slice
         WHERE dur > 5000000 AND dur < 35000000
+          AND (${start_ts} IS NULL OR ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ts < ${end_ts})
       ),
       combined AS (
         SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
@@ -128,17 +134,41 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+      ),
+      -- 将原始周期 snap 到最近的标准刷新率（边界为相邻标准率周期的几何均值）
+      raw_period AS (
+        SELECT
+          COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) as period_ns,
+          COALESCE((SELECT source FROM combined LIMIT 1), 'default') as source
+      ),
+      snapped AS (
+        SELECT
+          CASE
+            WHEN period_ns < 4880000 THEN 240   -- < sqrt(4.17ms * 5.71ms)
+            WHEN period_ns < 6300000 THEN 175   -- < sqrt(5.71ms * 6.94ms)
+            WHEN period_ns < 7610000 THEN 144   -- < sqrt(6.94ms * 8.33ms)
+            WHEN period_ns < 9620000 THEN 120   -- < sqrt(8.33ms * 11.11ms)
+            WHEN period_ns < 13610000 THEN 90   -- < sqrt(11.11ms * 16.67ms)
+            WHEN period_ns < 23570000 THEN 60   -- < sqrt(16.67ms * 33.33ms)
+            WHEN period_ns < 37270000 THEN 30   -- < sqrt(33.33ms * 41.67ms)
+            WHEN period_ns < 52700000 THEN 24   -- < sqrt(41.67ms * 66.67ms)
+            ELSE 15
+          END as refresh_rate_hz,
+          source
+        FROM raw_period
       )
       SELECT
-        COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) as vsync_period_ns,
-        ROUND(1e9 / COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333), 0) as refresh_rate_hz,
-        ROUND(COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) / 1e6, 2) as vsync_period_ms,
-        COALESCE((SELECT source FROM combined LIMIT 1), 'default') as vsync_source,
+        CAST(ROUND(1e9 / refresh_rate_hz, 0) AS INTEGER) as vsync_period_ns,
+        refresh_rate_hz,
+        ROUND(1e9 / refresh_rate_hz / 1e6, 2) as vsync_period_ms,
+        source as vsync_source,
         (SELECT total_frames FROM frame_count) as total_frames,
         CASE WHEN (SELECT total_frames FROM frame_count) > 0 THEN 1 ELSE 0 END as has_data
+      FROM snapped
     save_as: environment
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
@@ -207,26 +237,26 @@ steps:
         - name: refresh_rate
           label: "刷新率"
           type: number
-        - name: avg_frame_dur_ms
+        - name: avg_frame_dur
           label: "平均帧耗时"
           type: duration
-          format: duration_ms
-        - name: p95_frame_dur_ms
+        - name: p95_frame_dur
           label: "P95 帧耗时"
           type: duration
-          format: duration_ms
         - name: rating
           label: "评级"
           type: string
     sql: |
       WITH
-      -- 获取 VSync 周期（从 VSYNC-sf 信号计算）
+      -- 获取 VSync 周期（从 VSYNC-sf 信号计算，限定在分析区间内）
       vsync_intervals AS (
         SELECT
           c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
         FROM counter c
         JOIN counter_track t ON c.track_id = t.id
         WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config AS (
         SELECT
@@ -245,6 +275,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -312,14 +343,15 @@ steps:
         SELECT
           COUNT(*) as total,
           SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) as app_janky_frames,
-          AVG(dur) / 1e6 as avg_dur_ms,
-          MAX(dur) / 1e6 as max_dur_ms,
-          PERCENTILE(dur, 0.5) / 1e6 as median_dur_ms,
-          PERCENTILE(dur, 0.95) / 1e6 as p95_dur_ms,
-          PERCENTILE(dur, 0.99) / 1e6 as p99_dur_ms
+          CAST(ROUND(AVG(dur)) AS INTEGER) as avg_dur,
+          MAX(dur) as max_dur,
+          CAST(ROUND(PERCENTILE(dur, 0.5)) AS INTEGER) as median_dur,
+          CAST(ROUND(PERCENTILE(dur, 0.95)) AS INTEGER) as p95_dur,
+          CAST(ROUND(PERCENTILE(dur, 0.99)) AS INTEGER) as p99_dur
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -337,6 +369,7 @@ steps:
           FROM actual_frame_timeline_slice a
           LEFT JOIN process p ON a.upid = p.upid
           WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+            AND p.name NOT LIKE '/system/%'
             AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
             AND (${end_ts} IS NULL OR a.ts < ${end_ts})
             AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -381,11 +414,11 @@ steps:
         ) as app_jank_rate,
         -- SF 侧掉帧率
         ROUND(100.0 * COALESCE((SELECT sf_jank_count FROM jank_analysis), 0) / NULLIF((SELECT total FROM app_stats), 0), 2) as sf_jank_rate,
-        ROUND((SELECT avg_dur_ms FROM app_stats), 2) as avg_frame_dur_ms,
-        ROUND((SELECT max_dur_ms FROM app_stats), 2) as max_frame_dur_ms,
-        ROUND((SELECT median_dur_ms FROM app_stats), 2) as median_frame_dur_ms,
-        ROUND((SELECT p95_dur_ms FROM app_stats), 2) as p95_frame_dur_ms,
-        ROUND((SELECT p99_dur_ms FROM app_stats), 2) as p99_frame_dur_ms,
+        (SELECT avg_dur FROM app_stats) as avg_frame_dur,
+        (SELECT max_dur FROM app_stats) as max_frame_dur,
+        (SELECT median_dur FROM app_stats) as median_frame_dur,
+        (SELECT p95_dur FROM app_stats) as p95_frame_dur,
+        (SELECT p99_dur FROM app_stats) as p99_frame_dur,
         ROUND((SELECT duration_ns FROM time_range) / 1e9, 2) as duration_sec,
         ROUND(1e9 * (SELECT total FROM app_stats) / NULLIF((SELECT duration_ns FROM time_range), 0), 1) as actual_fps,
         ROUND(1e9 / ((SELECT vsync_period_ns FROM vsync_config) * 1.0), 1) as refresh_rate,
@@ -443,14 +476,12 @@ steps:
         - name: false_positive
           label: "假阳性"
           type: number
-        - name: total_dur_ms
+        - name: total_dur
           label: "总耗时"
           type: duration
-          format: duration_ms
-        - name: avg_dur_ms
+        - name: avg_dur
           label: "平均耗时"
           type: duration
-          format: duration_ms
         - name: responsibility
           label: "责任归属"
           type: string
@@ -467,6 +498,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -490,8 +522,8 @@ steps:
         SUM(is_consumer_jank) as real_jank_count,
         -- 假阳性数 (jank_type报告掉帧但gap=1)
         SUM(CASE WHEN jank_type != 'None' AND is_consumer_jank = 0 THEN 1 ELSE 0 END) as false_positive,
-        ROUND(SUM(dur) / 1e6, 2) as total_dur_ms,
-        ROUND(AVG(dur) / 1e6, 2) as avg_dur_ms,
+        SUM(dur) as total_dur,
+        CAST(ROUND(AVG(dur)) AS INTEGER) as avg_dur,
         CASE
           WHEN jank_type GLOB '*App*' OR jank_type = 'Self Jank' THEN '应用'
           WHEN jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
@@ -536,29 +568,28 @@ steps:
           label: "帧数"
           type: number
           format: compact
-        - name: duration_ms
+        - name: duration
           label: "持续时间"
           type: duration
-          format: duration_ms
-        - name: avg_frame_ms
+        - name: avg_dur
           label: "平均帧耗时"
           type: duration
-          format: duration_ms
-        - name: max_frame_ms
+        - name: max_dur
           label: "最大帧耗时"
           type: duration
-          format: duration_ms
         - name: session_fps
           label: "FPS"
           type: number
     sql: |
       WITH
-      -- 动态 VSync 周期检测用于 session 切分
+      -- 动态 VSync 周期检测用于 session 切分（限定在分析区间内）
       vsync_intervals AS (
         SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
         FROM counter c
         JOIN counter_track t ON c.track_id = t.id
         WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config AS (
         SELECT COALESCE(
@@ -580,6 +611,7 @@ steps:
         FROM actual_frame_timeline_slice a
         JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -601,9 +633,9 @@ steps:
         printf('%d', MIN(ts)) as start_ts,
         printf('%d', MAX(ts + dur)) as end_ts,
         COUNT(*) as frame_count,
-        ROUND((MAX(ts + dur) - MIN(ts)) / 1e6, 1) as duration_ms,
-        ROUND(AVG(dur) / 1e6, 2) as avg_frame_ms,
-        ROUND(MAX(dur) / 1e6, 2) as max_frame_ms,
+        MAX(ts + dur) - MIN(ts) as duration,
+        CAST(ROUND(AVG(dur)) AS INTEGER) as avg_dur,
+        MAX(dur) as max_dur,
         ROUND(1e9 * COUNT(*) / NULLIF(MAX(ts + dur) - MIN(ts), 0), 1) as session_fps
       FROM sessions
       GROUP BY upid, session_id
@@ -652,12 +684,16 @@ steps:
           format: truncate
     sql: |
       WITH
-      -- 动态 VSync 周期检测
+      -- 动态 VSync 周期检测（限定在分析区间内）
       vsync_intervals_for_session AS (
-        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        SELECT
+          c.ts as vsync_ts,
+          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
         FROM counter c
         JOIN counter_track t ON c.track_id = t.id
         WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config_for_session AS (
         SELECT COALESCE(
@@ -666,6 +702,29 @@ steps:
            WHERE interval_ns > 5000000 AND interval_ns < 15000000),
           8333333
         ) as vsync_period_ns
+      ),
+      -- BufferTX 事件（用于判断掉帧责任归属）
+      buffer_events_for_session AS (
+        SELECT c.ts, c.value as buffer_count
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name LIKE '%BufferTX%'
+          AND (t.name LIKE '%${package}%' OR '${package}' = '')
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      ),
+      -- 在每个 VSync 时刻查找 BufferTX 状态
+      vsync_with_buffer_for_session AS (
+        SELECT
+          v.vsync_ts,
+          v.interval_ns,
+          (SELECT b.buffer_count
+           FROM buffer_events_for_session b
+           WHERE b.ts <= v.vsync_ts
+           ORDER BY b.ts DESC
+           LIMIT 1
+          ) as buffer_at_vsync
+        FROM vsync_intervals_for_session v
+        WHERE v.interval_ns IS NOT NULL
       ),
       frame_gaps AS (
         SELECT
@@ -679,6 +738,7 @@ steps:
         FROM actual_frame_timeline_slice a
         JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND a.dur > 0
@@ -706,30 +766,37 @@ steps:
         HAVING COUNT(*) >= 10
           AND (MAX(ts + dur) - MIN(ts)) > 200000000
       ),
-      session_jank_stats AS (
+      -- 基于 VSYNC-sf 间隔 > 1.5x period 检测掉帧（与全局 performance_summary 一致）
+      session_vsync_jank AS (
         SELECT
-          sr.session_id,
-          -- 消费端掉帧 (display_frame_token 跳跃 > 1)
-          SUM(CASE WHEN sr.prev_display_token IS NOT NULL AND sr.display_frame_token - sr.prev_display_token > 1 THEN 1 ELSE 0 END) as consumer_jank_count,
-          -- App 报告掉帧 (旧逻辑，仅供参考)
-          SUM(CASE WHEN sr.jank_type != 'None' THEN 1 ELSE 0 END) as app_jank_count,
-          -- 最大跳跃
-          MAX(sr.display_frame_token - sr.prev_display_token) as max_gap,
-          GROUP_CONCAT(DISTINCT sr.jank_type) as jank_types
-        FROM sessions_raw sr
-        WHERE sr.prev_display_token IS NOT NULL
-        GROUP BY sr.session_id
+          s.session_id,
+          SUM(CASE WHEN vwb.interval_ns > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+                    THEN 1 ELSE 0 END) as consumer_jank_count,
+          SUM(CASE WHEN vwb.interval_ns > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+                    AND vwb.buffer_at_vsync = 0 THEN 1 ELSE 0 END) as app_jank_count,
+          MAX(CASE WHEN vwb.interval_ns > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+              THEN CAST(ROUND(vwb.interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_config_for_session) - 1) AS INTEGER)
+              ELSE 0 END) as max_vsync_missed,
+          GROUP_CONCAT(DISTINCT CASE WHEN vwb.interval_ns > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+              THEN (CASE WHEN vwb.buffer_at_vsync = 0 THEN 'App Deadline Missed'
+                         ELSE 'Buffer Stuffing' END)
+              END) as jank_types
+        FROM sessions s
+        CROSS JOIN vsync_with_buffer_for_session vwb
+        WHERE vwb.vsync_ts >= s.start_ts AND vwb.vsync_ts < s.end_ts
+          AND vwb.buffer_at_vsync IS NOT NULL
+        GROUP BY s.session_id
       )
       SELECT
         s.session_id,
         s.frame_count,
-        COALESCE(sjs.consumer_jank_count, 0) as janky_count,
-        ROUND(100.0 * COALESCE(sjs.consumer_jank_count, 0) / NULLIF(s.frame_count, 0), 2) as jank_rate,
-        COALESCE(sjs.app_jank_count, 0) as app_janky_count,
-        COALESCE(sjs.max_gap, 1) - 1 as max_vsync_missed,
-        sjs.jank_types
+        COALESCE(svj.consumer_jank_count, 0) as janky_count,
+        ROUND(100.0 * COALESCE(svj.consumer_jank_count, 0) / NULLIF(s.frame_count, 0), 2) as jank_rate,
+        COALESCE(svj.app_jank_count, 0) as app_janky_count,
+        COALESCE(svj.max_vsync_missed, 0) as max_vsync_missed,
+        svj.jank_types
       FROM sessions s
-      LEFT JOIN session_jank_stats sjs ON s.session_id = sjs.session_id
+      LEFT JOIN session_vsync_jank svj ON s.session_id = svj.session_id
       ORDER BY s.session_id
     save_as: session_jank_data
     optional: true
@@ -774,10 +841,9 @@ steps:
           type: timestamp
           clickAction: navigate_range
           durationColumn: start_ts
-        - name: dur_ms
+        - name: dur
           label: "帧耗时"
           type: duration
-          format: duration_ms
         - name: jank_type
           label: "掉帧类型"
           type: string
@@ -795,10 +861,9 @@ steps:
           label: "主线程结束"
           type: timestamp
           hidden: true
-        - name: main_dur_ms
+        - name: main_dur
           label: "主线程耗时"
           type: duration
-          format: duration_ms
           hidden: true
         - name: render_start_ts
           label: "渲染开始"
@@ -808,10 +873,9 @@ steps:
           label: "渲染结束"
           type: timestamp
           hidden: true
-        - name: render_dur_ms
+        - name: render_dur
           label: "渲染耗时"
           type: duration
-          format: duration_ms
           hidden: true
         - name: jank_severity_type
           label: "严重程度"
@@ -841,14 +905,28 @@ steps:
           label: "帧索引"
           type: number
           hidden: true
+        - name: main_dur_ms
+          type: number
+          hidden: true
+        - name: render_dur_ms
+          type: number
+          hidden: true
+        - name: dur_ns
+          type: number
+          hidden: true
+        - name: dur_ms
+          type: number
+          hidden: true
     sql: |
       WITH
-      -- VSync 周期
+      -- VSync 周期（限定在分析区间内，避免 VRR 省电时段干扰）
       vsync_intervals AS (
         SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
         FROM counter c
         JOIN counter_track t ON c.track_id = t.id
         WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config AS (
         SELECT COALESCE(
@@ -912,6 +990,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -960,9 +1039,9 @@ steps:
           sm.token_gap as token_gap
         FROM sessions_map sm
         WHERE (sm.token_gap > 1)
-           OR EXISTS (
+           AND EXISTS (
              SELECT 1 FROM all_jank_events je
-             WHERE je.vsync_ts >= sm.ts AND je.vsync_ts <= sm.ts + sm.dur + 50000000
+             WHERE je.vsync_ts >= sm.ts AND je.vsync_ts <= sm.ts + sm.dur + (SELECT vsync_period_ns FROM vsync_config)
            )
       ),
       frame_thread_info AS (
@@ -1040,6 +1119,7 @@ steps:
         FROM frame_thread_info fti
         JOIN process p ON fti.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
       )
       SELECT
         frame_id,
@@ -1047,12 +1127,15 @@ steps:
         printf('%d', actual_end) as end_ts,
         printf('%d', COALESCE(main_start_ts, actual_start)) as main_start_ts,
         printf('%d', COALESCE(main_end_ts, actual_end)) as main_end_ts,
+        COALESCE(main_end_ts - main_start_ts, 0) as main_dur,
         ROUND(COALESCE(main_end_ts - main_start_ts, 0) / 1e6, 2) as main_dur_ms,
         printf('%d', COALESCE(render_start_ts, actual_start)) as render_start_ts,
         printf('%d', COALESCE(render_end_ts, actual_end)) as render_end_ts,
+        COALESCE(render_end_ts - render_start_ts, 0) as render_dur,
         ROUND(COALESCE(render_end_ts - render_start_ts, 0) / 1e6, 2) as render_dur_ms,
         printf('%d', actual_dur) as dur_ns,
-        actual_dur / 1e6 as dur_ms,
+        actual_dur as dur,
+        ROUND(actual_dur / 1e6, 2) as dur_ms,
         jank_type,
         jank_severity_type,
         layer_name,
@@ -1065,9 +1148,8 @@ steps:
         ROW_NUMBER() OVER (ORDER BY session_id, actual_start) as frame_index
       FROM ranked_frames
       ORDER BY session_id, actual_start
-      LIMIT 30
     save_as: app_jank_frames
-    condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && typeof environment !== 'undefined' && environment.data[0]?.has_data === 1 && perf_summary.data[0]?.janky_frames > 0"
+    condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && typeof environment !== 'undefined' && environment.data[0]?.has_data === 1 && perf_summary.data[0]?.janky_frames > 0 && start_ts != null"
 
   # ==========================================================================
   # L3: 逐帧诊断 (所有掉帧帧 → janky_frame_analysis)
@@ -1076,7 +1158,6 @@ steps:
     type: iterator
     name: "逐帧诊断分析"
     source: app_jank_frames
-    max_items: "${max_frames_per_session|8}"
     item_skill: janky_frame_analysis
     item_params:
       frame_ts: start_ts
@@ -1086,7 +1167,7 @@ steps:
       level: key
       layer: overview
       title: "帧诊断结果"
-    condition: "app_jank_frames.data?.length > 0"
+    condition: "app_jank_frames.data?.length > 0 && enable_frame_details === true"
 
   # ==========================================================================
   # L4: 逐帧详细分析 (Iterator)
@@ -1116,7 +1197,6 @@ steps:
           type: percentage
           format: percentage
     source: app_jank_frames
-    max_items: 50
     item_skill: jank_frame_detail
     condition: "enable_frame_details === true"
     item_params:
@@ -1197,6 +1277,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -1223,6 +1304,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         LEFT JOIN cpu_info c ON ts.cpu = c.cpu
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND t.tid = p.pid
           AND (${start_ts} IS NULL OR ts.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ts.ts < ${end_ts})
@@ -1239,6 +1321,7 @@ steps:
         JOIN thread t ON ts.utid = t.utid
         JOIN process p ON t.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
           AND t.name = 'RenderThread'
           AND (${start_ts} IS NULL OR ts.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ts.ts < ${end_ts})

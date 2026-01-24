@@ -1,6 +1,8 @@
 /**
  * SmartPerfetto Agent State Machine
  *
+ * @deprecated Not used in Agent-Driven architecture (v5.0). See agentDrivenOrchestrator.ts.
+ *
  * 状态机核心组件，负责：
  * 1. 管理 Agent 生命周期状态转换
  * 2. 检查点持久化和恢复
@@ -49,6 +51,11 @@ const STATE_TRANSITIONS: Record<AgentPhase, AgentPhase[]> = {
  * - 检查点创建和恢复
  * - 持久化存储
  * - 事件钩子
+ *
+ * @deprecated This class is no longer used in the Agent-Driven architecture (v5.0).
+ * The new architecture uses AgentDrivenOrchestrator with StrategyExecutor/HypothesisExecutor
+ * which manage their own lifecycle internally. Retained for potential future integration
+ * with session persistence. Will be removed in v6.0.
  */
 export class AgentStateMachine extends EventEmitter {
   private state: AgentStateMachineState;

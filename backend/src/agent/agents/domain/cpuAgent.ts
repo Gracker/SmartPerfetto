@@ -76,10 +76,7 @@ ${task.description}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 格式返回你的理解：
 {
@@ -98,10 +95,7 @@ ${this.getToolDescriptionsForLLM()}
 ## 目标
 ${understanding.objective}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 格式返回执行计划：
 {

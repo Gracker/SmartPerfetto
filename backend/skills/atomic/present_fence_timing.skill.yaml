@@ -36,12 +36,14 @@ steps:
           COALESCE(${end_ts}, MAX(ts + dur)) as end_ts
         FROM actual_frame_timeline_slice
       ),
-      -- 动态检测 VSync 周期
+      -- 动态检测 VSync 周期（限定在分析区间内）
       vsync_config AS (
         SELECT COALESCE(
           (SELECT CAST(AVG(dur) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 20000000
+             AND ts >= (SELECT start_ts FROM time_bounds)
+             AND ts <= (SELECT end_ts FROM time_bounds)
            LIMIT 1000),
           16666666
         ) as vsync_period_ns

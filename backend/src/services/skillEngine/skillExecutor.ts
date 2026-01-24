@@ -170,8 +170,26 @@ class ExpressionEvaluator {
     const fullExprMatch = expression.match(/^\$\{(.+)\}$/s);
     // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
     if (fullExprMatch && !fullExprMatch[1].includes('${')) {
+      const innerExpr = fullExprMatch[1].trim();
+      // Support ${varName|defaultValue} syntax for full expressions
+      const pipeIndex = innerExpr.indexOf('|');
+      if (pipeIndex >= 0) {
+        const varPart = innerExpr.substring(0, pipeIndex).trim();
+        const defaultPart = innerExpr.substring(pipeIndex + 1).trim();
+        // Check if varPart is a simple path (not a bitwise OR expression)
+        const isSimple = /^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$/.test(varPart);
+        if (isSimple) {
+          const value = this.resolvePath(varPart, context);
+          if (value !== undefined && value !== null) return value;
+          // Parse default: try number, boolean, then string
+          if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
+          if (defaultPart === 'true') return true;
+          if (defaultPart === 'false') return false;
+          return defaultPart;
+        }
+      }
       // 这是一个 JavaScript 表达式，需要完整求值
-      return this.evaluateJsExpression(fullExprMatch[1], context);
+      return this.evaluateJsExpression(innerExpr, context);
     }
 
     // 否则，做变量替换（支持嵌入的 JavaScript 表达式）
@@ -188,22 +206,31 @@ class ExpressionEvaluator {
     result = result.replace(/\$\{([^}]+)\}/g, (match, path) => {
       const rawPath = String(path ?? '').trim();
 
+      // Support ${varName|defaultValue} syntax
+      const pipeIndex = rawPath.indexOf('|');
+      const actualPath = pipeIndex >= 0 ? rawPath.substring(0, pipeIndex).trim() : rawPath;
+      const defaultValue = pipeIndex >= 0 ? rawPath.substring(pipeIndex + 1).trim() : undefined;
+
       // 复杂表达式：使用完整的 JS 表达式求值
-      if (!isSimplePath(rawPath)) {
+      if (!isSimplePath(actualPath)) {
         try {
-          const value = this.evaluateJsExpression(rawPath, context);
-          if (value === undefined || value === null) return '';
+          const value = this.evaluateJsExpression(actualPath, context);
+          if (value === undefined || value === null) {
+            return defaultValue !== undefined ? defaultValue : '';
+          }
           if (typeof value === 'object') return JSON.stringify(value);
           return String(value);
         } catch (e) {
-          console.warn(`[ExpressionEvaluator] Failed to evaluate embedded JS: ${rawPath}`, e);
-          return '';
+          console.warn(`[ExpressionEvaluator] Failed to evaluate embedded JS: ${actualPath}`, e);
+          return defaultValue !== undefined ? defaultValue : '';
         }
       }
 
       // 简单路径：使用 resolvePath
-      const value = this.resolvePath(rawPath, context);
-      if (value === undefined || value === null) return '';
+      const value = this.resolvePath(actualPath, context);
+      if (value === undefined || value === null) {
+        return defaultValue !== undefined ? defaultValue : '';
+      }
       if (typeof value === 'object') return JSON.stringify(value);
       return String(value);
     });
@@ -501,21 +528,27 @@ function substituteVariables(sql: string, context: SkillExecutionContext): strin
     return inSingle;
   };
 
-  // 替换所有 ${xxx} 格式的变量
+  // 替换所有 ${xxx} 格式的变量（支持 ${varName|defaultValue} 语法）
   result = result.replace(/\$\{([^}]+)\}/g, (match, path, offset, full) => {
     const rawPath = String(path ?? '').trim();
     const insideQuotes = typeof offset === 'number' && typeof full === 'string'
       ? isInsideSingleQuotes(full, offset)
       : false;
 
-    const value = ExpressionEvaluator.resolvePath(rawPath, context);
+    // Support ${varName|defaultValue} syntax
+    const pipeIndex = rawPath.indexOf('|');
+    const actualPath = pipeIndex >= 0 ? rawPath.substring(0, pipeIndex).trim() : rawPath;
+    const explicitDefault = pipeIndex >= 0 ? rawPath.substring(pipeIndex + 1).trim() : undefined;
 
-    // 缺省值：
-    // - 字符串常量内部：用 ''（避免把 NULL 注入到 '...${x}...' 里变成字面量 "NULL"）
-    // - 其它位置：用 NULL（避免 COALESCE(, 0) 这类语法错误）
+    const value = ExpressionEvaluator.resolvePath(actualPath, context);
+
+    // 缺省值优先级：
+    // 1. 显式 |default 值
+    // 2. 字符串常量内部：用 ''
+    // 3. 其它位置：用 NULL
     if (value === undefined || value === null) {
+      if (explicitDefault !== undefined) return explicitDefault;
       if (insideQuotes) return '';
-      // 对于可选参数缺失是常态，不要把 ${...} 留在 SQL 里，否则会导致解析错误。
       return 'NULL';
     }
 
@@ -1108,6 +1141,22 @@ export class SkillExecutor {
                   ));
                 }
 
+                // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 DisplayResult
+                if (step.type === 'iterator' && 'source' in step && (step as any).source) {
+                  const sourceName = (step as any).source;
+                  // source 引用的是 save_as 名称，需要找到对应的 step.id
+                  const sourceStep = skill.steps!.find((s: any) =>
+                    s.save_as === sourceName || s.id === sourceName
+                  );
+                  const sourceStepId = sourceStep ? sourceStep.id : sourceName;
+                  const sourceDisplayResult = displayResults.find(dr => dr.stepId === sourceStepId);
+                  // expandableData 在 DisplayResult.data 中（由 flattenIteratorResults 创建）
+                  const iteratorDisplayResult = displayResults.find(dr => dr.stepId === step.id);
+                  if (sourceDisplayResult?.data && iteratorDisplayResult?.data?.expandableData) {
+                    sourceDisplayResult.data.expandableData = iteratorDisplayResult.data.expandableData;
+                  }
+                }
+
                 // 收集诊断结果
                 if (step.type === 'diagnostic' && stepResult.data?.diagnostics) {
                   diagnostics.push(...stepResult.data.diagnostics);
@@ -1260,7 +1309,37 @@ export class SkillExecutor {
       }
     }
 
-    // Debug log removed for cleaner output
+    // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 StepResult
+    // 这样 convertDisplayResultsToSections 可以在源步骤的 data 上找到 expandableData
+    if (skill.steps) {
+      for (let i = 0; i < skill.steps.length; i++) {
+        const step = skill.steps[i];
+        if (step.type === 'iterator' && 'source' in step && (step as any).source) {
+          const sourceName = (step as any).source;
+          // source 引用的是 save_as 名称，需要找到对应的 step.id
+          const sourceStep = skill.steps.find((s: any) =>
+            s.save_as === sourceName || s.id === sourceName
+          );
+          const sourceStepId = sourceStep ? sourceStep.id : sourceName;
+          const sourceResult = stepResults.find(sr => sr.stepId === sourceStepId);
+          const iteratorResult = stepResults[i];
+          // 在 executeCompositeSkill 路径中，iterator 的 data 是原始 [{itemIndex, item, result}, ...]
+          // 需要将其转换为 expandableData 格式
+          if (sourceResult?.data && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
+            const expandableData = iteratorResult.data.map((iterItem: any) => ({
+              item: iterItem.item,
+              result: {
+                success: iterItem.result?.success ?? false,
+                sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
+                error: iterItem.result?.error,
+              },
+            }));
+            // 直接在 data 上挂载 expandableData（JS 数组/对象都支持额外属性）
+            (sourceResult.data as any).expandableData = expandableData;
+          }
+        }
+      }
+    }
 
     // Return layered structure
     try {

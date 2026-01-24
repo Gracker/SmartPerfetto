@@ -60,10 +60,7 @@ ${task.description}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"objective":"","questions":[],"relevantAreas":["startup"],"recommendedTools":["analyze_startup"],"constraints":[],"confidence":0.7}`;
   }
@@ -71,10 +68,7 @@ ${this.getToolDescriptionsForLLM()}
   protected buildPlanningPrompt(understanding: TaskUnderstanding, task: AgentTask): string {
     return `规划启动分析：目标 ${understanding.objective}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"steps":[{"toolName":"analyze_startup","params":{},"purpose":"分析启动性能"}],"expectedOutcomes":["启动时间分析"],"estimatedTimeMs":30000,"confidence":0.7}`;
   }
@@ -143,10 +137,7 @@ ${task.description}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"objective":"","questions":[],"relevantAreas":["interaction"],"recommendedTools":["analyze_click_response"],"constraints":[],"confidence":0.7}`;
   }
@@ -154,10 +145,7 @@ ${this.getToolDescriptionsForLLM()}
   protected buildPlanningPrompt(understanding: TaskUnderstanding, task: AgentTask): string {
     return `规划交互分析：目标 ${understanding.objective}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"steps":[{"toolName":"analyze_click_response","params":{},"purpose":"分析点击响应"}],"expectedOutcomes":[],"estimatedTimeMs":30000,"confidence":0.7}`;
   }
@@ -226,10 +214,7 @@ ${task.description}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"objective":"","questions":[],"relevantAreas":["anr"],"recommendedTools":["analyze_anr"],"constraints":[],"confidence":0.7}`;
   }
@@ -237,10 +222,7 @@ ${this.getToolDescriptionsForLLM()}
   protected buildPlanningPrompt(understanding: TaskUnderstanding, task: AgentTask): string {
     return `规划 ANR 分析：目标 ${understanding.objective}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"steps":[{"toolName":"analyze_anr","params":{},"purpose":"分析 ANR"}],"expectedOutcomes":[],"estimatedTimeMs":30000,"confidence":0.7}`;
   }
@@ -310,10 +292,7 @@ ${task.description}
 ${task.context.hypothesis ? `- 当前假设: ${task.context.hypothesis.description}` : ''}
 ${this.formatTaskContext(task)}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"objective":"","questions":[],"relevantAreas":["system"],"recommendedTools":[],"constraints":[],"confidence":0.7}`;
   }
@@ -321,10 +300,7 @@ ${this.getToolDescriptionsForLLM()}
   protected buildPlanningPrompt(understanding: TaskUnderstanding, task: AgentTask): string {
     return `规划系统分析：目标 ${understanding.objective}
 
-## 可用工具（只能使用以下工具）
-${this.getToolDescriptionsForLLM()}
-
-重要：你只能使用上面列出的工具，不要使用任何其他工具名称。
+${this.getToolSectionForPrompt()}
 
 请以 JSON 返回：{"steps":[{"toolName":"","params":{},"purpose":""}],"expectedOutcomes":[],"estimatedTimeMs":30000,"confidence":0.7}`;
   }

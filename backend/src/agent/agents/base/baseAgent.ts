@@ -930,13 +930,25 @@ export abstract class BaseAgent extends EventEmitter {
   }
 
   /**
-   * Get tool descriptions for LLM
-   * Falls back to skill definitions if tools haven't been loaded yet
+   * Get tool descriptions for LLM, including parameter info.
+   * This helps the LLM understand that tools are self-contained (with built-in SQL)
+   * and only need simple parameters to execute.
    */
   getToolDescriptionsForLLM(): string {
     if (this.tools.size > 0) {
       return this.getAllTools()
-        .map(t => `- ${t.name}: ${t.description}`)
+        .map(t => {
+          let desc = `- ${t.name}: ${t.description}`;
+          if (t.parameters && t.parameters.length > 0) {
+            const paramList = t.parameters
+              .map(p => `${p.name}(${p.type}${p.required ? ',必填' : ''})`)
+              .join(', ');
+            desc += `\n  参数: [${paramList}]`;
+          } else {
+            desc += `\n  参数: 无（自动从上下文获取 package/start_ts/end_ts）`;
+          }
+          return desc;
+        })
         .join('\n');
     }
     // Fallback: use skill definitions even before tools are loaded
@@ -946,6 +958,22 @@ export abstract class BaseAgent extends EventEmitter {
         .join('\n');
     }
     return '（无可用工具）';
+  }
+
+  /**
+   * Get the full "available tools" section for LLM prompts.
+   * Includes tool list, parameter info, and usage clarification.
+   * Use this in buildUnderstandingPrompt / buildPlanningPrompt instead of raw getToolDescriptionsForLLM().
+   */
+  protected getToolSectionForPrompt(): string {
+    return `## 可用工具（只能使用以下工具，每个工具内置 SQL，不需要你提供查询语句）
+${this.getToolDescriptionsForLLM()}
+
+重要规则：
+1. 只能使用上面列出的工具，不要使用任何其他工具名称
+2. 每个工具内置了完整的 SQL 查询，不需要你提供 SQL
+3. package/start_ts/end_ts 会自动从上下文注入，params 中一般不需要填写这些
+4. params 只需填写工具特有的可选参数，留空 {} 即可使用默认行为`;
   }
 
   /**

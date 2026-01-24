@@ -75,7 +75,7 @@ steps:
       layer: deep
       title: "帧诊断结果"
     inputs: [cpu, scheduling, binder]
-    ai_assist: true
+    ai_assist: false  # 禁用：逐帧 AI 调用导致 N×LLM，由 conclusion 阶段统一总结
     rules:
       # CPU 密集型
       - condition: "cpu.data?.[0]?.total_cpu_ms > ${frame_dur} / 1e6 * 0.8"
