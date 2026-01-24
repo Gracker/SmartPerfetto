@@ -102,7 +102,6 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE (p.name = 'surfaceflinger' OR p.name LIKE '%surfaceflinger%')
           AND (s.name GLOB '*VSYNC*' OR s.name GLOB '*vsync-sf*' OR s.name GLOB '*vsync-app*')
-        LIMIT 500
       ),
       sf_vsync AS (
         SELECT
@@ -117,8 +116,7 @@ steps:
           CAST(AVG(dur) AS INTEGER) as vsync_period_ns,
           'expected_frame' as source
         FROM expected_frame_timeline_slice
-        WHERE dur > 5000000 AND dur < 20000000
-        LIMIT 1000
+        WHERE dur > 5000000 AND dur < 35000000
       ),
       combined AS (
         SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
@@ -135,9 +133,9 @@ steps:
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       )
       SELECT
-        COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666) as vsync_period_ns,
-        ROUND(1e9 / COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666), 0) as refresh_rate_hz,
-        ROUND(COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 16666666) / 1e6, 2) as vsync_period_ms,
+        COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) as vsync_period_ns,
+        ROUND(1e9 / COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333), 0) as refresh_rate_hz,
+        ROUND(COALESCE((SELECT vsync_period_ns FROM combined LIMIT 1), 8333333) / 1e6, 2) as vsync_period_ms,
         COALESCE((SELECT source FROM combined LIMIT 1), 'default') as vsync_source,
         (SELECT total_frames FROM frame_count) as total_frames,
         CASE WHEN (SELECT total_frames FROM frame_count) > 0 THEN 1 ELSE 0 END as has_data
@@ -554,7 +552,23 @@ steps:
           label: "FPS"
           type: number
     sql: |
-      WITH frame_gaps AS (
+      WITH
+      -- 动态 VSync 周期检测用于 session 切分
+      vsync_intervals AS (
+        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+      ),
+      vsync_config AS (
+        SELECT COALESCE(
+          (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
+           FROM vsync_intervals
+           WHERE interval_ns > 5000000 AND interval_ns < 15000000),
+          8333333
+        ) as vsync_period_ns
+      ),
+      frame_gaps AS (
         SELECT
           COALESCE(a.display_frame_token, a.surface_frame_token) as frame_id,
           a.ts,
@@ -573,7 +587,7 @@ steps:
       ),
       session_markers AS (
         SELECT *,
-          CASE WHEN gap_ns IS NULL OR gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
+          CASE WHEN gap_ns IS NULL OR gap_ns > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 1 ELSE 0 END as new_session
         FROM frame_gaps
       ),
       sessions AS (
@@ -596,7 +610,6 @@ steps:
       HAVING COUNT(*) >= 10
         AND (MAX(ts + dur) - MIN(ts)) > 200000000
       ORDER BY MIN(ts)
-      LIMIT 20
     save_as: sessions
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
 
@@ -638,7 +651,23 @@ steps:
           type: string
           format: truncate
     sql: |
-      WITH frame_gaps AS (
+      WITH
+      -- 动态 VSync 周期检测
+      vsync_intervals_for_session AS (
+        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+      ),
+      vsync_config_for_session AS (
+        SELECT COALESCE(
+          (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
+           FROM vsync_intervals_for_session
+           WHERE interval_ns > 5000000 AND interval_ns < 15000000),
+          8333333
+        ) as vsync_period_ns
+      ),
+      frame_gaps AS (
         SELECT
           COALESCE(a.display_frame_token, a.surface_frame_token) as display_frame_token,
           a.ts, a.dur, a.upid,
@@ -657,7 +686,7 @@ steps:
       ),
       session_markers AS (
         SELECT *,
-          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
+          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > (SELECT vsync_period_ns * 6 FROM vsync_config_for_session) THEN 1 ELSE 0 END as new_session
         FROM frame_gaps
       ),
       sessions_raw AS (
@@ -890,7 +919,7 @@ steps:
       session_markers AS (
         SELECT
           *,
-          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > 100000000 THEN 1 ELSE 0 END as new_session
+          CASE WHEN time_gap_ns IS NULL OR time_gap_ns > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 1 ELSE 0 END as new_session
         FROM all_frames
       ),
       sessions_map AS (
@@ -1036,6 +1065,7 @@ steps:
         ROW_NUMBER() OVER (ORDER BY session_id, actual_start) as frame_index
       FROM ranked_frames
       ORDER BY session_id, actual_start
+      LIMIT 30
     save_as: app_jank_frames
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && typeof environment !== 'undefined' && environment.data[0]?.has_data === 1 && perf_summary.data[0]?.janky_frames > 0"
 
@@ -1046,7 +1076,7 @@ steps:
     type: iterator
     name: "逐帧诊断分析"
     source: app_jank_frames
-    max_items: 9999
+    max_items: 30
     item_skill: janky_frame_analysis
     item_params:
       frame_ts: start_ts

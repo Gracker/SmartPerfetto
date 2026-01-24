@@ -149,8 +149,8 @@ export interface DecisionContext {
   traceProcessorService: any;
   /** 之前执行的结果 (key -> result) */
   previousResults: Map<string, any>;
-  /** 当前分析的时间范围 */
-  timeRange?: { start: number; end: number };
+  /** 当前分析的时间范围 (string for precision-safe ns timestamps) */
+  timeRange?: { start: number | string; end: number | string };
   /** 目标包名 */
   packageName?: string;
 }

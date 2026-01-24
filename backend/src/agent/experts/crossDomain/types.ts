@@ -69,8 +69,8 @@ export interface ModuleQuery {
   params: Record<string, any>;
   /** Dialogue context for multi-turn conversations */
   context?: DialogueContext;
-  /** Time range constraint (optional) */
-  timeRange?: { start: number; end: number };
+  /** Time range constraint (string for precision-safe ns timestamps) */
+  timeRange?: { start: number | string; end: number | string };
 }
 
 /**
@@ -319,8 +319,8 @@ export interface CrossDomainInput {
   architecture?: ArchitectureInfo;
   /** Target package name */
   packageName?: string;
-  /** Time range for analysis */
-  timeRange?: { start: number; end: number };
+  /** Time range for analysis (string for precision-safe ns timestamps) */
+  timeRange?: { start: number | string; end: number | string };
   /** Trace processor service */
   traceProcessorService: any;
   /** Previous findings from other phases */

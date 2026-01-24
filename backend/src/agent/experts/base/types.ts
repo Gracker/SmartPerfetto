@@ -53,8 +53,8 @@ export interface ExpertInput {
   traceProcessorService: any;
   /** Target package name */
   packageName?: string;
-  /** Time range for analysis */
-  timeRange?: { start: number; end: number };
+  /** Time range for analysis (string for precision-safe ns timestamps) */
+  timeRange?: { start: number | string; end: number | string };
   /** Context from previous analysis turns */
   previousFindings?: Finding[];
 }

@@ -95,7 +95,7 @@ interface TaskGraphNode {
   domain: string;
   description: string;
   evidenceNeeded: string[];
-  timeRange?: { start: number; end: number };
+  timeRange?: { start: number | string; end: number | string };
   dependsOn?: string[];
   priority?: number;
 }
@@ -151,10 +151,10 @@ interface ScrollingFocusSession {
   sessionId: number;
   /** Target process/package name */
   processName: string;
-  /** Range start (ns) */
-  startTs: number;
-  /** Range end (ns) */
-  endTs: number;
+  /** Range start (ns) - stored as string to preserve precision for values > 2^53 */
+  startTs: string;
+  /** Range end (ns) - stored as string to preserve precision for values > 2^53 */
+  endTs: string;
   /** Count of detected jank frames in this session */
   jankFrameCount: number;
   /** Max vsync missed among detected jank frames */
@@ -236,7 +236,7 @@ export class AgentDrivenOrchestrator extends EventEmitter {
     options: {
       traceProcessorService?: any;
       packageName?: string;
-      timeRange?: { start: number; end: number };
+      timeRange?: { start: number | string; end: number | string };
     } = {}
   ): Promise<AnalysisResult> {
     const startTime = Date.now();
@@ -1084,9 +1084,17 @@ ${allowedDomains.join(', ')}
       if (!this.isLikelyAppProcessName(processName)) continue;
 
       const sessionId = toNumber(session.session_id);
-      const startTs = toNumber(session.start_ts);
-      const endTs = toNumber(session.end_ts);
-      if (!startTs || !endTs || endTs <= startTs) continue;
+      // Keep timestamps as strings to preserve precision for values > Number.MAX_SAFE_INTEGER.
+      // SQL printf('%d', ts) returns precise string representation; Number() would truncate.
+      const startTs = String(session.start_ts ?? '');
+      const endTs = String(session.end_ts ?? '');
+      if (!startTs || !endTs || startTs === '0' || endTs === '0') continue;
+      // Use BigInt for safe comparison of large nanosecond timestamps
+      try {
+        if (BigInt(endTs) <= BigInt(startTs)) continue;
+      } catch {
+        continue; // Skip if not valid integer strings
+      }
 
       let maxVsyncMissed = 0;
       for (const f of frames) {
@@ -1103,19 +1111,36 @@ ${allowedDomains.join(', ')}
       });
     }
 
-    focusSessions.sort((a, b) =>
-      (b.maxVsyncMissed - a.maxVsyncMissed) ||
-      (b.jankFrameCount - a.jankFrameCount) ||
-      ((b.endTs - b.startTs) - (a.endTs - a.startTs))
-    );
+    focusSessions.sort((a, b) => {
+      if (b.maxVsyncMissed !== a.maxVsyncMissed) return b.maxVsyncMissed - a.maxVsyncMissed;
+      if (b.jankFrameCount !== a.jankFrameCount) return b.jankFrameCount - a.jankFrameCount;
+      // Use BigInt for safe duration comparison of large nanosecond timestamps
+      try {
+        const durA = BigInt(a.endTs) - BigInt(a.startTs);
+        const durB = BigInt(b.endTs) - BigInt(b.startTs);
+        if (durB > durA) return 1;
+        if (durB < durA) return -1;
+      } catch { /* fallback: equal */ }
+      return 0;
+    });
 
     return focusSessions.slice(0, STAGED_SCROLLING_DEFAULTS.maxFocusSessions);
   }
 
-  private formatNsRangeLabel(startTs: number, endTs: number): string {
-    const startS = (startTs / 1e9).toFixed(2);
-    const endS = (endTs / 1e9).toFixed(2);
-    return `${startS}s–${endS}s`;
+  private formatNsRangeLabel(startTs: string | number, endTs: string | number): string {
+    // Use BigInt division for precision-safe conversion from ns to seconds
+    try {
+      const startBi = BigInt(String(startTs));
+      const endBi = BigInt(String(endTs));
+      const startS = Number(startBi / 1000000n) / 1000;  // ns → ms (BigInt) → s (Number, safe range)
+      const endS = Number(endBi / 1000000n) / 1000;
+      return `${startS.toFixed(2)}s–${endS.toFixed(2)}s`;
+    } catch {
+      // Fallback for non-BigInt-compatible values
+      const startS = (Number(startTs) / 1e9).toFixed(2);
+      const endS = (Number(endTs) / 1e9).toFixed(2);
+      return `${startS}s–${endS}s`;
+    }
   }
 
   private buildStagedScrollingTasks(
@@ -1149,8 +1174,8 @@ ${allowedDomains.join(', ')}
             traceProcessorService: options.traceProcessorService,
             packageName: options.packageName,
             scopeLabel: '阶段1 · 概览',
-            // Do not enable deep frame details in stage 1
-            enableFrameDetails: false,
+            // Pass skill-specific params via generic skillParams mechanism
+            skillParams: { enable_frame_details: false },
           },
         },
         dependencies: [],
@@ -1266,8 +1291,13 @@ ${allowedDomains.join(', ')}
               traceProcessorService: options.traceProcessorService,
               packageName: fs.processName,
               scopeLabel,
-              enableFrameDetails: true,
-              maxFramesPerSession: STAGED_SCROLLING_DEFAULTS.maxFramesPerSession,
+              // Generic: restrict agent to specific tools for this stage
+              focusTools: ['analyze_scrolling'],
+              // Generic: skill-specific params passed through to the skill executor
+              skillParams: {
+                enable_frame_details: true,
+                max_frames_per_session: STAGED_SCROLLING_DEFAULTS.maxFramesPerSession,
+              },
             },
           },
           dependencies: [],
@@ -1302,12 +1332,23 @@ ${allowedDomains.join(', ')}
     input: any,
     options: any,
     sharedContext: SharedAgentContext
-  ): { start: number; end: number } | undefined {
-    if (input && typeof input === 'object' && typeof input.start === 'number' && typeof input.end === 'number') {
-      return { start: input.start, end: input.end };
+  ): { start: number | string; end: number | string } | undefined {
+    if (input && typeof input === 'object') {
+      const start = input.start;
+      const end = input.end;
+      if ((typeof start === 'number' || typeof start === 'string') &&
+          (typeof end === 'number' || typeof end === 'string') &&
+          start && end) {
+        return { start, end };
+      }
     }
-    if (Array.isArray(input) && input.length >= 2 && typeof input[0] === 'number' && typeof input[1] === 'number') {
-      return { start: input[0], end: input[1] };
+    if (Array.isArray(input) && input.length >= 2) {
+      const start = input[0];
+      const end = input[1];
+      if ((typeof start === 'number' || typeof start === 'string') &&
+          (typeof end === 'number' || typeof end === 'string')) {
+        return { start, end };
+      }
     }
     if (sharedContext.focusedTimeRange) {
       return sharedContext.focusedTimeRange;
@@ -1361,9 +1402,25 @@ ${allowedDomains.join(', ')}
     }));
     this.log(`emitDataEnvelopes: ${responses.length} responses, tool results: ${JSON.stringify(toolResultCounts)}`);
 
-    const envelopes = responses
+    const allEnvelopes = responses
       .flatMap(response => response.toolResults || [])
       .flatMap(result => result.dataEnvelopes || []);
+
+    // Filter out envelopes with no data rows (empty tables add noise without value)
+    const envelopes = allEnvelopes.filter(env => {
+      const payload = env.data as any;
+      if (!payload) return false;
+      // Keep non-table formats (text, summary, chart, etc.)
+      if (env.display.format !== 'table' && env.display.format !== undefined) return true;
+      // For tables: require at least one row
+      const rows = payload.rows;
+      return rows && Array.isArray(rows) && rows.length > 0;
+    });
+
+    const filteredCount = allEnvelopes.length - envelopes.length;
+    if (filteredCount > 0) {
+      this.log(`Filtered out ${filteredCount} empty DataEnvelope(s)`);
+    }
 
     if (envelopes.length > 0) {
       this.log(`Emitting ${envelopes.length} DataEnvelope(s): [${envelopes.map(e => e.meta?.source || 'unknown').join(', ')}]`);

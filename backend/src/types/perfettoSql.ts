@@ -576,8 +576,8 @@ export interface PerfettoSqlRequest {
   question: string;
   /** Optional: package name filter */
   packageName?: string;
-  /** Optional: time range filter (ns) */
-  timeRange?: { start: number; end: number };
+  /** Optional: time range filter (ns, string for precision-safe timestamps) */
+  timeRange?: { start: number | string; end: number | string };
 }
 
 /**

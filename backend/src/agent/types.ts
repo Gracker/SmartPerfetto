@@ -608,8 +608,8 @@ export interface SubAgentContext {
   userQuery?: string;
   /** 目标应用包名 */
   package?: string;
-  /** 分析时间范围 */
-  timeRange?: { start: number; end: number };
+  /** 分析时间范围 (string for precision-safe ns timestamps) */
+  timeRange?: { start: number | string; end: number | string };
   /** AI 服务，用于 Skill 的 ai_summary 和 ai_decision 步骤 */
   aiService?: {
     chat: (prompt: string) => Promise<string>;

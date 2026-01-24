@@ -413,13 +413,7 @@ ${findings || '无'}
 
   protected getRecommendedTools(context: AgentTaskContext): string[] {
     const query = context.query?.toLowerCase() || '';
-    const enableFrameDetails = (context.additionalData as any)?.enableFrameDetails === true;
     const tools: string[] = [];
-
-    // Staged analysis: deep frame details are enabled explicitly by the orchestrator.
-    if (enableFrameDetails) {
-      return ['analyze_scrolling'];
-    }
 
     // Always start with overview analysis
     tools.push('analyze_scrolling');

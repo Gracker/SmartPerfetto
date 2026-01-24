@@ -218,6 +218,26 @@ export interface DataEnvelopeDisplay {
 
   /** Level of detail (key, summary, detail, debug) */
   level?: DisplayLevel;
+
+  // === Phase 3: Output Structure Optimization ===
+
+  /** Rendering priority (0 = highest). Used by frontend to order envelopes within a group. */
+  priority?: number;
+
+  /** Group identifier for grouping related envelopes (e.g. "interval_1"). */
+  group?: string;
+
+  /** Data severity level. Frontend uses this to sort (critical first) and style. */
+  severity?: 'critical' | 'warning' | 'info' | 'normal';
+
+  /** Whether this envelope's table is collapsible in the UI. */
+  collapsible?: boolean;
+
+  /** Whether this envelope should be collapsed by default (requires collapsible=true). */
+  defaultCollapsed?: boolean;
+
+  /** Maximum number of visible rows before "show more" truncation. */
+  maxVisibleRows?: number;
 }
 
 /**

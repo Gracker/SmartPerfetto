@@ -60,10 +60,10 @@ export interface AgentToolContext {
   };
   /** Package name being analyzed */
   packageName?: string;
-  /** Time range for analysis */
+  /** Time range for analysis (string for precision-safe ns timestamps) */
   timeRange?: {
-    start: number;
-    end: number;
+    start: number | string;
+    end: number | string;
   };
   /** Additional context data */
   additionalContext?: Record<string, any>;
@@ -127,10 +127,10 @@ export interface AgentTaskContext {
   evidenceNeeded?: string[];
   /** Hypothesis to investigate */
   hypothesis?: Hypothesis;
-  /** Time range to focus on */
+  /** Time range to focus on (string for precision-safe ns timestamps) */
   timeRange?: {
-    start: number;
-    end: number;
+    start: number | string;
+    end: number | string;
   };
   /** Previous findings relevant to this task */
   relevantFindings?: Finding[];
@@ -340,10 +340,10 @@ export interface SharedAgentContext {
   hypotheses: Map<string, Hypothesis>;
   /** Confirmed findings from all agents */
   confirmedFindings: Finding[];
-  /** Current focus time range */
+  /** Current focus time range (string for precision-safe ns timestamps) */
   focusedTimeRange?: {
-    start: number;
-    end: number;
+    start: number | string;
+    end: number | string;
   };
   /** Investigation path - trace of agent interactions */
   investigationPath: InvestigationStep[];

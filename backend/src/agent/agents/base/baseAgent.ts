@@ -225,9 +225,25 @@ export abstract class BaseAgent extends EventEmitter {
   protected abstract generateHypotheses(findings: Finding[], task: AgentTask): Promise<Hypothesis[]>;
 
   /**
-   * Get domain-specific tool recommendations
+   * Get domain-specific tool recommendations (subclass override)
    */
   protected abstract getRecommendedTools(context: AgentTaskContext): string[];
+
+  /**
+   * Resolve tools for a task context.
+   * Generic: if orchestrator specifies `additionalData.focusTools`, restricts to those tools.
+   * Otherwise falls back to subclass's getRecommendedTools().
+   * This allows any orchestrator to control agent tool selection without scenario-specific flags.
+   */
+  private resolveToolsForTask(context: AgentTaskContext): string[] {
+    const focusTools = (context.additionalData as any)?.focusTools;
+    if (Array.isArray(focusTools) && focusTools.length > 0) {
+      // Only return focusTools that this agent actually has registered
+      const validTools = focusTools.filter((t: string) => this.tools.has(t));
+      if (validTools.length > 0) return validTools;
+    }
+    return this.getRecommendedTools(context);
+  }
 
   // ==========================================================================
   // Core Agent Loop
@@ -309,7 +325,7 @@ export abstract class BaseAgent extends EventEmitter {
           objective: parsed.objective || task.description,
           questions: parsed.questions || [],
           relevantAreas: parsed.relevantAreas || [],
-          recommendedTools: parsed.recommendedTools || this.getRecommendedTools(task.context),
+          recommendedTools: parsed.recommendedTools || this.resolveToolsForTask(task.context),
           constraints: parsed.constraints || [],
           confidence: parsed.confidence || 0.7,
         };
@@ -323,7 +339,7 @@ export abstract class BaseAgent extends EventEmitter {
       objective: task.description,
       questions: [],
       relevantAreas: [this.config.domain],
-      recommendedTools: this.getRecommendedTools(task.context),
+      recommendedTools: this.resolveToolsForTask(task.context),
       constraints: [],
       confidence: 0.5,
     };
@@ -357,7 +373,7 @@ export abstract class BaseAgent extends EventEmitter {
         if (plannedSteps.length === 0) {
           const fallbackTools = understanding.recommendedTools.length > 0
             ? understanding.recommendedTools
-            : this.getRecommendedTools(task.context);
+            : this.resolveToolsForTask(task.context);
           return {
             steps: fallbackTools.map((toolName, i) => ({
               stepNumber: i + 1,
@@ -678,19 +694,20 @@ export abstract class BaseAgent extends EventEmitter {
         };
 
         if (context.timeRange) {
-          execParams.start_ts = context.timeRange.start;
-          execParams.end_ts = context.timeRange.end;
+          // Pass timestamps as strings to preserve precision for values > Number.MAX_SAFE_INTEGER.
+          // SQL template substitution (${start_ts}) handles string values correctly.
+          execParams.start_ts = String(context.timeRange.start);
+          execParams.end_ts = String(context.timeRange.end);
         }
 
-        // Allow orchestrators to control skill behavior without relying on LLM-generated params
-        // (e.g., staged scrolling analysis where deep frame details are only enabled in later stages).
+        // Generic skill params: orchestrators pass extra skill parameters via additionalContext.skillParams.
+        // This allows controlling skill behavior without the baseAgent needing to know specific skill IDs.
         const additional = (context.additionalContext || {}) as Record<string, any>;
-        if (skillId === 'scrolling_analysis') {
-          if (additional.enableFrameDetails === true) {
-            execParams.enable_frame_details = true;
-          }
-          if (typeof additional.maxFramesPerSession === 'number' && Number.isFinite(additional.maxFramesPerSession)) {
-            execParams.max_frames_per_session = additional.maxFramesPerSession;
+        if (additional.skillParams && typeof additional.skillParams === 'object') {
+          for (const [key, val] of Object.entries(additional.skillParams)) {
+            if (val !== undefined && val !== null) {
+              execParams[key] = val;
+            }
           }
         }
 
@@ -698,19 +715,45 @@ export abstract class BaseAgent extends EventEmitter {
 
         const findings = this.extractFindingsFromResult(result, skillId, category);
         const data = this.extractDataFromResult(result);
+
+        // Derive group: if a task has both a timeRange and a scopeLabel, it's part of a
+        // multi-interval analysis and should be grouped by its interval.
+        // This is generic — works for scrolling intervals, startup phases, ANR windows, etc.
+        const scopeLabel = typeof additional.scopeLabel === 'string' ? additional.scopeLabel.trim() : '';
+        const derivedGroup =
+          (typeof additional.group === 'string' && additional.group)  // explicit override
+            ? additional.group
+            : (context.timeRange && scopeLabel)  // auto-derive from timeRange
+              ? `interval_${String(context.timeRange.start)}`
+              : undefined;
+
         const dataEnvelopes = SkillExecutor.toDataEnvelopes(result).map((env) => {
-          const scopeLabel = typeof additional.scopeLabel === 'string' ? additional.scopeLabel.trim() : '';
           const executionId =
             typeof additional.executionId === 'string' ? additional.executionId :
             typeof additional.taskId === 'string' ? additional.taskId :
             `${skillId}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
           // Make envelope source unique per execution so frontend can render repeated analyses
-          // (e.g., per-scroll-session deep dives) without deduping them away.
+          // (e.g., per-interval deep dives) without deduping them away.
           env.meta.source = `${env.meta.source}#${executionId}`;
 
           if (scopeLabel) {
             env.display.title = `${scopeLabel} · ${env.display.title}`;
+          }
+
+          // Assign group for frontend interval grouping
+          if (derivedGroup) {
+            env.display.group = derivedGroup;
+          }
+
+          // Grouped results are collapsible; collapse empty tables by default
+          if (env.display.group) {
+            env.display.collapsible = true;
+            const payload = env.data as any;
+            const rows = payload?.rows;
+            if (!rows || !Array.isArray(rows) || rows.length === 0) {
+              env.display.defaultCollapsed = true;
+            }
           }
 
           return env;

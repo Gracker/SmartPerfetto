@@ -28,9 +28,7 @@ steps:
   - id: cpu_freq_changes
     type: atomic
     name: "CPU 频率变化"
-    display:
-      level: detail
-      title: "CPU 频率变化"
+    display: false  # Raw data hidden - use cpu_freq_summary for aggregated view
     sql: |
       WITH 
       -- 动态检测 CPU 集群（基于最大频率）
@@ -116,7 +114,8 @@ steps:
         SELECT
           t.cpu,
           COALESCE(cl.cluster_type, 'unknown') as core_type,
-          c.value as freq_khz
+          c.value as freq_khz,
+          LAG(c.value) OVER (PARTITION BY t.cpu ORDER BY c.ts) as prev_freq_khz
         FROM counter c
         JOIN cpu_counter_track t ON c.track_id = t.id
         LEFT JOIN cpu_clusters cl ON t.cpu = cl.cpu
@@ -130,7 +129,8 @@ steps:
         ROUND(AVG(freq_khz) / 1000, 0) as avg_freq_mhz,
         ROUND(MAX(freq_khz) / 1000, 0) as max_freq_mhz,
         ROUND(MIN(freq_khz) / 1000, 0) as min_freq_mhz,
-        COUNT(*) as sample_count
+        SUM(CASE WHEN freq_khz != COALESCE(prev_freq_khz, freq_khz) THEN 1 ELSE 0 END) as freq_changes,
+        SUM(CASE WHEN freq_khz < COALESCE(prev_freq_khz, freq_khz) THEN 1 ELSE 0 END) as downclocks
       FROM freq_data
       GROUP BY core_type
       ORDER BY core_type DESC
