@@ -51,22 +51,63 @@ export class StrategyExecutor implements AnalysisExecutor {
     let stopReason: string | null = null;
     let rounds = 0;
 
+    // Phase 1 Fix: Use prebuilt intervals from follow-up resolution if available
+    // This allows drill-down queries to skip discovery stages
+    const prebuiltIntervals = ctx.options.prebuiltIntervals || [];
+    const hasPrebuiltContext = prebuiltIntervals.length > 0;
+
+    if (hasPrebuiltContext) {
+      emitter.log(`[FollowUp] Using ${prebuiltIntervals.length} pre-built interval(s) from follow-up resolution`);
+    }
+
     const state: StrategyExecutionState = {
       strategyId: this.strategy.id,
       currentStageIndex: 0,
-      focusIntervals: [],
-      confidence: 0.5,
+      focusIntervals: prebuiltIntervals,
+      confidence: hasPrebuiltContext ? 0.7 : 0.5, // Higher starting confidence for drill-down
     };
 
     // Deferred L2 frame tables that will be emitted after L4 per-frame analysis
     // so that expandableData is already assembled when the table first renders in the UI.
     const deferredExpandableTables: DataEnvelope[] = [];
 
-    emitter.log(`Executing strategy: ${this.strategy.name} (${this.strategy.stages.length} stages)`);
+    // Determine which stages will actually run (for accurate progress reporting)
+    const stagesToRun = this.strategy.stages.filter(stage => {
+      if (!hasPrebuiltContext) return true;
+      const isDiscoveryStage = !!stage.extractIntervals;
+      const allTasksGlobal = stage.tasks.every(t => t.scope === 'global');
+      return !(isDiscoveryStage && allTasksGlobal);
+    });
+    const effectiveTotalStages = stagesToRun.length;
+
+    emitter.log(`Executing strategy: ${this.strategy.name} (${effectiveTotalStages}/${this.strategy.stages.length} stages${hasPrebuiltContext ? ', follow-up mode' : ''})`);
 
     for (let i = 0; i < this.strategy.stages.length; i++) {
       const stage = this.strategy.stages[i];
       state.currentStageIndex = i;
+
+      // =========================================================================
+      // Follow-Up Optimization: Skip discovery stages when we have prebuilt context
+      // =========================================================================
+      // Discovery stages (with extractIntervals) produce focus intervals.
+      // If we already have prebuilt intervals from follow-up resolution,
+      // these stages would just regenerate what we already have.
+      const isDiscoveryStage = !!stage.extractIntervals;
+      const allTasksGlobal = stage.tasks.every(t => t.scope === 'global');
+
+      if (hasPrebuiltContext && isDiscoveryStage && allTasksGlobal) {
+        emitter.log(`[FollowUp] Skipping discovery stage "${stage.name}" - already have ${state.focusIntervals.length} pre-built interval(s)`);
+        emitter.emitUpdate('stage_transition', {
+          stageIndex: i,
+          totalStages: this.strategy.stages.length,
+          stageName: stage.name,
+          intervalCount: state.focusIntervals.length,
+          skipped: true,
+          skipReason: 'Using pre-built intervals from follow-up',
+        });
+        continue;
+      }
+
       rounds++;
 
       // Phase 3: Emit stage_transition event
@@ -78,14 +119,15 @@ export class StrategyExecutor implements AnalysisExecutor {
       });
 
       // 1. Emit progress with template interpolation
+      // Use rounds (actual executed stage count) for consistent numbering
       const progressMessage = stage.progressMessageTemplate
-        .replace('{{stageIndex}}', String(i + 1))
-        .replace('{{totalStages}}', String(this.strategy.stages.length));
+        .replace('{{stageIndex}}', String(rounds))
+        .replace('{{totalStages}}', String(effectiveTotalStages));
 
       emitter.emitUpdate('progress', {
         phase: 'round_start',
-        round: i + 1,
-        maxRounds: this.strategy.stages.length,
+        round: rounds,
+        maxRounds: effectiveTotalStages,
         message: progressMessage,
       });
 

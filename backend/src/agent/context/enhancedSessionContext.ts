@@ -14,7 +14,8 @@ import {
   Intent,
   SubAgentResult,
   ContextSummary,
-  FindingReference
+  FindingReference,
+  ReferencedEntity,
 } from '../types';
 
 /**
@@ -237,6 +238,9 @@ export class EnhancedSessionContext {
   /**
    * Generate a prompt-friendly context string
    * Used for injecting context into LLM prompts
+   *
+   * Enhanced to include referenceable entity identifiers (frame_id, session_id)
+   * so LLM can understand what entities are available for drill-down.
    */
   generatePromptContext(maxTokens: number = 500): string {
     const summary = this.generateContextSummary();
@@ -246,12 +250,38 @@ export class EnhancedSessionContext {
     // Add turn count
     parts.push(`## 对话历史 (${summary.turnCount} 轮)`);
 
-    // Add conversation summary
-    if (summary.conversationSummary) {
-      parts.push(summary.conversationSummary);
+    // More detailed turn summaries with referenceable identifiers
+    for (const turn of this.turns.slice(-3)) {
+      // Extract identifiers from findings that can be referenced in follow-up
+      const identifiers = turn.findings
+        .filter(f => f.details?.frame_id || f.details?.session_id)
+        .slice(0, 5)
+        .map(f => {
+          const ids: string[] = [];
+          if (f.details?.frame_id) ids.push(`frame_id=${f.details.frame_id}`);
+          if (f.details?.session_id) ids.push(`session_id=${f.details.session_id}`);
+          return ids.join(', ');
+        })
+        .filter(Boolean);
+
+      const truncatedQuery = turn.query.length > 40
+        ? turn.query.substring(0, 40) + '...'
+        : turn.query;
+
+      parts.push(`\n### Turn ${turn.turnIndex + 1}: "${truncatedQuery}"`);
+
+      // Show severity-prioritized findings
+      for (const finding of turn.findings.slice(0, 5)) {
+        parts.push(`  - [${finding.severity}] ${finding.title}`);
+      }
+
+      // Show referenceable identifiers for drill-down
+      if (identifiers.length > 0) {
+        parts.push(`  可引用实体: ${identifiers.join('; ')}`);
+      }
     }
 
-    // Add key findings
+    // Add key findings with identifiers
     if (summary.keyFindings.length > 0) {
       parts.push('\n## 关键发现');
       for (const finding of summary.keyFindings.slice(0, 5)) {
@@ -283,6 +313,76 @@ export class EnhancedSessionContext {
     }
 
     return result;
+  }
+
+  /**
+   * Extract referenceable entities from all findings
+   *
+   * Returns entities (frames, sessions, etc.) that can be referenced
+   * in follow-up queries. Used by LLM to understand what drill-down
+   * targets are available.
+   */
+  extractReferenceableEntities(): ReferencedEntity[] {
+    const entities: ReferencedEntity[] = [];
+    const seen = new Set<string>();
+
+    for (const turn of this.turns) {
+      for (const finding of turn.findings) {
+        // Extract frame_id entities
+        if (finding.details?.frame_id !== undefined) {
+          const key = `frame:${finding.details.frame_id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            entities.push({
+              type: 'frame',
+              id: finding.details.frame_id,
+              value: {
+                start_ts: finding.details.start_ts,
+                end_ts: finding.details.end_ts,
+                process_name: finding.details.process_name,
+                ...finding.details,
+              },
+              fromTurn: turn.turnIndex,
+            });
+          }
+        }
+
+        // Extract session_id entities
+        if (finding.details?.session_id !== undefined) {
+          const key = `session:${finding.details.session_id}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            entities.push({
+              type: 'session',
+              id: finding.details.session_id,
+              value: {
+                start_ts: finding.details.start_ts,
+                end_ts: finding.details.end_ts,
+                process_name: finding.details.process_name,
+                ...finding.details,
+              },
+              fromTurn: turn.turnIndex,
+            });
+          }
+        }
+
+        // Extract process entities from various fields
+        const processName = finding.details?.process_name || finding.details?.package;
+        if (processName && typeof processName === 'string') {
+          const key = `process:${processName}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            entities.push({
+              type: 'process',
+              id: processName,
+              fromTurn: turn.turnIndex,
+            });
+          }
+        }
+      }
+    }
+
+    return entities;
   }
 
   /**
@@ -353,44 +453,195 @@ export class EnhancedSessionContext {
 }
 
 /**
- * Session context manager - manages multiple sessions
+ * Session context manager - manages multiple sessions with LRU eviction
+ *
+ * Key improvements:
+ * - Uses sessionId+traceId as compound key to prevent context cross-contamination
+ * - LRU eviction policy to prevent memory leaks
+ * - Automatic cleanup of stale sessions
  */
 export class SessionContextManager {
   private sessions: Map<string, EnhancedSessionContext> = new Map();
+  private accessOrder: string[] = []; // LRU tracking
+  private maxSessions: number;
+  private maxAgeMs: number;
+
+  constructor(options: { maxSessions?: number; maxAgeMs?: number } = {}) {
+    this.maxSessions = options.maxSessions || 100;
+    this.maxAgeMs = options.maxAgeMs || 30 * 60 * 1000; // 30 minutes default
+  }
+
+  /**
+   * Build composite key from sessionId and traceId
+   */
+  private buildKey(sessionId: string, traceId: string): string {
+    return `${sessionId}::${traceId}`;
+  }
 
   /**
    * Get or create a session context
+   * If traceId changes for the same sessionId, creates a new context
    */
   getOrCreate(sessionId: string, traceId: string): EnhancedSessionContext {
-    let ctx = this.sessions.get(sessionId);
+    const key = this.buildKey(sessionId, traceId);
+
+    let ctx = this.sessions.get(key);
     if (!ctx) {
+      // Check if there's an old context for this sessionId with different traceId
+      // and remove it (trace switched)
+      this.cleanupOldTracesForSession(sessionId);
+
       ctx = new EnhancedSessionContext(sessionId, traceId);
-      this.sessions.set(sessionId, ctx);
+      this.sessions.set(key, ctx);
+
+      // Evict oldest sessions if over limit
+      this.evictIfNeeded();
     }
+
+    // Update access order for LRU
+    this.touchKey(key);
+
     return ctx;
   }
 
   /**
-   * Get a session context
+   * Get a session context by sessionId and traceId
    */
-  get(sessionId: string): EnhancedSessionContext | undefined {
-    return this.sessions.get(sessionId);
+  get(sessionId: string, traceId?: string): EnhancedSessionContext | undefined {
+    if (traceId) {
+      const key = this.buildKey(sessionId, traceId);
+      const ctx = this.sessions.get(key);
+      if (ctx) {
+        this.touchKey(key);
+      }
+      return ctx;
+    }
+
+    // If no traceId provided, find first matching sessionId (legacy support)
+    for (const [key, ctx] of this.sessions.entries()) {
+      if (key.startsWith(sessionId + '::')) {
+        this.touchKey(key);
+        return ctx;
+      }
+    }
+    return undefined;
   }
 
   /**
    * Remove a session context
    */
-  remove(sessionId: string): void {
-    this.sessions.delete(sessionId);
+  remove(sessionId: string, traceId?: string): void {
+    if (traceId) {
+      const key = this.buildKey(sessionId, traceId);
+      this.sessions.delete(key);
+      this.removeFromAccessOrder(key);
+    } else {
+      // Remove all contexts for this sessionId
+      for (const key of Array.from(this.sessions.keys())) {
+        if (key.startsWith(sessionId + '::')) {
+          this.sessions.delete(key);
+          this.removeFromAccessOrder(key);
+        }
+      }
+    }
   }
 
   /**
-   * List all session IDs
+   * List all session IDs (returns unique sessionIds)
    */
   listSessions(): string[] {
-    return Array.from(this.sessions.keys());
+    const sessionIds = new Set<string>();
+    for (const key of this.sessions.keys()) {
+      const sessionId = key.split('::')[0];
+      sessionIds.add(sessionId);
+    }
+    return Array.from(sessionIds);
+  }
+
+  /**
+   * Get stats about the session manager
+   */
+  getStats(): { sessionCount: number; contextCount: number; oldestAccessMs: number } {
+    let oldestAccessMs = 0;
+    for (const ctx of this.sessions.values()) {
+      const lastTurn = ctx.getAllTurns().slice(-1)[0];
+      if (lastTurn?.timestamp) {
+        const age = Date.now() - lastTurn.timestamp;
+        if (age > oldestAccessMs) {
+          oldestAccessMs = age;
+        }
+      }
+    }
+
+    return {
+      sessionCount: this.listSessions().length,
+      contextCount: this.sessions.size,
+      oldestAccessMs,
+    };
+  }
+
+  /**
+   * Cleanup stale sessions based on maxAgeMs
+   */
+  cleanupStale(): number {
+    const now = Date.now();
+    let removed = 0;
+
+    for (const [key, ctx] of Array.from(this.sessions.entries())) {
+      const lastTurn = ctx.getAllTurns().slice(-1)[0];
+      const lastAccess = lastTurn?.timestamp || 0;
+
+      if (now - lastAccess > this.maxAgeMs) {
+        this.sessions.delete(key);
+        this.removeFromAccessOrder(key);
+        removed++;
+      }
+    }
+
+    return removed;
+  }
+
+  // ==========================================================================
+  // Private helpers
+  // ==========================================================================
+
+  private cleanupOldTracesForSession(sessionId: string): void {
+    for (const key of Array.from(this.sessions.keys())) {
+      if (key.startsWith(sessionId + '::')) {
+        this.sessions.delete(key);
+        this.removeFromAccessOrder(key);
+      }
+    }
+  }
+
+  private touchKey(key: string): void {
+    this.removeFromAccessOrder(key);
+    this.accessOrder.push(key);
+  }
+
+  private removeFromAccessOrder(key: string): void {
+    const idx = this.accessOrder.indexOf(key);
+    if (idx !== -1) {
+      this.accessOrder.splice(idx, 1);
+    }
+  }
+
+  private evictIfNeeded(): void {
+    // First, cleanup stale sessions
+    this.cleanupStale();
+
+    // Then evict LRU if still over limit
+    while (this.sessions.size > this.maxSessions && this.accessOrder.length > 0) {
+      const oldestKey = this.accessOrder.shift();
+      if (oldestKey) {
+        this.sessions.delete(oldestKey);
+      }
+    }
   }
 }
 
-// Singleton instance
-export const sessionContextManager = new SessionContextManager();
+// Singleton instance with reasonable defaults
+export const sessionContextManager = new SessionContextManager({
+  maxSessions: 100,
+  maxAgeMs: 30 * 60 * 1000, // 30 minutes
+});

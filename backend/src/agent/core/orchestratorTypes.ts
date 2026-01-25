@@ -27,6 +27,7 @@ import {
 import type { AgentMessageBus } from '../communication';
 import type { CircuitBreaker } from './circuitBreaker';
 import type { ModelRouter } from './modelRouter';
+import type { FocusInterval } from '../strategies/types';
 
 // =============================================================================
 // Agent ID Constants
@@ -156,6 +157,19 @@ export interface AnalysisOptions {
   traceProcessorService?: any;
   packageName?: string;
   timeRange?: { start: number | string; end: number | string };
+
+  /**
+   * Parameters resolved from follow-up queries
+   * Contains enriched params (frame_id with start_ts/end_ts, etc.)
+   * populated by resolveFollowUp()
+   */
+  resolvedFollowUpParams?: Record<string, any>;
+
+  /**
+   * Pre-built focus intervals for drill-down follow-ups
+   * These bypass the normal interval extraction and go directly to per-interval stages
+   */
+  prebuiltIntervals?: FocusInterval[];
 }
 
 // =============================================================================
@@ -164,7 +178,14 @@ export interface AnalysisOptions {
 
 export interface StreamingEventPayloads {
   degraded: { module: string; fallback: string; error?: string };
-  stage_transition: { stageIndex: number; totalStages: number; stageName: string; intervalCount: number };
+  stage_transition: {
+    stageIndex: number;
+    totalStages: number;
+    stageName: string;
+    intervalCount: number;
+    skipped?: boolean;
+    skipReason?: string;
+  };
   circuit_breaker: { agentId: string; reason: string };
   conclusion: { sessionId: string; summary: string; confidence: number; rounds: number };
   finding: { round: number; findings: Finding[] };
