@@ -24,7 +24,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 
 ## Backend Structure
 
-### Agent System (v5.0 - Dual-Executor Architecture)
+### Agent System (v6.0 - Conversation-Aware Architecture)
 
 **Core:** `backend/src/agent/core/`
 | Component | Purpose |
@@ -48,7 +48,16 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 | strategyExecutor.ts | Deterministic | Strategy matched | 确定性多阶段流水线 |
 | hypothesisExecutor.ts | Adaptive LLM | No strategy match | 假设驱动多轮分析 |
 | directSkillExecutor.ts | Direct bypass | Stage template | 直接执行 Skill (零 LLM 开销) |
+| clarifyExecutor.ts | Conversation | User clarification | 处理用户澄清请求 |
+| comparisonExecutor.ts | Conversation | Compare request | 对比多次分析结果 |
+| extendExecutor.ts | Conversation | Extend request | 扩展上一轮分析 |
 | analysisExecutor.ts | Interface | - | 执行器基类接口 |
+
+**Conversation Support:** `backend/src/agent/core/`
+| Component | Purpose |
+|-----------|---------|
+| drillDownResolver.ts | 解析 drill-down 导航 (时间戳/区间跳转) |
+| entityCapture.ts | 从分析结果中提取实体 (进程/线程/帧) |
 
 **Strategies:** `backend/src/agent/strategies/`
 | Component | Purpose |
@@ -95,6 +104,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 - `context/enhancedSessionContext.ts` - 多轮对话上下文
 - `context/contextBuilder.ts` - 按角色过滤上下文
 - `context/contextTypes.ts` - 上下文类型定义
+- `context/entityStore.ts` - 跨轮次实体追踪 (进程/线程/帧/区间)
 - `context/policies/` - Planner/Evaluator/Worker Policy
 - `compaction/contextCompactor.ts` - Token 溢出防护
 - `compaction/tokenEstimator.ts` - Token 用量估算
@@ -197,6 +207,30 @@ User Query → POST /api/agent/analyze → AgentDrivenOrchestrator
     │
     └─ Circuit Breaker: 置信度过低时触发用户介入
 ```
+
+### Multi-Round Conversation Flow
+
+```
+Round N+1 (Follow-up Query) → Intent Classification:
+    │
+    ├─ [Clarify] "刚才说的第3帧是什么情况?"
+    │   └─ ClarifyExecutor → entityStore.resolve("第3帧") → 定向分析
+    │
+    ├─ [Extend] "继续分析 CPU 调度"
+    │   └─ ExtendExecutor → 复用上轮 FocusInterval → 扩展 skill
+    │
+    ├─ [Compare] "对比这两次滑动"
+    │   └─ ComparisonExecutor → 多区间并行分析 → 差异报告
+    │
+    └─ [DrillDown] 点击表格中的时间戳
+        └─ DrillDownResolver → navigate_timeline / navigate_range
+```
+
+**Entity Tracking:** `entityStore` 跨轮次追踪实体引用
+- 进程: "com.example.app" → processName
+- 线程: "RenderThread" → threadName
+- 帧: "第3帧" → frameId + timestamp
+- 区间: "卡顿会话" → FocusInterval
 
 ---
 
@@ -331,7 +365,7 @@ steps:
 - cpu_freq_timeline, cpu_load_in_range, cpu_slice_analysis
 - cpu_topology_detection, scheduling_analysis, lock_contention_in_range
 
-**Range-Based Skills (NEW - 12 skills):**
+**Range-Based Skills (12 - direct_skill 模式):**
 - binder_blocking_in_range, cpu_cluster_load_in_range, cpu_throttling_in_range
 - gpu_freq_in_range, gpu_render_in_range, page_fault_in_range
 - render_pipeline_latency, sched_latency_in_range, sf_composition_in_range
@@ -489,7 +523,7 @@ DEEPSEEK_API_KEY=sk-xxx
 
 | Category | Count |
 |----------|-------|
-| Agent System | ~82 source files |
+| Agent System | ~129 source files |
 | Services | ~30 service files |
 | Skills | 56 definitions (29 atomic + 27 composite) |
 | Routes | 16 API handlers |
