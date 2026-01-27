@@ -1,0 +1,95 @@
+# =============================================================================
+# SurfaceView BLAST Pipeline
+# =============================================================================
+# Independent SurfaceView rendering with BLAST synchronization.
+# Common for custom OpenGL rendering, media playback.
+# =============================================================================
+
+name: pipeline_surfaceview_blast
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: SURFACEVIEW_BLAST
+  display_name: "SurfaceView (BLAST)"
+  description: "独立 SurfaceView + BLAST 同步，用于自定义 GL 渲染、媒体播放"
+  icon: "surface"
+  family: surface
+  doc_path: "rendering_pipelines/surfaceview.md"
+
+detection:
+  scoring_signals:
+    - signal: has_surfaceview
+      slice_pattern: "*SurfaceView*"
+      min_count: 10
+      weight: 55
+    - signal: has_blast
+      slice_pattern: "*BLASTBufferQueue*"
+      weight: 20
+    - signal: has_gl_thread
+      thread_pattern: "*GLThread*|*GLSurface*"
+      weight: 20
+
+  exclude_if:
+    - thread: "1.ui"
+    - thread: CrRendererMain
+
+teaching:
+  title: "SurfaceView (BLAST) 渲染管线"
+  summary: |
+    使用独立的 Surface 进行渲染，常见于 OpenGL 游戏、视频播放器。
+    SurfaceView 有自己的 Layer，不受 View 系统约束，可以在独立线程渲染。
+    BLAST 模式提供原子性 Buffer 提交。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App (main)
+      participant GL as GLThread
+      participant BBQ as BLAST Adapter
+      participant SF as SurfaceFlinger
+
+      App->>GL: Trigger Render
+      GL->>BBQ: dequeueBuffer
+      GL->>GL: OpenGL Draw
+      GL->>BBQ: queueBuffer
+      BBQ->>SF: Transaction
+      SF->>SF: Independent Layer Composite
+
+  thread_roles:
+    - thread: GLThread
+      role: "独立渲染线程"
+      description: "OpenGL/Vulkan 渲染，直接提交到 SurfaceView"
+    - thread: SurfaceFlinger
+      role: "独立层合成"
+      description: "SurfaceView 作为独立 Layer 合成"
+
+  key_slices:
+    - name: "eglSwapBuffers"
+      thread: GLThread
+      description: "交换 Buffer"
+    - name: "SurfaceView"
+      thread: any
+      description: "SurfaceView 操作"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "BLAST 合成"
+
+    - pattern: "GLThread"
+      match_by: name
+      priority: 2
+      reason: "独立渲染线程"
+
+    - pattern: "VSYNC"
+      match_by: name
+      priority: 3
+      reason: "帧同步"
+
+analysis:
+  recommended_skills:
+    - gpu_analysis
+    - sf_frame_consumption

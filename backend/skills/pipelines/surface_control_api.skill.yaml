@@ -1,0 +1,83 @@
+# =============================================================================
+# Surface Control API Pipeline
+# =============================================================================
+# NDK SurfaceControl for direct transaction submission.
+# Low-level control over buffer and surface state.
+# =============================================================================
+
+name: pipeline_surface_control_api
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: SURFACE_CONTROL_API
+  display_name: "SurfaceControl API"
+  description: "NDK SurfaceControl 直接事务提交，低级别表面控制"
+  icon: "code"
+  family: surface
+  doc_path: "rendering_pipelines/surface_control_api.md"
+
+detection:
+  scoring_signals:
+    - signal: has_surface_control
+      slice_pattern: "*SurfaceControl*"
+      min_count: 10
+      weight: 65
+    - signal: has_apply_transaction
+      slice_pattern: "*applyTransaction*"
+      weight: 20
+
+teaching:
+  title: "SurfaceControl API 渲染管线"
+  summary: |
+    使用 NDK SurfaceControl API 直接控制 Surface 和 Transaction。
+    提供最低级别的合成控制，可以创建子 Surface、控制 Z-order、
+    原子性更新多个属性。常用于高级合成场景。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App
+      participant SC as SurfaceControl
+      participant SF as SurfaceFlinger
+
+      App->>SC: Create Child Surface
+      App->>SC: Build Transaction
+      App->>SC: applyTransaction
+      SC->>SF: Atomic Surface Update
+      SF->>SF: Process Transaction
+
+  thread_roles:
+    - thread: main
+      role: "SurfaceControl 控制"
+      description: "创建 Surface、构建和提交 Transaction"
+
+  key_slices:
+    - name: "SurfaceControl"
+      thread: any
+      description: "SurfaceControl 操作"
+    - name: "applyTransaction"
+      thread: any
+      description: "事务提交"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "Transaction 处理"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 2
+      reason: "SurfaceControl 控制"
+
+    - pattern: "Transaction"
+      match_by: name
+      priority: 3
+      reason: "事务提交"
+
+analysis:
+  recommended_skills:
+    - sf_frame_consumption
+    - binder_analysis

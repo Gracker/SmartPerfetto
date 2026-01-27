@@ -1,0 +1,128 @@
+# =============================================================================
+# Game Engine Pipeline
+# =============================================================================
+# Unity, Unreal Engine, Godot, and other game engines.
+# Custom game loops with dedicated rendering threads.
+# =============================================================================
+
+name: pipeline_game_engine
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: GAME_ENGINE
+  display_name: "游戏引擎"
+  description: "Unity/Unreal/Godot 等游戏引擎渲染"
+  icon: "gamepad"
+  family: specialized
+  doc_path: "rendering_pipelines/game_engine.md"
+
+detection:
+  scoring_signals:
+    - signal: has_unity_main
+      thread: UnityMain
+      weight: 85
+    - signal: has_unity_gfx
+      thread: UnityGfx
+      weight: 85
+    - signal: has_unreal_game
+      thread: GameThread
+      weight: 85
+    - signal: has_unreal_rhi
+      thread: RHIThread
+      weight: 85
+    - signal: has_godot
+      thread: GodotMain
+      weight: 80
+    - signal: has_unity_slice
+      slice_pattern: "*Unity*|*PlayerLoop*"
+      weight: 75
+    - signal: has_unreal_slice
+      slice_pattern: "*Unreal*"
+      weight: 75
+
+teaching:
+  title: "游戏引擎渲染管线"
+  summary: |
+    游戏引擎 (Unity, Unreal, Godot) 有自己的游戏循环和渲染架构。
+    通常有独立的游戏逻辑线程和渲染线程，使用 OpenGL/Vulkan 直接渲染。
+    帧率目标通常为 30/60/90/120 FPS。
+
+  mermaid: |
+    sequenceDiagram
+      participant Game as GameThread
+      participant Render as RenderThread/UnityGfx
+      participant GPU as GPU
+      participant SF as SurfaceFlinger
+
+      Game->>Game: Update (Physics, AI, Logic)
+      Game->>Render: Submit Draw Calls
+      Render->>GPU: GL/Vulkan Commands
+      Render->>SF: Present Frame
+      SF->>SF: Composite
+
+  thread_roles:
+    - thread: UnityMain
+      role: "Unity 主线程"
+      description: "Unity 游戏逻辑、脚本执行"
+      trace_tags: "PlayerLoop, Update, LateUpdate"
+    - thread: UnityGfx
+      role: "Unity 渲染线程"
+      description: "Unity 图形命令提交"
+      trace_tags: "GfxDevice, RenderThread"
+    - thread: GameThread
+      role: "Unreal 游戏线程"
+      description: "Unreal 游戏逻辑"
+      trace_tags: "FEngineLoop"
+    - thread: RenderThread
+      role: "渲染线程"
+      description: "图形渲染"
+    - thread: RHIThread
+      role: "Unreal RHI 线程"
+      description: "Unreal 渲染硬件接口"
+
+  key_slices:
+    - name: "PlayerLoop"
+      thread: UnityMain
+      description: "Unity 游戏循环"
+    - name: "GfxDevice"
+      thread: UnityGfx
+      description: "Unity 图形设备操作"
+    - name: "FEngineLoop"
+      thread: GameThread
+      description: "Unreal 引擎循环"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "UnityMain|UnityGfx|GameThread"
+      match_by: name
+      priority: 2
+      reason: "游戏引擎主线程"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 3
+      reason: "GPU 渲染"
+
+analysis:
+  common_issues:
+    - id: cpu_bound
+      name: "CPU 瓶颈"
+      description: "游戏逻辑/物理/AI 过载"
+      detection_skill: cpu_analysis
+
+    - id: gpu_bound
+      name: "GPU 瓶颈"
+      description: "DrawCall 过多或 Shader 复杂"
+      detection_skill: gpu_analysis
+
+  recommended_skills:
+    - game_fps_analysis
+    - cpu_analysis
+    - gpu_analysis

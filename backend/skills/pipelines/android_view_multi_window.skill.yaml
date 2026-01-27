@@ -1,0 +1,104 @@
+# =============================================================================
+# Android View Multi-Window Pipeline
+# =============================================================================
+# Same-process multi-window rendering (Dialog, PopupWindow).
+# RenderThread serialization may cause jank.
+# =============================================================================
+
+name: pipeline_android_view_multi_window
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: ANDROID_VIEW_MULTI_WINDOW
+  display_name: "Android View 多窗口"
+  description: "同进程多窗口渲染 (Dialog/PopupWindow)，RenderThread 串行化"
+  icon: "window"
+  family: hwui
+  doc_path: "rendering_pipelines/android_view_multi_window.md"
+
+detection:
+  required_signals:
+    - thread: RenderThread
+      min_count: 1
+    - thread: main
+      min_count: 1
+
+  scoring_signals:
+    - signal: has_dialog
+      slice_pattern: "*Dialog*|*PopupWindow*"
+      weight: 40
+    - signal: has_draw_frame
+      slice_pattern: "DrawFrame*"
+      weight: 20
+
+teaching:
+  title: "Android View 多窗口渲染管线"
+  summary: |
+    同进程内存在多个窗口 (Dialog, PopupWindow, Toast)。由于共用一个 RenderThread，
+    多个窗口的渲染会串行化，可能导致帧率下降。需要关注窗口渲染顺序和时间分配。
+
+  mermaid: |
+    sequenceDiagram
+      participant Main as App (main)
+      participant RT as RenderThread
+      participant SF as SurfaceFlinger
+
+      Main->>RT: Window1 DrawFrame
+      RT->>SF: Window1 Buffer
+      Main->>RT: Window2 (Dialog) DrawFrame
+      RT->>SF: Window2 Buffer
+      SF->>SF: 合成所有窗口
+
+  thread_roles:
+    - thread: main
+      role: "多窗口 UI 管理"
+      description: "管理多个窗口的 View 树"
+    - thread: RenderThread
+      role: "渲染线程 (串行)"
+      description: "串行渲染多个窗口，可能成为瓶颈"
+
+  key_slices:
+    - name: "Dialog"
+      thread: any
+      description: "对话框相关操作"
+    - name: "PopupWindow"
+      thread: any
+      description: "弹出窗口操作"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "多窗口合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "渲染线程 (可能串行)"
+      smart_filter:
+        enabled: true
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name
+          FROM actual_frame_timeline_slice a
+          JOIN process p ON a.upid = p.upid
+          WHERE a.surface_frame_token IS NOT NULL
+          GROUP BY a.upid HAVING COUNT(*) > 0
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "多窗口 UI 管理"
+
+analysis:
+  common_issues:
+    - id: rt_serialization
+      name: "RenderThread 串行化"
+      description: "多窗口导致 RenderThread 工作量翻倍"
+      detection_skill: render_thread_slices
+
+  recommended_skills:
+    - render_thread_slices
+    - jank_frame_detail

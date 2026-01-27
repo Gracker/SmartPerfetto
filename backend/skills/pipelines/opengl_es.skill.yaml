@@ -1,0 +1,98 @@
+# =============================================================================
+# OpenGL ES Pipeline
+# =============================================================================
+# Direct OpenGL ES / EGL rendering.
+# Common for games, custom rendering engines.
+# =============================================================================
+
+name: pipeline_opengl_es
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: OPENGL_ES
+  display_name: "OpenGL ES"
+  description: "直接 OpenGL ES / EGL 渲染，用于游戏和自定义渲染引擎"
+  icon: "gpu"
+  family: graphics
+  doc_path: "rendering_pipelines/opengl_es.md"
+
+detection:
+  scoring_signals:
+    - signal: has_egl_swap
+      slice_pattern: "*eglSwapBuffers*"
+      weight: 50
+    - signal: has_gl_draw
+      slice_pattern: "*glDraw*"
+      weight: 20
+    - signal: has_gl_thread
+      thread_pattern: "*GLThread*"
+      weight: 15
+
+  exclude_if:
+    - slice: "*vkQueuePresent*"
+    - slice: "*ANGLE*"
+    - thread: "1.ui"
+
+teaching:
+  title: "OpenGL ES 渲染管线"
+  summary: |
+    直接使用 OpenGL ES 和 EGL API 进行渲染。适用于自定义游戏引擎、
+    3D 应用等需要精细控制 GPU 的场景。通过 eglSwapBuffers 提交帧。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App/Game Loop
+      participant GL as GL Context
+      participant EGL as EGL
+      participant SF as SurfaceFlinger
+
+      App->>GL: glDraw* Commands
+      App->>EGL: eglSwapBuffers
+      EGL->>SF: Buffer Ready
+      SF->>SF: Composite
+
+  thread_roles:
+    - thread: GLThread
+      role: "GL 渲染线程"
+      description: "执行 OpenGL 绘制命令"
+    - thread: RenderThread
+      role: "GPU 指令执行"
+      description: "可能用于辅助渲染"
+
+  key_slices:
+    - name: "eglSwapBuffers"
+      thread: GLThread
+      description: "交换 Buffer，提交帧"
+    - name: "glDraw*"
+      thread: GLThread
+      description: "OpenGL 绘制调用"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "GLThread"
+      match_by: name
+      priority: 2
+      reason: "GL 渲染线程"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 3
+      reason: "GPU 指令执行"
+
+analysis:
+  common_issues:
+    - id: gl_driver_stall
+      name: "GL 驱动阻塞"
+      description: "glFinish 或 eglSwapBuffers 等待过长"
+      detection_skill: gpu_analysis
+
+  recommended_skills:
+    - gpu_analysis
+    - gpu_metrics

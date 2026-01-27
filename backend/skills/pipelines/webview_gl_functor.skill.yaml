@@ -1,0 +1,116 @@
+# =============================================================================
+# WebView GL Functor Pipeline
+# =============================================================================
+# Traditional WebView rendering with App RenderThread sync wait.
+# WebView content rendered inline with app UI.
+# =============================================================================
+
+name: pipeline_webview_gl_functor
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: WEBVIEW_GL_FUNCTOR
+  display_name: "WebView GL Functor"
+  description: "传统 WebView 渲染，App RenderThread 同步等待"
+  icon: "web"
+  family: webview
+  doc_path: "rendering_pipelines/webview_gl_functor.md"
+
+detection:
+  scoring_signals:
+    - signal: has_draw_functor
+      slice_pattern: "*DrawGL*|*DrawFunctor*"
+      weight: 70
+    - signal: has_cr_renderer
+      thread: CrRendererMain
+      weight: 15
+    - signal: has_render_thread
+      thread: RenderThread
+      weight: 10
+
+  exclude_if:
+    - thread: VizCompositor
+
+teaching:
+  title: "WebView GL Functor 渲染管线"
+  summary: |
+    传统 WebView 渲染模式，WebView 内容通过 GL Functor 机制嵌入到
+    App 的 RenderThread 中渲染。App 需要等待 WebView 完成绘制，
+    可能导致主线程和 RenderThread 阻塞。
+
+  mermaid: |
+    sequenceDiagram
+      participant Main as App (main)
+      participant RT as App RenderThread
+      participant WV as CrRendererMain
+      participant SF as SurfaceFlinger
+
+      Main->>RT: DrawFrame
+      RT->>WV: DrawFunctor (sync)
+      WV->>RT: GL Commands
+      RT->>SF: Composite
+
+  thread_roles:
+    - thread: main
+      role: "WebView 宿主 UI"
+      description: "承载 WebView 的 Activity/Fragment"
+    - thread: RenderThread
+      role: "App 渲染"
+      description: "渲染 App UI，等待 WebView Functor"
+      trace_tags: "DrawFrame, DrawFunctor"
+    - thread: CrRendererMain
+      role: "Chromium 主渲染"
+      description: "WebView/Chromium 内容渲染"
+      trace_tags: "Blink, V8"
+
+  key_slices:
+    - name: "DrawGL"
+      thread: RenderThread
+      description: "GL Functor 调用"
+    - name: "DrawFunctor"
+      thread: RenderThread
+      description: "Functor 绘制"
+    - name: "Blink"
+      thread: CrRendererMain
+      description: "Blink 渲染引擎"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "App 渲染 (等待 WebView)"
+
+    - pattern: "CrRendererMain"
+      match_by: name
+      priority: 3
+      reason: "Chromium 主渲染"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 4
+      reason: "WebView 宿主 UI"
+
+analysis:
+  common_issues:
+    - id: functor_wait
+      name: "Functor 等待"
+      description: "RenderThread 等待 WebView 完成"
+      detection_skill: render_thread_slices
+
+    - id: js_long_task
+      name: "JS 长任务"
+      description: "JavaScript 执行阻塞渲染"
+      detection_skill: cpu_analysis
+
+  recommended_skills:
+    - render_thread_slices
+    - cpu_analysis
+    - binder_analysis

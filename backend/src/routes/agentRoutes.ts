@@ -38,6 +38,15 @@ import {
   isLegacySkillEvent,
   validateDataEnvelope,
 } from '../types/dataContract';
+// Pipeline Teaching Services
+import { getPipelineDocService } from '../services/pipelineDocService';
+import {
+  ensurePipelineSkillsInitialized,
+  pipelineSkillLoader,
+  PinInstruction,
+} from '../services/pipelineSkillLoader';
+import { SkillExecutor } from '../services/skillEngine/skillExecutor';
+import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skillEngine/skillLoader';
 
 const router = express.Router();
 
@@ -1002,6 +1011,263 @@ router.delete('/scene-reconstruct/:analysisId', (req, res) => {
   sceneReconstructionSessions.delete(analysisId);
 
   res.json({ success: true });
+});
+
+// ============================================================================
+// Teaching Pipeline Endpoints
+// ============================================================================
+
+/**
+ * POST /api/agent/teaching/pipeline
+ *
+ * Teaching: Rendering Pipeline Detection and Education
+ *
+ * Detects the rendering pipeline type of the current trace and returns:
+ * - Pipeline type detection results
+ * - Teaching content (Mermaid diagrams, thread roles, key slices)
+ * - Track pinning instructions
+ *
+ * Body:
+ * {
+ *   "traceId": "uuid-of-trace",
+ *   "packageName": "com.example.app"  // optional
+ * }
+ */
+router.post('/teaching/pipeline', async (req, res) => {
+  try {
+    const { traceId, packageName } = req.body;
+
+    if (!traceId) {
+      return res.status(400).json({
+        success: false,
+        error: 'traceId is required',
+      });
+    }
+
+    // Verify trace exists
+    const traceProcessorService = getTraceProcessorService();
+    const trace = traceProcessorService.getTrace(traceId);
+    if (!trace) {
+      return res.status(404).json({
+        success: false,
+        error: 'Trace not found in backend',
+        hint: 'Please upload the trace to the backend first',
+        code: 'TRACE_NOT_UPLOADED',
+      });
+    }
+
+    console.log(`[AgentRoutes] Teaching pipeline request for trace: ${traceId}`);
+
+    // Ensure skills are loaded
+    console.log('[AgentRoutes] Step 1: Initializing skill registry...');
+    await ensureSkillRegistryInitialized();
+    console.log('[AgentRoutes] Step 2: Skill registry initialized, skills count:', skillRegistry.getAllSkills().length);
+
+    // Execute the rendering_pipeline_detection skill
+    console.log('[AgentRoutes] Step 3: Creating SkillExecutor...');
+    const skillExecutor = new SkillExecutor(traceProcessorService);
+    skillExecutor.registerSkills(skillRegistry.getAllSkills());
+    console.log('[AgentRoutes] Step 4: Skills registered');
+
+    console.log('[AgentRoutes] Step 5: Executing rendering_pipeline_detection skill...');
+    const detectionResult = await skillExecutor.execute(
+      'rendering_pipeline_detection',
+      traceId,
+      { package: packageName || '' }
+    );
+    console.log('[AgentRoutes] Step 6: Skill execution complete, success:', detectionResult.success);
+
+    if (!detectionResult.success) {
+      console.error('[AgentRoutes] Skill execution failed:', detectionResult.error);
+      return res.status(500).json({
+        success: false,
+        error: 'Pipeline detection failed',
+        details: detectionResult.error,
+      });
+    }
+
+    // Extract detection results from skill output via rawResults keyed by step ID
+    const rawResults = detectionResult.rawResults || {};
+
+    // Get pipeline determination result (from 'determine_pipeline' step)
+    const pipelineStepResult = rawResults['determine_pipeline'];
+    const pipelineResult = pipelineStepResult?.data?.rows?.[0]
+      ? {
+          primary_pipeline_id: pipelineStepResult.data.rows[0][0],
+          primary_confidence: pipelineStepResult.data.rows[0][1],
+          candidates_list: pipelineStepResult.data.rows[0][2],
+          features_list: pipelineStepResult.data.rows[0][3],
+          doc_path: pipelineStepResult.data.rows[0][4],
+        }
+      : null;
+
+    // Get subvariants (from 'subvariants' step)
+    // SQL returns: buffer_mode, flutter_engine, webview_mode, game_engine
+    const subvariantsStepResult = rawResults['subvariants'];
+    const subvariants = subvariantsStepResult?.data?.rows?.[0]
+      ? {
+          buffer_mode: subvariantsStepResult.data.rows[0][0],
+          flutter_engine: subvariantsStepResult.data.rows[0][1],
+          webview_mode: subvariantsStepResult.data.rows[0][2],
+          game_engine: subvariantsStepResult.data.rows[0][3],
+        }
+      : null;
+
+    // Get pin instructions (from 'pin_instructions' step)
+    const pinInstructionsStepResult = rawResults['pin_instructions'];
+    const pinInstructionsData = pinInstructionsStepResult?.data?.rows || [];
+
+    // Get trace requirements (from 'trace_requirements' step)
+    const traceReqStepResult = rawResults['trace_requirements'];
+    const traceRequirements = traceReqStepResult?.data?.rows || [];
+
+    // Get active rendering processes (from 'active_rendering_processes' step - v3 smart pin)
+    // SQL returns: upid, process_name, frame_count, render_thread_tid
+    const activeProcessesStepResult = rawResults['active_rendering_processes'];
+    const activeRenderingProcesses = activeProcessesStepResult?.data?.rows?.map((row: any[]) => ({
+      upid: row[0],
+      processName: row[1],
+      frameCount: row[2],
+      renderThreadTid: row[3],
+    })) || [];
+
+    console.log('[AgentRoutes] Active rendering processes:', activeRenderingProcesses.map((p: any) => `${p.processName} (${p.frameCount} frames)`));
+
+    // Default values if skill output is incomplete
+    const primaryPipelineId = pipelineResult?.primary_pipeline_id || 'ANDROID_VIEW_STANDARD_BLAST';
+    const primaryConfidence = pipelineResult?.primary_confidence || 0.5;
+    const candidatesList = pipelineResult?.candidates_list || '';
+    const featuresList = pipelineResult?.features_list || '';
+    const docPath = pipelineResult?.doc_path || 'rendering_pipelines/android_view_standard.md';
+
+    // Parse candidates and features
+    const candidates = candidatesList
+      ? candidatesList.split('; ').map((c: string) => {
+          const [id, score] = c.split(':');
+          return { id, confidence: parseFloat(score) || 0 };
+        })
+      : [{ id: primaryPipelineId, confidence: primaryConfidence }];
+
+    const features = featuresList
+      ? featuresList.split('; ').map((f: string) => {
+          const [id, score] = f.split(':');
+          return { id, confidence: parseFloat(score) || 0 };
+        })
+      : [];
+
+    // Get teaching content from documentation
+    const pipelineDocService = getPipelineDocService();
+    const teachingContent = pipelineDocService.getTeachingContent(primaryPipelineId);
+
+    // Get base pin instructions from PipelineSkillLoader (new data-driven approach)
+    // Ensure pipeline skills are loaded
+    await ensurePipelineSkillsInitialized();
+
+    // Get pin instructions from pipeline skill YAML
+    const basePinInstructions = pipelineSkillLoader.getAutoPinInstructions(primaryPipelineId);
+
+    // Get smart filter configurations from pipeline skill
+    const smartFilterConfigs = pipelineSkillLoader.getSmartFilterConfigs(primaryPipelineId);
+
+    // v4 Smart Pin Enhancement: YAML-driven smart pin based on pipeline skill configuration
+    // Each pin instruction can have a smart_filter section that defines detection_sql.
+    // If smart_filter.enabled is true, we check if activeRenderingProcesses has data for that pattern.
+    //
+    // Decision logic per instruction:
+    // 1. Check if instruction has smart_filter.enabled = true
+    // 2. If smart filter enabled and activeRenderingProcesses has data → smartPin
+    // 3. If smart filter enabled and activeRenderingProcesses is empty → skipPin
+    // 4. If smart filter not enabled → normal pin
+
+    // Build a set of process names with active rendering data (from SQL in skill)
+    const activeProcessNames = new Set(activeRenderingProcesses.map((p: any) => p.processName));
+    const hasActiveRenderingData = activeRenderingProcesses.length > 0;
+
+    const smartPinInstructions = basePinInstructions.map((inst: PinInstruction) => {
+      // Check if this instruction has smart_filter enabled (from YAML config)
+      const hasSmartFilter = smartFilterConfigs.has(inst.pattern) || inst.smart_filter?.enabled;
+
+      if (hasSmartFilter) {
+        // This instruction requires smart filtering
+        if (hasActiveRenderingData) {
+          // SQL found active processes → enable smart pin filtering
+          return {
+            ...inst,
+            activeProcessNames: Array.from(activeProcessNames),
+            smartPin: true,
+            reason: `${inst.reason} (${activeRenderingProcesses.length} 活跃进程)`,
+          };
+        } else {
+          // SQL returned empty → skip this pin instruction
+          return {
+            ...inst,
+            skipPin: true,
+            reason: `${inst.reason} (无活跃渲染数据，跳过)`,
+          };
+        }
+      }
+      // No smart filter configured → normal pin
+      return inst;
+    });
+
+    // Build response
+    const response = {
+      success: true,
+      detection: {
+        primary_pipeline: {
+          id: primaryPipelineId,
+          confidence: primaryConfidence,
+        },
+        candidates,
+        features,
+        subvariants: subvariants || {
+          buffer_mode: 'UNKNOWN',
+          flutter_engine: 'N/A',
+          webview_mode: 'N/A',
+          game_engine: 'N/A',
+        },
+        trace_requirements_missing: traceRequirements
+          ? Object.values(traceRequirements).filter((v: any) => v !== null)
+          : [],
+      },
+      teaching: teachingContent
+        ? {
+            title: teachingContent.title,
+            summary: teachingContent.summary,
+            mermaidBlocks: teachingContent.mermaidBlocks,
+            threadRoles: teachingContent.threadRoles,
+            keySlices: teachingContent.keySlices,
+            docPath: teachingContent.docPath,
+          }
+        : {
+            title: `渲染管线: ${primaryPipelineId}`,
+            summary: '未找到对应的文档内容。',
+            mermaidBlocks: [],
+            threadRoles: [],
+            keySlices: [],
+            docPath,
+          },
+      pinInstructions: smartPinInstructions,
+      // v3: Active rendering processes for smart pin filtering
+      activeRenderingProcesses: activeRenderingProcesses.map((p: any) => ({
+        processName: p.processName,
+        frameCount: p.frameCount,
+        renderThreadTid: p.renderThreadTid,
+      })),
+    };
+
+    console.log(`[AgentRoutes] Teaching pipeline detected: ${primaryPipelineId} (${(primaryConfidence * 100).toFixed(1)}%)`);
+    console.log(`[AgentRoutes] Smart pin: ${activeRenderingProcesses.length} active rendering processes`);
+    res.json(response);
+  } catch (error: any) {
+    console.error('[AgentRoutes] Teaching pipeline error:', error);
+    console.error('[AgentRoutes] Stack trace:', error.stack);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to detect pipeline',
+      stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined,
+    });
+  }
 });
 
 // ============================================================================

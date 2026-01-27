@@ -1,0 +1,91 @@
+# =============================================================================
+# WebView Surface Control Pipeline
+# =============================================================================
+# Modern WebView with Viz/OOP-R and SurfaceControl.
+# Independent composition without blocking App RenderThread.
+# =============================================================================
+
+name: pipeline_webview_surface_control
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: WEBVIEW_SURFACE_CONTROL
+  display_name: "WebView Surface Control"
+  description: "现代 WebView + Viz/OOP-R，独立合成"
+  icon: "web"
+  family: webview
+  doc_path: "rendering_pipelines/webview_surface_control.md"
+
+detection:
+  scoring_signals:
+    - signal: has_viz_compositor
+      thread: VizCompositor
+      weight: 75
+    - signal: has_surface_control
+      slice_pattern: "*SurfaceControl*"
+      weight: 15
+
+teaching:
+  title: "WebView Surface Control 渲染管线"
+  summary: |
+    现代 WebView 使用 Viz (Visual Compositor) 和 OOP-R (Out-of-Process Rasterization)
+    进行渲染，通过 SurfaceControl 独立提交到 SurfaceFlinger。
+    这种模式不阻塞 App RenderThread，性能更好。
+
+  mermaid: |
+    sequenceDiagram
+      participant Main as App (main)
+      participant WV as CrRendererMain
+      participant Viz as VizCompositor
+      participant SF as SurfaceFlinger
+
+      Main->>Main: App UI (independent)
+      WV->>Viz: Rasterized Tiles
+      Viz->>SF: SurfaceControl Transaction
+      SF->>SF: Composite Independently
+
+  thread_roles:
+    - thread: VizCompositor
+      role: "Viz 合成器"
+      description: "Chromium 可视化合成器，独立合成"
+    - thread: CrRendererMain
+      role: "Chromium 渲染"
+      description: "WebView 内容渲染"
+
+  key_slices:
+    - name: "VizCompositor"
+      thread: VizCompositor
+      description: "Viz 合成操作"
+    - name: "SurfaceControl"
+      thread: any
+      description: "SurfaceControl 事务"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "独立合成"
+
+    - pattern: "VizCompositor"
+      match_by: name
+      priority: 2
+      reason: "Viz 合成器"
+
+    - pattern: "CrRendererMain"
+      match_by: name
+      priority: 3
+      reason: "Chromium 渲染"
+
+analysis:
+  common_issues:
+    - id: viz_latency
+      name: "Viz 延迟"
+      description: "Viz 合成器处理延迟"
+      detection_skill: sf_frame_consumption
+
+  recommended_skills:
+    - sf_frame_consumption
+    - cpu_analysis

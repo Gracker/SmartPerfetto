@@ -1,0 +1,98 @@
+# =============================================================================
+# Pipeline Skills Index
+# =============================================================================
+# Lists all available pipeline definitions for quick lookup.
+#
+# Pipeline Families:
+#   - hwui: Standard Android View system (HWUI/RenderThread)
+#   - surface: Surface-based rendering (SurfaceView, TextureView)
+#   - graphics: Graphics API rendering (OpenGL ES, Vulkan, ANGLE)
+#   - flutter: Flutter framework
+#   - webview: WebView/Chromium
+#   - specialized: Game engines, Camera, Video, etc.
+# =============================================================================
+
+version: "1.0"
+description: "Pipeline skills index - 24 rendering pipeline types"
+
+families:
+  hwui:
+    name: "HWUI Family"
+    description: "Standard Android View system using HWUI/RenderThread"
+    pipelines:
+      - ANDROID_VIEW_STANDARD_BLAST
+      - ANDROID_VIEW_STANDARD_LEGACY
+      - ANDROID_VIEW_SOFTWARE
+      - ANDROID_VIEW_MIXED
+      - ANDROID_VIEW_MULTI_WINDOW
+
+  surface:
+    name: "Surface-Based"
+    description: "SurfaceView, TextureView, and SurfaceControl patterns"
+    pipelines:
+      - ANDROID_PIP_FREEFORM
+      - SURFACEVIEW_BLAST
+      - TEXTUREVIEW_STANDARD
+      - SURFACE_CONTROL_API
+
+  graphics:
+    name: "Graphics APIs"
+    description: "Direct graphics API usage (OpenGL ES, Vulkan, ANGLE)"
+    pipelines:
+      - OPENGL_ES
+      - VULKAN_NATIVE
+      - ANGLE_GLES_VULKAN
+
+  flutter:
+    name: "Flutter"
+    description: "Flutter framework rendering"
+    pipelines:
+      - FLUTTER_SURFACEVIEW_IMPELLER
+      - FLUTTER_SURFACEVIEW_SKIA
+      - FLUTTER_TEXTUREVIEW
+
+  webview:
+    name: "WebView"
+    description: "WebView/Chromium rendering modes"
+    pipelines:
+      - WEBVIEW_GL_FUNCTOR
+      - WEBVIEW_SURFACE_CONTROL
+      - WEBVIEW_SURFACEVIEW_WRAPPER
+      - WEBVIEW_TEXTUREVIEW_CUSTOM
+
+  specialized:
+    name: "Specialized"
+    description: "Game engines, Camera, Video, VRR, etc."
+    pipelines:
+      - GAME_ENGINE
+      - CAMERA_PIPELINE
+      - VIDEO_OVERLAY_HWC
+      - HARDWARE_BUFFER_RENDERER
+      - VARIABLE_REFRESH_RATE
+
+# Quick lookup: pipeline_id -> skill file
+pipeline_files:
+  ANDROID_VIEW_STANDARD_BLAST: android_view_standard_blast.skill.yaml
+  ANDROID_VIEW_STANDARD_LEGACY: android_view_standard_legacy.skill.yaml
+  ANDROID_VIEW_SOFTWARE: android_view_software.skill.yaml
+  ANDROID_VIEW_MIXED: android_view_mixed.skill.yaml
+  ANDROID_VIEW_MULTI_WINDOW: android_view_multi_window.skill.yaml
+  ANDROID_PIP_FREEFORM: android_pip_freeform.skill.yaml
+  SURFACEVIEW_BLAST: surfaceview_blast.skill.yaml
+  TEXTUREVIEW_STANDARD: textureview_standard.skill.yaml
+  SURFACE_CONTROL_API: surface_control_api.skill.yaml
+  OPENGL_ES: opengl_es.skill.yaml
+  VULKAN_NATIVE: vulkan_native.skill.yaml
+  ANGLE_GLES_VULKAN: angle_gles_vulkan.skill.yaml
+  FLUTTER_SURFACEVIEW_IMPELLER: flutter_surfaceview_impeller.skill.yaml
+  FLUTTER_SURFACEVIEW_SKIA: flutter_surfaceview_skia.skill.yaml
+  FLUTTER_TEXTUREVIEW: flutter_textureview.skill.yaml
+  WEBVIEW_GL_FUNCTOR: webview_gl_functor.skill.yaml
+  WEBVIEW_SURFACE_CONTROL: webview_surface_control.skill.yaml
+  WEBVIEW_SURFACEVIEW_WRAPPER: webview_surfaceview_wrapper.skill.yaml
+  WEBVIEW_TEXTUREVIEW_CUSTOM: webview_textureview_custom.skill.yaml
+  GAME_ENGINE: game_engine.skill.yaml
+  CAMERA_PIPELINE: camera_pipeline.skill.yaml
+  VIDEO_OVERLAY_HWC: video_overlay_hwc.skill.yaml
+  HARDWARE_BUFFER_RENDERER: hardware_buffer_renderer.skill.yaml
+  VARIABLE_REFRESH_RATE: variable_refresh_rate.skill.yaml

@@ -1,0 +1,94 @@
+# =============================================================================
+# Camera Pipeline
+# =============================================================================
+# Camera2/HAL3 multi-stream camera rendering.
+# Preview, capture, and video recording.
+# =============================================================================
+
+name: pipeline_camera_pipeline
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: CAMERA_PIPELINE
+  display_name: "相机管线"
+  description: "Camera2/HAL3 多流相机渲染"
+  icon: "camera"
+  family: specialized
+  doc_path: "rendering_pipelines/camera_pipeline.md"
+
+detection:
+  scoring_signals:
+    - signal: has_camera_thread
+      thread: Camera
+      weight: 40
+    - signal: has_camera_slice
+      slice_pattern: "*Camera*"
+      weight: 30
+    - signal: has_capture_session
+      slice_pattern: "*CaptureSession*"
+      weight: 30
+
+teaching:
+  title: "相机渲染管线"
+  summary: |
+    Camera2 API 和 HAL3 相机架构，支持多流同时处理（预览、拍照、录像）。
+    涉及相机硬件、ISP、编码器等多个组件的协同工作。
+    需要关注帧率稳定性和延迟。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App
+      participant Cam as Camera Service
+      participant HAL as Camera HAL
+      participant SF as SurfaceFlinger
+
+      App->>Cam: Create CaptureSession
+      Cam->>HAL: Configure Streams
+      HAL->>SF: Preview Frames
+      SF->>SF: Display Preview
+
+  thread_roles:
+    - thread: Camera
+      role: "相机服务"
+      description: "Camera2 API 和相机服务"
+    - thread: CaptureSession
+      role: "采集会话"
+      description: "相机采集会话管理"
+
+  key_slices:
+    - name: "Camera"
+      thread: any
+      description: "相机操作"
+    - name: "CaptureSession"
+      thread: any
+      description: "采集会话"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "预览合成"
+
+    - pattern: "Camera"
+      match_by: name
+      priority: 2
+      reason: "Camera 服务"
+
+    - pattern: "CaptureSession"
+      match_by: name
+      priority: 3
+      reason: "采集会话"
+
+analysis:
+  common_issues:
+    - id: preview_jank
+      name: "预览卡顿"
+      description: "相机预览帧率不稳定"
+      detection_skill: sf_frame_consumption
+
+  recommended_skills:
+    - sf_frame_consumption
+    - cpu_analysis

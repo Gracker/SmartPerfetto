@@ -1,0 +1,124 @@
+# =============================================================================
+# Flutter SurfaceView Impeller Pipeline
+# =============================================================================
+# Flutter with Impeller rendering engine using SurfaceView.
+# Modern Flutter default with pre-compiled shaders.
+# =============================================================================
+
+name: pipeline_flutter_surfaceview_impeller
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: FLUTTER_SURFACEVIEW_IMPELLER
+  display_name: "Flutter SurfaceView (Impeller)"
+  description: "Flutter + Impeller 引擎，预编译 Shader，低首帧延迟"
+  icon: "flutter"
+  family: flutter
+  doc_path: "rendering_pipelines/flutter_surfaceview.md"
+
+detection:
+  required_signals:
+    - thread: "1.ui"
+      min_count: 1
+
+  scoring_signals:
+    - signal: has_impeller
+      slice_pattern: "*EntityPass*"
+      weight: 80
+    - signal: has_flutter_raster
+      thread: "1.raster"
+      weight: 15
+
+  exclude_if:
+    - slice: "*SkGpu*"
+    - slice: "*SkiaGpu*"
+
+teaching:
+  title: "Flutter SurfaceView (Impeller) 渲染管线"
+  summary: |
+    Flutter 使用 Impeller 渲染引擎，通过 SurfaceView 独立渲染。
+    Impeller 使用预编译 Shader (AOT)，消除了 Skia 的即时编译卡顿，
+    大幅改善首帧性能。这是现代 Flutter (3.16+) 的默认渲染模式。
+
+  mermaid: |
+    sequenceDiagram
+      participant VSync as VSync
+      participant UI as 1.ui (Dart)
+      participant Raster as 1.raster
+      participant SF as SurfaceFlinger
+
+      VSync->>UI: Engine.ScheduleFrame
+      UI->>UI: Build -> Layout -> Paint
+      UI->>Raster: Submit LayerTree
+      Raster->>Raster: Impeller Rasterize (Vulkan)
+      Raster->>SF: vkQueuePresent
+      SF->>SF: Independent Layer Composite
+
+  thread_roles:
+    - thread: "1.ui"
+      role: "Dart UI 线程"
+      description: "执行 Dart 代码，Build/Layout/Paint，生成 Layer Tree"
+      trace_tags: "Engine::BeginFrame, FrameworkAnimator"
+    - thread: "1.raster"
+      role: "Impeller 光栅化"
+      description: "使用 Impeller (Vulkan) 光栅化 Layer Tree"
+      trace_tags: "Rasterizer::DrawToSurfaces, EntityPass::Render"
+    - thread: "1.io"
+      role: "Flutter IO"
+      description: "图片解码、资源加载"
+      trace_tags: "ImageDecoder"
+    - thread: SurfaceFlinger
+      role: "合成显示"
+      description: "将 Flutter Layer 与系统 UI 合成"
+
+  key_slices:
+    - name: "Engine::BeginFrame"
+      thread: "1.ui"
+      description: "帧开始，驱动 Dart 运行"
+    - name: "EntityPass::Render"
+      thread: "1.raster"
+      description: "Impeller 实体渲染"
+    - name: "Rasterizer::DrawToSurfaces"
+      thread: "1.raster"
+      description: "光栅化到 Surface"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^1\\.raster$"
+      match_by: name
+      priority: 2
+      reason: "Impeller 光栅化"
+
+    - pattern: "^1\\.ui$"
+      match_by: name
+      priority: 3
+      reason: "Dart UI 线程"
+
+    - pattern: "io\\.flutter"
+      match_by: name
+      priority: 4
+      reason: "Flutter IO"
+
+analysis:
+  common_issues:
+    - id: dart_gc
+      name: "Dart GC 暂停"
+      description: "Dart 垃圾回收导致 UI 线程暂停"
+      detection_skill: gc_analysis
+
+    - id: raster_slow
+      name: "光栅化慢"
+      description: "Layer Tree 过于复杂，光栅化耗时"
+      detection_skill: gpu_analysis
+
+  recommended_skills:
+    - scrolling_analysis
+    - jank_frame_detail
+    - gpu_analysis

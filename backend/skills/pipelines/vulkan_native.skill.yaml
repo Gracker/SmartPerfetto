@@ -1,0 +1,111 @@
+# =============================================================================
+# Vulkan Native Pipeline
+# =============================================================================
+# Native Vulkan rendering with vkQueuePresent.
+# Modern graphics API for high-performance rendering.
+# =============================================================================
+
+name: pipeline_vulkan_native
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: VULKAN_NATIVE
+  display_name: "Vulkan Native"
+  description: "原生 Vulkan 渲染，现代高性能图形 API"
+  icon: "vulkan"
+  family: graphics
+  doc_path: "rendering_pipelines/vulkan_native.md"
+
+detection:
+  scoring_signals:
+    - signal: has_vk_present
+      slice_pattern: "*vkQueuePresent*"
+      weight: 60
+    - signal: has_vk_cmd
+      slice_pattern: "*vkCmd*"
+      min_count: 10
+      weight: 20
+    - signal: has_swappy
+      slice_pattern: "*Swappy*"
+      weight: 20
+    - signal: has_vulkan_thread
+      thread_pattern: "*Vulkan*|*VkQueue*"
+      weight: 10
+
+teaching:
+  title: "Vulkan Native 渲染管线"
+  summary: |
+    使用 Vulkan API 进行高性能渲染。Vulkan 提供更低的 CPU 开销、
+    更好的多线程支持和更精细的 GPU 控制。适用于高端游戏和专业图形应用。
+    Swappy 库提供帧节拍控制。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App
+      participant VK as Vulkan
+      participant Swappy as Swappy (Optional)
+      participant SF as SurfaceFlinger
+
+      App->>VK: vkCmdDraw*
+      App->>VK: vkQueueSubmit
+      App->>Swappy: Frame Pacing
+      App->>VK: vkQueuePresentKHR
+      VK->>SF: Buffer Ready
+      SF->>SF: Composite
+
+  thread_roles:
+    - thread: main
+      role: "应用逻辑"
+      description: "游戏/应用主循环"
+    - thread: RenderThread
+      role: "Vulkan 渲染"
+      description: "执行 Vulkan 命令"
+    - thread: VkQueue
+      role: "Vulkan 队列"
+      description: "GPU 命令提交"
+
+  key_slices:
+    - name: "vkQueuePresentKHR"
+      thread: any
+      description: "提交帧到显示"
+    - name: "vkCmdDraw*"
+      thread: any
+      description: "Vulkan 绘制命令"
+    - name: "Swappy"
+      thread: any
+      description: "帧节拍控制"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "Vulkan 渲染"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "应用逻辑"
+
+    - pattern: "VkQueue"
+      match_by: name
+      priority: 4
+      reason: "Vulkan 队列"
+
+analysis:
+  common_issues:
+    - id: vk_queue_stall
+      name: "Vulkan 队列阻塞"
+      description: "vkQueueSubmit 或 vkQueuePresentKHR 等待过长"
+      detection_skill: gpu_analysis
+
+  recommended_skills:
+    - gpu_analysis
+    - gpu_metrics

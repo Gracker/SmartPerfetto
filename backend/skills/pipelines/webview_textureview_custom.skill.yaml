@@ -1,0 +1,81 @@
+# =============================================================================
+# WebView TextureView Custom Pipeline
+# =============================================================================
+# Custom WebView kernel (X5/UC) using TextureView.
+# Third-party WebView implementations in China.
+# =============================================================================
+
+name: pipeline_webview_textureview_custom
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: WEBVIEW_TEXTUREVIEW_CUSTOM
+  display_name: "WebView TextureView (定制内核)"
+  description: "X5/UC 等定制 WebView 内核，使用 TextureView"
+  icon: "web"
+  family: webview
+  doc_path: "rendering_pipelines/webview_textureview_custom.md"
+
+detection:
+  scoring_signals:
+    - signal: has_custom_webview
+      slice_pattern: "*TBS*|*X5*|*UCCore*"
+      weight: 80
+
+teaching:
+  title: "WebView TextureView (定制内核) 渲染管线"
+  summary: |
+    使用腾讯 X5、UC 等第三方定制 WebView 内核，通常使用 TextureView
+    进行渲染。这些内核可能有自己的渲染优化策略，但整体架构与标准 WebView 类似。
+
+  mermaid: |
+    sequenceDiagram
+      participant Main as App (main)
+      participant X5 as X5/UC Kernel
+      participant RT as RenderThread
+      participant SF as SurfaceFlinger
+
+      Main->>X5: Load Content
+      X5->>RT: Texture Upload
+      RT->>SF: Composite
+      SF->>SF: Display
+
+  thread_roles:
+    - thread: main
+      role: "UI 集成"
+      description: "承载定制 WebView 的 Activity"
+    - thread: RenderThread
+      role: "纹理合成"
+      description: "将定制内核内容作为纹理合成"
+    - thread: CrRendererMain
+      role: "定制内核渲染"
+      description: "X5/UC 内核渲染"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "纹理合成"
+
+    - pattern: "CrRendererMain"
+      match_by: name
+      priority: 3
+      reason: "定制内核渲染"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 4
+      reason: "UI 集成"
+
+analysis:
+  recommended_skills:
+    - render_thread_slices
+    - cpu_analysis

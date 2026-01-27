@@ -1,0 +1,129 @@
+# =============================================================================
+# Android View Standard (Legacy) Pipeline
+# =============================================================================
+# Pre-Android 12 rendering pipeline using HWUI + Legacy BufferQueue.
+# Uses Binder-based buffer submission without BLAST atomic transactions.
+# =============================================================================
+
+name: pipeline_android_view_standard_legacy
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: ANDROID_VIEW_STANDARD_LEGACY
+  display_name: "标准 Android View (Legacy)"
+  description: "Android 12 之前的 HWUI + Legacy BufferQueue 渲染管线"
+  icon: "android"
+  family: hwui
+  doc_path: "rendering_pipelines/android_view_standard.md"
+
+detection:
+  required_signals:
+    - thread: RenderThread
+      min_count: 1
+    - thread: main
+      min_count: 1
+
+  scoring_signals:
+    - signal: no_blast
+      condition: "blast_count = 0"
+      weight: 35
+    - signal: has_queue_buffer
+      slice_pattern: "*queueBuffer*"
+      weight: 25
+    - signal: has_draw_frame
+      slice_pattern: "DrawFrame*"
+      weight: 25
+
+  exclude_if:
+    - slice: "*BLASTBufferQueue*"
+    - slice: "*applyTransaction*"
+    - thread: "1.ui"
+    - thread: CrRendererMain
+
+teaching:
+  title: "Android View 标准渲染管线 (Legacy)"
+  summary: |
+    Android 12 之前的默认渲染管线，使用 HWUI 硬件加速和传统 BufferQueue 机制。
+    Buffer 通过 Binder 调用提交给 SurfaceFlinger，缺少原子性事务支持。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App (main)
+      participant RT as RenderThread
+      participant BQ as BufferQueue
+      participant SF as SurfaceFlinger
+
+      App->>RT: SyncFrameState
+      RT->>BQ: dequeueBuffer
+      RT->>RT: GPU Draw
+      RT->>BQ: queueBuffer (Binder)
+      BQ->>SF: onFrameAvailable
+      SF->>SF: latchBuffer & Composite
+
+  thread_roles:
+    - thread: main
+      role: "UI 构建"
+      description: "Measure/Layout/Draw 生成 DisplayList"
+    - thread: RenderThread
+      role: "GPU 渲染"
+      description: "执行绘制命令，通过 BufferQueue 提交"
+    - thread: SurfaceFlinger
+      role: "合成显示"
+      description: "Latch Buffer，HWC 合成"
+
+  key_slices:
+    - name: "DrawFrame"
+      thread: RenderThread
+      description: "开始渲染"
+    - name: "queueBuffer"
+      thread: RenderThread
+      description: "提交 Buffer 到 BufferQueue"
+    - name: "dequeueBuffer"
+      thread: RenderThread
+      description: "获取空闲 Buffer"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "GPU 渲染"
+      smart_filter:
+        enabled: true
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*'
+          GROUP BY p.upid HAVING slice_count > 10
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "UI 构建"
+
+    - pattern: "BufferQueue"
+      match_by: name
+      priority: 4
+      reason: "Buffer 管理"
+
+analysis:
+  common_issues:
+    - id: buffer_stall
+      name: "Buffer 等待"
+      description: "等待 BufferQueue 可用 Buffer"
+      detection_skill: render_thread_slices
+
+  recommended_skills:
+    - scrolling_analysis
+    - jank_frame_detail
+    - render_thread_slices

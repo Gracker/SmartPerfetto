@@ -1,0 +1,70 @@
+# =============================================================================
+# Hardware Buffer Renderer Pipeline
+# =============================================================================
+# Android 14+ HardwareBufferRenderer API.
+# Direct buffer rendering without SurfaceView overhead.
+# =============================================================================
+
+name: pipeline_hardware_buffer_renderer
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: HARDWARE_BUFFER_RENDERER
+  display_name: "HardwareBufferRenderer"
+  description: "Android 14+ HBR API，直接 Buffer 渲染"
+  icon: "memory"
+  family: specialized
+  doc_path: "rendering_pipelines/hardware_buffer_renderer.md"
+
+detection:
+  scoring_signals:
+    - signal: has_hbr
+      slice_pattern: "*HardwareBufferRenderer*|*HBR*"
+      weight: 75
+
+teaching:
+  title: "HardwareBufferRenderer 渲染管线"
+  summary: |
+    Android 14+ 新增的 HardwareBufferRenderer API，允许应用直接渲染到
+    HardwareBuffer，无需 SurfaceView 或 TextureView 的额外开销。
+    适用于需要高性能自定义渲染的场景。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App
+      participant HBR as HardwareBufferRenderer
+      participant SF as SurfaceFlinger
+
+      App->>HBR: Create Buffer
+      App->>HBR: Render to Buffer
+      App->>SF: Submit Buffer
+      SF->>SF: Composite
+
+  thread_roles:
+    - thread: main
+      role: "HBR 控制"
+      description: "创建和管理 HardwareBuffer"
+
+  key_slices:
+    - name: "HardwareBufferRenderer"
+      thread: any
+      description: "HBR 操作"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 2
+      reason: "HBR 控制"
+
+analysis:
+  recommended_skills:
+    - sf_frame_consumption
+    - gpu_analysis

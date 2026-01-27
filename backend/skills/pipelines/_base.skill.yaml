@@ -1,0 +1,79 @@
+# =============================================================================
+# Pipeline Skill Base Template
+# =============================================================================
+# This file documents the structure for pipeline skill definitions.
+# Each pipeline skill should follow this structure.
+#
+# Pipeline skills are loaded from backend/skills/pipelines/ and provide:
+#   - Detection rules for identifying pipeline types
+#   - Teaching content (Mermaid diagrams, thread roles, key slices)
+#   - Auto-pin instructions for track pinning
+#   - Analysis recommendations
+#
+# Type: pipeline_definition (special type for pipeline skills)
+# =============================================================================
+
+# Template structure (DO NOT USE THIS FILE DIRECTLY):
+#
+# name: pipeline_<pipeline_id_lowercase>
+# version: "1.0"
+# type: pipeline_definition
+# category: rendering
+#
+# meta:
+#   pipeline_id: PIPELINE_ID          # Unique identifier (uppercase)
+#   display_name: "显示名称"           # Human-readable name
+#   description: "描述"               # Brief description
+#   icon: "icon_name"                 # Icon name for UI
+#   family: hwui|flutter|webview|...  # Pipeline family
+#
+# detection:
+#   required_signals:                 # Must have all of these
+#     - thread: "ThreadName"
+#       min_count: 1
+#     - slice: "SliceName*"
+#       min_count: 1
+#   scoring_signals:                  # Adds to confidence score
+#     - signal: signal_name
+#       weight: 10-50
+#   exclude_if:                       # Disqualifies if present
+#     - thread: "ExcludedThread"
+#     - slice: "ExcludedSlice*"
+#
+# teaching:
+#   title: "教学标题"
+#   summary: |
+#     Multi-line description of the pipeline.
+#   mermaid: |
+#     sequenceDiagram
+#       ...
+#   thread_roles:
+#     - thread: "ThreadName"
+#       role: "角色"
+#       description: "描述"
+#   key_slices:
+#     - name: "SliceName"
+#       thread: "ThreadName"
+#       description: "描述"
+#
+# auto_pin:
+#   instructions:
+#     - pattern: "RegexPattern"
+#       match_by: name|uri
+#       priority: 1-10
+#       reason: "原因说明"
+#       smart_filter:                 # Optional: data-driven filtering
+#         enabled: true
+#         detection_sql: |            # SQL to find active instances
+#           SELECT DISTINCT process_name FROM ...
+#         fallback_sql: |             # Backup if main SQL returns empty
+#           SELECT DISTINCT process_name FROM ...
+#
+# analysis:
+#   common_issues:
+#     - id: issue_id
+#       name: "问题名称"
+#       detection_skill: skill_name
+#   recommended_skills:
+#     - skill_name_1
+#     - skill_name_2

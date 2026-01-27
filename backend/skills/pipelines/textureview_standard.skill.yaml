@@ -1,0 +1,92 @@
+# =============================================================================
+# TextureView Standard Pipeline
+# =============================================================================
+# SurfaceTexture-based rendering integrated into View hierarchy.
+# Higher integration but more overhead than SurfaceView.
+# =============================================================================
+
+name: pipeline_textureview_standard
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: TEXTUREVIEW_STANDARD
+  display_name: "TextureView 标准"
+  description: "SurfaceTexture 纹理上传模式，与 View 层次集成"
+  icon: "texture"
+  family: surface
+  doc_path: "rendering_pipelines/textureview.md"
+
+detection:
+  scoring_signals:
+    - signal: has_texture_view
+      slice_pattern: "*SurfaceTexture*|*updateTexImage*"
+      min_count: 5
+      weight: 60
+    - signal: has_render_thread
+      thread: RenderThread
+      weight: 20
+
+teaching:
+  title: "TextureView 渲染管线"
+  summary: |
+    使用 SurfaceTexture 将渲染内容作为纹理集成到 View 层次中。
+    支持 View 的所有变换（缩放、裁剪、透明度），但需要额外的纹理上传开销。
+    适合需要与 View 混合显示的场景。
+
+  mermaid: |
+    sequenceDiagram
+      participant Content as Content Producer
+      participant ST as SurfaceTexture
+      participant RT as RenderThread
+      participant SF as SurfaceFlinger
+
+      Content->>ST: Render to Surface
+      ST->>RT: updateTexImage
+      RT->>RT: Draw as Texture
+      RT->>SF: Composite with View Layer
+
+  thread_roles:
+    - thread: main
+      role: "UI 集成"
+      description: "管理 TextureView 在 View 层次中的位置"
+    - thread: RenderThread
+      role: "纹理上传 + 合成"
+      description: "将 SurfaceTexture 内容作为纹理绘制"
+
+  key_slices:
+    - name: "updateTexImage"
+      thread: RenderThread
+      description: "更新纹理内容"
+    - name: "SurfaceTexture"
+      thread: any
+      description: "SurfaceTexture 操作"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "纹理上传 + 合成"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "UI 集成"
+
+analysis:
+  common_issues:
+    - id: texture_upload_slow
+      name: "纹理上传慢"
+      description: "updateTexImage 耗时过长"
+      detection_skill: render_thread_slices
+
+  recommended_skills:
+    - render_thread_slices
+    - gpu_analysis

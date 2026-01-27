@@ -1,0 +1,97 @@
+# =============================================================================
+# Flutter TextureView Pipeline
+# =============================================================================
+# Flutter PlatformView fallback using TextureView.
+# Used when embedding native Android views in Flutter.
+# =============================================================================
+
+name: pipeline_flutter_textureview
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: FLUTTER_TEXTUREVIEW
+  display_name: "Flutter TextureView"
+  description: "Flutter PlatformView 降级模式，嵌入原生 Android View"
+  icon: "flutter"
+  family: flutter
+  doc_path: "rendering_pipelines/flutter_textureview.md"
+
+detection:
+  required_signals:
+    - thread: "1.ui"
+      min_count: 1
+
+  scoring_signals:
+    - signal: has_texture_view
+      slice_pattern: "*SurfaceTexture*|*updateTexImage*"
+      weight: 65
+
+teaching:
+  title: "Flutter TextureView 渲染管线"
+  summary: |
+    当 Flutter 需要嵌入原生 Android View (PlatformView) 时，
+    会降级到 TextureView 模式。这种模式有额外的纹理上传开销，
+    性能不如 SurfaceView 模式。应尽量减少 PlatformView 使用。
+
+  mermaid: |
+    sequenceDiagram
+      participant UI as 1.ui (Dart)
+      participant Raster as 1.raster
+      participant RT as Android RenderThread
+      participant SF as SurfaceFlinger
+
+      UI->>Raster: Submit LayerTree
+      Raster->>RT: Texture Upload
+      RT->>SF: Composite Flutter + Native
+      SF->>SF: Final Composite
+
+  thread_roles:
+    - thread: "1.ui"
+      role: "Dart UI 线程"
+      description: "Flutter UI 构建"
+    - thread: "1.raster"
+      role: "Flutter 光栅化"
+      description: "Flutter 内容光栅化"
+    - thread: RenderThread
+      role: "Android 合成"
+      description: "将 Flutter 纹理与原生 View 合成"
+
+  key_slices:
+    - name: "SurfaceTexture"
+      thread: RenderThread
+      description: "纹理更新"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "Android 合成"
+
+    - pattern: "^1\\.raster$"
+      match_by: name
+      priority: 3
+      reason: "Flutter 光栅化"
+
+    - pattern: "^1\\.ui$"
+      match_by: name
+      priority: 4
+      reason: "Dart UI 线程"
+
+analysis:
+  common_issues:
+    - id: platformview_overhead
+      name: "PlatformView 开销"
+      description: "嵌入原生 View 的额外开销"
+      detection_skill: render_thread_slices
+
+  recommended_skills:
+    - scrolling_analysis
+    - render_thread_slices

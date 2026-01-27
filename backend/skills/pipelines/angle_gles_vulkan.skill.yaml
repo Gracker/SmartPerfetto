@@ -1,0 +1,86 @@
+# =============================================================================
+# ANGLE GLES over Vulkan Pipeline
+# =============================================================================
+# OpenGL ES translated to Vulkan via ANGLE.
+# Used when Vulkan backend provides better compatibility or performance.
+# =============================================================================
+
+name: pipeline_angle_gles_vulkan
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: ANGLE_GLES_VULKAN
+  display_name: "ANGLE (GLES over Vulkan)"
+  description: "通过 ANGLE 将 OpenGL ES 翻译为 Vulkan"
+  icon: "translate"
+  family: graphics
+  doc_path: "rendering_pipelines/angle_gles_vulkan.md"
+
+detection:
+  scoring_signals:
+    - signal: has_angle
+      slice_pattern: "*ANGLE*"
+      weight: 80
+
+teaching:
+  title: "ANGLE GLES over Vulkan 渲染管线"
+  summary: |
+    使用 ANGLE 库将 OpenGL ES 调用翻译为 Vulkan 命令。
+    这种模式提供了更好的驱动兼容性和可能的性能提升，
+    同时应用代码仍然使用熟悉的 OpenGL ES API。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App (GLES Calls)
+      participant ANGLE as ANGLE Translator
+      participant VK as Vulkan
+      participant SF as SurfaceFlinger
+
+      App->>ANGLE: glDraw*
+      ANGLE->>VK: vkCmd*
+      ANGLE->>VK: vkQueueSubmit
+      VK->>SF: Buffer Ready
+      SF->>SF: Composite
+
+  thread_roles:
+    - thread: main
+      role: "应用逻辑"
+      description: "发起 OpenGL ES 调用"
+    - thread: RenderThread
+      role: "ANGLE 翻译层"
+      description: "将 GLES 翻译为 Vulkan"
+
+  key_slices:
+    - name: "ANGLE"
+      thread: any
+      description: "ANGLE 翻译层操作"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "ANGLE 翻译层"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "应用逻辑"
+
+analysis:
+  common_issues:
+    - id: angle_overhead
+      name: "ANGLE 翻译开销"
+      description: "API 翻译层的 CPU 开销"
+      detection_skill: cpu_analysis
+
+  recommended_skills:
+    - gpu_analysis
+    - cpu_analysis

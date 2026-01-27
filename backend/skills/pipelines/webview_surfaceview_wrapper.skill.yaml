@@ -1,0 +1,91 @@
+# =============================================================================
+# WebView SurfaceView Wrapper Pipeline
+# =============================================================================
+# Full-screen video wrapper mode for WebView.
+# Used for video playback in WebView.
+# =============================================================================
+
+name: pipeline_webview_surfaceview_wrapper
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: WEBVIEW_SURFACEVIEW_WRAPPER
+  display_name: "WebView SurfaceView Wrapper"
+  description: "WebView 全屏视频包装模式"
+  icon: "video"
+  family: webview
+  doc_path: "rendering_pipelines/webview_surfaceview_wrapper.md"
+
+detection:
+  scoring_signals:
+    - signal: has_webview
+      slice_pattern: "*WebView*"
+      weight: 30
+    - signal: has_webview_core
+      thread: WebViewCore
+      weight: 20
+    - signal: has_surfaceview
+      slice_pattern: "*SurfaceView*"
+      weight: 25
+    - signal: has_video
+      slice_pattern: "*Video*|*MediaCodec*"
+      weight: 25
+
+teaching:
+  title: "WebView SurfaceView Wrapper 渲染管线"
+  summary: |
+    WebView 全屏视频播放模式，使用 SurfaceView 包装视频内容。
+    视频解码通过 MediaCodec，直接输出到 SurfaceView。
+    常见于网页视频全屏播放场景。
+
+  mermaid: |
+    sequenceDiagram
+      participant Main as App (main)
+      participant WV as CrRendererMain
+      participant MC as MediaCodec
+      participant SF as SurfaceFlinger
+
+      Main->>WV: Video Playback Request
+      WV->>MC: Decode Video
+      MC->>SF: Video Frame (SurfaceView)
+      SF->>SF: Video Layer Composite
+
+  thread_roles:
+    - thread: main
+      role: "App 控制"
+      description: "控制 WebView 和播放状态"
+    - thread: CrRendererMain
+      role: "Chromium 渲染"
+      description: "WebView 内容和视频协调"
+    - thread: MediaCodec
+      role: "视频解码"
+      description: "硬件视频解码"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "视频合成"
+
+    - pattern: "CrRendererMain"
+      match_by: name
+      priority: 2
+      reason: "Chromium 渲染"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "App 控制"
+
+    - pattern: "MediaCodec"
+      match_by: name
+      priority: 4
+      reason: "视频解码"
+
+analysis:
+  recommended_skills:
+    - sf_frame_consumption
+    - cpu_analysis

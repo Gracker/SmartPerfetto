@@ -1,0 +1,117 @@
+# =============================================================================
+# Variable Refresh Rate Pipeline
+# =============================================================================
+# VRR/ARR with FrameTimeline.
+# Dynamic refresh rate based on content.
+# =============================================================================
+
+name: pipeline_variable_refresh_rate
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: VARIABLE_REFRESH_RATE
+  display_name: "可变刷新率 (VRR)"
+  description: "VRR/ARR + FrameTimeline 动态刷新率"
+  icon: "refresh"
+  family: specialized
+  doc_path: "rendering_pipelines/variable_refresh_rate.md"
+
+detection:
+  scoring_signals:
+    - signal: has_frame_timeline
+      slice_pattern: "*FrameTimeline*"
+      min_count: 5
+      weight: 40
+    - signal: has_frame_rate
+      slice_pattern: "*setFrameRate*|*FrameRateVote*"
+      weight: 30
+
+teaching:
+  title: "可变刷新率 (VRR) 渲染管线"
+  summary: |
+    可变刷新率 (VRR/ARR) 允许屏幕动态调整刷新率以匹配内容帧率。
+    结合 FrameTimeline，系统可以精确追踪每一帧的预期和实际显示时间，
+    实现更流畅的显示效果和更好的功耗表现。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App
+      participant SF as SurfaceFlinger
+      participant FT as FrameTimeline
+      participant Display as VRR Display
+
+      App->>SF: Submit Frame + FrameRate Hint
+      SF->>FT: Record Expected Timeline
+      SF->>Display: Dynamic Refresh
+      FT->>FT: Track Actual vs Expected
+
+  thread_roles:
+    - thread: main
+      role: "UI 构建"
+      description: "应用 UI 渲染"
+    - thread: RenderThread
+      role: "帧渲染"
+      description: "GPU 渲染和帧提交"
+    - thread: SurfaceFlinger
+      role: "VRR 控制"
+      description: "动态刷新率控制"
+
+  key_slices:
+    - name: "FrameTimeline"
+      thread: any
+      description: "帧时间线追踪"
+    - name: "setFrameRate"
+      thread: any
+      description: "帧率设置"
+    - name: "FrameRateVote"
+      thread: SurfaceFlinger
+      description: "帧率投票"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "VRR 合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "帧渲染"
+      smart_filter:
+        enabled: true
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name
+          FROM actual_frame_timeline_slice a
+          JOIN process p ON a.upid = p.upid
+          WHERE a.surface_frame_token IS NOT NULL
+          GROUP BY a.upid HAVING COUNT(*) > 0
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "UI 构建"
+
+    - pattern: "VSYNC"
+      match_by: name
+      priority: 4
+      reason: "动态刷新率"
+
+    - pattern: "FrameTimeline"
+      match_by: name
+      priority: 5
+      reason: "帧时间线"
+
+analysis:
+  common_issues:
+    - id: vrr_miss
+      name: "VRR 目标未达"
+      description: "帧率低于 VRR 目标刷新率"
+      detection_skill: jank_frame_detail
+
+  recommended_skills:
+    - scrolling_analysis
+    - jank_frame_detail
+    - vrr_detection

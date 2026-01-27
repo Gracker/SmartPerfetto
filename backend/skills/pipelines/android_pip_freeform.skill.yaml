@@ -1,0 +1,73 @@
+# =============================================================================
+# Android PIP/Freeform Pipeline
+# =============================================================================
+# Picture-in-Picture and Freeform window features.
+# Special window management with system compositor integration.
+# =============================================================================
+
+name: pipeline_android_pip_freeform
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: ANDROID_PIP_FREEFORM
+  display_name: "Android PIP/Freeform"
+  description: "画中画和自由窗口模式，特殊窗口管理与合成"
+  icon: "pip"
+  family: surface
+  doc_path: "rendering_pipelines/android_pip_freeform.md"
+
+detection:
+  scoring_signals:
+    - signal: has_pip
+      slice_pattern: "*PictureInPicture*|*PIP*"
+      weight: 70
+
+teaching:
+  title: "Android PIP/Freeform 渲染管线"
+  summary: |
+    画中画 (PIP) 和自由窗口 (Freeform) 模式的渲染管线。这些窗口有特殊的
+    缩放、移动和 Z-order 管理需求，需要与系统合成器紧密配合。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App
+      participant RT as RenderThread
+      participant WMS as WindowManager
+      participant SF as SurfaceFlinger
+
+      App->>WMS: Enter PIP Mode
+      WMS->>SF: Update Window Bounds
+      RT->>SF: Render to Scaled Surface
+      SF->>SF: PIP Layer Composite
+
+  thread_roles:
+    - thread: main
+      role: "PIP 控制逻辑"
+      description: "处理 PIP 进入/退出、手势控制"
+    - thread: RenderThread
+      role: "窗口渲染"
+      description: "渲染 PIP 窗口内容"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "PIP 层合成"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "窗口渲染"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "PIP 控制逻辑"
+
+analysis:
+  recommended_skills:
+    - sf_frame_consumption
+    - jank_frame_detail

@@ -304,6 +304,14 @@ class SkillRegistry {
       await this.loadModuleSkillsRecursively(modulesDir);
     }
 
+    // 加载 pipeline skills (Pipeline Skill Architecture)
+    // Note: Pipeline skills are loaded separately by PipelineSkillLoader
+    // but we register them here for skill discovery
+    const pipelinesDir = path.join(skillsDir, 'pipelines');
+    if (fs.existsSync(pipelinesDir)) {
+      await this.loadPipelineSkills(pipelinesDir);
+    }
+
     this.initialized = true;
     console.log(`[SkillLoader] Loaded ${this.skills.size} skills (${this.moduleSkills.size} module experts)`);
   }
@@ -349,6 +357,34 @@ class SkillRegistry {
         } catch (error: any) {
           console.error(`[SkillLoader] Failed to load ${fullPath}:`, error.message);
         }
+      }
+    }
+  }
+
+  /**
+   * 加载 pipeline skills
+   * Pipeline skills are a special type that define rendering pipeline configurations
+   */
+  private async loadPipelineSkills(dir: string): Promise<void> {
+    const files = fs.readdirSync(dir);
+
+    for (const file of files) {
+      // Skip non-skill files and template files
+      if (!file.endsWith('.skill.yaml') && !file.endsWith('.skill.yml')) continue;
+      if (file.startsWith('_')) continue;
+
+      const filePath = path.join(dir, file);
+      try {
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const skill = yaml.load(content) as SkillDefinition;
+
+        if (skill && skill.name && skill.type === 'pipeline_definition') {
+          // Register pipeline skills with a special prefix for discoverability
+          this.skills.set(skill.name, skill);
+          console.log(`[SkillLoader] Loaded pipeline skill: ${skill.name}`);
+        }
+      } catch (error: any) {
+        console.error(`[SkillLoader] Failed to load pipeline ${file}:`, error.message);
       }
     }
   }

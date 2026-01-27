@@ -1,0 +1,129 @@
+# =============================================================================
+# Android View Mixed Pipeline
+# =============================================================================
+# Hybrid rendering with View + SurfaceView.
+# Common for video players, games embedded in native UI.
+# =============================================================================
+
+name: pipeline_android_view_mixed
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: ANDROID_VIEW_MIXED
+  display_name: "Android View 混合渲染"
+  description: "View + SurfaceView 混合渲染，常见于视频播放器、内嵌游戏"
+  icon: "layers"
+  family: hwui
+  doc_path: "rendering_pipelines/android_view_mixed.md"
+
+detection:
+  required_signals:
+    - thread: RenderThread
+      min_count: 1
+    - thread: main
+      min_count: 1
+
+  scoring_signals:
+    - signal: has_surfaceview
+      slice_pattern: "*SurfaceView*"
+      weight: 50
+    - signal: has_draw_frame
+      slice_pattern: "DrawFrame*"
+      weight: 20
+    - signal: has_media_thread
+      thread_pattern: "*MediaCodec*|*Decoder*"
+      weight: 20
+
+  exclude_if:
+    - thread: "1.ui"
+    - thread: CrRendererMain
+
+teaching:
+  title: "Android View 混合渲染管线"
+  summary: |
+    同时使用 View 系统和 SurfaceView 进行渲染。View 部分通过 RenderThread，
+    SurfaceView 有独立的渲染线程 (GLThread/MediaCodec)。常见于视频播放器、
+    内嵌游戏等需要混合原生 UI 和自定义渲染的场景。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App (main)
+      participant RT as RenderThread
+      participant GL as GLThread/MediaCodec
+      participant SF as SurfaceFlinger
+
+      App->>RT: View 绘制
+      GL->>SF: SurfaceView Buffer
+      RT->>SF: View Layer Buffer
+      SF->>SF: 合成多 Layer
+
+  thread_roles:
+    - thread: main
+      role: "UI 协调"
+      description: "协调 View 和 SurfaceView，处理布局"
+    - thread: RenderThread
+      role: "View 层渲染"
+      description: "渲染原生 View UI"
+    - thread: GLThread
+      role: "SurfaceView 渲染"
+      description: "独立渲染 SurfaceView 内容"
+    - thread: MediaCodec
+      role: "视频解码"
+      description: "解码视频帧到 SurfaceView"
+
+  key_slices:
+    - name: "SurfaceView"
+      thread: any
+      description: "SurfaceView 相关操作"
+    - name: "DrawFrame"
+      thread: RenderThread
+      description: "View 层渲染"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "合成多 Layer"
+
+    - pattern: "^RenderThread$"
+      match_by: name
+      priority: 2
+      reason: "View 层渲染"
+      smart_filter:
+        enabled: true
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name
+          FROM actual_frame_timeline_slice a
+          JOIN process p ON a.upid = p.upid
+          WHERE a.surface_frame_token IS NOT NULL
+          GROUP BY a.upid HAVING COUNT(*) > 0
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 3
+      reason: "UI 协调"
+
+    - pattern: "GLThread"
+      match_by: name
+      priority: 4
+      reason: "SurfaceView 渲染"
+
+    - pattern: "MediaCodec"
+      match_by: name
+      priority: 5
+      reason: "视频解码"
+
+analysis:
+  common_issues:
+    - id: layer_sync
+      name: "Layer 同步问题"
+      description: "View 和 SurfaceView 帧率不同步"
+      detection_skill: sf_frame_consumption
+
+  recommended_skills:
+    - scrolling_analysis
+    - sf_frame_consumption
+    - gpu_analysis

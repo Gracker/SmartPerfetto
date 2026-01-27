@@ -13,7 +13,7 @@
 // 基础类型
 // =============================================================================
 
-export type SkillType = 'atomic' | 'composite' | 'iterator' | 'diagnostic' | 'ai_decision' | 'ai_summary' | 'conditional';
+export type SkillType = 'atomic' | 'composite' | 'iterator' | 'diagnostic' | 'ai_decision' | 'ai_summary' | 'conditional' | 'pipeline_definition';
 
 export type DisplayLevel = 'none' | 'debug' | 'detail' | 'summary' | 'key';
 

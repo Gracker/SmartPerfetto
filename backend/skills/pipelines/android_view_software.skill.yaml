@@ -1,0 +1,94 @@
+# =============================================================================
+# Android View Software Pipeline
+# =============================================================================
+# CPU-based Skia rendering without hardware acceleration.
+# No RenderThread - all drawing done on main thread.
+# =============================================================================
+
+name: pipeline_android_view_software
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: ANDROID_VIEW_SOFTWARE
+  display_name: "Android View 软件渲染"
+  description: "CPU Skia 软件渲染，无 RenderThread，用于低端设备或特殊场景"
+  icon: "cpu"
+  family: hwui
+  doc_path: "rendering_pipelines/android_view_software.md"
+
+detection:
+  required_signals:
+    - thread: main
+      min_count: 1
+
+  scoring_signals:
+    - signal: no_render_thread
+      condition: "render_thread_count = 0"
+      weight: 60
+    - signal: has_lock_canvas
+      slice_pattern: "*lockCanvas*"
+      weight: 40
+    - signal: no_draw_frame
+      condition: "draw_frame_count = 0"
+      weight: 20
+
+  exclude_if:
+    - thread: RenderThread
+
+teaching:
+  title: "Android View 软件渲染管线"
+  summary: |
+    使用 CPU Skia 进行软件渲染，所有绘制都在主线程完成。
+    通常用于低端设备、特殊 View (如 SurfaceHolder.lockCanvas)，或硬件加速被禁用时。
+    性能较低，但兼容性最好。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App (main)
+      participant Canvas as Canvas (CPU)
+      participant SF as SurfaceFlinger
+
+      App->>App: Measure/Layout
+      App->>Canvas: lockCanvas
+      App->>Canvas: draw (CPU Skia)
+      App->>Canvas: unlockCanvasAndPost
+      Canvas->>SF: Buffer Ready
+      SF->>SF: Composite
+
+  thread_roles:
+    - thread: main
+      role: "UI 构建 + 渲染"
+      description: "Measure/Layout/Draw 全在主线程，使用 CPU Skia 渲染"
+
+  key_slices:
+    - name: "lockCanvas"
+      thread: main
+      description: "获取 CPU 画布"
+    - name: "unlockCanvasAndPost"
+      thread: main
+      description: "提交绘制结果"
+
+auto_pin:
+  instructions:
+    - pattern: "^SurfaceFlinger$"
+      match_by: name
+      priority: 1
+      reason: "最终合成"
+
+    - pattern: "^main$"
+      match_by: name
+      priority: 2
+      reason: "CPU 软件渲染 (Skia)"
+
+analysis:
+  common_issues:
+    - id: cpu_bottleneck
+      name: "CPU 渲染瓶颈"
+      description: "软件渲染占用大量 CPU 时间"
+      detection_skill: cpu_analysis
+
+  recommended_skills:
+    - cpu_analysis
+    - scheduling_analysis
