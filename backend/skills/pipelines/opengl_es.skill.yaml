@@ -31,8 +31,8 @@ detection:
       weight: 15
 
   exclude_if:
-    - slice: "*vkQueuePresent*"
-    - slice: "*ANGLE*"
+    - slice_pattern: "*vkQueuePresentKHR*"
+    - slice_pattern: "*ANGLE*"
     - thread: "1.ui"
 
 teaching:
@@ -43,23 +43,36 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App/Game Loop
-      participant GL as GL Context
-      participant EGL as EGL
+      participant App as App Thread
+      participant GL as GLThread
+      participant EGL as EGL Context
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>GL: glDraw* Commands
-      App->>EGL: eglSwapBuffers
-      EGL->>SF: Buffer Ready
-      SF->>SF: Composite
+      Note over App,SF: 📍 OpenGL ES 渲染链路
+      GL->>EGL: eglMakeCurrent
+      activate GL
+      GL->>GL: glClear / glDraw*
+      GL->>GL: GPU 命令提交
+      GL->>EGL: eglSwapBuffers
+      EGL->>BQ: queueBuffer
+      deactivate GL
 
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over App,SF: 🎮 传统 OpenGL ES 游戏/渲染引擎常用
   thread_roles:
     - thread: GLThread
       role: "GL 渲染线程"
       description: "执行 OpenGL 绘制命令"
-    - thread: RenderThread
-      role: "GPU 指令执行"
-      description: "可能用于辅助渲染"
+    - thread: SurfaceFlinger
+      role: "合成显示"
+      description: "latch Buffer 并提交到 HWC"
 
   key_slices:
     - name: "eglSwapBuffers"
@@ -71,20 +84,38 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (开始生产帧)"
 
     - pattern: "GLThread"
       match_by: name
       priority: 2
-      reason: "GL 渲染线程"
+      reason: "GL 渲染线程 (生产/传输)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 3
-      reason: "GPU 指令执行"
+      reason: "RenderThread (如存在，用于 View 系统合成)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "最终合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

@@ -24,9 +24,12 @@ detection:
       min_count: 1
 
   scoring_signals:
-    - signal: has_texture_view
-      slice_pattern: "*SurfaceTexture*|*updateTexImage*"
-      weight: 65
+    - signal: has_surface_texture
+      slice_pattern: "*SurfaceTexture*"
+      weight: 30
+    - signal: has_update_tex_image
+      slice_pattern: "*updateTexImage*"
+      weight: 35
 
 teaching:
   title: "Flutter TextureView 渲染管线"
@@ -37,16 +40,38 @@ teaching:
 
   mermaid: |
     sequenceDiagram
+      participant VA as VSync-app
       participant UI as 1.ui (Dart)
       participant Raster as 1.raster
-      participant RT as Android RenderThread
+      participant RT as RenderThread (Host)
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      UI->>Raster: Submit LayerTree
-      Raster->>RT: Texture Upload
-      RT->>SF: Composite Flutter + Native
-      SF->>SF: Final Composite
+      Note over VA,SF: 📍 Flutter PlatformView (TextureView)
+      VA->>UI: 🔔 VSync → Engine::BeginFrame
+      activate UI
+      UI->>UI: Dart 构建 Widget Tree
+      UI->>Raster: 提交 Layer Tree + PlatformView
+      deactivate UI
 
+      activate Raster
+      Raster->>Raster: 光栅化 Flutter 内容
+      Raster-->>RT: 通知 PlatformView 更新
+      deactivate Raster
+
+      activate RT
+      RT->>RT: DrawFrame (合成 Flutter + Native)
+      RT->>BQ: queueBuffer
+      deactivate RT
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over VA,SF: ⚠️ PlatformView 需要同步，可能有性能开销
   thread_roles:
     - thread: "1.ui"
       role: "Dart UI 线程"
@@ -59,31 +84,58 @@ teaching:
       description: "将 Flutter 纹理与原生 View 合成"
 
   key_slices:
+    - name: "Engine::BeginFrame"
+      thread: "1.ui"
+      description: "帧开始，驱动 Dart 构建与布局"
+    - name: "Rasterizer::DrawToSurfaces"
+      thread: "1.raster"
+      description: "Flutter 光栅化输出（与 PlatformView 合成前后可能出现同步）"
     - name: "SurfaceTexture"
+      thread: any
+      description: "PlatformView/TextureView 的纹理生产-消费链路"
+    - name: "updateTexImage"
       thread: RenderThread
-      description: "纹理更新"
+      description: "宿主侧更新纹理并参与合成"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (Flutter 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^1\\.ui$"
       match_by: name
       priority: 2
-      reason: "Android 合成"
+      reason: "Dart UI 线程 (生产)"
 
     - pattern: "^1\\.raster$"
       match_by: name
       priority: 3
-      reason: "Flutter 光栅化"
+      reason: "Flutter 光栅化 (传输)"
 
-    - pattern: "^1\\.ui$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 4
-      reason: "Dart UI 线程"
+      reason: "Android 合成 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

@@ -85,6 +85,8 @@ export interface PinInstructionResponse {
   matchBy: 'name' | 'uri' | 'thread' | 'process' | 'slice';
   priority: number;
   reason: string;
+  expand?: boolean;           // Whether to expand the track after pinning
+  mainThreadOnly?: boolean;   // Only pin main thread (track.chips includes 'main thread')
   smartPin?: boolean;
   skipPin?: boolean;
   activeProcessNames?: string[];
@@ -112,6 +114,8 @@ export interface RawPinInstruction {
   match_by: 'name' | 'uri';
   priority: number;
   reason: string;
+  expand?: boolean;           // Whether to expand the track after pinning
+  main_thread_only?: boolean; // Only pin main thread (track.chips includes 'main thread')
   smart_filter?: RawSmartFilter;
 }
 
@@ -169,10 +173,18 @@ export interface SqlResult {
 }
 
 /**
+ * Raw step data returned by SkillExecutor.
+ *
+ * Note: In rawResults, SkillExecutor returns an array of objects (one per row),
+ * not the {columns, rows} table structure used by displayResults.
+ */
+export type SkillStepData = Array<Record<string, unknown>> | SqlResult;
+
+/**
  * Step result from skill execution
  */
 export interface SkillStepResult {
-  data?: SqlResult;
+  data?: SkillStepData;
   error?: string;
 }
 
@@ -198,15 +210,23 @@ export function transformPinInstruction(
     reason: raw.reason,
   };
 
+  // Pass through expand and main_thread_only flags
+  if (raw.expand !== undefined) {
+    base.expand = raw.expand;
+  }
+  if (raw.main_thread_only !== undefined) {
+    base.mainThreadOnly = raw.main_thread_only;
+  }
+
   // Apply smart filter logic if enabled
   if (raw.smart_filter?.enabled) {
-    base.smartPin = true;
-    base.activeProcessNames = activeProcesses.map((p) => p.processName);
-
-    // Skip pin if no active processes detected
-    if (activeProcesses.length === 0) {
-      base.skipPin = true;
-      base.reason = `${raw.reason} (跳过: 未检测到活跃渲染进程)`;
+    if (activeProcesses.length > 0) {
+      base.smartPin = true;
+      base.activeProcessNames = activeProcesses.map((p) => p.processName);
+    } else {
+      // If we can't identify active rendering processes, fall back to normal pinning.
+      // This avoids missing critical tracks (e.g. app main thread) on sparse traces.
+      base.reason = `${raw.reason} (未检测到活跃渲染进程，使用默认 Pin)`;
     }
   }
 
@@ -252,13 +272,49 @@ export function transformTeachingContent(
  * @returns Validated array of active processes
  */
 export function validateActiveProcesses(stepResult: SkillStepResult | undefined): ActiveProcess[] {
-  // Check basic structure
-  if (!stepResult?.data?.rows || !Array.isArray(stepResult.data.rows)) {
+  if (!stepResult?.data) {
+    console.warn('[Teaching] Missing step data for active_rendering_processes');
+    return [];
+  }
+
+  // New (SkillExecutor rawResults): array of objects
+  if (Array.isArray(stepResult.data)) {
+    const processes: ActiveProcess[] = [];
+
+    for (const row of stepResult.data) {
+      if (!row || typeof row !== 'object') continue;
+
+      const processName =
+        (typeof row.process_name === 'string' && row.process_name) ||
+        (typeof row.processName === 'string' && row.processName) ||
+        (typeof row.name === 'string' && row.name) ||
+        '';
+      if (!processName) continue;
+
+      const upidRaw = row.upid ?? row.UPID;
+      const frameCountRaw = row.frame_count ?? row.frameCount ?? row.count;
+      const tidRaw = row.render_thread_tid ?? row.renderThreadTid ?? row.tid;
+
+      processes.push({
+        upid: typeof upidRaw === 'number' ? upidRaw : parseInt(String(upidRaw ?? ''), 10) || 0,
+        processName,
+        frameCount:
+          typeof frameCountRaw === 'number' ? frameCountRaw : parseInt(String(frameCountRaw ?? ''), 10) || 0,
+        renderThreadTid: typeof tidRaw === 'number' ? tidRaw : parseInt(String(tidRaw ?? ''), 10) || 0,
+      });
+    }
+
+    return processes;
+  }
+
+  // Legacy table structure: { columns, rows }
+  const legacy = stepResult.data as SqlResult;
+  if (!legacy.rows || !Array.isArray(legacy.rows)) {
     console.warn('[Teaching] Invalid SQL result structure for active_rendering_processes');
     return [];
   }
 
-  const { columns, rows } = stepResult.data;
+  const { columns, rows } = legacy;
 
   // Check columns exist
   if (!columns || !Array.isArray(columns) || columns.length < 4) {
@@ -352,7 +408,7 @@ export function parseCandidates(candidates: unknown, limit = 10): PipelineCandid
   // Handle string format: "id1:0.9,id2:0.8"
   if (typeof candidates === 'string') {
     return candidates
-      .split(',')
+      .split(/[;,]/)
       .slice(0, limit)
       .map((item) => {
         const [id, score] = item.split(':');
@@ -392,12 +448,18 @@ export function parseFeatures(features: unknown): DetectedFeature[] {
   // Handle string format: "feature1,feature2,feature3"
   if (typeof features === 'string') {
     return features
-      .split(',')
+      .split(/[;,]/)
       .filter((f) => f.trim())
-      .map((name) => ({
-        name: name.trim(),
-        detected: true,
-      }));
+      .map((raw) => {
+        const item = raw.trim();
+        const [name, valueRaw] = item.split(':');
+        const value = valueRaw !== undefined ? Number(valueRaw) : NaN;
+        return {
+          name: (name || item).trim(),
+          detected: true,
+          value: Number.isFinite(value) ? value : undefined,
+        };
+      });
   }
 
   // Handle array format

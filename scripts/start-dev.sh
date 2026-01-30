@@ -275,7 +275,8 @@ if [ "$SKIP_BUILD" = false ]; then
 else
   echo "Skipping build (--quick mode)..."
   # Verify that build artifacts exist
-  if [ ! -d "$PERFETTO_DIR/out/ui/dist" ]; then
+  # Perfetto UI build output lives under out/ui/ui/ (see ui/build.js ensureDir()).
+  if [ ! -d "$PERFETTO_DIR/out/ui/ui/dist" ] && [ ! -d "$PERFETTO_DIR/out/ui/dist" ]; then
     echo "ERROR: Frontend build artifacts not found. Run without --quick first."
     exit 1
   fi

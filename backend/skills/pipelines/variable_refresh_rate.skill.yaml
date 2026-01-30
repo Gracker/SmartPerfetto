@@ -19,14 +19,34 @@ meta:
   doc_path: "rendering_pipelines/variable_refresh_rate.md"
 
 detection:
+  # Required: VRR always operates through SurfaceFlinger
+  required_signals:
+    - thread: SurfaceFlinger
+      min_count: 1
+
   scoring_signals:
     - signal: has_frame_timeline
       slice_pattern: "*FrameTimeline*"
       min_count: 5
       weight: 40
-    - signal: has_frame_rate
-      slice_pattern: "*setFrameRate*|*FrameRateVote*"
-      weight: 30
+    - signal: has_set_frame_rate
+      slice_pattern: "*setFrameRate*"
+      weight: 18
+    - signal: has_frame_rate_vote
+      slice_pattern: "*FrameRateVote*"
+      weight: 12
+    - signal: has_set_frame_rate_category
+      slice_pattern: "*setFrameRateCategory*"
+      weight: 13
+    - signal: has_frame_rate_category
+      slice_pattern: "*FRAME_RATE_CATEGORY*"
+      weight: 12
+    - signal: has_display_mode
+      slice_pattern: "*DisplayMode*"
+      weight: 8
+    - signal: has_refresh_rate
+      slice_pattern: "*RefreshRate*"
+      weight: 7
 
 teaching:
   title: "可变刷新率 (VRR) 渲染管线"
@@ -35,18 +55,39 @@ teaching:
     结合 FrameTimeline，系统可以精确追踪每一帧的预期和实际显示时间，
     实现更流畅的显示效果和更好的功耗表现。
 
+    关键机制（随 Android 版本持续演进）:
+    - Android 11+：应用侧可通过 Surface.setFrameRate 表达“期望帧率/稳定性/场景”（具体能力依设备）
+    - SurfaceFlinger 汇总多层的帧率偏好，做 DisplayMode/刷新率决策
+    - FrameTimeline 让“生产-合成-显示”的帧节拍可观测，便于定位抖动来源
+
   mermaid: |
     sequenceDiagram
       participant App as App
-      participant SF as SurfaceFlinger
+      participant RT as RenderThread
       participant FT as FrameTimeline
-      participant Display as VRR Display
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
+      participant SF as SurfaceFlinger
+      participant Disp as Display (VRR)
 
-      App->>SF: Submit Frame + FrameRate Hint
-      SF->>FT: Record Expected Timeline
-      SF->>Display: Dynamic Refresh
-      FT->>FT: Track Actual vs Expected
+      Note over App,SF: 📍 Variable Refresh Rate (VRR/ARR)
+      App->>FT: setFrameRate (期望帧率)
+      App->>RT: syncFrameState
 
+      activate RT
+      RT->>RT: DrawFrame
+      RT->>BQ: queueBuffer + presentTime
+      deactivate RT
+
+      FT-->>SF: FrameTimeline 信息
+      VS->>SF: 🔔 VSync-sf (动态间隔)
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: 检查 FrameTimeline
+      SF->>Disp: 按内容帧率刷新
+      deactivate SF
+
+      Note over App,SF: 📺 支持 30/60/90/120Hz 等动态帧率切换
   thread_roles:
     - thread: main
       role: "UI 构建"
@@ -64,35 +105,76 @@ teaching:
       description: "帧时间线追踪"
     - name: "setFrameRate"
       thread: any
-      description: "帧率设置"
+      description: "应用表达期望帧率/稳定性（具体 trace 名称与实现有关）"
+    - name: "setFrameRateCategory"
+      thread: any
+      description: "帧率分类/场景提示（不同版本/厂商实现可能不同）"
     - name: "FrameRateVote"
       thread: SurfaceFlinger
       description: "帧率投票"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "VRR 合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "帧渲染"
+      reason: "UI 构建 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程的 main 线程"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'main'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
+
+    - pattern: "^RenderThread(\\s+\\d+)?$"
+      match_by: name
+      priority: 3
+      reason: "帧渲染 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
       smart_filter:
         enabled: true
         detection_sql: |
-          SELECT DISTINCT p.name as process_name
-          FROM actual_frame_timeline_slice a
-          JOIN process p ON a.upid = p.upid
-          WHERE a.surface_frame_token IS NOT NULL
-          GROUP BY a.upid HAVING COUNT(*) > 0
-
-    - pattern: "^main$"
-      match_by: name
-      priority: 3
-      reason: "UI 构建"
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+          GROUP BY p.upid
+          HAVING frame_count > 5
 
     - pattern: "VSYNC"
       match_by: name
@@ -103,6 +185,22 @@ auto_pin:
       match_by: name
       priority: 5
       reason: "帧时间线"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "VRR 合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

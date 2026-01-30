@@ -42,6 +42,8 @@ export interface PinInstruction {
   match_by: 'name' | 'uri';
   priority: number;
   reason: string;
+  expand?: boolean;            // Whether to expand the track after pinning (show callstack/Running)
+  main_thread_only?: boolean;  // Only pin main thread (track.chips includes 'main thread')
   smart_filter?: SmartFilterConfig;
   // Runtime fields (set after smart filter evaluation)
   smartPin?: boolean;
@@ -85,9 +87,27 @@ export interface PipelineDefinition {
   category: string;
   meta: PipelineMeta;
   detection?: {
-    required_signals?: Array<{ thread?: string; slice?: string; min_count?: number }>;
-    scoring_signals?: Array<{ signal: string; slice_pattern?: string; thread_pattern?: string; weight: number; min_count?: number; condition?: string }>;
-    exclude_if?: Array<{ thread?: string; slice?: string }>;
+    required_signals?: Array<{
+      thread?: string;
+      thread_pattern?: string;
+      slice?: string;
+      slice_pattern?: string;
+      min_count?: number;
+    }>;
+    scoring_signals?: Array<{
+      signal: string;
+      slice_pattern?: string;
+      thread_pattern?: string;
+      weight: number;
+      min_count?: number;
+      condition?: string;
+    }>;
+    exclude_if?: Array<{
+      thread?: string;
+      thread_pattern?: string;
+      slice?: string;
+      slice_pattern?: string;
+    }>;
   };
   teaching: TeachingContent;
   auto_pin: {
@@ -107,6 +127,56 @@ class PipelineSkillLoaderClass {
 
   constructor() {
     this.pipelinesDir = path.resolve(__dirname, '../../skills/pipelines');
+  }
+
+  private validateDetection(pipeline: PipelineDefinition, file: string): void {
+    const pipelineId = pipeline?.meta?.pipeline_id || 'UNKNOWN';
+    const detection = pipeline.detection;
+    if (!detection) return;
+
+    const selectorKeys = ['thread', 'thread_pattern', 'slice', 'slice_pattern'] as const;
+    const countSelectors = (obj: Record<string, unknown>): string[] =>
+      selectorKeys.filter((k) => obj[k] !== undefined && obj[k] !== null);
+
+    const validateMinCount = (v: unknown): boolean => {
+      if (v === undefined || v === null) return true;
+      const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+      return Number.isFinite(n) && n > 0;
+    };
+
+    const warn = (msg: string) => {
+      console.warn(`[PipelineSkillLoader] Validation warning in ${file} (${pipelineId}): ${msg}`);
+    };
+
+    for (const [kind, items] of [
+      ['required_signals', detection.required_signals || []],
+      ['exclude_if', detection.exclude_if || []],
+    ] as const) {
+      for (const item of items) {
+        const keys = countSelectors(item as any);
+        if (keys.length !== 1) warn(`${kind} entry must have exactly one selector, got [${keys.join(', ')}]`);
+        if (!validateMinCount((item as any).min_count)) warn(`${kind} entry has invalid min_count: ${(item as any).min_count}`);
+      }
+    }
+
+    for (const item of detection.scoring_signals || []) {
+      const keys = countSelectors(item as any);
+      if (keys.length !== 1) warn(`scoring_signals '${(item as any).signal}' must have exactly one selector, got [${keys.join(', ')}]`);
+
+      const signal = (item as any).signal;
+      if (!signal || typeof signal !== 'string') warn(`scoring_signals entry missing 'signal' name`);
+
+      const weight = (item as any).weight;
+      if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0) {
+        warn(`scoring_signals '${signal || 'UNKNOWN'}' has invalid weight: ${weight}`);
+      }
+
+      if (!validateMinCount((item as any).min_count)) warn(`scoring_signals '${signal || 'UNKNOWN'}' has invalid min_count: ${(item as any).min_count}`);
+    }
+
+    if (!Array.isArray(detection.scoring_signals) || detection.scoring_signals.length === 0) {
+      warn('detection.scoring_signals is empty; pipeline will never be selected by scoring');
+    }
   }
 
   /**
@@ -136,6 +206,7 @@ class PipelineSkillLoaderClass {
         const pipeline = yaml.load(content) as PipelineDefinition;
 
         if (pipeline && pipeline.meta?.pipeline_id) {
+          this.validateDetection(pipeline, file);
           this.pipelineCache.set(pipeline.meta.pipeline_id, pipeline);
           console.log(`[PipelineSkillLoader] Loaded pipeline: ${pipeline.meta.pipeline_id} (${pipeline.meta.display_name})`);
         }
@@ -254,22 +325,34 @@ class PipelineSkillLoaderClass {
   private getDefaultPinInstructions(): PinInstruction[] {
     return [
       {
-        pattern: 'SurfaceFlinger',
+        pattern: '^VSYNC-app$',
         match_by: 'name',
         priority: 1,
-        reason: '最终合成 (HWC)',
+        reason: 'VSync (App 开始生产帧)',
       },
       {
-        pattern: 'RenderThread',
+        pattern: '^main(\\s+\\d+)?$',
         match_by: 'name',
         priority: 2,
-        reason: 'GPU 渲染执行',
+        reason: 'App 主线程',
       },
       {
-        pattern: '\\bmain\\b',
+        pattern: '^RenderThread(\\s+\\d+)?$',
         match_by: 'name',
         priority: 3,
-        reason: 'UI 构建',
+        reason: 'App 渲染线程 (RenderThread)',
+      },
+      {
+        pattern: '^VSYNC-sf$',
+        match_by: 'name',
+        priority: 5.5,
+        reason: 'VSync (SurfaceFlinger 消费/合成)',
+      },
+      {
+        pattern: '^SurfaceFlinger$',
+        match_by: 'name',
+        priority: 7,
+        reason: 'SurfaceFlinger (最终合成/显示)',
       },
     ];
   }

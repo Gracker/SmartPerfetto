@@ -19,14 +19,23 @@ meta:
   doc_path: "rendering_pipelines/surface_control_api.md"
 
 detection:
+  # Key signals: NDK SurfaceControl API uses ASurfaceControl/ASurfaceTransaction.
+  # NOTE: Generic "*SurfaceControl*" slices may appear in other pipelines (e.g. BLAST); prefer NDK-specific markers.
   scoring_signals:
-    - signal: has_surface_control
-      slice_pattern: "*SurfaceControl*"
-      min_count: 10
-      weight: 65
+    - signal: has_asurface_control
+      slice_pattern: "*ASurfaceControl*"
+      min_count: 5
+      weight: 30
+    - signal: has_asurface_transaction
+      slice_pattern: "*ASurfaceTransaction*"
+      min_count: 5
+      weight: 35
     - signal: has_apply_transaction
-      slice_pattern: "*applyTransaction*"
+      slice_pattern: "*ASurfaceTransaction_apply*"
       weight: 20
+    - signal: has_native_window
+      slice_pattern: "*ANativeWindow*"
+      weight: 15
 
 teaching:
   title: "SurfaceControl API 渲染管线"
@@ -37,47 +46,108 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App
+      participant App as App (NDK)
       participant SC as SurfaceControl
+      participant TX as Transaction
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>SC: Create Child Surface
-      App->>SC: Build Transaction
-      App->>SC: applyTransaction
-      SC->>SF: Atomic Surface Update
-      SF->>SF: Process Transaction
+      Note over App,SF: 📍 NDK SurfaceControl API
+      App->>SC: ASurfaceControl_create
+      App->>BQ: ANativeWindow_dequeueBuffer
+      App->>App: GPU 渲染
+      App->>BQ: ANativeWindow_queueBuffer
 
+      App->>TX: ASurfaceTransaction_create
+      App->>TX: 设置 Buffer/几何/混合模式
+      App->>TX: ASurfaceTransaction_apply
+
+      TX-->>SF: Transaction 提交
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: setTransactionState
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over App,SF: 🔧 低级别 API，完全控制 Buffer 和 Surface
   thread_roles:
     - thread: main
       role: "SurfaceControl 控制"
       description: "创建 Surface、构建和提交 Transaction"
+    - thread: any
+      role: "生产者线程"
+      description: "在任意线程渲染/写入 Buffer，并与 Transaction 提交节拍对齐"
+    - thread: SurfaceFlinger
+      role: "事务处理/合成"
+      description: "接收 Transaction、latch Buffer、合成并提交到 HWC"
 
   key_slices:
-    - name: "SurfaceControl"
+    - name: "ASurfaceControl"
       thread: any
-      description: "SurfaceControl 操作"
-    - name: "applyTransaction"
+      description: "NDK SurfaceControl 操作（create/destroy/reparent 等）"
+    - name: "ASurfaceTransaction_apply"
       thread: any
-      description: "事务提交"
+      description: "提交 Transaction（原子性更新多个属性）"
+    - name: "setTransactionState"
+      thread: SurfaceFlinger
+      description: "SurfaceFlinger 应用 Transaction 状态"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "Transaction 处理"
+      reason: "VSync (开始生产帧)"
 
-    - pattern: "^main$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "SurfaceControl 控制"
+      reason: "SurfaceControl 控制 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
     - pattern: "Transaction"
       match_by: name
       priority: 3
-      reason: "事务提交"
+      reason: "事务提交 (传输)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "Transaction 处理/显示"
+      main_thread_only: true
 
 analysis:
+  common_issues:
+    - id: transaction_batching
+      name: "Transaction 批量提交不当"
+      description: "频繁的小 Transaction 提交导致 SurfaceFlinger 负载"
+      detection_skill: sf_frame_consumption
+
+    - id: buffer_fence_wait
+      name: "Buffer Fence 等待过长"
+      description: "GPU 渲染未完成时提交 Transaction，导致 SF 等待"
+      detection_skill: present_fence_timing
+
+    - id: layer_hierarchy_deep
+      name: "Layer 层级过深"
+      description: "过多 Child Layer 导致合成开销"
+      detection_skill: surfaceflinger_analysis
+
   recommended_skills:
     - sf_frame_consumption
     - binder_analysis
+    - present_fence_timing
+    - surfaceflinger_analysis

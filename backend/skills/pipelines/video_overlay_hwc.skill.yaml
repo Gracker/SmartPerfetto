@@ -21,29 +21,52 @@ meta:
 detection:
   scoring_signals:
     - signal: has_hwc
-      slice_pattern: "*HWC*|*HardwareComposer*"
-      weight: 35
+      slice_pattern: "*HWC*"
+      weight: 20
+    - signal: has_hardware_composer
+      slice_pattern: "*HardwareComposer*"
+      weight: 15
     - signal: has_video
-      slice_pattern: "*Video*|*MediaCodec*"
-      weight: 35
+      slice_pattern: "*Video*"
+      weight: 15
+    - signal: has_mediacodec
+      slice_pattern: "*MediaCodec*"
+      weight: 20
 
 teaching:
   title: "视频 Overlay (HWC) 渲染管线"
   summary: |
     使用 HWC (Hardware Composer) 的视频 Overlay 层进行视频渲染。
-    视频帧直接从解码器输出到独立的 HWC 层，绕过 GPU 合成，
-    实现最低延迟和最佳功耗。
+    视频帧直接从解码器输出到独立的 HWC 层，通常可绕过或显著减少 GPU 合成负担，
+    在设备/内容满足 overlay 条件时实现更低延迟与更好功耗。
 
   mermaid: |
     sequenceDiagram
+      participant App as App
       participant MC as MediaCodec
-      participant HWC as HWC
-      participant Display as Display
+      participant Dec as Video Decoder
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
+      participant HWC as HWC (Overlay)
+      participant SF as SurfaceFlinger
 
-      MC->>HWC: Video Buffer (Direct)
-      HWC->>HWC: Configure Video Layer
-      HWC->>Display: Overlay Scanout
+      Note over App,SF: 📍 Video HWC Overlay 链路
+      App->>MC: configure (Surface)
+      App->>MC: queueInputBuffer
 
+      activate Dec
+      Dec->>Dec: 硬件视频解码
+      Dec->>BQ: releaseOutputBuffer
+      deactivate Dec
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>HWC: 请求 Overlay 合成
+      HWC->>HWC: 硬件 Overlay 混合
+      Note over HWC: 视频层直接送显示
+      deactivate SF
+
+      Note over App,SF: 🎥 硬件 Overlay 零拷贝显示，最低功耗
   thread_roles:
     - thread: MediaCodec
       role: "视频解码"
@@ -62,20 +85,37 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "HWC 合成"
+      reason: "VSync (开始生产帧)"
 
     - pattern: "MediaCodec"
       match_by: name
       priority: 2
-      reason: "视频解码"
+      reason: "视频解码 (生产)"
 
     - pattern: "HWC|HardwareComposer"
       match_by: name
       priority: 3
-      reason: "硬件合成器"
+      reason: "硬件合成器 (传输/合成)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "HWC 合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

@@ -19,9 +19,15 @@ meta:
   doc_path: "rendering_pipelines/vulkan_native.md"
 
 detection:
+  # Required: vkQueuePresentKHR is the definitive Vulkan frame submission
+  # The KHR suffix is always present in the actual function name
+  required_signals:
+    - slice_pattern: "*vkQueuePresentKHR*"
+      min_count: 5
+
   scoring_signals:
     - signal: has_vk_present
-      slice_pattern: "*vkQueuePresent*"
+      slice_pattern: "*vkQueuePresentKHR*"
       weight: 60
     - signal: has_vk_cmd
       slice_pattern: "*vkCmd*"
@@ -31,8 +37,14 @@ detection:
       slice_pattern: "*Swappy*"
       weight: 20
     - signal: has_vulkan_thread
-      thread_pattern: "*Vulkan*|*VkQueue*"
-      weight: 10
+      thread_pattern: "*Vulkan*"
+      weight: 6
+    - signal: has_vkqueue_thread
+      thread_pattern: "*VkQueue*"
+      weight: 4
+    - signal: has_vk_acquire
+      slice_pattern: "*vkAcquireNextImage*"
+      weight: 15
 
 teaching:
   title: "Vulkan Native 渲染管线"
@@ -43,28 +55,42 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App
-      participant VK as Vulkan
-      participant Swappy as Swappy (Optional)
+      participant App as App Thread
+      participant VK as Vulkan Thread
+      participant Swappy as Frame Pacing
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>VK: vkCmdDraw*
-      App->>VK: vkQueueSubmit
-      App->>Swappy: Frame Pacing
-      App->>VK: vkQueuePresentKHR
-      VK->>SF: Buffer Ready
-      SF->>SF: Composite
+      Note over App,SF: 📍 Vulkan Native 渲染链路
+      VK->>VK: vkAcquireNextImage
+      activate VK
+      VK->>VK: vkBeginCommandBuffer
+      VK->>VK: Record Draw Commands
+      VK->>VK: vkEndCommandBuffer
+      VK->>VK: vkQueueSubmit
+      VK->>VK: vkQueuePresentKHR
+      deactivate VK
 
+      Swappy-->>VK: Frame Pacing 控制
+      BQ-->>SF: Buffer Ready
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over App,SF: 🚀 现代高性能图形 API，支持 Frame Pacing
   thread_roles:
     - thread: main
       role: "应用逻辑"
       description: "游戏/应用主循环"
-    - thread: RenderThread
-      role: "Vulkan 渲染"
-      description: "执行 Vulkan 命令"
-    - thread: VkQueue
-      role: "Vulkan 队列"
-      description: "GPU 命令提交"
+    - thread: Vulkan
+      role: "Vulkan 渲染线程"
+      description: "记录/提交 Vulkan 命令（线程名通常包含 Vulkan/Vk/Render 等关键词）"
+    - thread: SurfaceFlinger
+      role: "合成显示"
+      description: "latch Buffer 并提交到 HWC"
 
   key_slices:
     - name: "vkQueuePresentKHR"
@@ -79,25 +105,44 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "Vulkan 渲染"
+      reason: "应用逻辑 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$|Vulkan|Vk"
       match_by: name
       priority: 3
-      reason: "应用逻辑"
+      reason: "Vulkan 渲染线程 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
-    - pattern: "VkQueue"
+    - pattern: "Swappy|FramePacing|VkQueue"
       match_by: name
       priority: 4
-      reason: "Vulkan 队列"
+      reason: "帧节拍/队列相关线程 (传输)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "最终合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

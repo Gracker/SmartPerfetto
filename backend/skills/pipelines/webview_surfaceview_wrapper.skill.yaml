@@ -24,14 +24,20 @@ detection:
       slice_pattern: "*WebView*"
       weight: 30
     - signal: has_webview_core
-      thread: WebViewCore
-      weight: 20
+      thread_pattern: "WebViewCore*"
+      weight: 10
+    - signal: has_cr_renderer
+      thread_pattern: "CrRendererMain*"
+      weight: 10
     - signal: has_surfaceview
       slice_pattern: "*SurfaceView*"
       weight: 25
     - signal: has_video
-      slice_pattern: "*Video*|*MediaCodec*"
-      weight: 25
+      slice_pattern: "*Video*"
+      weight: 12
+    - signal: has_mediacodec
+      slice_pattern: "*MediaCodec*"
+      weight: 13
 
 teaching:
   title: "WebView SurfaceView Wrapper 渲染管线"
@@ -43,15 +49,31 @@ teaching:
   mermaid: |
     sequenceDiagram
       participant Main as App (main)
-      participant WV as CrRendererMain
-      participant MC as MediaCodec
+      participant WV as WebView
+      participant CR as CrRendererMain
+      participant SV as SurfaceView
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Main->>WV: Video Playback Request
-      WV->>MC: Decode Video
-      MC->>SF: Video Frame (SurfaceView)
-      SF->>SF: Video Layer Composite
+      Note over Main,SF: 📍 WebView SurfaceView Wrapper (全屏视频)
+      Main->>WV: 加载视频页面
+      WV->>CR: 请求视频渲染
 
+      activate CR
+      CR->>SV: 创建 SurfaceView 包装
+      CR->>BQ: 视频解码输出
+      deactivate CR
+
+      Note over SV,SF: 视频帧独立路径
+      BQ-->>SF: 视频 Buffer Ready
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer (视频 Layer)
+      SF->>SF: HWC Overlay/Composite
+      deactivate SF
+
+      Note over Main,SF: 🎬 全屏视频使用独立 Surface 优化
   thread_roles:
     - thread: main
       role: "App 控制"
@@ -62,28 +84,63 @@ teaching:
     - thread: MediaCodec
       role: "视频解码"
       description: "硬件视频解码"
+    - thread: SurfaceFlinger
+      role: "合成/Overlay"
+      description: "将视频 SurfaceView Layer 以 Overlay 或 GPU 合成方式输出"
+
+  key_slices:
+    - name: "MediaCodec"
+      thread: any
+      description: "视频解码（queue/dequeue/releaseOutputBuffer 等）"
+    - name: "SurfaceView"
+      thread: any
+      description: "全屏视频 SurfaceView 创建/attach/resize"
+    - name: "latchBuffer"
+      thread: SurfaceFlinger
+      description: "SurfaceFlinger 获取视频 Buffer（决定 Overlay/合成）"
+    - name: "HWC"
+      thread: any
+      description: "硬件合成/Overlay 相关调用（不同厂商 trace 名称可能不同）"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "视频合成"
+      reason: "VSync (WebView/视频开始生产帧)"
+
+    - pattern: "^main(\\s+\\d+)?$"
+      match_by: name
+      priority: 2
+      reason: "App 控制 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
     - pattern: "CrRendererMain"
       match_by: name
-      priority: 2
-      reason: "Chromium 渲染"
-
-    - pattern: "^main$"
-      match_by: name
       priority: 3
-      reason: "App 控制"
+      reason: "Chromium 渲染 (生产/传输)"
 
     - pattern: "MediaCodec"
       match_by: name
       priority: 4
-      reason: "视频解码"
+      reason: "视频解码 (生产/传输)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   recommended_skills:

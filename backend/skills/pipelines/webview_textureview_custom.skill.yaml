@@ -20,9 +20,15 @@ meta:
 
 detection:
   scoring_signals:
-    - signal: has_custom_webview
-      slice_pattern: "*TBS*|*X5*|*UCCore*"
-      weight: 80
+    - signal: has_tbs
+      slice_pattern: "*TBS*"
+      weight: 30
+    - signal: has_x5
+      slice_pattern: "*X5*"
+      weight: 30
+    - signal: has_uccore
+      slice_pattern: "*UCCore*"
+      weight: 20
 
 teaching:
   title: "WebView TextureView (定制内核) 渲染管线"
@@ -33,15 +39,34 @@ teaching:
   mermaid: |
     sequenceDiagram
       participant Main as App (main)
-      participant X5 as X5/UC Kernel
       participant RT as RenderThread
+      participant X5 as X5/UC Core
+      participant TV as TextureView
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Main->>X5: Load Content
-      X5->>RT: Texture Upload
-      RT->>SF: Composite
-      SF->>SF: Display
+      Note over Main,SF: 📍 自定义 WebView 内核 (X5/UC)
+      Main->>X5: 加载网页
+      activate X5
+      X5->>TV: 渲染到 TextureView
+      X5->>TV: updateTexImage
+      deactivate X5
 
+      Main->>RT: syncFrameState
+      activate RT
+      RT->>RT: DrawFrame
+      RT->>RT: 绑定 TextureView 纹理
+      RT->>BQ: queueBuffer
+      deactivate RT
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over Main,SF: 🇨🇳 国内常见的第三方 WebView 方案
   thread_roles:
     - thread: main
       role: "UI 集成"
@@ -49,31 +74,64 @@ teaching:
     - thread: RenderThread
       role: "纹理合成"
       description: "将定制内核内容作为纹理合成"
-    - thread: CrRendererMain
+    - thread: WebViewCore
       role: "定制内核渲染"
-      description: "X5/UC 内核渲染"
+      description: "X5/UC 等内核渲染线程（trace 中可能表现为 WebViewCore/CrRendererMain/其他专用线程）"
+
+  key_slices:
+    - name: "SurfaceTexture"
+      thread: any
+      description: "TextureView/SurfaceTexture 生产-消费链路"
+    - name: "updateTexImage"
+      thread: RenderThread
+      description: "消费侧更新纹理（通常发生在合成阶段）"
+    - name: "syncFrameState"
+      thread: RenderThread
+      description: "宿主 UI 与 RenderThread 同步，驱动纹理合成"
+    - name: "DrawFrame"
+      thread: RenderThread
+      description: "宿主 RenderThread 合成 WebView 纹理并提交"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (WebView 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "纹理合成"
+      reason: "UI 集成 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
-    - pattern: "CrRendererMain"
+    - pattern: "CrRendererMain|WebViewCore|UCCore|X5"
       match_by: name
       priority: 3
-      reason: "定制内核渲染"
+      reason: "定制内核渲染 (生产/传输)"
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 4
-      reason: "UI 集成"
+      reason: "纹理合成 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   recommended_skills:

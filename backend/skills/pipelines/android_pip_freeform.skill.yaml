@@ -19,10 +19,29 @@ meta:
   doc_path: "rendering_pipelines/android_pip_freeform.md"
 
 detection:
+  # Required: PIP/Freeform is still Android View rendering, needs main + RenderThread
+  required_signals:
+    - thread: main
+      min_count: 1
+    - thread: RenderThread
+      min_count: 1
+
   scoring_signals:
-    - signal: has_pip
-      slice_pattern: "*PictureInPicture*|*PIP*"
-      weight: 70
+    - signal: has_picture_in_picture
+      slice_pattern: "*PictureInPicture*"
+      weight: 45
+    - signal: has_pip_abbrev
+      slice_pattern: "*PIP*"
+      weight: 25
+    - signal: has_freeform_task
+      slice_pattern: "*FreeformTask*"
+      weight: 35
+    - signal: has_freeform
+      slice_pattern: "*Freeform*"
+      weight: 25
+    - signal: has_windowing_mode
+      slice_pattern: "*windowingMode*"
+      weight: 20
 
 teaching:
   title: "Android PIP/Freeform 渲染管线"
@@ -32,16 +51,36 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App
+      participant VA as VSync-app
+      participant Main as App (main)
       participant RT as RenderThread
       participant WMS as WindowManager
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>WMS: Enter PIP Mode
-      WMS->>SF: Update Window Bounds
-      RT->>SF: Render to Scaled Surface
-      SF->>SF: PIP Layer Composite
+      Note over VA,SF: 📍 PIP/Freeform 窗口模式
+      VA->>Main: 🔔 VSync-app
+      activate Main
+      Main->>Main: Choreographer#doFrame
+      Main->>Main: 处理特殊窗口尺寸/位置
+      Main->>RT: syncFrameState
+      deactivate Main
 
+      activate RT
+      RT->>RT: DrawFrame (缩放后尺寸)
+      RT->>BQ: queueBuffer
+      deactivate RT
+
+      WMS-->>SF: 窗口几何变换信息
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: 应用 PIP/Freeform 变换
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成 (带变换)
+      deactivate SF
+
+      Note over VA,SF: 🎬 支持画中画和自由窗口特性
   thread_roles:
     - thread: main
       role: "PIP 控制逻辑"
@@ -49,25 +88,79 @@ teaching:
     - thread: RenderThread
       role: "窗口渲染"
       description: "渲染 PIP 窗口内容"
+    - thread: SurfaceFlinger
+      role: "窗口变换/合成"
+      description: "应用几何变换与 Z-order，合成并显示 PIP/Freeform Layer"
+
+  key_slices:
+    - name: "Choreographer#doFrame"
+      thread: main
+      description: "帧回调入口，触发窗口位置/尺寸变化与 UI 构建"
+    - name: "syncFrameState"
+      thread: RenderThread
+      description: "UI 线程与 RenderThread 同步 DisplayList/RenderNode"
+    - name: "DrawFrame"
+      thread: RenderThread
+      description: "渲染窗口内容（常伴随缩放/裁剪）"
+    - name: "applyTransaction"
+      thread: any
+      description: "提交窗口几何/Buffer 相关 Transaction（PIP/Freeform 频繁发生）"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "PIP 层合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "窗口渲染"
+      reason: "PIP 控制逻辑 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 3
-      reason: "PIP 控制逻辑"
+      reason: "窗口渲染 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "PIP 层合成/显示"
+      main_thread_only: true
 
 analysis:
+  common_issues:
+    - id: pip_animation_jank
+      name: "PIP 动画卡顿"
+      description: "PIP 进入/退出动画期间帧率下降"
+      detection_skill: jank_frame_detail
+
+    - id: pip_resize_slow
+      name: "窗口缩放延迟"
+      description: "PIP 窗口尺寸变化时渲染延迟"
+      detection_skill: render_thread_slices
+
+    - id: freeform_bounds_update
+      name: "Freeform 边界更新慢"
+      description: "拖动 Freeform 窗口时响应延迟"
+      detection_skill: app_frame_production
+
   recommended_skills:
     - sf_frame_consumption
     - jank_frame_detail
+    - render_thread_slices
+    - app_frame_production

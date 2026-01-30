@@ -13,6 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { SkillDefinition, ModuleLayer, DialogueCapability, SkillStep } from './types';
+import { generateRenderingPipelineDetectionSkill } from '../renderingPipelineDetectionSkillGenerator';
 import {
   VALID_DISPLAY_LAYERS,
   VALID_DISPLAY_LEVELS,
@@ -436,6 +437,21 @@ class SkillRegistry {
   }
 
   /**
+   * Programmatically insert/override a skill definition.
+   * Used for runtime-generated skills where YAML should be the single source of truth.
+   */
+  upsertSkill(skill: SkillDefinition): void {
+    this.skills.set(skill.name, skill);
+
+    // Keep moduleSkills map consistent
+    if (skill.module) {
+      this.moduleSkills.set(skill.name, skill);
+    } else {
+      this.moduleSkills.delete(skill.name);
+    }
+  }
+
+  /**
    * 获取所有模块专家 skills
    */
   getAllModuleSkills(): SkillDefinition[] {
@@ -597,7 +613,18 @@ export async function ensureSkillRegistryInitialized(): Promise<void> {
 
   // Start initialization (only one caller will reach here)
   const skillsDir = path.resolve(__dirname, '../../../skills');
-  initializationPromise = skillRegistry.loadSkills(skillsDir);
+  initializationPromise = (async () => {
+    await skillRegistry.loadSkills(skillsDir);
+
+    // Runtime-generated skills (YAML-driven single source of truth)
+    try {
+      const generated = await generateRenderingPipelineDetectionSkill();
+      skillRegistry.upsertSkill(generated);
+      console.log(`[SkillLoader] Overrode skill with YAML-driven generator: ${generated.name} (v${generated.version})`);
+    } catch (error: any) {
+      console.warn('[SkillLoader] Failed to generate YAML-driven rendering pipeline detection skill:', error?.message || error);
+    }
+  })();
 
   try {
     await initializationPromise;
@@ -616,4 +643,3 @@ export async function ensureSkillRegistryInitialized(): Promise<void> {
 export function getSkillsDir(): string {
   return path.resolve(__dirname, '../../../skills');
 }
-

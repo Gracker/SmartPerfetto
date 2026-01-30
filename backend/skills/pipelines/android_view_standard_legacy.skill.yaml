@@ -26,19 +26,19 @@ detection:
       min_count: 1
 
   scoring_signals:
-    - signal: no_blast
-      condition: "blast_count = 0"
-      weight: 35
     - signal: has_queue_buffer
       slice_pattern: "*queueBuffer*"
-      weight: 25
+      weight: 30
+    - signal: has_dequeue_buffer
+      slice_pattern: "*dequeueBuffer*"
+      weight: 20
     - signal: has_draw_frame
       slice_pattern: "DrawFrame*"
       weight: 25
 
   exclude_if:
-    - slice: "*BLASTBufferQueue*"
-    - slice: "*applyTransaction*"
+    - slice_pattern: "*BLASTBufferQueue*"
+    - slice_pattern: "*applyTransaction*"
     - thread: "1.ui"
     - thread: CrRendererMain
 
@@ -50,17 +50,37 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App (main)
+      participant VA as VSync-app
+      participant Main as App (main)
       participant RT as RenderThread
       participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>RT: SyncFrameState
+      Note over VA,SF: 📍 Frame N Production Phase (Legacy)
+      VA->>Main: 🔔 VSync-app 信号触发
+      activate Main
+      Main->>Main: Choreographer#doFrame
+      Main->>Main: Input → Animation → Measure → Layout → Draw
+      Main->>RT: syncFrameState (阻塞)
+      deactivate Main
+
+      activate RT
       RT->>BQ: dequeueBuffer
-      RT->>RT: GPU Draw
-      RT->>BQ: queueBuffer (Binder)
-      BQ->>SF: onFrameAvailable
-      SF->>SF: latchBuffer & Composite
+      RT->>RT: DrawFrame (GPU 渲染)
+      RT->>BQ: queueBuffer (Binder 调用)
+      deactivate RT
+
+      Note over BQ,SF: 📍 Frame N Consumption Phase
+      BQ-->>SF: onFrameAvailable 回调
+      VS->>SF: 🔔 VSync-sf 信号触发
+      activate SF
+      SF->>SF: handleMessageRefresh
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over VA,SF: ⚠️ Legacy 缺少原子事务，可能出现撕裂/尺寸不同步
 
   thread_roles:
     - thread: main
@@ -86,15 +106,53 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "GPU 渲染"
+      reason: "App 主线程 (生产帧)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程的 main 线程"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'main'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
+
+    - pattern: "^RenderThread(\\s+\\d+)?$"
+      match_by: name
+      priority: 3
+      reason: "App 渲染线程 (RenderThread)"
+      expand: true  # 展开显示 Running 状态和 callstack
       smart_filter:
         enabled: true
         detection_sql: |
@@ -106,15 +164,26 @@ auto_pin:
           WHERE t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*'
           GROUP BY p.upid HAVING slice_count > 10
 
-    - pattern: "^main$"
-      match_by: name
-      priority: 3
-      reason: "UI 构建"
-
     - pattern: "BufferQueue"
       match_by: name
       priority: 4
-      reason: "Buffer 管理"
+      reason: "BufferQueue (传输)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

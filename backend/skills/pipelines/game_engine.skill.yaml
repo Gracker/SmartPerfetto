@@ -21,26 +21,41 @@ meta:
 detection:
   scoring_signals:
     - signal: has_unity_main
-      thread: UnityMain
+      thread_pattern: "UnityMain*"
       weight: 85
     - signal: has_unity_gfx
-      thread: UnityGfx
+      thread_pattern: "UnityGfx*"
       weight: 85
     - signal: has_unreal_game
-      thread: GameThread
+      thread_pattern: "GameThread*"
       weight: 85
     - signal: has_unreal_rhi
-      thread: RHIThread
+      thread_pattern: "RHIThread*"
       weight: 85
     - signal: has_godot
-      thread: GodotMain
+      thread_pattern: "GodotMain*"
       weight: 80
+    - signal: has_cocos_lower
+      thread_pattern: "*cocos*"
+      weight: 35
+    - signal: has_cocos_upper
+      thread_pattern: "*Cocos*"
+      weight: 40
     - signal: has_unity_slice
-      slice_pattern: "*Unity*|*PlayerLoop*"
-      weight: 75
+      slice_pattern: "*Unity*"
+      weight: 45
+    - signal: has_player_loop
+      slice_pattern: "*PlayerLoop*"
+      weight: 30
     - signal: has_unreal_slice
       slice_pattern: "*Unreal*"
       weight: 75
+    - signal: has_swappy
+      slice_pattern: "*Swappy*"
+      weight: 10
+    - signal: has_frame_pacing
+      slice_pattern: "*FramePacing*"
+      weight: 5
 
 teaching:
   title: "游戏引擎渲染管线"
@@ -53,15 +68,29 @@ teaching:
     sequenceDiagram
       participant Game as GameThread
       participant Render as RenderThread/UnityGfx
-      participant GPU as GPU
+      participant GPU as GPU Queue
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Game->>Game: Update (Physics, AI, Logic)
-      Game->>Render: Submit Draw Calls
-      Render->>GPU: GL/Vulkan Commands
-      Render->>SF: Present Frame
-      SF->>SF: Composite
+      Note over Game,SF: 📍 Game Engine 渲染链路
+      Game->>Game: 游戏逻辑更新 (Physics/AI)
+      Game->>Render: 提交渲染任务
 
+      activate Render
+      Render->>Render: 构建渲染命令
+      Render->>GPU: 提交 Draw Calls
+      GPU->>GPU: GPU 渲染
+      Render->>BQ: Present/SwapBuffers
+      deactivate Render
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over Game,SF: 🎮 Unity/Unreal/Godot 等游戏引擎
   thread_roles:
     - thread: UnityMain
       role: "Unity 主线程"
@@ -95,20 +124,38 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (开始生产帧)"
 
     - pattern: "UnityMain|UnityGfx|GameThread"
       match_by: name
       priority: 2
-      reason: "游戏引擎主线程"
+      reason: "游戏引擎线程 (生产)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 3
-      reason: "GPU 渲染"
+      reason: "GPU 渲染 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "最终合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

@@ -20,51 +20,142 @@ meta:
 
 detection:
   scoring_signals:
-    - signal: has_hbr
-      slice_pattern: "*HardwareBufferRenderer*|*HBR*"
-      weight: 75
+    - signal: has_hardware_buffer_renderer
+      slice_pattern: "*HardwareBufferRenderer*"
+      weight: 55
+    - signal: has_ahardware_buffer_renderer
+      slice_pattern: "*AHardwareBufferRenderer*"
+      weight: 20
+    - signal: has_render_node
+      slice_pattern: "*RenderNode*"
+      weight: 15
+    - signal: has_recording_canvas
+      slice_pattern: "*RecordingCanvas*"
+      weight: 10
 
 teaching:
   title: "HardwareBufferRenderer 渲染管线"
   summary: |
-    Android 14+ 新增的 HardwareBufferRenderer API，允许应用直接渲染到
-    HardwareBuffer，无需 SurfaceView 或 TextureView 的额外开销。
-    适用于需要高性能自定义渲染的场景。
+    Android 14+ 新增的 HardwareBufferRenderer API，提供 GPU 硬件加速的离屏渲染，
+    替代传统的 lockCanvas() CPU 软件渲染。
+
+    核心优势:
+    - GPU 光栅化代替 CPU Skia 软件渲染
+    - 直接渲染到 HardwareBuffer（是否零拷贝取决于后续合成/采样/拷贝链路）
+    - 可选择 wide-gamut/HDR 相关 buffer format（取决于设备与格式支持，如 RGBA_FP16 等）
+    - 显式 Fence 控制
+
+    典型使用场景:
+    - 自定义绘图引擎 (PDF 渲染器、矢量编辑器)
+    - HDR 图像处理
+    - 高帧率软件渲染
 
   mermaid: |
     sequenceDiagram
       participant App as App
       participant HBR as HardwareBufferRenderer
+      participant GPU as GPU
+      participant TX as Transaction
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>HBR: Create Buffer
-      App->>HBR: Render to Buffer
-      App->>SF: Submit Buffer
-      SF->>SF: Composite
+      Note over App,SF: 📍 HardwareBufferRenderer (Android 14+)
+      App->>HBR: create (HardwareBuffer)
+      activate HBR
+      HBR->>GPU: GPU 渲染到 HardwareBuffer
+      HBR->>HBR: 完成渲染
+      deactivate HBR
 
+      App->>TX: ASurfaceTransaction
+      App->>TX: setBuffer (HardwareBuffer)
+      TX->>SF: Transaction 提交
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: setTransactionState
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over App,SF: 🆕 Android 14+ 新 API，无 SurfaceView 开销
   thread_roles:
     - thread: main
       role: "HBR 控制"
-      description: "创建和管理 HardwareBuffer"
+      description: "创建 HardwareBuffer，记录绘制命令"
+      trace_tags: "HardwareBufferRenderer, RenderNode, RecordingCanvas"
+    - thread: RenderThread
+      role: "GPU 光栅化"
+      description: "执行 RenderNode 的 GPU 渲染"
+      trace_tags: "DrawRenderNode, GpuRasterize"
+    - thread: SurfaceFlinger
+      role: "合成显示"
+      description: "等待 Fence，合成 HardwareBuffer"
 
   key_slices:
     - name: "HardwareBufferRenderer"
+      thread: main
+      description: "HBR 生命周期操作 (create/draw/close)"
+    - name: "obtainRenderRequest"
+      thread: main
+      description: "获取渲染请求"
+    - name: "RenderNode"
+      thread: main
+      description: "绘制命令容器"
+    - name: "RecordingCanvas"
+      thread: main
+      description: "记录绘制命令"
+    - name: "SyncFence"
       thread: any
-      description: "HBR 操作"
+      description: "GPU 完成同步 Fence"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (开始生产帧)"
 
-    - pattern: "^main$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "HBR 控制"
+      reason: "HBR 控制 (生产/传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "最终合成/显示"
+      main_thread_only: true
 
 analysis:
+  common_issues:
+    - id: hbr_fence_not_awaited
+      name: "Fence 未正确等待"
+      description: "HBR submit 返回的 Fence 未等待即提交 Transaction"
+      detection_skill: present_fence_timing
+
+    - id: hbr_buffer_reuse
+      name: "Buffer 重用冲突"
+      description: "在 GPU 渲染完成前复用 HardwareBuffer"
+      detection_skill: gpu_analysis
+
+    - id: hbr_transaction_timing
+      name: "Transaction 提交时机不当"
+      description: "HBR 内容未同步到 VSync"
+      detection_skill: vsync_alignment_in_range
+
   recommended_skills:
     - sf_frame_consumption
     - gpu_analysis
+    - present_fence_timing

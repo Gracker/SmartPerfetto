@@ -28,8 +28,11 @@ detection:
       slice_pattern: "*BLASTBufferQueue*"
       weight: 20
     - signal: has_gl_thread
-      thread_pattern: "*GLThread*|*GLSurface*"
-      weight: 20
+      thread_pattern: "*GLThread*"
+      weight: 12
+    - signal: has_glsurface_thread
+      thread_pattern: "*GLSurface*"
+      weight: 8
 
   exclude_if:
     - thread: "1.ui"
@@ -44,18 +47,31 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App (main)
+      participant App as App Thread
       participant GL as GLThread
-      participant BBQ as BLAST Adapter
+      participant BQ as BufferQueue
+      participant TX as BufferTX
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>GL: Trigger Render
-      GL->>BBQ: dequeueBuffer
-      GL->>GL: OpenGL Draw
-      GL->>BBQ: queueBuffer
-      BBQ->>SF: Transaction
-      SF->>SF: Independent Layer Composite
+      Note over App,SF: 📍 SurfaceView (BLAST) 独立渲染
+      App->>GL: 请求绘制
+      activate GL
+      GL->>BQ: dequeueBuffer
+      GL->>GL: OpenGL/Vulkan 渲染
+      GL->>GL: GPU 绘制命令
+      GL->>BQ: queueBuffer + Transaction
+      deactivate GL
 
+      BQ-->>TX: BLAST Transaction
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      TX->>SF: setTransactionState
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成 (独立 Layer)
+      deactivate SF
+
+      Note over App,SF: ✨ 独立于 App UI，不阻塞 RenderThread
   thread_roles:
     - thread: GLThread
       role: "独立渲染线程"
@@ -68,26 +84,44 @@ teaching:
     - name: "eglSwapBuffers"
       thread: GLThread
       description: "交换 Buffer"
+    - name: "dequeueBuffer"
+      thread: any
+      description: "获取可写 Buffer（可能阻塞在 BufferQueue）"
+    - name: "queueBuffer"
+      thread: any
+      description: "提交 Buffer（BLAST 模式下常与 Transaction 绑定）"
     - name: "SurfaceView"
       thread: any
       description: "SurfaceView 操作"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "BLAST 合成"
+      reason: "VSync (App 开始生产帧)"
 
     - pattern: "GLThread"
       match_by: name
       priority: 2
       reason: "独立渲染线程"
 
-    - pattern: "VSYNC"
+    - pattern: "^VSYNC-sf$"
       match_by: name
-      priority: 3
-      reason: "帧同步"
+      priority: 3.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 3.8
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 4
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   recommended_skills:

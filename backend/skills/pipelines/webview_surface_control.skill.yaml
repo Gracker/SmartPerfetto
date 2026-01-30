@@ -21,7 +21,7 @@ meta:
 detection:
   scoring_signals:
     - signal: has_viz_compositor
-      thread: VizCompositor
+      thread_pattern: "VizCompositor"
       weight: 75
     - signal: has_surface_control
       slice_pattern: "*SurfaceControl*"
@@ -36,16 +36,32 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant Main as App (main)
-      participant WV as CrRendererMain
+      participant CR as CrRendererMain
       participant Viz as VizCompositor
+      participant SC as SurfaceControl
+      participant TX as Transaction
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Main->>Main: App UI (independent)
-      WV->>Viz: Rasterized Tiles
-      Viz->>SF: SurfaceControl Transaction
-      SF->>SF: Composite Independently
+      Note over CR,SF: 📍 WebView Surface Control (独立合成)
+      CR->>CR: Blink 渲染网页
+      CR->>Viz: 提交合成任务
 
+      activate Viz
+      Viz->>Viz: GPU 光栅化 Tiles
+      Viz->>Viz: 合成网页 Layers
+      Viz->>SC: 创建/更新 SurfaceControl
+      Viz->>TX: ASurfaceTransaction
+      TX->>SF: 独立提交 Transaction
+      deactivate Viz
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over CR,SF: ✨ 独立于 App RenderThread，不阻塞 UI
   thread_roles:
     - thread: VizCompositor
       role: "Viz 合成器"
@@ -64,20 +80,43 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "独立合成"
+      reason: "VSync (WebView 开始生产帧)"
 
-    - pattern: "VizCompositor"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "Viz 合成器"
+      reason: "WebView 宿主 UI (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
     - pattern: "CrRendererMain"
       match_by: name
       priority: 3
-      reason: "Chromium 渲染"
+      reason: "Chromium 渲染 (生产/传输)"
+
+    - pattern: "VizCompositor"
+      match_by: name
+      priority: 4
+      reason: "Viz 合成器 (传输)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

@@ -1,9 +1,9 @@
 # =============================================================================
 # Android View Standard (BLAST) Pipeline
 # =============================================================================
-# Android 12+ default rendering pipeline using HWUI + BLAST synchronization.
-# BLAST replaces the legacy Binder-based BufferQueue submission with atomic
-# Transaction-based buffer commits, reducing latency by one frame.
+# Android 12+ 常见的渲染管线：HWUI + BLASTBufferQueue。
+# BLASTBufferQueue 将 Buffer 提交与 Transaction 绑定，提升原子性与同步性；
+# 对延迟/抖动的改善依赖设备实现与负载情况，建议以 trace 结果为准。
 # =============================================================================
 
 name: pipeline_android_view_standard_blast
@@ -14,7 +14,7 @@ category: rendering
 meta:
   pipeline_id: ANDROID_VIEW_STANDARD_BLAST
   display_name: "标准 Android View (BLAST)"
-  description: "Android 12+ HWUI + BLAST 同步机制，现代 Android 默认渲染管线"
+  description: "Android 12+ 常见：HWUI + BLASTBufferQueue，Transaction 原子提交"
   icon: "android"
   family: hwui
   doc_path: "rendering_pipelines/android_view_standard.md"
@@ -59,24 +59,53 @@ detection:
 teaching:
   title: "Android View 标准渲染管线 (BLAST)"
   summary: |
-    Android 12+ 默认的渲染管线，使用 BLAST (Buffer Layer State Transition) 同步机制。
-    与旧版相比，BLAST 将 Buffer 提交变成 Transaction 的一部分，实现原子性更新，
-    解决了画面撕裂和尺寸不同步问题，同时减少一帧延迟。
+    Android 12+ 设备上常见的渲染管线：View 系统由 RenderThread 通过 BLASTBufferQueue
+    将 Buffer 提交绑定到 Transaction，提升原子性更新与同步性，减少撕裂/尺寸不同步等问题。
+    相比传统 BufferQueue 提交流程，它通常能减少由“提交不同步/额外缓冲/等待”导致的卡顿与延迟，
+    但具体收益会随设备实现与负载变化，建议以 trace 为准。
+
+    版本要点（以 AOSP/厂商实现为准）:
+    - Android 12+：BLASTBufferQueue/Transaction 提交流程更普遍（原子性更新）
+    - 与 FrameTimeline 等帧诊断能力结合后，可更容易定位“生产慢/合成慢/显示慢”
+    - 新版本持续在 Transaction 批处理、合成调度与帧诊断上演进，建议用 trace 验证实际链路
 
   mermaid: |
     sequenceDiagram
-      participant App as App (main)
+      participant VA as VSync-app
+      participant Main as App (main)
       participant RT as RenderThread
-      participant BBQ as BLAST Adapter
+      participant BQ as BufferQueue<br/>(QueuedBuffer)
+      participant VS as VSync-sf
+      participant TX as BufferTX
       participant SF as SurfaceFlinger
 
-      App->>App: Input -> Anim -> Layout -> Draw
-      App->>RT: SyncFrameState (Block)
-      RT->>BBQ: dequeueBuffer
+      Note over VA,SF: 📍 Frame N Production Phase
+      VA->>Main: 🔔 VSync-app 信号触发
+      activate Main
+      Main->>Main: Choreographer#doFrame
+      Main->>Main: Input → Animation → Measure → Layout → Draw
+      Main->>RT: syncFrameState (阻塞等待)
+      deactivate Main
+
+      activate RT
+      RT->>BQ: dequeueBuffer
+      RT->>RT: DrawFrame (执行 GPU 命令)
       RT->>RT: Flush GPU Commands
-      RT->>BBQ: queueBuffer
-      BBQ->>SF: Transaction(Buffer)
-      SF->>SF: latchBuffer & Composite
+      RT->>BQ: queueBuffer + applyTransaction
+      deactivate RT
+
+      Note over BQ,SF: 📍 Frame N Consumption Phase
+      BQ-->>TX: Buffer Ready (BLAST Transaction)
+      VS->>SF: 🔔 VSync-sf 信号触发
+      activate SF
+      TX->>SF: setTransactionState
+      SF->>SF: handleMessageRefresh
+      SF->>SF: latchBuffer (获取 Buffer)
+      SF->>SF: HWC Composite (合成)
+      SF->>SF: Present to Display
+      deactivate SF
+
+      Note over VA,SF: ⏱️ 关键耗时点：Main/RT阻塞、GPU渲染、SF合成
 
   thread_roles:
     - thread: main
@@ -114,27 +143,70 @@ teaching:
 # ==========================================================================
 auto_pin:
   instructions:
-    - pattern: "SurfaceFlinger"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成 (HWC)"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "RenderThread"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "GPU 渲染执行"
+      reason: "App 主线程 (生产帧)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程的主线程"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'main'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
+
+    - pattern: "^RenderThread(\\s+\\d+)?$"
+      match_by: name
+      priority: 3
+      reason: "App 渲染线程 (RenderThread)"
+      expand: true  # 展开显示 Running 状态和 callstack
       smart_filter:
         enabled: true
         description: "仅 Pin 有活跃渲染的进程的 RenderThread"
         detection_sql: |
           SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
-          FROM actual_frame_timeline_slice a
-          JOIN process p ON a.upid = p.upid
-          WHERE a.surface_frame_token IS NOT NULL
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
             AND p.name IS NOT NULL
             AND p.name NOT LIKE 'com.android.systemui%'
-          GROUP BY a.upid
-          HAVING frame_count > 0
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
           ORDER BY frame_count DESC
           LIMIT 10
         fallback_sql: |
@@ -150,20 +222,57 @@ auto_pin:
           ORDER BY slice_count DESC
           LIMIT 10
 
-    - pattern: "\\bmain\\b"
-      match_by: name
-      priority: 3
-      reason: "UI 构建 (Measure/Layout/Draw)"
-
-    - pattern: "^VSYNC-(app|sf|appSf)$"
+    - pattern: "^QueuedBuffer"
       match_by: name
       priority: 4
-      reason: "垂直同步信号"
+      reason: "BufferQueue/BLAST (传输)"
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程相关的 BufferQueue"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB '*BufferQueue*'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
 
-    - pattern: "Choreographer"
+    - pattern: "^VSYNC-sf$"
       match_by: name
-      priority: 5
-      reason: "帧调度"
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 # ==========================================================================
 # Analysis Configuration

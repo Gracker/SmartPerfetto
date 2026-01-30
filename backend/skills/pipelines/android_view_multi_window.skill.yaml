@@ -27,8 +27,11 @@ detection:
 
   scoring_signals:
     - signal: has_dialog
-      slice_pattern: "*Dialog*|*PopupWindow*"
-      weight: 40
+      slice_pattern: "*Dialog*"
+      weight: 20
+    - signal: has_popup_window
+      slice_pattern: "*PopupWindow*"
+      weight: 20
     - signal: has_draw_frame
       slice_pattern: "DrawFrame*"
       weight: 20
@@ -41,16 +44,36 @@ teaching:
 
   mermaid: |
     sequenceDiagram
+      participant VA as VSync-app
       participant Main as App (main)
       participant RT as RenderThread
+      participant BQ1 as BufferQueue (Main)
+      participant BQ2 as BufferQueue (Dialog)
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Main->>RT: Window1 DrawFrame
-      RT->>SF: Window1 Buffer
-      Main->>RT: Window2 (Dialog) DrawFrame
-      RT->>SF: Window2 Buffer
-      SF->>SF: 合成所有窗口
+      Note over VA,SF: 📍 Multi-Window (Dialog/PopupWindow)
+      VA->>Main: 🔔 VSync-app
+      activate Main
+      Main->>Main: 主窗口 Layout + Draw
+      Main->>RT: syncFrameState (主窗口)
+      Main->>Main: Dialog Layout + Draw
+      Main->>RT: syncFrameState (Dialog)
+      deactivate Main
 
+      activate RT
+      Note over RT: ⏱️ 串行处理多窗口
+      RT->>BQ1: queueBuffer (主窗口)
+      RT->>BQ2: queueBuffer (Dialog)
+      deactivate RT
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer (多 Surface)
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over VA,SF: ⚠️ RenderThread 串行化可能导致卡顿
   thread_roles:
     - thread: main
       role: "多窗口 UI 管理"
@@ -66,31 +89,112 @@ teaching:
     - name: "PopupWindow"
       thread: any
       description: "弹出窗口操作"
+    - name: "Choreographer#doFrame"
+      thread: main
+      description: "同一帧内可能连续驱动多个窗口的 layout/draw"
+    - name: "syncFrameState"
+      thread: RenderThread
+      description: "多个窗口共享 RenderThread，同步与提交容易串行化"
+    - name: "DrawFrame"
+      thread: RenderThread
+      description: "GPU 渲染阶段（多窗口会放大工作量）"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "多窗口合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "渲染线程 (可能串行)"
+      reason: "App 主线程 (生产帧)"
+      expand: true  # 展开显示 Running 状态和 callstack
       smart_filter:
         enabled: true
+        description: "仅 Pin 活跃渲染进程的 main 线程"
         detection_sql: |
-          SELECT DISTINCT p.name as process_name
-          FROM actual_frame_timeline_slice a
-          JOIN process p ON a.upid = p.upid
-          WHERE a.surface_frame_token IS NOT NULL
-          GROUP BY a.upid HAVING COUNT(*) > 0
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'main'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 3
-      reason: "多窗口 UI 管理"
+      reason: "App 渲染线程 (RenderThread)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 有活跃渲染的进程的 RenderThread"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

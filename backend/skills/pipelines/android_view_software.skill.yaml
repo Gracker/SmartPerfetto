@@ -24,18 +24,16 @@ detection:
       min_count: 1
 
   scoring_signals:
-    - signal: no_render_thread
-      condition: "render_thread_count = 0"
-      weight: 60
     - signal: has_lock_canvas
       slice_pattern: "*lockCanvas*"
-      weight: 40
-    - signal: no_draw_frame
-      condition: "draw_frame_count = 0"
-      weight: 20
+      weight: 55
+    - signal: has_unlock_canvas_post
+      slice_pattern: "*unlockCanvasAndPost*"
+      weight: 55
 
   exclude_if:
     - thread: RenderThread
+    - slice_pattern: "DrawFrame*"
 
 teaching:
   title: "Android View 软件渲染管线"
@@ -46,17 +44,30 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App (main)
+      participant VA as VSync-app
+      participant Main as App (main)
       participant Canvas as Canvas (CPU)
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>App: Measure/Layout
-      App->>Canvas: lockCanvas
-      App->>Canvas: draw (CPU Skia)
-      App->>Canvas: unlockCanvasAndPost
-      Canvas->>SF: Buffer Ready
-      SF->>SF: Composite
+      Note over VA,SF: 📍 Software Rendering (无 RenderThread)
+      VA->>Main: 🔔 VSync-app 信号触发
+      activate Main
+      Main->>Main: Choreographer#doFrame
+      Main->>Canvas: lockCanvas
+      Main->>Canvas: Skia CPU 绘制 (drawXXX)
+      Main->>Canvas: unlockCanvasAndPost
+      Main->>BQ: queueBuffer
+      deactivate Main
 
+      VS->>SF: 🔔 VSync-sf 触发
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over VA,SF: ⚠️ 无硬件加速，适用于简单 UI 或兼容模式
   thread_roles:
     - thread: main
       role: "UI 构建 + 渲染"
@@ -72,15 +83,28 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^main$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
       reason: "CPU 软件渲染 (Skia)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 3
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 4
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

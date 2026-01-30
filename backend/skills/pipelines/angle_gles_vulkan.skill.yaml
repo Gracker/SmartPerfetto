@@ -33,46 +33,86 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App (GLES Calls)
-      participant ANGLE as ANGLE Translator
-      participant VK as Vulkan
+      participant App as App (GLES)
+      participant ANGLE as ANGLE Layer
+      participant VK as Vulkan Backend
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>ANGLE: glDraw*
-      ANGLE->>VK: vkCmd*
-      ANGLE->>VK: vkQueueSubmit
-      VK->>SF: Buffer Ready
-      SF->>SF: Composite
+      Note over App,SF: 📍 ANGLE (GLES-over-Vulkan)
+      App->>ANGLE: glDraw* 调用
+      activate ANGLE
+      ANGLE->>VK: 转换为 Vulkan 命令
+      VK->>VK: vkQueueSubmit
+      ANGLE->>ANGLE: eglSwapBuffers
+      VK->>BQ: vkQueuePresentKHR
+      deactivate ANGLE
 
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over App,SF: 🔄 GLES 应用透明迁移到 Vulkan 后端
   thread_roles:
     - thread: main
       role: "应用逻辑"
       description: "发起 OpenGL ES 调用"
-    - thread: RenderThread
-      role: "ANGLE 翻译层"
-      description: "将 GLES 翻译为 Vulkan"
+    - thread: GLThread
+      role: "GLES/ANGLE 调用线程"
+      description: "持有 EGL context 的线程；GLES 调用经 ANGLE 翻译为 Vulkan（线程名可能为 GLThread/RenderThread/自定义）"
 
   key_slices:
+    - name: "glDraw*"
+      thread: any
+      description: "应用侧 GLES 绘制调用（由 ANGLE 拦截并翻译）"
+    - name: "eglSwapBuffers"
+      thread: any
+      description: "交换 Buffer（最终触发 Present 路径）"
     - name: "ANGLE"
       thread: any
-      description: "ANGLE 翻译层操作"
+      description: "ANGLE 翻译/状态管理（trace 名称通常包含 ANGLE）"
+    - name: "vkQueuePresentKHR"
+      thread: any
+      description: "Vulkan Present（ANGLE 后端常见）"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "ANGLE 翻译层"
+      reason: "应用逻辑 (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 3
-      reason: "应用逻辑"
+      reason: "ANGLE 翻译层 (传输)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "最终合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

@@ -32,9 +32,12 @@ detection:
     - signal: has_draw_frame
       slice_pattern: "DrawFrame*"
       weight: 20
-    - signal: has_media_thread
-      thread_pattern: "*MediaCodec*|*Decoder*"
-      weight: 20
+    - signal: has_mediacodec_thread
+      thread_pattern: "*MediaCodec*"
+      weight: 12
+    - signal: has_decoder_thread
+      thread_pattern: "*Decoder*"
+      weight: 8
 
   exclude_if:
     - thread: "1.ui"
@@ -49,16 +52,39 @@ teaching:
 
   mermaid: |
     sequenceDiagram
-      participant App as App (main)
+      participant VA as VSync-app
+      participant Main as App (main)
       participant RT as RenderThread
-      participant GL as GLThread/MediaCodec
+      participant GL as GLThread (SurfaceView)
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>RT: View 绘制
-      GL->>SF: SurfaceView Buffer
-      RT->>SF: View Layer Buffer
-      SF->>SF: 合成多 Layer
+      Note over VA,SF: 📍 View + SurfaceView 混合渲染
+      VA->>Main: 🔔 VSync-app
+      activate Main
+      Main->>RT: syncFrameState (View 部分)
+      deactivate Main
 
+      par View 渲染链路
+        activate RT
+        RT->>RT: DrawFrame (HWUI)
+        RT->>BQ: queueBuffer (Layer 1)
+        deactivate RT
+      and SurfaceView 渲染链路
+        activate GL
+        GL->>GL: OpenGL/Vulkan 渲染
+        GL->>BQ: eglSwapBuffers (Layer 2)
+        deactivate GL
+      end
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer (多 Layer)
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over VA,SF: ⚠️ 两条独立链路，需注意同步问题
   thread_roles:
     - thread: main
       role: "UI 协调"
@@ -77,44 +103,123 @@ teaching:
     - name: "SurfaceView"
       thread: any
       description: "SurfaceView 相关操作"
+    - name: "Choreographer#doFrame"
+      thread: main
+      description: "帧回调入口，协调 View 与 SurfaceView 的布局/动画"
+    - name: "syncFrameState"
+      thread: RenderThread
+      description: "主线程与 RenderThread 同步 DisplayList/RenderNode"
     - name: "DrawFrame"
       thread: RenderThread
       description: "View 层渲染"
+    - name: "eglSwapBuffers"
+      thread: GLThread
+      description: "SurfaceView 渲染线程提交帧"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "合成多 Layer"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "View 层渲染"
+      reason: "App 主线程 (生产帧)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程的 main 线程"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'main'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
+
+    - pattern: "^RenderThread(\\s+\\d+)?$"
+      match_by: name
+      priority: 3
+      reason: "App 渲染线程 (RenderThread)"
+      expand: true  # 展开显示 Running 状态和 callstack
       smart_filter:
         enabled: true
         detection_sql: |
-          SELECT DISTINCT p.name as process_name
-          FROM actual_frame_timeline_slice a
-          JOIN process p ON a.upid = p.upid
-          WHERE a.surface_frame_token IS NOT NULL
-          GROUP BY a.upid HAVING COUNT(*) > 0
-
-    - pattern: "^main$"
-      match_by: name
-      priority: 3
-      reason: "UI 协调"
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+          GROUP BY p.upid
+          HAVING frame_count > 5
 
     - pattern: "GLThread"
       match_by: name
-      priority: 4
+      priority: 3.5
       reason: "SurfaceView 渲染"
 
     - pattern: "MediaCodec"
       match_by: name
-      priority: 5
+      priority: 4
       reason: "视频解码"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

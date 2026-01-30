@@ -1110,47 +1110,76 @@ router.post('/teaching/pipeline', async (req, res) => {
 
     // Get pipeline determination result (from 'determine_pipeline' step)
     const pipelineStepResult = rawResults['determine_pipeline'];
-    const pipelineResult = pipelineStepResult?.data?.rows?.[0]
+    const pipelineRow =
+      Array.isArray(pipelineStepResult?.data) && pipelineStepResult.data.length > 0
+        ? (pipelineStepResult.data[0] as Record<string, any>)
+        : null;
+    const pipelineResult = pipelineRow
       ? {
-          primary_pipeline_id: pipelineStepResult.data.rows[0][0],
-          primary_confidence: pipelineStepResult.data.rows[0][1],
-          candidates_list: pipelineStepResult.data.rows[0][2],
-          features_list: pipelineStepResult.data.rows[0][3],
-          doc_path: pipelineStepResult.data.rows[0][4],
+          primary_pipeline_id: String(pipelineRow.primary_pipeline_id ?? ''),
+          primary_confidence: pipelineRow.primary_confidence,
+          candidates_list: pipelineRow.candidates_list,
+          features_list: pipelineRow.features_list,
+          doc_path: pipelineRow.doc_path,
         }
       : null;
 
     // Get subvariants (from 'subvariants' step)
     // SQL returns: buffer_mode, flutter_engine, webview_mode, game_engine
     const subvariantsStepResult = rawResults['subvariants'];
-    const subvariants = subvariantsStepResult?.data?.rows?.[0]
+    const subvariantsRow =
+      Array.isArray(subvariantsStepResult?.data) && subvariantsStepResult.data.length > 0
+        ? (subvariantsStepResult.data[0] as Record<string, any>)
+        : null;
+    const subvariants = subvariantsRow
       ? {
-          buffer_mode: subvariantsStepResult.data.rows[0][0],
-          flutter_engine: subvariantsStepResult.data.rows[0][1],
-          webview_mode: subvariantsStepResult.data.rows[0][2],
-          game_engine: subvariantsStepResult.data.rows[0][3],
+          buffer_mode: String(subvariantsRow.buffer_mode ?? 'UNKNOWN'),
+          flutter_engine: String(subvariantsRow.flutter_engine ?? 'N/A'),
+          webview_mode: String(subvariantsRow.webview_mode ?? 'N/A'),
+          game_engine: String(subvariantsRow.game_engine ?? 'N/A'),
         }
       : null;
 
     // Get pin instructions (from 'pin_instructions' step)
     const pinInstructionsStepResult = rawResults['pin_instructions'];
-    const pinInstructionsData = pinInstructionsStepResult?.data?.rows || [];
+    const pinInstructionsData = Array.isArray(pinInstructionsStepResult?.data) ? pinInstructionsStepResult.data : [];
 
     // Get trace requirements (from 'trace_requirements' step)
     const traceReqStepResult = rawResults['trace_requirements'];
-    const traceRequirements = traceReqStepResult?.data?.rows || [];
+    const traceReqRow =
+      Array.isArray(traceReqStepResult?.data) && traceReqStepResult.data.length > 0
+        ? (traceReqStepResult.data[0] as Record<string, any>)
+        : null;
+    const traceRequirementsMissing = traceReqRow
+      ? Object.values(traceReqRow).filter((v: any) => typeof v === 'string' && v.trim())
+      : [];
 
     // Get active rendering processes (from 'active_rendering_processes' step - v3 smart pin)
     // v2.0: Use validated extraction with column name mapping instead of positional access
     const activeProcessesStepResult = rawResults[TEACHING_STEP_IDS.activeProcesses];
     const activeRenderingProcesses: ActiveProcess[] = TEACHING_FEATURES.useSqlValidation
       ? validateActiveProcesses(activeProcessesStepResult)
-      : (activeProcessesStepResult?.data?.rows?.map((row: unknown[]) => ({
-          upid: row[0] as number,
-          processName: row[1] as string,
-          frameCount: row[2] as number,
-          renderThreadTid: row[3] as number,
-        })) || []);
+      : (Array.isArray(activeProcessesStepResult?.data)
+          ? activeProcessesStepResult.data
+              .map((row: any) => ({
+                upid: typeof row?.upid === 'number' ? row.upid : parseInt(String(row?.upid ?? ''), 10) || 0,
+                processName: String(row?.process_name ?? row?.processName ?? row?.name ?? ''),
+                frameCount:
+                  typeof row?.frame_count === 'number'
+                    ? row.frame_count
+                    : parseInt(String(row?.frame_count ?? row?.frameCount ?? row?.count ?? ''), 10) || 0,
+                renderThreadTid:
+                  typeof row?.render_thread_tid === 'number'
+                    ? row.render_thread_tid
+                    : parseInt(String(row?.render_thread_tid ?? row?.renderThreadTid ?? row?.tid ?? ''), 10) || 0,
+              }))
+              .filter((p) => p.processName)
+          : (activeProcessesStepResult?.data?.rows?.map((row: unknown[]) => ({
+              upid: row[0] as number,
+              processName: row[1] as string,
+              frameCount: row[2] as number,
+              renderThreadTid: row[3] as number,
+            })) || []));
 
     if (TEACHING_FEATURES.debugLogging) {
       console.log('[AgentRoutes] Active rendering processes:', activeRenderingProcesses.map((p) => `${p.processName} (${p.frameCount} frames)`));
@@ -1230,6 +1259,8 @@ router.post('/teaching/pipeline', async (req, res) => {
             match_by: inst.match_by,
             priority: inst.priority,
             reason: inst.reason,
+            expand: inst.expand,
+            main_thread_only: inst.main_thread_only,
             smart_filter: hasSmartFilter ? inst.smart_filter : undefined,
           };
 
@@ -1243,17 +1274,19 @@ router.post('/teaching/pipeline', async (req, res) => {
 
           return transformed;
         })
-      : basePinInstructions.map((inst: PinInstruction) => {
+      : basePinInstructions.map((inst: PinInstruction): PinInstructionResponse => {
           // Legacy transformation (fallback when feature flag is disabled)
           const hasSmartFilter = smartFilterConfigs.has(inst.pattern) || inst.smart_filter?.enabled;
           const hasActiveRenderingData = activeRenderingProcesses.length > 0;
           const activeProcessNames = new Set(activeRenderingProcesses.map((p) => p.processName));
 
-          const baseInstruction = {
+          const baseInstruction: PinInstructionResponse = {
             pattern: inst.pattern,
             matchBy: inst.match_by,
             priority: inst.priority,
             reason: inst.reason,
+            expand: inst.expand,
+            mainThreadOnly: inst.main_thread_only,
           };
 
           if (hasSmartFilter) {
@@ -1267,8 +1300,7 @@ router.post('/teaching/pipeline', async (req, res) => {
             } else {
               return {
                 ...baseInstruction,
-                skipPin: true,
-                reason: `${inst.reason} (无活跃渲染数据，跳过)`,
+                reason: `${inst.reason} (未检测到活跃渲染进程，使用默认 Pin)`,
               };
             }
           }
@@ -1291,9 +1323,7 @@ router.post('/teaching/pipeline', async (req, res) => {
           webview_mode: 'N/A',
           game_engine: 'N/A',
         },
-        trace_requirements_missing: traceRequirements
-          ? Object.values(traceRequirements).filter((v: any) => v !== null)
-          : [],
+        trace_requirements_missing: traceRequirementsMissing,
       },
       teaching: teachingContent
         ? {

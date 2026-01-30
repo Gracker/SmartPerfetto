@@ -21,8 +21,11 @@ meta:
 detection:
   scoring_signals:
     - signal: has_camera_thread
-      thread: Camera
-      weight: 40
+      thread_pattern: "*Camera*"
+      weight: 30
+    - signal: has_cam_abbrev_thread
+      thread_pattern: "*Cam*"
+      weight: 10
     - signal: has_camera_slice
       slice_pattern: "*Camera*"
       weight: 30
@@ -40,15 +43,33 @@ teaching:
   mermaid: |
     sequenceDiagram
       participant App as App
-      participant Cam as Camera Service
+      participant Cam as CameraService
       participant HAL as Camera HAL
+      participant ISP as ISP/GPU
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      App->>Cam: Create CaptureSession
-      Cam->>HAL: Configure Streams
-      HAL->>SF: Preview Frames
-      SF->>SF: Display Preview
+      Note over App,SF: 📍 Camera2/HAL3 渲染链路
+      App->>Cam: createCaptureSession
+      App->>Cam: setRepeatingRequest
 
+      activate HAL
+      HAL->>ISP: 配置图像处理流水线
+      loop 每帧
+        HAL->>HAL: 捕获 Bayer 数据
+        HAL->>ISP: 3A + ISP 处理
+        ISP->>BQ: 输出到 Surface
+      end
+      deactivate HAL
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over App,SF: 📷 支持预览/录制/拍照多路输出
   thread_roles:
     - thread: Camera
       role: "相机服务"
@@ -64,23 +85,46 @@ teaching:
     - name: "CaptureSession"
       thread: any
       description: "采集会话"
+    - name: "createCaptureSession"
+      thread: any
+      description: "创建采集会话（常见于启动/切换摄像头/重配流）"
+    - name: "setRepeatingRequest"
+      thread: any
+      description: "预览/录制的重复请求（影响吞吐与延迟）"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "预览合成"
-
-    - pattern: "Camera"
-      match_by: name
-      priority: 2
-      reason: "Camera 服务"
+      reason: "VSync (预览开始生产帧)"
 
     - pattern: "CaptureSession"
       match_by: name
+      priority: 2
+      reason: "采集会话 (生产)"
+
+    - pattern: "Camera"
+      match_by: name
       priority: 3
-      reason: "采集会话"
+      reason: "Camera 服务 (传输)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "预览合成/显示"
+      main_thread_only: true
 
 analysis:
   common_issues:

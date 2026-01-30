@@ -19,15 +19,26 @@ meta:
   doc_path: "rendering_pipelines/webview_gl_functor.md"
 
 detection:
+  # Required: Must have both RenderThread (App) and CrRendererMain (Chromium)
+  # Without these, cannot be WebView GL Functor mode
+  required_signals:
+    - thread: RenderThread
+      min_count: 1
+    - thread: CrRendererMain
+      min_count: 1
+
   scoring_signals:
+    - signal: has_draw_gl
+      slice_pattern: "*DrawGL*"
+      weight: 35
     - signal: has_draw_functor
-      slice_pattern: "*DrawGL*|*DrawFunctor*"
-      weight: 70
+      slice_pattern: "*DrawFunctor*"
+      weight: 35
     - signal: has_cr_renderer
-      thread: CrRendererMain
+      thread_pattern: "CrRendererMain*"
       weight: 15
     - signal: has_render_thread
-      thread: RenderThread
+      thread_pattern: "RenderThread*"
       weight: 10
 
   exclude_if:
@@ -42,16 +53,44 @@ teaching:
 
   mermaid: |
     sequenceDiagram
+      participant VA as VSync-app
       participant Main as App (main)
-      participant RT as App RenderThread
-      participant WV as CrRendererMain
+      participant RT as RenderThread
+      participant CR as CrRendererMain
+      participant Blink as Blink Engine
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Main->>RT: DrawFrame
-      RT->>WV: DrawFunctor (sync)
-      WV->>RT: GL Commands
-      RT->>SF: Composite
+      Note over VA,SF: 📍 WebView GL Functor 模式
+      VA->>Main: 🔔 VSync-app
+      activate Main
+      Main->>RT: syncFrameState
+      deactivate Main
 
+      activate RT
+      RT->>RT: DrawFrame 开始
+      RT->>CR: 调用 WebView DrawGL
+      deactivate RT
+
+      activate CR
+      CR->>Blink: 渲染网页内容
+      CR->>CR: GPU 绘制
+      CR-->>RT: 返回
+      deactivate CR
+
+      activate RT
+      RT->>RT: 继续 DrawFrame
+      RT->>BQ: queueBuffer
+      deactivate RT
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC Composite
+      deactivate SF
+
+      Note over VA,SF: ⚠️ WebView 阻塞 RenderThread，可能影响流畅度
   thread_roles:
     - thread: main
       role: "WebView 宿主 UI"
@@ -78,25 +117,44 @@ teaching:
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (WebView 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "App 渲染 (等待 WebView)"
+      reason: "WebView 宿主 UI (生产)"
+      expand: true  # 展开显示 Running 状态和 callstack
 
     - pattern: "CrRendererMain"
       match_by: name
       priority: 3
-      reason: "Chromium 主渲染"
+      reason: "Chromium 主渲染 (生产/传输)"
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 4
-      reason: "WebView 宿主 UI"
+      reason: "App RenderThread (传输/合成)"
+      expand: true  # 展开显示 Running 状态和 callstack
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:

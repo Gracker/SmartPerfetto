@@ -31,14 +31,30 @@
 #   required_signals:                 # Must have all of these
 #     - thread: "ThreadName"
 #       min_count: 1
+#     - thread_pattern: "GlobPattern" # SQLite GLOB pattern (supports * and ?)
+#       min_count: 1
 #     - slice: "SliceName*"
+#       min_count: 1
+#     - slice_pattern: "GlobPattern"  # SQLite GLOB pattern (supports * and ?)
 #       min_count: 1
 #   scoring_signals:                  # Adds to confidence score
 #     - signal: signal_name
+#       # Exactly ONE selector per entry:
+#       # - thread / thread_pattern / slice / slice_pattern
+#       # If you need compound conditions, split into multiple signals or use required_signals/exclude_if.
+#       slice_pattern: "SliceName*"
 #       weight: 10-50
+#       min_count: 1                  # matched when cnt >= min_count (default: 1)
 #   exclude_if:                       # Disqualifies if present
 #     - thread: "ExcludedThread"
+#     - thread_pattern: "ExcludedThreadPattern"
 #     - slice: "ExcludedSlice*"
+#     - slice_pattern: "ExcludedSlicePattern"
+#
+# Detection semantics (used by rendering_pipeline_detection generator):
+# - required_signals: AND (all must match)
+# - exclude_if: OR (any match disqualifies)
+# - scoring_signals: score = matched_weight / total_weight (only if required_signals satisfied and exclude_if not triggered)
 #
 # teaching:
 #   title: "教学标题"
@@ -62,6 +78,7 @@
 #       match_by: name|uri
 #       priority: 1-10
 #       reason: "原因说明"
+#       expand: true                  # Optional: expand pinned track
 #       smart_filter:                 # Optional: data-driven filtering
 #         enabled: true
 #         detection_sql: |            # SQL to find active instances

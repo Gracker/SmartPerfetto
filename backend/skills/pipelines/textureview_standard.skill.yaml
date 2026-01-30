@@ -13,40 +13,67 @@ category: rendering
 meta:
   pipeline_id: TEXTUREVIEW_STANDARD
   display_name: "TextureView 标准"
-  description: "SurfaceTexture 纹理上传模式，与 View 层次集成"
+  description: "SurfaceTexture 纹理采样/合成模式，与 View 层次集成"
   icon: "texture"
   family: surface
   doc_path: "rendering_pipelines/textureview.md"
 
 detection:
   scoring_signals:
-    - signal: has_texture_view
-      slice_pattern: "*SurfaceTexture*|*updateTexImage*"
+    - signal: has_surface_texture
+      slice_pattern: "*SurfaceTexture*"
       min_count: 5
-      weight: 60
+      weight: 25
+    - signal: has_update_tex_image
+      slice_pattern: "*updateTexImage*"
+      min_count: 5
+      weight: 35
     - signal: has_render_thread
-      thread: RenderThread
+      thread_pattern: "RenderThread*"
       weight: 20
 
 teaching:
   title: "TextureView 渲染管线"
   summary: |
     使用 SurfaceTexture 将渲染内容作为纹理集成到 View 层次中。
-    支持 View 的所有变换（缩放、裁剪、透明度），但需要额外的纹理上传开销。
+    支持 View 的所有变换（缩放、裁剪、透明度），但会增加纹理采样/合成带宽开销。
     适合需要与 View 混合显示的场景。
 
   mermaid: |
     sequenceDiagram
-      participant Content as Content Producer
-      participant ST as SurfaceTexture
+      participant VA as VSync-app
+      participant Main as App (main)
       participant RT as RenderThread
+      participant Producer as Producer Thread
+      participant ST as SurfaceTexture
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Content->>ST: Render to Surface
-      ST->>RT: updateTexImage
-      RT->>RT: Draw as Texture
-      RT->>SF: Composite with View Layer
+      Note over VA,SF: 📍 TextureView 渲染链路
+      Producer->>ST: 渲染内容到 SurfaceTexture
+      Producer->>ST: updateTexImage
+      ST-->>RT: onFrameAvailable 回调
 
+      VA->>Main: 🔔 VSync-app
+      activate Main
+      Main->>RT: syncFrameState
+      deactivate Main
+
+      activate RT
+      RT->>RT: DrawFrame
+      RT->>RT: 绑定 SurfaceTexture 纹理
+      RT->>RT: 绘制到 View 层级
+      RT->>BQ: queueBuffer
+      deactivate RT
+
+      VS->>SF: 🔔 VSync-sf
+      activate SF
+      SF->>SF: latchBuffer
+      SF->>SF: HWC 合成
+      deactivate SF
+
+      Note over VA,SF: ⚠️ 需要 GPU 采样 → 开销高于 SurfaceView
   thread_roles:
     - thread: main
       role: "UI 集成"
@@ -62,23 +89,112 @@ teaching:
     - name: "SurfaceTexture"
       thread: any
       description: "SurfaceTexture 操作"
+    - name: "onFrameAvailable"
+      thread: any
+      description: "生产者有新帧可用，触发消费者侧更新纹理"
+    - name: "syncFrameState"
+      thread: RenderThread
+      description: "宿主 UI 与 RenderThread 同步，驱动 TextureView 合成"
+    - name: "DrawFrame"
+      thread: RenderThread
+      description: "RenderThread 绑定纹理并绘制到 View 层级"
 
 auto_pin:
   instructions:
-    - pattern: "^SurfaceFlinger$"
+    # Time-ordered pinning (production -> transfer -> consume -> display)
+    - pattern: "^VSYNC-app$"
       match_by: name
       priority: 1
-      reason: "最终合成"
+      reason: "VSync (App 开始生产帧)"
 
-    - pattern: "^RenderThread$"
+    - pattern: "^main(\\s+\\d+)?$"
       match_by: name
       priority: 2
-      reason: "纹理上传 + 合成"
+      reason: "App 主线程 (生产帧)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程的 main 线程"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'main'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
 
-    - pattern: "^main$"
+    - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
       priority: 3
-      reason: "UI 集成"
+      reason: "App 渲染线程 (RenderThread)"
+      expand: true  # 展开显示 Running 状态和 callstack
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 有活跃渲染的进程的 RenderThread"
+        detection_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as frame_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+            AND p.name IS NOT NULL
+            AND p.name NOT LIKE 'com.android.systemui%'
+            AND p.name NOT LIKE 'system_server%'
+            AND p.name NOT LIKE '/system/%'
+          GROUP BY p.upid
+          HAVING frame_count > 5
+          ORDER BY frame_count DESC
+          LIMIT 10
+        fallback_sql: |
+          SELECT DISTINCT p.name as process_name, COUNT(*) as slice_count
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE t.name = 'RenderThread'
+            AND s.name GLOB 'DrawFrame*'
+          GROUP BY p.upid
+          HAVING slice_count > 10
+          ORDER BY slice_count DESC
+          LIMIT 10
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
 
 analysis:
   common_issues:
