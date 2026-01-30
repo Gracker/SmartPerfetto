@@ -92,8 +92,14 @@ AIPanel (ai_panel.ts)
 │   │   └── AssistantMessage             # AI 回复气泡
 │   │       ├── Markdown Content         # 格式化文本
 │   │       ├── SqlResultTable           # SQL 结果表格
+│   │       ├── MermaidDiagram           # Mermaid 时序图渲染
 │   │       └── ReportLink               # HTML 报告链接
 │   └── InputArea                        # 输入框 + 发送按钮
+│
+├── Mermaid Support
+│   ├── loadMermaidScript()              # 懒加载 mermaid.min.js
+│   ├── ensureMermaidInitialized()       # 初始化 Mermaid
+│   └── renderMermaidInElement()         # 渲染 Base64 编码的图表
 │
 └── Event Handlers
     ├── sendMessage()                    # 发送消息
@@ -877,3 +883,5 @@ AIPanel (ai_panel.ts)
 | SessionLogger | `backend/src/services/sessionLogger.ts` |
 | **Skills** | |
 | Skill Definitions | `backend/skills/v2/composite/*.skill.yaml` |
+| Pipeline Skills | `backend/skills/pipelines/*.skill.yaml` (24 个渲染管线) |
+| PipelineSkillLoader | `backend/src/services/pipelineSkillLoader.ts` |

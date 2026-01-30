@@ -163,6 +163,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 | TraceProcessorService | services/traceProcessorService.ts | HTTP RPC 查询 (端口池 9100-9900) |
 | SkillExecutor | services/skillEngine/skillExecutor.ts | YAML Skill 引擎 |
 | SkillLoader | services/skillEngine/skillLoader.ts | Skill 加载器 |
+| PipelineSkillLoader | services/pipelineSkillLoader.ts | Pipeline Skill 加载器 (含 Teaching) |
 | SkillAnalysisAdapter | services/skillEngine/skillAnalysisAdapter.ts | Skill 分析适配 |
 | AnswerGenerator | services/skillEngine/answerGenerator.ts | 答案生成器 |
 | SmartSummaryGenerator | services/skillEngine/smartSummaryGenerator.ts | 智能摘要 |
@@ -400,6 +401,76 @@ steps:
 **Meta:**
 - scene_reconstruction
 
+### Pipeline Skills (24)
+
+**Location:** `backend/skills/pipelines/`
+
+渲染管线检测和教学内容，每个 Pipeline Skill 包含:
+- `detection` - SQL 检测逻辑
+- `teaching` - 教学内容 (线程角色、关键 Slice、Mermaid 时序图)
+
+**Android View 系列:**
+- android_view_standard_blast, android_view_standard_legacy
+- android_view_software, android_view_mixed, android_view_multi_window
+- android_pip_freeform
+
+**Surface/Texture 系列:**
+- surfaceview_blast, textureview_standard, surface_control_api
+
+**Flutter 系列:**
+- flutter_surfaceview_skia, flutter_surfaceview_impeller, flutter_textureview
+
+**WebView 系列:**
+- webview_gl_functor, webview_surface_control
+- webview_surfaceview_wrapper, webview_textureview_custom
+
+**Graphics API 系列:**
+- opengl_es, vulkan_native, angle_gles_vulkan
+
+**特殊场景:**
+- game_engine, video_overlay_hwc, camera_pipeline
+- hardware_buffer_renderer, variable_refresh_rate
+
+---
+
+## Teaching Content System
+
+**Purpose:** 为每种渲染管线提供结构化教学内容，帮助用户理解帧渲染流程。
+
+### 数据结构
+
+```typescript
+interface TeachingContent {
+  threadRoles: ThreadRole[];     // 关键线程角色
+  keySlices: KeySlice[];         // 关键 Trace Slice
+  mermaidBlocks: string[];       // Mermaid 时序图源码
+}
+
+interface ThreadRole {
+  thread: string;                // 线程名 (main/RenderThread/SurfaceFlinger)
+  responsibility: string;        // 职责描述
+  traceLabels: string[];         // 对应的 Trace 标签
+}
+
+interface KeySlice {
+  name: string;                  // Slice 名称
+  description?: string;          // 说明
+}
+```
+
+### 前端渲染
+
+**Mermaid 图表渲染流程:**
+```
+Teaching Content → Base64 编码 → data-mermaid-b64 属性
+                                       ↓
+页面加载 → loadMermaidScript() → 从 assets/mermaid.min.js 加载
+                                       ↓
+renderMermaidInElement() → 解码 Base64 → mermaid.render() → SVG
+```
+
+**CSP 兼容:** Mermaid.js 从同源 `assets/mermaid.min.js` 加载，符合 CSP `script-src 'self'`
+
 ---
 
 ## DataEnvelope (v2.0)
@@ -428,9 +499,16 @@ interface ColumnDefinition {
 ## Frontend
 
 **Plugin:** `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/`
-- ai_panel.ts - 主 UI
+- ai_panel.ts - 主 UI + Mermaid 渲染
 - sql_result_table.ts - 数据表格 (schema-driven)
 - ai_service.ts - 后端通信
+- chart_visualizer.ts - 图表可视化
+- navigation_bookmark_bar.ts - 导航书签
+
+**Mermaid 图表支持:**
+- 懒加载 `assets/mermaid.min.js` (CSP 兼容)
+- Base64 编码存储图表源码
+- 错误处理 + 源码折叠展示
 
 ---
 
@@ -524,6 +602,6 @@ DEEPSEEK_API_KEY=sk-xxx
 | Category | Count |
 |----------|-------|
 | Agent System | ~129 source files |
-| Services | ~30 service files |
-| Skills | 56 definitions (29 atomic + 27 composite) |
+| Services | ~31 service files |
+| Skills | 80 definitions (29 atomic + 27 composite + 24 pipelines) |
 | Routes | 16 API handlers |
