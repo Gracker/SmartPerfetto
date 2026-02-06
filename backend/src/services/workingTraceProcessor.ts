@@ -19,6 +19,14 @@ const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_I
 const TRACE_PROCESSOR_PATH = process.env.TRACE_PROCESSOR_PATH ||
   path.resolve(__dirname, '../../../perfetto/out/ui/trace_processor_shell');
 
+// Small subset used by core Android analysis paths that query stdlib views directly.
+const CRITICAL_STDLIB_MODULES = [
+  'android.frames.timeline',
+  'android.binder',
+  'android.startup.startups',
+  'android.input',
+];
+
 /**
  * Kill all orphan trace_processor_shell processes.
  * This should be called at startup to clean up processes from previous runs.
@@ -150,13 +158,21 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         throw new Error(`Server verification failed: ${testResult.error}`);
       }
 
-      // Preload all Perfetto stdlib modules to make views/tables available
-      // This runs after trace is loaded so modules can access trace data
-      await this.preloadAllPerfettoModules();
+      // Preload a small critical module set first to keep startup latency low.
+      if (traceProcessorConfig.preloadCriticalStdlibModules) {
+        await this.preloadCriticalPerfettoModules();
+      }
 
       this.status = 'ready';
       console.log(`[TraceProcessor] Processor ${this.id} ready (HTTP mode) for trace ${this.traceId}`);
       this.emit('ready');
+
+      // Optional full prewarm runs in background so upload response is not blocked.
+      if (traceProcessorConfig.preloadAllStdlibModules) {
+        void this.preloadAllPerfettoModules().catch((error: any) => {
+          console.warn('[TraceProcessor] Background stdlib preload failed:', error?.message || error);
+        });
+      }
     } catch (error: any) {
       console.error(`[TraceProcessor] Initialization failed:`, error.message);
       this.status = 'error';
@@ -381,33 +397,31 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     });
   }
 
-  /**
-   * Preload all Perfetto stdlib modules to make their views and tables available.
-   *
-   * This method loads modules in parallel batches for efficiency. Modules that fail
-   * to load (e.g., due to missing data dependencies in the trace) are logged but
-   * don't block other modules from loading.
-   *
-   * @returns Object containing arrays of successfully loaded and failed module names
-   */
-  async preloadAllPerfettoModules(): Promise<{ loaded: string[]; failed: string[] }> {
-    const modules = getPerfettoStdlibModules();
+  private async preloadModules(
+    modules: string[],
+    label: string,
+  ): Promise<{ loaded: string[]; failed: string[] }> {
     const loaded: string[] = [];
     const failed: string[] = [];
 
     if (modules.length === 0) {
-      console.warn('[TraceProcessor] No stdlib modules found to preload');
+      console.warn(`[TraceProcessor] No ${label} stdlib modules found to preload`);
       return { loaded, failed };
     }
 
     const startTime = Date.now();
 
-    // Log module breakdown by namespace
-    const namespaceGroups = groupModulesByNamespace(modules);
-    console.log(
-      `[TraceProcessor] Preloading ${modules.length} stdlib modules:`,
-      namespaceGroups
-    );
+    if (label === 'all') {
+      const namespaceGroups = groupModulesByNamespace(modules);
+      console.log(
+        `[TraceProcessor] Preloading ${modules.length} ${label} stdlib modules:`,
+        namespaceGroups,
+      );
+    } else {
+      console.log(
+        `[TraceProcessor] Preloading ${modules.length} ${label} stdlib modules: ${modules.join(', ')}`,
+      );
+    }
 
     // Load modules in parallel batches for efficiency
     const BATCH_SIZE = 10;
@@ -443,11 +457,25 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
     const elapsed = Date.now() - startTime;
     console.log(
-      `[TraceProcessor] Preloaded ${loaded.length}/${modules.length} stdlib modules in ${elapsed}ms ` +
+      `[TraceProcessor] Preloaded ${loaded.length}/${modules.length} ${label} stdlib modules in ${elapsed}ms ` +
         `(${failed.length} failed)`
     );
 
     return { loaded, failed };
+  }
+
+  /**
+   * Preload critical modules used by frequently hit analysis paths.
+   */
+  async preloadCriticalPerfettoModules(): Promise<{ loaded: string[]; failed: string[] }> {
+    return this.preloadModules(CRITICAL_STDLIB_MODULES, 'critical');
+  }
+
+  /**
+   * Preload all Perfetto stdlib modules to make additional views/tables available.
+   */
+  async preloadAllPerfettoModules(): Promise<{ loaded: string[]; failed: string[] }> {
+    return this.preloadModules(getPerfettoStdlibModules(), 'all');
   }
 
   destroy(): void {

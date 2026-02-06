@@ -18,35 +18,40 @@ import crypto from 'crypto';
  * Generate a deduplication key for a DataEnvelope.
  *
  * Key composition (in order of preference):
- * 1. envelope.meta.source (most specific, includes executionId)
- * 2. skillId:stepId:contentHash (fallback with content fingerprint)
+ * 1. skillId:stepId:contentHash (stable across different execution ids)
+ * 2. normalized meta.source (strip volatile execution suffix)
  * 3. skillId:stepId:title (last resort)
  *
- * Content hash is computed from rows to catch identical data from different executions.
+ * Content hash is computed from rows (including row count) to catch
+ * identical data emitted in different stages/rounds.
  */
 export function generateDeduplicationKey(envelope: DataEnvelope): string {
   const meta = envelope.meta || {};
   const display = envelope.display || {};
-
-  // Priority 1: Use source if available (includes execution-specific suffix)
-  if (meta.source && typeof meta.source === 'string' && meta.source.length > 0) {
-    return meta.source;
-  }
-
-  // Priority 2: Compose from skillId, stepId, and content hash
   const skillId = meta.skillId || 'unknown';
   const stepId = meta.stepId || 'unknown';
 
-  // Compute content hash from data rows (catches identical data from different runs)
+  // Priority 1: Stable content key (preferred over source because source usually carries
+  // execution id suffixes like "#mandatory_frame_..." or "#t1").
   const contentHash = computeContentHash(envelope.data);
-
   if (contentHash) {
     return `${skillId}:${stepId}:${contentHash}`;
+  }
+
+  // Priority 2: normalized source (strip execution suffix after '#')
+  if (meta.source && typeof meta.source === 'string' && meta.source.length > 0) {
+    const normalized = normalizeSource(meta.source);
+    if (normalized) return normalized;
   }
 
   // Priority 3: Fallback to skillId:stepId:title
   const title = display.title || '';
   return `${skillId}:${stepId}:${title}`;
+}
+
+function normalizeSource(source: string): string {
+  const normalized = source.split('#')[0]?.trim();
+  return normalized || source.trim();
 }
 
 /**
@@ -61,12 +66,17 @@ function computeContentHash(data: any): string | null {
     if (data.rows && Array.isArray(data.rows)) {
       if (data.rows.length === 0) return 'empty';
 
-      // Hash first and last few rows to balance accuracy vs performance
+      // Hash row count + first/last rows to balance accuracy vs performance.
+      // Including rowCount avoids collisions when samples look similar but sizes differ.
       const sample = [
         ...data.rows.slice(0, 3),
         ...(data.rows.length > 6 ? data.rows.slice(-3) : []),
       ];
-      const content = JSON.stringify(sample);
+      const content = JSON.stringify({
+        rowCount: data.rows.length,
+        columns: Array.isArray(data.columns) ? data.columns : undefined,
+        sample,
+      });
       return crypto.createHash('md5').update(content).digest('hex').slice(0, 8);
     }
 

@@ -56,10 +56,23 @@ function normalizeId(id: any): string {
   return String(id);
 }
 
+function normalizeLooseNumericId(id: any): string | null {
+  if (id === null || id === undefined) return null;
+  if (typeof id === 'number' && Number.isFinite(id)) return String(Math.trunc(id));
+  const s = String(id).trim();
+  if (!s) return null;
+  const compact = s.replace(/[,\s，_]/g, '');
+  if (!/^\d+$/.test(compact)) return null;
+  return compact;
+}
+
 /**
  * Compare two IDs with type normalization.
  */
 function idsMatch(a: any, b: any): boolean {
+  const an = normalizeLooseNumericId(a);
+  const bn = normalizeLooseNumericId(b);
+  if (an !== null && bn !== null) return an === bn;
   return normalizeId(a) === normalizeId(b);
 }
 

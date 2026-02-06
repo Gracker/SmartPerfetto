@@ -10,8 +10,6 @@ meta:
   tags: [scene, input, screen, composite]
 
 prerequisites:
-  required_tables:
-    - android_input_events
   modules:
     - android.input
     - android.screen_state
@@ -135,6 +133,55 @@ steps:
           SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_input_events'
         )
       ),
+      battery_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_battery_stats_event_slices'
+        )
+      ),
+      startup_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_startups'
+        )
+      ),
+      frame_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_frame_timeline_slice'
+        )
+      ),
+      top_app_spans AS (
+        SELECT
+          ts AS start_ts,
+          ts + safe_dur AS end_ts,
+          str_value AS app_package
+        FROM android_battery_stats_event_slices
+        WHERE track_name = 'battery_stats.top'
+          AND safe_dur > 0
+      ),
+      startup_spans AS (
+        SELECT
+          ts AS start_ts,
+          ts + dur AS end_ts,
+          package AS app_package
+        FROM android_startups
+        WHERE dur > 0
+      ),
+      frame_apps AS (
+        SELECT
+          a.ts,
+          a.ts + a.dur AS end_ts,
+          COALESCE(
+            NULLIF(p.name, ''),
+            CASE
+              WHEN a.layer_name IS NOT NULL AND instr(a.layer_name, '/') > 1
+              THEN substr(a.layer_name, 1, instr(a.layer_name, '/') - 1)
+              ELSE NULL
+            END
+          ) AS app_package
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON p.upid = a.upid
+        WHERE a.dur > 0
+          AND a.surface_frame_token IS NOT NULL
+      ),
       gesture_events AS (
         SELECT
           read_time AS ts,
@@ -153,26 +200,63 @@ steps:
         SELECT
           gesture_id,
           MIN(ts) AS ts,
+          MAX(ts) AS end_ts,
           MAX(ts) - MIN(ts) AS dur,
           COUNT(*) AS event_count,
           COUNT(CASE WHEN event_action = 'MOVE' THEN 1 END) AS move_count,
-          MAX(process_name) AS app
+          MAX(process_name) AS raw_process_name
         FROM gesture_groups
         WHERE gesture_id > 0
         GROUP BY gesture_id
+      ),
+      gesture_with_app AS (
+        SELECT
+          g.*,
+          CASE
+            WHEN g.raw_process_name GLOB 'com.*'
+              OR g.raw_process_name GLOB 'org.*'
+              OR g.raw_process_name GLOB 'io.*'
+              OR g.raw_process_name GLOB 'net.*'
+            THEN g.raw_process_name
+            ELSE COALESCE(
+              (SELECT t.app_package
+               FROM top_app_spans t
+               WHERE g.ts BETWEEN t.start_ts AND t.end_ts
+               ORDER BY t.start_ts DESC
+               LIMIT 1),
+              (SELECT f.app_package
+               FROM frame_apps f
+               WHERE f.app_package IS NOT NULL
+                 AND f.app_package != ''
+                 AND f.app_package NOT GLOB 'surfaceflinger*'
+                 AND f.app_package NOT GLOB 'system_server*'
+                 AND f.app_package NOT GLOB 'com.android.systemui*'
+                 AND f.ts >= g.ts - 300000000
+                 AND f.end_ts <= g.end_ts + 800000000
+               GROUP BY f.app_package
+               ORDER BY COUNT(*) DESC
+               LIMIT 1),
+              (SELECT s.app_package
+               FROM startup_spans s
+               WHERE g.ts BETWEEN s.start_ts AND s.end_ts
+               ORDER BY s.start_ts DESC
+               LIMIT 1),
+              g.raw_process_name
+            )
+          END AS app_package
+        FROM gestures g
       )
       SELECT
         printf('%d', ts) AS ts,
         printf('%d', dur) AS dur,
-        -- 手势类型 + 详细信息（面向初学者）
         CASE
           WHEN move_count >= 3 THEN '滑动 (' || move_count || '次移动, ' || CAST(dur / 1000000 AS INT) || 'ms)'
           WHEN dur > 500000000 AND move_count <= 2 THEN '长按 (' || CAST(dur / 1000000 AS INT) || 'ms)'
           ELSE '点击'
         END ||
         CASE
-          WHEN app IS NOT NULL AND app != ''
-          THEN ' [' || REPLACE(REPLACE(app, 'com.', ''), 'android.', '') || ']'
+          WHEN app_package IS NOT NULL AND app_package != ''
+          THEN ' [' || REPLACE(REPLACE(app_package, 'com.', ''), 'android.', '') || ']'
           ELSE ''
         END AS event,
         CASE
@@ -180,7 +264,6 @@ steps:
           WHEN dur > 500000000 AND move_count <= 2 THEN 'long_press'
           ELSE 'tap'
         END AS gesture_type,
-        -- 检测置信度（帮助初学者理解检测可靠性）
         CASE
           WHEN move_count >= 10 THEN '高'
           WHEN move_count >= 5 THEN '中'
@@ -188,8 +271,9 @@ steps:
           ELSE '高'
         END AS confidence,
         move_count,
+        app_package,
         'gesture' AS category
-      FROM gestures
+      FROM gesture_with_app
       WHERE event_count >= 2
       ORDER BY ts
       LIMIT 200
@@ -263,6 +347,214 @@ steps:
       ORDER BY scroll_start_ts
       LIMIT 100
     save_as: scroll_starts
+    optional: true
+
+  # ==========================================================================
+  # L2: 惯性滑动检测 (UP 后仍持续渲染)
+  # ==========================================================================
+  - id: inertial_scrolls
+    type: atomic
+    name: "惯性滑动"
+    display:
+      level: detail
+      layer: list
+      title: "惯性滑动"
+    sql: |
+      WITH RECURSIVE input_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_input_events'
+        )
+      ),
+      frame_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='actual_frame_timeline_slice'
+        )
+      ),
+      battery_check AS (
+        SELECT 1 AS dummy WHERE EXISTS (
+          SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_battery_stats_event_slices'
+        )
+      ),
+      top_app_spans AS (
+        SELECT
+          ts AS start_ts,
+          ts + safe_dur AS end_ts,
+          str_value AS app_package
+        FROM android_battery_stats_event_slices
+        WHERE track_name = 'battery_stats.top'
+          AND safe_dur > 0
+      ),
+      motion_base AS (
+        SELECT
+          read_time AS ts,
+          event_action,
+          process_name,
+          SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END)
+            OVER (ORDER BY read_time) AS gesture_id
+        FROM android_input_events
+        WHERE event_type = 'MOTION'
+      ),
+      gesture_stats AS (
+        SELECT
+          gesture_id,
+          MIN(ts) AS down_ts,
+          MAX(CASE WHEN event_action = 'UP' THEN ts END) AS up_ts,
+          COUNT(*) AS event_count,
+          SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END) AS move_count,
+          MAX(process_name) AS raw_process_name
+        FROM motion_base
+        WHERE gesture_id > 0
+        GROUP BY gesture_id
+        HAVING COUNT(*) >= 4 AND SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END) >= 3
+      ),
+      fling_windows AS (
+        SELECT
+          g.gesture_id,
+          g.down_ts,
+          g.up_ts AS inertial_start,
+          MIN(
+            COALESCE(LEAD(g.down_ts) OVER (ORDER BY g.down_ts), g.up_ts + 1500000000),
+            g.up_ts + 1200000000
+          ) AS inertial_end,
+          g.raw_process_name
+        FROM gesture_stats g
+        WHERE g.up_ts IS NOT NULL
+      ),
+      resolved_windows AS (
+        SELECT
+          w.*,
+          CASE
+            WHEN w.raw_process_name GLOB 'com.*'
+              OR w.raw_process_name GLOB 'org.*'
+              OR w.raw_process_name GLOB 'io.*'
+              OR w.raw_process_name GLOB 'net.*'
+            THEN w.raw_process_name
+            ELSE COALESCE(
+              (SELECT t.app_package
+               FROM top_app_spans t
+               WHERE w.inertial_start BETWEEN t.start_ts AND t.end_ts
+               ORDER BY t.start_ts DESC
+               LIMIT 1),
+              w.raw_process_name
+            )
+          END AS app_package
+        FROM fling_windows w
+      ),
+      inertial_frames AS (
+        SELECT
+          w.gesture_id,
+          w.inertial_start,
+          w.inertial_end,
+          w.app_package,
+          COUNT(f.ts) AS frame_count,
+          SUM(CASE
+            WHEN f.jank_type IS NOT NULL
+              AND f.jank_type != 'None'
+              AND f.jank_type != ''
+            THEN 1 ELSE 0 END
+          ) AS jank_frames
+        FROM resolved_windows w
+        LEFT JOIN actual_frame_timeline_slice f
+          ON f.ts >= w.inertial_start
+         AND f.ts < w.inertial_end
+         AND f.surface_frame_token IS NOT NULL
+         AND f.dur > 0
+        WHERE w.inertial_end > w.inertial_start + 80000000
+        GROUP BY w.gesture_id, w.inertial_start, w.inertial_end, w.app_package
+      )
+      SELECT
+        printf('%d', inertial_start) AS ts,
+        printf('%d', inertial_end - inertial_start) AS dur,
+        '惯性滑动' ||
+        CASE
+          WHEN app_package IS NOT NULL AND app_package != ''
+          THEN ' [' || REPLACE(REPLACE(app_package, 'com.', ''), 'android.', '') || ']'
+          ELSE ''
+        END ||
+        ' (' || CAST((inertial_end - inertial_start) / 1000000 AS INT) || 'ms, ' || frame_count || '帧)' AS event,
+        frame_count,
+        jank_frames,
+        app_package,
+        'inertial_scroll' AS category
+      FROM inertial_frames
+      WHERE frame_count >= 4
+      ORDER BY inertial_start
+      LIMIT 100
+    save_as: inertial_scrolls
+    optional: true
+
+  # ==========================================================================
+  # L2: Idle 区间检测 (用户无交互)
+  # ==========================================================================
+  - id: idle_periods
+    type: atomic
+    name: "Idle 区间"
+    display:
+      level: detail
+      layer: list
+      title: "空闲区间"
+    sql: |
+      WITH key_events AS (
+        SELECT read_time AS ts
+        FROM android_input_events
+        WHERE event_type = 'MOTION'
+          AND event_action = 'DOWN'
+
+        UNION ALL
+
+        SELECT ts
+        FROM android_battery_stats_event_slices
+        WHERE track_name = 'battery_stats.top'
+          AND safe_dur > 0
+
+        UNION ALL
+
+        SELECT ts
+        FROM android_startups
+        WHERE dur > 0
+
+        UNION ALL
+
+        SELECT ts
+        FROM slice
+        WHERE (
+          name GLOB '*Keyguard*dismiss*'
+          OR name GLOB '*unlock*'
+          OR name GLOB '*NotificationPanel*expand*'
+          OR name GLOB '*NotificationPanel*collapse*'
+          OR name GLOB '*SplitScreen*'
+        )
+          AND dur > 0
+      ),
+      ordered_events AS (
+        SELECT
+          ts,
+          LEAD(ts) OVER (ORDER BY ts) AS next_ts
+        FROM key_events
+      ),
+      idle_windows AS (
+        SELECT
+          ts AS start_ts,
+          next_ts AS end_ts,
+          next_ts - ts AS gap_ns
+        FROM ordered_events
+        WHERE next_ts IS NOT NULL
+          AND next_ts - ts >= 800000000
+      )
+      SELECT
+        printf('%d', start_ts) AS ts,
+        printf('%d', gap_ns) AS dur,
+        '空闲 (' || CAST(gap_ns / 1000000 AS INT) || 'ms)' AS event,
+        CASE
+          WHEN gap_ns >= 3000000000 THEN '高'
+          WHEN gap_ns >= 1500000000 THEN '中'
+          ELSE '低'
+        END AS confidence,
+        'idle' AS category
+      FROM idle_windows
+      ORDER BY start_ts
+      LIMIT 120
+    save_as: idle_periods
     optional: true
 
   # ==========================================================================
@@ -566,6 +858,8 @@ steps:
       - top_app_changes
       - user_gestures
       - scroll_initiation
+      - inertial_scrolls
+      - idle_periods
       - app_launches
       - system_events
       - jank_events
@@ -588,6 +882,14 @@ steps:
       ## 滑动启动时刻
       ${scroll_initiation}
       说明：这里记录了每次滑动开始的精确时刻（手指按下后移动到第2个点时）
+
+      ## 惯性滑动区间
+      ${inertial_scrolls}
+      说明：这里记录手指抬起（UP）后界面仍在滚动的区间，通常对应 Fling 惯性滚动
+
+      ## 空闲区间（Idle）
+      ${idle_periods}
+      说明：这里记录较长时间没有明显用户交互/切换的区间
 
       ## App 启动事件
       ${app_launches}

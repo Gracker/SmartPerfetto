@@ -120,27 +120,30 @@ class ExpressionEvaluator {
    * 支持：${variable}、${step.field}、比较运算符等
    */
   static evaluate(expression: string, context: SkillExecutionContext): any {
+    const parsePathWithDefault = (raw: string): { actualPath: string; defaultValue: string } | null => {
+      const m = raw.trim().match(
+        /^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*)\|([^|].*)$/
+      );
+      if (!m) return null;
+      return { actualPath: m[1].trim(), defaultValue: m[2].trim() };
+    };
+
     // 检查是否是完整的 ${...} 表达式（整个字符串被包裹）
     const fullExprMatch = expression.match(/^\$\{(.+)\}$/s);
     // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
     if (fullExprMatch && !fullExprMatch[1].includes('${')) {
       const innerExpr = fullExprMatch[1].trim();
       // Support ${varName|defaultValue} syntax for full expressions
-      const pipeIndex = innerExpr.indexOf('|');
-      if (pipeIndex >= 0) {
-        const varPart = innerExpr.substring(0, pipeIndex).trim();
-        const defaultPart = innerExpr.substring(pipeIndex + 1).trim();
-        // Check if varPart is a simple path (not a bitwise OR expression)
-        const isSimple = /^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$/.test(varPart);
-        if (isSimple) {
-          const value = this.resolvePath(varPart, context);
-          if (value !== undefined && value !== null) return value;
-          // Parse default: try number, boolean, then string
-          if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
-          if (defaultPart === 'true') return true;
-          if (defaultPart === 'false') return false;
-          return defaultPart;
-        }
+      const defaultSyntax = parsePathWithDefault(innerExpr);
+      if (defaultSyntax) {
+        const value = this.resolvePath(defaultSyntax.actualPath, context);
+        if (value !== undefined && value !== null) return value;
+        const defaultPart = defaultSyntax.defaultValue;
+        // Parse default: try number, boolean, then string
+        if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
+        if (defaultPart === 'true') return true;
+        if (defaultPart === 'false') return false;
+        return defaultPart;
       }
       // 这是一个 JavaScript 表达式，需要完整求值
       return this.evaluateJsExpression(innerExpr, context);
@@ -161,9 +164,9 @@ class ExpressionEvaluator {
       const rawPath = String(path ?? '').trim();
 
       // Support ${varName|defaultValue} syntax
-      const pipeIndex = rawPath.indexOf('|');
-      const actualPath = pipeIndex >= 0 ? rawPath.substring(0, pipeIndex).trim() : rawPath;
-      const defaultValue = pipeIndex >= 0 ? rawPath.substring(pipeIndex + 1).trim() : undefined;
+      const defaultSyntax = parsePathWithDefault(rawPath);
+      const actualPath = defaultSyntax?.actualPath ?? rawPath;
+      const defaultValue = defaultSyntax?.defaultValue;
 
       // 复杂表达式：使用完整的 JS 表达式求值
       if (!isSimplePath(actualPath)) {
@@ -217,11 +220,11 @@ class ExpressionEvaluator {
       for (const varName of rootVarNames) {
         // 从步骤结果中获取
         if (context.results[varName]) {
-          scope[varName] = { data: context.results[varName].data };
+          scope[varName] = this.wrapAsDataScope(context.results[varName].data);
         }
         // 从变量中获取
         else if (context.variables[varName] !== undefined) {
-          scope[varName] = { data: context.variables[varName] };
+          scope[varName] = this.wrapAsDataScope(context.variables[varName]);
         }
         // 从参数中获取
         else if (context.params[varName] !== undefined) {
@@ -301,6 +304,56 @@ class ExpressionEvaluator {
   }
 
   /**
+   * Unwrap SkillExecutionResult-like objects from referenced skills.
+   * save_as on `skill:` steps stores nested result objects, while most YAML
+   * expressions expect plain row arrays at `.data`.
+   */
+  private static unwrapSkillResultData(value: any): any {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value;
+    }
+
+    const maybeSkillResult = value as Record<string, any>;
+    // Full SkillExecutionResult from a referenced skill step.
+    // Prefer explicit `data` if present; otherwise fallback to raw step outputs.
+    if (Object.prototype.hasOwnProperty.call(maybeSkillResult, 'rawResults')) {
+      if (Object.prototype.hasOwnProperty.call(maybeSkillResult, 'data')) {
+        return maybeSkillResult.data;
+      }
+
+      const raw = maybeSkillResult.rawResults;
+      if (raw && typeof raw === 'object') {
+        const rootStepData = (raw as any)?.root?.data;
+        if (rootStepData !== undefined) {
+          return rootStepData;
+        }
+        for (const step of Object.values(raw as Record<string, any>)) {
+          if (step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data')) {
+            return (step as any).data;
+          }
+        }
+      }
+    }
+
+    // StepResult-like object.
+    if (
+      Object.prototype.hasOwnProperty.call(maybeSkillResult, 'success') &&
+      Object.prototype.hasOwnProperty.call(maybeSkillResult, 'data')
+    ) {
+      return maybeSkillResult.data;
+    }
+
+    return value;
+  }
+
+  /**
+   * Wrap values for `.data[...]` access pattern used by skill conditions.
+   */
+  private static wrapAsDataScope(value: any): { data: any } {
+    return { data: this.unwrapSkillResultData(value) };
+  }
+
+  /**
    * 解析路径引用，支持深层嵌套和数组索引
    * 例如: "step1.data[0].field" 或 "performance_summary.data[0].app_jank_rate"
    */
@@ -332,7 +385,7 @@ class ExpressionEvaluator {
       // 如果路径包含 .data，需要包装；否则直接返回
       const nextToken = tokens[1];
       if (nextToken === 'data') {
-        value = { data: context.variables[rootKey] };
+        value = this.wrapAsDataScope(context.variables[rootKey]);
       } else {
         // 直接访问数组元素，如 ${main_slices[0].name}
         value = context.variables[rootKey];
@@ -341,7 +394,7 @@ class ExpressionEvaluator {
     // 5. 步骤结果 - 返回包装对象以支持 .data[0].field 访问
     else if (context.results[rootKey]) {
       // 返回包含 data 属性的对象，这样 ${main_slices.data[0].name} 才能正确解析
-      value = { data: context.results[rootKey].data };
+      value = this.wrapAsDataScope(context.results[rootKey].data);
     }
     else {
       return undefined;
@@ -1064,6 +1117,9 @@ export class SkillExecutor {
                 error: atomicResult.error,
               };
             }
+            // Keep parity with step-based execution so referenced atomic skills
+            // can expose their payload via rawResults.root.data.
+            context.results['root'] = atomicResult;
             if (atomicResult.display) {
               displayResults.push(this.createDisplayResult('root', skill.meta.display_name, atomicResult, skill.output?.display));
             }
@@ -1161,6 +1217,38 @@ export class SkillExecutor {
    * Execute a step-based skill (composite/iterator/diagnostic, and legacy atomic skills without root-level `sql`).
    * Mutates `context.results` / `context.variables` and appends into `displayResults` / `diagnostics` / `synthesizeData`.
    */
+  private extractSaveAsValue(stepResult: StepResult): any {
+    // Most steps already store direct row arrays/objects in stepResult.data.
+    if (stepResult.stepType !== 'skill') {
+      return stepResult.data;
+    }
+
+    const nested = stepResult.data as any;
+    if (!nested || typeof nested !== 'object') {
+      return stepResult.data;
+    }
+
+    // Future-proof: if nested result already exposes .data directly, use it.
+    if (Object.prototype.hasOwnProperty.call(nested, 'data')) {
+      return nested.data;
+    }
+
+    // SkillExecutionResult currently exposes payloads via rawResults.
+    const rawResults = nested.rawResults;
+    if (rawResults && typeof rawResults === 'object') {
+      if ((rawResults as any).root?.data !== undefined) {
+        return (rawResults as any).root.data;
+      }
+      for (const step of Object.values(rawResults as Record<string, any>)) {
+        if (step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data')) {
+          return (step as any).data;
+        }
+      }
+    }
+
+    return stepResult.data;
+  }
+
   private async executeStepBasedSkill(
     skill: SkillDefinition,
     skillId: string,
@@ -1208,7 +1296,7 @@ export class SkillExecutor {
 
         // 如果有 save_as，保存到变量
         if ('save_as' in step && step.save_as) {
-          context.variables[step.save_as] = stepResult.data;
+          context.variables[step.save_as] = this.extractSaveAsValue(stepResult);
         }
 
         // 收集需要展示的结果
@@ -1307,7 +1395,7 @@ export class SkillExecutor {
 
           // Save to variables if save_as is specified
           if ('save_as' in step && step.save_as) {
-            execContext.variables[step.save_as] = stepResult.data;
+            execContext.variables[step.save_as] = this.extractSaveAsValue(stepResult);
           }
         }
 

@@ -136,6 +136,43 @@ export class HTMLReportGenerator {
     return HTMLReportGenerator.METADATA_COLUMN_PATTERNS.includes(colName);
   }
 
+  /**
+   * 标识符列（如 frame_id/session_id）不应做千分位格式化，
+   * 否则用户复制后会变成 "1,435,508" 这类不可直接用于 drill-down 的值。
+   */
+  private isIdentifierKey(key?: string): boolean {
+    if (!key) return false;
+    const k = String(key).trim().toLowerCase();
+    if (!k) return false;
+
+    if (
+      k === 'id' ||
+      k === 'frame_id' ||
+      k === 'session_id' ||
+      k === 'pid' ||
+      k === 'tid' ||
+      k === 'utid' ||
+      k === 'upid' ||
+      k === 'vsync_id' ||
+      k === 'binder_txn_id' ||
+      k === 'transaction_id'
+    ) {
+      return true;
+    }
+
+    return k.endsWith('_id');
+  }
+
+  private normalizeIdentifierDisplay(value: any): string {
+    if (value === null || value === undefined) return '-';
+    if (typeof value === 'bigint') return value.toString();
+    if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value));
+    const raw = String(value).trim();
+    const compact = raw.replace(/[,\s，_]/g, '');
+    if (/^\d+$/.test(compact)) return compact;
+    return raw;
+  }
+
   private sanitizeDomIdPart(value: string): string {
     return (value || 'section').replace(/[^a-zA-Z0-9_-]/g, '-');
   }
@@ -1130,7 +1167,7 @@ export class HTMLReportGenerator {
               <tr class="expandable-row" data-row-id="${rowId}">
                 ${variableColumns.map((col: string) => {
           const value = Array.isArray(row) ? row[data.columns.indexOf(col)] : row[col];
-          return `<td>${this.formatCellValue(value)}</td>`;
+          return `<td>${this.formatCellValue(value, col)}</td>`;
         }).join('')}
                 <td>
                   ${hasExpandable ? `
@@ -1485,14 +1522,14 @@ export class HTMLReportGenerator {
             ${visibleRows.map((row, idx) => `
               <tr>
                 <td style="color: #666; font-weight: 500;">${idx + 1}</td>
-                ${variableColumns.map(col => `<td class="${this.getCellClass(row[col])}">${this.formatCellValue(row[col])}</td>`).join('')}
+                ${variableColumns.map(col => `<td class="${this.getCellClass(row[col])}">${this.formatCellValue(row[col], col)}</td>`).join('')}
               </tr>
             `).join('')
       }
             ${hiddenRows.map((row, idx) => `
               <tr class="hidden-row" style="display: none;">
                 <td style="color: #666; font-weight: 500;">${defaultVisibleRows + idx + 1}</td>
-                ${variableColumns.map(col => `<td class="${this.getCellClass(row[col])}">${this.formatCellValue(row[col])}</td>`).join('')}
+                ${variableColumns.map(col => `<td class="${this.getCellClass(row[col])}">${this.formatCellValue(row[col], col)}</td>`).join('')}
               </tr>
             `).join('')
       }
@@ -1771,6 +1808,10 @@ export class HTMLReportGenerator {
       return '<span style="color: #999;">-</span>';
     }
 
+    if (this.isIdentifierKey(colDef.name)) {
+      return this.escapeHtml(this.normalizeIdentifierDisplay(value));
+    }
+
     const format = colDef.format || 'default';
 
     switch (format) {
@@ -1918,9 +1959,12 @@ export class HTMLReportGenerator {
   /**
    * Format cell value for display
    */
-  private formatCellValue(value: any): string {
+  private formatCellValue(value: any, key?: string): string {
     if (value === null || value === undefined) {
       return '<span style="color: #999;">NULL</span>';
+    }
+    if (this.isIdentifierKey(key)) {
+      return this.escapeHtml(this.normalizeIdentifierDisplay(value));
     }
     if (typeof value === 'number') {
       return value.toLocaleString('zh-CN');
@@ -3642,6 +3686,9 @@ export class HTMLReportGenerator {
    */
   private formatLayeredCellValue(value: any, key: string): string {
     if (value === null || value === undefined) return '<span style="color: #9ca3af;">-</span>';
+    if (this.isIdentifierKey(key)) {
+      return this.escapeHtml(this.normalizeIdentifierDisplay(value));
+    }
 
     if (typeof value === 'number') {
       const lowerKey = key.toLowerCase();
@@ -3927,7 +3974,7 @@ export class HTMLReportGenerator {
    */
   generateAgentDrivenHTML(data: AgentDrivenReportData): string {
     const { traceId, query, result, hypotheses, dialogue, timestamp } = data;
-    const dataEnvelopes = data.dataEnvelopes || [];
+    const dataEnvelopes = this.prepareAgentDrivenEnvelopes(data.dataEnvelopes || []);
     const agentResponses = data.agentResponses || [];
     const traceStartNs = data.traceStartNs ? this.parseNs(data.traceStartNs) : null;
 
@@ -4203,6 +4250,69 @@ export class HTMLReportGenerator {
 </html>`;
   }
 
+  private prepareAgentDrivenEnvelopes(envelopes: DataEnvelope[]): DataEnvelope[] {
+    if (!Array.isArray(envelopes) || envelopes.length === 0) return [];
+
+    const hasScrollingJankFrames = envelopes.some((env) => {
+      const stepId = String(env?.meta?.stepId || '');
+      return stepId === 'get_app_jank_frames' || stepId === 'app_jank_frames';
+    });
+
+    const filtered = envelopes.filter((env) => {
+      if (!env || env.data === undefined || env.data === null) return false;
+
+      const skillId = String(env.meta?.skillId || '');
+      const stepId = String(env.meta?.stepId || '');
+
+      // Prefer scrolling_analysis as primary jank source in report.
+      // Consumer-side views are still available in raw SSE stream if needed.
+      if (
+        hasScrollingJankFrames &&
+        skillId === 'consumer_jank_detection' &&
+        (stepId === 'consumer_jank_frames' || stepId === 'consumer_jank_summary' || stepId === 'jank_severity_distribution')
+      ) {
+        return false;
+      }
+
+      return true;
+    });
+
+    const seen = new Set<string>();
+    const deduped: DataEnvelope[] = [];
+    for (const env of filtered) {
+      const key = this.buildAgentEnvelopeDedupeKey(env);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(env);
+    }
+    return deduped;
+  }
+
+  private buildAgentEnvelopeDedupeKey(env: DataEnvelope): string {
+    const skillId = String(env.meta?.skillId || 'unknown');
+    const stepId = String(env.meta?.stepId || 'unknown');
+    const source = String(env.meta?.source || '').split('#')[0];
+    const data = env.data as any;
+
+    if (data && typeof data === 'object' && Array.isArray(data.rows)) {
+      const rows = data.rows as any[];
+      const sample = rows.length > 6
+        ? [...rows.slice(0, 3), ...rows.slice(-3)]
+        : rows;
+      return `${skillId}:${stepId}:${rows.length}:${JSON.stringify(sample)}`;
+    }
+
+    const compactData = (() => {
+      try {
+        return JSON.stringify(data);
+      } catch {
+        return String(data);
+      }
+    })();
+
+    return `${skillId}:${stepId}:${source}:${compactData.slice(0, 512)}`;
+  }
+
   /**
    * Render the DataEnvelopes section with all collected SQL result tables
    */
@@ -4274,7 +4384,7 @@ export class HTMLReportGenerator {
             ${simpleEntries.map(([key, value]) => `
               <span style="color: #666; font-size: 12px;">
                 <span style="color: #888;">${this.formatMetricLabel(key)}:</span>
-                <strong style="color: #333;">${this.formatDetailValue(value)}</strong>
+                <strong style="color: #333;">${this.formatDetailValue(value, key)}</strong>
               </span>
             `).join('')}
           </div>
@@ -4307,8 +4417,11 @@ export class HTMLReportGenerator {
   /**
    * 格式化 detail 值为更友好的显示
    */
-  private formatDetailValue(value: any): string {
+  private formatDetailValue(value: any, key?: string): string {
     if (value === null || value === undefined) return '-';
+    if (this.isIdentifierKey(key)) {
+      return this.escapeHtml(this.normalizeIdentifierDisplay(value));
+    }
     if (typeof value === 'number') {
       // 百分比
       if (value > 0 && value < 1) return `${(value * 100).toFixed(1)}%`;

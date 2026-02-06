@@ -33,7 +33,7 @@ import {
 import { createHypothesis } from '../hypothesisGenerator';
 import { planTaskGraph, buildTasksFromGraph } from '../taskGraphPlanner';
 import { executeTaskGraph, emitDataEnvelopes } from '../taskGraphExecutor';
-import { synthesizeFeedback } from '../feedbackSynthesizer';
+import { synthesizeFeedback, SynthesisResult } from '../feedbackSynthesizer';
 import type { FocusStore, UserFocus } from '../../context/focusStore';
 
 // =============================================================================
@@ -97,6 +97,7 @@ export class HypothesisExecutor implements AnalysisExecutor {
     let failureRounds = 0;
     let stopReason: string | null = null;
     let interventionRequest: InterventionRequest | undefined;
+    let hypothesesAnnounced = false;
 
     const hardMaxRounds = Math.max(1, ctx.config.maxRounds);
     const softMaxRounds = (() => {
@@ -237,6 +238,15 @@ export class HypothesisExecutor implements AnalysisExecutor {
 
       informationGaps = synthesis.informationGaps;
       allFindings.push(...synthesis.newFindings);
+
+      if (!hypothesesAnnounced && currentRound === 1) {
+        hypothesesAnnounced = this.emitEvidenceBasedHypothesesIfReady(
+          ctx.sharedContext,
+          synthesis,
+          responses,
+          emitter
+        );
+      }
 
       if (synthesis.newFindings.length > 0) {
         emitter.emitUpdate('finding', {
@@ -655,5 +665,69 @@ export class HypothesisExecutor implements AnalysisExecutor {
     }
 
     return alignedFindings / findings.length;
+  }
+
+  private emitEvidenceBasedHypothesesIfReady(
+    sharedContext: SharedAgentContext,
+    synthesis: SynthesisResult,
+    responses: AgentResponse[],
+    emitter: ProgressEmitter
+  ): boolean {
+    const hypotheses = Array.from(sharedContext.hypotheses.values())
+      .filter(h => h.status === 'proposed' || h.status === 'investigating' || h.status === 'confirmed')
+      .map(h => h.description);
+    if (hypotheses.length === 0) {
+      return false;
+    }
+
+    const evidenceSummary = this.buildEvidenceSummary(synthesis, responses);
+    if (evidenceSummary.length === 0) {
+      return false;
+    }
+
+    emitter.emitUpdate('progress', {
+      phase: 'hypotheses_generated',
+      message: `基于首轮证据，形成 ${hypotheses.length} 个待验证假设`,
+      hypotheses,
+      evidenceBased: true,
+      evidenceSummary,
+    });
+    return true;
+  }
+
+  private buildEvidenceSummary(
+    synthesis: SynthesisResult,
+    responses: AgentResponse[]
+  ): string[] {
+    const summary: string[] = [];
+
+    for (const finding of synthesis.newFindings.slice(0, 3)) {
+      summary.push(`发现: ${finding.title}`);
+    }
+
+    if (summary.length < 4) {
+      for (const finding of synthesis.confirmedFindings.slice(0, 2)) {
+        summary.push(`确认: ${finding.title}`);
+      }
+    }
+
+    if (summary.length < 4 && responses.length > 0) {
+      const successResponses = responses.filter(r => r.success).length;
+      const withData = responses.filter(r =>
+        (r.toolResults || []).some(t => t.success && t.data !== undefined && t.data !== null)
+      ).length;
+      if (withData > 0) {
+        summary.push(`任务反馈: ${successResponses}/${responses.length} 成功，${withData} 个任务返回有效数据`);
+      }
+    }
+
+    const deduped: string[] = [];
+    const seen = new Set<string>();
+    for (const item of summary) {
+      if (seen.has(item)) continue;
+      seen.add(item);
+      deduped.push(item);
+    }
+    return deduped.slice(0, 5);
   }
 }

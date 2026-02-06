@@ -102,6 +102,25 @@ export async function understandIntent(
       parsed.extractedParams = {};
     }
 
+    // Deterministic normalization and ID extraction safeguard:
+    // - normalize "1,435,508" style IDs
+    // - backfill missing referencedEntities/extractedParams from query text
+    // - backfill implicit references like "这一帧/该帧" from the last turn
+    // - force drill_down when a specific frame/session ID is explicitly given in follow-up
+    normalizeIntentEntityIds(parsed);
+    const deterministicRefs = extractDeterministicEntityRefs(query);
+    mergeDeterministicRefsIntoIntent(parsed, deterministicRefs);
+    const implicitCarry = applyImplicitEntityCarryOver(parsed, query, isFollowUp, sessionContext);
+    if (implicitCarry) {
+      emitter.log(`Intent carry-over: resolved implicit ${implicitCarry.entityType} -> ${implicitCarry.entityId}`);
+    }
+    if ((isFollowUp || deterministicRefs.frameIds.length > 0 || deterministicRefs.sessionIds.length > 0) &&
+        hasSpecificEntityRef(parsed) &&
+        parsed.followUpType !== 'compare' &&
+        parsed.followUpType !== 'clarify') {
+      parsed.followUpType = 'drill_down';
+    }
+
     emitter.log(`Intent understood: ${parsed.primaryGoal} (followUp: ${parsed.followUpType || 'initial'})`);
 
     return parsed;
@@ -191,8 +210,12 @@ const DRILL_DOWN_PATTERNS = [
   /详细分析/, /看一下/, /分析[一下]?帧/, /分析[一下]?frame/,
   /查看/, /检查/, /深入/, /具体看/,
   // Entity references
-  /frame\s*\d+/i, /帧\s*\d+/, /帧号\s*\d+/,
-  /session\s*\d+/i, /会话\s*\d+/, /滑动会话\s*\d+/,
+  /frame(?:_id)?\s*[:=：#]?\s*[0-9][0-9,，_\s]*/i,
+  /帧(?:号)?\s*[:=：#]?\s*[0-9][0-9,，_\s]*/,
+  /[0-9][0-9,，_\s]*\s*这?一?帧/,
+  /session\s*[:=：#]?\s*[0-9][0-9,，_\s]*/i,
+  /会话\s*[:=：#]?\s*[0-9][0-9,，_\s]*/,
+  /滑动会话\s*[:=：#]?\s*[0-9][0-9,，_\s]*/,
   // Time range references
   /从.*到.*秒/, /\d+\.?\d*\s*[秒s].*[到~\-].*\d+\.?\d*\s*[秒s]/i,
   /\d+\s*ms.*[到~\-].*\d+\s*ms/i,
@@ -200,22 +223,223 @@ const DRILL_DOWN_PATTERNS = [
   /发生了什么/, /怎么了/, /为什么/,
 ];
 
-function buildFallbackIntent(query: string, isFollowUp: boolean | null): Intent {
-  const isDrillDown = DRILL_DOWN_PATTERNS.some(p => p.test(query));
+function parseLooseInteger(input: any): number | null {
+  if (input === null || input === undefined) return null;
+  if (typeof input === 'number' && Number.isFinite(input)) {
+    return Math.trunc(input);
+  }
+  const s = String(input).trim();
+  if (!s) return null;
+  // Support IDs like "1,435,508", "1 435 508", "1_435_508", "1，435，508".
+  const normalized = s.replace(/[,\s，_]/g, '');
+  if (!/^\d+$/.test(normalized)) return null;
+  const n = Number(normalized);
+  return Number.isFinite(n) ? n : null;
+}
 
-  const frameIdMatch = query.match(/(?:帧|frame)\s*(\d+)/i);
-  const sessionIdMatch = query.match(/(?:会话|session)\s*(\d+)/i);
+interface DeterministicEntityRefs {
+  frameIds: number[];
+  sessionIds: number[];
+}
+
+function extractDeterministicEntityRefs(query: string): DeterministicEntityRefs {
+  const frameIds = new Set<number>();
+  const sessionIds = new Set<number>();
+
+  const framePatterns = [
+    /(?:frame(?:_id)?|frame\s*id|帧(?:号)?)\s*[:=：#]?\s*([0-9][0-9,，_\s]*)/gi,
+    /第\s*([0-9][0-9,，_\s]*)\s*帧/gi,
+    /([0-9][0-9,，_\s]*)\s*(?:这一帧|这帧|该帧|这个帧)/gi,
+  ];
+
+  const sessionPatterns = [
+    /(?:session|会话|滑动会话)\s*[:=：#]?\s*([0-9][0-9,，_\s]*)/gi,
+    /第\s*([0-9][0-9,，_\s]*)\s*(?:个)?\s*(?:会话|session)/gi,
+  ];
+
+  for (const pattern of framePatterns) {
+    for (const m of query.matchAll(pattern)) {
+      const n = parseLooseInteger(m[1]);
+      if (n !== null) frameIds.add(n);
+    }
+  }
+  for (const pattern of sessionPatterns) {
+    for (const m of query.matchAll(pattern)) {
+      const n = parseLooseInteger(m[1]);
+      if (n !== null) sessionIds.add(n);
+    }
+  }
+
+  return {
+    frameIds: Array.from(frameIds),
+    sessionIds: Array.from(sessionIds),
+  };
+}
+
+function normalizeIntentEntityIds(intent: Intent): void {
+  if (intent.extractedParams && typeof intent.extractedParams === 'object') {
+    const frameId = parseLooseInteger((intent.extractedParams as any).frame_id ?? (intent.extractedParams as any).frameId);
+    if (frameId !== null) {
+      (intent.extractedParams as any).frame_id = frameId;
+      delete (intent.extractedParams as any).frameId;
+    }
+    const sessionId = parseLooseInteger((intent.extractedParams as any).session_id ?? (intent.extractedParams as any).sessionId);
+    if (sessionId !== null) {
+      (intent.extractedParams as any).session_id = sessionId;
+      delete (intent.extractedParams as any).sessionId;
+    }
+  }
+
+  if (!Array.isArray(intent.referencedEntities)) return;
+  intent.referencedEntities = intent.referencedEntities.map((entity) => {
+    if (entity.type !== 'frame' && entity.type !== 'session') return entity;
+    const id = entity.value !== undefined ? entity.value : entity.id;
+    const normalized = parseLooseInteger(id);
+    if (normalized === null) return entity;
+    return { ...entity, id: normalized };
+  });
+}
+
+function mergeDeterministicRefsIntoIntent(intent: Intent, refs: DeterministicEntityRefs): void {
+  const extracted = intent.extractedParams || {};
+  const referenced = Array.isArray(intent.referencedEntities) ? [...intent.referencedEntities] : [];
+
+  if (refs.frameIds.length > 0) {
+    if (parseLooseInteger((extracted as any).frame_id) === null) {
+      (extracted as any).frame_id = refs.frameIds[0];
+    }
+    const hasFrameRef = referenced.some(e => e.type === 'frame');
+    if (!hasFrameRef) referenced.push({ type: 'frame', id: refs.frameIds[0] });
+  }
+
+  if (refs.sessionIds.length > 0) {
+    if (parseLooseInteger((extracted as any).session_id) === null) {
+      (extracted as any).session_id = refs.sessionIds[0];
+    }
+    const hasSessionRef = referenced.some(e => e.type === 'session');
+    if (!hasSessionRef) referenced.push({ type: 'session', id: refs.sessionIds[0] });
+  }
+
+  if (Object.keys(extracted).length > 0) intent.extractedParams = extracted;
+  if (referenced.length > 0) intent.referencedEntities = referenced;
+}
+
+function hasSpecificEntityRef(intent: Intent): boolean {
+  if (intent.extractedParams) {
+    if (parseLooseInteger((intent.extractedParams as any).frame_id) !== null) return true;
+    if (parseLooseInteger((intent.extractedParams as any).session_id) !== null) return true;
+  }
+  return !!intent.referencedEntities?.some(
+    e => (e.type === 'frame' || e.type === 'session') && parseLooseInteger(e.id ?? e.value) !== null
+  );
+}
+
+type ImplicitEntityType = 'frame' | 'session';
+
+function inferImplicitEntityType(query: string): ImplicitEntityType | null {
+  const q = String(query || '');
+  if (/(这一帧|这帧|该帧|这个帧|\bthis frame\b|\bthat frame\b)/i.test(q)) {
+    return 'frame';
+  }
+  if (/(这个会话|该会话|这次会话|这一会话|\bthis session\b|\bthat session\b)/i.test(q)) {
+    return 'session';
+  }
+  return null;
+}
+
+function applyImplicitEntityCarryOver(
+  intent: Intent,
+  query: string,
+  isFollowUp: boolean | null,
+  sessionContext: EnhancedSessionContext | null
+): { entityType: ImplicitEntityType; entityId: number } | null {
+  if (!isFollowUp || !sessionContext) return null;
+  if (hasSpecificEntityRef(intent)) return null;
+
+  const entityType = inferImplicitEntityType(query);
+  if (!entityType) return null;
+
+  const turns = sessionContext.getAllTurns();
+  if (!Array.isArray(turns) || turns.length === 0) return null;
+
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const entityId = extractEntityIdFromTurn(turns[i], entityType);
+    if (entityId === null) continue;
+
+    const extracted = (intent.extractedParams && typeof intent.extractedParams === 'object')
+      ? { ...intent.extractedParams }
+      : {};
+
+    if (entityType === 'frame') {
+      (extracted as any).frame_id = entityId;
+    } else {
+      (extracted as any).session_id = entityId;
+    }
+    intent.extractedParams = extracted;
+
+    const refs = Array.isArray(intent.referencedEntities) ? [...intent.referencedEntities] : [];
+    if (!refs.some(ref => ref.type === entityType)) {
+      refs.push({ type: entityType, id: entityId });
+    }
+    intent.referencedEntities = refs;
+
+    return { entityType, entityId };
+  }
+
+  return null;
+}
+
+function extractEntityIdFromTurn(turn: any, entityType: ImplicitEntityType): number | null {
+  const intent = turn?.intent;
+  if (intent && typeof intent === 'object') {
+    const extracted = (intent as any).extractedParams;
+    if (extracted && typeof extracted === 'object') {
+      const id = entityType === 'frame'
+        ? parseLooseInteger((extracted as any).frame_id ?? (extracted as any).frameId)
+        : parseLooseInteger((extracted as any).session_id ?? (extracted as any).sessionId);
+      if (id !== null) return id;
+    }
+
+    const refs = Array.isArray((intent as any).referencedEntities)
+      ? (intent as any).referencedEntities as Array<Record<string, any>>
+      : [];
+    for (let i = refs.length - 1; i >= 0; i -= 1) {
+      const ref = refs[i];
+      if (!ref || ref.type !== entityType) continue;
+      const raw = ref.value !== undefined ? ref.value : ref.id;
+      const id = parseLooseInteger(raw);
+      if (id !== null) return id;
+    }
+  }
+
+  const findings = Array.isArray(turn?.findings) ? turn.findings : [];
+  for (let i = findings.length - 1; i >= 0; i -= 1) {
+    const details = findings[i]?.details;
+    if (!details || typeof details !== 'object') continue;
+    const id = entityType === 'frame'
+      ? parseLooseInteger((details as any).frame_id ?? (details as any).frameId)
+      : parseLooseInteger((details as any).session_id ?? (details as any).sessionId);
+    if (id !== null) return id;
+  }
+
+  return null;
+}
+
+function buildFallbackIntent(query: string, isFollowUp: boolean | null): Intent {
+  const refs = extractDeterministicEntityRefs(query);
+  const hasEntityRef = refs.frameIds.length > 0 || refs.sessionIds.length > 0;
+  const isDrillDown = hasEntityRef || DRILL_DOWN_PATTERNS.some(p => p.test(query));
 
   const extractedParams: Record<string, any> = {};
   const referencedEntities: ReferencedEntity[] = [];
 
-  if (frameIdMatch) {
-    const id = parseInt(frameIdMatch[1], 10);
+  if (refs.frameIds.length > 0) {
+    const id = refs.frameIds[0];
     extractedParams.frame_id = id;
     referencedEntities.push({ type: 'frame', id });
   }
-  if (sessionIdMatch) {
-    const id = parseInt(sessionIdMatch[1], 10);
+  if (refs.sessionIds.length > 0) {
+    const id = refs.sessionIds[0];
     extractedParams.session_id = id;
     referencedEntities.push({ type: 'session', id });
   }

@@ -120,6 +120,67 @@ function extractListRows(rawResults: Record<string, any>, keys: string[]): any[]
   return null;
 }
 
+function parseTsNs(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim().replace(/^0+/, '');
+  if (!/^\d+$/.test(s) || s === '') return null;
+  return s;
+}
+
+function compareTsNs(a: string, b: string): number {
+  if (a.length !== b.length) return a.length - b.length;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+function buildWindowScope(rawResults: Record<string, any>, appJankList: any[] | null, consumerJankList: any[] | null): {
+  sessionIds: number[];
+  startTsNs?: string;
+  endTsNs?: string;
+} {
+  const sessionIds = new Set<number>();
+  let startTs: string | null = null;
+  let endTs: string | null = null;
+
+  const addSession = (v: unknown): void => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) sessionIds.add(n);
+  };
+
+  const addTs = (s: string | null, kind: 'start' | 'end'): void => {
+    if (!s) return;
+    if (kind === 'start') {
+      if (startTs === null || compareTsNs(s, startTs) < 0) startTs = s;
+      return;
+    }
+    if (endTs === null || compareTsNs(s, endTs) > 0) endTs = s;
+  };
+
+  const collectFromRows = (rows: any[] | null): void => {
+    if (!Array.isArray(rows)) return;
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      addSession((row as any).session_id);
+      addSession((row as any).sessionId);
+      addTs(parseTsNs((row as any).start_ts) || parseTsNs((row as any).startTs), 'start');
+      addTs(parseTsNs((row as any).end_ts) || parseTsNs((row as any).endTs) || parseTsNs((row as any).ts), 'end');
+    }
+  };
+
+  collectFromRows(appJankList);
+  collectFromRows(consumerJankList);
+  collectFromRows(extractListRows(rawResults, ['session_jank']));
+  collectFromRows(extractListRows(rawResults, ['scroll_sessions']));
+
+  const scope: { sessionIds: number[]; startTsNs?: string; endTsNs?: string } = {
+    sessionIds: Array.from(sessionIds).sort((a, b) => a - b),
+  };
+  if (startTs !== null) scope.startTsNs = startTs;
+  if (endTs !== null) scope.endTsNs = endTs;
+  return scope;
+}
+
 /**
  * Build a finding for jank detection results.
  *
@@ -204,14 +265,13 @@ export class FrameAgent extends BaseAgent {
    * to avoid duplicate/conflicting reports (e.g., "13 frames" vs "39 frames" vs "25 frames").
    *
    * Priority order for data source selection (default for user-facing jank analysis):
-   * 1. Consumer-side detection (consumerSummary) - closest to user perception, includes SF/HWC issues
-   * 2. Frame list count (jankList.length) - concrete per-frame data
-   * 3. App-side report (perfSummary) - app's own tracking, may miss system-layer jank
+   * 1. Scrolling skill frame list (get_app_jank_frames/app_jank_frames) - concrete per-frame data
+   * 2. Scrolling skill summary (performance_summary) - same detection logic aggregate
+   * 3. Consumer-side detection (consumerSummary) - supplemental perspective (SF/HWC layer)
    *
    * IMPORTANT trade-off notes for Android performance experts:
-   * - Consumer > App: Better for "why does user see jank?" analysis
-   * - App > Consumer: Better for "is this App's fault?" attribution
-   * - When consumer jank >> app jank, the delta is likely SF/HWC/GPU layer issues
+   * - 默认以 scrolling_analysis 定义的“真实掉帧”作为主口径，避免跨技能口径混淆
+   * - consumer_jank_detection 保留为补充证据，用于定位 SF/HWC/GPU 层问题
    * - All sources are preserved in evidence[] for expert review
    */
   protected extractFindingsFromResult(result: SkillExecutionResult, skillId: string, category: string): Finding[] {
@@ -222,58 +282,74 @@ export class FrameAgent extends BaseAgent {
     const rawResults = result.rawResults || {};
     const perfSummary = extractSummaryRow(rawResults, ['performance_summary', 'perf_summary']);
     const consumerSummary = extractSummaryRow(rawResults, ['consumer_jank_summary']);
-    const jankList = extractListRows(rawResults, ['get_app_jank_frames', 'app_jank_frames', 'consumer_jank_frames']);
+    const appJankList = extractListRows(rawResults, ['get_app_jank_frames', 'app_jank_frames']);
+    const consumerJankList = extractListRows(rawResults, ['consumer_jank_frames']);
+    const windowScope = buildWindowScope(rawResults, appJankList, consumerJankList);
 
     // Collect all available jank data sources
     const perfJankCount = perfSummary
       ? toNumber(perfSummary.janky_frames ?? perfSummary.jank_frames ?? perfSummary.jank_count)
       : 0;
-    const perfJankRate = perfSummary
-      ? toNumber(perfSummary.jank_rate ?? perfSummary.consumer_jank_rate ?? perfSummary.app_jank_rate)
-      : 0;
+    const perfJankRate = perfSummary ? toNumber(perfSummary.jank_rate ?? perfSummary.app_jank_rate) : 0;
     const consumerJankCount = consumerSummary
       ? toNumber(consumerSummary.consumer_jank_frames ?? consumerSummary.jank_frames)
       : 0;
     const consumerJankRate = consumerSummary
       ? toNumber(consumerSummary.consumer_jank_rate)
       : 0;
-    const listJankCount = jankList?.length ?? 0;
+    const appListJankCount = appJankList?.length ?? 0;
+    const consumerListJankCount = consumerJankList?.length ?? 0;
 
-    // Select the most reliable data source (priority: consumer > list > app report)
+    // Select the most reliable data source
+    // Priority: scrolling frame list > scrolling summary > consumer summary/list
     let primaryJankCount = 0;
     let primaryJankRate = 0;
     let dataSource = '';
     const evidenceSources: string[] = [];
 
-    if (consumerJankCount > 0 || consumerJankRate > 0) {
-      primaryJankCount = consumerJankCount;
-      primaryJankRate = consumerJankRate;
-      dataSource = '消费端检测';
-    } else if (listJankCount > 0) {
-      primaryJankCount = listJankCount;
+    if (appListJankCount > 0) {
+      primaryJankCount = appListJankCount;
       // Estimate rate if we have total frames from perfSummary
       const totalFrames = perfSummary ? toNumber(perfSummary.total_frames) : 0;
-      primaryJankRate = totalFrames > 0 ? (listJankCount / totalFrames) * 100 : 0;
-      dataSource = '帧列表统计';
+      primaryJankRate = totalFrames > 0 ? (appListJankCount / totalFrames) * 100 : 0;
+      dataSource = 'Scrolling 帧列表';
     } else if (perfJankCount > 0 || perfJankRate > 0) {
       primaryJankCount = perfJankCount;
       primaryJankRate = perfJankRate;
-      dataSource = 'App 报告';
+      dataSource = 'Scrolling 概览';
+    } else if (consumerJankCount > 0 || consumerJankRate > 0 || consumerListJankCount > 0) {
+      primaryJankCount = consumerJankCount > 0 ? consumerJankCount : consumerListJankCount;
+      primaryJankRate = consumerJankRate;
+      dataSource = '消费端检测(补充)';
     }
 
     // Build evidence list showing all data sources for transparency
+    if (appListJankCount > 0) {
+      evidenceSources.push(`Scrolling 帧列表: ${appListJankCount} 帧`);
+    }
     if (perfJankCount > 0 || perfJankRate > 0) {
-      evidenceSources.push(`App 报告: ${perfJankCount} 帧 (${perfJankRate.toFixed(1)}%)`);
+      evidenceSources.push(`Scrolling 概览: ${perfJankCount} 帧 (${perfJankRate.toFixed(1)}%)`);
     }
     if (consumerJankCount > 0 || consumerJankRate > 0) {
       evidenceSources.push(`消费端: ${consumerJankCount} 帧 (${consumerJankRate.toFixed(1)}%)`);
     }
-    if (listJankCount > 0) {
-      evidenceSources.push(`帧列表: ${listJankCount} 帧`);
+    if (consumerListJankCount > 0) {
+      evidenceSources.push(`消费端帧列表: ${consumerListJankCount} 帧`);
     }
 
     // Generate a single consolidated Finding for jank detection
     if (primaryJankCount > 0 || primaryJankRate > 0) {
+      const titlePrefix = windowScope.sessionIds.length === 1
+        ? `区间${windowScope.sessionIds[0]} 滑动卡顿检测`
+        : '滑动卡顿检测';
+      const scopeParts: string[] = [];
+      if (windowScope.sessionIds.length > 0) {
+        scopeParts.push(`session=${windowScope.sessionIds.join(',')}`);
+      }
+      if (windowScope.startTsNs && windowScope.endTsNs) {
+        scopeParts.push(`时间窗=${windowScope.startTsNs}~${windowScope.endTsNs}`);
+      }
+
       const severity: Finding['severity'] =
         primaryJankRate >= DEFAULT_JANK_THRESHOLDS.criticalRate ||
         primaryJankCount >= DEFAULT_JANK_THRESHOLDS.criticalCount
@@ -288,21 +364,27 @@ export class FrameAgent extends BaseAgent {
         category: 'frame',
         type: 'issue',
         severity,
-        title: `滑动卡顿检测: ${primaryJankCount} 帧 (${primaryJankRate.toFixed(1)}%)`,
-        description: `数据来源: ${dataSource}`,
+        title: `${titlePrefix}: ${primaryJankCount} 帧 (${primaryJankRate.toFixed(1)}%)`,
+        description: `数据来源: ${dataSource}${scopeParts.length > 0 ? `；范围: ${scopeParts.join('，')}` : ''}`,
         source: skillId,
         confidence: DEFAULT_RAW_FINDING_CONFIDENCE,
         details: {
           jankCount: primaryJankCount,
           jankRate: primaryJankRate,
           dataSource,
+          sourceWindow: {
+            sessionIds: windowScope.sessionIds,
+            ...(windowScope.startTsNs && { startTsNs: windowScope.startTsNs }),
+            ...(windowScope.endTsNs && { endTsNs: windowScope.endTsNs }),
+          },
           // Include all sources for debugging/comparison
           allSources: {
-            app: perfJankCount > 0 ? { count: perfJankCount, rate: perfJankRate } : null,
+            scrollingList: appListJankCount > 0 ? { count: appListJankCount } : null,
+            scrollingSummary: perfJankCount > 0 ? { count: perfJankCount, rate: perfJankRate } : null,
             consumer: consumerJankCount > 0 ? { count: consumerJankCount, rate: consumerJankRate } : null,
-            list: listJankCount > 0 ? { count: listJankCount } : null,
+            consumerList: consumerListJankCount > 0 ? { count: consumerListJankCount } : null,
           },
-          sample: jankList?.slice(0, 5) ?? [],
+          sample: (appJankList?.slice(0, 5) ?? consumerJankList?.slice(0, 5)) || [],
         },
         evidence: evidenceSources,
       });
@@ -508,14 +590,20 @@ ${findings || '无'}
   protected getRecommendedTools(context: AgentTaskContext): string[] {
     const query = context.query?.toLowerCase() || '';
     const tools: string[] = [];
+    const needsConsumerPerspective =
+      query.includes('surfaceflinger') ||
+      query.includes('sf') ||
+      query.includes('消费端') ||
+      query.includes('合成') ||
+      query.includes('hwc') ||
+      query.includes('gpu') ||
+      query.includes('renderthread') ||
+      query.includes('display') ||
+      query.includes('呈现') ||
+      query.includes('fence');
 
     // Always start with overview analysis
     tools.push('analyze_scrolling');
-
-    // Add specific tools based on query
-    if (query.includes('卡顿') || query.includes('jank') || query.includes('掉帧')) {
-      tools.push('detect_consumer_jank');
-    }
 
     if (query.includes('帧') || query.includes('frame')) {
       tools.push('analyze_app_frames');
@@ -524,11 +612,14 @@ ${findings || '无'}
 
     if (query.includes('滑动') || query.includes('scroll') || query.includes('列表')) {
       tools.push('analyze_scrolling');
-      tools.push('detect_consumer_jank');
     }
 
     if (query.includes('vsync') || query.includes('fence') || query.includes('延迟')) {
       tools.push('analyze_present_fence');
+    }
+
+    if (needsConsumerPerspective) {
+      tools.push('detect_consumer_jank');
     }
 
     // Default: use scrolling analysis

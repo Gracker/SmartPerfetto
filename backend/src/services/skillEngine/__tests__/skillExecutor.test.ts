@@ -1732,6 +1732,64 @@ describe('Skill Reference Step 执行', () => {
     expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT 7 as value');
   });
 
+  it('应该在 save_as + skill 引用场景下正确解包 data 供条件与模板访问', async () => {
+    mockTraceProcessor.query
+      .mockResolvedValueOnce({
+        columns: ['operation', 'total_ms'],
+        rows: [['GPU Fence Wait', 4.5]],
+      })
+      .mockResolvedValueOnce({
+        columns: ['ok'],
+        rows: [[1]],
+      })
+      .mockResolvedValueOnce({
+        columns: ['op'],
+        rows: [['GPU Fence Wait']],
+      });
+
+    const childSkill: SkillDefinition = {
+      name: 'child_gpu_skill',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Child GPU Skill'),
+      sql: "SELECT 'GPU Fence Wait' as operation, 4.5 as total_ms",
+    };
+
+    const parentSkill: SkillDefinition = {
+      name: 'parent_gpu_skill',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Parent GPU Skill'),
+      steps: [
+        {
+          id: 'gpu_render',
+          skill: 'child_gpu_skill',
+          save_as: 'gpu_data',
+        },
+        {
+          id: 'gpu_condition_check',
+          type: 'atomic',
+          condition: "gpu_data?.data?.find(g => g.operation === 'GPU Fence Wait')?.total_ms > 3",
+          sql: 'SELECT 1 as ok',
+        },
+        {
+          id: 'gpu_template_check',
+          type: 'atomic',
+          sql: "SELECT '${gpu_data.data[0].operation}' as op",
+        },
+      ],
+    };
+
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    const result = await executor.execute('parent_gpu_skill', 'trace-1');
+
+    expect(result.success).toBe(true);
+    expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT 1 as ok');
+    expect(mockTraceProcessor.query).toHaveBeenLastCalledWith('trace-1', "SELECT 'GPU Fence Wait' as op");
+  });
+
   it('应该正确合并结果', async () => {
     mockTraceProcessor.query
       .mockResolvedValueOnce({

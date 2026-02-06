@@ -119,6 +119,45 @@ function formatFindingWithEvidence(f: Finding): string {
   return result;
 }
 
+function deriveAttributionSignals(findings: Finding[]): {
+  sfDominant: boolean;
+  appJankZero: boolean;
+} {
+  let sfDominant = false;
+  let appJankZero = false;
+
+  for (const f of findings) {
+    const title = String(f.title || '');
+    const description = String(f.description || '');
+    const text = `${title}\n${description}`;
+
+    if (/责任归属分布:\s*SF\s+\d+\s*\(100%\)/i.test(text)) {
+      sfDominant = true;
+    }
+
+    const d = (f.details && typeof f.details === 'object') ? f.details as Record<string, any> : {};
+    const appCount = Number(
+      d.app_janky_count ??
+      d.appJankyCount ??
+      d.summary?.app_janky_count ??
+      d.summary?.appJankyCount
+    );
+    const appRate = Number(
+      d.app_jank_rate ??
+      d.appJankRate ??
+      d.summary?.app_jank_rate ??
+      d.summary?.appJankRate
+    );
+
+    if ((Number.isFinite(appCount) && appCount === 0) ||
+        (Number.isFinite(appRate) && appRate === 0)) {
+      appJankZero = true;
+    }
+  }
+
+  return { sfDominant, appJankZero };
+}
+
 /**
  * Generate an AI-powered conclusion from analysis results.
  * Falls back to a simple markdown summary if LLM fails.
@@ -262,6 +301,8 @@ ${sharedContext.traceConfig ? (sharedContext.traceConfig.isVRR
      - App 报告：App 自己统计的掉帧（可能漏报消费端问题）
      - 消费端检测：用户实际感知的掉帧（包含系统层问题）
      - 帧列表：逐帧分析的结果
+   - 如果来自不同 session_id 或不同时间窗（例如区间1 vs 区间2），属于区间差异，不应判定为矛盾
+   - 仅当“同口径 + 同时间窗 + 同进程”下出现冲突，才标记为矛盾
    - 应说明使用的是哪个口径，并引用具体 Finding 来源
 
 5. **CPU 频率低** vs **主线程耗时**：
@@ -466,6 +507,22 @@ function buildInsightFirstPrompt(params: {
 
   if (params.contradictionSection) {
     parts.push(params.contradictionSection.trim());
+    parts.push('');
+  }
+
+  const attributionSignals = deriveAttributionSignals(
+    params.allFindingsSorted.length > 0 ? params.allFindingsSorted : params.findings
+  );
+  if (attributionSignals.sfDominant || attributionSignals.appJankZero) {
+    parts.push('## 归因护栏');
+    if (attributionSignals.sfDominant) {
+      parts.push('- 当前证据显示 SF/消费端责任占主导（含 SF 100% 责任分布信号）。');
+    }
+    if (attributionSignals.appJankZero) {
+      parts.push('- 当前口径存在 app_janky_count 或 app_jank_rate 为 0 的信号。');
+    }
+    parts.push('- 在该前提下，不要直接给出“主线程/Choreographer 是主要根因”的高置信度结论。');
+    parts.push('- 若判定 App 主因，必须引用同一时间窗/同一帧的直接证据链（App Deadline Missed + 主线程耗时切片）。');
     parts.push('');
   }
 

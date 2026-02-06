@@ -55,6 +55,22 @@ interface TraceProcessorServiceLike {
   executeQuery(traceId: string, sql: string): Promise<{ columns: string[]; rows: any[][] }>;
 }
 
+function normalizeLooseNumericId(id: any): string | null {
+  if (id === null || id === undefined) return null;
+  if (typeof id === 'number' && Number.isFinite(id)) return String(Math.trunc(id));
+  const s = String(id).trim();
+  if (!s) return null;
+  const compact = s.replace(/[,\s，_]/g, '');
+  if (!/^\d+$/.test(compact)) return null;
+  return compact;
+}
+
+function normalizeEntityLookupId(entityType: 'frame' | 'session', id: any): string {
+  const numeric = normalizeLooseNumericId(id);
+  if (numeric !== null) return numeric;
+  return String(id);
+}
+
 // =============================================================================
 // Main Resolution Function
 // =============================================================================
@@ -103,12 +119,13 @@ export async function resolveDrillDown(
   for (const entity of entities) {
     if (entity.type !== 'frame' && entity.type !== 'session') continue;
 
-    const entityId = entity.value !== undefined ? entity.value : entity.id;
-    if (entityId === undefined || entityId === null) continue;
+    const rawEntityId = entity.value !== undefined ? entity.value : entity.id;
+    if (rawEntityId === undefined || rawEntityId === null) continue;
+    const entityId = normalizeEntityLookupId(entity.type, rawEntityId);
 
     const trace: DrillDownResolutionTrace = {
       entityType: entity.type,
-      entityId: String(entityId),
+      entityId,
       used: [],
       enriched: false,
     };

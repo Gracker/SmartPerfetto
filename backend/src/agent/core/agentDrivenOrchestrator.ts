@@ -31,6 +31,7 @@ import {
 import {
   createEnhancedStrategyRegistry,
   StrategyRegistry,
+  type StrategyMatchResult,
 } from '../strategies';
 import {
   sessionContextManager,
@@ -60,6 +61,9 @@ import {
   AnalysisServices,
   ProgressEmitter,
   ExecutionContext,
+  AnalysisPlanMode,
+  AnalysisPlanPayload,
+  AnalysisPlanStep,
 } from './orchestratorTypes';
 import type { Hypothesis } from '../types/agentProtocol';
 import { understandIntent } from './intentUnderstanding';
@@ -281,6 +285,7 @@ export class AgentDrivenOrchestrator extends EventEmitter {
       // 跳过假设生成，避免重复工作
       let initialHypotheses: Hypothesis[] = [];
       const isClarifyFollowUp = intent.followUpType === 'clarify';
+      const isDrillDownFollowUp = intent.followUpType === 'drill_down';
       const entityStore = sessionContext?.getEntityStore();
       const targetFrameId = intent.extractedParams?.frame_id;
       const targetSessionId = intent.extractedParams?.session_id;
@@ -297,30 +302,38 @@ export class AgentDrivenOrchestrator extends EventEmitter {
         targetSessionId &&
         entityStore?.wasSessionAnalyzed(String(targetSessionId));
 
-      const shouldSkipHypothesisGeneration = isClarifyFollowUp || isDrillDownWithCachedFrame || isDrillDownWithCachedSession;
-
+      // For explicit drill-down, hypothesis generation is usually noise:
+      // we already know the target entity and should execute deterministic deep analysis directly.
       if (isClarifyFollowUp) {
         emitter.log('[Clarify] Skipping hypothesis generation for clarification follow-up');
         initialHypotheses = [];
-      } else if (shouldSkipHypothesisGeneration) {
-        // Skip hypothesis generation for drill-down on already-analyzed entities
-        const entityType = isDrillDownWithCachedFrame ? 'frame' : 'session';
-        const entityId = isDrillDownWithCachedFrame ? targetFrameId : targetSessionId;
-        emitter.log(`[DrillDown] Skipping hypothesis generation - ${entityType} ${entityId} already cached in EntityStore`);
+      } else if (isDrillDownFollowUp) {
+        const entityType = targetFrameId ? 'frame' : (targetSessionId ? 'session' : 'entity');
+        const entityId = targetFrameId ?? targetSessionId ?? 'target';
 
-        // Generate minimal targeted hypothesis for drill-down context
-        initialHypotheses = [{
-          id: `drill_down_${entityType}_${entityId}`,
-          description: `深入分析 ${entityType === 'frame' ? '帧' : '会话'} ${entityId} 的详细数据`,
-          status: 'investigating',
-          confidence: 0.8,
-          relevantAgents: ['frame_agent'],
-          supportingEvidence: [],
-          contradictingEvidence: [],
-          proposedBy: 'drill_down_resolver',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        }];
+        if (isDrillDownWithCachedFrame || isDrillDownWithCachedSession) {
+          emitter.log(`[DrillDown] Skipping hypothesis generation - ${entityType} ${entityId} already cached in EntityStore`);
+        } else {
+          emitter.log(`[DrillDown] Skipping hypothesis generation - explicit drill-down target ${entityType}:${entityId}`);
+        }
+
+        // Minimal targeted hypothesis keeps downstream context coherent without generic LLM guesses.
+        if (targetFrameId || targetSessionId) {
+          initialHypotheses = [{
+            id: `drill_down_${entityType}_${entityId}`,
+            description: `深入分析 ${entityType === 'frame' ? '帧' : '会话'} ${entityId} 的详细数据`,
+            status: 'investigating',
+            confidence: 0.8,
+            relevantAgents: ['frame_agent'],
+            supportingEvidence: [],
+            contradictingEvidence: [],
+            proposedBy: 'drill_down_resolver',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }];
+        } else {
+          initialHypotheses = [];
+        }
       } else {
         // Normal hypothesis generation for initial queries or new entities
         initialHypotheses = await generateInitialHypotheses(
@@ -331,15 +344,6 @@ export class AgentDrivenOrchestrator extends EventEmitter {
       for (const hypothesis of initialHypotheses) {
         this.messageBus.updateHypothesis(hypothesis);
       }
-      emitter.emitUpdate('progress', {
-        phase: 'hypotheses_generated',
-        message: shouldSkipHypothesisGeneration
-          ? (isClarifyFollowUp
-            ? '澄清请求：跳过假设生成'
-            : `使用缓存数据，跳过假设生成`)
-          : `生成 ${initialHypotheses.length} 个假设`,
-        hypotheses: initialHypotheses.map(h => h.description),
-      });
 
       // 5. Enhanced drill-down resolution using EntityStore cache
       let drillDownResolved: DrillDownResolved | null = null;
@@ -378,6 +382,61 @@ export class AgentDrivenOrchestrator extends EventEmitter {
           });
         }
       }
+
+      // 5.25 Pre-routing decision: determine executor mode and expose first-turn plan.
+      const followUpType = intent.followUpType;
+      const isDrillDown = followUpResolution.isFollowUp &&
+        followUpType === 'drill_down' &&
+        effectiveIntervals &&
+        effectiveIntervals.length > 0;
+
+      let strategyMatchResult: StrategyMatchResult | null = null;
+      let preferHypothesisLoop = false;
+
+      if (followUpType !== 'clarify' && followUpType !== 'compare' && followUpType !== 'extend' && !isDrillDown) {
+        // Normal path: enhanced strategy matching with LLM semantic understanding.
+        let traceContext = undefined;
+        try {
+          traceContext = await detectTraceContext(options.traceProcessorService, traceId);
+        } catch (e: any) {
+          emitter.log(`[StrategySelection] Failed to detect trace context: ${e.message}`);
+        }
+
+        strategyMatchResult = await this.strategyRegistry.matchEnhanced(query, intent, traceContext);
+        if (strategyMatchResult.strategy) {
+          const forceStrategy = ['1', 'true', 'yes', 'on'].includes(
+            String(process.env.SMARTPERFETTO_FORCE_STRATEGY || '').trim().toLowerCase()
+          );
+          const isScrollingStrategy = strategyMatchResult.strategy.id === 'scrolling';
+          const isSceneReconstructionStrategy =
+            strategyMatchResult.strategy.id === 'scene_reconstruction' ||
+            strategyMatchResult.strategy.id === 'scene_reconstruction_quick';
+          // Scrolling/jank strategy needs deterministic staged execution so frame list
+          // can be bound with per-frame expandable details.
+          preferHypothesisLoop =
+            !forceStrategy &&
+            traceAgentState.preferences?.defaultLoopMode === 'hypothesis_experiment' &&
+            !isScrollingStrategy &&
+            !isSceneReconstructionStrategy;
+        }
+      }
+
+      const analysisPlanMode = this.determineAnalysisPlanMode(
+        followUpType,
+        strategyMatchResult,
+        preferHypothesisLoop
+      );
+      const analysisPlan = this.buildAnalysisPlanPayload(
+        analysisPlanMode,
+        intent.primaryGoal,
+        intent.aspects,
+        strategyMatchResult
+      );
+      emitter.emitUpdate('progress', {
+        phase: 'analysis_plan',
+        message: '已确认分析计划：先收集证据，再定位根因',
+        plan: analysisPlan,
+      });
 
       // 5.5 Determine incremental analysis scope (v2.0)
       // Uses FocusStore to decide if full or incremental analysis is needed
@@ -441,6 +500,16 @@ export class AgentDrivenOrchestrator extends EventEmitter {
         incrementalScope,
         config: effectiveConfig,
       };
+      if (strategyMatchResult?.strategy) {
+        // Keep strategy hint for downstream task planning even when we route to hypothesis loop.
+        executionCtx.options.suggestedStrategy = {
+          id: strategyMatchResult.strategy.id,
+          name: strategyMatchResult.strategy.name,
+          confidence: strategyMatchResult.confidence,
+          matchMethod: strategyMatchResult.matchMethod,
+          reasoning: strategyMatchResult.reasoning,
+        };
+      }
 
       // 7. Select and run executor
       // Create session-scoped envelope registry to prevent duplicate data emission
@@ -461,8 +530,6 @@ export class AgentDrivenOrchestrator extends EventEmitter {
       // 5. Strategy executor if a strategy matches the query
       // 6. Hypothesis executor as fallback for adaptive analysis
       let executor: AnalysisExecutor;
-
-      const followUpType = intent.followUpType;
 
       if (followUpType === 'clarify') {
         // Clarify: read-only explanation, no SQL queries
@@ -489,91 +556,57 @@ export class AgentDrivenOrchestrator extends EventEmitter {
         // Set FocusStore for focus-aware entity prioritization
         extendExecutor.setFocusStore(this.focusStore);
         executor = extendExecutor;
-      } else {
-        const isDrillDown = followUpResolution.isFollowUp &&
-          followUpType === 'drill_down' &&
-          effectiveIntervals &&
-          effectiveIntervals.length > 0;
+      } else if (isDrillDown) {
+        // Direct drill-down: bypasses strategy pipeline, runs target skill directly
+        // Update followUpResolution with resolved intervals
+        const enhancedFollowUp: FollowUpResolution = {
+          ...followUpResolution,
+          focusIntervals: effectiveIntervals,
+        };
+        emitter.log(`[Routing] Using DirectDrillDownExecutor for ${effectiveIntervals!.length} interval(s)`);
+        executor = new DirectDrillDownExecutor(enhancedFollowUp, services);
+      } else if (strategyMatchResult?.strategy) {
+        // Emit strategy selection event for observability
+        emitter.emitUpdate('strategy_selected', {
+          strategyId: strategyMatchResult.strategy.id,
+          strategyName: strategyMatchResult.strategy.name,
+          confidence: strategyMatchResult.confidence,
+          reasoning: strategyMatchResult.reasoning || 'Keyword match',
+          selectionMethod: strategyMatchResult.matchMethod === 'keyword' ? 'keyword' : 'llm',
+        });
 
-        if (isDrillDown) {
-          // Direct drill-down: bypasses strategy pipeline, runs target skill directly
-          // Update followUpResolution with resolved intervals
-          const enhancedFollowUp: FollowUpResolution = {
-            ...followUpResolution,
-            focusIntervals: effectiveIntervals,
-          };
-          emitter.log(`[Routing] Using DirectDrillDownExecutor for ${effectiveIntervals!.length} interval(s)`);
-          executor = new DirectDrillDownExecutor(enhancedFollowUp, services);
+        if (preferHypothesisLoop) {
+          emitter.emitUpdate('strategy_fallback', {
+            reason: 'prefer_hypothesis_experiment_loop',
+            candidatesEvaluated: this.strategyRegistry.getAll().length,
+            topCandidateConfidence: strategyMatchResult.confidence,
+            fallbackTo: 'hypothesis_driven',
+          });
+
+          emitter.log(`[Routing] Strategy matched (${strategyMatchResult.strategy.name}) but prefer hypothesis+exp loop; using HypothesisExecutor`);
+          const hypothesisExecutor = new HypothesisExecutor(services, this.agentRegistry, this.strategyPlanner);
+          hypothesisExecutor.setFocusStore(this.focusStore);
+          executor = hypothesisExecutor;
         } else {
-          // Normal path: enhanced strategy matching with LLM semantic understanding
-          // Detect trace context for LLM strategy selection
-          let traceContext = undefined;
-          try {
-            traceContext = await detectTraceContext(options.traceProcessorService, traceId);
-          } catch (e: any) {
-            emitter.log(`[StrategySelection] Failed to detect trace context: ${e.message}`);
-          }
-
-          // Use enhanced matching (keyword-first with LLM fallback)
-          const matchResult = await this.strategyRegistry.matchEnhanced(query, intent, traceContext);
-
-          if (matchResult.strategy) {
-            // Emit strategy selection event for observability
-            emitter.emitUpdate('strategy_selected', {
-              strategyId: matchResult.strategy.id,
-              strategyName: matchResult.strategy.name,
-              confidence: matchResult.confidence,
-              reasoning: matchResult.reasoning || 'Keyword match',
-              selectionMethod: matchResult.matchMethod === 'keyword' ? 'keyword' : 'llm',
-            });
-
-            // Always attach suggested strategy hint for downstream planning (even if we don't execute it).
-            executionCtx.options.suggestedStrategy = {
-              id: matchResult.strategy.id,
-              name: matchResult.strategy.name,
-              confidence: matchResult.confidence,
-              matchMethod: matchResult.matchMethod,
-              reasoning: matchResult.reasoning,
-            };
-
-            const forceStrategy = ['1', 'true', 'yes', 'on'].includes(
-              String(process.env.SMARTPERFETTO_FORCE_STRATEGY || '').trim().toLowerCase()
-            );
-            const preferHypothesisLoop = !forceStrategy && traceAgentState.preferences?.defaultLoopMode === 'hypothesis_experiment';
-            if (preferHypothesisLoop) {
-              emitter.emitUpdate('strategy_fallback', {
-                reason: 'prefer_hypothesis_experiment_loop',
-                candidatesEvaluated: this.strategyRegistry.getAll().length,
-                topCandidateConfidence: matchResult.confidence,
-                fallbackTo: 'hypothesis_driven',
-              });
-
-              emitter.log(`[Routing] Strategy matched (${matchResult.strategy.name}) but prefer hypothesis+exp loop; using HypothesisExecutor`);
-              const hypothesisExecutor = new HypothesisExecutor(services, this.agentRegistry, this.strategyPlanner);
-              hypothesisExecutor.setFocusStore(this.focusStore);
-              executor = hypothesisExecutor;
-            } else {
-              emitter.log(`[Routing] Using StrategyExecutor: ${matchResult.strategy.name} (method: ${matchResult.matchMethod}, confidence: ${matchResult.confidence.toFixed(2)})`);
-              executor = new StrategyExecutor(matchResult.strategy, services);
-            }
-          } else {
-            // No strategy match - emit fallback event
-            if (matchResult.fallbackReason) {
-              emitter.emitUpdate('strategy_fallback', {
-                reason: matchResult.fallbackReason,
-                candidatesEvaluated: this.strategyRegistry.getAll().length,
-                topCandidateConfidence: matchResult.confidence,
-                fallbackTo: 'hypothesis_driven',
-              });
-            }
-
-            emitter.log(`[Routing] Using HypothesisExecutor (${matchResult.fallbackReason || 'no strategy match'})`);
-            const hypothesisExecutor = new HypothesisExecutor(services, this.agentRegistry, this.strategyPlanner);
-            // Set FocusStore for focus-aware analysis planning (v2.0)
-            hypothesisExecutor.setFocusStore(this.focusStore);
-            executor = hypothesisExecutor;
-          }
+          emitter.log(`[Routing] Using StrategyExecutor: ${strategyMatchResult.strategy.name} (method: ${strategyMatchResult.matchMethod}, confidence: ${strategyMatchResult.confidence.toFixed(2)})`);
+          executor = new StrategyExecutor(strategyMatchResult.strategy, services);
         }
+      } else {
+        // No strategy match - emit fallback event
+        if (strategyMatchResult?.fallbackReason) {
+          emitter.emitUpdate('strategy_fallback', {
+            reason: strategyMatchResult.fallbackReason,
+            candidatesEvaluated: this.strategyRegistry.getAll().length,
+            topCandidateConfidence: strategyMatchResult.confidence,
+            fallbackTo: 'hypothesis_driven',
+          });
+        }
+
+        emitter.log(`[Routing] Using HypothesisExecutor (${strategyMatchResult?.fallbackReason || 'no strategy match'})`);
+        const hypothesisExecutor = new HypothesisExecutor(services, this.agentRegistry, this.strategyPlanner);
+        // Set FocusStore for focus-aware analysis planning (v2.0)
+        hypothesisExecutor.setFocusStore(this.focusStore);
+        executor = hypothesisExecutor;
       }
 
       const executorResult = await executor.execute(executionCtx, emitter);
@@ -768,6 +801,139 @@ export class AgentDrivenOrchestrator extends EventEmitter {
         totalDurationMs: Date.now() - startTime,
       };
     }
+  }
+
+  private determineAnalysisPlanMode(
+    followUpType: string | undefined,
+    strategyMatchResult: StrategyMatchResult | null,
+    preferHypothesisLoop: boolean
+  ): AnalysisPlanMode {
+    if (followUpType === 'clarify') return 'clarify';
+    if (followUpType === 'compare') return 'compare';
+    if (followUpType === 'extend') return 'extend';
+    if (followUpType === 'drill_down') return 'drill_down';
+    if (strategyMatchResult?.strategy && !preferHypothesisLoop) return 'strategy';
+    return 'hypothesis';
+  }
+
+  private buildAnalysisPlanPayload(
+    mode: AnalysisPlanMode,
+    objective: string,
+    aspects: string[],
+    strategyMatchResult: StrategyMatchResult | null
+  ): AnalysisPlanPayload {
+    const plan: AnalysisPlanPayload = {
+      mode,
+      objective,
+      steps: this.buildAnalysisPlanSteps(mode),
+      evidence: this.buildEvidenceChecklist(aspects, mode),
+      hypothesisPolicy: 'after_first_evidence',
+    };
+
+    if (mode === 'strategy' && strategyMatchResult?.strategy) {
+      plan.strategy = {
+        id: strategyMatchResult.strategy.id,
+        name: strategyMatchResult.strategy.name,
+        confidence: strategyMatchResult.confidence,
+        selectionMethod: strategyMatchResult.matchMethod,
+      };
+    }
+
+    return plan;
+  }
+
+  private buildAnalysisPlanSteps(mode: AnalysisPlanMode): AnalysisPlanStep[] {
+    const byMode: Record<AnalysisPlanMode, AnalysisPlanStep[]> = {
+      strategy: [
+        { order: 1, title: '基线采集', action: '按匹配策略先收集全局概览指标与异常分布' },
+        { order: 2, title: '区间定位', action: '定位关键时间窗或目标实体并缩小范围' },
+        { order: 3, title: '深度验证', action: '对关键区间执行逐层验证后输出结论' },
+      ],
+      hypothesis: [
+        { order: 1, title: '证据采集', action: '先采集最小必要证据，建立性能基线' },
+        { order: 2, title: '形成假设', action: '基于首轮证据形成待验证假设，不做先验猜测' },
+        { order: 3, title: '验证收敛', action: '按信息增益执行实验并收敛到可解释根因' },
+      ],
+      clarify: [
+        { order: 1, title: '证据回放', action: '回放并归纳已有 findings/evidence 事实' },
+        { order: 2, title: '概念澄清', action: '解释术语、分类标准与判定依据' },
+        { order: 3, title: '结论对齐', action: '给出可追溯的解释结论与下一步建议' },
+      ],
+      compare: [
+        { order: 1, title: '口径对齐', action: '统一时间窗、刷新率与统计口径' },
+        { order: 2, title: '差异量化', action: '量化对象间关键指标差异与显著性' },
+        { order: 3, title: '归因验证', action: '对主要差异进行证据归因与可信度标注' },
+      ],
+      extend: [
+        { order: 1, title: '扩展范围', action: '在未覆盖实体/区间中扩展同类问题检索' },
+        { order: 2, title: '模式归纳', action: '识别重复模式并补齐关键证据缺口' },
+        { order: 3, title: '风险评估', action: '输出扩展后的影响面与优先级建议' },
+      ],
+      drill_down: [
+        { order: 1, title: '锁定目标', action: '锁定指定实体或时间区间并确认边界' },
+        { order: 2, title: '细粒度分析', action: '在目标范围内执行逐层细粒度证据采集' },
+        { order: 3, title: '根因解释', action: '输出目标问题的直接证据链与根因解释' },
+      ],
+    };
+
+    return byMode[mode];
+  }
+
+  private buildEvidenceChecklist(aspects: string[], mode: AnalysisPlanMode): string[] {
+    const evidences = new Set<string>();
+    const normalizedAspects = Array.isArray(aspects)
+      ? aspects.map(a => String(a || '').toLowerCase())
+      : [];
+
+    const aspectEvidenceMap: Record<string, string[]> = {
+      scrolling: ['滑动会话与区间级 FPS/掉帧率'],
+      jank: ['卡顿帧列表、jank 类型分布与严重度'],
+      frame: ['App/SF 帧时序、帧预算与超时类型'],
+      cpu: ['主线程与关键线程 CPU 调度、频率与等待'],
+      memory: ['内存分配热点、GC 暂停与内存压力'],
+      binder: ['Binder 调用耗时、阻塞链与锁竞争'],
+      startup: ['启动阶段拆解与关键阶段耗时'],
+      interaction: ['输入到渲染链路延迟与交互响应'],
+      anr: ['阻塞线程、等待对象与 ANR 证据链'],
+      system: ['系统负载、热限频、I/O 抖动与后台干扰'],
+      gpu: ['GPU 渲染耗时、Fence 等待与合成延迟'],
+      render: ['RenderThread/绘制阶段耗时与瓶颈'],
+      timeline: ['关键事件时间线与关联区间'],
+    };
+
+    for (const aspect of normalizedAspects) {
+      const mapped = aspectEvidenceMap[aspect];
+      if (!mapped) continue;
+      for (const evidence of mapped) {
+        evidences.add(evidence);
+      }
+    }
+
+    // Baseline evidence always comes first.
+    evidences.add('关键指标基线（时间窗、进程、刷新率口径一致）');
+
+    if (mode === 'compare') {
+      evidences.add('对比对象统一口径指标（同窗口/同刷新率）');
+    } else if (mode === 'clarify') {
+      evidences.add('已确认发现与证据链摘要');
+    } else if (mode === 'drill_down') {
+      evidences.add('目标实体区间内的逐层证据（frame/cpu/binder/memory）');
+    } else if (mode === 'extend') {
+      evidences.add('未覆盖实体的同类证据补齐与模式一致性');
+    }
+
+    const fallbackEvidence = [
+      '帧时序与掉帧统计',
+      '线程调度与关键耗时切片',
+      'IPC/锁竞争与系统侧干扰指标',
+    ];
+    if (evidences.size === 1) {
+      for (const evidence of fallbackEvidence) {
+        evidences.add(evidence);
+      }
+    }
+
+    return Array.from(evidences);
   }
 
   // ==========================================================================

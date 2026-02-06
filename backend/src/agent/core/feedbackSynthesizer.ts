@@ -108,6 +108,195 @@ function formatFindingBrief(f: Finding): string {
   return `${f.title} (${metrics}${evStr ? `, ev=${evStr}` : ''})`;
 }
 
+function extractEvidenceIdsFromFinding(f: Finding): string[] {
+  const ids: string[] = [];
+  const ev = (f as any).evidence;
+  const arr = Array.isArray(ev) ? ev : (ev ? [ev] : []);
+
+  for (const e of arr) {
+    if (!e) continue;
+    if (typeof e === 'string') {
+      const s = e.trim();
+      if (/^ev_[0-9a-f]{12}$/.test(s)) ids.push(s);
+      continue;
+    }
+    if (typeof e === 'object') {
+      const id = (e as any).evidenceId || (e as any).evidence_id;
+      if (typeof id === 'string' && /^ev_[0-9a-f]{12}$/.test(id.trim())) {
+        ids.push(id.trim());
+      }
+    }
+  }
+
+  const seen = new Set<string>();
+  return ids.filter(id => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function extractSessionIdsFromFinding(f: Finding): number[] {
+  const out = new Set<number>();
+  const d = (f.details && typeof f.details === 'object') ? f.details as Record<string, any> : {};
+
+  const addMaybeNumber = (v: unknown): void => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) out.add(n);
+  };
+
+  addMaybeNumber(d.session_id);
+  addMaybeNumber(d.sessionId);
+  addMaybeNumber(d.scope?.session_id);
+  addMaybeNumber(d.scope?.sessionId);
+
+  const sessionIdArrays = [
+    d.sourceWindow?.sessionIds,
+    d.sourceWindow?.session_ids,
+    d.scope?.sessionIds,
+    d.scope?.session_ids,
+  ];
+  for (const arr of sessionIdArrays) {
+    if (!Array.isArray(arr)) continue;
+    for (const v of arr) addMaybeNumber(v);
+  }
+
+  const samples = Array.isArray(d.sample) ? d.sample : [];
+  for (const s of samples) {
+    if (!s || typeof s !== 'object') continue;
+    addMaybeNumber((s as any).session_id);
+    addMaybeNumber((s as any).sessionId);
+  }
+
+  const title = String(f.title || '');
+  const titleMatch = title.match(/区间\s*(\d+)/);
+  if (titleMatch) addMaybeNumber(titleMatch[1]);
+
+  return Array.from(out);
+}
+
+function parseTsNs(value: unknown): bigint | null {
+  if (value === null || value === undefined) return null;
+  const s = String(value).trim();
+  if (!/^\d+$/.test(s)) return null;
+  try {
+    const n = BigInt(s);
+    return n > 0n ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractTimeRangeFromFinding(f: Finding): { start?: bigint; end?: bigint } {
+  const d = (f.details && typeof f.details === 'object') ? f.details as Record<string, any> : {};
+
+  let start = parseTsNs(d.start_ts) || parseTsNs(d.startTs) || parseTsNs(d.sourceWindow?.startTsNs) || parseTsNs(d.sourceWindow?.start_ts);
+  let end = parseTsNs(d.end_ts) || parseTsNs(d.endTs) || parseTsNs(d.sourceWindow?.endTsNs) || parseTsNs(d.sourceWindow?.end_ts);
+
+  const samples = Array.isArray(d.sample) ? d.sample : [];
+  for (const s of samples) {
+    if (!s || typeof s !== 'object') continue;
+    const sStart = parseTsNs((s as any).start_ts) || parseTsNs((s as any).startTs);
+    const sEnd = parseTsNs((s as any).end_ts) || parseTsNs((s as any).endTs);
+    if (sStart && (!start || sStart < start)) start = sStart;
+    if (sEnd && (!end || sEnd > end)) end = sEnd;
+  }
+
+  return {
+    ...(start && { start }),
+    ...(end && { end }),
+  };
+}
+
+function findingsAreDifferentScope(a: Finding, b: Finding): boolean {
+  const aSessions = extractSessionIdsFromFinding(a);
+  const bSessions = extractSessionIdsFromFinding(b);
+  if (aSessions.length > 0 && bSessions.length > 0) {
+    const bSet = new Set(bSessions);
+    const hasIntersection = aSessions.some(id => bSet.has(id));
+    if (!hasIntersection) return true;
+  }
+
+  const aRange = extractTimeRangeFromFinding(a);
+  const bRange = extractTimeRangeFromFinding(b);
+  if (aRange.start !== undefined && aRange.end !== undefined &&
+      bRange.start !== undefined && bRange.end !== undefined) {
+    const overlap = aRange.start <= bRange.end && bRange.start <= aRange.end;
+    if (!overlap) return true;
+  }
+
+  return false;
+}
+
+function buildEvidenceIdFindingIndex(findings: Finding[]): Map<string, Finding> {
+  const index = new Map<string, Finding>();
+  for (const f of findings) {
+    for (const id of extractEvidenceIdsFromFinding(f)) {
+      if (!index.has(id)) index.set(id, f);
+    }
+  }
+  return index;
+}
+
+function filterScopeIncompatibleContradictions(
+  contradictions: string[],
+  findings: Finding[],
+  emitter: ProgressEmitter
+): string[] {
+  if (!Array.isArray(contradictions) || contradictions.length === 0) return [];
+
+  const evidenceIndex = buildEvidenceIdFindingIndex(findings);
+  const filtered: string[] = [];
+
+  for (const contradiction of contradictions) {
+    const ids = Array.from(new Set(String(contradiction || '').match(/\bev_[0-9a-f]{12}\b/g) || []));
+    if (ids.length < 2) {
+      filtered.push(contradiction);
+      continue;
+    }
+
+    const related: Finding[] = [];
+    for (const id of ids) {
+      const f = evidenceIndex.get(id);
+      if (f && !related.includes(f)) related.push(f);
+    }
+
+    if (related.length < 2) {
+      filtered.push(contradiction);
+      continue;
+    }
+
+    let scopeIncompatible = false;
+    for (let i = 0; i < related.length; i += 1) {
+      for (let j = i + 1; j < related.length; j += 1) {
+        if (findingsAreDifferentScope(related[i], related[j])) {
+          scopeIncompatible = true;
+          break;
+        }
+      }
+      if (scopeIncompatible) break;
+    }
+
+    if (scopeIncompatible) {
+      emitter.log(`[feedbackSynthesizer] Skip contradiction (different scope): ${contradiction}`);
+      continue;
+    }
+
+    filtered.push(contradiction);
+  }
+
+  return filtered;
+}
+
+function contradictionMentionsFinding(contradiction: string, finding: Finding): boolean {
+  const lower = String(contradiction || '').toLowerCase();
+  const title = String(finding.title || '').toLowerCase();
+  if (title && lower.includes(title)) return true;
+
+  const evIds = extractEvidenceIdsFromFinding(finding);
+  return evIds.some(id => lower.includes(id.toLowerCase()));
+}
+
 export interface SynthesisResult {
   newFindings: Finding[];
   confirmedFindings: Finding[];
@@ -198,6 +387,11 @@ ${Array.from(sharedContext.hypotheses.values()).map(h => `- ${h.description} (${
 4. 当前数据是否存在不一致或异常？
 5. 若可能，请在矛盾描述中引用 evidence id（例如 ev_123...），便于后续追溯证据链。
 
+矛盾判定约束（必须遵守）：
+- 只有“同口径 + 同时间窗/同会话 + 同进程”下的数据冲突，才可标记为矛盾
+- 不同区间（例如区间1 vs 区间2）的数值差异，属于区间差异，不是矛盾
+- 如果无法确认同一时间窗，优先归类为“信息缺口”而不是“矛盾”
+
 请以 JSON 返回：
 {
   "correlatedFindings": ["相互印证的发现"],
@@ -234,7 +428,11 @@ ${Array.from(sharedContext.hypotheses.values()).map(h => `- ${h.description} (${
 
     // Process contradictions - mark conflicting findings with reduced confidence
     // This prevents self-contradictory conclusions like "主线程耗时" vs "主线程阻塞 90%"
-    const contradictions = parsed.contradictions || [];
+    const contradictions = filterScopeIncompatibleContradictions(
+      parsed.contradictions || [],
+      newFindings,
+      emitter
+    );
     if (contradictions.length > 0) {
       emitter.log(`[feedbackSynthesizer] Detected contradictions: ${contradictions.join('; ')}`);
 
@@ -252,21 +450,17 @@ ${Array.from(sharedContext.hypotheses.values()).map(h => `- ${h.description} (${
 
       // Mark contradicted findings for downstream filtering
       for (const finding of newFindings) {
-        for (const contradiction of contradictions) {
-          // Check if this finding is mentioned in the contradiction
-          if (contradiction.toLowerCase().includes(finding.title.toLowerCase()) ||
-              (finding.category && contradiction.toLowerCase().includes(finding.category.toLowerCase()))) {
-            // Reduce confidence for contradicted findings
-            finding.confidence = Math.max(0.3, (finding.confidence || 0.7) - 0.3);
-            // Mark as contradicted for conclusionGenerator to filter
-            finding.details = {
-              ...finding.details,
-              _contradicted: true,
-              _contradictionReason: contradiction,
-            };
-            emitter.log(`[feedbackSynthesizer] Marked finding "${finding.title}" as contradicted`);
-          }
-        }
+        const matchedReasons = contradictions.filter(c => contradictionMentionsFinding(c, finding));
+        if (matchedReasons.length === 0) continue;
+
+        // Reduce confidence once even if multiple contradiction entries mention the same finding.
+        finding.confidence = Math.max(0.3, (finding.confidence || 0.7) - 0.3);
+        finding.details = {
+          ...finding.details,
+          _contradicted: true,
+          _contradictionReason: matchedReasons.join('；'),
+        };
+        emitter.log(`[feedbackSynthesizer] Marked finding "${finding.title}" as contradicted`);
       }
 
       // Also treat contradictions as top-priority gaps to drive next experiments.

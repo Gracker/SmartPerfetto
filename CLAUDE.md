@@ -2,6 +2,10 @@
 
 AI-driven Perfetto analysis platform for Android performance data.
 
+## Tech Stack
+
+This is primarily a TypeScript codebase. Use TypeScript idioms, strict typing, and follow existing patterns in the codebase.
+
 ## Architecture Overview
 
 ```
@@ -584,6 +588,13 @@ interface ColumnDefinition {
 | Empty data | 检查 stepId 匹配 YAML `id:` |
 | Port conflict | `pkill -f trace_processor_shell` |
 | Debug | 查看 `backend/logs/sessions/*.jsonl` |
+| Build/compilation error in unfamiliar file | Check if the file is auto-generated before editing. Look for headers like `// Generated`, `/* Auto-generated */`, or check if the path contains `generated`, `build`, or `dist`. Fix the generator/template instead. |
+
+---
+
+## Code Generation
+
+When fixing localization (L10n) or code generation issues, always identify and modify the generator script/template rather than editing generated output files directly.
 
 ---
 

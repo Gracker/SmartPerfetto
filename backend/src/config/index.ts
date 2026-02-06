@@ -87,6 +87,18 @@ export const traceProcessorConfig = {
 
   /** Stale allocation cleanup age (ms) - default 30 minutes */
   staleAllocationMaxAgeMs: parseIntEnv('TP_STALE_MAX_AGE_MS', 30 * 60 * 1000),
+
+  /**
+   * Preload a small critical subset of stdlib modules during processor startup.
+   * Keeps key Android views available without blocking startup on full stdlib preload.
+   */
+  preloadCriticalStdlibModules: parseBoolEnv('TP_PRELOAD_CRITICAL_STDLIB_MODULES', true),
+
+  /**
+   * Preload all stdlib modules in the background after processor is marked ready.
+   * Disabled by default to reduce upload-to-ready latency.
+   */
+  preloadAllStdlibModules: parseBoolEnv('TP_PRELOAD_ALL_STDLIB_MODULES', false),
 } as const;
 
 // =============================================================================

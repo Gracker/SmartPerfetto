@@ -30,9 +30,11 @@ type SceneCategory =
   | 'warm_start'
   | 'hot_start'
   | 'scroll'
+  | 'inertial_scroll'
   | 'navigation'
   | 'app_switch'
   | 'tap'
+  | 'long_press'
   | 'idle'
   | 'jank_region';  // Fallback: performance issue regions
 
@@ -42,7 +44,9 @@ const PROBLEM_THRESHOLDS: Record<string, { durationMs?: number; fps?: number }> 
   warm_start: { durationMs: 600 },
   hot_start: { durationMs: 200 },
   scroll: { fps: 50 },
+  inertial_scroll: { fps: 50 },
   tap: { durationMs: 200 },
+  long_press: { durationMs: 500 },
   navigation: { durationMs: 500 },
 };
 
@@ -96,6 +100,8 @@ function extractScenesAsIntervals(
   helpers: IntervalHelpers
 ): FocusInterval[] {
   const intervals: FocusInterval[] = [];
+  const jankRowsForFallback: Array<Record<string, any>> = [];
+  let hasGestureLikeInterval = false;
 
   for (const resp of responses) {
     if (!resp.success) continue;
@@ -164,7 +170,7 @@ function extractScenesAsIntervals(
             const durationMs = nsToMs(dur);
             const priority = computeScenePriority(sceneType, durationMs, row);
 
-            const processName = extractBracketAppName(String(row.event || '')) || 'unknown';
+            const processName = resolveSceneProcessName(row);
 
             intervals.push({
               id: intervals.length,
@@ -178,6 +184,65 @@ function extractScenesAsIntervals(
                 durationMs,
                 confidence: row.confidence,
                 moveCount: row.move_count,
+                sourceStepId: stepId,
+              },
+            });
+            hasGestureLikeInterval = true;
+          }
+        } else if (stepId === 'inertial_scrolls') {
+          for (const row of rows) {
+            const startTs = String(row.ts || '');
+            const dur = String(row.dur || '');
+            if (!startTs || !dur) continue;
+
+            const endTs = safeAddNs(startTs, dur);
+            if (!endTs) continue;
+
+            const durationMs = nsToMs(dur);
+            const sceneType: SceneCategory = 'inertial_scroll';
+            const priority = computeScenePriority(sceneType, durationMs, row);
+
+            intervals.push({
+              id: intervals.length,
+              processName: resolveSceneProcessName(row),
+              startTs,
+              endTs,
+              priority,
+              label: `${getSceneDisplayName(sceneType)} (${durationMs}ms)`,
+              metadata: {
+                sceneType,
+                durationMs,
+                frameCount: row.frame_count,
+                jankFrames: row.jank_frames,
+                sourceStepId: stepId,
+              },
+            });
+            hasGestureLikeInterval = true;
+          }
+        } else if (stepId === 'idle_periods') {
+          for (const row of rows) {
+            const startTs = String(row.ts || '');
+            const dur = String(row.dur || '');
+            if (!startTs || !dur) continue;
+
+            const endTs = safeAddNs(startTs, dur);
+            if (!endTs) continue;
+
+            const durationMs = nsToMs(dur);
+            const sceneType: SceneCategory = 'idle';
+            const priority = computeScenePriority(sceneType, durationMs, row);
+
+            intervals.push({
+              id: intervals.length,
+              processName: 'system',
+              startTs,
+              endTs,
+              priority,
+              label: `${getSceneDisplayName(sceneType)} (${durationMs}ms)`,
+              metadata: {
+                sceneType,
+                durationMs,
+                confidence: row.confidence,
                 sourceStepId: stepId,
               },
             });
@@ -210,34 +275,36 @@ function extractScenesAsIntervals(
             });
           }
         } else if (stepId === 'jank_events') {
-          // ===================================================================
-          // FALLBACK: jank_events
-          // When user_gestures returns no data (e.g., android_input_events
-          // doesn't exist), use jank events to identify performance problem
-          // regions that need analysis.
-          // ===================================================================
-          const jankIntervals = aggregateJankFramesToIntervals(rows);
-          for (const interval of jankIntervals) {
-            // Only add intervals with 3+ jank frames as analysis targets
-            if (interval.jankCount >= 3) {
-              intervals.push({
-                id: intervals.length,
-                processName: 'jank_region',
-                startTs: interval.startTs,
-                endTs: interval.endTs,
-                priority: interval.severity === 'severe' ? 75 : 60,
-                label: `${getSceneDisplayName('jank_region')} (${interval.jankCount} 帧掉帧)`,
-                metadata: {
-                  sceneType: 'jank_region',
-                  jankCount: interval.jankCount,
-                  severity: interval.severity,
-                  durationMs: interval.durationMs,
-                  sourceStepId: stepId,
-                },
-              });
-            }
-          }
+          jankRowsForFallback.push(...rows);
         }
+      }
+    }
+  }
+
+  // ===================================================================
+  // FALLBACK: jank_events
+  // Only used when no gesture-like scene (tap/scroll/long_press/inertial)
+  // is detected.
+  // ===================================================================
+  if (!hasGestureLikeInterval && jankRowsForFallback.length > 0) {
+    const jankIntervals = aggregateJankFramesToIntervals(jankRowsForFallback);
+    for (const interval of jankIntervals) {
+      if (interval.jankCount >= 3) {
+        intervals.push({
+          id: intervals.length,
+          processName: 'jank_region',
+          startTs: interval.startTs,
+          endTs: interval.endTs,
+          priority: interval.severity === 'severe' ? 75 : 60,
+          label: `${getSceneDisplayName('jank_region')} (${interval.jankCount} 帧掉帧)`,
+          metadata: {
+            sceneType: 'jank_region',
+            jankCount: interval.jankCount,
+            severity: interval.severity,
+            durationMs: interval.durationMs,
+            sourceStepId: 'jank_events',
+          },
+        });
       }
     }
   }
@@ -363,9 +430,11 @@ function getSceneDisplayName(type: string): string {
     warm_start: '温启动',
     hot_start: '热启动',
     scroll: '滑动',
+    inertial_scroll: '惯性滑动',
     navigation: '跳转',
     app_switch: '应用切换',
     tap: '点击',
+    long_press: '长按',
     idle: '空闲',
     jank_region: '性能问题区间',
   };
@@ -391,6 +460,16 @@ function safeAddNs(startTs: string, durNs: string): string | null {
 function extractBracketAppName(eventText: string): string | null {
   const m = eventText.match(/\[([^\]]+)\]\s*$/);
   return m ? m[1] : null;
+}
+
+function resolveSceneProcessName(row: Record<string, any>): string {
+  const appPackage = String(row.app_package || '').trim();
+  if (appPackage) return appPackage;
+
+  const eventApp = extractBracketAppName(String(row.event || ''));
+  if (eventApp) return eventApp;
+
+  return 'unknown';
 }
 
 function computeScenePriority(sceneType: string, durationMs: number, row: any): number {

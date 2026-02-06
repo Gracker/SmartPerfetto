@@ -207,6 +207,40 @@ export interface AnalysisOptions {
 }
 
 // =============================================================================
+// First-Turn Analysis Plan Types
+// =============================================================================
+
+export type AnalysisPlanMode =
+  | 'strategy'
+  | 'hypothesis'
+  | 'clarify'
+  | 'compare'
+  | 'extend'
+  | 'drill_down';
+
+export interface AnalysisPlanStep {
+  order: number;
+  title: string;
+  action: string;
+}
+
+export interface AnalysisPlanStrategyHint {
+  id: string;
+  name: string;
+  confidence?: number;
+  selectionMethod?: 'keyword' | 'llm' | 'none';
+}
+
+export interface AnalysisPlanPayload {
+  mode: AnalysisPlanMode;
+  objective: string;
+  steps: AnalysisPlanStep[];
+  evidence: string[];
+  hypothesisPolicy: 'after_first_evidence';
+  strategy?: AnalysisPlanStrategyHint;
+}
+
+// =============================================================================
 // Typed Event Payloads (compile-time safety for new events)
 // =============================================================================
 

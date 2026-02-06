@@ -43,11 +43,21 @@ interface DrillDownSkillConfig {
   enrichmentQuery?: string;
 }
 
+type DrillDownEntityType = 'frame' | 'session';
+type DrillDownFocus = 'default' | 'cpu' | 'cpu_frequency';
+
+interface DrillDownSkillPlan {
+  entityType: DrillDownEntityType;
+  focus: DrillDownFocus;
+  reason: string;
+  skills: DrillDownSkillConfig[];
+}
+
 /**
  * Maps entity types to their corresponding drill-down skills.
  * Each entry defines how to invoke the skill for that entity type.
  */
-const DRILL_DOWN_SKILLS: Record<string, DrillDownSkillConfig> = {
+const DRILL_DOWN_ENTITY_SKILLS: Record<DrillDownEntityType, DrillDownSkillConfig> = {
   frame: {
     skillId: 'jank_frame_detail',
     domain: 'frame',
@@ -121,6 +131,41 @@ const DRILL_DOWN_SKILLS: Record<string, DrillDownSkillConfig> = {
   },
 };
 
+const CPU_IN_RANGE_SKILLS: DrillDownSkillConfig[] = [
+  {
+    skillId: 'cpu_load_in_range',
+    domain: 'cpu',
+    agentId: 'cpu_agent',
+    paramMapping: {
+      start_ts: 'startTs',
+      end_ts: 'endTs',
+    },
+  },
+  {
+    skillId: 'scheduling_analysis',
+    domain: 'cpu',
+    agentId: 'cpu_agent',
+    paramMapping: {
+      start_ts: 'startTs',
+      end_ts: 'endTs',
+      package: 'processName',
+    },
+  },
+];
+
+const CPU_FREQ_IN_RANGE_SKILLS: DrillDownSkillConfig[] = [
+  {
+    skillId: 'cpu_freq_timeline',
+    domain: 'cpu',
+    agentId: 'cpu_agent',
+    paramMapping: {
+      start_ts: 'startTs',
+      end_ts: 'endTs',
+    },
+  },
+  ...CPU_IN_RANGE_SKILLS,
+];
+
 // =============================================================================
 // DirectDrillDownExecutor
 // =============================================================================
@@ -135,27 +180,29 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
     const allFindings: Finding[] = [];
     let confidence = 0.5;
 
-    // Determine target skill based on follow-up resolution
-    const skillConfig = this.determineTargetSkill();
-    if (!skillConfig) {
-      emitter.log('[DrillDown] Could not determine target skill, falling back');
+    // Determine target skills based on entity + follow-up focus.
+    const skillPlan = this.determineSkillPlan(ctx);
+    if (!skillPlan) {
+      emitter.log('[DrillDown] Could not determine target skill plan, falling back');
       return {
         findings: [],
         lastStrategy: concludeDecision(0.3, 'Could not determine drill-down target'),
         confidence: 0.3,
-        informationGaps: ['Unable to map follow-up to specific skill'],
+        informationGaps: ['Unable to map follow-up to specific drill-down plan'],
         rounds: 0,
         stopReason: 'No matching drill-down skill',
       };
     }
 
-    const { skillId, domain, agentId, paramMapping } = skillConfig;
+    const skillIds = skillPlan.skills.map(skill => skill.skillId);
+    const skillLabel = skillIds.join(' + ');
     let intervals = this.followUp.focusIntervals || [];
 
     // Enrich intervals that need timestamps
+    const enrichmentSkill = DRILL_DOWN_ENTITY_SKILLS[skillPlan.entityType];
     intervals = await this.enrichIntervalsIfNeeded(
       intervals,
-      skillConfig,
+      enrichmentSkill,
       ctx.options.traceProcessorService,
       emitter
     );
@@ -177,35 +224,37 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
       };
     }
 
-    emitter.log(`[DrillDown] Executing ${skillId} for ${validIntervals.length} interval(s)`);
+    emitter.log(`[DrillDown] Focus=${skillPlan.focus}, executing ${skillLabel} for ${validIntervals.length} interval(s)`);
     emitter.emitUpdate('progress', {
       phase: 'round_start',
       round: 1,
       maxRounds: 1,
-      message: `直接执行 ${skillId} (跳过策略流水线)`,
+      message: `直接执行 ${skillLabel}（${skillPlan.reason}）`,
     });
 
     const experimentId = ctx.sessionContext?.startTraceAgentExperiment({
       type: 'run_skill',
-      objective: `[drill_down] ${skillId} intervals=${validIntervals.length}`,
+      objective: `[drill_down:${skillPlan.focus}] ${skillIds.join(',')} intervals=${validIntervals.length}`,
     });
 
-    // Build direct skill tasks
-    const template: StageTaskTemplate = {
-      agentId,
-      domain,
-      scope: 'per_interval',
-      executionMode: 'direct_skill',
-      directSkillId: skillId,
-      paramMapping,
-      descriptionTemplate: `Drill-down: {{scopeLabel}}`,
-    };
+    // Build direct skill tasks (one per skill per interval).
+    const tasks = skillPlan.skills.flatMap((skill) => {
+      const template: StageTaskTemplate = {
+        agentId: skill.agentId,
+        domain: skill.domain,
+        scope: 'per_interval',
+        executionMode: 'direct_skill',
+        directSkillId: skill.skillId,
+        paramMapping: skill.paramMapping,
+        descriptionTemplate: `Drill-down: {{scopeLabel}}`,
+      };
 
-    const tasks = validIntervals.map((interval, idx) => ({
-      template,
-      interval,
-      scopeLabel: interval.label || `区间${idx + 1}`,
-    }));
+      return validIntervals.map((interval, idx) => ({
+        template,
+        interval,
+        scopeLabel: interval.label || `区间${idx + 1}`,
+      }));
+    });
 
     // Execute via DirectSkillExecutor
     const directExecutor = new DirectSkillExecutor(
@@ -277,11 +326,11 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
 
     return {
       findings: allFindings,
-      lastStrategy: concludeDecision(confidence, `Drill-down ${skillId} completed`),
+      lastStrategy: concludeDecision(confidence, `Drill-down ${skillLabel} completed`),
       confidence,
       informationGaps: synthesis.informationGaps,
       rounds: 1,
-      stopReason: `Drill-down ${skillId} completed for ${validIntervals.length} interval(s)`,
+      stopReason: `Drill-down ${skillLabel} completed for ${validIntervals.length} interval(s)`,
     };
   }
 
@@ -368,41 +417,91 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
   }
 
   /**
-   * Determine the target skill based on follow-up resolution.
-   * Looks at resolvedParams and focusIntervals to infer entity type.
+   * Determine drill-down skill plan based on:
+   * 1) resolved entity target (frame/session)
+   * 2) user follow-up focus (default/cpu/cpu_frequency)
    */
-  private determineTargetSkill(): DrillDownSkillConfig | null {
+  private determineSkillPlan(ctx: ExecutionContext): DrillDownSkillPlan | null {
+    const entityType = this.determineTargetEntityType();
+    if (!entityType) return null;
+
+    const focus = this.detectDrillDownFocus(ctx.query, ctx.intent.aspects || []);
+    if (focus === 'cpu_frequency') {
+      return {
+        entityType,
+        focus,
+        reason: '聚焦 CPU 频率变化与调度时序',
+        skills: CPU_FREQ_IN_RANGE_SKILLS,
+      };
+    }
+
+    if (focus === 'cpu') {
+      return {
+        entityType,
+        focus,
+        reason: '聚焦 CPU 负载与调度证据',
+        skills: CPU_IN_RANGE_SKILLS,
+      };
+    }
+
+    return {
+      entityType,
+      focus: 'default',
+      reason: entityType === 'frame' ? '聚焦目标帧的卡顿根因' : '聚焦目标会话的整体卡顿分布',
+      skills: [DRILL_DOWN_ENTITY_SKILLS[entityType]],
+    };
+  }
+
+  /**
+   * Resolve drill-down target entity type from follow-up params/interval metadata.
+   */
+  private determineTargetEntityType(): DrillDownEntityType | null {
     const params = this.followUp.resolvedParams;
     const intervals = this.followUp.focusIntervals || [];
 
     // Check resolved params for entity type hints (support both snake_case and camelCase)
     if (params.frame_id !== undefined || params.frameId !== undefined) {
-      return DRILL_DOWN_SKILLS.frame;
+      return 'frame';
     }
     if ((params.session_id !== undefined || params.sessionId !== undefined) &&
         params.frame_id === undefined && params.frameId === undefined) {
-      return DRILL_DOWN_SKILLS.session;
+      return 'session';
     }
 
     // Check intervals for entity type metadata
     if (intervals.length > 0) {
       const firstInterval = intervals[0];
       const entityType = firstInterval.metadata?.sourceEntityType;
-      if (entityType && DRILL_DOWN_SKILLS[entityType]) {
-        return DRILL_DOWN_SKILLS[entityType];
+      if (entityType === 'frame' || entityType === 'session') {
+        return entityType;
       }
 
       // Infer from metadata
       if (firstInterval.metadata?.frameId !== undefined ||
           firstInterval.metadata?.frame_id !== undefined) {
-        return DRILL_DOWN_SKILLS.frame;
+        return 'frame';
       }
       if (firstInterval.metadata?.sessionId !== undefined ||
           firstInterval.metadata?.session_id !== undefined) {
-        return DRILL_DOWN_SKILLS.session;
+        return 'session';
       }
     }
 
     return null;
+  }
+
+  /**
+   * Detect follow-up focus from query/aspects to avoid repeatedly answering
+   * frame-level generic root cause when user asks a CPU/CpuFreq sub-question.
+   */
+  private detectDrillDownFocus(query: string, aspects: string[]): DrillDownFocus {
+    const text = `${query || ''} ${(aspects || []).join(' ')}`.toLowerCase();
+
+    const cpuFocus = /\bcpu\b|调度|scheduler|sched|runqueue|runnable|线程|大核|小核|core/.test(text);
+    const freqFocus = /频率|freq|mhz|降频|升频|throttle|boost/.test(text);
+
+    if (freqFocus) return 'cpu_frequency';
+    if (cpuFocus) return 'cpu';
+    return 'default';
   }
 }

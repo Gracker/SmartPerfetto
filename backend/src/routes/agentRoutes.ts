@@ -73,6 +73,7 @@ const router = express.Router();
 
 interface AnalysisSession {
   orchestrator: AgentDrivenOrchestrator;
+  orchestratorUpdateHandler?: (update: StreamingUpdate) => void;
   sessionId: string;
   sseClients: express.Response[];
   result?: AgentDrivenAnalysisResult;
@@ -121,6 +122,7 @@ type SceneCategory =
   | 'warm_start'
   | 'hot_start'
   | 'scroll'
+  | 'inertial_scroll'
   | 'navigation'
   | 'app_switch'
   | 'screen_unlock'
@@ -1415,235 +1417,261 @@ router.post('/scene-detect-quick', async (req, res) => {
   }
 });
 
+// ============================================================================
+// Scene Detection Cache + Parallel Helpers
+// ============================================================================
+
+const sceneCache = new Map<string, { scenes: DetectedScene[]; timestamp: number }>();
+const SCENE_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+/** Detect app startups from android_startups stdlib view */
+async function detectStartups(
+  tps: ReturnType<typeof getTraceProcessorService>,
+  traceId: string,
+): Promise<DetectedScene[]> {
+  const result = await tps.query(traceId, `
+    SELECT
+      ts,
+      dur,
+      package,
+      startup_type,
+      CAST(dur / 1000000 AS INT) AS dur_ms
+    FROM android_startups
+    WHERE dur > 0
+    ORDER BY ts
+  `);
+
+  const scenes: DetectedScene[] = [];
+  if (result.rows) {
+    for (const row of result.rows) {
+      const [ts, dur, pkg, startupType, durMs] = row;
+      let sceneType: SceneCategory = 'cold_start';
+      if (startupType === 'warm') sceneType = 'warm_start';
+      else if (startupType === 'hot') sceneType = 'hot_start';
+
+      scenes.push({
+        type: sceneType,
+        startTs: String(ts),
+        endTs: String(BigInt(ts) + BigInt(dur)),
+        durationMs: Number(durMs),
+        confidence: 0.95,
+        appPackage: pkg,
+        metadata: { startupType },
+      });
+    }
+  }
+  return scenes;
+}
+
+/** Detect scroll sessions from input events + frame timeline */
+async function detectScrollSessions(
+  tps: ReturnType<typeof getTraceProcessorService>,
+  traceId: string,
+): Promise<DetectedScene[]> {
+  const scrollResult = await tps.query(traceId, `
+    WITH
+    input_exists AS (
+      SELECT 1 AS ok WHERE EXISTS (
+        SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = 'android_input_events'
+      )
+    ),
+    motion_events AS (
+      SELECT
+        read_time AS ts,
+        event_action
+      FROM android_input_events
+      WHERE event_type = 'MOTION'
+        AND EXISTS (SELECT ok FROM input_exists)
+    ),
+    gesture_markers AS (
+      SELECT
+        ts,
+        event_action,
+        SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS gesture_id
+      FROM motion_events
+    ),
+    gestures AS (
+      SELECT
+        gesture_id,
+        MIN(ts) AS down_ts,
+        MAX(CASE WHEN event_action = 'UP' THEN ts ELSE NULL END) AS up_ts,
+        COUNT(*) AS event_count
+      FROM gesture_markers
+      WHERE gesture_id > 0
+      GROUP BY gesture_id
+      HAVING COUNT(*) >= 4
+    ),
+    frame_with_stats AS (
+      SELECT
+        ts,
+        dur,
+        ts + dur AS frame_end,
+        jank_type,
+        COALESCE(LEAD(ts) OVER (ORDER BY ts) - (ts + dur), 999999999) AS gap_to_next
+      FROM actual_frame_timeline_slice
+      WHERE surface_frame_token IS NOT NULL AND dur > 0
+    ),
+    scroll_sessions AS (
+      SELECT
+        g.gesture_id,
+        g.down_ts AS start_ts,
+        COALESCE(
+          (SELECT MIN(f.frame_end)
+           FROM frame_with_stats f
+           WHERE f.ts >= g.up_ts AND f.gap_to_next > 100000000),
+          g.up_ts + 500000000
+        ) AS end_ts
+      FROM gestures g
+      WHERE g.up_ts IS NOT NULL
+    )
+    SELECT
+      s.start_ts,
+      s.end_ts,
+      CAST((s.end_ts - s.start_ts) / 1000000 AS INT) AS dur_ms,
+      (SELECT COUNT(*) FROM frame_with_stats f WHERE f.ts >= s.start_ts AND f.frame_end <= s.end_ts) AS frame_count
+    FROM scroll_sessions s
+    WHERE s.end_ts > s.start_ts + 100000000
+    ORDER BY s.start_ts
+  `);
+
+  const scenes: DetectedScene[] = [];
+  if (scrollResult.rows) {
+    for (const row of scrollResult.rows) {
+      const [startTs, endTs, durMs, frameCount] = row;
+      if (Number(frameCount) >= 3) {
+        const fps = (Number(frameCount) * 1000) / Math.max(Number(durMs), 1);
+        scenes.push({
+          type: 'scroll',
+          startTs: String(startTs),
+          endTs: String(endTs),
+          durationMs: Number(durMs),
+          confidence: 0.85,
+          metadata: {
+            frameCount: Number(frameCount),
+            averageFps: Math.round(fps * 10) / 10,
+          },
+        });
+      }
+    }
+  }
+  return scenes;
+}
+
+/** Detect tap/click events from input events */
+async function detectTapEvents(
+  tps: ReturnType<typeof getTraceProcessorService>,
+  traceId: string,
+): Promise<DetectedScene[]> {
+  const tapResult = await tps.query(traceId, `
+    WITH
+    input_exists AS (
+      SELECT 1 AS ok WHERE EXISTS (
+        SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = 'android_input_events'
+      )
+    ),
+    motion_events AS (
+      SELECT
+        read_time AS ts,
+        event_action
+      FROM android_input_events
+      WHERE event_type = 'MOTION'
+        AND EXISTS (SELECT ok FROM input_exists)
+    ),
+    tap_events AS (
+      SELECT
+        ts AS down_ts,
+        LEAD(ts) OVER (ORDER BY ts) AS up_ts,
+        event_action
+      FROM motion_events
+      WHERE event_action IN ('DOWN', 'UP')
+    )
+    SELECT
+      down_ts AS start_ts,
+      up_ts AS end_ts,
+      CAST((up_ts - down_ts) / 1000000 AS INT) AS dur_ms
+    FROM tap_events
+    WHERE event_action = 'DOWN'
+      AND up_ts IS NOT NULL
+      AND (up_ts - down_ts) < 300000000
+    ORDER BY down_ts
+    LIMIT 50
+  `);
+
+  const scenes: DetectedScene[] = [];
+  if (tapResult.rows) {
+    for (const row of tapResult.rows) {
+      const [startTs, endTs, durMs] = row;
+      scenes.push({
+        type: 'tap',
+        startTs: String(startTs),
+        endTs: String(endTs),
+        durationMs: Number(durMs),
+        confidence: 0.75,
+      });
+    }
+  }
+  return scenes;
+}
+
 /**
  * Quick scene detection function - executes minimal SQL queries to detect scenes
- * without full agent overhead
+ * without full agent overhead. Uses parallel queries and result caching.
  */
 async function detectScenesQuick(
   traceProcessorService: ReturnType<typeof getTraceProcessorService>,
   traceId: string
-): Promise<Array<{
-  type: string;
-  startTs: string;
-  endTs: string;
-  durationMs: number;
-  confidence: number;
-  appPackage?: string;
-  metadata?: Record<string, any>;
-}>> {
+): Promise<DetectedScene[]> {
+  // Check cache first
+  const cached = sceneCache.get(traceId);
+  if (cached && Date.now() - cached.timestamp < SCENE_CACHE_TTL) {
+    console.log('[QuickSceneDetect] Cache hit for traceId:', traceId);
+    return cached.scenes;
+  }
+
+  const t0 = Date.now();
+
   // =========================================================================
-  // CORE FIX: Pre-load Perfetto stdlib modules
+  // Pre-load Perfetto stdlib modules (parallel)
   // =========================================================================
   // `android_input_events` and `android_startups` are stdlib VIEWS, not
   // intrinsic tables. They only exist after loading the corresponding modules.
-  // The Skill executor does this automatically via prerequisites.modules,
-  // but Quick Scene Detection bypasses skills, so we must load them manually.
   const REQUIRED_MODULES = [
     'android.input',            // Creates android_input_events, android_key_events
     'android.startup.startups', // Creates android_startups
   ];
 
-  for (const module of REQUIRED_MODULES) {
-    try {
-      await traceProcessorService.query(traceId, `INCLUDE PERFETTO MODULE ${module};`);
-    } catch (e) {
-      // Module load failure is non-fatal; subsequent SQL will gracefully return empty
-      console.warn(`[QuickSceneDetect] Module not available: ${module}`, e);
-    }
+  await Promise.all(
+    REQUIRED_MODULES.map(module =>
+      traceProcessorService.query(traceId, `INCLUDE PERFETTO MODULE ${module};`)
+        .catch(e => console.warn(`[QuickSceneDetect] Module not available: ${module}`, e))
+    )
+  );
+
+  // =========================================================================
+  // Run all 3 detection queries in parallel
+  // =========================================================================
+  const [startupResult, scrollResult, tapResult] = await Promise.allSettled([
+    detectStartups(traceProcessorService, traceId),
+    detectScrollSessions(traceProcessorService, traceId),
+    detectTapEvents(traceProcessorService, traceId),
+  ]);
+
+  // Merge results from fulfilled promises
+  const scenes: DetectedScene[] = [];
+  if (startupResult.status === 'fulfilled') {
+    scenes.push(...startupResult.value);
+  } else {
+    console.warn('[QuickSceneDetect] Startup detection failed:', startupResult.reason);
   }
-
-  const scenes: Array<{
-    type: string;
-    startTs: string;
-    endTs: string;
-    durationMs: number;
-    confidence: number;
-    appPackage?: string;
-    metadata?: Record<string, any>;
-  }> = [];
-
-  // 1. Detect App Startups
-  try {
-    const startupResult = await traceProcessorService.query(traceId, `
-      SELECT
-        ts,
-        dur,
-        package,
-        startup_type,
-        CAST(dur / 1000000 AS INT) AS dur_ms
-      FROM android_startups
-      WHERE dur > 0
-      ORDER BY ts
-    `);
-
-    if (startupResult.rows) {
-      for (const row of startupResult.rows) {
-        const [ts, dur, pkg, startupType, durMs] = row;
-        let sceneType = 'cold_start';
-        if (startupType === 'warm') sceneType = 'warm_start';
-        else if (startupType === 'hot') sceneType = 'hot_start';
-
-        scenes.push({
-          type: sceneType,
-          startTs: String(ts),
-          endTs: String(BigInt(ts) + BigInt(dur)),
-          durationMs: Number(durMs),
-          confidence: 0.95,
-          appPackage: pkg,
-          metadata: { startupType },
-        });
-      }
-    }
-  } catch (e) {
-    console.warn('[QuickSceneDetect] Startup detection failed:', e);
+  if (scrollResult.status === 'fulfilled') {
+    scenes.push(...scrollResult.value);
+  } else {
+    console.warn('[QuickSceneDetect] Scroll detection failed:', scrollResult.reason);
   }
-
-  // 2. Detect Scroll Sessions (simplified)
-  // Note: android_input_events is a stdlib VIEW, requires module loading above
-  try {
-    const scrollResult = await traceProcessorService.query(traceId, `
-      WITH
-      -- Existence check: short-circuit if table doesn't exist
-      input_exists AS (
-        SELECT 1 AS ok WHERE EXISTS (
-          SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = 'android_input_events'
-        )
-      ),
-      motion_events AS (
-        SELECT
-          read_time AS ts,
-          event_action
-        FROM android_input_events
-        WHERE event_type = 'MOTION'
-          AND EXISTS (SELECT ok FROM input_exists)
-      ),
-      gesture_markers AS (
-        SELECT
-          ts,
-          event_action,
-          SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS gesture_id
-        FROM motion_events
-      ),
-      gestures AS (
-        SELECT
-          gesture_id,
-          MIN(ts) AS down_ts,
-          MAX(CASE WHEN event_action = 'UP' THEN ts ELSE NULL END) AS up_ts,
-          COUNT(*) AS event_count
-        FROM gesture_markers
-        WHERE gesture_id > 0
-        GROUP BY gesture_id
-        HAVING COUNT(*) >= 4
-      ),
-      frame_with_stats AS (
-        SELECT
-          ts,
-          dur,
-          ts + dur AS frame_end,
-          jank_type,
-          COALESCE(LEAD(ts) OVER (ORDER BY ts) - (ts + dur), 999999999) AS gap_to_next
-        FROM actual_frame_timeline_slice
-        WHERE surface_frame_token IS NOT NULL AND dur > 0
-      ),
-      scroll_sessions AS (
-        SELECT
-          g.gesture_id,
-          g.down_ts AS start_ts,
-          COALESCE(
-            (SELECT MIN(f.frame_end)
-             FROM frame_with_stats f
-             WHERE f.ts >= g.up_ts AND f.gap_to_next > 100000000),
-            g.up_ts + 500000000
-          ) AS end_ts
-        FROM gestures g
-        WHERE g.up_ts IS NOT NULL
-      )
-      SELECT
-        s.start_ts,
-        s.end_ts,
-        CAST((s.end_ts - s.start_ts) / 1000000 AS INT) AS dur_ms,
-        (SELECT COUNT(*) FROM frame_with_stats f WHERE f.ts >= s.start_ts AND f.frame_end <= s.end_ts) AS frame_count
-      FROM scroll_sessions s
-      WHERE s.end_ts > s.start_ts + 100000000
-      ORDER BY s.start_ts
-    `);
-
-    if (scrollResult.rows) {
-      for (const row of scrollResult.rows) {
-        const [startTs, endTs, durMs, frameCount] = row;
-        if (Number(frameCount) >= 3) {
-          const fps = (Number(frameCount) * 1000) / Math.max(Number(durMs), 1);
-          scenes.push({
-            type: 'scroll',
-            startTs: String(startTs),
-            endTs: String(endTs),
-            durationMs: Number(durMs),
-            confidence: 0.85,
-            metadata: {
-              frameCount: Number(frameCount),
-              averageFps: Math.round(fps * 10) / 10,
-            },
-          });
-        }
-      }
-    }
-  } catch (e) {
-    console.warn('[QuickSceneDetect] Scroll detection failed:', e);
-  }
-
-  // 3. Detect Tap/Click events (simplified)
-  // Note: android_input_events is a stdlib VIEW, requires module loading above
-  try {
-    const tapResult = await traceProcessorService.query(traceId, `
-      WITH
-      -- Existence check: short-circuit if table doesn't exist
-      input_exists AS (
-        SELECT 1 AS ok WHERE EXISTS (
-          SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name = 'android_input_events'
-        )
-      ),
-      motion_events AS (
-        SELECT
-          read_time AS ts,
-          event_action
-        FROM android_input_events
-        WHERE event_type = 'MOTION'
-          AND EXISTS (SELECT ok FROM input_exists)
-      ),
-      tap_events AS (
-        SELECT
-          ts AS down_ts,
-          LEAD(ts) OVER (ORDER BY ts) AS up_ts,
-          event_action
-        FROM motion_events
-        WHERE event_action IN ('DOWN', 'UP')
-      )
-      SELECT
-        down_ts AS start_ts,
-        up_ts AS end_ts,
-        CAST((up_ts - down_ts) / 1000000 AS INT) AS dur_ms
-      FROM tap_events
-      WHERE event_action = 'DOWN'
-        AND up_ts IS NOT NULL
-        AND (up_ts - down_ts) < 300000000
-      ORDER BY down_ts
-      LIMIT 50
-    `);
-
-    if (tapResult.rows) {
-      for (const row of tapResult.rows) {
-        const [startTs, endTs, durMs] = row;
-        scenes.push({
-          type: 'tap',
-          startTs: String(startTs),
-          endTs: String(endTs),
-          durationMs: Number(durMs),
-          confidence: 0.75,
-        });
-      }
-    }
-  } catch (e) {
-    console.warn('[QuickSceneDetect] Tap detection failed:', e);
+  if (tapResult.status === 'fulfilled') {
+    scenes.push(...tapResult.value);
+  } else {
+    console.warn('[QuickSceneDetect] Tap detection failed:', tapResult.reason);
   }
 
   // Sort scenes by start timestamp
@@ -1652,6 +1680,11 @@ async function detectScenesQuick(
     const bTs = BigInt(b.startTs);
     return aTs < bTs ? -1 : aTs > bTs ? 1 : 0;
   });
+
+  console.log(`[QuickSceneDetect] Completed in ${Date.now() - t0}ms, ${scenes.length} scenes`);
+
+  // Store in cache
+  sceneCache.set(traceId, { scenes, timestamp: Date.now() });
 
   return scenes;
 }
@@ -2145,6 +2178,10 @@ async function runAgentDrivenAnalysis(
   };
 
   // Listen to orchestrator events
+  if (session.orchestratorUpdateHandler) {
+    session.orchestrator.off('update', session.orchestratorUpdateHandler);
+  }
+  session.orchestratorUpdateHandler = handleUpdate;
   session.orchestrator.on('update', handleUpdate);
 
   try {
@@ -2265,6 +2302,13 @@ async function runAgentDrivenAnalysis(
     logger.close();
     throw error;
   } finally {
+    // Prevent listener accumulation across multi-turn requests in the same session.
+    if (session.orchestratorUpdateHandler) {
+      session.orchestrator.off('update', session.orchestratorUpdateHandler);
+      if (session.orchestratorUpdateHandler === handleUpdate) {
+        session.orchestratorUpdateHandler = undefined;
+      }
+    }
     modelRouter.off('llmTelemetry', onLlmTelemetry);
   }
 }
@@ -2376,6 +2420,7 @@ const SCENE_DISPLAY_NAMES: Record<SceneCategory, string> = {
   warm_start: '温启动',
   hot_start: '热启动',
   scroll: '滑动',
+  inertial_scroll: '惯性滑动',
   navigation: '跳转',
   app_switch: '应用切换',
   screen_unlock: '解锁屏幕',
@@ -2392,6 +2437,7 @@ const SCENE_COLOR_SCHEMES: Record<SceneCategory, TrackEvent['colorScheme']> = {
   warm_start: 'launch',
   hot_start: 'launch',
   scroll: 'scroll',
+  inertial_scroll: 'scroll',
   navigation: 'navigation',
   app_switch: 'system',
   screen_unlock: 'system',
@@ -2426,6 +2472,7 @@ function updateSceneReconstructionArtifactsFromEnvelopes(
 
 function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): DetectedScene[] {
   const scenes: DetectedScene[] = [];
+  const jankRowsForFallback: Array<Record<string, any>> = [];
 
   for (const env of envelopes) {
     if (!env || env.meta?.skillId !== 'scene_reconstruction') continue;
@@ -2457,7 +2504,7 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
           endTs: endNs.toString(),
           durationMs,
           confidence: 0.95,
-          appPackage: typeof row.package === 'string' ? row.package : undefined,
+          appPackage: extractRowAppPackage(row, ['package']),
           metadata: {
             source: 'scene_reconstruction:app_launches',
             startupType: startupType || undefined,
@@ -2491,10 +2538,66 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
           endTs: endNs.toString(),
           durationMs,
           confidence: confidenceToScore(row.confidence),
-          appPackage: extractBracketContent(String(row.event || '')) || undefined,
+          appPackage: extractRowAppPackage(row),
           metadata: {
             source: 'scene_reconstruction:user_gestures',
             moveCount: row.move_count,
+            event: row.event,
+          },
+        });
+      }
+      continue;
+    }
+
+    // Step: inertial_scrolls (fling inertia region after finger up)
+    if (stepId === 'inertial_scrolls') {
+      for (const row of rows) {
+        const startTs = normalizeNs(row.ts);
+        const durNs = toBigInt(row.dur);
+        if (!startTs || durNs === null) continue;
+
+        const startNs = BigInt(startTs);
+        const endNs = startNs + durNs;
+        const durationMs = Number(durNs / 1_000_000n);
+        const frameCount = Number(row.frame_count || 0);
+
+        scenes.push({
+          type: 'inertial_scroll',
+          startTs: startTs,
+          endTs: endNs.toString(),
+          durationMs,
+          confidence: frameCount >= 12 ? 0.9 : frameCount >= 8 ? 0.8 : 0.7,
+          appPackage: extractRowAppPackage(row),
+          metadata: {
+            source: 'scene_reconstruction:inertial_scrolls',
+            frameCount,
+            jankFrames: Number(row.jank_frames || 0),
+            event: row.event,
+          },
+        });
+      }
+      continue;
+    }
+
+    // Step: idle_periods (no obvious operation gap)
+    if (stepId === 'idle_periods') {
+      for (const row of rows) {
+        const startTs = normalizeNs(row.ts);
+        const durNs = toBigInt(row.dur);
+        if (!startTs || durNs === null) continue;
+
+        const startNs = BigInt(startTs);
+        const endNs = startNs + durNs;
+        const durationMs = Number(durNs / 1_000_000n);
+
+        scenes.push({
+          type: 'idle',
+          startTs: startTs,
+          endTs: endNs.toString(),
+          durationMs,
+          confidence: confidenceToScore(row.confidence),
+          metadata: {
+            source: 'scene_reconstruction:idle_periods',
             event: row.event,
           },
         });
@@ -2519,7 +2622,7 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
           endTs: endNs.toString(),
           durationMs,
           confidence: 0.9,
-          appPackage: typeof row.app_package === 'string' ? row.app_package : undefined,
+          appPackage: extractRowAppPackage(row),
           metadata: {
             source: 'scene_reconstruction:top_app_changes',
             event: row.event,
@@ -2560,28 +2663,36 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
     }
 
     // Step: jank_events (performance issue regions) - FALLBACK
-    // When no user gestures are detected, use jank events to identify regions
-    // that need analysis. These are aggregated into intervals for deep-dive.
+    // Collected first; only used if no gesture-like scenes are found.
     if (stepId === 'jank_events') {
-      const jankIntervals = aggregateJankFramesToIntervals(rows);
-      for (const interval of jankIntervals) {
-        // Only create scenes for regions with significant jank (3+ frames)
-        if (interval.jankCount >= 3) {
-          scenes.push({
-            type: 'jank_region',
-            startTs: interval.startTs,
-            endTs: interval.endTs,
-            durationMs: interval.durationMs,
-            confidence: 0.8,
-            metadata: {
-              source: 'scene_reconstruction:jank_events',
-              jankCount: interval.jankCount,
-              severity: interval.severity,
-            },
-          });
-        }
-      }
+      jankRowsForFallback.push(...rows);
       continue;
+    }
+  }
+
+  const hasGestureLikeScene = scenes.some((scene) => (
+    scene.type === 'tap' ||
+    scene.type === 'scroll' ||
+    scene.type === 'long_press' ||
+    scene.type === 'inertial_scroll'
+  ));
+
+  if (!hasGestureLikeScene && jankRowsForFallback.length > 0) {
+    const jankIntervals = aggregateJankFramesToIntervals(jankRowsForFallback);
+    for (const interval of jankIntervals) {
+      if (interval.jankCount < 3) continue;
+      scenes.push({
+        type: 'jank_region',
+        startTs: interval.startTs,
+        endTs: interval.endTs,
+        durationMs: interval.durationMs,
+        confidence: 0.8,
+        metadata: {
+          source: 'scene_reconstruction:jank_events',
+          jankCount: interval.jankCount,
+          severity: interval.severity,
+        },
+      });
     }
   }
 
@@ -2780,6 +2891,20 @@ function confidenceToScore(value: any): number {
   if (s === '中') return 0.7;
   if (s === '低') return 0.5;
   return 0.8;
+}
+
+function extractRowAppPackage(row: Record<string, any>, extraFields: string[] = []): string | undefined {
+  const candidateFields = ['app_package', 'appPackage', ...extraFields];
+  for (const field of candidateFields) {
+    const value = row[field];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  const eventApp = extractBracketContent(String(row.event || ''));
+  if (eventApp) return eventApp;
+  return undefined;
 }
 
 function extractBracketContent(text: string): string | null {

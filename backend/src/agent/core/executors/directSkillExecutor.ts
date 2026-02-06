@@ -421,7 +421,7 @@ export class DirectSkillExecutor {
     scopeLabel: string
   ): Finding[] {
     const rawResults = result.rawResults || {};
-    const rootCauseStep = rawResults['root_cause'];
+    const rootCauseStep = rawResults['root_cause'] || rawResults['root_cause_summary'];
 
     // Debug: Log available keys in rawResults
     const availableKeys = Object.keys(rawResults);
