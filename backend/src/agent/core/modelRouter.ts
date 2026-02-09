@@ -149,6 +149,8 @@ export class ModelRouter extends EventEmitter {
   private static readonly PROMPT_COMPACTION_RATIOS = [0.72, 0.55];
   private static readonly MIN_PROMPT_FOR_COMPACTION = 2200;
   private static readonly MIN_COMPACTED_PROMPT = 1600;
+  /** Buffer for downstream transformations (ensureJsonOnlyInstruction + redaction overhead) */
+  private static readonly TRANSFORMATION_OVERHEAD_CHARS = 250;
 
   constructor(config: Partial<ModelRouterConfig> = {}) {
     super();
@@ -309,6 +311,8 @@ export class ModelRouter extends EventEmitter {
           const hasMoreCompactedCandidates = attempt < promptCandidates.length - 1;
 
           if (!isContextOverflow || !hasMoreCompactedCandidates) {
+            // Final failure for this model — record it in stats
+            this.recordFailure(model.id, result.error || 'unknown');
             break;
           }
 
@@ -346,9 +350,11 @@ export class ModelRouter extends EventEmitter {
     const seen = new Set<string>([source]);
 
     for (const ratio of ModelRouter.PROMPT_COMPACTION_RATIOS) {
+      // Subtract transformation overhead: callModel appends JSON instructions and
+      // runs redaction AFTER compaction, so the effective prompt will be longer.
       const targetChars = Math.max(
         ModelRouter.MIN_COMPACTED_PROMPT,
-        Math.floor(source.length * ratio)
+        Math.floor(source.length * ratio) - ModelRouter.TRANSFORMATION_OVERHEAD_CHARS
       );
       const compacted = this.compactPromptMiddle(source, targetChars);
       if (compacted.length < source.length && !seen.has(compacted)) {
@@ -481,7 +487,8 @@ export class ModelRouter extends EventEmitter {
         error: error.message,
       };
 
-      this.recordFailure(model.id, error.message);
+      // Note: recordFailure is NOT called here — callers (callWithFallback, ensemble)
+      // decide when a failure is final vs retriable (e.g. context overflow with compaction).
       this.emit('llmTelemetry', {
         schemaVersion: '1.0.0',
         sessionId: options.sessionId,

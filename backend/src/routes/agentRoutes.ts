@@ -437,8 +437,15 @@ router.get('/:sessionId/status', (req, res) => {
 
   if (session.status === 'completed' && session.result) {
     const conclusion = normalizeNarrativeForClient(session.result.conclusion);
+    const conclusionContract =
+      session.result.conclusionContract ||
+      deriveConclusionContract(conclusion, {
+        mode: session.result.rounds > 1 ? 'focused_answer' : 'initial_report',
+      }) ||
+      undefined;
     response.result = {
       conclusion,
+      conclusionContract,
       confidence: session.result.confidence,
       totalDurationMs: session.result.totalDurationMs,
       rounds: session.result.rounds,
@@ -3103,6 +3110,9 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
   const result = session.result;
   if (!result) return;
   const normalizedConclusion = normalizeNarrativeForClient(result.conclusion);
+  // Fallback: re-derive contract if the orchestrator didn't populate it.
+  // Note: mode heuristic uses rounds (available here) as proxy for turnCount
+  // (which only the orchestrator knows). Both signal "multi-interaction" analysis.
   const normalizedConclusionContract =
     result.conclusionContract ||
     deriveConclusionContract(normalizedConclusion, {

@@ -711,6 +711,9 @@ export class AgentDrivenOrchestrator extends EventEmitter {
 
       // 9. Generate conclusion
       emitter.emitUpdate('progress', { phase: 'concluding', message: '生成分析结论' });
+      // Dynamic history budget: more findings → more tokens needed for evidence in the
+      // conclusion prompt → less room for history context. Thresholds tuned empirically:
+      // ≤12 findings (~typical): 600 tokens history, >12: 500, >24 (large trace): 380.
       const conclusionHistoryBudget = mergedFindings.length > 24
         ? 380
         : mergedFindings.length > 12
@@ -738,6 +741,12 @@ export class AgentDrivenOrchestrator extends EventEmitter {
         mode: turnCount >= 1 ? 'focused_answer' : 'initial_report',
         singleFrameDrillDown: isSingleFrameDrillDown,
       }) || undefined;
+      if (!conclusionContract) {
+        console.warn(
+          `[Orchestrator] deriveConclusionContract returned null for session ${sessionId}. ` +
+          `Conclusion preview: "${conclusion.slice(0, 200)}..."`
+        );
+      }
 
       emitter.emitUpdate('conclusion', {
         sessionId,

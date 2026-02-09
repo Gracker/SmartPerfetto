@@ -1027,7 +1027,9 @@ function parseNumberFromUnknown(raw: unknown): number | undefined {
 
 function clampPercent(raw: number | undefined): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return undefined;
-  if (raw <= 1) return Math.max(0, Math.min(100, raw * 100));
+  // Use strict < 1 so that exactly 1 is treated as "1%" not "100%".
+  // LLM may output confidence on 0-1 scale (e.g. 0.85) or 0-100 scale (e.g. 85).
+  if (raw > 0 && raw < 1) return Math.max(0, Math.min(100, raw * 100));
   return Math.max(0, Math.min(100, raw));
 }
 
@@ -2584,69 +2586,7 @@ function injectEvidenceIndexIntoEvidenceChain(markdown: string, findings: Findin
   return `${text.slice(0, sectionEnd).trimEnd()}\n${line}\n${text.slice(sectionEnd).trimStart()}`;
 }
 
-function buildDialogueModePrompt(params: {
-  turnCount: number;
-  historyContext: string;
-  intent: Intent;
-  stopReason?: string;
-  confirmedHypotheses: Array<{ description: string; confidence: number; status: string }>;
-  findings: Finding[];
-  jankSummary?: JankCauseSummary;
-}): string {
-  const parts: string[] = [];
 
-  parts.push(`你是 SmartPerfetto 的 AI 性能分析助手，正在进行多轮对话（当前第 ${params.turnCount + 1} 轮）。`);
-  parts.push('你的目标：充分理解用户本轮输入，在不重复长篇报告的前提下，用最小输出推进到"用户满意"。');
-  parts.push('');
-
-  parts.push('## 用户本轮输入');
-  parts.push(params.intent.primaryGoal);
-  parts.push('');
-
-  if (params.stopReason) {
-    parts.push('## 本轮停止原因');
-    parts.push(params.stopReason);
-    parts.push('');
-  }
-
-  if (params.historyContext) {
-    parts.push('## 对话历史摘要（用于承接上下文）');
-    parts.push(params.historyContext);
-    parts.push('');
-  }
-
-  // Include jank cause summary if available (from per-frame analysis)
-  if (params.jankSummary && params.jankSummary.totalJankFrames > 0) {
-    parts.push(formatJankSummaryForPrompt(params.jankSummary));
-    parts.push('');
-  }
-
-  if (params.confirmedHypotheses.length > 0) {
-    parts.push('## 已确认假设（摘要）');
-    for (const h of params.confirmedHypotheses.slice(0, 5)) {
-      parts.push(`- ${h.description} (confidence: ${Number(h.confidence).toFixed(2)})`);
-    }
-    parts.push('');
-  }
-
-  parts.push('## 本轮新增证据（findings 摘要）');
-  if (params.findings.length === 0) {
-    parts.push('无新增 findings。');
-  } else {
-    parts.push(params.findings.slice(0, 8).map(f => formatFindingWithEvidence(f)).join('\n\n'));
-  }
-  parts.push('');
-
-  parts.push('## 输出要求（必须严格遵守）');
-  parts.push('- 输出尽量短：总长度不超过 12 行（含空行）');
-  parts.push('- 先回答用户本轮问题（如果可直接回答，用 1-3 句话；不要复述历史长文）');
-  parts.push('- 然后提出最多 3 个澄清问题（每行以 "Q:" 开头），问题必须是决定下一步分析方向的关键信息');
-  parts.push('- 结尾给出 2-3 个可选下一步（以 "A."/"B."/"C." 开头），让用户选择');
-  parts.push('- 不要输出 SQL、不要代码块、不要编造未提供的数据');
-  parts.push('- 全部中文');
-
-  return parts.join('\n');
-}
 
 function generateDialogueFallback(
   findings: Finding[],

@@ -709,7 +709,7 @@ export interface AnalysisCompletedEvent {
   type: 'analysis_completed';
   data: {
     summary: string;
-    conclusionContract?: unknown;
+    conclusionContract?: import('../agent/core/conclusionContract').ConclusionContract;
     reportUrl?: string;
     findings: DiagnosticFinding[];
     suggestions: string[];

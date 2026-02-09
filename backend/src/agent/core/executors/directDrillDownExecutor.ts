@@ -697,8 +697,7 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
       'big',
       'little',
       'prime',
-      'core_placement',
-      'frequency_insufficient',
+      'placement',  // from "core_placement" after tokenization by _
     ]);
     const freqAspectHints = new Set([
       'frequency',
