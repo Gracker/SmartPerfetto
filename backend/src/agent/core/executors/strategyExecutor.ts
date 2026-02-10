@@ -947,9 +947,13 @@ export class StrategyExecutor implements AnalysisExecutor {
     // Build direct skill tasks from direct templates
     const directSkillTasks: DirectSkillTask[] = [];
     for (const template of directTemplates) {
+      const filteredIntervals = template.scope === 'per_interval'
+        ? this.filterIntervalsForTemplate(template, focusIntervals, emitter)
+        : [];
+
       const scopes = template.scope === 'global'
         ? [{ interval: { id: 0, processName: '', startTs: '0', endTs: '0', priority: 0 } as FocusInterval, scopeLabel: '全局' }]
-        : focusIntervals.map(interval => ({
+        : filteredIntervals.map(interval => ({
             interval,
             scopeLabel: interval.label || `区间${interval.id}`,
           }));
@@ -981,9 +985,13 @@ export class StrategyExecutor implements AnalysisExecutor {
     const tasks: AgentTask[] = [];
 
     for (const template of templates) {
+      const filteredIntervals = template.scope === 'per_interval'
+        ? this.filterIntervalsForTemplate(template, focusIntervals)
+        : [];
+
       const scopes = template.scope === 'global'
         ? [{ scopeLabel: '全局' as string }]
-        : focusIntervals.map(interval => ({
+        : filteredIntervals.map(interval => ({
             scopeLabel: interval.label || `区间${interval.id}`,
             timeRange: { start: interval.startTs, end: interval.endTs },
             packageName: interval.processName,
@@ -1024,6 +1032,32 @@ export class StrategyExecutor implements AnalysisExecutor {
     }
 
     return tasks;
+  }
+
+  private filterIntervalsForTemplate(
+    template: StageTaskTemplate,
+    intervals: FocusInterval[],
+    emitter?: ProgressEmitter
+  ): FocusInterval[] {
+    if (typeof template.intervalFilter !== 'function') {
+      return intervals;
+    }
+
+    const filtered: FocusInterval[] = [];
+    for (const interval of intervals) {
+      try {
+        if (template.intervalFilter(interval)) {
+          filtered.push(interval);
+        }
+      } catch (error: any) {
+        if (emitter) {
+          emitter.log(
+            `[StrategyExecutor] intervalFilter failed for template ${template.directSkillId || template.agentId}: ${error?.message || error}`
+          );
+        }
+      }
+    }
+    return filtered;
   }
 
   /**

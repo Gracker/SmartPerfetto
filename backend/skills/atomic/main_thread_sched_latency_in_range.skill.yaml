@@ -1,0 +1,86 @@
+# =============================================================================
+# 主线程调度延迟（原子 Skill）
+# =============================================================================
+# 分析指定时间区间内主线程 Runnable 等待时延。
+
+name: main_thread_sched_latency_in_range
+version: "1.0"
+type: atomic
+category: kernel
+
+meta:
+  display_name: "主线程调度延迟 (区间)"
+  description: "统计主线程 Runnable 等待时间分布"
+  icon: "schedule"
+  tags: [sched, latency, main_thread, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+  - name: package
+    type: string
+    required: false
+    description: "目标应用包名（支持 GLOB）"
+
+display:
+  level: detail
+  layer: deep
+  title: "主线程调度延迟"
+  columns:
+    - name: thread_name
+      label: "线程"
+      type: string
+    - name: runnable_count
+      label: "等待次数"
+      type: number
+    - name: total_runnable_ms
+      label: "总等待"
+      type: duration
+      format: duration_ms
+    - name: max_latency_ms
+      label: "最大延迟"
+      type: duration
+      format: duration_ms
+    - name: avg_latency_ms
+      label: "平均延迟"
+      type: duration
+      format: duration_ms
+    - name: long_wait_count
+      label: ">2ms 次数"
+      type: number
+    - name: severe_count
+      label: ">8ms 次数"
+      type: number
+
+sql: |
+  WITH main_thread AS (
+    SELECT t.utid
+    FROM thread t
+    JOIN process p ON t.upid = p.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND t.tid = p.pid
+  )
+  SELECT
+    'MainThread' as thread_name,
+    COUNT(*) as runnable_count,
+    ROUND(SUM(ts.dur) / 1e6, 2) as total_runnable_ms,
+    ROUND(MAX(ts.dur) / 1e6, 2) as max_latency_ms,
+    ROUND(AVG(ts.dur) / 1e6, 2) as avg_latency_ms,
+    SUM(CASE WHEN ts.dur > 2000000 THEN 1 ELSE 0 END) as long_wait_count,
+    SUM(CASE WHEN ts.dur > 8000000 THEN 1 ELSE 0 END) as severe_count
+  FROM thread_state ts
+  JOIN main_thread mt ON ts.utid = mt.utid
+  WHERE ts.ts >= ${start_ts}
+    AND ts.ts < ${end_ts}
+    AND ts.state IN ('R', 'R+')
+  GROUP BY 1
+  HAVING total_runnable_ms > 0.01
+
+output:
+  format: structured

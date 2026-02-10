@@ -1,0 +1,96 @@
+# =============================================================================
+# 启动主线程状态分布（原子 Skill）
+# =============================================================================
+
+name: startup_main_thread_states_in_range
+version: "1.0"
+type: atomic
+category: app_lifecycle
+
+meta:
+  display_name: "启动主线程状态分布 (区间)"
+  description: "统计启动阶段主线程 Running/Runnable/Blocked 状态占比"
+  icon: "timeline"
+  tags: [startup, main_thread, state, sched, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+    - sched
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+
+display:
+  level: key
+  layer: overview
+  title: "启动期间主线程状态"
+  columns:
+    - name: state
+      label: "状态"
+      type: string
+    - name: state_desc
+      label: "状态说明"
+      type: string
+    - name: total_dur_ms
+      label: "总耗时"
+      type: duration
+      format: duration_ms
+    - name: percent
+      label: "占比"
+      type: percentage
+      format: percentage
+    - name: count
+      label: "次数"
+      type: number
+      format: compact
+    - name: blocked_functions
+      label: "阻塞函数"
+      type: string
+      format: truncate
+
+sql: |
+  SELECT
+    ts.state,
+    CASE ts.state
+      WHEN 'Running' THEN 'Running (CPU执行)'
+      WHEN 'R' THEN 'Runnable (等待调度)'
+      WHEN 'R+' THEN 'Runnable+ (抢占等待)'
+      WHEN 'S' THEN 'Sleeping (主动睡眠)'
+      WHEN 'D' THEN 'Disk Sleep (IO等待)'
+      ELSE ts.state
+    END as state_desc,
+    SUM(ts.dur) / 1e6 as total_dur_ms,
+    ROUND(100.0 * SUM(ts.dur) / s.dur, 1) as percent,
+    COUNT(*) as count,
+    GROUP_CONCAT(DISTINCT ts.blocked_function) as blocked_functions
+  FROM thread_state ts
+  JOIN android_startup_threads st ON ts.utid = st.utid
+  JOIN android_startups s ON st.startup_id = s.startup_id
+  WHERE st.is_main_thread = 1
+    AND (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+    AND ts.ts >= s.ts
+    AND ts.ts <= s.ts + s.dur
+  GROUP BY ts.state, s.startup_id
+  ORDER BY total_dur_ms DESC
+
+output:
+  format: structured

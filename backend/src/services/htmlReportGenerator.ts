@@ -1856,9 +1856,10 @@ export class HTMLReportGenerator {
 
       case 'duration_us':
         if (typeof value === 'number') {
-          const unit = colDef.unit || 'ns';
+          // Keep legacy format key for compatibility, but display in ms.
+          const unit = colDef.unit || 'us';
           const ns = value * (unit === 'ns' ? 1 : unit === 'us' ? 1e3 : unit === 'ms' ? 1e6 : 1e9);
-          return `${(ns / 1e3).toFixed(1)} μs`;
+          return `${(ns / 1e6).toFixed(2)} ms`;
         }
         break;
 
@@ -3317,7 +3318,7 @@ export class HTMLReportGenerator {
                   ${stageIcon} 步骤 ${idx + 1}: ${this.escapeHtml(stage.stageId)}
                 </div>
                 <div style="font-size: 12px; color: #6b7280;">
-                  ${stage.success ? '✅' : '❌'} ${(duration / 1000).toFixed(1)}s
+                  ${stage.success ? '✅' : '❌'} ${duration.toFixed(0)}ms
                 </div>
               </div>
 
@@ -3474,7 +3475,7 @@ export class HTMLReportGenerator {
           displayValue = `${(value * 100).toFixed(1)}%`;
           color = value > 0.1 ? '#ef4444' : value > 0.05 ? '#f59e0b' : '#10b981';
         } else if (key.toLowerCase().includes('duration') || key.toLowerCase().includes('time') || key.toLowerCase().includes('ms')) {
-          displayValue = value > 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(1)}ms`;
+          displayValue = `${value.toFixed(2)}ms`;
         } else {
           displayValue = value.toLocaleString();
         }
@@ -3693,13 +3694,10 @@ export class HTMLReportGenerator {
     if (typeof value === 'number') {
       const lowerKey = key.toLowerCase();
       if (lowerKey.includes('ns') || lowerKey.includes('_ns')) {
-        if (value > 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}s`;
-        if (value > 1_000_000) return `${(value / 1_000_000).toFixed(2)}ms`;
-        if (value > 1000) return `${(value / 1000).toFixed(2)}µs`;
-        return `${value}ns`;
+        return `${(value / 1_000_000).toFixed(2)}ms`;
       }
       if (lowerKey.includes('duration') || lowerKey.includes('time') || lowerKey.includes('ms')) {
-        return value > 1000 ? `${(value / 1000).toFixed(2)}s` : `${value.toFixed(1)}ms`;
+        return `${value.toFixed(2)}ms`;
       }
       if (lowerKey.includes('rate') || lowerKey.includes('percent')) {
         // If value is already a percentage (e.g., 6.07), don't multiply

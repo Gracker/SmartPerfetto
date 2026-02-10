@@ -50,15 +50,18 @@ describe('narrativeSanitizer', () => {
 
     const output = sanitizeNarrativeForClient(input);
 
-    expect(output).toContain('触发因子（直接原因）');
-    expect(output).toContain('供给约束（资源瓶颈）');
-    expect(output).toContain('放大路径（问题放大环节）');
+    expect(output).toContain('直接原因');
+    expect(output).toContain('资源问题');
+    expect(output).toContain('放大因素');
+    expect(output).not.toContain('触发因子');
+    expect(output).not.toContain('供给约束');
+    expect(output).not.toContain('放大路径');
     expect(output).toContain('阻塞等待（线程等待锁/IO/Binder）');
     expect(output).toContain('显示系统处理不过来（SF消费端背压）');
   });
 
   test('is idempotent for already-humanized jargon phrases', () => {
-    const input = '放大路径: 显示系统处理不过来（SF消费端背压）';
+    const input = '放大因素: 显示系统处理不过来（SF消费端背压）';
 
     const once = sanitizeNarrativeForClient(input);
     const twice = sanitizeNarrativeForClient(once);

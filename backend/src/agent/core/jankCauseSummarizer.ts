@@ -8,6 +8,12 @@
 
 import { Finding } from '../types';
 import type { FrameMechanismRecord } from '../types/jankCause';
+import {
+  AMPLIFICATION_UNKNOWN_TEXT,
+  SUPPLY_NONE_TEXT,
+  SUPPLY_WORKLOAD_WEAK_TEXT,
+  TRIAD_LABELS,
+} from '../../utils/analysisNarrative';
 
 // =============================================================================
 // Types
@@ -104,7 +110,7 @@ const SUPPLY_CONSTRAINT_LABELS: Record<string, string> = {
   scheduling_delay: '调度延迟',
   core_placement: '核心摆放',
   blocking_wait: '阻塞等待',
-  none: '供给约束不明显',
+  none: SUPPLY_NONE_TEXT,
 };
 
 const WORKLOAD_DOMINANT_CAUSE_TYPES = new Set([
@@ -116,7 +122,7 @@ const AMPLIFICATION_PATH_LABELS: Record<string, string> = {
   render_pipeline_wait: 'RenderPipeline 等待放大',
   sf_consumer_backpressure: 'SF 消费端背压',
   app_deadline_miss: 'APP 截止超时',
-  unknown: '未识别放大路径',
+  unknown: AMPLIFICATION_UNKNOWN_TEXT,
 };
 
 /**
@@ -389,8 +395,8 @@ function buildClustersFromFindings(findings: Finding[]): JankCluster[] {
       frameCount: bucket.count,
       percentage: roundPercent(bucket.count, total),
       triggerFactor: CAUSE_TYPE_LABELS[causeType] || causeType,
-      supplyConstraint: '供给约束不明显',
-      amplificationPath: '未识别放大路径',
+      supplyConstraint: SUPPLY_NONE_TEXT,
+      amplificationPath: AMPLIFICATION_UNKNOWN_TEXT,
       causeType,
       representativeFrames: [],
       samplePrimaryCauses: bucket.samples,
@@ -409,7 +415,7 @@ function assignClusterIds(clusters: JankCluster[]): JankCluster[] {
 
 function resolveClusterSupplyLabel(causeType: string, supplyConstraint: string): string {
   if (supplyConstraint === 'none' && WORKLOAD_DOMINANT_CAUSE_TYPES.has(causeType)) {
-    return '负载主导（供给约束弱）';
+    return SUPPLY_WORKLOAD_WEAK_TEXT;
   }
   return SUPPLY_CONSTRAINT_LABELS[supplyConstraint] || supplyConstraint;
 }
@@ -511,7 +517,7 @@ function generateSummaryText(
   const topClusters = clusters.slice(0, CLUSTER_TOP_LIMIT);
   if (topClusters.length > 0) {
     lines.push(`### 掉帧聚类（优先按大头治理，${totalFrames} 帧）\n`);
-    lines.push('| 聚类 | 帧数 | 占比 | 触发因子 | 供给约束 | 放大路径 |');
+    lines.push(`| 聚类 | 帧数 | 占比 | ${TRIAD_LABELS.trigger} | ${TRIAD_LABELS.supply} | ${TRIAD_LABELS.amplification} |`);
     lines.push('|------|------|------|----------|----------|----------|');
     for (const cluster of topClusters) {
       lines.push(

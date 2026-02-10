@@ -21,6 +21,7 @@ import {
   FocusInterval,
   IntervalHelpers,
 } from './types';
+import { unwrapStepResult } from './helpers';
 import {
   inferVsyncPeriodNs,
   DEFAULT_VSYNC_PERIODS_FOR_FRAME_ESTIMATION,
@@ -141,10 +142,10 @@ function extractScrollingIntervals(
       if (!data || typeof data !== 'object') continue;
 
       if (data.scroll_sessions) {
-        scrollSessions.push(...helpers.payloadToObjectRows(data.scroll_sessions));
+        scrollSessions.push(...helpers.payloadToObjectRows(unwrapStepResult(data.scroll_sessions)));
       }
       if (data.session_jank) {
-        sessionJankList.push(...helpers.payloadToObjectRows(data.session_jank));
+        sessionJankList.push(...helpers.payloadToObjectRows(unwrapStepResult(data.session_jank)));
       }
     }
   }
@@ -254,7 +255,7 @@ function extractFrameIntervals(
 
       // Parse jank frames from response data
       if (data.get_app_jank_frames) {
-        const frames = helpers.payloadToObjectRows(data.get_app_jank_frames);
+        const frames = helpers.payloadToObjectRows(unwrapStepResult(data.get_app_jank_frames));
         for (const f of frames) {
           const startTs = String(f.start_ts ?? f.ts ?? '');
           const endTs = String(f.end_ts ?? '');

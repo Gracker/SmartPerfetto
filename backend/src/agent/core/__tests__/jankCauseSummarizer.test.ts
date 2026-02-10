@@ -278,7 +278,7 @@ describe('JankCauseSummarizer', () => {
       const summary = summarizeJankCauses([], records);
 
       expect(summary.clusters).toHaveLength(1);
-      expect(summary.clusters[0].supplyConstraint).toBe('负载主导（供给约束弱）');
+      expect(summary.clusters[0].supplyConstraint).toBe('负载主导（资源问题弱）');
     });
   });
 

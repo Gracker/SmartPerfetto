@@ -372,6 +372,8 @@ export interface SkillExecutionContext {
   traceId: string;
   packageName?: string;
   vendor?: string;
+  // 当前 skill 解析后的 prerequisite modules（用于每个 SQL 步骤内自动 INCLUDE）
+  moduleIncludes?: string[];
 
   // 当前 skill 的输入参数
   params: Record<string, any>;

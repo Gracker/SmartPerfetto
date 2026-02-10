@@ -1095,4 +1095,50 @@ describe('DirectSkillExecutor', () => {
       expect(responses[0].toolResults![0].metadata?.packageName).toBe('com.test.package');
     });
   });
+
+  // ===========================================================================
+  // Global Scope Sentinel Handling
+  // ===========================================================================
+
+  describe('Global Scope Sentinel Handling', () => {
+    test('does not inject start_ts/end_ts for global sentinel interval (startTs/endTs = "0")', async () => {
+      // The strategyExecutor creates a fake global interval with startTs='0', endTs='0'.
+      // buildParams must NOT forward these as real time filters to the skill,
+      // otherwise SQL conditions like "s.ts + s.dur <= 0" reject all data.
+      const globalSentinel = createFocusInterval({
+        id: 0,
+        processName: '',
+        startTs: '0',
+        endTs: '0',
+        priority: 0,
+      });
+      const task = createDirectSkillTask(
+        { skillParams: { analysis_mode: 'overview' } },
+        { ...globalSentinel }
+      );
+      mockExecute.mockResolvedValue(createMockSkillResult());
+
+      await executor.executeTasks([task], emitter);
+
+      const calledParams = mockExecute.mock.calls[0][2];
+      expect(calledParams.start_ts).toBeUndefined();
+      expect(calledParams.end_ts).toBeUndefined();
+      expect(calledParams.analysis_mode).toBe('overview');
+    });
+
+    test('injects start_ts/end_ts for real intervals with valid timestamps', async () => {
+      const realInterval = createFocusInterval({
+        startTs: '1234567890000000',
+        endTs: '1234567990000000',
+      });
+      const task = createDirectSkillTask({}, { ...realInterval });
+      mockExecute.mockResolvedValue(createMockSkillResult());
+
+      await executor.executeTasks([task], emitter);
+
+      const calledParams = mockExecute.mock.calls[0][2];
+      expect(calledParams.start_ts).toBe('1234567890000000');
+      expect(calledParams.end_ts).toBe('1234567990000000');
+    });
+  });
 });

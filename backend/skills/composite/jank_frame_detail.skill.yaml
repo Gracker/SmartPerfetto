@@ -871,6 +871,15 @@ steps:
         - name: primary_cause
           label: "主要原因"
           type: string
+        - name: deep_reason
+          label: "为什么慢"
+          type: string
+        - name: optimization_hint
+          label: "优化方向"
+          type: string
+        - name: reason_code
+          label: "原因类型"
+          type: enum
         - name: secondary_info
           label: "附加信息"
           type: string
@@ -884,13 +893,13 @@ steps:
           label: "机制分组"
           type: enum
         - name: supply_constraint
-          label: "供给约束"
+          label: "资源问题"
           type: enum
         - name: trigger_layer
           label: "触发层"
           type: enum
         - name: amplification_path
-          label: "放大路径"
+          label: "放大因素"
           type: enum
         - name: frame_dur_ms
           label: "帧耗时"
@@ -986,8 +995,17 @@ steps:
         FROM thread t JOIN process p ON t.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '') AND t.tid = p.pid
       ),
+      main_thread_tid AS (
+        SELECT t.tid
+        FROM thread t JOIN process p ON t.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '') AND t.tid = p.pid
+      ),
       top_slice AS (
-        SELECT s.name, ROUND(s.dur / 1e6, 2) as dur_ms
+        SELECT
+          s.name,
+          s.ts as slice_ts,
+          s.dur as slice_dur_ns,
+          ROUND(s.dur / 1e6, 2) as dur_ms
         FROM slice s
         JOIN thread_track tt ON s.track_id = tt.id
         WHERE tt.utid IN (SELECT utid FROM main_thread_utid)
@@ -997,15 +1015,128 @@ steps:
         ORDER BY s.dur DESC
         LIMIT 1
       ),
+      top_slice_bounds AS (
+        SELECT
+          slice_ts as slice_start_ns,
+          slice_ts + slice_dur_ns as slice_end_ns,
+          slice_dur_ns
+        FROM top_slice
+      ),
+      top_slice_state_overlap AS (
+        SELECT
+          ts.state,
+          ts.cpu,
+          (
+            CASE
+              WHEN ts.ts + ts.dur < b.slice_end_ns THEN ts.ts + ts.dur
+              ELSE b.slice_end_ns
+            END
+            -
+            CASE
+              WHEN ts.ts > b.slice_start_ns THEN ts.ts
+              ELSE b.slice_start_ns
+            END
+          ) as overlap_ns
+        FROM thread_state ts
+        JOIN main_thread_utid mtu ON ts.utid = mtu.utid
+        JOIN top_slice_bounds b
+        WHERE ts.ts < b.slice_end_ns
+          AND ts.ts + ts.dur > b.slice_start_ns
+      ),
+      top_slice_cpu_mix AS (
+        SELECT
+          ROUND(
+            100.0 * SUM(CASE WHEN state = 'Running' AND cpu < 4 AND overlap_ns > 0 THEN overlap_ns ELSE 0 END)
+            / NULLIF((SELECT slice_dur_ns FROM top_slice_bounds), 0),
+            1
+          ) as little_run_pct,
+          ROUND(
+            100.0 * SUM(CASE WHEN state = 'Running' AND cpu >= 4 AND overlap_ns > 0 THEN overlap_ns ELSE 0 END)
+            / NULLIF((SELECT slice_dur_ns FROM top_slice_bounds), 0),
+            1
+          ) as big_run_pct,
+          ROUND(
+            100.0 * SUM(CASE WHEN state = 'R' AND overlap_ns > 0 THEN overlap_ns ELSE 0 END)
+            / NULLIF((SELECT slice_dur_ns FROM top_slice_bounds), 0),
+            1
+          ) as runnable_pct,
+          ROUND(
+            100.0 * SUM(CASE WHEN state IN ('S', 'D', 'I', 'DK') AND overlap_ns > 0 THEN overlap_ns ELSE 0 END)
+            / NULLIF((SELECT slice_dur_ns FROM top_slice_bounds), 0),
+            1
+          ) as blocked_pct
+        FROM top_slice_state_overlap
+      ),
       -- 5. 获取 CPU 频率
       freq_info AS (
         SELECT
-          MAX(CASE WHEN cpu >= 4 THEN ROUND(value / 1000, 0) ELSE 0 END) as big_freq,
-          MAX(CASE WHEN cpu < 4 THEN ROUND(value / 1000, 0) ELSE 0 END) as little_freq
+          ROUND(AVG(CASE WHEN cpu >= 4 THEN value END) / 1000, 0) as big_avg_freq,
+          ROUND(MAX(CASE WHEN cpu >= 4 THEN value END) / 1000, 0) as big_max_freq,
+          ROUND(MIN(CASE WHEN cpu >= 4 THEN value END) / 1000, 0) as big_min_freq,
+          ROUND(AVG(CASE WHEN cpu < 4 THEN value END) / 1000, 0) as little_avg_freq,
+          ROUND(MAX(CASE WHEN cpu < 4 THEN value END) / 1000, 0) as little_max_freq,
+          ROUND(MIN(CASE WHEN cpu < 4 THEN value END) / 1000, 0) as little_min_freq
         FROM counter c
         JOIN cpu_counter_track t ON c.track_id = t.id
         WHERE t.name = 'cpufreq'
           AND c.ts >= ${start_ts} AND c.ts < ${end_ts}
+      ),
+      top_slice_freq AS (
+        SELECT
+          ROUND(AVG(CASE WHEN t.cpu >= 4 THEN c.value END) / 1000, 0) as top_big_avg_freq_mhz,
+          ROUND(MAX(CASE WHEN t.cpu >= 4 THEN c.value END) / 1000, 0) as top_big_max_freq_mhz,
+          ROUND(MIN(CASE WHEN t.cpu >= 4 THEN c.value END) / 1000, 0) as top_big_min_freq_mhz,
+          ROUND(AVG(CASE WHEN t.cpu < 4 THEN c.value END) / 1000, 0) as top_little_avg_freq_mhz
+        FROM counter c
+        JOIN cpu_counter_track t ON c.track_id = t.id
+        WHERE t.name = 'cpufreq'
+          AND EXISTS (SELECT 1 FROM top_slice_bounds)
+          AND c.ts >= (SELECT slice_start_ns FROM top_slice_bounds)
+          AND c.ts < (SELECT slice_end_ns FROM top_slice_bounds)
+      ),
+      big_freq_window AS (
+        SELECT c.ts, c.value as freq_khz
+        FROM counter c
+        JOIN cpu_counter_track t ON c.track_id = t.id
+        WHERE t.name = 'cpufreq'
+          AND t.cpu >= 4
+          AND c.ts >= ${start_ts}
+          AND c.ts < ${end_ts}
+      ),
+      big_freq_stats AS (
+        SELECT
+          MAX(freq_khz) as peak_khz,
+          MIN(freq_khz) as min_khz,
+          AVG(freq_khz) as avg_khz
+        FROM big_freq_window
+      ),
+      big_freq_ramp AS (
+        SELECT
+          ROUND(
+            (
+              COALESCE(
+                MIN(
+                  CASE
+                    WHEN b.freq_khz >=
+                      CASE
+                        WHEN s.peak_khz IS NULL THEN NULL
+                        WHEN s.peak_khz * 0.70 > 1800000 THEN s.peak_khz * 0.70
+                        ELSE 1800000
+                      END
+                    THEN b.ts
+                  END
+                ),
+                ${end_ts}
+              ) - ${start_ts}
+            ) / 1e6,
+            2
+          ) as ramp_to_high_ms,
+          ROUND(
+            (COALESCE(MIN(CASE WHEN b.freq_khz >= 2000000 THEN b.ts END), ${end_ts}) - ${start_ts}) / 1e6,
+            2
+          ) as ramp_to_2g_ms
+        FROM big_freq_window b
+        CROSS JOIN big_freq_stats s
       ),
       -- 6. IO 阻塞检测（主线程 D/DK 状态）
       io_block AS (
@@ -1054,11 +1185,97 @@ steps:
           AND ts.state = 'Running'
           AND ts.cpu IS NOT NULL
       ),
+      -- 10. 主线程同步 Binder 与关键 slice 重叠分析
+      binder_sync_main AS (
+        SELECT
+          bt.client_ts,
+          bt.client_dur,
+          bt.server_process
+        FROM android_binder_txns bt
+        WHERE bt.client_tid IN (SELECT tid FROM main_thread_tid)
+          AND bt.is_sync = 1
+          AND bt.client_ts < ${end_ts}
+          AND bt.client_ts + bt.client_dur > ${start_ts}
+      ),
+      binder_frame AS (
+        SELECT
+          ROUND(COALESCE(SUM(client_dur), 0) / 1e6, 2) as sync_total_ms,
+          ROUND(COALESCE(MAX(client_dur), 0) / 1e6, 2) as sync_max_ms,
+          COUNT(*) as sync_count
+        FROM binder_sync_main
+      ),
+      binder_overlap AS (
+        SELECT
+          ROUND(
+            COALESCE(
+              SUM(
+                CASE
+                  WHEN b.client_ts < tsb.slice_end_ns
+                    AND b.client_ts + b.client_dur > tsb.slice_start_ns
+                  THEN
+                    (
+                      CASE
+                        WHEN b.client_ts + b.client_dur < tsb.slice_end_ns THEN b.client_ts + b.client_dur
+                        ELSE tsb.slice_end_ns
+                      END
+                      -
+                      CASE
+                        WHEN b.client_ts > tsb.slice_start_ns THEN b.client_ts
+                        ELSE tsb.slice_start_ns
+                      END
+                    )
+                  ELSE 0
+                END
+              ),
+              0
+            ) / 1e6,
+            2
+          ) as overlap_ms,
+          ROUND(
+            COALESCE(
+              MAX(
+                CASE
+                  WHEN b.client_ts < tsb.slice_end_ns
+                    AND b.client_ts + b.client_dur > tsb.slice_start_ns
+                  THEN
+                    (
+                      CASE
+                        WHEN b.client_ts + b.client_dur < tsb.slice_end_ns THEN b.client_ts + b.client_dur
+                        ELSE tsb.slice_end_ns
+                      END
+                      -
+                      CASE
+                        WHEN b.client_ts > tsb.slice_start_ns THEN b.client_ts
+                        ELSE tsb.slice_start_ns
+                      END
+                    )
+                  ELSE 0
+                END
+              ),
+              0
+            ) / 1e6,
+            2
+          ) as max_overlap_ms,
+          COALESCE(
+            MAX(
+              CASE
+                WHEN b.client_ts < tsb.slice_end_ns
+                  AND b.client_ts + b.client_dur > tsb.slice_start_ns
+                THEN b.server_process
+                ELSE NULL
+              END
+            ),
+            ''
+          ) as overlap_server
+        FROM binder_sync_main b
+        JOIN top_slice_bounds tsb
+      ),
       -- 10. 综合根因判断
       analysis AS (
         SELECT
           (SELECT dur_ms FROM top_slice) as slice_dur,
           (SELECT name FROM top_slice) as slice_name,
+          ROUND(((SELECT slice_ts FROM top_slice) - ${start_ts}) / 1e6, 2) as top_slice_offset_ms,
           (SELECT q1 FROM main_summary) as main_q1,
           (SELECT q2 FROM main_summary) as main_q2,
           (SELECT q3 FROM main_summary) as main_q3,
@@ -1067,8 +1284,28 @@ steps:
           (SELECT q2 FROM render_summary) as render_q2,
           (SELECT q3 FROM render_summary) as render_q3,
           (SELECT q4 FROM render_summary) as render_q4,
-          (SELECT big_freq FROM freq_info) as big_freq,
-          (SELECT little_freq FROM freq_info) as little_freq,
+          (SELECT big_avg_freq FROM freq_info) as big_freq,
+          (SELECT big_max_freq FROM freq_info) as big_freq_peak,
+          (SELECT big_min_freq FROM freq_info) as big_freq_min,
+          (SELECT little_avg_freq FROM freq_info) as little_freq,
+          (SELECT little_max_freq FROM freq_info) as little_freq_peak,
+          (SELECT little_min_freq FROM freq_info) as little_freq_min,
+          (SELECT little_run_pct FROM top_slice_cpu_mix) as top_slice_little_pct,
+          (SELECT big_run_pct FROM top_slice_cpu_mix) as top_slice_big_pct,
+          (SELECT runnable_pct FROM top_slice_cpu_mix) as top_slice_runnable_pct,
+          (SELECT blocked_pct FROM top_slice_cpu_mix) as top_slice_blocked_pct,
+          (SELECT top_big_avg_freq_mhz FROM top_slice_freq) as top_big_avg_freq_mhz,
+          (SELECT top_big_max_freq_mhz FROM top_slice_freq) as top_big_max_freq_mhz,
+          (SELECT top_big_min_freq_mhz FROM top_slice_freq) as top_big_min_freq_mhz,
+          (SELECT top_little_avg_freq_mhz FROM top_slice_freq) as top_little_avg_freq_mhz,
+          (SELECT ramp_to_high_ms FROM big_freq_ramp) as ramp_to_high_ms,
+          (SELECT ramp_to_2g_ms FROM big_freq_ramp) as ramp_to_2g_ms,
+          (SELECT overlap_ms FROM binder_overlap) as binder_overlap_ms,
+          (SELECT max_overlap_ms FROM binder_overlap) as binder_max_overlap_ms,
+          (SELECT overlap_server FROM binder_overlap) as binder_overlap_server,
+          (SELECT sync_total_ms FROM binder_frame) as binder_sync_total_ms,
+          (SELECT sync_max_ms FROM binder_frame) as binder_sync_max_ms,
+          (SELECT sync_count FROM binder_frame) as binder_sync_count,
           (SELECT io_block_ms FROM io_block) as io_block_ms,
           (SELECT max_sched_ms FROM sched_latency) as max_sched_ms,
           (SELECT total_sched_ms FROM sched_latency) as total_sched_ms,
@@ -1082,7 +1319,52 @@ steps:
           ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.06, 0.8), 2) as gpu_fence_warning_ms,
           ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.30, 3.5), 2) as sched_max_critical_ms,
           ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.18, 2.0), 2) as total_sched_critical_ms,
-          ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.12, 1.5), 2) as io_block_critical_ms
+          ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.12, 1.5), 2) as io_block_critical_ms,
+          ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.18, 1.5), 2) as binder_overlap_critical_ms,
+          ROUND(MAX(((SELECT vsync_period_ns FROM vsync_config) / 1e6) * 0.35, 2.0), 2) as freq_ramp_critical_ms
+      )
+      , classified AS (
+        SELECT
+          *,
+          CASE
+            WHEN slice_dur > slice_critical_ms
+              AND binder_overlap_ms >= binder_overlap_critical_ms
+              THEN 'binder_sync_blocking'
+            WHEN slice_dur > slice_critical_ms
+              AND COALESCE(top_slice_little_pct, 0) >= 45
+              THEN 'small_core_placement'
+            WHEN slice_dur > slice_critical_ms
+              AND COALESCE(top_slice_runnable_pct, 0) >= 15
+              THEN 'sched_delay_in_slice'
+            WHEN slice_dur > slice_critical_ms
+              AND COALESCE(top_slice_big_pct, 0) >= 40
+              AND COALESCE(top_big_avg_freq_mhz, 0) > 0
+              AND COALESCE(top_big_max_freq_mhz, 0) > 0
+              AND top_big_avg_freq_mhz < top_big_max_freq_mhz * 0.55
+              THEN 'big_core_low_freq'
+            WHEN slice_dur > slice_critical_ms
+              AND COALESCE(ramp_to_high_ms, 0) > freq_ramp_critical_ms
+              AND COALESCE(top_slice_offset_ms, 0) <= ramp_to_high_ms
+              THEN 'freq_ramp_slow'
+            WHEN slice_dur > slice_critical_ms
+              THEN 'workload_heavy'
+            WHEN max_sched_ms > sched_max_critical_ms
+              OR total_sched_ms > total_sched_critical_ms
+              OR main_q3 > 20
+              THEN 'scheduling_delay'
+            WHEN main_q2 > 50
+              THEN 'small_core_placement'
+            WHEN big_freq > 0 AND big_freq_peak > 0 AND big_freq < big_freq_peak * 0.45
+              THEN 'big_core_low_freq'
+            WHEN big_load_pct > 90 OR (big_load_pct > 70 AND little_load_pct > 70)
+              THEN 'cpu_load_high'
+            WHEN io_block_ms > io_block_critical_ms OR main_q4 > 30
+              THEN 'blocking_wait'
+            WHEN fence_ms > gpu_fence_warning_ms
+              THEN 'gpu_wait'
+            ELSE 'unknown'
+          END as reason_code
+        FROM analysis
       )
       , base_result AS (
         SELECT
@@ -1133,10 +1415,73 @@ steps:
             ELSE '帧耗时 ${dur_ms}ms 超过 VSync 周期(' || frame_budget_ms || 'ms)'
           END as primary_cause,
           CASE
+            WHEN reason_code = 'binder_sync_blocking' THEN
+              'Binder 同步阻塞：关键操作与同步Binder重叠 ' || binder_overlap_ms || 'ms（累计 ' ||
+              binder_sync_total_ms || 'ms' ||
+              CASE
+                WHEN COALESCE(binder_overlap_server, '') != '' THEN '，对端 ' || binder_overlap_server || ''
+                ELSE ''
+              END || '）'
+            WHEN reason_code = 'small_core_placement' THEN
+              '线程更多跑在小核：关键操作小核运行占比 ' || COALESCE(top_slice_little_pct, 0) ||
+              '%（大核占比 ' || COALESCE(top_slice_big_pct, 0) || '%）'
+            WHEN reason_code = 'sched_delay_in_slice' THEN
+              '调度延迟：关键操作中 Runnable 等待占比 ' || COALESCE(top_slice_runnable_pct, 0) ||
+              '%，主线程最大调度等待 ' || COALESCE(max_sched_ms, 0) || 'ms'
+            WHEN reason_code = 'big_core_low_freq' THEN
+              '大核低频：关键操作大核运行占比 ' || COALESCE(top_slice_big_pct, 0) ||
+              '%，但平均频率仅 ' || COALESCE(top_big_avg_freq_mhz, big_freq) || 'MHz（片内峰值 ' ||
+              COALESCE(top_big_max_freq_mhz, big_freq_peak) || 'MHz）'
+            WHEN reason_code = 'freq_ramp_slow' THEN
+              '频率爬升慢：帧开始后 ' || COALESCE(ramp_to_high_ms, 0) ||
+              'ms 才升到高频，关键操作起点 +' || COALESCE(top_slice_offset_ms, 0) || 'ms'
+            WHEN reason_code = 'workload_heavy' THEN
+              CASE
+                WHEN slice_name GLOB '*RV*Prefetch*' OR slice_name GLOB '*OnBind*' OR slice_name GLOB '*Adapter*bind*' OR slice_name GLOB '*bind*'
+                  THEN '业务负载重：列表预取/绑定逻辑在主线程串行执行 ' || slice_dur || 'ms'
+                ELSE '业务负载重：主线程业务逻辑本身执行 ' || slice_dur || 'ms'
+              END
+            WHEN reason_code = 'scheduling_delay' THEN
+              '调度延迟：主线程 Runnable 累计 ' || COALESCE(total_sched_ms, 0) ||
+              'ms（最大 ' || COALESCE(max_sched_ms, 0) || 'ms）'
+            WHEN reason_code = 'cpu_load_high' THEN
+              'CPU 负载高：大核负载 ' || COALESCE(big_load_pct, 0) ||
+              '%，小核负载 ' || COALESCE(little_load_pct, 0) || '%'
+            WHEN reason_code = 'blocking_wait' THEN
+              '阻塞等待：主线程阻塞/IO 等待 ' || COALESCE(io_block_ms, 0) || 'ms，Q4 占比 ' || COALESCE(main_q4, 0) || '%'
+            WHEN reason_code = 'gpu_wait' THEN
+              'GPU 等待：RenderThread/GPU Fence 累计等待 ' || COALESCE(fence_ms, 0) || 'ms'
+            ELSE NULL
+          END as deep_reason,
+          CASE
+            WHEN reason_code = 'binder_sync_blocking' THEN '优化方向：减少主线程同步 Binder（异步化/批量化/结果缓存）并压缩关键路径 IPC'
+            WHEN reason_code = 'small_core_placement' THEN '优化方向：保证关键滚动路径优先使用大核，减少后台线程对主线程的抢占'
+            WHEN reason_code = 'sched_delay_in_slice' OR reason_code = 'scheduling_delay' THEN '优化方向：降低同窗并发与高优线程竞争，缩短主线程 Runnable 等待'
+            WHEN reason_code = 'big_core_low_freq' THEN '优化方向：在输入/滚动前预拉频，避免大核低频执行关键 UI 热路径'
+            WHEN reason_code = 'freq_ramp_slow' THEN '优化方向：使用 touch/scroll boost 提前拉频，减少频率爬升滞后'
+            WHEN reason_code = 'workload_heavy' THEN
+              CASE
+                WHEN slice_name GLOB '*RV*Prefetch*' OR slice_name GLOB '*OnBind*' OR slice_name GLOB '*Adapter*bind*' OR slice_name GLOB '*bind*'
+                  THEN '优化方向：拆分 RV Prefetch/OnBind 重逻辑，预计算和缓存绑定数据，避免主线程串行重活'
+                ELSE '优化方向：把关键帧内重逻辑拆分到后台并做结果复用，缩短主线程单次执行时长'
+              END
+            WHEN reason_code = 'cpu_load_high' THEN '优化方向：降低 CPU 总负载并限制后台并发，优先保障 UI 与 RenderThread 预算'
+            WHEN reason_code = 'blocking_wait' THEN '优化方向：减少主线程同步等待（Binder/锁/IO），缩短临界区和同步链路'
+            WHEN reason_code = 'gpu_wait' THEN '优化方向：降低 draw 复杂度/overdraw，减少 GPU Fence 等待'
+            ELSE '优化方向：扩大同窗样本做聚类，确认该慢原因是否稳定复现'
+          END as optimization_hint,
+          reason_code,
+          CASE
+            WHEN reason_code = 'binder_sync_blocking' THEN '同步 Binder 重叠 ' || COALESCE(binder_overlap_ms, 0) || 'ms'
+            WHEN reason_code = 'small_core_placement' THEN '关键操作小核占比 ' || COALESCE(top_slice_little_pct, 0) || '%'
+            WHEN reason_code = 'sched_delay_in_slice' THEN '关键操作 Runnable 占比 ' || COALESCE(top_slice_runnable_pct, 0) || '%'
+            WHEN reason_code = 'big_core_low_freq' THEN '关键操作大核频率 ' || COALESCE(top_big_avg_freq_mhz, big_freq) || 'MHz'
+            WHEN reason_code = 'freq_ramp_slow' THEN '高频拉升耗时 ' || COALESCE(ramp_to_high_ms, 0) || 'ms'
+            WHEN reason_code = 'workload_heavy' THEN '关键业务操作 ' || COALESCE(slice_name, 'unknown') || ' 执行 ' || COALESCE(slice_dur, 0) || 'ms'
             WHEN fence_ms > gpu_fence_warning_ms THEN 'GPU Fence 等待 ' || ROUND(fence_ms, 1) || 'ms'
             WHEN total_sched_ms > (total_sched_critical_ms * 0.5) THEN '调度等待累计 ' || ROUND(total_sched_ms, 1) || 'ms'
             WHEN big_load_pct > 70 THEN '大核负载 ' || ROUND(big_load_pct, 0) || '%'
-            WHEN big_freq > 0 AND big_freq < 1500 THEN '大核频率 ' || big_freq || 'MHz'
+            WHEN big_freq > 0 AND big_freq < 1500 THEN '大核平均频率 ' || big_freq || 'MHz'
             WHEN main_q2 > 30 THEN '小核运行占比 ' || main_q2 || '%'
             ELSE NULL
           END as secondary_info,
@@ -1170,6 +1515,9 @@ steps:
             WHEN big_load_pct > 70 AND little_load_pct > 70 THEN 'cpu_overload'
             ELSE 'unknown'
           END as cause_type,
+          slice_name,
+          slice_dur,
+          frame_budget_ms,
           ${dur_ms} as frame_dur_ms,
           '${jank_type}' as jank_type,
           '${jank_responsibility}' as jank_responsibility,
@@ -1179,19 +1527,42 @@ steps:
           main_q3,
           main_q4,
           big_freq,
+          big_freq_peak,
+          top_slice_little_pct,
+          top_slice_big_pct,
+          top_slice_runnable_pct,
+          top_big_avg_freq_mhz,
+          top_big_max_freq_mhz,
+          ramp_to_high_ms,
+          binder_overlap_ms,
+          binder_sync_total_ms,
           big_load_pct,
           little_load_pct,
           io_block_ms,
+          render_q4,
+          fence_ms,
           sched_max_critical_ms,
           total_sched_critical_ms,
           io_block_critical_ms
-        FROM analysis
+        FROM classified
       )
       SELECT
         primary_cause,
+        deep_reason,
+        optimization_hint,
+        reason_code,
         secondary_info,
         confidence,
         cause_type,
+        slice_name,
+        slice_dur,
+        frame_budget_ms,
+        main_q3 as main_q3_pct,
+        main_q4 as main_q4_pct,
+        render_q4 as render_q4_pct,
+        max_sched_ms as main_max_sched_ms,
+        io_block_ms as main_io_block_ms,
+        fence_ms as gpu_fence_ms,
         frame_dur_ms,
         jank_type,
         CASE
@@ -1201,6 +1572,12 @@ steps:
           ELSE 'unknown'
         END as mechanism_group,
         CASE
+          WHEN reason_code IN ('binder_sync_blocking', 'blocking_wait') THEN 'blocking_wait'
+          WHEN reason_code = 'small_core_placement' THEN 'core_placement'
+          WHEN reason_code IN ('big_core_low_freq', 'freq_ramp_slow') THEN 'frequency_insufficient'
+          WHEN reason_code IN ('sched_delay_in_slice', 'scheduling_delay') THEN 'scheduling_delay'
+          WHEN reason_code = 'cpu_load_high' THEN 'load_high'
+          WHEN reason_code = 'workload_heavy' THEN 'none'
           WHEN io_block_ms > io_block_critical_ms OR main_q4 > 30 THEN 'blocking_wait'
           WHEN big_freq < 1200 AND big_freq > 0 THEN 'frequency_insufficient'
           WHEN main_q2 > 50 THEN 'core_placement'
@@ -1370,18 +1747,18 @@ steps:
           - "考虑批量处理或缓存"
 
       # ===== 高优先级：CPU 限频 =====
-      - condition: "Boolean(throttling_data?.data?.find(t => t.throttle_detected === 1))"
+      - condition: "Boolean(throttling_data?.data?.find(t => t.core_type === 'big' && t.throttle_detected === 1 && (t.freq_drop_pct || 0) > 20 && (t.max_freq_mhz || 0) > (t.min_freq_mhz || 0)))"
         severity: critical
-        diagnosis: "检测到 CPU 限频: 大核从 ${throttling_data.data.find(t => t.throttle_detected === 1)?.start_freq_mhz}MHz 降至 ${throttling_data.data.find(t => t.throttle_detected === 1)?.end_freq_mhz}MHz"
+        diagnosis: "检测到 CPU 限频: 大核最低 ${throttling_data.data.find(t => t.core_type === 'big' && t.throttle_detected === 1)?.min_freq_mhz}MHz（峰值 ${throttling_data.data.find(t => t.core_type === 'big' && t.throttle_detected === 1)?.max_freq_mhz}MHz，降幅 ${throttling_data.data.find(t => t.core_type === 'big' && t.throttle_detected === 1)?.freq_drop_pct}%）"
         confidence: high
         suggestions:
           - "设备温度过高触发限频"
           - "减少持续高负载任务"
           - "检查散热状况"
 
-      - condition: "throttling_data?.data?.length > 0 && throttling_data.data[0]?.freq_drop_pct > 20"
+      - condition: "Boolean(throttling_data?.data?.find(t => t.core_type === 'big' && (t.freq_drop_pct || 0) > 20))"
         severity: warning
-        diagnosis: "帧期间大核降频 ${throttling_data.data[0].freq_drop_pct}%"
+        diagnosis: "帧期间大核降频 ${throttling_data.data.find(t => t.core_type === 'big')?.freq_drop_pct}%"
         confidence: high
         suggestions:
           - "CPU 频率不稳定影响性能"

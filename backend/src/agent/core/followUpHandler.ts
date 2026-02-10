@@ -32,6 +32,7 @@ interface ResolvedEntityResult {
 const ENTITY_PARAM_KEYS: Record<string, string> = {
   frame: 'frame_id',
   session: 'session_id',
+  startup: 'startup_id',
   process: 'process_name',
   binder_call: 'binder_txn_id',
   time_range: 'time_range',
@@ -40,6 +41,7 @@ const ENTITY_PARAM_KEYS: Record<string, string> = {
 const ENTITY_LABELS: Record<string, string> = {
   frame: '帧',
   session: '滑动会话',
+  startup: '启动事件',
   process: '进程',
 };
 
@@ -198,6 +200,17 @@ function resolveEntityFromFindings(
       }
     }
 
+    // Startup entity matching
+    if (entity.type === 'startup') {
+      const findingStartupId = getField(d, 'startup_id', 'startupId');
+      if (findingStartupId !== undefined && idsMatch(findingStartupId, entityId)) {
+        return {
+          params: buildStartupParams(entityId, d),
+          finding,
+        };
+      }
+    }
+
     // Process entity matching
     if (entity.type === 'process') {
       const processName = getField(d, 'process_name', 'processName', 'package');
@@ -250,6 +263,19 @@ function buildSessionParams(entityId: any, d: Record<string, any>): Record<strin
   };
 }
 
+function buildStartupParams(entityId: any, d: Record<string, any>): Record<string, any> {
+  return {
+    startup_id: entityId,
+    start_ts: getField(d, 'start_ts', 'startTs'),
+    end_ts: getField(d, 'end_ts', 'endTs'),
+    package: getField(d, 'package', 'process_name', 'processName'),
+    startup_type: getField(d, 'startup_type', 'startupType'),
+    dur_ms: getField(d, 'dur_ms', 'durMs'),
+    ttid_ms: getField(d, 'ttid_ms', 'ttidMs'),
+    ttfd_ms: getField(d, 'ttfd_ms', 'ttfdMs'),
+  };
+}
+
 function buildProcessParams(entityId: any, d: Record<string, any>): Record<string, any> {
   const startTs = getField(d, 'start_ts', 'startTs');
   const endTs = getField(d, 'end_ts', 'endTs');
@@ -294,8 +320,12 @@ function buildFocusInterval(
       // Normalize all metadata to snake_case for consistency
       frameId: getField(d, 'frame_id', 'frameId'),
       sessionId: getField(d, 'session_id', 'sessionId'),
+      startupId: getField(d, 'startup_id', 'startupId'),
+      startupType: getField(d, 'startup_type', 'startupType'),
       jankType: getField(d, 'jank_type', 'jankType'),
       durMs: getField(d, 'dur_ms', 'durMs'),
+      ttidMs: getField(d, 'ttid_ms', 'ttidMs'),
+      ttfdMs: getField(d, 'ttfd_ms', 'ttfdMs'),
       mainStartTs: getField(d, 'main_start_ts', 'mainStartTs'),
       mainEndTs: getField(d, 'main_end_ts', 'mainEndTs'),
       renderStartTs: getField(d, 'render_start_ts', 'renderStartTs'),
@@ -354,7 +384,8 @@ function buildMinimalIntervalFromParams(
   // Need at least an entity ID to be meaningful
   const frameId = getField(params, 'frame_id', 'frameId');
   const sessionId = getField(params, 'session_id', 'sessionId');
-  const entityId = frameId || sessionId;
+  const startupId = getField(params, 'startup_id', 'startupId');
+  const entityId = frameId || sessionId || startupId;
   if (!entityId) return null;
 
   const startTs = getField(params, 'start_ts', 'startTs');
@@ -362,7 +393,7 @@ function buildMinimalIntervalFromParams(
 
   // If we have timestamps, use them
   if (startTs && endTs) {
-    const entityType = frameId ? 'frame' : 'session';
+    const entityType = frameId ? 'frame' : (sessionId ? 'session' : 'startup');
     const label = ENTITY_LABELS[entityType]
       ? `${ENTITY_LABELS[entityType]} ${entityId}`
       : `${entityType} ${entityId}`;
@@ -375,7 +406,7 @@ function buildMinimalIntervalFromParams(
       priority: 1,
       label,
       metadata: {
-        sourceEntityType: frameId ? 'frame' : 'session',
+        sourceEntityType: entityType,
         sourceEntityId: entityId,
         minimal: true, // Mark as minimal construction
         ...params,
@@ -385,7 +416,7 @@ function buildMinimalIntervalFromParams(
 
   // No timestamps - still create interval but mark it as needing enrichment
   // The DirectDrillDownExecutor will need to handle this case
-  const entityType = frameId ? 'frame' : 'session';
+  const entityType = frameId ? 'frame' : (sessionId ? 'session' : 'startup');
   const entity = entities.find(e => e.type === entityType);
   const label = ENTITY_LABELS[entityType]
     ? `${ENTITY_LABELS[entityType]} ${entityId}`
@@ -418,6 +449,7 @@ function getSuggestedStrategy(
   if (followUpType === 'drill_down') {
     if (getField(params, 'frame_id', 'frameId')) return 'frame_drill_down';
     if (getField(params, 'session_id', 'sessionId')) return 'session_drill_down';
+    if (getField(params, 'startup_id', 'startupId')) return 'startup_drill_down';
   }
   if (followUpType === 'compare') return 'comparison';
   return undefined;
@@ -458,13 +490,15 @@ function calculateConfidence(
  * Uses normalized ID comparison.
  */
 export function findEntityInFindings(
-  type: 'frame' | 'session',
+  type: 'frame' | 'session' | 'startup',
   id: number | string,
   sessionContext: EnhancedSessionContext
 ): Record<string, any> | null {
   const keys = type === 'frame'
     ? ['frame_id', 'frameId']
-    : ['session_id', 'sessionId'];
+    : type === 'session'
+      ? ['session_id', 'sessionId']
+      : ['startup_id', 'startupId'];
 
   for (const finding of sessionContext.getAllFindings()) {
     const d = finding.details;
@@ -485,3 +519,6 @@ export const findFrameDataInFindings = (frameId: number | string, ctx: EnhancedS
 
 export const findSessionDataInFindings = (sessionId: number | string, ctx: EnhancedSessionContext) =>
   findEntityInFindings('session', sessionId, ctx);
+
+export const findStartupDataInFindings = (startupId: number | string, ctx: EnhancedSessionContext) =>
+  findEntityInFindings('startup', startupId, ctx);

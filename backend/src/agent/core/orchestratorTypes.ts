@@ -206,6 +206,13 @@ export interface AnalysisOptions {
     matchMethod?: 'keyword' | 'llm' | 'none';
     reasoning?: string;
   };
+
+  /**
+   * Optional strategy deny-list enforced by route layer.
+   * Matched strategies in this list will be treated as no-match and
+   * routed to non-strategy executors.
+   */
+  blockedStrategyIds?: string[];
 }
 
 // =============================================================================

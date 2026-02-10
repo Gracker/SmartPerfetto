@@ -2,6 +2,7 @@
 
 本文档描述 SmartPerfetto 在当前代码中的真实架构（以 `backend/src/agent/` 为主），目标是让系统从“pipeline + LLM 胶水”升级为“目标驱动的 Agent”：围绕用户目标形成 **假设空间 → 实验 → 证据 → 结论 → 下一步** 的闭环，并且多轮对话下不会遗忘已做过的事。
 
+> 更新日期：2026-02-10（与 `backend/src/agent/` 当前实现对齐）
 > 重要约束：所有 memory/状态必须 **严格 trace-scoped**（同一 `(sessionId, traceId)`），禁止跨 trace 泄漏。
 
 ---
@@ -19,44 +20,88 @@
 ## 1. 端到端数据流（大图）
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Frontend (Perfetto UI Plugin)                                             │
-│ - 聊天面板 / 表格渲染 / 时间戳跳转                                         │
-└───────────────┬──────────────────────────────────────────────────────────┘
-                │ HTTP/SSE
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Frontend (Perfetto UI Plugin)                                               │
+│ - 聊天面板 / SQL 结果表 / 时间戳跳转 / Focus 交互 / Intervention 面板         │
+└───────────────┬────────────────────────────────────────────────────────────┘
+                │ HTTP + SSE
                 ▼
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Backend (Node.js/Express)                                                 │
-│  routes/agentRoutes.ts                                                    │
-│    └── AgentDrivenOrchestrator.analyze(query, sessionId, traceId, options)│
-│                                                                          │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ AgentDrivenOrchestrator (Thin Coordinator)                          │  │
-│  │  - 获取 EnhancedSessionContext（trace-scoped）                        │  │
-│  │  - intent / follow-up / drill-down resolve                           │  │
-│  │  - 选择 executor：HypothesisExecutor 或 StrategyExecutor              │  │
-│  │  - 生成 Conclusion（结论+证据链摘要）                                 │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-│                 │                               │                         │
-│                 │ Agent tasks / Skills           │ SQL RPC                 │
-│                 ▼                               ▼                         │
-│  ┌──────────────────────────────┐   ┌─────────────────────────────────┐   │
-│  │ Domain Agents (BaseAgent)     │   │ trace_processor_shell (HTTP RPC)│   │
-│  │ - Think/Act/Reflect           │   │ - Perfetto SQL engine            │   │
-│  │ - Skills as tools             │   └─────────────────────────────────┘   │
-│  │ - 动态 SQL 生成/验证/修复     │                                         │
-│  └───────────────┬──────────────┘                                         │
-│                  │                                                        │
-│                  ▼                                                        │
-│  ┌────────────────────────────────────────────────────────────────────┐  │
-│  │ Skill Engine (YAML)                                                 │  │
-│  │ - prerequisites/modules                                             │  │
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Backend (Node.js/Express)                                                   │
+│ routes/agentRoutes.ts                                                       │
+│ └── runAgentDrivenAnalysis() + AgentDrivenOrchestrator.analyze()           │
+│                                                                            │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │ AgentDrivenOrchestrator (Thin Coordinator)                            │  │
+│  │ - trace-scoped SessionContext / TraceAgentState / EntityStore          │  │
+│  │ - Follow-up + Drill-down resolve + Incremental scope                   │  │
+│  │ - FocusStore + InterventionController + AnalysisPlan                   │  │
+│  │ - Executor 路由 + Conclusion 生成                                      │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+│          │                             │                                    │
+│          │ Task Graph / Direct Skill   │ Trace SQL RPC                      │
+│          ▼                             ▼                                    │
+│  ┌──────────────────────────────┐   ┌─────────────────────────────────┐     │
+│  │ Domain Agents + DirectSkill   │   │ trace_processor_shell           │     │
+│  │ - Think/Act/Reflect           │   │ - Perfetto SQL engine           │     │
+│  │ - Skills as tools             │   └─────────────────────────────────┘     │
+│  │ - 动态 SQL 生成/验证/修复     │                                           │
+│  └───────────────┬──────────────┘                                           │
+│                  ▼                                                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │ Skill Engine + Data Contract                                          │  │
 │  │ - atomic/composite/iterator/diagnostic                               │  │
-│  │ - DataEnvelope (v2 data contract)                                    │  │
-│  │ - synthesize(洞见摘要) + diagnostics(规则证据)                         │  │
-│  └────────────────────────────────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────┘
+│  │ - DataEnvelope (v2) + schema-driven columns                           │  │
+│  │ - EmittedEnvelopeRegistry 去重 + SSE data 事件输出                    │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+### 1.1 领域策略分流（Scrolling 与 Startup）
+
+当前版本中，`scrolling/startup/scene_reconstruction` 均走 staged strategy；同时存在 follow-up 专用执行器（clarify/compare/extend/drill-down），并支持“命中策略但按 manifest 偏好回退 hypothesis loop”。
+
+```mermaid
+flowchart TD
+    A[用户问题] --> B[AgentDrivenOrchestrator]
+    B --> C{Follow-up 类型}
+
+    C -->|clarify| C1[ClarifyExecutor]
+    C -->|compare| C2[ComparisonExecutor]
+    C -->|extend| C3[ExtendExecutor]
+    C -->|drill_down| D[DirectDrillDownExecutor]
+    C -->|normal query| E[StrategyRegistry.matchEnhanced]
+
+    E --> F{命中策略?}
+    F -->|命中但策略偏好为 hypothesis| J
+    F -->|scrolling| G[StrategyExecutor: scrolling 3 stages]
+    F -->|startup| H[StrategyExecutor: startup 3 stages]
+    F -->|scene_reconstruction| I[StrategyExecutor: scene_reconstruction]
+    F -->|未命中| J[HypothesisExecutor]
+
+    I --> K[Stage1 scene_detection]
+    K --> L[Stage2 problem_scene_analysis]
+    L -->|DomainManifest.sceneReconstructionRoutes| M[startup_detail / scrolling_analysis]
+
+    D --> O[drillDownRegistry: frame/session/startup]
+
+    G --> P[DataEnvelope + SSE data]
+    H --> P
+    I --> P
+    J --> P
+    C1 --> P
+    C2 --> P
+    C3 --> P
+```
+
+已确认的代码事实：
+- `backend/src/agent/strategies/registry.ts` 当前注册 `scrolling`、`startup`、`scene_reconstruction_quick`、`scene_reconstruction`。
+- `backend/src/agent/strategies/startupStrategy.ts` 定义了 `startup_overview -> launch_event_overview -> launch_event_detail` 三阶段，并在 Stage2 直达 `startup_detail`。
+- `backend/src/agent/strategies/sceneReconstructionStrategy.ts` 的二阶段 task 由 `DomainManifest.sceneReconstructionRoutes` 动态构建（默认 startup/detail + non-startup/scrolling）。
+- `backend/src/agent/config/drillDownRegistry.ts` 提供统一 `entity -> skill` 映射，`backend/src/agent/core/executors/directDrillDownExecutor.ts` 与 `backend/src/agent/core/drillDownResolver.ts` 复用。
+- `backend/src/agent/config/domainManifest.ts` 控制策略执行偏好（`prefer_strategy` / `prefer_hypothesis`）与分析计划证据清单映射。
 
 ---
 
@@ -68,16 +113,22 @@
 
 - **只做协调，不做重逻辑**：初始化基础设施（MessageBus / Registry / CircuitBreaker 等），决定“怎么跑”，不做“具体怎么分析”。
 - **多轮上下文入口**：通过 `sessionContextManager.getOrCreate(sessionId, traceId)` 获取 `EnhancedSessionContext`（严格 trace-scoped）。
+- **状态与交互基础设施**：内置 `FocusStore`、`InterventionController`、`IncrementalAnalyzer`，并记录 `focus_updated` / intervention 事件。
 - **偏好/预算映射**：
   - `config.maxRounds`：硬安全上限（防跑飞）
   - `config.softMaxRounds`：偏好预算（来自 `TraceAgentState.preferences.maxExperimentsPerTurn`），只在“结果已足够”时触发收敛
+- **策略决策**：
+  - `StrategyRegistry.matchEnhanced` 支持 keyword-first + LLM fallback
+  - 通过 `DomainManifest.strategyExecutionPolicies` 决定命中策略后是否仍偏好 hypothesis loop
+  - `blockedStrategyIds` 支持入口级策略禁用
 - **执行器选择**：
   - `HypothesisExecutor`：目标驱动、可自适应循环（默认模式）
   - `StrategyExecutor`：匹配到策略时可走确定性 pipeline（仍保留，便于稳定产出）
   - Follow-up 特例：`ClarifyExecutor` / `ComparisonExecutor` / `ExtendExecutor` / `DirectDrillDownExecutor`
+- **数据输出治理**：每轮创建 session-scoped `EmittedEnvelopeRegistry`，对 `DataEnvelope` 做去重后再发 SSE。
 - **结论生成**：`generateConclusion(...)` 强制输出 `结论/证据链/不确定性/下一步` 四段（洞见优先）。
 
-### 2.2 Executors：两种“跑法”
+### 2.2 Executors：三类执行路径
 
 #### A) HypothesisExecutor（Hypothesis + Experiments）
 
@@ -101,6 +152,31 @@
 - 仍按 strategy stages 执行（例如滚动 3 阶段：概览 → 会话 → 帧级）
 - `maxRounds` 仅作为“硬安全 stage 上限”，不再等价于用户偏好预算
 - 重要：也会把 `historyContext` 注入到 agent tasks，保证 pipeline 阶段不会“失忆”。
+- 关键增强：
+  - 支持 follow-up 预构建区间，跳过 discovery stage
+  - `session_overview` 的帧表可延迟发射并绑定 `frame_analysis` 结果形成 expandableData
+  - 汇总 `frameMechanismRecord` 并生成 jank cause summary（供结论引用）
+
+#### C) Follow-up 专用执行器（Conversation / Drill-down）
+
+代码：`backend/src/agent/core/executors/clarifyExecutor.ts`、`comparisonExecutor.ts`、`extendExecutor.ts`、`directDrillDownExecutor.ts`
+
+- `ClarifyExecutor`：只解释已有证据，不新增 SQL 开销。
+- `ComparisonExecutor`：统一口径后对比多个实体/区间。
+- `ExtendExecutor`：基于 `EntityStore` 与 `FocusStore` 扩展未覆盖实体。
+- `DirectDrillDownExecutor`：显式目标（frame/session/startup）直达 skill，并复用 `drillDownRegistry` + enrichment。
+
+### 2.3 Conclusion Scene 模板链路（新）
+
+代码：`backend/src/agent/core/sceneTemplateStore.ts`、`sceneTemplateValidator.ts`、`sceneRouter.ts`、`scenePolicy.ts`
+
+- 模板来源是“内置 fallback + base YAML + override YAML”三层合并。
+- 默认配置路径：`backend/skills/config/conclusion_scene_templates.base.yaml` 与 `backend/skills/config/conclusion_scene_templates.yaml`。
+- 环境变量支持覆盖：
+  - `SMARTPERFETTO_CONCLUSION_SCENE_TEMPLATE_PATH`（单文件）
+  - `SMARTPERFETTO_CONCLUSION_SCENE_TEMPLATE_BASE_PATH`
+  - `SMARTPERFETTO_CONCLUSION_SCENE_TEMPLATE_OVERRIDE_PATH`
+- `sceneTemplateValidator` 做 schema/字段告警；`sceneRouter` 基于 intent+findings 选模板；`scenePolicy` 产出最终提示词片段。
 
 ---
 
@@ -202,11 +278,15 @@
 ## 6. 对外可观测性（SSE 事件）
 
 关键事件（部分）：
-- `progress`：阶段/轮次进度（可携带 softMaxRounds）
-- `stage_transition`：strategy pipeline stage 变更
+- `progress`：阶段/轮次进度（含 `analysis_plan`、`trace_config`、`task_scope_filtered` 等 phase）
+- `data`：统一 DataEnvelope 数据流（表格/摘要/图表），用于前端 schema-driven 渲染
+- `stage_transition`：strategy stage 切换（含 skip reason）
 - `finding`：实时 findings 推送
 - `degraded`：模块降级（fallback）
 - `strategy_selected/strategy_fallback`：策略选择与回退原因
+- `focus_updated`：用户/系统关注点更新（用于增量分析）
+- `intervention_required/intervention_resolved/intervention_timeout`：用户干预闭环
+- `analysis_completed`：最终结果（含 conclusion contract）
 - `sql_generated/sql_validation_failed`：动态 SQL 路径观测点
 
 ---
@@ -229,3 +309,5 @@
 - `docs/architecture-analysis/03-memory-state-management.md`
 - `docs/architecture-analysis/04-strategy-system.md`
 - `docs/architecture-analysis/05-domain-agents.md`
+- `docs/architecture-analysis/06-scrolling-startup-optimization.md`
+- `docs/architecture-analysis/07-domain-extensibility-refactor.md`

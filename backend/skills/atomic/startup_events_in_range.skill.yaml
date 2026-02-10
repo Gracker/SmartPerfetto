@@ -1,0 +1,117 @@
+# =============================================================================
+# 启动事件列表（原子 Skill）
+# =============================================================================
+
+name: startup_events_in_range
+version: "1.0"
+type: atomic
+category: app_lifecycle
+
+meta:
+  display_name: "启动事件列表 (区间)"
+  description: "查询启动事件及 TTID/TTFD 指标"
+  icon: "rocket_launch"
+  tags: [startup, lifecycle, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+    - android.startup.time_to_display
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+
+display:
+  level: key
+  layer: overview
+  title: "检测到的启动事件"
+  columns:
+    - name: startup_id
+      label: "启动 ID"
+      type: number
+    - name: package
+      label: "包名"
+      type: string
+    - name: type_display
+      label: "启动类型"
+      type: string
+    - name: dur_ms
+      label: "耗时"
+      type: number
+      hidden: true
+    - name: start_ts
+      label: "开始时间"
+      type: timestamp
+      clickAction: navigate_range
+      durationColumn: dur_ns
+    - name: end_ts
+      label: "结束时间"
+      type: timestamp
+      clickAction: navigate_timeline
+    - name: dur_ns
+      label: "耗时"
+      type: duration
+    - name: ttid_ms
+      label: "TTID"
+      type: number
+    - name: ttfd_ms
+      label: "TTFD"
+      type: number
+    - name: rating
+      label: "评级"
+      type: string
+
+sql: |
+  SELECT
+    s.startup_id,
+    s.package,
+    s.startup_type,
+    s.dur / 1e6 as dur_ms,
+    printf('%d', s.ts) as start_ts,
+    printf('%d', s.ts + s.dur) as end_ts,
+    printf('%d', s.dur) as dur_ns,
+    ttd.time_to_initial_display / 1e6 as ttid_ms,
+    ttd.time_to_full_display / 1e6 as ttfd_ms,
+    CASE s.startup_type
+      WHEN 'cold' THEN '冷启动'
+      WHEN 'warm' THEN '温启动'
+      WHEN 'hot' THEN '热启动'
+      ELSE s.startup_type
+    END as type_display,
+    CASE
+      WHEN s.startup_type = 'cold' AND s.dur / 1e6 < 500 THEN '优秀'
+      WHEN s.startup_type = 'cold' AND s.dur / 1e6 < 1000 THEN '良好'
+      WHEN s.startup_type = 'cold' AND s.dur / 1e6 < 2000 THEN '需优化'
+      WHEN s.startup_type = 'warm' AND s.dur / 1e6 < 200 THEN '优秀'
+      WHEN s.startup_type = 'warm' AND s.dur / 1e6 < 500 THEN '良好'
+      WHEN s.startup_type = 'hot' AND s.dur / 1e6 < 100 THEN '优秀'
+      WHEN s.startup_type = 'hot' AND s.dur / 1e6 < 200 THEN '良好'
+      ELSE '需优化'
+    END as rating,
+    printf('%d', CAST(s.ts - s.dur * 0.1 AS INTEGER)) as perfetto_start,
+    printf('%d', CAST(s.ts + s.dur * 1.1 AS INTEGER)) as perfetto_end
+  FROM android_startups s
+  LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
+  WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+  ORDER BY s.dur DESC, s.ts ASC
+
+output:
+  format: structured

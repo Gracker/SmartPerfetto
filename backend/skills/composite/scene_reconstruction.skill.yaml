@@ -662,22 +662,25 @@ steps:
         )
       )
       SELECT
-        printf('%d', ts) AS ts,
-        printf('%d', dur) AS dur,
-        CASE startup_type
+        s.startup_id,
+        printf('%d', s.ts) AS ts,
+        printf('%d', s.dur) AS dur,
+        CASE s.startup_type
           WHEN 'cold' THEN '冷启动'
           WHEN 'warm' THEN '温启动'
           WHEN 'hot' THEN '热启动'
           ELSE '启动'
         END || ' ' ||
-        REPLACE(REPLACE(package, 'com.', ''), 'android.', '') ||
-        ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event,
-        startup_type,
-        package,
+        REPLACE(REPLACE(s.package, 'com.', ''), 'android.', '') ||
+        ' [' || CAST(s.dur / 1000000 AS INT) || 'ms]' AS event,
+        s.startup_type,
+        s.package,
+        NULL AS ttid_ms,
+        NULL AS ttfd_ms,
         'app_launch' AS category
-      FROM android_startups
-      WHERE dur > 0
-      ORDER BY ts
+      FROM android_startups s
+      WHERE s.dur > 0
+      ORDER BY s.ts
       LIMIT 50
     save_as: launches
     optional: true

@@ -56,6 +56,7 @@ export class SkillEvaluator {
   private traceProcessor: TraceProcessorService;
   private executor: SkillExecutor | null = null;
   private skill: SkillDefinition | null = null;
+  private availablePrerequisiteModules: string[] | null = null;
   private static sharedTraceProcessor: TraceProcessorService | null = null;
 
   constructor(skillId: string) {
@@ -83,6 +84,7 @@ export class SkillEvaluator {
     console.log(`[SkillEvaluator] Loading trace: ${absolutePath}`);
     this.traceId = await this.traceProcessor.loadTraceFromFilePath(absolutePath);
     console.log(`[SkillEvaluator] Trace loaded with ID: ${this.traceId}`);
+    this.availablePrerequisiteModules = null;
 
     // 创建 executor
     this.executor = createSkillExecutor(this.traceProcessor);
@@ -122,6 +124,7 @@ export class SkillEvaluator {
 
           if (skill && skill.name === this.skillId) {
             this.skill = skill;
+            this.availablePrerequisiteModules = null;
             console.log(`[SkillEvaluator] Loaded skill: ${skill.name}`);
             return;
           }
@@ -306,12 +309,66 @@ export class SkillEvaluator {
       throw new Error('SkillEvaluator not initialized. Call loadTrace() first.');
     }
 
-    const result = await this.traceProcessor.query(this.traceId, sql);
+    const modules = await this.getAvailablePrerequisiteModules();
+    const includePrefix = modules.length > 0
+      ? `${modules.map(module => `INCLUDE PERFETTO MODULE ${module};`).join('\n')}\n`
+      : '';
+
+    const result = await this.traceProcessor.query(this.traceId, `${includePrefix}${sql}`);
     return {
       columns: result.columns,
       rows: result.rows,
       error: result.error,
     };
+  }
+
+  private resolvePrerequisiteModules(modules?: string[]): string[] {
+    if (!Array.isArray(modules) || modules.length === 0) return [];
+
+    const expanded: string[] = [];
+    for (const moduleName of modules) {
+      switch (moduleName) {
+        case 'sched':
+          expanded.push('sched.states', 'sched.runnable');
+          break;
+        case 'stack_profile':
+          expanded.push('callstacks.stack_profile');
+          break;
+        case 'android.frames':
+          expanded.push('android.frames.timeline', 'android.frames.jank_type');
+          break;
+        case 'android.frames.jank':
+          expanded.push('android.frames.jank_type');
+          break;
+        default:
+          expanded.push(moduleName);
+      }
+    }
+
+    return Array.from(new Set(expanded));
+  }
+
+  private async getAvailablePrerequisiteModules(): Promise<string[]> {
+    if (!this.traceId) return [];
+    if (this.availablePrerequisiteModules !== null) {
+      return this.availablePrerequisiteModules;
+    }
+
+    const resolved = this.resolvePrerequisiteModules(this.skill?.prerequisites?.modules || []);
+    const available: string[] = [];
+
+    for (const moduleName of resolved) {
+      const includeResult = await this.traceProcessor.query(
+        this.traceId,
+        `INCLUDE PERFETTO MODULE ${moduleName};`
+      );
+      if (!includeResult.error) {
+        available.push(moduleName);
+      }
+    }
+
+    this.availablePrerequisiteModules = available;
+    return available;
   }
 
   /**
@@ -380,6 +437,7 @@ export class SkillEvaluator {
         // 忽略清理错误
       }
       this.traceId = null;
+      this.availablePrerequisiteModules = null;
     }
     this.executor = null;
     this.skill = null;

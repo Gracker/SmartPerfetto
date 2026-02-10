@@ -108,6 +108,51 @@ validate_ui_lockfile() {
   return 0
 }
 
+# Extract frontend version directory from Perfetto index.html
+# e.g. data-perfetto_version='{"stable":"v53.0-xxxx"}'
+extract_frontend_version() {
+  local index_html="$1"
+  local version
+  version=$(echo "$index_html" | sed -n "s/.*data-perfetto_version='[^']*\"stable\":\"\\([^\"]*\\)\"[^']*'.*/\\1/p" | head -n 1)
+  if [ -z "$version" ]; then
+    return 1
+  fi
+  echo "$version"
+}
+
+# Strong readiness check for Perfetto frontend:
+# - index.html responds 200
+# - versioned frontend_bundle.js responds 200
+# - bundle is reasonably large (guard against truncated output)
+# - bundle tail contains sourceMappingURL marker
+is_frontend_bundle_ready() {
+  local version="$1"
+  local bundle_url="http://localhost:10000/$version/frontend_bundle.js"
+  local tmp_file="/tmp/smartperfetto_frontend_bundle_$$.js"
+
+  local code
+  code=$(curl -sS -o "$tmp_file" -w "%{http_code}" "$bundle_url" 2>/dev/null || echo "000")
+  if [ "$code" != "200" ]; then
+    rm -f "$tmp_file" 2>/dev/null || true
+    return 1
+  fi
+
+  local size
+  size=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
+  if [ "${size:-0}" -lt 5000000 ]; then
+    rm -f "$tmp_file" 2>/dev/null || true
+    return 1
+  fi
+
+  if ! tail -c 256 "$tmp_file" | grep -q "sourceMappingURL=frontend_bundle.js.map"; then
+    rm -f "$tmp_file" 2>/dev/null || true
+    return 1
+  fi
+
+  rm -f "$tmp_file" 2>/dev/null || true
+  return 0
+}
+
 # Install UI node_modules using Perfetto's bundled pnpm
 install_ui_deps() {
   echo "Installing UI dependencies with Perfetto's bundled pnpm..."
@@ -317,17 +362,24 @@ FRONTEND_PID=$!
 # Wait for frontend to start and verify health
 echo "Waiting for frontend to start..."
 FRONTEND_READY=false
-for i in {1..60}; do
-  if curl -s -o /dev/null -w "%{http_code}" http://localhost:10000 2>/dev/null | grep -q "200"; then
-    FRONTEND_READY=true
-    echo "Frontend is ready! (took ${i}s)"
-    break
+FRONTEND_VERSION=""
+for i in {1..90}; do
+  INDEX_HTML=$(curl -fsS http://localhost:10000/ 2>/dev/null || true)
+  if [ -n "$INDEX_HTML" ]; then
+    FRONTEND_VERSION=$(extract_frontend_version "$INDEX_HTML" || true)
+    if [ -n "$FRONTEND_VERSION" ] && is_frontend_bundle_ready "$FRONTEND_VERSION"; then
+      FRONTEND_READY=true
+      echo "Frontend is ready! (took ${i}s, version: $FRONTEND_VERSION)"
+      break
+    fi
   fi
   sleep 1
 done
 
 if [ "$FRONTEND_READY" = false ]; then
-  echo "WARNING: Frontend health check failed after 60s. It may still be building..."
+  echo "WARNING: Frontend readiness check failed after 90s. It may still be building..."
+  echo "         If browser shows 'Unexpected end of input', try hard refresh (Ctrl+Shift+R)"
+  echo "         and disable browser extensions on localhost before retrying."
 fi
 
 echo ""

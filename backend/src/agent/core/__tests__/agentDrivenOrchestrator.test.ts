@@ -516,6 +516,83 @@ describe('AgentDrivenOrchestrator', () => {
       expect(mockHypothesisExecutor.execute).not.toHaveBeenCalled();
     });
 
+    test('falls back to HypothesisExecutor when matched strategy is blocked', async () => {
+      const sceneIntent: Intent = {
+        ...defaultIntent,
+        primaryGoal: '场景还原',
+        aspects: ['general'],
+      };
+      (understandIntent as jest.Mock).mockResolvedValue(sceneIntent);
+
+      const matchEnhancedMock = (orchestrator as any).strategyRegistry.matchEnhanced as jest.Mock;
+      matchEnhancedMock.mockResolvedValueOnce({
+        strategy: {
+          id: 'scene_reconstruction',
+          name: '场景还原分析',
+          stages: [],
+          trigger: () => true,
+        },
+        confidence: 0.95,
+        matchMethod: 'keyword',
+      });
+
+      const mockStrategyExecutor = {
+        execute: jest.fn().mockResolvedValue(defaultExecutorResult),
+      };
+      (StrategyExecutor as jest.Mock).mockImplementation(() => mockStrategyExecutor);
+
+      const mockHypothesisExecutor = {
+        execute: jest.fn().mockResolvedValue(defaultExecutorResult),
+        setFocusStore: jest.fn(),
+      };
+      (HypothesisExecutor as jest.Mock).mockImplementation(() => mockHypothesisExecutor);
+
+      await orchestrator.analyze('场景还原', 'session-1', 'trace-1', {
+        blockedStrategyIds: ['scene_reconstruction'],
+      });
+
+      expect(StrategyExecutor).not.toHaveBeenCalled();
+      expect(mockHypothesisExecutor.execute).toHaveBeenCalled();
+    });
+
+    test('routes to StrategyExecutor for startup strategy', async () => {
+      const startupIntent: Intent = {
+        ...defaultIntent,
+        primaryGoal: '分析冷启动慢原因',
+        aspects: ['startup'],
+      };
+      (understandIntent as jest.Mock).mockResolvedValue(startupIntent);
+
+      const matchEnhancedMock = (orchestrator as any).strategyRegistry.matchEnhanced as jest.Mock;
+      matchEnhancedMock.mockResolvedValueOnce({
+        strategy: {
+          id: 'startup',
+          name: 'Startup Analysis',
+          stages: [],
+          trigger: () => true,
+        },
+        confidence: 0.94,
+        matchMethod: 'keyword',
+      });
+
+      const mockStrategyExecutor = {
+        execute: jest.fn().mockResolvedValue(defaultExecutorResult),
+      };
+      (StrategyExecutor as jest.Mock).mockImplementation(() => mockStrategyExecutor);
+
+      const mockHypothesisExecutor = {
+        execute: jest.fn().mockResolvedValue(defaultExecutorResult),
+        setFocusStore: jest.fn(),
+      };
+      (HypothesisExecutor as jest.Mock).mockImplementation(() => mockHypothesisExecutor);
+
+      await orchestrator.analyze('分析冷启动慢原因', 'session-1', 'trace-1');
+
+      expect(StrategyExecutor).toHaveBeenCalled();
+      expect(mockStrategyExecutor.execute).toHaveBeenCalled();
+      expect(mockHypothesisExecutor.execute).not.toHaveBeenCalled();
+    });
+
     test('routes to HypothesisExecutor when no strategy matches', async () => {
       const generalIntent: Intent = {
         ...defaultIntent,

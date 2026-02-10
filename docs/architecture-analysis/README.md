@@ -1,6 +1,6 @@
 # SmartPerfetto 架构深度分析（与代码对齐）
 
-> 更新日期：2026-02-06
+> 更新日期：2026-02-10
 > 范围：以当前 `backend/src/agent/` 的 **目标驱动 Agent** 主链路为准（trace-scoped，多轮对话可持续）。
 
 本目录用于沉淀"可维护、可落地"的架构深度文档：不仅描述模块如何工作，也明确 **哪些已经实现**、**哪些是设计但未接入主链路**，避免"文档看起来很高级，实际系统仍像 pipeline + LLM 胶水"。
@@ -16,6 +16,8 @@
 | [03-memory-state-management.md](./03-memory-state-management.md) | Memory：短期/长期、证据摘要、trace 隔离、持久化 | `backend/src/agent/state/traceAgentState.ts` |
 | [04-strategy-system.md](./04-strategy-system.md) | Strategy：确定性流水线作为"工具"，以及如何与目标驱动 loop 融合 | `backend/src/agent/strategies/*` |
 | [05-domain-agents.md](./05-domain-agents.md) | Domain Agents：Think-Act-Reflect、skills、动态 SQL 自主修复 | `backend/src/agent/agents/*` |
+| [06-scrolling-startup-optimization.md](./06-scrolling-startup-optimization.md) | Scrolling/Startup 全流程梳理与 startup 对齐优化方案 | `backend/src/agent/strategies/*`, `backend/skills/composite/*startup*` |
+| [07-domain-extensibility-refactor.md](./07-domain-extensibility-refactor.md) | 领域可扩展性重构蓝图（manifest/registry 驱动） | `backend/src/agent/config/*`, `backend/src/agent/core/*` |
 
 ---
 
@@ -31,33 +33,41 @@ SmartPerfetto 的核心升级点是：从"按固定 pipeline 走完就结束"变
 
 ## 架构总览（当前真实运行路径）
 
+```mermaid
+flowchart TD
+    A[HTTP /api/agent/analyze] --> B[AgentDrivenOrchestrator]
+    B --> C{follow-up 类型}
+
+    C -->|clarify| C1[ClarifyExecutor]
+    C -->|compare| C2[ComparisonExecutor]
+    C -->|extend| C3[ExtendExecutor]
+    C -->|drill_down| C4[DirectDrillDownExecutor]
+    C -->|normal| D[StrategyRegistry.matchEnhanced]
+
+    D --> E{策略命中?}
+    E -->|no| F[HypothesisExecutor]
+    E -->|yes + prefer_strategy| G[StrategyExecutor]
+    E -->|yes + prefer_hypothesis| F
+
+    G --> H[executeTaskGraph / direct_skill]
+    F --> H
+    C1 --> H
+    C2 --> H
+    C3 --> H
+    C4 --> H
+
+    H --> I[SkillExecutor + DataEnvelope]
+    I --> J[EmittedEnvelopeRegistry 去重]
+    J --> K[SSE: data/progress/focus/intervention]
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│ AgentDrivenOrchestrator (Thin Coordinator)                           │
-│ - trace-scoped EnhancedSessionContext                                 │
-│ - TraceAgentState(目标/偏好/实验/证据摘要)                              │
-│ - FocusStore(用户关注点/增量范围)                                       │
-│ - InterventionController(不确定时请求用户介入)                          │
-│ - Executor routing (follow-up / strategy / hypothesis loop)          │
-└─────────────────────────────────────────────────────────────────────┘
-                │
-        ┌───────┴─────────────────────────────────────────────────┐
-        ▼                                                         ▼
-┌───────────────────────────────────┐                  ┌───────────────────────────┐
-│ HypothesisExecutor（默认）          │                  │ StrategyExecutor（可选）    │
-│ - 假设 + 实验循环                   │                  │ - 确定性多阶段流水线         │
-│ - 证据驱动 early stop（软预算）     │                  │ - direct_skill 高性能阶段     │
-│ - IncrementalAnalyzer 增量分析     │                  │ - Decision Tree 决策树       │
-└───────────────┬───────────────────┘                  └──────────────┬────────────┘
-                │                                                      │
-                ▼                                                      ▼
-        ┌────────────────────────────────────────────────────────────────────┐
-        │ Domain Agents（Frame/CPU/Binder/Memory/Startup/Interaction/ANR/System） │
-        │ - skills as tools（YAML）                                           │
-        │ - 动态 SQL 生成/验证/修复（当 skills 不够用且目标明确）               │
-        │ - EntityCapture（跨轮次实体追踪）                                    │
-        └────────────────────────────────────────────────────────────────────┘
-```
+
+### 最新对齐点（2026-02-10）
+
+- Orchestrator 路由已是“多执行器优先级链”：`clarify/compare/extend/drill_down` 优先于策略匹配。
+- 策略命中后仍会按 `DomainManifest.strategyExecutionPolicies` 决定是否偏好 hypothesis loop。
+- `scene_reconstruction` 的 Stage2 task 已由 `DomainManifest.sceneReconstructionRoutes` 动态构建，不再写死二分逻辑。
+- Data 输出统一走 `DataEnvelope` + `emitDataEnvelopes()`，并由 `EmittedEnvelopeRegistry` 做 session 级去重。
+- 结论提示词已接入 scene template 链路：`sceneTemplateStore -> sceneRouter -> scenePolicy`。
 
 关键约束：
 - **仅同一 trace**：所有记忆/状态以 `(sessionId, traceId)` 为 key，且有迁移时的 trace guard。
@@ -66,9 +76,21 @@ SmartPerfetto 的核心升级点是：从"按固定 pipeline 走完就结束"变
 
 ---
 
+## Scrolling / Startup 专题（当前重点）
+
+- `scrolling`：已接入 strategy 主链路（概览 -> 会话 -> 帧级 `direct_skill`）。
+- `startup`：已接入 `startupStrategy` 三阶段主链路（`startup_overview -> launch_event_overview -> launch_event_detail`）。
+- `scene_reconstruction`：二阶段改为 `DomainManifest.sceneReconstructionRoutes` 路由驱动（默认 startup -> `startup_detail`，其他 -> `scrolling_analysis`）。
+- `drill-down`：`frame/session/startup` 三类实体直达已统一到 `drillDownRegistry` 映射入口。
+
+详见：
+- [06-scrolling-startup-optimization.md](./06-scrolling-startup-optimization.md)
+
+---
+
 ## 模块清单（与代码对齐）
 
-### Agent System（131 source files，不含测试）
+### Agent System（141 source files，不含测试）
 
 #### Core (`backend/src/agent/core/`)
 
@@ -78,13 +100,18 @@ SmartPerfetto 的核心升级点是：从"按固定 pipeline 走完就结束"变
 | orchestratorTypes.ts | Orchestrator 配置/结果/选项/上下文类型定义 |
 | circuitBreaker.ts | 熔断器，置信度过低时触发用户介入 |
 | modelRouter.ts | 多模型路由（DeepSeek/OpenAI/Anthropic/GLM） |
-| stateMachine.ts | 状态机 (IDLE→PLANNING→HYPOTHESIS→ROUNDS→CONCLUSION) |
+| stateMachine.ts | 旧状态机实现（已废弃，保留兼容） |
 | intentUnderstanding.ts | 意图理解 |
 | hypothesisGenerator.ts | 初始假设生成 |
 | conclusionGenerator.ts | 结论综合（强制结构化输出：结论/证据链/不确定性/下一步） |
+| conclusionSceneTemplates.ts | 结论场景模板入口（resolve/build hints） |
+| sceneRouter.ts | 模板路由（aspect/goal/finding 评分） |
+| scenePolicy.ts | 模板转 prompt hints（含 deep_reason_label 占位符） |
+| sceneTemplateStore.ts | base/override YAML 加载与缓存 |
+| sceneTemplateValidator.ts | scene template 配置校验与告警 |
 | feedbackSynthesizer.ts | LLM 综合发现 |
 | followUpHandler.ts | 后续问题处理与上下文延续 |
-| pipelineExecutor.ts | 任务执行流水线 |
+| pipelineExecutor.ts | 旧 pipeline 执行器（已废弃，保留兼容） |
 | taskGraphPlanner.ts | 任务图生成 |
 | taskGraphExecutor.ts | 依赖有序执行 |
 | drillDownResolver.ts | 解析 drill-down 导航（时间戳/区间跳转） |
@@ -114,10 +141,18 @@ SmartPerfetto 的核心升级点是：从"按固定 pipeline 走完就结束"变
 | 文件 | 说明 |
 |------|------|
 | types.ts | StagedAnalysisStrategy, FocusInterval, StageDefinition, StageTaskTemplate |
-| registry.ts | StrategyRegistry - trigger 匹配策略选择 |
+| registry.ts | StrategyRegistry（keyword/LLM 混合匹配，含 fallback 元数据） |
 | scrollingStrategy.ts | 滑动分析策略（3 阶段流水线） |
-| sceneReconstructionStrategy.ts | 场景重建策略（ADB 上下文 + 渲染管线检测） |
+| startupStrategy.ts | 启动分析策略（3 阶段流水线） |
+| sceneReconstructionStrategy.ts | 场景重建策略（Stage2 由 manifest 路由驱动） |
 | helpers.ts | 区间提取和格式化工具函数 |
+
+#### Config Registries (`backend/src/agent/config/`)
+
+| 文件 | 说明 |
+|------|------|
+| domainManifest.ts | 策略偏好、证据清单、scene 路由规则（single source of truth） |
+| drillDownRegistry.ts | `entity -> direct_skill` 映射（resolver/executor 复用） |
 
 #### Context & State (`backend/src/agent/context/` + `state/`)
 

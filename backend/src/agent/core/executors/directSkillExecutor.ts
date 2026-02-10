@@ -189,9 +189,15 @@ export class DirectSkillExecutor {
         }
       }
     } else {
-      // Default mapping: start_ts, end_ts, package
-      params.start_ts = interval.startTs;
-      params.end_ts = interval.endTs;
+      // Default mapping: start_ts, end_ts, package.
+      // Skip sentinel values from the fake "global" interval (startTs/endTs = '0')
+      // to let skill SQL treat missing params as unfiltered (NULL/empty-string).
+      const isRealInterval = interval.startTs && interval.endTs
+        && interval.startTs !== '0' && interval.endTs !== '0';
+      if (isRealInterval) {
+        params.start_ts = interval.startTs;
+        params.end_ts = interval.endTs;
+      }
       if (interval.processName) {
         params.package = interval.processName;
       }
@@ -445,10 +451,26 @@ export class DirectSkillExecutor {
         ...f.details,
         cause_type: rootCauseData.cause_type,
         primary_cause: rootCauseData.primary_cause,
+        deep_reason: rootCauseData.deep_reason,
+        optimization_hint: rootCauseData.optimization_hint,
+        reason_code: rootCauseData.reason_code,
         secondary_info: rootCauseData.secondary_info,
         confidence_level: rootCauseData.confidence,
         frame_dur_ms: rootCauseData.frame_dur_ms,
         jank_type: rootCauseData.jank_type,
+        slice_name: rootCauseData.slice_name,
+        slice_dur: rootCauseData.slice_dur,
+        frame_budget_ms: rootCauseData.frame_budget_ms,
+        main_q3_pct: rootCauseData.main_q3_pct,
+        main_q4_pct: rootCauseData.main_q4_pct,
+        render_q4_pct: rootCauseData.render_q4_pct,
+        main_max_sched_ms: rootCauseData.main_max_sched_ms,
+        main_io_block_ms: rootCauseData.main_io_block_ms,
+        gpu_fence_ms: rootCauseData.gpu_fence_ms,
+        mechanism_group: rootCauseData.mechanism_group,
+        supply_constraint: rootCauseData.supply_constraint,
+        trigger_layer: rootCauseData.trigger_layer,
+        amplification_path: rootCauseData.amplification_path,
         scope: scopeLabel,
       },
     }));

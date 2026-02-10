@@ -40,6 +40,10 @@ prerequisites:
   required_tables:
     - slice
     - process
+  modules:
+    - android.binder
+    - linux.cpu.frequency
+    - android.monitor_contention
 
 inputs:
   - name: anr_ts
@@ -116,18 +120,94 @@ steps:
       level: key
       layer: deep
       title: "主线程状态分布"
+      columns:
+        - name: q1_big_running_ms
+          label: "Q1大核运行(ms)"
+          type: number
+        - name: q2_little_running_ms
+          label: "Q2小核运行(ms)"
+          type: number
+        - name: q3_runnable_ms
+          label: "Q3可运行等待(ms)"
+          type: number
+        - name: q4_sleeping_ms
+          label: "Q4睡眠阻塞(ms)"
+          type: number
+        - name: total_ms
+          label: "总时长(ms)"
+          type: number
+        - name: running_pct
+          label: "Running占比(%)"
+          type: percentage
+          format: percentage
+        - name: runnable_pct
+          label: "Runnable占比(%)"
+          type: percentage
+          format: percentage
+        - name: sleeping_pct
+          label: "Sleeping占比(%)"
+          type: percentage
+          format: percentage
+        - name: status_verdict
+          label: "状态判断"
+          type: string
+        - name: classify_method
+          label: "核判定来源"
+          type: string
     sql: |
       WITH 
-      -- 1. 动态检测 CPU 集群
+      cpu_cap AS (
+        SELECT id as cpu, capacity
+        FROM cpu
+      ),
+      cpu_freq AS (
+        SELECT
+          cpu,
+          MAX(freq) as max_freq_khz
+        FROM cpu_frequency_counters
+        GROUP BY cpu
+      ),
+      cpu_rank AS (
+        SELECT
+          c.cpu,
+          c.capacity,
+          f.max_freq_khz,
+          ROW_NUMBER() OVER (
+            ORDER BY COALESCE(f.max_freq_khz, 0) DESC, COALESCE(c.capacity, 0) DESC, c.cpu DESC
+          ) as perf_rank,
+          COUNT(*) OVER () as cpu_count,
+          SUM(CASE WHEN f.max_freq_khz IS NOT NULL THEN 1 ELSE 0 END) OVER () as freq_known_count,
+          AVG(CASE WHEN c.capacity IS NOT NULL THEN c.capacity END) OVER () as avg_capacity
+        FROM cpu_cap c
+        LEFT JOIN cpu_freq f ON c.cpu = f.cpu
+      ),
       cpu_info AS (
         SELECT
-          id as cpu,
+          cpu,
           CASE
-            WHEN capacity >= 1024 THEN 'big'  -- Covers Prime and Big
-            WHEN capacity >= 500 THEN 'mid'
-            ELSE 'little'
-          END as cluster
-        FROM cpu
+            WHEN freq_known_count >= 2 THEN
+              CASE
+                WHEN perf_rank <= CASE
+                  WHEN cpu_count >= 8 THEN 3
+                  WHEN cpu_count >= 6 THEN 2
+                  ELSE 1
+                END THEN 'big'
+                ELSE 'little'
+              END
+            WHEN capacity IS NOT NULL AND capacity > 0 THEN
+              CASE
+                WHEN capacity >= COALESCE(avg_capacity, capacity) THEN 'big'
+                ELSE 'little'
+              END
+            ELSE
+              CASE WHEN cpu >= 4 THEN 'big' ELSE 'little' END
+          END as cluster,
+          CASE
+            WHEN freq_known_count >= 2 THEN 'freq_rank'
+            WHEN capacity IS NOT NULL AND capacity > 0 THEN 'capacity_fallback'
+            ELSE 'cpu_id_fallback'
+          END as classify_method
+        FROM cpu_rank
       ),
       main_thread AS (
         SELECT t.utid, t.tid
@@ -146,8 +226,8 @@ steps:
       thread_states AS (
         SELECT
           ts.state,
-          ts.cpu,
           COALESCE(ci.cluster, 'little') as cluster,
+          COALESCE(ci.classify_method, 'cpu_id_fallback') as classify_method,
           ts.blocked_function,
           SUM(
             MIN(ts.ts + ts.dur, aw.end_ts) - MAX(ts.ts, aw.start_ts)
@@ -158,7 +238,7 @@ steps:
         LEFT JOIN cpu_info ci ON ts.cpu = ci.cpu
         WHERE ts.ts < aw.end_ts
           AND ts.ts + ts.dur > aw.start_ts
-        GROUP BY ts.state, ts.cpu, ci.cluster, ts.blocked_function
+        GROUP BY ts.state, ci.cluster, ci.classify_method, ts.blocked_function
       ),
       quadrant_data AS (
         SELECT
@@ -170,6 +250,7 @@ steps:
             ELSE 'other'
           END as quadrant,
           dur_ns,
+          classify_method,
           blocked_function
         FROM thread_states
       )
@@ -195,7 +276,8 @@ steps:
           WHEN 100.0 * SUM(CASE WHEN quadrant IN ('Q1_big_running', 'Q2_little_running') THEN dur_ns ELSE 0 END) /
                NULLIF(SUM(dur_ns), 0) > 70 THEN 'busy_running'
           ELSE 'mixed'
-        END as status_verdict
+        END as status_verdict,
+        GROUP_CONCAT(DISTINCT classify_method) as classify_method
       FROM quadrant_data
     save_as: quadrant
 
@@ -203,53 +285,18 @@ steps:
   # 主线程阻塞原因 Top10（详细）
   # ============================================================================
   - id: blocking_reasons
-    type: atomic
+    type: skill
     name: "阻塞原因分析"
+    skill: main_thread_states_in_range
     display:
       level: key
       layer: deep
       title: "阻塞原因 Top10"
-    sql: |
-      WITH main_thread AS (
-        SELECT t.utid
-        FROM thread t
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${process_name}*'
-          AND t.tid = p.pid
-        LIMIT 1
-      ),
-      anr_window AS (
-        SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
-      )
-      SELECT
-        ts.state,
-        CASE ts.state
-          WHEN 'Running' THEN 'Running (CPU执行)'
-          WHEN 'R' THEN 'Runnable (等CPU)'
-          WHEN 'R+' THEN 'Runnable+ (被抢占)'
-          WHEN 'S' THEN 'Sleeping (主动睡眠)'
-          WHEN 'D' THEN 'Disk Sleep (IO等待)'
-          WHEN 'I' THEN 'Idle (空闲)'
-          ELSE ts.state
-        END as state_desc,
-        COALESCE(ts.blocked_function, '-') as blocked_function,
-        ROUND(SUM(
-          MIN(ts.ts + ts.dur, aw.end_ts) - MAX(ts.ts, aw.start_ts)
-        ) / 1e6, 2) as dur_ms,
-        ROUND(100.0 * SUM(
-          MIN(ts.ts + ts.dur, aw.end_ts) - MAX(ts.ts, aw.start_ts)
-        ) / ${timeout_ns}, 1) as pct,
-        COUNT(*) as count
-      FROM thread_state ts
-      JOIN main_thread mt ON ts.utid = mt.utid
-      CROSS JOIN anr_window aw
-      WHERE ts.ts < aw.end_ts
-        AND ts.ts + ts.dur > aw.start_ts
-      GROUP BY ts.state, ts.blocked_function
-      ORDER BY dur_ms DESC
-      LIMIT 10
+    params:
+      start_ts: "${anr_ts - timeout_ns}"
+      end_ts: "${anr_ts}"
+      package: "${process_name}"
+      top_k: 10
     save_as: blocking
 
   # ============================================================================
@@ -329,42 +376,54 @@ steps:
   # Binder 调用分析（主线程发起）
   # ============================================================================
   - id: binder_calls
-    type: atomic
+    type: skill
     name: "Binder 调用分析"
+    skill: binder_in_range
     display:
       level: key
       layer: deep
       title: "Binder 调用"
-    sql: |
-      WITH anr_window AS (
-        SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
-      )
-      SELECT
-        bt.server_process,
-        bt.aidl_name,
-        COUNT(*) as call_count,
-        ROUND(SUM(bt.client_dur) / 1e6, 2) as total_ms,
-        ROUND(AVG(bt.client_dur) / 1e6, 2) as avg_ms,
-        ROUND(MAX(bt.client_dur) / 1e6, 2) as max_ms,
-        SUM(CASE WHEN bt.is_sync = 1 THEN 1 ELSE 0 END) as sync_count,
-        -- 判断是否阻塞
-        CASE
-          WHEN MAX(bt.client_dur) / 1e6 > 500 THEN 'blocking'
-          WHEN AVG(bt.client_dur) / 1e6 > 100 THEN 'slow'
-          ELSE 'normal'
-        END as status
-      FROM android_binder_txns bt
-      CROSS JOIN anr_window aw
-      WHERE bt.client_process GLOB '${process_name}*'
-        AND bt.client_ts >= aw.start_ts
-        AND bt.client_ts < aw.end_ts
-        AND bt.is_main_thread = 1
-      GROUP BY bt.server_process, bt.aidl_name
-      ORDER BY total_ms DESC
-      LIMIT 10
+    params:
+      start_ts: "${anr_ts - timeout_ns}"
+      end_ts: "${anr_ts}"
+      package: "${process_name}"
     save_as: binder_calls
+    optional: true
+
+  # ============================================================================
+  # 主线程同步 Binder 阻塞（补充佐证）
+  # ============================================================================
+  - id: main_thread_sync_binder
+    type: skill
+    name: "主线程同步 Binder"
+    skill: binder_blocking_in_range
+    display:
+      level: detail
+      layer: deep
+      title: "主线程同步 Binder"
+    params:
+      start_ts: "${anr_ts - timeout_ns}"
+      end_ts: "${anr_ts}"
+      package: "${process_name}"
+    save_as: main_sync_binder
+    optional: true
+
+  # ============================================================================
+  # 主线程调度延迟（补充佐证）
+  # ============================================================================
+  - id: sched_latency
+    type: skill
+    name: "调度延迟分析"
+    skill: main_thread_sched_latency_in_range
+    display:
+      level: detail
+      layer: deep
+      title: "主线程调度延迟"
+    params:
+      start_ts: "${anr_ts - timeout_ns}"
+      end_ts: "${anr_ts}"
+      package: "${process_name}"
+    save_as: sched_delay
     optional: true
 
   # ============================================================================
@@ -524,43 +583,19 @@ steps:
   # 主线程耗时 Slice（在做什么）
   # ============================================================================
   - id: main_thread_slices
-    type: atomic
+    type: skill
     name: "主线程耗时操作"
+    skill: main_thread_slices_in_range
     display:
       level: detail
       layer: deep
       title: "主线程操作"
-    sql: |
-      WITH main_thread AS (
-        SELECT t.utid
-        FROM thread t
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${process_name}*'
-          AND t.tid = p.pid
-        LIMIT 1
-      ),
-      anr_window AS (
-        SELECT
-          ${anr_ts} - ${timeout_ns} as start_ts,
-          ${anr_ts} as end_ts
-      )
-      SELECT
-        s.name,
-        ROUND(SUM(s.dur) / 1e6, 2) as dur_ms,
-        COUNT(*) as count,
-        ROUND(MAX(s.dur) / 1e6, 2) as max_ms,
-        printf('%d', MIN(s.ts)) as first_ts
-      FROM slice s
-      JOIN thread_track tt ON s.track_id = tt.id
-      JOIN main_thread mt ON tt.utid = mt.utid
-      CROSS JOIN anr_window aw
-      WHERE s.ts >= aw.start_ts
-        AND s.ts < aw.end_ts
-        AND s.dur >= 1000000  -- > 1ms
-      GROUP BY s.name
-      HAVING dur_ms > 1
-      ORDER BY dur_ms DESC
-      LIMIT 15
+    params:
+      start_ts: "${anr_ts - timeout_ns}"
+      end_ts: "${anr_ts}"
+      package: "${process_name}"
+      min_dur_ns: 1000000
+      top_k: 15
     save_as: main_slices
     optional: true
 
@@ -574,46 +609,54 @@ steps:
       level: key
       layer: deep
       title: "诊断结果"
-    inputs: [anr_basic, quadrant, blocking, render_thread, binder_calls, lock_contention, freeze_check, wakeup]
+    inputs: [anr_basic, quadrant, blocking, render_thread, binder_calls, main_sync_binder, sched_delay, lock_contention, freeze_check, wakeup, main_slices]
     rules:
       # === 主线程状态诊断 ===
 
-      # 主线程完全阻塞（Sleeping > 80%）
-      - condition: "quadrant.data[0]?.sleeping_pct > 80"
+      # 主线程完全阻塞（Sleeping > 80%，且有阻塞证据）
+      - condition: "quadrant.data[0]?.sleeping_pct > 80 && ((((blocking.data[0]?.state === 'D' || blocking.data[0]?.state === 'S') && (blocking.data[0]?.pct || 0) > 20) || ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 100 || (lock_contention.data[0]?.severity === 'critical')))"
         severity: critical
-        diagnosis: "主线程阻塞率 ${quadrant.data[0].sleeping_pct}%，几乎完全停滞"
+        diagnosis: "主线程阻塞率 ${quadrant.data[0].sleeping_pct}%，且存在 Binder/锁/阻塞态证据，几乎完全停滞"
         confidence: high
         suggestions:
           - "主线程长时间处于 Sleeping/Blocked 状态"
           - "重点检查 blocking 数据中的 blocked_function"
           - "可能原因：Binder/IO/锁等待"
 
-      # 主线程 CPU 饥饿（Runnable > 30%）
-      - condition: "quadrant.data[0]?.runnable_pct > 30"
+      # 主线程 CPU 饥饿（Runnable > 30%，需调度延迟佐证）
+      - condition: "quadrant.data[0]?.runnable_pct > 30 && (sched_delay.data[0]?.severe_count || 0) > 3"
         severity: warning
-        diagnosis: "主线程等待调度 ${quadrant.data[0].runnable_pct}%，CPU 资源争抢"
+        diagnosis: "主线程等待调度 ${quadrant.data[0].runnable_pct}%，且有 ${sched_delay.data[0].severe_count} 次 >8ms 调度延迟"
         confidence: high
         suggestions:
           - "主线程想运行但拿不到 CPU"
           - "检查系统是否有高负载进程"
           - "考虑提高线程优先级"
 
-      # 主线程活跃但在小核（大核 < 20%）
-      - condition: "quadrant.data[0]?.running_pct > 50 && quadrant.data[0]?.q1_big_running_ms < quadrant.data[0]?.q2_little_running_ms * 0.3"
+      # 主线程活跃但大核占比偏低（仅在判定来源可信且有调度佐证时触发）
+      - condition: "quadrant.data[0]?.running_pct > 50 && quadrant.data[0]?.q1_big_running_ms < quadrant.data[0]?.q2_little_running_ms * 0.3 && quadrant.data[0]?.runnable_pct > 10 && (sched_delay.data[0]?.severe_count || 0) > 0 && !(quadrant.data[0]?.classify_method || '').includes('cpu_id_fallback')"
         severity: warning
-        diagnosis: "主线程主要运行在小核，大核占比低"
+        diagnosis: "主线程大核占比偏低且存在调度等待（Runnable ${quadrant.data[0].runnable_pct}%），可能有 CPU 供给不足"
         confidence: medium
         suggestions:
-          - "主线程被调度到小核，性能受限"
+          - "检查高优先级线程是否占用大核"
           - "检查是否有高优先级任务抢占大核"
           - "可能触发温控策略"
 
+      # 核判定来源不可靠时，避免把大小核结论当根因
+      - condition: "(quadrant.data[0]?.classify_method || '').includes('cpu_id_fallback')"
+        severity: info
+        diagnosis: "核类型判定回退到 CPU 编号阈值，大小核相关结论置信度有限"
+        confidence: medium
+        suggestions:
+          - "补充或检查 cpu_frequency/cpu capacity 数据后再判断大小核调度问题"
+
       # === Binder 阻塞诊断 ===
 
-      # Binder 调用严重阻塞
-      - condition: "binder_calls.data[0]?.status === 'blocking'"
+      # Binder 调用严重阻塞（需同步 Binder 阻塞佐证）
+      - condition: "(binder_calls.data[0]?.total_client_ms || 0) > 200 && ((((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.max_block_ms) || 0) > 50) || (((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 100))"
         severity: critical
-        diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 阻塞 ${binder_calls.data[0].max_ms}ms"
+        diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 总耗时 ${binder_calls.data[0].total_client_ms}ms，且主线程同步 Binder 阻塞明显"
         confidence: high
         suggestions:
           - "主线程 Binder 调用被目标进程阻塞"
@@ -622,8 +665,8 @@ steps:
 
       # === 锁竞争诊断 ===
 
-      # 严重锁竞争
-      - condition: "lock_contention.data[0]?.severity === 'critical'"
+      # 严重锁竞争（需主线程阻塞态佐证）
+      - condition: "lock_contention.data[0]?.severity === 'critical' && (quadrant.data[0]?.sleeping_pct || 0) > 50"
         severity: critical
         diagnosis: "锁竞争：${lock_contention.data[0].blocked_type} 等待 ${lock_contention.data[0].blocking_thread_name} ${lock_contention.data[0].wait_ms}ms"
         confidence: high
@@ -632,8 +675,8 @@ steps:
           - "持锁线程：${lock_contention.data[0].blocking_thread_name}"
           - "阻塞方法：${lock_contention.data[0].blocking_method}"
 
-      # 主线程被锁阻塞
-      - condition: "lock_contention.data?.find(r => r.blocked_type === 'MainThread')"
+      # 主线程被锁阻塞（需阻塞态佐证）
+      - condition: "lock_contention.data?.find(r => r.blocked_type === 'MainThread') && (quadrant.data[0]?.sleeping_pct || 0) > 30"
         severity: warning
         diagnosis: "主线程被锁阻塞"
         confidence: high
@@ -644,8 +687,8 @@ steps:
 
       # === RenderThread 诊断 ===
 
-      # nSyncDraw 阻塞
-      - condition: "render_thread.data?.find(r => r.name?.includes('nSyncDraw') && r.dur_ms > 50)"
+      # nSyncDraw 阻塞（仅在主线程阻塞态明显时作为次要证据）
+      - condition: "render_thread.data?.find(r => r.name?.includes('nSyncDraw') && r.dur_ms > 50) && (quadrant.data[0]?.sleeping_pct || 0) > 30"
         severity: warning
         diagnosis: "RenderThread nSyncDraw 阻塞 ${render_thread.data.find(r => r.name?.includes('nSyncDraw'))?.dur_ms}ms"
         confidence: high
@@ -654,8 +697,8 @@ steps:
           - "可能与主线程有同步等待"
           - "检查是否有复杂绘制操作"
 
-      # dequeueBuffer 阻塞
-      - condition: "render_thread.data?.find(r => r.name?.includes('dequeueBuffer') && r.dur_ms > 50)"
+      # dequeueBuffer 阻塞（仅在主线程阻塞态明显时作为次要证据）
+      - condition: "render_thread.data?.find(r => r.name?.includes('dequeueBuffer') && r.dur_ms > 50) && (quadrant.data[0]?.sleeping_pct || 0) > 30"
         severity: warning
         diagnosis: "RenderThread dequeueBuffer 阻塞 ${render_thread.data.find(r => r.name?.includes('dequeueBuffer'))?.dur_ms}ms"
         confidence: medium
@@ -666,8 +709,8 @@ steps:
 
       # === 应用冻结诊断 ===
 
-      # 应用完全冻结
-      - condition: "freeze_check.data?.find(r => r.thread_type === 'MainThread')?.status === 'frozen'"
+      # 应用完全冻结（需主线程阻塞态佐证）
+      - condition: "freeze_check.data?.find(r => r.thread_type === 'MainThread')?.status === 'frozen' && (quadrant.data[0]?.sleeping_pct || 0) > 80"
         severity: critical
         diagnosis: "应用完全冻结，主线程活动率仅 ${freeze_check.data.find(r => r.thread_type === 'MainThread')?.activity_pct}%"
         confidence: high

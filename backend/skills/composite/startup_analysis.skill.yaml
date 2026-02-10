@@ -47,6 +47,7 @@ prerequisites:
   modules:
     - android.startup.startups
     - android.startup.time_to_display
+    - android.startup.startup_breakdowns
     - android.binder
 
 inputs:
@@ -54,12 +55,37 @@ inputs:
     type: string
     required: false
     description: "应用包名（可选，不填则分析所有启动事件）"
+  - name: startup_id
+    type: integer
+    required: false
+    description: "指定启动事件 ID（可选）"
+  - name: startup_type
+    type: string
+    required: false
+    description: "启动类型过滤（cold/warm/hot，可选）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "启动区间开始时间戳（ns，可选）"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "启动区间结束时间戳（ns，可选）"
+  - name: analysis_mode
+    type: string
+    required: false
+    description: "分析模式：full（默认）或 overview（仅启动事件定位）"
+  - name: enable_startup_details
+    type: boolean
+    required: false
+    description: "是否执行逐个启动事件详情分析（默认 true）"
 
 steps:
   # ========== 获取启动事件概览 ==========
   - id: get_startups
-    type: atomic
+    type: skill
     name: "获取启动事件"
+    skill: startup_events_in_range
     synthesize:
       role: overview
       fields:
@@ -94,8 +120,7 @@ steps:
           type: string
         - name: dur_ms
           label: "耗时"
-          type: duration
-          format: duration_ms
+          type: number
           hidden: true
         - name: start_ts
           label: "开始时间"
@@ -109,60 +134,141 @@ steps:
         - name: dur_ns
           label: "耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: ttid_ms
           label: "TTID"
           type: duration
           format: duration_ms
+          unit: ms
         - name: ttfd_ms
           label: "TTFD"
           type: duration
           format: duration_ms
+          unit: ms
         - name: rating
           label: "评级"
           type: string
-    sql: |
-      SELECT
-        s.startup_id,
-        s.package,
-        s.startup_type,
-        s.dur / 1e6 as dur_ms,
-        printf('%d', s.ts) as start_ts,
-        printf('%d', s.ts + s.dur) as end_ts,
-        printf('%d', s.dur) as dur_ns,
-        -- 关联 TTID/TTFD 数据
-        ttd.time_to_initial_display / 1e6 as ttid_ms,
-        ttd.time_to_full_display / 1e6 as ttfd_ms,
-        CASE s.startup_type
-          WHEN 'cold' THEN '冷启动'
-          WHEN 'warm' THEN '温启动'
-          WHEN 'hot' THEN '热启动'
-          ELSE s.startup_type
-        END as type_display,
-        CASE
-          WHEN s.startup_type = 'cold' AND s.dur / 1e6 < 500 THEN '优秀'
-          WHEN s.startup_type = 'cold' AND s.dur / 1e6 < 1000 THEN '良好'
-          WHEN s.startup_type = 'cold' AND s.dur / 1e6 < 2000 THEN '需优化'
-          WHEN s.startup_type = 'warm' AND s.dur / 1e6 < 200 THEN '优秀'
-          WHEN s.startup_type = 'warm' AND s.dur / 1e6 < 500 THEN '良好'
-          WHEN s.startup_type = 'hot' AND s.dur / 1e6 < 100 THEN '优秀'
-          WHEN s.startup_type = 'hot' AND s.dur / 1e6 < 200 THEN '良好'
-          ELSE '需优化'
-        END as rating,
-        -- Perfetto 跳转参数（前后各扩展 10%）
-        printf('%d', CAST(s.ts - s.dur * 0.1 AS INTEGER)) as perfetto_start,
-        printf('%d', CAST(s.ts + s.dur * 1.1 AS INTEGER)) as perfetto_end
-      FROM android_startups s
-      LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
-      WHERE s.package GLOB '${package}*' OR '${package}' = ''
-      -- Prefer the slowest startup first (used by diagnosis + synthesize overview)
-      ORDER BY s.dur DESC, s.ts ASC
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
     save_as: startups
     on_empty: "未检测到启动事件。请确认 Trace 包含应用启动数据。"
 
+  # ========== 启动数据质量门禁 ==========
+  - id: startup_quality
+    type: atomic
+    name: "启动数据质量门禁"
+    display:
+      level: key
+      layer: overview
+      title: "启动数据质量"
+      columns:
+        - name: sample_count
+          label: "样本数"
+          type: number
+        - name: blocker_count
+          label: "阻断问题"
+          type: number
+        - name: warning_count
+          label: "告警问题"
+          type: number
+        - name: quality_status
+          label: "门禁状态"
+          type: string
+        - name: issue_codes
+          label: "问题编码"
+          type: string
+        - name: quality_summary
+          label: "说明"
+          type: string
+    sql: |
+      WITH filtered AS (
+        SELECT
+          s.startup_id,
+          s.startup_type,
+          s.ts,
+          s.dur,
+          s.dur / 1e6 as dur_ms,
+          CASE
+            WHEN ttd.time_to_initial_display IS NULL OR ttd.time_to_initial_display <= 0 THEN NULL
+            ELSE ttd.time_to_initial_display / 1e6
+          END as ttid_ms,
+          CASE
+            WHEN ttd.time_to_full_display IS NULL OR ttd.time_to_full_display <= 0 THEN NULL
+            ELSE ttd.time_to_full_display / 1e6
+          END as ttfd_ms
+        FROM android_startups s
+        LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
+        WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+          AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+          AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+      ),
+      flags AS (
+        SELECT
+          startup_id,
+          CASE WHEN dur <= 0 THEN 1 ELSE 0 END as b_invalid_duration,
+          CASE WHEN dur_ms >= 200 AND ttid_ms IS NOT NULL AND ttid_ms < 10 THEN 1 ELSE 0 END as w_ttid_small,
+          CASE WHEN dur_ms >= 200 AND ttfd_ms IS NOT NULL AND ttfd_ms < 10 THEN 1 ELSE 0 END as w_ttfd_small,
+          CASE WHEN ttid_ms IS NOT NULL AND ttid_ms > dur_ms + 50 THEN 1 ELSE 0 END as w_ttid_gt_dur,
+          CASE WHEN ttfd_ms IS NOT NULL AND ttfd_ms > dur_ms + 50 THEN 1 ELSE 0 END as w_ttfd_gt_dur,
+          CASE WHEN ttid_ms IS NOT NULL AND ttfd_ms IS NOT NULL AND ttfd_ms < ttid_ms THEN 1 ELSE 0 END as w_ttfd_lt_ttid
+        FROM filtered
+      ),
+      agg AS (
+        SELECT
+          COUNT(*) as sample_count,
+          COALESCE(SUM(b_invalid_duration), 0) as blocker_count,
+          COALESCE(SUM(w_ttid_small), 0) +
+            COALESCE(SUM(w_ttfd_small), 0) +
+            COALESCE(SUM(w_ttid_gt_dur), 0) +
+            COALESCE(SUM(w_ttfd_gt_dur), 0) +
+            COALESCE(SUM(w_ttfd_lt_ttid), 0) as warning_count,
+          MAX(CASE WHEN b_invalid_duration = 1 THEN 1 ELSE 0 END) as has_invalid_duration,
+          MAX(CASE WHEN w_ttid_small = 1 THEN 1 ELSE 0 END) as has_ttid_small,
+          MAX(CASE WHEN w_ttfd_small = 1 THEN 1 ELSE 0 END) as has_ttfd_small,
+          MAX(CASE WHEN w_ttid_gt_dur = 1 THEN 1 ELSE 0 END) as has_ttid_gt_dur,
+          MAX(CASE WHEN w_ttfd_gt_dur = 1 THEN 1 ELSE 0 END) as has_ttfd_gt_dur,
+          MAX(CASE WHEN w_ttfd_lt_ttid = 1 THEN 1 ELSE 0 END) as has_ttfd_lt_ttid
+        FROM flags
+      )
+      SELECT
+        sample_count,
+        blocker_count,
+        warning_count,
+        CASE
+          WHEN blocker_count > 0 THEN 'BLOCKER'
+          WHEN warning_count > 0 THEN 'WARN'
+          ELSE 'PASS'
+        END as quality_status,
+        TRIM(
+          (CASE WHEN has_invalid_duration = 1 THEN 'R001_INVALID_DURATION,' ELSE '' END) ||
+          (CASE WHEN has_ttid_small = 1 THEN 'R008_TTID_SUSPICIOUSLY_SMALL,' ELSE '' END) ||
+          (CASE WHEN has_ttfd_small = 1 THEN 'R008_TTFD_SUSPICIOUSLY_SMALL,' ELSE '' END) ||
+          (CASE WHEN has_ttid_gt_dur = 1 THEN 'R008_TTID_GT_DUR,' ELSE '' END) ||
+          (CASE WHEN has_ttfd_gt_dur = 1 THEN 'R008_TTFD_GT_DUR,' ELSE '' END) ||
+          (CASE WHEN has_ttfd_lt_ttid = 1 THEN 'R008_TTFD_LT_TTID,' ELSE '' END),
+          ','
+        ) as issue_codes,
+        CASE
+          WHEN blocker_count > 0 THEN '检测到阻断级数据问题，已停止启动深挖'
+          WHEN warning_count > 0 THEN '检测到可疑指标，结论需谨慎解读'
+          ELSE '数据质量通过，允许进入深度分析'
+        END as quality_summary
+      FROM agg
+    save_as: startup_quality
+    condition: startups.data.length > 0
+
   # ========== 启动延迟归因分析（使用 opinionated_breakdown）==========
   - id: startup_breakdown
-    type: atomic
+    type: skill
     name: "启动延迟归因"
+    skill: startup_breakdown_in_range
     synthesize:
       role: list
       groupBy:
@@ -205,43 +311,21 @@ steps:
         - name: category
           label: "类别"
           type: string
-    sql: |
-      SELECT
-        b.reason,
-        COUNT(*) as count,
-        SUM(b.dur) / 1e6 as total_dur_ms,
-        ROUND(AVG(b.dur) / 1e6, 2) as avg_dur_ms,
-        ROUND(MAX(b.dur) / 1e6, 2) as max_dur_ms,
-        ROUND(100.0 * SUM(b.dur) / (
-          SELECT SUM(dur) FROM android_startup_opinionated_breakdown
-          WHERE startup_id IN (
-            SELECT startup_id FROM android_startups
-            WHERE package GLOB '${package}*' OR '${package}' = ''
-          )
-        ), 1) as percent,
-        -- 按原因分类
-        CASE
-          WHEN b.reason GLOB '*binder*' THEN 'IPC'
-          WHEN b.reason GLOB '*io*' OR b.reason GLOB '*dlopen*' THEN 'IO'
-          WHEN b.reason GLOB '*gc*' OR b.reason GLOB '*memory*' THEN 'Memory'
-          WHEN b.reason GLOB '*lock*' OR b.reason GLOB '*contention*' THEN 'Lock'
-          WHEN b.reason GLOB '*inflate*' THEN 'Layout'
-          WHEN b.reason GLOB '*verify*' OR b.reason GLOB '*dex*' THEN 'ClassLoading'
-          ELSE 'Other'
-        END as category
-      FROM android_startup_opinionated_breakdown b
-      JOIN android_startups s ON b.startup_id = s.startup_id
-      WHERE s.package GLOB '${package}*' OR '${package}' = ''
-      GROUP BY b.reason
-      ORDER BY total_dur_ms DESC
-      LIMIT 15
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      top_k: 15
     save_as: breakdown
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 主线程关键 Slice 分析 ==========
   - id: main_thread_slices
-    type: atomic
+    type: skill
     name: "主线程关键操作"
+    skill: startup_main_thread_slices_in_range
     synthesize:
       role: list
       groupBy:
@@ -290,33 +374,86 @@ steps:
         - name: startup_type
           label: "启动类型"
           type: string
-    sql: |
-      SELECT
-        ts.slice_name,
-        ts.thread_name,
-        COUNT(*) as count,
-        SUM(ts.slice_dur) / 1e6 as total_dur_ms,
-        ROUND(AVG(ts.slice_dur) / 1e6, 2) as avg_dur_ms,
-        ROUND(MAX(ts.slice_dur) / 1e6, 2) as max_dur_ms,
-        -- 关联启动信息计算占比
-        ROUND(100.0 * SUM(ts.slice_dur) / s.dur, 1) as percent_of_startup,
-        s.startup_type,
-        s.package
-      FROM android_thread_slices_for_all_startups ts
-      JOIN android_startups s ON ts.startup_id = s.startup_id
-      WHERE ts.is_main_thread = 1
-        AND (s.package GLOB '${package}*' OR '${package}' = '')
-        AND ts.slice_dur > 1000000  -- > 1ms
-      GROUP BY ts.slice_name, s.startup_id
-      ORDER BY total_dur_ms DESC
-      LIMIT 15
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      min_dur_ns: 1000000
+      top_k: 15
     save_as: main_thread_slices
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
+
+  # ========== 启动期间主线程文件 IO ==========
+  - id: main_thread_file_io
+    type: skill
+    name: "主线程文件 IO"
+    skill: startup_main_thread_file_io_in_range
+    synthesize:
+      role: list
+      groupBy:
+        - field: startup_type
+          title: 按启动类型分布
+      fields:
+        - key: io_slice
+          label: IO 操作
+        - key: total_dur_ms
+          label: 总耗时
+          format: "{{value}} ms"
+        - key: percent_of_startup
+          label: 占比
+          format: "{{value}}%"
+    display:
+      level: key
+      layer: overview
+      title: "主线程文件 IO Top15"
+      columns:
+        - name: io_slice
+          label: "IO 操作"
+          type: string
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: count
+          label: "次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总耗时"
+          type: duration
+          format: duration_ms
+        - name: avg_dur_ms
+          label: "平均耗时"
+          type: duration
+          format: duration_ms
+        - name: max_dur_ms
+          label: "最大耗时"
+          type: duration
+          format: duration_ms
+        - name: percent_of_startup
+          label: "启动占比"
+          type: percentage
+          format: percentage
+        - name: startup_type
+          label: "启动类型"
+          type: string
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      min_dur_ns: 500000
+      top_k: 15
+    save_as: main_thread_file_io
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 启动期间 Binder 调用分析（多表 JOIN）==========
   - id: startup_binder
-    type: atomic
+    type: skill
     name: "启动期间 Binder 调用"
+    skill: startup_binder_in_range
     synthesize:
       role: list
       groupBy:
@@ -367,34 +504,67 @@ steps:
           label: "启动占比"
           type: percentage
           format: percentage
-    sql: |
-      SELECT
-        bt.server_process,
-        bt.aidl_name,
-        COUNT(*) as call_count,
-        SUM(bt.client_dur) / 1e6 as total_dur_ms,
-        ROUND(AVG(bt.client_dur) / 1e6, 2) as avg_dur_ms,
-        ROUND(MAX(bt.client_dur) / 1e6, 2) as max_dur_ms,
-        SUM(CASE WHEN bt.is_main_thread THEN 1 ELSE 0 END) as main_thread_calls,
-        -- 关联启动信息
-        s.startup_type,
-        ROUND(100.0 * SUM(bt.client_dur) / s.dur, 1) as percent_of_startup
-      FROM android_binder_txns bt
-      JOIN android_startups s ON (
-        bt.client_ts >= s.ts AND bt.client_ts <= s.ts + s.dur
-        AND bt.client_process GLOB s.package || '*'
-      )
-      WHERE s.package GLOB '${package}*' OR '${package}' = ''
-      GROUP BY bt.server_process, bt.aidl_name, s.startup_id
-      ORDER BY total_dur_ms DESC
-      LIMIT 15
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      top_k: 15
     save_as: startup_binder
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
+
+  # ========== 启动期间主线程同步 Binder 调用 ==========
+  - id: main_thread_sync_binder
+    type: skill
+    name: "主线程同步 Binder 调用"
+    skill: startup_main_thread_sync_binder_in_range
+    display:
+      level: key
+      layer: overview
+      title: "主线程同步 Binder 调用"
+      columns:
+        - name: server_process
+          label: "服务进程"
+          type: string
+        - name: aidl_name
+          label: "AIDL 方法"
+          type: string
+        - name: call_count
+          label: "调用次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总耗时"
+          type: duration
+          format: duration_ms
+        - name: avg_dur_ms
+          label: "平均耗时"
+          type: duration
+          format: duration_ms
+        - name: max_dur_ms
+          label: "最大耗时"
+          type: duration
+          format: duration_ms
+        - name: percent_of_startup
+          label: "启动占比"
+          type: percentage
+          format: percentage
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      top_k: 15
+    save_as: main_sync_binder
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 主线程 Binder 阻塞分析（深度 JOIN）==========
   - id: main_thread_binder_blocking
-    type: atomic
+    type: skill
     name: "主线程 Binder 阻塞"
+    skill: startup_main_thread_binder_blocking_in_range
     display:
       level: detail
       layer: list
@@ -424,43 +594,22 @@ steps:
         - name: severity
           label: "严重程度"
           type: enum
-    sql: |
-      SELECT
-        bt.server_process,
-        bt.aidl_name,
-        bt.client_dur / 1e6 as dur_ms,
-        -- 关联 thread_state 分析阻塞期间的状态
-        ts.state,
-        ts.blocked_function,
-        printf('%d', bt.client_ts) as ts_str,
-        printf('%d', bt.client_dur) as dur_str,
-        CASE
-          WHEN bt.client_dur / 1e6 > 50 THEN 'critical'
-          WHEN bt.client_dur / 1e6 > 16 THEN 'warning'
-          ELSE 'normal'
-        END as severity
-      FROM android_binder_txns bt
-      JOIN android_startups s ON (
-        bt.client_ts >= s.ts AND bt.client_ts <= s.ts + s.dur
-        AND bt.client_process GLOB s.package || '*'
-      )
-      LEFT JOIN thread_state ts ON (
-        ts.utid = bt.client_utid
-        AND ts.ts >= bt.client_ts
-        AND ts.ts < bt.client_ts + bt.client_dur
-      )
-      WHERE bt.is_main_thread = 1
-        AND (s.package GLOB '${package}*' OR '${package}' = '')
-        AND bt.client_dur > 5000000  -- > 5ms
-      ORDER BY bt.client_dur DESC
-      LIMIT 20
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      min_dur_ns: 5000000
+      top_k: 20
     save_as: main_binder_blocking
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 启动期间主线程状态分析（多表 JOIN）==========
   - id: main_thread_state_during_startup
-    type: atomic
+    type: skill
     name: "主线程状态分析"
+    skill: startup_main_thread_states_in_range
     display:
       level: key
       layer: overview
@@ -488,38 +637,20 @@ steps:
           label: "阻塞函数"
           type: string
           format: truncate
-    sql: |
-      SELECT
-        ts.state,
-        CASE ts.state
-          WHEN 'Running' THEN 'Running (CPU执行)'
-          WHEN 'R' THEN 'Runnable (等待调度)'
-          WHEN 'R+' THEN 'Runnable+ (抢占等待)'
-          WHEN 'S' THEN 'Sleeping (主动睡眠)'
-          WHEN 'D' THEN 'Disk Sleep (IO等待)'
-          ELSE ts.state
-        END as state_desc,
-        SUM(ts.dur) / 1e6 as total_dur_ms,
-        ROUND(100.0 * SUM(ts.dur) / s.dur, 1) as percent,
-        COUNT(*) as count,
-        -- 分析阻塞函数
-        GROUP_CONCAT(DISTINCT ts.blocked_function) as blocked_functions
-      FROM thread_state ts
-      JOIN android_startup_threads st ON ts.utid = st.utid
-      JOIN android_startups s ON st.startup_id = s.startup_id
-      WHERE st.is_main_thread = 1
-        AND (s.package GLOB '${package}*' OR '${package}' = '')
-        AND ts.ts >= s.ts
-        AND ts.ts <= s.ts + s.dur
-      GROUP BY ts.state, s.startup_id
-      ORDER BY total_dur_ms DESC
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
     save_as: main_thread_states
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 类加载分析 ==========
   - id: class_loading
-    type: atomic
+    type: skill
     name: "类加载分析"
+    skill: startup_class_loading_in_range
     display:
       level: detail
       layer: list
@@ -547,29 +678,21 @@ steps:
           label: "启动占比"
           type: percentage
           format: percentage
-    sql: |
-      SELECT
-        cl.slice_name,
-        cl.thread_name,
-        COUNT(*) as count,
-        SUM(cl.slice_dur) / 1e6 as total_dur_ms,
-        ROUND(AVG(cl.slice_dur) / 1e6, 2) as avg_dur_ms,
-        -- 关联启动信息
-        s.startup_type,
-        ROUND(100.0 * SUM(cl.slice_dur) / s.dur, 1) as percent_of_startup
-      FROM android_class_loading_for_startup cl
-      JOIN android_startups s ON cl.startup_id = s.startup_id
-      WHERE s.package GLOB '${package}*' OR '${package}' = ''
-      GROUP BY cl.slice_name
-      ORDER BY total_dur_ms DESC
-      LIMIT 10
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      top_k: 10
     save_as: class_loading
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== GC 对启动的影响 ==========
   - id: gc_during_startup
-    type: atomic
+    type: skill
     name: "GC 影响分析"
+    skill: startup_gc_in_range
     display:
       level: detail
       layer: list
@@ -600,29 +723,21 @@ steps:
           label: "启动占比"
           type: percentage
           format: percentage
-    sql: |
-      SELECT
-        ts.slice_name as gc_type,
-        ts.thread_name,
-        ts.is_main_thread,
-        COUNT(*) as count,
-        SUM(ts.slice_dur) / 1e6 as total_dur_ms,
-        ROUND(AVG(ts.slice_dur) / 1e6, 2) as avg_dur_ms,
-        ROUND(100.0 * SUM(ts.slice_dur) / s.dur, 1) as percent_of_startup
-      FROM android_thread_slices_for_all_startups ts
-      JOIN android_startups s ON ts.startup_id = s.startup_id
-      WHERE (s.package GLOB '${package}*' OR '${package}' = '')
-        AND (ts.slice_name GLOB '*GC*' OR ts.slice_name GLOB '*gc*')
-      GROUP BY ts.slice_name, ts.is_main_thread
-      ORDER BY total_dur_ms DESC
-      LIMIT 10
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      top_k: 10
     save_as: gc_during_startup
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 调度延迟分析（关联 sched_slice 和 cpu）==========
   - id: sched_latency_during_startup
-    type: atomic
+    type: skill
     name: "调度延迟分析"
+    skill: startup_sched_latency_in_range
     display:
       level: detail
       layer: list
@@ -650,26 +765,14 @@ steps:
         - name: severe_delays
           label: "严重延迟次数"
           type: number
-    sql: |
-      SELECT
-        ts.state,
-        COUNT(*) as count,
-        SUM(ts.dur) / 1e6 as total_wait_ms,
-        ROUND(AVG(ts.dur) / 1e6, 2) as avg_wait_ms,
-        ROUND(MAX(ts.dur) / 1e6, 2) as max_wait_ms,
-        -- 严重的调度延迟次数
-        SUM(CASE WHEN ts.dur / 1e6 > 8 THEN 1 ELSE 0 END) as severe_delays
-      FROM thread_state ts
-      JOIN android_startup_threads st ON ts.utid = st.utid
-      JOIN android_startups s ON st.startup_id = s.startup_id
-      WHERE st.is_main_thread = 1
-        AND (s.package GLOB '${package}*' OR '${package}' = '')
-        AND ts.state IN ('R', 'R+')
-        AND ts.ts >= s.ts
-        AND ts.ts <= s.ts + s.dur
-      GROUP BY ts.state
+    params:
+      package: "${package}"
+      startup_id: "${startup_id}"
+      startup_type: "${startup_type}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
     save_as: sched_latency
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== 逐个启动事件详细分析 ==========
   - id: analyze_startups
@@ -695,7 +798,7 @@ steps:
       ttfd_ms: ttfd_ms
       perfetto_start: perfetto_start
       perfetto_end: perfetto_end
-    condition: startups.data.length > 0
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0) && ${enable_startup_details|true}
 
   # ========== 启动诊断 ==========
   - id: startup_diagnosis
@@ -716,8 +819,28 @@ steps:
       level: key
       layer: overview
       title: "问题诊断"
-    inputs: [startups, breakdown, main_thread_slices, startup_binder, main_thread_states, gc_during_startup]
+    inputs: [startups, startup_quality, breakdown, main_thread_slices, main_thread_file_io, startup_binder, main_sync_binder, main_binder_blocking, main_thread_states, class_loading, gc_during_startup, sched_latency]
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview'
     rules:
+      # 数据质量门禁阻断
+      - condition: "((startup_quality?.data?.[0]?.blocker_count) || 0) > 0"
+        severity: critical
+        diagnosis: "启动数据质量存在阻断问题（${startup_quality?.data?.[0]?.issue_codes || 'unknown'}），深度分析已跳过"
+        confidence: high
+        suggestions:
+          - "优先核对 dur_ms/start_ts/end_ts 的单位与换算逻辑，统一为 ms 展示"
+          - "检查 TTID/TTFD 字段来源和单位，确认没有误用 us/ns"
+          - "修复数据口径后重新执行启动分析"
+
+      # 数据质量告警
+      - condition: "((startup_quality?.data?.[0]?.warning_count) || 0) > 0"
+        severity: info
+        diagnosis: "启动数据存在告警项（${startup_quality?.data?.[0]?.issue_codes || 'none'}），结论需结合原始 Trace 复核"
+        confidence: medium
+        suggestions:
+          - "重点复核 TTID/TTFD 与启动总时长关系是否合理"
+          - "保留本次结论作为线索，不直接作为最终定论"
+
       # 冷启动时间过长
       - condition: "((startups?.data?.[0]?.dur_ms) || 0) > 2000 && startups?.data?.[0]?.startup_type === 'cold'"
         severity: critical
@@ -728,18 +851,36 @@ steps:
           - "使用 App Startup 库延迟初始化"
           - "将耗时操作移到后台线程"
 
-      # Binder 调用占比过高
-      - condition: "(startup_binder?.data?.length || 0) > 0 && ((startup_binder.data[0]?.percent_of_startup) || 0) > 20"
+      # Binder 调用占比过高（需有主线程证据佐证）
+      - condition: "(startup_binder?.data?.length || 0) > 0 && ((startup_binder.data[0]?.percent_of_startup) || 0) > 20 && ((startup_binder.data[0]?.main_thread_calls || 0) > 0) && ((((main_sync_binder?.data?.[0]?.percent_of_startup) || 0) > 5) || (((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 8) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
-        diagnosis: "Binder 调用占启动时间 ${startup_binder?.data?.[0]?.percent_of_startup}%"
+        diagnosis: "Binder 调用占启动时间 ${startup_binder?.data?.[0]?.percent_of_startup}%（含主线程调用）"
         confidence: high
         suggestions:
           - "减少启动期间的 IPC 调用"
           - "将非必要的服务调用延迟到启动后"
           - "使用异步 Binder 调用"
 
+      # 主线程同步 Binder 占比过高（需与主线程阻塞状态一致）
+      - condition: "(main_sync_binder?.data?.length || 0) > 0 && ((main_sync_binder.data[0]?.percent_of_startup) || 0) > 8 && ((((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 16) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+        severity: warning
+        diagnosis: "主线程同步 Binder 占启动时间 ${main_sync_binder?.data?.[0]?.percent_of_startup}% 且主线程存在阻塞态证据"
+        confidence: high
+        suggestions:
+          - "优先将同步 Binder 调用迁移到后台线程"
+          - "首屏前只保留必要 IPC，其余延后到首帧后"
+
+      # 主线程文件 IO 占比过高（需有 D/S 阻塞态佐证）
+      - condition: "(main_thread_file_io?.data?.length || 0) > 0 && (((main_thread_file_io.data[0]?.percent_of_startup) || 0) > 5 || ((main_thread_file_io.data[0]?.total_dur_ms) || 0) > 50) && ((((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+        severity: warning
+        diagnosis: "主线程文件 IO 占比较高（${main_thread_file_io?.data?.[0]?.percent_of_startup}%）且主线程阻塞态占比偏高"
+        confidence: high
+        suggestions:
+          - "将文件读取与数据库初始化前移到预热阶段或改为异步"
+          - "减少启动阶段小文件随机 IO，合并为批量顺序读取"
+
       # 主线程 Running 比例低
-      - condition: "(main_thread_states?.data?.length || 0) > 0 && ((main_thread_states.data.find(s => s.state === 'Running')?.percent) || 0) < 50"
+      - condition: "(main_thread_states?.data?.length || 0) > 0 && ((main_thread_states.data.find(s => s.state === 'Running')?.percent) || 0) < 50 && ((((main_thread_states.data.find(s => s.state === 'R')?.percent) || 0) + ((main_thread_states.data.find(s => s.state === 'R+')?.percent) || 0)) > 20 || ((((main_thread_states.data.find(s => s.state === 'D')?.percent) || 0) + ((main_thread_states.data.find(s => s.state === 'S')?.percent) || 0)) > 30) || ((((sched_latency?.data?.find(s => s.state === 'R')?.severe_delays) || 0) + ((sched_latency?.data?.find(s => s.state === 'R+')?.severe_delays) || 0)) > 3))"
         severity: warning
         diagnosis: "主线程 Running 比例偏低"
         confidence: medium
@@ -747,23 +888,143 @@ steps:
           - "分析阻塞原因：IO 等待、锁竞争、调度延迟"
           - "将阻塞操作移到后台线程"
 
-      # GC 影响
-      - condition: "(gc_during_startup?.data?.length || 0) > 0 && ((gc_during_startup.data[0]?.percent_of_startup) || 0) > 5"
+      # GC 影响（优先关注主线程 GC）
+      - condition: "(gc_during_startup?.data?.length || 0) > 0 && ((gc_during_startup.data.find(g => g.is_main_thread === 1)?.percent_of_startup) || 0) > 3"
         severity: warning
-        diagnosis: "GC 占启动时间 ${gc_during_startup?.data?.[0]?.percent_of_startup}%"
+        diagnosis: "主线程 GC 占启动时间 ${gc_during_startup?.data?.find(g => g.is_main_thread === 1)?.percent_of_startup}%"
         confidence: medium
         suggestions:
           - "减少启动期间的对象分配"
           - "避免在启动时创建大量临时对象"
 
-      # 类加载耗时
-      - condition: "(breakdown?.data?.length || 0) > 0 && ((breakdown.data.find(b => b.category === 'ClassLoading')?.percent) || 0) > 15"
+      # 调度延迟偏高（需严重延迟+峰值同时出现）
+      - condition: "(sched_latency?.data?.length || 0) > 0 && ((((sched_latency.data.find(s => s.state === 'R')?.severe_delays) || 0) + ((sched_latency.data.find(s => s.state === 'R+')?.severe_delays) || 0)) > 3) && (((sched_latency.data.find(s => s.state === 'R')?.max_wait_ms) || 0) > 8 || ((sched_latency.data.find(s => s.state === 'R+')?.max_wait_ms) || 0) > 8)"
+        severity: warning
+        diagnosis: "主线程调度延迟偏高（>8ms 严重等待次数 ${(sched_latency?.data?.find(s => s.state === 'R')?.severe_delays || 0) + (sched_latency?.data?.find(s => s.state === 'R+')?.severe_delays || 0)}）"
+        confidence: medium
+        suggestions:
+          - "降低启动阶段后台并发，避免与主线程争抢 CPU"
+          - "检查系统级负载和高优先级抢占线程"
+
+      # 类加载耗时（需 breakdown 与类加载明细双证据）
+      - condition: "(breakdown?.data?.length || 0) > 0 && ((breakdown.data.find(b => b.category === 'ClassLoading')?.percent) || 0) > 15 && (class_loading?.data?.length || 0) > 0 && ((class_loading.data[0]?.percent_of_startup) || 0) > 5"
         severity: info
-        diagnosis: "类加载占比较高"
+        diagnosis: "类加载占比较高（breakdown ${breakdown?.data?.find(b => b.category === 'ClassLoading')?.percent}%）"
         confidence: medium
         suggestions:
           - "使用 baseline profile 预编译热点类"
           - "减少启动时加载的类数量"
+
+  # ========== 启动证据矩阵（主指标 + 佐证） ==========
+  - id: startup_evidence_matrix
+    type: atomic
+    name: "启动证据矩阵"
+    display:
+      level: key
+      layer: overview
+      title: "证据矩阵"
+      columns:
+        - name: item
+          label: "分析项"
+          type: string
+        - name: primary_metric
+          label: "主指标"
+          type: string
+        - name: primary_value
+          label: "主指标值"
+          type: number
+        - name: primary_threshold
+          label: "异常阈值"
+          type: string
+        - name: corroborating_metric
+          label: "佐证指标"
+          type: string
+        - name: corroborating_value
+          label: "佐证值"
+          type: number
+        - name: corroborating_threshold
+          label: "佐证阈值"
+          type: string
+        - name: status
+          label: "判定"
+          type: string
+    sql: |
+      SELECT
+        'MainThread Hot Slice' as item,
+        'main_thread_slices.percent_of_startup' as primary_metric,
+        ROUND(COALESCE(${main_thread_slices.data[0].percent_of_startup}, 0), 2) as primary_value,
+        '>20% OR max_dur_ms>100' as primary_threshold,
+        'main_thread_slices.max_dur_ms' as corroborating_metric,
+        ROUND(COALESCE(${main_thread_slices.data[0].max_dur_ms}, 0), 2) as corroborating_value,
+        '>100ms' as corroborating_threshold,
+        CASE
+          WHEN (COALESCE(${main_thread_slices.data[0].percent_of_startup}, 0) > 20 OR COALESCE(${main_thread_slices.data[0].max_dur_ms}, 0) > 100)
+               AND COALESCE(${main_thread_slices.data[0].max_dur_ms}, 0) > 100 THEN 'confirmed'
+          WHEN (COALESCE(${main_thread_slices.data[0].percent_of_startup}, 0) > 20 OR COALESCE(${main_thread_slices.data[0].max_dur_ms}, 0) > 100) THEN 'needs_corroboration'
+          ELSE 'normal'
+        END as status
+      UNION ALL
+      SELECT
+        'MainThread File IO' as item,
+        'main_thread_file_io.percent_of_startup' as primary_metric,
+        ROUND(COALESCE(${main_thread_file_io.data[0].percent_of_startup}, 0), 2) as primary_value,
+        '>5%' as primary_threshold,
+        'main_thread_file_io.total_dur_ms' as corroborating_metric,
+        ROUND(COALESCE(${main_thread_file_io.data[0].total_dur_ms}, 0), 2) as corroborating_value,
+        '>50ms' as corroborating_threshold,
+        CASE
+          WHEN COALESCE(${main_thread_file_io.data[0].percent_of_startup}, 0) > 5
+               AND COALESCE(${main_thread_file_io.data[0].total_dur_ms}, 0) > 50 THEN 'confirmed'
+          WHEN COALESCE(${main_thread_file_io.data[0].percent_of_startup}, 0) > 5 THEN 'needs_corroboration'
+          ELSE 'normal'
+        END as status
+      UNION ALL
+      SELECT
+        'Binder Total' as item,
+        'startup_binder.percent_of_startup' as primary_metric,
+        ROUND(COALESCE(${startup_binder.data[0].percent_of_startup}, 0), 2) as primary_value,
+        '>20%' as primary_threshold,
+        'main_sync_binder.percent_of_startup' as corroborating_metric,
+        ROUND(COALESCE(${main_sync_binder.data[0].percent_of_startup}, 0), 2) as corroborating_value,
+        '>5%' as corroborating_threshold,
+        CASE
+          WHEN COALESCE(${startup_binder.data[0].percent_of_startup}, 0) > 20
+               AND COALESCE(${main_sync_binder.data[0].percent_of_startup}, 0) > 5 THEN 'confirmed'
+          WHEN COALESCE(${startup_binder.data[0].percent_of_startup}, 0) > 20 THEN 'needs_corroboration'
+          ELSE 'normal'
+        END as status
+      UNION ALL
+      SELECT
+        'Main Sync Binder' as item,
+        'main_sync_binder.percent_of_startup' as primary_metric,
+        ROUND(COALESCE(${main_sync_binder.data[0].percent_of_startup}, 0), 2) as primary_value,
+        '>8%' as primary_threshold,
+        'main_binder_blocking.dur_ms' as corroborating_metric,
+        ROUND(COALESCE(${main_binder_blocking.data[0].dur_ms}, 0), 2) as corroborating_value,
+        '>16ms' as corroborating_threshold,
+        CASE
+          WHEN COALESCE(${main_sync_binder.data[0].percent_of_startup}, 0) > 8
+               AND COALESCE(${main_binder_blocking.data[0].dur_ms}, 0) > 16 THEN 'confirmed'
+          WHEN COALESCE(${main_sync_binder.data[0].percent_of_startup}, 0) > 8 THEN 'needs_corroboration'
+          ELSE 'normal'
+        END as status
+      UNION ALL
+      SELECT
+        'Sched Latency' as item,
+        'sched_latency.severe_delays' as primary_metric,
+        ROUND(COALESCE(${sched_latency.data[0].severe_delays}, 0), 2) as primary_value,
+        '>3' as primary_threshold,
+        'sched_latency.max_wait_ms' as corroborating_metric,
+        ROUND(COALESCE(${sched_latency.data[0].max_wait_ms}, 0), 2) as corroborating_value,
+        '>8ms' as corroborating_threshold,
+        CASE
+          WHEN COALESCE(${sched_latency.data[0].severe_delays}, 0) > 3
+               AND COALESCE(${sched_latency.data[0].max_wait_ms}, 0) > 8 THEN 'confirmed'
+          WHEN COALESCE(${sched_latency.data[0].severe_delays}, 0) > 3 THEN 'needs_corroboration'
+          ELSE 'normal'
+        END as status
+    save_as: evidence_matrix
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
 
   # ========== AI 总结 ==========
   - id: global_summary
@@ -773,7 +1034,8 @@ steps:
       level: key
       layer: overview
       title: "启动分析总结"
-    inputs: [startups, breakdown, main_thread_slices, startup_binder, main_thread_states, analyze_startups, startup_diagnosis]
+    inputs: [startups, startup_quality, breakdown, main_thread_slices, main_thread_file_io, startup_binder, main_sync_binder, main_binder_blocking, main_thread_states, class_loading, gc_during_startup, sched_latency, evidence_matrix, analyze_startups, startup_diagnosis]
+    condition: startups.data.length > 0 && '${analysis_mode|full}' !== 'overview' && ((startup_quality?.data?.[0]?.blocker_count || 0) === 0)
     prompt: |
       请基于以下启动分析结果，生成专业的性能评估总结。
 
@@ -781,17 +1043,41 @@ steps:
       共检测到 ${startups.data.length} 个启动事件：
           startups
 
+      ## 数据质量门禁
+          startup_quality
+
       ## 延迟归因分析
           breakdown
 
       ## 主线程耗时操作
           main_thread_slices
 
+      ## 主线程文件 IO
+          main_thread_file_io
+
       ## Binder 调用
           startup_binder
 
+      ## 主线程同步 Binder
+          main_sync_binder
+
+      ## 主线程 Binder 阻塞
+          main_binder_blocking
+
       ## 主线程状态
           main_thread_states
+
+      ## 类加载
+          class_loading
+
+      ## GC
+          gc_during_startup
+
+      ## 调度延迟
+          sched_latency
+
+      ## 证据矩阵
+          evidence_matrix
 
       ## 逐个启动详细分析（大小核、四象限）
           analyze_startups
@@ -823,7 +1109,13 @@ steps:
       ## 严格要求
       - 只基于提供的实际数据分析，不要编造数据
       - 区分冷启动、温启动、热启动分别说明
-      - 重点分析大核占比和 Runnable 等待时间
+      - 启动阶段默认聚焦主线程关键路径（Main Thread）进行归因
+      - GPU/SF/RenderThread 仅在有与主线程锁竞争或明确阻塞证据时纳入分析
+      - 优先给出 Binder 与文件 IO 的归因结论，再补充其他次要因素
+      - 每个结论必须包含「主指标 -> 异常阈值 -> 佐证指标」三段式证据链
+      - 若缺少佐证指标，必须明确写“证据不足，暂不下根因结论”
+      - 大小核结论需先校验判定口径是否可信（频率/capacity/拓扑是否一致），若口径不稳需降置信度
+      - 重点分析 Runnable 等待时间与主线程耗时热点
       - 格式清晰，不超过400字
 
 output:

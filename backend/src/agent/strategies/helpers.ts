@@ -97,6 +97,22 @@ function formatTimeValue(seconds: number): string {
 }
 
 /**
+ * Unwrap a value that may be a raw payload OR a SkillExecutor StepResult
+ * wrapper ({ data, success, stepId, ... }).  Returns the inner payload so
+ * that payloadToObjectRows always receives an array or columnar object.
+ *
+ * rawResults (context.results) maps step IDs to StepResult objects.
+ * Strategies must unwrap before calling payloadToObjectRows.
+ */
+export function unwrapStepResult(value: any): any {
+  if (!value || typeof value !== 'object') return value;
+  if ('stepId' in value && 'success' in value && 'data' in value) {
+    return value.data;
+  }
+  return value;
+}
+
+/**
  * Pre-built helpers instance for use in strategy extractIntervals implementations.
  */
 export const intervalHelpers: IntervalHelpers = {

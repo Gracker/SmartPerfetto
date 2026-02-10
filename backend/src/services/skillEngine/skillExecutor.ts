@@ -115,6 +115,18 @@ export function normalizeLayer(layer: string | undefined): DisplayLayer | undefi
 // =============================================================================
 
 class ExpressionEvaluator {
+  private static warnedConditionMessages = new Set<string>();
+
+  private static warnConditionOnce(reason: string, condition: string, extra?: string): void {
+    const key = `${reason}::${condition}`;
+    if (this.warnedConditionMessages.has(key)) return;
+    this.warnedConditionMessages.add(key);
+    logger.warn(
+      'ExpressionEvaluator',
+      `${reason}: ${condition}${extra ? ` (${extra})` : ''}`
+    );
+  }
+
   /**
    * 在上下文中求值表达式
    * 支持：${variable}、${step.field}、比较运算符等
@@ -178,7 +190,7 @@ class ExpressionEvaluator {
           if (typeof value === 'object') return JSON.stringify(value);
           return String(value);
         } catch (e) {
-          console.warn(`[ExpressionEvaluator] Failed to evaluate embedded JS: ${actualPath}`, e);
+          logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${actualPath}`);
           return defaultValue !== undefined ? defaultValue : '';
         }
       }
@@ -209,7 +221,11 @@ class ExpressionEvaluator {
    * 评估 JavaScript 表达式
    * 例如: performance_summary.data[0]?.app_jank_rate > 10
    */
-  private static evaluateJsExpression(expr: string, context: SkillExecutionContext): any {
+  private static evaluateJsExpression(
+    expr: string,
+    context: SkillExecutionContext,
+    options?: { suppressErrorLog?: boolean }
+  ): any {
     try {
       // 从表达式中提取根变量名
       const rootVarNames = this.extractRootVariables(expr);
@@ -260,7 +276,9 @@ class ExpressionEvaluator {
 
       return result;
     } catch (e: any) {
-      console.warn('[ExpressionEvaluator] JS expression failed:', expr, e.message);
+      if (!options?.suppressErrorLog) {
+        logger.debug('ExpressionEvaluator', `JS expression failed: ${expr} (${e.message})`);
+      }
       return undefined;
     }
   }
@@ -473,7 +491,6 @@ class ExpressionEvaluator {
 
       // evaluate 可能直接返回 boolean/number（例如 "3 >= 1"）
       if (prepared === undefined || prepared === null) {
-        console.warn(`[ExpressionEvaluator] Condition evaluated to undefined: ${condition}`);
         return false;
       }
       if (typeof prepared === 'boolean') {
@@ -489,22 +506,22 @@ class ExpressionEvaluator {
       const expr = prepared.trim();
       if (!expr) return false;
       if (expr.includes('${')) {
-        console.warn(`[ExpressionEvaluator] Condition still contains template placeholders: ${expr}`);
+        // 未替换完的模板通常意味着上游数据缺失，不作为告警噪声输出。
+        logger.debug('ExpressionEvaluator', `Condition still contains template placeholders: ${expr}`);
         return false;
       }
 
       // 条件表达式作为 JavaScript 表达式求值
-      const result = this.evaluateJsExpression(expr, context);
+      const result = this.evaluateJsExpression(expr, context, { suppressErrorLog: true });
 
       // 如果求值失败（返回 undefined），默认为 false
       if (result === undefined) {
-        console.warn(`[ExpressionEvaluator] Condition evaluated to undefined: ${condition}`);
         return false;
       }
 
       return Boolean(result);
     } catch (e: any) {
-      console.error(`[ExpressionEvaluator] Condition evaluation failed: ${condition}`, e.message);
+      this.warnConditionOnce('Condition evaluation failed', condition, e.message);
       return false;
     }
   }
@@ -992,6 +1009,71 @@ export class SkillExecutor {
   }
 
   /**
+   * Expand prerequisite module aliases to canonical stdlib module ids.
+   */
+  private resolvePrerequisiteModules(modules?: string[]): string[] {
+    if (!Array.isArray(modules) || modules.length === 0) return [];
+
+    const expanded: string[] = [];
+    for (const m of modules) {
+      switch (m) {
+        case 'sched':
+          // stdlib/sched/ 下不存在 sched.sql；常用能力在 states/runnable
+          expanded.push('sched.states', 'sched.runnable');
+          break;
+        case 'stack_profile':
+          // stdlib/callstacks/stack_profile.sql
+          expanded.push('callstacks.stack_profile');
+          break;
+        case 'android.frames':
+          // stdlib/android/frames/ 无 frames.sql；常见能力来自 timeline/jank_type
+          expanded.push('android.frames.timeline', 'android.frames.jank_type');
+          break;
+        case 'android.frames.jank':
+          // 实际模块名为 jank_type.sql
+          expanded.push('android.frames.jank_type');
+          break;
+        default:
+          expanded.push(m);
+      }
+    }
+
+    return Array.from(new Set(expanded));
+  }
+
+  /**
+   * Best-effort probe for prerequisite modules and return only available ones.
+   * Note: some trace processor builds treat INCLUDE as statement-scoped, so
+   * SQL execution still prepends INCLUDE per-step for determinism.
+   */
+  private async resolveAvailableModules(traceId: string, modules: string[]): Promise<string[]> {
+    const available: string[] = [];
+    for (const module of modules) {
+      try {
+        const includeResult = await this.traceProcessor.query(traceId, `INCLUDE PERFETTO MODULE ${module};`);
+        if ((includeResult as any)?.error) {
+          console.warn(`[SkillExecutor] Module not available: ${module}`);
+          continue;
+        }
+        available.push(module);
+      } catch {
+        console.warn(`[SkillExecutor] Module not available: ${module}`);
+      }
+    }
+    return available;
+  }
+
+  /**
+   * Prefix SQL with prerequisite INCLUDE statements.
+   */
+  private buildSqlWithModuleIncludes(sql: string, context: SkillExecutionContext): string {
+    const modules = context.moduleIncludes || [];
+    if (modules.length === 0) return sql;
+    const prefix = modules.map(module => `INCLUDE PERFETTO MODULE ${module};`).join('\n');
+    return `${prefix}\n${sql}`;
+  }
+
+  /**
    * 执行 skill
    */
   async execute(
@@ -1021,6 +1103,14 @@ export class SkillExecutor {
       data: { skillName: skill.meta.display_name },
     });
 
+    const prerequisiteModules = this.resolvePrerequisiteModules(skill.prerequisites?.modules);
+    let moduleIncludes = prerequisiteModules;
+
+    // 仅注入可用模块，避免未知模块导致整条 SQL 失败
+    if (prerequisiteModules.length > 0) {
+      moduleIncludes = await this.resolveAvailableModules(traceId, prerequisiteModules);
+    }
+
     // 创建执行上下文
     const context: SkillExecutionContext = {
       traceId,
@@ -1028,49 +1118,7 @@ export class SkillExecutor {
       inherited,
       results: {},
       variables: {},
-    };
-
-    // 加载必要的模块
-    if (skill.prerequisites?.modules) {
-      // 兼容旧/简写模块名，避免 "INCLUDE: unknown module 'sched'" 这类噪声
-      const expandModules = (modules: string[]): string[] => {
-        const expanded: string[] = [];
-        for (const m of modules) {
-          switch (m) {
-            case 'sched':
-              // stdlib/sched/ 下不存在 sched.sql；常用能力在 states/runnable 等文件里
-              expanded.push('sched.states', 'sched.runnable');
-              break;
-            case 'stack_profile':
-              // stdlib/callstacks/stack_profile.sql
-              expanded.push('callstacks.stack_profile');
-              break;
-            case 'android.frames':
-              // stdlib/android/frames/ 目录下没有 frames.sql；常见能力来自 timeline/jank_type
-              expanded.push('android.frames.timeline', 'android.frames.jank_type');
-              break;
-            case 'android.frames.jank':
-              // 实际模块名为 jank_type.sql
-              expanded.push('android.frames.jank_type');
-              break;
-            default:
-              expanded.push(m);
-          }
-        }
-        // 去重并保持顺序
-        return Array.from(new Set(expanded));
-      };
-
-      for (const module of expandModules(skill.prerequisites.modules)) {
-        try {
-          const includeResult = await this.traceProcessor.query(traceId, `INCLUDE PERFETTO MODULE ${module};`);
-          if ((includeResult as any)?.error) {
-            console.warn(`[SkillExecutor] Module not available: ${module}`);
-          }
-        } catch (e: any) {
-          console.warn(`[SkillExecutor] Module not available: ${module}`);
-        }
-      }
+      moduleIncludes,
     }
 
     // 检查表依赖
@@ -1371,6 +1419,8 @@ export class SkillExecutor {
       };
     }
 
+    const prerequisiteModules = this.resolvePrerequisiteModules(skill.prerequisites?.modules);
+
     // Create execution context
     const execContext: SkillExecutionContext = {
       traceId: context.traceId || '',
@@ -1378,7 +1428,12 @@ export class SkillExecutor {
       inherited: context.inherited || {},
       results: {},
       variables: {},
+      moduleIncludes: prerequisiteModules,
     };
+
+    if (execContext.traceId && prerequisiteModules.length > 0) {
+      execContext.moduleIncludes = await this.resolveAvailableModules(execContext.traceId, prerequisiteModules);
+    }
 
     // Execute all steps and collect synthesize-marked data
     const stepResults: StepResult[] = [];
@@ -1513,7 +1568,10 @@ export class SkillExecutor {
       };
     }
 
-    const sql = substituteVariables(skill.sql, context);
+    const sql = this.buildSqlWithModuleIncludes(
+      substituteVariables(skill.sql, context),
+      context
+    );
 
     try {
       const result = await this.traceProcessor.query(context.traceId, sql);
@@ -1662,7 +1720,10 @@ export class SkillExecutor {
     context: SkillExecutionContext
   ): Promise<StepResult> {
     const startTime = Date.now();
-    const sql = substituteVariables(step.sql, context);
+    const sql = this.buildSqlWithModuleIncludes(
+      substituteVariables(step.sql, context),
+      context
+    );
 
 
     try {
@@ -2460,7 +2521,10 @@ export class SkillExecutor {
     sql?: string
   ): DisplayResult {
     const config = displayConfig || { level: 'summary', format: 'table' };
-    const data = stepResult.data;
+    // Skill 引用步骤返回的是嵌套 SkillExecutionResult，展示时需要先解包到真实数据。
+    const data = stepResult.stepType === 'skill'
+      ? this.extractSaveAsValue(stepResult)
+      : stepResult.data;
 
     // Extract column definitions from config (runtime data may be ColumnDefinition[] even though type says string[])
     // This happens because skill YAML is loaded dynamically and contains full column definitions

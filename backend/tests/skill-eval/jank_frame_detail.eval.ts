@@ -336,6 +336,15 @@ describe('jank_frame_detail skill', () => {
           expect(rootCause.cause_type).toBeDefined();
           expect(typeof rootCause.cause_type).toBe('string');
 
+          // Deeper "why slow" breakdown fields
+          expect(rootCause.reason_code).toBeDefined();
+          expect(typeof rootCause.reason_code).toBe('string');
+          expect(
+            rootCause.deep_reason === null || typeof rootCause.deep_reason === 'string'
+          ).toBe(true);
+          expect(rootCause.optimization_hint).toBeDefined();
+          expect(typeof rootCause.optimization_hint).toBe('string');
+
           // Structured mechanism fields for trigger/supply/amplification layering
           expect(rootCause.mechanism_group).toBeDefined();
           expect(typeof rootCause.mechanism_group).toBe('string');

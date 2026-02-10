@@ -20,6 +20,25 @@ import type {
   ConclusionContractMetadata,
   ConclusionOutputMode,
 } from './conclusionContract';
+import {
+  AMPLIFICATION_UNKNOWN_CURRENT_FRAME_TEXT,
+  buildTriadStatement,
+  DEEP_REASON_ALIASES,
+  DEEP_REASON_LABEL,
+  hasTriadRoleText,
+  normalizeLegacyTriadTerms,
+  OPTIMIZATION_LABEL,
+  parseTriadParts,
+  stripTriadPrefix,
+  SUPPLY_NONE_CURRENT_FRAME_TEXT,
+  TRIAD_EVIDENCE_LABELS,
+  TRIAD_HEADING,
+  TRIAD_LABELS,
+} from '../../utils/analysisNarrative';
+import {
+  buildConclusionScenePromptHints,
+  type ConclusionScenePromptHints,
+} from './conclusionSceneTemplates';
 
 export interface ConclusionGenerationOptions {
   /**
@@ -215,7 +234,19 @@ function formatFindingWithEvidence(f: Finding): string {
 
   if (f.details && typeof f.details === 'object' && Object.keys(f.details).length > 0) {
     // Priority fields that should be preserved in full
-    const priorityFields = ['root_cause', 'primary_cause', 'cause_type', 'confidence', 'jank_type'];
+    const priorityFields = [
+      'root_cause',
+      'primary_cause',
+      'deep_reason',
+      'reason_code',
+      'optimization_hint',
+      'cause_type',
+      'supply_constraint',
+      'trigger_layer',
+      'amplification_path',
+      'confidence',
+      'jank_type',
+    ];
     const details = f.details as Record<string, unknown>;
 
     // First, output priority fields without truncation
@@ -636,7 +667,7 @@ function injectWorkloadDominantClusterMarker(
   const sampleCauseText = cluster.samplePrimaryCauses.length > 0
     ? `；关键切片: ${cluster.samplePrimaryCauses.join('；')}`
     : '';
-  const marker = `- 负载主导簇: ${cluster.clusterId}（${cluster.frameCount}帧, ${cluster.percentage.toFixed(1)}%），该簇以 APP 侧工作负载触发为主，供给约束信号较弱${repFramesText}${sampleCauseText}。`;
+  const marker = `- 负载主导簇: ${cluster.clusterId}（${cluster.frameCount}帧, ${cluster.percentage.toFixed(1)}%），该簇以 APP 侧工作负载触发为主，资源问题信号较弱${repFramesText}${sampleCauseText}。`;
   const lines = String(markdown || '').split('\n');
 
   const headingPatterns = [
@@ -736,22 +767,22 @@ function buildSupplyEvidence(params: {
   } = params;
 
   if (recordSupplyParts.length > 0) {
-    return `逐帧结构化供给约束: ${recordSupplyParts.join('；')}（命中 ${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
+    return `逐帧结构化资源问题: ${recordSupplyParts.join('；')}（命中 ${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
   }
 
   if (supplyFromRecords.totalFrames > 0) {
-    return `逐帧结构化供给约束命中较低（${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
+    return `逐帧结构化资源问题命中较低（${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
   }
 
   if (supplyParts.length > 0) {
-    return `供给约束信号: ${supplyParts.join('；')}`;
+    return `资源问题信号: ${supplyParts.join('；')}`;
   }
 
   if (supplyTop) {
-    return `逐帧供给约束主因=${supplyTop.causeType}，占比 ${supplyTop.percentage.toFixed(1)}%`;
+    return `逐帧资源问题主因=${supplyTop.causeType}，占比 ${supplyTop.percentage.toFixed(1)}%`;
   }
 
-  return `供给约束样本不足（逐帧样本 ${frameSample}）`;
+  return `资源问题样本不足（逐帧样本 ${frameSample}）`;
 }
 
 function deriveMechanismTriad(
@@ -786,23 +817,23 @@ function deriveMechanismTriad(
   if (contentionPct >= 10) supplyParts.push(`CPU 争抢 ${contentionPct.toFixed(1)}%`);
   const recordSupplyParts = supplyFromRecords.breakdown.slice(0, 2)
     .map(s => `${supplyConstraintLabel(s.constraint)} ${s.percentage.toFixed(1)}%`);
-  let supply = '暂无供给约束证据';
+  let supply = '暂无明显资源问题证据';
   if (recordSupplyParts.length > 0) {
     supply = recordSupplyParts.join('；');
     if (supplyFromRecords.constrainedFrames < supplyFromRecords.totalFrames) {
       supply += `（覆盖 ${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
     }
   } else if (supplyFromRecords.totalFrames > 0) {
-    supply = `供给约束不明显（命中 ${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
+    supply = `资源问题不明显（命中 ${supplyFromRecords.constrainedFrames}/${supplyFromRecords.totalFrames} 帧）`;
   } else if (supplyParts.length > 0) {
     supply = supplyParts.join('；');
   } else if (supplyTop) {
     supply = `${supplyTop.label}（占比 ${supplyTop.percentage.toFixed(1)}%）`;
   } else if (assessment.frameSample > 0) {
-    supply = '供给约束信号较弱或样本不足';
+    supply = '资源问题信号较弱或样本不足';
   }
 
-  let amplification = '未观察到稳定放大路径证据';
+  let amplification = '未观察到稳定放大因素证据';
   if (amplificationTop) {
     amplification = `${amplificationTop.label}（逐帧占比 ${amplificationTop.percentage.toFixed(1)}%）`;
   } else if (assessment.sfRespPct >= 50 || assessment.consumerRate >= 30) {
@@ -822,7 +853,7 @@ function deriveMechanismTriad(
   });
 
   const amplificationEvidence = amplificationTop
-    ? `逐帧放大路径主因=${amplificationTop.causeType}，占比 ${amplificationTop.percentage.toFixed(1)}%`
+    ? `逐帧放大因素主因=${amplificationTop.causeType}，占比 ${amplificationTop.percentage.toFixed(1)}%`
     : `责任分布 SF ${assessment.sfRespSample} 帧 (${assessment.sfRespPct.toFixed(1)}%)，消费端 ${assessment.consumerFrames} 帧 (${assessment.consumerRate.toFixed(1)}%)`;
 
   return {
@@ -844,10 +875,10 @@ function buildMechanismTriadPromptSection(
   const clusterHints = getTopClusterHints(jankSummary);
   const lines: string[] = [];
 
-  lines.push('## 根因机制拆解（触发/供给/放大）');
-  lines.push(`- 触发因子: ${triad.trigger}`);
-  lines.push(`- 供给约束: ${triad.supply}`);
-  lines.push(`- 放大路径: ${triad.amplification}`);
+  lines.push(`## ${TRIAD_HEADING}`);
+  lines.push(`- ${TRIAD_LABELS.trigger}: ${triad.trigger}`);
+  lines.push(`- ${TRIAD_LABELS.supply}: ${triad.supply}`);
+  lines.push(`- ${TRIAD_LABELS.amplification}: ${triad.amplification}`);
   if (clusterHints.length > 0) {
     lines.push('- 聚类优先级（先治大头）:');
     for (const hint of clusterHints) {
@@ -968,9 +999,9 @@ function generateAttributionSafeFallback(
   } else {
     lines.push('1. 当前证据不足以给出单一主因结论（置信度: 35%）。');
   }
-  lines.push(`- 触发因子: ${mechanismTriad.trigger}`);
-  lines.push(`- 供给约束: ${mechanismTriad.supply}`);
-  lines.push(`- 放大路径: ${mechanismTriad.amplification}`);
+  lines.push(`- ${TRIAD_LABELS.trigger}: ${mechanismTriad.trigger}`);
+  lines.push(`- ${TRIAD_LABELS.supply}: ${mechanismTriad.supply}`);
+  lines.push(`- ${TRIAD_LABELS.amplification}: ${mechanismTriad.amplification}`);
   lines.push('');
 
   lines.push('## 掉帧聚类（先看大头）');
@@ -984,9 +1015,9 @@ function generateAttributionSafeFallback(
   lines.push('');
 
   lines.push('## 证据链（对应上述结论）');
-  lines.push(`- C1: 触发层证据：${mechanismTriad.triggerEvidence}${c1EvTag ? ` ${c1EvTag}` : ''}`);
-  lines.push(`- C2: 供给层证据：${mechanismTriad.supplyEvidence}${c2EvTag ? ` ${c2EvTag}` : ''}`);
-  lines.push(`- C3: 放大层证据：${mechanismTriad.amplificationEvidence}；Finding=${topTitle}${c3EvTag ? ` ${c3EvTag}` : ''}`);
+  lines.push(`- C1: ${TRIAD_EVIDENCE_LABELS.trigger}：${mechanismTriad.triggerEvidence}${c1EvTag ? ` ${c1EvTag}` : ''}`);
+  lines.push(`- C2: ${TRIAD_EVIDENCE_LABELS.supply}：${mechanismTriad.supplyEvidence}${c2EvTag ? ` ${c2EvTag}` : ''}`);
+  lines.push(`- C3: ${TRIAD_EVIDENCE_LABELS.amplification}：${mechanismTriad.amplificationEvidence}；Finding=${topTitle}${c3EvTag ? ` ${c3EvTag}` : ''}`);
   lines.push('');
 
   lines.push('## 不确定性与反例');
@@ -1013,11 +1044,415 @@ function generateAttributionSafeFallback(
 function finalizeConclusionMarkdown(
   markdown: string,
   findings: Finding[],
-  jankSummary?: JankCauseSummary
+  jankSummary?: JankCauseSummary,
+  options: { singleFrameDrillDown?: boolean } = {}
 ): string {
   const withPerConclusionMapping = injectPerConclusionEvidenceMapping(markdown, findings);
   const withEvidenceIndex = injectEvidenceIndexIntoEvidenceChain(withPerConclusionMapping, findings);
-  return injectWorkloadDominantClusterMarker(withEvidenceIndex, jankSummary);
+  const withTriadAligned = options.singleFrameDrillDown
+    ? injectSingleFrameRootCauseTriad(withEvidenceIndex, findings)
+    : withEvidenceIndex;
+  const withEvidenceAligned = options.singleFrameDrillDown
+    ? injectSingleFrameRootCauseEvidenceChain(withTriadAligned, findings)
+    : withTriadAligned;
+  const withHumanReadable = options.singleFrameDrillDown
+    ? injectSingleFrameHumanReadableConclusion(withEvidenceAligned, findings)
+    : withEvidenceAligned;
+  const withDeepReason = injectDeepReasonIntoConclusionSection(withHumanReadable, findings);
+  return injectWorkloadDominantClusterMarker(withDeepReason, jankSummary);
+}
+
+function normalizeHintText(text: string): string {
+  const deepReasonPrefix = new RegExp(`^(?:${DEEP_REASON_ALIASES.join('|')})\\s*[:：]\\s*`, 'i');
+  return String(text || '')
+    .trim()
+    .replace(new RegExp(`^${OPTIMIZATION_LABEL}\\s*[:：]\\s*`, 'i'), '')
+    .replace(deepReasonPrefix, '')
+    .trim();
+}
+
+function extractDeepReasonHints(findings: Finding[]): { deepReason?: string; optimizationHint?: string } {
+  for (const finding of findings) {
+    if (!finding?.details || typeof finding.details !== 'object') continue;
+    const details = finding.details as Record<string, unknown>;
+    const deepReasonRaw = typeof details.deep_reason === 'string'
+      ? details.deep_reason
+      : (typeof details.secondary_info === 'string' ? details.secondary_info : '');
+    const optimizationRaw = typeof details.optimization_hint === 'string' ? details.optimization_hint : '';
+
+    const deepReason = normalizeHintText(deepReasonRaw);
+    const optimizationHint = normalizeHintText(optimizationRaw);
+
+    if (deepReason || optimizationHint) {
+      return {
+        ...(deepReason ? { deepReason } : {}),
+        ...(optimizationHint ? { optimizationHint } : {}),
+      };
+    }
+  }
+
+  return {};
+}
+
+function injectDeepReasonIntoConclusionSection(markdown: string, findings: Finding[]): string {
+  const hints = extractDeepReasonHints(findings);
+  if (!hints.deepReason && !hints.optimizationHint) {
+    return markdown;
+  }
+
+  const lines = String(markdown || '').split('\n');
+  const headerIdx = lines.findIndex(line => /^##\s*结论（按可能性排序）\s*$/.test(line.trim()));
+  if (headerIdx < 0) {
+    return markdown;
+  }
+
+  let nextHeaderIdx = -1;
+  for (let i = headerIdx + 1; i < lines.length; i += 1) {
+    if (/^##\s+/.test(lines[i].trim())) {
+      nextHeaderIdx = i;
+      break;
+    }
+  }
+
+  const sectionEnd = nextHeaderIdx >= 0 ? nextHeaderIdx : lines.length;
+  const sectionLines = lines.slice(headerIdx + 1, sectionEnd);
+  const hasDeepReasonLine = sectionLines.some(line => new RegExp(`(?:${DEEP_REASON_ALIASES.join('|')})\\s*[:：]`).test(line));
+  const hasOptimizationLine = sectionLines.some(line => new RegExp(`${OPTIMIZATION_LABEL}\\s*[:：]`).test(line));
+
+  const inserts: string[] = [];
+  if (hints.deepReason && !hasDeepReasonLine) {
+    inserts.push(`- ${DEEP_REASON_LABEL}: ${hints.deepReason}`);
+  }
+  if (hints.optimizationHint && !hasOptimizationLine) {
+    inserts.push(`- ${OPTIMIZATION_LABEL}: ${hints.optimizationHint}`);
+  }
+  if (inserts.length === 0) {
+    return markdown;
+  }
+
+  if (sectionEnd > 0 && lines[sectionEnd - 1].trim() !== '') {
+    inserts.push('');
+  }
+  lines.splice(sectionEnd, 0, ...inserts);
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function supplyConstraintToConclusionText(constraintRaw: unknown, secondaryInfoRaw: unknown): string {
+  const constraint = String(constraintRaw || '').trim();
+  const secondaryInfo = normalizeMechanismPlainText(String(secondaryInfoRaw || '').trim());
+  switch (constraint) {
+    case 'blocking_wait':
+      return secondaryInfo || '阻塞等待';
+    case 'frequency_insufficient':
+      return secondaryInfo || '频率不足';
+    case 'scheduling_delay':
+      return secondaryInfo || '调度延迟';
+    case 'core_placement':
+      return secondaryInfo || '核心摆放偏小核';
+    case 'load_high':
+      return secondaryInfo || 'CPU 负载偏高';
+    case 'none':
+      return SUPPLY_NONE_CURRENT_FRAME_TEXT;
+    default:
+      return secondaryInfo || (constraint ? constraint : SUPPLY_NONE_CURRENT_FRAME_TEXT);
+  }
+}
+
+function amplificationPathToConclusionText(pathRaw: unknown): string {
+  const path = normalizeMechanismPlainText(String(pathRaw || '').trim());
+  switch (path) {
+    case 'gpu_fence_wait':
+      return 'GPU Fence 等待放大';
+    case 'render_pipeline_wait':
+      return 'RenderThread/RenderPipeline 等待放大';
+    case 'sf_consumer_backpressure':
+      return 'SF 消费端背压';
+    case 'app_deadline_miss':
+      return 'APP 截止超时';
+    case 'unknown':
+    default:
+      return AMPLIFICATION_UNKNOWN_CURRENT_FRAME_TEXT;
+  }
+}
+
+function parseOptionalNumber(value: unknown): number | undefined {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function roundStr(value: number | undefined, digits = 2): string {
+  if (value === undefined) return '-';
+  return Number(value.toFixed(digits)).toString();
+}
+
+function confidenceToPercent(raw: unknown): number | undefined {
+  if (typeof raw === 'number') {
+    if (raw > 0 && raw <= 1) return Math.round(raw * 100);
+    if (raw > 1 && raw <= 100) return Math.round(raw);
+  }
+  const text = String(raw || '').trim();
+  if (!text) return undefined;
+  if (/^高$/.test(text)) return 85;
+  if (/^中$/.test(text)) return 70;
+  if (/^低$/.test(text)) return 55;
+  const n = Number(text.replace(/[%％]/g, ''));
+  if (Number.isFinite(n)) return Math.round(n <= 1 ? n * 100 : n);
+  return undefined;
+}
+
+function parsePrimaryCauseMetrics(primaryCauseRaw: unknown): {
+  sliceName?: string;
+  sliceDurMs?: number;
+  frameBudgetMs?: number;
+} {
+  const text = String(primaryCauseRaw || '');
+  const m = text.match(/主线程耗时操作\s+"([^"]+)"\s+占用\s+([0-9.]+)ms\s+\(帧预算\s+([0-9.]+)ms\)/);
+  if (!m) return {};
+  return {
+    sliceName: m[1],
+    sliceDurMs: parseOptionalNumber(m[2]),
+    frameBudgetMs: parseOptionalNumber(m[3]),
+  };
+}
+
+function collectSingleFrameFacts(details: Record<string, unknown>): {
+  sliceName?: string;
+  sliceDurMs?: number;
+  frameBudgetMs?: number;
+  mainQ3Pct?: number;
+  mainQ4Pct?: number;
+  gpuFenceMs?: number;
+  confidencePct?: number;
+  supplyText: string;
+  amplificationText: string;
+  triggerText: string;
+} {
+  const parsed = parsePrimaryCauseMetrics(details.primary_cause);
+  const sliceName = String(details.slice_name || parsed.sliceName || '').trim() || undefined;
+  const sliceDurMs = parseOptionalNumber(details.slice_dur) ?? parsed.sliceDurMs;
+  const frameBudgetMs = parseOptionalNumber(details.frame_budget_ms) ?? parsed.frameBudgetMs;
+  const mainQ3Pct = parseOptionalNumber(details.main_q3_pct);
+  const mainQ4Pct = parseOptionalNumber(details.main_q4_pct);
+  const gpuFenceMs = parseOptionalNumber(details.gpu_fence_ms);
+  const confidencePct = confidenceToPercent(details.confidence_level ?? details.confidence);
+  const triggerText = normalizeMechanismPlainText(String(details.primary_cause || '').trim());
+  const supplyText = supplyConstraintToConclusionText(details.supply_constraint, details.secondary_info);
+  const amplificationText = amplificationPathToConclusionText(details.amplification_path);
+
+  return {
+    sliceName,
+    sliceDurMs,
+    frameBudgetMs,
+    mainQ3Pct,
+    mainQ4Pct,
+    gpuFenceMs,
+    confidencePct,
+    supplyText,
+    amplificationText,
+    triggerText,
+  };
+}
+
+function normalizeMechanismPlainText(text: string): string {
+  return normalizeLegacyTriadTerms(stripTriadPrefix(String(text || '').trim()))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pickBestRootCauseDetails(findings: Finding[]): Record<string, unknown> | null {
+  const candidates = findings
+    .filter(f => f?.details && typeof f.details === 'object' && typeof (f.details as Record<string, unknown>).primary_cause === 'string')
+    .map(f => {
+      const details = f.details as Record<string, unknown>;
+      const primary = String(details.primary_cause || '');
+      const title = String(f.title || '');
+      let score = 0;
+      if (primary && title.includes(primary)) score += 4;
+      if (f.severity === 'critical') score += 2;
+      if (Array.isArray(f.evidence) && f.evidence.length > 0) score += 1;
+      return { details, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  return candidates[0]?.details || null;
+}
+
+function injectSingleFrameRootCauseTriad(markdown: string, findings: Finding[]): string {
+  const details = pickBestRootCauseDetails(findings);
+  if (!details) return markdown;
+
+  const trigger = normalizeMechanismPlainText(String(details.primary_cause || '').trim());
+  if (!trigger) return markdown;
+  const supply = supplyConstraintToConclusionText(details.supply_constraint, details.secondary_info);
+  const amplification = amplificationPathToConclusionText(details.amplification_path);
+  const triad = buildTriadStatement({ trigger, supply, amplification });
+
+  const lines = String(markdown || '').split('\n');
+  const headerIdx = lines.findIndex(line => /^##\s*结论（按可能性排序）\s*$/.test(line.trim()));
+  if (headerIdx < 0) return markdown;
+
+  let nextHeaderIdx = -1;
+  for (let i = headerIdx + 1; i < lines.length; i += 1) {
+    if (/^##\s+/.test(lines[i].trim())) {
+      nextHeaderIdx = i;
+      break;
+    }
+  }
+  const sectionEnd = nextHeaderIdx >= 0 ? nextHeaderIdx : lines.length;
+
+  let replaced = false;
+  for (let i = headerIdx + 1; i < sectionEnd; i += 1) {
+    const raw = lines[i];
+    if (
+      !hasTriadRoleText(raw, 'trigger') ||
+      !hasTriadRoleText(raw, 'supply') ||
+      !hasTriadRoleText(raw, 'amplification')
+    ) continue;
+    const numbered = raw.match(/^(\s*\d+\.\s*)(.*)$/);
+    const bullet = raw.match(/^(\s*-\s*)(.*)$/);
+    const prefix = numbered?.[1] || bullet?.[1] || '';
+    const content = numbered?.[2] || bullet?.[2] || raw.trim();
+    const conf = content.match(/（置信度\s*[:：]?\s*\d+(?:\.\d+)?%?\）/)?.[0] || '';
+    lines[i] = `${prefix}${triad}${conf}`.trimEnd();
+    replaced = true;
+    break;
+  }
+
+  if (!replaced) {
+    let insertAt = headerIdx + 1;
+    for (let i = headerIdx + 1; i < sectionEnd; i += 1) {
+      if (/^\s*\d+\.\s+/.test(lines[i])) {
+        insertAt = i + 1;
+        break;
+      }
+    }
+    lines.splice(insertAt, 0, `- ${triad}`);
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n');
+}
+
+function getSingleFrameEvidenceTag(findings: Finding[]): string {
+  const evIds = findings
+    .flatMap(f => extractEvidenceIdsFromFinding(f))
+    .filter(Boolean);
+  const deduped = [...new Set(evIds)].slice(0, 2);
+  if (deduped.length === 0) {
+    return '（证据ID缺失）';
+  }
+  return `（${deduped.join('|')}）`;
+}
+
+function injectSingleFrameRootCauseEvidenceChain(markdown: string, findings: Finding[]): string {
+  const details = pickBestRootCauseDetails(findings);
+  if (!details) return markdown;
+
+  const facts = collectSingleFrameFacts(details);
+  if (!facts.triggerText) return markdown;
+  const evTag = getSingleFrameEvidenceTag(findings);
+
+  const section = findMarkdownSection(markdown, /^##\s*证据链[（(]对应上述结论[）)]\s*$/m);
+  if (!section) return markdown;
+
+  const c1 = facts.sliceName && facts.sliceDurMs !== undefined && facts.frameBudgetMs !== undefined
+    ? `主线程 ${facts.sliceName} 执行 ${roundStr(facts.sliceDurMs)}ms，超过帧预算 ${roundStr(facts.frameBudgetMs)}ms ${evTag}`
+    : `${facts.triggerText} ${evTag}`;
+  const q3Text = facts.mainQ3Pct !== undefined ? `Q3=${roundStr(facts.mainQ3Pct, 1)}%` : '';
+  const q4Text = facts.mainQ4Pct !== undefined ? `Q4=${roundStr(facts.mainQ4Pct, 1)}%` : '';
+  const supplyBasis = [q3Text, q4Text].filter(Boolean).join('，');
+  const c2 = supplyBasis
+    ? `${supplyBasis}，结论：${facts.supplyText} ${evTag}`
+    : `${facts.supplyText} ${evTag}`;
+  const c3 = facts.gpuFenceMs !== undefined
+    ? `GPU Fence=${roundStr(facts.gpuFenceMs)}ms，结论：${facts.amplificationText} ${evTag}`
+    : `${facts.amplificationText} ${evTag}`;
+
+  const normalizedLines = [
+    `- C1: ${TRIAD_EVIDENCE_LABELS.trigger}：${c1}`,
+    `- C2: ${TRIAD_EVIDENCE_LABELS.supply}：${c2}`,
+    `- C3: ${TRIAD_EVIDENCE_LABELS.amplification}：${c3}`,
+  ];
+
+  return `${markdown.slice(0, section.bodyStart)}${normalizedLines.join('\n')}\n${markdown.slice(section.bodyEnd)}`;
+}
+
+function injectSingleFrameHumanReadableConclusion(markdown: string, findings: Finding[]): string {
+  const details = pickBestRootCauseDetails(findings);
+  if (!details) return markdown;
+  const facts = collectSingleFrameFacts(details);
+  if (!facts.triggerText) return markdown;
+
+  const lines = String(markdown || '').split('\n');
+  const headerIdx = lines.findIndex(line => /^##\s*结论（按可能性排序）\s*$/.test(line.trim()));
+  if (headerIdx < 0) return markdown;
+
+  let nextHeaderIdx = -1;
+  for (let i = headerIdx + 1; i < lines.length; i += 1) {
+    if (/^##\s+/.test(lines[i].trim())) {
+      nextHeaderIdx = i;
+      break;
+    }
+  }
+  const sectionEnd = nextHeaderIdx >= 0 ? nextHeaderIdx : lines.length;
+
+  const summary = facts.sliceName && facts.sliceDurMs !== undefined && facts.frameBudgetMs !== undefined
+    ? `这帧主要卡在主线程 ${facts.sliceName}：单次 ${roundStr(facts.sliceDurMs)}ms，超过帧预算 ${roundStr(facts.frameBudgetMs)}ms。`
+    : `这帧主要卡在主线程长耗时：${facts.triggerText}。`;
+  const confSuffix = facts.confidencePct !== undefined ? `（置信度: ${facts.confidencePct}%）` : '';
+  const triggerLine = `- ${TRIAD_LABELS.trigger}: ${facts.triggerText}`;
+  const supplyLine = facts.mainQ3Pct !== undefined || facts.mainQ4Pct !== undefined
+    ? `- ${TRIAD_LABELS.supply}: ${facts.supplyText}（主线程 Q3=${facts.mainQ3Pct !== undefined ? `${roundStr(facts.mainQ3Pct, 1)}%` : '未知'}，Q4=${facts.mainQ4Pct !== undefined ? `${roundStr(facts.mainQ4Pct, 1)}%` : '未知'}）`
+    : `- ${TRIAD_LABELS.supply}: ${facts.supplyText}`;
+  const amplificationLine = facts.gpuFenceMs !== undefined
+    ? `- ${TRIAD_LABELS.amplification}: ${facts.amplificationText}（GPU Fence=${roundStr(facts.gpuFenceMs)}ms）`
+    : `- ${TRIAD_LABELS.amplification}: ${facts.amplificationText}`;
+
+  let firstItemIdx = -1;
+  for (let i = headerIdx + 1; i < sectionEnd; i += 1) {
+    if (/^\s*1\.\s+/.test(lines[i])) {
+      firstItemIdx = i;
+      break;
+    }
+  }
+  if (firstItemIdx >= 0) {
+    lines[firstItemIdx] = `1. ${summary}${confSuffix}`;
+  }
+
+  const cleanedSection = lines
+    .slice(headerIdx + 1, sectionEnd)
+    .filter(line => {
+      const t = line.trim();
+      if (!t) return true;
+      if (/^(?:-|\d+\.)\s*/.test(t)) {
+        const noPrefix = t.replace(/^(?:-|\d+\.)\s*/, '');
+        if (hasTriadRoleText(noPrefix, 'trigger')) return false;
+        if (hasTriadRoleText(noPrefix, 'supply')) return false;
+        if (hasTriadRoleText(noPrefix, 'amplification')) return false;
+      }
+      if (/抢不到CPU|阻塞型卡顿|渲染端放大/.test(t)) return false;
+      return true;
+    });
+
+  const rebuilt = [...cleanedSection];
+  const hasTriadBullets = rebuilt.some(line =>
+    hasTriadRoleText(line, 'trigger') ||
+    hasTriadRoleText(line, 'supply') ||
+    hasTriadRoleText(line, 'amplification')
+  );
+  if (!hasTriadBullets) {
+    let insertAt = firstItemIdx >= 0 ? (firstItemIdx - (headerIdx + 1) + 1) : 0;
+    rebuilt.splice(
+      insertAt,
+      0,
+      triggerLine,
+      supplyLine,
+      amplificationLine
+    );
+  }
+
+  return `${lines.slice(0, headerIdx + 1).join('\n')}\n${rebuilt.join('\n')}\n${lines.slice(sectionEnd).join('\n')}`
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 
 function parseNumberFromUnknown(raw: unknown): number | undefined {
@@ -1120,11 +1555,11 @@ function parseConclusionItemFromRecord(
 
   let resolvedStatement = statement;
   if (!resolvedStatement && (trigger || supply || amplification)) {
-    const parts: string[] = [];
-    if (trigger) parts.push(`触发因子（直接原因）: ${trigger}`);
-    if (supply) parts.push(`供给约束（资源瓶颈）: ${supply}`);
-    if (amplification) parts.push(`放大路径（问题放大环节）: ${amplification}`);
-    resolvedStatement = parts.join('；');
+    resolvedStatement = buildTriadStatement({
+      ...(trigger ? { trigger } : {}),
+      ...(supply ? { supply } : {}),
+      ...(amplification ? { amplification } : {}),
+    });
   }
 
   if (!resolvedStatement) return null;
@@ -1232,13 +1667,7 @@ function parseConclusionItemsFromMarkdownSection(sectionBody: string): Conclusio
     ? numberedItems
     : bulletFallback.slice(0, 3).map((text, idx) => ({ index: idx + 1, text }));
 
-  const triadTrigger = String(sectionBody || '').match(/触发因子(?:（[^）]*）)?\s*[:：]\s*([^；;\n]+)/)?.[1]?.trim() || '';
-  const triadSupply = String(sectionBody || '').match(/供给约束(?:（[^）]*）)?\s*[:：]\s*([^；;\n]+)/)?.[1]?.trim() || '';
-  const triadAmp = String(sectionBody || '').match(/放大路径(?:（[^）]*）)?\s*[:：]\s*([^；;\n]+)/)?.[1]?.trim() || '';
-  const triadParts: string[] = [];
-  if (triadTrigger) triadParts.push(`触发因子: ${triadTrigger}`);
-  if (triadSupply) triadParts.push(`供给约束: ${triadSupply}`);
-  if (triadAmp) triadParts.push(`放大路径: ${triadAmp}`);
+  const triadParts = parseTriadParts(sectionBody || '');
 
   const items = baseItems.map((item, idx) => {
     const rank = item.index || idx + 1;
@@ -1250,12 +1679,12 @@ function parseConclusionItemsFromMarkdownSection(sectionBody: string): Conclusio
     };
   });
 
-  if (triadParts.length > 0) {
-    const triadStatement = triadParts.join('；');
+  if (triadParts.trigger || triadParts.supply || triadParts.amplification) {
+    const triadStatement = buildTriadStatement(triadParts);
     const alreadyCovered = items.some(item =>
-      item.statement.includes('触发因子') &&
-      item.statement.includes('供给约束') &&
-      item.statement.includes('放大路径')
+      hasTriadRoleText(item.statement, 'trigger') &&
+      hasTriadRoleText(item.statement, 'supply') &&
+      hasTriadRoleText(item.statement, 'amplification')
     );
     if (!alreadyCovered) {
       items.push({
@@ -1378,11 +1807,11 @@ function sanitizeConclusionContract(
     .map((item, idx) => {
       let statement = item.statement;
       if (!statement) {
-        const parts: string[] = [];
-        if (item.trigger) parts.push(`触发因子（直接原因）: ${item.trigger}`);
-        if (item.supply) parts.push(`供给约束（资源瓶颈）: ${item.supply}`);
-        if (item.amplification) parts.push(`放大路径（问题放大环节）: ${item.amplification}`);
-        statement = parts.join('；');
+        statement = buildTriadStatement({
+          ...(item.trigger ? { trigger: item.trigger } : {}),
+          ...(item.supply ? { supply: item.supply } : {}),
+          ...(item.amplification ? { amplification: item.amplification } : {}),
+        });
       }
       return {
         rank: idx + 1,
@@ -1815,6 +2244,11 @@ export async function generateConclusion(
     confirmedHypothesesCount: confirmedHypotheses.length,
     hasJankSummary: Boolean(scopedJankSummary && scopedJankSummary.totalJankFrames > 0),
   });
+  const scenePromptHints = buildConclusionScenePromptHints({
+    intent,
+    findings: promptFindings,
+    deepReasonLabel: DEEP_REASON_LABEL,
+  });
 
   // Build contradiction section for prompt if any exist
   const contradictionSection = contradictionReasons.length > 0
@@ -1829,6 +2263,21 @@ export async function generateConclusion(
     scopedJankSummary,
     frameMechanismRecords
   );
+  const sceneFocusPromptSection = [
+    '## 场景化分析焦点',
+    `- 当前场景: ${scenePromptHints.sceneName}`,
+    ...scenePromptHints.focusLines,
+  ].join('\n');
+  const sceneOutputRequirementSection = [
+    ...scenePromptHints.outputRequirementLines,
+    scenePromptHints.nextStepLine,
+  ].join('\n');
+  const nonInsightClusterGoalLine = scenePromptHints.requireTopClusters
+    ? '6. 掉帧聚类 Top3（按帧数降序，先给 K1 大头）'
+    : '6. 若有分组证据可给出 Top 分组；若无可省略聚类并说明原因';
+  const nonInsightClusterConstraint = scenePromptHints.requireTopClusters
+    ? '- 必须输出聚类信息（K1/K2/K3），并给出每类的帧数和占比'
+    : '- 当前场景 clusters 可按时间阶段/样本分组给出；若无聚类证据可传空数组';
 
   // Debug: Log whether jank summary is being included
   if (scopedJankSummary) {
@@ -1856,6 +2305,7 @@ export async function generateConclusion(
         jankSummary: scopedJankSummary,
         frameMechanismRecords,
         attributionAssessment,
+        scenePromptHints,
         traceConfig: sharedContext.traceConfig,
         investigationPath: sharedContext.investigationPath,
       })
@@ -1866,6 +2316,7 @@ ${stopReason ? `提前终止原因: ${stopReason}` : ''}
 ${jankSummarySection}
 ${attributionAssessmentSection}
 ${mechanismTriadSection}
+${sceneFocusPromptSection}
 已确认的假设:
 ${confirmedHypotheses.map(h => `- ${h.description} (confidence: ${h.confidence.toFixed(2)})`).join('\n') || '无'}
 
@@ -1879,17 +2330,17 @@ ${sharedContext.investigationPath.map(s => `${s.stepNumber}. [${s.agentId}] ${s.
 1. 根因分析（最可能的原因）
 2. 证据支撑（每个结论的依据）
 3. 置信度评估
-4. 下一步最有信息增益的分析动作（不是优化建议）
-5. 机制分层说明：触发因子 / 供给约束 / 放大路径
-6. 掉帧聚类 Top3（按帧数降序，先给 K1 大头）
+4. 下一步最有信息增益的分析动作
+5. 机制分层说明：直接原因 / 资源问题 / 放大因素
+${nonInsightClusterGoalLine}
 
 重要约束：
 - 只基于上述提供的数据和证据得出结论，不要推测未提供的信息
 - 如果数据不足以得出某个结论，明确标注"证据不足"
 - 每个结论必须引用具体的数据来源（Finding 的标题或数据值）
-- 不要给出优化建议，只需要指出问题所在
-- 明确回答“供给约束”属于哪类：负载高 / 频率不足 / 调度延迟 / 核心摆放 / 阻塞等待
-- 必须输出聚类信息（K1/K2/K3），并给出每类的帧数和占比
+${sceneOutputRequirementSection}
+- 可给出最多 2 条与“${DEEP_REASON_LABEL}”一一对应的优化方向，避免泛化建议
+- ${nonInsightClusterConstraint}
 
 ## 刷新率与帧预算
 ${sharedContext.traceConfig ? (sharedContext.traceConfig.isVRR
@@ -1975,7 +2426,12 @@ ${sharedContext.traceConfig ? (sharedContext.traceConfig.isVRR
 
     // Ensure evidence IDs appear in the evidence-chain section when available.
     // This makes the output auditable even if the LLM forgets to cite.
-    conclusion = finalizeConclusionMarkdown(conclusion, finalFindings, scopedJankSummary);
+    conclusion = finalizeConclusionMarkdown(
+      conclusion,
+      finalFindings,
+      scopedJankSummary,
+      { singleFrameDrillDown }
+    );
 
     if (isConclusionContradictingAttributionVerdict(conclusion, attributionAssessment)) {
       emitter.log('[conclusionGenerator] LLM conclusion contradicts attribution verdict, switching to rule-based safe fallback');
@@ -1997,7 +2453,12 @@ ${sharedContext.traceConfig ? (sharedContext.traceConfig.isVRR
         contractRenderOptions,
         emitter
       );
-      return finalizeConclusionMarkdown(deterministicFallback, finalFindings, scopedJankSummary);
+      return finalizeConclusionMarkdown(
+        deterministicFallback,
+        finalFindings,
+        scopedJankSummary,
+        { singleFrameDrillDown }
+      );
     }
 
     return conclusion;
@@ -2035,7 +2496,12 @@ ${sharedContext.traceConfig ? (sharedContext.traceConfig.isVRR
       contractRenderOptions,
       emitter
     );
-    return finalizeConclusionMarkdown(deterministicFallback, fallbackEvidenceFindings, scopedJankSummary);
+    return finalizeConclusionMarkdown(
+      deterministicFallback,
+      fallbackEvidenceFindings,
+      scopedJankSummary,
+      { singleFrameDrillDown }
+    );
   }
 
   return turnCount >= 1
@@ -2091,6 +2557,7 @@ function buildInsightFirstPrompt(params: {
   jankSummary?: JankCauseSummary;
   frameMechanismRecords: FrameMechanismRecord[];
   attributionAssessment: AttributionAssessment;
+  scenePromptHints: ConclusionScenePromptHints;
   traceConfig?: SharedAgentContext['traceConfig'];
   investigationPath: Array<{ stepNumber: number; agentId: string; summary: string }>;
 }): string {
@@ -2129,6 +2596,7 @@ function buildInsightFirstPrompt(params: {
     parts.push('## 单帧 Drill-Down 范围约束');
     parts.push('- 本轮只允许使用目标帧或同一时间窗的直接证据。');
     parts.push('- 禁止沿用历史轮次的聚类帧数/占比（如 K1/K2/K3 百分比）。');
+    parts.push('- 若识别到主线程长 slice，必须解释“为什么这个 slice 慢”，并给出可执行优化方向。');
     parts.push('');
   }
 
@@ -2193,6 +2661,11 @@ function buildInsightFirstPrompt(params: {
   ));
   parts.push('');
 
+  parts.push('## 场景化分析焦点');
+  parts.push(`- 当前场景: ${params.scenePromptHints.sceneName}`);
+  parts.push(...params.scenePromptHints.focusLines);
+  parts.push('');
+
   if (params.attributionAssessment.verdict === 'APP_TRIGGER' || params.attributionAssessment.verdict === 'MIXED') {
     parts.push('## 归因提示');
     parts.push('- 逐帧根因显示主线程/APP 侧耗时信号占主导（例如 cause_type=slice）。');
@@ -2217,17 +2690,19 @@ function buildInsightFirstPrompt(params: {
   parts.push('- 只输出合法 JSON；禁止输出 Markdown、代码块、SQL 或额外解释。');
   parts.push('- 只基于已提供的数据与证据；不允许编造未提供的数据。');
   parts.push('- 优先用通俗表达：先说现象和影响；若必须用术语，在术语后补一句人话解释。');
-  parts.push('- 允许给出“下一步分析动作/要补充的数据”，但不要给出“优化代码/改架构”的建议。');
+  parts.push(...params.scenePromptHints.outputRequirementLines);
+  parts.push(params.scenePromptHints.nextStepLine);
+  parts.push(`- 可给出最多 2 条与“${DEEP_REASON_LABEL}”一一对应的优化方向，避免泛化建议。`);
   parts.push('- JSON 顶层字段固定为：schema_version, mode, conclusion, clusters, evidence_chain, uncertainties, next_steps, metadata。');
   parts.push(`- mode 必须是 "${params.mode}"。schema_version 必须是 "conclusion_contract_v1"。`);
   parts.push('- 结论最终会渲染为“## 结论（按可能性排序）/## 掉帧聚类（先看大头）/## 证据链（对应上述结论）/## 不确定性与反例/## 下一步（最高信息增益）”。');
-  parts.push('- “下一步”优先给出口径对齐、聚类下钻、同窗验证动作；若指标已存在逐帧数据，禁止写“补充XXX数据”。');
   parts.push('- conclusion 数组最多 3 项，每项包含：rank, statement, confidence, trigger, supply, amplification。');
-  parts.push('- trigger/supply/amplification 需要能映射为：触发因子（直接原因）/供给约束（资源瓶颈）/放大路径（问题放大环节）。');
-  parts.push('- statement 建议包含可读三元组短句，例如：触发因子: ...；供给约束: ...；放大路径: ...');
-  parts.push('- “供给约束”必须优先判别属于哪类：负载高 / 频率不足 / 调度延迟 / 核心摆放 / 阻塞等待。');
-  if (!singleFrameDrillDown) {
+  parts.push(`- trigger/supply/amplification 需要能映射为：${TRIAD_LABELS.trigger}/${TRIAD_LABELS.supply}/${TRIAD_LABELS.amplification}。`);
+  parts.push(`- statement 建议包含可读三元组短句，例如：${TRIAD_LABELS.trigger}: ...；${TRIAD_LABELS.supply}: ...；${TRIAD_LABELS.amplification}: ...`);
+  if (!singleFrameDrillDown && params.scenePromptHints.requireTopClusters) {
     parts.push('- clusters 必须按帧数降序列出 Top3 聚类（K1/K2/K3），并标注帧数与占比。');
+  } else if (!singleFrameDrillDown) {
+    parts.push('- 当前场景 clusters 可按时间阶段/样本分组给出；若无聚类证据可传空数组。');
   } else {
     parts.push('- 单帧 drill-down 禁止复用历史 K1/K2/K3；clusters 传空数组。');
   }
@@ -2546,12 +3021,21 @@ function injectPerConclusionEvidenceMapping(markdown: string, findings: Finding[
     const evStr = finalEvIds.length > 0 ? `(${finalEvIds.join('|')})` : '';
     const cStr = conclusionText ? truncate(conclusionText, 56) : `对应结论 ${idx}`;
     const fStr = truncate(String(picked.finding.title || picked.finding.description || ''), 56);
-    injectedLines.push(`- C${idx}（自动补全）: ${cStr} ← ${evStr} ${fStr}`.trim());
+    const attachFindingTitle = picked.score >= 16;
+    injectedLines.push(`- C${idx}（自动补全）: ${cStr} ← ${evStr}${attachFindingTitle && fStr ? ` ${fStr}` : ''}`.trim());
   }
 
   if (injectedLines.length === 0) return text;
 
-  return `${text.slice(0, evidenceSection.bodyStart)}${injectedLines.join('\n')}\n${text.slice(evidenceSection.bodyStart)}`;
+  // If we are injecting evidence lines, remove placeholder "证据链信息缺失"
+  // to avoid contradictory output ("auto-filled" + "missing" at the same time).
+  const evidenceBody = String(evidenceSection.body || '');
+  const sanitizedBody = evidenceBody
+    .split('\n')
+    .filter(line => !/^\s*-\s*证据链信息缺失\s*$/.test(line))
+    .join('\n');
+
+  return `${text.slice(0, evidenceSection.bodyStart)}${injectedLines.join('\n')}\n${sanitizedBody}${text.slice(evidenceSection.bodyEnd)}`;
 }
 
 function injectEvidenceIndexIntoEvidenceChain(markdown: string, findings: Finding[]): string {
@@ -2702,12 +3186,13 @@ function convertJsonLikeSectionsToMarkdown(rawText: string): string | null {
       const supply = readSemanticText(obj, 'supply');
       const amp = readSemanticText(obj, 'amplification');
       if (trigger || supply || amp) {
-        const parts: string[] = [];
-        if (trigger) parts.push(`触发因子（直接原因）: ${trigger}`);
-        if (supply) parts.push(`供给约束（资源瓶颈）: ${supply}`);
-        if (amp) parts.push(`放大路径（问题放大环节）: ${amp}`);
+        const triadStatement = buildTriadStatement({
+          ...(trigger ? { trigger } : {}),
+          ...(supply ? { supply } : {}),
+          ...(amp ? { amplification: amp } : {}),
+        });
         conclusions.push({
-          statement: parts.join('；'),
+          statement: triadStatement,
           confidence,
         });
         continue;
@@ -3005,12 +3490,12 @@ const SEMANTIC_TEXT_RULES: Record<SemanticTextField, SemanticRule> = {
     patterns: [/trigger|触发|直接原因/i],
   },
   supply: {
-    aliases: ['supply', 'supply_constraint', 'supplyConstraint', '供给约束', '资源瓶颈'],
-    patterns: [/supply|constraint|bottleneck|供给约束|资源瓶颈|瓶颈/i],
+    aliases: ['supply', 'supply_constraint', 'supplyConstraint', '供给约束', '资源瓶颈', '资源问题'],
+    patterns: [/supply|constraint|bottleneck|供给约束|资源瓶颈|资源问题|瓶颈/i],
   },
   amplification: {
-    aliases: ['amplification', 'amplification_path', 'amplificationPath', '放大路径', '放大环节'],
-    patterns: [/amplification|amplify|path|放大路径|放大环节|放大/i],
+    aliases: ['amplification', 'amplification_path', 'amplificationPath', '放大路径', '放大环节', '放大因素'],
+    patterns: [/amplification|amplify|path|放大路径|放大环节|放大因素|放大/i],
   },
   conclusion_id: {
     aliases: ['conclusion_id', 'conclusionId', 'conclusion', '结论编号', '结论ID'],

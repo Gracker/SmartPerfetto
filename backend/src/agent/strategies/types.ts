@@ -89,6 +89,11 @@ export interface StageTaskTemplate {
   /** Skill ID to execute when executionMode is 'direct_skill' */
   directSkillId?: string;
   /**
+   * Optional interval predicate used by per_interval tasks.
+   * Only intervals that satisfy this predicate will generate tasks.
+   */
+  intervalFilter?: (interval: FocusInterval) => boolean;
+  /**
    * Maps interval fields to skill parameter names.
    * Keys are skill param names, values are interval field names or special values:
    * - 'startTs' / 'endTs' / 'processName': from FocusInterval

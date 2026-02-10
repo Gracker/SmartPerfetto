@@ -21,9 +21,13 @@ meta:
 
 prerequisites:
   required_tables:
-    - android_input_events, cpu, core, quadrant]
+    - thread
+    - process
+    - thread_state
+    - sched_slice
   modules:
     - android.binder
+    - linux.cpu.frequency
 
 inputs:
   - name: event_ts
@@ -111,6 +115,37 @@ steps:
       level: key
       layer: deep
       title: "大小核占比"
+      columns:
+        - name: thread_type
+          label: "线程类型"
+          type: string
+        - name: big_core_ms
+          label: "大核运行(ms)"
+          type: number
+        - name: little_core_ms
+          label: "小核运行(ms)"
+          type: number
+        - name: total_running_ms
+          label: "总运行(ms)"
+          type: number
+        - name: big_core_pct
+          label: "大核占比(%)"
+          type: percentage
+          format: percentage
+        - name: little_core_pct
+          label: "小核占比(%)"
+          type: percentage
+          format: percentage
+        - name: running_pct
+          label: "运行占总时长(%)"
+          type: percentage
+          format: percentage
+        - name: used_cpus
+          label: "使用CPU"
+          type: string
+        - name: classify_method
+          label: "核判定来源"
+          type: string
     sql: |
       WITH main_thread AS (
         SELECT t.utid, t.tid, p.pid
@@ -119,18 +154,70 @@ steps:
         WHERE p.name GLOB '${process_name}*'
           AND t.tid = p.pid
       ),
+      cpu_cap AS (
+        SELECT id as cpu, capacity
+        FROM cpu
+      ),
+      cpu_freq AS (
+        SELECT
+          cpu,
+          MAX(freq) as max_freq_khz
+        FROM cpu_frequency_counters
+        GROUP BY cpu
+      ),
+      cpu_rank AS (
+        SELECT
+          c.cpu,
+          c.capacity,
+          f.max_freq_khz,
+          ROW_NUMBER() OVER (
+            ORDER BY COALESCE(f.max_freq_khz, 0) DESC, COALESCE(c.capacity, 0) DESC, c.cpu DESC
+          ) as perf_rank,
+          COUNT(*) OVER () as cpu_count,
+          SUM(CASE WHEN f.max_freq_khz IS NOT NULL THEN 1 ELSE 0 END) OVER () as freq_known_count,
+          AVG(CASE WHEN c.capacity IS NOT NULL THEN c.capacity END) OVER () as avg_capacity
+        FROM cpu_cap c
+        LEFT JOIN cpu_freq f ON c.cpu = f.cpu
+      ),
+      cpu_info AS (
+        SELECT
+          cpu,
+          CASE
+            WHEN freq_known_count >= 2 THEN
+              CASE
+                WHEN perf_rank <= CASE
+                  WHEN cpu_count >= 8 THEN 3
+                  WHEN cpu_count >= 6 THEN 2
+                  ELSE 1
+                END THEN 'big'
+                ELSE 'little'
+              END
+            WHEN capacity IS NOT NULL AND capacity > 0 THEN
+              CASE
+                WHEN capacity >= COALESCE(avg_capacity, capacity) THEN 'big'
+                ELSE 'little'
+              END
+            ELSE
+              CASE WHEN cpu >= 4 THEN 'big' ELSE 'little' END
+          END as core_type,
+          CASE
+            WHEN freq_known_count >= 2 THEN 'freq_rank'
+            WHEN capacity IS NOT NULL AND capacity > 0 THEN 'capacity_fallback'
+            ELSE 'cpu_id_fallback'
+          END as classify_method
+        FROM cpu_rank
+      ),
       cpu_time AS (
         SELECT
           ss.cpu,
           SUM(
             MIN(ss.ts + ss.dur, ${event_end_ts}) - MAX(ss.ts, ${event_ts})
           ) / 1e6 as dur_ms,
-          CASE
-            WHEN ss.cpu >= 4 THEN 'big'
-            ELSE 'little'
-          END as core_type
+          COALESCE(ci.core_type, 'little') as core_type,
+          COALESCE(ci.classify_method, 'cpu_id_fallback') as classify_method
         FROM sched_slice ss
         JOIN main_thread mt ON ss.utid = mt.utid
+        LEFT JOIN cpu_info ci ON ss.cpu = ci.cpu
         WHERE ss.ts < ${event_end_ts}
           AND ss.ts + ss.dur > ${event_ts}
         GROUP BY ss.cpu
@@ -142,7 +229,11 @@ steps:
         ROUND(SUM(dur_ms), 2) as total_running_ms,
         ROUND(100.0 * SUM(CASE WHEN core_type = 'big' THEN dur_ms ELSE 0 END) /
               NULLIF(SUM(dur_ms), 0), 1) as big_core_pct,
-        ROUND(100.0 * SUM(dur_ms) / ${total_ms}, 1) as running_pct
+        ROUND(100.0 * SUM(CASE WHEN core_type = 'little' THEN dur_ms ELSE 0 END) /
+              NULLIF(SUM(dur_ms), 0), 1) as little_core_pct,
+        ROUND(100.0 * SUM(dur_ms) / ${total_ms}, 1) as running_pct,
+        GROUP_CONCAT(DISTINCT cpu) as used_cpus,
+        GROUP_CONCAT(DISTINCT classify_method) as classify_method
       FROM cpu_time
       GROUP BY 1
     save_as: cpu_core
@@ -155,6 +246,36 @@ steps:
       level: key
       layer: deep
       title: "四大象限分析"
+      columns:
+        - name: thread_type
+          label: "线程类型"
+          type: string
+        - name: q1_big_running_ms
+          label: "Q1大核运行(ms)"
+          type: number
+        - name: q2_little_running_ms
+          label: "Q2小核运行(ms)"
+          type: number
+        - name: q3_runnable_ms
+          label: "Q3可运行等待(ms)"
+          type: number
+        - name: q4_sleeping_ms
+          label: "Q4睡眠阻塞(ms)"
+          type: number
+        - name: total_ms
+          label: "总时长(ms)"
+          type: number
+        - name: runnable_pct
+          label: "Runnable占比(%)"
+          type: percentage
+          format: percentage
+        - name: sleeping_pct
+          label: "Sleeping占比(%)"
+          type: percentage
+          format: percentage
+        - name: classify_method
+          label: "核判定来源"
+          type: string
     sql: |
       WITH main_thread AS (
         SELECT t.utid, t.tid, p.pid
@@ -163,30 +284,86 @@ steps:
         WHERE p.name GLOB '${process_name}*'
           AND t.tid = p.pid
       ),
+      cpu_cap AS (
+        SELECT id as cpu, capacity
+        FROM cpu
+      ),
+      cpu_freq AS (
+        SELECT
+          cpu,
+          MAX(freq) as max_freq_khz
+        FROM cpu_frequency_counters
+        GROUP BY cpu
+      ),
+      cpu_rank AS (
+        SELECT
+          c.cpu,
+          c.capacity,
+          f.max_freq_khz,
+          ROW_NUMBER() OVER (
+            ORDER BY COALESCE(f.max_freq_khz, 0) DESC, COALESCE(c.capacity, 0) DESC, c.cpu DESC
+          ) as perf_rank,
+          COUNT(*) OVER () as cpu_count,
+          SUM(CASE WHEN f.max_freq_khz IS NOT NULL THEN 1 ELSE 0 END) OVER () as freq_known_count,
+          AVG(CASE WHEN c.capacity IS NOT NULL THEN c.capacity END) OVER () as avg_capacity
+        FROM cpu_cap c
+        LEFT JOIN cpu_freq f ON c.cpu = f.cpu
+      ),
+      cpu_info AS (
+        SELECT
+          cpu,
+          CASE
+            WHEN freq_known_count >= 2 THEN
+              CASE
+                WHEN perf_rank <= CASE
+                  WHEN cpu_count >= 8 THEN 3
+                  WHEN cpu_count >= 6 THEN 2
+                  ELSE 1
+                END THEN 'big'
+                ELSE 'little'
+              END
+            WHEN capacity IS NOT NULL AND capacity > 0 THEN
+              CASE
+                WHEN capacity >= COALESCE(avg_capacity, capacity) THEN 'big'
+                ELSE 'little'
+              END
+            ELSE
+              CASE WHEN cpu >= 4 THEN 'big' ELSE 'little' END
+          END as core_type,
+          CASE
+            WHEN freq_known_count >= 2 THEN 'freq_rank'
+            WHEN capacity IS NOT NULL AND capacity > 0 THEN 'capacity_fallback'
+            ELSE 'cpu_id_fallback'
+          END as classify_method
+        FROM cpu_rank
+      ),
       thread_states AS (
         SELECT
           ts.state,
-          ts.cpu,
+          COALESCE(ci.core_type, 'little') as core_type,
+          COALESCE(ci.classify_method, 'cpu_id_fallback') as classify_method,
           ts.blocked_function,
           SUM(
             MIN(ts.ts + ts.dur, ${event_end_ts}) - MAX(ts.ts, ${event_ts})
           ) / 1e6 as dur_ms
         FROM thread_state ts
         JOIN main_thread mt ON ts.utid = mt.utid
+        LEFT JOIN cpu_info ci ON ts.cpu = ci.cpu
         WHERE ts.ts < ${event_end_ts}
           AND ts.ts + ts.dur > ${event_ts}
-        GROUP BY ts.state, ts.cpu, ts.blocked_function
+        GROUP BY ts.state, ci.core_type, ci.classify_method, ts.blocked_function
       ),
       quadrant_data AS (
         SELECT
           CASE
-            WHEN state = 'Running' AND cpu >= 4 THEN 'Q1_big_running'
-            WHEN state = 'Running' AND cpu < 4 THEN 'Q2_little_running'
+            WHEN state = 'Running' AND core_type = 'big' THEN 'Q1_big_running'
+            WHEN state = 'Running' AND core_type = 'little' THEN 'Q2_little_running'
             WHEN state IN ('R', 'R+') THEN 'Q3_runnable'
             WHEN state IN ('S', 'D', 'I') THEN 'Q4_sleeping'
             ELSE 'other'
           END as quadrant,
-          dur_ms
+          dur_ms,
+          classify_method
         FROM thread_states
       )
       SELECT
@@ -200,75 +377,89 @@ steps:
         ROUND(100.0 * SUM(CASE WHEN quadrant = 'Q3_runnable' THEN dur_ms ELSE 0 END) /
               NULLIF(SUM(dur_ms), 0), 1) as runnable_pct,
         ROUND(100.0 * SUM(CASE WHEN quadrant = 'Q4_sleeping' THEN dur_ms ELSE 0 END) /
-              NULLIF(SUM(dur_ms), 0), 1) as sleeping_pct
+              NULLIF(SUM(dur_ms), 0), 1) as sleeping_pct,
+        GROUP_CONCAT(DISTINCT classify_method) as classify_method
       FROM quadrant_data
       GROUP BY 1
     save_as: quadrant
 
   # ========== 主线程阻塞原因 ==========
   - id: blocking_analysis
-    type: atomic
+    type: skill
     name: "阻塞原因分析"
+    skill: main_thread_states_in_range
     display:
       level: key
       layer: deep
       title: "阻塞原因 Top5"
-    sql: |
-      WITH main_thread AS (
-        SELECT t.utid, t.tid, p.pid
-        FROM thread t
-        JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${process_name}*'
-          AND t.tid = p.pid
-      )
-      SELECT
-        ts.state,
-        CASE ts.state
-          WHEN 'Running' THEN 'Running (CPU执行)'
-          WHEN 'R' THEN 'Runnable (等待调度)'
-          WHEN 'S' THEN 'Sleeping (主动睡眠)'
-          WHEN 'D' THEN 'Disk Sleep (IO等待)'
-          ELSE ts.state
-        END as state_desc,
-        ts.blocked_function,
-        ROUND(SUM(
-          MIN(ts.ts + ts.dur, ${event_end_ts}) - MAX(ts.ts, ${event_ts})
-        ) / 1e6, 2) as dur_ms,
-        COUNT(*) as count
-      FROM thread_state ts
-      JOIN main_thread mt ON ts.utid = mt.utid
-      WHERE ts.ts < ${event_end_ts}
-        AND ts.ts + ts.dur > ${event_ts}
-      GROUP BY ts.state, ts.blocked_function
-      ORDER BY dur_ms DESC
-      LIMIT 5
+    params:
+      start_ts: "${event_ts}"
+      end_ts: "${event_end_ts}"
+      package: "${process_name}"
+      top_k: 5
     save_as: blocking
 
   # ========== Binder 调用分析 ==========
   - id: binder_analysis
-    type: atomic
+    type: skill
     name: "Binder 调用分析"
+    skill: binder_in_range
     display:
       level: key
       layer: deep
       title: "Binder 调用"
-    sql: |
-      SELECT
-        bt.server_process,
-        bt.aidl_name,
-        COUNT(*) as call_count,
-        ROUND(SUM(bt.client_dur) / 1e6, 2) as total_ms,
-        ROUND(MAX(bt.client_dur) / 1e6, 2) as max_ms,
-        SUM(CASE WHEN bt.is_main_thread THEN 1 ELSE 0 END) as main_thread_calls
-      FROM android_binder_txns bt
-      WHERE bt.client_process GLOB '${process_name}*'
-        AND bt.client_ts >= ${event_ts}
-        AND bt.client_ts < ${event_end_ts}
-        AND bt.is_main_thread = 1
-      GROUP BY bt.server_process, bt.aidl_name
-      ORDER BY total_ms DESC
-      LIMIT 5
+    params:
+      start_ts: "${event_ts}"
+      end_ts: "${event_end_ts}"
+      package: "${process_name}"
     save_as: binder_calls
+
+  # ========== 主线程同步 Binder 阻塞 ==========
+  - id: main_thread_sync_binder
+    type: skill
+    name: "主线程同步 Binder"
+    skill: binder_blocking_in_range
+    display:
+      level: key
+      layer: deep
+      title: "主线程同步 Binder"
+    params:
+      start_ts: "${event_ts}"
+      end_ts: "${event_end_ts}"
+      package: "${process_name}"
+    save_as: main_sync_binder
+
+  # ========== 主线程调度延迟 ==========
+  - id: sched_latency
+    type: skill
+    name: "调度延迟分析"
+    skill: main_thread_sched_latency_in_range
+    display:
+      level: detail
+      layer: deep
+      title: "主线程调度延迟"
+    params:
+      start_ts: "${event_ts}"
+      end_ts: "${event_end_ts}"
+      package: "${process_name}"
+    save_as: sched_delay
+
+  # ========== 主线程文件 IO ==========
+  - id: main_thread_file_io
+    type: skill
+    name: "主线程文件 IO"
+    skill: main_thread_file_io_in_range
+    display:
+      level: detail
+      layer: deep
+      title: "主线程文件 IO"
+    params:
+      start_ts: "${event_ts}"
+      end_ts: "${event_end_ts}"
+      package: "${process_name}"
+      min_dur_ns: 500000
+      top_k: 10
+    save_as: main_file_io
 
   # ========== 慢点击诊断 ==========
   - id: click_diagnosis
@@ -278,39 +469,56 @@ steps:
       level: key
       layer: deep
       title: "问题诊断"
-    inputs: [event_basic, cpu_core, quadrant, blocking, binder_calls]
+    inputs: [event_basic, cpu_core, quadrant, blocking, binder_calls, main_sync_binder, sched_delay, main_file_io]
     rules:
-      # Runnable 等待过长
-      - condition: "quadrant.data[0]?.q3_runnable_ms > 20"
+      # Runnable 等待过长（需由调度延迟指标佐证）
+      - condition: "quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0"
         severity: warning
-        diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms"
+        diagnosis: "主线程 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms，且存在 ${sched_delay.data[0].severe_count} 次 >8ms 调度延迟"
         confidence: high
         suggestions:
           - "CPU 资源争抢，检查后台线程负载"
           - "减少并发任务"
 
-      # Sleeping 占比过高
-      - condition: "quadrant.data[0]?.sleeping_pct > 50"
+      # Sleeping 占比过高（需有 IO/Binder 阻塞佐证）
+      - condition: "quadrant.data[0]?.sleeping_pct > 50 && ((main_file_io.data[0]?.percent || 0) > 2 || ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 15)"
         severity: warning
-        diagnosis: "主线程 Sleeping 占比 ${quadrant.data[0].sleeping_pct}%"
+        diagnosis: "主线程 Sleeping 占比 ${quadrant.data[0].sleeping_pct}% 且存在 IO/Binder 阻塞证据"
         confidence: medium
         suggestions:
           - "检查主线程阻塞原因"
           - "将阻塞操作移到后台线程"
 
-      # 大核占比过低
-      - condition: "cpu_core.data[0]?.big_core_pct < 30 && cpu_core.data[0]?.total_running_ms > 20"
+      # 大核占比偏低 + Runnable 明显（仅在判定来源可信且有调度证据时触发）
+      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 20 && quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0 && !(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
         severity: warning
-        diagnosis: "主线程大核占比仅 ${cpu_core.data[0].big_core_pct}%"
+        diagnosis: "主线程大核占比偏低（${cpu_core.data[0].big_core_pct}%）且 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms，存在调度供给不足迹象"
         confidence: medium
         suggestions:
-          - "主线程被调度到小核"
-          - "检查大核占用情况"
+          - "检查是否有高优先级线程长期占用大核"
+          - "减少点击关键路径中的并发争抢"
 
-      # Binder 阻塞
-      - condition: "binder_calls.data[0]?.total_ms > 30"
+      # 核判定来源不可靠时，避免把大小核结论当根因
+      - condition: "(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
+        severity: info
+        diagnosis: "核类型判定回退到 CPU 编号阈值，大小核相关结论置信度有限"
+        confidence: medium
+        suggestions:
+          - "补充或检查 cpu_frequency/cpu capacity 数据后再判断大小核调度问题"
+
+      # 主线程文件 IO 偏高（需与阻塞态相互印证）
+      - condition: "(main_file_io.data[0]?.total_ms > 20 || main_file_io.data[0]?.percent > 5) && (quadrant.data[0]?.sleeping_pct || 0) > 20"
         severity: warning
-        diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 耗时 ${binder_calls.data[0].total_ms}ms"
+        diagnosis: "主线程文件 IO '${main_file_io.data[0].io_slice}' 耗时 ${main_file_io.data[0].total_ms}ms（占比 ${main_file_io.data[0].percent}%）"
+        confidence: high
+        suggestions:
+          - "避免在点击关键路径执行同步文件读写"
+          - "将数据库/文件访问改为异步或延后"
+
+      # Binder 阻塞（需同步 Binder 阻塞证据）
+      - condition: "binder_calls.data[0]?.total_client_ms > 30 && ((main_sync_binder?.data?.find(r => r.is_main_blocked === 1)?.total_block_ms) || 0) > 10"
+        severity: warning
+        diagnosis: "Binder 调用 ${binder_calls.data[0].server_process} 耗时 ${binder_calls.data[0].total_client_ms}ms，且主线程同步 Binder 阻塞明显"
         confidence: high
         suggestions:
           - "将 Binder 调用移到后台线程"

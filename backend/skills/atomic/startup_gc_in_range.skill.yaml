@@ -1,0 +1,93 @@
+# =============================================================================
+# 启动 GC 分析（原子 Skill）
+# =============================================================================
+
+name: startup_gc_in_range
+version: "1.0"
+type: atomic
+category: memory
+
+meta:
+  display_name: "启动 GC 分析 (区间)"
+  description: "统计启动阶段 GC 相关切片及主线程占比"
+  icon: "memory"
+  tags: [startup, gc, memory, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+  - name: top_k
+    type: integer
+    required: false
+
+display:
+  level: detail
+  layer: list
+  title: "启动期间 GC"
+  columns:
+    - name: gc_type
+      label: "GC 类型"
+      type: string
+    - name: thread_name
+      label: "线程"
+      type: string
+    - name: is_main_thread
+      label: "主线程"
+      type: boolean
+    - name: count
+      label: "次数"
+      type: number
+      format: compact
+    - name: total_dur_ms
+      label: "总耗时"
+      type: duration
+      format: duration_ms
+    - name: avg_dur_ms
+      label: "平均耗时"
+      type: duration
+      format: duration_ms
+    - name: percent_of_startup
+      label: "启动占比"
+      type: percentage
+      format: percentage
+
+sql: |
+  SELECT
+    ts.slice_name as gc_type,
+    ts.thread_name,
+    ts.is_main_thread,
+    COUNT(*) as count,
+    SUM(ts.slice_dur) / 1e6 as total_dur_ms,
+    ROUND(AVG(ts.slice_dur) / 1e6, 2) as avg_dur_ms,
+    ROUND(100.0 * SUM(ts.slice_dur) / s.dur, 1) as percent_of_startup
+  FROM android_thread_slices_for_all_startups ts
+  JOIN android_startups s ON ts.startup_id = s.startup_id
+  WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+    AND (ts.slice_name GLOB '*GC*' OR ts.slice_name GLOB '*gc*')
+  GROUP BY ts.slice_name, ts.is_main_thread
+  ORDER BY total_dur_ms DESC
+  LIMIT ${top_k|10}
+
+output:
+  format: structured

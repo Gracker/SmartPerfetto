@@ -1,0 +1,100 @@
+# =============================================================================
+# 主线程切片热点（原子 Skill）
+# =============================================================================
+# 分析指定时间区间内主线程切片耗时 TopN。
+
+name: main_thread_slices_in_range
+version: "1.0"
+type: atomic
+category: app_lifecycle
+
+meta:
+  display_name: "主线程切片热点 (区间)"
+  description: "统计区间内主线程切片耗时分布"
+  icon: "view_timeline"
+  tags: [main_thread, slice, startup, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+  - name: package
+    type: string
+    required: false
+    description: "目标应用包名（支持 GLOB）"
+  - name: min_dur_ns
+    type: integer
+    required: false
+    description: "最小切片时长阈值(ns)，默认 1ms"
+  - name: top_k
+    type: integer
+    required: false
+    description: "返回 TopK 条目，默认 10"
+
+display:
+  level: key
+  layer: deep
+  title: "主线程耗时操作 Top10"
+  columns:
+    - name: slice_name
+      label: "切片名"
+      type: string
+    - name: count
+      label: "次数"
+      type: number
+      format: compact
+    - name: total_ms
+      label: "总耗时"
+      type: duration
+      format: duration_ms
+    - name: avg_ms
+      label: "平均耗时"
+      type: duration
+      format: duration_ms
+    - name: max_ms
+      label: "最大耗时"
+      type: duration
+      format: duration_ms
+    - name: percent
+      label: "区间占比"
+      type: percentage
+      format: percentage
+
+sql: |
+  WITH main_thread AS (
+    SELECT t.utid
+    FROM thread t
+    JOIN process p ON t.upid = p.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND t.tid = p.pid
+  ),
+  slice_clipped AS (
+    SELECT
+      s.name as slice_name,
+      MIN(s.ts + s.dur, ${end_ts}) - MAX(s.ts, ${start_ts}) as clipped_dur
+    FROM slice s
+    JOIN thread_track tt ON s.track_id = tt.id
+    JOIN main_thread mt ON tt.utid = mt.utid
+    WHERE s.ts < ${end_ts}
+      AND s.ts + s.dur > ${start_ts}
+  )
+  SELECT
+    slice_name,
+    COUNT(*) as count,
+    ROUND(SUM(clipped_dur) / 1e6, 2) as total_ms,
+    ROUND(AVG(clipped_dur) / 1e6, 2) as avg_ms,
+    ROUND(MAX(clipped_dur) / 1e6, 2) as max_ms,
+    ROUND(100.0 * SUM(clipped_dur) / NULLIF(${end_ts} - ${start_ts}, 0), 1) as percent
+  FROM slice_clipped
+  WHERE clipped_dur >= ${min_dur_ns|1000000}
+  GROUP BY slice_name
+  ORDER BY total_ms DESC
+  LIMIT ${top_k|10}
+
+output:
+  format: structured

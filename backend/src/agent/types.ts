@@ -163,7 +163,7 @@ export type FollowUpType = 'initial' | 'drill_down' | 'clarify' | 'extend' | 'co
  */
 export interface ReferencedEntity {
   /** Entity type being referenced */
-  type: 'frame' | 'session' | 'process' | 'binder_call' | 'time_range';
+  type: 'frame' | 'session' | 'startup' | 'process' | 'binder_call' | 'time_range';
   /** Entity identifier (e.g., frame_id, session_id) */
   id?: number | string;
   /** Additional value data */

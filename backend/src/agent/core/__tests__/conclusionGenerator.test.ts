@@ -142,10 +142,29 @@ describe('conclusionGenerator', () => {
     expect(calledPrompt).toContain('多轮对话');
     expect(calledPrompt).toContain('## 输出要求（必须严格遵守）');
     expect(calledPrompt).toContain('总长度尽量控制在 25 行以内');
-    expect(calledPrompt).toContain('## 根因机制拆解（触发/供给/放大）');
-    expect(calledPrompt).toContain('触发因子:');
-    expect(calledPrompt).toContain('供给约束:');
-    expect(calledPrompt).toContain('放大路径:');
+    expect(calledPrompt).toContain('## 根因机制拆解（直接原因/资源问题/放大因素）');
+    expect(calledPrompt).toContain('直接原因:');
+    expect(calledPrompt).toContain('资源问题:');
+    expect(calledPrompt).toContain('放大因素:');
+  });
+
+  test('uses startup scene template instead of jank-only prompt rules', async () => {
+    await invokeGenerateConclusion({
+      currentIntent: {
+        ...intent,
+        primaryGoal: '分析应用冷启动慢的根因',
+        aspects: ['startup'],
+      },
+      options: { turnCount: 0 },
+    });
+
+    const calledPrompt = (mockModelRouter.callWithFallback as jest.Mock).mock.calls[0][0] as string;
+    expect(calledPrompt).toContain('## 场景化分析焦点');
+    expect(calledPrompt).toContain('当前场景: 启动性能');
+    expect(calledPrompt).toContain('慢在第几阶段');
+    expect(calledPrompt).toContain('TTID/TTFD');
+    expect(calledPrompt).toContain('clusters 可按时间阶段/样本分组给出；若无聚类证据可传空数组');
+    expect(calledPrompt).not.toContain('候选包括：业务负载重 / 小核摆放 / 大核低频 / 调度延迟 / Binder 同步阻塞 / 频率爬升慢');
   });
 
   test('applies single-frame drill-down guardrails and suppresses history carry-over hints', async () => {
@@ -166,6 +185,51 @@ describe('conclusionGenerator', () => {
     expect(calledPrompt).toContain('单帧 drill-down 禁止复用历史 K1/K2/K3');
     expect(calledPrompt).not.toContain('历史结论: K1 Buffer Stuffing（9帧，36%）');
     expect(calledPrompt).not.toContain('“## 掉帧聚类（先看大头）”必须按帧数降序列出 Top3 聚类');
+  });
+
+  test('aligns single-frame triad with structured root-cause fields', async () => {
+    mockModelRouter.callWithFallback = jest.fn().mockResolvedValue(createMockModelResponse(`## 结论（按可能性排序）
+1. 触发因子（直接原因）: 主线程RV Prefetch操作耗时11.75ms，远超帧预算5.84ms；供给约束（资源瓶颈）: 大核降频80.8%，频率不足；放大路径（问题放大环节）: RenderThread占用109.2%，渲染压力放大主线程延迟（置信度: 85%）
+
+## 证据链（对应上述结论）
+- 证据链信息缺失
+
+## 不确定性与反例
+- 单帧数据不足
+
+## 下一步（最高信息增益）
+- 继续分析`
+    ));
+
+    const frameFinding: Finding = {
+      ...findings[0],
+      evidence: [{ evidenceId: 'ev_0123456789ab', title: '[frame_agent] jank_frame_detail', kind: 'skill' }],
+      details: {
+        primary_cause: '主线程耗时操作 "RV Prefetch" 占用 11.75ms (帧预算 5.84ms)',
+        secondary_info: '关键业务操作 RV Prefetch 执行 11.75ms',
+        supply_constraint: 'none',
+        amplification_path: 'unknown',
+        cause_type: 'slice',
+      },
+    };
+
+    const conclusion = await invokeGenerateConclusion({
+      currentFindings: [frameFinding],
+      currentIntent: {
+        ...intent,
+        followUpType: 'drill_down',
+        referencedEntities: [{ type: 'frame', id: 1435508 }],
+        extractedParams: { frame_id: 1435508 },
+      },
+      options: { turnCount: 2, historyContext: 'HISTORY' },
+    });
+
+    expect(conclusion).toContain('资源问题: 资源问题不明显（当前帧）');
+    expect(conclusion).toContain('放大因素: 未观察到明确放大因素证据（当前帧）');
+    expect(conclusion).toContain('C2: 资源问题证据：资源问题不明显（当前帧）');
+    expect(conclusion).toContain('C3: 放大因素证据：未观察到明确放大因素证据（当前帧）');
+    expect(conclusion).not.toContain('大核降频80.8%');
+    expect(conclusion).not.toContain('RenderThread占用109.2%');
   });
 
   test('insight mode falls back to 4-section markdown when LLM fails (follow-up)', async () => {
@@ -258,6 +322,7 @@ describe('conclusionGenerator', () => {
 
     expect(conclusion).toContain('C1（自动补全）');
     expect(conclusion).toContain('ev_0123456789ab');
+    expect(conclusion).not.toContain('证据链信息缺失');
   });
 
   test('normalizes json-like section output into markdown conclusion blocks', async () => {
@@ -363,7 +428,7 @@ analysis_metadata:
     expect(conclusion).toContain('## 证据链（对应上述结论）');
     expect(conclusion).toContain('## 下一步（最高信息增益）');
     expect(conclusion).toContain('## 分析元数据');
-    expect(conclusion).toContain('触发因子（直接原因）: 主线程耗时操作（65%）；供给约束（资源瓶颈）: 阻塞等待（57.1%）；放大路径（问题放大环节）: SF消费端背压（SF 100%，消费端 6.0%）');
+    expect(conclusion).toContain('直接原因: 主线程耗时操作（65%）；资源问题: 阻塞等待（57.1%）；放大因素: SF消费端背压（SF 100%，消费端 6.0%）');
     expect(conclusion).toContain('- K1: 主线程耗时操作/负载主导/SF消费端背压（22帧, 34.9%）');
     expect(conclusion).toContain('在同一帧同一时间窗统一统计口径，复核主线程休眠占比与占用时间的分母与计算方式');
     expect(conclusion).not.toContain('\njank_clusters:');
@@ -392,9 +457,9 @@ analysis_metadata:
     expect(conclusion.trim().startsWith('## 结论（按可能性排序）')).toBe(true);
     expect(conclusion).toContain('## 掉帧聚类（先看大头）');
     expect(conclusion).toContain('## 分析元数据');
-    expect(conclusion).toContain('触发因子（直接原因）: 主线程耗时操作（65%）');
-    expect(conclusion).toContain('供给约束（资源瓶颈）: 阻塞等待（57.1%）');
-    expect(conclusion).toContain('放大路径（问题放大环节）: SF消费端背压');
+    expect(conclusion).toContain('直接原因: 主线程耗时操作（65%）');
+    expect(conclusion).toContain('资源问题: 阻塞等待（57.1%）');
+    expect(conclusion).toContain('放大因素: SF消费端背压');
     expect(conclusion).toContain('- K1: 主线程耗时操作/负载主导/SF消费端背压（22帧, 34.9%）');
     expect(conclusion).toContain('主线程耗时操作（65%）');
     expect(conclusion).toContain('阻塞等待（57.1%）');
@@ -636,9 +701,9 @@ analysis_metadata:
 
     expect(conclusion).toContain('## 结论（按可能性排序）');
     expect(conclusion).toContain('混合型掉帧');
-    expect(conclusion).toContain('触发因子:');
-    expect(conclusion).toContain('供给约束:');
-    expect(conclusion).toContain('放大路径:');
+    expect(conclusion).toContain('直接原因:');
+    expect(conclusion).toContain('资源问题:');
+    expect(conclusion).toContain('放大因素:');
     expect(conclusion).not.toContain('而非App主线程操作');
     expect(conclusion).not.toContain('（自动补全）');
     expect((conclusion.match(/^- C1\b/gm) || []).length).toBe(1);
@@ -774,7 +839,7 @@ analysis_metadata:
       options: { turnCount: 0 },
     });
 
-    expect(conclusion).toContain('供给约束:');
+    expect(conclusion).toContain('资源问题:');
     expect(conclusion).toContain('频率不足');
     expect(conclusion).toContain('核心摆放偏小核');
     expect(conclusion).toContain('## 掉帧聚类（先看大头）');

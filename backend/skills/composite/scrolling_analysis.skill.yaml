@@ -946,13 +946,19 @@ steps:
           type: number
           hidden: true
         - name: main_dur_ms
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
           hidden: true
         - name: render_dur_ms
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
           hidden: true
         - name: dur_ms
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
           hidden: true
     sql: |
       WITH

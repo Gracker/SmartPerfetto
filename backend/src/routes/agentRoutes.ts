@@ -14,7 +14,10 @@ import {
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { reportStore } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
-import { sessionContextManager } from '../agent/context/enhancedSessionContext';
+import {
+  sessionContextManager,
+  EnhancedSessionContext,
+} from '../agent/context/enhancedSessionContext';
 import {
   registerCoreTools,
   StreamingUpdate,
@@ -36,6 +39,7 @@ import type { UserDecision, AnalysisDirective } from '../agent/core/intervention
 import type { FocusInteraction } from '../agent/context/focusStore';
 // DataEnvelope types for v2.0 data contract
 import {
+  createDataEnvelope,
   generateEventId,
   isDataEvent,
   isLegacySkillEvent,
@@ -70,6 +74,7 @@ import {
   TEACHING_STEP_IDS,
   TEACHING_FEATURES,
 } from '../config/teaching.config';
+import type { ConversationTurn } from '../agent/types';
 
 const router = express.Router();
 
@@ -119,6 +124,205 @@ function getModelRouter(): ModelRouter {
   return modelRouterInstance;
 }
 
+type TurnHistorySource = 'memory' | 'persistence';
+
+interface ResolvedSessionContext {
+  context: EnhancedSessionContext;
+  source: TurnHistorySource;
+  traceId: string;
+  query?: string;
+  createdAt?: number;
+}
+
+function resolveSessionContextForReview(sessionId: string): ResolvedSessionContext | null {
+  const activeSession = sessions.get(sessionId);
+  if (activeSession) {
+    const activeContext =
+      sessionContextManager.get(sessionId, activeSession.traceId) ||
+      sessionContextManager.get(sessionId);
+    if (activeContext) {
+      return {
+        context: activeContext,
+        source: 'memory',
+        traceId: activeSession.traceId,
+        query: activeSession.query,
+        createdAt: activeSession.createdAt,
+      };
+    }
+  }
+
+  const memoryContext = sessionContextManager.get(sessionId);
+  if (memoryContext) {
+    return {
+      context: memoryContext,
+      source: 'memory',
+      traceId: memoryContext.getTraceId(),
+      query: activeSession?.query,
+      createdAt: activeSession?.createdAt,
+    };
+  }
+
+  const persistenceService = SessionPersistenceService.getInstance();
+  const persistedSession = persistenceService.getSession(sessionId);
+  if (!persistedSession) {
+    return null;
+  }
+
+  const persistedContext = persistenceService.loadSessionContext(sessionId);
+  if (!persistedContext) {
+    return null;
+  }
+
+  return {
+    context: persistedContext,
+    source: 'persistence',
+    traceId: persistedSession.traceId,
+    query: persistedSession.question,
+    createdAt: persistedSession.createdAt,
+  };
+}
+
+function buildTurnSeverityCounts(turn: ConversationTurn): Record<string, number> {
+  const counts: Record<string, number> = {
+    critical: 0,
+    high: 0,
+    warning: 0,
+    medium: 0,
+    low: 0,
+    info: 0,
+  };
+
+  for (const finding of turn.findings || []) {
+    const severity = String(finding?.severity || '').toLowerCase();
+    if (severity in counts) {
+      counts[severity] += 1;
+    } else {
+      counts.info += 1;
+    }
+  }
+
+  return counts;
+}
+
+function toJsonSafe<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? v.toString() : v))
+  ) as T;
+}
+
+function buildTurnSummary(turn: ConversationTurn) {
+  const confidence =
+    typeof turn.result?.confidence === 'number'
+      ? turn.result.confidence
+      : undefined;
+  const sanitizedConclusion = typeof turn.result?.message === 'string'
+    ? normalizeNarrativeForClient(turn.result.message)
+    : '';
+  const conclusionPreview = sanitizedConclusion
+    ? sanitizedConclusion.replace(/\s+/g, ' ').slice(0, 240)
+    : undefined;
+
+  return {
+    turnId: turn.id,
+    turnIndex: turn.turnIndex,
+    timestamp: turn.timestamp,
+    query: turn.query,
+    intent: {
+      primaryGoal: turn.intent?.primaryGoal || '',
+      followUpType: turn.intent?.followUpType || 'initial',
+      aspects: Array.isArray(turn.intent?.aspects) ? turn.intent.aspects : [],
+    },
+    completed: !!turn.completed,
+    success: typeof turn.result?.success === 'boolean' ? turn.result.success : null,
+    confidence,
+    findingCount: Array.isArray(turn.findings) ? turn.findings.length : 0,
+    severityCounts: buildTurnSeverityCounts(turn),
+    conclusionPreview,
+  };
+}
+
+function buildTurnDetail(turn: ConversationTurn) {
+  const summary = buildTurnSummary(turn);
+  return {
+    ...summary,
+    intent: toJsonSafe(turn.intent),
+    result: turn.result
+      ? toJsonSafe({
+          ...turn.result,
+          message:
+            typeof turn.result.message === 'string'
+              ? normalizeNarrativeForClient(turn.result.message)
+              : turn.result.message,
+        })
+      : null,
+    findings: toJsonSafe(turn.findings || []),
+  };
+}
+
+function getLastCompletedTurn(context: EnhancedSessionContext): ConversationTurn | null {
+  const turns = context.getAllTurns();
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    if (turn.completed && turn.result) {
+      return turn;
+    }
+  }
+  return null;
+}
+
+function buildRecoveredResultFromContext(
+  sessionId: string,
+  context: EnhancedSessionContext
+): AgentDrivenAnalysisResult | null {
+  const turn = getLastCompletedTurn(context);
+  if (!turn || !turn.result) {
+    return null;
+  }
+
+  const conclusion = typeof turn.result.message === 'string' && turn.result.message.trim().length > 0
+    ? turn.result.message
+    : `已恢复会话历史。可通过 /api/agent/${sessionId}/turns 查看历史轮次。`;
+  const confidence =
+    typeof turn.result.confidence === 'number'
+      ? turn.result.confidence
+      : 0.5;
+
+  return {
+    sessionId,
+    success: turn.result.success !== false,
+    findings: Array.isArray(turn.findings) ? turn.findings : [],
+    hypotheses: [],
+    conclusion,
+    confidence,
+    rounds: 1,
+    totalDurationMs: 0,
+  };
+}
+
+function recoverResultForSessionIfNeeded(sessionId: string, session: AnalysisSession): AgentDrivenAnalysisResult | null {
+  if (session.result) {
+    return session.result;
+  }
+
+  const resolved = resolveSessionContextForReview(sessionId);
+  if (!resolved) {
+    return null;
+  }
+
+  const recovered = buildRecoveredResultFromContext(sessionId, resolved.context);
+  if (!recovered) {
+    return null;
+  }
+
+  session.result = recovered;
+  const turns = resolved.context.getAllTurns();
+  const latestTurn = turns.length > 0 ? turns[turns.length - 1] : null;
+  if (latestTurn?.query) {
+    session.query = latestTurn.query;
+  }
+  return recovered;
+}
+
 // =============================================================================
 // Scene Reconstruction Types (kept for backward-compatible API responses)
 // =============================================================================
@@ -127,10 +331,14 @@ type SceneCategory =
   | 'cold_start'
   | 'warm_start'
   | 'hot_start'
+  | 'scroll_start'
   | 'scroll'
   | 'inertial_scroll'
   | 'navigation'
   | 'app_switch'
+  | 'screen_on'
+  | 'screen_off'
+  | 'screen_sleep'
   | 'screen_unlock'
   | 'notification'
   | 'split_screen'
@@ -160,6 +368,7 @@ interface TrackEvent {
 
 // Initialize Agent tools once
 let toolsRegistered = false;
+const SCENE_STRATEGY_IDS = ['scene_reconstruction', 'scene_reconstruction_quick'];
 
 function ensureToolsRegistered() {
   if (!toolsRegistered) {
@@ -167,6 +376,17 @@ function ensureToolsRegistered() {
     toolsRegistered = true;
     console.log('[AgentRoutes] Core tools registered');
   }
+}
+
+function isDedicatedSceneReplayRequest(query: string): boolean {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return false;
+  return (
+    q === '/scene' ||
+    q.includes('场景还原') ||
+    q.includes('scene reconstruction') ||
+    q.includes('scene replay')
+  );
 }
 
 // ============================================================================
@@ -215,6 +435,15 @@ router.post('/analyze', async (req, res) => {
       });
     }
 
+    if (isDedicatedSceneReplayRequest(query)) {
+      return res.status(400).json({
+        success: false,
+        code: 'SCENE_REPLAY_SEPARATED',
+        error: '场景还原已独立为专用功能',
+        hint: '请使用 /scene 命令（前端）或 POST /api/agent/scene-reconstruct（后端）',
+      });
+    }
+
     // Verify trace exists
     const traceProcessorService = getTraceProcessorService();
     const trace = traceProcessorService.getTrace(traceId);
@@ -251,8 +480,90 @@ router.post('/analyze', async (req, res) => {
         existingSession.status = 'pending';
         console.log(`[AgentRoutes] Reusing agent session ${sessionId} for multi-turn dialogue`);
       } else {
-        console.log(`[AgentRoutes] Requested session ${requestedSessionId} not found or trace mismatch, creating new session`);
-        sessionId = `agent-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+        // Try restoring requested session from persistence before falling back to new session.
+        const persistenceService = SessionPersistenceService.getInstance();
+        const persistedSession = persistenceService.getSession(requestedSessionId);
+
+        if (persistedSession && persistedSession.traceId !== traceId) {
+          return res.status(400).json({
+            success: false,
+            error: 'traceId mismatch for requested session',
+            hint: `This session belongs to traceId=${persistedSession.traceId}. Switch to that trace or start a new chat.`,
+            code: 'TRACE_ID_MISMATCH',
+          });
+        }
+
+        if (persistedSession && persistedSession.traceId === traceId) {
+          const restoredContext = persistenceService.loadSessionContext(requestedSessionId);
+          if (restoredContext) {
+            sessionContextManager.set(requestedSessionId, traceId, restoredContext);
+
+            const restoredOrchestrator = createAgentDrivenOrchestrator(getModelRouter(), {
+              enableLogging: true,
+            });
+
+            const focusSnapshot = persistenceService.loadFocusStore(requestedSessionId);
+            if (focusSnapshot) {
+              restoredOrchestrator.getFocusStore().loadSnapshot(focusSnapshot);
+              restoredOrchestrator.getFocusStore().syncWithEntityStore(restoredContext.getEntityStore());
+            }
+
+            const traceAgentStateSnapshot = persistenceService.loadTraceAgentState(requestedSessionId);
+            if (traceAgentStateSnapshot) {
+              restoredContext.setTraceAgentState(traceAgentStateSnapshot);
+            }
+
+            const restoredTurns = restoredContext.getAllTurns();
+            const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
+            const recoveredResult = buildRecoveredResultFromContext(requestedSessionId, restoredContext);
+
+            const restoredLogger = createSessionLogger(requestedSessionId);
+            restoredLogger.setMetadata({
+              traceId,
+              query,
+              architecture: 'agent-driven',
+              resumed: true,
+            });
+            restoredLogger.info('AgentRoutes', 'Session restored from persistence in analyze()', {
+              turnCount: restoredTurns.length,
+              entityStoreStats: restoredContext.getEntityStore().getStats(),
+            });
+
+            sessions.set(requestedSessionId, {
+              orchestrator: restoredOrchestrator,
+              sessionId: requestedSessionId,
+              sseClients: [],
+              result: recoveredResult || undefined,
+              status: 'pending',
+              traceId,
+              query,
+              createdAt: persistedSession.createdAt,
+              logger: restoredLogger,
+              hypotheses: [],
+              agentDialogue: [],
+              dataEnvelopes: [],
+              agentResponses: [],
+            });
+
+            sessionId = requestedSessionId;
+            orchestrator = restoredOrchestrator;
+            logger = restoredLogger;
+            isNewSession = false;
+
+            logger.info('AgentRoutes', 'Continuing multi-turn dialogue from persisted context', {
+              turnQuery: query,
+              previousQuery: latestTurn?.query || persistedSession.question,
+              turnCount: restoredTurns.length,
+            });
+            console.log(`[AgentRoutes] Restored agent session ${sessionId} from persistence for multi-turn dialogue`);
+          } else {
+            console.log(`[AgentRoutes] Requested session ${requestedSessionId} has no persisted context, creating new session`);
+            sessionId = `agent-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+          }
+        } else {
+          console.log(`[AgentRoutes] Requested session ${requestedSessionId} not found, creating new session`);
+          sessionId = `agent-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
+        }
       }
     } else {
       sessionId = `agent-${Date.now()}-${Math.random().toString(36).substr(2, 8)}`;
@@ -289,7 +600,16 @@ router.post('/analyze', async (req, res) => {
       });
     }
 
-    runAgentDrivenAnalysis(sessionId, query, traceId, { ...options, traceProcessorService }).catch((error) => {
+    const blockedStrategyIds = Array.from(new Set([
+      ...SCENE_STRATEGY_IDS,
+      ...(Array.isArray(options.blockedStrategyIds) ? options.blockedStrategyIds : []),
+    ]));
+
+    runAgentDrivenAnalysis(sessionId, query, traceId, {
+      ...options,
+      blockedStrategyIds,
+      traceProcessorService,
+    }).catch((error) => {
       const session = sessions.get(sessionId);
       if (session) {
         session.logger.error('AgentRoutes', 'Agent-driven analysis failed', error);
@@ -368,13 +688,17 @@ router.get('/:sessionId/stream', (req, res) => {
   session.sseClients.push(res);
   console.log(`[AgentRoutes] SSE client connected for ${sessionId}`);
 
-  // If analysis is already completed, send the result
-  if (session.status === 'completed' && session.result) {
-    sendAgentDrivenResult(res, session);
-    res.write(`event: end\n`);
-    res.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
-    res.end();
-    return;
+  // If analysis is already completed, send the result.
+  // Resumed sessions may not have session.result in memory; recover from persisted turn context.
+  if (session.status === 'completed') {
+    recoverResultForSessionIfNeeded(sessionId, session);
+    if (session.result) {
+      sendAgentDrivenResult(res, session);
+      res.write(`event: end\n`);
+      res.write(`data: ${JSON.stringify({ timestamp: Date.now() })}\n\n`);
+      res.end();
+      return;
+    }
   }
 
   // If analysis failed, send error
@@ -435,22 +759,25 @@ router.get('/:sessionId/status', (req, res) => {
     createdAt: session.createdAt,
   };
 
-  if (session.status === 'completed' && session.result) {
-    const conclusion = normalizeNarrativeForClient(session.result.conclusion);
-    const conclusionContract =
-      session.result.conclusionContract ||
-      deriveConclusionContract(conclusion, {
-        mode: session.result.rounds > 1 ? 'focused_answer' : 'initial_report',
-      }) ||
-      undefined;
-    response.result = {
-      conclusion,
-      conclusionContract,
-      confidence: session.result.confidence,
-      totalDurationMs: session.result.totalDurationMs,
-      rounds: session.result.rounds,
-      findingsCount: session.result.findings.length,
-    };
+  if (session.status === 'completed') {
+    const recoveredResult = recoverResultForSessionIfNeeded(sessionId, session);
+    if (recoveredResult) {
+      const conclusion = normalizeNarrativeForClient(recoveredResult.conclusion);
+      const conclusionContract =
+        recoveredResult.conclusionContract ||
+        deriveConclusionContract(conclusion, {
+          mode: recoveredResult.rounds > 1 ? 'focused_answer' : 'initial_report',
+        }) ||
+        undefined;
+      response.result = {
+        conclusion,
+        conclusionContract,
+        confidence: recoveredResult.confidence,
+        totalDurationMs: recoveredResult.totalDurationMs,
+        rounds: recoveredResult.rounds,
+        findingsCount: recoveredResult.findings.length,
+      };
+    }
   }
 
   if (session.status === 'failed') {
@@ -458,6 +785,126 @@ router.get('/:sessionId/status', (req, res) => {
   }
 
   res.json(response);
+});
+
+/**
+ * GET /api/agent/:sessionId/turns
+ *
+ * List persisted turns for a session.
+ * Supports in-memory sessions and persisted (recoverable) sessions.
+ *
+ * Query params:
+ * - limit: default 20, max 200
+ * - offset: default 0
+ * - order: asc | desc (default desc)
+ */
+router.get('/:sessionId/turns', (req, res) => {
+  const { sessionId } = req.params;
+  const rawLimit = parseInt(String(req.query.limit || '20'), 10);
+  const rawOffset = parseInt(String(req.query.offset || '0'), 10);
+  const order = String(req.query.order || 'desc').toLowerCase() === 'asc' ? 'asc' : 'desc';
+
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(200, rawLimit)) : 20;
+  const offset = Number.isFinite(rawOffset) ? Math.max(0, rawOffset) : 0;
+
+  const resolved = resolveSessionContextForReview(sessionId);
+  if (!resolved) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session context not found',
+      hint: 'Session may not exist or was not persisted with context snapshots',
+    });
+  }
+
+  const allTurns = resolved.context.getAllTurns();
+  const ordered = order === 'desc' ? [...allTurns].reverse() : [...allTurns];
+  const paged = ordered.slice(offset, offset + limit);
+
+  const latestTurn = allTurns.length > 0 ? allTurns[allTurns.length - 1] : null;
+
+  return res.json({
+    success: true,
+    sessionId,
+    traceId: resolved.traceId,
+    source: resolved.source,
+    query: resolved.query,
+    createdAt: resolved.createdAt,
+    totalTurns: allTurns.length,
+    turns: paged.map(buildTurnSummary),
+    latestTurn: latestTurn ? buildTurnSummary(latestTurn) : null,
+    pagination: {
+      limit,
+      offset,
+      order,
+      hasMore: offset + limit < ordered.length,
+    },
+  });
+});
+
+/**
+ * GET /api/agent/:sessionId/turns/:turnId
+ *
+ * Get details for a specific turn.
+ * `turnId` supports:
+ * - UUID turn ID
+ * - numeric turn index (0-based or 1-based)
+ * - literal `latest`
+ */
+router.get('/:sessionId/turns/:turnId', (req, res) => {
+  const { sessionId, turnId } = req.params;
+
+  const resolved = resolveSessionContextForReview(sessionId);
+  if (!resolved) {
+    return res.status(404).json({
+      success: false,
+      error: 'Session context not found',
+      hint: 'Session may not exist or was not persisted with context snapshots',
+    });
+  }
+
+  const turns = resolved.context.getAllTurns();
+  if (turns.length === 0) {
+    return res.status(404).json({
+      success: false,
+      error: 'No turns recorded for this session',
+    });
+  }
+
+  let turn: ConversationTurn | undefined;
+  if (turnId === 'latest') {
+    turn = turns[turns.length - 1];
+  } else {
+    turn = turns.find(t => t.id === turnId);
+    if (!turn && /^\d+$/.test(turnId)) {
+      const parsed = parseInt(turnId, 10);
+      turn = turns.find(t => t.turnIndex === parsed) || turns.find(t => t.turnIndex === parsed - 1);
+    }
+  }
+
+  if (!turn) {
+    return res.status(404).json({
+      success: false,
+      error: `Turn not found: ${turnId}`,
+      hint: 'Use /api/agent/:sessionId/turns to inspect available turn IDs',
+    });
+  }
+
+  const previousTurn = turns.find(t => t.turnIndex === turn!.turnIndex - 1) || null;
+  const nextTurn = turns.find(t => t.turnIndex === turn!.turnIndex + 1) || null;
+
+  return res.json({
+    success: true,
+    sessionId,
+    traceId: resolved.traceId,
+    source: resolved.source,
+    turn: buildTurnDetail(turn),
+    navigation: {
+      previousTurnId: previousTurn?.id || null,
+      nextTurnId: nextTurn?.id || null,
+      previousTurnIndex: previousTurn?.turnIndex ?? null,
+      nextTurnIndex: nextTurn?.turnIndex ?? null,
+    },
+  });
 });
 
 /**
@@ -825,6 +1272,7 @@ router.get('/sessions', async (req, res) => {
     for (const [sessionId, session] of sessions.entries()) {
       if (traceId && session.traceId !== traceId) continue;
 
+      const activeContext = sessionContextManager.get(sessionId, session.traceId);
       activeIds.add(sessionId);
       activeSessions.push({
         sessionId,
@@ -833,6 +1281,7 @@ router.get('/sessions', async (req, res) => {
         query: session.query,
         createdAt: session.createdAt,
         isActive: true,
+        turnCount: activeContext?.getAllTurns().length ?? 0,
         entityStoreStats: null, // Active sessions have live context
       });
     }
@@ -858,6 +1307,7 @@ router.get('/sessions', async (req, res) => {
 
           // Get EntityStore stats for quick preview
           const storeStats = persistenceService.getEntityStoreStats(persistedSession.id);
+          const persistedContext = persistenceService.loadSessionContext(persistedSession.id);
 
           recoverableSessions.push({
             sessionId: persistedSession.id,
@@ -868,6 +1318,7 @@ router.get('/sessions', async (req, res) => {
             createdAt: persistedSession.createdAt,
             updatedAt: persistedSession.updatedAt,
             isActive: false,
+            turnCount: persistedContext?.getAllTurns().length ?? 0,
             entityStoreStats: storeStats,
           });
         }
@@ -979,35 +1430,35 @@ router.post('/resume', async (req, res) => {
     }
 
     // Restore the EnhancedSessionContext (includes EntityStore)
-	    const restoredContext = persistenceService.loadSessionContext(sessionId);
-	    if (!restoredContext) {
-	      return res.status(500).json({
-	        success: false,
-	        error: 'Failed to deserialize session context',
-	      });
-	    }
+    const restoredContext = persistenceService.loadSessionContext(sessionId);
+    if (!restoredContext) {
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to deserialize session context',
+      });
+    }
 
-	    // Inject the restored context into the session context manager (preserves internal state)
-	    sessionContextManager.set(sessionId, effectiveTraceId, restoredContext);
+    // Inject the restored context into the session context manager (preserves internal state)
+    sessionContextManager.set(sessionId, effectiveTraceId, restoredContext);
 
-	    // Create a new orchestrator for this session
-	    const modelRouter = getModelRouter();
-	    const orchestrator = createAgentDrivenOrchestrator(modelRouter, {
-	      enableLogging: true,
-	    });
+    // Create a new orchestrator for this session
+    const modelRouter = getModelRouter();
+    const orchestrator = createAgentDrivenOrchestrator(modelRouter, {
+      enableLogging: true,
+    });
 
-	    // Restore FocusStore (if present) so focus-aware incremental planning survives restarts
-	    const focusSnapshot = persistenceService.loadFocusStore(sessionId);
-	    if (focusSnapshot) {
-	      orchestrator.getFocusStore().loadSnapshot(focusSnapshot);
-	      orchestrator.getFocusStore().syncWithEntityStore(restoredContext.getEntityStore());
-	    }
+    // Restore FocusStore (if present) so focus-aware incremental planning survives restarts
+    const focusSnapshot = persistenceService.loadFocusStore(sessionId);
+    if (focusSnapshot) {
+      orchestrator.getFocusStore().loadSnapshot(focusSnapshot);
+      orchestrator.getFocusStore().syncWithEntityStore(restoredContext.getEntityStore());
+    }
 
-	    // Restore TraceAgentState (if present) for goal-driven continuity across restarts.
-	    const traceAgentStateSnapshot = persistenceService.loadTraceAgentState(sessionId);
-	    if (traceAgentStateSnapshot) {
-	      restoredContext.setTraceAgentState(traceAgentStateSnapshot);
-	    }
+    // Restore TraceAgentState (if present) for goal-driven continuity across restarts.
+    const traceAgentStateSnapshot = persistenceService.loadTraceAgentState(sessionId);
+    if (traceAgentStateSnapshot) {
+      restoredContext.setTraceAgentState(traceAgentStateSnapshot);
+    }
 
     // Create logger
     const logger = createSessionLogger(sessionId);
@@ -1022,43 +1473,53 @@ router.post('/resume', async (req, res) => {
       turnCount: restoredContext.getAllTurns().length,
     });
 
-    // Create the session record
-	    sessions.set(sessionId, {
-	      orchestrator,
-	      sessionId,
-	      sseClients: [],
-	      status: 'completed', // Previous analysis was completed
-	      traceId: effectiveTraceId,
-	      query: persistedSession.question,
-	      createdAt: persistedSession.createdAt,
-	      logger,
-	      hypotheses: [],
-	      agentDialogue: [],
-	      dataEnvelopes: [],
-	      agentResponses: [],
-	    });
+    const restoredTurns = restoredContext.getAllTurns();
+    const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
+    const recoveredResult = buildRecoveredResultFromContext(sessionId, restoredContext);
 
-	    return res.json({
-	      success: true,
-	      sessionId,
-	      traceId: effectiveTraceId,
-	      status: 'completed',
-	      message: 'Session restored from persistence',
-	      restored: true,
-	      restoredStats: {
-	        turnCount: restoredContext.getAllTurns().length,
-	        entityStore: restoredContext.getEntityStore().getStats(),
-	        focusStore: focusSnapshot ? orchestrator.getFocusStore().getStats() : null,
-	        traceAgentState: traceAgentStateSnapshot
-	          ? {
-	              version: traceAgentStateSnapshot.version,
-	              updatedAt: traceAgentStateSnapshot.updatedAt,
-	              turns: Array.isArray(traceAgentStateSnapshot.turnLog) ? traceAgentStateSnapshot.turnLog.length : 0,
-	              goal: traceAgentStateSnapshot.goal?.normalizedGoal || traceAgentStateSnapshot.goal?.userGoal || '',
-	            }
-	          : null,
-	      },
-	    });
+    // Create the session record
+    sessions.set(sessionId, {
+      orchestrator,
+      sessionId,
+      sseClients: [],
+      result: recoveredResult || undefined,
+      status: 'completed', // Previous analysis was completed
+      traceId: effectiveTraceId,
+      query: latestTurn?.query || persistedSession.question,
+      createdAt: persistedSession.createdAt,
+      logger,
+      hypotheses: [],
+      agentDialogue: [],
+      dataEnvelopes: [],
+      agentResponses: [],
+    });
+
+    return res.json({
+      success: true,
+      sessionId,
+      traceId: effectiveTraceId,
+      status: 'completed',
+      message: 'Session restored from persistence',
+      restored: true,
+      historyEndpoints: {
+        turns: `/api/agent/${sessionId}/turns`,
+        latestTurn: `/api/agent/${sessionId}/turns/latest`,
+      },
+      restoredStats: {
+        turnCount: restoredTurns.length,
+        latestTurn: latestTurn ? buildTurnSummary(latestTurn) : null,
+        entityStore: restoredContext.getEntityStore().getStats(),
+        focusStore: focusSnapshot ? orchestrator.getFocusStore().getStats() : null,
+        traceAgentState: traceAgentStateSnapshot
+          ? {
+              version: traceAgentStateSnapshot.version,
+              updatedAt: traceAgentStateSnapshot.updatedAt,
+              turns: Array.isArray(traceAgentStateSnapshot.turnLog) ? traceAgentStateSnapshot.turnLog.length : 0,
+              goal: traceAgentStateSnapshot.goal?.normalizedGoal || traceAgentStateSnapshot.goal?.userGoal || '',
+            }
+          : null,
+      },
+    });
   } catch (error: any) {
     console.error('[AgentRoutes] Session restore failed:', error);
     return res.status(500).json({
@@ -1081,7 +1542,7 @@ router.post('/resume', async (req, res) => {
  * {
  *   "traceId": "uuid-of-trace",
  *   "options": {
- *     "deepAnalysis": true,
+ *     "deepAnalysis": false, // Deprecated: scene-reconstruct is replay-only now
  *     "generateTracks": true
  *   }
  * }
@@ -1112,11 +1573,12 @@ router.post('/scene-reconstruct', async (req, res) => {
     // Initialize tools
     ensureToolsRegistered();
 
-    const deepAnalysis = options.deepAnalysis ?? true;
+    // `scene-reconstruct` is a dedicated replay feature.
+    // Keep accepting deepAnalysis for backward compatibility, but force replay-only behavior.
+    const deepAnalysis = false;
     const generateTracks = options.generateTracks ?? true;
 
-    // Scene reconstruction always uses the agent-driven orchestrator (unified architecture).
-    // Use a query string that triggers the scene reconstruction strategy.
+    // Use quick scene reconstruction query to avoid mixing with diagnosis workflows.
     const query = deepAnalysis ? '场景还原' : '场景还原 仅检测';
 
     // Generate analysis ID (also used as agent-driven sessionId for compatibility)
@@ -1322,7 +1784,9 @@ router.get('/scene-reconstruct/:analysisId/status', (req, res) => {
   };
 
   if (session.status === 'completed' && session.result) {
-    const narrative = normalizeNarrativeForClient(session.result.conclusion);
+    const narrative = isSceneReplayOnlyQuery(session.query)
+      ? buildSceneReplayNarrative(session.scenes || [])
+      : normalizeNarrativeForClient(session.result.conclusion);
     response.result = {
       narrative,
       confidence: session.result.confidence,
@@ -1438,6 +1902,90 @@ router.post('/scene-detect-quick', async (req, res) => {
 
 const sceneCache = new Map<string, { scenes: DetectedScene[]; timestamp: number }>();
 const SCENE_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+const SCENE_EXTRACTION_STEP_IDS = new Set([
+  'screen_state_changes',
+  'app_launches',
+  'user_gestures',
+  'scroll_initiation',
+  'inertial_scrolls',
+  'idle_periods',
+  'top_app_changes',
+  'system_events',
+  'jank_events',
+]);
+
+function objectRowsToEnvelopePayload(rows: Array<Record<string, any>>): { columns: string[]; rows: any[][] } {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { columns: [], rows: [] };
+  }
+
+  const columns: string[] = [];
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    for (const key of Object.keys(row)) {
+      if (!seen.has(key)) {
+        seen.add(key);
+        columns.push(key);
+      }
+    }
+  }
+
+  return {
+    columns,
+    rows: rows.map((row) => columns.map((col) => (row ? row[col] : null))),
+  };
+}
+
+function buildSceneExtractionEnvelopesFromRawResults(rawResults: any): DataEnvelope[] {
+  const envelopes: DataEnvelope[] = [];
+  if (!rawResults || typeof rawResults !== 'object') return envelopes;
+
+  for (const [stepId, stepResult] of Object.entries(rawResults as Record<string, any>)) {
+    if (!SCENE_EXTRACTION_STEP_IDS.has(stepId)) continue;
+    const rows = Array.isArray((stepResult as any)?.data)
+      ? ((stepResult as any).data as Array<Record<string, any>>)
+      : [];
+    if (rows.length === 0) continue;
+
+    const payload = objectRowsToEnvelopePayload(rows);
+    if (payload.columns.length === 0) continue;
+
+    envelopes.push(createDataEnvelope(payload, {
+      type: 'skill_result',
+      source: `scene_reconstruction.${stepId}`,
+      skillId: 'scene_reconstruction',
+      stepId,
+      title: stepId,
+      layer: 'list',
+      format: 'table',
+    }));
+  }
+
+  return envelopes;
+}
+
+async function detectScenesQuickViaSkill(
+  traceProcessorService: ReturnType<typeof getTraceProcessorService>,
+  traceId: string
+): Promise<DetectedScene[]> {
+  await ensureSkillRegistryInitialized();
+
+  const skillExecutor = new SkillExecutor(traceProcessorService);
+  skillExecutor.registerSkills(skillRegistry.getAllSkills());
+
+  const skillResult = await skillExecutor.execute('scene_reconstruction', traceId, {
+    trace_id: traceId,
+  });
+
+  if (!skillResult.success) {
+    throw new Error(skillResult.error || 'scene_reconstruction execution failed');
+  }
+
+  const envelopes = buildSceneExtractionEnvelopesFromRawResults(skillResult.rawResults);
+  return extractDetectedScenesFromEnvelopes(envelopes);
+}
 
 /** Detect app startups from android_startups stdlib view */
 async function detectStartups(
@@ -1629,22 +2177,13 @@ async function detectTapEvents(
 }
 
 /**
- * Quick scene detection function - executes minimal SQL queries to detect scenes
- * without full agent overhead. Uses parallel queries and result caching.
+ * Legacy quick scene detection path.
+ * Kept as fallback when skill-based extraction is unavailable.
  */
-async function detectScenesQuick(
+async function detectScenesQuickLegacy(
   traceProcessorService: ReturnType<typeof getTraceProcessorService>,
   traceId: string
 ): Promise<DetectedScene[]> {
-  // Check cache first
-  const cached = sceneCache.get(traceId);
-  if (cached && Date.now() - cached.timestamp < SCENE_CACHE_TTL) {
-    console.log('[QuickSceneDetect] Cache hit for traceId:', traceId);
-    return cached.scenes;
-  }
-
-  const t0 = Date.now();
-
   // =========================================================================
   // Pre-load Perfetto stdlib modules (parallel)
   // =========================================================================
@@ -1696,11 +2235,45 @@ async function detectScenesQuick(
     return aTs < bTs ? -1 : aTs > bTs ? 1 : 0;
   });
 
+  return scenes;
+}
+
+async function detectScenesQuick(
+  traceProcessorService: ReturnType<typeof getTraceProcessorService>,
+  traceId: string
+): Promise<DetectedScene[]> {
+  const cached = sceneCache.get(traceId);
+  if (cached && Date.now() - cached.timestamp < SCENE_CACHE_TTL) {
+    console.log('[QuickSceneDetect] Cache hit for traceId:', traceId);
+    return cached.scenes;
+  }
+
+  const t0 = Date.now();
+
+  let scenes: DetectedScene[] = [];
+  try {
+    scenes = await detectScenesQuickViaSkill(traceProcessorService, traceId);
+    console.log(`[QuickSceneDetect] Skill extraction path returned ${scenes.length} scenes`);
+    if (scenes.length === 0) {
+      const legacyScenes = await detectScenesQuickLegacy(traceProcessorService, traceId);
+      if (legacyScenes.length > 0) {
+        console.log(`[QuickSceneDetect] Legacy fallback provided ${legacyScenes.length} scenes after empty skill extraction`);
+        scenes = legacyScenes;
+      }
+    }
+  } catch (error: any) {
+    console.warn('[QuickSceneDetect] Skill extraction failed, falling back to legacy SQL path:', error?.message || error);
+    scenes = await detectScenesQuickLegacy(traceProcessorService, traceId);
+  }
+
+  scenes.sort((a, b) => {
+    const aTs = BigInt(a.startTs);
+    const bTs = BigInt(b.startTs);
+    return aTs < bTs ? -1 : aTs > bTs ? 1 : 0;
+  });
+
   console.log(`[QuickSceneDetect] Completed in ${Date.now() - t0}ms, ${scenes.length} scenes`);
-
-  // Store in cache
   sceneCache.set(traceId, { scenes, timestamp: Date.now() });
-
   return scenes;
 }
 
@@ -2059,7 +2632,7 @@ router.get('/:sessionId/report', (req, res) => {
     });
   }
 
-  if (session.status !== 'completed' || !session.result) {
+  if (session.status !== 'completed') {
     return res.status(400).json({
       success: false,
       error: 'Session is not completed yet',
@@ -2067,7 +2640,15 @@ router.get('/:sessionId/report', (req, res) => {
     });
   }
 
-  const result = session.result;
+  const result = recoverResultForSessionIfNeeded(sessionId, session);
+  if (!result) {
+    return res.status(404).json({
+      success: false,
+      error: 'No completed turn result available for this session',
+      hint: `Use /api/agent/${sessionId}/turns to inspect historical turns`,
+    });
+  }
+
   const conclusion = normalizeNarrativeForClient(result.conclusion);
   // Generate simplified report data
   const report = {
@@ -2435,10 +3016,14 @@ const SCENE_DISPLAY_NAMES: Record<SceneCategory, string> = {
   cold_start: '冷启动',
   warm_start: '温启动',
   hot_start: '热启动',
+  scroll_start: '滑动启动',
   scroll: '滑动',
   inertial_scroll: '惯性滑动',
   navigation: '跳转',
   app_switch: '应用切换',
+  screen_on: '屏幕点亮',
+  screen_off: '屏幕熄灭',
+  screen_sleep: '屏幕休眠',
   screen_unlock: '解锁屏幕',
   notification: '通知操作',
   split_screen: '分屏操作',
@@ -2452,10 +3037,14 @@ const SCENE_COLOR_SCHEMES: Record<SceneCategory, TrackEvent['colorScheme']> = {
   cold_start: 'launch',
   warm_start: 'launch',
   hot_start: 'launch',
+  scroll_start: 'scroll',
   scroll: 'scroll',
   inertial_scroll: 'scroll',
   navigation: 'navigation',
   app_switch: 'system',
+  screen_on: 'system',
+  screen_off: 'system',
+  screen_sleep: 'system',
   screen_unlock: 'system',
   notification: 'system',
   split_screen: 'system',
@@ -2496,6 +3085,36 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
     const stepId = env.meta.stepId || '';
     const rows = payloadToObjectRowsLocal(env.data);
     if (rows.length === 0) continue;
+
+    // Step: screen_state_changes (screen on/off/sleep)
+    if (stepId === 'screen_state_changes') {
+      for (const row of rows) {
+        const startTs = normalizeNs(row.ts);
+        const durNs = toBigInt(row.dur);
+        if (!startTs || durNs === null) continue;
+
+        const eventText = String(row.event || '');
+        const type = mapScreenStateEventToSceneType(eventText);
+        if (!type) continue;
+
+        const startNs = BigInt(startTs);
+        const endNs = startNs + durNs;
+        const durationMs = Number(durNs / 1_000_000n);
+
+        scenes.push({
+          type,
+          startTs,
+          endTs: endNs.toString(),
+          durationMs,
+          confidence: 0.9,
+          metadata: {
+            source: 'scene_reconstruction:screen_state_changes',
+            event: eventText,
+          },
+        });
+      }
+      continue;
+    }
 
     // Step: app_launches (startup events)
     if (stepId === 'app_launches') {
@@ -2559,6 +3178,35 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
             source: 'scene_reconstruction:user_gestures',
             moveCount: row.move_count,
             event: row.event,
+          },
+        });
+      }
+      continue;
+    }
+
+    // Step: scroll_initiation (precise scroll start marker)
+    if (stepId === 'scroll_initiation') {
+      for (const row of rows) {
+        const startTs = normalizeNs(row.ts);
+        const durNs = toBigInt(row.dur);
+        if (!startTs || durNs === null) continue;
+
+        const startNs = BigInt(startTs);
+        const endNs = startNs + durNs;
+        const durationMs = Number(durNs / 1_000_000n);
+
+        scenes.push({
+          type: 'scroll_start',
+          startTs,
+          endTs: endNs.toString(),
+          durationMs,
+          confidence: 0.9,
+          appPackage: extractRowAppPackage(row, ['app']),
+          metadata: {
+            source: 'scene_reconstruction:scroll_initiation',
+            gestureId: row.gesture_id,
+            event: row.event,
+            explanation: row.explanation,
           },
         });
       }
@@ -2935,9 +3583,19 @@ function mapSystemEventToSceneType(eventText: string): SceneCategory | null {
   if (!e) return null;
   // Keep unlock mapping strict; broad substring matching causes false positives.
   if (e === '解锁屏幕' || e.includes('锁屏解锁')) return 'screen_unlock';
+  if (e.includes('画中画')) return 'navigation';
   if (e.includes('通知栏') || e.includes('通知')) return 'notification';
   if (e.includes('分屏')) return 'split_screen';
   if (e.includes('Activity')) return 'navigation';
+  return null;
+}
+
+function mapScreenStateEventToSceneType(eventText: string): SceneCategory | null {
+  const e = eventText.trim();
+  if (!e) return null;
+  if (e.includes('点亮')) return 'screen_on';
+  if (e.includes('熄灭')) return 'screen_off';
+  if (e.includes('休眠')) return 'screen_sleep';
   return null;
 }
 
@@ -3086,6 +3744,94 @@ function hasIssueSignalText(text: string): boolean {
   );
 }
 
+function isSceneReplayOnlyQuery(query: string): boolean {
+  const q = String(query || '').toLowerCase();
+  const isSceneQuery = q.includes('场景还原') || q.includes('scene reconstruction');
+  if (!isSceneQuery) return false;
+  // Scene reconstruction in this product is replay-first; quick/replay variants are explicit.
+  return q.includes('仅检测') || q.includes('只检测') || q.includes('quick') || q.includes('replay');
+}
+
+const SCENE_RESPONSE_THRESHOLDS: Record<string, { good: number; acceptable: number }> = {
+  cold_start: { good: 500, acceptable: 1000 },
+  warm_start: { good: 300, acceptable: 600 },
+  hot_start: { good: 100, acceptable: 200 },
+  inertial_scroll: { good: 500, acceptable: 1000 },
+  tap: { good: 100, acceptable: 200 },
+  navigation: { good: 300, acceptable: 500 },
+  app_switch: { good: 500, acceptable: 1000 },
+};
+
+function classifySceneResponse(scene: DetectedScene): '流畅' | '轻微波动' | '明显波动' | '未知' {
+  const metadata = scene.metadata as Record<string, any> | undefined;
+
+  if ((scene.type === 'scroll' || scene.type === 'inertial_scroll') && Number.isFinite(Number(metadata?.averageFps))) {
+    const fps = Number(metadata?.averageFps);
+    if (fps >= 55) return '流畅';
+    if (fps >= 45) return '轻微波动';
+    return '明显波动';
+  }
+
+  const thresholds = SCENE_RESPONSE_THRESHOLDS[scene.type];
+  if (!thresholds) return '未知';
+  if (scene.durationMs <= thresholds.good) return '流畅';
+  if (scene.durationMs <= thresholds.acceptable) return '轻微波动';
+  return '明显波动';
+}
+
+function formatSceneDurationMs(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return '-';
+  if (durationMs >= 1000) return `${(durationMs / 1000).toFixed(2)}s`;
+  return `${Math.round(durationMs)}ms`;
+}
+
+function formatSceneStartTsForNarrative(tsNs: string): string {
+  const ns = toBigInt(tsNs);
+  if (ns === null) return tsNs;
+  const totalMs = Number(ns / 1_000_000n);
+  const seconds = totalMs / 1000;
+  if (!Number.isFinite(seconds)) return tsNs;
+  if (seconds < 60) return `${seconds.toFixed(3)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return `${minutes}m ${remainingSeconds.toFixed(3)}s`;
+}
+
+function buildSceneReplayNarrative(scenes: DetectedScene[]): string {
+  if (!Array.isArray(scenes) || scenes.length === 0) {
+    return '未检测到可回放的用户操作场景。';
+  }
+
+  const sorted = [...scenes].sort((a, b) => {
+    const aTs = toBigInt(a.startTs);
+    const bTs = toBigInt(b.startTs);
+    if (aTs === null || bTs === null) return 0;
+    if (aTs > bTs) return 1;
+    if (aTs < bTs) return -1;
+    return 0;
+  });
+  const maxItems = 12;
+  const sequenceLines = sorted.slice(0, maxItems).map((scene, idx) => {
+    const displayName = SCENE_DISPLAY_NAMES[scene.type] || scene.type;
+    const startTs = formatSceneStartTsForNarrative(scene.startTs);
+    const duration = formatSceneDurationMs(scene.durationMs);
+    const response = classifySceneResponse(scene);
+    const appText = scene.appPackage ? `，应用 ${scene.appPackage}` : '';
+    return `${idx + 1}. [${startTs}] ${displayName}，持续 ${duration}${appText}，响应状态：${response}`;
+  });
+
+  const extraLine = sorted.length > maxItems
+    ? `- 其余 ${sorted.length - maxItems} 个场景可在表格中继续查看。`
+    : '';
+
+  return [
+    `共还原 ${sorted.length} 个操作场景。以下为操作与设备响应事实回放（不含根因推断）：`,
+    '',
+    ...sequenceLines.map((line) => `- ${line}`),
+    extraLine,
+  ].filter(Boolean).join('\n');
+}
+
 function normalizeNarrativeForClient(narrative: string): string {
   const raw = String(narrative || '');
   const trimmed = raw.trim();
@@ -3109,21 +3855,27 @@ function normalizeNarrativeForClient(narrative: string): string {
 function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) {
   const result = session.result;
   if (!result) return;
-  const normalizedConclusion = normalizeNarrativeForClient(result.conclusion);
+  const replayOnlyScene = isSceneReplayOnlyQuery(session.query);
+  const normalizedConclusion = replayOnlyScene
+    ? buildSceneReplayNarrative(session.scenes || [])
+    : normalizeNarrativeForClient(result.conclusion);
   // Fallback: re-derive contract if the orchestrator didn't populate it.
   // Note: mode heuristic uses rounds (available here) as proxy for turnCount
   // (which only the orchestrator knows). Both signal "multi-interaction" analysis.
-  const normalizedConclusionContract =
-    result.conclusionContract ||
-    deriveConclusionContract(normalizedConclusion, {
-      mode: result.rounds > 1 ? 'focused_answer' : 'initial_report',
-    }) ||
-    undefined;
+  const normalizedConclusionContract = replayOnlyScene
+    ? undefined
+    : (
+      result.conclusionContract ||
+      deriveConclusionContract(normalizedConclusion, {
+        mode: result.rounds > 1 ? 'focused_answer' : 'initial_report',
+      }) ||
+      undefined
+    );
   const resultForClient =
     normalizedConclusion === result.conclusion && normalizedConclusionContract === result.conclusionContract
       ? result
       : { ...result, conclusion: normalizedConclusion, conclusionContract: normalizedConclusionContract };
-  const clientFindings = buildClientFindings(result.findings, session.scenes || []);
+  const clientFindings = replayOnlyScene ? [] : buildClientFindings(result.findings, session.scenes || []);
 
   // Generate HTML report
   let reportUrl: string | undefined;

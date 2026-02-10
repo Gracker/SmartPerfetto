@@ -97,6 +97,30 @@ function createFollowUpResolutionNeedsEnrichment(): FollowUpResolution {
   };
 }
 
+function createStartupFollowUpResolutionNeedsEnrichment(): FollowUpResolution {
+  return {
+    isFollowUp: true,
+    resolvedParams: { startup_id: 12 },
+    focusIntervals: [
+      {
+        id: 12,
+        processName: '',
+        startTs: '0',
+        endTs: '0',
+        priority: 1,
+        label: '启动事件 12',
+        metadata: {
+          sourceEntityType: 'startup',
+          sourceEntityId: 12,
+          startup_id: 12,
+          needsEnrichment: true,
+        },
+      },
+    ],
+    confidence: 0.9,
+  };
+}
+
 function createExecutionContext(query: string, aspects: string[] = []): ExecutionContext {
   return {
     query,
@@ -265,8 +289,9 @@ describe('DirectDrillDownExecutor', () => {
 
   it('uses traceProcessorService.query(traceId, sql) for interval enrichment', async () => {
     const queryMock = jest.fn<any>().mockResolvedValue({
-      columns: ['start_ts', 'end_ts', 'process_name', 'jank_type', 'layer_name', 'vsync_missed'],
+      columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type', 'layer_name', 'vsync_missed'],
       rows: [[
+        1435500,
         '123456789000000',
         '123456889000000',
         'com.example.app',
@@ -286,11 +311,108 @@ describe('DirectDrillDownExecutor', () => {
 
     expect(queryMock).toHaveBeenCalledWith(
       'trace-1',
-      expect.stringContaining('WHERE af.frame_id = 1435500')
+      expect.stringContaining('COALESCE(a.display_frame_token, a.surface_frame_token) = 1435500')
     );
 
     const tasks = mockExecuteTasks.mock.calls[0][0] as any[];
     expect(tasks[0].interval.startTs).toBe('123456789000000');
     expect(tasks[0].interval.endTs).toBe('123456889000000');
+  });
+
+  it('falls back to doFrame alias mapping when frame token enrichment misses', async () => {
+    const queryMock = jest.fn<any>()
+      // Primary lookup (actual_frame_timeline_slice by frame token) misses.
+      .mockResolvedValueOnce({ columns: [], rows: [] })
+      // Legacy lookup (android_frames.frame_id) misses.
+      .mockResolvedValueOnce({ columns: [], rows: [] })
+      // Alias lookup via Choreographer#doFrame name hit.
+      .mockResolvedValueOnce({
+        columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type', 'layer_name'],
+        rows: [[
+          1435611,
+          '223456789000000',
+          '223456889000000',
+          'com.example.app',
+          'App Deadline Missed',
+          'SurfaceView',
+        ]],
+      });
+
+    const followUp: FollowUpResolution = {
+      isFollowUp: true,
+      resolvedParams: { frame_id: 1435596 },
+      focusIntervals: [
+        {
+          id: 1435596,
+          processName: '',
+          startTs: '0',
+          endTs: '0',
+          priority: 1,
+          label: '帧 1435596',
+          metadata: {
+            sourceEntityType: 'frame',
+            sourceEntityId: 1435596,
+            frame_id: 1435596,
+            needsEnrichment: true,
+          },
+        },
+      ],
+      confidence: 0.9,
+    };
+
+    const executor = new DirectDrillDownExecutor(followUp, services);
+    const ctx = createExecutionContext('分析 1435596 这一帧的卡顿原因', ['frame']);
+    ctx.options.traceProcessorService = {
+      query: queryMock,
+    };
+
+    await executor.execute(ctx, emitter);
+
+    expect(queryMock).toHaveBeenCalledTimes(3);
+    expect(queryMock.mock.calls[0][1]).toContain('actual_frame_timeline_slice');
+    expect(queryMock.mock.calls[1][1]).toContain('FROM android_frames');
+    expect(queryMock.mock.calls[2][1]).toContain('Choreographer#doFrame 1435596');
+
+    const tasks = mockExecuteTasks.mock.calls[0][0] as any[];
+    expect(tasks[0].interval.startTs).toBe('223456789000000');
+    expect(tasks[0].interval.endTs).toBe('223456889000000');
+    expect(tasks[0].interval.metadata.frame_id).toBe('1435611');
+    expect(tasks[0].interval.metadata.resolvedFrom).toBe('doframe_alias');
+  });
+
+  it('routes startup drill-down to startup_detail and enriches startup interval', async () => {
+    const queryMock = jest.fn<any>().mockResolvedValue({
+      columns: ['startup_id', 'start_ts', 'end_ts', 'dur_ms', 'process_name', 'startup_type', 'ttid_ms', 'ttfd_ms'],
+      rows: [[
+        12,
+        '323456789000000',
+        '323457089000000',
+        300,
+        'com.example.app',
+        'warm',
+        280,
+        320,
+      ]],
+    });
+
+    const executor = new DirectDrillDownExecutor(createStartupFollowUpResolutionNeedsEnrichment(), services);
+    const ctx = createExecutionContext('分析启动 12 的详细瓶颈', ['startup']);
+    ctx.options.traceProcessorService = {
+      query: queryMock,
+    };
+
+    await executor.execute(ctx, emitter);
+
+    expect(queryMock).toHaveBeenCalledWith(
+      'trace-1',
+      expect.stringContaining('WHERE s.startup_id = 12')
+    );
+
+    const tasks = mockExecuteTasks.mock.calls[0][0] as any[];
+    const skillIds = extractSkillIdsFromTasks(tasks);
+    expect(skillIds).toEqual(['startup_detail']);
+    expect(tasks[0].interval.startTs).toBe('323456789000000');
+    expect(tasks[0].interval.endTs).toBe('323457089000000');
+    expect(tasks[0].interval.metadata.startup_type).toBe('warm');
   });
 });

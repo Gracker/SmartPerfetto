@@ -1,0 +1,100 @@
+# =============================================================================
+# 主线程状态分布（原子 Skill）
+# =============================================================================
+# 统计指定时间区间主线程 Running/Runnable/Blocked 状态及阻塞函数分布。
+
+name: main_thread_states_in_range
+version: "1.0"
+type: atomic
+category: app_lifecycle
+
+meta:
+  display_name: "主线程状态分布 (区间)"
+  description: "统计区间内主线程状态、阻塞函数与占比"
+  icon: "timeline"
+  tags: [main_thread, state, blocking, sched, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: top_k
+    type: integer
+    required: false
+    description: "返回 TopK 条目，默认 10"
+
+display:
+  level: key
+  layer: deep
+  title: "主线程状态分布"
+  columns:
+    - name: state
+      label: "状态"
+      type: string
+    - name: state_desc
+      label: "状态说明"
+      type: string
+    - name: blocked_function
+      label: "阻塞函数"
+      type: string
+      format: code
+    - name: total_dur_ms
+      label: "总耗时"
+      type: duration
+      format: duration_ms
+    - name: pct
+      label: "区间占比"
+      type: percentage
+      format: percentage
+    - name: count
+      label: "次数"
+      type: number
+      format: compact
+
+sql: |
+  WITH main_thread AS (
+    SELECT t.utid
+    FROM thread t
+    JOIN process p ON t.upid = p.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND t.tid = p.pid
+    LIMIT 1
+  )
+  SELECT
+    ts.state,
+    CASE ts.state
+      WHEN 'Running' THEN 'Running (CPU执行)'
+      WHEN 'R' THEN 'Runnable (等待调度)'
+      WHEN 'R+' THEN 'Runnable+ (抢占等待)'
+      WHEN 'S' THEN 'Sleeping (主动睡眠)'
+      WHEN 'D' THEN 'Disk Sleep (IO等待)'
+      WHEN 'I' THEN 'Idle (空闲)'
+      ELSE ts.state
+    END as state_desc,
+    COALESCE(ts.blocked_function, '-') as blocked_function,
+    ROUND(SUM(
+      MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts})
+    ) / 1e6, 2) as total_dur_ms,
+    ROUND(100.0 * SUM(
+      MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts})
+    ) / NULLIF(${end_ts} - ${start_ts}, 0), 1) as pct,
+    COUNT(*) as count
+  FROM thread_state ts
+  JOIN main_thread mt ON ts.utid = mt.utid
+  WHERE ts.ts < ${end_ts}
+    AND ts.ts + ts.dur > ${start_ts}
+  GROUP BY ts.state, ts.blocked_function
+  ORDER BY total_dur_ms DESC
+  LIMIT ${top_k|10}
+
+output:
+  format: structured

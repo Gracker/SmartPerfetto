@@ -1,0 +1,112 @@
+# =============================================================================
+# 启动归因分解（原子 Skill）
+# =============================================================================
+
+name: startup_breakdown_in_range
+version: "1.0"
+type: atomic
+category: app_lifecycle
+
+meta:
+  display_name: "启动归因分解 (区间)"
+  description: "统计启动阶段各归因原因耗时占比"
+  icon: "analytics"
+  tags: [startup, breakdown, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+    - android.startup.startup_breakdowns
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+  - name: top_k
+    type: integer
+    required: false
+
+display:
+  level: key
+  layer: overview
+  title: "启动延迟归因分析"
+  columns:
+    - name: reason
+      label: "延迟原因"
+      type: string
+    - name: count
+      label: "次数"
+      type: number
+      format: compact
+    - name: total_dur_ms
+      label: "总耗时"
+      type: duration
+      format: duration_ms
+    - name: avg_dur_ms
+      label: "平均耗时"
+      type: duration
+      format: duration_ms
+    - name: max_dur_ms
+      label: "最大耗时"
+      type: duration
+      format: duration_ms
+    - name: percent
+      label: "占比"
+      type: percentage
+      format: percentage
+    - name: category
+      label: "类别"
+      type: string
+
+sql: |
+  SELECT
+    b.reason,
+    COUNT(*) as count,
+    SUM(b.dur) / 1e6 as total_dur_ms,
+    ROUND(AVG(b.dur) / 1e6, 2) as avg_dur_ms,
+    ROUND(MAX(b.dur) / 1e6, 2) as max_dur_ms,
+    ROUND(100.0 * SUM(b.dur) / (
+      SELECT SUM(dur) FROM android_startup_opinionated_breakdown
+      WHERE startup_id IN (
+        SELECT startup_id FROM android_startups
+        WHERE (package GLOB '${package}*' OR '${package}' = '')
+          AND (${startup_id} IS NULL OR startup_id = ${startup_id})
+          AND ('${startup_type}' = '' OR startup_type = '${startup_type}')
+          AND (${start_ts} IS NULL OR ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ts + dur <= ${end_ts})
+      )
+    ), 1) as percent,
+    CASE
+      WHEN b.reason GLOB '*binder*' THEN 'IPC'
+      WHEN b.reason GLOB '*io*' OR b.reason GLOB '*dlopen*' THEN 'IO'
+      WHEN b.reason GLOB '*gc*' OR b.reason GLOB '*memory*' THEN 'Memory'
+      WHEN b.reason GLOB '*lock*' OR b.reason GLOB '*contention*' THEN 'Lock'
+      WHEN b.reason GLOB '*inflate*' THEN 'Layout'
+      WHEN b.reason GLOB '*verify*' OR b.reason GLOB '*dex*' THEN 'ClassLoading'
+      ELSE 'Other'
+    END as category
+  FROM android_startup_opinionated_breakdown b
+  JOIN android_startups s ON b.startup_id = s.startup_id
+  WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+  GROUP BY b.reason
+  ORDER BY total_dur_ms DESC
+  LIMIT ${top_k|15}
+
+output:
+  format: structured

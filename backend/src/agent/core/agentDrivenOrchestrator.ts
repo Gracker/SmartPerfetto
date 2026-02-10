@@ -45,6 +45,12 @@ import { detectAdbContext } from '../../services/adb';
 import { summarizeTraceAgentState } from '../state/traceAgentState';
 import type { FocusInterval } from '../strategies/types';
 import { detectTraceConfig } from './executors/traceConfigDetector';
+import {
+  DEFAULT_DOMAIN_MANIFEST,
+  getAspectEvidenceChecklist,
+  getModeSpecificEvidenceChecklist,
+  shouldPreferHypothesisLoop,
+} from '../config/domainManifest';
 
 // New Agent-Driven Architecture components (v2.0)
 import { InterventionController, InterventionPoint, InterventionOption } from './interventionController';
@@ -392,6 +398,11 @@ export class AgentDrivenOrchestrator extends EventEmitter {
 
       let strategyMatchResult: StrategyMatchResult | null = null;
       let preferHypothesisLoop = false;
+      const blockedStrategyIds = new Set(
+        (effectiveOptions.blockedStrategyIds || [])
+          .map((id) => String(id || '').trim())
+          .filter(Boolean)
+      );
 
       if (followUpType !== 'clarify' && followUpType !== 'compare' && followUpType !== 'extend' && !isDrillDown) {
         // Normal path: enhanced strategy matching with LLM semantic understanding.
@@ -403,21 +414,31 @@ export class AgentDrivenOrchestrator extends EventEmitter {
         }
 
         strategyMatchResult = await this.strategyRegistry.matchEnhanced(query, intent, traceContext);
+        if (
+          strategyMatchResult.strategy &&
+          blockedStrategyIds.has(strategyMatchResult.strategy.id)
+        ) {
+          const blockedId = strategyMatchResult.strategy.id;
+          emitter.log(`[StrategySelection] Matched strategy "${blockedId}" is blocked by route options, falling back`);
+          strategyMatchResult = {
+            strategy: null,
+            matchMethod: 'none',
+            confidence: 0,
+            shouldFallback: true,
+            fallbackReason: `策略 ${blockedId} 已被当前入口禁用`,
+          };
+        }
         if (strategyMatchResult.strategy) {
           const forceStrategy = ['1', 'true', 'yes', 'on'].includes(
             String(process.env.SMARTPERFETTO_FORCE_STRATEGY || '').trim().toLowerCase()
           );
-          const isScrollingStrategy = strategyMatchResult.strategy.id === 'scrolling';
-          const isSceneReconstructionStrategy =
-            strategyMatchResult.strategy.id === 'scene_reconstruction' ||
-            strategyMatchResult.strategy.id === 'scene_reconstruction_quick';
-          // Scrolling/jank strategy needs deterministic staged execution so frame list
-          // can be bound with per-frame expandable details.
-          preferHypothesisLoop =
-            !forceStrategy &&
-            traceAgentState.preferences?.defaultLoopMode === 'hypothesis_experiment' &&
-            !isScrollingStrategy &&
-            !isSceneReconstructionStrategy;
+          // Domain-manifest policy decides whether strategy should keep deterministic path
+          // even when user preference is hypothesis_experiment.
+          preferHypothesisLoop = shouldPreferHypothesisLoop({
+            strategyId: strategyMatchResult.strategy.id,
+            forceStrategy,
+            preferredLoopMode: traceAgentState.preferences?.defaultLoopMode,
+          });
         }
       }
 
@@ -920,50 +941,19 @@ export class AgentDrivenOrchestrator extends EventEmitter {
       ? aspects.map(a => String(a || '').toLowerCase())
       : [];
 
-    const aspectEvidenceMap: Record<string, string[]> = {
-      scrolling: ['滑动会话与区间级 FPS/掉帧率'],
-      jank: ['卡顿帧列表、jank 类型分布与严重度'],
-      frame: ['App/SF 帧时序、帧预算与超时类型'],
-      cpu: ['主线程与关键线程 CPU 调度、频率与等待'],
-      memory: ['内存分配热点、GC 暂停与内存压力'],
-      binder: ['Binder 调用耗时、阻塞链与锁竞争'],
-      startup: ['启动阶段拆解与关键阶段耗时'],
-      interaction: ['输入到渲染链路延迟与交互响应'],
-      anr: ['阻塞线程、等待对象与 ANR 证据链'],
-      system: ['系统负载、热限频、I/O 抖动与后台干扰'],
-      gpu: ['GPU 渲染耗时、Fence 等待与合成延迟'],
-      render: ['RenderThread/绘制阶段耗时与瓶颈'],
-      timeline: ['关键事件时间线与关联区间'],
-    };
-
-    for (const aspect of normalizedAspects) {
-      const mapped = aspectEvidenceMap[aspect];
-      if (!mapped) continue;
-      for (const evidence of mapped) {
-        evidences.add(evidence);
-      }
+    for (const evidence of getAspectEvidenceChecklist(normalizedAspects, DEFAULT_DOMAIN_MANIFEST)) {
+      evidences.add(evidence);
     }
 
     // Baseline evidence always comes first.
-    evidences.add('关键指标基线（时间窗、进程、刷新率口径一致）');
+    evidences.add(DEFAULT_DOMAIN_MANIFEST.baselineEvidence);
 
-    if (mode === 'compare') {
-      evidences.add('对比对象统一口径指标（同窗口/同刷新率）');
-    } else if (mode === 'clarify') {
-      evidences.add('已确认发现与证据链摘要');
-    } else if (mode === 'drill_down') {
-      evidences.add('目标实体区间内的逐层证据（frame/cpu/binder/memory）');
-    } else if (mode === 'extend') {
-      evidences.add('未覆盖实体的同类证据补齐与模式一致性');
+    for (const evidence of getModeSpecificEvidenceChecklist(mode, DEFAULT_DOMAIN_MANIFEST)) {
+      evidences.add(evidence);
     }
 
-    const fallbackEvidence = [
-      '帧时序与掉帧统计',
-      '线程调度与关键耗时切片',
-      'IPC/锁竞争与系统侧干扰指标',
-    ];
     if (evidences.size === 1) {
-      for (const evidence of fallbackEvidence) {
+      for (const evidence of DEFAULT_DOMAIN_MANIFEST.fallbackEvidence) {
         evidences.add(evidence);
       }
     }

@@ -1,0 +1,89 @@
+# =============================================================================
+# 启动主线程调度延迟（原子 Skill）
+# =============================================================================
+
+name: startup_sched_latency_in_range
+version: "1.0"
+type: atomic
+category: kernel
+
+meta:
+  display_name: "启动调度延迟 (区间)"
+  description: "统计启动阶段主线程 Runnable 等待时延"
+  icon: "schedule"
+  tags: [startup, sched, latency, main_thread, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+    - sched
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+
+display:
+  level: detail
+  layer: list
+  title: "启动期间调度延迟"
+  columns:
+    - name: state
+      label: "状态"
+      type: string
+    - name: count
+      label: "次数"
+      type: number
+      format: compact
+    - name: total_wait_ms
+      label: "总等待"
+      type: duration
+      format: duration_ms
+    - name: avg_wait_ms
+      label: "平均等待"
+      type: duration
+      format: duration_ms
+    - name: max_wait_ms
+      label: "最大等待"
+      type: duration
+      format: duration_ms
+    - name: severe_delays
+      label: "严重延迟次数"
+      type: number
+
+sql: |
+  SELECT
+    ts.state,
+    COUNT(*) as count,
+    SUM(ts.dur) / 1e6 as total_wait_ms,
+    ROUND(AVG(ts.dur) / 1e6, 2) as avg_wait_ms,
+    ROUND(MAX(ts.dur) / 1e6, 2) as max_wait_ms,
+    SUM(CASE WHEN ts.dur / 1e6 > 8 THEN 1 ELSE 0 END) as severe_delays
+  FROM thread_state ts
+  JOIN android_startup_threads st ON ts.utid = st.utid
+  JOIN android_startups s ON st.startup_id = s.startup_id
+  WHERE st.is_main_thread = 1
+    AND (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+    AND ts.state IN ('R', 'R+')
+    AND ts.ts >= s.ts
+    AND ts.ts <= s.ts + s.dur
+  GROUP BY ts.state
+
+output:
+  format: structured

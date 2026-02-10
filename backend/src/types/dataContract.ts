@@ -50,7 +50,7 @@ export const VALID_COLUMN_FORMATS = [
   'relative',    // Relative to some base (e.g., "+10ms")
   'percentage',  // Show as X%
   'duration_ms', // Show duration in ms
-  'duration_us', // Show duration in μs
+  'duration_us', // Legacy alias: interpret input unit, display in ms
   'timestamp_relative', // Show as time offset from trace start
   'timestamp_absolute', // Show as absolute timestamp
   'bytes_human', // Show as KB/MB/GB
@@ -153,9 +153,9 @@ export const DEFAULT_COLUMN_PATTERNS: Array<{
   // _ms suffix: value is already in milliseconds (e.g., vsync_period_ms = 8.33)
   { pattern: /_ms$/i,
     definition: { type: 'duration', format: 'duration_ms', unit: 'ms' } },
-  // _us suffix: value is already in microseconds
+  // _us suffix: value is in microseconds, normalize display to ms
   { pattern: /_us$/i,
-    definition: { type: 'duration', format: 'duration_us', unit: 'us' } },
+    definition: { type: 'duration', format: 'duration_ms', unit: 'us' } },
   // _ns suffix: value is already in nanoseconds
   { pattern: /_ns$/i,
     definition: { type: 'duration', format: 'duration_ms', unit: 'ns' } },

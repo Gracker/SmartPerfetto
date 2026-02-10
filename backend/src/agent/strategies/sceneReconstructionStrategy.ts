@@ -19,7 +19,13 @@ import {
   StageDefinition,
   FocusInterval,
   IntervalHelpers,
+  StageTaskTemplate,
 } from './types';
+import {
+  getSceneReconstructionRoutes,
+  matchesSceneReconstructionRoute,
+  type SceneReconstructionRouteRule,
+} from '../config/domainManifest';
 
 // =============================================================================
 // Scene Types (matches backend SceneCategory)
@@ -136,6 +142,12 @@ function extractScenesAsIntervals(
 
             const durationMs = nsToMs(dur);
             const priority = computeScenePriority(sceneType, durationMs, row);
+            const startupId = Number(row.startup_id || row.startupId || intervals.length + 1);
+            const normalizedStartupId = Number.isFinite(startupId) && startupId > 0
+              ? startupId
+              : intervals.length + 1;
+            const ttidMs = Number(row.ttid_ms || row.ttidMs);
+            const ttfdMs = Number(row.ttfd_ms || row.ttfdMs);
 
             intervals.push({
               id: intervals.length,
@@ -147,7 +159,14 @@ function extractScenesAsIntervals(
               metadata: {
                 sceneType,
                 durationMs,
+                startupId: normalizedStartupId,
+                startup_id: normalizedStartupId,
                 startupType: startupType || undefined,
+                startup_type: startupType || undefined,
+                ttidMs: Number.isFinite(ttidMs) ? ttidMs : undefined,
+                ttid_ms: Number.isFinite(ttidMs) ? ttidMs : undefined,
+                ttfdMs: Number.isFinite(ttfdMs) ? ttfdMs : undefined,
+                ttfd_ms: Number.isFinite(ttfdMs) ? ttfdMs : undefined,
                 sourceStepId: stepId,
               },
             });
@@ -485,6 +504,90 @@ function computeScenePriority(sceneType: string, durationMs: number, row: any): 
   return priority;
 }
 
+function isStartupSceneInterval(interval: FocusInterval): boolean {
+  const sceneType = String(interval.metadata?.sceneType || '').toLowerCase();
+  return sceneType === 'cold_start' || sceneType === 'warm_start' || sceneType === 'hot_start';
+}
+
+function createRouteDrivenTaskTemplate(route: SceneReconstructionRouteRule): StageTaskTemplate {
+  return {
+    agentId: route.agentId,
+    domain: route.domain,
+    scope: 'per_interval',
+    priority: route.priority ?? 1,
+    executionMode: 'direct_skill',
+    directSkillId: route.directSkillId,
+    intervalFilter: (interval) => {
+      const sceneType = String(interval.metadata?.sceneType || '');
+      return matchesSceneReconstructionRoute(sceneType, route);
+    },
+    paramMapping: { ...(route.paramMapping || {}) },
+    ...(route.skillParams ? { skillParams: route.skillParams } : {}),
+    descriptionTemplate: route.descriptionTemplate || '分析场景: {{scopeLabel}}',
+  };
+}
+
+function buildLegacySceneAnalysisTasks(): StageTaskTemplate[] {
+  return [
+    {
+      agentId: 'startup_agent',
+      domain: 'startup',
+      scope: 'per_interval',
+      priority: 1,
+      executionMode: 'direct_skill',
+      directSkillId: 'startup_detail',
+      intervalFilter: isStartupSceneInterval,
+      paramMapping: {
+        startup_id: 'startupId',
+        start_ts: 'startTs',
+        end_ts: 'endTs',
+        dur_ms: 'durationMs',
+        package: 'processName',
+        startup_type: 'startupType',
+        ttid_ms: 'ttidMs',
+        ttfd_ms: 'ttfdMs',
+      },
+      descriptionTemplate: '分析启动场景: {{scopeLabel}}',
+    },
+    {
+      agentId: 'frame_agent',
+      domain: 'scroll',
+      scope: 'per_interval',
+      priority: 1,
+      executionMode: 'direct_skill',
+      directSkillId: 'scrolling_analysis',
+      intervalFilter: (interval) => !isStartupSceneInterval(interval),
+      paramMapping: {
+        start_ts: 'startTs',
+        end_ts: 'endTs',
+        package: 'processName',
+      },
+      skillParams: {
+        enable_frame_details: false,
+      },
+      descriptionTemplate: '分析帧性能: {{scopeLabel}}',
+    },
+  ];
+}
+
+function buildSceneAnalysisTasksFromManifest(): StageTaskTemplate[] {
+  const routes = getSceneReconstructionRoutes();
+  const tasks = routes
+    .filter(route => (
+      route
+      && route.agentId
+      && route.domain
+      && route.directSkillId
+      && typeof route.descriptionTemplate === 'string'
+      && route.paramMapping
+      && typeof route.paramMapping === 'object'
+    ))
+    .map(route => createRouteDrivenTaskTemplate(route));
+
+  if (tasks.length > 0) return tasks;
+  return buildLegacySceneAnalysisTasks();
+}
+
 // =============================================================================
 // Stage Definitions
 // =============================================================================
@@ -537,25 +640,7 @@ const stage2_problemSceneAnalysis: StageDefinition = {
   name: 'problem_scene_analysis',
   description: '分析性能问题场景',
   progressMessageTemplate: '阶段 {{stageIndex}}/{{totalStages}}: 分析问题场景',
-  tasks: [
-    {
-      agentId: 'frame_agent',
-      domain: 'scroll',
-      scope: 'per_interval',
-      priority: 1,
-      executionMode: 'direct_skill',
-      directSkillId: 'scrolling_analysis',
-      paramMapping: {
-        start_ts: 'startTs',
-        end_ts: 'endTs',
-        package: 'processName',
-      },
-      skillParams: {
-        enable_frame_details: false,
-      },
-      descriptionTemplate: '分析帧性能: {{scopeLabel}}',
-    },
-  ],
+  tasks: buildSceneAnalysisTasksFromManifest(),
 };
 
 // =============================================================================

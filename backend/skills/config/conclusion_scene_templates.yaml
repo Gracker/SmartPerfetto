@@ -1,0 +1,13 @@
+version: 1
+scenes:
+  # Override layer for project-specific tuning.
+  # Keep this file focused on deltas from conclusion_scene_templates.base.yaml.
+  - id: jank
+    output_requirement_lines:
+      - "- 若结论包含主线程长耗时/长 slice，必须继续回答“{{deep_reason_label}}”，候选包括：业务负载重 / 小核摆放 / 大核低频 / 调度延迟 / Binder 同步阻塞 / 频率爬升慢。"
+      - "- 每个“{{deep_reason_label}}”必须绑定至少 1 个数值证据（时长/占比/频率/等待时间）。"
+      - "- “资源问题”必须优先判别属于哪类：负载高 / 频率不足 / 调度延迟 / 核心摆放 / 阻塞等待。"
+      - "- 术语边界：CPU限频/调度延迟/核心摆放/阻塞等待 只能放在资源问题，不要写到放大因素。"
+
+  - id: startup
+    next_step_line: "- “下一步”优先给出启动阶段拆分与最慢阶段下钻动作，必要时补充冷/温/热启动分型验证。"

@@ -113,4 +113,34 @@ describe('intentUnderstanding', () => {
       expect.arrayContaining([expect.objectContaining({ type: 'frame', id: 1435500 })])
     );
   });
+
+  test('extracts startup id and forces drill_down for startup follow-up queries', async () => {
+    const modelRouter = {
+      callWithFallback: jest.fn().mockResolvedValue({
+        success: true,
+        response: JSON.stringify({
+          primaryGoal: '分析启动事件',
+          aspects: ['startup'],
+          expectedOutputType: 'diagnosis',
+          complexity: 'moderate',
+          followUpType: 'extend',
+          referencedEntities: [{ type: 'startup', id: '12' }],
+          extractedParams: { startup_id: '12' },
+        }),
+      }),
+    } as unknown as ModelRouter;
+
+    const intent = await understandIntent(
+      '分析启动 12 的详细瓶颈',
+      createSessionContext(2),
+      modelRouter,
+      createEmitter()
+    );
+
+    expect(intent.followUpType).toBe('drill_down');
+    expect(intent.extractedParams?.startup_id).toBe(12);
+    expect(intent.referencedEntities).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'startup', id: 12 })])
+    );
+  });
 });

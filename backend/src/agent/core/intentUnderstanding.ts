@@ -114,7 +114,7 @@ export async function understandIntent(
     if (implicitCarry) {
       emitter.log(`Intent carry-over: resolved implicit ${implicitCarry.entityType} -> ${implicitCarry.entityId}`);
     }
-    if ((isFollowUp || deterministicRefs.frameIds.length > 0 || deterministicRefs.sessionIds.length > 0) &&
+    if ((isFollowUp || deterministicRefs.frameIds.length > 0 || deterministicRefs.sessionIds.length > 0 || deterministicRefs.startupIds.length > 0) &&
         hasSpecificEntityRef(parsed) &&
         parsed.followUpType !== 'compare' &&
         parsed.followUpType !== 'clarify') {
@@ -186,6 +186,7 @@ ${entitiesSection}
 ## 实体提取规则
 - 帧引用: "帧123"、"frame 123"、"第123帧"、"帧号123"、"frame_id=123" → { "type": "frame", "id": 123 }
 - 会话引用: "会话2"、"session 2"、"第2个滑动会话"、"scroll session 2" → { "type": "session", "id": 2 }
+- 启动引用: "启动12"、"startup 12"、"launch #12"、"启动事件12" → { "type": "startup", "id": 12 }
 - 进程引用: "com.example.app"、"包名xxx" → { "type": "process", "id": "com.example.app" }
 - 时间范围（支持多种格式）:
   - "从1.2秒到1.5秒" → { "type": "time_range", "value": { "start": "1.2s", "end": "1.5s" } }
@@ -198,6 +199,7 @@ ${entitiesSection}
 - 将 referencedEntities 中的 id 转换为 skill 可用的参数
 - frame 实体 → frame_id 参数
 - session 实体 → session_id 参数
+- startup 实体 → startup_id 参数
 - process 实体 → process_name 参数`;
 }
 
@@ -216,6 +218,9 @@ const DRILL_DOWN_PATTERNS = [
   /session\s*[:=：#]?\s*[0-9][0-9,，_\s]*/i,
   /会话\s*[:=：#]?\s*[0-9][0-9,，_\s]*/,
   /滑动会话\s*[:=：#]?\s*[0-9][0-9,，_\s]*/,
+  /startup\s*[:=：#]?\s*[0-9][0-9,，_\s]*/i,
+  /launch\s*[:=：#]?\s*[0-9][0-9,，_\s]*/i,
+  /启动(?:事件)?\s*[:=：#]?\s*[0-9][0-9,，_\s]*/,
   // Time range references
   /从.*到.*秒/, /\d+\.?\d*\s*[秒s].*[到~\-].*\d+\.?\d*\s*[秒s]/i,
   /\d+\s*ms.*[到~\-].*\d+\s*ms/i,
@@ -240,11 +245,13 @@ function parseLooseInteger(input: any): number | null {
 interface DeterministicEntityRefs {
   frameIds: number[];
   sessionIds: number[];
+  startupIds: number[];
 }
 
 function extractDeterministicEntityRefs(query: string): DeterministicEntityRefs {
   const frameIds = new Set<number>();
   const sessionIds = new Set<number>();
+  const startupIds = new Set<number>();
 
   const framePatterns = [
     /(?:frame(?:_id)?|frame\s*id|帧(?:号)?)\s*[:=：#]?\s*([0-9][0-9,，_\s]*)/gi,
@@ -255,6 +262,11 @@ function extractDeterministicEntityRefs(query: string): DeterministicEntityRefs 
   const sessionPatterns = [
     /(?:session|会话|滑动会话)\s*[:=：#]?\s*([0-9][0-9,，_\s]*)/gi,
     /第\s*([0-9][0-9,，_\s]*)\s*(?:个)?\s*(?:会话|session)/gi,
+  ];
+
+  const startupPatterns = [
+    /(?:startup|launch|启动(?:事件)?)\s*[:=：#]?\s*([0-9][0-9,，_\s]*)/gi,
+    /第\s*([0-9][0-9,，_\s]*)\s*(?:个)?\s*(?:启动|startup|launch)/gi,
   ];
 
   for (const pattern of framePatterns) {
@@ -269,10 +281,17 @@ function extractDeterministicEntityRefs(query: string): DeterministicEntityRefs 
       if (n !== null) sessionIds.add(n);
     }
   }
+  for (const pattern of startupPatterns) {
+    for (const m of query.matchAll(pattern)) {
+      const n = parseLooseInteger(m[1]);
+      if (n !== null) startupIds.add(n);
+    }
+  }
 
   return {
     frameIds: Array.from(frameIds),
     sessionIds: Array.from(sessionIds),
+    startupIds: Array.from(startupIds),
   };
 }
 
@@ -288,11 +307,16 @@ function normalizeIntentEntityIds(intent: Intent): void {
       (intent.extractedParams as any).session_id = sessionId;
       delete (intent.extractedParams as any).sessionId;
     }
+    const startupId = parseLooseInteger((intent.extractedParams as any).startup_id ?? (intent.extractedParams as any).startupId);
+    if (startupId !== null) {
+      (intent.extractedParams as any).startup_id = startupId;
+      delete (intent.extractedParams as any).startupId;
+    }
   }
 
   if (!Array.isArray(intent.referencedEntities)) return;
   intent.referencedEntities = intent.referencedEntities.map((entity) => {
-    if (entity.type !== 'frame' && entity.type !== 'session') return entity;
+    if (entity.type !== 'frame' && entity.type !== 'session' && entity.type !== 'startup') return entity;
     const id = entity.value !== undefined ? entity.value : entity.id;
     const normalized = parseLooseInteger(id);
     if (normalized === null) return entity;
@@ -320,6 +344,14 @@ function mergeDeterministicRefsIntoIntent(intent: Intent, refs: DeterministicEnt
     if (!hasSessionRef) referenced.push({ type: 'session', id: refs.sessionIds[0] });
   }
 
+  if (refs.startupIds.length > 0) {
+    if (parseLooseInteger((extracted as any).startup_id) === null) {
+      (extracted as any).startup_id = refs.startupIds[0];
+    }
+    const hasStartupRef = referenced.some(e => e.type === 'startup');
+    if (!hasStartupRef) referenced.push({ type: 'startup', id: refs.startupIds[0] });
+  }
+
   if (Object.keys(extracted).length > 0) intent.extractedParams = extracted;
   if (referenced.length > 0) intent.referencedEntities = referenced;
 }
@@ -328,13 +360,14 @@ function hasSpecificEntityRef(intent: Intent): boolean {
   if (intent.extractedParams) {
     if (parseLooseInteger((intent.extractedParams as any).frame_id) !== null) return true;
     if (parseLooseInteger((intent.extractedParams as any).session_id) !== null) return true;
+    if (parseLooseInteger((intent.extractedParams as any).startup_id) !== null) return true;
   }
   return !!intent.referencedEntities?.some(
-    e => (e.type === 'frame' || e.type === 'session') && parseLooseInteger(e.id ?? e.value) !== null
+    e => (e.type === 'frame' || e.type === 'session' || e.type === 'startup') && parseLooseInteger(e.id ?? e.value) !== null
   );
 }
 
-type ImplicitEntityType = 'frame' | 'session';
+type ImplicitEntityType = 'frame' | 'session' | 'startup';
 
 function inferImplicitEntityType(query: string): ImplicitEntityType | null {
   const q = String(query || '');
@@ -343,6 +376,9 @@ function inferImplicitEntityType(query: string): ImplicitEntityType | null {
   }
   if (/(这个会话|该会话|这次会话|这一会话|\bthis session\b|\bthat session\b)/i.test(q)) {
     return 'session';
+  }
+  if (/(这个启动|该启动|这次启动|这一启动|\bthis startup\b|\bthat startup\b|\bthis launch\b|\bthat launch\b)/i.test(q)) {
+    return 'startup';
   }
   return null;
 }
@@ -372,8 +408,10 @@ function applyImplicitEntityCarryOver(
 
     if (entityType === 'frame') {
       (extracted as any).frame_id = entityId;
-    } else {
+    } else if (entityType === 'session') {
       (extracted as any).session_id = entityId;
+    } else {
+      (extracted as any).startup_id = entityId;
     }
     intent.extractedParams = extracted;
 
@@ -396,7 +434,9 @@ function extractEntityIdFromTurn(turn: any, entityType: ImplicitEntityType): num
     if (extracted && typeof extracted === 'object') {
       const id = entityType === 'frame'
         ? parseLooseInteger((extracted as any).frame_id ?? (extracted as any).frameId)
-        : parseLooseInteger((extracted as any).session_id ?? (extracted as any).sessionId);
+        : entityType === 'session'
+          ? parseLooseInteger((extracted as any).session_id ?? (extracted as any).sessionId)
+          : parseLooseInteger((extracted as any).startup_id ?? (extracted as any).startupId);
       if (id !== null) return id;
     }
 
@@ -418,7 +458,9 @@ function extractEntityIdFromTurn(turn: any, entityType: ImplicitEntityType): num
     if (!details || typeof details !== 'object') continue;
     const id = entityType === 'frame'
       ? parseLooseInteger((details as any).frame_id ?? (details as any).frameId)
-      : parseLooseInteger((details as any).session_id ?? (details as any).sessionId);
+      : entityType === 'session'
+        ? parseLooseInteger((details as any).session_id ?? (details as any).sessionId)
+        : parseLooseInteger((details as any).startup_id ?? (details as any).startupId);
     if (id !== null) return id;
   }
 
@@ -427,7 +469,7 @@ function extractEntityIdFromTurn(turn: any, entityType: ImplicitEntityType): num
 
 function buildFallbackIntent(query: string, isFollowUp: boolean | null): Intent {
   const refs = extractDeterministicEntityRefs(query);
-  const hasEntityRef = refs.frameIds.length > 0 || refs.sessionIds.length > 0;
+  const hasEntityRef = refs.frameIds.length > 0 || refs.sessionIds.length > 0 || refs.startupIds.length > 0;
   const isDrillDown = hasEntityRef || DRILL_DOWN_PATTERNS.some(p => p.test(query));
 
   const extractedParams: Record<string, any> = {};
@@ -442,6 +484,11 @@ function buildFallbackIntent(query: string, isFollowUp: boolean | null): Intent 
     const id = refs.sessionIds[0];
     extractedParams.session_id = id;
     referencedEntities.push({ type: 'session', id });
+  }
+  if (refs.startupIds.length > 0) {
+    const id = refs.startupIds[0];
+    extractedParams.startup_id = id;
+    referencedEntities.push({ type: 'startup', id });
   }
 
   return {

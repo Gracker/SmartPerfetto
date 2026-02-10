@@ -2,6 +2,7 @@
  * Sanitizes assistant narrative text for end users.
  * Keeps human-readable reasoning but removes internal evidence IDs.
  */
+import { LEGACY_TO_PLAIN_PHRASE_RULES } from '../utils/analysisNarrative';
 
 const EVIDENCE_ID_RE = /\bev_[0-9a-f]{12}\b/gi;
 
@@ -16,6 +17,7 @@ type AnnotationRule = {
 };
 
 const PHRASE_RULES: PhraseRule[] = [
+  ...LEGACY_TO_PLAIN_PHRASE_RULES,
   {
     pattern: /(?<!显示系统处理不过来（)SF消费端背压/g,
     replacement: '显示系统处理不过来（SF消费端背压）',
@@ -23,10 +25,6 @@ const PHRASE_RULES: PhraseRule[] = [
   {
     pattern: /SF\/消费端放大信号存在/g,
     replacement: '显示系统侧存在放大效应',
-  },
-  {
-    pattern: /负载主导（供给约束弱）/g,
-    replacement: '任务量偏大（资源瓶颈不明显）',
   },
   {
     pattern: /(?<!线程更多跑在小核上（)核心摆放偏小核/g,
@@ -39,9 +37,6 @@ const PHRASE_RULES: PhraseRule[] = [
 ];
 
 const ANNOTATION_RULES: AnnotationRule[] = [
-  { term: '触发因子', plainMeaning: '直接原因' },
-  { term: '供给约束', plainMeaning: '资源瓶颈' },
-  { term: '放大路径', plainMeaning: '问题放大环节' },
   { term: '阻塞等待', plainMeaning: '线程等待锁/IO/Binder' },
   { term: '调度延迟', plainMeaning: '线程排队等CPU' },
   { term: '频率不足', plainMeaning: 'CPU频率偏低' },

@@ -1,0 +1,170 @@
+version: 1
+scenes:
+  - id: startup
+    scene_name: 启动性能
+    aspect_hints: [startup, launch, coldstart]
+    keywords: [启动, 冷启动, 温启动, 热启动, launch, startup, ttid, ttfd]
+    focus_lines:
+      - "- 聚焦启动链路：进程创建 -> Application/Provider 初始化 -> 首帧可见 -> 可交互。"
+      - "- 结论要回答“慢在第几阶段、哪段最慢、为什么慢”。"
+    output_requirement_lines:
+      - "- 启动场景必须给出至少 1 个阶段耗时或启动指标（TTID/TTFD/冷温热启动）。"
+      - "- 资源问题要明确归类（CPU 频率/调度、I/O、Binder、类加载/初始化），不要笼统写“系统慢”。"
+    next_step_line: "- “下一步”优先给出启动阶段拆分与最慢阶段下钻动作，避免泛化为“继续观察”。"
+    require_top_clusters: false
+
+  - id: navigation
+    scene_name: 页面跳转
+    aspect_hints: [navigation, transition, activity_switch]
+    keywords: [跳转, 切换, 页面切换, activity, navigation, transition, startactivity]
+    focus_lines:
+      - "- 聚焦跳转链路：输入事件 -> startActivity/事务调度 -> 目标页生命周期 -> 首帧展示。"
+      - "- 结论要回答“慢在发起侧、系统调度侧，还是目标页渲染侧”。"
+    output_requirement_lines:
+      - "- 跳转场景至少引用 1 个链路证据（如 startActivity、生命周期、首帧时间）。"
+      - "- 资源问题要区分 APP 业务重活、系统调度/窗口动画、渲染线程压力三类来源。"
+    next_step_line: "- “下一步”优先做跳转链路分段（输入->调度->生命周期->首帧）并对最慢段下钻。"
+    require_top_clusters: false
+
+  - id: click_response
+    scene_name: 点击响应
+    aspect_hints: [click, tap, interaction, input]
+    keywords: [点击, 响应, 点击响应, tap, click, input latency, touch, 延迟]
+    focus_lines:
+      - "- 聚焦“输入到反馈”路径：Input 分发 -> 主线程处理 -> RenderThread/GPU -> 首次可见反馈。"
+      - "- 结论要回答“点击后延迟主要卡在哪一段”。"
+    output_requirement_lines:
+      - "- 点击响应场景至少给出 1 个输入延迟指标（输入到 doFrame / 输入到首帧反馈）。"
+      - "- 资源问题要明确是 Input 分发等待、主线程重活、还是渲染链路放大。"
+    next_step_line: "- “下一步”优先选慢点击样本，按 Input->App->Render->SF 链路逐段测量。"
+    require_top_clusters: false
+
+  - id: jank
+    scene_name: 卡顿/掉帧
+    aspect_hints: [jank, scroll, frame, fps]
+    keywords: [卡顿, 掉帧, 滑动, frame, jank, vsync, doframe, renderthread]
+    focus_lines:
+      - "- 聚焦帧预算违约链路：主线程 -> RenderThread -> SF/HWC，先定位哪一段超预算。"
+      - "- 如果主线程出现长切片，要继续解释“为什么慢”，而不只停留在“某个 slice 很长”。"
+    output_requirement_lines:
+      - "- 若结论包含主线程长耗时/长 slice，必须继续回答“{{deep_reason_label}}”，候选包括：业务负载重 / 小核摆放 / 大核低频 / 调度延迟 / Binder 同步阻塞 / 频率爬升慢。"
+      - "- 每个“{{deep_reason_label}}”必须绑定至少 1 个数值证据（时长/占比/频率/等待时间）。"
+      - "- “资源问题”必须优先判别属于哪类：负载高 / 频率不足 / 调度延迟 / 核心摆放 / 阻塞等待。"
+      - "- 术语边界：CPU限频/调度延迟/核心摆放/阻塞等待 只能放在资源问题，不要写到放大因素。"
+    next_step_line: "- “下一步”优先给出口径对齐、聚类下钻、同窗验证动作；若已有逐帧数据，禁止写“补充XXX数据”。"
+    require_top_clusters: true
+
+  - id: anr
+    scene_name: ANR/卡死
+    aspect_hints: [anr, freeze, hang, deadlock]
+    keywords: [anr, 无响应, 卡死, freeze, not responding, 死锁, watchdog]
+    focus_lines:
+      - "- 聚焦卡死链路：输入事件 -> 主线程消息循环 -> 阻塞点（锁/Binder/I/O）-> 超时触发。"
+      - "- 结论要回答“谁在阻塞主线程、阻塞了多久、为什么没恢复”。"
+    output_requirement_lines:
+      - "- ANR 场景至少给出 1 个阻塞证据（阻塞时长/等待对象/Binder 调用或锁竞争）。"
+      - "- 资源问题要区分：锁竞争、同步 Binder、I/O 阻塞、调度饥饿。"
+    next_step_line: "- “下一步”优先回放 ANR 前后 5s 的主线程调用链并定位最长阻塞链路。"
+    require_top_clusters: false
+
+  - id: memory
+    scene_name: 内存与 GC
+    aspect_hints: [memory, gc, heap, oom, lmk]
+    keywords: [内存, memory, gc, heap, oom, 泄漏, lmk, rss, pss]
+    focus_lines:
+      - "- 聚焦内存变化链路：对象分配/缓存增长 -> GC 触发 -> 回收效果 -> 前台卡顿或杀进程。"
+      - "- 结论要回答“内存增长来自哪里，GC 是否有效”。"
+    output_requirement_lines:
+      - "- 内存场景至少引用 1 个指标（PSS/RSS/Java Heap/GC 停顿/LMK 事件）。"
+      - "- 资源问题要明确是泄漏趋势、分配突增、缓存策略或回收效率问题。"
+    next_step_line: "- “下一步”优先定位内存增长最快对象与线程，并验证 GC 后回落幅度。"
+    require_top_clusters: false
+
+  - id: cpu
+    scene_name: CPU 与调度
+    aspect_hints: [cpu, sched, frequency, utilization, load]
+    keywords: [cpu, 调度, 频率, load, utilization, runnable, 运行队列]
+    focus_lines:
+      - "- 聚焦 CPU 供给链路：Runnable 排队 -> 核心摆放 -> 频率爬升 -> 实际执行时长。"
+      - "- 结论要回答“慢是算力不足、调度延迟，还是线程摆放不当”。"
+    output_requirement_lines:
+      - "- CPU 场景至少给出 1 个调度/频率证据（等待时长、核心类型、频率区间、利用率）。"
+      - "- 资源问题要明确归类：频率不足 / 调度延迟 / 核心摆放 / 负载过高。"
+    next_step_line: "- “下一步”优先锁定最慢线程在问题窗口内的调度轨迹与核心迁移路径。"
+    require_top_clusters: false
+
+  - id: binder
+    scene_name: Binder / IPC
+    aspect_hints: [binder, ipc, lock_contention]
+    keywords: [binder, ipc, 事务, transact, 同步调用, 进程间通信]
+    focus_lines:
+      - "- 聚焦 IPC 链路：调用方发起 -> 服务方处理 -> 返回路径，识别同步等待位置。"
+      - "- 结论要回答“慢在调用方等待，还是服务方处理过慢”。"
+    output_requirement_lines:
+      - "- Binder 场景至少给出 1 个调用证据（调用时长/调用次数/超时样本）。"
+      - "- 资源问题要区分：服务端慢、调用链过长、锁竞争或线程池饱和。"
+    next_step_line: "- “下一步”优先沿最长 Binder 调用链向下钻，定位最慢服务端处理段。"
+    require_top_clusters: false
+
+  - id: io
+    scene_name: I/O 与文件系统
+    aspect_hints: [io, disk, filesystem, storage]
+    keywords: [io, 磁盘, 文件, fsync, read, write, page fault, block io]
+    focus_lines:
+      - "- 聚焦 I/O 链路：请求发起 -> 内核队列 -> 设备完成 -> 回调唤醒。"
+      - "- 结论要回答“慢在随机读写、刷盘、还是页缺失导致阻塞”。"
+    output_requirement_lines:
+      - "- I/O 场景至少给出 1 个时延证据（读写时长、队列等待、页缺失次数）。"
+      - "- 资源问题要明确是存储瓶颈、访问模式不佳，还是主线程误用同步 I/O。"
+    next_step_line: "- “下一步”优先定位主线程相关同步 I/O，并拆分为异步或批处理。"
+    require_top_clusters: false
+
+  - id: network
+    scene_name: 网络请求
+    aspect_hints: [network, http, socket, rpc]
+    keywords: [network, 网络, http, socket, 请求, timeout, dns, tls]
+    focus_lines:
+      - "- 聚焦网络链路：DNS -> 连接/TLS -> 请求发送 -> 响应处理 -> UI 回调。"
+      - "- 结论要回答“慢在网络侧、服务端，还是客户端串行等待”。"
+    output_requirement_lines:
+      - "- 网络场景至少给出 1 个链路时延证据（DNS/连接/首包/总耗时）。"
+      - "- 资源问题要区分：外部网络抖动、服务端慢、客户端串行依赖或重试策略不当。"
+    next_step_line: "- “下一步”优先抽取慢请求样本，按 DNS/连接/服务端耗时分段归因。"
+    require_top_clusters: false
+
+  - id: gpu
+    scene_name: GPU 与合成
+    aspect_hints: [gpu, render, surfaceflinger, hwc, composition]
+    keywords: [gpu, renderthread, surfaceflinger, hwc, fence, 合成, 渲染]
+    focus_lines:
+      - "- 聚焦渲染链路：主线程提交 -> RenderThread -> GPU -> SF/HWC 合成。"
+      - "- 结论要回答“慢在绘制命令、GPU 执行，还是合成提交”。"
+    output_requirement_lines:
+      - "- GPU 场景至少给出 1 个渲染证据（Draw/Flush/Fence/合成时长）。"
+      - "- 资源问题要区分：绘制负载重、GPU 饱和、SF/HWC 合成背压。"
+    next_step_line: "- “下一步”优先对慢帧提取 Draw/Fence 分解，定位最重渲染阶段。"
+    require_top_clusters: false
+
+  - id: system
+    scene_name: 系统级约束
+    aspect_hints: [system, thermal, power, irq, kernel]
+    keywords: [system, thermal, 功耗, 温度, 节流, irq, 内核]
+    focus_lines:
+      - "- 聚焦系统供给：温控/功耗策略 -> 频率限制 -> 线程调度与响应延迟。"
+      - "- 结论要回答“系统策略如何放大了业务层耗时”。"
+    output_requirement_lines:
+      - "- 系统场景至少引用 1 个系统证据（温度、限频、功耗策略、IRQ 抢占）。"
+      - "- 资源问题要明确是热节流、电源策略、还是系统线程争用导致。"
+    next_step_line: "- “下一步”优先对齐温度-频率-卡顿时间窗，确认系统约束是否持续触发。"
+    require_top_clusters: false
+
+  - id: generic
+    scene_name: 通用性能
+    aspect_hints: []
+    keywords: []
+    focus_lines:
+      - "- 先用人话说明“现象 -> 直接证据 -> 影响”，再给根因与优化方向。"
+    output_requirement_lines:
+      - "- 结论必须绑定明确证据，避免抽象术语堆砌。"
+    next_step_line: "- “下一步”给出 1-2 个最高信息增益动作，并与当前证据直接对应。"
+    require_top_clusters: false

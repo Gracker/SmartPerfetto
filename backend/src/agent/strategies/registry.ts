@@ -12,6 +12,7 @@
 
 import { StagedAnalysisStrategy } from './types';
 import { scrollingStrategy } from './scrollingStrategy';
+import { startupStrategy } from './startupStrategy';
 import { sceneReconstructionQuickStrategy, sceneReconstructionStrategy } from './sceneReconstructionStrategy';
 import {
   LLMStrategySelector,
@@ -292,6 +293,7 @@ export function createStrategyRegistry(): StrategyRegistry {
   const registry = new StrategyRegistry();
   // Register strategies in order of specificity (more specific first)
   registry.register(scrollingStrategy);
+  registry.register(startupStrategy);
   registry.register(sceneReconstructionQuickStrategy);
   // Scene reconstruction is a catch-all for overview queries
   registry.register(sceneReconstructionStrategy);

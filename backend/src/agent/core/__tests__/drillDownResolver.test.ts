@@ -261,6 +261,49 @@ describe('drillDownResolver', () => {
         expect(result).toBeNull();
       });
 
+      test('enriches startup via SQL when startup entity is requested', async () => {
+        const intent: Intent = {
+          primaryGoal: '分析启动 12',
+          aspects: ['startup'],
+          expectedOutputType: 'diagnosis',
+          complexity: 'moderate',
+          followUpType: 'drill_down',
+          referencedEntities: [{ type: 'startup', id: 12 }],
+        };
+
+        const followUp: FollowUpResolution = {
+          isFollowUp: true,
+          resolvedParams: { startup_id: 12 },
+          confidence: 0.5,
+        };
+
+        const mockTps = {
+          executeQuery: jest.fn().mockResolvedValue({
+            columns: [
+              'startup_id',
+              'start_ts',
+              'end_ts',
+              'dur_ms',
+              'process_name',
+              'startup_type',
+              'ttid_ms',
+              'ttfd_ms',
+            ],
+            rows: [
+              [12, '1000000', '2800000', 1800, 'com.example.app', 'cold', 1500, 1900],
+            ],
+          }),
+        };
+
+        const result = await resolveDrillDown(intent, followUp, sessionContext, mockTps, 'trace-1');
+
+        expect(result).not.toBeNull();
+        expect(result!.intervals).toHaveLength(1);
+        expect(result!.intervals[0].metadata?.startup_id).toBe('12');
+        expect(result!.traces[0].entityType).toBe('startup');
+        expect(result!.traces[0].used).toContain('enrichment');
+      });
+
       test('supports trace processor query(traceId, sql) API for enrichment', async () => {
         const intent: Intent = {
           primaryGoal: '分析帧 1436069',
@@ -289,7 +332,54 @@ describe('drillDownResolver', () => {
         const result = await resolveDrillDown(intent, followUp, sessionContext, mockTps, 'trace-1');
 
         expect(result).not.toBeNull();
-        expect(mockTps.query).toHaveBeenCalledWith('trace-1', expect.stringContaining('WHERE frame_id = 1436069'));
+        expect(mockTps.query).toHaveBeenCalledWith(
+          'trace-1',
+          expect.stringContaining('COALESCE(a.display_frame_token, a.surface_frame_token) = 1436069')
+        );
+      });
+
+      test('falls back to doFrame alias enrichment when token and legacy lookups miss', async () => {
+        const intent: Intent = {
+          primaryGoal: '分析帧 1435596',
+          aspects: ['jank'],
+          expectedOutputType: 'diagnosis',
+          complexity: 'moderate',
+          followUpType: 'drill_down',
+          referencedEntities: [{ type: 'frame', id: 1435596 }],
+        };
+
+        const followUp: FollowUpResolution = {
+          isFollowUp: true,
+          resolvedParams: { frame_id: 1435596 },
+          confidence: 0.5,
+        };
+
+        const queryMock = jest.fn()
+          // Token lookup miss.
+          .mockResolvedValueOnce({ columns: [], rows: [] })
+          // Legacy lookup miss.
+          .mockResolvedValueOnce({ columns: [], rows: [] })
+          // doFrame alias hit.
+          .mockResolvedValueOnce({
+            columns: ['frame_id', 'start_ts', 'end_ts', 'dur', 'process_name', 'jank_type', 'layer_name'],
+            rows: [
+              [1435611, '223456789000000', '223456889000000', 100000000, 'com.example.app', 'App Deadline Missed', 'SurfaceView'],
+            ],
+          });
+
+        const mockTps = {
+          query: queryMock,
+        };
+
+        const result = await resolveDrillDown(intent, followUp, sessionContext, mockTps, 'trace-1');
+
+        expect(result).not.toBeNull();
+        expect(queryMock).toHaveBeenCalledTimes(3);
+        expect(queryMock.mock.calls[2][1]).toContain('Choreographer#doFrame 1435596');
+        expect(result!.intervals[0].startTs).toBe('223456789000000');
+        expect(result!.intervals[0].endTs).toBe('223456889000000');
+        expect(result!.intervals[0].metadata?.frame_id).toBe('1435611');
+        expect(result!.intervals[0].metadata?.resolvedFrom).toBe('doframe_alias');
       });
     });
 
@@ -337,7 +427,7 @@ describe('drillDownResolver', () => {
     });
 
     describe('Entity type filtering', () => {
-      test('ignores non-frame/session entity types', async () => {
+      test('ignores unsupported non-drill-down entity types', async () => {
         const intent: Intent = {
           primaryGoal: '分析进程',
           aspects: ['process'],

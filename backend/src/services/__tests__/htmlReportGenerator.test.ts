@@ -53,4 +53,21 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('1435508');
     expect(html).not.toContain('1,435,508');
   });
+
+  test('formats layered duration-like keys in ms only', () => {
+    const generator = new HTMLReportGenerator() as any;
+    expect(generator.formatLayeredCellValue(1338654478, 'dur_ns')).toBe('1338.65ms');
+    expect(generator.formatLayeredCellValue(1500, 'startup_time_ms')).toBe('1500.00ms');
+  });
+
+  test('renders legacy duration_us format as ms', () => {
+    const generator = new HTMLReportGenerator() as any;
+    const formatted = generator.formatCellValueFromDefinition(
+      1910,
+      { name: 'ttid_us', type: 'duration', format: 'duration_us', unit: 'us' },
+      null
+    );
+    expect(formatted).toContain('1.91 ms');
+    expect(formatted).not.toContain('μs');
+  });
 });

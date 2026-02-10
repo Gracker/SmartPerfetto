@@ -1,0 +1,110 @@
+# =============================================================================
+# 启动主线程 Binder 阻塞（原子 Skill）
+# =============================================================================
+
+name: startup_main_thread_binder_blocking_in_range
+version: "1.0"
+type: atomic
+category: ipc
+
+meta:
+  display_name: "启动主线程 Binder 阻塞 (区间)"
+  description: "分析启动阶段主线程同步 Binder 阻塞明细"
+  icon: "call_split"
+  tags: [startup, main_thread, binder, blocking, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+    - android.binder
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+  - name: min_dur_ns
+    type: integer
+    required: false
+  - name: top_k
+    type: integer
+    required: false
+
+display:
+  level: detail
+  layer: list
+  title: "主线程 Binder 阻塞分析"
+  columns:
+    - name: server_process
+      label: "服务进程"
+      type: string
+    - name: aidl_name
+      label: "AIDL 方法"
+      type: string
+    - name: dur_ms
+      label: "耗时"
+      type: duration
+      format: duration_ms
+    - name: state
+      label: "阻塞状态"
+      type: string
+    - name: blocked_function
+      label: "阻塞函数"
+      type: string
+      format: code
+    - name: ts_str
+      label: "时间戳"
+      type: timestamp
+      clickAction: navigate_timeline
+    - name: severity
+      label: "严重程度"
+      type: enum
+
+sql: |
+  SELECT DISTINCT
+    bt.server_process,
+    bt.aidl_name,
+    bt.client_dur / 1e6 as dur_ms,
+    ts.state,
+    ts.blocked_function,
+    printf('%d', bt.client_ts) as ts_str,
+    printf('%d', bt.client_dur) as dur_str,
+    CASE
+      WHEN bt.client_dur / 1e6 > 50 THEN 'critical'
+      WHEN bt.client_dur / 1e6 > 16 THEN 'warning'
+      ELSE 'normal'
+    END as severity
+  FROM android_binder_txns bt
+  JOIN android_startups s ON (
+    bt.client_ts >= s.ts AND bt.client_ts <= s.ts + s.dur
+    AND bt.client_process GLOB s.package || '*'
+  )
+  LEFT JOIN thread_state ts ON (
+    ts.utid = bt.client_utid
+    AND ts.ts >= bt.client_ts
+    AND ts.ts < bt.client_ts + bt.client_dur
+  )
+  WHERE bt.is_main_thread = 1
+    AND bt.is_sync = 1
+    AND (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+    AND bt.client_dur > ${min_dur_ns|5000000}
+  ORDER BY bt.client_dur DESC
+  LIMIT ${top_k|20}
+
+output:
+  format: structured

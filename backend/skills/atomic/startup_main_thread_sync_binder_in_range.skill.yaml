@@ -1,0 +1,99 @@
+# =============================================================================
+# 启动主线程同步 Binder（原子 Skill）
+# =============================================================================
+
+name: startup_main_thread_sync_binder_in_range
+version: "1.0"
+type: atomic
+category: ipc
+
+meta:
+  display_name: "启动主线程同步 Binder (区间)"
+  description: "统计启动阶段主线程同步 Binder 调用耗时"
+  icon: "call"
+  tags: [startup, main_thread, binder, ipc, atomic]
+
+prerequisites:
+  modules:
+    - android.startup.startups
+    - android.binder
+
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: startup_id
+    type: integer
+    required: false
+  - name: startup_type
+    type: string
+    required: false
+  - name: start_ts
+    type: timestamp
+    required: false
+  - name: end_ts
+    type: timestamp
+    required: false
+  - name: top_k
+    type: integer
+    required: false
+
+display:
+  level: key
+  layer: overview
+  title: "主线程同步 Binder 调用"
+  columns:
+    - name: server_process
+      label: "服务进程"
+      type: string
+    - name: aidl_name
+      label: "AIDL 方法"
+      type: string
+    - name: call_count
+      label: "调用次数"
+      type: number
+      format: compact
+    - name: total_dur_ms
+      label: "总耗时"
+      type: duration
+      format: duration_ms
+    - name: avg_dur_ms
+      label: "平均耗时"
+      type: duration
+      format: duration_ms
+    - name: max_dur_ms
+      label: "最大耗时"
+      type: duration
+      format: duration_ms
+    - name: percent_of_startup
+      label: "启动占比"
+      type: percentage
+      format: percentage
+
+sql: |
+  SELECT
+    bt.server_process,
+    bt.aidl_name,
+    COUNT(*) as call_count,
+    SUM(bt.client_dur) / 1e6 as total_dur_ms,
+    ROUND(AVG(bt.client_dur) / 1e6, 2) as avg_dur_ms,
+    ROUND(MAX(bt.client_dur) / 1e6, 2) as max_dur_ms,
+    ROUND(100.0 * SUM(bt.client_dur) / s.dur, 1) as percent_of_startup
+  FROM android_binder_txns bt
+  JOIN android_startups s ON (
+    bt.client_ts >= s.ts AND bt.client_ts <= s.ts + s.dur
+    AND bt.client_process GLOB s.package || '*'
+  )
+  WHERE bt.is_main_thread = 1
+    AND bt.is_sync = 1
+    AND (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
+    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+  GROUP BY bt.server_process, bt.aidl_name, s.startup_id
+  ORDER BY total_dur_ms DESC
+  LIMIT ${top_k|15}
+
+output:
+  format: structured

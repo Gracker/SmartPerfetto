@@ -1,6 +1,6 @@
 # Strategy 系统深度解析（确定性流水线作为"可调用工具"）
 
-> 对齐版本：2026-02-06
+> 对齐版本：2026-02-10
 > 目标：把"稳定高频场景的确定性流水线"融入"目标驱动 Agent"闭环，而不是让系统退化成 pipeline + LLM 胶水。
 
 ---
@@ -157,19 +157,24 @@ interface StrategyMatchResult {
 }
 ```
 
-### 2.3 已注册策略清单（3 条）
+### 2.3 已注册策略清单（4 条）
 
 工厂函数 `createStrategyRegistry()` 按优先级顺序注册：
 
 | 优先级 | 策略 ID | 名称 | 触发关键词 |
 |--------|---------|------|-----------|
 | 1 | `scrolling` | Scrolling/Jank Analysis | 滑动/scroll/jank/掉帧/丢帧/卡顿/stutter/fps |
-| 2 | `scene_reconstruction_quick` | 场景还原（仅检测） | 概览类 + 仅检测/只检测/quick |
-| 3 | `scene_reconstruction` | 场景还原分析 | 发生了什么/有什么问题/概览/整体分析/overview/场景还原/分析（无特定领域） |
+| 2 | `startup` | Startup Analysis | 启动/冷启动/温启动/热启动/startup/launch/ttid/ttfd |
+| 3 | `scene_reconstruction_quick` | 场景还原（仅检测） | 概览类 + 仅检测/只检测/quick |
+| 4 | `scene_reconstruction` | 场景还原分析 | 发生了什么/有什么问题/概览/整体分析/overview/场景还原/分析（无特定领域） |
 
 匹配结果会产生：
 - `strategy_selected` / `strategy_fallback` SSE 事件（可观测）
 - `options.suggestedStrategy`（无论是否执行 pipeline，都传入 planner 作为结构化 hint）
+
+补充说明：
+- `AgentDrivenOrchestrator` 中，`scrolling/startup/scene_reconstruction` 命中时默认优先走 `StrategyExecutor`（除非显式 force hypothesis）。
+- 策略信息仍会注入 `options.suggestedStrategy`，供 hypothesis loop 复用结构化 hint。
 
 ---
 
@@ -317,10 +322,22 @@ function isScrollingOrJankQuery(query: string): boolean {
 - 保护：最多 5 个场景进入下一阶段
 
 **Stage 2: problem_scene_analysis（per_interval, direct_skill）**
-- directSkillId: `scrolling_analysis`
-- 对每个问题场景运行帧性能分析
+- 已改为 **manifest 路由驱动**（`DomainManifest.sceneReconstructionRoutes`），由策略在启动时动态构建任务模板。
+- 默认路由（当前实现）：
+  - Route A（`sceneTypeGroups: ['startup']`）-> `startup_detail`
+  - Route B（`sceneTypeGroups: ['all']` + `excludeSceneTypes: cold/warm/hot_start`）-> `scrolling_analysis`
 
-### 5.4 性能阈值
+### 5.4 分流机制实现点
+
+- `DomainManifest.sceneReconstructionRoutes`：场景路由规则来源。
+- `matchesSceneReconstructionRoute(...)`：统一 route 命中判断（支持 `all` wildcard 与 `excludeSceneTypes`）。
+- `sceneReconstructionStrategy.buildSceneAnalysisTasksFromManifest()`：从 manifest 转为 `StageTaskTemplate`。
+- `StrategyExecutor.filterIntervalsForTemplate(...)`：运行时按模板过滤 focus intervals 并安全降级。
+
+详细流程见：
+- `docs/architecture-analysis/06-scrolling-startup-optimization.md`
+
+### 5.5 性能阈值
 
 | 场景类型 | 时长阈值 | FPS 阈值 |
 |----------|----------|----------|
@@ -620,8 +637,8 @@ steps:
 ### 9.1 作为 suggestedStrategy（结构化 hint）
 
 planner 可以复用 strategy 的 stages 作为"实验候选空间"，例如：
-- 当前缺口在"帧级根因" -> 直接选 frame_analysis 的 direct_skill
-- 当前缺口在"会话级定位" -> 选 overview/session_overview
+- 当前目标在"帧级根因" -> 直接选 frame_analysis 的 direct_skill
+- 当前目标在"启动事件根因" -> 直接选 startup 的 launch_event_detail
 
 ### 9.2 作为"实验模板库"
 

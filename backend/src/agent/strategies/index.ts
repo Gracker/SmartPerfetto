@@ -31,4 +31,5 @@ export {
   type StrategyMatchResult,
 } from './registry';
 export { scrollingStrategy } from './scrollingStrategy';
+export { startupStrategy } from './startupStrategy';
 export { sceneReconstructionQuickStrategy, sceneReconstructionStrategy } from './sceneReconstructionStrategy';
