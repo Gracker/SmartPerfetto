@@ -38,12 +38,59 @@ describe('scrolling_analysis skill schema', () => {
     expect(dur.unit).toBe('ms');
   });
 
+  it('keeps ns-based frame durations explicitly normalized to ms display', () => {
+    const perfSummary = getStep('performance_summary');
+    const avgFrameDur = getColumn(perfSummary, 'avg_frame_dur');
+    const p95FrameDur = getColumn(perfSummary, 'p95_frame_dur');
+
+    expect(avgFrameDur.type).toBe('duration');
+    expect(avgFrameDur.format).toBe('duration_ms');
+    expect(avgFrameDur.unit).toBe('ns');
+
+    expect(p95FrameDur.type).toBe('duration');
+    expect(p95FrameDur.format).toBe('duration_ms');
+    expect(p95FrameDur.unit).toBe('ns');
+
+    const sessionStep = getStep('scroll_sessions');
+    const duration = getColumn(sessionStep, 'duration');
+    const avgDur = getColumn(sessionStep, 'avg_dur');
+    const maxDur = getColumn(sessionStep, 'max_dur');
+
+    expect(duration.type).toBe('duration');
+    expect(duration.format).toBe('duration_ms');
+    expect(duration.unit).toBe('ns');
+
+    expect(avgDur.type).toBe('duration');
+    expect(avgDur.format).toBe('duration_ms');
+    expect(avgDur.unit).toBe('ns');
+
+    expect(maxDur.type).toBe('duration');
+    expect(maxDur.format).toBe('duration_ms');
+    expect(maxDur.unit).toBe('ns');
+  });
+
   it('keeps timestamp-range binding for jank frame navigation', () => {
     const step = getStep('get_app_jank_frames');
     const startTs = getColumn(step, 'start_ts');
+    const dur = getColumn(step, 'dur');
+    const mainDur = getColumn(step, 'main_dur');
+    const renderDur = getColumn(step, 'render_dur');
 
     expect(startTs.type).toBe('timestamp');
+    expect(startTs.unit).toBe('ns');
     expect(startTs.clickAction).toBe('navigate_range');
     expect(startTs.durationColumn).toBe('dur');
+
+    expect(dur.type).toBe('duration');
+    expect(dur.format).toBe('duration_ms');
+    expect(dur.unit).toBe('ns');
+
+    expect(mainDur.type).toBe('duration');
+    expect(mainDur.format).toBe('duration_ms');
+    expect(mainDur.unit).toBe('ns');
+
+    expect(renderDur.type).toBe('duration');
+    expect(renderDur.format).toBe('duration_ms');
+    expect(renderDur.unit).toBe('ns');
   });
 });

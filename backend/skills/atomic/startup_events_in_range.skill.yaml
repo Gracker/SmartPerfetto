@@ -51,26 +51,36 @@ display:
       type: string
     - name: dur_ms
       label: "耗时"
-      type: number
+      type: duration
+      format: duration_ms
+      unit: ms
       hidden: true
     - name: start_ts
       label: "开始时间"
       type: timestamp
+      unit: ns
       clickAction: navigate_range
       durationColumn: dur_ns
     - name: end_ts
       label: "结束时间"
       type: timestamp
+      unit: ns
       clickAction: navigate_timeline
     - name: dur_ns
       label: "耗时"
       type: duration
+      format: duration_ms
+      unit: ns
     - name: ttid_ms
       label: "TTID"
-      type: number
+      type: duration
+      format: duration_ms
+      unit: ms
     - name: ttfd_ms
       label: "TTFD"
-      type: number
+      type: duration
+      format: duration_ms
+      unit: ms
     - name: rating
       label: "评级"
       type: string

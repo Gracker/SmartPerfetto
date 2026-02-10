@@ -138,28 +138,78 @@ export class SkillEvaluator {
   }
 
   /**
-   * 注册依赖的子 skills（用于 iterator 步骤）
+   * 注册依赖的子 skills（递归处理 skill/iterator/parallel/conditional 引用）
    */
   private async registerDependentSkills(): Promise<void> {
-    if (!this.skill?.steps || !this.executor) return;
+    if (!this.skill || !this.executor) return;
 
     const skillsDir = path.join(process.cwd(), 'skills');
-    const neededSkills = new Set<string>();
+    const visited = new Set<string>([this.skill.name]);
+    const queue = [...this.collectReferencedSkills(this.skill.steps || [])];
 
-    // 收集所有 iterator 步骤引用的 item_skill
-    for (const step of this.skill.steps) {
-      if (step.type === 'iterator' && 'item_skill' in step) {
-        neededSkills.add((step as any).item_skill);
-      }
-    }
+    while (queue.length > 0) {
+      const skillName = queue.shift();
+      if (!skillName || visited.has(skillName)) continue;
+      visited.add(skillName);
 
-    // 加载这些 skills
-    for (const skillName of neededSkills) {
       const skill = await this.findAndLoadSkill(skillName, skillsDir);
       if (skill) {
         this.executor.registerSkill(skill);
         console.log(`[SkillEvaluator] Registered dependent skill: ${skillName}`);
+
+        const nestedRefs = this.collectReferencedSkills(skill.steps || []);
+        for (const ref of nestedRefs) {
+          if (!visited.has(ref)) {
+            queue.push(ref);
+          }
+        }
+      } else {
+        console.warn(`[SkillEvaluator] Dependent skill not found: ${skillName}`);
       }
+    }
+  }
+
+  private collectReferencedSkills(steps: any[]): string[] {
+    const refs = new Set<string>();
+    for (const step of steps) {
+      this.collectReferencedSkillsFromStep(step, refs);
+    }
+    return Array.from(refs);
+  }
+
+  private collectReferencedSkillsFromStep(step: any, refs: Set<string>): void {
+    if (!step || typeof step !== 'object') return;
+
+    if (typeof step.skill === 'string' && step.skill.trim().length > 0) {
+      refs.add(step.skill.trim());
+    }
+
+    if (typeof step.item_skill === 'string' && step.item_skill.trim().length > 0) {
+      refs.add(step.item_skill.trim());
+    }
+
+    if (Array.isArray(step.steps)) {
+      for (const subStep of step.steps) {
+        this.collectReferencedSkillsFromStep(subStep, refs);
+      }
+    }
+
+    if (Array.isArray(step.conditions)) {
+      for (const condition of step.conditions) {
+        const thenBranch = condition?.then;
+        if (typeof thenBranch === 'string' && thenBranch.trim().length > 0) {
+          refs.add(thenBranch.trim());
+        } else if (thenBranch && typeof thenBranch === 'object') {
+          this.collectReferencedSkillsFromStep(thenBranch, refs);
+        }
+      }
+    }
+
+    const elseBranch = step.else;
+    if (typeof elseBranch === 'string' && elseBranch.trim().length > 0) {
+      refs.add(elseBranch.trim());
+    } else if (elseBranch && typeof elseBranch === 'object') {
+      this.collectReferencedSkillsFromStep(elseBranch, refs);
     }
   }
 

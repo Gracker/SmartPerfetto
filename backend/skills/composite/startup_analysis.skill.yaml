@@ -120,16 +120,20 @@ steps:
           type: string
         - name: dur_ms
           label: "耗时"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
           hidden: true
         - name: start_ts
           label: "开始时间"
           type: timestamp
+          unit: ns
           clickAction: navigate_range
           durationColumn: dur_ns
         - name: end_ts
           label: "结束时间"
           type: timestamp
+          unit: ns
           clickAction: navigate_timeline
         - name: dur_ns
           label: "耗时"
@@ -296,14 +300,17 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: max_dur_ms
           label: "最大耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent
           label: "占比"
           type: percentage
@@ -359,14 +366,17 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: max_dur_ms
           label: "最大耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent_of_startup
           label: "启动占比"
           type: percentage
@@ -423,14 +433,17 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: max_dur_ms
           label: "最大耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent_of_startup
           label: "启动占比"
           type: percentage
@@ -489,14 +502,17 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: max_dur_ms
           label: "最大耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: main_thread_calls
           label: "主线程调用"
           type: number
@@ -538,14 +554,17 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: max_dur_ms
           label: "最大耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent_of_startup
           label: "启动占比"
           type: percentage
@@ -580,6 +599,7 @@ steps:
           label: "耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: state
           label: "阻塞状态"
           type: string
@@ -590,6 +610,7 @@ steps:
         - name: ts_str
           label: "时间戳"
           type: timestamp
+          unit: ns
           clickAction: navigate_timeline
         - name: severity
           label: "严重程度"
@@ -625,6 +646,7 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent
           label: "占比"
           type: percentage
@@ -670,10 +692,12 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent_of_startup
           label: "启动占比"
           type: percentage
@@ -715,10 +739,12 @@ steps:
           label: "总耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_dur_ms
           label: "平均耗时"
           type: duration
           format: duration_ms
+          unit: ms
         - name: percent_of_startup
           label: "启动占比"
           type: percentage
@@ -754,14 +780,17 @@ steps:
           label: "总等待"
           type: duration
           format: duration_ms
+          unit: ms
         - name: avg_wait_ms
           label: "平均等待"
           type: duration
           format: duration_ms
+          unit: ms
         - name: max_wait_ms
           label: "最大等待"
           type: duration
           format: duration_ms
+          unit: ms
         - name: severe_delays
           label: "严重延迟次数"
           type: number

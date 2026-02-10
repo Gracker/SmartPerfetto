@@ -44,6 +44,36 @@
 3. **Backward Compatible** - 新增字段不破坏现有功能
 4. **Self-Describing** - 数据自带元信息，前端无需硬编码
 
+## 2026-02-11 落地补充（与当前实现对齐）
+
+以下补充反映当前代码中的真实实现，而不是理想化设计：
+
+1. **Layered skill 结果会先解包再渲染**
+   - 在 `strategy/layered` 流程中，`stepType: 'skill'` 可能包裹真实 `displayResults`。
+   - `backend/src/services/skillEngine/skillAnalysisAdapter.ts` 会先解包嵌套结果，再做统一 `DisplayResult` 转换。
+
+2. **列定义透传以 `columnDefinitions` 为准**
+   - backend 从 `display.columns` 提取列定义并传入 sections。
+   - frontend 在 `skill_layered_result` 路径归一化后继续按 `columnDefinitions` 渲染，不再依赖“从数据猜列”。
+
+3. **时间单位双轨契约**
+   - 展示层：统一 `ms`（`type: duration` + `format: duration_ms` + `unit: ms`）。
+   - 跳转链路：保留 `ns`（`timestamp/duration` 原始字段仍标注 `unit: ns`），用于精确 range 定位。
+
+4. **点击跳转的依赖列不可误删**
+   - 当 `clickAction: navigate_range` 且存在 `durationColumn` 依赖时，即便该列默认隐藏，前端也必须保留其值用于跳转。
+   - 位置：`perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/sse_event_handlers.ts`
+
+```text
+LayeredResult
+  -> skillAnalysisAdapter.extractLayerStepData
+  -> extractColumnDefinitions(display.columns)
+  -> sections(columnDefinitions)
+  -> SSE skill_layered_result
+  -> frontend normalizeColumnDefinitions
+  -> SqlResultTable format(ms) + navigate_range(ns)
+```
+
 ## 核心设计：Universal Data Envelope
 
 ### 设计理念

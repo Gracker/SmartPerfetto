@@ -12,6 +12,7 @@
     "test:coverage": "jest --coverage",
     "test:unit": "jest --testPathPatterns=src/tests",
     "test:skill-eval": "jest --testPathPatterns=tests/skill-eval --runInBand --testTimeout=120000 --forceExit",
+    "test:skill-eval:real-traces": "jest --runInBand --testTimeout=180000 --forceExit tests/skill-eval/scrolling_analysis.eval.ts tests/skill-eval/startup_analysis.eval.ts",
     "test:scene-trace-regression": "TP_PORT_MIN=9800 TP_PORT_MAX=9899 tsx tests/skill-eval/scene_trace_regression.ts",
     "test:integration": "jest --testPathPatterns=tests/integration --runInBand --forceExit",
     "test:agent-eval": "tsx tests/agent-eval/evaluationRunner.ts",

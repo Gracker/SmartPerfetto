@@ -47,6 +47,7 @@ export interface SkillAnalysisResponse {
     level: DisplayLevel;
     format: string;
     data: any;
+    columnDefinitions?: Array<Record<string, any>>;
   }>;
   aiSummary?: string;
 
@@ -408,6 +409,7 @@ export class SkillAnalysisAdapter {
     level: DisplayLevel;
     format: string;
     data: any;
+    columnDefinitions?: Array<Record<string, any>>;
     sql?: string;
   }> {
     console.log('[convertLayeredResultToDisplayResults] Starting conversion. Input:', JSON.stringify({
@@ -423,6 +425,7 @@ export class SkillAnalysisAdapter {
       level: DisplayLevel;
       format: string;
       data: any;
+      columnDefinitions?: Array<Record<string, any>>;
       sql?: string;
     }> = [];
 
@@ -445,18 +448,22 @@ export class SkillAnalysisAdapter {
           continue;
         }
 
+        const normalizedData = this.extractLayerStepData(stepResult as any);
+        const columnDefinitions = this.extractColumnDefinitions(stepResult as any);
         const dr = {
           stepId,
           title: stepResult.display?.title || stepId,
           level: stepResult.display?.level || 'detail',
           format: stepResult.display?.format || 'table',
-          data: stepResult.data || {},
+          data: normalizedData,
+          columnDefinitions,
         };
         console.log(`[convertLayeredResultToDisplayResults] Adding ${layerKey} item:`, JSON.stringify({
           stepId,
           hasData: !!dr.data,
           dataType: Array.isArray(dr.data) ? 'array' : typeof dr.data,
           dataLength: Array.isArray(dr.data) ? dr.data.length : 'N/A',
+          hasColumnDefinitions: Array.isArray(dr.columnDefinitions) && dr.columnDefinitions.length > 0,
         }));
         displayResults.push(dr);
       }
@@ -472,12 +479,15 @@ export class SkillAnalysisAdapter {
           if (!stepResult.display?.show && stepResult.display?.show !== undefined) continue;
           if (stepResult.display?.level === 'none') continue;
 
+          const normalizedData = this.extractLayerStepData(stepResult as any);
+          const columnDefinitions = this.extractColumnDefinitions(stepResult as any);
           displayResults.push({
             stepId: `${sessionId}_${stepId}`,
             title: stepResult.display?.title || `[${sessionId}] ${stepId}`,
             level: stepResult.display?.level || 'detail',
             format: stepResult.display?.format || 'table',
-            data: stepResult.data || {},
+            data: normalizedData,
+            columnDefinitions,
           });
         }
       }
@@ -493,12 +503,15 @@ export class SkillAnalysisAdapter {
           if (!stepResult.display?.show && stepResult.display?.show !== undefined) continue;
           if (stepResult.display?.level === 'none') continue;
 
+          const normalizedData = this.extractLayerStepData(stepResult as any);
+          const columnDefinitions = this.extractColumnDefinitions(stepResult as any);
           const dr = {
             stepId: `${sessionId}_${frameId}`,
             title: stepResult.display?.title || `[${sessionId}] ${frameId}`,
             level: stepResult.display?.level || 'detail',
             format: stepResult.display?.format || 'table',
-            data: stepResult.data || {},
+            data: normalizedData,
+            columnDefinitions,
           };
           console.log(`[convertLayeredResultToDisplayResults] Adding deep frame:`, JSON.stringify({
             stepId: dr.stepId,
@@ -506,6 +519,7 @@ export class SkillAnalysisAdapter {
             hasData: !!dr.data,
             dataType: Array.isArray(dr.data) ? 'array' : typeof dr.data,
             dataLength: Array.isArray(dr.data) ? dr.data.length : 'N/A',
+            hasColumnDefinitions: Array.isArray(dr.columnDefinitions) && dr.columnDefinitions.length > 0,
           }));
           displayResults.push(dr);
         }
@@ -526,6 +540,7 @@ export class SkillAnalysisAdapter {
       level: DisplayLevel;
       format: string;
       data: any;
+      columnDefinitions?: Array<Record<string, any>>;
       sql?: string;  // 新增：原始 SQL
     }>
   ): Record<string, any> {
@@ -555,6 +570,9 @@ export class SkillAnalysisAdapter {
       let sectionData: any;
       let rowCount: number;
       let columns: string[] | undefined;
+      const columnDefinitions = Array.isArray(result.columnDefinitions)
+        ? result.columnDefinitions
+        : undefined;
 
       // 0. 诊断数据格式 {diagnostics, inputs} - 保持原样
       if (result.data.diagnostics && Array.isArray(result.data.diagnostics)) {
@@ -568,7 +586,9 @@ export class SkillAnalysisAdapter {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using {columns, rows} format`);
         sectionData = this.rowsToObjects(result.data.columns, result.data.rows);
         rowCount = result.data.rows.length;
-        columns = result.data.columns;
+        columns = Array.isArray(result.data.columns) && result.data.columns.length > 0
+          ? result.data.columns
+          : columnDefinitions?.map((d: any) => d.name).filter((name: any) => typeof name === 'string');
       }
       // 2. 文本格式
       else if (result.data.text) {
@@ -581,8 +601,12 @@ export class SkillAnalysisAdapter {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using array format, length=${result.data.length}`);
         sectionData = result.data;
         rowCount = result.data.length;
-        // 从第一个对象提取列名
-        if (result.data.length > 0 && typeof result.data[0] === 'object') {
+        // 优先使用 display.columns 定义列顺序；否则从首行推导
+        if (columnDefinitions && columnDefinitions.length > 0) {
+          columns = columnDefinitions
+            .map((d: any) => d?.name)
+            .filter((name: any) => typeof name === 'string' && name.length > 0);
+        } else if (result.data.length > 0 && typeof result.data[0] === 'object') {
           columns = Object.keys(result.data[0]);
           console.log(`[convertDisplayResultsToSections] ${result.stepId}: Extracted columns:`, columns);
         }
@@ -601,6 +625,7 @@ export class SkillAnalysisAdapter {
         data: sectionData,
         rowCount,
         columns,
+        columnDefinitions,
         sql: result.sql,  // 保存 SQL
       };
 
@@ -628,6 +653,77 @@ export class SkillAnalysisAdapter {
     console.log('[convertDisplayResultsToSections] Output sections keys:', Object.keys(sections));
 
     return sections;
+  }
+
+  /**
+   * 从分层 StepResult 提取可展示数据。
+   * 对 skill 引用步骤进行解包，避免把嵌套 SkillExecutionResult 直接透传到展示层。
+   */
+  private extractLayerStepData(stepResult: any): any {
+    if (!stepResult || typeof stepResult !== 'object') {
+      return {};
+    }
+
+    if (stepResult.stepType !== 'skill') {
+      return stepResult.data ?? {};
+    }
+
+    const nested = stepResult.data;
+    if (!nested || typeof nested !== 'object') {
+      return stepResult.data ?? {};
+    }
+
+    if (Object.prototype.hasOwnProperty.call(nested, 'data')) {
+      return (nested as any).data ?? {};
+    }
+
+    const rawResults = (nested as any).rawResults;
+    if (rawResults && typeof rawResults === 'object') {
+      if ((rawResults as any).root?.data !== undefined) {
+        return (rawResults as any).root.data ?? {};
+      }
+      for (const step of Object.values(rawResults as Record<string, any>)) {
+        if (step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data')) {
+          return (step as any).data ?? {};
+        }
+      }
+    }
+
+    const nestedDisplayResults = Array.isArray((nested as any).displayResults)
+      ? (nested as any).displayResults
+      : [];
+    const firstTabular = nestedDisplayResults.find((dr: any) =>
+      dr?.data && typeof dr.data === 'object' && Array.isArray(dr.data.rows)
+    );
+    if (firstTabular?.data) {
+      return firstTabular.data;
+    }
+
+    return stepResult.data ?? {};
+  }
+
+  /**
+   * 从 StepResult.display.columns 中提取列定义（含 type/format/unit/clickAction）。
+   */
+  private extractColumnDefinitions(stepResult: any): Array<Record<string, any>> | undefined {
+    const columns = stepResult?.display?.columns;
+    if (!Array.isArray(columns)) {
+      return undefined;
+    }
+
+    const columnDefinitions = columns
+      .map((col: any) => {
+        if (typeof col === 'string') {
+          return { name: col };
+        }
+        if (col && typeof col === 'object' && typeof col.name === 'string') {
+          return { ...col };
+        }
+        return null;
+      })
+      .filter((col: any) => !!col);
+
+    return columnDefinitions.length > 0 ? columnDefinitions : undefined;
   }
 
   /**
@@ -720,4 +816,3 @@ export function createSkillAnalysisAdapter(
 ): SkillAnalysisAdapter {
   return new SkillAnalysisAdapter(traceProcessor, eventHandler);
 }
-

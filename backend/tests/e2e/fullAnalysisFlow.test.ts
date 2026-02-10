@@ -38,8 +38,8 @@ const E2E_TIMEOUT = 180000; // 3 minutes
 const SSE_TIMEOUT = 120000; // 2 minutes for SSE collection
 
 // Test traces
-const SCROLLING_TRACE = 'app_aosp_scrolling_light.pftrace';
-const HEAVY_JANK_TRACE = 'app_aosp_scrolling_heavy_jank.pftrace';
+const SCROLLING_TRACE = 'app_aosp_scrolling_heavy_jank.pftrace';
+const STARTUP_TRACE = 'app_start_heavy.pftrace';
 
 // =============================================================================
 // Types for Test Assertions
@@ -355,6 +355,55 @@ describe('E2E: Full Scrolling Analysis Flow', () => {
     }
 
     // Cleanup
+    await cleanupSession(app, sessionId);
+  }, E2E_TIMEOUT);
+});
+
+// =============================================================================
+// Test Suite: Full Startup Analysis Flow
+// =============================================================================
+
+describe('E2E: Full Startup Analysis Flow', () => {
+  let app: ReturnType<typeof createTestApp>;
+  let traceId: string | null = null;
+
+  beforeAll(async () => {
+    app = createTestApp();
+
+    try {
+      traceId = await loadTestTrace(STARTUP_TRACE);
+      console.log(`[E2E] Loaded startup test trace: ${traceId}`);
+    } catch (error) {
+      console.warn(`[E2E] Could not load startup trace: ${error}`);
+    }
+  }, E2E_TIMEOUT);
+
+  afterAll(async () => {
+    await cleanupAllSessions(app);
+    if (traceId) {
+      await cleanupTrace(traceId);
+    }
+  });
+
+  it('should complete a full startup analysis and emit data events', async () => {
+    if (!traceId) {
+      console.warn('Skipping startup test: no trace loaded');
+      return;
+    }
+
+    const { sessionId, result, events } = await runAnalysisToCompletion(
+      app,
+      traceId,
+      '分析启动性能'
+    );
+
+    expect(['completed', 'running', 'pending']).toContain(result.status);
+    expect(result.sessionId).toBe(sessionId);
+    expect(result.traceId).toBe(traceId);
+    expect(events.length).toBeGreaterThan(0);
+    expect(hasEvent(events, 'connected')).toBe(true);
+    expect(hasEvent(events, 'progress')).toBe(true);
+
     await cleanupSession(app, sessionId);
   }, E2E_TIMEOUT);
 });

@@ -241,9 +241,13 @@ steps:
         - name: avg_frame_dur
           label: "平均帧耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: p95_frame_dur
           label: "P95 帧耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: rating
           label: "评级"
           type: string
@@ -480,9 +484,13 @@ steps:
         - name: total_dur
           label: "总耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: avg_dur
           label: "平均耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: responsibility
           label: "责任归属"
           type: string
@@ -607,12 +615,18 @@ steps:
         - name: duration
           label: "持续时间"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: avg_dur
           label: "平均帧耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: max_dur
           label: "最大帧耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: session_fps
           label: "FPS"
           type: number
@@ -875,15 +889,19 @@ steps:
         - name: start_ts
           label: "开始时间"
           type: timestamp
+          unit: ns
           clickAction: navigate_range
           durationColumn: dur
         - name: end_ts
           label: "结束时间"
           type: timestamp
+          unit: ns
           clickAction: navigate_timeline
         - name: dur
           label: "帧耗时"
           type: duration
+          format: duration_ms
+          unit: ns
         - name: jank_type
           label: "掉帧类型"
           type: string
@@ -896,26 +914,34 @@ steps:
         - name: main_start_ts
           label: "主线程开始"
           type: timestamp
+          unit: ns
           hidden: true
         - name: main_end_ts
           label: "主线程结束"
           type: timestamp
+          unit: ns
           hidden: true
         - name: main_dur
           label: "主线程耗时"
           type: duration
+          format: duration_ms
+          unit: ns
           hidden: true
         - name: render_start_ts
           label: "渲染开始"
           type: timestamp
+          unit: ns
           hidden: true
         - name: render_end_ts
           label: "渲染结束"
           type: timestamp
+          unit: ns
           hidden: true
         - name: render_dur
           label: "渲染耗时"
           type: duration
+          format: duration_ms
+          unit: ns
           hidden: true
         - name: jank_severity_type
           label: "严重程度"

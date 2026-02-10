@@ -2,7 +2,7 @@
 
 本文档描述 SmartPerfetto 在当前代码中的真实架构（以 `backend/src/agent/` 为主），目标是让系统从“pipeline + LLM 胶水”升级为“目标驱动的 Agent”：围绕用户目标形成 **假设空间 → 实验 → 证据 → 结论 → 下一步** 的闭环，并且多轮对话下不会遗忘已做过的事。
 
-> 更新日期：2026-02-10（与 `backend/src/agent/` 当前实现对齐）
+> 更新日期：2026-02-11（与 `backend/src/agent/` 与 `backend/src/services/skillEngine/` 当前实现对齐）
 > 重要约束：所有 memory/状态必须 **严格 trace-scoped**（同一 `(sessionId, traceId)`），禁止跨 trace 泄漏。
 
 ---
@@ -102,6 +102,27 @@ flowchart TD
 - `backend/src/agent/strategies/sceneReconstructionStrategy.ts` 的二阶段 task 由 `DomainManifest.sceneReconstructionRoutes` 动态构建（默认 startup/detail + non-startup/scrolling）。
 - `backend/src/agent/config/drillDownRegistry.ts` 提供统一 `entity -> skill` 映射，`backend/src/agent/core/executors/directDrillDownExecutor.ts` 与 `backend/src/agent/core/drillDownResolver.ts` 复用。
 - `backend/src/agent/config/domainManifest.ts` 控制策略执行偏好（`prefer_strategy` / `prefer_hypothesis`）与分析计划证据清单映射。
+
+### 1.2 分层结果规范化链路（Layered -> Sections）
+
+`strategy` / `layered` 路径下，skill 结果可能嵌套在 `stepType: 'skill'` 的包装对象中。当前实现会先做解包和列定义保真，再交给前端统一渲染。
+
+```mermaid
+flowchart LR
+    A["LayeredSkillResult (backend)"] --> B["skillAnalysisAdapter.extractLayerStepData"]
+    B --> C["convertLayeredResultToDisplayResults"]
+    C --> D["extractColumnDefinitions(display.columns)"]
+    D --> E["convertDisplayResultsToSections(columnDefinitions)"]
+    E --> F["SSE: skill_layered_result"]
+    F --> G["sse_event_handlers.normalizeColumnDefinitions"]
+    G --> H["SqlResultTable (schema-driven)"]
+    H --> I["navigate_range (durationColumn)"]
+```
+
+当前落地点：
+- `backend/src/services/skillEngine/skillAnalysisAdapter.ts`：统一处理 `stepType: 'skill'` 嵌套、提取 `display.columns` 到 `columnDefinitions`、保持列顺序与点击配置。
+- `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/sse_event_handlers.ts`：接收 layered 结果时归一化 `columnDefinitions`，并在 `navigate_range` 依赖时保留 `durationColumn` 对应列（即使该列默认隐藏）。
+- 目标是避免“单位/格式/点击跳转配置在中间层丢失”。
 
 ---
 
@@ -247,6 +268,19 @@ flowchart TD
 - iterator 支持 `filter:`（best-effort），并记录 per-item 失败，便于 agent 做 SQL/参数修复
 - `synthesize:` 支持对象配置（role/fields/insights/clusterBy/groupBy），并生成确定性的“洞见摘要” DisplayResult
 
+### 4.4 时间单位契约（展示 ms，跳转保留 ns）
+
+为保证一致可读性，启动与滑动分析的展示层统一为 `ms`；为保证跳转精度，trace range 仍以 `ns` 传递：
+- 展示列约定：`type: duration` + `format: duration_ms` + `unit: ms`
+- 时间戳/区间列约定：`type: timestamp` + `unit: ns`
+- 点击跳转约定：`clickAction: navigate_range`，由 `durationColumn` 指向 `ns` 时长列
+
+代表性实现文件：
+- `backend/skills/atomic/startup_events_in_range.skill.yaml`
+- `backend/skills/composite/startup_detail.skill.yaml`
+- `backend/skills/composite/startup_analysis.skill.yaml`
+- `backend/skills/composite/scrolling_analysis.skill.yaml`
+
 ---
 
 ## 5. 自主能力与安全边界
@@ -311,3 +345,17 @@ flowchart TD
 - `docs/architecture-analysis/05-domain-agents.md`
 - `docs/architecture-analysis/06-scrolling-startup-optimization.md`
 - `docs/architecture-analysis/07-domain-extensibility-refactor.md`
+
+---
+
+## 9. 回归与真实 Trace 自验证（当前默认流程）
+
+为避免“仅单测通过但真实 trace 流程退化”，当前默认加入真实 trace 技能评测：
+
+- 命令：`cd backend && npm run test:skill-eval:real-traces`
+- 启动 trace：`test-traces/app_start_heavy.pftrace`
+- 滑动 trace：`test-traces/app_aosp_scrolling_heavy_jank.pftrace`
+
+对应实现：
+- `backend/package.json`（新增 `test:skill-eval:real-traces`）
+- `backend/tests/skill-eval/runner.ts`（递归注册 skill/iterator/parallel/conditional 依赖）

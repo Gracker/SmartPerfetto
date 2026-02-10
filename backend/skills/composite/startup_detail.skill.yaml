@@ -108,25 +108,35 @@ steps:
           type: string
         - name: dur_ms
           label: "启动耗时(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: ttid_ms
           label: "TTID(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: ttfd_ms
           label: "TTFD(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: start_ts
           label: "开始时间"
           type: timestamp
+          unit: ns
         - name: end_ts
           label: "结束时间"
           type: timestamp
+          unit: ns
         - name: perfetto_start
           label: "Perfetto开始"
           type: timestamp
+          unit: ns
         - name: perfetto_end
           label: "Perfetto结束"
           type: timestamp
+          unit: ns
         - name: rating
           label: "评级"
           type: string
@@ -177,13 +187,19 @@ steps:
           type: string
         - name: big_core_ms
           label: "大核运行(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: little_core_ms
           label: "小核运行(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: total_running_ms
           label: "总运行(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: big_core_pct
           label: "大核占比(%)"
           type: percentage
@@ -430,19 +446,29 @@ steps:
           type: string
         - name: q1_big_running_ms
           label: "Q1大核运行(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: q2_little_running_ms
           label: "Q2小核运行(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: q3_runnable_ms
           label: "Q3可运行等待(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: q4_sleeping_ms
           label: "Q4睡眠阻塞(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: total_ms
           label: "总时长(ms)"
-          type: number
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: q1_pct
           label: "Q1占比(%)"
           type: percentage

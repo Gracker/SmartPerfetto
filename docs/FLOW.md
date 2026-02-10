@@ -583,6 +583,18 @@
 
 ---
 
+### 2.x 实现补充（2026-02-11）
+
+`skill_layered_result` 的前端处理链路已补齐以下契约：
+
+- 统一从 `display.columns` / `columnDefinitions` 归一化列定义，按列定义顺序渲染。
+- 对 `clickAction: navigate_range` 的列，若依赖 `durationColumn`，则对应时长列即使隐藏也保留原始值。
+- 展示时长统一按 `ms` 格式化；时间跳转依赖的原始区间仍按 `ns` 传递。
+
+相关实现：
+- `backend/src/services/skillEngine/skillAnalysisAdapter.ts`
+- `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/sse_event_handlers.ts`
+
 ## 3. 待整合的 MasterOrchestrator 功能
 
 以下功能已在 MasterOrchestrator 中实现，但尚未集成到前端调用路径：

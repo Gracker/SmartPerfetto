@@ -1,6 +1,6 @@
 # SmartPerfetto 架构深度分析（与代码对齐）
 
-> 更新日期：2026-02-10
+> 更新日期：2026-02-11
 > 范围：以当前 `backend/src/agent/` 的 **目标驱动 Agent** 主链路为准（trace-scoped，多轮对话可持续）。
 
 本目录用于沉淀"可维护、可落地"的架构深度文档：不仅描述模块如何工作，也明确 **哪些已经实现**、**哪些是设计但未接入主链路**，避免"文档看起来很高级，实际系统仍像 pipeline + LLM 胶水"。
@@ -61,13 +61,16 @@ flowchart TD
     J --> K[SSE: data/progress/focus/intervention]
 ```
 
-### 最新对齐点（2026-02-10）
+### 最新对齐点（2026-02-11）
 
 - Orchestrator 路由已是“多执行器优先级链”：`clarify/compare/extend/drill_down` 优先于策略匹配。
 - 策略命中后仍会按 `DomainManifest.strategyExecutionPolicies` 决定是否偏好 hypothesis loop。
 - `scene_reconstruction` 的 Stage2 task 已由 `DomainManifest.sceneReconstructionRoutes` 动态构建，不再写死二分逻辑。
 - Data 输出统一走 `DataEnvelope` + `emitDataEnvelopes()`，并由 `EmittedEnvelopeRegistry` 做 session 级去重。
 - 结论提示词已接入 scene template 链路：`sceneTemplateStore -> sceneRouter -> scenePolicy`。
+- `layered` 结果路径新增统一解包与列定义透传：`skillAnalysisAdapter` 提取 `display.columns -> columnDefinitions`，前端按该定义渲染并保留 `navigate_range.durationColumn` 依赖列。
+- 启动与滑动展示层时长统一 `ms`，时间跳转链路保持 `ns` 精度（双轨时间契约）。
+- 真实 trace 回归纳入默认流程：`npm run test:skill-eval:real-traces` 覆盖 `test-traces/app_start_heavy.pftrace` 与 `test-traces/app_aosp_scrolling_heavy_jank.pftrace`。
 
 关键约束：
 - **仅同一 trace**：所有记忆/状态以 `(sessionId, traceId)` 为 key，且有迁移时的 trace guard。
