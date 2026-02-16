@@ -62,6 +62,7 @@ import { ApprovalController } from '../operations/approvalController';
 import { PrincipleEngine } from '../principles/principleEngine';
 import { createSoulProfile } from '../soul/soulProfile';
 import { evaluateSoulGuard } from '../soul/soulGuard';
+import { shouldPreferHypothesisLoop } from '../../agent/config/domainManifest';
 
 export type AgentRuntimeAnalysisResult = AnalysisResult;
 
@@ -315,10 +316,12 @@ export class AgentRuntime extends EventEmitter {
     }
 
     const preferredLoopMode = runtimeContext.sessionContext.getTraceAgentState()?.preferences?.defaultLoopMode;
-    const preferHypothesisLoop =
-      preferredLoopMode === 'hypothesis_experiment' &&
-      strategyMatchResult?.strategy !== null &&
-      strategyMatchResult?.strategy !== undefined;
+    const preferHypothesisLoop = strategyMatchResult?.strategy
+      ? shouldPreferHypothesisLoop({
+          strategyId: strategyMatchResult.strategy.id,
+          preferredLoopMode,
+        })
+      : false;
 
     const incrementalScope = this.determineIncrementalScope(query, runtimeContext.sessionContext);
     emitter.emitUpdate('incremental_scope', {
