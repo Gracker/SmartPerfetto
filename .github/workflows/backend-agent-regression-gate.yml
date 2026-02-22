@@ -35,5 +35,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install trace_processor_shell
+        run: |
+          curl -fsSL https://get.perfetto.dev/trace_processor -o /tmp/trace_processor_installer.py
+          python3 /tmp/trace_processor_installer.py --version
+
+          TP_BIN="$HOME/.local/share/perfetto/prebuilts/trace_processor_shell"
+          if [ ! -x "$TP_BIN" ]; then
+            echo "trace_processor_shell not found at $TP_BIN" >&2
+            exit 1
+          fi
+
+          echo "TRACE_PROCESSOR_PATH=$TP_BIN" >> "$GITHUB_ENV"
+
       - name: Run agent regression gate
         run: npm run test:gate
