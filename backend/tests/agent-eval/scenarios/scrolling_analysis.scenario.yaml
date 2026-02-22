@@ -43,6 +43,13 @@ scenarios:
           includeRecommendations: true
           citeData: true
 
+      groundTruth:
+        summary: "滑动存在掉帧"
+        keyFacts:
+          - "掉帧"
+          - "帧率"
+          - "优化"
+
     tags:
       - scrolling
       - basic
@@ -171,6 +178,13 @@ scenarios:
               good: "References data but not always specific"
               fair: "Vague references to data"
               poor: "No data citation"
+
+      groundTruth:
+        summary: "掉帧存在可定位的根因"
+        keyFacts:
+          - "主线程"
+          - "卡顿"
+          - "建议"
 
     tags:
       - scrolling

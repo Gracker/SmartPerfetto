@@ -1509,7 +1509,11 @@ describe('AI Decision Step 执行', () => {
 
     const result = await executor.execute('ai_decision_test', 'trace-1');
     expect(result.success).toBe(true);
-    expect(mockAiService.chat).toHaveBeenCalledWith('根据数据选择最佳方案');
+    expect(mockAiService.chat).toHaveBeenCalledTimes(1);
+    const aiPrompt = String((mockAiService.chat as jest.Mock).mock.calls[0][0] || '');
+    expect(aiPrompt).toContain('根据数据选择最佳方案');
+    expect(aiPrompt).toContain('只返回一个 JSON 对象');
+    expect(aiPrompt).toContain('JSON Schema');
   });
 
   it('应该发射 ai_thinking 和 ai_response 事件', async () => {

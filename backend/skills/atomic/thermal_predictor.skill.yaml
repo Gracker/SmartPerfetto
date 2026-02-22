@@ -1,0 +1,161 @@
+# =============================================================================
+# Thermal Predictor (Atomic Skill)
+# =============================================================================
+# Predict thermal throttling risk from CPU frequency trend.
+
+name: thermal_predictor
+version: "1.0"
+type: atomic
+category: thermal
+
+meta:
+  display_name: "热控风险预测"
+  description: "基于 CPU 频率趋势预测热限频风险"
+  icon: "thermostat"
+  tags: [thermal, throttling, prediction, cpu]
+
+triggers:
+  keywords:
+    zh: [热风险, 热控, 限频预测, 温度趋势]
+    en: [thermal risk, thermal predictor, throttling prediction]
+  patterns:
+    - ".*thermal.*(predict|risk).*"
+    - ".*(热控|限频).*(预测|风险).*"
+
+prerequisites:
+  required_tables:
+    - counter
+    - cpu_counter_track
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+  - name: high_drop_threshold_pct
+    type: number
+    required: false
+    default: 30
+    description: "平均降频高风险阈值（%）"
+  - name: medium_drop_threshold_pct
+    type: number
+    required: false
+    default: 15
+    description: "平均降频中风险阈值（%）"
+  - name: high_core_ratio_threshold_pct
+    type: number
+    required: false
+    default: 50
+    description: "限频核心占比高风险阈值（%）"
+  - name: medium_core_ratio_threshold_pct
+    type: number
+    required: false
+    default: 25
+    description: "限频核心占比中风险阈值（%）"
+  - name: core_drop_threshold_pct
+    type: number
+    required: false
+    default: 30
+    description: "单核心疑似限频判定阈值（%）"
+
+display:
+  level: summary
+  layer: overview
+  title: "热控预测"
+  columns:
+    - name: avg_start_freq_mhz
+      label: "区间初段频率"
+      type: number
+    - name: avg_end_freq_mhz
+      label: "区间末段频率"
+      type: number
+    - name: avg_drop_pct
+      label: "平均降幅"
+      type: percentage
+      format: percentage
+    - name: throttled_core_ratio_pct
+      label: "疑似限频核心占比"
+      type: percentage
+      format: percentage
+    - name: thermal_risk
+      label: "热控风险"
+      type: string
+    - name: prediction
+      label: "预测"
+      type: string
+
+sql: |
+  WITH freq_samples AS (
+    SELECT
+      t.cpu,
+      c.ts,
+      c.value / 1000.0 as freq_mhz
+    FROM counter c
+    JOIN cpu_counter_track t ON c.track_id = t.id
+    WHERE t.name = 'cpufreq'
+      AND c.ts >= ${start_ts}
+      AND c.ts < ${end_ts}
+  ),
+  ordered AS (
+    SELECT
+      *,
+      PERCENT_RANK() OVER (PARTITION BY cpu ORDER BY ts) as ts_rank
+    FROM freq_samples
+  ),
+  per_cpu AS (
+    SELECT
+      cpu,
+      AVG(CASE WHEN ts_rank <= 0.2 THEN freq_mhz END) as start_freq_mhz,
+      AVG(CASE WHEN ts_rank >= 0.8 THEN freq_mhz END) as end_freq_mhz,
+      MAX(freq_mhz) as max_freq_mhz,
+      MIN(freq_mhz) as min_freq_mhz
+    FROM ordered
+    GROUP BY cpu
+  ),
+  scored AS (
+    SELECT
+      cpu,
+      start_freq_mhz,
+      end_freq_mhz,
+      max_freq_mhz,
+      min_freq_mhz,
+      CASE
+        WHEN start_freq_mhz IS NULL OR start_freq_mhz <= 0 THEN 0
+        ELSE 100.0 * (start_freq_mhz - end_freq_mhz) / start_freq_mhz
+      END as drop_pct,
+      CASE
+        WHEN min_freq_mhz < max_freq_mhz * (1 - ${core_drop_threshold_pct|30} / 100.0) THEN 1 ELSE 0
+      END as likely_throttled
+    FROM per_cpu
+  )
+  SELECT
+    ROUND(AVG(start_freq_mhz), 0) as avg_start_freq_mhz,
+    ROUND(AVG(end_freq_mhz), 0) as avg_end_freq_mhz,
+    ROUND(AVG(drop_pct), 1) as avg_drop_pct,
+    ROUND(100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0), 1) as throttled_core_ratio_pct,
+    CASE
+      WHEN AVG(drop_pct) >= ${high_drop_threshold_pct|30}
+           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${high_core_ratio_threshold_pct|50}
+        THEN 'high'
+      WHEN AVG(drop_pct) >= ${medium_drop_threshold_pct|15}
+           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${medium_core_ratio_threshold_pct|25}
+        THEN 'medium'
+      ELSE 'low'
+    END as thermal_risk,
+    CASE
+      WHEN AVG(drop_pct) >= ${high_drop_threshold_pct|30}
+           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${high_core_ratio_threshold_pct|50}
+        THEN '频率持续下探，预计短时间内出现热限频，建议降载或分批执行重任务'
+      WHEN AVG(drop_pct) >= ${medium_drop_threshold_pct|15}
+           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${medium_core_ratio_threshold_pct|25}
+        THEN '存在热压趋势，建议观察后续频率恢复与帧稳定性'
+      ELSE '当前热控风险较低'
+    END as prediction
+  FROM scored
+
+output:
+  format: structured

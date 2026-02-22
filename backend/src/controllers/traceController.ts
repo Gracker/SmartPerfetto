@@ -1,15 +1,12 @@
 import { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs/promises';
-import AIService from '../services/aiService';
-import { TraceAnalysisRequest, TraceAnalysisResponse, ErrorResponse } from '../types';
+import { ErrorResponse } from '../types';
 
 class TraceController {
-  private aiService: AIService;
   private uploadDir: string;
 
   constructor() {
-    this.aiService = new AIService();
     this.uploadDir = process.env.UPLOAD_DIR || './uploads';
     this.ensureUploadDir();
   }
@@ -71,60 +68,21 @@ class TraceController {
   };
 
   analyzeTrace = async (req: Request, res: Response) => {
-    try {
-      const { fileId, query, analysisType } = req.body;
-
-      if (!fileId) {
-        const error: ErrorResponse = {
-          error: 'Missing file ID',
-          details: 'Please provide a file ID to analyze',
-        };
-        return res.status(400).json(error);
-      }
-
-      // Check if file exists
-      const filePath = path.join(this.uploadDir, fileId);
-      try {
-        await fs.access(filePath);
-      } catch {
-        const error: ErrorResponse = {
-          error: 'File not found',
-          details: 'The uploaded trace file does not exist',
-        };
-        return res.status(404).json(error);
-      }
-
-      // Mock analysis request
-      const analysisRequest: TraceAnalysisRequest = {
-        file: {
-          path: filePath,
-          originalname: fileId,
-          mimetype: 'application/octet-stream',
-          size: 0,
-          buffer: Buffer.alloc(0),
-          fieldname: 'file',
-          encoding: '7bit',
-          stream: null,
-        } as any,
-        query,
-        analysisType: analysisType || 'performance',
-      };
-
-      const analysisResult: TraceAnalysisResponse = await this.aiService.analyzeTrace(analysisRequest);
-
-      res.json({
-        fileId,
-        analysis: analysisResult,
-        analysisTime: new Date().toISOString(),
-      });
-    } catch (error) {
-      console.error('Error analyzing trace:', error);
-      const errorResponse: ErrorResponse = {
-        error: 'Internal server error',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
-    }
+    res.status(410).json({
+      success: false,
+      code: 'TRACE_ANALYZE_DEPRECATED',
+      error: '/api/trace/analyze has been removed',
+      details: 'Use AgentRuntime unified flow: upload with /api/traces/* and analyze with /api/agent/analyze.',
+      migration: {
+        upload: [
+          'POST /api/traces/initialize',
+          'POST /api/traces/:traceId/upload (or chunk upload)',
+          'POST /api/traces/:traceId/complete',
+        ],
+        analyze: 'POST /api/agent/analyze',
+      },
+      removedAt: '2026-02-22',
+    });
   };
 
   getTraceInfo = async (req: Request, res: Response) => {

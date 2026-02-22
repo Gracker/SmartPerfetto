@@ -1,0 +1,110 @@
+# =============================================================================
+# Cache Miss Impact (Atomic Skill)
+# =============================================================================
+# Analyze cache-miss counters (if present) and estimate impact trend.
+
+name: cache_miss_impact
+version: "1.0"
+type: atomic
+category: cpu
+
+meta:
+  display_name: "缓存未命中影响"
+  description: "统计 cache-miss 计数器并评估波动"
+  icon: "memory"
+  tags: [cpu, cache, perf_event, counters]
+
+triggers:
+  keywords:
+    zh: [缓存未命中, cache miss, MPKI, L3, 缓存瓶颈]
+    en: [cache miss, mpki, l3 cache, cache bottleneck]
+  patterns:
+    - ".*cache.*(miss|mpki).*"
+    - ".*(缓存|L3).*(未命中|瓶颈).*"
+
+prerequisites:
+  required_tables:
+    - counter
+    - counter_track
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns，可选)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns，可选)"
+  - name: high_impact_threshold
+    type: number
+    required: false
+    default: 500000
+    description: "高影响阈值（平均增量）"
+  - name: medium_impact_threshold
+    type: number
+    required: false
+    default: 100000
+    description: "中影响阈值（平均增量）"
+
+display:
+  level: detail
+  layer: deep
+  title: "缓存未命中"
+  columns:
+    - name: counter_name
+      label: "计数器"
+      type: string
+    - name: samples
+      label: "样本数"
+      type: number
+    - name: total_miss_delta
+      label: "累计增量"
+      type: number
+      format: compact
+    - name: avg_miss_delta
+      label: "平均增量"
+      type: number
+      format: compact
+    - name: peak_miss_delta
+      label: "峰值增量"
+      type: number
+      format: compact
+    - name: impact_level
+      label: "影响等级"
+      type: string
+
+sql: |
+  WITH raw AS (
+    SELECT
+      ct.name as counter_name,
+      c.ts,
+      c.value,
+      c.value - LAG(c.value) OVER (PARTITION BY ct.id ORDER BY c.ts) as delta
+    FROM counter c
+    JOIN counter_track ct ON c.track_id = ct.id
+    WHERE (${start_ts} IS NULL OR c.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      AND LOWER(ct.name) LIKE '%cache%'
+      AND (
+        LOWER(ct.name) LIKE '%miss%'
+        OR LOWER(ct.name) LIKE '%mpki%'
+      )
+  )
+  SELECT
+    counter_name,
+    COUNT(*) as samples,
+    ROUND(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0) as total_miss_delta,
+    ROUND(AVG(CASE WHEN delta > 0 THEN delta END), 2) as avg_miss_delta,
+    ROUND(MAX(CASE WHEN delta > 0 THEN delta END), 2) as peak_miss_delta,
+    CASE
+      WHEN AVG(CASE WHEN delta > 0 THEN delta END) >= ${high_impact_threshold|500000} THEN 'high'
+      WHEN AVG(CASE WHEN delta > 0 THEN delta END) >= ${medium_impact_threshold|100000} THEN 'medium'
+      ELSE 'low'
+    END as impact_level
+  FROM raw
+  GROUP BY counter_name
+  ORDER BY avg_miss_delta DESC
+
+output:
+  format: structured

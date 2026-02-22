@@ -340,15 +340,15 @@ Turn 4: "对比第2帧和第5帧"
 
 **Gaps Identified:**
 
-| Missing Skill | Priority | Use Case |
-|---------------|----------|----------|
-| memory_pressure_in_range | HIGH | PSI metrics, kswapd activity |
-| gpu_power_state_analysis | HIGH | GPU DVFS, power domain transitions |
-| thread_affinity_violation | MEDIUM | CPU pinning failures |
-| frame_pipeline_variance | MEDIUM | Anomalous frame path detection |
-| thermal_predictor | MEDIUM | Throttling prediction |
-| futex_wait_distribution | LOW | Futex vs mutex patterns |
-| cache_miss_impact | LOW | L3 cache efficiency |
+| Missing Skill | Priority | Use Case | Status (2026-02-22) |
+|---------------|----------|----------|-----------------------|
+| memory_pressure_in_range | HIGH | PSI metrics, kswapd activity | Implemented (`backend/skills/atomic/memory_pressure_in_range.skill.yaml`) |
+| gpu_power_state_analysis | HIGH | GPU DVFS, power domain transitions | Implemented (`backend/skills/atomic/gpu_power_state_analysis.skill.yaml`) |
+| thread_affinity_violation | MEDIUM | CPU pinning failures | Implemented (`backend/skills/atomic/thread_affinity_violation.skill.yaml`) |
+| frame_pipeline_variance | MEDIUM | Anomalous frame path detection | Implemented (`backend/skills/atomic/frame_pipeline_variance.skill.yaml`) |
+| thermal_predictor | MEDIUM | Throttling prediction | Implemented (`backend/skills/atomic/thermal_predictor.skill.yaml`) |
+| futex_wait_distribution | LOW | Futex vs mutex patterns | Implemented (`backend/skills/atomic/futex_wait_distribution.skill.yaml`) |
+| cache_miss_impact | LOW | L3 cache efficiency | Implemented (`backend/skills/atomic/cache_miss_impact.skill.yaml`) |
 
 ### 3.2 SQL Performance Issues
 

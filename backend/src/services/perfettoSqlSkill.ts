@@ -486,7 +486,7 @@ export class PerfettoSqlSkill {
         break;
       case PerfettoSkillType.SLOW_FUNCTIONS:
         sql = this.getSlowFunctionsSql(packageName);
-        summary = `Execute this SQL to analyze slow functions. Look for slices > 16ms (missed frame threshold).`;
+        summary = `Execute this SQL to analyze long-running main-thread slices (>16ms). Correlate these slices with jank evidence before claiming dropped frames.`;
         break;
       case PerfettoSkillType.NETWORK:
         sql = this.getNetworkSql(packageName);
@@ -748,7 +748,7 @@ ORDER BY ts ASC;
   private getSlowFunctionsSql(packageName?: string): string {
     const processFilter = packageName ? `WHERE p.name GLOB '${packageName}*'` : '';
     return `
--- Slow Functions Analysis (>16ms)
+-- Slow Main-Thread Functions Analysis (>16ms)
 SELECT
   s.name as function_name,
   COUNT(*) as count,
@@ -757,10 +757,12 @@ SELECT
   SUM(s.dur) / 1e6 as total_dur_ms,
   p.name as process_name
 FROM slice s
-JOIN track t ON s.track_id = t.id
-JOIN process_track pt ON t.id = pt.id
-JOIN process p ON pt.upid = p.upid
-${processFilter.replace('WHERE', 'AND')} AND s.dur > 16000000
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+${processFilter.replace('WHERE', 'AND')}
+  AND s.dur > 16000000
+  AND (COALESCE(t.is_main_thread, 0) = 1 OR t.tid = p.pid OR LOWER(COALESCE(t.name, '')) = 'main')
 GROUP BY s.name, p.name
 ORDER BY total_dur_ms DESC;
     `;
@@ -2303,7 +2305,7 @@ ORDER BY s.ts ASC;
       processFilter = `AND p.name GLOB '${packageName}*'`;
     }
 
-    // Calculate frame time statistics including standard deviation
+    // Calculate frame time statistics with exact percentiles from ordered samples.
     const sql = `
       WITH frame_stats AS (
         SELECT
@@ -2314,6 +2316,13 @@ ORDER BY s.ts ASC;
         WHERE 1=1
           ${processFilter}
       ),
+      ordered AS (
+        SELECT
+          frame_time_ms,
+          ROW_NUMBER() OVER (ORDER BY frame_time_ms) as rn,
+          COUNT(*) OVER () as total_count
+        FROM frame_stats
+      ),
       stats AS (
         SELECT
           AVG(frame_time_ms) as avg_ms,
@@ -2323,24 +2332,29 @@ ORDER BY s.ts ASC;
       ),
       percentiles AS (
         SELECT
-          percentile_val,
-          frame_time_ms
-        FROM frame_stats
-        JOIN (
-          SELECT 0.50 as pct, 'p50' as percentile_val
-          UNION SELECT 0.95, 'p95'
-          UNION SELECT 0.99, 'p99'
-        ) ON frame_time_ms >= (
-          SELECT frame_time_ms FROM frame_stats f2
-          ORDER BY f2.frame_time_ms
-          LIMIT 1 OFFSET (CAST((SELECT COUNT(*) FROM frame_stats) * percentile_val.pct) AS INT) - 1
-        )
+          MAX(CASE
+            WHEN rn = CAST(ROUND((total_count - 1) * 0.50) AS INT) + 1 THEN frame_time_ms
+          END) as p50_ms,
+          MAX(CASE
+            WHEN rn = CAST(ROUND((total_count - 1) * 0.95) AS INT) + 1 THEN frame_time_ms
+          END) as p95_ms,
+          MAX(CASE
+            WHEN rn = CAST(ROUND((total_count - 1) * 0.99) AS INT) + 1 THEN frame_time_ms
+          END) as p99_ms
+        FROM ordered
       )
       SELECT
         s.avg_ms,
-        SQRT(s.avg_sq_ms - s.avg_ms * s.avg_ms) as std_dev_ms,
-        s.frame_count
+        CASE
+          WHEN s.frame_count <= 1 THEN 0
+          ELSE SQRT(MAX(s.avg_sq_ms - s.avg_ms * s.avg_ms, 0))
+        END as std_dev_ms,
+        s.frame_count,
+        p.p50_ms,
+        p.p95_ms,
+        p.p99_ms
       FROM stats s
+      CROSS JOIN percentiles p
     `;
 
     const result = await this.traceProcessor.query(traceId, sql);
@@ -2351,18 +2365,30 @@ ORDER BY s.ts ASC;
 
     const rowObjects = rowsToObjects(result.columns || [], result.rows);
     const r = rowObjects[0];
-    const avgMs = (r.avg_ms as number) || 0;
-    const stdDevMs = (r.std_dev_ms as number) || 0;
+    const frameCount = Number(r.frame_count || 0);
+    const avgMs = Number(r.avg_ms || 0);
+    const stdDevMs = Number(r.std_dev_ms || 0);
+
+    if (!Number.isFinite(avgMs) || frameCount <= 0 || avgMs <= 0) {
+      return null;
+    }
+
+    const p50 = Number.isFinite(Number(r.p50_ms)) ? Number(r.p50_ms) : avgMs;
+    const p95 = Number.isFinite(Number(r.p95_ms)) ? Number(r.p95_ms) : avgMs;
+    const p99 = Number.isFinite(Number(r.p99_ms)) ? Number(r.p99_ms) : avgMs;
 
     // Calculate coefficient of variation (CV = std/mean)
-    // Lower CV means more stable frame rate
+    // Lower CV means more stable frame rate.
     const cv = avgMs > 0 ? (stdDevMs / avgMs) * 100 : 0;
 
-    // Calculate stability score (0-100)
-    // Based on how close frame times are to ideal 16.6ms and how stable they are
+    // Calculate stability score (0-100):
+    // - penalize high variation
+    // - penalize high-tail latency (p95)
+    // - penalize mean frame time drifting above the 60fps budget
     let stabilityScore = 100;
-    stabilityScore -= Math.min(cv * 2, 50); // Penalty for high variation
-    stabilityScore -= Math.min(Math.abs(avgMs - 16.6) * 2, 30); // Penalty for deviation from 60fps
+    stabilityScore -= Math.min(cv * 1.8, 45);
+    stabilityScore -= Math.min(Math.max(p95 - 16.6, 0) * 1.5, 35);
+    stabilityScore -= Math.min(Math.max(avgMs - 16.6, 0) * 1.2, 20);
     stabilityScore = Math.max(0, Math.min(100, stabilityScore));
 
     return {
@@ -2370,9 +2396,9 @@ ORDER BY s.ts ASC;
       stdDevMs: stdDevMs,
       coefficientOfVariation: cv,
       framePercentiles: {
-        p50: avgMs, // Approximation
-        p95: avgMs + stdDevMs * 1.64, // Approximation
-        p99: avgMs + stdDevMs * 2.33, // Approximation
+        p50,
+        p95,
+        p99,
       },
       stabilityScore: Math.round(stabilityScore),
     };
@@ -2395,6 +2421,12 @@ ORDER BY s.ts ASC;
       jankType: string;
       rootCause: string;
       description: string;
+      confidence: 'high' | 'medium' | 'low';
+      evidence?: {
+        mainOverlapMs?: number;
+        maxMainSliceMs?: number;
+        presentType?: string;
+      };
     }>;
   } | null> {
     let processFilter = '';
@@ -2402,7 +2434,11 @@ ORDER BY s.ts ASC;
       processFilter = `AND p.name GLOB '${packageName}*'`;
     }
 
-    // Analyze janky frames with root cause attribution
+    // Analyze janky frames with stricter root-cause attribution:
+    // - Main-thread cause requires >=8ms overlap with frame window
+    // - GPU cause relies on gpu_composition flag
+    // - BufferQueue cause uses present_type/jank_type late indicators
+    // - Otherwise fallback to system pipeline
     const sql = `
       WITH janky_frames AS (
         SELECT
@@ -2410,53 +2446,83 @@ ORDER BY s.ts ASC;
           a.ts,
           a.dur,
           a.jank_type,
-          a.on_time_finish,
           a.gpu_composition,
           a.present_type,
           p.name as process_name,
-          p.upid
+          p.upid,
+          p.pid,
+          a.ts as frame_start_ns,
+          a.ts + a.dur as frame_end_ns
         FROM actual_frame_timeline_slice a
         JOIN process p ON a.upid = p.upid
         WHERE a.jank_type IS NOT NULL AND a.jank_type != 'None'
           ${processFilter}
         ORDER BY a.ts
       ),
-      thread_analysis AS (
+      main_thread_overlap AS (
         SELECT
           jf.id,
+          COUNT(*) as overlapping_main_slice_count,
+          SUM(
+            CASE
+              WHEN MIN(s.ts + s.dur, jf.frame_end_ns) > MAX(s.ts, jf.frame_start_ns)
+                THEN MIN(s.ts + s.dur, jf.frame_end_ns) - MAX(s.ts, jf.frame_start_ns)
+              ELSE 0
+            END
+          ) / 1e6 as main_overlap_ms,
+          MAX(s.dur) / 1e6 as max_main_slice_ms
+        FROM janky_frames jf
+        JOIN thread t ON t.upid = jf.upid
+        JOIN thread_track tt ON tt.utid = t.utid
+        JOIN slice s ON s.track_id = tt.id
+        WHERE s.dur > 0
+          AND (COALESCE(t.is_main_thread, 0) = 1 OR t.tid = jf.pid OR LOWER(COALESCE(t.name, '')) = 'main')
+          AND s.ts < jf.frame_end_ns
+          AND s.ts + s.dur > jf.frame_start_ns
+        GROUP BY jf.id
+      ),
+      classified AS (
+        SELECT
           jf.ts,
           jf.jank_type,
           jf.gpu_composition,
           jf.present_type,
-          -- Check for long running slices on main thread during this frame
-          EXISTS(
-            SELECT 1 FROM slice s
-            JOIN thread_track tt ON s.track_id = tt.id
-            JOIN thread t ON tt.utid = t.utid
-            WHERE t.upid = jf.upid
-              AND t.name GLOB '*main*'
-              AND s.ts >= jf.ts - 16000000
-              AND s.ts <= jf.ts + jf.dur
-              AND s.dur > 8000000
-          ) as has_long_main_thread_work,
-          -- Check for SF-related issues
-          jf.gpu_composition = 1 as has_gpu_composition
+          COALESCE(mto.overlapping_main_slice_count, 0) as overlapping_main_slice_count,
+          COALESCE(mto.main_overlap_ms, 0) as main_overlap_ms,
+          COALESCE(mto.max_main_slice_ms, 0) as max_main_slice_ms,
+          CASE
+            WHEN COALESCE(mto.main_overlap_ms, 0) >= 8.0 THEN 'MainThread'
+            WHEN jf.gpu_composition = 1 THEN 'GPU'
+            WHEN LOWER(COALESCE(jf.present_type, '')) LIKE '%late%'
+              OR LOWER(COALESCE(jf.present_type, '')) LIKE '%miss%'
+              OR LOWER(COALESCE(jf.jank_type, '')) LIKE '%buffer%'
+              THEN 'BufferQueue'
+            ELSE 'System'
+          END as root_cause,
+          CASE
+            WHEN COALESCE(mto.main_overlap_ms, 0) >= 8.0 THEN 'high'
+            WHEN jf.gpu_composition = 1 THEN 'medium'
+            WHEN LOWER(COALESCE(jf.present_type, '')) LIKE '%late%'
+              OR LOWER(COALESCE(jf.present_type, '')) LIKE '%miss%'
+              OR LOWER(COALESCE(jf.jank_type, '')) LIKE '%buffer%'
+              THEN 'medium'
+            ELSE 'low'
+          END as confidence
         FROM janky_frames jf
+        LEFT JOIN main_thread_overlap mto ON mto.id = jf.id
       )
       SELECT
         ts,
         jank_type,
         gpu_composition,
         present_type,
-        has_long_main_thread_work,
-        has_gpu_composition,
-        CASE
-          WHEN has_long_main_thread_work = 1 THEN 'MainThread'
-          WHEN has_gpu_composition = 1 THEN 'GPU'
-          WHEN present_type = 'Late' THEN 'BufferQueue'
-          ELSE 'System'
-        END as root_cause
-      FROM thread_analysis
+        overlapping_main_slice_count,
+        main_overlap_ms,
+        max_main_slice_ms,
+        root_cause,
+        confidence
+      FROM classified
+      ORDER BY ts ASC
     `;
 
     const result = await this.traceProcessor.query(traceId, sql);
@@ -2485,6 +2551,12 @@ ORDER BY s.ts ASC;
         jankType: r.jank_type,
         rootCause: r.root_cause,
         description: this.getRootCauseDescription(r.root_cause as string, r.jank_type as string),
+        confidence: (r.confidence as 'high' | 'medium' | 'low') || 'low',
+        evidence: {
+          mainOverlapMs: Number(r.main_overlap_ms || 0),
+          maxMainSliceMs: Number(r.max_main_slice_ms || 0),
+          presentType: String(r.present_type || ''),
+        },
       };
     });
 
@@ -3141,44 +3213,139 @@ ORDER BY s.ts ASC;
       processFilter = `AND p.name GLOB '${packageName}*'`;
     }
 
-    // Find slow functions (>16ms - frame budget for 60fps)
-    const sql = `
-      WITH slow_functions AS (
-        SELECT
-          s.name as function_name,
-          s.dur / 1e6 as dur_ms,
-          s.ts / 1e6 as ts_ms,
-          t.name as thread_name,
-          p.name as process_name
-        FROM slice s
-        JOIN track tr ON s.track_id = tr.id
-        JOIN thread_track tt ON tr.id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE s.dur > 16000000
-          ${processFilter}
-      ),
-      aggregated AS (
+    const frameTimelineCheck = await this.traceProcessor.query(traceId, `
+      SELECT COUNT(*) as count FROM sqlite_master
+      WHERE name = 'actual_frame_timeline_slice'
+    `);
+    const hasFrameTimeline = frameTimelineCheck.rows &&
+      frameTimelineCheck.rows.length > 0 &&
+      Number((frameTimelineCheck.rows[0] as any[])[0] || 0) > 0;
+
+    // Find long-running slices on app main thread only.
+    // If FrameTimeline exists, also compute overlap with janky frames.
+    const sql = hasFrameTimeline
+      ? `
+        WITH main_thread_slices AS (
+          SELECT
+            s.name as function_name,
+            s.dur / 1e6 as dur_ms,
+            s.ts / 1e6 as ts_ms,
+            s.ts as slice_start_ns,
+            s.ts + s.dur as slice_end_ns,
+            t.name as thread_name,
+            p.name as process_name,
+            p.upid
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE s.dur > 16000000
+            ${processFilter}
+            AND (COALESCE(t.is_main_thread, 0) = 1 OR t.tid = p.pid OR LOWER(COALESCE(t.name, '')) = 'main')
+        ),
+        janky_frames AS (
+          SELECT
+            a.upid,
+            a.ts as frame_start_ns,
+            a.ts + a.dur as frame_end_ns
+          FROM actual_frame_timeline_slice a
+          WHERE a.jank_type IS NOT NULL
+            AND a.jank_type != 'None'
+        ),
+        overlap_annotated AS (
+          SELECT
+            mts.*,
+            CASE
+              WHEN EXISTS (
+                SELECT 1
+                FROM janky_frames jf
+                WHERE jf.upid = mts.upid
+                  AND jf.frame_start_ns < mts.slice_end_ns
+                  AND jf.frame_end_ns > mts.slice_start_ns
+              ) THEN 1
+              ELSE 0
+            END as overlaps_jank_frame,
+            COALESCE((
+              SELECT SUM(
+                CASE
+                  WHEN MIN(mts.slice_end_ns, jf.frame_end_ns) > MAX(mts.slice_start_ns, jf.frame_start_ns)
+                    THEN MIN(mts.slice_end_ns, jf.frame_end_ns) - MAX(mts.slice_start_ns, jf.frame_start_ns)
+                  ELSE 0
+                END
+              )
+              FROM janky_frames jf
+              WHERE jf.upid = mts.upid
+                AND jf.frame_start_ns < mts.slice_end_ns
+                AND jf.frame_end_ns > mts.slice_start_ns
+            ), 0) / 1e6 as overlap_jank_ms
+          FROM main_thread_slices mts
+        ),
+        aggregated AS (
+          SELECT
+            function_name,
+            process_name,
+            COUNT(*) as count,
+            AVG(dur_ms) as avg_dur_ms,
+            MAX(dur_ms) as max_dur_ms,
+            SUM(dur_ms) as total_dur_ms,
+            SUM(overlaps_jank_frame) as jank_overlap_count,
+            SUM(overlap_jank_ms) as total_jank_overlap_ms
+          FROM overlap_annotated
+          GROUP BY function_name, process_name
+        )
         SELECT
           function_name,
           process_name,
-          COUNT(*) as count,
-          AVG(dur_ms) as avg_dur_ms,
-          MAX(dur_ms) as max_dur_ms,
-          SUM(dur_ms) as total_dur_ms
-        FROM slow_functions
-        GROUP BY function_name, process_name
-      )
-      SELECT
-        function_name,
-        process_name,
-        count,
-        avg_dur_ms,
-        max_dur_ms,
-        total_dur_ms
-      FROM aggregated
-      ORDER BY total_dur_ms DESC
-    `;
+          count,
+          avg_dur_ms,
+          max_dur_ms,
+          total_dur_ms,
+          jank_overlap_count,
+          total_jank_overlap_ms
+        FROM aggregated
+        ORDER BY total_dur_ms DESC
+      `
+      : `
+        WITH slow_functions AS (
+          SELECT
+            s.name as function_name,
+            s.dur / 1e6 as dur_ms,
+            s.ts / 1e6 as ts_ms,
+            t.name as thread_name,
+            p.name as process_name
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN process p ON t.upid = p.upid
+          WHERE s.dur > 16000000
+            ${processFilter}
+            AND (COALESCE(t.is_main_thread, 0) = 1 OR t.tid = p.pid OR LOWER(COALESCE(t.name, '')) = 'main')
+        ),
+        aggregated AS (
+          SELECT
+            function_name,
+            process_name,
+            COUNT(*) as count,
+            AVG(dur_ms) as avg_dur_ms,
+            MAX(dur_ms) as max_dur_ms,
+            SUM(dur_ms) as total_dur_ms,
+            0 as jank_overlap_count,
+            0 as total_jank_overlap_ms
+          FROM slow_functions
+          GROUP BY function_name, process_name
+        )
+        SELECT
+          function_name,
+          process_name,
+          count,
+          avg_dur_ms,
+          max_dur_ms,
+          total_dur_ms,
+          jank_overlap_count,
+          total_jank_overlap_ms
+        FROM aggregated
+        ORDER BY total_dur_ms DESC
+      `;
 
     const queryResult = await this.traceProcessor.query(traceId, sql);
 
@@ -3194,23 +3361,59 @@ ORDER BY s.ts ASC;
 
     const rowObjects = rowsToObjects(queryResult.columns, queryResult.rows);
 
-    // Get top slowest individual instances
-    const topSlowestSql = `
-      SELECT
-        s.name as function_name,
-        s.dur / 1e6 as dur_ms,
-        s.ts / 1e6 as ts_ms,
-        t.name as thread_name,
-        p.name as process_name
-      FROM slice s
-      JOIN track tr ON s.track_id = tr.id
-      JOIN thread_track tt ON tr.id = tt.id
-      JOIN thread t ON tt.utid = t.utid
-      JOIN process p ON t.upid = p.upid
-      WHERE s.dur > 16000000
-        ${processFilter}
-      ORDER BY s.ts ASC
-    `;
+    // Get top slowest individual instances from main thread.
+    const topSlowestSql = hasFrameTimeline
+      ? `
+        WITH janky_frames AS (
+          SELECT
+            a.upid,
+            a.ts as frame_start_ns,
+            a.ts + a.dur as frame_end_ns
+          FROM actual_frame_timeline_slice a
+          WHERE a.jank_type IS NOT NULL AND a.jank_type != 'None'
+        )
+        SELECT
+          s.name as function_name,
+          s.dur / 1e6 as dur_ms,
+          s.ts / 1e6 as ts_ms,
+          t.name as thread_name,
+          p.name as process_name,
+          CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM janky_frames jf
+              WHERE jf.upid = p.upid
+                AND jf.frame_start_ns < s.ts + s.dur
+                AND jf.frame_end_ns > s.ts
+            ) THEN 1
+            ELSE 0
+          END as overlaps_jank_frame
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE s.dur > 16000000
+          ${processFilter}
+          AND (COALESCE(t.is_main_thread, 0) = 1 OR t.tid = p.pid OR LOWER(COALESCE(t.name, '')) = 'main')
+        ORDER BY s.ts ASC
+      `
+      : `
+        SELECT
+          s.name as function_name,
+          s.dur / 1e6 as dur_ms,
+          s.ts / 1e6 as ts_ms,
+          t.name as thread_name,
+          p.name as process_name,
+          0 as overlaps_jank_frame
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE s.dur > 16000000
+          ${processFilter}
+          AND (COALESCE(t.is_main_thread, 0) = 1 OR t.tid = p.pid OR LOWER(COALESCE(t.name, '')) = 'main')
+        ORDER BY s.ts ASC
+      `;
 
     const topSlowestResult = await this.traceProcessor.query(traceId, topSlowestSql);
     const topSlowestObjects = rowsToObjects(topSlowestResult.columns || [], topSlowestResult.rows || []);
@@ -3225,7 +3428,8 @@ ORDER BY s.ts ASC;
       summary,
       metrics: {
         totalSlowFunctions: rowObjects.length,
-        threshold: '16ms (frame budget)',
+        threshold: '16ms (long main-thread slice)',
+        hasFrameTimeline: hasFrameTimeline ? 1 : 0,
       },
       details: {
         topSlowest: topSlowestObjects,
@@ -3780,21 +3984,29 @@ ORDER BY s.ts ASC;
     topSlowest: Record<string, unknown>[]
   ): string {
     if (rows.length === 0) {
-      return 'No slow functions found in trace. All functions completed within the 16ms frame budget.';
+      return 'No long main-thread slices (>16ms) were found.';
     }
 
     const totalCount = rows.reduce((sum, r: any) => sum + r.count, 0);
     const totalDur = rows.reduce((sum, r: any) => sum + r.total_dur_ms, 0);
     const avgDur = rows.reduce((sum, r: any) => sum + r.avg_dur_ms * r.count, 0) / totalCount;
+    const jankOverlapCount = rows.reduce((sum, r: any) => sum + Number(r.jank_overlap_count || 0), 0);
+    const overlapRatio = totalCount > 0 ? (jankOverlapCount / totalCount) * 100 : 0;
 
-    let summary = `Found ${rows.length} types of slow functions (>16ms threshold). `;
+    let summary = `Found ${rows.length} types of long main-thread slices (>16ms). `;
     summary += `Total occurrences: ${totalCount}. `;
     summary += `Total time: ${totalDur.toFixed(2)}ms, average: ${avgDur.toFixed(2)}ms.`;
+    if (jankOverlapCount > 0) {
+      summary += ` Overlap with janky frames: ${jankOverlapCount}/${totalCount} (${overlapRatio.toFixed(1)}%).`;
+    } else {
+      summary += ' No overlap with detected janky frames in this trace.';
+    }
 
     if (topSlowest.length > 0) {
       const slowest = topSlowest[0] as any;
+      const overlapTag = Number(slowest.overlaps_jank_frame || 0) > 0 ? ' [overlaps jank frame]' : '';
       summary += ` Slowest instance: ${slowest.function_name} at ${slowest.dur_ms.toFixed(2)}ms ` +
-        `in ${slowest.thread_name} thread (${slowest.process_name}).`;
+        `in ${slowest.thread_name} thread (${slowest.process_name}).${overlapTag}`;
     }
 
     return summary;

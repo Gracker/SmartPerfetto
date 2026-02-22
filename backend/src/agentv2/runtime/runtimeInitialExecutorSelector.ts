@@ -28,6 +28,7 @@ interface SelectInitialExecutorInput {
 
 export interface InitialExecutorSelection {
   executor: AnalysisExecutor;
+  executorType: 'strategy' | 'hypothesis';
   initialHypotheses: Awaited<ReturnType<typeof generateInitialHypotheses>>;
   strategyMatchResult: StrategyMatchResult | null;
   effectiveConfig: AgentRuntimeConfig;
@@ -98,6 +99,7 @@ export async function selectInitialExecutor(input: SelectInitialExecutorInput): 
 
     return {
       executor: new StrategyExecutor(strategyMatchResult.strategy, input.services),
+      executorType: 'strategy',
       initialHypotheses,
       strategyMatchResult,
       effectiveConfig,
@@ -122,6 +124,7 @@ export async function selectInitialExecutor(input: SelectInitialExecutorInput): 
 
   return {
     executor: hypothesisExecutor,
+    executorType: 'hypothesis',
     initialHypotheses,
     strategyMatchResult,
     effectiveConfig,

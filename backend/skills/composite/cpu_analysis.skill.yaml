@@ -78,6 +78,31 @@ inputs:
     required: false
     default: 50
     description: "阻塞函数告警阈值（ms）"
+  - name: enable_expert_probes
+    type: boolean
+    required: false
+    default: true
+    description: "是否启用专家探针（迁核/Cache miss）"
+  - name: affinity_probe_migration_ratio_threshold_pct
+    type: number
+    required: false
+    default: 25
+    description: "线程亲和性探针判定阈值（%）"
+  - name: affinity_violation_warning_threshold_pct
+    type: number
+    required: false
+    default: 35
+    description: "线程迁核告警阈值（%）"
+  - name: cache_miss_high_avg_delta_threshold
+    type: number
+    required: false
+    default: 500000
+    description: "Cache miss 高影响阈值（平均增量）"
+  - name: cache_miss_medium_avg_delta_threshold
+    type: number
+    required: false
+    default: 100000
+    description: "Cache miss 中影响阈值（平均增量）"
 
 steps:
   # ========== 初始化 CPU 拓扑视图（供后续步骤 JOIN）==========
@@ -715,6 +740,106 @@ steps:
     save_as: wakeup_chain
     condition: target_process.data.length > 0
 
+  # ========== 线程亲和性探针 ==========
+  # 仅在目标进程已确定时执行；用于识别主线程/RenderThread 高频迁核。
+  - id: thread_affinity_probe
+    type: skill
+    name: "线程亲和性探针"
+    skill: thread_affinity_violation
+    params:
+      package: "${target_process.data[0]?.process_name || package || ''}"
+      start_ts: "${start_ts ?? null}"
+      end_ts: "${end_ts ?? null}"
+      migration_ratio_threshold: "${affinity_probe_migration_ratio_threshold_pct|25}"
+    display:
+      level: detail
+      layer: list
+      title: "线程迁核稳定性（专家探针）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: run_samples
+          label: "运行样本"
+          type: number
+        - name: distinct_cpus
+          label: "涉及 CPU 数"
+          type: number
+        - name: migration_count
+          label: "迁核次数"
+          type: number
+        - name: migration_ratio_pct
+          label: "迁核占比"
+          type: percentage
+          format: percentage
+        - name: affinity_violation
+          label: "亲和性异常"
+          type: boolean
+    save_as: affinity_probe
+    condition: "enable_expert_probes !== false && target_process.data.length > 0"
+    optional: true
+
+  # ========== Cache Miss 可用性检测 ==========
+  - id: cache_counter_check
+    type: atomic
+    name: "Cache Miss 计数器检测"
+    display: false
+    sql: |
+      SELECT
+        CASE WHEN EXISTS (
+          SELECT 1
+          FROM counter_track
+          WHERE LOWER(name) LIKE '%cache%'
+            AND (LOWER(name) LIKE '%miss%' OR LOWER(name) LIKE '%mpki%')
+        ) THEN 1 ELSE 0 END as has_cache_counter
+    save_as: cache_counter_check
+    condition: "enable_expert_probes !== false && target_process.data.length > 0"
+    optional: true
+
+  # ========== Cache Miss 探针 ==========
+  # 仅当硬件计数器存在时执行，避免对无 perf_event 的设备产生误导。
+  - id: cache_miss_probe
+    type: skill
+    name: "Cache Miss 探针"
+    skill: cache_miss_impact
+    params:
+      start_ts: "${start_ts ?? null}"
+      end_ts: "${end_ts ?? null}"
+      high_impact_threshold: "${cache_miss_high_avg_delta_threshold|500000}"
+      medium_impact_threshold: "${cache_miss_medium_avg_delta_threshold|100000}"
+    display:
+      level: detail
+      layer: list
+      title: "Cache Miss 影响（专家探针）"
+      columns:
+        - name: counter_name
+          label: "计数器"
+          type: string
+        - name: samples
+          label: "样本数"
+          type: number
+        - name: total_miss_delta
+          label: "累计增量"
+          type: number
+          format: compact
+        - name: avg_miss_delta
+          label: "平均增量"
+          type: number
+          format: compact
+        - name: peak_miss_delta
+          label: "峰值增量"
+          type: number
+          format: compact
+        - name: impact_level
+          label: "影响等级"
+          type: string
+    save_as: cache_miss_probe
+    condition: "enable_expert_probes !== false && target_process.data.length > 0 && cache_counter_check.data[0]?.has_cache_counter === 1"
+    optional: true
+
   # ========== CPU 诊断 ==========
   - id: cpu_diagnosis
     type: diagnostic
@@ -734,7 +859,7 @@ steps:
       level: key
       layer: overview
       title: "问题诊断"
-    inputs: [core_stats, main_thread_states, runnable_delays, blocked_functions]
+    inputs: [core_stats, main_thread_states, runnable_delays, blocked_functions, affinity_probe, cache_miss_probe]
     rules:
       # 大核使用率低
       - condition: |
@@ -786,6 +911,26 @@ steps:
         suggestions:
           - "分析阻塞原因，考虑异步化"
           - "检查锁竞争或 IO 操作"
+
+      # 线程迁核过于频繁
+      - condition: "((affinity_probe?.data?.[0]?.migration_ratio_pct) || 0) >= (affinity_violation_warning_threshold_pct || 35)"
+        severity: warning
+        diagnosis: "线程 ${affinity_probe?.data?.[0]?.thread_name} 迁核占比 ${affinity_probe?.data?.[0]?.migration_ratio_pct}% ，存在亲和性抖动"
+        confidence: medium
+        suggestions:
+          - "检查主线程/RenderThread 调度优先级与绑核策略"
+          - "避免短周期任务在大小核间频繁迁移"
+          - "结合系统功耗策略评估是否需要固定关键线程亲和性"
+
+      # Cache miss 压力
+      - condition: "(cache_miss_probe?.data?.find(r => r.impact_level === 'high')?.avg_miss_delta || 0) > 0"
+        severity: warning
+        diagnosis: "检测到高缓存未命中压力 (${cache_miss_probe.data.find(r => r.impact_level === 'high').counter_name})"
+        confidence: medium
+        suggestions:
+          - "优化数据局部性，减少跨大对象随机访问"
+          - "合并小任务批处理，降低 cache thrashing"
+          - "优先排查高 miss 热点线程与函数"
 
 output:
   format: structured

@@ -841,11 +841,13 @@ router.get('/:sessionId/status', (req, res) => {
         }) ||
         undefined;
       response.result = {
+        answer: conclusion,
         conclusion,
         conclusionContract,
         confidence: recoveredResult.confidence,
         totalDurationMs: recoveredResult.totalDurationMs,
         rounds: recoveredResult.rounds,
+        findings: recoveredResult.findings,
         findingsCount: recoveredResult.findings.length,
       };
     }

@@ -1,0 +1,134 @@
+# =============================================================================
+# Thread Affinity Violation (Atomic Skill)
+# =============================================================================
+# Detect frequent CPU migrations on key rendering threads.
+# High migration ratio often indicates affinity instability or scheduler pressure.
+
+name: thread_affinity_violation
+version: "1.0"
+type: atomic
+category: cpu
+
+meta:
+  display_name: "线程亲和性异常"
+  description: "检测主线程/RenderThread 的高频迁核行为"
+  icon: "compare_arrows"
+  tags: [cpu, affinity, scheduler, migration]
+
+triggers:
+  keywords:
+    zh: [迁核, 亲和性, 调度抖动, 大小核, CPU 绑定]
+    en: [migration, affinity, scheduler jitter, core pinning]
+  patterns:
+    - ".*(thread|main|render).*(migration|affinity).*"
+    - ".*(迁核|亲和性|调度).*"
+
+prerequisites:
+  required_tables:
+    - sched
+    - thread
+    - process
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "应用包名(可选)"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns，可选)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns，可选)"
+  - name: migration_ratio_threshold
+    type: number
+    required: false
+    default: 25
+    description: "迁核占比阈值(%)"
+
+display:
+  level: detail
+  layer: deep
+  title: "线程亲和性"
+  columns:
+    - name: process_name
+      label: "进程"
+      type: string
+    - name: thread_name
+      label: "线程"
+      type: string
+    - name: run_samples
+      label: "运行样本"
+      type: number
+    - name: distinct_cpus
+      label: "涉及 CPU 数"
+      type: number
+    - name: migration_count
+      label: "迁核次数"
+      type: number
+    - name: migration_ratio_pct
+      label: "迁核占比"
+      type: percentage
+      format: percentage
+    - name: affinity_violation
+      label: "亲和性异常"
+      type: boolean
+
+sql: |
+  WITH target_threads AS (
+    SELECT
+      t.utid,
+      t.name as thread_name,
+      p.name as process_name,
+      p.pid,
+      t.tid
+    FROM thread t
+    JOIN process p ON t.upid = p.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND (
+        t.tid = p.pid
+        OR t.name = 'RenderThread'
+        OR t.name GLOB '*Hwui*'
+      )
+  ),
+  sched_runs AS (
+    SELECT
+      s.utid,
+      s.ts,
+      s.cpu,
+      tt.thread_name,
+      tt.process_name
+    FROM sched s
+    JOIN target_threads tt ON s.utid = tt.utid
+    WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+  ),
+  annotated AS (
+    SELECT
+      *,
+      CASE
+        WHEN LAG(cpu) OVER (PARTITION BY utid ORDER BY ts) IS NULL THEN 0
+        WHEN LAG(cpu) OVER (PARTITION BY utid ORDER BY ts) != cpu THEN 1
+        ELSE 0
+      END as migrated
+    FROM sched_runs
+  )
+  SELECT
+    process_name,
+    thread_name,
+    COUNT(*) as run_samples,
+    COUNT(DISTINCT cpu) as distinct_cpus,
+    SUM(migrated) as migration_count,
+    ROUND(100.0 * SUM(migrated) / NULLIF(COUNT(*), 0), 1) as migration_ratio_pct,
+    CASE
+      WHEN 100.0 * SUM(migrated) / NULLIF(COUNT(*), 0) >= ${migration_ratio_threshold|25} THEN 1
+      ELSE 0
+    END as affinity_violation
+  FROM annotated
+  GROUP BY process_name, thread_name
+  ORDER BY migration_ratio_pct DESC
+
+output:
+  format: structured

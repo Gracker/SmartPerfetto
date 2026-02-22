@@ -1,0 +1,112 @@
+# =============================================================================
+# Futex Wait Distribution (Atomic Skill)
+# =============================================================================
+# Compare futex/mutex/lock wait slices to locate contention hotspots.
+
+name: futex_wait_distribution
+version: "1.0"
+type: atomic
+category: lock
+
+meta:
+  display_name: "Futex 等待分布"
+  description: "统计 futex/mutex 锁等待分布与耗时"
+  icon: "hourglass_empty"
+  tags: [lock, futex, mutex, contention]
+
+triggers:
+  keywords:
+    zh: [futex, mutex, 锁等待, 锁竞争, 卡锁]
+    en: [futex, mutex, lock wait, contention]
+  patterns:
+    - ".*(futex|mutex|lock).*(wait|contention).*"
+    - ".*(锁|互斥).*(等待|竞争).*"
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "应用包名(可选)"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns，可选)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns，可选)"
+
+display:
+  level: detail
+  layer: deep
+  title: "锁等待分布"
+  columns:
+    - name: wait_type
+      label: "等待类型"
+      type: string
+    - name: events
+      label: "事件数"
+      type: number
+    - name: avg_wait_ms
+      label: "平均等待"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: p95_wait_ms
+      label: "P95 等待"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: max_wait_ms
+      label: "最大等待"
+      type: duration
+      format: duration_ms
+      unit: ms
+
+sql: |
+  WITH waits AS (
+    SELECT
+      CASE
+        WHEN LOWER(s.name) LIKE '%futex%' THEN 'futex'
+        WHEN LOWER(s.name) LIKE '%mutex%' THEN 'mutex'
+        WHEN LOWER(s.name) LIKE '%rwlock%' OR LOWER(s.name) LIKE '%spinlock%' THEN 'lock'
+        ELSE 'other'
+      END as wait_type,
+      s.dur / 1e6 as wait_ms
+    FROM slice s
+    LEFT JOIN thread_track tt ON s.track_id = tt.id
+    LEFT JOIN thread t ON tt.utid = t.utid
+    LEFT JOIN process p ON t.upid = p.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+      AND (
+        LOWER(s.name) LIKE '%futex%'
+        OR LOWER(s.name) LIKE '%mutex%'
+        OR LOWER(s.name) LIKE '%rwlock%'
+        OR LOWER(s.name) LIKE '%spinlock%'
+      )
+  ),
+  ranked AS (
+    SELECT
+      wait_type,
+      wait_ms,
+      PERCENT_RANK() OVER (PARTITION BY wait_type ORDER BY wait_ms) as pct
+    FROM waits
+  )
+  SELECT
+    wait_type,
+    COUNT(*) as events,
+    ROUND(AVG(wait_ms), 2) as avg_wait_ms,
+    ROUND(MAX(CASE WHEN pct >= 0.95 THEN wait_ms END), 2) as p95_wait_ms,
+    ROUND(MAX(wait_ms), 2) as max_wait_ms
+  FROM ranked
+  GROUP BY wait_type
+  ORDER BY avg_wait_ms DESC
+
+output:
+  format: structured

@@ -61,6 +61,46 @@ inputs:
     type: timestamp
     required: false
     description: "分析结束时间戳（纳秒，可选）"
+  - name: enable_expert_probes
+    type: boolean
+    required: false
+    default: true
+    description: "是否启用专家探针（热预测/GPU DVFS）"
+  - name: thermal_predictor_high_drop_pct
+    type: number
+    required: false
+    default: 30
+    description: "热预测高风险的平均降频阈值（%）"
+  - name: thermal_predictor_medium_drop_pct
+    type: number
+    required: false
+    default: 15
+    description: "热预测中风险的平均降频阈值（%）"
+  - name: thermal_predictor_high_core_ratio_pct
+    type: number
+    required: false
+    default: 50
+    description: "热预测高风险的限频核心占比阈值（%）"
+  - name: thermal_predictor_medium_core_ratio_pct
+    type: number
+    required: false
+    default: 25
+    description: "热预测中风险的限频核心占比阈值（%）"
+  - name: thermal_predictor_core_drop_threshold_pct
+    type: number
+    required: false
+    default: 30
+    description: "判定单核心疑似限频的降频阈值（%）"
+  - name: gpu_transition_threshold_pct
+    type: number
+    required: false
+    default: 12
+    description: "GPU 升降频判定阈值（%）"
+  - name: gpu_downshift_warning_pct
+    type: number
+    required: false
+    default: 25
+    description: "GPU 降频占比告警阈值（%）"
 
 steps:
   # ========== L0: 温度数据检查 ==========
@@ -79,8 +119,108 @@ steps:
         ) THEN 1 ELSE 0 END as has_thermal_data,
         CASE WHEN EXISTS (
           SELECT 1 FROM cpu_counter_track WHERE name = 'cpufreq'
-        ) THEN 1 ELSE 0 END as has_freq_data
+        ) THEN 1 ELSE 0 END as has_freq_data,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM sqlite_master
+          WHERE type IN ('table', 'view') AND name = 'android_gpu_frequency'
+        ) THEN 1 ELSE 0 END as has_gpu_freq_data
     save_as: data_check
+
+  # ========== L0: 专家分析时间窗 ==========
+  # 规则：
+  # 1) 若用户传入 start_ts/end_ts，直接采用用户窗口
+  # 2) 若未传入，则用 thermal/cpufreq/gpu 观测数据边界自动推断窗口
+  - id: expert_analysis_window
+    type: atomic
+    name: "热分析窗口"
+    display: false
+    sql: |
+      WITH observed AS (
+        SELECT
+          MIN(c.ts) as min_ts,
+          MAX(c.ts) as max_ts
+        FROM counter c
+        LEFT JOIN counter_track ct ON c.track_id = ct.id
+        LEFT JOIN cpu_counter_track cct ON c.track_id = cct.id
+        WHERE (
+            cct.name = 'cpufreq'
+            OR ct.name LIKE '%thermal%'
+            OR ct.name LIKE '%temp%'
+            OR ct.name LIKE '%temperature%'
+            OR ct.name LIKE '%tsens%'
+            OR ct.name LIKE '%gpu%'
+          )
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      )
+      SELECT
+        CASE
+          WHEN COALESCE(${start_ts}, min_ts) IS NOT NULL
+            THEN printf('%d', COALESCE(${start_ts}, min_ts))
+          ELSE NULL
+        END as window_start_ts,
+        CASE
+          WHEN COALESCE(${end_ts}, max_ts) IS NOT NULL
+            THEN printf('%d', COALESCE(${end_ts}, max_ts))
+          ELSE NULL
+        END as window_end_ts,
+        CASE
+          WHEN COALESCE(${start_ts}, min_ts) IS NOT NULL
+            AND COALESCE(${end_ts}, max_ts) IS NOT NULL
+            THEN ROUND((COALESCE(${end_ts}, max_ts) - COALESCE(${start_ts}, min_ts)) / 1e6, 2)
+          ELSE NULL
+        END as window_ms,
+        CASE
+          WHEN ${start_ts} IS NOT NULL OR ${end_ts} IS NOT NULL THEN 'user_selected'
+          WHEN min_ts IS NOT NULL AND max_ts IS NOT NULL THEN 'auto_observed_range'
+          ELSE 'unavailable'
+        END as window_source
+      FROM observed
+    save_as: analysis_window
+    condition: "enable_expert_probes !== false && (data_check.data[0]?.has_thermal_data === 1 || data_check.data[0]?.has_freq_data === 1 || data_check.data[0]?.has_gpu_freq_data === 1)"
+    optional: true
+
+  # ========== L0: 热风险预测（性能专家探针） ==========
+  - id: thermal_predictor_probe
+    type: skill
+    name: "热风险预测"
+    skill: thermal_predictor
+    params:
+      start_ts: "${analysis_window.data?.[0]?.window_start_ts ?? start_ts ?? null}"
+      end_ts: "${analysis_window.data?.[0]?.window_end_ts ?? end_ts ?? null}"
+      high_drop_threshold_pct: "${thermal_predictor_high_drop_pct|30}"
+      medium_drop_threshold_pct: "${thermal_predictor_medium_drop_pct|15}"
+      high_core_ratio_threshold_pct: "${thermal_predictor_high_core_ratio_pct|50}"
+      medium_core_ratio_threshold_pct: "${thermal_predictor_medium_core_ratio_pct|25}"
+      core_drop_threshold_pct: "${thermal_predictor_core_drop_threshold_pct|30}"
+    display:
+      level: summary
+      layer: overview
+      title: "热风险预测（专家探针）"
+      columns:
+        - name: avg_start_freq_mhz
+          label: "区间初段频率"
+          type: number
+        - name: avg_end_freq_mhz
+          label: "区间末段频率"
+          type: number
+        - name: avg_drop_pct
+          label: "平均降幅"
+          type: percentage
+          format: percentage
+        - name: throttled_core_ratio_pct
+          label: "疑似限频核心占比"
+          type: percentage
+          format: percentage
+        - name: thermal_risk
+          label: "热风险"
+          type: string
+        - name: prediction
+          label: "预测"
+          type: string
+    save_as: thermal_prediction
+    condition: "enable_expert_probes !== false && data_check.data[0]?.has_freq_data === 1 && analysis_window.data?.[0]?.window_start_ts != null && analysis_window.data?.[0]?.window_end_ts != null"
+    optional: true
 
   # ========== L1: 温度传感器概览 ==========
   - id: thermal_overview
@@ -249,6 +389,46 @@ steps:
     save_as: cpu_freq_overview
     optional: true
     condition: "data_check.data[0]?.has_freq_data === 1"
+
+  # ========== L1: GPU 功耗状态探针 (性能专家) ==========
+  - id: gpu_power_probe
+    type: skill
+    name: "GPU DVFS 探针"
+    skill: gpu_power_state_analysis
+    params:
+      start_ts: "${analysis_window.data?.[0]?.window_start_ts ?? start_ts ?? null}"
+      end_ts: "${analysis_window.data?.[0]?.window_end_ts ?? end_ts ?? null}"
+      transition_threshold_pct: "${gpu_transition_threshold_pct|12}"
+    display:
+      level: detail
+      layer: list
+      title: "GPU 功耗状态（专家探针）"
+      columns:
+        - name: gpu_id
+          label: "GPU"
+          type: number
+        - name: samples
+          label: "采样数"
+          type: number
+        - name: avg_freq_mhz
+          label: "平均频率(MHz)"
+          type: number
+        - name: min_freq_mhz
+          label: "最低频率(MHz)"
+          type: number
+        - name: max_freq_mhz
+          label: "最高频率(MHz)"
+          type: number
+        - name: downshift_count
+          label: "降频次数"
+          type: number
+        - name: downshift_ratio_pct
+          label: "降频占比"
+          type: percentage
+          format: percentage
+    save_as: gpu_power_probe
+    condition: "enable_expert_probes !== false && data_check.data[0]?.has_gpu_freq_data === 1 && analysis_window.data?.[0]?.window_start_ts != null && analysis_window.data?.[0]?.window_end_ts != null"
+    optional: true
 
   # ========== L2: 温度变化时间线 ==========
   - id: thermal_timeline
@@ -699,7 +879,7 @@ steps:
       level: key
       layer: overview
       title: "问题诊断"
-    inputs: [thermal_overview, cpu_freq_overview, frequency_drops, high_temp_periods, root_cause]
+    inputs: [thermal_overview, cpu_freq_overview, thermal_prediction, gpu_power_probe, frequency_drops, high_temp_periods, root_cause]
     rules:
       # 严重热节流
       - condition: "root_cause.data[0]?.classification === 'THERMAL_THROTTLING'"
@@ -720,6 +900,25 @@ steps:
           - "降低持续 CPU 负载"
           - "避免长时间高强度计算"
           - "监控温度变化趋势"
+
+      # 专家预测：短时间内热风险
+      - condition: "(thermal_prediction?.data?.[0]?.thermal_risk || '') === 'high'"
+        severity: critical
+        diagnosis: "热风险预测为高：频率平均降幅 ${thermal_prediction.data[0].avg_drop_pct}%"
+        confidence: high
+        suggestions:
+          - "立即降低持续计算密度，增加任务分批与冷却间隔"
+          - "优先优化后台并发，避免长时间满载"
+          - "结合温度传感器与 FPS 继续观测 1-3 分钟趋势"
+
+      # GPU 侧降频抖动
+      - condition: "(gpu_power_probe?.data?.[0]?.downshift_ratio_pct || 0) >= (gpu_downshift_warning_pct || 25)"
+        severity: warning
+        diagnosis: "GPU 降频占比 ${gpu_power_probe.data[0].downshift_ratio_pct}% ，存在图形侧热压或功耗抖动"
+        confidence: medium
+        suggestions:
+          - "降低高峰渲染负载，减少过度绘制和昂贵 shader"
+          - "平滑 GPU 突发任务，避免频繁升降频震荡"
 
       # 频率不稳定
       - condition: "root_cause.data[0]?.classification === 'FREQ_INSTABILITY'"
@@ -753,7 +952,7 @@ steps:
     sql: |
       SELECT '未检测到温度传感器数据。可能原因：Trace 未包含 thermal/temperature counter，或设备不支持温度上报。建议：确保 Trace 包含 ftrace thermal 事件。' as message
     save_as: no_data_fallback
-    condition: "data_check.data[0]?.has_thermal_data !== 1 && data_check.data[0]?.has_freq_data !== 1"
+    condition: "data_check.data[0]?.has_thermal_data !== 1 && data_check.data[0]?.has_freq_data !== 1 && data_check.data[0]?.has_gpu_freq_data !== 1"
 
 output:
   format: layered

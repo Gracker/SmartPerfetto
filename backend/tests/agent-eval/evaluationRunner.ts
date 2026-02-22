@@ -396,10 +396,10 @@ export class EvaluationRunner {
     return {
       sessionId,
       success: true,
-      answer: result.answer,
+      answer: result.answer || result.conclusion,
       confidence: result.confidence,
-      executionTimeMs: result.executionTimeMs || 0,
-      iterationCount: result.iterationsUsed,
+      executionTimeMs: result.totalDurationMs || result.executionTimeMs || 0,
+      iterationCount: result.rounds || result.iterationsUsed,
       findings: result.findings as Finding[],
       evaluation: result.evaluation
         ? {
@@ -409,6 +409,7 @@ export class EvaluationRunner {
           }
         : undefined,
       layers: result.layers,
+      raw: result,
     };
   }
 

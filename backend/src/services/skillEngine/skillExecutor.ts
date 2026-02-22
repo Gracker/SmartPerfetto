@@ -31,6 +31,7 @@ import {
   SynthesizeConfig,
 } from './types';
 import logger from '../../utils/logger';
+import { parseLlmJson } from '../../utils/llmJson';
 import { redactObjectForLLM, redactTextForLLM } from '../../utils/llmPrivacy';
 import {
   DataEnvelope,
@@ -2271,9 +2272,7 @@ export class SkillExecutor {
     const basePrompt = ExpressionEvaluator.evaluate(step.prompt, context);
     const inputsPayloadRaw = this.buildAIInputsPayload(step.inputs, context);
     const inputsPayload = inputsPayloadRaw ? (redactObjectForLLM(inputsPayloadRaw).value as any) : null;
-    const promptRaw = inputsPayload
-      ? `${basePrompt}\n\n[INPUT_DATA_JSON]\n${JSON.stringify(inputsPayload, null, 2)}\n[/INPUT_DATA_JSON]\n\n严格要求：只根据 INPUT_DATA_JSON 中提供的数据做判断；缺数据就明确说明缺口。`
-      : basePrompt;
+    const promptRaw = this.buildStructuredAIPrompt(basePrompt, inputsPayload, 'decision');
     const prompt = redactTextForLLM(promptRaw).text;
 
     this.emit({
@@ -2284,19 +2283,20 @@ export class SkillExecutor {
     });
 
     const response = await this.callAI(prompt, context, 'evaluation');
+    const normalizedDecision = this.extractStructuredAIField(response, 'decision');
 
     this.emit({
       type: 'ai_response',
       skillId: '',
       stepId: step.id,
-      data: { response },
+      data: { response: normalizedDecision, rawResponse: response },
     });
 
     return {
       stepId: step.id,
       stepType: 'ai_decision',
       success: true,
-      data: { decision: response },
+      data: { decision: normalizedDecision },
       executionTimeMs: Date.now() - startTime,
     };
   }
@@ -2323,9 +2323,7 @@ export class SkillExecutor {
     const basePrompt = ExpressionEvaluator.evaluate(step.prompt, context);
     const inputsPayloadRaw = this.buildAIInputsPayload(step.inputs, context);
     const inputsPayload = inputsPayloadRaw ? (redactObjectForLLM(inputsPayloadRaw).value as any) : null;
-    const promptRaw = inputsPayload
-      ? `${basePrompt}\n\n[INPUT_DATA_JSON]\n${JSON.stringify(inputsPayload, null, 2)}\n[/INPUT_DATA_JSON]\n\n严格要求：只基于 INPUT_DATA_JSON 中的实际数据分析；不要编造数值。若字段不存在/为空，请明确说明无法判断，并给出下一步建议（需要补哪些表/模块/操作）。`
-      : basePrompt;
+    const promptRaw = this.buildStructuredAIPrompt(basePrompt, inputsPayload, 'summary');
     const prompt = redactTextForLLM(promptRaw).text;
 
     this.emit({
@@ -2336,19 +2334,20 @@ export class SkillExecutor {
     });
 
     const response = await this.callAI(prompt, context, 'synthesis');
+    const normalizedSummary = this.extractStructuredAIField(response, 'summary');
 
     this.emit({
       type: 'ai_response',
       skillId: '',
       stepId: step.id,
-      data: { response },
+      data: { response: normalizedSummary, rawResponse: response },
     });
 
     return {
       stepId: step.id,
       stepType: 'ai_summary',
       success: true,
-      data: { summary: response },
+      data: { summary: normalizedSummary },
       executionTimeMs: Date.now() - startTime,
     };
   }
@@ -2441,7 +2440,7 @@ export class SkillExecutor {
     const maxColumns = 64;
 
     for (const inputName of inputs) {
-      const value = context.variables[inputName] ?? context.results[inputName]?.data;
+      const value = this.resolveAIInputValue(inputName, context);
 
       if (value === undefined) {
         payload[inputName] = { missing: true };
@@ -2486,6 +2485,67 @@ export class SkillExecutor {
     }
 
     return payload;
+  }
+
+  private resolveAIInputValue(inputName: string, context: SkillExecutionContext): any {
+    if (context.variables[inputName] !== undefined) {
+      return context.variables[inputName];
+    }
+    if (context.results[inputName]?.data !== undefined) {
+      return context.results[inputName].data;
+    }
+    if (context.params && context.params[inputName] !== undefined) {
+      return context.params[inputName];
+    }
+    if (context.inherited && context.inherited[inputName] !== undefined) {
+      return context.inherited[inputName];
+    }
+    if (context.currentItem && (context.currentItem as any)[inputName] !== undefined) {
+      return (context.currentItem as any)[inputName];
+    }
+    return undefined;
+  }
+
+  private buildStructuredAIPrompt(
+    basePrompt: string,
+    inputsPayload: Record<string, any> | null,
+    mode: 'decision' | 'summary'
+  ): string {
+    const schema = mode === 'decision'
+      ? '{"decision":"string","reasoning":"string","confidence":"high|medium|low","missing_data":["string"]}'
+      : '{"summary":"string","key_points":["string"],"confidence":"high|medium|low","missing_data":["string"],"next_steps":["string"]}';
+    const inputBlock = inputsPayload
+      ? `\n\n[INPUT_DATA_JSON]\n${JSON.stringify(inputsPayload, null, 2)}\n[/INPUT_DATA_JSON]`
+      : '';
+    const groundingRule = mode === 'decision'
+      ? '严格要求：只根据 INPUT_DATA_JSON 中提供的数据做判断；缺数据就明确说明缺口。'
+      : '严格要求：只基于 INPUT_DATA_JSON 中的实际数据分析；不要编造数值。若字段不存在/为空，请明确说明无法判断，并给出下一步建议。';
+
+    return `${basePrompt}${inputBlock}\n\n${groundingRule}\n输出要求：只返回一个 JSON 对象，不要输出 markdown、代码块或额外解释。\nJSON Schema: ${schema}`;
+  }
+
+  private extractStructuredAIField(
+    response: string,
+    field: 'decision' | 'summary'
+  ): string {
+    const fallback = String(response || '').trim();
+    if (!fallback) return '';
+
+    try {
+      const parsed = parseLlmJson<Record<string, any>>(fallback);
+      if (parsed && typeof parsed === 'object') {
+        if (typeof parsed[field] === 'string' && parsed[field].trim()) {
+          return parsed[field].trim();
+        }
+        if (field === 'decision' && typeof parsed.reasoning === 'string' && parsed.reasoning.trim()) {
+          return parsed.reasoning.trim();
+        }
+      }
+    } catch {
+      // Fall back to raw response if structured parse fails.
+    }
+
+    return fallback;
   }
 
   /**

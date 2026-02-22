@@ -1,0 +1,112 @@
+# =============================================================================
+# GPU Power State Analysis (Atomic Skill)
+# =============================================================================
+# Analyze GPU frequency transitions to identify power-state oscillation and
+# downshift pressure that may correlate with rendering instability.
+
+name: gpu_power_state_analysis
+version: "1.0"
+type: atomic
+category: gpu
+
+meta:
+  display_name: "GPU 功耗状态分析"
+  description: "分析 GPU 频率状态切换，识别降频压力与抖动"
+  icon: "bolt"
+  tags: [gpu, power, dvfs, thermal]
+
+triggers:
+  keywords:
+    zh: [GPU, 功耗, 降频, DVFS, 热控]
+    en: [gpu, power, downshift, dvfs, thermal]
+  patterns:
+    - ".*gpu.*(power|dvfs|freq).*"
+    - ".*(降频|功耗|热控).*gpu.*"
+
+prerequisites:
+  modules:
+    - android.gpu.frequency
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns，可选)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns，可选)"
+  - name: transition_threshold_pct
+    type: number
+    required: false
+    default: 15
+    description: "判定升降频的百分比阈值"
+
+display:
+  level: detail
+  layer: deep
+  title: "GPU 功耗状态"
+  columns:
+    - name: gpu_id
+      label: "GPU"
+      type: number
+    - name: samples
+      label: "采样数"
+      type: number
+    - name: avg_freq_mhz
+      label: "平均频率(MHz)"
+      type: number
+    - name: min_freq_mhz
+      label: "最低频率(MHz)"
+      type: number
+    - name: max_freq_mhz
+      label: "最高频率(MHz)"
+      type: number
+    - name: downshift_count
+      label: "降频次数"
+      type: number
+    - name: upshift_count
+      label: "升频次数"
+      type: number
+    - name: downshift_ratio_pct
+      label: "降频占比"
+      type: percentage
+      format: percentage
+
+sql: |
+  WITH freq_samples AS (
+    SELECT
+      gpu_id,
+      ts,
+      gpu_freq,
+      LAG(gpu_freq) OVER (PARTITION BY gpu_id ORDER BY ts) as prev_freq
+    FROM android_gpu_frequency
+    WHERE (${start_ts} IS NULL OR ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR ts < ${end_ts})
+  ),
+  transitions AS (
+    SELECT
+      gpu_id,
+      gpu_freq,
+      CASE
+        WHEN prev_freq IS NULL THEN 'init'
+        WHEN gpu_freq < prev_freq * (1 - ${transition_threshold_pct|15} / 100.0) THEN 'downshift'
+        WHEN gpu_freq > prev_freq * (1 + ${transition_threshold_pct|15} / 100.0) THEN 'upshift'
+        ELSE 'stable'
+      END as transition_type
+    FROM freq_samples
+  )
+  SELECT
+    gpu_id,
+    COUNT(*) as samples,
+    ROUND(AVG(gpu_freq) / 1e6, 0) as avg_freq_mhz,
+    ROUND(MIN(gpu_freq) / 1e6, 0) as min_freq_mhz,
+    ROUND(MAX(gpu_freq) / 1e6, 0) as max_freq_mhz,
+    SUM(CASE WHEN transition_type = 'downshift' THEN 1 ELSE 0 END) as downshift_count,
+    SUM(CASE WHEN transition_type = 'upshift' THEN 1 ELSE 0 END) as upshift_count,
+    ROUND(100.0 * SUM(CASE WHEN transition_type = 'downshift' THEN 1 ELSE 0 END) / NULLIF(COUNT(*), 0), 1) as downshift_ratio_pct
+  FROM transitions
+  GROUP BY gpu_id
+
+output:
+  format: structured

@@ -2,6 +2,7 @@ import type {
   AnalysisResult,
   AgentRuntimeConfig,
   ExecutionContext,
+  ExecutorResult,
 } from '../../../agent/core/orchestratorTypes';
 import type { EnhancedSessionContext } from '../../../agent/context/enhancedSessionContext';
 import {
@@ -14,6 +15,8 @@ import { ModelRouter } from '../../../agent/core/modelRouter';
 import type { DomainAgentRegistry } from '../../../agent/agents/domain';
 import type { IterationStrategyPlanner } from '../../../agent/agents/iterationStrategyPlanner';
 import type { StrategyRegistry } from '../../../agent/strategies';
+import { HypothesisExecutor } from '../../../agent/core/executors/hypothesisExecutor';
+import { mergeCapturedEntities } from '../../../agent/core/entityCapture';
 import { RuntimeExecutionFactory } from '../runtimeExecutionFactory';
 import { RuntimeResultFinalizer } from '../runtimeResultFinalizer';
 import { selectInitialExecutor } from '../runtimeInitialExecutorSelector';
@@ -116,7 +119,27 @@ export class InitialModeHandler implements RuntimeModeHandler {
     }
 
     const startTime = Date.now();
-    const executorResult = await selection.executor.execute(executionCtx, emitter);
+    let executorResult = await selection.executor.execute(executionCtx, emitter);
+    const fallbackDecision = this.shouldFallbackToHypothesis(selection.executorType, executorResult);
+
+    if (fallbackDecision.shouldFallback) {
+      emitter.emitUpdate('strategy_fallback', {
+        reason: fallbackDecision.reason,
+        candidatesEvaluated: this.strategyRegistry.getAll().length,
+        topCandidateConfidence: selection.strategyMatchResult?.confidence,
+        fallbackTo: 'hypothesis_driven',
+      });
+
+      const hypothesisExecutor = new HypothesisExecutor(
+        services,
+        this.agentRegistry,
+        this.strategyPlanner
+      );
+      hypothesisExecutor.setFocusStore(this.focusStore);
+
+      const fallbackResult = await hypothesisExecutor.execute(executionCtx, emitter);
+      executorResult = this.mergeExecutorResultsForFallback(executorResult, fallbackResult);
+    }
 
     this.resultFinalizer.handleExecutorIntervention(sessionId, executorResult);
     this.resultFinalizer.applyEntityWriteback(runtimeContext.sessionContext, executorResult);
@@ -146,6 +169,91 @@ export class InitialModeHandler implements RuntimeModeHandler {
       mode: runtimeContext.sessionContext.getAllTurns().length > 0 ? 'focused_answer' : 'initial_report',
       historyBudget: conclusionHistoryBudget,
     });
+  }
+
+  private shouldFallbackToHypothesis(
+    executorType: 'strategy' | 'hypothesis',
+    executorResult: ExecutorResult
+  ): { shouldFallback: boolean; reason: string } {
+    if (executorType !== 'strategy') {
+      return { shouldFallback: false, reason: '' };
+    }
+
+    const stopReason = String(executorResult.stopReason || '').trim();
+    if (!stopReason) {
+      return { shouldFallback: false, reason: '' };
+    }
+
+    if (/^Strategy .+ completed$/i.test(stopReason)) {
+      return { shouldFallback: false, reason: '' };
+    }
+
+    if (stopReason.includes('Circuit breaker')) {
+      return { shouldFallback: false, reason: '' };
+    }
+
+    if (stopReason.startsWith('No tasks generated for strategy stage:')) {
+      return { shouldFallback: true, reason: stopReason };
+    }
+
+    if (stopReason.startsWith('Reached hard stage budget')) {
+      return { shouldFallback: true, reason: stopReason };
+    }
+
+    const insufficientEvidence = executorResult.findings.length === 0 || executorResult.confidence < 0.65;
+    if (insufficientEvidence) {
+      return { shouldFallback: true, reason: stopReason };
+    }
+
+    return { shouldFallback: false, reason: '' };
+  }
+
+  private mergeExecutorResultsForFallback(
+    strategyResult: ExecutorResult,
+    fallbackResult: ExecutorResult
+  ): ExecutorResult {
+    const mergedFindings = this.incrementalAnalyzer.mergeFindings(
+      strategyResult.findings,
+      fallbackResult.findings
+    );
+
+    const mergedInformationGaps = Array.from(new Set([
+      ...(strategyResult.informationGaps || []),
+      ...(fallbackResult.informationGaps || []),
+    ]));
+
+    const mergedCapturedEntities = strategyResult.capturedEntities && fallbackResult.capturedEntities
+      ? mergeCapturedEntities(strategyResult.capturedEntities, fallbackResult.capturedEntities)
+      : strategyResult.capturedEntities || fallbackResult.capturedEntities;
+
+    const mergedFrames = Array.from(new Set([
+      ...(strategyResult.analyzedEntityIds?.frames || []),
+      ...(fallbackResult.analyzedEntityIds?.frames || []),
+    ]));
+    const mergedSessions = Array.from(new Set([
+      ...(strategyResult.analyzedEntityIds?.sessions || []),
+      ...(fallbackResult.analyzedEntityIds?.sessions || []),
+    ]));
+
+    const analyzedEntityIds = mergedFrames.length > 0 || mergedSessions.length > 0
+      ? { frames: mergedFrames, sessions: mergedSessions }
+      : undefined;
+
+    return {
+      ...fallbackResult,
+      findings: mergedFindings,
+      confidence: Math.max(strategyResult.confidence, fallbackResult.confidence),
+      informationGaps: mergedInformationGaps,
+      rounds: strategyResult.rounds + fallbackResult.rounds,
+      stopReason: `Strategy fallback triggered (${strategyResult.stopReason || 'early stop'}); ${fallbackResult.stopReason || 'hypothesis complete'}`,
+      lastStrategy: fallbackResult.lastStrategy || strategyResult.lastStrategy,
+      capturedEntities: mergedCapturedEntities,
+      analyzedEntityIds,
+      interventionRequest: fallbackResult.interventionRequest || strategyResult.interventionRequest,
+      pausedForIntervention: Boolean(
+        fallbackResult.pausedForIntervention || strategyResult.pausedForIntervention
+      ),
+    };
   }
 
   private determineIncrementalScope(

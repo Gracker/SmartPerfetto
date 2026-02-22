@@ -43,6 +43,21 @@ inputs:
     type: number
     required: false
     description: "每个滑动区间最多分析的掉帧帧数（默认 8）"
+  - name: enable_expert_probes
+    type: boolean
+    required: false
+    default: true
+    description: "是否启用专家探针（帧方差等）"
+  - name: frame_variance_probe_min_janky_frames
+    type: number
+    required: false
+    default: 5
+    description: "触发帧方差探针的最小掉帧数"
+  - name: frame_variance_transition_threshold_ms
+    type: number
+    required: false
+    default: 8
+    description: "帧间高抖动阈值（ms）"
 
 steps:
   # ==========================================================================
@@ -463,6 +478,99 @@ steps:
       LIMIT 1
     save_as: perf_summary
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
+
+  # ==========================================================================
+  # L1: 专家探针 - 时间窗与帧波动
+  # ==========================================================================
+  # 原则：
+  # 1) 用户显式给 start_ts/end_ts 时严格尊重用户窗口
+  # 2) 未给窗口时，自动使用目标包名的 FrameTimeline 边界作为分析窗口
+  # 3) 仅在已确认存在可见掉帧时才启用额外探针，避免无谓开销
+  - id: expert_analysis_window
+    type: atomic
+    name: "专家分析窗口"
+    display: false
+    sql: |
+      WITH frame_bounds AS (
+        SELECT
+          MIN(a.ts) as min_ts,
+          MAX(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END) as max_ts
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+          AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR a.ts < ${end_ts})
+      )
+      SELECT
+        CASE
+          WHEN COALESCE(${start_ts}, min_ts) IS NOT NULL
+            THEN printf('%d', COALESCE(${start_ts}, min_ts))
+          ELSE NULL
+        END as window_start_ts,
+        CASE
+          WHEN COALESCE(${end_ts}, max_ts) IS NOT NULL
+            THEN printf('%d', COALESCE(${end_ts}, max_ts))
+          ELSE NULL
+        END as window_end_ts,
+        CASE
+          WHEN COALESCE(${start_ts}, min_ts) IS NOT NULL
+            AND COALESCE(${end_ts}, max_ts) IS NOT NULL
+            THEN ROUND((COALESCE(${end_ts}, max_ts) - COALESCE(${start_ts}, min_ts)) / 1e6, 2)
+          ELSE NULL
+        END as window_ms,
+        CASE
+          WHEN ${start_ts} IS NOT NULL OR ${end_ts} IS NOT NULL THEN 'user_selected'
+          WHEN min_ts IS NOT NULL AND max_ts IS NOT NULL THEN 'auto_frame_bounds'
+          ELSE 'unavailable'
+        END as window_source
+      FROM frame_bounds
+    save_as: expert_window
+    condition: "enable_expert_probes !== false && frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
+    optional: true
+
+  - id: frame_variance_probe
+    type: skill
+    name: "帧方差探针"
+    skill: frame_pipeline_variance
+    params:
+      package: "${package}"
+      start_ts: "${expert_window.data?.[0]?.window_start_ts ?? start_ts ?? null}"
+      end_ts: "${expert_window.data?.[0]?.window_end_ts ?? end_ts ?? null}"
+      transition_threshold_ms: "${frame_variance_transition_threshold_ms|8}"
+    display:
+      level: summary
+      layer: overview
+      title: "帧稳定性方差（专家探针）"
+      columns:
+        - name: total_frames
+          label: "总帧数"
+          type: number
+        - name: avg_frame_ms
+          label: "平均帧耗时"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: stddev_ms
+          label: "标准差"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: avg_delta_ms
+          label: "帧间波动"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: high_variance_transitions
+          label: "高抖动转折"
+          type: number
+        - name: variance_level
+          label: "波动等级"
+          type: string
+    save_as: frame_variance_probe
+    condition: "enable_expert_probes !== false && frame_timeline.data[0]?.has_frame_timeline === 1 && (perf_summary?.data?.[0]?.janky_frames || 0) >= (frame_variance_probe_min_janky_frames || 5)"
+    optional: true
 
   # ==========================================================================
   # L1: 掉帧分析 - 消费端 vs App 报告对比

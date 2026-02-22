@@ -18,6 +18,7 @@ import {
   AgentResponse,
   TestScenario,
   CodeExpectations,
+  GroundTruth,
 } from './types';
 
 export class CodeGrader implements Grader {
@@ -77,6 +78,11 @@ export class CodeGrader implements Grader {
       for (const assertion of expectations.customAssertions) {
         checks.push(this.checkCustomAssertion(response, assertion));
       }
+    }
+
+    // 9. Ground truth check (deterministic)
+    if (scenario.expectations.groundTruth) {
+      checks.push(this.checkGroundTruth(response, scenario.expectations.groundTruth));
     }
 
     // Aggregate results
@@ -259,6 +265,61 @@ export class CodeGrader implements Grader {
     }
   }
 
+  private checkGroundTruth(response: AgentResponse, groundTruth: GroundTruth): CheckResult {
+    const answer = String(
+      response.answer ??
+      response.raw?.conclusion ??
+      response.raw?.answer ??
+      ''
+    );
+    const answerNorm = this.normalizeText(answer);
+
+    const summaryHit = answerNorm.includes(this.normalizeText(groundTruth.summary));
+    const missingFacts = groundTruth.keyFacts.filter(fact => {
+      const normFact = this.normalizeText(fact);
+      return normFact.length > 0 && !answerNorm.includes(normFact);
+    });
+
+    let numericScore = 1.0;
+    if (groundTruth.numericValues && Object.keys(groundTruth.numericValues).length > 0) {
+      const answerNumbers = this.extractNumbers(answerNorm);
+      const expected = Object.values(groundTruth.numericValues);
+      if (expected.length > 0) {
+        let matched = 0;
+        for (const target of expected) {
+          if (!Number.isFinite(target)) continue;
+          const hasClose = answerNumbers.some(v => {
+            const tolerance = Math.max(Math.abs(target) * 0.1, 1);
+            return Math.abs(v - target) <= tolerance;
+          });
+          if (hasClose) matched++;
+        }
+        numericScore = expected.length > 0 ? matched / expected.length : 1.0;
+      }
+    }
+
+    const factsScore = groundTruth.keyFacts.length > 0
+      ? (groundTruth.keyFacts.length - missingFacts.length) / groundTruth.keyFacts.length
+      : 1.0;
+    const summaryScore = summaryHit ? 1.0 : 0.0;
+    const score = summaryScore * 0.4 + factsScore * 0.5 + numericScore * 0.1;
+    const passed = summaryHit && missingFacts.length === 0 && numericScore >= 0.5;
+
+    const factsMessage = missingFacts.length === 0
+      ? 'all key facts present'
+      : `missing facts: ${missingFacts.join(', ')}`;
+    const summaryMessage = summaryHit ? 'summary matched' : 'summary missing';
+    const numericMessage = groundTruth.numericValues ? `numeric score=${numericScore.toFixed(2)}` : 'numeric check skipped';
+
+    return {
+      name: 'groundTruth',
+      passed,
+      score,
+      message: `Ground truth check ${passed ? 'passed' : 'failed'} (${summaryMessage}; ${factsMessage}; ${numericMessage})`,
+      severity: 'high',
+    };
+  }
+
   // ===========================================================================
   // Helpers
   // ===========================================================================
@@ -275,6 +336,22 @@ export class CodeGrader implements Grader {
     }
 
     return current;
+  }
+
+  private normalizeText(value: string): string {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[`*_#>~-]/g, ' ')
+      .replace(/[\s\u3000]+/g, '')
+      .trim();
+  }
+
+  private extractNumbers(value: string): number[] {
+    const matches = value.match(/-?\d+(?:\.\d+)?/g);
+    if (!matches) return [];
+    return matches
+      .map(v => Number(v))
+      .filter(v => Number.isFinite(v));
   }
 
   private aggregateChecks(checks: CheckResult[]): GradeResult {

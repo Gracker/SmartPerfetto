@@ -74,6 +74,21 @@ inputs:
     required: false
     default: 500
     description: "IO 等待告警阈值（ms）"
+  - name: enable_lock_probe
+    type: boolean
+    required: false
+    default: true
+    description: "是否启用锁等待探针（futex/mutex）"
+  - name: lock_contention_futex_p95_critical_ms
+    type: number
+    required: false
+    default: 20
+    description: "Futex P95 严重锁竞争阈值（ms）"
+  - name: lock_contention_mutex_p95_warning_ms
+    type: number
+    required: false
+    default: 10
+    description: "Mutex P95 锁等待告警阈值（ms）"
 
 steps:
   # ============================================================================
@@ -330,6 +345,46 @@ steps:
     condition: detection.data[0]?.total_anr_count > 0
     optional: true
 
+  # Step 1.4b: 锁等待分布（性能专家探针）
+  # 使用 ANR 前 timeout 窗口，定位 futex/mutex 竞争是否是主因。
+  - id: futex_wait_probe
+    type: skill
+    name: "ANR 锁等待探针"
+    skill: futex_wait_distribution
+    params:
+      package: "${package || process_name || anr_ctx.data?.[0]?.process_name || ''}"
+      start_ts: "${anr_ctx.data?.[0]?.anr_ts != null && anr_ctx.data?.[0]?.timeout_ns != null ? (Number(anr_ctx.data[0].anr_ts) - Number(anr_ctx.data[0].timeout_ns)) : null}"
+      end_ts: "${anr_ctx.data?.[0]?.anr_ts ?? null}"
+    display:
+      level: detail
+      layer: list
+      title: "ANR 窗口锁等待分布（专家探针）"
+      columns:
+        - name: wait_type
+          label: "等待类型"
+          type: string
+        - name: events
+          label: "事件数"
+          type: number
+        - name: avg_wait_ms
+          label: "平均等待"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: p95_wait_ms
+          label: "P95 等待"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_wait_ms
+          label: "最大等待"
+          type: duration
+          format: duration_ms
+          unit: ms
+    save_as: lock_waits
+    condition: "detection.data[0]?.total_anr_count > 0 && enable_lock_probe !== false"
+    optional: true
+
   # Step 1.5: 系统冻结检测（所有应用都卡住）
   - id: system_freeze_check
     type: atomic
@@ -352,6 +407,13 @@ steps:
         - name: freeze_verdict
           label: "判定"
           type: string
+        - name: system_server_running_pct
+          label: "system_server 运行占比"
+          type: percentage
+          format: percentage
+        - name: system_server_frozen
+          label: "system_server 冻结"
+          type: boolean
     sql: |
       WITH app_activity AS (
         SELECT
@@ -364,21 +426,34 @@ steps:
         WHERE ts.ts >= ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns}
           AND ts.ts < ${anr_ctx.data[0].anr_ts}
           AND t.tid = p.pid  -- 主线程
-          AND p.name NOT LIKE 'com.android.systemui'
-          AND p.name NOT LIKE 'system_server'
+          AND (
+            COALESCE(p.uid, 0) >= 10000
+            OR p.name = 'system_server'
+            OR p.name = 'com.android.systemui'
+          )
         GROUP BY p.name
+      ),
+      freeze_eval AS (
+        SELECT
+          process_name,
+          100.0 * running_ns / NULLIF(total_ns, 0) as running_pct
+        FROM app_activity
       )
       SELECT
         COUNT(*) as total_apps,
-        SUM(CASE WHEN 100.0 * running_ns / NULLIF(total_ns, 0) < 5 THEN 1 ELSE 0 END) as frozen_apps,
-        ROUND(100.0 * SUM(CASE WHEN 100.0 * running_ns / NULLIF(total_ns, 0) < 5 THEN 1 ELSE 0 END) /
+        SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) as frozen_apps,
+        ROUND(100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
               NULLIF(COUNT(*), 0), 1) as frozen_pct,
+        MAX(CASE WHEN process_name = 'system_server' THEN ROUND(running_pct, 1) END) as system_server_running_pct,
+        MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) as system_server_frozen,
         CASE
-          WHEN 100.0 * SUM(CASE WHEN 100.0 * running_ns / NULLIF(total_ns, 0) < 5 THEN 1 ELSE 0 END) /
+          WHEN MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) = 1
+            THEN 'system_server_freeze'
+          WHEN 100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
                NULLIF(COUNT(*), 0) > 50 THEN 'system_freeze'
           ELSE 'app_specific'
         END as freeze_verdict
-      FROM app_activity
+      FROM freeze_eval
     save_as: freeze_check
     condition: detection.data[0]?.total_anr_count > 0
     optional: true
@@ -679,9 +754,19 @@ steps:
         - condition: "severity === 'warning'"
           template: "🟡 警告：{{diagnosis}}"
         - template: "ANR 诊断：{{diagnosis}}"
-    inputs: [detection, cpu_health, memory_pressure, io_load, freeze_check, overview, anr_events, top_processes]
+    inputs: [detection, cpu_health, memory_pressure, io_load, lock_waits, freeze_check, overview, anr_events, top_processes]
     rules:
       # === 系统级问题判定 ===
+
+      # system_server 冻结（系统服务自身无调度）
+      - condition: "freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
+        severity: critical
+        diagnosis: "system_server 运行占比仅 ${freeze_check.data[0].system_server_running_pct}%（疑似系统服务冻结）"
+        confidence: high
+        suggestions:
+          - "这是系统级问题，优先排查 system_server 调度阻塞"
+          - "检查 Binder 死锁、IO 堵塞和内核锁等待"
+          - "结合内核调度与系统服务线程栈定位阻塞点"
 
       # 系统冻结（多个应用同时卡住）
       - condition: "freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
@@ -730,6 +815,24 @@ steps:
         suggestions:
           - "大量 IO 等待可能影响系统响应"
           - "检查是否有大量文件/数据库操作"
+
+      # Futex/Mutex 锁竞争
+      - condition: "(lock_waits?.data?.find(r => r.wait_type === 'futex')?.p95_wait_ms || 0) > (lock_contention_futex_p95_critical_ms || 20)"
+        severity: critical
+        diagnosis: "ANR 窗口 Futex P95 等待 ${lock_waits.data.find(r => r.wait_type === 'futex').p95_wait_ms}ms，存在明显锁竞争"
+        confidence: high
+        suggestions:
+          - "优先排查主线程相关锁的持锁时长和锁顺序"
+          - "避免在锁内执行 Binder/IO/数据库操作"
+          - "缩小临界区并降低共享写竞争"
+
+      - condition: "(lock_waits?.data?.find(r => r.wait_type === 'mutex')?.p95_wait_ms || 0) > (lock_contention_mutex_p95_warning_ms || 10)"
+        severity: warning
+        diagnosis: "ANR 窗口 Mutex P95 等待 ${lock_waits.data.find(r => r.wait_type === 'mutex').p95_wait_ms}ms，锁等待偏高"
+        confidence: medium
+        suggestions:
+          - "按热点函数重构锁粒度，降低串行化路径"
+          - "评估是否可用无锁队列或分段锁替换"
 
       # === 应用级问题判定 ===
 

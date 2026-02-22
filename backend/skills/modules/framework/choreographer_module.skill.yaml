@@ -244,20 +244,9 @@ steps:
 
   # Step 4: VSYNC timing analysis
   - id: vsync_timing
-    type: atomic
+    type: skill
     name: "VSYNC 时序"
-    sql: |
-      SELECT
-        s.name AS vsync_event,
-        COUNT(*) AS vsync_count,
-        CAST(AVG(s.dur) / 1e6 AS REAL) AS avg_dur_ms,
-        CAST(MAX(s.dur) / 1e6 AS REAL) AS max_dur_ms
-      FROM slice s
-      WHERE s.name GLOB '*VSYNC*'
-        OR s.name GLOB '*vsync*'
-        OR s.name GLOB '*HWVsync*'
-      GROUP BY s.name
-      ORDER BY vsync_count DESC
+    skill: vsync_period_detection
     display:
       level: detail
       layer: overview

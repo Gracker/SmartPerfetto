@@ -1,0 +1,110 @@
+# =============================================================================
+# Frame Pipeline Variance (Atomic Skill)
+# =============================================================================
+# Measure frame-time variance and frame-to-frame jitter from FrameTimeline.
+
+name: frame_pipeline_variance
+version: "1.0"
+type: atomic
+category: frame
+
+meta:
+  display_name: "帧管线方差分析"
+  description: "检测帧时长抖动与高方差区间"
+  icon: "show_chart"
+  tags: [frame, jank, variance, frametimeline]
+
+triggers:
+  keywords:
+    zh: [帧抖动, 方差, 波动, 帧不稳定, 帧时间]
+    en: [frame variance, frame jitter, frame stability]
+  patterns:
+    - ".*(frame|jank).*(variance|jitter).*"
+    - ".*(帧|掉帧).*(抖动|方差|波动).*"
+
+prerequisites:
+  required_tables:
+    - actual_frame_timeline_slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "应用包名(可选)"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns，可选)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns，可选)"
+  - name: transition_threshold_ms
+    type: number
+    required: false
+    default: 8
+    description: "高抖动阈值(ms)"
+
+display:
+  level: summary
+  layer: overview
+  title: "帧管线方差"
+  columns:
+    - name: total_frames
+      label: "总帧数"
+      type: number
+    - name: avg_frame_ms
+      label: "平均帧耗时"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: stddev_ms
+      label: "标准差"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: avg_delta_ms
+      label: "帧间波动"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: high_variance_transitions
+      label: "高抖动转折"
+      type: number
+    - name: variance_level
+      label: "抖动等级"
+      type: string
+
+sql: |
+  WITH frames AS (
+    SELECT
+      a.ts,
+      a.dur / 1e6 as frame_ms
+    FROM actual_frame_timeline_slice a
+    LEFT JOIN process p ON a.upid = p.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR a.ts < ${end_ts})
+  ),
+  deltas AS (
+    SELECT
+      ts,
+      frame_ms,
+      ABS(frame_ms - LAG(frame_ms) OVER (ORDER BY ts)) as delta_ms
+    FROM frames
+  )
+  SELECT
+    COUNT(*) as total_frames,
+    ROUND(AVG(frame_ms), 2) as avg_frame_ms,
+    ROUND(SQRT(MAX(AVG(frame_ms * frame_ms) - AVG(frame_ms) * AVG(frame_ms), 0)), 2) as stddev_ms,
+    ROUND(AVG(COALESCE(delta_ms, 0)), 2) as avg_delta_ms,
+    SUM(CASE WHEN COALESCE(delta_ms, 0) >= ${transition_threshold_ms|8} THEN 1 ELSE 0 END) as high_variance_transitions,
+    CASE
+      WHEN AVG(COALESCE(delta_ms, 0)) >= ${transition_threshold_ms|8} THEN 'high'
+      WHEN AVG(COALESCE(delta_ms, 0)) >= ${transition_threshold_ms|8} * 0.5 THEN 'medium'
+      ELSE 'low'
+    END as variance_level
+  FROM deltas
+
+output:
+  format: structured

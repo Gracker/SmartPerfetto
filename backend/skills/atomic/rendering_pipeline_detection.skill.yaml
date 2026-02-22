@@ -128,7 +128,22 @@ steps:
       level: detail
       title: "Slice 特征检测"
     sql: |
-      WITH slice_counts AS (
+      WITH candidate_upids AS (
+        SELECT DISTINCT p.upid
+        FROM process p
+        LEFT JOIN thread t ON t.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (
+            '${package}' != ''
+            OR t.name IN ('main', 'RenderThread')
+            OR t.name GLOB '*ui*'
+            OR t.name GLOB '*Flutter*'
+            OR t.name GLOB '*Chrome*'
+            OR t.name GLOB '*CrRenderer*'
+            OR t.name GLOB '*Unity*'
+          )
+      ),
+      slice_counts AS (
         SELECT
           s.name as slice_name,
           COUNT(*) as cnt
@@ -136,9 +151,8 @@ steps:
         JOIN thread_track tt ON s.track_id = tt.id
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        WHERE p.upid IN (SELECT upid FROM candidate_upids)
         GROUP BY s.name
-        LIMIT 10000
       )
       SELECT
         -- BLAST signals
