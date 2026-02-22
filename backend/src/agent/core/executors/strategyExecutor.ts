@@ -1006,6 +1006,7 @@ export class StrategyExecutor implements AnalysisExecutor {
           description,
           targetAgentId: template.agentId,
           priority: template.priority || 5,
+          timeout: template.timeoutMs ?? ctx.options.taskTimeoutMs ?? ctx.config.taskTimeoutMs,
           context: {
             query: ctx.query,
             intent: intentSummary,

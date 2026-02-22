@@ -10,7 +10,7 @@
  * - dmabuf_analysis
  */
 
-import { BaseAgent, SkillDefinitionForAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
+import { BaseAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
 import {
   AgentTask,
   AgentTaskContext,
@@ -19,57 +19,7 @@ import {
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
 import { getAdbAgentTools } from '../tools/adbTools';
-
-// =============================================================================
-// Memory Agent Configuration
-// =============================================================================
-
-/**
- * Memory Agent Skills
- *
- * Each skill description includes:
- * - What it does
- * - When to use it (scenario)
- * - What output to expect
- */
-const MEMORY_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'memory_analysis',
-    toolName: 'analyze_memory_overview',
-    description: '【内存概览分析】分析内存使用概况，包括各进程内存分布、PSS/RSS。适用于：首次分析内存、获取内存使用全景。输出：进程内存排行+内存分类统计',
-    category: 'memory',
-  },
-  {
-    skillId: 'gc_analysis',
-    toolName: 'analyze_gc',
-    description: '【GC活动分析】分析垃圾回收活动，检测频繁GC和长时间GC。适用于：怀疑GC影响性能、内存抖动。输出：GC事件列表+类型统计+耗时分布（注意：分析全局GC可能输出较多）',
-    category: 'memory',
-  },
-  {
-    skillId: 'lmk_analysis',
-    toolName: 'analyze_lmk',
-    description: '【LMK分析】分析Low Memory Killer活动，检测进程被杀情况。适用于：应用被杀、内存压力大。输出：LMK事件列表+被杀进程信息',
-    category: 'memory',
-  },
-  {
-    skillId: 'dmabuf_analysis',
-    toolName: 'analyze_dmabuf',
-    description: '【DMA-BUF分析】分析DMA-BUF内存使用，检测图形内存泄漏。适用于：GPU内存问题、图形buffer泄漏。输出：DMA-BUF分配统计',
-    category: 'memory',
-  },
-  {
-    skillId: 'memory_pressure_in_range',
-    toolName: 'analyze_memory_pressure',
-    description: '【区间内存压力】分析指定时间范围内的系统内存压力（PSI、kswapd、直接回收、压缩、LMK）。适用于：分析特定卡顿区间是否存在内存压力导致的性能问题。输出：压力评分+各指标统计',
-    category: 'memory',
-  },
-  {
-    skillId: 'gc_events_in_range',
-    toolName: 'analyze_gc_events',
-    description: '【区间GC事件】查询指定时间范围内的GC事件并分类（ConcurrentCopying/MarkSweep/Explicit等）。适用于：分析特定区间内GC对性能的影响。输出：GC事件列表+类型分类',
-    category: 'memory',
-  },
-];
+import { MEMORY_SKILLS } from './skillCatalog';
 
 // =============================================================================
 // Memory Agent Implementation

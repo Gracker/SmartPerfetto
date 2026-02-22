@@ -189,7 +189,8 @@ steps:
 # backend/.env
 PORT=3000
 AI_SERVICE=deepseek          # deepseek | openai | anthropic | glm
-DEEPSEEK_API_KEY=sk-xxx
+SMARTPERFETTO_API_KEY=replace_with_strong_secret
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
 DEEPSEEK_MODEL=deepseek-chat
 ```
 

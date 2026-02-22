@@ -12,7 +12,7 @@
  * All agents use lazy tool initialization via BaseAgent.ensureToolsLoaded()
  */
 
-import { BaseAgent, SkillDefinitionForAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
+import { BaseAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
 import {
   AgentTask,
   AgentTaskContext,
@@ -21,25 +21,11 @@ import {
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
 import { getAdbAgentTools } from '../tools/adbTools';
+import { ANR_SKILLS, INTERACTION_SKILLS, STARTUP_SKILLS, SYSTEM_SKILLS } from './skillCatalog';
 
 // =============================================================================
 // Startup Agent
 // =============================================================================
-
-const STARTUP_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'startup_analysis',
-    toolName: 'analyze_startup',
-    description: '【启动概览分析】分析应用启动性能，检测冷启动/热启动，统计各阶段耗时。适用于：首次分析启动、获取启动全景。输出：启动类型+各阶段耗时+慢启动事件列表',
-    category: 'startup',
-  },
-  {
-    skillId: 'startup_detail',
-    toolName: 'get_startup_detail',
-    description: '【启动详情分析】获取启动过程的详细阶段耗时分解，包括bindApplication、contentProvider、Activity创建等。适用于：深入分析具体启动事件的瓶颈。输出：阶段耗时分解+Binder调用+CPU调度',
-    category: 'startup',
-  },
-];
 
 export class StartupAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {
@@ -112,27 +98,6 @@ ${this.getToolSectionForPrompt()}
 // =============================================================================
 // Interaction Agent
 // =============================================================================
-
-const INTERACTION_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'click_response_analysis',
-    toolName: 'analyze_click_response',
-    description: '【点击响应分析】分析用户点击到界面响应的延迟，检测慢响应事件。适用于：点击后延迟明显、交互不流畅。输出：响应延迟统计+慢响应事件列表',
-    category: 'interaction',
-  },
-  {
-    skillId: 'click_response_detail',
-    toolName: 'get_click_detail',
-    description: '【点击响应详情】获取单次点击事件的详细响应时间分解，包括输入处理、布局、渲染各阶段耗时。适用于：深入分析具体的慢响应事件。输出：阶段耗时分解+瓶颈定位',
-    category: 'interaction',
-  },
-  {
-    skillId: 'navigation_analysis',
-    toolName: 'analyze_navigation',
-    description: '【页面导航分析】分析页面切换和Activity启动耗时，检测慢导航。适用于：页面跳转慢、Activity启动延迟。输出：导航事件列表+耗时分解+根因分析',
-    category: 'interaction',
-  },
-];
 
 export class InteractionAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {
@@ -218,21 +183,6 @@ ${this.getToolSectionForPrompt()}
 // ANR Agent
 // =============================================================================
 
-const ANR_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'anr_analysis',
-    toolName: 'analyze_anr',
-    description: '【ANR概览分析】检测ANR事件，分析主线程阻塞原因和堆栈。适用于：应用无响应、主线程卡死。输出：ANR事件列表+阻塞原因分类+主线程状态',
-    category: 'system',
-  },
-  {
-    skillId: 'anr_detail',
-    toolName: 'get_anr_detail',
-    description: '【ANR详情分析】获取单个ANR事件的详细信息，包括线程状态、锁竞争、Binder阻塞。适用于：深入分析具体的ANR事件。输出：线程状态时间线+锁持有者+Binder调用链',
-    category: 'system',
-  },
-];
-
 export class ANRAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {
     super(
@@ -304,45 +254,6 @@ ${this.getToolSectionForPrompt()}
 // =============================================================================
 // System Agent
 // =============================================================================
-
-const SYSTEM_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'thermal_throttling',
-    toolName: 'analyze_thermal',
-    description: '【热节流分析】检测温度传感器数据和CPU降频事件，分析热节流对性能的影响。适用于：怀疑高温导致性能下降、CPU频率异常偏低。输出：温度曲线+降频事件+根因分类',
-    category: 'system',
-  },
-  {
-    skillId: 'io_pressure',
-    toolName: 'analyze_io_pressure',
-    description: '【IO压力分析】分析IO Wait时间和阻塞函数，检测磁盘IO瓶颈。适用于：怀疑IO导致卡顿、文件读写慢、数据库操作阻塞。输出：IO Wait统计+阻塞函数排行+根因分类',
-    category: 'system',
-  },
-  {
-    skillId: 'suspend_wakeup_analysis',
-    toolName: 'analyze_suspend_wakeup',
-    description: '【休眠唤醒分析】分析系统挂起/唤醒事件和wakelock使用。适用于：功耗分析、唤醒延迟问题。输出：挂起唤醒事件+wakelock统计+唤醒原因',
-    category: 'system',
-  },
-  {
-    skillId: 'block_io_analysis',
-    toolName: 'analyze_block_io',
-    description: '【块IO分析】分析块设备层IO操作，检测读写延迟和吞吐。适用于：IO密集场景、大文件操作、数据库写入慢。输出：IO请求统计+延迟分布+根因分类',
-    category: 'system',
-  },
-  {
-    skillId: 'irq_analysis',
-    toolName: 'analyze_irq',
-    description: '【IRQ分析】分析中断处理时间和频率，检测IRQ风暴和长中断。适用于：怀疑硬件中断影响调度、IRQ处理耗时过长。输出：IRQ统计+耗时排行+根因分类',
-    category: 'system',
-  },
-  {
-    skillId: 'network_analysis',
-    toolName: 'analyze_network',
-    description: '【网络分析】分析网络活动和延迟，检测网络请求阻塞。适用于：网络请求慢、DNS解析延迟、网络导致主线程阻塞。输出：网络请求统计+延迟分布+根因分类',
-    category: 'system',
-  },
-];
 
 export class SystemAgent extends BaseAgent {
   constructor(modelRouter: ModelRouter) {

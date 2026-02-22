@@ -19,7 +19,7 @@
  * - callstack_analysis
  */
 
-import { BaseAgent, SkillDefinitionForAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
+import { BaseAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
 import {
   AgentTask,
   AgentTaskContext,
@@ -28,81 +28,7 @@ import {
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
 import { getAdbAgentTools } from '../tools/adbTools';
-
-// =============================================================================
-// CPU Agent Configuration
-// =============================================================================
-
-/**
- * CPU Agent Skills
- *
- * Each skill description includes:
- * - What it does
- * - When to use it (scenario)
- * - What output to expect
- */
-const CPU_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'cpu_analysis',
-    toolName: 'analyze_cpu_overview',
-    description: '【CPU概览分析】分析全局CPU使用情况，包括各核心负载分布、大小核使用比例。适用于：首次分析CPU、获取整体负载概况。输出：核心负载分布+进程CPU占用排行',
-    category: 'cpu',
-  },
-  {
-    skillId: 'scheduling_analysis',
-    toolName: 'analyze_scheduling',
-    description: '【调度分析】分析线程调度延迟、Runnable等待时间、抢占情况。适用于：怀疑调度问题、线程等待时间长。输出：调度延迟统计+Runnable等待分析',
-    category: 'cpu',
-  },
-  {
-    skillId: 'cpu_freq_timeline',
-    toolName: 'get_cpu_freq_timeline',
-    description: '【CPU频率时间线】获取CPU频率变化历史，分析降频/升频事件。适用于：怀疑温控限频、功耗管理影响。输出：频率变化时间线+降频事件',
-    category: 'cpu',
-  },
-  {
-    skillId: 'cpu_load_in_range',
-    toolName: 'analyze_cpu_load',
-    description: '【区间CPU负载】分析指定时间范围内的CPU负载，适合与帧区间配合。适用于：分析特定卡顿区间的CPU情况。输出：区间内负载统计',
-    category: 'cpu',
-  },
-  {
-    skillId: 'cpu_slice_analysis',
-    toolName: 'analyze_cpu_slices',
-    description: '【CPU时间片分析】分析CPU密集型操作和时间片分布。适用于：找出CPU热点操作。输出：热点操作排行+时间片分布',
-    category: 'cpu',
-  },
-  {
-    skillId: 'cpu_profiling',
-    toolName: 'profile_cpu_hotspots',
-    description: '【CPU热点分析】分析最耗CPU的函数和调用路径。适用于：定位CPU瓶颈函数。输出：热点函数排行（需要trace包含perf数据）',
-    category: 'cpu',
-  },
-  {
-    skillId: 'callstack_analysis',
-    toolName: 'analyze_callstacks',
-    description: '【调用栈分析】分析采样调用栈，定位性能热点代码路径。适用于：需要函数级定位。输出：调用栈聚合分析（需要trace包含callstack数据）',
-    category: 'cpu',
-  },
-  {
-    skillId: 'cpu_cluster_load_in_range',
-    toolName: 'analyze_cpu_cluster_load',
-    description: '【区间大小核负载】分析指定时间范围内各CPU簇（大核/小核）的负载分布。适用于：分析卡顿区间CPU核心调度策略是否合理。输出：大小核利用率+线程核心分布',
-    category: 'cpu',
-  },
-  {
-    skillId: 'cpu_throttling_in_range',
-    toolName: 'analyze_cpu_throttling',
-    description: '【区间限频检测】检测指定时间范围内CPU频率是否被限制（温控/功耗）。适用于：怀疑温控降频导致性能下降。输出：限频事件+频率下降比例',
-    category: 'cpu',
-  },
-  {
-    skillId: 'task_migration_in_range',
-    toolName: 'analyze_task_migration',
-    description: '【区间任务迁移】分析指定时间范围内线程在大小核之间的迁移情况。适用于：怀疑频繁核间迁移导致缓存失效、性能抖动。输出：迁移次数+核心切换模式',
-    category: 'cpu',
-  },
-];
+import { CPU_SKILLS } from './skillCatalog';
 
 // =============================================================================
 // CPU Agent Implementation

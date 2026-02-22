@@ -60,6 +60,8 @@ export interface AgentRuntimeConfig {
   softMaxRounds?: number;
   /** Maximum concurrent agent tasks */
   maxConcurrentTasks: number;
+  /** Default timeout for a single agent task (ms) */
+  taskTimeoutMs?: number;
   /** Confidence threshold to conclude */
   confidenceThreshold: number;
   /** Stop after consecutive rounds with no new evidence */
@@ -75,6 +77,7 @@ export interface AgentRuntimeConfig {
 export const DEFAULT_CONFIG: AgentRuntimeConfig = {
   maxRounds: 5,
   maxConcurrentTasks: 3,
+  taskTimeoutMs: Number.parseInt(process.env.AGENT_TASK_TIMEOUT_MS || '', 10) || 180000,
   confidenceThreshold: 0.7,
   maxNoProgressRounds: 2,
   maxFailureRounds: 2,
@@ -165,6 +168,8 @@ export interface AnalysisOptions {
   traceProcessorService?: any;
   packageName?: string;
   timeRange?: { start: number | string; end: number | string };
+  /** Optional per-task timeout override (ms) */
+  taskTimeoutMs?: number;
   /**
    * Optional ADB collaboration configuration.
    * - off: do not use ADB

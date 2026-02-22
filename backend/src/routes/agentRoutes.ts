@@ -633,6 +633,7 @@ router.post('/analyze', async (req, res) => {
       orchestrator = createAgentRuntime(modelRouter, {
         maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
         maxConcurrentTasks: options.maxConcurrentTasks || 3,
+        taskTimeoutMs: options.taskTimeoutMs,
         confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
         maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
         maxFailureRounds: options.maxFailureRounds ?? 2,
@@ -2876,6 +2877,8 @@ async function runAgentDrivenAnalysis(
         traceProcessorService: options.traceProcessorService,
         packageName: options.packageName,
         timeRange: options.timeRange,
+        taskTimeoutMs: options.taskTimeoutMs,
+        blockedStrategyIds: options.blockedStrategyIds,
         adb: options.adb,
       });
     });

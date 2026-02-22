@@ -272,6 +272,7 @@ export function buildTasksFromGraph(
       description: node.description,
       targetAgentId: agentId,
       priority: 5,
+      timeout: options.taskTimeoutMs,
       context: {
         query,
         intent: {

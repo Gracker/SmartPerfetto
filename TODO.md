@@ -1,10 +1,20 @@
 # SmartPerfetto 待办事项
 
-最后更新: 2026-02-01
+最后更新: 2026-02-22
 
 ---
 
 ## ✅ 已完成
+
+### AI Agent 架构专项修复（2026-02-22）
+- [x] `/chat` AI 代理路由接入统一鉴权与用量检查（移除显式跳过鉴权）
+- [x] `execute_sql` 工具接入 SQL 安全校验（SELECT 限制、表白名单、LIMIT 强制、行数裁剪）
+- [x] LLM 适配层补齐超时/重试/退避策略，避免外部模型抖动导致流程卡死
+- [x] 打通任务超时链路（`AgentTask.timeout` → `AgentMessageBus` 强制执行）
+- [x] 修复 `blockedStrategyIds` 契约（路由参数透传 + runtime 匹配后强制过滤）
+- [x] 领域 Agent 技能映射集中到统一 catalog，工具描述从 skill registry 派生并对缺失技能 fail-fast
+- [x] 补齐关键配置模板与文档一致性（新增 `backend/.env.example`）
+- [x] 补充并发/超时与任务图执行的直接测试覆盖（MessageBus / TaskGraph / Runtime parity）
 
 ### 核心架构
 - [x] Perfetto UI AI 助手插件基础架构

@@ -71,6 +71,8 @@ export interface StageTaskTemplate {
   scope: 'global' | 'per_interval';
   /** Task priority (lower number = higher priority) */
   priority?: number;
+  /** Optional timeout for generated agent tasks (ms) */
+  timeoutMs?: number;
   /** Evidence types this task should collect */
   evidenceNeeded?: string[];
   /** Restrict agent to specific tools */

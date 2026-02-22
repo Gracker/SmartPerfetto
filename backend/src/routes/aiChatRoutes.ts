@@ -1,6 +1,6 @@
 import express from 'express';
-import axios from 'axios';
 import OpenAI from 'openai';
+import { authenticate, checkUsage } from '../middleware/auth';
 
 const router = express.Router();
 
@@ -12,34 +12,48 @@ function getDeepSeekClient(): OpenAI | null {
     return deepseek;
   }
 
-  // Initialize on first call
-  if (process.env.DEEPSEEK_API_KEY) {
-    console.log('[aiChatRoutes] Initializing DeepSeek client');
-    console.log('[aiChatRoutes] DEEPSEEK_BASE_URL:', process.env.DEEPSEEK_BASE_URL);
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (apiKey) {
     deepseek = new OpenAI({
-      apiKey: process.env.DEEPSEEK_API_KEY,
+      apiKey,
       baseURL: process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
     });
-    console.log('[aiChatRoutes] DeepSeek client initialized successfully');
-  } else {
-    console.log('[aiChatRoutes] DEEPSEEK_API_KEY not found in environment');
   }
 
   return deepseek;
 }
 
-// Middleware to skip auth for AI chat
-router.use((req, res, next) => {
-  // Skip authentication for AI chat endpoint
+function isMessageArray(value: unknown): value is OpenAI.Chat.Completions.ChatCompletionMessageParam[] {
+  return Array.isArray(value) && value.length > 0;
+}
+
+function resolveModel(providedModel?: string): string {
+  return providedModel || process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+}
+
+function ensureApiKeyConfigured(_req: express.Request, res: express.Response, next: express.NextFunction): void {
+  if (!process.env.SMARTPERFETTO_API_KEY) {
+    res.status(503).json({
+      success: false,
+      error: 'Chat proxy authentication is not configured',
+      details: 'Set SMARTPERFETTO_API_KEY to enable /chat routes safely',
+    });
+    return;
+  }
   next();
-});
+}
+
+// Align with other backend APIs: enforce auth + usage checks.
+router.use(ensureApiKeyConfigured);
+router.use(authenticate);
+router.use(checkUsage(false));
 
 // AI chat endpoint - supports OpenAI-compatible API
 router.post('/chat', async (req, res) => {
   try {
-    const { messages, provider = 'deepseek', model } = req.body;
+    const { messages, model } = req.body || {};
 
-    if (!messages || !Array.isArray(messages) || messages.length === 0) {
+    if (!isMessageArray(messages)) {
       return res.status(400).json({
         success: false,
         error: 'messages array is required'
@@ -54,8 +68,6 @@ router.post('/chat', async (req, res) => {
       });
     }
 
-    const userMessages = messages;
-
     // Get DeepSeek client (lazy initialization)
     const client = getDeepSeekClient();
     if (!client) {
@@ -67,8 +79,8 @@ router.post('/chat', async (req, res) => {
 
     // Call DeepSeek API
     const completion = await client.chat.completions.create({
-      model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-      messages: userMessages,
+      model: resolveModel(model),
+      messages,
     });
 
     const response = completion.choices[0]?.message?.content || '';
@@ -79,9 +91,8 @@ router.post('/chat', async (req, res) => {
       usage: completion.usage,
     });
   } catch (error: any) {
-    console.error('Error in AI chat:', error?.response?.data || error?.message);
+    console.error('Error in AI chat route:', error?.message || error);
 
-    // Return detailed error for debugging
     res.status(500).json({
       success: false,
       error: 'Failed to process chat request',
@@ -93,7 +104,16 @@ router.post('/chat', async (req, res) => {
 // OpenAI-compatible completions endpoint for direct API compatibility
 router.post('/completions', async (req, res) => {
   try {
-    const { model, messages } = req.body;
+    const { model, messages } = req.body || {};
+
+    if (!isMessageArray(messages)) {
+      return res.status(400).json({
+        error: {
+          message: 'messages array is required',
+          type: 'invalid_request_error',
+        }
+      });
+    }
 
     const client = getDeepSeekClient();
     if (!client) {
@@ -107,13 +127,13 @@ router.post('/completions', async (req, res) => {
 
     // Call DeepSeek API
     const completion = await client.chat.completions.create({
-      model: model || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+      model: resolveModel(model),
       messages,
     });
 
     res.json(completion);
   } catch (error: any) {
-    console.error('Error in completions:', error?.response?.data || error?.message);
+    console.error('Error in /completions route:', error?.message || error);
     res.status(500).json({
       error: {
         message: error?.response?.data?.error?.message || error?.message || 'Failed to process request',

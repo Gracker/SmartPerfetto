@@ -58,7 +58,9 @@ import {
 export interface SkillDefinitionForAgent {
   skillId: string;
   toolName: string;
-  description: string;
+  description?: string;
+  descriptionHint?: string;
+  required?: boolean;
   category: AgentTool['category'];
 }
 
@@ -1013,19 +1015,25 @@ export abstract class BaseAgent extends EventEmitter {
     }
 
     await ensureSkillRegistryInitialized();
+    const missingRequiredSkills: string[] = [];
 
     for (const skillDef of this.skillDefinitions) {
-      if (this.tools.has(skillDef.toolName)) continue;
+      const toolName = skillDef.toolName || skillDef.skillId;
+      if (this.tools.has(toolName)) continue;
 
       const skill = skillRegistry.getSkill(skillDef.skillId);
       if (!skill) {
-        console.warn(`[${this.config.id}] Skill not found after init: ${skillDef.skillId}`);
+        if (skillDef.required === false) {
+          console.warn(`[${this.config.id}] Optional skill not found: ${skillDef.skillId}`);
+          continue;
+        }
+        missingRequiredSkills.push(skillDef.skillId);
         continue;
       }
 
       const tool: AgentTool = {
-        name: skillDef.toolName,
-        description: skillDef.description,
+        name: toolName,
+        description: this.resolveSkillToolDescription(skillDef, skill),
         skillId: skillDef.skillId,
         category: skillDef.category,
         parameters: skill.inputs?.map((input: any) => ({
@@ -1035,16 +1043,31 @@ export abstract class BaseAgent extends EventEmitter {
           description: input.description || input.name,
           default: input.default,
         })),
-        execute: this.createSkillToolExecutor(skillDef.toolName, skillDef.skillId, skillDef.category),
+        execute: this.createSkillToolExecutor(toolName, skillDef.skillId, skillDef.category),
       };
 
       this.tools.set(tool.name, tool);
+    }
+
+    if (missingRequiredSkills.length > 0) {
+      throw new Error(
+        `[${this.config.id}] Required skills missing: ${missingRequiredSkills.join(', ')}`
+      );
     }
 
     this.toolsLoaded = true;
     if (this.tools.size > 0) {
       console.log(`[${this.config.id}] Loaded ${this.tools.size} tools from skills`);
     }
+  }
+
+  private resolveSkillToolDescription(skillDef: SkillDefinitionForAgent, skill: any): string {
+    const base = (skillDef.description && skillDef.description.trim())
+      || (skill?.meta?.description && String(skill.meta.description).trim())
+      || (skill?.meta?.display_name && String(skill.meta.display_name).trim())
+      || skillDef.skillId;
+    const hint = skillDef.descriptionHint && skillDef.descriptionHint.trim();
+    return hint ? `${base}。${hint}` : base;
   }
 
   /**
@@ -1437,7 +1460,7 @@ export abstract class BaseAgent extends EventEmitter {
     // Fallback: use skill definitions even before tools are loaded
     if (this.skillDefinitions.length > 0) {
       return this.skillDefinitions
-        .map(s => `- ${s.toolName}: ${s.description}`)
+        .map(s => `- ${s.toolName}: ${s.description || s.descriptionHint || s.skillId}`)
         .join('\n');
     }
     return '（无可用工具）';

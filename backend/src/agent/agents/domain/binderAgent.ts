@@ -11,7 +11,7 @@
  * - lock_contention_in_range
  */
 
-import { BaseAgent, SkillDefinitionForAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
+import { BaseAgent, TaskUnderstanding, ExecutionResult } from '../base/baseAgent';
 import {
   AgentTask,
   AgentTaskContext,
@@ -20,51 +20,7 @@ import {
 import { Finding } from '../../types';
 import { ModelRouter } from '../../core/modelRouter';
 import { getAdbAgentTools } from '../tools/adbTools';
-
-// =============================================================================
-// Binder Agent Configuration
-// =============================================================================
-
-/**
- * Binder Agent Skills
- *
- * Each skill description includes:
- * - What it does
- * - When to use it (scenario)
- * - What output to expect
- */
-const BINDER_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'binder_analysis',
-    toolName: 'analyze_binder_overview',
-    description: '【Binder概览分析】分析全局Binder IPC通信，找出慢调用和高频调用。适用于：首次分析IPC、获取Binder通信全景。输出：慢调用排行+服务端统计',
-    category: 'binder',
-  },
-  {
-    skillId: 'binder_detail',
-    toolName: 'get_binder_detail',
-    description: '【Binder详情】获取单个Binder事务的详细信息，包括调用链路、等待时间。适用于：深入分析特定慢调用。输出：事务详情+时序分解',
-    category: 'binder',
-  },
-  {
-    skillId: 'binder_in_range',
-    toolName: 'analyze_binder_range',
-    description: '【区间Binder分析】分析指定时间范围内的Binder调用，适合与帧区间配合。适用于：分析特定卡顿区间的IPC情况。输出：区间内Binder调用列表',
-    category: 'binder',
-  },
-  {
-    skillId: 'lock_contention_analysis',
-    toolName: 'analyze_lock_contention',
-    description: '【锁竞争分析】分析Monitor Contention，找出锁等待热点。适用于：怀疑锁竞争、线程阻塞。输出：锁竞争事件+持锁/等锁线程（需要trace包含monitor_contention数据）',
-    category: 'binder',
-  },
-  {
-    skillId: 'lock_contention_in_range',
-    toolName: 'analyze_lock_range',
-    description: '【区间锁竞争分析】分析指定时间范围内的锁竞争。适用于：分析特定区间的锁等待。输出：区间内锁竞争事件',
-    category: 'binder',
-  },
-];
+import { BINDER_SKILLS } from './skillCatalog';
 
 // =============================================================================
 // Binder Agent Implementation

@@ -58,7 +58,6 @@ app.get('/health', (req, res) => {
 app.get('/debug', (req, res) => {
   res.json({
     hasDeepSeekKey: !!process.env.DEEPSEEK_API_KEY,
-    deepSeekKeyPrefix: process.env.DEEPSEEK_API_KEY?.substring(0, 10) + '...',
     deepSeekBaseUrl: process.env.DEEPSEEK_BASE_URL,
     deepSeekModel: process.env.DEEPSEEK_MODEL,
     aiService: process.env.AI_SERVICE,
@@ -70,7 +69,7 @@ app.get('/debug', (req, res) => {
 app.use('/api/sql', sqlRoutes);
 app.use('/api/trace', traceRoutes);
 app.use('/api/traces', simpleTraceRoutes);
-app.use('/chat', aiChatRoutes); // Separate endpoint for AI chat without auth
+app.use('/chat', aiChatRoutes);
 app.use('/api/ai', advancedAIRoutes);
 app.use('/api/perfetto', perfettoLocalRoutes);
 app.use('/api/auto-analysis', autoAnalysisRoutes);

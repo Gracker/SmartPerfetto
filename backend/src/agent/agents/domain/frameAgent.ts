@@ -20,7 +20,6 @@
 
 import {
   BaseAgent,
-  SkillDefinitionForAgent,
   TaskUnderstanding,
   ExecutionPlan,
   ExecutionResult,
@@ -42,75 +41,7 @@ import {
   DEFAULT_RAW_FINDING_CONFIDENCE,
   JankSeverityThresholds,
 } from '../../../config/thresholds';
-
-// =============================================================================
-// Frame Agent Configuration
-// =============================================================================
-
-/**
- * Skills that FrameAgent wraps as tools (lazy-loaded at executeTask time)
- *
- * Each skill description includes:
- * - What it does
- * - When to use it
- * - What output to expect
- */
-const FRAME_SKILLS: SkillDefinitionForAgent[] = [
-  {
-    skillId: 'jank_frame_detail',
-    toolName: 'get_frame_detail',
-    description: '【深度分析单帧】获取指定帧的完整诊断信息，包括四象限分析、Binder调用、CPU频率、主线程/RenderThread耗时操作、锁竞争、GC影响、IO阻塞等。适用于：已知帧ID/时间范围后的深度分析。输出：根因诊断+详细数据表格',
-    category: 'frame',
-  },
-  {
-    skillId: 'scrolling_analysis',
-    toolName: 'analyze_scrolling',
-    description: '【滑动概览分析】检测滑动会话、统计FPS和掉帧率、识别卡顿帧列表。适用于：首次分析滑动性能、获取会话列表。输出：会话列表+掉帧统计+卡顿帧列表',
-    category: 'frame',
-  },
-  {
-    skillId: 'consumer_jank_detection',
-    toolName: 'detect_consumer_jank',
-    description: '【消费端卡顿检测】分析SurfaceFlinger合成和GPU渲染延迟导致的掉帧。适用于：App侧正常但仍有掉帧、怀疑SF/GPU问题。输出：消费端掉帧列表+原因分类',
-    category: 'frame',
-  },
-  {
-    skillId: 'sf_frame_consumption',
-    toolName: 'analyze_sf_frames',
-    description: '【SF帧消费分析】分析SurfaceFlinger对App帧的处理情况，包括帧到达时序、合成延迟。适用于：分析系统合成层瓶颈。输出：SF处理时序数据',
-    category: 'frame',
-  },
-  {
-    skillId: 'app_frame_production',
-    toolName: 'analyze_app_frames',
-    description: '【App帧生产分析】分析应用帧生产流程，包括Choreographer回调时序、VSYNC对齐。适用于：分析App帧生产节奏问题。输出：帧生产时序+VSYNC对齐情况',
-    category: 'frame',
-  },
-  {
-    skillId: 'present_fence_timing',
-    toolName: 'analyze_present_fence',
-    description: '【显示时序分析】分析Present Fence等待时间和显示延迟。适用于：怀疑显示端问题、GPU Fence阻塞。输出：Fence等待时序数据',
-    category: 'frame',
-  },
-  {
-    skillId: 'gpu_analysis',
-    toolName: 'analyze_gpu',
-    description: '【GPU概览分析】分析GPU频率、负载和渲染管线耗时。适用于：首次分析GPU性能、怀疑GPU瓶颈。输出：GPU频率统计+负载分布+渲染管线耗时+根因分类',
-    category: 'frame',
-  },
-  {
-    skillId: 'surfaceflinger_analysis',
-    toolName: 'analyze_surfaceflinger',
-    description: '【SurfaceFlinger分析】分析系统合成器的帧处理流程和延迟。适用于：怀疑SF合成瓶颈、多窗口场景掉帧、HWC合成问题。输出：SF合成统计+帧丢失分析+合成延迟分布',
-    category: 'frame',
-  },
-  {
-    skillId: 'game_fps_analysis',
-    toolName: 'analyze_game_fps',
-    description: '【游戏帧率分析】分析游戏渲染帧率，检测目标FPS（30/45/60/90/120fps）、帧间隔分布和掉帧率。适用于：游戏性能分析、游戏流畅度评估。输出：目标FPS+帧间隔统计+掉帧率',
-    category: 'frame',
-  },
-];
+import { FRAME_SKILLS } from './skillCatalog';
 
 function toNumber(value: any): number {
   if (value === null || value === undefined || value === '') return 0;

@@ -329,6 +329,11 @@ export class AgentRuntime extends EventEmitter {
       strategyMatchResult = null;
     }
 
+    strategyMatchResult = applyBlockedStrategyIds(
+      strategyMatchResult,
+      runtimeContext.executionOptions.blockedStrategyIds
+    );
+
     const preferredLoopMode = runtimeContext.sessionContext.getTraceAgentState()?.preferences?.defaultLoopMode;
     const preferHypothesisLoop = strategyMatchResult?.strategy
       ? shouldPreferHypothesisLoop({
@@ -613,6 +618,7 @@ export class AgentRuntime extends EventEmitter {
   private createNativeExecutionServices(): AnalysisServices {
     const messageBus = createAgentMessageBus({
       maxConcurrentTasks: this.runtimeConfig.maxConcurrentTasks,
+      messageTimeoutMs: this.runtimeConfig.taskTimeoutMs ?? DEFAULT_CONFIG.taskTimeoutMs ?? 180000,
       enableLogging: this.runtimeConfig.enableLogging,
     });
 
@@ -946,6 +952,33 @@ export function buildRuntimeExecutionOptions(
       ? { prebuiltIntervals: resolvedIntervals }
       : {}),
     ...(intent.followUpType === 'drill_down' ? { suggestedStrategy: { id: 'drill_down', name: 'Direct drill-down', confidence: followUpResolution.confidence } } : {}),
+  };
+}
+
+export function applyBlockedStrategyIds(
+  matchResult: StrategyMatchResult | null,
+  blockedStrategyIds?: string[]
+): StrategyMatchResult | null {
+  if (!matchResult?.strategy) {
+    return matchResult;
+  }
+
+  const blocked = new Set(
+    (blockedStrategyIds || [])
+      .map(id => String(id || '').trim())
+      .filter(Boolean)
+  );
+  if (!blocked.has(matchResult.strategy.id)) {
+    return matchResult;
+  }
+
+  return {
+    strategy: null,
+    matchMethod: matchResult.matchMethod,
+    confidence: matchResult.confidence,
+    reasoning: matchResult.reasoning,
+    shouldFallback: true,
+    fallbackReason: `策略 ${matchResult.strategy.id} 已被 blockedStrategyIds 禁用`,
   };
 }
 

@@ -1,4 +1,5 @@
 import {
+  applyBlockedStrategyIds,
   buildDecisionContextFromIntent,
   buildNativeClarifyFallback,
   buildNativeClarifyPrompt,
@@ -7,6 +8,7 @@ import {
   mapFollowUpTypeToMode,
 } from '../runtime/agentRuntime';
 import { EnhancedSessionContext } from '../../agent/context/enhancedSessionContext';
+import type { StrategyMatchResult } from '../../agent/strategies';
 
 describe('AgentRuntime parity helpers', () => {
   it('maps follow-up types to operation modes', () => {
@@ -36,7 +38,7 @@ describe('AgentRuntime parity helpers', () => {
 
   it('builds runtime execution options with resolved follow-up params and intervals', () => {
     const options = buildRuntimeExecutionOptions(
-      { packageName: 'com.example.app' },
+      { packageName: 'com.example.app', blockedStrategyIds: ['scene_reconstruction'] },
       {
         resolvedParams: { frame_id: 123, start_ts: '100', end_ts: '200' },
         confidence: 0.88,
@@ -63,6 +65,29 @@ describe('AgentRuntime parity helpers', () => {
     expect(options.resolvedFollowUpParams).toEqual({ frame_id: 123, start_ts: '100', end_ts: '200' });
     expect(options.prebuiltIntervals?.length).toBe(1);
     expect(options.suggestedStrategy?.id).toBe('drill_down');
+    expect(options.blockedStrategyIds).toEqual(['scene_reconstruction']);
+  });
+
+  it('filters blocked strategy matches to fallback mode', () => {
+    const match: StrategyMatchResult = {
+      strategy: {
+        id: 'scene_reconstruction',
+        name: 'Scene Reconstruction',
+        trigger: () => true,
+        stages: [],
+      },
+      matchMethod: 'keyword',
+      confidence: 1,
+      shouldFallback: false,
+    };
+
+    const blocked = applyBlockedStrategyIds(match, ['scene_reconstruction']);
+    expect(blocked?.strategy).toBeNull();
+    expect(blocked?.shouldFallback).toBe(true);
+    expect(blocked?.fallbackReason).toContain('blockedStrategyIds');
+
+    const allowed = applyBlockedStrategyIds(match, ['scrolling']);
+    expect(allowed?.strategy?.id).toBe('scene_reconstruction');
   });
 
   it('builds native clarify prompt and fallback text', () => {
