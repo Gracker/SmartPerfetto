@@ -14,6 +14,8 @@ import {
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { reportStore } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
+import { authenticate } from '../middleware/auth';
+import { featureFlagsConfig } from '../config';
 import {
   sessionContextManager,
   EnhancedSessionContext,
@@ -1603,6 +1605,17 @@ router.post('/resume', async (req, res) => {
 // ============================================================================
 // Scene Reconstruction Endpoints
 // ============================================================================
+
+router.use('/scene-reconstruct', (_req, res, next) => {
+  if (!featureFlagsConfig.enableAgentSceneReconstruct) {
+    return res.status(503).json({
+      success: false,
+      error: 'Scene reconstruction feature is disabled by FEATURE_AGENT_SCENE_RECONSTRUCT',
+      code: 'FEATURE_DISABLED',
+    });
+  }
+  next();
+});
 
 /**
  * POST /api/agent/scene-reconstruct
@@ -4367,6 +4380,20 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
 // ============================================================================
 // Session Logs Endpoints (for debugging)
 // ============================================================================
+
+router.use('/logs', (_req, res, next) => {
+  if (!featureFlagsConfig.enableAgentLogsApi) {
+    return res.status(503).json({
+      success: false,
+      error: 'Agent logs API is disabled by FEATURE_AGENT_LOGS_API',
+      code: 'FEATURE_DISABLED',
+    });
+  }
+  next();
+});
+
+// Protect debug log APIs with API-key auth (or dev mock user when auth is not configured).
+router.use('/logs', authenticate);
 
 /**
  * GET /api/agent/logs

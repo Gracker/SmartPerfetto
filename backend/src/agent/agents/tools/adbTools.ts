@@ -17,7 +17,6 @@ function resolveAdbConfig(params: Record<string, any>, context: AgentToolContext
   const fromContext = (context.additionalContext as any)?.adb;
   const fromParams: AdbCollaborationConfig = {};
 
-  if (typeof params.mode === 'string') fromParams.mode = params.mode as any;
   if (typeof params.serial === 'string') fromParams.serial = params.serial;
   if (typeof params.requireTraceMatch === 'boolean') fromParams.requireTraceMatch = params.requireTraceMatch;
 
@@ -93,6 +92,16 @@ function truncateText(text: string, maxChars: number): { text: string; truncated
   return { text: text.slice(0, maxChars) + `\n…(truncated, maxChars=${maxChars})`, truncated: true };
 }
 
+function isAgentFullModeAllowed(context: AgentToolContext): boolean {
+  const adbContext = (context.additionalContext as any)?.adb || {};
+  const userApproved = adbContext.allowAgentFullMode === true
+    || adbContext.userApprovedFullMode === true
+    || adbContext.fullModeApproved === true;
+  const adminFlag = String(process.env.SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE || '').trim().toLowerCase();
+  const adminEnabled = adminFlag === '1' || adminFlag === 'true' || adminFlag === 'yes';
+  return userApproved && adminEnabled;
+}
+
 export function getAdbAgentTools(options: { includeRecorder?: boolean } = {}): AgentTool[] {
   const adb = getAdbService();
 
@@ -102,7 +111,6 @@ export function getAdbAgentTools(options: { includeRecorder?: boolean } = {}): A
       description: '检测当前 ADB 是否可用、连接设备列表、选中设备、以及 trace↔device 匹配结果（如可用）',
       category: 'system',
       parameters: [
-        { name: 'mode', type: 'string', required: false, description: "覆盖 ADB 模式：off|auto|read_only|full（可选）" },
         { name: 'serial', type: 'string', required: false, description: '指定设备 serial（可选）' },
         { name: 'requireTraceMatch', type: 'boolean', required: false, description: 'auto 模式下是否要求 trace 匹配（可选）' },
       ],
@@ -165,7 +173,7 @@ export function getAdbAgentTools(options: { includeRecorder?: boolean } = {}): A
     {
       name: 'adb_shell',
       description:
-        '通过 ADB 执行设备 shell 命令。read_only/auto 模式下仅允许安全只读命令（getprop/dumpsys/pm/ps/top/logcat/cat/ls），且禁止管道/重定向/多命令链；full 模式才允许任意命令。',
+        '通过 ADB 执行设备 shell 命令。read_only/auto 模式下仅允许安全只读命令（getprop/dumpsys/pm/ps/top/logcat/cat/ls），且禁止管道/重定向/多命令链；full 模式需要管理员开关+用户显式批准。',
       category: 'system',
       parameters: [
         { name: 'command', type: 'string', required: true, description: '要执行的 shell 命令（单条）' },
@@ -184,6 +192,14 @@ export function getAdbAgentTools(options: { includeRecorder?: boolean } = {}): A
               success: false,
               error: `ADB 协同未启用（mode=${adbContext.mode}, selected=${selected || 'none'}）`,
               data: adbContext,
+              executionTimeMs: now() - start,
+            };
+          }
+
+          if (adbContext.mode === 'full' && !isAgentFullModeAllowed(context)) {
+            return {
+              success: false,
+              error: 'full 模式调用被拒绝：需要 SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE=true 且请求上下文显式批准 allowAgentFullMode=true',
               executionTimeMs: now() - start,
             };
           }
@@ -262,6 +278,13 @@ export function getAdbAgentTools(options: { includeRecorder?: boolean } = {}): A
           return {
             success: false,
             error: `该工具需要 adb mode=full（当前为 ${adbContext.mode}）`,
+            executionTimeMs: now() - start,
+          };
+        }
+        if (!isAgentFullModeAllowed(context)) {
+          return {
+            success: false,
+            error: 'full 模式调用被拒绝：需要 SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE=true 且请求上下文显式批准 allowAgentFullMode=true',
             executionTimeMs: now() - start,
           };
         }

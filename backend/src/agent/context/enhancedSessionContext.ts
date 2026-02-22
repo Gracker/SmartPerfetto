@@ -908,15 +908,22 @@ export class EnhancedSessionContext {
     conclusion: string;
     confidence?: number;
   }): void {
-    const conclusions = extractBulletsFromMarkdownSection(params.conclusion, /^##\s*结论/).slice(0, 6);
-    const nextSteps = extractBulletsFromMarkdownSection(params.conclusion, /^##\s*下一步/).slice(0, 4);
+    const conclusions = sanitizeWorkingMemoryBullets(
+      extractBulletsFromMarkdownSection(params.conclusion, /^##\s*结论/),
+      6
+    );
+    const nextSteps = sanitizeWorkingMemoryBullets(
+      extractBulletsFromMarkdownSection(params.conclusion, /^##\s*下一步/),
+      4
+    );
+    const fallbackConclusions = sanitizeWorkingMemoryBullets(this.fallbackKeyFindingTitles(3), 3);
 
     const entry: WorkingMemoryEntry = {
       turnIndex: params.turnIndex,
       timestamp: Date.now(),
       query: params.query,
       confidence: params.confidence,
-      conclusions: conclusions.length > 0 ? conclusions : this.fallbackKeyFindingTitles(3),
+      conclusions: conclusions.length > 0 ? conclusions : fallbackConclusions,
       nextSteps,
     };
 
@@ -1171,6 +1178,52 @@ export class EnhancedSessionContext {
 // =============================================================================
 // Markdown Helpers (no dependency, deterministic)
 // =============================================================================
+
+const WORKING_MEMORY_BLOCKLIST: RegExp[] = [
+  /\b(ignore|disregard|override|bypass)\b/i,
+  /\b(system prompt|developer message|policy|guardrail)\b/i,
+  /\b(reveal|expose|leak)\b/i,
+  /\b(api[-_\s]?key|token|secret|password|credential)\b/i,
+  /\b(only respond|output only|do not follow)\b/i,
+  /(忽略|无视|绕过).*(规则|指令|策略)/i,
+  /(泄露|暴露).*(密钥|token|密码|凭据)/i,
+  /(只输出|仅输出).*(密钥|token|密码|原文)/i,
+];
+
+function sanitizeWorkingMemoryLine(line: string): string | null {
+  const normalized = String(line || '')
+    .replace(/[`*_>#]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return null;
+
+  if (WORKING_MEMORY_BLOCKLIST.some(pattern => pattern.test(normalized))) {
+    return null;
+  }
+
+  const maxLen = 220;
+  if (normalized.length <= maxLen) {
+    return normalized;
+  }
+
+  return normalized.slice(0, maxLen).trim();
+}
+
+function sanitizeWorkingMemoryBullets(items: string[], maxItems: number): string[] {
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const sanitized = sanitizeWorkingMemoryLine(item);
+    if (!sanitized) continue;
+    if (seen.has(sanitized)) continue;
+    seen.add(sanitized);
+    deduped.push(sanitized);
+    if (deduped.length >= maxItems) break;
+  }
+
+  return deduped;
+}
 
 function extractBulletsFromMarkdownSection(markdown: string, headerPattern: RegExp): string[] {
   const lines = String(markdown || '').split(/\r?\n/);

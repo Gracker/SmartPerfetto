@@ -13,8 +13,15 @@ import type { AgentToolContext } from '../agent/types/agentProtocol';
 import { getAdbAgentTools } from '../agent/agents/tools/adbTools';
 
 describe('adb agent tools', () => {
+  const originalAllowFullMode = process.env.SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE;
+
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE = originalAllowFullMode;
+  });
+
+  afterAll(() => {
+    process.env.SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE = originalAllowFullMode;
   });
 
   function baseContext(): AgentToolContext {
@@ -60,7 +67,7 @@ describe('adb agent tools', () => {
     expect(mockAdb.shell).not.toHaveBeenCalled();
   });
 
-  test('adb_shell allows more commands in full mode', async () => {
+  test('adb_shell allows full mode commands only when explicitly approved', async () => {
     mockDetectAdbContext.mockResolvedValueOnce({
       mode: 'full',
       enabled: true,
@@ -71,11 +78,52 @@ describe('adb agent tools', () => {
 
     const adbShell = getAdbAgentTools().find((t) => t.name === 'adb_shell')!;
     const ctx = baseContext();
-    (ctx.additionalContext as any).adb = { mode: 'full' };
+    process.env.SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE = 'true';
+    (ctx.additionalContext as any).adb = { mode: 'full', allowAgentFullMode: true };
 
     const result = await adbShell.execute({ command: 'echo hi' }, ctx);
     expect(result.success).toBe(true);
     expect((result.data as any).output).toContain('hi');
+  });
+
+  test('adb_shell rejects full mode commands without explicit approval', async () => {
+    mockDetectAdbContext.mockResolvedValueOnce({
+      mode: 'full',
+      enabled: true,
+      availability: { installed: true, devices: [], selectedSerial: 'ABC' },
+      warnings: [],
+    });
+
+    process.env.SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE = 'false';
+    const adbShell = getAdbAgentTools().find((t) => t.name === 'adb_shell')!;
+    const ctx = baseContext();
+    (ctx.additionalContext as any).adb = { mode: 'full' };
+
+    const result = await adbShell.execute({ command: 'echo hi' }, ctx);
+    expect(result.success).toBe(false);
+    expect(String(result.error)).toContain('full 模式调用被拒绝');
+    expect(mockAdb.shell).not.toHaveBeenCalled();
+  });
+
+  test('adb tools ignore mode overrides from params', async () => {
+    mockDetectAdbContext.mockResolvedValueOnce({
+      mode: 'read_only',
+      enabled: true,
+      availability: { installed: true, devices: [], selectedSerial: 'ABC' },
+      warnings: [],
+    });
+
+    const statusTool = getAdbAgentTools().find((t) => t.name === 'adb_status')!;
+    await statusTool.execute({ mode: 'full', serial: 'ABC' }, baseContext());
+
+    expect(mockDetectAdbContext).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'read_only',
+        serial: 'ABC',
+      }),
+      undefined,
+      't1'
+    );
   });
 
   test('adb_get_device_info redacts props by default', async () => {
@@ -98,4 +146,3 @@ describe('adb agent tools', () => {
     expect((result.data as any).props).toBeUndefined();
   });
 });
-

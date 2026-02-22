@@ -296,6 +296,18 @@ export const contextConfig = {
 } as const;
 
 // =============================================================================
+// Feature Flags
+// =============================================================================
+
+export const featureFlagsConfig = {
+  /** Toggle scene reconstruction endpoints without redeploying code paths */
+  enableAgentSceneReconstruct: parseBoolEnv('FEATURE_AGENT_SCENE_RECONSTRUCT', true),
+
+  /** Toggle debug log endpoints */
+  enableAgentLogsApi: parseBoolEnv('FEATURE_AGENT_LOGS_API', true),
+} as const;
+
+// =============================================================================
 // Frontend Configuration (for reference, actual values in frontend)
 // =============================================================================
 
@@ -328,6 +340,7 @@ export const config = {
   fork: forkConfig,
   analysis: analysisConfig,
   context: contextConfig,
+  featureFlags: featureFlagsConfig,
   frontend: frontendConfig,
 } as const;
 

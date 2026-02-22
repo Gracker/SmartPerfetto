@@ -65,6 +65,64 @@ export interface SessionLogSummary {
 const DEFAULT_LOG_DIR = path.join(process.cwd(), 'logs', 'sessions');
 const MAX_LOG_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const MAX_LOGS_PER_SESSION = 10000;
+const MAX_LOG_DEPTH = 5;
+const MAX_ARRAY_ITEMS = 50;
+const MAX_STRING_LENGTH = 512;
+const REDACTED = '[REDACTED]';
+const SENSITIVE_KEY_PATTERN = /(authorization|token|api[-_]?key|secret|password|passwd|cookie|set-cookie|credential|session)/i;
+
+function truncateLogString(value: string): string {
+  if (value.length <= MAX_STRING_LENGTH) {
+    return value;
+  }
+  return `${value.slice(0, MAX_STRING_LENGTH)}…(truncated ${value.length - MAX_STRING_LENGTH} chars)`;
+}
+
+function sanitizeLogValue(value: any, depth: number, seen: WeakSet<object>): any {
+  if (value == null) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return truncateLogString(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'bigint') {
+    return value.toString();
+  }
+  if (typeof value === 'function') {
+    return '[Function]';
+  }
+  if (depth >= MAX_LOG_DEPTH) {
+    return '[MaxDepthReached]';
+  }
+  if (typeof value !== 'object') {
+    return String(value);
+  }
+  if (seen.has(value)) {
+    return '[Circular]';
+  }
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    return value.slice(0, MAX_ARRAY_ITEMS).map((item) => sanitizeLogValue(item, depth + 1, seen));
+  }
+
+  const sanitized: Record<string, any> = {};
+  for (const [key, nested] of Object.entries(value)) {
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      sanitized[key] = REDACTED;
+      continue;
+    }
+    sanitized[key] = sanitizeLogValue(nested, depth + 1, seen);
+  }
+  return sanitized;
+}
+
+export function sanitizeLogData(data: any): any {
+  return sanitizeLogValue(data, 0, new WeakSet<object>());
+}
 
 // =============================================================================
 // Session Logger Class
@@ -186,13 +244,15 @@ export class SessionLogger {
       return; // Prevent runaway logging
     }
 
+    const sanitizedData = data === undefined ? undefined : sanitizeLogData(data);
+
     const entry: LogEntry = {
       timestamp: new Date().toISOString(),
       level,
       sessionId: this.sessionId,
       component,
       message,
-      data,
+      data: sanitizedData,
       error,
     };
 
@@ -202,7 +262,7 @@ export class SessionLogger {
     if (process.env.NODE_ENV !== 'production') {
       const prefix = `[${entry.timestamp}] [${level.toUpperCase()}] [${this.sessionId.slice(0, 8)}] [${component}]`;
       const consoleMethod = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
-      consoleMethod(prefix, message, data || '');
+      consoleMethod(prefix, message, sanitizedData || '');
     }
   }
 
