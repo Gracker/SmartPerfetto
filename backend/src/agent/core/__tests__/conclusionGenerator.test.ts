@@ -395,6 +395,85 @@ clusters: S1: 初始化阶段（3帧, 75%）
     expect(conclusion).not.toContain('"conclusion"');
   });
 
+  test('injects system-context action item with owner/priority/verification for system skills', async () => {
+    mockModelRouter.callWithFallback = jest.fn().mockResolvedValue(createMockModelResponse(JSON.stringify({
+      schema_version: 'conclusion_contract_v1',
+      mode: 'initial_report',
+      conclusion: [
+        { rank: 1, statement: '存在热控导致的性能抖动', confidence: 82 },
+      ],
+      clusters: [],
+      evidence_chain: [
+        { conclusion_id: 'C1', evidence: ['观察到 CPU 频率持续下探（ev_111111111111）'] },
+      ],
+      uncertainties: ['当前温度采样粒度有限'],
+      next_steps: ['复现关键场景并补充采样'],
+      metadata: { confidence: 79, rounds: 2 },
+    })));
+
+    const systemFinding: Finding = {
+      id: 'f-system-thermal',
+      severity: 'critical',
+      title: '[区间2] 检测到热节流：峰值 78C，4 核受影响',
+      description: '建议降低主线程尖峰负载并分批执行重任务',
+      source: 'direct_skill:thermal_throttling',
+      confidence: 0.88,
+    };
+
+    const conclusion = await invokeGenerateConclusion({
+      currentFindings: [systemFinding],
+      options: { turnCount: 0 },
+    });
+
+    expect(conclusion).toContain('## 下一步（最高信息增益）');
+    expect(conclusion).toContain('owner: 热管理/性能团队; priority: P0;');
+    expect(conclusion).toContain('verification: 复跑同时间窗 trace');
+    expect(conclusion).toContain('复现关键场景并补充采样');
+  });
+
+  test('prefers explicit details.system_context action fields in next steps', async () => {
+    mockModelRouter.callWithFallback = jest.fn().mockResolvedValue(createMockModelResponse(`## 结论（按可能性排序）
+1. 存在系统侧资源竞争（置信度: 78%）
+
+## 掉帧聚类（先看大头）
+- 暂无
+
+## 证据链（对应上述结论）
+- C1: 发现系统负载波动（ev_111111111111）
+
+## 不确定性与反例
+- 暂无
+
+## 下一步（最高信息增益）
+- 继续补充样本`
+    ));
+
+    const explicitSystemContextFinding: Finding = {
+      id: 'f-system-context',
+      severity: 'warning',
+      title: '[区间1] 系统压力偏高',
+      description: '系统线程争用导致渲染预算压缩',
+      source: 'direct_skill:network_analysis',
+      details: {
+        system_context: {
+          owner: '平台专项负责人',
+          priority: 'P1',
+          action: '合并短周期网络请求并限制后台心跳频率',
+          verification: '复跑同窗口 trace，确认 active_periods 下降且卡顿率无回归',
+        },
+      },
+    };
+
+    const conclusion = await invokeGenerateConclusion({
+      currentFindings: [explicitSystemContextFinding],
+      options: { turnCount: 0 },
+    });
+
+    expect(conclusion).toContain('owner: 平台专项负责人; priority: P1;');
+    expect(conclusion).toContain('action: 合并短周期网络请求并限制后台心跳频率;');
+    expect(conclusion).toContain('verification: 复跑同窗口 trace，确认 active_periods 下降且卡顿率无回归');
+  });
+
   test('injects per-conclusion evidence mapping into evidence-chain section when LLM forgets to cite', async () => {
     mockModelRouter.callWithFallback = jest.fn().mockResolvedValue(createMockModelResponse(`## 结论（按可能性排序）
 1. 主线程阻塞（置信度: 80%）

@@ -41,6 +41,10 @@ export interface FrameStatsAnalyzerConfig {
   targetFrameTimeMs?: number;
   /** Number of VSync periods missed before counting as jank (default: 2) */
   jankVsyncThreshold?: number;
+  /** Detected VSync period in nanoseconds from trace metadata */
+  detectedVsyncPeriodNs?: string | bigint | number;
+  /** Device refresh rate in Hz from trace metadata */
+  deviceRefreshRate?: number;
 }
 
 export class FrameStatsAnalyzer {
@@ -60,9 +64,14 @@ export class FrameStatsAnalyzer {
     private traceProcessor: TraceProcessorService,
     config?: FrameStatsAnalyzerConfig
   ) {
-    // Use configured value or derive from centralized VSync config
-    // Default: 60Hz = 16666667ns = 16.67ms
-    const defaultVsyncMs = Number(inferVsyncPeriodNs()) / 1_000_000;
+    // Use configured value or derive from centralized VSync config.
+    // For frame stats fallback, use 60Hz baseline unless trace metadata provides a better value.
+    const defaultVsyncMs = Number(
+      inferVsyncPeriodNs({
+        detectedVsyncPeriodNs: config?.detectedVsyncPeriodNs,
+        deviceRefreshRate: config?.deviceRefreshRate ?? 60,
+      })
+    ) / 1_000_000;
     this.targetFrameTimeMs = config?.targetFrameTimeMs ?? defaultVsyncMs;
 
     // Jank threshold: default 2 VSyncs missed
@@ -85,7 +94,7 @@ export class FrameStatsAnalyzer {
   ): Promise<FrameStatsResult> {
     const timeCondition = this.buildTimeCondition(startTs, endTs);
     const packageCondition = packageName
-      ? `AND process.name LIKE '%${packageName}%'`
+      ? `AND process.name LIKE '%${this.escapeLikePattern(packageName)}%' ESCAPE '\\'`
       : '';
 
     // 查询所有帧的时长
@@ -119,20 +128,21 @@ export class FrameStatsAnalyzer {
     // 计算时间范围（秒）
     const firstTs = parseInt(rows[0].ts);
     const lastTs = parseInt(rows[rows.length - 1].ts);
-    const totalTimeSec = (lastTs - firstTs) / 1e9;
+    const rawTotalTimeSec = (lastTs - firstTs) / 1e9;
+    const totalTimeSec = rawTotalTimeSec > 0 ? rawTotalTimeSec : 1e-6;
     const avgFps = totalFrames / totalTimeSec;
 
     // 识别掉帧
-    const jankFrames = rows
+    const allJankFrames = rows
       .filter(r => parseFloat(r.dur_ms) > this.jankThresholdMs)
       .map(r => ({
         timestamp: parseInt(r.ts),
         durationMs: parseFloat(r.dur_ms),
         vsyncsMissed: Math.floor(parseFloat(r.dur_ms) / this.targetFrameTimeMs),
-      }))
-      .slice(0, 100); // 限制返回前 100 个掉帧点
+      }));
+    const jankFrames = allJankFrames.slice(0, 100); // 限制返回前 100 个掉帧点
 
-    const jankCount = jankFrames.length;
+    const jankCount = allJankFrames.length;
     const jankPercentage = (jankCount / totalFrames) * 100;
 
     // 计算百分位数
@@ -206,17 +216,18 @@ export class FrameStatsAnalyzer {
 
     const firstTs = parseInt(rows[0].ts);
     const lastTs = parseInt(rows[rows.length - 1].ts);
-    const totalTimeSec = (lastTs - firstTs) / 1e9;
+    const rawTotalTimeSec = (lastTs - firstTs) / 1e9;
+    const totalTimeSec = rawTotalTimeSec > 0 ? rawTotalTimeSec : 1e-6;
     const avgFps = totalFrames / totalTimeSec;
 
-    const jankFrames = rows
+    const allJankFrames = rows
       .filter(r => parseFloat(r.dur_ms) > this.jankThresholdMs)
       .map(r => ({
         timestamp: parseInt(r.ts),
         durationMs: parseFloat(r.dur_ms),
         vsyncsMissed: Math.floor(parseFloat(r.dur_ms) / this.targetFrameTimeMs),
-      }))
-      .slice(0, 100);
+      }));
+    const jankFrames = allJankFrames.slice(0, 100);
 
     const sortedDurations = [...durations].sort((a, b) => a - b);
 
@@ -224,8 +235,8 @@ export class FrameStatsAnalyzer {
       summary: {
         totalFrames,
         avgFps,
-        jankCount: jankFrames.length,
-        jankPercentage: (jankFrames.length / totalFrames) * 100,
+        jankCount: allJankFrames.length,
+        jankPercentage: (allJankFrames.length / totalFrames) * 100,
         avgFrameDurationMs: avgDuration,
       },
       percentiles: {
@@ -277,10 +288,27 @@ export class FrameStatsAnalyzer {
   }
 
   private buildTimeCondition(startTs?: number, endTs?: number): string {
-    if (!startTs && !endTs) return '';
-    if (startTs && !endTs) return `AND ts >= ${startTs}`;
-    if (!startTs && endTs) return `AND ts <= ${endTs}`;
-    return `AND ts >= ${startTs} AND ts <= ${endTs}`;
+    const safeStart = this.normalizeTimestamp(startTs);
+    const safeEnd = this.normalizeTimestamp(endTs);
+    if (safeStart === undefined && safeEnd === undefined) return '';
+    if (safeStart !== undefined && safeEnd === undefined) return `AND ts >= ${safeStart}`;
+    if (safeStart === undefined && safeEnd !== undefined) return `AND ts <= ${safeEnd}`;
+    return `AND ts >= ${safeStart} AND ts <= ${safeEnd}`;
+  }
+
+  private normalizeTimestamp(ts?: number): number | undefined {
+    if (ts === undefined || ts === null) return undefined;
+    const n = Number(ts);
+    if (!Number.isFinite(n)) return undefined;
+    return Math.floor(n);
+  }
+
+  private escapeLikePattern(value: string): string {
+    return value
+      .replace(/\\/g, '\\\\')
+      .replace(/%/g, '\\%')
+      .replace(/_/g, '\\_')
+      .replace(/'/g, "''");
   }
 
   private resultToRows(result: any): any[] {

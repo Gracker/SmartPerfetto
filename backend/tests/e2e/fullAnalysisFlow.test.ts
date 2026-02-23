@@ -244,6 +244,12 @@ function hasEvent(events: SSEEvent[], eventType: string): boolean {
   return events.some(e => e.event === eventType);
 }
 
+function getAnalysisCompletedPayload(events: SSEEvent[]): Record<string, any> | null {
+  const completed = findEvents(events, 'analysis_completed');
+  if (completed.length === 0) return null;
+  return (completed[0].data?.data || completed[0].data || null) as Record<string, any> | null;
+}
+
 function collectEnvelopes(events: SSEEvent[]): any[] {
   const envelopes: any[] = [];
   for (const event of events) {
@@ -555,6 +561,34 @@ describe('E2E: Multi-Turn Conversation', () => {
     const turn2Events = await collectSSEFromUrl(app, turn2SessionId, 60000);
 
     expect(turn2Events.length).toBeGreaterThan(0);
+    const hasCompleted = hasEvent(turn2Events, 'analysis_completed');
+    const hasEnd = hasEvent(turn2Events, 'end');
+    expect(hasCompleted || hasEnd).toBe(true);
+
+    if (hasCompleted) {
+      const turn2Completed = getAnalysisCompletedPayload(turn2Events);
+      expect(turn2Completed).toBeTruthy();
+      expect(typeof turn2Completed?.conclusion).toBe('string');
+      expect(String(turn2Completed?.conclusion || '').length).toBeGreaterThan(0);
+
+      const turn2DataEnvelopes = collectEnvelopes(turn2Events);
+      const hasDrillDownEvidence = turn2DataEnvelopes.some((envelope) => {
+        const source = String(envelope?.meta?.source || '').toLowerCase();
+        return (
+          source.includes('jank_frame_detail') ||
+          source.includes('scrolling_analysis') ||
+          source.includes('frame')
+        );
+      });
+      const hasStructuredFindings =
+        Array.isArray(turn2Completed?.findings) && turn2Completed.findings.length > 0;
+      const degradedMode = hasEvent(turn2Events, 'degraded');
+      expect(hasDrillDownEvidence || hasStructuredFindings || degradedMode).toBe(true);
+    } else {
+      // 在降级模式下可能仅发 end
+      expect(hasEnd).toBe(true);
+    }
+
     console.log(`[E2E] Turn 2 completed with ${turn2Events.length} events`);
 
     // Cleanup both sessions
@@ -681,6 +715,16 @@ describe('E2E: SSE Event Sequence Validation', () => {
       if (endIndex !== -1) {
         expect(completedIndex).toBeLessThan(endIndex);
       }
+
+      const payload = getAnalysisCompletedPayload(events);
+      expect(payload).toBeTruthy();
+      expect(typeof payload?.conclusion).toBe('string');
+      expect(String(payload?.conclusion || '').length).toBeGreaterThan(0);
+
+      const dataEvents = findEvents(events, 'data');
+      const envelopeCount = collectEnvelopes(dataEvents).length;
+      const degradedMode = hasEvent(events, 'degraded');
+      expect(envelopeCount > 0 || degradedMode).toBe(true);
     }
 
     console.log(`[E2E] Event sequence validated: ${eventSequence.slice(0, 10).join(' -> ')}...`);

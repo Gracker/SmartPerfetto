@@ -27,18 +27,18 @@ export interface TemplateSelectionContext {
     hasFrameData?: boolean;
     hasSchedData?: boolean;
     processNames?: string[];
+    detectedVsyncPeriodNs?: string | bigint | number;
+    deviceRefreshRate?: number;
   };
 }
 
 export class AnalysisTemplateManager {
   private fourQuadrantAnalyzer: FourQuadrantAnalyzer;
   private cpuCoreAnalyzer: CpuCoreAnalyzer;
-  private frameStatsAnalyzer: FrameStatsAnalyzer;
 
   constructor(private traceProcessor: TraceProcessorService) {
     this.fourQuadrantAnalyzer = new FourQuadrantAnalyzer(traceProcessor);
     this.cpuCoreAnalyzer = new CpuCoreAnalyzer(traceProcessor);
-    this.frameStatsAnalyzer = new FrameStatsAnalyzer(traceProcessor);
   }
 
   /**
@@ -164,16 +164,21 @@ export class AnalysisTemplateManager {
   private async executeFrameStats(
     context: TemplateSelectionContext
   ): Promise<FrameStatsResult> {
+    const frameStatsAnalyzer = new FrameStatsAnalyzer(this.traceProcessor, {
+      detectedVsyncPeriodNs: context.metadata?.detectedVsyncPeriodNs,
+      deviceRefreshRate: context.metadata?.deviceRefreshRate,
+    });
+
     // 尝试使用 actual_frame_timeline_slice
     try {
-      return await this.frameStatsAnalyzer.analyze(context.traceId);
+      return await frameStatsAnalyzer.analyze(context.traceId);
     } catch (error) {
       // 降级到基于 slice 的分析
       console.warn('Frame timeline not available, falling back to slice-based analysis');
 
       // 需要找到进程名
       const processName = await this.findMainProcess(context.traceId);
-      return await this.frameStatsAnalyzer.analyzeFromSlices(
+      return await frameStatsAnalyzer.analyzeFromSlices(
         context.traceId,
         processName || 'unknown'
       );

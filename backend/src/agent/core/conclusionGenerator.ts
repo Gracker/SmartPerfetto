@@ -87,6 +87,22 @@ const STARTUP_WRAPPER_SLICE_RE = /\b(clientTransactionExecuted|activityStart|bin
 const STARTUP_ACTIONABLE_HINT_RE = /\b(LoadSimulator_|ChaosTask|SimulateInflation|RealInflation|AppInit|ActivityInit)\b/i;
 const DEFAULT_TOP_CLUSTER_FRAME_RENDER_LIMIT = 5;
 const DEFAULT_FULL_CLUSTER_FRAME_RENDER_LIMIT = 120;
+const STRUCTURED_ACTION_ITEM_RE = /(?=.*(?:owner|责任人)\s*[:：=])(?=.*(?:priority|优先级)\s*[:：=])(?=.*(?:verification|验证)\s*[:：=])/i;
+
+const SYSTEM_CONTEXT_SKILL_HINTS: Record<string, { owner: string; verification: string }> = {
+  io_pressure: {
+    owner: '存储/内核团队',
+    verification: '复跑同时间窗 trace，确认 total_io_wait_ms 与长 IO 事件数下降，且关键卡顿帧无回归',
+  },
+  network_analysis: {
+    owner: '网络/接入团队',
+    verification: '复跑同时间窗 trace，确认 total_mb 与 active_periods 下降，并验证关键交互帧无新增掉帧',
+  },
+  thermal_throttling: {
+    owner: '热管理/性能团队',
+    verification: '复跑同时间窗 trace，确认峰值温度与降频占比下降，并验证 jank_rate 改善',
+  },
+};
 
 function isJankSceneId(sceneId?: string): boolean {
   return String(sceneId || '').trim().toLowerCase() === 'jank';
@@ -325,6 +341,12 @@ function formatFindingWithEvidence(f: Finding): string {
       'supply_constraint',
       'trigger_layer',
       'amplification_path',
+      'owner',
+      'priority',
+      'action',
+      'verification',
+      'system_context',
+      'systemContext',
       'confidence',
       'jank_type',
     ];
@@ -1251,9 +1273,211 @@ function finalizeConclusionMarkdown(
     )
     : withDeepReason;
   const shouldInjectWorkloadDominant = Boolean(options.scenePromptHints?.clusterPolicy.injectWorkloadDominantMarker);
-  return shouldInjectWorkloadDominant
+  const withWorkloadDominant = shouldInjectWorkloadDominant
     ? injectWorkloadDominantClusterMarker(withClusterAggregation, jankSummary)
     : withClusterAggregation;
+  return injectSystemContextActionItems(withWorkloadDominant, findings);
+}
+
+interface SystemContextActionItem {
+  owner: string;
+  priority: 'P0' | 'P1' | 'P2';
+  action: string;
+  verification: string;
+}
+
+function extractDirectSkillIdFromFindingSource(source?: string): string | null {
+  const match = String(source || '').trim().match(/^direct_skill:([a-zA-Z0-9_.-]+)/i);
+  return match ? String(match[1]).toLowerCase() : null;
+}
+
+function severityToActionPriority(severity: Finding['severity'] | undefined): 'P0' | 'P1' | 'P2' {
+  const normalized = String(severity || '').trim().toLowerCase();
+  if (normalized === 'critical' || normalized === 'high') return 'P0';
+  if (normalized === 'warning' || normalized === 'medium') return 'P1';
+  return 'P2';
+}
+
+function normalizeActionPriority(raw: unknown, fallbackSeverity: Finding['severity'] | undefined): 'P0' | 'P1' | 'P2' {
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    if (raw <= 1) return 'P0';
+    if (raw <= 3) return 'P1';
+    return 'P2';
+  }
+
+  const normalized = String(raw || '').trim().toLowerCase();
+  if (!normalized) return severityToActionPriority(fallbackSeverity);
+
+  if (/p0\b|critical|urgent|highest|高优|紧急|严重/.test(normalized)) return 'P0';
+  if (/p1\b|warning|medium|中优|中等|警告/.test(normalized)) return 'P1';
+  if (/p2\b|info|low|低优|低风险/.test(normalized)) return 'P2';
+
+  const asNumber = Number(normalized);
+  if (Number.isFinite(asNumber)) {
+    if (asNumber <= 1) return 'P0';
+    if (asNumber <= 3) return 'P1';
+    return 'P2';
+  }
+
+  return severityToActionPriority(fallbackSeverity);
+}
+
+function readFirstStringFromRecord(record: Record<string, unknown> | null, keys: string[]): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function truncateActionItemText(text: string, maxLength = 120): string {
+  const normalized = String(text || '').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function normalizeActionLineForDedupe(line: string): string {
+  return String(line || '')
+    .toLowerCase()
+    .replace(/[\s;；:：,，()（）\[\]{}"'`]/g, '')
+    .trim();
+}
+
+function isActionableSystemFinding(finding: Finding): boolean {
+  const details = (finding.details && typeof finding.details === 'object')
+    ? finding.details as Record<string, unknown>
+    : null;
+  const hasExplicitSystemContext = Boolean(
+    (details && (details.system_context || details.systemContext))
+    || readFirstStringFromRecord(details, ['owner', 'priority', 'verification', 'action'])
+  );
+  const directSkillId = extractDirectSkillIdFromFindingSource(finding.source);
+  const hasSystemSkillHint = Boolean(directSkillId && SYSTEM_CONTEXT_SKILL_HINTS[directSkillId]);
+  if (!hasExplicitSystemContext && !hasSystemSkillHint) return false;
+
+  const severity = String(finding.severity || '').toLowerCase();
+  if (severity === 'critical' || severity === 'warning' || severity === 'high' || severity === 'medium') {
+    return true;
+  }
+
+  const text = `${String(finding.title || '')}\n${String(finding.description || '')}`;
+  if (/严重|偏高|风险|瓶颈|阻塞|过大|节流|异常/i.test(text)) {
+    return true;
+  }
+  if (/正常|良好|无明显|未检测到/i.test(text)) {
+    return false;
+  }
+
+  return severity !== 'info' && severity !== 'low';
+}
+
+function buildSystemContextActionItem(finding: Finding): SystemContextActionItem | null {
+  if (!isActionableSystemFinding(finding)) {
+    return null;
+  }
+
+  const details = (finding.details && typeof finding.details === 'object')
+    ? finding.details as Record<string, unknown>
+    : null;
+  const systemContextRecord = (() => {
+    if (!details) return null;
+    if (details.system_context && typeof details.system_context === 'object' && !Array.isArray(details.system_context)) {
+      return details.system_context as Record<string, unknown>;
+    }
+    if (details.systemContext && typeof details.systemContext === 'object' && !Array.isArray(details.systemContext)) {
+      return details.systemContext as Record<string, unknown>;
+    }
+    return null;
+  })();
+
+  const directSkillId = extractDirectSkillIdFromFindingSource(finding.source);
+  const hint = directSkillId ? SYSTEM_CONTEXT_SKILL_HINTS[directSkillId] : undefined;
+
+  const owner = readFirstStringFromRecord(systemContextRecord, ['owner', '责任人'])
+    || readFirstStringFromRecord(details, ['owner', '责任人'])
+    || hint?.owner
+    || '性能优化负责人';
+
+  const priorityRaw = readFirstStringFromRecord(systemContextRecord, ['priority', '优先级'])
+    || readFirstStringFromRecord(details, ['priority', '优先级']);
+  const priority = normalizeActionPriority(priorityRaw, finding.severity);
+
+  const actionRaw = readFirstStringFromRecord(systemContextRecord, ['action', 'next_action', 'nextStep', '建议'])
+    || readFirstStringFromRecord(details, ['action', 'next_action', 'nextStep', '建议']);
+  const fallbackAction = String(finding.title || finding.description || '推进系统性能优化动作')
+    .replace(/^\[[^\]]+\]\s*/, '')
+    .trim();
+  const action = truncateActionItemText(actionRaw || fallbackAction || '推进系统性能优化动作');
+
+  const verification = readFirstStringFromRecord(systemContextRecord, ['verification', 'verify', '验收标准', '验证'])
+    || readFirstStringFromRecord(details, ['verification', 'verify', '验收标准', '验证'])
+    || hint?.verification
+    || '复跑同时间窗 trace，确认对应指标改善且无回归';
+
+  return { owner, priority, action, verification: truncateActionItemText(verification, 140) };
+}
+
+function buildSystemContextActionItems(findings: Finding[]): string[] {
+  const candidates = findings
+    .map(buildSystemContextActionItem)
+    .filter((item): item is SystemContextActionItem => Boolean(item));
+  if (candidates.length === 0) return [];
+
+  const priorityRank: Record<'P0' | 'P1' | 'P2', number> = { P0: 0, P1: 1, P2: 2 };
+  candidates.sort((a, b) => {
+    const pa = priorityRank[a.priority];
+    const pb = priorityRank[b.priority];
+    if (pa !== pb) return pa - pb;
+    return a.action.localeCompare(b.action, 'zh-CN');
+  });
+
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const item of candidates) {
+    const line = `owner: ${item.owner}; priority: ${item.priority}; action: ${item.action}; verification: ${item.verification}`;
+    const key = normalizeActionLineForDedupe(line);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(line);
+  }
+
+  return deduped.slice(0, 3);
+}
+
+function injectSystemContextActionItems(markdown: string, findings: Finding[]): string {
+  const text = String(markdown || '');
+  if (!text.trim()) return text;
+
+  const nextStepSection = findMarkdownSection(text, /^##\s*下一步[（(]最高信息增益[）)]\s*$/m);
+  if (!nextStepSection) return text;
+
+  const actionItems = buildSystemContextActionItems(findings);
+  if (actionItems.length === 0) return text;
+
+  const existingEntries = extractListEntriesFromSectionBody(nextStepSection.body);
+  if (existingEntries.some(entry => STRUCTURED_ACTION_ITEM_RE.test(entry))) {
+    return text;
+  }
+
+  const existingKeys = new Set(existingEntries.map(normalizeActionLineForDedupe));
+  const injectedLines = actionItems
+    .filter(item => !existingKeys.has(normalizeActionLineForDedupe(item)))
+    .map(item => `- ${item}`);
+
+  if (injectedLines.length === 0) return text;
+
+  const existingBodyLines = String(nextStepSection.body || '')
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .filter(line => !/^\s*(?:-\s*)?暂无\s*$/i.test(line));
+
+  const mergedBody = [...injectedLines, ...existingBodyLines];
+  const replacement = `${mergedBody.join('\n')}\n`;
+  return `${text.slice(0, nextStepSection.bodyStart)}${replacement}${text.slice(nextStepSection.bodyEnd)}`;
 }
 
 function normalizeHintText(text: string): string {
@@ -2806,6 +3030,7 @@ ${nonInsightClusterGoalLine}
 - 如果数据不足以得出某个结论，明确标注"证据不足"
 - 每个结论必须引用具体的数据来源（Finding 的标题或数据值）
 ${sceneOutputRequirementSection}
+- “下一步”至少包含 1 条行动项，使用 owner/priority/verification 明确责任与验收标准
 - 可给出最多 2 条与“${DEEP_REASON_LABEL}”一一对应的优化方向，避免泛化建议
 - ${nonInsightClusterConstraint}
 ${nonInsightConflictRulesSection}
@@ -3194,6 +3419,7 @@ function buildInsightFirstPrompt(params: {
   parts.push('- 优先用通俗表达：先说现象和影响；若必须用术语，在术语后补一句人话解释。');
   parts.push(...params.scenePromptHints.outputRequirementLines);
   parts.push(params.scenePromptHints.nextStepLine);
+  parts.push('- next_steps 至少 1 条使用固定格式：owner: <负责人>; priority: P0/P1/P2; action: <具体动作>; verification: <验收方式>。');
   parts.push(`- 可给出最多 2 条与“${DEEP_REASON_LABEL}”一一对应的优化方向，避免泛化建议。`);
   parts.push('- JSON 顶层字段固定为：schema_version, mode, conclusion, clusters, evidence_chain, uncertainties, next_steps, metadata。');
   parts.push(`- mode 必须是 "${params.mode}"。schema_version 必须是 "conclusion_contract_v1"。`);

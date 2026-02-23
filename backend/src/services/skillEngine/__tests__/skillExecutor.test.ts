@@ -1147,6 +1147,46 @@ describe('Diagnostic Step 执行', () => {
     expect(result.diagnostics[0].severity).toBe('critical'); // confidence >= 0.8
   });
 
+  it('应该优先使用规则中显式声明的 severity', async () => {
+    mockTraceProcessor.query.mockResolvedValue({
+      columns: ['value'],
+      rows: [[100]],
+    });
+
+    const severityOverrideSkill: SkillDefinition = {
+      name: 'severity_override_test',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Severity Override Test'),
+      steps: [
+        {
+          id: 'data',
+          type: 'atomic',
+          sql: 'SELECT 100 as value',
+          save_as: 'data',
+        },
+        {
+          id: 'diagnose',
+          type: 'diagnostic',
+          inputs: ['data'],
+          rules: [
+            {
+              condition: 'data.data[0]?.value > 50',
+              confidence: 0.9,
+              severity: 'warning',
+              diagnosis: 'Severity should follow explicit rule',
+              suggestions: [],
+            },
+          ],
+        },
+      ],
+    };
+    executor.registerSkill(severityOverrideSkill);
+
+    const result = await executor.execute('severity_override_test', 'trace-1');
+    expect(result.diagnostics[0].severity).toBe('warning');
+  });
+
   it('应该处理无匹配规则的情况', async () => {
     mockTraceProcessor.query.mockResolvedValue({
       columns: ['jank_rate'],
@@ -3102,6 +3142,43 @@ describe('边界情况', () => {
     // 条件不满足的步骤应该被跳过
     expect(result.success).toBe(true);
     expect(mockTraceProcessor.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('应该将 optional 步骤在 condition 不满足时视为成功空结果', async () => {
+    mockTraceProcessor.query.mockResolvedValue({
+      columns: ['has_data'],
+      rows: [[false]],
+    });
+
+    const skill: SkillDefinition = {
+      name: 'optional_condition_skip',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Optional Condition Skip'),
+      steps: [
+        {
+          id: 'check',
+          type: 'atomic',
+          sql: 'SELECT false as has_data',
+          save_as: 'check_result',
+        },
+        {
+          id: 'optional_conditional_step',
+          type: 'atomic',
+          sql: 'SELECT 1 as value',
+          condition: 'check_result.data[0]?.has_data === true',
+          optional: true,
+        },
+      ],
+    };
+    executor.registerSkill(skill);
+
+    const result = await executor.execute('optional_condition_skip', 'trace-1');
+
+    expect(result.success).toBe(true);
+    expect(mockTraceProcessor.query).toHaveBeenCalledTimes(1);
+    expect(result.rawResults?.optional_conditional_step?.success).toBe(true);
+    expect(result.rawResults?.optional_conditional_step?.data).toEqual([]);
   });
 });
 

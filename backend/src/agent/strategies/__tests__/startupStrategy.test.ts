@@ -117,6 +117,17 @@ describe('startupStrategy', () => {
     expect(detailTask.paramMapping?.startup_id).toBe('startupId');
   });
 
+  it('includes stage1 system context skills for IO/network/thermal', () => {
+    const stage1Tasks = startupStrategy.stages[1].tasks;
+    const directSkills = stage1Tasks
+      .filter(task => task.executionMode === 'direct_skill')
+      .map(task => task.directSkillId);
+
+    expect(directSkills).toContain('io_pressure');
+    expect(directSkills).toContain('network_analysis');
+    expect(directSkills).toContain('thermal_throttling');
+  });
+
   it('skips blocked intervals before startup_detail deep dive', () => {
     const detailTask = startupStrategy.stages[2].tasks[0];
     const filter = detailTask.intervalFilter;

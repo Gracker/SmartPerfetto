@@ -671,23 +671,35 @@ steps:
       title: "问题诊断"
     inputs: [binder_overview, main_thread_binder, binder_blocking, server_response]
     rules:
+      # 数据不足时显式声明，避免误判
+      - condition: "binder_check?.data?.[0]?.status !== 'available'"
+        severity: warning
+        diagnosis: "unable_to_determine：缺少 android_binder_txns 或目标时段无 Binder 数据"
+        confidence: low
+        suggestions:
+          - "[Owner] Perf/Infra | [Priority] P0 | [Action] 采集包含 android.binder 模块的 trace 并覆盖问题时段"
+          - "[Verify] 重新执行 binder_analysis，确认 binder_check.status=available"
+        evidence_fields: [binder_check.data]
+
       # 主线程慢 Binder
       - condition: "main_thread_binder.data[0]?.dur_ms > (inputs?.slow_binder_critical_ms ?? 50)"
         severity: critical
         diagnosis: "主线程存在严重慢 Binder 调用 (${main_thread_binder.data[0].dur_ms}ms)"
         confidence: high
         suggestions:
-          - "将该 Binder 调用移到后台线程"
-          - "检查服务 ${main_thread_binder.data[0].server_process} 响应延迟"
-          - "考虑使用异步 Binder 接口"
+          - "[Owner] App | [Priority] P0 | [Action] 将该 Binder 调用迁移到后台线程或异步化"
+          - "[Owner] Service | [Priority] P0 | [Action] 优化服务 ${main_thread_binder.data[0].server_process} 响应链路"
+          - "[Verify] 复测主线程 slow binder 次数和单次耗时"
+        evidence_fields: [main_thread_binder.data, binder_overview.data]
 
       - condition: "main_thread_binder.data[0]?.dur_ms > (inputs?.slow_binder_warning_ms ?? 16)"
         severity: warning
         diagnosis: "主线程 Binder 调用超过一帧时间 (${main_thread_binder.data[0].dur_ms}ms)"
         confidence: high
         suggestions:
-          - "可能导致掉帧，考虑异步化"
-          - "优化服务端处理时间"
+          - "[Owner] App/Service | [Priority] P1 | [Action] 对主线程 Binder 做异步化并减少重调用"
+          - "[Verify] 对比优化前后关键场景帧时长与 Binder P95"
+        evidence_fields: [main_thread_binder.data]
 
       # 主线程 Binder 调用过多
       - condition: "binder_overview.data[0]?.main_thread_txns > (inputs?.main_thread_txn_warning ?? 50)"
@@ -695,9 +707,9 @@ steps:
         diagnosis: "主线程发起 ${binder_overview.data[0].main_thread_txns} 次 Binder 调用"
         confidence: medium
         suggestions:
-          - "批量合并多次调用"
-          - "使用缓存减少重复调用"
-          - "将非必要调用移到后台线程"
+          - "[Owner] App | [Priority] P1 | [Action] 合并调用、增加缓存并迁移非关键调用到后台线程"
+          - "[Verify] 复测 main_thread_txns 和 slow_calls_count"
+        evidence_fields: [binder_overview.data]
 
       # 服务端响应慢
       - condition: "server_response.data[0]?.avg_server_dur_ms > (inputs?.server_response_warning_ms ?? 20)"
@@ -705,8 +717,10 @@ steps:
         diagnosis: "服务端平均处理时间较长 (${server_response.data[0].avg_server_dur_ms}ms)"
         confidence: medium
         suggestions:
-          - "联系服务提供方优化"
-          - "考虑缓存服务调用结果"
+          - "[Owner] Service | [Priority] P1 | [Action] 优化服务端热点接口与锁/IO路径"
+          - "[Owner] App | [Priority] P2 | [Action] 结合缓存减少重复服务请求"
+          - "[Verify] 复测 avg_server_dur_ms 与接口耗时分布"
+        evidence_fields: [server_response.data]
 
       # 阻塞状态分析
       - condition: "binder_blocking.data.find(b => b.state === 'D')?.state_percent > 50"
@@ -714,8 +728,9 @@ steps:
         diagnosis: "Binder 阻塞期间存在大量 IO 等待"
         confidence: medium
         suggestions:
-          - "检查服务端是否有 IO 操作"
-          - "考虑使用异步接口"
+          - "[Owner] Service | [Priority] P1 | [Action] 检查并下移阻塞 IO，避免同步链路卡住调用方"
+          - "[Verify] 复测阻塞态占比与主线程阻塞时长"
+        evidence_fields: [binder_blocking.data]
 
 output:
   format: structured

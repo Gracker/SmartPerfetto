@@ -345,8 +345,12 @@ class AutoAnalysisService {
         WHERE ts IS NOT NULL
       `;
 
-      // @ts-ignore - query method not yet implemented
-      const timeRangeResult = await perfettoService.query(timeRangeQuery, port);
+      const legacyQuery = (perfettoService as unknown as {
+        query?: (sql: string, port: number) => Promise<any[]>;
+      }).query;
+      const timeRangeResult = typeof legacyQuery === 'function'
+        ? await legacyQuery.call(perfettoService, timeRangeQuery, port)
+        : [];
 
       let start = 0;
       let end = Date.now() * 1e6;
@@ -366,8 +370,9 @@ class AutoAnalysisService {
         LEFT JOIN thread ON slice.utid = thread.utid
       `;
 
-      // @ts-ignore - query method not yet implemented
-      const statsResult = await perfettoService.query(statsQuery, port);
+      const statsResult = typeof legacyQuery === 'function'
+        ? await legacyQuery.call(perfettoService, statsQuery, port)
+        : [];
 
       return {
         timeRange: {

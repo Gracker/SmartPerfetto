@@ -2,11 +2,11 @@
 # OPPO ColorOS 启动分析覆盖配置
 # =============================================================================
 # 版本: 1.0.0
-# 基于: base/startup
+# 基于: composite/startup_analysis
 # 适用: OPPO 设备 (ColorOS)
 # =============================================================================
 
-extends: base/startup
+extends: composite/startup_analysis
 version: "1.0.0"
 
 meta:

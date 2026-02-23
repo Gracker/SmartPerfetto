@@ -125,6 +125,7 @@ export interface DiagnosticRule {
   condition: string;          // 条件表达式
   diagnosis: string;          // 诊断结论
   confidence: number | ConfidenceLevel;  // 置信度
+  severity?: 'info' | 'warning' | 'critical'; // 显式严重程度（可选）
   suggestions?: string[];     // 优化建议
   evidence_fields?: string[]; // 证据字段
 }

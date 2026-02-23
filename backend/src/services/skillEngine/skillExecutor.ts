@@ -1198,6 +1198,8 @@ export class SkillExecutor {
         case 'composite':
         case 'iterator':
         case 'diagnostic':
+        case 'ai_decision':
+        case 'ai_summary':
           {
             if (!skill.steps || skill.steps.length === 0) {
               return {
@@ -1626,17 +1628,19 @@ export class SkillExecutor {
       const conditionStr = (step as any).condition;
       const conditionResult = ExpressionEvaluator.evaluateCondition(conditionStr, context);
       if (!conditionResult) {
+        const isOptional = Boolean((step as any).optional);
         this.emit({
           type: 'step_completed',
           skillId: parentSkillId,
           stepId: step.id,
-          data: { skipped: true, reason: 'condition_not_met' },
+          data: { skipped: true, reason: 'condition_not_met', optional: isOptional },
         });
         return {
           stepId: step.id,
           stepType: step.type,
-          success: false,
-          error: 'Condition not met',
+          success: isOptional,
+          data: isOptional ? [] : undefined,
+          error: isOptional ? undefined : 'Condition not met',
           executionTimeMs: Date.now() - startTime,
         };
       }
@@ -2068,6 +2072,9 @@ export class SkillExecutor {
         const confidence = typeof rule.confidence === 'number'
           ? rule.confidence
           : rule.confidence === 'high' ? 0.9 : rule.confidence === 'medium' ? 0.7 : 0.5;
+        const severityFromRule = rule.severity === 'critical' || rule.severity === 'warning' || rule.severity === 'info'
+          ? rule.severity
+          : undefined;
 
         // Substitute variables in diagnosis message
         const diagnosis = ExpressionEvaluator.evaluate(rule.diagnosis, context);
@@ -2084,7 +2091,7 @@ export class SkillExecutor {
           id: `${step.id}_${diagnostics.length}`,
           diagnosis,
           confidence,
-          severity: confidence >= 0.8 ? 'critical' : confidence >= 0.6 ? 'warning' : 'info',
+          severity: severityFromRule ?? (confidence >= 0.8 ? 'critical' : confidence >= 0.6 ? 'warning' : 'info'),
           suggestions: evaluatedSuggestions,
           evidence,
           source: 'rule',

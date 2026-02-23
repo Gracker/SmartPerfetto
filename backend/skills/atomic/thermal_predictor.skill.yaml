@@ -124,7 +124,7 @@ sql: |
       max_freq_mhz,
       min_freq_mhz,
       CASE
-        WHEN start_freq_mhz IS NULL OR start_freq_mhz <= 0 THEN 0
+        WHEN start_freq_mhz IS NULL OR start_freq_mhz <= 0 THEN NULL
         ELSE 100.0 * (start_freq_mhz - end_freq_mhz) / start_freq_mhz
       END as drop_pct,
       CASE
@@ -133,25 +133,41 @@ sql: |
     FROM per_cpu
   )
   SELECT
-    ROUND(AVG(start_freq_mhz), 0) as avg_start_freq_mhz,
-    ROUND(AVG(end_freq_mhz), 0) as avg_end_freq_mhz,
+    ROUND(AVG(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN start_freq_mhz END), 0) as avg_start_freq_mhz,
+    ROUND(AVG(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN end_freq_mhz END), 0) as avg_end_freq_mhz,
     ROUND(AVG(drop_pct), 1) as avg_drop_pct,
-    ROUND(100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0), 1) as throttled_core_ratio_pct,
+    ROUND(
+      100.0 * SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN likely_throttled ELSE 0 END)
+      / NULLIF(SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN 1 ELSE 0 END), 0),
+      1
+    ) as throttled_core_ratio_pct,
     CASE
       WHEN AVG(drop_pct) >= ${high_drop_threshold_pct|30}
-           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${high_core_ratio_threshold_pct|50}
+           OR (
+             100.0 * SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN likely_throttled ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN 1 ELSE 0 END), 0)
+           ) >= ${high_core_ratio_threshold_pct|50}
         THEN 'high'
       WHEN AVG(drop_pct) >= ${medium_drop_threshold_pct|15}
-           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${medium_core_ratio_threshold_pct|25}
+           OR (
+             100.0 * SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN likely_throttled ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN 1 ELSE 0 END), 0)
+           ) >= ${medium_core_ratio_threshold_pct|25}
         THEN 'medium'
       ELSE 'low'
     END as thermal_risk,
     CASE
       WHEN AVG(drop_pct) >= ${high_drop_threshold_pct|30}
-           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${high_core_ratio_threshold_pct|50}
+           OR (
+             100.0 * SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN likely_throttled ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN 1 ELSE 0 END), 0)
+           ) >= ${high_core_ratio_threshold_pct|50}
         THEN '频率持续下探，预计短时间内出现热限频，建议降载或分批执行重任务'
       WHEN AVG(drop_pct) >= ${medium_drop_threshold_pct|15}
-           OR (100.0 * SUM(likely_throttled) / NULLIF(COUNT(*), 0)) >= ${medium_core_ratio_threshold_pct|25}
+           OR (
+             100.0 * SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN likely_throttled ELSE 0 END)
+             / NULLIF(SUM(CASE WHEN start_freq_mhz IS NOT NULL AND start_freq_mhz > 0 THEN 1 ELSE 0 END), 0)
+           ) >= ${medium_core_ratio_threshold_pct|25}
         THEN '存在热压趋势，建议观察后续频率恢复与帧稳定性'
       ELSE '当前热控风险较低'
     END as prediction

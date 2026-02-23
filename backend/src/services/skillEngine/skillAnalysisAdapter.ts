@@ -160,19 +160,55 @@ export class SkillAnalysisAdapter {
       const result = await this.traceProcessor.query(traceId, `
         SELECT
           CASE
-            WHEN EXISTS(SELECT 1 FROM slice WHERE name GLOB '*miui*') THEN 'xiaomi'
-            WHEN EXISTS(SELECT 1 FROM slice WHERE name GLOB '*oppo*' OR name GLOB '*color*') THEN 'oppo'
-            WHEN EXISTS(SELECT 1 FROM slice WHERE name GLOB '*vivo*') THEN 'vivo'
-            WHEN EXISTS(SELECT 1 FROM slice WHERE name GLOB '*huawei*' OR name GLOB '*honor*') THEN 'huawei'
-            WHEN EXISTS(SELECT 1 FROM slice WHERE name GLOB '*samsung*' OR name GLOB '*oneui*') THEN 'samsung'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%miui%' OR LOWER(name) LIKE '%hyperos%' OR LOWER(name) LIKE '%xiaomi%')
+            ) THEN 'xiaomi'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%oppo%' OR LOWER(name) LIKE '%coloros%' OR LOWER(name) LIKE '%oplus%')
+            ) THEN 'oppo'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%vivo%' OR LOWER(name) LIKE '%originos%' OR LOWER(name) LIKE '%funtouch%' OR LOWER(name) LIKE '%bbk%')
+            ) THEN 'vivo'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%honor%' OR LOWER(name) LIKE '%magicos%' OR LOWER(name) LIKE '%huawei%')
+            ) THEN 'honor'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%samsung%' OR LOWER(name) LIKE '%oneui%' OR LOWER(name) LIKE '%sec.%' OR LOWER(name) LIKE '%galaxy%')
+            ) THEN 'samsung'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%pixel%' OR LOWER(name) LIKE '%tensor%' OR LOWER(name) LIKE '%google%')
+            ) THEN 'pixel'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%qualcomm%' OR LOWER(name) LIKE '%qcom%' OR LOWER(name) LIKE '%snapdragon%' OR LOWER(name) LIKE '%adreno%')
+            ) THEN 'qualcomm'
+            WHEN EXISTS(
+              SELECT 1 FROM slice
+              WHERE name IS NOT NULL
+                AND (LOWER(name) LIKE '%mediatek%' OR LOWER(name) LIKE '%mtk%' OR LOWER(name) LIKE '%dimensity%' OR LOWER(name) LIKE '%helio%')
+            ) THEN 'mtk'
             ELSE 'aosp'
           END as vendor
       `);
 
       if (result.rows && result.rows.length > 0) {
+        const detectedVendor = String(result.rows[0][0] || 'aosp');
         return {
-          vendor: result.rows[0][0] as string,
-          confidence: 0.8,
+          vendor: detectedVendor,
+          confidence: detectedVendor === 'aosp' ? 0.5 : 0.8,
         };
       }
     } catch (error) {
@@ -556,14 +592,16 @@ export class SkillAnalysisAdapter {
     })), null, 2));
 
     for (const result of displayResults) {
+      const data = result.data ?? {};
+
       console.log(`[convertDisplayResultsToSections] Processing ${result.stepId}:`, JSON.stringify({
-        hasData: !!result.data,
-        dataType: typeof result.data,
-        dataIsArray: Array.isArray(result.data),
-        dataHasRows: !!result.data?.rows,
-        dataHasText: !!result.data?.text,
-        dataLength: Array.isArray(result.data) ? result.data.length : 'N/A',
-        dataSample: Array.isArray(result.data) && result.data.length > 0 ? result.data[0] : result.data,
+        hasData: !!data,
+        dataType: typeof data,
+        dataIsArray: Array.isArray(data),
+        dataHasRows: !!data?.rows,
+        dataHasText: !!data?.text,
+        dataLength: Array.isArray(data) ? data.length : 'N/A',
+        dataSample: Array.isArray(data) && data.length > 0 ? data[0] : data,
       }, null, 2));
 
       // 处理不同类型的 data 格式
@@ -575,39 +613,39 @@ export class SkillAnalysisAdapter {
         : undefined;
 
       // 0. 诊断数据格式 {diagnostics, inputs} - 保持原样
-      if (result.data.diagnostics && Array.isArray(result.data.diagnostics)) {
+      if (data.diagnostics && Array.isArray(data.diagnostics)) {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using diagnostic format`);
         // 保持诊断结构，前端需要这个格式
-        sectionData = result.data;
-        rowCount = result.data.diagnostics.length;
+        sectionData = data;
+        rowCount = data.diagnostics.length;
       }
       // 1. 标准 {columns, rows} 格式
-      else if (result.data.rows && Array.isArray(result.data.rows)) {
+      else if (data.rows && Array.isArray(data.rows)) {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using {columns, rows} format`);
-        sectionData = this.rowsToObjects(result.data.columns, result.data.rows);
-        rowCount = result.data.rows.length;
-        columns = Array.isArray(result.data.columns) && result.data.columns.length > 0
-          ? result.data.columns
+        sectionData = this.rowsToObjects(data.columns, data.rows);
+        rowCount = data.rows.length;
+        columns = Array.isArray(data.columns) && data.columns.length > 0
+          ? data.columns
           : columnDefinitions?.map((d: any) => d.name).filter((name: any) => typeof name === 'string');
       }
       // 2. 文本格式
-      else if (result.data.text) {
+      else if (data.text) {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using text format`);
-        sectionData = [{ text: result.data.text }];
+        sectionData = [{ text: data.text }];
         rowCount = 1;
       }
       // 3. 对象数组格式（直接来自 SQL 查询）
-      else if (Array.isArray(result.data)) {
-        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using array format, length=${result.data.length}`);
-        sectionData = result.data;
-        rowCount = result.data.length;
+      else if (Array.isArray(data)) {
+        console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using array format, length=${data.length}`);
+        sectionData = data;
+        rowCount = data.length;
         // 优先使用 display.columns 定义列顺序；否则从首行推导
         if (columnDefinitions && columnDefinitions.length > 0) {
           columns = columnDefinitions
             .map((d: any) => d?.name)
             .filter((name: any) => typeof name === 'string' && name.length > 0);
-        } else if (result.data.length > 0 && typeof result.data[0] === 'object') {
-          columns = Object.keys(result.data[0]);
+        } else if (data.length > 0 && typeof data[0] === 'object') {
+          columns = Object.keys(data[0]);
           console.log(`[convertDisplayResultsToSections] ${result.stepId}: Extracted columns:`, columns);
         }
       }
@@ -638,12 +676,12 @@ export class SkillAnalysisAdapter {
       }, null, 2));
 
       // 包含可展开数据和汇总（用于 iterator 类型的结果）
-      if (result.data.expandableData) {
-        section.expandableData = result.data.expandableData;
-        console.log(`[convertDisplayResultsToSections] Step ${result.stepId} has expandableData with ${result.data.expandableData.length} items`);
+      if (data.expandableData) {
+        section.expandableData = data.expandableData;
+        console.log(`[convertDisplayResultsToSections] Step ${result.stepId} has expandableData with ${data.expandableData.length} items`);
       }
-      if (result.data.summary) {
-        section.summary = result.data.summary;
+      if (data.summary) {
+        section.summary = data.summary;
       }
 
       sections[result.stepId] = section;

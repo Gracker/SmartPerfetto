@@ -162,5 +162,32 @@ describe('SkillAnalysisAdapter layered conversion', () => {
       rows: [[2, 1338.65]],
     });
   });
-});
 
+  it('maps detected vendor ids consistently with available vendor profiles', async () => {
+    const queryMock = jest.fn() as any;
+    queryMock.mockResolvedValue({
+      rows: [['pixel']],
+    });
+    const traceProcessorMock = {
+      query: queryMock,
+    };
+    const adapter = new SkillAnalysisAdapter(traceProcessorMock as any);
+
+    const detected = await adapter.detectVendor('trace-1');
+    expect(queryMock).toHaveBeenCalled();
+    expect(detected.vendor).toBe('pixel');
+    expect(detected.confidence).toBeGreaterThan(0.5);
+  });
+
+  it('falls back to aosp when vendor detection query fails', async () => {
+    const queryMock = jest.fn() as any;
+    queryMock.mockRejectedValue(new Error('query failed'));
+    const traceProcessorMock = {
+      query: queryMock,
+    };
+    const adapter = new SkillAnalysisAdapter(traceProcessorMock as any);
+
+    const detected = await adapter.detectVendor('trace-1');
+    expect(detected).toEqual({ vendor: 'aosp', confidence: 0.5 });
+  });
+});

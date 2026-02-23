@@ -80,6 +80,8 @@ import {
 import type { ConversationTurn, Finding, Intent } from '../agent/types';
 
 const router = express.Router();
+// Apply API-key auth to all Agent endpoints (dev fallback still applies when key is not configured).
+router.use(authenticate);
 
 // ============================================================================
 // Session Tracking (Agent-Driven)
@@ -96,6 +98,7 @@ interface AnalysisSession {
   traceId: string;
   query: string;
   createdAt: number;
+  lastActivityAt: number;
   logger: SessionLogger;
   hypotheses: Hypothesis[];
   // Optional scene reconstruction artifacts (unified into agent-driven sessions)
@@ -428,6 +431,22 @@ interface TrackEvent {
 // Initialize Agent tools once
 let toolsRegistered = false;
 const SCENE_STRATEGY_IDS = ['scene_reconstruction', 'scene_reconstruction_quick'];
+const MAX_SESSION_DATA_ENVELOPES = 1200;
+const MAX_SESSION_AGENT_DIALOGUE = 800;
+const MAX_SESSION_AGENT_RESPONSES = 400;
+const TERMINAL_SESSION_MAX_IDLE_MS = 30 * 60 * 1000;
+const NON_TERMINAL_SESSION_MAX_IDLE_MS = 2 * 60 * 60 * 1000;
+
+function trimSessionArray<T>(items: T[], maxEntries: number): void {
+  if (items.length > maxEntries) {
+    items.splice(0, items.length - maxEntries);
+  }
+}
+
+function pushWithSessionCap<T>(items: T[], value: T, maxEntries: number): void {
+  items.push(value);
+  trimSessionArray(items, maxEntries);
+}
 
 function ensureToolsRegistered() {
   if (!toolsRegistered) {
@@ -537,6 +556,7 @@ router.post('/analyze', async (req, res) => {
         });
         existingSession.query = query;
         existingSession.status = 'pending';
+        existingSession.lastActivityAt = Date.now();
         console.log(`[AgentRoutes] Reusing agent session ${sessionId} for multi-turn dialogue`);
       } else {
         // Try restoring requested session from persistence before falling back to new session.
@@ -597,6 +617,7 @@ router.post('/analyze', async (req, res) => {
               traceId,
               query,
               createdAt: persistedSession.createdAt,
+              lastActivityAt: Date.now(),
               logger: restoredLogger,
               hypotheses: [],
               agentDialogue: [],
@@ -654,6 +675,7 @@ router.post('/analyze', async (req, res) => {
         traceId,
         query,
         createdAt: Date.now(),
+        lastActivityAt: Date.now(),
         logger,
         hypotheses: [],
         agentDialogue: [],
@@ -751,6 +773,7 @@ router.get('/:sessionId/stream', (req, res) => {
 
   // Add client to session
   session.sseClients.push(res);
+  session.lastActivityAt = Date.now();
   console.log(`[AgentRoutes] SSE client connected for ${sessionId}`);
 
   // If analysis is already completed, send the result.
@@ -783,6 +806,7 @@ router.get('/:sessionId/stream', (req, res) => {
     if (idx !== -1) {
       session.sseClients.splice(idx, 1);
     }
+    session.lastActivityAt = Date.now();
   });
 
   // Keep-alive ping
@@ -1560,6 +1584,7 @@ router.post('/resume', async (req, res) => {
       traceId: effectiveTraceId,
       query: latestTurn?.query || persistedSession.question,
       createdAt: persistedSession.createdAt,
+      lastActivityAt: Date.now(),
       logger,
       hypotheses: [],
       agentDialogue: [],
@@ -1692,6 +1717,7 @@ router.post('/scene-reconstruct', async (req, res) => {
       traceId,
       query,
       createdAt: Date.now(),
+      lastActivityAt: Date.now(),
       logger,
       hypotheses: [],
       agentDialogue: [],
@@ -1774,6 +1800,7 @@ router.get('/scene-reconstruct/:analysisId/stream', (req, res) => {
 
   // Add client to session
   session.sseClients.push(res);
+  session.lastActivityAt = Date.now();
   console.log(`[AgentRoutes] Scene SSE client connected for ${analysisId}`);
 
   // If analysis is already completed, send the result
@@ -1802,6 +1829,7 @@ router.get('/scene-reconstruct/:analysisId/stream', (req, res) => {
     if (idx !== -1) {
       session.sseClients.splice(idx, 1);
     }
+    session.lastActivityAt = Date.now();
   });
 
   // Keep-alive ping
@@ -2803,6 +2831,7 @@ async function runAgentDrivenAnalysis(
 
   const { logger } = session;
   session.status = 'running';
+  session.lastActivityAt = Date.now();
   logger.info('AgentDrivenAnalysis', 'Starting agent-driven analysis', { query, traceId });
 
   // Track generation is a lightweight derivation step from DataEnvelopes.
@@ -2820,6 +2849,7 @@ async function runAgentDrivenAnalysis(
 
   // Set up streaming via event listener on orchestrator
   const handleUpdate = (update: StreamingUpdate) => {
+    session.lastActivityAt = Date.now();
     console.log(`[AgentRoutes.AgentDriven] Received event: ${update.type}`, update.content?.phase);
     logger.debug('Stream', `Update: ${update.type}`, update.content);
     const normalizedUpdate = normalizeAgentDrivenUpdate(update);
@@ -2850,21 +2880,21 @@ async function runAgentDrivenAnalysis(
 
     // Track agent dialogue events
     if (normalizedUpdate.content?.phase === 'task_dispatched' || normalizedUpdate.content?.phase === 'task_completed') {
-      session.agentDialogue.push({
+      pushWithSessionCap(session.agentDialogue, {
         agentId: normalizedUpdate.content.agentId || 'master',
         type: normalizedUpdate.content.phase === 'task_dispatched' ? 'task' : 'response',
         content: normalizedUpdate.content,
         timestamp: normalizedUpdate.timestamp,
-      });
+      }, MAX_SESSION_AGENT_DIALOGUE);
 
       // Collect full agent responses for HTML report enrichment
       if (normalizedUpdate.content.phase === 'task_completed') {
-        session.agentResponses.push({
+        pushWithSessionCap(session.agentResponses, {
           taskId: normalizedUpdate.content.taskId || '',
           agentId: normalizedUpdate.content.agentId || 'unknown',
           response: normalizedUpdate.content.response || normalizedUpdate.content,
           timestamp: normalizedUpdate.timestamp,
-        });
+        }, MAX_SESSION_AGENT_RESPONSES);
       }
     }
 
@@ -3325,6 +3355,7 @@ function mapToAgentDrivenEventType(update: StreamingUpdate): StreamingUpdate['ty
 function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdate) {
   const session = sessions.get(sessionId);
   if (!session) return;
+  session.lastActivityAt = Date.now();
 
   const eventType = update.type;
   let eventData: string;
@@ -3351,11 +3382,11 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
 
     console.log(`[AgentRoutes.broadcastToAgentDrivenClients] Sending ${envelopes.length} DataEnvelope(s) for session ${sessionId}`);
 
-    // Collect DataEnvelopes for HTML report generation
-    for (const envelope of envelopes) {
-      if (envelope && envelope.data) {
-        session.dataEnvelopes.push(envelope);
-      }
+    // Collect DataEnvelopes for HTML report generation with bounded memory.
+    const validEnvelopes = envelopes.filter((envelope) => envelope && envelope.data);
+    if (validEnvelopes.length > 0) {
+      session.dataEnvelopes.push(...validEnvelopes);
+      trimSessionArray(session.dataEnvelopes, MAX_SESSION_DATA_ENVELOPES);
     }
 
     eventData = JSON.stringify({
@@ -4394,9 +4425,6 @@ router.use('/logs', (_req, res, next) => {
   next();
 });
 
-// Protect debug log APIs with API-key auth (or dev mock user when auth is not configured).
-router.use('/logs', authenticate);
-
 /**
  * GET /api/agent/logs
  *
@@ -4526,12 +4554,19 @@ router.post('/logs/cleanup', (req, res) => {
 // Cleanup old sessions every 30 minutes
 const sessionCleanupInterval = setInterval(() => {
   const now = Date.now();
-  const maxAge = 30 * 60 * 1000; // 30 minutes
 
   // Clean up stale sessions (agent-driven)
   for (const [id, session] of sessions.entries()) {
-    const age = now - session.createdAt;
-    if (age > maxAge && (session.status === 'completed' || session.status === 'failed')) {
+    const idle = now - (session.lastActivityAt || session.createdAt);
+    const isTerminal = session.status === 'completed' || session.status === 'failed';
+    const isAbandonedNonTerminal =
+      (session.status === 'pending' || session.status === 'running') &&
+      session.sseClients.length === 0;
+
+    if (
+      (isTerminal && idle > TERMINAL_SESSION_MAX_IDLE_MS) ||
+      (isAbandonedNonTerminal && idle > NON_TERMINAL_SESSION_MAX_IDLE_MS)
+    ) {
       console.log(`[AgentRoutes] Cleaning up stale session: ${id}`);
       session.sseClients.forEach((client) => {
         try {

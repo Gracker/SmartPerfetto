@@ -137,13 +137,23 @@ ${PROMPTS.ANALYSIS_SUMMARY.detailed}
 
 {schema}
 
-Focus on providing actionable insights with specific numbers and data points.`,
+Required output structure:
+1) Executive Summary
+2) Findings (each item: symptom, evidence, impact)
+3) Action Items (owner, priority: P0/P1/P2, concrete action, verification steps)
+4) Missing Data (what is missing + how to collect it)
+5) Uncertainty (assumptions and confidence)
+
+Rules:
+- Do not make claims without evidence.
+- For every finding, cite evidence as table[field]=value.
+- If evidence is missing, say "unable_to_determine" and add it to Missing Data.`,
       user: `User Question: "{question}"
 
 {context}
 
 Provide a final answer that directly addresses the user's question. Include specific numbers and data points when relevant.`,
-      temperature: 0.5,
+      temperature: 0.2,
     });
 
     // Trace Analysis System Prompt (for traceAnalysisSkill)
@@ -172,6 +182,8 @@ Provide a final answer that directly addresses the user's question. Include spec
    - When you have enough data, provide a COMPLETE answer
    - Include specific numbers, timestamps, percentages
    - Be thorough but concise
+   - Every key claim must include evidence in the form table[field]=value
+   - If evidence is insufficient, explicitly output "unable_to_determine"
 
 {schema}
 
@@ -183,10 +195,22 @@ Provide a final answer that directly addresses the user's question. Include spec
 **Common Analysis Patterns:**
 - Startup: Look for process.start_ts, then slice table for activity
 - CPU: Check sched table for thread states, counter table for frequency
+- GPU/Render: Check gpu_counter_track, frame timeline, and RenderThread slices
+- Frame/Jank: Check actual_frame_timeline_slice and expected frame pacing
+- Binder contention: Check android_binder_txns and blocking thread states
+- GC/Memory pressure: Check heap counters, LMK/low-memory signals, GC events
+- Thermal/Power: Check frequency drops, thermal counters, throttling indicators
 - Memory: Check counter table for memory stats
-- ANR: Check instant table for "android_anr" events`,
+- ANR: Check instant table for "android_anr" events
+
+Final response format:
+1) Summary
+2) Findings with evidence
+3) Action items (owner/priority/verification)
+4) Missing data
+5) Uncertainty`,
       user: '{question}',
-      temperature: 0.3,
+      temperature: 0.2,
     });
   }
 

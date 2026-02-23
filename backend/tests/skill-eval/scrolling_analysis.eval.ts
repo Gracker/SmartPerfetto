@@ -387,22 +387,59 @@ describe('scrolling_analysis edge cases', () => {
 
       expect(result.success).toBe(true);
       expect(result.data.length).toBeGreaterThan(0);
+      expect(result.data[0].total_frames).toBeGreaterThan(0);
+      expect(result.data[0].jank_rate).toBeGreaterThanOrEqual(0);
     }, 30000);
 
-    it('should handle non-matching package filter gracefully', async () => {
+    it('should return condition-not-met for non-matching package in performance_summary', async () => {
       const result = await evaluator.executeStep('performance_summary', {
         package: 'com.nonexistent.app',
       });
 
-      // 对于不匹配的 package filter，可能成功但没数据，或者直接失败
-      // 两种结果都是可接受的 - 重要的是不会崩溃
-      if (result.success) {
-        // 成功时，数据可能为空或有数据
-        expect(Array.isArray(result.data)).toBe(true);
-      } else {
-        // 失败时，应该有错误信息
-        expect(result.error).toBeDefined();
-      }
+      expect(result.success).toBe(false);
+      expect(result.data).toEqual([]);
+      expect(result.error).toContain('Condition not met');
+    }, 30000);
+
+    it('should return condition-not-met for non-matching package in scroll_sessions', async () => {
+      const result = await evaluator.executeStep('scroll_sessions', {
+        package: 'com.nonexistent.app',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.data).toEqual([]);
+      expect(result.error).toContain('Condition not met');
+    }, 30000);
+
+    it('should disable frame_variance_probe when enable_expert_probes is false', async () => {
+      const result = await evaluator.executeStep('frame_variance_probe', {
+        enable_expert_probes: false,
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.data).toEqual([]);
+      expect(result.error).toContain('Condition not met');
+    }, 30000);
+
+    it('should react to frame_variance_transition_threshold_ms changes', async () => {
+      const lowThreshold = await evaluator.executeStep('frame_variance_probe', {
+        enable_expert_probes: true,
+        frame_variance_probe_min_janky_frames: 1,
+        frame_variance_transition_threshold_ms: 2,
+      });
+      const highThreshold = await evaluator.executeStep('frame_variance_probe', {
+        enable_expert_probes: true,
+        frame_variance_probe_min_janky_frames: 1,
+        frame_variance_transition_threshold_ms: 20,
+      });
+
+      expect(lowThreshold.success).toBe(true);
+      expect(highThreshold.success).toBe(true);
+      expect(lowThreshold.data.length).toBeGreaterThan(0);
+      expect(highThreshold.data.length).toBeGreaterThan(0);
+      expect(lowThreshold.data[0].high_variance_transitions).toBeGreaterThan(
+        highThreshold.data[0].high_variance_transitions
+      );
     }, 30000);
   });
 });

@@ -2,17 +2,17 @@
 # Google Pixel 启动分析覆盖配置
 # =============================================================================
 # 版本: 1.0.0
-# 基于: base/startup
+# 基于: composite/startup_analysis
 # 适用: Google Pixel 设备
 # =============================================================================
 
-extends: base/startup
+extends: composite/startup_analysis
 version: "1.0.0"
 
 meta:
   display_name: "Google Pixel 启动分析"
   description: "针对 Google Pixel 优化的启动分析"
-  vendor: google
+  vendor: pixel
   platform: Pixel
 
 # -----------------------------------------------------------------------------

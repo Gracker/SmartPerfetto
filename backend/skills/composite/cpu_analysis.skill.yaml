@@ -861,6 +861,20 @@ steps:
       title: "问题诊断"
     inputs: [core_stats, main_thread_states, runnable_delays, blocked_functions, affinity_probe, cache_miss_probe]
     rules:
+      # 数据不足时显式声明，避免误判
+      - condition: |
+          (core_stats?.data?.length || 0) === 0 &&
+          (main_thread_states?.data?.length || 0) === 0 &&
+          (runnable_delays?.data?.length || 0) === 0 &&
+          (blocked_functions?.data?.length || 0) === 0
+        severity: warning
+        diagnosis: "unable_to_determine：CPU 诊断数据不足（缺少 sched/thread_state 关键样本）"
+        confidence: low
+        suggestions:
+          - "[Owner] Perf/Infra | [Priority] P0 | [Action] 采集包含 sched 与 thread_state 的完整 trace（覆盖目标场景）"
+          - "[Verify] 重新执行 cpu_analysis，确认 core_stats/main_thread_states/runnable_delays 均有数据"
+        evidence_fields: [core_stats.data, main_thread_states.data, runnable_delays.data, blocked_functions.data]
+
       # 大核使用率低
       - condition: |
           (core_stats?.data?.length || 0) > 0 &&
@@ -869,9 +883,10 @@ steps:
         diagnosis: "大核使用率偏低 (<${big_core_threshold_pct || 30}%)"
         confidence: medium
         suggestions:
-          - "检查线程优先级设置"
-          - "考虑使用 PowerHint 提升调度"
-          - "确认系统功耗策略配置"
+          - "[Owner] Runtime/App | [Priority] P1 | [Action] 检查关键线程优先级与调度组"
+          - "[Owner] System | [Priority] P1 | [Action] 评估 PowerHint/调频策略对关键线程的影响"
+          - "[Verify] 对比优化前后 big/prime 核占比与帧稳定性"
+        evidence_fields: [core_stats.data]
 
       # 主线程 Running 比例低
       - condition: |
@@ -881,8 +896,9 @@ steps:
         diagnosis: "主线程 CPU 利用率偏低 (Running ${main_thread_states?.data?.find(s => s.state === 'Running')?.percent}%)"
         confidence: medium
         suggestions:
-          - "检查主线程是否存在等待或阻塞"
-          - "分析 Sleeping/IO 等待原因"
+          - "[Owner] App | [Priority] P1 | [Action] 排查主线程等待/阻塞来源（锁、IO、Binder）"
+          - "[Verify] 复测 Running 比例与可交互场景帧时长"
+        evidence_fields: [main_thread_states.data]
 
       # 严重调度延迟
       - condition: "((runnable_delays?.data?.[0]?.wait_ms) || 0) > (sched_delay_critical_ms || 16)"
@@ -890,9 +906,10 @@ steps:
         diagnosis: "存在严重调度延迟 (${runnable_delays?.data?.[0]?.wait_ms}ms)"
         confidence: high
         suggestions:
-          - "检查系统 CPU 负载是否过高"
-          - "考虑减少后台线程数量"
-          - "检查是否有高优先级任务抢占"
+          - "[Owner] Perf/System | [Priority] P0 | [Action] 检查高负载与抢占来源，控制后台并发"
+          - "[Owner] App | [Priority] P1 | [Action] 合并短任务，减少调度抖动"
+          - "[Verify] 复测 runnable wait P95 与关键路径帧时间"
+        evidence_fields: [runnable_delays.data]
 
       # 频繁调度延迟
       - condition: "(runnable_delays?.data?.length || 0) > 10"
@@ -900,8 +917,9 @@ steps:
         diagnosis: "调度延迟频繁发生 (${runnable_delays?.data?.length} 次 >1ms)"
         confidence: medium
         suggestions:
-          - "优化线程模型，减少线程切换"
-          - "合并短任务，减少调度开销"
+          - "[Owner] App | [Priority] P1 | [Action] 优化线程模型，减少线程切换"
+          - "[Verify] 对比调优前后 delay 次数与上下文切换指标"
+        evidence_fields: [runnable_delays.data]
 
       # 阻塞函数问题
       - condition: "((blocked_functions?.data?.[0]?.total_dur_ms) || 0) > (blocked_function_threshold_ms || 50)"
@@ -909,8 +927,9 @@ steps:
         diagnosis: "主线程阻塞在 ${blocked_functions?.data?.[0]?.blocked_function} 上 ${blocked_functions?.data?.[0]?.total_dur_ms}ms"
         confidence: high
         suggestions:
-          - "分析阻塞原因，考虑异步化"
-          - "检查锁竞争或 IO 操作"
+          - "[Owner] App | [Priority] P0 | [Action] 针对阻塞函数做异步化/拆分"
+          - "[Verify] 复测 blocked_function 总耗时和主线程可运行占比"
+        evidence_fields: [blocked_functions.data]
 
       # 线程迁核过于频繁
       - condition: "((affinity_probe?.data?.[0]?.migration_ratio_pct) || 0) >= (affinity_violation_warning_threshold_pct || 35)"
@@ -918,9 +937,9 @@ steps:
         diagnosis: "线程 ${affinity_probe?.data?.[0]?.thread_name} 迁核占比 ${affinity_probe?.data?.[0]?.migration_ratio_pct}% ，存在亲和性抖动"
         confidence: medium
         suggestions:
-          - "检查主线程/RenderThread 调度优先级与绑核策略"
-          - "避免短周期任务在大小核间频繁迁移"
-          - "结合系统功耗策略评估是否需要固定关键线程亲和性"
+          - "[Owner] Runtime/System | [Priority] P1 | [Action] 调整关键线程亲和性与调度优先级"
+          - "[Verify] 复测 migration_ratio_pct 与帧稳定性"
+        evidence_fields: [affinity_probe.data]
 
       # Cache miss 压力
       - condition: "(cache_miss_probe?.data?.find(r => r.impact_level === 'high')?.avg_miss_delta || 0) > 0"
@@ -928,9 +947,9 @@ steps:
         diagnosis: "检测到高缓存未命中压力 (${cache_miss_probe.data.find(r => r.impact_level === 'high').counter_name})"
         confidence: medium
         suggestions:
-          - "优化数据局部性，减少跨大对象随机访问"
-          - "合并小任务批处理，降低 cache thrashing"
-          - "优先排查高 miss 热点线程与函数"
+          - "[Owner] App | [Priority] P1 | [Action] 优化数据局部性并减少 cache thrashing"
+          - "[Verify] 复测 avg_miss_delta 与关键路径耗时"
+        evidence_fields: [cache_miss_probe.data]
 
 output:
   format: structured

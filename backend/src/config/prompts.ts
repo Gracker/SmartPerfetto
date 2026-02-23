@@ -51,7 +51,13 @@ Include:
 2. Detailed Findings
 3. Root Cause Analysis
 4. Recommendations
-5. SQL queries for further investigation`,
+5. SQL queries for further investigation
+6. Missing Data and Uncertainty
+
+Quality constraints:
+- Every finding MUST include evidence in this format: table[field]=value
+- If data is insufficient, explicitly say "unable_to_determine"
+- Action items must include owner, priority, and verification steps`,
   },
 
   // Error Recovery Prompts

@@ -71,11 +71,44 @@ steps:
     save_as: time_range
 
   # ==========================================================================
+  # L1: 可用数据表探测（用于门禁可选步骤，避免缺表报错）
+  # ==========================================================================
+  - id: table_availability
+    type: atomic
+    name: "可用数据表探测"
+    display:
+      level: hidden
+    sql: |
+      SELECT
+        CASE
+          WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='android_screen_state') THEN 1
+          ELSE 0
+        END AS has_screen_state,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='android_battery_stats_event_slices') THEN 1
+          ELSE 0
+        END AS has_battery_top,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='android_input_events') THEN 1
+          ELSE 0
+        END AS has_input_events,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='android_startups') THEN 1
+          ELSE 0
+        END AS has_startups,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='actual_frame_timeline_slice') THEN 1
+          ELSE 0
+        END AS has_frame_timeline
+    save_as: table_availability
+
+  # ==========================================================================
   # L2: 屏幕状态变化
   # ==========================================================================
   - id: screen_state_changes
     type: atomic
     name: "屏幕状态变化"
+    condition: table_availability.data[0]?.has_screen_state === 1
     display:
       level: detail
       layer: list
@@ -124,6 +157,7 @@ steps:
   - id: top_app_changes
     type: atomic
     name: "Top App 切换"
+    condition: table_availability.data[0]?.has_battery_top === 1
     display:
       level: detail
       layer: list
@@ -174,6 +208,7 @@ steps:
   - id: user_gestures
     type: atomic
     name: "用户手势识别"
+    condition: table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_startups === 1 && table_availability.data[0]?.has_frame_timeline === 1
     display:
       level: detail
       layer: list
@@ -396,6 +431,7 @@ steps:
   - id: scroll_initiation
     type: atomic
     name: "滑动启动时刻"
+    condition: table_availability.data[0]?.has_input_events === 1
     display:
       level: detail
       layer: list
@@ -486,6 +522,7 @@ steps:
   - id: inertial_scrolls
     type: atomic
     name: "惯性滑动"
+    condition: table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_frame_timeline === 1
     display:
       level: detail
       layer: list
@@ -703,6 +740,7 @@ steps:
   - id: idle_periods
     type: atomic
     name: "Idle 区间"
+    condition: table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_startups === 1
     display:
       level: detail
       layer: list
@@ -798,6 +836,7 @@ steps:
   - id: app_launches
     type: atomic
     name: "App 启动事件"
+    condition: table_availability.data[0]?.has_startups === 1
     display:
       level: detail
       layer: list
@@ -935,6 +974,7 @@ steps:
   - id: jank_events
     type: atomic
     name: "掉帧事件"
+    condition: table_availability.data[0]?.has_frame_timeline === 1
     display:
       level: detail
       layer: list
@@ -996,6 +1036,7 @@ steps:
   - id: merged_timeline
     type: atomic
     name: "合并时间线"
+    condition: table_availability.data[0]?.has_screen_state === 1 && table_availability.data[0]?.has_battery_top === 1 && table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_startups === 1 && table_availability.data[0]?.has_frame_timeline === 1
     display:
       level: detail
       layer: list
