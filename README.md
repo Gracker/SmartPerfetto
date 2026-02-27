@@ -10,7 +10,7 @@ SmartPerfetto combines Perfetto's trace visualization with an intelligent agent 
 - **Multi-Agent Architecture** — Domain-specialized agents (Frame, CPU, Memory, Binder) collaborate to collect and synthesize evidence
 - **Strategy-Driven Pipelines** — Common scenarios (scrolling, startup) execute deterministic multi-stage analysis without LLM uncertainty
 - **Layered Results** — Analysis results from high-level overview (L1) down to per-frame root cause (L4)
-- **YAML Skill System** — 86 analysis skills across atomic, composite, pipeline, and deep categories; vendor-specific overrides for Pixel/Samsung/Xiaomi/etc.
+- **YAML Skill System** — 111 analysis skills across atomic, composite, pipeline, and deep categories; vendor-specific overrides for Pixel/Samsung/Xiaomi/etc.
 - **Real-time Streaming** — SSE-based progress updates as analysis progresses through stages
 - **Perfetto Integration** — Shared `trace_processor_shell` via HTTP RPC; timeline navigation from analysis results
 
@@ -113,9 +113,9 @@ SmartPerfetto/
 │   │   │   └── skillEngine/    # YAML skill executor & loader
 │   │   └── routes/             # API endpoints
 │   ├── skills/                 # Analysis skills (YAML)
-│   │   ├── atomic/             # Single-step detection (32 skills)
+│   │   ├── atomic/             # Single-step detection (56 skills)
 │   │   ├── composite/          # Multi-step analysis (27 skills)
-│   │   ├── pipelines/          # Rendering pipeline detection (25 skills)
+│   │   ├── pipelines/          # Rendering pipeline detection (26 skills)
 │   │   ├── deep/               # Deep analysis (2 skills)
 │   │   ├── modules/            # Module configs (app/framework/hardware/kernel)
 │   │   └── vendors/            # Vendor overrides (pixel/samsung/xiaomi/...)
