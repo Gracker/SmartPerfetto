@@ -2,7 +2,6 @@ import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
 import type { StreamingUpdate } from '../../agent/types';
 import type { DecisionContext, PrincipleDecision } from '../contracts/policy';
 import type { OperationPlan } from '../contracts/runtime';
-import { ApprovalController } from './approvalController';
 
 export interface OperationExecutorInput {
   query: string;
@@ -17,16 +16,23 @@ export interface OperationExecutorInput {
 
 export interface OperationExecutorOutput {
   result: AnalysisResult;
-  approvalRequired: boolean;
 }
 
+/**
+ * Executes the governed analysis plan.
+ *
+ * Responsibilities:
+ *   1. Emit plan progress event (SSE visibility)
+ *   2. Enforce 'deny' gate from PrincipleEngine
+ *   3. Delegate to the real mode executor
+ *
+ * Architecture note (2026-03-01 review):
+ *   ApprovalController was removed because it emitted `intervention_required`
+ *   events without awaiting a response (fire-and-forget). The real intervention
+ *   mechanism lives in HypothesisExecutor's CircuitBreaker, which properly
+ *   awaits user input via InterventionController.
+ */
 export class OperationExecutor {
-  private readonly approvalController: ApprovalController;
-
-  constructor(approvalController?: ApprovalController) {
-    this.approvalController = approvalController || new ApprovalController();
-  }
-
   async execute(input: OperationExecutorInput): Promise<OperationExecutorOutput> {
     input.emitUpdate({
       type: 'progress',
@@ -40,46 +46,8 @@ export class OperationExecutor {
       id: `plan.${input.plan.id}`,
     });
 
-    const approval = this.approvalController.evaluate(input.decision, input.context);
-    if (approval.required) {
-      input.emitUpdate({
-        type: 'intervention_required',
-        content: {
-          interventionId: approval.interventionId,
-          type: 'validation_required',
-          options: [
-            {
-              id: 'approve_principle_flow',
-              label: 'Approve',
-              description: 'Continue with principle-constrained flow',
-              action: 'continue',
-              recommended: true,
-            },
-            {
-              id: 'abort_principle_flow',
-              label: 'Abort',
-              description: 'Abort analysis',
-              action: 'abort',
-            },
-          ],
-          context: {
-            confidence: 0.5,
-            elapsedTimeMs: 0,
-            roundsCompleted: 0,
-            progressSummary: input.context.userGoal,
-            triggerReason: 'Principle policy requires approval',
-            findingsCount: 0,
-          },
-          timeout: 60000,
-        },
-        timestamp: Date.now(),
-        id: `intervention.${approval.interventionId}`,
-      });
-    }
-
     if (input.decision.outcome === 'deny') {
       return {
-        approvalRequired: approval.required,
         result: {
           sessionId: input.sessionId,
           success: false,
@@ -94,13 +62,6 @@ export class OperationExecutor {
     }
 
     const result = await input.analyzeWithRuntimeEngine();
-    return {
-      approvalRequired: approval.required,
-      result,
-    };
-  }
-
-  getApprovalController(): ApprovalController {
-    return this.approvalController;
+    return { result };
   }
 }

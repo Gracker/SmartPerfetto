@@ -589,12 +589,13 @@ class SQLLearningSystem {
     }
     const success = validation.isValid && executionOk;
 
-    // 步骤4: 记录修正
+    // 步骤4: 记录修正（仅当规则实际改变了 SQL 时标记为 'learned'）
+    const rulesActuallyApplied = appliedRules.length > 0 && fixed.trim() !== originalSQL.trim();
     await this.fixLog.logFix({
       errorId,
       originalSQL,
       fixedSQL: fixed,
-      fixMethod: appliedRules.length > 0 ? 'learned' : 'auto',
+      fixMethod: rulesActuallyApplied ? 'learned' : 'auto',
       success,
       validationResult: {
         ...validation,
@@ -606,10 +607,15 @@ class SQLLearningSystem {
       },
     });
 
-    // 步骤5: 更新规则置信度
-    if (success) {
-      for (const ruleId of appliedRules) {
-        await this.ruleEngine.recordSuccess(ruleId);
+    // 步骤5: 持久化规则使用统计（无论成功与否，usageCount 已在 applyRules 中增加）
+    if (appliedRules.length > 0) {
+      if (success) {
+        for (const ruleId of appliedRules) {
+          await this.ruleEngine.recordSuccess(ruleId);
+        }
+      } else {
+        // 即使失败也要持久化 usageCount，防止重启后统计丢失
+        await this.ruleEngine.save();
       }
     }
 

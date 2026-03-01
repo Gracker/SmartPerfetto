@@ -46,7 +46,14 @@ export class PrincipleEngine {
       reasonCodes.push('policy.approval_required_for_action');
     }
 
-    if (context.evidenceCount < compiled.policy.minEvidenceBeforeConclusion) {
+    // Skip evidence check on turn 0: first analysis has no prior evidence by
+    // definition.  Previously this always fired `require_more_evidence` on the
+    // first turn, which EvidenceSynthesizer then silently patched to 'allow'
+    // post-execution — a feedback loop that produced stale governance decisions.
+    if (
+      context.turnIndex > 0 &&
+      context.evidenceCount < compiled.policy.minEvidenceBeforeConclusion
+    ) {
       outcome = strongerOutcome(outcome, 'require_more_evidence');
       reasonCodes.push('policy.insufficient_evidence');
     }

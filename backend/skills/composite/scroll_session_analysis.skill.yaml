@@ -117,17 +117,21 @@ steps:
     sql: |
       WITH frames AS (
         SELECT
-          ts,
-          dur,
-          dur / 1e6 AS dur_ms,
+          s.ts,
+          s.dur,
+          s.dur / 1e6 AS dur_ms,
           CASE
-            WHEN dur > ${vsync_period_ns} * 2 THEN 1
+            WHEN s.dur > ${vsync_period_ns} * 2 THEN 1
             ELSE 0
           END AS is_janky
-        FROM slice
-        WHERE (name GLOB '*doFrame*' OR name GLOB '*Choreographer#doFrame*' OR name GLOB '*DrawFrame*')
-          AND ts >= ${start_ts}
-          AND ts <= ${end_ts}
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*')
+          AND t.tid = p.pid
+          AND s.ts >= ${start_ts}
+          AND s.ts <= ${end_ts}
       )
       SELECT
         ${session_id} AS session_id,
@@ -187,17 +191,21 @@ steps:
     sql: |
       WITH touch_frames AS (
         SELECT
-          ts,
-          dur,
-          dur / 1e6 AS dur_ms,
+          s.ts,
+          s.dur,
+          s.dur / 1e6 AS dur_ms,
           CASE
-            WHEN dur > ${vsync_period_ns} * 2 THEN 1
+            WHEN s.dur > ${vsync_period_ns} * 2 THEN 1
             ELSE 0
           END AS is_janky
-        FROM slice
-        WHERE (name GLOB '*doFrame*' OR name GLOB '*Choreographer#doFrame*' OR name GLOB '*DrawFrame*')
-          AND ts >= ${touch_start_ts}
-          AND ts <= ${touch_end_ts}
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*')
+          AND t.tid = p.pid
+          AND s.ts >= ${touch_start_ts}
+          AND s.ts <= ${touch_end_ts}
       )
       SELECT
         'touch' AS phase,
@@ -258,17 +266,21 @@ steps:
     sql: |
       WITH fling_frames AS (
         SELECT
-          ts,
-          dur,
-          dur / 1e6 AS dur_ms,
+          s.ts,
+          s.dur,
+          s.dur / 1e6 AS dur_ms,
           CASE
-            WHEN dur > ${vsync_period_ns} * 2 THEN 1
+            WHEN s.dur > ${vsync_period_ns} * 2 THEN 1
             ELSE 0
           END AS is_janky
-        FROM slice
-        WHERE (name GLOB '*doFrame*' OR name GLOB '*Choreographer#doFrame*' OR name GLOB '*DrawFrame*')
-          AND ts >= ${fling_start_ts}
-          AND ts <= ${fling_end_ts}
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*')
+          AND t.tid = p.pid
+          AND s.ts >= ${fling_start_ts}
+          AND s.ts <= ${fling_end_ts}
       )
       SELECT
         'fling' AS phase,

@@ -24,7 +24,6 @@ import { InterventionController } from '../../agent/core/interventionController'
 import { OperationPlanner } from '../operations/operationPlanner';
 import { OperationExecutor } from '../operations/operationExecutor';
 import { EvidenceSynthesizer } from '../operations/evidenceSynthesizer';
-import { ApprovalController } from '../operations/approvalController';
 import { PrincipleEngine } from '../principles/principleEngine';
 import {
   prepareRuntimeContext,
@@ -84,9 +83,7 @@ export class AgentRuntime extends EventEmitter {
     this.planner = new OperationPlanner();
     this.principleEngine = new PrincipleEngine();
     this.evidenceSynthesizer = new EvidenceSynthesizer();
-    this.operationExecutor = new OperationExecutor(
-      new ApprovalController(this.interventionController)
-    );
+    this.operationExecutor = new OperationExecutor();
 
     this.updateBridge = new RuntimeUpdateBridge((update) => {
       this.emit('update', update);

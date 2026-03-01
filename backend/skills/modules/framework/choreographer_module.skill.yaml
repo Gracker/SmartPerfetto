@@ -143,8 +143,8 @@ steps:
         CAST(MAX(s.dur) / 1e6 AS REAL) AS max_dur_ms,
         CAST(MIN(s.dur) / 1e6 AS REAL) AS min_dur_ms,
         SUM(CASE WHEN s.dur > ${vsync_period_ns|16666667} THEN 1 ELSE 0 END) AS jank_frames,
-        SUM(CASE WHEN s.dur > 33330000 THEN 1 ELSE 0 END) AS severe_jank_frames,
-        ROUND(SUM(CASE WHEN s.dur > 16670000 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS jank_rate_pct
+        SUM(CASE WHEN s.dur > ${vsync_period_ns|16666667} * 2 THEN 1 ELSE 0 END) AS severe_jank_frames,
+        ROUND(SUM(CASE WHEN s.dur > ${vsync_period_ns|16666667} THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS jank_rate_pct
       FROM slice s
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
@@ -183,9 +183,9 @@ steps:
         s.name AS frame_event,
         CAST(s.dur / 1e6 AS REAL) AS dur_ms,
         CASE
-          WHEN s.dur < 16670000 THEN 'smooth'
-          WHEN s.dur < 33330000 THEN 'jank'
-          WHEN s.dur < 50000000 THEN 'severe_jank'
+          WHEN s.dur < ${vsync_period_ns|16666667} THEN 'smooth'
+          WHEN s.dur < ${vsync_period_ns|16666667} * 2 THEN 'jank'
+          WHEN s.dur < ${vsync_period_ns|16666667} * 3 THEN 'severe_jank'
           ELSE 'frozen'
         END AS frame_quality,
         s.depth

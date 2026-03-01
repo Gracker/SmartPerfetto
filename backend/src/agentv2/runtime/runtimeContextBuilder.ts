@@ -91,7 +91,10 @@ export function buildDecisionContextFromIntent(
     requestedActions,
     referencedEntities: mapReferencedEntities(intent.referencedEntities || []),
     coverageDomains: traceAgentState?.coverage?.domains || [],
-    evidenceCount: Array.isArray(traceAgentState?.evidence) ? traceAgentState!.evidence.length : 0,
+    evidenceCount: Math.max(
+      Array.isArray(traceAgentState?.evidence) ? traceAgentState!.evidence.length : 0,
+      sessionContext.getAllFindings().length
+    ),
     contradictionCount: Array.isArray(traceAgentState?.contradictions)
       ? traceAgentState!.contradictions.length
       : 0,

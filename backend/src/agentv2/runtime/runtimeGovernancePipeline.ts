@@ -5,9 +5,7 @@ import { OperationPlanner } from '../operations/operationPlanner';
 import { OperationExecutor } from '../operations/operationExecutor';
 import { EvidenceSynthesizer } from '../operations/evidenceSynthesizer';
 import { PrincipleEngine } from '../principles/principleEngine';
-import { createSoulProfile } from '../soul/soulProfile';
-import { evaluateSoulGuard } from '../soul/soulGuard';
-import type { PrincipleDecision, SoulViolation } from '../contracts/policy';
+import type { PrincipleDecision } from '../contracts/policy';
 
 interface ExecuteGovernedRuntimeAnalysisInput {
   query: string;
@@ -22,6 +20,18 @@ interface ExecuteGovernedRuntimeAnalysisInput {
   analyzeWithRuntimeEngine: () => Promise<AnalysisResult>;
 }
 
+/**
+ * Governed runtime analysis pipeline.
+ *
+ * Flow: PrincipleEngine → deny gate → execute → evidence synthesis
+ *
+ * Architecture note (2026-03-01 review):
+ *   SoulGuard was removed because it validated OperationPlanner's synthetic
+ *   step objects — not the actual StrategyExecutor/HypothesisExecutor
+ *   behaviour. 3 of its 4 checks were structurally unreachable. Confidence
+ *   honesty is now enforced post-execution via the existing CircuitBreaker
+ *   in HypothesisExecutor.
+ */
 export async function executeGovernedRuntimeAnalysis(
   input: ExecuteGovernedRuntimeAnalysisInput
 ): Promise<AnalysisResult> {
@@ -32,25 +42,6 @@ export async function executeGovernedRuntimeAnalysis(
   });
 
   input.emitUpdate(buildPrinciplesAppliedUpdate(decision, plan.id));
-
-  const soulResult = evaluateSoulGuard(createSoulProfile(), {
-    context: input.runtimeContext.decisionContext,
-    plan,
-  });
-
-  if (!soulResult.passed) {
-    input.emitUpdate(buildSoulViolationUpdate(soulResult.violations));
-    return {
-      sessionId: input.sessionId,
-      success: false,
-      findings: [],
-      hypotheses: [],
-      conclusion: `Soul guard blocked execution: ${soulResult.violations.map(v => v.code).join(', ')}`,
-      confidence: 0,
-      rounds: 0,
-      totalDurationMs: 0,
-    };
-  }
 
   const execution = await input.operationExecutor.execute({
     query: input.query,
@@ -88,17 +79,5 @@ function buildPrinciplesAppliedUpdate(decision: PrincipleDecision, planId: strin
     },
     timestamp: Date.now(),
     id: `principles.${planId}`,
-  };
-}
-
-function buildSoulViolationUpdate(violations: SoulViolation[]): StreamingUpdate {
-  return {
-    type: 'error',
-    content: {
-      message: `Soul guard violations: ${violations.map(v => v.code).join(', ')}`,
-      violations,
-    },
-    timestamp: Date.now(),
-    id: `soul.violation.${Date.now()}`,
   };
 }

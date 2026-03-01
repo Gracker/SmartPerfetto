@@ -33,7 +33,7 @@ function createFinding(description: string): Finding {
 }
 
 describe('EvidenceSynthesizer', () => {
-  it('does not append principles block for allow outcomes', () => {
+  it('passes through conclusion without modification', () => {
     const synthesizer = new EvidenceSynthesizer();
     const output = synthesizer.synthesize({
       originalConclusion: '结论正文',
@@ -44,7 +44,9 @@ describe('EvidenceSynthesizer', () => {
     expect(output.conclusion).toBe('结论正文');
   });
 
-  it('keeps principles block for non-allow outcomes with no findings', () => {
+  it('passes through conclusion for non-allow outcomes too', () => {
+    // PrincipleEngine now produces correct decisions (turn 0 bypass),
+    // so EvidenceSynthesizer no longer needs to patch or append summaries.
     const synthesizer = new EvidenceSynthesizer();
     const output = synthesizer.synthesize({
       originalConclusion: '结论正文',
@@ -52,95 +54,58 @@ describe('EvidenceSynthesizer', () => {
       decision: createDecision('require_more_evidence'),
     });
 
-    expect(output.conclusion).toContain('## Principles Applied');
-    expect(output.conclusion).toContain('Outcome: require_more_evidence');
+    expect(output.conclusion).toBe('结论正文');
   });
 
-  it('suppresses stale require_more_evidence when findings were collected', () => {
+  it('attaches principle evidence to findings', () => {
     const synthesizer = new EvidenceSynthesizer();
-    const decision = createDecision('require_more_evidence', [
-      'policy.insufficient_evidence',
-      'effect.min_evidence.3',
-    ]);
     const output = synthesizer.synthesize({
       originalConclusion: '分析完成',
       findings: [createFinding('发现掉帧'), createFinding('CPU 调度延迟')],
-      decision,
+      decision: createDecision('allow'),
     });
 
-    // The stale require_more_evidence should be suppressed — conclusion should be clean
-    expect(output.conclusion).toBe('分析完成');
-    expect(output.conclusion).not.toContain('Principles Applied');
-    expect(output.conclusion).not.toContain('require_more_evidence');
+    expect(output.findings).toHaveLength(2);
+    for (const finding of output.findings) {
+      expect(finding.evidence).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            principleId: 'evidence-first-conclusion',
+          }),
+        ])
+      );
+    }
   });
 
-  describe('resolveEffectiveDecision', () => {
+  it('does not modify findings when there are none', () => {
     const synthesizer = new EvidenceSynthesizer();
-
-    it('overrides require_more_evidence + insufficient_evidence when findings exist', () => {
-      const decision = createDecision('require_more_evidence', [
-        'policy.insufficient_evidence',
-      ]);
-      const findings = [createFinding('evidence collected')];
-
-      const result = synthesizer.resolveEffectiveDecision(decision, findings);
-
-      expect(result.outcome).toBe('allow');
-      expect(result.reasonCodes).not.toContain('policy.insufficient_evidence');
+    const output = synthesizer.synthesize({
+      originalConclusion: '空分析',
+      findings: [],
+      decision: createDecision('allow'),
     });
 
-    it('preserves require_more_evidence when findings are empty', () => {
-      const decision = createDecision('require_more_evidence', [
-        'policy.insufficient_evidence',
-      ]);
+    expect(output.findings).toHaveLength(0);
+  });
 
-      const result = synthesizer.resolveEffectiveDecision(decision, []);
+  it('preserves existing evidence on findings while adding principle refs', () => {
+    const synthesizer = new EvidenceSynthesizer();
+    const findingWithEvidence = {
+      ...createFinding('有证据的发现'),
+      evidence: [{ type: 'sql_result', data: 'some query' }],
+    } as unknown as Finding;
 
-      expect(result.outcome).toBe('require_more_evidence');
-      expect(result.reasonCodes).toContain('policy.insufficient_evidence');
+    const output = synthesizer.synthesize({
+      originalConclusion: '完成',
+      findings: [findingWithEvidence],
+      decision: createDecision('allow'),
     });
 
-    it('does not override deny outcomes even with findings', () => {
-      const decision = createDecision('deny', ['policy.blocked_domain']);
-      const findings = [createFinding('some finding')];
-
-      const result = synthesizer.resolveEffectiveDecision(decision, findings);
-
-      expect(result.outcome).toBe('deny');
-    });
-
-    it('does not override require_approval even with findings', () => {
-      const decision = createDecision('require_approval', ['policy.needs_approval']);
-      const findings = [createFinding('some finding')];
-
-      const result = synthesizer.resolveEffectiveDecision(decision, findings);
-
-      expect(result.outcome).toBe('require_approval');
-    });
-
-    it('does not override require_more_evidence without insufficient_evidence reason', () => {
-      const decision = createDecision('require_more_evidence', [
-        'some.other.reason',
-      ]);
-      const findings = [createFinding('some finding')];
-
-      const result = synthesizer.resolveEffectiveDecision(decision, findings);
-
-      expect(result.outcome).toBe('require_more_evidence');
-    });
-
-    it('preserves other reasonCodes when filtering insufficient_evidence', () => {
-      const decision = createDecision('require_more_evidence', [
-        'policy.insufficient_evidence',
-        'effect.min_evidence.3',
-      ]);
-      const findings = [createFinding('evidence')];
-
-      const result = synthesizer.resolveEffectiveDecision(decision, findings);
-
-      expect(result.outcome).toBe('allow');
-      expect(result.reasonCodes).toContain('effect.min_evidence.3');
-      expect(result.reasonCodes).not.toContain('policy.insufficient_evidence');
-    });
+    const evidence = output.findings[0]!.evidence!;
+    expect(evidence).toHaveLength(2); // original + principle
+    expect(evidence[0]).toEqual({ type: 'sql_result', data: 'some query' });
+    expect(evidence[1]).toEqual(
+      expect.objectContaining({ principleId: 'evidence-first-conclusion' })
+    );
   });
 });

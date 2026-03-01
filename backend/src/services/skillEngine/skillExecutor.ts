@@ -1871,11 +1871,21 @@ export class SkillExecutor {
         failedSQL,
         errorMessage,
         `skill_step:${step.id}`,
-        // validator: 基本语法检查（SQL 不为空且与原 SQL 不同）
+        // validator: 基本语法检查
         (candidateSQL: string) => {
           const errors: string[] = [];
-          if (!candidateSQL.trim()) errors.push('Empty SQL');
-          if (candidateSQL.trim() === failedSQL.trim()) errors.push('Same as original');
+          const trimmed = candidateSQL.trim();
+          if (!trimmed) errors.push('Empty SQL');
+          if (trimmed === failedSQL.trim()) errors.push('Same as original');
+          // 必须以合法 SQL 关键字开头
+          const validStart = /^(SELECT|WITH|CREATE|INSERT|UPDATE|DELETE|EXPLAIN|PRAGMA|DROP|ALTER|INCLUDE)/i;
+          if (trimmed && !validStart.test(trimmed)) errors.push('Does not start with valid SQL keyword');
+          // 括号必须匹配
+          const opens = (trimmed.match(/\(/g) || []).length;
+          const closes = (trimmed.match(/\)/g) || []).length;
+          if (opens !== closes) errors.push(`Unbalanced parentheses: ${opens} open vs ${closes} close`);
+          // 不能包含未替换的模板变量（JS 条件语法残留）
+          if (/\$\{[^}]*\?/.test(trimmed)) errors.push('Contains unreplaced JS-style template conditional');
           return { isValid: errors.length === 0, errors };
         },
         // executor: 实际执行修正后的 SQL 验证

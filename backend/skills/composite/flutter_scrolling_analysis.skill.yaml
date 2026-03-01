@@ -65,13 +65,12 @@ steps:
           a.jank_tag,
           a.on_time_finish
         FROM actual_frame_timeline_slice a
-        JOIN process_track pt ON a.track_id = pt.id
-        JOIN process p ON pt.upid = p.upid
+        LEFT JOIN process p ON a.upid = p.upid
         WHERE (
           '${package}' = '' OR p.name LIKE '%${package}%'
         )
-        ${start_ts ? "AND a.ts >= ${start_ts}" : ""}
-        ${end_ts ? "AND a.ts <= ${end_ts}" : ""}
+        AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR a.ts <= ${end_ts})
       )
       SELECT
         COUNT(*) AS total_frames,
@@ -79,7 +78,7 @@ steps:
         ROUND(MAX(dur_ms), 2) AS max_frame_ms,
         ROUND(MIN(dur_ms), 2) AS min_frame_ms,
         SUM(CASE WHEN dur > ${vsync_period_ns} THEN 1 ELSE 0 END) AS jank_frames,
-        SUM(CASE WHEN jank_type != 0 THEN 1 ELSE 0 END) AS reported_jank_frames,
+        SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) AS reported_jank_frames,
         ROUND(
           100.0 * SUM(CASE WHEN dur > ${vsync_period_ns} THEN 1 ELSE 0 END) / MAX(COUNT(*), 1),
           1
@@ -127,8 +126,8 @@ steps:
           OR t.name GLOB '*1.io*'
         )
         AND s.dur > 0
-        ${start_ts ? "AND s.ts >= ${start_ts}" : ""}
-        ${end_ts ? "AND s.ts <= ${end_ts}" : ""}
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts <= ${end_ts})
       )
       SELECT
         role,
@@ -175,14 +174,13 @@ steps:
         ROUND(a.dur / CAST(${vsync_period_ns} AS REAL), 1) AS frames_dropped,
         COALESCE(a.jank_tag, '') AS jank_tag
       FROM actual_frame_timeline_slice a
-      JOIN process_track pt ON a.track_id = pt.id
-      JOIN process p ON pt.upid = p.upid
+      LEFT JOIN process p ON a.upid = p.upid
       WHERE (
         '${package}' = '' OR p.name LIKE '%${package}%'
       )
       AND a.dur > ${vsync_period_ns}
-      ${start_ts ? "AND a.ts >= ${start_ts}" : ""}
-      ${end_ts ? "AND a.ts <= ${end_ts}" : ""}
+      AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR a.ts <= ${end_ts})
       ORDER BY a.dur DESC
       LIMIT 30
     save_as: jank_frames
@@ -226,8 +224,8 @@ steps:
       AND t.name GLOB '*1.ui*'
       AND s.dur > ${vsync_period_ns}
       AND s.depth = 0
-      ${start_ts ? "AND s.ts >= ${start_ts}" : ""}
-      ${end_ts ? "AND s.ts <= ${end_ts}" : ""}
+      AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR s.ts <= ${end_ts})
       ORDER BY s.dur DESC
       LIMIT 20
 
@@ -269,7 +267,7 @@ steps:
       AND t.name GLOB '*1.raster*'
       AND s.dur > ${vsync_period_ns}
       AND s.depth = 0
-      ${start_ts ? "AND s.ts >= ${start_ts}" : ""}
-      ${end_ts ? "AND s.ts <= ${end_ts}" : ""}
+      AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR s.ts <= ${end_ts})
       ORDER BY s.dur DESC
       LIMIT 20
