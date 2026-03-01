@@ -163,6 +163,41 @@ describe('SkillAnalysisAdapter layered conversion', () => {
     });
   });
 
+  it('prefers configured column definitions for {columns, rows} payloads', () => {
+    const adapter = createAdapter();
+
+    const displayResults = [
+      {
+        stepId: 'root_cause',
+        title: '根因分析',
+        level: 'key',
+        format: 'table',
+        data: {
+          columns: ['primary_cause', 'deep_reason', 'internal_metric', 'confidence'],
+          rows: [['主线程耗时过长', 'RecyclerView 绑定耗时', 12.34, '高']],
+        },
+        columnDefinitions: [
+          { name: 'primary_cause' },
+          { name: 'deep_reason' },
+          { name: 'confidence' },
+        ],
+      } as any,
+    ];
+
+    const sections = (adapter as any).convertDisplayResultsToSections(displayResults);
+    const section = sections.root_cause;
+
+    expect(section.columns).toEqual(['primary_cause', 'deep_reason', 'confidence']);
+    expect(section.data).toEqual([
+      {
+        primary_cause: '主线程耗时过长',
+        deep_reason: 'RecyclerView 绑定耗时',
+        confidence: '高',
+      },
+    ]);
+    expect(section.data[0].internal_metric).toBeUndefined();
+  });
+
   it('maps detected vendor ids consistently with available vendor profiles', async () => {
     const queryMock = jest.fn() as any;
     queryMock.mockResolvedValue({

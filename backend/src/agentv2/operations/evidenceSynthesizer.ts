@@ -44,7 +44,9 @@ export class EvidenceSynthesizer {
   }
 
   private buildPrincipleSummary(decision: PrincipleDecision): string {
-    if (decision.matchedPrincipleIds.length === 0) {
+    // Keep "allow" outputs user-facing and concise.
+    // Principle internals remain available via progress events and attached evidence.
+    if (decision.outcome === 'allow' || decision.matchedPrincipleIds.length === 0) {
       return '';
     }
 

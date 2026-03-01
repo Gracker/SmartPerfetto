@@ -201,7 +201,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 ## Data Flow
 
 ```
-User Query → POST /api/agent/analyze → AgentRuntime
+User Query → POST /api/agent/v1/analyze → AgentRuntime
     │
     ├─ Phase 1: Intent Understanding + Hypothesis Generation
     │   └─ intentUnderstanding → generateInitialHypotheses (LLM)
@@ -537,15 +537,15 @@ interface ColumnDefinition {
 ## API Endpoints
 
 **Agent (唯一主链路):**
-- `POST /api/agent/analyze` - 启动分析 (Strategy 匹配 → Executor 路由)
-- `GET /api/agent/:sessionId/stream` - SSE 实时流
-- `GET /api/agent/:sessionId/status` - 轮询状态
-- `POST /api/agent/:sessionId/respond` - 响应断路器
-- `POST /api/agent/scene-reconstruct` - 场景重建（独立功能）
+- `POST /api/agent/v1/analyze` - 启动分析 (Strategy 匹配 → Executor 路由)
+- `GET /api/agent/v1/:sessionId/stream` - SSE 实时流
+- `GET /api/agent/v1/:sessionId/status` - 轮询状态
+- `POST /api/agent/v1/:sessionId/respond` - 响应断路器
+- `POST /api/agent/v1/scene-reconstruct` - 场景重建（独立功能）
 
 **Logs:**
-- `GET /api/agent/logs/:sessionId` - 会话日志
-- `GET /api/agent/logs/:sessionId/errors` - 仅错误
+- `GET /api/agent/v1/logs/:sessionId` - 会话日志
+- `GET /api/agent/v1/logs/:sessionId/errors` - 仅错误
 
 **Trace:**
 - `POST /api/traces/register-rpc` - 注册 RPC

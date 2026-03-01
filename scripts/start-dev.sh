@@ -65,14 +65,15 @@ kill_processes_on_port() {
 }
 
 start_with_logs() {
-  local tag="$1"
-  local log_file="$2"
-  shift 2
+  local pid_var="$1"
+  local tag="$2"
+  local log_file="$3"
+  shift 3
 
   "$@" > >(
     tee -a "$log_file" | sed "s/^/[$tag] /" | tee -a "$COMBINED_LOG"
   ) 2>&1 &
-  echo "$!"
+  printf -v "$pid_var" '%s' "$!"
 }
 
 cleanup() {
@@ -455,7 +456,7 @@ fi
 # Start backend
 echo "Starting backend..."
 cd "$PROJECT_ROOT/backend"
-BACKEND_PID=$(start_with_logs "BACKEND" "$BACKEND_LOG" npm run dev)
+start_with_logs BACKEND_PID "BACKEND" "$BACKEND_LOG" npm run dev
 
 # Wait for backend to start and verify health
 echo "Waiting for backend to start..."
@@ -476,7 +477,7 @@ fi
 # Start frontend (uses Perfetto's bundled node via run-dev-server)
 echo "Starting frontend..."
 cd "$UI_DIR"
-FRONTEND_PID=$(start_with_logs "FRONTEND" "$FRONTEND_LOG" ./run-dev-server)
+start_with_logs FRONTEND_PID "FRONTEND" "$FRONTEND_LOG" ./run-dev-server
 
 # Wait for frontend to start and verify health
 echo "Waiting for frontend to start..."

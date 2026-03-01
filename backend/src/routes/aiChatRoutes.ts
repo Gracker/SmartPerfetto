@@ -36,7 +36,7 @@ function ensureApiKeyConfigured(_req: express.Request, res: express.Response, ne
     res.status(503).json({
       success: false,
       error: 'Chat proxy authentication is not configured',
-      details: 'Set SMARTPERFETTO_API_KEY to enable /chat routes safely',
+      details: 'Set SMARTPERFETTO_API_KEY to enable /api/agent/v1/llm routes safely',
     });
     return;
   }

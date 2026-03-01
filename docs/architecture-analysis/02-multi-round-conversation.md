@@ -42,7 +42,7 @@
 
 ### 1.3 路由层的 sessionId 复用
 
-`POST /api/agent/analyze` 接受可选的 `sessionId` 参数。若提供且匹配现有会话的 `traceId`，则复用 `AgentRuntime` 实例和 `SessionLogger`，实现多轮对话。否则创建新会话。
+`POST /api/agent/v1/analyze` 接受可选的 `sessionId` 参数。若提供且匹配现有会话的 `traceId`，则复用 `AgentRuntime` 实例和 `SessionLogger`，实现多轮对话。否则创建新会话。
 
 ```
 if (requestedSessionId && existingSession.traceId === traceId) {

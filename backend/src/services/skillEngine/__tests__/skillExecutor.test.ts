@@ -915,6 +915,54 @@ describe('Iterator Step 执行', () => {
     expect(table.rows?.[1]?.[0]).toBe(2);
   });
 
+  it('应该在普通 atomic 表格中按 display.columns 裁剪列', async () => {
+    mockTraceProcessor.query.mockResolvedValueOnce({
+      columns: ['primary_cause', 'deep_reason', 'internal_metric', 'confidence'],
+      rows: [['主线程耗时过长', 'RecyclerView 绑定耗时', 12.34, '高']],
+    });
+
+    const skill: SkillDefinition = {
+      name: 'root_cause_trim_columns',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Root Cause Trim Columns'),
+      steps: [
+        {
+          id: 'root_cause_summary',
+          type: 'atomic',
+          sql: 'SELECT * FROM root_cause',
+          display: {
+            show: true,
+            level: 'key',
+            format: 'table',
+            columns: [
+              { name: 'primary_cause' },
+              { name: 'deep_reason' },
+              { name: 'confidence' },
+            ],
+          } as any,
+        } as any,
+      ],
+    };
+    executor.registerSkill(skill);
+
+    const result = await executor.execute('root_cause_trim_columns', 'trace-1');
+    expect(result.success).toBe(true);
+
+    const dr = result.displayResults.find(r => r.stepId === 'root_cause_summary');
+    expect(dr).toBeTruthy();
+    expect((dr as any).data.columns).toEqual(['primary_cause', 'deep_reason', 'confidence']);
+    expect((dr as any).data.rows).toEqual([['主线程耗时过长', 'RecyclerView 绑定耗时', '高']]);
+
+    const envelopes = SkillExecutor.toDataEnvelopes(result);
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].display.columns?.map(c => c.name)).toEqual([
+      'primary_cause',
+      'deep_reason',
+      'confidence',
+    ]);
+  });
+
   it('应该尊重 max_items 限制', async () => {
     // 返回 5 个帧，但 max_items 设为 2
     mockTraceProcessor.query

@@ -551,12 +551,14 @@ class SQLLearningSystem {
     originalSQL: string,
     errorMessage: string,
     userQuery: string,
-    validator: (sql: string) => { isValid: boolean; errors: string[] }
+    validator: (sql: string) => { isValid: boolean; errors: string[] },
+    executor?: (sql: string) => Promise<{ ok: boolean; error?: string }>
   ): Promise<{
     success: boolean;
     fixedSQL: string;
     appliedRules: string[];
     method: string;
+    executionError?: string;
   }> {
     await this.init();
 
@@ -573,6 +575,19 @@ class SQLLearningSystem {
 
     // 步骤3: 验证修正结果
     const validation = validator(fixed);
+    let executionOk = validation.isValid;
+    let executionError: string | undefined;
+    if (validation.isValid && executor) {
+      try {
+        const execResult = await executor(fixed);
+        executionOk = execResult.ok;
+        executionError = execResult.error;
+      } catch (error: any) {
+        executionOk = false;
+        executionError = error?.message || String(error);
+      }
+    }
+    const success = validation.isValid && executionOk;
 
     // 步骤4: 记录修正
     await this.fixLog.logFix({
@@ -580,22 +595,30 @@ class SQLLearningSystem {
       originalSQL,
       fixedSQL: fixed,
       fixMethod: appliedRules.length > 0 ? 'learned' : 'auto',
-      success: validation.isValid,
-      validationResult: validation
+      success,
+      validationResult: {
+        ...validation,
+        execution: {
+          verified: !!executor,
+          ok: executionOk,
+          ...(executionError ? { error: executionError } : {}),
+        },
+      },
     });
 
     // 步骤5: 更新规则置信度
-    if (validation.isValid) {
+    if (success) {
       for (const ruleId of appliedRules) {
         await this.ruleEngine.recordSuccess(ruleId);
       }
     }
 
     return {
-      success: validation.isValid,
+      success,
       fixedSQL: fixed,
       appliedRules,
-      method: appliedRules.length > 0 ? 'learned_rules' : 'basic_fix'
+      method: appliedRules.length > 0 ? 'learned_rules' : 'basic_fix',
+      ...(executionError ? { executionError } : {}),
     };
   }
 

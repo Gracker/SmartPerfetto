@@ -20,16 +20,47 @@ import {
   EnsembleResult,
 } from '../types';
 
+const DEFAULT_DEEPSEEK_CHAT_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+const DEFAULT_DEEPSEEK_REASONING_MODEL = process.env.DEEPSEEK_REASONING_MODEL || 'deepseek-reasoner';
+const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+const DEFAULT_GLM_MODEL = process.env.GLM_MODEL || 'glm-5';
+const DEFAULT_GLM_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
+const DEFAULT_GLM_CODING_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
+
+function normalizeDeepSeekBaseUrl(baseUrl: string): string {
+  // DeepSeek supports both:
+  // - https://api.deepseek.com
+  // - https://api.deepseek.com/v1
+  // We normalize to root URL and append /v1/chat/completions ourselves.
+  return String(baseUrl || DEFAULT_DEEPSEEK_BASE_URL)
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/v1$/i, '');
+}
+
 // 默认模型配置
 const DEFAULT_MODELS: ModelProfile[] = [
   {
     id: 'deepseek-chat',
     provider: 'deepseek',
-    model: 'deepseek-chat',
+    model: DEFAULT_DEEPSEEK_CHAT_MODEL,
     strengths: ['reasoning', 'coding', 'cost'],
     costPerInputToken: 0.00014,
     costPerOutputToken: 0.00028,
     avgLatencyMs: 1500,
+    maxTokens: 8192,
+    supportsJSON: true,
+    supportsStreaming: true,
+    enabled: true,
+  },
+  {
+    id: 'deepseek-reasoner',
+    provider: 'deepseek',
+    model: DEFAULT_DEEPSEEK_REASONING_MODEL,
+    strengths: ['reasoning', 'coding'],
+    costPerInputToken: 0.00014,
+    costPerOutputToken: 0.00028,
+    avgLatencyMs: 1800,
     maxTokens: 8192,
     supportsJSON: true,
     supportsStreaming: true,
@@ -88,9 +119,9 @@ const DEFAULT_MODELS: ModelProfile[] = [
     enabled: false,
   },
   {
-    id: 'glm-4',
+    id: 'glm-5',
     provider: 'glm',
-    model: 'glm-4',
+    model: DEFAULT_GLM_MODEL,
     strengths: ['reasoning', 'coding', 'cost'],
     costPerInputToken: 0.0001,  // 约 0.1 元/千 tokens
     costPerOutputToken: 0.0001,
@@ -115,13 +146,25 @@ const TASK_STRENGTH_MAPPING: Record<TaskType, ModelStrength[]> = {
   general: ['reasoning'],
 };
 
+const DEFAULT_TASK_MODEL_MAPPING: Partial<Record<TaskType, string>> = {
+  intent_understanding: 'glm-5',
+  planning: 'glm-5',
+  synthesis: 'glm-5',
+  evaluation: 'glm-5',
+  sql_generation: 'glm-5',
+  code_analysis: 'glm-5',
+  simple_extraction: 'glm-5',
+  formatting: 'glm-5',
+  general: 'glm-5',
+};
+
 // 默认配置
 const DEFAULT_CONFIG: Partial<ModelRouterConfig> = {
-  defaultModel: 'deepseek-chat',  // 使用 DeepSeek 作为默认模型
-  fallbackChain: ['deepseek-chat', 'deepseek-coder', 'glm-4'],
+  defaultModel: 'glm-5',
+  fallbackChain: ['deepseek-reasoner', 'deepseek-chat'],
   enableEnsemble: false,
   ensembleThreshold: 0.8,
-  taskModelMapping: {},
+  taskModelMapping: DEFAULT_TASK_MODEL_MAPPING,
 };
 
 /**
@@ -161,7 +204,7 @@ export class ModelRouter extends EventEmitter {
     this.config = {
       models,
       defaultModel: config.defaultModel || DEFAULT_CONFIG.defaultModel!,
-      taskModelMapping: config.taskModelMapping || {},
+      taskModelMapping: config.taskModelMapping || DEFAULT_CONFIG.taskModelMapping!,
       fallbackChain: config.fallbackChain || DEFAULT_CONFIG.fallbackChain!,
       enableEnsemble: config.enableEnsemble ?? false,
       ensembleThreshold: config.ensembleThreshold ?? 0.8,
@@ -278,6 +321,7 @@ export class ModelRouter extends EventEmitter {
     taskType: TaskType,
     options: CallOptions = {}
   ): Promise<ModelCallResult> {
+    const taskAwareOptions = resolveTaskAwareCallOptions(taskType, options);
     const primary = this.routeByTask(taskType);
     const fallbacks = this.getFallbackChain(primary.id);
 
@@ -302,12 +346,12 @@ export class ModelRouter extends EventEmitter {
           const canStreamThisAttempt =
             model.id === primary.id &&
             attempt === 0 &&
-            typeof options.onToken === 'function';
+            typeof taskAwareOptions.onToken === 'function';
 
           const result = await this.callModel(model, promptCandidate, {
-            ...options,
+            ...taskAwareOptions,
             taskType,
-            onToken: canStreamThisAttempt ? options.onToken : undefined,
+            onToken: canStreamThisAttempt ? taskAwareOptions.onToken : undefined,
           });
           if (result.success) {
             console.log(`[ModelRouter.callWithFallback] Model ${model.id} succeeded`);
@@ -424,11 +468,19 @@ export class ModelRouter extends EventEmitter {
 
       // 调用模型
       const onToken = model.supportsStreaming ? options.onToken : undefined;
+      const nativeDefaults = resolveDefaultNativeInvocationOptions();
+      const tools = options.tools ?? nativeDefaults.tools;
+      const hasNativeTools = Array.isArray(tools) ? tools.length > 0 : tools !== undefined;
+      const toolChoice = resolveToolChoice(options) ?? (hasNativeTools ? nativeDefaults.toolChoice : undefined);
+      const reasoning = options.reasoning ?? nativeDefaults.reasoning;
       const response = await client.complete(redactedPrompt.text, {
         maxTokens,
         temperature,
         jsonMode,
         onToken,
+        tools,
+        toolChoice,
+        reasoning,
       });
 
       const latencyMs = Date.now() - startTime;
@@ -805,6 +857,13 @@ interface CallOptions {
   temperature?: number;
   jsonMode?: boolean;
   onToken?: (token: string) => void;
+  // OpenAI-compatible native tool calling passthrough.
+  tools?: Array<Record<string, unknown>>;
+  // Support both camelCase and snake_case naming.
+  toolChoice?: string | Record<string, unknown>;
+  tool_choice?: string | Record<string, unknown>;
+  // Provider-native reasoning config passthrough.
+  reasoning?: Record<string, unknown>;
   // Telemetry (optional)
   sessionId?: string;
   traceId?: string;
@@ -816,6 +875,185 @@ interface CallOptions {
 
 interface LLMClientInterface {
   complete(prompt: string, options?: CallOptions): Promise<string>;
+}
+
+interface NativeInvocationDefaults {
+  tools?: Array<Record<string, unknown>>;
+  toolChoice?: string | Record<string, unknown>;
+  reasoning?: Record<string, unknown>;
+}
+
+type TaskReasoningOverrides = Partial<Record<TaskType, Record<string, unknown>>>;
+
+const DEFAULT_TASK_REASONING_PROFILES: Record<TaskType, Record<string, unknown>> = {
+  intent_understanding: { effort: 'high' },
+  planning: { effort: 'high' },
+  synthesis: { effort: 'high' },
+  evaluation: { effort: 'high' },
+  sql_generation: { effort: 'medium' },
+  code_analysis: { effort: 'medium' },
+  simple_extraction: { effort: 'low' },
+  formatting: { effort: 'low' },
+  general: { effort: 'medium' },
+};
+
+const TASKS_DISABLE_DEFAULT_NATIVE_TOOLS = new Set<TaskType>([
+  'simple_extraction',
+  'formatting',
+]);
+
+function areNativeInvocationDefaultsEnabled(): boolean {
+  return parseEnvBoolean(process.env.MODEL_NATIVE_OPTIONS_ENABLED, true);
+}
+
+function hasExplicitGlobalReasoningEnv(): boolean {
+  const envReasoning = String(process.env.MODEL_NATIVE_REASONING || '').trim();
+  if (envReasoning) return true;
+
+  const envEffort = String(process.env.MODEL_NATIVE_REASONING_EFFORT || '').trim();
+  return Boolean(envEffort);
+}
+
+function parseEnvBoolean(value: string | undefined, defaultValue: boolean): boolean {
+  if (value == null) return defaultValue;
+  const normalized = String(value).trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    return false;
+  }
+  return defaultValue;
+}
+
+function parseJsonObject(raw: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Ignore invalid JSON payloads and fall back to safe defaults.
+  }
+  return undefined;
+}
+
+function parseJsonArrayOfObjects(raw: string): Array<Record<string, unknown>> | undefined {
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const normalized = parsed.filter(
+      (item): item is Record<string, unknown> => !!item && typeof item === 'object' && !Array.isArray(item)
+    );
+    return normalized.length > 0 ? normalized : [];
+  } catch {
+    // Ignore invalid JSON payloads and fall back to safe defaults.
+  }
+  return undefined;
+}
+
+function resolveDefaultNativeInvocationOptions(): NativeInvocationDefaults {
+  const enabled = areNativeInvocationDefaultsEnabled();
+  if (!enabled) return {};
+
+  const defaults: NativeInvocationDefaults = {};
+
+  const envTools = String(process.env.MODEL_NATIVE_TOOLS || '').trim();
+  if (envTools) {
+    const parsedTools = parseJsonArrayOfObjects(envTools);
+    if (parsedTools !== undefined) {
+      defaults.tools = parsedTools;
+    }
+  }
+
+  const envToolChoice = String(process.env.MODEL_NATIVE_TOOL_CHOICE || '').trim();
+  if (envToolChoice) {
+    defaults.toolChoice = envToolChoice.startsWith('{')
+      ? (parseJsonObject(envToolChoice) || envToolChoice)
+      : envToolChoice;
+  }
+
+  const envReasoning = String(process.env.MODEL_NATIVE_REASONING || '').trim();
+  if (envReasoning) {
+    const parsedReasoning = parseJsonObject(envReasoning);
+    if (parsedReasoning) {
+      defaults.reasoning = parsedReasoning;
+    }
+  } else {
+    const effort = String(process.env.MODEL_NATIVE_REASONING_EFFORT || 'medium').trim();
+    if (effort) {
+      defaults.reasoning = { effort };
+    }
+  }
+
+  if (!defaults.toolChoice && Array.isArray(defaults.tools)) {
+    defaults.toolChoice = 'auto';
+  }
+
+  return defaults;
+}
+
+function resolveToolChoice(options: CallOptions): string | Record<string, unknown> | undefined {
+  if (options.toolChoice !== undefined) return options.toolChoice;
+  return options.tool_choice;
+}
+
+function normalizeReasoningOverride(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value === 'string') {
+    const effort = value.trim();
+    if (!effort) return undefined;
+    return { effort };
+  }
+
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+
+  return undefined;
+}
+
+function resolveTaskReasoningOverrides(): TaskReasoningOverrides {
+  const raw = String(process.env.MODEL_NATIVE_REASONING_BY_TASK || '').trim();
+  if (!raw) return {};
+
+  const parsed = parseJsonObject(raw);
+  if (!parsed) return {};
+
+  const overrides: TaskReasoningOverrides = {};
+  for (const [taskType, rawReasoning] of Object.entries(parsed)) {
+    if (!(taskType in DEFAULT_TASK_REASONING_PROFILES)) continue;
+    const normalized = normalizeReasoningOverride(rawReasoning);
+    if (!normalized) continue;
+    overrides[taskType as TaskType] = normalized;
+  }
+
+  return overrides;
+}
+
+function resolveTaskAwareCallOptions(taskType: TaskType, options: CallOptions): CallOptions {
+  const normalized: CallOptions = { ...options };
+  const nativeDefaultsEnabled = areNativeInvocationDefaultsEnabled();
+
+  if (nativeDefaultsEnabled && normalized.reasoning === undefined) {
+    const taskOverrides = resolveTaskReasoningOverrides();
+    const explicitTaskReasoning = taskOverrides[taskType];
+    if (explicitTaskReasoning) {
+      normalized.reasoning = explicitTaskReasoning;
+    } else if (!hasExplicitGlobalReasoningEnv()) {
+      normalized.reasoning = DEFAULT_TASK_REASONING_PROFILES[taskType] || undefined;
+    }
+  }
+
+  if (
+    nativeDefaultsEnabled &&
+    normalized.tools === undefined &&
+    TASKS_DISABLE_DEFAULT_NATIVE_TOOLS.has(taskType)
+  ) {
+    // Explicitly disable env default tools for low-complexity extraction/formatting tasks.
+    normalized.tools = [];
+  }
+
+  return normalized;
 }
 
 function detectJsonModeFromPrompt(prompt: string): boolean {
@@ -973,7 +1211,9 @@ class DeepSeekClient implements LLMClientInterface {
   constructor(model: ModelProfile) {
     this.model = model;
     this.apiKey = process.env.DEEPSEEK_API_KEY || '';
-    this.baseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
+    this.baseUrl = normalizeDeepSeekBaseUrl(
+      process.env.DEEPSEEK_BASE_URL || DEFAULT_DEEPSEEK_BASE_URL
+    );
   }
 
   async complete(prompt: string, options: CallOptions = {}): Promise<string> {
@@ -982,19 +1222,30 @@ class DeepSeekClient implements LLMClientInterface {
     }
 
     const useStreaming = typeof options.onToken === 'function';
+    const toolChoice = resolveToolChoice(options);
+    const body: Record<string, unknown> = {
+      model: this.model.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: options.maxTokens || this.model.maxTokens,
+      temperature: options.temperature ?? 0.3,
+      stream: useStreaming,
+    };
+    if (Array.isArray(options.tools)) {
+      body.tools = options.tools;
+    }
+    if (toolChoice !== undefined) {
+      body.tool_choice = toolChoice;
+    }
+    if (options.reasoning !== undefined) {
+      body.reasoning = options.reasoning;
+    }
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.model.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: options.maxTokens || this.model.maxTokens,
-        temperature: options.temperature ?? 0.3,
-        stream: useStreaming,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -1073,6 +1324,7 @@ class OpenAIClient implements LLMClientInterface {
     }
 
     const useStreaming = typeof options.onToken === 'function';
+    const toolChoice = resolveToolChoice(options);
     const body: any = {
       model: this.model.model,
       messages: [{ role: 'user', content: prompt }],
@@ -1083,6 +1335,15 @@ class OpenAIClient implements LLMClientInterface {
 
     if (options.jsonMode) {
       body.response_format = { type: 'json_object' };
+    }
+    if (Array.isArray(options.tools)) {
+      body.tools = options.tools;
+    }
+    if (toolChoice !== undefined) {
+      body.tool_choice = toolChoice;
+    }
+    if (options.reasoning !== undefined) {
+      body.reasoning = options.reasoning;
     }
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
@@ -1115,11 +1376,33 @@ class GLMClient implements LLMClientInterface {
   private model: ModelProfile;
   private apiKey: string;
   private baseUrl: string;
+  private codingBaseUrl: string;
 
   constructor(model: ModelProfile) {
     this.model = model;
     this.apiKey = process.env.GLM_API_KEY || '';
-    this.baseUrl = process.env.GLM_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4';
+    this.baseUrl = process.env.GLM_BASE_URL || DEFAULT_GLM_BASE_URL;
+    this.codingBaseUrl = process.env.GLM_CODING_BASE_URL || DEFAULT_GLM_CODING_BASE_URL;
+  }
+
+  private isCodingPlanModel(): boolean {
+    const modelName = String(this.model.model || '').toLowerCase();
+    return modelName.includes('coding') && modelName.includes('plan');
+  }
+
+  private resolveEndpoint(options: CallOptions): string {
+    // GLM Coding Plan must use the dedicated coding endpoint.
+    if (this.isCodingPlanModel()) {
+      return this.codingBaseUrl;
+    }
+
+    // Allow explicit override for environments that want all GLM traffic on coding endpoint.
+    const forceCodingEndpoint = String(process.env.GLM_USE_CODING_ENDPOINT || '').toLowerCase();
+    if (forceCodingEndpoint === '1' || forceCodingEndpoint === 'true') {
+      return this.codingBaseUrl;
+    }
+
+    return this.baseUrl;
   }
 
   async complete(prompt: string, options: CallOptions = {}): Promise<string> {
@@ -1128,19 +1411,31 @@ class GLMClient implements LLMClientInterface {
     }
 
     const useStreaming = typeof options.onToken === 'function';
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
+    const endpoint = this.resolveEndpoint(options);
+    const toolChoice = resolveToolChoice(options);
+    const body: Record<string, unknown> = {
+      model: this.model.model,
+      messages: [{ role: 'user', content: prompt }],
+      max_tokens: options.maxTokens || this.model.maxTokens,
+      temperature: options.temperature ?? 0.3,
+      stream: useStreaming,
+    };
+    if (Array.isArray(options.tools)) {
+      body.tools = options.tools;
+    }
+    if (toolChoice !== undefined) {
+      body.tool_choice = toolChoice;
+    }
+    if (options.reasoning !== undefined) {
+      body.reasoning = options.reasoning;
+    }
+    const response = await fetch(`${endpoint}/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({
-        model: this.model.model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: options.maxTokens || this.model.maxTokens,
-        temperature: options.temperature ?? 0.3,
-        stream: useStreaming,
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {

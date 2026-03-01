@@ -54,7 +54,7 @@
 - [x] 支持多专家协作分析
 - [x] 完整的 Trace 记录和 Eval 系统
 - [x] 前端 Skill/Agent 模式切换
-- [x] Agent API 端点 (`/api/agent/analyze`, `/api/agent/:id/stream`)
+- [x] Agent API 端点 (`/api/agent/v1/analyze`, `/api/agent/v1/:id/stream`)
 - [x] Agent 分析 HTML 报告生成
 
 ### 场景还原功能 (v3.2)
@@ -106,6 +106,16 @@
 ---
 
 ## 🚧 进行中
+
+### 架构收敛（单入口稳态，2026-02-27）
+- [x] 后端 Assistant API 收敛为单入口 `/api/agent/v1/*`（移除 `/api/assistant/v1/*` 与 `/api/ai/*` 对外入口）
+- [x] 后端 Trace API 收敛为单入口 `/api/traces/*`（移除 `/api/trace/*` 对外入口）
+- [x] 移除 `/api/traces` 内部冲突路由（尤其是重复 `/upload`）并固定唯一契约（`multipart file=<trace>`）
+- [x] Perfetto AI 插件统一改为调用收敛后入口（`/api/agent/v1/*` + `/api/traces/*`）
+- [x] assistant-shell 统一改为调用 `/api/agent/v1/*`
+- [x] backend tests 契约改为单入口（删除 alias 兼容性断言）
+- [x] README 与架构计划文档更新为单入口描述，去掉“兼容双入口”表述
+- [x] 完成最小回归：backend 关键测试 + backend build + perfetto/ui build
 
 ### Skill 相关 SOP 完善
 - [ ] 完善 PerfettoSqlSkill 的标准操作流程

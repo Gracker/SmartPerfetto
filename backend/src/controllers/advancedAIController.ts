@@ -215,6 +215,24 @@ export async function executeQuery(req: Request, res: Response): Promise<void> {
             isValid: validation.isValid,
             errors: validation.errors
           };
+        },
+        async (sql: string) => {
+          try {
+            const verification = await traceService.query(traceId, sql);
+            const executionError =
+              verification && typeof (verification as any).error === 'string'
+                ? (verification as any).error.trim()
+                : '';
+            if (executionError) {
+              return { ok: false, error: executionError };
+            }
+            return { ok: true };
+          } catch (verificationError: any) {
+            return {
+              ok: false,
+              error: verificationError?.message || String(verificationError),
+            };
+          }
         }
       );
 

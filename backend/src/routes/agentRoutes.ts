@@ -8,14 +8,12 @@ import express from 'express';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import {
   createSessionLogger,
-  getSessionLoggerManager,
   SessionLogger,
 } from '../services/sessionLogger';
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { reportStore } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { authenticate } from '../middleware/auth';
-import { featureFlagsConfig } from '../config';
 import {
   sessionContextManager,
   EnhancedSessionContext,
@@ -38,6 +36,11 @@ import { resolveConclusionScene } from '../agent/core/conclusionSceneTemplates';
 import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { sanitizeNarrativeForClient } from './narrativeSanitizer';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
+import { registerAgentLogsRoutes } from './agentLogsRoutes';
+import { registerAgentQuickSceneRoutes } from './agentQuickSceneRoutes';
+import { registerAgentReportRoutes } from './agentReportRoutes';
+import { registerAgentResumeRoutes } from './agentResumeRoutes';
+import { registerAgentSessionCatalogRoutes } from './agentSessionCatalogRoutes';
 import { registerTeachingRoutes } from './agentTeachingRoutes';
 import { AssistantApplicationService } from '../assistant/application/assistantApplicationService';
 import { StreamProjector } from '../assistant/stream/streamProjector';
@@ -394,7 +397,7 @@ function buildRecoveredResultFromContext(
 
   const conclusion = typeof turn.result.message === 'string' && turn.result.message.trim().length > 0
     ? turn.result.message
-    : `已恢复会话历史。可通过 /api/agent/${sessionId}/turns 查看历史轮次。`;
+    : `已恢复会话历史。可通过 /api/agent/v1/${sessionId}/turns 查看历史轮次。`;
   const confidence =
     typeof turn.result.confidence === 'number'
       ? turn.result.confidence
@@ -570,7 +573,7 @@ function isDedicatedSceneReplayRequest(query: string): boolean {
 // ============================================================================
 
 /**
- * POST /api/agent/analyze
+ * POST /api/agent/v1/analyze
  *
  * Start analysis using AgentRuntime
  *
@@ -617,13 +620,13 @@ router.post('/analyze', async (req, res) => {
         success: false,
         code: 'SCENE_REPLAY_SEPARATED',
         error: '场景还原已独立为专用功能',
-        hint: '请使用 /scene 命令（前端）或 POST /api/agent/scene-reconstruct（后端）',
+        hint: '请使用 /scene 命令（前端）或 POST /api/agent/v1/scene-reconstruct（后端）',
       });
     }
 
     // Verify trace exists
     const traceProcessorService = getTraceProcessorService();
-    const trace = traceProcessorService.getTrace(traceId);
+    const trace = await traceProcessorService.getOrLoadTrace(traceId);
     if (!trace) {
       return res.status(404).json({
         success: false,
@@ -700,7 +703,7 @@ router.post('/analyze', async (req, res) => {
         markSessionRunStatus(session, 'failed', error.message);
         broadcastToAgentDrivenClients(sessionId, {
           type: 'error',
-          content: { message: error.message },
+          content: { message: error.message, error: error.message },
           timestamp: Date.now(),
         });
       }
@@ -731,7 +734,7 @@ router.post('/analyze', async (req, res) => {
 });
 
 /**
- * GET /api/agent/:sessionId/stream
+ * GET /api/agent/v1/:sessionId/stream
  *
  * SSE endpoint for real-time analysis updates
  *
@@ -804,7 +807,7 @@ router.get('/:sessionId/stream', (req, res) => {
 });
 
 /**
- * GET /api/agent/:sessionId/status
+ * GET /api/agent/v1/:sessionId/status
  *
  * Get analysis status (for polling)
  */
@@ -869,7 +872,7 @@ router.get('/:sessionId/status', (req, res) => {
 });
 
 /**
- * GET /api/agent/:sessionId/turns
+ * GET /api/agent/v1/:sessionId/turns
  *
  * List persisted turns for a session.
  * Supports in-memory sessions and persisted (recoverable) sessions.
@@ -923,7 +926,7 @@ router.get('/:sessionId/turns', (req, res) => {
 });
 
 /**
- * GET /api/agent/:sessionId/turns/:turnId
+ * GET /api/agent/v1/:sessionId/turns/:turnId
  *
  * Get details for a specific turn.
  * `turnId` supports:
@@ -966,7 +969,7 @@ router.get('/:sessionId/turns/:turnId', (req, res) => {
     return res.status(404).json({
       success: false,
       error: `Turn not found: ${turnId}`,
-      hint: 'Use /api/agent/:sessionId/turns to inspect available turn IDs',
+      hint: 'Use /api/agent/v1/:sessionId/turns to inspect available turn IDs',
     });
   }
 
@@ -989,7 +992,7 @@ router.get('/:sessionId/turns/:turnId', (req, res) => {
 });
 
 /**
- * DELETE /api/agent/:sessionId
+ * DELETE /api/agent/v1/:sessionId
  *
  * Clean up an analysis session
  */
@@ -1018,7 +1021,7 @@ router.delete('/:sessionId', (req, res) => {
 });
 
 /**
- * POST /api/agent/:sessionId/respond
+ * POST /api/agent/v1/:sessionId/respond
  *
  * Respond to an interactive session (e.g. continue/abort).
  *
@@ -1069,7 +1072,7 @@ router.post('/:sessionId/respond', async (req, res) => {
 // =============================================================================
 
 /**
- * POST /api/agent/:sessionId/intervene
+ * POST /api/agent/v1/:sessionId/intervene
  *
  * Handle user intervention response during analysis.
  * Called when the frontend receives an 'intervention_required' event and
@@ -1166,7 +1169,7 @@ router.post('/:sessionId/intervene', async (req, res) => {
 });
 
 /**
- * POST /api/agent/:sessionId/interaction
+ * POST /api/agent/v1/:sessionId/interaction
  *
  * Record user interaction from the frontend.
  * Used to update the FocusStore for incremental analysis support.
@@ -1262,7 +1265,7 @@ router.post('/:sessionId/interaction', async (req, res) => {
 });
 
 /**
- * GET /api/agent/:sessionId/focus
+ * GET /api/agent/v1/:sessionId/focus
  *
  * Get current user focus state for a session.
  * Useful for debugging and displaying focus indicators in the UI.
@@ -1330,312 +1333,17 @@ router.get('/:sessionId/focus', (req, res) => {
   }
 });
 
-/**
- * GET /api/agent/sessions
- *
- * List all active and recoverable sessions
- *
- * Query params:
- * - traceId: Filter by trace ID
- * - limit: Max number of recoverable sessions (default: 20)
- * - includeRecoverable: Include recoverable sessions from persistence (default: true)
- */
-router.get('/sessions', async (req, res) => {
-  try {
-    const { traceId, limit, includeRecoverable } = req.query;
-    const parsedLimit = limit ? parseInt(limit as string, 10) : 20;
-    const shouldIncludeRecoverable = includeRecoverable !== 'false';
-
-    // Get active sessions from memory
-    const activeSessions: any[] = [];
-    const activeIds = new Set<string>();
-
-    for (const [sessionId, session] of assistantAppService.entries()) {
-      if (traceId && session.traceId !== traceId) continue;
-
-      const activeContext = sessionContextManager.get(sessionId, session.traceId);
-      activeIds.add(sessionId);
-      activeSessions.push({
-        sessionId,
-        status: session.status,
-        traceId: session.traceId,
-        query: session.query,
-        createdAt: session.createdAt,
-        isActive: true,
-        turnCount: activeContext?.getAllTurns().length ?? 0,
-        entityStoreStats: null, // Active sessions have live context
-        observability: buildSessionObservability(session),
-      });
-    }
-
-    // Get recoverable sessions from persistence (excluding active ones)
-    const recoverableSessions: any[] = [];
-
-    if (shouldIncludeRecoverable) {
-      try {
-        const persistenceService = SessionPersistenceService.getInstance();
-        const persistedResult = persistenceService.listSessions({
-          traceId: traceId as string | undefined,
-          limit: parsedLimit,
-        });
-
-        for (const persistedSession of persistedResult.sessions) {
-          // Skip if session is already active
-          if (activeIds.has(persistedSession.id)) continue;
-
-          // Check if session has recoverable context
-          const hasContext = persistenceService.hasSessionContext(persistedSession.id);
-          if (!hasContext) continue;
-
-          // Get EntityStore stats for quick preview
-          const storeStats = persistenceService.getEntityStoreStats(persistedSession.id);
-          const persistedContext = persistenceService.loadSessionContext(persistedSession.id);
-
-          recoverableSessions.push({
-            sessionId: persistedSession.id,
-            status: 'recoverable',
-            traceId: persistedSession.traceId,
-            traceName: persistedSession.traceName,
-            query: persistedSession.question,
-            createdAt: persistedSession.createdAt,
-            updatedAt: persistedSession.updatedAt,
-            isActive: false,
-            turnCount: persistedContext?.getAllTurns().length ?? 0,
-            entityStoreStats: storeStats,
-          });
-        }
-      } catch (persistError: any) {
-        // Don't fail the request if persistence lookup fails
-        console.warn('[AgentRoutes] Failed to list recoverable sessions:', persistError.message);
-      }
-    }
-
-    res.json({
-      success: true,
-      activeSessions,
-      totalActive: activeSessions.length,
-      recoverableSessions,
-      totalRecoverable: recoverableSessions.length,
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
+registerAgentSessionCatalogRoutes(router, {
+  sessionStore: assistantAppService,
+  buildSessionObservability,
 });
 
-/**
- * POST /api/agent/resume
- *
- * Resume a recoverable session from persistence.
- *
- * This endpoint enables cross-restart session recovery by:
- * 1. Loading the persisted session from SQLite
- * 2. Restoring the EnhancedSessionContext (including EntityStore)
- * 3. Re-creating the orchestrator with the restored context
- *
- * Body:
- * {
- *   "sessionId": "agent-xxx",
- *   "traceId": "trace-xxx"  // Required for context restoration
- * }
- */
-router.post('/resume', async (req, res) => {
-  const { sessionId, traceId } = req.body || {};
-
-  if (!sessionId || typeof sessionId !== 'string') {
-    return res.status(400).json({
-      success: false,
-      error: 'sessionId is required',
-    });
-  }
-
-  // Check if session is already active in memory
-  const existingSession = assistantAppService.getSession(sessionId);
-  if (existingSession) {
-    return res.json({
-      success: true,
-      sessionId,
-      status: existingSession.status,
-      message: 'Session already active',
-      restored: false,
-      observability: buildSessionObservability(existingSession),
-    });
-  }
-
-  // Try to restore from persistence
-  try {
-    const persistenceService = SessionPersistenceService.getInstance();
-
-    // Check if session exists in persistence
-    if (!persistenceService.hasSessionContext(sessionId)) {
-      return res.status(404).json({
-        success: false,
-        error: 'Session not found in persistence',
-        hint: 'Session may have expired or was never persisted',
-      });
-    }
-
-    // Load persisted session metadata
-    const persistedSession = persistenceService.getSession(sessionId);
-    if (!persistedSession) {
-      return res.status(404).json({
-        success: false,
-        error: 'Session metadata not found',
-      });
-    }
-
-    // Security/consistency: long-term memory is scoped to the same trace.
-    // Reject attempts to resume a session against a different trace.
-    if (traceId && traceId !== persistedSession.traceId) {
-      return res.status(400).json({
-        success: false,
-        error: 'traceId mismatch for resume',
-        hint: `This session was created for traceId=${persistedSession.traceId}. Upload/choose that trace to resume.`,
-        code: 'TRACE_ID_MISMATCH',
-      });
-    }
-
-    // Use persisted traceId (or request-provided when identical).
-    const effectiveTraceId = persistedSession.traceId;
-
-    // Verify trace exists
-    const traceProcessorService = getTraceProcessorService();
-    const trace = traceProcessorService.getTrace(effectiveTraceId);
-    if (!trace) {
-      return res.status(404).json({
-        success: false,
-        error: 'Trace not found in backend',
-        hint: 'Please upload the trace before resuming the session',
-        code: 'TRACE_NOT_UPLOADED',
-      });
-    }
-
-    // Restore the EnhancedSessionContext (includes EntityStore)
-    const restoredContext = persistenceService.loadSessionContext(sessionId);
-    if (!restoredContext) {
-      return res.status(500).json({
-        success: false,
-        error: 'Failed to deserialize session context',
-      });
-    }
-
-    // Inject the restored context into the session context manager (preserves internal state)
-    sessionContextManager.set(sessionId, effectiveTraceId, restoredContext);
-
-    // Create a new orchestrator for this session
-    const modelRouter = getModelRouter();
-    const orchestrator = createAgentRuntime(modelRouter, {
-      enableLogging: true,
-    });
-
-    // Restore FocusStore (if present) so focus-aware incremental planning survives restarts
-    const focusSnapshot = persistenceService.loadFocusStore(sessionId);
-    if (focusSnapshot) {
-      orchestrator.getFocusStore().loadSnapshot(focusSnapshot);
-      orchestrator.getFocusStore().syncWithEntityStore(restoredContext.getEntityStore());
-    }
-
-    // Restore TraceAgentState (if present) for goal-driven continuity across restarts.
-    const traceAgentStateSnapshot = persistenceService.loadTraceAgentState(sessionId);
-    if (traceAgentStateSnapshot) {
-      restoredContext.setTraceAgentState(traceAgentStateSnapshot);
-    }
-
-    // Create logger
-    const logger = createSessionLogger(sessionId);
-    logger.setMetadata({
-      traceId: effectiveTraceId,
-      query: persistedSession.question,
-      architecture: 'agent-driven',
-      resumed: true,
-    });
-    logger.info('AgentRoutes', 'Session restored from persistence', {
-      entityStoreStats: restoredContext.getEntityStore().getStats(),
-      turnCount: restoredContext.getAllTurns().length,
-    });
-
-    const restoredTurns = restoredContext.getAllTurns();
-    const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
-    const recoveredResult = buildRecoveredResultFromContext(sessionId, restoredContext);
-    const restoredRunSequence = Math.max(0, restoredTurns.length);
-    const restoredRun: AnalyzeSessionRunContext | undefined = restoredRunSequence > 0
-      ? {
-          runId: `run-${sessionId}-${restoredRunSequence}-recovered`,
-          requestId: `recovered-${sessionId}-${restoredRunSequence}`,
-          sequence: restoredRunSequence,
-          query: latestTurn?.query || persistedSession.question,
-          startedAt: latestTurn?.timestamp || persistedSession.createdAt,
-          completedAt: persistedSession.updatedAt,
-          status: 'completed',
-        }
-      : undefined;
-
-    // Create the session record
-    assistantAppService.setSession(sessionId, {
-      orchestrator,
-      sessionId,
-      sseClients: [],
-      result: recoveredResult || undefined,
-      status: 'completed', // Previous analysis was completed
-      traceId: effectiveTraceId,
-      query: latestTurn?.query || persistedSession.question,
-      createdAt: persistedSession.createdAt,
-      lastActivityAt: Date.now(),
-      logger,
-      hypotheses: [],
-      agentDialogue: [],
-      dataEnvelopes: [],
-      agentResponses: [],
-      conversationOrdinal: 0,
-      conversationSteps: [],
-      runSequence: restoredRunSequence,
-      activeRun: restoredRun,
-      lastRun: restoredRun,
-    });
-
-    return res.json({
-      success: true,
-      sessionId,
-      traceId: effectiveTraceId,
-      status: 'completed',
-      message: 'Session restored from persistence',
-      restored: true,
-      observability: restoredRun
-        ? {
-            runId: restoredRun.runId,
-            requestId: restoredRun.requestId,
-            runSequence: restoredRun.sequence,
-            status: restoredRun.status,
-          }
-        : undefined,
-      historyEndpoints: {
-        turns: `/api/agent/${sessionId}/turns`,
-        latestTurn: `/api/agent/${sessionId}/turns/latest`,
-      },
-      restoredStats: {
-        turnCount: restoredTurns.length,
-        latestTurn: latestTurn ? buildTurnSummary(latestTurn) : null,
-        entityStore: restoredContext.getEntityStore().getStats(),
-        focusStore: focusSnapshot ? orchestrator.getFocusStore().getStats() : null,
-        traceAgentState: traceAgentStateSnapshot
-          ? {
-              version: traceAgentStateSnapshot.version,
-              updatedAt: traceAgentStateSnapshot.updatedAt,
-              turns: Array.isArray(traceAgentStateSnapshot.turnLog) ? traceAgentStateSnapshot.turnLog.length : 0,
-              goal: traceAgentStateSnapshot.goal?.normalizedGoal || traceAgentStateSnapshot.goal?.userGoal || '',
-            }
-          : null,
-      },
-    });
-  } catch (error: any) {
-    console.error('[AgentRoutes] Session restore failed:', error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to restore session',
-    });
-  }
+registerAgentResumeRoutes(router, {
+  sessionStore: assistantAppService,
+  buildSessionObservability,
+  buildRecoveredResultFromContext,
+  buildTurnSummary,
+  getModelRouter,
 });
 
 // ============================================================================
@@ -1655,68 +1363,8 @@ registerSceneReconstructRoutes(router, {
   normalizeNarrativeForClient,
 });
 
-// ============================================================================
-// Quick Scene Detection Endpoint (Phase 1 only)
-// ============================================================================
-
-/**
- * POST /api/agent/scene-detect-quick
- *
- * Quick scene detection - only runs Phase 1 (scene detection) without deep analysis.
- * Used for scene navigation bar that auto-appears on trace load.
- *
- * Body:
- * {
- *   "traceId": "uuid-of-trace"
- * }
- *
- * Response:
- * {
- *   "success": true,
- *   "scenes": DetectedScene[]
- * }
- */
-router.post('/scene-detect-quick', async (req, res) => {
-  try {
-    const { traceId } = req.body;
-
-    if (!traceId) {
-      return res.status(400).json({
-        success: false,
-        error: 'traceId is required',
-      });
-    }
-
-    // Verify trace exists
-    const traceProcessorService = getTraceProcessorService();
-    const trace = traceProcessorService.getTrace(traceId);
-    if (!trace) {
-      return res.status(404).json({
-        success: false,
-        error: 'Trace not found in backend',
-        hint: 'Please upload the trace to the backend first',
-        code: 'TRACE_NOT_UPLOADED',
-      });
-    }
-
-    console.log('[AgentRoutes] Quick scene detection for traceId:', traceId);
-
-    // Execute quick scene detection SQL queries directly
-    const scenes = await detectScenesQuick(traceProcessorService, traceId);
-
-    console.log('[AgentRoutes] Quick scene detection complete:', scenes.length, 'scenes');
-
-    res.json({
-      success: true,
-      scenes,
-    });
-  } catch (error: any) {
-    console.error('[AgentRoutes] Quick scene detection error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Quick scene detection failed',
-    });
-  }
+registerAgentQuickSceneRoutes(router, {
+  detectScenesQuick,
 });
 
 // ============================================================================
@@ -2106,95 +1754,12 @@ async function detectScenesQuick(
 
 registerTeachingRoutes(router);
 
-// ============================================================================
-// Report Generation (simplified for new architecture)
-// ============================================================================
-
-/**
- * GET /api/agent/:sessionId/report
- *
- * Generate a simple JSON report for the session
- */
-router.get('/:sessionId/report', (req, res) => {
-  const { sessionId } = req.params;
-
-  const session = assistantAppService.getSession(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
-
-  if (session.status !== 'completed') {
-    return res.status(400).json({
-      success: false,
-      error: 'Session is not completed yet',
-      status: session.status,
-    });
-  }
-
-  const result = recoverResultForSessionIfNeeded(sessionId, session);
-  if (!result) {
-    return res.status(404).json({
-      success: false,
-      error: 'No completed turn result available for this session',
-      hint: `Use /api/agent/${sessionId}/turns to inspect historical turns`,
-    });
-  }
-
-  const conclusion = normalizeNarrativeForClient(result.conclusion);
-  const clientFindings = buildClientFindings(result.findings, session.scenes || []);
-  const resultContract = buildSessionResultContract(session, clientFindings);
-  // Generate simplified report data
-  const report = {
-    sessionId,
-    traceId: session.traceId,
-    query: session.query,
-    createdAt: session.createdAt,
-    completedAt: Date.now(),
-
-    summary: {
-      conclusion,
-      confidence: result.confidence,
-      totalDurationMs: result.totalDurationMs,
-      rounds: result.rounds,
-    },
-
-    findings: result.findings.map((f: AgentRuntimeAnalysisResult['findings'][number]) => ({
-      id: f.id,
-      category: f.category,
-      severity: f.severity,
-      title: f.title,
-      description: f.description,
-    })),
-
-    hypotheses: result.hypotheses.map((h: AgentRuntimeAnalysisResult['hypotheses'][number]) => ({
-      id: h.id,
-      description: h.description,
-      status: h.status,
-      confidence: h.confidence,
-    })),
-
-    conversationTimeline: session.conversationSteps.map((step) => ({
-      eventId: step.eventId,
-      ordinal: step.ordinal,
-      phase: step.phase,
-      role: step.role,
-      text: step.text,
-      timestamp: step.timestamp,
-      sourceEventType: step.sourceEventType,
-    })),
-    resultContract,
-
-    // Log file path for debugging
-    logFile: session.logger.getLogFilePath(),
-  };
-
-  res.json({
-    success: true,
-    report,
-  });
+registerAgentReportRoutes(router, {
+  getSession: (sessionId) => assistantAppService.getSession(sessionId),
+  recoverResultForSessionIfNeeded,
+  normalizeNarrativeForClient,
+  buildClientFindings,
+  buildSessionResultContract,
 });
 
 // ============================================================================
@@ -2251,7 +1816,7 @@ async function runAgentDrivenAnalysis(
   });
 
   // Track generation is a lightweight derivation step from DataEnvelopes.
-  // Enable by default (unless explicitly disabled) so `/api/agent/analyze` can
+  // Enable by default (unless explicitly disabled) so `/api/agent/v1/analyze` can
   // also produce TrackEvent(s) when the scene reconstruction skill runs.
   const shouldGenerateTracks = options.generateTracks !== false;
 
@@ -2448,7 +2013,7 @@ async function runAgentDrivenAnalysis(
 
     broadcastToAgentDrivenClients(sessionId, {
       type: 'error',
-      content: { message: error.message },
+      content: { message: error.message, error: error.message },
       timestamp: Date.now(),
     });
 
@@ -3819,142 +3384,7 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
   }
 }
 
-// ============================================================================
-// Session Logs Endpoints (for debugging)
-// ============================================================================
-
-router.use('/logs', (_req, res, next) => {
-  if (!featureFlagsConfig.enableAgentLogsApi) {
-    return res.status(503).json({
-      success: false,
-      error: 'Agent logs API is disabled by FEATURE_AGENT_LOGS_API',
-      code: 'FEATURE_DISABLED',
-    });
-  }
-  next();
-});
-
-/**
- * GET /api/agent/logs
- *
- * List all available session logs
- */
-router.get('/logs', (req, res) => {
-  try {
-    const manager = getSessionLoggerManager();
-    const sessions = manager.listSessions();
-
-    res.json({
-      success: true,
-      logDir: manager.getLogDir(),
-      sessions,
-      count: sessions.length,
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * GET /api/agent/logs/:sessionId
- *
- * Get logs for a specific session
- *
- * Query params:
- * - level: Filter by level (debug, info, warn, error)
- * - component: Filter by component name
- * - search: Search in message or data
- * - limit: Max number of logs to return
- */
-router.get('/logs/:sessionId', (req, res) => {
-  const { sessionId } = req.params;
-  const { level, component, search, limit } = req.query;
-
-  try {
-    const manager = getSessionLoggerManager();
-    const logs = manager.readSessionLogs(sessionId, {
-      level: level as any,
-      component: component as string,
-      search: search as string,
-      limit: limit ? parseInt(limit as string, 10) : undefined,
-    });
-
-    res.json({
-      success: true,
-      sessionId,
-      logs,
-      count: logs.length,
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * GET /api/agent/logs/:sessionId/errors
- *
- * Get only errors and warnings for a session
- */
-router.get('/logs/:sessionId/errors', (req, res) => {
-  const { sessionId } = req.params;
-
-  try {
-    const manager = getSessionLoggerManager();
-    const logs = manager.readSessionLogs(sessionId, {
-      level: ['error', 'warn'],
-    });
-
-    res.json({
-      success: true,
-      sessionId,
-      logs,
-      errorCount: logs.filter(l => l.level === 'error').length,
-      warnCount: logs.filter(l => l.level === 'warn').length,
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
-
-/**
- * POST /api/agent/logs/cleanup
- *
- * Clean up old log files
- *
- * Body:
- * {
- *   "maxAgeDays": 7  // optional, default 7 days
- * }
- */
-router.post('/logs/cleanup', (req, res) => {
-  const { maxAgeDays = 7 } = req.body;
-
-  try {
-    const manager = getSessionLoggerManager();
-    const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
-    const deletedCount = manager.cleanup(maxAgeMs);
-
-    res.json({
-      success: true,
-      deletedCount,
-      message: `Deleted ${deletedCount} log files older than ${maxAgeDays} days`,
-    });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
-  }
-});
+registerAgentLogsRoutes(router);
 
 // ============================================================================
 // Cleanup

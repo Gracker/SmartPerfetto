@@ -196,3 +196,71 @@ describe('BaseAgent - focusTools constrained planning', () => {
     expect(plan.steps[0].toolName).toBe('analyze_scrolling');
   });
 });
+
+describe('BaseAgent - dynamic SQL error handling', () => {
+  const config: AgentConfig = {
+    id: 'test_agent',
+    name: 'Test Agent',
+    domain: 'test',
+    description: 'test',
+    tools: [],
+    maxIterations: 1,
+    confidenceThreshold: 0.5,
+    canDelegate: false,
+  };
+
+  test('treats queryResult.error as execution failure', async () => {
+    const agent = new TestAgent(config, {} as any);
+    const query = jest.fn().mockResolvedValue({
+      columns: ['value'],
+      rows: [[1]],
+      error: 'no such table: bad_table',
+    });
+
+    const ensureLimit = jest.fn((sql: string) => sql);
+    const validate = jest.fn().mockReturnValue({ valid: true, errors: [] });
+    const generateSQL = jest.fn().mockResolvedValue({
+      success: true,
+      sql: {
+        sql: 'SELECT * FROM bad_table LIMIT 1',
+        explanation: 'test',
+        expectedColumns: ['value'],
+        riskLevel: 'safe',
+        riskFactors: [],
+      },
+    });
+    const repairSQL = jest.fn().mockResolvedValue({
+      success: false,
+      error: 'cannot repair',
+    });
+
+    (agent as any).getSQLGenerator = jest.fn(async () => ({
+      generateSQL,
+      repairSQL,
+    }));
+    (agent as any).getSQLValidator = jest.fn(async () => ({
+      ensureLimit,
+      validate,
+    }));
+    (agent as any).getSQLLearningSystem = jest.fn(async () => ({
+      fixSQL: jest.fn().mockResolvedValue({
+        success: false,
+        fixedSQL: 'SELECT * FROM bad_table LIMIT 1',
+        appliedRules: [],
+        method: 'basic_fix',
+      }),
+    }));
+
+    const result = await (agent as any).generateAndExecuteSQL(
+      'diagnose problem',
+      {
+        traceId: 'trace_1',
+        traceProcessorService: { query },
+      }
+    );
+
+    expect(query).toHaveBeenCalled();
+    expect(result.success).toBe(false);
+    expect(String(result.error || '')).toContain('cannot repair');
+  });
+});

@@ -346,8 +346,8 @@ flowchart LR
 
 关键路由已支持 feature flag（环境变量）：
 
-- `FEATURE_AGENT_SCENE_RECONSTRUCT`：控制 `/api/agent/scene-reconstruct*`
-- `FEATURE_AGENT_LOGS_API`：控制 `/api/agent/logs*`
+- `FEATURE_AGENT_SCENE_RECONSTRUCT`：控制 `/api/agent/v1/scene-reconstruct*`
+- `FEATURE_AGENT_LOGS_API`：控制 `/api/agent/v1/logs*`
 - `SMARTPERFETTO_ALLOW_AGENT_ADB_FULL_MODE`：控制 agent 是否可进入 ADB full 模式（仍需请求上下文显式批准）
 
 ---

@@ -915,5 +915,5 @@ export interface LogEntry {
 3. **偏好可调**：允许用户显式设置"快/准/可解释"，并映射到 soft budget、策略选择与输出视图
 4. **ContextCompactor 主链路集成**：在 HypothesisExecutor 多轮循环中自动触发 `compactIfNeeded()`
 5. **Hook 系统完整挂载**：在 AgentRuntime 的 session/iteration/subagent 生命周期中调用 HookRegistry
-6. **Checkpoint 恢复集成**：在 POST /api/agent/analyze 入口检查 `canResume()`，提供恢复选项
+6. **Checkpoint 恢复集成**：在 POST /api/agent/v1/analyze 入口检查 `canResume()`，提供恢复选项
 7. **Fork 体验完善**：暴露 fork/compare/merge API，支持用户在分析过程中创建分支探索

@@ -44,6 +44,7 @@ import {
   ensureSkillRegistryInitialized,
   SkillExecutionResult,
 } from '../../../services/skillEngine';
+import { SQLLearningSystem } from '../../../services/sqlLearningSystem';
 
 // =============================================================================
 // Types
@@ -1549,6 +1550,7 @@ ${this.getToolDescriptionsForLLM()}
    */
   private sqlGenerator: import('../../tools/sqlGenerator').SQLGenerator | null = null;
   private sqlValidator: import('../../tools/sqlValidator').SQLValidator | null = null;
+  private sqlLearningSystem: SQLLearningSystem | null = null;
 
   /**
    * Get or create SQL generator instance.
@@ -1570,6 +1572,61 @@ ${this.getToolDescriptionsForLLM()}
       this.sqlValidator = new SQLValidator();
     }
     return this.sqlValidator;
+  }
+
+  protected async getSQLLearningSystem(): Promise<SQLLearningSystem> {
+    if (!this.sqlLearningSystem) {
+      const logDir = process.env.SQL_LEARNING_LOG_DIR || './logs/sql_learning';
+      this.sqlLearningSystem = new SQLLearningSystem(logDir);
+    }
+    await this.sqlLearningSystem.init();
+    return this.sqlLearningSystem;
+  }
+
+  private async tryLearnedSQLRepair(
+    params: {
+      sql: string;
+      error: string;
+      objective: string;
+      validator: import('../../tools/sqlValidator').SQLValidator;
+      context: import('../../types/agentProtocol').AgentToolContext;
+    }
+  ): Promise<string | null> {
+    const { sql, error, objective, validator, context } = params;
+    const learning = await this.getSQLLearningSystem();
+    const fixResult = await learning.fixSQL(
+      sql,
+      error,
+      objective,
+      (candidateSql: string) => {
+        const validation = validator.validate(candidateSql);
+        return {
+          isValid: validation.valid,
+          errors: validation.errors.map((item) => item.message),
+        };
+      },
+      async (candidateSql: string) => {
+        try {
+          const result = await context.traceProcessorService.query(context.traceId, candidateSql);
+          const executionError =
+            result && typeof result.error === 'string' ? result.error.trim() : '';
+          if (executionError) {
+            return { ok: false, error: executionError };
+          }
+          return { ok: true };
+        } catch (executionError: any) {
+          return {
+            ok: false,
+            error: String(executionError?.message || executionError || 'Execution failed'),
+          };
+        }
+      }
+    );
+
+    if (!fixResult.success || !fixResult.fixedSQL || fixResult.fixedSQL === sql) {
+      return null;
+    }
+    return fixResult.fixedSQL;
   }
 
   /**
@@ -1659,6 +1716,35 @@ ${this.getToolDescriptionsForLLM()}
             };
           }
 
+          const learnedFixedSql = await this.tryLearnedSQLRepair({
+            sql: sqlToExecute,
+            error: errMsg,
+            objective,
+            validator,
+            context,
+          });
+          if (learnedFixedSql) {
+            repairAttempts++;
+            sqlToExecute = validator.ensureLimit(learnedFixedSql, 1000);
+            if (attemptedSql.has(sqlToExecute)) {
+              return {
+                success: false,
+                error: `SQL repair loop produced duplicate SQL (stopping)`,
+                validationErrors: [errMsg],
+                generatedSQL: currentGeneratedSQL,
+                repairAttempts,
+                repairErrors,
+                executionTimeMs: Date.now() - startTime,
+              };
+            }
+            attemptedSql.add(sqlToExecute);
+            currentGeneratedSQL = {
+              ...currentGeneratedSQL,
+              sql: sqlToExecute,
+            };
+            continue;
+          }
+
           repairAttempts++;
           const repaired = await generator.repairSQL({
             objective,
@@ -1715,6 +1801,13 @@ ${this.getToolDescriptionsForLLM()}
             context.traceId,
             sqlToExecute
           );
+          const executionError =
+            queryResult && typeof queryResult.error === 'string'
+              ? queryResult.error.trim()
+              : '';
+          if (executionError) {
+            throw new Error(executionError);
+          }
 
           const executionTimeMs = Date.now() - startTime;
 
@@ -1744,6 +1837,34 @@ ${this.getToolDescriptionsForLLM()}
               repairErrors,
               executionTimeMs: Date.now() - startTime,
             };
+          }
+
+          const learnedFixedSql = await this.tryLearnedSQLRepair({
+            sql: sqlToExecute,
+            error: errMsg,
+            objective,
+            validator,
+            context,
+          });
+          if (learnedFixedSql) {
+            repairAttempts++;
+            sqlToExecute = validator.ensureLimit(learnedFixedSql, 1000);
+            if (attemptedSql.has(sqlToExecute)) {
+              return {
+                success: false,
+                error: `SQL repair loop produced duplicate SQL (stopping)`,
+                generatedSQL: currentGeneratedSQL,
+                repairAttempts,
+                repairErrors,
+                executionTimeMs: Date.now() - startTime,
+              };
+            }
+            attemptedSql.add(sqlToExecute);
+            currentGeneratedSQL = {
+              ...currentGeneratedSQL,
+              sql: sqlToExecute,
+            };
+            continue;
           }
 
           repairAttempts++;

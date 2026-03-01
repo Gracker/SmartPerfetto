@@ -1,5 +1,5 @@
 (function () {
-  const API_BASE_PATH = '/api/assistant/v1';
+  const API_BASE_PATH = '/api/agent/v1';
   const LS_KEY = 'smartperfetto_assistant_web_shell_state_v1';
   const MAX_LOG_LINES = 300;
   const MAX_TIMELINE_LINES = 300;
@@ -224,7 +224,13 @@
 
   function handleConversationStep(data) {
     const payload = normalizeEventPayload(data);
-    const text = payload.text || payload.message || payload.phase || JSON.stringify(payload);
+    const nestedContent = payload.content && typeof payload.content === 'object' ? payload.content : null;
+    const text =
+      payload.text ||
+      (nestedContent && nestedContent.text) ||
+      payload.message ||
+      payload.phase ||
+      JSON.stringify(payload);
     logTimeline(text);
   }
 
@@ -287,6 +293,7 @@
     if (eventType === 'error') {
       const payload = normalizeEventPayload(eventData);
       logEvent(`error: ${payload.message || payload.error || 'unknown'}`);
+      stopStream('error');
       setSseState('error', 'error');
       return;
     }

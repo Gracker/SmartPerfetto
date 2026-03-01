@@ -69,10 +69,13 @@ export class StreamProjector {
     errorMessage: string | undefined,
     observability?: BroadcastStreamingUpdateOptions['observability']
   ): void {
-    this.sendEvent(
+      this.sendEvent(
       res,
       'error',
-      this.withObservability({ error: errorMessage, timestamp: Date.now() }, observability)
+      this.withObservability(
+        { error: errorMessage, message: errorMessage, timestamp: Date.now() },
+        observability
+      )
     );
   }
 

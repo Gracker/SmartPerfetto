@@ -16,7 +16,7 @@
 
 - [x] 引入 `AssistantApplicationService` 统一托管 in-memory session 生命周期
 - [x] 引入 `StreamProjector` 统一 SSE headers/connected/error/end/broadcast 逻辑
-- [x] 将 `/api/agent/analyze` 的 session create/resume 编排迁移到 application service
+- [x] 将 `/api/agent/v1/analyze` 的 session create/resume 编排迁移到 application service
 - [x] 将 `scene-reconstruct` 主链路从 `agentRoutes.ts` 拆为独立 route module
 - [x] 将 `teaching` 从 `agentRoutes.ts` 拆为独立 route/service
 - [x] 增加 SSE contract tests（覆盖 `analysis_completed` / `data` / `conversation_step`）
@@ -38,6 +38,6 @@
 
 ## Guardrails
 
-- 保持 `/api/agent/*` 兼容直到 `Assistant API v1` 稳定并完成迁移。
+- Assistant HTTP 入口保持单路径 `/api/agent/v1/*`，禁止新增并行别名路径。
 - 任何事件字段新增必须同步契约定义和回归测试，避免“实现漂移”。
 - 重构期间不引入第二套 SSE 事件协议。

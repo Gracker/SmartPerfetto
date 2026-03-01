@@ -448,7 +448,7 @@ This state machine describes the analysis session lifecycle.
 │                         Session State Machine                                │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
-│   New Analysis (POST /api/agent/analyze):                                   │
+│   New Analysis (POST /api/agent/v1/analyze):                                   │
 │                                                                              │
 │         createSession()           orchestrator.analyze()                     │
 │              │                          │                                    │

@@ -34,7 +34,7 @@ const upload = multer({
 // POST /api/trace/upload - Upload a trace file (auth disabled for development)
 router.post('/upload', upload.single('file'), traceController.uploadTrace);
 
-// POST /api/trace/analyze - Deprecated. Returns migration guidance to /api/agent/analyze.
+// POST /api/trace/analyze - Deprecated. Returns migration guidance to /api/agent/v1/analyze.
 router.post('/analyze', traceController.analyzeTrace);
 
 // GET /api/trace/:fileId - Get trace file information (auth disabled for development)

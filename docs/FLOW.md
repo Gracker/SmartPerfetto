@@ -8,7 +8,7 @@
 
 当前已统一为单一主链路：
 
-- 路由: /api/agent/*
+- 路由: /api/agent/v1/*
 - Orchestrator: AgentRuntime
 - 会话管理: 内存 sessions Map + SSE 流
 
@@ -95,7 +95,7 @@
 │  │  - backendTraceId 必须存在 (trace 已上传到后端)                      │    │
 │  │                                                                      │    │
 │  │  API 调用:                                                          │    │
-│  │  POST ${backendUrl}/api/agent/analyze                      │    │
+│  │  POST ${backendUrl}/api/agent/v1/analyze                      │    │
 │  │  {                                                                  │    │
 │  │    traceId: "trace-abc123",                                         │    │
 │  │    question: "分析这个 trace 的滑动性能问题",                         │    │
@@ -114,7 +114,7 @@
 │  │                                                                      │    │
 │  │  await this.listenToSSE(analysisId)                                 │    │
 │  │                                                                      │    │
-│  │  GET ${backendUrl}/api/agent/${analysisId}/stream          │    │
+│  │  GET ${backendUrl}/api/agent/v1/${analysisId}/stream          │    │
 │  │                                                                      │    │
 │  │  开始监听服务器推送的事件...                                          │    │
 │  │                                                                      │    │
@@ -133,7 +133,7 @@
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │  Step 2.1: 接收分析请求                                              │    │
 │  │                                                                      │    │
-│  │  POST /api/agent/analyze                                   │    │
+│  │  POST /api/agent/v1/analyze                                   │    │
 │  │                                                                      │    │
 │  │  router.post('/analyze', async (req, res) => {                      │    │
 │  │    const { traceId, question, maxIterations = 10 } = req.body       │    │
@@ -186,7 +186,7 @@
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │  Step 2.5: SSE 流连接处理                                            │    │
 │  │                                                                      │    │
-│  │  GET /api/agent/:sessionId/stream                          │    │
+│  │  GET /api/agent/v1/:sessionId/stream                          │    │
 │  │                                                                      │    │
 │  │  router.get('/:sessionId/stream', (req, res) => {                   │    │
 │  │    // 设置 SSE headers                                              │    │
@@ -691,13 +691,13 @@
 
 ### 目标
 
-将 MasterOrchestrator 的增强功能集成到前端实际使用的 `/api/agent/analyze` 路径。
+将 MasterOrchestrator 的增强功能集成到前端实际使用的 `/api/agent/v1/analyze` 路径。
 
 ### 方案
 
 **方案 A: 路由转发 (推荐)**
 
-修改 `traceAnalysisRoutes.ts`，让 `/api/agent/analyze` 内部调用 `MasterOrchestrator`：
+修改 `traceAnalysisRoutes.ts`，让 `/api/agent/v1/analyze` 内部调用 `MasterOrchestrator`：
 
 ```typescript
 // traceAnalysisRoutes.ts

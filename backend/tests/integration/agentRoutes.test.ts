@@ -44,7 +44,7 @@ async function waitForTerminalStatus(
 ): Promise<{ status: string; payload: any }> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const response = await request(app).get(`/api/agent/${sessionId}/status`);
+    const response = await request(app).get(`/api/agent/v1/${sessionId}/status`);
     if (response.status === 200) {
       const status = String(response.body?.status || '');
       if (status === 'completed' || status === 'failed') {
@@ -92,7 +92,7 @@ describe('Agent Routes - Input Validation', () => {
       process.env[API_KEY_ENV] = 'test-key';
 
       try {
-        const response = await request(app).get('/api/agent/sessions');
+        const response = await request(app).get('/api/agent/v1/sessions');
         expect(response.status).toBe(401);
         expect(response.body.error).toContain('Unauthorized');
       } finally {
@@ -106,7 +106,7 @@ describe('Agent Routes - Input Validation', () => {
 
       try {
         const response = await request(app)
-          .get('/api/agent/sessions')
+          .get('/api/agent/v1/sessions')
           .set('x-api-key', 'test-key');
 
         expect(response.status).toBe(200);
@@ -117,40 +117,34 @@ describe('Agent Routes - Input Validation', () => {
     });
   });
 
-  describe('Assistant API v1 Alias', () => {
-    it('should expose sessions endpoint via /api/assistant/v1', async () => {
-      const response = await request(app).get('/api/assistant/v1/sessions');
-
-      expect(response.status).toBe(200);
-      expect(response.body.success).toBe(true);
-      expect(Array.isArray(response.body.activeSessions)).toBe(true);
-    });
-
-    it('should keep analyze validation behavior on /api/assistant/v1/analyze', async () => {
-      const response = await request(app)
-        .post('/api/assistant/v1/analyze')
-        .send({ query: 'Test query' });
-
-      expect(response.status).toBe(400);
-      expect(response.body.success).toBe(false);
-      expect(response.body.error).toContain('traceId');
-    });
-  });
-
   describe('Assistant Web Shell', () => {
     it('should serve standalone assistant shell page', async () => {
       const response = await request(app).get('/assistant-shell');
 
       expect(response.status).toBe(200);
       expect(response.text).toContain('SmartPerfetto Assistant Web Shell');
-      expect(response.text).toContain('/api/assistant/v1');
+      expect(response.text).toContain('/api/agent/v1');
     });
   });
 
-  describe('POST /api/agent/analyze - Validation', () => {
+  describe('Legacy API Compatibility', () => {
+    it('should return 410 for /api/agent alias with migration headers', async () => {
+      const response = await request(app).get('/api/agent/sessions');
+
+      expect(response.status).toBe(410);
+      expect(response.body.success).toBe(false);
+      expect(response.headers.deprecation).toBe('true');
+      expect(response.headers.sunset).toBeTruthy();
+      expect(response.headers.link).toContain('/api/agent/v1');
+      expect(response.headers.warning).toContain('removed');
+      expect(response.body.migration.successor).toBe('/api/agent/v1/sessions');
+    });
+  });
+
+  describe('POST /api/agent/v1/analyze - Validation', () => {
     it('should return 400 if traceId is missing', async () => {
       const response = await request(app)
-        .post('/api/agent/analyze')
+        .post('/api/agent/v1/analyze')
         .send({ query: 'Test query' });
 
       expect(response.status).toBe(400);
@@ -160,7 +154,7 @@ describe('Agent Routes - Input Validation', () => {
 
     it('should return 400 if query is missing', async () => {
       const response = await request(app)
-        .post('/api/agent/analyze')
+        .post('/api/agent/v1/analyze')
         .send({ traceId: 'some-trace-id' });
 
       expect(response.status).toBe(400);
@@ -170,7 +164,7 @@ describe('Agent Routes - Input Validation', () => {
 
     it('should return 400 for empty body', async () => {
       const response = await request(app)
-        .post('/api/agent/analyze')
+        .post('/api/agent/v1/analyze')
         .send({});
 
       expect(response.status).toBe(400);
@@ -178,7 +172,7 @@ describe('Agent Routes - Input Validation', () => {
 
     it('should return 400 for null traceId', async () => {
       const response = await request(app)
-        .post('/api/agent/analyze')
+        .post('/api/agent/v1/analyze')
         .send({ traceId: null, query: 'test' });
 
       expect(response.status).toBe(400);
@@ -186,7 +180,7 @@ describe('Agent Routes - Input Validation', () => {
 
     it('should return 404 if trace does not exist', async () => {
       const response = await request(app)
-        .post('/api/agent/analyze')
+        .post('/api/agent/v1/analyze')
         .send({
           traceId: 'non-existent-trace-id',
           query: '分析滑动性能',
@@ -198,10 +192,10 @@ describe('Agent Routes - Input Validation', () => {
     });
   });
 
-  describe('GET /api/agent/:sessionId/status - Validation', () => {
+  describe('GET /api/agent/v1/:sessionId/status - Validation', () => {
     it('should return 404 for non-existent session', async () => {
       const response = await request(app)
-        .get('/api/agent/non-existent-session-123/status');
+        .get('/api/agent/v1/non-existent-session-123/status');
 
       expect(response.status).toBe(404);
       expect(response.body.success).toBe(false);
@@ -209,20 +203,20 @@ describe('Agent Routes - Input Validation', () => {
     });
   });
 
-  describe('DELETE /api/agent/:sessionId - Validation', () => {
+  describe('DELETE /api/agent/v1/:sessionId - Validation', () => {
     it('should return 404 for non-existent session', async () => {
       const response = await request(app)
-        .delete('/api/agent/non-existent-session-456');
+        .delete('/api/agent/v1/non-existent-session-456');
 
       expect(response.status).toBe(404);
       expect(response.body.success).toBe(false);
     });
   });
 
-  describe('POST /api/agent/:sessionId/respond - Validation', () => {
+  describe('POST /api/agent/v1/:sessionId/respond - Validation', () => {
     it('should return 404 for non-existent session', async () => {
       const response = await request(app)
-        .post('/api/agent/non-existent-session-789/respond')
+        .post('/api/agent/v1/non-existent-session-789/respond')
         .send({ action: 'continue' });
 
       expect(response.status).toBe(404);
@@ -230,10 +224,10 @@ describe('Agent Routes - Input Validation', () => {
     });
   });
 
-  describe('POST /api/agent/resume - Validation', () => {
+  describe('POST /api/agent/v1/resume - Validation', () => {
     it('should return 400 if sessionId is missing', async () => {
       const response = await request(app)
-        .post('/api/agent/resume')
+        .post('/api/agent/v1/resume')
         .send({});
 
       expect(response.status).toBe(400);
@@ -243,7 +237,7 @@ describe('Agent Routes - Input Validation', () => {
 
     it('should return 404 for non-existent session', async () => {
       const response = await request(app)
-        .post('/api/agent/resume')
+        .post('/api/agent/v1/resume')
         .send({ sessionId: 'non-existent-session' });
 
       // In environments where better-sqlite3 native binding is unavailable,
@@ -253,10 +247,10 @@ describe('Agent Routes - Input Validation', () => {
     });
   });
 
-  describe('GET /api/agent/:sessionId/report - Validation', () => {
+  describe('GET /api/agent/v1/:sessionId/report - Validation', () => {
     it('should return 404 for non-existent session', async () => {
       const response = await request(app)
-        .get('/api/agent/non-existent-session-abc/report');
+        .get('/api/agent/v1/non-existent-session-abc/report');
 
       expect(response.status).toBe(404);
       expect(response.body.success).toBe(false);
@@ -275,9 +269,9 @@ describe('Agent Routes - Session Management', () => {
     app = createTestApp();
   });
 
-  describe('GET /api/agent/sessions', () => {
+  describe('GET /api/agent/v1/sessions', () => {
     it('should list all sessions with correct structure', async () => {
-      const response = await request(app).get('/api/agent/sessions');
+      const response = await request(app).get('/api/agent/v1/sessions');
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -300,9 +294,9 @@ describe('Agent Routes - Session Logs', () => {
     app = createTestApp();
   });
 
-  describe('GET /api/agent/logs', () => {
+  describe('GET /api/agent/v1/logs', () => {
     it('should list session logs with correct structure', async () => {
-      const response = await request(app).get('/api/agent/logs');
+      const response = await request(app).get('/api/agent/v1/logs');
 
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
@@ -312,10 +306,10 @@ describe('Agent Routes - Session Logs', () => {
     });
   });
 
-  describe('GET /api/agent/logs/:sessionId', () => {
+  describe('GET /api/agent/v1/logs/:sessionId', () => {
     it('should handle non-existent session gracefully', async () => {
       const response = await request(app)
-        .get('/api/agent/logs/test-session-xyz');
+        .get('/api/agent/v1/logs/test-session-xyz');
 
       // May return 200 with empty array or 500 if file operations fail
       expect([200, 500]).toContain(response.status);
@@ -326,10 +320,10 @@ describe('Agent Routes - Session Logs', () => {
     });
   });
 
-  describe('GET /api/agent/logs/:sessionId/errors', () => {
+  describe('GET /api/agent/v1/logs/:sessionId/errors', () => {
     it('should handle non-existent session gracefully', async () => {
       const response = await request(app)
-        .get('/api/agent/logs/test-session-xyz/errors');
+        .get('/api/agent/v1/logs/test-session-xyz/errors');
 
       // May return 200 with empty arrays or 500 if file operations fail
       expect([200, 500]).toContain(response.status);
@@ -341,10 +335,10 @@ describe('Agent Routes - Session Logs', () => {
     });
   });
 
-  describe('POST /api/agent/logs/cleanup', () => {
+  describe('POST /api/agent/v1/logs/cleanup', () => {
     it('should accept cleanup request with default maxAgeDays', async () => {
       const response = await request(app)
-        .post('/api/agent/logs/cleanup')
+        .post('/api/agent/v1/logs/cleanup')
         .send({});
 
       expect(response.status).toBe(200);
@@ -354,7 +348,7 @@ describe('Agent Routes - Session Logs', () => {
 
     it('should accept cleanup request with custom maxAgeDays', async () => {
       const response = await request(app)
-        .post('/api/agent/logs/cleanup')
+        .post('/api/agent/v1/logs/cleanup')
         .send({ maxAgeDays: 30 });
 
       expect(response.status).toBe(200);
@@ -401,7 +395,7 @@ describe('Agent Routes - Session Lifecycle', () => {
 
     // 1. Create session
     const createResponse = await request(app)
-      .post('/api/agent/analyze')
+      .post('/api/agent/v1/analyze')
       .send({
         traceId,
         query: '分析性能',
@@ -422,7 +416,7 @@ describe('Agent Routes - Session Lifecycle', () => {
     await wait(500); // Give it time to initialize
 
     const statusResponse = await request(app)
-      .get(`/api/agent/${sessionId}/status`);
+      .get(`/api/agent/v1/${sessionId}/status`);
 
     expect(statusResponse.status).toBe(200);
     expect(statusResponse.body.success).toBe(true);
@@ -435,7 +429,7 @@ describe('Agent Routes - Session Lifecycle', () => {
       .toContain(statusResponse.body.status);
 
     // 3. Session should appear in list
-    const listResponse = await request(app).get('/api/agent/sessions');
+    const listResponse = await request(app).get('/api/agent/v1/sessions');
 
     expect(listResponse.status).toBe(200);
     const foundSession = listResponse.body.activeSessions.find(
@@ -445,14 +439,14 @@ describe('Agent Routes - Session Lifecycle', () => {
 
     // 4. Delete session
     const deleteResponse = await request(app)
-      .delete(`/api/agent/${sessionId}`);
+      .delete(`/api/agent/v1/${sessionId}`);
 
     expect(deleteResponse.status).toBe(200);
     expect(deleteResponse.body.success).toBe(true);
 
     // 5. Verify deletion
     const verifyResponse = await request(app)
-      .get(`/api/agent/${sessionId}/status`);
+      .get(`/api/agent/v1/${sessionId}/status`);
 
     expect(verifyResponse.status).toBe(404);
   }, 60000);
@@ -465,7 +459,7 @@ describe('Agent Routes - Session Lifecycle', () => {
 
     // Create session
     const createResponse = await request(app)
-      .post('/api/agent/analyze')
+      .post('/api/agent/v1/analyze')
       .send({
         traceId,
         query: '测试',
@@ -476,7 +470,7 @@ describe('Agent Routes - Session Lifecycle', () => {
 
     // Try to respond with invalid action
     const invalidResponse = await request(app)
-      .post(`/api/agent/${sessionId}/respond`)
+      .post(`/api/agent/v1/${sessionId}/respond`)
       .send({ action: 'invalid_action' });
 
     expect(invalidResponse.status).toBe(400);
@@ -486,14 +480,14 @@ describe('Agent Routes - Session Lifecycle', () => {
     // Try to respond when not awaiting user (should fail)
     await wait(200);
     const respondResponse = await request(app)
-      .post(`/api/agent/${sessionId}/respond`)
+      .post(`/api/agent/v1/${sessionId}/respond`)
       .send({ action: 'continue' });
 
     // Either succeeds or fails with "not awaiting user"
     expect([200, 400]).toContain(respondResponse.status);
 
     // Cleanup
-    await request(app).delete(`/api/agent/${sessionId}`);
+    await request(app).delete(`/api/agent/v1/${sessionId}`);
   }, 30000);
 
   it('should satisfy SSE contract for analysis_completed event', async () => {
@@ -503,7 +497,7 @@ describe('Agent Routes - Session Lifecycle', () => {
     }
 
     const createResponse = await request(app)
-      .post('/api/agent/analyze')
+      .post('/api/agent/v1/analyze')
       .send({
         traceId,
         query: '分析性能',
@@ -525,7 +519,7 @@ describe('Agent Routes - Session Lifecycle', () => {
     expect(terminal.status).toBe('completed');
 
     const streamResponse = await request(app)
-      .get(`/api/agent/${sessionId}/stream`)
+      .get(`/api/agent/v1/${sessionId}/stream`)
       .buffer(true);
 
     expect(streamResponse.status).toBe(200);
@@ -563,7 +557,7 @@ describe('Agent Routes - Session Lifecycle', () => {
     expect(completedEvent?.data?.data?.observability?.requestId).toBe(requestId);
     expect(completedEvent?.data?.data?.observability?.runSequence).toBe(runSequence);
 
-    const statusResponse = await request(app).get(`/api/agent/${sessionId}/status`);
+    const statusResponse = await request(app).get(`/api/agent/v1/${sessionId}/status`);
     expect(statusResponse.status).toBe(200);
     expect(statusResponse.body?.status).toBe('completed');
     expect(statusResponse.body?.observability?.runId).toBe(runId);
@@ -574,6 +568,6 @@ describe('Agent Routes - Session Lifecycle', () => {
     expect(Array.isArray(statusResponse.body?.result?.resultContract?.diagnostics)).toBe(true);
     expect(Array.isArray(statusResponse.body?.result?.resultContract?.actions)).toBe(true);
 
-    await request(app).delete(`/api/agent/${sessionId}`);
+    await request(app).delete(`/api/agent/v1/${sessionId}`);
   }, 90000);
 });

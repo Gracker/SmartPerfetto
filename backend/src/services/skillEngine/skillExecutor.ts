@@ -2820,7 +2820,18 @@ export class SkillExecutor {
         // 普通数组 - 转换为表格格式
         const firstItem = data[0];
         if (typeof firstItem === 'object' && firstItem !== null) {
-          const columns = Object.keys(firstItem);
+          // If display.columns is provided, project data to configured columns only.
+          // This keeps UI tables concise and avoids leaking internal helper fields.
+          const configuredColumns = Array.isArray(columnDefinitions)
+            ? columnDefinitions
+              .map((d: any) => d?.name)
+              .filter((name: any, idx: number, arr: any[]) =>
+                typeof name === 'string' &&
+                name.length > 0 &&
+                arr.indexOf(name) === idx
+              )
+            : [];
+          const columns = configuredColumns.length > 0 ? configuredColumns : Object.keys(firstItem);
           const rows = data.map(row => columns.map(col => this.formatCellValue(row[col])));
           displayData = { columns, rows };
         } else {

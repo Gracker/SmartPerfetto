@@ -96,7 +96,7 @@ async function collectSSEFromUrl(
     }, timeoutMs);
 
     const req = request(app)
-      .get(`/api/agent/${sessionId}/stream`)
+      .get(`/api/agent/v1/${sessionId}/stream`)
       .set('Accept', 'text/event-stream')
       .buffer(false)
       .parse((res, callback) => {
@@ -165,7 +165,7 @@ async function runAnalysisToCompletion(
 ): Promise<{ sessionId: string; result: any; events: SSEEvent[] }> {
   // Start analysis
   const startResponse = await request(app)
-    .post('/api/agent/analyze')
+    .post('/api/agent/v1/analyze')
     .send({
       traceId,
       query,
@@ -189,7 +189,7 @@ async function runAnalysisToCompletion(
 
   // Get final status
   const statusResponse = await request(app)
-    .get(`/api/agent/${newSessionId}/status`);
+    .get(`/api/agent/v1/${newSessionId}/status`);
 
   return {
     sessionId: newSessionId,
@@ -203,7 +203,7 @@ async function runAnalysisToCompletion(
  */
 async function cleanupSession(app: ReturnType<typeof createTestApp>, sessionId: string): Promise<void> {
   try {
-    await request(app).delete(`/api/agent/${sessionId}`);
+    await request(app).delete(`/api/agent/v1/${sessionId}`);
     activeSessions.delete(sessionId);
     console.log(`[E2E] Cleaned up session: ${sessionId}`);
   } catch (e) {
@@ -535,7 +535,7 @@ describe('E2E: Multi-Turn Conversation', () => {
 
     // Second turn: Follow-up query using same session
     const turn2Response = await request(app)
-      .post('/api/agent/analyze')
+      .post('/api/agent/v1/analyze')
       .send({
         traceId,
         query: '详细分析最严重的卡顿帧',
@@ -631,7 +631,7 @@ describe('E2E: Multi-Turn Conversation', () => {
     if (timestamp) {
       // Record interaction for drill-down
       const interactionResponse = await request(app)
-        .post(`/api/agent/${sessionId}/interaction`)
+        .post(`/api/agent/v1/${sessionId}/interaction`)
         .send({
           type: 'drill_down',
           target: {
@@ -841,7 +841,7 @@ describe('E2E: Data Integrity Validation', () => {
 
     // Get detailed status
     const statusResponse = await request(app)
-      .get(`/api/agent/${sessionId}/status`);
+      .get(`/api/agent/v1/${sessionId}/status`);
 
     if (statusResponse.body.status === 'completed' && statusResponse.body.result) {
       const analysisResult = statusResponse.body.result;
@@ -1123,7 +1123,7 @@ describe('E2E: Error Handling', () => {
 
   it('should handle invalid trace gracefully', async () => {
     const response = await request(app)
-      .post('/api/agent/analyze')
+      .post('/api/agent/v1/analyze')
       .send({
         traceId: 'non-existent-trace-id',
         query: '分析性能',
@@ -1136,7 +1136,7 @@ describe('E2E: Error Handling', () => {
 
   it('should handle empty query gracefully', async () => {
     const response = await request(app)
-      .post('/api/agent/analyze')
+      .post('/api/agent/v1/analyze')
       .send({
         traceId: 'some-trace-id',
         query: '',
@@ -1149,7 +1149,7 @@ describe('E2E: Error Handling', () => {
   it('should handle session cleanup correctly', async () => {
     // Try to delete non-existent session
     const response = await request(app)
-      .delete('/api/agent/non-existent-session-xyz');
+      .delete('/api/agent/v1/non-existent-session-xyz');
 
     expect(response.status).toBe(404);
   });

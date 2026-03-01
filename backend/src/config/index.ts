@@ -208,10 +208,10 @@ export const pipelineConfig = {
 
 export const modelRouterConfig = {
   /** Default model to use */
-  defaultModel: process.env.MODEL_DEFAULT || 'deepseek-chat',
+  defaultModel: process.env.MODEL_DEFAULT || 'glm-5',
 
   /** Fallback chain for model failures */
-  fallbackChain: parseArrayEnv('MODEL_FALLBACK_CHAIN', ['deepseek-chat']),
+  fallbackChain: parseArrayEnv('MODEL_FALLBACK_CHAIN', ['deepseek-reasoner', 'deepseek-chat']),
 
   /** Enable ensemble mode */
   enableEnsemble: parseBoolEnv('MODEL_ENABLE_ENSEMBLE', false),

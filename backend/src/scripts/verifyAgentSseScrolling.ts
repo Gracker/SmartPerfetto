@@ -161,7 +161,7 @@ function createVerificationApp(): express.Express {
     res.json({ status: 'OK', timestamp: new Date().toISOString() });
   });
 
-  app.use('/api/agent', agentRoutes);
+  app.use('/api/agent/v1', agentRoutes);
   app.use('/api/trace-processor', traceProcessorRoutes);
   app.use('/api/skills', skillRoutes);
 
@@ -200,7 +200,7 @@ async function collectSseSummary(baseUrl: string, sessionId: string, timeoutMs: 
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(`${baseUrl}/api/agent/${sessionId}/stream`, {
+    const response = await fetch(`${baseUrl}/api/agent/v1/${sessionId}/stream`, {
       headers: { Accept: 'text/event-stream' },
       signal: controller.signal,
     });
@@ -366,7 +366,7 @@ async function main(): Promise<void> {
   try {
     traceId = await traceProcessorService.loadTraceFromFilePath(options.tracePath);
 
-    const startResponse = await fetch(`${baseUrl}/api/agent/analyze`, {
+    const startResponse = await fetch(`${baseUrl}/api/agent/v1/analyze`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -431,7 +431,7 @@ async function main(): Promise<void> {
   } finally {
     if (sessionId !== '' && !options.keepSession) {
       try {
-        await fetch(`${baseUrl}/api/agent/${sessionId}`, { method: 'DELETE' });
+        await fetch(`${baseUrl}/api/agent/v1/${sessionId}`, { method: 'DELETE' });
       } catch {
       }
     }

@@ -11,9 +11,6 @@ import { serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
-import traceRoutes from './routes/trace';
-import traceProcessorRoutes from './routes/traceProcessorRoutes';
-import advancedAIRoutes from './routes/advancedAIRoutes';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
 import perfettoLocalRoutes from './routes/perfettoLocalRoutes';
 import aiChatRoutes from './routes/aiChatRoutes';
@@ -30,6 +27,15 @@ import {
   assertTraceAnalysisConfiguredForStartup,
   getTraceAnalysisConfigurationStatus,
 } from './services/traceAnalysisSkill';
+import {
+  getLegacyApiUsageSnapshot,
+} from './services/legacyApiTelemetry';
+import {
+  AGENT_API_V1_BASE,
+  AGENT_API_V1_LLM_BASE,
+  LEGACY_AGENT_API_BASE,
+  rejectLegacyAgentApi,
+} from './middleware/legacyAgentApi';
 
 // Import cleanup utilities
 import { TraceProcessorFactory, killOrphanProcessors } from './services/workingTraceProcessor';
@@ -64,21 +70,21 @@ app.get('/health', (req, res) => {
 
 // Debug endpoint to check env vars
 app.get('/debug', (req, res) => {
+  const legacyUsage = getLegacyApiUsageSnapshot(10);
   res.json({
     hasDeepSeekKey: !!process.env.DEEPSEEK_API_KEY,
     deepSeekBaseUrl: process.env.DEEPSEEK_BASE_URL,
     deepSeekModel: process.env.DEEPSEEK_MODEL,
     aiService: process.env.AI_SERVICE,
     cwd: process.cwd(),
+    legacyAgentApiUsage: legacyUsage,
   });
 });
 
 // API routes
 app.use('/api/sql', sqlRoutes);
-app.use('/api/trace', traceRoutes);
 app.use('/api/traces', simpleTraceRoutes);
-app.use('/chat', aiChatRoutes);
-app.use('/api/ai', advancedAIRoutes);
+app.use(AGENT_API_V1_LLM_BASE, aiChatRoutes);
 app.use('/api/perfetto', perfettoLocalRoutes);
 app.use('/api/auto-analysis', autoAnalysisRoutes);
 app.use('/api/sessions', sessionRoutes);
@@ -88,8 +94,8 @@ app.use('/api/template-analysis', templateAnalysisRoutes);
 app.use('/api/skills', skillRoutes);
 app.use('/api/admin', skillAdminRoutes);
 app.use('/api/reports', reportRoutes);
-app.use('/api/assistant/v1', agentRoutes);
-app.use('/api/agent', agentRoutes);
+app.use(AGENT_API_V1_BASE, agentRoutes);
+app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
 
 const assistantShellDir = path.resolve(__dirname, '../public/assistant-shell');
 app.get('/assistant-shell', (_req, res) => {

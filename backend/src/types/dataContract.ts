@@ -980,9 +980,19 @@ export function displayResultToEnvelope(
   skillId: string,
   explicitColumns?: Partial<ColumnDefinition>[]
 ): DataEnvelope {
+  const explicitColumnNames = Array.isArray(explicitColumns)
+    ? explicitColumns
+      .map((def) => def?.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0)
+    : [];
+
+  const envelopeColumnNames = result.data.columns
+    ? (explicitColumnNames.length > 0 ? explicitColumnNames : result.data.columns)
+    : undefined;
+
   // Build column definitions from data columns
-  const columns = result.data.columns
-    ? buildColumnDefinitions(result.data.columns, explicitColumns)
+  const columns = envelopeColumnNames
+    ? buildColumnDefinitions(envelopeColumnNames, explicitColumns)
     : undefined;
 
   return createDataEnvelope(result.data, {

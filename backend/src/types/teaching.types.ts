@@ -16,7 +16,7 @@
 // =============================================================================
 
 /**
- * Main API response for /api/agent/teaching/pipeline
+ * Main API response for /api/agent/v1/teaching/pipeline
  */
 export interface TeachingPipelineResponse {
   success: boolean;

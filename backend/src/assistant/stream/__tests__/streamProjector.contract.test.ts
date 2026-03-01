@@ -117,4 +117,28 @@ describe('StreamProjector SSE Contract', () => {
     expect(parsed[0].data.requestId).toBe('req-2');
     expect(parsed[0].data.runSequence).toBe(2);
   });
+
+  it('emits error event with both error and message fields for client compatibility', () => {
+    const projector = new StreamProjector();
+    const res = new MockSseResponse();
+
+    projector.sendError(
+      res as unknown as express.Response,
+      'trace not found',
+      {
+        runId: 'run-3',
+        requestId: 'req-3',
+        runSequence: 3,
+      }
+    );
+
+    const parsed = parseSsePayload(res.writes.join(''));
+    expect(parsed.length).toBe(1);
+    expect(parsed[0].event).toBe('error');
+    expect(parsed[0].data.error).toBe('trace not found');
+    expect(parsed[0].data.message).toBe('trace not found');
+    expect(parsed[0].data.runId).toBe('run-3');
+    expect(parsed[0].data.requestId).toBe('req-3');
+    expect(parsed[0].data.runSequence).toBe(3);
+  });
 });

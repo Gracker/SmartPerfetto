@@ -200,7 +200,7 @@ Protects against infinite loops and user intervention:
 User Query: "分析滑动卡顿"
     │
     ▼
-POST /api/agent/analyze
+POST /api/agent/v1/analyze
     │
     ├─ Intent Understanding
     │   └─ Parse: intent=scrolling, followUpType=null
@@ -228,10 +228,10 @@ POST /api/agent/analyze
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/agent/analyze` | POST | Start analysis |
-| `/api/agent/:sessionId/stream` | GET | SSE real-time stream |
-| `/api/agent/:sessionId/status` | GET | Poll status |
-| `/api/agent/:sessionId/respond` | POST | Circuit breaker response |
+| `/api/agent/v1/analyze` | POST | Start analysis |
+| `/api/agent/v1/:sessionId/stream` | GET | SSE real-time stream |
+| `/api/agent/v1/:sessionId/status` | GET | Poll status |
+| `/api/agent/v1/:sessionId/respond` | POST | Circuit breaker response |
 | `/api/traces/register-rpc` | POST | Register trace_processor |
 | `/api/skills/*` | GET | Skill management |
 | `/api/sessions/*` | GET | Session management |

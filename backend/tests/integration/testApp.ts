@@ -17,6 +17,10 @@ import fs from 'fs';
 import agentRoutes from '../../src/routes/agentRoutes';
 import traceProcessorRoutes from '../../src/routes/traceProcessorRoutes';
 import skillRoutes from '../../src/routes/skillRoutes';
+import {
+  LEGACY_AGENT_API_BASE,
+  rejectLegacyAgentApi,
+} from '../../src/middleware/legacyAgentApi';
 
 // Import services
 import { TraceProcessorService, getTraceProcessorService } from '../../src/services/traceProcessorService';
@@ -39,8 +43,8 @@ export function createTestApp() {
   });
 
   // API routes (only the ones we need for testing)
-  app.use('/api/assistant/v1', agentRoutes);
-  app.use('/api/agent', agentRoutes);
+  app.use('/api/agent/v1', agentRoutes);
+  app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
   app.use('/api/trace-processor', traceProcessorRoutes);
   app.use('/api/skills', skillRoutes);
 

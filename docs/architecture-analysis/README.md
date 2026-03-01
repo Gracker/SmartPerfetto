@@ -35,7 +35,7 @@ SmartPerfetto 的核心升级点是：从"按固定 pipeline 走完就结束"变
 
 ```mermaid
 flowchart TD
-    A[HTTP /api/agent/analyze] --> B[AgentRuntime]
+    A[HTTP /api/agent/v1/analyze] --> B[AgentRuntime]
     B --> C{follow-up 类型}
 
     C -->|clarify| C1[ClarifyExecutor]

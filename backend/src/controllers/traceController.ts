@@ -73,14 +73,13 @@ class TraceController {
       success: false,
       code: 'TRACE_ANALYZE_DEPRECATED',
       error: '/api/trace/analyze has been removed',
-      details: 'Use AgentRuntime unified flow: upload with /api/traces/* and analyze with /api/agent/analyze.',
+      details: 'Use AgentRuntime unified flow: upload with /api/traces/* and analyze with /api/agent/v1/analyze.',
       migration: {
         upload: [
-          'POST /api/traces/initialize',
-          'POST /api/traces/:traceId/upload (or chunk upload)',
-          'POST /api/traces/:traceId/complete',
+          'POST /api/traces/upload (multipart, file=<trace>)',
+          'GET /api/traces/:id (optional verification)',
         ],
-        analyze: 'POST /api/agent/analyze',
+        analyze: 'POST /api/agent/v1/analyze',
       },
       removedAt: '2026-02-22',
     });

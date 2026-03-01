@@ -136,24 +136,22 @@ SmartPerfetto/
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/assistant/v1/analyze` | Start analysis (Assistant API v1) |
-| GET | `/api/assistant/v1/:id/stream` | SSE real-time updates (Assistant API v1) |
-| POST | `/api/agent/analyze` | Start analysis (legacy-compatible path) |
-| GET | `/api/agent/:id/stream` | SSE real-time updates (legacy-compatible path) |
-| GET | `/api/agent/:id/status` | Get analysis status |
-| POST | `/api/agent/:id/respond` | Respond to circuit breaker |
-| POST | `/api/agent/scene-reconstruct` | Scene reconstruction |
+| POST | `/api/agent/v1/analyze` | Start analysis |
+| GET | `/api/agent/v1/:id/stream` | SSE real-time updates |
+| GET | `/api/agent/v1/:id/status` | Get analysis status |
+| POST | `/api/agent/v1/:id/respond` | Respond to circuit breaker |
+| POST | `/api/agent/v1/scene-reconstruct` | Scene reconstruction |
 | GET | `/assistant-shell` | Standalone assistant web shell (minimal UI) |
 
-`POST /api/assistant/v1/analyze` and `POST /api/agent/analyze` return `runId`, `requestId`, `runSequence`.  
+`POST /api/agent/v1/analyze` returns `runId`, `requestId`, `runSequence`.  
 SSE events (`connected`, `conversation_step`, `data`, `analysis_completed`, `error`, `end`) carry the same observability fields for end-to-end correlation.
 
 ### Logging
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/agent/logs/:sessionId` | Get session logs |
-| GET | `/api/agent/logs/:sessionId/errors` | Get only errors |
+| GET | `/api/agent/v1/logs/:sessionId` | Get session logs |
+| GET | `/api/agent/v1/logs/:sessionId/errors` | Get only errors |
 
 ### Trace
 
@@ -208,10 +206,10 @@ DEEPSEEK_MODEL=deepseek-chat
 
 ```bash
 # View session logs
-curl http://localhost:3000/api/agent/logs/{sessionId}
+curl http://localhost:3000/api/agent/v1/logs/{sessionId}
 
 # View only errors
-curl http://localhost:3000/api/agent/logs/{sessionId}/errors
+curl http://localhost:3000/api/agent/v1/logs/{sessionId}/errors
 ```
 
 Logs are stored in `backend/logs/sessions/*.jsonl`.

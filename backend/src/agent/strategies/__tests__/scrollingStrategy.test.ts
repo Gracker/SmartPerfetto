@@ -17,14 +17,10 @@ describe('scrollingStrategy', () => {
     expect(frameAnalysisTask.directSkillId).toBe('jank_frame_detail');
   });
 
-  it('adds per-session system context skills for IO/network/thermal breadth', () => {
+  it('keeps session_overview focused on frame_agent and analyze_scrolling only', () => {
     const sessionTasks = scrollingStrategy.stages[1].tasks;
-    const directSkills = sessionTasks
-      .filter(task => task.executionMode === 'direct_skill')
-      .map(task => task.directSkillId);
-
-    expect(directSkills).toContain('io_pressure');
-    expect(directSkills).toContain('network_analysis');
-    expect(directSkills).toContain('thermal_throttling');
+    expect(sessionTasks).toHaveLength(1);
+    expect(sessionTasks[0].agentId).toBe('frame_agent');
+    expect(sessionTasks[0].focusTools).toEqual(['analyze_scrolling']);
   });
 });

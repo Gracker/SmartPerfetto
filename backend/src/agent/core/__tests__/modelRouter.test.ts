@@ -855,7 +855,7 @@ describe('ModelRouter', () => {
       const glmModel = createMockModel({
         id: 'glm-test',
         provider: 'glm',
-        model: 'glm-4',
+        model: 'glm-5',
       });
 
       const glmRouter = new ModelRouter({
@@ -1074,6 +1074,370 @@ describe('ModelRouter', () => {
       expect(result.success).toBe(true);
       // Verify the call was made - the options are passed internally
       expect(mockClient.complete).toHaveBeenCalled();
+    });
+
+    it('should enable native tools/tool_choice/reasoning by default from env', async () => {
+      const complete = jest
+        .fn<(prompt: string, options?: Record<string, unknown>) => Promise<string>>()
+        .mockResolvedValue('Response');
+      const mockClient = { complete };
+      for (const model of router.getEnabledModels()) {
+        router.registerClient(model.id, mockClient as any);
+      }
+
+      const previousEnabled = process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+      const previousTools = process.env.MODEL_NATIVE_TOOLS;
+      const previousToolChoice = process.env.MODEL_NATIVE_TOOL_CHOICE;
+      const previousReasoning = process.env.MODEL_NATIVE_REASONING;
+
+      process.env.MODEL_NATIVE_OPTIONS_ENABLED = 'true';
+      process.env.MODEL_NATIVE_TOOLS = JSON.stringify([
+        { type: 'function', function: { name: 'default_tool', parameters: { type: 'object' } } },
+      ]);
+      process.env.MODEL_NATIVE_TOOL_CHOICE = 'required';
+      process.env.MODEL_NATIVE_REASONING = JSON.stringify({ effort: 'high' });
+
+      try {
+        const result = await router.callWithFallback('Test', 'general');
+        expect(result.success).toBe(true);
+        expect(complete).toHaveBeenCalled();
+        const callOptions = (complete.mock.calls[0]?.[1] ?? {}) as Record<string, unknown>;
+        expect(callOptions.tools).toEqual([
+          { type: 'function', function: { name: 'default_tool', parameters: { type: 'object' } } },
+        ]);
+        expect(callOptions.toolChoice).toBe('required');
+        expect(callOptions.reasoning).toEqual({ effort: 'high' });
+      } finally {
+        if (previousEnabled === undefined) delete process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+        else process.env.MODEL_NATIVE_OPTIONS_ENABLED = previousEnabled;
+        if (previousTools === undefined) delete process.env.MODEL_NATIVE_TOOLS;
+        else process.env.MODEL_NATIVE_TOOLS = previousTools;
+        if (previousToolChoice === undefined) delete process.env.MODEL_NATIVE_TOOL_CHOICE;
+        else process.env.MODEL_NATIVE_TOOL_CHOICE = previousToolChoice;
+        if (previousReasoning === undefined) delete process.env.MODEL_NATIVE_REASONING;
+        else process.env.MODEL_NATIVE_REASONING = previousReasoning;
+      }
+    });
+
+    it('should apply task-aware reasoning profile when reasoning is not explicitly provided', async () => {
+      const complete = jest
+        .fn<(prompt: string, options?: Record<string, unknown>) => Promise<string>>()
+        .mockResolvedValue('Response');
+      const mockClient = { complete };
+      for (const model of router.getEnabledModels()) {
+        router.registerClient(model.id, mockClient as any);
+      }
+
+      const previousTaskReasoning = process.env.MODEL_NATIVE_REASONING_BY_TASK;
+      const previousReasoning = process.env.MODEL_NATIVE_REASONING;
+
+      delete process.env.MODEL_NATIVE_REASONING_BY_TASK;
+      delete process.env.MODEL_NATIVE_REASONING;
+
+      try {
+        const result = await router.callWithFallback('Plan this task', 'planning');
+        expect(result.success).toBe(true);
+        expect(complete).toHaveBeenCalled();
+
+        const callOptions = (complete.mock.calls[0]?.[1] ?? {}) as Record<string, unknown>;
+        expect(callOptions.reasoning).toEqual({ effort: 'high' });
+      } finally {
+        if (previousTaskReasoning === undefined) delete process.env.MODEL_NATIVE_REASONING_BY_TASK;
+        else process.env.MODEL_NATIVE_REASONING_BY_TASK = previousTaskReasoning;
+        if (previousReasoning === undefined) delete process.env.MODEL_NATIVE_REASONING;
+        else process.env.MODEL_NATIVE_REASONING = previousReasoning;
+      }
+    });
+
+    it('should disable env default native tools for formatting/simple extraction tasks', async () => {
+      const complete = jest
+        .fn<(prompt: string, options?: Record<string, unknown>) => Promise<string>>()
+        .mockResolvedValue('Response');
+      const mockClient = { complete };
+      for (const model of router.getEnabledModels()) {
+        router.registerClient(model.id, mockClient as any);
+      }
+
+      const previousEnabled = process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+      const previousTools = process.env.MODEL_NATIVE_TOOLS;
+      const previousToolChoice = process.env.MODEL_NATIVE_TOOL_CHOICE;
+
+      process.env.MODEL_NATIVE_OPTIONS_ENABLED = 'true';
+      process.env.MODEL_NATIVE_TOOLS = JSON.stringify([
+        { type: 'function', function: { name: 'default_tool', parameters: { type: 'object' } } },
+      ]);
+      process.env.MODEL_NATIVE_TOOL_CHOICE = 'auto';
+
+      try {
+        const result = await router.callWithFallback('Format this output', 'formatting');
+        expect(result.success).toBe(true);
+        expect(complete).toHaveBeenCalled();
+
+        const callOptions = (complete.mock.calls[0]?.[1] ?? {}) as Record<string, unknown>;
+        expect(callOptions.tools).toEqual([]);
+        expect(callOptions.toolChoice).toBeUndefined();
+      } finally {
+        if (previousEnabled === undefined) delete process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+        else process.env.MODEL_NATIVE_OPTIONS_ENABLED = previousEnabled;
+        if (previousTools === undefined) delete process.env.MODEL_NATIVE_TOOLS;
+        else process.env.MODEL_NATIVE_TOOLS = previousTools;
+        if (previousToolChoice === undefined) delete process.env.MODEL_NATIVE_TOOL_CHOICE;
+        else process.env.MODEL_NATIVE_TOOL_CHOICE = previousToolChoice;
+      }
+    });
+
+    it('should skip task-aware native defaults when native options are disabled', async () => {
+      const complete = jest
+        .fn<(prompt: string, options?: Record<string, unknown>) => Promise<string>>()
+        .mockResolvedValue('Response');
+      const mockClient = { complete };
+      for (const model of router.getEnabledModels()) {
+        router.registerClient(model.id, mockClient as any);
+      }
+
+      const previousEnabled = process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+      const previousTools = process.env.MODEL_NATIVE_TOOLS;
+      const previousReasoning = process.env.MODEL_NATIVE_REASONING;
+
+      process.env.MODEL_NATIVE_OPTIONS_ENABLED = 'false';
+      process.env.MODEL_NATIVE_TOOLS = JSON.stringify([
+        { type: 'function', function: { name: 'default_tool', parameters: { type: 'object' } } },
+      ]);
+      process.env.MODEL_NATIVE_REASONING = JSON.stringify({ effort: 'high' });
+
+      try {
+        const result = await router.callWithFallback('Plan this task', 'planning');
+        expect(result.success).toBe(true);
+        expect(complete).toHaveBeenCalled();
+
+        const callOptions = (complete.mock.calls[0]?.[1] ?? {}) as Record<string, unknown>;
+        expect(callOptions.tools).toBeUndefined();
+        expect(callOptions.toolChoice).toBeUndefined();
+        expect(callOptions.reasoning).toBeUndefined();
+      } finally {
+        if (previousEnabled === undefined) delete process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+        else process.env.MODEL_NATIVE_OPTIONS_ENABLED = previousEnabled;
+        if (previousTools === undefined) delete process.env.MODEL_NATIVE_TOOLS;
+        else process.env.MODEL_NATIVE_TOOLS = previousTools;
+        if (previousReasoning === undefined) delete process.env.MODEL_NATIVE_REASONING;
+        else process.env.MODEL_NATIVE_REASONING = previousReasoning;
+      }
+    });
+
+    it('should allow per-call native options to override env defaults', async () => {
+      const complete = jest
+        .fn<(prompt: string, options?: Record<string, unknown>) => Promise<string>>()
+        .mockResolvedValue('Response');
+      const mockClient = { complete };
+      for (const model of router.getEnabledModels()) {
+        router.registerClient(model.id, mockClient as any);
+      }
+
+      const previousEnabled = process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+      const previousTools = process.env.MODEL_NATIVE_TOOLS;
+      const previousToolChoice = process.env.MODEL_NATIVE_TOOL_CHOICE;
+      const previousReasoning = process.env.MODEL_NATIVE_REASONING;
+
+      process.env.MODEL_NATIVE_OPTIONS_ENABLED = 'true';
+      process.env.MODEL_NATIVE_TOOLS = JSON.stringify([
+        { type: 'function', function: { name: 'default_tool', parameters: { type: 'object' } } },
+      ]);
+      process.env.MODEL_NATIVE_TOOL_CHOICE = 'required';
+      process.env.MODEL_NATIVE_REASONING = JSON.stringify({ effort: 'high' });
+
+      try {
+        const overrideTools = [
+          { type: 'function', function: { name: 'override_tool', parameters: { type: 'object' } } },
+        ];
+        const overrideToolChoice = 'auto';
+        const overrideReasoning = { effort: 'low' };
+
+        const result = await router.callWithFallback('Test', 'general', {
+          tools: overrideTools,
+          toolChoice: overrideToolChoice,
+          reasoning: overrideReasoning,
+        });
+        expect(result.success).toBe(true);
+        expect(complete).toHaveBeenCalled();
+        const callOptions = (complete.mock.calls[0]?.[1] ?? {}) as Record<string, unknown>;
+        expect(callOptions.tools).toEqual(overrideTools);
+        expect(callOptions.toolChoice).toBe(overrideToolChoice);
+        expect(callOptions.reasoning).toEqual(overrideReasoning);
+      } finally {
+        if (previousEnabled === undefined) delete process.env.MODEL_NATIVE_OPTIONS_ENABLED;
+        else process.env.MODEL_NATIVE_OPTIONS_ENABLED = previousEnabled;
+        if (previousTools === undefined) delete process.env.MODEL_NATIVE_TOOLS;
+        else process.env.MODEL_NATIVE_TOOLS = previousTools;
+        if (previousToolChoice === undefined) delete process.env.MODEL_NATIVE_TOOL_CHOICE;
+        else process.env.MODEL_NATIVE_TOOL_CHOICE = previousToolChoice;
+        if (previousReasoning === undefined) delete process.env.MODEL_NATIVE_REASONING;
+        else process.env.MODEL_NATIVE_REASONING = previousReasoning;
+      }
+    });
+
+    it('should pass native tools/tool_choice/reasoning options to client', async () => {
+      const complete = jest
+        .fn<(prompt: string, options?: Record<string, unknown>) => Promise<string>>()
+        .mockResolvedValue('Response');
+      const mockClient = { complete };
+      for (const model of router.getEnabledModels()) {
+        router.registerClient(model.id, mockClient as any);
+      }
+
+      const tools = [
+        {
+          type: 'function',
+          function: {
+            name: 'analyze_perfetto_slice',
+            parameters: {
+              type: 'object',
+              properties: {
+                table: { type: 'string' },
+              },
+            },
+          },
+        },
+      ];
+      const toolChoice = {
+        type: 'function',
+        function: { name: 'analyze_perfetto_slice' },
+      };
+      const reasoning = { effort: 'high' };
+
+      const result = await router.callWithFallback('Test', 'general', {
+        tools,
+        tool_choice: toolChoice,
+        reasoning,
+      });
+
+      expect(result.success).toBe(true);
+      expect(complete).toHaveBeenCalled();
+      const callOptions = (complete.mock.calls[0]?.[1] ?? {}) as Record<string, unknown>;
+      expect(callOptions.tools).toEqual(tools);
+      expect(callOptions.toolChoice).toEqual(toolChoice);
+      expect(callOptions.reasoning).toEqual(reasoning);
+    });
+
+    it('should forward native tools/tool_choice/reasoning to DeepSeek request body', async () => {
+      const deepseekModel = createMockModel({
+        id: 'deepseek-native',
+        provider: 'deepseek',
+        model: 'deepseek-reasoner',
+      });
+      const deepseekRouter = new ModelRouter({
+        models: [deepseekModel],
+        defaultModel: 'deepseek-native',
+        fallbackChain: ['deepseek-native'],
+      });
+
+      const previousApiKey = process.env.DEEPSEEK_API_KEY;
+      const previousBaseUrl = process.env.DEEPSEEK_BASE_URL;
+      process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
+      process.env.DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
+
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: 'ok' } }] }),
+        text: async () => '',
+      } as any);
+
+      const tools = [
+        {
+          type: 'function',
+          function: { name: 'inspect_trace', parameters: { type: 'object' } },
+        },
+      ];
+      const reasoning = { effort: 'high' };
+
+      try {
+        const result = await deepseekRouter.callWithFallback('DeepSeek passthrough', 'general', {
+          tools,
+          toolChoice: 'required',
+          reasoning,
+        });
+
+        expect(result.success).toBe(true);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(body.tools).toEqual(tools);
+        expect(body.tool_choice).toBe('required');
+        expect(body.reasoning).toEqual(reasoning);
+      } finally {
+        fetchSpy.mockRestore();
+        if (previousApiKey === undefined) {
+          delete process.env.DEEPSEEK_API_KEY;
+        } else {
+          process.env.DEEPSEEK_API_KEY = previousApiKey;
+        }
+        if (previousBaseUrl === undefined) {
+          delete process.env.DEEPSEEK_BASE_URL;
+        } else {
+          process.env.DEEPSEEK_BASE_URL = previousBaseUrl;
+        }
+      }
+    });
+
+    it('should forward native tools/tool_choice/reasoning to GLM request body', async () => {
+      const glmModel = createMockModel({
+        id: 'glm-native',
+        provider: 'glm',
+        model: 'glm-5',
+      });
+      const glmRouter = new ModelRouter({
+        models: [glmModel],
+        defaultModel: 'glm-native',
+        fallbackChain: ['glm-native'],
+      });
+
+      const previousApiKey = process.env.GLM_API_KEY;
+      const previousBaseUrl = process.env.GLM_BASE_URL;
+      process.env.GLM_API_KEY = 'test-glm-key';
+      process.env.GLM_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
+
+      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ choices: [{ message: { content: 'ok' } }] }),
+        text: async () => '',
+      } as any);
+
+      const tools = [
+        {
+          type: 'function',
+          function: { name: 'inspect_frame', parameters: { type: 'object' } },
+        },
+      ];
+      const reasoning = { effort: 'medium', budget_tokens: 512 };
+
+      try {
+        const result = await glmRouter.callWithFallback('GLM passthrough', 'general', {
+          tools,
+          toolChoice: 'auto',
+          reasoning,
+        });
+
+        expect(result.success).toBe(true);
+        expect(fetchSpy).toHaveBeenCalledTimes(1);
+        const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        expect(body.tools).toEqual(tools);
+        expect(body.tool_choice).toBe('auto');
+        expect(body.reasoning).toEqual(reasoning);
+      } finally {
+        fetchSpy.mockRestore();
+        if (previousApiKey === undefined) {
+          delete process.env.GLM_API_KEY;
+        } else {
+          process.env.GLM_API_KEY = previousApiKey;
+        }
+        if (previousBaseUrl === undefined) {
+          delete process.env.GLM_BASE_URL;
+        } else {
+          process.env.GLM_BASE_URL = previousBaseUrl;
+        }
+      }
     });
   });
 

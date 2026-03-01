@@ -622,11 +622,42 @@ export class SkillAnalysisAdapter {
       // 1. 标准 {columns, rows} 格式
       else if (data.rows && Array.isArray(data.rows)) {
         console.log(`[convertDisplayResultsToSections] ${result.stepId}: Using {columns, rows} format`);
-        sectionData = this.rowsToObjects(data.columns, data.rows);
+        const configuredColumns = columnDefinitions
+          ?.map((d: any) => d?.name)
+          .filter((name: any, idx: number, arr: any[]) =>
+            typeof name === 'string' &&
+            name.length > 0 &&
+            arr.indexOf(name) === idx
+          ) || [];
+        const sourceColumns = Array.isArray(data.columns) ? data.columns : [];
+
+        // Prefer configured display columns and project the row objects accordingly.
+        // This keeps rendered columns aligned with skill author intent.
+        if (configuredColumns.length > 0) {
+          if (sourceColumns.length > 0) {
+            const sourceRows = this.rowsToObjects(sourceColumns, data.rows);
+            sectionData = sourceRows.map((row: Record<string, any>) => {
+              const projected: Record<string, any> = {};
+              for (const col of configuredColumns) {
+                projected[col] = row[col];
+              }
+              return projected;
+            });
+          } else {
+            sectionData = data.rows.map((row: any) => {
+              const projected: Record<string, any> = {};
+              configuredColumns.forEach((col, idx) => {
+                projected[col] = Array.isArray(row) ? row[idx] : undefined;
+              });
+              return projected;
+            });
+          }
+          columns = configuredColumns;
+        } else {
+          sectionData = this.rowsToObjects(sourceColumns, data.rows);
+          columns = sourceColumns;
+        }
         rowCount = data.rows.length;
-        columns = Array.isArray(data.columns) && data.columns.length > 0
-          ? data.columns
-          : columnDefinitions?.map((d: any) => d.name).filter((name: any) => typeof name === 'string');
       }
       // 2. 文本格式
       else if (data.text) {

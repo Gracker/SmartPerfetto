@@ -6,9 +6,13 @@
 
 import express from 'express';
 import SkillAdminController from '../controllers/skillAdminController';
+import { authenticate } from '../middleware/auth';
 
 const router = express.Router();
 const skillAdminController = new SkillAdminController();
+
+// Admin endpoints must always be authenticated.
+router.use(authenticate);
 
 // =============================================================================
 // Skill CRUD

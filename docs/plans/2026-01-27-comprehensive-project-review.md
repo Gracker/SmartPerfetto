@@ -478,7 +478,7 @@ describe('AgentRuntime', () => {
 
 ```typescript
 // tests/integration/agentRoutes.full.test.ts
-describe('POST /api/agent/analyze', () => {
+describe('POST /api/agent/v1/analyze', () => {
   it('should stream SSE events for scrolling analysis');
   it('should handle circuit breaker intervention');
   it('should return proper error for invalid trace');

@@ -217,6 +217,24 @@ export class HTMLReportGenerator {
     return `${sign}${seconds.toFixed(3)}s`;
   }
 
+  private stringifyValueForDisplay(value: any, maxLen: number = 200): string {
+    if (value === null || value === undefined) return 'NULL';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+      return String(value);
+    }
+    try {
+      const json = JSON.stringify(value);
+      if (typeof json === 'string' && json.length > 0) {
+        return json.length > maxLen ? `${json.substring(0, maxLen)}...` : json;
+      }
+    } catch {
+      // Fall through to String(value) for non-serializable objects.
+    }
+    const raw = String(value);
+    return raw.length > maxLen ? `${raw.substring(0, maxLen)}...` : raw;
+  }
+
   /**
    * Generate HTML report from analysis data
    */
@@ -1142,7 +1160,7 @@ export class HTMLReportGenerator {
       // 【P2 Fix】使用可配置的元数据列名代替硬编码
       const constantColumnLabels = Object.entries(constantColumns)
         .filter(([col]) => this.isMetadataColumn(col))
-        .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(String(value))}</strong></span>`)
+        .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`)
         .join('');
 
       // 主表格 + 展开行（colspan 横跨所有列）
@@ -1515,7 +1533,7 @@ export class HTMLReportGenerator {
     // 【P2 Fix】使用可配置的元数据列名代替硬编码
     const constantColumnLabels = Object.entries(constantColumns)
       .filter(([col]) => this.isMetadataColumn(col))
-      .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(String(value))}</strong></span>`)
+      .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`)
       .join('');
 
     return `
@@ -1604,7 +1622,7 @@ export class HTMLReportGenerator {
     const metadataLabels = Object.entries(metadataValues)
       .map(([col, value]) => {
         const label = columnDefs.find(d => d.name === col)?.label || col;
-        return `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(label)}: <strong>${this.escapeHtml(String(value))}</strong></span>`;
+        return `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(label)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`;
       })
       .join('');
 
@@ -1694,7 +1712,7 @@ export class HTMLReportGenerator {
     const metadataLabels = Object.entries(metadataValues)
       .map(([col, value]) => {
         const label = columnDefs.find(d => d.name === col)?.label || col;
-        return `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(label)}: <strong>${this.escapeHtml(String(value))}</strong></span>`;
+        return `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(label)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`;
       })
       .join('');
 
@@ -1919,7 +1937,9 @@ export class HTMLReportGenerator {
       return value ? '<span style="color: #10b981;">✓</span>' : '<span style="color: #ef4444;">✗</span>';
     }
 
-    const str = String(value);
+    const str = typeof value === 'object'
+      ? this.stringifyValueForDisplay(value, 200)
+      : String(value);
     if (str.length > 200) {
       return `<span title="${this.escapeHtml(str)}">${this.escapeHtml(str.substring(0, 200))}...</span>`;
     }
@@ -1982,7 +2002,9 @@ export class HTMLReportGenerator {
     if (typeof value === 'boolean') {
       return value ? '<span style="color: #10b981;">✓</span>' : '<span style="color: #ef4444;">✗</span>';
     }
-    const str = String(value);
+    const str = typeof value === 'object'
+      ? this.stringifyValueForDisplay(value, 200)
+      : String(value);
     if (str.length > 200) {
       return `<span title="${this.escapeHtml(str)}">${this.escapeHtml(str.substring(0, 200))}...</span>`;
     }

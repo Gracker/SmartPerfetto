@@ -21,7 +21,7 @@
 
 ### 1.1 入口与路由
 
-- HTTP 入口：`backend/src/routes/agentRoutes.ts` (`/api/agent/analyze`)
+- HTTP 入口：`backend/src/routes/agentRoutes.ts` (`/api/agent/v1/analyze`)
 - 主协调器：`backend/src/agentv2/runtime/agentRuntime.ts`
 - 策略注册：`backend/src/agent/strategies/registry.ts`
 

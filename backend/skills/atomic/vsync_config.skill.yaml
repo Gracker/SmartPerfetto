@@ -4,8 +4,8 @@
 # 从 trace 中解析实际的 Vsync 周期和刷新率设置
 #
 # 数据来源 (按优先级):
-#   1. expected_frame_timeline_slice 的帧 duration (最可靠，直接反映帧调度周期)
-#   2. VSYNC-sf counter track 间隔的中位数 (counter 值 0/1 交替，每次变化=vsync tick)
+#   1. VSYNC-sf counter track 间隔的中位数 (直接反映显示侧消费节奏，和滑动分析口径一致)
+#   2. expected_frame_timeline_slice 的帧 duration (作为回退)
 #   3. 默认 120Hz (8.33ms)
 #
 # 输出:
@@ -47,7 +47,7 @@ steps:
     name: "检测 Vsync 配置"
     sql: |
       WITH
-      -- 方法1: 从 expected_frame_timeline_slice 获取 vsync 周期 (最可靠，直接反映帧调度周期)
+      -- 方法1: 从 expected_frame_timeline_slice 获取 vsync 周期（回退来源）
       -- 当提供 start_ts/end_ts 时，只看该区间内的帧（避免 VRR 省电时段干扰）
       expected_frame_vsync AS (
         SELECT
@@ -77,11 +77,11 @@ steps:
         FROM sf_vsync_intervals
         WHERE interval_ns > 4000000 AND interval_ns < 20000000
       ),
-      -- 合并结果，按优先级选择 (expected_frame 优先)
+      -- 合并结果，按优先级选择 (sf_vsync 优先，expected_frame 回退)
       combined AS (
-        SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
-        UNION ALL
         SELECT vsync_period_ns, source FROM sf_vsync WHERE vsync_period_ns > 0
+        UNION ALL
+        SELECT vsync_period_ns, source FROM expected_frame_vsync WHERE vsync_period_ns > 0
       ),
       -- 将原始周期 snap 到最近的标准刷新率（边界为相邻标准率周期的几何均值）
       raw_period AS (

@@ -287,9 +287,9 @@ export class EvaluationRunner {
 
     // Create a Blob from the buffer
     const blob = new Blob([fileBuffer]);
-    formData.append('trace', blob, fileName);
+    formData.append('file', blob, fileName);
 
-    const response = await fetch(`${this.options.backendUrl}/api/trace/upload`, {
+    const response = await fetch(`${this.options.backendUrl}/api/traces/upload`, {
       method: 'POST',
       body: formData,
     });
@@ -300,11 +300,12 @@ export class EvaluationRunner {
     }
 
     const data = await response.json();
-    if (!data.success || !data.traceId) {
+    const traceId = data?.trace?.id || data?.traceId;
+    if (!data.success || !traceId) {
       throw new Error(`Upload failed: ${data.error || 'Unknown error'}`);
     }
 
-    return data.traceId;
+    return traceId;
   }
 
   /**
@@ -328,7 +329,7 @@ export class EvaluationRunner {
     const endpoint =
       input.mode === 'skill'
         ? `${this.options.backendUrl}/api/skill/analyze`
-        : `${this.options.backendUrl}/api/agent/analyze`;
+        : `${this.options.backendUrl}/api/agent/v1/analyze`;
 
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -358,7 +359,7 @@ export class EvaluationRunner {
 
     while (Date.now() - startTime < this.options.timeoutMs) {
       const response = await fetch(
-        `${this.options.backendUrl}/api/agent/${sessionId}/status`,
+        `${this.options.backendUrl}/api/agent/v1/${sessionId}/status`,
       );
 
       if (!response.ok) {
