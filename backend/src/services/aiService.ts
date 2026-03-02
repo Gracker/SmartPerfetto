@@ -5,21 +5,6 @@ import { PERFETTO_TABLES_SCHEMA, PERFETTO_SQL_EXAMPLES } from '../data/perfettoS
 import SQLValidator from './sqlValidator';
 import { redactTextForLLM } from '../utils/llmPrivacy';
 
-const DEFAULT_GLM_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_GLM_CODING_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
-
-function isGLMCodingPlanModel(model: string): boolean {
-  const modelName = String(model || '').toLowerCase();
-  return modelName.includes('coding') && modelName.includes('plan');
-}
-
-function resolveGLMBaseUrl(model: string): string {
-  if (isGLMCodingPlanModel(model)) {
-    return process.env.GLM_CODING_BASE_URL || DEFAULT_GLM_CODING_BASE_URL;
-  }
-  return process.env.GLM_BASE_URL || DEFAULT_GLM_BASE_URL;
-}
-
 interface GenerateSqlRequest {
   query: string;
   context?: string;
@@ -58,7 +43,6 @@ class AIService {
   private openai?: OpenAI;
   private claudeUrl?: string;
   private deepseek?: OpenAI;
-  private glm?: OpenAI;
   private sqlValidator: SQLValidator;
 
   constructor() {
@@ -78,12 +62,6 @@ class AIService {
       this.deepseek = new OpenAI({
         apiKey: process.env.DEEPSEEK_API_KEY,
         baseURL: deepseekBaseURL,
-      });
-    } else if (aiService === 'glm' && process.env.GLM_API_KEY) {
-      const glmModel = process.env.GLM_MODEL || 'glm-5';
-      this.glm = new OpenAI({
-        apiKey: process.env.GLM_API_KEY,
-        baseURL: resolveGLMBaseUrl(glmModel),
       });
     }
   }
@@ -208,39 +186,8 @@ If data is missing, say what is needed.`;
     return completion.choices[0].message.content || '';
   }
 
-  private async callGLM(
-    prompt: string,
-    systemPrompt?: string,
-    options?: { temperature?: number; maxTokens?: number }
-  ): Promise<string> {
-    if (!this.glm) {
-      throw new Error('GLM not configured');
-    }
-
-    const safeSystem = redactTextForLLM(systemPrompt || this.buildSqlSystemPrompt()).text;
-    const safePrompt = redactTextForLLM(prompt).text;
-    const glmModel = process.env.GLM_MODEL || 'glm-5';
-    const completion = await this.glm.chat.completions.create({
-      model: glmModel,
-      messages: [
-        {
-          role: 'system',
-          content: safeSystem,
-        },
-        {
-          role: 'user',
-          content: safePrompt,
-        },
-      ],
-      temperature: options?.temperature ?? 0.3,
-      max_tokens: options?.maxTokens ?? 2000,
-    });
-
-    return completion.choices[0].message.content || '';
-  }
-
   async chat(prompt: string, options?: { systemPrompt?: string }): Promise<string> {
-    if (!this.openai && !process.env.ANTHROPIC_API_KEY && !this.deepseek && !this.glm) {
+    if (!this.openai && !process.env.ANTHROPIC_API_KEY && !this.deepseek) {
       return '';
     }
 
@@ -253,15 +200,12 @@ If data is missing, say what is needed.`;
     if (aiService === 'deepseek') {
       return await this.callDeepseek(prompt, systemPrompt);
     }
-    if (aiService === 'glm') {
-      return await this.callGLM(prompt, systemPrompt);
-    }
     return await this.callOpenAI(prompt, systemPrompt);
   }
 
   async generatePerfettoSQL(request: GenerateSqlRequest): Promise<GenerateSqlResponse> {
     // Check if AI service is configured
-    if (!this.openai && !process.env.ANTHROPIC_API_KEY && !this.deepseek && !this.glm) {
+    if (!this.openai && !process.env.ANTHROPIC_API_KEY && !this.deepseek) {
       // Return mock response when no AI service is configured
       return this.generateMockSQL(request.query);
     }
@@ -297,8 +241,6 @@ Rules:
       response = await this.callClaude(prompt, safeSystemPrompt, { temperature: 0 });
     } else if (aiService === 'deepseek') {
       response = await this.callDeepseek(prompt, safeSystemPrompt, { temperature: 0 });
-    } else if (aiService === 'glm') {
-      response = await this.callGLM(prompt, safeSystemPrompt, { temperature: 0 });
     } else {
       const safePrompt = redactTextForLLM(prompt).text;
       // OpenAI: enable JSON mode if supported by the target model.
@@ -322,9 +264,6 @@ Rules:
       }
       if (aiService === 'deepseek') {
         return this.callDeepseek(repairPrompt, safeSystemPrompt, { temperature: 0 });
-      }
-      if (aiService === 'glm') {
-        return this.callGLM(repairPrompt, safeSystemPrompt, { temperature: 0 });
       }
       const safeRepairPrompt = redactTextForLLM(repairPrompt).text;
       // OpenAI JSON mode again

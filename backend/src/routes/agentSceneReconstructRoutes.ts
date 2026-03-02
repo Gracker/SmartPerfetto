@@ -7,6 +7,7 @@ import {
   type ModelRouter,
   type StreamingUpdate,
 } from '../agent';
+import { isClaudeCodeEnabled, createClaudeRuntime } from '../agentv3';
 import { featureFlagsConfig } from '../config';
 import {
   AssistantApplicationService,
@@ -115,14 +116,16 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       const query = deepAnalysis ? '场景还原' : '场景还原 仅检测';
       const analysisId = `scene-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-      const orchestrator = createAgentRuntime(deps.getModelRouter(), {
-        maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
-        maxConcurrentTasks: options.maxConcurrentTasks || 3,
-        confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
-        maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
-        maxFailureRounds: options.maxFailureRounds ?? 2,
-        enableLogging: true,
-      });
+      const orchestrator = isClaudeCodeEnabled()
+        ? createClaudeRuntime(getTraceProcessorService()) as unknown as AgentRuntime
+        : createAgentRuntime(deps.getModelRouter(), {
+            maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
+            maxConcurrentTasks: options.maxConcurrentTasks || 3,
+            confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
+            maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
+            maxFailureRounds: options.maxFailureRounds ?? 2,
+            enableLogging: true,
+          });
 
       const logger = createSessionLogger(analysisId);
       logger.setMetadata({ traceId, query, architecture: 'agent-driven', feature: 'scene-reconstruct' });

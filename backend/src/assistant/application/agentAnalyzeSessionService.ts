@@ -6,6 +6,8 @@ import {
   type ModelRouter,
   type StreamingUpdate,
 } from '../../agent';
+import { isClaudeCodeEnabled, createClaudeRuntime } from '../../agentv3';
+import { getTraceProcessorService } from '../../services/traceProcessorService';
 import {
   type EnhancedSessionContext,
 } from '../../agent/context/enhancedSessionContext';
@@ -170,9 +172,11 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
         if (restoredContext) {
           this.sessionContextManager.set(requestedSessionId, traceId, restoredContext);
 
-          const restoredOrchestrator = createAgentRuntime(this.getModelRouter(), {
-            enableLogging: true,
-          });
+          const restoredOrchestrator = isClaudeCodeEnabled()
+            ? createClaudeRuntime(getTraceProcessorService()) as unknown as AgentRuntime
+            : createAgentRuntime(this.getModelRouter(), {
+                enableLogging: true,
+              });
 
           const focusSnapshot = this.sessionPersistenceService.loadFocusStore(requestedSessionId);
           if (focusSnapshot) {
@@ -265,15 +269,17 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
     }
 
     const sessionId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const orchestrator = createAgentRuntime(this.getModelRouter(), {
-      maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
-      maxConcurrentTasks: options.maxConcurrentTasks || 3,
-      taskTimeoutMs: options.taskTimeoutMs,
-      confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
-      maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
-      maxFailureRounds: options.maxFailureRounds ?? 2,
-      enableLogging: true,
-    });
+    const orchestrator = isClaudeCodeEnabled()
+      ? createClaudeRuntime(getTraceProcessorService()) as unknown as AgentRuntime
+      : createAgentRuntime(this.getModelRouter(), {
+          maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
+          maxConcurrentTasks: options.maxConcurrentTasks || 3,
+          taskTimeoutMs: options.taskTimeoutMs,
+          confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
+          maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
+          maxFailureRounds: options.maxFailureRounds ?? 2,
+          enableLogging: true,
+        });
 
     const logger = this.createSessionLogger(sessionId);
     logger.setMetadata({ traceId, query, architecture: 'agent-driven' });

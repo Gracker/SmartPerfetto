@@ -567,7 +567,7 @@ export interface CircuitBreakerState {
 // Multi-Model Router Types (新架构)
 // =============================================================================
 
-export type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'glm' | 'mock';
+export type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'mock';
 export type ModelStrength = 'reasoning' | 'coding' | 'speed' | 'cost' | 'vision';
 export type TaskType =
   | 'intent_understanding'

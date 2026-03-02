@@ -9,7 +9,7 @@ import { LLMClient } from './agents/baseExpertAgent';
 import { parseLlmJson } from '../utils/llmJson';
 
 export interface LLMAdapterConfig {
-  provider: 'deepseek' | 'openai' | 'glm';
+  provider: 'deepseek' | 'openai';
   apiKey?: string;
   baseUrl?: string;
   model?: string;
@@ -32,8 +32,6 @@ const DEFAULT_TIMEOUT_MS = Number.parseInt(process.env.LLM_REQUEST_TIMEOUT_MS ||
 const DEFAULT_MAX_RETRIES = Number.parseInt(process.env.LLM_MAX_RETRIES || '', 10) || 2;
 const DEFAULT_RETRY_BASE_DELAY_MS = Number.parseInt(process.env.LLM_RETRY_BASE_DELAY_MS || '', 10) || 600;
 const DEFAULT_MAX_RETRY_DELAY_MS = Number.parseInt(process.env.LLM_MAX_RETRY_DELAY_MS || '', 10) || 5000;
-const DEFAULT_GLM_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_GLM_CODING_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
 
 /**
  * Error thrown when LLM API key is not configured
@@ -45,7 +43,6 @@ export class LLMConfigurationError extends Error {
       `Please set the appropriate environment variable:\n` +
       `  - DeepSeek: DEEPSEEK_API_KEY\n` +
       `  - OpenAI: OPENAI_API_KEY\n` +
-      `  - GLM: GLM_API_KEY\n` +
       `Or specify the API key in the configuration.`
     );
     this.name = 'LLMConfigurationError';
@@ -117,11 +114,6 @@ function summarizeError(error: any): string {
   const code = error?.code ? ` code=${String(error.code)}` : '';
   const message = error?.message ? String(error.message) : 'Unknown error';
   return `${status ? `status=${status} ` : ''}${message}${code}`.trim();
-}
-
-function isGLMCodingPlanModel(model: string): boolean {
-  const modelName = String(model || '').toLowerCase();
-  return modelName.includes('coding') && modelName.includes('plan');
 }
 
 async function withRetries<T>(
@@ -289,77 +281,6 @@ export function createOpenAILLMClient(config?: Partial<LLMAdapterConfig>): LLMCl
 }
 
 /**
- * Creates an LLMClient that uses the GLM API (OpenAI-compatible)
- */
-export function createGLMLLMClient(config?: Partial<LLMAdapterConfig>): LLMClient {
-  const apiKey = config?.apiKey || process.env.GLM_API_KEY;
-  const model = config?.model || process.env.GLM_MODEL || 'glm-5';
-  const defaultBaseUrl = isGLMCodingPlanModel(model)
-    ? (process.env.GLM_CODING_BASE_URL || DEFAULT_GLM_CODING_BASE_URL)
-    : (process.env.GLM_BASE_URL || DEFAULT_GLM_BASE_URL);
-  const baseUrl = config?.baseUrl || defaultBaseUrl;
-  const temperature = config?.temperature ?? 0.3;
-  const maxTokens = config?.maxTokens ?? 4000;
-  const retryPolicy = resolveRetryPolicy(config);
-
-  if (!apiKey) {
-    throw new LLMConfigurationError('glm');
-  }
-
-  const client = new OpenAI({
-    apiKey,
-    baseURL: baseUrl,
-    timeout: retryPolicy.timeoutMs,
-    maxRetries: 0,
-  });
-
-  return {
-    async complete(prompt: string): Promise<string> {
-      try {
-        const completion = await withRetries(
-          'glm.complete',
-          retryPolicy,
-          async () => client.chat.completions.create({
-            model,
-            messages: [{ role: 'user', content: prompt }],
-            temperature,
-            max_tokens: maxTokens,
-          })
-        );
-        return completion.choices[0]?.message?.content || '';
-      } catch (error: any) {
-        console.error('[LLMAdapter] GLM API error:', summarizeError(error));
-        throw new Error(`LLM completion failed: ${error.message}`);
-      }
-    },
-
-    async completeJSON<T>(prompt: string): Promise<T> {
-      const jsonPrompt = `${prompt}\n\nIMPORTANT: Respond ONLY with valid JSON. No markdown, no explanation, just the JSON object.`;
-
-      try {
-        const completion = await withRetries(
-          'glm.completeJSON',
-          retryPolicy,
-          async () => client.chat.completions.create({
-            model,
-            messages: [{ role: 'user', content: jsonPrompt }],
-            temperature: 0.1,
-            max_tokens: maxTokens,
-            response_format: { type: 'json_object' },
-          })
-        );
-
-        const content = completion.choices[0]?.message?.content || '{}';
-        return parseJSONResponse<T>(content);
-      } catch (error: any) {
-        console.error('[LLMAdapter] GLM JSON completion error:', summarizeError(error));
-        throw new Error(`LLM JSON completion failed: ${error.message}`);
-      }
-    },
-  };
-}
-
-/**
  * Creates the appropriate LLMClient based on configuration or environment
  */
 export function createLLMClient(config?: LLMAdapterConfig): LLMClient {
@@ -370,8 +291,6 @@ export function createLLMClient(config?: LLMAdapterConfig): LLMClient {
       return createDeepSeekLLMClient(config);
     case 'openai':
       return createOpenAILLMClient(config);
-    case 'glm':
-      return createGLMLLMClient(config);
     default:
       throw new LLMConfigurationError(provider);
   }

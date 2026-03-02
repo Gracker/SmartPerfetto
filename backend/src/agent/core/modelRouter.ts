@@ -23,9 +23,7 @@ import {
 const DEFAULT_DEEPSEEK_CHAT_MODEL = process.env.DEEPSEEK_MODEL || 'deepseek-chat';
 const DEFAULT_DEEPSEEK_REASONING_MODEL = process.env.DEEPSEEK_REASONING_MODEL || 'deepseek-reasoner';
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
-const DEFAULT_GLM_MODEL = process.env.GLM_MODEL || 'glm-5';
-const DEFAULT_GLM_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
-const DEFAULT_GLM_CODING_BASE_URL = 'https://open.bigmodel.cn/api/coding/paas/v4';
+
 
 function normalizeDeepSeekBaseUrl(baseUrl: string): string {
   // DeepSeek supports both:
@@ -118,19 +116,6 @@ const DEFAULT_MODELS: ModelProfile[] = [
     supportsStreaming: true,
     enabled: false,
   },
-  {
-    id: 'glm-5',
-    provider: 'glm',
-    model: DEFAULT_GLM_MODEL,
-    strengths: ['reasoning', 'coding', 'cost'],
-    costPerInputToken: 0.0001,  // 约 0.1 元/千 tokens
-    costPerOutputToken: 0.0001,
-    avgLatencyMs: 1500,
-    maxTokens: 8192,
-    supportsJSON: true,
-    supportsStreaming: true,
-    enabled: true,  // 已配置 API key，默认启用
-  },
 ];
 
 // 任务类型到模型强项的映射
@@ -147,20 +132,20 @@ const TASK_STRENGTH_MAPPING: Record<TaskType, ModelStrength[]> = {
 };
 
 const DEFAULT_TASK_MODEL_MAPPING: Partial<Record<TaskType, string>> = {
-  intent_understanding: 'glm-5',
-  planning: 'glm-5',
-  synthesis: 'glm-5',
-  evaluation: 'glm-5',
-  sql_generation: 'glm-5',
-  code_analysis: 'glm-5',
-  simple_extraction: 'glm-5',
-  formatting: 'glm-5',
-  general: 'glm-5',
+  intent_understanding: 'deepseek-chat',
+  planning: 'deepseek-chat',
+  synthesis: 'deepseek-chat',
+  evaluation: 'deepseek-chat',
+  sql_generation: 'deepseek-chat',
+  code_analysis: 'deepseek-chat',
+  simple_extraction: 'deepseek-chat',
+  formatting: 'deepseek-chat',
+  general: 'deepseek-chat',
 };
 
 // 默认配置
 const DEFAULT_CONFIG: Partial<ModelRouterConfig> = {
-  defaultModel: 'glm-5',
+  defaultModel: 'deepseek-chat',
   fallbackChain: ['deepseek-reasoner', 'deepseek-chat'],
   enableEnsemble: false,
   ensembleThreshold: 0.8,
@@ -716,8 +701,7 @@ export class ModelRouter extends EventEmitter {
         return new AnthropicClient(model);
       case 'openai':
         return new OpenAIClient(model);
-      case 'glm':
-        return new GLMClient(model);
+      // GLM provider removed — use DeepSeek or Anthropic instead
       case 'mock':
         return new MockClient(model);
       default:
@@ -1369,88 +1353,7 @@ class OpenAIClient implements LLMClientInterface {
   }
 }
 
-/**
- * GLM (智谱 AI) 客户端
- */
-class GLMClient implements LLMClientInterface {
-  private model: ModelProfile;
-  private apiKey: string;
-  private baseUrl: string;
-  private codingBaseUrl: string;
-
-  constructor(model: ModelProfile) {
-    this.model = model;
-    this.apiKey = process.env.GLM_API_KEY || '';
-    this.baseUrl = process.env.GLM_BASE_URL || DEFAULT_GLM_BASE_URL;
-    this.codingBaseUrl = process.env.GLM_CODING_BASE_URL || DEFAULT_GLM_CODING_BASE_URL;
-  }
-
-  private isCodingPlanModel(): boolean {
-    const modelName = String(this.model.model || '').toLowerCase();
-    return modelName.includes('coding') && modelName.includes('plan');
-  }
-
-  private resolveEndpoint(options: CallOptions): string {
-    // GLM Coding Plan must use the dedicated coding endpoint.
-    if (this.isCodingPlanModel()) {
-      return this.codingBaseUrl;
-    }
-
-    // Allow explicit override for environments that want all GLM traffic on coding endpoint.
-    const forceCodingEndpoint = String(process.env.GLM_USE_CODING_ENDPOINT || '').toLowerCase();
-    if (forceCodingEndpoint === '1' || forceCodingEndpoint === 'true') {
-      return this.codingBaseUrl;
-    }
-
-    return this.baseUrl;
-  }
-
-  async complete(prompt: string, options: CallOptions = {}): Promise<string> {
-    if (!this.apiKey) {
-      throw new Error('GLM_API_KEY not configured');
-    }
-
-    const useStreaming = typeof options.onToken === 'function';
-    const endpoint = this.resolveEndpoint(options);
-    const toolChoice = resolveToolChoice(options);
-    const body: Record<string, unknown> = {
-      model: this.model.model,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: options.maxTokens || this.model.maxTokens,
-      temperature: options.temperature ?? 0.3,
-      stream: useStreaming,
-    };
-    if (Array.isArray(options.tools)) {
-      body.tools = options.tools;
-    }
-    if (toolChoice !== undefined) {
-      body.tool_choice = toolChoice;
-    }
-    if (options.reasoning !== undefined) {
-      body.reasoning = options.reasoning;
-    }
-    const response = await fetch(`${endpoint}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const error = await response.text();
-      throw new Error(`GLM API error: ${response.status} - ${error}`);
-    }
-
-    if (useStreaming) {
-      return readOpenAICompatibleStreamResponse(response, options.onToken!);
-    }
-
-    const data = await response.json() as { choices: Array<{ message?: { content?: string } }> };
-    return data.choices[0]?.message?.content || '';
-  }
-}
+// GLM client removed — was non-functional (every call failed, wasting timeout)
 
 /**
  * Mock 客户端（测试用）

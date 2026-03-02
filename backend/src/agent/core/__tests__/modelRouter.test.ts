@@ -851,23 +851,6 @@ describe('ModelRouter', () => {
       expect(model!.provider).toBe('openai');
     });
 
-    it('should create GLM client for glm provider', () => {
-      const glmModel = createMockModel({
-        id: 'glm-test',
-        provider: 'glm',
-        model: 'glm-5',
-      });
-
-      const glmRouter = new ModelRouter({
-        models: [glmModel],
-        defaultModel: 'glm-test',
-        fallbackChain: ['glm-test'],
-      });
-
-      const model = glmRouter.getModel('glm-test');
-      expect(model!.provider).toBe('glm');
-    });
-
     it('should create Mock client for mock provider', async () => {
       const mockModel = createMockModel({
         id: 'mock-test',
@@ -1379,66 +1362,6 @@ describe('ModelRouter', () => {
       }
     });
 
-    it('should forward native tools/tool_choice/reasoning to GLM request body', async () => {
-      const glmModel = createMockModel({
-        id: 'glm-native',
-        provider: 'glm',
-        model: 'glm-5',
-      });
-      const glmRouter = new ModelRouter({
-        models: [glmModel],
-        defaultModel: 'glm-native',
-        fallbackChain: ['glm-native'],
-      });
-
-      const previousApiKey = process.env.GLM_API_KEY;
-      const previousBaseUrl = process.env.GLM_BASE_URL;
-      process.env.GLM_API_KEY = 'test-glm-key';
-      process.env.GLM_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
-
-      const fetchSpy = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => ({ choices: [{ message: { content: 'ok' } }] }),
-        text: async () => '',
-      } as any);
-
-      const tools = [
-        {
-          type: 'function',
-          function: { name: 'inspect_frame', parameters: { type: 'object' } },
-        },
-      ];
-      const reasoning = { effort: 'medium', budget_tokens: 512 };
-
-      try {
-        const result = await glmRouter.callWithFallback('GLM passthrough', 'general', {
-          tools,
-          toolChoice: 'auto',
-          reasoning,
-        });
-
-        expect(result.success).toBe(true);
-        expect(fetchSpy).toHaveBeenCalledTimes(1);
-        const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
-        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-        expect(body.tools).toEqual(tools);
-        expect(body.tool_choice).toBe('auto');
-        expect(body.reasoning).toEqual(reasoning);
-      } finally {
-        fetchSpy.mockRestore();
-        if (previousApiKey === undefined) {
-          delete process.env.GLM_API_KEY;
-        } else {
-          process.env.GLM_API_KEY = previousApiKey;
-        }
-        if (previousBaseUrl === undefined) {
-          delete process.env.GLM_BASE_URL;
-        } else {
-          process.env.GLM_BASE_URL = previousBaseUrl;
-        }
-      }
-    });
   });
 
   // ===========================================================================

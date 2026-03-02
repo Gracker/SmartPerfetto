@@ -3,6 +3,7 @@ import { createAgentRuntime } from '../agent';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import type { AnalyzeSessionRunContext } from '../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../services/traceProcessorService';
+import { isClaudeCodeEnabled, createClaudeRuntime } from '../agentv3';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 
@@ -95,13 +96,14 @@ export function registerAgentResumeRoutes(
 
       sessionContextManager.set(sessionId, effectiveTraceId, restoredContext);
 
-      const modelRouter = deps.getModelRouter();
-      const orchestrator = createAgentRuntime(modelRouter, {
-        enableLogging: true,
-      });
+      const orchestrator = isClaudeCodeEnabled()
+        ? createClaudeRuntime(getTraceProcessorService()) as any
+        : createAgentRuntime(deps.getModelRouter(), {
+            enableLogging: true,
+          });
 
       const focusSnapshot = persistenceService.loadFocusStore(sessionId);
-      if (focusSnapshot) {
+      if (focusSnapshot && typeof orchestrator.getFocusStore === 'function') {
         orchestrator.getFocusStore().loadSnapshot(focusSnapshot);
         orchestrator.getFocusStore().syncWithEntityStore(restoredContext.getEntityStore());
       }

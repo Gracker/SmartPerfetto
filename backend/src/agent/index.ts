@@ -21,7 +21,6 @@ export {
   createLLMClient,
   createDeepSeekLLMClient,
   createOpenAILLMClient,
-  createGLMLLMClient,
   LLMAdapterConfig,
   LLMConfigurationError,
 } from './llmAdapter';
