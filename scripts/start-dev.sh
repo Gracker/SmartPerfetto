@@ -186,29 +186,91 @@ if [ ! -x "$UI_DIR/run-dev-server" ]; then
   exit 1
 fi
 
-# Validate UI lockfile format (must be pnpm v8 / lockfileVersion '6.0')
+# Validate UI lockfile is compatible with Perfetto's bundled pnpm.
+# Auto-fixes incompatible lockfiles caused by system pnpm after upstream merges.
+#
+# pnpm major version → lockfileVersion mapping:
+#   pnpm 8.x → lockfileVersion '6.0'
+#   pnpm 9.x → lockfileVersion '9.0'
+get_lockfile_version() {
+  awk -F: '/^[[:space:]]*lockfileVersion[[:space:]]*:/ { v=$2; gsub(/[[:space:]'\''"]/, "", v); print v; exit }' "$1"
+}
+
+get_expected_lockfile_version() {
+  local pnpm_version
+  pnpm_version=$("$PERFETTO_PNPM" --version 2>/dev/null || echo "0.0.0")
+  local major="${pnpm_version%%.*}"
+  case "$major" in
+    8) echo "6.0" ;;
+    9) echo "9.0" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
 validate_ui_lockfile() {
   local lockfile="$UI_DIR/pnpm-lock.yaml"
   if [ ! -f "$lockfile" ]; then
     echo "ERROR: UI lockfile not found at $lockfile"
     return 1
   fi
+
+  local expected
+  expected=$(get_expected_lockfile_version)
+  if [ "$expected" = "unknown" ]; then
+    echo "WARNING: Cannot determine expected lockfile version from bundled pnpm. Skipping check."
+    return 0
+  fi
+
   local version
-  version=$(awk -F: '/^[[:space:]]*lockfileVersion[[:space:]]*:/ { v=$2; gsub(/[[:space:]'\''"]/, "", v); print v; exit }' "$lockfile")
-  if [ "$version" != "6.0" ]; then
-    echo "=============================================="
-    echo "ERROR: UI pnpm-lock.yaml has incompatible format!"
-    echo "  Found: lockfileVersion '$version'"
-    echo "  Expected: lockfileVersion '6.0' (pnpm v8)"
-    echo ""
-    echo "  This usually happens when you run 'pnpm install' with a"
-    echo "  system-installed pnpm (v9/v10) instead of Perfetto's bundled pnpm v8."
-    echo ""
-    echo "  Fix: git checkout -- ui/pnpm-lock.yaml"
-    echo "  Then re-run this script."
-    echo "=============================================="
+  version=$(get_lockfile_version "$lockfile")
+  if [ "$version" = "$expected" ]; then
+    return 0
+  fi
+
+  echo "=============================================="
+  echo "WARNING: UI pnpm-lock.yaml has lockfileVersion '$version' (expected '$expected')"
+  echo "  Bundled pnpm: $($PERFETTO_PNPM --version 2>/dev/null)"
+  echo "  Auto-fixing: restoring upstream lockfile + regenerating with bundled pnpm..."
+  echo "=============================================="
+
+  # Step 1: Restore lockfile from upstream (origin/main in the perfetto submodule)
+  cd "$PERFETTO_DIR"
+  if git cat-file -e origin/main:ui/pnpm-lock.yaml 2>/dev/null; then
+    git checkout origin/main -- ui/pnpm-lock.yaml
+    echo "  Restored ui/pnpm-lock.yaml from origin/main"
+  else
+    echo "  origin/main not available, fetching upstream..."
+    git fetch origin main --depth=1 2>/dev/null || true
+    if git cat-file -e origin/main:ui/pnpm-lock.yaml 2>/dev/null; then
+      git checkout origin/main -- ui/pnpm-lock.yaml
+      echo "  Restored ui/pnpm-lock.yaml from origin/main"
+    else
+      echo "ERROR: Cannot restore lockfile — origin/main not reachable."
+      echo "  Manual fix: cd perfetto && git checkout origin/main -- ui/pnpm-lock.yaml"
+      return 1
+    fi
+  fi
+
+  # Step 2: If fork has extra deps in package.json, regenerate lockfile with bundled pnpm
+  # (--shamefully-hoist matches Perfetto's install-build-deps behavior)
+  if git diff origin/main -- ui/package.json | grep -q '^+'; then
+    echo "  Fork has extra UI dependencies — regenerating lockfile with bundled pnpm..."
+    yes | "$PERFETTO_PNPM" install --shamefully-hoist --no-frozen-lockfile --dir ui 2>&1 | tail -5
+  fi
+
+  # Step 3: Verify
+  version=$(get_lockfile_version "$lockfile")
+  if [ "$version" != "$expected" ]; then
+    echo "ERROR: Auto-fix failed — lockfileVersion is '$version', expected '$expected'"
+    echo "  Bundled pnpm version: $($PERFETTO_PNPM --version 2>/dev/null || echo 'unknown')"
     return 1
   fi
+
+  # Step 4: Clear stale install marker so deps get properly installed later
+  rm -f "$UI_DIR/node_modules/.last_install" 2>/dev/null || true
+
+  echo "  ✅ Lockfile fixed to lockfileVersion '$expected'"
+  cd "$PROJECT_ROOT"
   return 0
 }
 
@@ -300,7 +362,7 @@ install_ui_deps() {
     echo "ERROR: UI dependency installation failed!"
     echo ""
     echo "Common fixes:"
-    echo "  1. Restore lockfile: git checkout -- ui/pnpm-lock.yaml"
+    echo "  1. Restore lockfile: cd perfetto && git checkout origin/main -- ui/pnpm-lock.yaml"
     echo "  2. Clean reinstall: rm -rf ui/node_modules && re-run"
     echo "  3. NEVER use system pnpm for ui/. Always use: tools/pnpm"
     echo "=============================================="
