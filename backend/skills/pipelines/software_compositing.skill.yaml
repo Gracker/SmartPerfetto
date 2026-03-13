@@ -1,0 +1,153 @@
+# =============================================================================
+# Software Compositing Pipeline
+# =============================================================================
+# SurfaceFlinger CPU compositing fallback when GPU composition is unavailable.
+# Detects scenarios where SF performs software compositing instead of HWC/GPU.
+# =============================================================================
+
+name: pipeline_software_compositing
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: SOFTWARE_COMPOSITING
+  display_name: "软件合成回退"
+  description: "SurfaceFlinger CPU 软件合成回退，GPU 合成不可用时的降级路径"
+  icon: "memory"
+  family: surfaceflinger
+  doc_path: "rendering_pipelines/software_compositing.md"
+
+detection:
+  required_signals:
+    - thread: SurfaceFlinger
+      min_count: 1
+
+  scoring_signals:
+    - signal: has_handle_message_refresh
+      slice_pattern: "*handleMessageRefresh*"
+      weight: 30
+    - signal: has_sf_commit
+      slice_pattern: "*commit*"
+      weight: 15
+    - signal: has_sf_composite
+      slice_pattern: "*composite*"
+      weight: 15
+    - signal: has_validate_display
+      slice_pattern: "*validateDisplay*"
+      weight: 20
+    - signal: has_present_display
+      slice_pattern: "*presentDisplay*"
+      weight: 20
+
+  exclude_if:
+    - slice_pattern: "GPU completion*"
+    - slice_pattern: "*eglSwapBuffers*"
+
+teaching:
+  title: "SurfaceFlinger 软件合成管线"
+  summary: |
+    当 GPU 合成不可用或不适用时，SurfaceFlinger 会回退到 CPU 软件合成路径。
+    常见触发场景包括：
+    - GPU 不可用（低端设备或 GPU 被占用）
+    - Layer 数量超过 HWC 硬件叠加层上限
+    - 不支持的混合模式或像素格式
+    - 安全内容保护需要 CPU 合成
+    - 调试/降级模式
+
+    软件合成性能显著低于 GPU/HWC 合成，通常导致 SurfaceFlinger
+    主线程耗时增加，可能影响帧率和显示延迟。
+
+  mermaid: |
+    sequenceDiagram
+      participant App as App Process
+      participant BQ as BufferQueue
+      participant VS as VSync-sf
+      participant SF as SurfaceFlinger
+      participant VAL as HWC Validate
+      participant CPU as CPU Compositor
+      participant DISP as Display
+
+      Note over App,DISP: Software Compositing Fallback Path
+      App->>BQ: queueBuffer (帧提交)
+
+      VS->>SF: VSync-sf 触发
+      activate SF
+      SF->>SF: handleMessageRefresh
+      SF->>SF: latchBuffer (获取 Layer 缓冲区)
+      SF->>VAL: validateDisplay
+      Note over VAL: HWC 拒绝部分/全部 Layer
+      VAL-->>SF: 返回需要 Client 合成的 Layer 列表
+
+      SF->>CPU: CPU 软件合成 (Skia/OpenGL fallback)
+      activate CPU
+      CPU->>CPU: 逐 Layer 像素混合
+      CPU->>CPU: 颜色空间转换/缩放
+      deactivate CPU
+
+      SF->>DISP: presentDisplay (提交合成结果)
+      deactivate SF
+
+      Note over App,DISP: ⚠️ CPU 合成延迟高于 GPU/HWC 路径
+
+  thread_roles:
+    - thread: SurfaceFlinger
+      role: "合成调度 + CPU 合成"
+      description: "handleMessageRefresh 驱动合成流程，回退时执行 CPU 像素混合"
+      trace_tags:
+        - "handleMessageRefresh"
+        - "composite"
+        - "validateDisplay"
+        - "presentDisplay"
+
+  key_slices:
+    - name: "handleMessageRefresh"
+      thread: SurfaceFlinger
+      description: "SurfaceFlinger 合成主入口，每帧触发"
+    - name: "validateDisplay"
+      thread: SurfaceFlinger
+      description: "HWC 验证 Layer 合成方式（Client/Device/Cursor）"
+    - name: "composite"
+      thread: SurfaceFlinger
+      description: "执行实际合成操作（软件合成时耗时显著增加）"
+    - name: "presentDisplay"
+      thread: SurfaceFlinger
+      description: "提交合成结果到显示硬件"
+
+auto_pin:
+  instructions:
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 1
+      reason: "VSync (SurfaceFlinger 合成触发)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 2
+      reason: "SurfaceFlinger (软件合成执行)"
+      main_thread_only: true
+      expand: true
+      smart_filter:
+        enabled: true
+        description: "Pin SurfaceFlinger 主线程以观察 CPU 合成耗时"
+
+    - pattern: "^VSYNC-app$"
+      match_by: name
+      priority: 3
+      reason: "VSync (App 帧生产参考)"
+
+analysis:
+  common_issues:
+    - id: sf_cpu_compositing_overhead
+      name: "CPU 合成开销过大"
+      description: "SurfaceFlinger 回退到 CPU 合成导致主线程耗时增加"
+      detection_skill: sf_composition_in_range
+    - id: hwc_layer_overflow
+      name: "HWC 叠加层溢出"
+      description: "Layer 数量超过硬件叠加层上限，触发 Client 合成"
+      detection_skill: surfaceflinger_analysis
+
+  recommended_skills:
+    - sf_composition_in_range
+    - surfaceflinger_analysis
+    - cpu_analysis

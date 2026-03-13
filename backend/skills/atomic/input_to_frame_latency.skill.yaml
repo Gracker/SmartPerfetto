@@ -1,0 +1,377 @@
+# =============================================================================
+# 逐帧 Input-to-Display 延迟分析（原子 Skill）
+# =============================================================================
+# 核心跟手度 Skill：将每个 MotionEvent 与消费它的帧关联，计算逐帧 input-to-display 延迟。
+# 依赖 android_input_event_dispatch 表（部分 trace 可能不包含）。
+# 用于跟手度分析，而非首帧响应速度（scroll_response_latency）。
+
+name: input_to_frame_latency
+version: "1.0"
+type: atomic
+category: input_response
+
+meta:
+  display_name: "逐帧 Input-to-Display 延迟"
+  description: "测量每个 MotionEvent 到对应帧 present 的延迟，用于跟手度分析"
+  icon: "swipe_vertical"
+  tags: [touch_tracking, follow_finger, input, latency, per_frame, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: event_action_filter
+    type: string
+    required: false
+    description: "事件动作过滤（默认 ACTION_MOVE）"
+
+display:
+  level: detail
+  layer: detail
+  title: "逐帧 Input-to-Display 延迟"
+  columns:
+    - name: input_ts
+      label: "输入时间"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_timeline
+    - name: process_name
+      label: "进程"
+      type: string
+    - name: event_action
+      label: "事件"
+      type: string
+    - name: input_to_display_ms
+      label: "Input→Display"
+      type: duration
+      format: duration_ms
+    - name: input_to_frame_start_ms
+      label: "Input→VSync"
+      type: duration
+      format: duration_ms
+    - name: frame_dur_ms
+      label: "帧耗时"
+      type: duration
+      format: duration_ms
+    - name: frame_to_present_ms
+      label: "Frame→Present"
+      type: duration
+      format: duration_ms
+    - name: rating
+      label: "评级"
+      type: string
+
+steps:
+  # Step 1: 检测 VSync 周期
+  - id: vsync_period
+    type: atomic
+    name: "VSync 周期检测"
+    display:
+      level: summary
+      layer: overview
+      title: "VSync 配置"
+      columns:
+        - name: vsync_period_ns
+          label: "VSync 周期(ns)"
+          type: number
+        - name: refresh_rate_hz
+          label: "刷新率(Hz)"
+          type: number
+    sql: |
+      WITH vsync_intervals AS (
+        SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-app'
+      ),
+      filtered AS (
+        SELECT interval_ns FROM vsync_intervals
+        WHERE interval_ns BETWEEN 4000000 AND 50000000
+      )
+      SELECT
+        CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) as vsync_period_ns,
+        ROUND(1e9 / PERCENTILE(interval_ns, 0.5), 1) as refresh_rate_hz
+      FROM filtered
+
+  # Step 2: 检测输入采样率
+  - id: input_sampling_rate
+    type: atomic
+    name: "输入采样率检测"
+    display:
+      level: summary
+      layer: overview
+      title: "触控采样率"
+      columns:
+        - name: median_interval_ms
+          label: "中位间隔(ms)"
+          type: number
+        - name: sampling_rate_hz
+          label: "采样率(Hz)"
+          type: number
+        - name: total_events
+          label: "事件总数"
+          type: number
+    sql: |
+      WITH move_events AS (
+        SELECT
+          ied.ts,
+          ied.ts - LAG(ied.ts) OVER (ORDER BY ied.ts) as interval_ns
+        FROM android_input_event_dispatch ied
+        LEFT JOIN process p ON p.upid = ied.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2')
+          AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      ),
+      filtered AS (
+        SELECT interval_ns FROM move_events
+        WHERE interval_ns IS NOT NULL
+          AND interval_ns BETWEEN 1000000 AND 100000000
+      )
+      SELECT
+        ROUND(PERCENTILE(interval_ns, 0.5) / 1e6, 2) as median_interval_ms,
+        ROUND(1e9 / PERCENTILE(interval_ns, 0.5), 0) as sampling_rate_hz,
+        (SELECT COUNT(*) FROM move_events) as total_events
+      FROM filtered
+
+  # Step 3: 逐帧 Input-to-Display 延迟
+  - id: per_frame_latency
+    type: atomic
+    name: "逐帧延迟"
+    display:
+      level: detail
+      layer: detail
+      title: "逐帧 Input-to-Display 延迟"
+      columns:
+        - name: input_ts
+          label: "输入时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: event_action
+          label: "事件"
+          type: string
+        - name: input_to_display_ms
+          label: "Input→Display(ms)"
+          type: duration
+          format: duration_ms
+        - name: input_to_frame_start_ms
+          label: "Input→VSync(ms)"
+          type: duration
+          format: duration_ms
+        - name: frame_dur_ms
+          label: "帧耗时(ms)"
+          type: duration
+          format: duration_ms
+        - name: frame_to_present_ms
+          label: "Frame→Present(ms)"
+          type: duration
+          format: duration_ms
+        - name: rating
+          label: "评级"
+          type: string
+    sql: |
+      WITH vsync_cfg AS (
+        SELECT COALESCE(
+          (SELECT CAST(PERCENTILE(c.ts - LAG(c.ts) OVER (ORDER BY c.ts), 0.5) AS INTEGER)
+           FROM counter c
+           JOIN counter_track t ON c.track_id = t.id
+           WHERE t.name = 'VSYNC-app'),
+          16666667
+        ) as period_ns
+      ),
+      input_events AS (
+        SELECT
+          ied.ts as input_ts,
+          ied.event_action,
+          ied.upid,
+          p.name as process_name
+        FROM android_input_event_dispatch ied
+        LEFT JOIN process p ON p.upid = ied.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2'
+               OR '${event_action_filter}' = ied.event_action)
+          AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      ),
+      frame_match AS (
+        SELECT
+          ie.input_ts,
+          ie.event_action,
+          ie.process_name,
+          ie.upid,
+          (SELECT f.ts FROM actual_frame_timeline_slice f
+           WHERE f.upid = ie.upid AND f.ts >= ie.input_ts
+           ORDER BY f.ts LIMIT 1) as frame_ts,
+          (SELECT f.dur FROM actual_frame_timeline_slice f
+           WHERE f.upid = ie.upid AND f.ts >= ie.input_ts
+           ORDER BY f.ts LIMIT 1) as frame_dur,
+          (SELECT f.ts + f.dur FROM actual_frame_timeline_slice f
+           WHERE f.upid = ie.upid AND f.ts >= ie.input_ts
+           ORDER BY f.ts LIMIT 1) as frame_present_ts
+        FROM input_events ie
+      )
+      SELECT
+        printf('%d', input_ts) as input_ts,
+        process_name,
+        event_action,
+        ROUND((frame_present_ts - input_ts) / 1e6, 2) as input_to_display_ms,
+        ROUND((frame_ts - input_ts) / 1e6, 2) as input_to_frame_start_ms,
+        ROUND(frame_dur / 1e6, 2) as frame_dur_ms,
+        ROUND((frame_present_ts - frame_ts - frame_dur) / 1e6, 2) as frame_to_present_ms,
+        CASE
+          WHEN (frame_present_ts - input_ts) / 1e6 < 2 * (SELECT period_ns FROM vsync_cfg) / 1e6 THEN '优秀'
+          WHEN (frame_present_ts - input_ts) / 1e6 < 3 * (SELECT period_ns FROM vsync_cfg) / 1e6 THEN '良好'
+          WHEN (frame_present_ts - input_ts) / 1e6 < 4 * (SELECT period_ns FROM vsync_cfg) / 1e6 THEN '需优化'
+          ELSE '严重'
+        END as rating
+      FROM frame_match
+      WHERE frame_present_ts IS NOT NULL
+        AND (frame_present_ts - input_ts) > 0
+        AND (frame_present_ts - input_ts) < 500000000
+      ORDER BY input_ts
+
+  # Step 4: 统计摘要
+  - id: latency_statistics
+    type: atomic
+    name: "延迟统计"
+    display:
+      level: summary
+      layer: overview
+      title: "Input-to-Display 延迟统计"
+      columns:
+        - name: metric
+          label: "指标"
+          type: string
+        - name: value_ms
+          label: "值(ms)"
+          type: number
+    sql: |
+      WITH vsync_cfg AS (
+        SELECT COALESCE(
+          (SELECT CAST(PERCENTILE(c.ts - LAG(c.ts) OVER (ORDER BY c.ts), 0.5) AS INTEGER)
+           FROM counter c
+           JOIN counter_track t ON c.track_id = t.id
+           WHERE t.name = 'VSYNC-app'),
+          16666667
+        ) as period_ns
+      ),
+      input_events AS (
+        SELECT
+          ied.ts as input_ts,
+          ied.upid
+        FROM android_input_event_dispatch ied
+        LEFT JOIN process p ON p.upid = ied.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2')
+          AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      ),
+      latencies AS (
+        SELECT
+          (SELECT (f.ts + f.dur) FROM actual_frame_timeline_slice f
+           WHERE f.upid = ie.upid AND f.ts >= ie.input_ts
+           ORDER BY f.ts LIMIT 1) - ie.input_ts as latency_ns
+        FROM input_events ie
+      ),
+      valid AS (
+        SELECT latency_ns FROM latencies
+        WHERE latency_ns IS NOT NULL AND latency_ns > 0 AND latency_ns < 500000000
+      )
+      SELECT 'P50' as metric, ROUND(PERCENTILE(latency_ns, 0.5) / 1e6, 2) as value_ms FROM valid
+      UNION ALL
+      SELECT 'P90', ROUND(PERCENTILE(latency_ns, 0.9) / 1e6, 2) FROM valid
+      UNION ALL
+      SELECT 'P99', ROUND(PERCENTILE(latency_ns, 0.99) / 1e6, 2) FROM valid
+      UNION ALL
+      SELECT '均值', ROUND(AVG(latency_ns) / 1e6, 2) FROM valid
+      UNION ALL
+      SELECT '标准差', ROUND(SQRT(AVG(latency_ns * latency_ns) - AVG(latency_ns) * AVG(latency_ns)) / 1e6, 2) FROM valid
+      UNION ALL
+      SELECT '样本数', CAST(COUNT(*) AS REAL) FROM valid
+      UNION ALL
+      SELECT 'VSync周期(ms)', ROUND((SELECT period_ns FROM vsync_cfg) / 1e6, 2) FROM valid LIMIT 1
+
+  # Step 5: 延迟飙升检测
+  - id: latency_spikes
+    type: atomic
+    name: "延迟飙升检测"
+    display:
+      level: list
+      layer: detail
+      title: "延迟飙升点"
+      columns:
+        - name: input_ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: latency_ms
+          label: "延迟(ms)"
+          type: duration
+          format: duration_ms
+        - name: prev_latency_ms
+          label: "前帧延迟(ms)"
+          type: duration
+          format: duration_ms
+        - name: spike_ratio
+          label: "飙升倍数"
+          type: number
+    sql: |
+      WITH input_events AS (
+        SELECT
+          ied.ts as input_ts,
+          ied.upid
+        FROM android_input_event_dispatch ied
+        LEFT JOIN process p ON p.upid = ied.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2')
+          AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      ),
+      latencies AS (
+        SELECT
+          ie.input_ts,
+          (SELECT (f.ts + f.dur) FROM actual_frame_timeline_slice f
+           WHERE f.upid = ie.upid AND f.ts >= ie.input_ts
+           ORDER BY f.ts LIMIT 1) - ie.input_ts as latency_ns
+        FROM input_events ie
+      ),
+      with_prev AS (
+        SELECT
+          input_ts,
+          latency_ns,
+          LAG(latency_ns) OVER (ORDER BY input_ts) as prev_latency_ns
+        FROM latencies
+        WHERE latency_ns IS NOT NULL AND latency_ns > 0 AND latency_ns < 500000000
+      )
+      SELECT
+        printf('%d', input_ts) as input_ts,
+        ROUND(latency_ns / 1e6, 2) as latency_ms,
+        ROUND(prev_latency_ns / 1e6, 2) as prev_latency_ms,
+        ROUND(CAST(latency_ns AS REAL) / MAX(prev_latency_ns, 1), 1) as spike_ratio
+      FROM with_prev
+      WHERE prev_latency_ns IS NOT NULL
+        AND latency_ns > prev_latency_ns * 2
+        AND latency_ns > 30000000
+      ORDER BY spike_ratio DESC
+      LIMIT 20
+
+output:
+  format: structured

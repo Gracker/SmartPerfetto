@@ -9,12 +9,29 @@ import {
   validateDataEnvelope,
 } from '../../types/dataContract';
 
+/**
+ * A buffered SSE event for replay on reconnect.
+ * Stored in a per-session ring buffer so late-joining clients can catch up.
+ */
+export interface BufferedSseEvent {
+  seqId: number;
+  eventType: string;
+  eventData: string;
+}
+
+/** Max events retained in the per-session ring buffer. */
+export const SSE_RING_BUFFER_SIZE = 200;
+
 export interface BroadcastStreamingUpdateOptions {
   observability?: {
     runId?: string;
     requestId?: string;
     runSequence?: number;
   };
+  /** Monotonic sequence ID — set by the caller from the session counter. */
+  seqId?: number;
+  /** Called with the buffered event so the caller can push it to the ring buffer. */
+  onBufferedEvent?: (event: BufferedSseEvent) => void;
   onValidDataEnvelopes?: (envelopes: DataEnvelope[]) => void;
   onDataEnvelopeValidationWarning?: (payload: {
     sessionId: string;
@@ -55,7 +72,10 @@ export class StreamProjector {
     res.setHeader('X-Accel-Buffering', 'no');
   }
 
-  sendEvent(res: express.Response, eventType: string, payload: unknown): void {
+  sendEvent(res: express.Response, eventType: string, payload: unknown, seqId?: number): void {
+    if (seqId !== undefined) {
+      res.write(`id: ${seqId}\n`);
+    }
     res.write(`event: ${eventType}\n`);
     res.write(`data: ${JSON.stringify(payload)}\n\n`);
   }
@@ -158,13 +178,46 @@ export class StreamProjector {
       }, options.observability));
     }
 
+    // Buffer the event for replay on reconnect
+    if (options.seqId !== undefined) {
+      options.onBufferedEvent?.({ seqId: options.seqId, eventType, eventData });
+    }
+
     for (const client of clients) {
       try {
+        if (options.seqId !== undefined) {
+          client.write(`id: ${options.seqId}\n`);
+        }
         client.write(`event: ${eventType}\n`);
         client.write(`data: ${eventData}\n\n`);
       } catch {
         // Ignore broken pipe errors; disconnection is handled elsewhere.
       }
     }
+  }
+
+  /**
+   * Replay buffered events to a single client that reconnected.
+   * Sends all events with seqId > lastEventId.
+   */
+  replayBufferedEvents(
+    res: express.Response,
+    buffer: BufferedSseEvent[],
+    lastEventId: number
+  ): number {
+    let replayed = 0;
+    for (const event of buffer) {
+      if (event.seqId > lastEventId) {
+        try {
+          res.write(`id: ${event.seqId}\n`);
+          res.write(`event: ${event.eventType}\n`);
+          res.write(`data: ${event.eventData}\n\n`);
+          replayed++;
+        } catch {
+          break; // Client disconnected during replay
+        }
+      }
+    }
+    return replayed;
   }
 }

@@ -20,6 +20,7 @@ import {
 import { EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
 import { FocusStore, FocusStoreSnapshot } from '../agent/context/focusStore';
 import { TraceAgentState } from '../agent/state/traceAgentState';
+import type { SessionStateSnapshot } from '../agentv3/sessionStateSnapshot';
 
 const DB_DIR = path.join(process.cwd(), 'data', 'sessions');
 const DB_PATH = path.join(DB_DIR, 'sessions.db');
@@ -583,13 +584,205 @@ export class SessionPersistenceService {
     }
   }
 
+  // ==========================================================================
+  // Unified Session State Snapshot (replaces 7-phase cascade)
+  // ==========================================================================
+
   /**
-   * Get EntityStore statistics for a session without full deserialization.
-   * Useful for dashboard displays.
+   * Atomically save a unified session state snapshot.
    *
-   * @param sessionId - The session ID
-   * @returns Stats object or null
+   * Performs a single UPDATE metadata call that writes:
+   * - sessionStateSnapshot (new format)
+   * - runtimeArraysSnapshot (backward compat dual-write)
+   * - architectureSnapshot (if present in snapshot)
+   * - sessionContextSnapshot + entityStoreSnapshot (if sessionContext provided)
+   * - focusStoreSnapshot (if provided)
+   * - traceAgentStateSnapshot (if provided)
+   *
+   * Auto-creates the session record if it doesn't exist.
+   * Replaces the 7 individual save*() calls that each did read-modify-write.
    */
+  saveSessionStateSnapshot(
+    sessionId: string,
+    snapshot: SessionStateSnapshot,
+    extras?: {
+      sessionContext?: EnhancedSessionContext;
+      focusStoreSnapshot?: FocusStoreSnapshot;
+      traceAgentState?: TraceAgentState;
+    },
+  ): boolean {
+    try {
+      const now = Date.now();
+
+      // Auto-create session if not exists
+      const existing = this.getSession(sessionId);
+      if (!existing) {
+        const latestQuery = snapshot.queryHistory.length > 0
+          ? snapshot.queryHistory[snapshot.queryHistory.length - 1].query
+          : '';
+        this.db.prepare(`
+          INSERT INTO sessions (id, trace_id, trace_name, question, created_at, updated_at, metadata)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          sessionId,
+          snapshot.traceId,
+          snapshot.traceId,
+          latestQuery,
+          snapshot.snapshotTimestamp,
+          now,
+          JSON.stringify({}),
+        );
+      }
+
+      // Preserve non-snapshot fields from existing metadata (new sessions start with {})
+      const metadata: SessionMetadata = existing?.metadata || {};
+
+      // Write new snapshot
+      metadata.sessionStateSnapshot = snapshot;
+
+      // Backward-compat dual-write: also populate runtimeArraysSnapshot
+      metadata.runtimeArraysSnapshot = {
+        conversationSteps: snapshot.conversationSteps,
+        dataEnvelopes: snapshot.dataEnvelopes,
+        hypotheses: snapshot.hypotheses,
+        queryHistory: snapshot.queryHistory,
+        conclusionHistory: snapshot.conclusionHistory,
+        analysisNotes: snapshot.analysisNotes,
+        analysisPlan: snapshot.analysisPlan,
+        planHistory: snapshot.planHistory,
+        uncertaintyFlags: snapshot.uncertaintyFlags,
+      };
+
+      // Write architecture (from snapshot)
+      if (snapshot.architecture) {
+        metadata.architectureSnapshot = snapshot.architecture;
+      }
+
+      // Write session context if provided
+      if (extras?.sessionContext) {
+        metadata.sessionContextSnapshot = extras.sessionContext.serialize();
+        metadata.entityStoreSnapshot = extras.sessionContext.getEntityStore().serialize();
+      }
+
+      // Write FocusStore if provided
+      if (extras?.focusStoreSnapshot) {
+        metadata.focusStoreSnapshot = extras.focusStoreSnapshot;
+      }
+
+      // Write TraceAgentState if provided
+      if (extras?.traceAgentState) {
+        metadata.traceAgentStateSnapshot = extras.traceAgentState;
+      }
+
+      // Single atomic UPDATE — replaces 6+ sequential read-modify-write cycles
+      const metadataJson = JSON.stringify(metadata);
+      this.db.prepare('UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?')
+        .run(metadataJson, now, sessionId);
+
+      return true;
+    } catch (error) {
+      console.error('[SessionPersistence] Failed to save session state snapshot:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Load a unified session state snapshot.
+   *
+   * V2 path: returns `metadata.sessionStateSnapshot` directly.
+   * V1 fallback: reconstructs from `metadata.runtimeArraysSnapshot` for old sessions
+   * (no DB migration needed).
+   */
+  loadSessionStateSnapshot(sessionId: string): SessionStateSnapshot | null {
+    try {
+      const session = this.getSession(sessionId);
+      if (!session?.metadata) return null;
+
+      // V2 path: return new snapshot directly
+      if (session.metadata.sessionStateSnapshot) {
+        return session.metadata.sessionStateSnapshot;
+      }
+
+      // V1 fallback: reconstruct from runtimeArraysSnapshot
+      const legacy = session.metadata.runtimeArraysSnapshot;
+      if (!legacy) return null;
+
+      return {
+        version: 1,
+        snapshotTimestamp: session.updatedAt,
+        sessionId: session.id,
+        traceId: session.traceId,
+        conversationSteps: legacy.conversationSteps || [],
+        queryHistory: legacy.queryHistory || [],
+        conclusionHistory: legacy.conclusionHistory || [],
+        agentDialogue: [],  // Not stored in legacy format
+        agentResponses: [], // Not stored in legacy format
+        dataEnvelopes: legacy.dataEnvelopes || [],
+        hypotheses: legacy.hypotheses || [],
+        analysisNotes: legacy.analysisNotes || [],
+        analysisPlan: legacy.analysisPlan || null,
+        planHistory: legacy.planHistory || [],
+        uncertaintyFlags: legacy.uncertaintyFlags || [],
+        architecture: session.metadata.architectureSnapshot,
+        runSequence: 0,       // Not stored in legacy format
+        conversationOrdinal: 0, // Not stored in legacy format
+      };
+    } catch (error) {
+      console.error('[SessionPersistence] Failed to load session state snapshot:', error);
+      return null;
+    }
+  }
+
+  // ==========================================================================
+  // Runtime Arrays Persistence (R4)
+  // @deprecated Use saveSessionStateSnapshot / loadSessionStateSnapshot instead.
+  // Kept for agentv2 fallback compatibility.
+  // ==========================================================================
+
+  /**
+   * Save runtime arrays snapshot for cross-restart report continuity.
+   * Stores conversationSteps, dataEnvelopes, hypotheses, queryHistory,
+   * and conclusionHistory that would otherwise be lost on backend restart.
+   */
+  saveRuntimeArrays(sessionId: string, snapshot: NonNullable<SessionMetadata['runtimeArraysSnapshot']>): boolean {
+    try {
+      const session = this.getSession(sessionId);
+      if (!session) {
+        console.warn(`[SessionPersistence] Cannot save runtime arrays: session ${sessionId} not found`);
+        return false;
+      }
+
+      const metadata: SessionMetadata = session.metadata || {};
+      metadata.runtimeArraysSnapshot = snapshot;
+
+      const metadataJson = JSON.stringify(metadata);
+      this.db.prepare('UPDATE sessions SET metadata = ?, updated_at = ? WHERE id = ?')
+        .run(metadataJson, Date.now(), sessionId);
+
+      return true;
+    } catch (error) {
+      console.error('[SessionPersistence] Failed to save runtime arrays:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Load runtime arrays snapshot for a session.
+   * Returns null if session doesn't exist or has no snapshot.
+   */
+  loadRuntimeArrays(sessionId: string): SessionMetadata['runtimeArraysSnapshot'] | null {
+    try {
+      const session = this.getSession(sessionId);
+      if (!session?.metadata?.runtimeArraysSnapshot) {
+        return null;
+      }
+      return session.metadata.runtimeArraysSnapshot;
+    } catch (error) {
+      console.error('[SessionPersistence] Failed to load runtime arrays:', error);
+      return null;
+    }
+  }
+
   getEntityStoreStats(sessionId: string): {
     frameCount: number;
     sessionCount: number;

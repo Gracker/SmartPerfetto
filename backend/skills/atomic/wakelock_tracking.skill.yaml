@@ -1,0 +1,271 @@
+# =============================================================================
+# Wake Lock 追踪（原子 Skill）
+# =============================================================================
+# 追踪 Wake Lock 持有情况，用于电池功耗分析。
+# 检测长时间持有的 WakeLock 和内核 Suspend Blocker。
+
+name: wakelock_tracking
+version: "1.0"
+type: atomic
+category: power
+
+meta:
+  display_name: "Wake Lock 追踪"
+  description: "追踪 Wake Lock 持有情况，检测电池功耗异常"
+  icon: "battery_alert"
+  tags: [wakelock, battery, power, suspend, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+steps:
+  # ========== Wake Lock 事件列表 ==========
+  - id: wakelock_events
+    type: atomic
+    name: "Wake Lock 事件"
+    display:
+      level: overview
+      layer: overview
+      title: "Wake Lock 事件概览"
+      columns:
+        - name: wakelock_name
+          label: "Wake Lock 名称"
+          type: string
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: count
+          label: "次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总持有时间"
+          type: duration
+          format: duration_ms
+        - name: avg_dur_ms
+          label: "平均持有时间"
+          type: duration
+          format: duration_ms
+        - name: max_dur_ms
+          label: "最长持有时间"
+          type: duration
+          format: duration_ms
+        - name: rating
+          label: "评级"
+          type: string
+    sql: |
+      SELECT
+        s.name as wakelock_name,
+        p.name as process_name,
+        COUNT(*) as count,
+        ROUND(SUM(s.dur) / 1e6, 2) as total_dur_ms,
+        ROUND(AVG(s.dur) / 1e6, 2) as avg_dur_ms,
+        ROUND(MAX(s.dur) / 1e6, 2) as max_dur_ms,
+        CASE
+          WHEN MAX(s.dur) / 1e6 > 60000 THEN '严重'
+          WHEN MAX(s.dur) / 1e6 > 10000 THEN '需优化'
+          WHEN SUM(s.dur) / 1e6 > 30000 THEN '需优化'
+          ELSE '正常'
+        END as rating
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+        AND (s.name GLOB '*WakeLock*' OR s.name GLOB '*wakelock*'
+             OR s.name GLOB '*PowerManager*WakeLock*'
+             OR s.name GLOB '*wake_lock*')
+      GROUP BY s.name, p.name
+      ORDER BY SUM(s.dur) DESC
+    save_as: wakelock_events
+
+  # ========== Suspend Blocker（内核层）==========
+  - id: suspend_blockers
+    type: atomic
+    name: "Suspend Blocker"
+    display:
+      level: detail
+      layer: list
+      title: "内核 Suspend Blocker"
+      columns:
+        - name: blocker_name
+          label: "Blocker 名称"
+          type: string
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: count
+          label: "次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总阻止时间"
+          type: duration
+          format: duration_ms
+        - name: avg_dur_ms
+          label: "平均阻止时间"
+          type: duration
+          format: duration_ms
+        - name: max_dur_ms
+          label: "最长阻止时间"
+          type: duration
+          format: duration_ms
+    sql: |
+      SELECT
+        s.name as blocker_name,
+        t.name as thread_name,
+        COUNT(*) as count,
+        ROUND(SUM(s.dur) / 1e6, 2) as total_dur_ms,
+        ROUND(AVG(s.dur) / 1e6, 2) as avg_dur_ms,
+        ROUND(MAX(s.dur) / 1e6, 2) as max_dur_ms
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+        AND (s.name GLOB '*suspend_blocker*' OR s.name GLOB '*SuspendBlocker*'
+             OR s.name GLOB '*wakeup_source*' OR s.name GLOB '*WakeupSource*')
+      GROUP BY s.name, t.name
+      ORDER BY SUM(s.dur) DESC
+      LIMIT 30
+    save_as: suspend_blockers
+
+  # ========== Wake Lock 持有时间排行 ==========
+  - id: wakelock_duration
+    type: atomic
+    name: "Wake Lock 持有时间排行"
+    display:
+      level: detail
+      layer: list
+      title: "Wake Lock 累计持有时间排行"
+      columns:
+        - name: wakelock_name
+          label: "Wake Lock 名称"
+          type: string
+        - name: total_held_ms
+          label: "累计持有时间"
+          type: duration
+          format: duration_ms
+        - name: total_held_pct
+          label: "占比"
+          type: percentage
+          format: percentage
+        - name: acquire_count
+          label: "获取次数"
+          type: number
+          format: compact
+        - name: avg_held_ms
+          label: "平均持有"
+          type: duration
+          format: duration_ms
+    sql: |
+      WITH trace_duration AS (
+        SELECT
+          COALESCE(${end_ts}, (SELECT MAX(ts + dur) FROM slice)) -
+          COALESCE(${start_ts}, (SELECT MIN(ts) FROM slice)) as total_ns
+      ),
+      wl_stats AS (
+        SELECT
+          s.name as wakelock_name,
+          SUM(s.dur) as total_held_ns,
+          COUNT(*) as acquire_count,
+          AVG(s.dur) as avg_held_ns
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+          AND (s.name GLOB '*WakeLock*' OR s.name GLOB '*wakelock*'
+               OR s.name GLOB '*PowerManager*WakeLock*'
+               OR s.name GLOB '*wake_lock*')
+        GROUP BY s.name
+      )
+      SELECT
+        wl.wakelock_name,
+        ROUND(wl.total_held_ns / 1e6, 2) as total_held_ms,
+        ROUND(100.0 * wl.total_held_ns / td.total_ns, 2) as total_held_pct,
+        wl.acquire_count,
+        ROUND(wl.avg_held_ns / 1e6, 2) as avg_held_ms
+      FROM wl_stats wl
+      CROSS JOIN trace_duration td
+      ORDER BY wl.total_held_ns DESC
+      LIMIT 20
+    save_as: wakelock_duration
+
+  # ========== Wake Lock 时间线 ==========
+  - id: wakelock_timeline
+    type: atomic
+    name: "Wake Lock 时间线"
+    display:
+      level: detail
+      layer: deep
+      title: "Wake Lock 时间线事件"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_range
+          durationColumn: dur_ns
+        - name: wakelock_name
+          label: "Wake Lock 名称"
+          type: string
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: dur_ms
+          label: "持有时间"
+          type: duration
+          format: duration_ms
+        - name: dur_ns
+          label: "持有时间(ns)"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: status
+          label: "状态"
+          type: string
+    sql: |
+      SELECT
+        printf('%d', s.ts) as ts,
+        s.name as wakelock_name,
+        p.name as process_name,
+        t.name as thread_name,
+        ROUND(s.dur / 1e6, 2) as dur_ms,
+        printf('%d', s.dur) as dur_ns,
+        CASE
+          WHEN s.dur / 1e6 > 60000 THEN '长时间持有'
+          WHEN s.dur / 1e6 > 10000 THEN '较长持有'
+          WHEN s.dur / 1e6 > 1000 THEN '正常'
+          ELSE '短暂'
+        END as status
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+        AND (s.name GLOB '*WakeLock*' OR s.name GLOB '*wakelock*'
+             OR s.name GLOB '*PowerManager*WakeLock*'
+             OR s.name GLOB '*wake_lock*')
+      ORDER BY s.ts ASC
+      LIMIT 100
+    save_as: wakelock_timeline
+
+output:
+  format: structured

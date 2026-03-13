@@ -141,6 +141,24 @@ export function registerAgentResumeRoutes(
           }
         : undefined;
 
+      // Unified snapshot restoration — all fields populated from single source
+      const snapshot = persistenceService.loadSessionStateSnapshot(sessionId);
+
+      // Restore ClaudeRuntime Maps (notes, plans, hypotheses, flags, artifacts, architecture, sdkSessionId)
+      if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
+        orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
+        logger.info('AgentRoutes', 'ClaudeRuntime Maps restored from snapshot', {
+          notes: snapshot.analysisNotes.length,
+          hasPlan: !!snapshot.analysisPlan,
+          hypotheses: snapshot.claudeHypotheses?.length || 0,
+          flags: snapshot.uncertaintyFlags.length,
+          artifacts: snapshot.artifacts?.length || 0,
+        });
+      } else if (typeof orchestrator.restoreArchitectureCache === 'function' && persistedSession.metadata?.architectureSnapshot) {
+        // Fallback for agentv2 or when no snapshot available
+        orchestrator.restoreArchitectureCache(effectiveTraceId, persistedSession.metadata.architectureSnapshot);
+      }
+
       deps.sessionStore.setSession(sessionId, {
         orchestrator,
         sessionId,
@@ -152,15 +170,20 @@ export function registerAgentResumeRoutes(
         createdAt: persistedSession.createdAt,
         lastActivityAt: Date.now(),
         logger,
-        hypotheses: [],
-        agentDialogue: [],
-        dataEnvelopes: [],
-        agentResponses: [],
-        conversationOrdinal: 0,
-        conversationSteps: [],
-        runSequence: restoredRunSequence,
+        // All fields now restored from snapshot (previously agentDialogue/agentResponses were hardcoded to [])
+        hypotheses: snapshot?.hypotheses || [],
+        agentDialogue: snapshot?.agentDialogue || [],
+        dataEnvelopes: snapshot?.dataEnvelopes || [],
+        agentResponses: snapshot?.agentResponses || [],
+        conversationOrdinal: snapshot?.conversationOrdinal || 0,
+        conversationSteps: snapshot?.conversationSteps || [],
+        queryHistory: snapshot?.queryHistory || [],
+        conclusionHistory: snapshot?.conclusionHistory || [],
+        runSequence: snapshot?.runSequence || restoredRunSequence,
         activeRun: restoredRun,
         lastRun: restoredRun,
+        sseEventSeq: 0,
+        sseEventBuffer: [],
       });
 
       return res.json({

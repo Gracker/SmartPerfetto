@@ -16,6 +16,8 @@ import {
 import { StreamProjector } from '../assistant/stream/streamProjector';
 import { createSessionLogger, type SessionLogger } from '../services/sessionLogger';
 import { getTraceProcessorService } from '../services/traceProcessorService';
+import { SkillExecutor } from '../services/skillEngine/skillExecutor';
+import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skillEngine/skillLoader';
 
 export interface SceneReconstructConversationStep {
   eventId: string;
@@ -291,6 +293,67 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
     }
 
     res.json(response);
+  });
+
+  // ── Deep-dive: execute a skill scoped to a specific event ──────────────
+  const EVENT_DEEP_DIVE_SKILLS: Record<string, { skillId: string; description: string }> = {
+    'cold_start': { skillId: 'startup_analysis', description: '启动性能分析' },
+    'warm_start': { skillId: 'startup_analysis', description: '启动性能分析' },
+    'hot_start': { skillId: 'startup_analysis', description: '启动性能分析' },
+    'scroll': { skillId: 'scrolling_analysis', description: '滑动流畅性分析' },
+    'scroll_start': { skillId: 'scrolling_analysis', description: '滑动流畅性分析' },
+    'inertial_scroll': { skillId: 'scrolling_analysis', description: '惯性滑动分析' },
+    'tap': { skillId: 'click_response_analysis', description: '点击响应分析' },
+    'long_press': { skillId: 'click_response_analysis', description: '点击响应分析' },
+    'screen_unlock': { skillId: 'click_response_analysis', description: '解锁响应分析' },
+    'idle': { skillId: 'device_state_snapshot', description: '设备状态快照' },
+  };
+
+  router.post('/scene-reconstruct/:analysisId/deep-dive', async (req, res) => {
+    try {
+      const { analysisId } = req.params;
+      const { eventId, eventType, startTs, endTs, appPackage } = req.body;
+
+      const session = deps.assistantAppService.getSession(analysisId);
+      if (!session) {
+        return res.status(404).json({ success: false, error: 'Session not found' });
+      }
+
+      const skillConfig = EVENT_DEEP_DIVE_SKILLS[eventType];
+      if (!skillConfig) {
+        return res.status(400).json({
+          success: false,
+          error: `No deep-dive skill for event type: ${eventType}`,
+        });
+      }
+
+      await ensureSkillRegistryInitialized();
+      const traceProcessorService = getTraceProcessorService();
+      const skillExecutor = new SkillExecutor(traceProcessorService);
+      skillExecutor.registerSkills(skillRegistry.getAllSkills());
+
+      const params: Record<string, any> = {
+        start_ts: startTs,
+        end_ts: endTs,
+      };
+      if (appPackage) params.package = appPackage;
+
+      const result = await skillExecutor.execute(skillConfig.skillId, session.traceId, params);
+
+      res.json({
+        success: true,
+        eventId,
+        skillId: skillConfig.skillId,
+        description: skillConfig.description,
+        result: result.displayResults,
+      });
+    } catch (error: any) {
+      console.error('[AgentRoutes] Deep-dive error:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Deep-dive analysis failed',
+      });
+    }
   });
 
   router.delete('/scene-reconstruct/:analysisId', (req, res) => {

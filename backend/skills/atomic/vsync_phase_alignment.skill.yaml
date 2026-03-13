@@ -1,0 +1,233 @@
+# =============================================================================
+# VSync 相位对齐分析（原子 Skill）
+# =============================================================================
+# 分析 Input event timestamp 与 VSync 信号的相位关系。
+# 相位差决定了输入事件需要等待多久才能被处理（跟手度的关键因素）。
+# 依赖 android_input_event_dispatch 表和 VSYNC-app counter。
+
+name: vsync_phase_alignment
+version: "1.0"
+type: atomic
+category: input_response
+
+meta:
+  display_name: "VSync 相位对齐分析"
+  description: "分析输入事件与 VSync 信号的相位关系，定位跟手延迟中的 VSync 等待瓶颈"
+  icon: "sync"
+  tags: [vsync, phase, alignment, input, latency, touch_tracking, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+display:
+  level: detail
+  layer: detail
+  title: "VSync 相位对齐"
+  columns:
+    - name: input_ts
+      label: "输入时间"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_timeline
+    - name: phase_offset_ms
+      label: "相位偏移(ms)"
+      type: number
+    - name: phase_ratio
+      label: "相位比(%)"
+      type: percentage
+    - name: wait_until_next_vsync_ms
+      label: "等待下个VSync(ms)"
+      type: duration
+      format: duration_ms
+
+steps:
+  # Step 1: VSync 时间点序列
+  - id: vsync_timeline
+    type: atomic
+    name: "VSync 时间线"
+    display:
+      level: summary
+      layer: overview
+      title: "VSync 配置"
+      columns:
+        - name: vsync_count
+          label: "VSync 数量"
+          type: number
+        - name: period_ms
+          label: "VSync 周期(ms)"
+          type: number
+        - name: refresh_hz
+          label: "刷新率(Hz)"
+          type: number
+    sql: |
+      WITH vsync_events AS (
+        SELECT c.ts as vsync_ts
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-app'
+        ORDER BY c.ts
+      ),
+      intervals AS (
+        SELECT vsync_ts - LAG(vsync_ts) OVER (ORDER BY vsync_ts) as interval_ns
+        FROM vsync_events
+      )
+      SELECT
+        (SELECT COUNT(*) FROM vsync_events) as vsync_count,
+        ROUND(PERCENTILE(interval_ns, 0.5) / 1e6, 2) as period_ms,
+        ROUND(1e9 / PERCENTILE(interval_ns, 0.5), 1) as refresh_hz
+      FROM intervals
+      WHERE interval_ns BETWEEN 4000000 AND 50000000
+
+  # Step 2: 逐事件相位分析
+  - id: phase_analysis
+    type: atomic
+    name: "相位偏移分析"
+    display:
+      level: detail
+      layer: detail
+      title: "Input-VSync 相位偏移"
+      columns:
+        - name: input_ts
+          label: "输入时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: nearest_vsync_ts
+          label: "最近VSync"
+          type: timestamp
+          unit: ns
+        - name: phase_offset_ms
+          label: "相位偏移(ms)"
+          type: number
+        - name: phase_ratio_pct
+          label: "相位比(%)"
+          type: percentage
+        - name: wait_ms
+          label: "VSync等待(ms)"
+          type: duration
+          format: duration_ms
+    sql: |
+      WITH vsync_cfg AS (
+        SELECT COALESCE(
+          (SELECT CAST(PERCENTILE(c.ts - LAG(c.ts) OVER (ORDER BY c.ts), 0.5) AS INTEGER)
+           FROM counter c
+           JOIN counter_track t ON c.track_id = t.id
+           WHERE t.name = 'VSYNC-app'),
+          16666667
+        ) as period_ns
+      ),
+      vsync_events AS (
+        SELECT c.ts as vsync_ts
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-app'
+        ORDER BY c.ts
+      ),
+      input_events AS (
+        SELECT ied.ts as input_ts
+        FROM android_input_event_dispatch ied
+        LEFT JOIN process p ON p.upid = ied.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2')
+          AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      ),
+      input_with_vsync AS (
+        SELECT
+          ie.input_ts,
+          (SELECT MAX(v.vsync_ts) FROM vsync_events v WHERE v.vsync_ts <= ie.input_ts) as prev_vsync,
+          (SELECT MIN(v.vsync_ts) FROM vsync_events v WHERE v.vsync_ts > ie.input_ts) as next_vsync
+        FROM input_events ie
+      )
+      SELECT
+        printf('%d', input_ts) as input_ts,
+        printf('%d', prev_vsync) as nearest_vsync_ts,
+        ROUND((input_ts - prev_vsync) / 1e6, 2) as phase_offset_ms,
+        ROUND((input_ts - prev_vsync) * 100.0 / (SELECT period_ns FROM vsync_cfg), 1) as phase_ratio_pct,
+        ROUND((next_vsync - input_ts) / 1e6, 2) as wait_ms
+      FROM input_with_vsync
+      WHERE prev_vsync IS NOT NULL AND next_vsync IS NOT NULL
+      ORDER BY input_ts
+
+  # Step 3: 相位分布统计
+  - id: phase_distribution
+    type: atomic
+    name: "相位分布统计"
+    display:
+      level: summary
+      layer: overview
+      title: "相位分布统计"
+      columns:
+        - name: metric
+          label: "指标"
+          type: string
+        - name: value
+          label: "值"
+          type: string
+    sql: |
+      WITH vsync_cfg AS (
+        SELECT COALESCE(
+          (SELECT CAST(PERCENTILE(c.ts - LAG(c.ts) OVER (ORDER BY c.ts), 0.5) AS INTEGER)
+           FROM counter c
+           JOIN counter_track t ON c.track_id = t.id
+           WHERE t.name = 'VSYNC-app'),
+          16666667
+        ) as period_ns
+      ),
+      vsync_events AS (
+        SELECT c.ts as vsync_ts
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-app'
+      ),
+      input_events AS (
+        SELECT ied.ts as input_ts
+        FROM android_input_event_dispatch ied
+        LEFT JOIN process p ON p.upid = ied.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2')
+          AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      ),
+      phase_offsets AS (
+        SELECT
+          (ie.input_ts - (SELECT MAX(v.vsync_ts) FROM vsync_events v WHERE v.vsync_ts <= ie.input_ts)) as offset_ns,
+          ((SELECT MIN(v.vsync_ts) FROM vsync_events v WHERE v.vsync_ts > ie.input_ts) - ie.input_ts) as wait_ns
+        FROM input_events ie
+      ),
+      valid AS (
+        SELECT offset_ns, wait_ns FROM phase_offsets
+        WHERE offset_ns IS NOT NULL AND wait_ns IS NOT NULL
+          AND offset_ns >= 0 AND wait_ns >= 0
+      )
+      SELECT '相位偏移 P50(ms)' as metric, CAST(ROUND(PERCENTILE(offset_ns, 0.5) / 1e6, 2) AS TEXT) as value FROM valid
+      UNION ALL
+      SELECT '相位偏移 P90(ms)', CAST(ROUND(PERCENTILE(offset_ns, 0.9) / 1e6, 2) AS TEXT) FROM valid
+      UNION ALL
+      SELECT 'VSync等待 P50(ms)', CAST(ROUND(PERCENTILE(wait_ns, 0.5) / 1e6, 2) AS TEXT) FROM valid
+      UNION ALL
+      SELECT 'VSync等待 P90(ms)', CAST(ROUND(PERCENTILE(wait_ns, 0.9) / 1e6, 2) AS TEXT) FROM valid
+      UNION ALL
+      SELECT '偏移>75%周期(不利相位)', CAST(ROUND(
+        100.0 * (SELECT COUNT(*) FROM valid WHERE offset_ns > (SELECT period_ns FROM vsync_cfg) * 0.75) /
+        MAX((SELECT COUNT(*) FROM valid), 1), 1) AS TEXT) || '%' FROM valid LIMIT 1
+      UNION ALL
+      SELECT '样本数', CAST(COUNT(*) AS TEXT) FROM valid
+
+output:
+  format: structured

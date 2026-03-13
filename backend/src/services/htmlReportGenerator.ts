@@ -120,6 +120,16 @@ export interface AgentDrivenReportData {
   timestamp: number;
   /** P1-11: User conversation turn count (distinct from SDK internal rounds). */
   conversationTurns?: number;
+  /** P0-R1: Cross-turn query history for multi-turn reports */
+  queryHistory?: Array<{ turn: number; query: string; timestamp: number }>;
+  /** P0-R2: Cross-turn conclusion history for multi-turn reports */
+  conclusionHistory?: Array<{ turn: number; conclusion: string; confidence: number; timestamp: number }>;
+  /** P1-R3: Analysis notes from Claude's write_analysis_note MCP tool */
+  analysisNotes?: Array<{ section?: string; type?: string; content: string; priority?: string; timestamp?: number }>;
+  /** P1-R3: Current analysis plan from submit_plan MCP tool */
+  analysisPlan?: { phases: Array<{ name: string; goal?: string; status: string; summary?: string }> ; successCriteria: string } | null;
+  /** P1-R3: Uncertainty flags from flag_uncertainty MCP tool */
+  uncertaintyFlags?: Array<{ topic: string; assumption: string; question: string }>;
 }
 
 export class HTMLReportGenerator {
@@ -2636,7 +2646,9 @@ export class HTMLReportGenerator {
   private markdownToHtml(text: string): string {
     if (!text) return '';
 
-    let result = text;
+    // P0-2: Escape HTML first to prevent XSS from LLM-generated content,
+    // then apply markdown transformations on the safe escaped text.
+    let result = this.escapeHtml(text);
 
     // First, convert tables (must be done before other transformations)
     // Store tables as placeholders to protect them from newline conversion
@@ -4004,7 +4016,7 @@ export class HTMLReportGenerator {
    * Generate HTML report from agent runtime result (Phase 2-4 architecture)
    */
   generateAgentDrivenHTML(data: AgentDrivenReportData): string {
-    const { traceId, query, result, hypotheses, dialogue, conversationTimeline, timestamp } = data;
+    const { traceId, query, result, hypotheses, dialogue, conversationTimeline, timestamp, queryHistory, conclusionHistory } = data;
     const dataEnvelopes = this.prepareAgentDrivenEnvelopes(data.dataEnvelopes || []);
     const agentResponses = data.agentResponses || [];
     const traceStartNs = data.traceStartNs ? this.parseNs(data.traceStartNs) : null;
@@ -4237,12 +4249,25 @@ export class HTMLReportGenerator {
 
     <div class="section">
       <h2 class="section-title">用户问题</h2>
+      ${(queryHistory && queryHistory.length > 1)
+        ? queryHistory.map(qh => `
+      <div class="hypothesis-card" style="margin-bottom: 8px;">
+        <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">第 ${qh.turn} 轮</div>
+        <div class="hypothesis-title" style="color: #166534;">${this.escapeHtml(qh.query)}</div>
+      </div>`).join('')
+        : `
       <div class="hypothesis-card">
         <div class="hypothesis-title" style="color: #166534;">${this.escapeHtml(query)}</div>
-      </div>
+      </div>`}
     </div>
 
     ${this.renderHypothesesSection(hypotheses)}
+
+    ${this.renderAnalysisPlanSection(data.analysisPlan)}
+
+    ${this.renderAnalysisNotesSection(data.analysisNotes)}
+
+    ${this.renderUncertaintyFlagsSection(data.uncertaintyFlags)}
 
     ${this.renderConversationTimelineSection(normalizedConversationTimeline)}
 
@@ -4252,14 +4277,23 @@ export class HTMLReportGenerator {
 
     <div class="section">
       <h2 class="section-title">分析结论</h2>
+      ${(conclusionHistory && conclusionHistory.length > 1)
+        ? conclusionHistory.map(ch => `
+      <div style="margin-bottom: 16px;">
+        <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; padding: 4px 8px; background: #f3f4f6; border-radius: 4px; display: inline-block;">第 ${ch.turn} 轮 · 置信度 ${(ch.confidence * 100).toFixed(0)}%</div>
+        <div class="answer-box">
+          ${this.formatAnswer(ch.conclusion)}
+        </div>
+      </div>`).join('')
+        : `
       <div class="answer-box">
         ${this.formatAnswer(result.conclusion)}
-      </div>
+      </div>`}
     </div>
 
     <div class="footer">
       <p>由 SmartPerfetto Agent-Driven Orchestrator 生成</p>
-      <p style="margin-top: 5px; font-size: 12px;">Powered by AI Agents + Hypothesis-Driven Architecture</p>
+      <p style="margin-top: 5px; font-size: 12px;">Powered by Claude Agent SDK + MCP Tools</p>
     </div>
   </div>
   <script>
@@ -4587,6 +4621,74 @@ export class HTMLReportGenerator {
       case 'info': return '#eff6ff';
       default: return '#f9fafb';
     }
+  }
+
+  /**
+   * P1-R3: Render analysis plan section from agentv3 submit_plan data
+   */
+  private renderAnalysisPlanSection(plan?: AgentDrivenReportData['analysisPlan']): string {
+    if (!plan || !plan.phases || plan.phases.length === 0) return '';
+    return `
+    <div class="section" style="background: #fafafa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+      <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span style="color: #2563eb;">📋</span> 分析计划
+      </h2>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        ${plan.phases.map(p => {
+          const icon = p.status === 'completed' ? '✓' : p.status === 'skipped' ? '⊘' : p.status === 'in_progress' ? '◐' : '○';
+          const color = p.status === 'completed' ? '#059669' : p.status === 'skipped' ? '#9ca3af' : p.status === 'in_progress' ? '#f59e0b' : '#2563eb';
+          return `<div style="display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="color: ${color}; font-weight: 600;">${icon}</span>
+            <span style="font-weight: 500;">${this.escapeHtml(p.name)}</span>
+            ${p.summary ? `<span style="color: #6b7280; font-size: 13px;"> — ${this.escapeHtml(p.summary)}</span>` : ''}
+          </div>`;
+        }).join('')}
+      </div>
+      <div style="margin-top: 8px; font-size: 13px; color: #6b7280;">成功标准: ${this.escapeHtml(plan.successCriteria)}</div>
+    </div>`;
+  }
+
+  /**
+   * P1-R3: Render analysis notes from agentv3 write_analysis_note data
+   */
+  private renderAnalysisNotesSection(notes?: AgentDrivenReportData['analysisNotes']): string {
+    if (!notes || notes.length === 0) return '';
+    return `
+    <div class="section" style="background: #fafafa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+      <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span style="color: #d97706;">📝</span> 分析笔记
+        <span style="font-size: 12px; color: #666; font-weight: normal;">(${notes.length})</span>
+      </h2>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        ${notes.map(n => `
+          <div style="padding: 8px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="font-size: 11px; color: #9ca3af; text-transform: uppercase; letter-spacing: 0.5px;">${this.escapeHtml(n.section || n.type || 'note')}${n.priority ? ` · ${n.priority}` : ''}</span>
+            <div style="margin-top: 4px; font-size: 14px;">${this.markdownToHtml(n.content)}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
+  }
+
+  /**
+   * P1-R3: Render uncertainty flags from agentv3 flag_uncertainty data
+   */
+  private renderUncertaintyFlagsSection(flags?: AgentDrivenReportData['uncertaintyFlags']): string {
+    if (!flags || flags.length === 0) return '';
+    return `
+    <div class="section" style="background: #fffbeb; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+      <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span style="color: #f59e0b;">⚠</span> 不确定性标记
+        <span style="font-size: 12px; color: #666; font-weight: normal;">(${flags.length})</span>
+      </h2>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        ${flags.map(f => `
+          <div style="padding: 8px 12px; background: white; border-radius: 6px; border: 1px solid #fcd34d;">
+            <div style="font-weight: 500;">${this.escapeHtml(f.topic)}</div>
+            <div style="font-size: 13px; color: #6b7280; margin-top: 2px;">假设: ${this.escapeHtml(f.assumption)}</div>
+            <div style="font-size: 13px; color: #92400e; margin-top: 2px;">待确认: ${this.escapeHtml(f.question)}</div>
+          </div>`).join('')}
+      </div>
+    </div>`;
   }
 
   /**

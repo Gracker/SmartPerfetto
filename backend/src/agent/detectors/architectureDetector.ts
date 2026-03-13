@@ -20,6 +20,9 @@ import { FlutterDetector } from './flutterDetector';
 import { WebViewDetector } from './webviewDetector';
 import { ComposeDetector } from './composeDetector';
 import { StandardDetector } from './standardDetector';
+import { GameDetector } from './gameDetector';
+import { CameraDetector } from './cameraDetector';
+import { VideoOverlayDetector } from './videoOverlayDetector';
 import { BaseDetector } from './baseDetector';
 
 /**
@@ -51,10 +54,16 @@ export class ArchitectureDetector {
     this.config = { ...DEFAULT_CONFIG, ...config };
 
     // 按优先级注册检测器
+    // Flutter/WebView/Compose 优先 (独特线程模型)
+    // Game/Camera/Video 次之 (特殊渲染管线)
+    // Standard 最低 (默认兜底)
     this.detectors = [
       new FlutterDetector(),
       new WebViewDetector(),
       new ComposeDetector(),
+      new GameDetector(),
+      new CameraDetector(),
+      new VideoOverlayDetector(),
       new StandardDetector(),
     ];
   }
@@ -162,6 +171,9 @@ export class ArchitectureDetector {
       'FLUTTER',
       'WEBVIEW',
       'COMPOSE',
+      'GAME_ENGINE',
+      'CAMERA',
+      'VIDEO_OVERLAY',
       'SURFACEVIEW',
       'GLSURFACEVIEW',
       'SOFTWARE',

@@ -1,0 +1,389 @@
+# =============================================================================
+# Binder Storm 检测（原子 Skill）
+# =============================================================================
+# 检测 Binder 事务风暴 —— 短时间内过多的 IPC 调用可导致延迟或 ANR。
+# 分析 Binder 调用密度、突发检测、回调循环和缓冲区压力。
+
+name: binder_storm_detection
+version: "1.0"
+type: atomic
+category: binder
+
+meta:
+  display_name: "Binder 风暴检测"
+  description: "检测 Binder 事务风暴：短时间内过多 IPC 调用导致延迟或 ANR"
+  icon: "warning"
+  tags: [binder, storm, ipc, burst, saturation, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+  modules:
+    - android.binder
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: threshold
+    type: number
+    required: false
+    default: 50
+    description: "100ms 窗口内 Binder 调用次数告警阈值"
+
+steps:
+  # ========== Binder 密度分析（每 100ms 窗口）==========
+  - id: binder_density
+    type: atomic
+    name: "Binder 调用密度"
+    display:
+      level: overview
+      layer: overview
+      title: "Binder 调用密度（100ms 窗口）"
+      columns:
+        - name: window_ts
+          label: "窗口开始"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: txn_count
+          label: "事务数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总耗时"
+          type: duration
+          format: duration_ms
+        - name: avg_dur_ms
+          label: "平均耗时"
+          type: duration
+          format: duration_ms
+        - name: status
+          label: "状态"
+          type: string
+    sql: |
+      WITH binder_txns AS (
+        SELECT
+          bt.client_ts,
+          bt.client_dur,
+          bt.client_process as process_name
+        FROM android_binder_txns bt
+        WHERE (bt.client_process GLOB '${package}*' OR '${package}' = '')
+          AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
+      ),
+      txn_bounds AS (
+        SELECT
+          COALESCE(${start_ts}, MIN(client_ts)) as t_start,
+          COALESCE(${end_ts}, MAX(client_ts + client_dur)) as t_end
+        FROM binder_txns
+      ),
+      windows AS (
+        SELECT
+          t_start + (value * 100000000) as window_start,
+          t_start + ((value + 1) * 100000000) as window_end
+        FROM txn_bounds
+        JOIN (
+          WITH RECURSIVE cnt(value) AS (
+            SELECT 0
+            UNION ALL
+            SELECT value + 1 FROM cnt
+            WHERE value < 3000
+          )
+          SELECT value FROM cnt
+        )
+        WHERE t_start + (value * 100000000) < t_end
+      )
+      SELECT
+        printf('%d', w.window_start) as window_ts,
+        bt.process_name,
+        COUNT(*) as txn_count,
+        ROUND(SUM(bt.client_dur) / 1e6, 2) as total_dur_ms,
+        ROUND(AVG(bt.client_dur) / 1e6, 2) as avg_dur_ms,
+        CASE
+          WHEN COUNT(*) > ${threshold|50} * 2 THEN '严重风暴'
+          WHEN COUNT(*) > ${threshold|50} THEN '风暴'
+          WHEN COUNT(*) > ${threshold|50} / 2 THEN '密集'
+          ELSE '正常'
+        END as status
+      FROM windows w
+      JOIN binder_txns bt ON bt.client_ts >= w.window_start AND bt.client_ts < w.window_end
+      GROUP BY w.window_start, bt.process_name
+      HAVING txn_count > 5
+      ORDER BY txn_count DESC
+      LIMIT 50
+    save_as: binder_density
+
+  # ========== 突发检测（超过阈值的 100ms 窗口）==========
+  - id: burst_detection
+    type: atomic
+    name: "突发检测"
+    display:
+      level: detail
+      layer: list
+      title: "Binder 突发事件"
+      columns:
+        - name: burst_ts
+          label: "突发开始"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: txn_count
+          label: "事务数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总耗时"
+          type: duration
+          format: duration_ms
+        - name: top_server
+          label: "最多调用的服务"
+          type: string
+        - name: top_server_count
+          label: "服务调用次数"
+          type: number
+        - name: severity
+          label: "严重程度"
+          type: string
+    sql: |
+      WITH binder_txns AS (
+        SELECT
+          bt.client_ts,
+          bt.client_dur,
+          bt.client_process as process_name,
+          bt.server_process
+        FROM android_binder_txns bt
+        WHERE (bt.client_process GLOB '${package}*' OR '${package}' = '')
+          AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
+      ),
+      txn_bounds AS (
+        SELECT
+          COALESCE(${start_ts}, MIN(client_ts)) as t_start,
+          COALESCE(${end_ts}, MAX(client_ts + client_dur)) as t_end
+        FROM binder_txns
+      ),
+      windows AS (
+        SELECT
+          t_start + (value * 100000000) as window_start,
+          t_start + ((value + 1) * 100000000) as window_end
+        FROM txn_bounds
+        JOIN (
+          WITH RECURSIVE cnt(value) AS (
+            SELECT 0
+            UNION ALL
+            SELECT value + 1 FROM cnt
+            WHERE value < 3000
+          )
+          SELECT value FROM cnt
+        )
+        WHERE t_start + (value * 100000000) < t_end
+      ),
+      burst_windows AS (
+        SELECT
+          w.window_start,
+          bt.process_name,
+          COUNT(*) as txn_count,
+          ROUND(SUM(bt.client_dur) / 1e6, 2) as total_dur_ms
+        FROM windows w
+        JOIN binder_txns bt ON bt.client_ts >= w.window_start AND bt.client_ts < w.window_end
+        GROUP BY w.window_start, bt.process_name
+        HAVING txn_count > ${threshold|50}
+      ),
+      top_servers AS (
+        SELECT
+          bw.window_start,
+          bw.process_name,
+          bt.server_process,
+          COUNT(*) as srv_count,
+          ROW_NUMBER() OVER (PARTITION BY bw.window_start, bw.process_name ORDER BY COUNT(*) DESC) as rn
+        FROM burst_windows bw
+        JOIN binder_txns bt ON bt.client_ts >= bw.window_start
+          AND bt.client_ts < bw.window_start + 100000000
+          AND bt.process_name = bw.process_name
+        GROUP BY bw.window_start, bw.process_name, bt.server_process
+      )
+      SELECT
+        printf('%d', bw.window_start) as burst_ts,
+        bw.process_name,
+        bw.txn_count,
+        bw.total_dur_ms,
+        ts.server_process as top_server,
+        ts.srv_count as top_server_count,
+        CASE
+          WHEN bw.txn_count > ${threshold|50} * 3 THEN 'critical'
+          WHEN bw.txn_count > ${threshold|50} * 2 THEN 'warning'
+          ELSE 'notice'
+        END as severity
+      FROM burst_windows bw
+      LEFT JOIN top_servers ts ON ts.window_start = bw.window_start
+        AND ts.process_name = bw.process_name AND ts.rn = 1
+      ORDER BY bw.txn_count DESC
+      LIMIT 30
+    save_as: burst_detection
+
+  # ========== 回调循环检测（A→B→A 双向 Binder）==========
+  - id: callback_loops
+    type: atomic
+    name: "回调循环检测"
+    display:
+      level: detail
+      layer: list
+      title: "Binder 回调循环（A→B→A）"
+      columns:
+        - name: process_a
+          label: "进程 A"
+          type: string
+        - name: process_b
+          label: "进程 B"
+          type: string
+        - name: a_to_b_count
+          label: "A→B 次数"
+          type: number
+          format: compact
+        - name: b_to_a_count
+          label: "B→A 次数"
+          type: number
+          format: compact
+        - name: total_loop_dur_ms
+          label: "总耗时"
+          type: duration
+          format: duration_ms
+        - name: loop_ratio
+          label: "回调比"
+          type: number
+    sql: |
+      WITH pair_stats AS (
+        SELECT
+          bt.client_process,
+          bt.server_process,
+          COUNT(*) as call_count,
+          SUM(bt.client_dur) as total_dur
+        FROM android_binder_txns bt
+        WHERE (bt.client_process GLOB '${package}*' OR bt.server_process GLOB '${package}*' OR '${package}' = '')
+          AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
+        GROUP BY bt.client_process, bt.server_process
+      )
+      SELECT
+        a.client_process as process_a,
+        a.server_process as process_b,
+        a.call_count as a_to_b_count,
+        b.call_count as b_to_a_count,
+        ROUND((a.total_dur + b.total_dur) / 1e6, 2) as total_loop_dur_ms,
+        ROUND(CAST(MIN(a.call_count, b.call_count) AS REAL) / MAX(a.call_count, b.call_count), 2) as loop_ratio
+      FROM pair_stats a
+      JOIN pair_stats b ON a.client_process = b.server_process AND a.server_process = b.client_process
+      WHERE a.client_process < a.server_process
+        AND a.call_count > 3 AND b.call_count > 3
+      ORDER BY (a.total_dur + b.total_dur) DESC
+      LIMIT 20
+    save_as: callback_loops
+
+  # ========== 缓冲区压力估算（基于事务密度和耗时）==========
+  - id: buffer_pressure
+    type: atomic
+    name: "缓冲区压力"
+    display:
+      level: detail
+      layer: list
+      title: "Binder 缓冲区压力估算"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: total_txns
+          label: "总事务数"
+          type: number
+          format: compact
+        - name: sync_txns
+          label: "同步事务"
+          type: number
+          format: compact
+        - name: async_txns
+          label: "异步事务"
+          type: number
+          format: compact
+        - name: total_client_ms
+          label: "总客户端耗时"
+          type: duration
+          format: duration_ms
+        - name: concurrent_peak
+          label: "并发峰值"
+          type: number
+        - name: pressure_rating
+          label: "压力评级"
+          type: string
+    sql: |
+      WITH process_stats AS (
+        SELECT
+          bt.client_process as process_name,
+          COUNT(*) as total_txns,
+          SUM(CASE WHEN bt.is_sync = 1 THEN 1 ELSE 0 END) as sync_txns,
+          SUM(CASE WHEN bt.is_sync = 0 THEN 1 ELSE 0 END) as async_txns,
+          ROUND(SUM(bt.client_dur) / 1e6, 2) as total_client_ms,
+          ROUND(MAX(bt.client_dur) / 1e6, 2) as max_dur_ms
+        FROM android_binder_txns bt
+        WHERE (bt.client_process GLOB '${package}*' OR '${package}' = '')
+          AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
+        GROUP BY bt.client_process
+      ),
+      concurrent_estimate AS (
+        SELECT
+          bt1.client_process as process_name,
+          MAX(overlap_count) as concurrent_peak
+        FROM (
+          SELECT
+            bt1.client_process,
+            bt1.client_ts,
+            COUNT(*) as overlap_count
+          FROM android_binder_txns bt1
+          JOIN android_binder_txns bt2 ON (
+            bt1.client_process = bt2.client_process
+            AND bt2.client_ts < bt1.client_ts + bt1.client_dur
+            AND bt2.client_ts + bt2.client_dur > bt1.client_ts
+          )
+          WHERE (bt1.client_process GLOB '${package}*' OR '${package}' = '')
+            AND (${start_ts} IS NULL OR bt1.client_ts >= ${start_ts})
+            AND (${end_ts} IS NULL OR bt1.client_ts <= ${end_ts})
+          GROUP BY bt1.client_process, bt1.client_ts
+        ) bt1
+        GROUP BY bt1.client_process
+      )
+      SELECT
+        ps.process_name,
+        ps.total_txns,
+        ps.sync_txns,
+        ps.async_txns,
+        ps.total_client_ms,
+        COALESCE(ce.concurrent_peak, 1) as concurrent_peak,
+        CASE
+          WHEN COALESCE(ce.concurrent_peak, 1) > 15 OR ps.total_txns > 1000 THEN '严重'
+          WHEN COALESCE(ce.concurrent_peak, 1) > 8 OR ps.total_txns > 500 THEN '需优化'
+          WHEN COALESCE(ce.concurrent_peak, 1) > 4 OR ps.total_txns > 200 THEN '正常'
+          ELSE '低'
+        END as pressure_rating
+      FROM process_stats ps
+      LEFT JOIN concurrent_estimate ce ON ce.process_name = ps.process_name
+      ORDER BY ps.total_txns DESC
+      LIMIT 20
+    save_as: buffer_pressure
+
+output:
+  format: structured

@@ -49,6 +49,8 @@ export interface ClaudeAnalysisContext {
   negativePatternContext?: string;
   /** Previous turn's analysis plan for multi-turn context (P1-G12) */
   previousPlan?: AnalysisPlanV3;
+  /** Recent plan history (max 3) for deeper cross-turn context (P1-B1) */
+  planHistory?: AnalysisPlanV3[];
   /** User's Perfetto UI selection context — scopes analysis to a time range or single slice */
   selectionContext?: SelectionContext;
 }

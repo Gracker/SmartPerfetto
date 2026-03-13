@@ -283,23 +283,30 @@ ${context.conversationSummary}`);
     sections.push(context.negativePatternContext);
   }
 
-  // P1-G12: Previous turn's plan for cross-turn continuity
+  // P1-B1: Recent plan history for deeper cross-turn context (up to 3 plans)
+  const allPlans: Array<{ plan: typeof context.previousPlan; label: string }> = [];
+  if (context.planHistory) {
+    context.planHistory.forEach((p, i) => allPlans.push({ plan: p, label: `第 ${i + 1} 轮` }));
+  }
   if (context.previousPlan) {
-    const prevPlan = context.previousPlan;
-    const phasesSummary = prevPlan.phases.map(p => {
-      const statusLabel = p.status === 'completed' ? '✓' : p.status === 'skipped' ? '⊘' : '○';
-      const summary = p.summary ? ` — ${p.summary}` : '';
-      return `  ${statusLabel} ${p.name}${summary}`;
-    }).join('\n');
-    sections.push(`## 上一轮分析计划
+    allPlans.push({ plan: context.previousPlan, label: '上一轮' });
+  }
+  if (allPlans.length > 0) {
+    const plansSummary = allPlans.map(({ plan, label }) => {
+      const phasesSummary = plan!.phases.map(p => {
+        const statusLabel = p.status === 'completed' ? '✓' : p.status === 'skipped' ? '⊘' : '○';
+        const summary = p.summary ? ` — ${p.summary}` : '';
+        return `    ${statusLabel} ${p.name}${summary}`;
+      }).join('\n');
+      return `### ${label}分析计划\n${phasesSummary}\n  成功标准: ${plan!.successCriteria}`;
+    }).join('\n\n');
+    sections.push(`## 历史分析计划
 
-上一轮对话已执行以下分析计划，供参考以避免重复分析：
+以下是近几轮对话的分析计划，供参考以避免重复分析：
 
-${phasesSummary}
+${plansSummary}
 
-成功标准: ${prevPlan.successCriteria}
-
-> 你可以在新计划中引用上一轮的发现，或对未完成的阶段进行补充分析。也可以使用 \`recall_patterns\` 查询跨会话的历史分析经验。`);
+> 你可以在新计划中引用之前的发现，或对未完成的阶段进行补充分析。也可以使用 \`recall_patterns\` 查询跨会话的历史分析经验。`);
   }
 
   if (context.knowledgeBaseContext) {
@@ -323,6 +330,7 @@ ${context.knowledgeBaseContext}
       '## 历史踩坑记录',              // Negative memory — important but droppable under pressure
       '## SQL 踩坑记录',              // Nice-to-have, not critical
       '## 子代理协作',                 // Only useful when sub-agents enabled
+      '## 历史分析计划',              // P2-3: Plan history is supplementary context, droppable under pressure
     ];
     for (const marker of droppableSections) {
       if (tokens <= MAX_PROMPT_TOKENS) break;

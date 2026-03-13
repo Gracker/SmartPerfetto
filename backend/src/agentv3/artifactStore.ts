@@ -182,6 +182,29 @@ export class ArtifactStore {
     return this.artifacts.size;
   }
 
+  /**
+   * Serialize all artifacts for snapshot persistence.
+   * Returns a shallow copy of all stored artifacts.
+   */
+  serialize(): StoredArtifact[] {
+    return Array.from(this.artifacts.values());
+  }
+
+  /**
+   * Restore an ArtifactStore from a persisted snapshot.
+   * Reconstructs the internal counter from the highest artifact ID
+   * so new artifacts get IDs that don't collide with restored ones.
+   */
+  static fromSnapshot(artifacts: StoredArtifact[]): ArtifactStore {
+    const store = new ArtifactStore();
+    for (const art of artifacts) {
+      store.artifacts.set(art.id, art);
+      const num = parseInt(art.id.replace('art-', ''), 10) || 0;
+      if (num > store.counter) store.counter = num;
+    }
+    return store;
+  }
+
   /** Clear all artifacts (e.g., on session reset). */
   clear(): void {
     this.artifacts.clear();

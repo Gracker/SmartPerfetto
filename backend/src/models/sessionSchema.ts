@@ -65,6 +65,34 @@ export interface SessionMetadata {
    * Prevents re-detection failures when trace_processor has unloaded the trace.
    */
   architectureSnapshot?: import('../agent/detectors/types').ArchitectureInfo;
+
+  /**
+   * Unified session state snapshot — single source of truth for persistence,
+   * report generation, and session restoration. Written atomically.
+   * @see SessionStateSnapshot in backend/src/agentv3/sessionStateSnapshot.ts
+   */
+  sessionStateSnapshot?: import('../agentv3/sessionStateSnapshot').SessionStateSnapshot;
+
+  /**
+   * @deprecated Use sessionStateSnapshot instead. Kept for backward-compatible reads of old sessions.
+   * New writes always populate both (dual-write).
+   *
+   * R4: Runtime arrays snapshot for cross-restart report continuity.
+   * Stores conversationSteps (timeline) and dataEnvelopes (skill tables)
+   * that would otherwise be lost on backend restart.
+   */
+  runtimeArraysSnapshot?: {
+    conversationSteps?: any[];
+    dataEnvelopes?: any[];
+    hypotheses?: any[];
+    queryHistory?: any[];
+    conclusionHistory?: any[];
+    /** P1-1/P1-3: Persist agentv3-specific state for cross-restart report/context continuity */
+    analysisNotes?: any[];
+    analysisPlan?: any;
+    planHistory?: any[];
+    uncertaintyFlags?: any[];
+  };
 }
 
 export interface SessionFilter {

@@ -1,0 +1,166 @@
+# =============================================================================
+# 设备环境状态快照（原子 Skill）
+# =============================================================================
+# 采集 trace 期间的设备环境信息：屏幕状态、电量、温度、CPU 频率、内存压力等。
+
+name: device_state_snapshot
+version: "1.0"
+type: atomic
+category: system_context
+
+meta:
+  display_name: "设备环境状态快照"
+  description: "采集 trace 期间的设备环境信息（屏幕、电量、温度、CPU、内存等）"
+  icon: "devices"
+  tags: [device, state, environment, context, atomic]
+
+prerequisites:
+  required_tables:
+    - counter
+    - counter_track
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+display:
+  level: overview
+  layer: overview
+  title: "设备环境状态"
+  columns:
+    - name: metric
+      label: "指标"
+      type: string
+    - name: value
+      label: "值"
+      type: string
+    - name: ts
+      label: "时间戳"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_timeline
+
+sql: |
+  WITH trace_bounds AS (
+    SELECT
+      COALESCE(${start_ts}, (SELECT MIN(ts) FROM slice)) as t_start,
+      COALESCE(${end_ts}, (SELECT MAX(ts + dur) FROM slice)) as t_end
+  ),
+  screen_state AS (
+    SELECT
+      'screen_state' as metric,
+      CASE WHEN c.value > 0 THEN 'ON' ELSE 'OFF' END as value,
+      c.ts as ts
+    FROM counter c
+    JOIN counter_track ct ON c.track_id = ct.id
+    WHERE ct.name GLOB '*ScreenState*' OR ct.name GLOB '*screen_state*'
+    ORDER BY c.ts DESC
+    LIMIT 1
+  ),
+  battery_info AS (
+    SELECT
+      'battery_level' as metric,
+      CAST(c.value AS TEXT) as value,
+      c.ts as ts
+    FROM counter c
+    JOIN counter_track ct ON c.track_id = ct.id
+    WHERE ct.name GLOB '*battery_level*' OR ct.name GLOB '*BatteryLevel*'
+    ORDER BY c.ts DESC
+    LIMIT 1
+  ),
+  charging_info AS (
+    SELECT
+      'charging_state' as metric,
+      CASE WHEN c.value > 0 THEN 'CHARGING' ELSE 'NOT_CHARGING' END as value,
+      c.ts as ts
+    FROM counter c
+    JOIN counter_track ct ON c.track_id = ct.id
+    WHERE ct.name GLOB '*battery_status*' OR ct.name GLOB '*charging*' OR ct.name GLOB '*BatteryStatus*'
+    ORDER BY c.ts DESC
+    LIMIT 1
+  ),
+  thermal_info AS (
+    SELECT
+      'thermal_zone' as metric,
+      ct.name || ': ' || CAST(ROUND(MAX(c.value) / 1000.0, 1) AS TEXT) || '°C' as value,
+      MAX(c.ts) as ts
+    FROM counter c
+    JOIN counter_track ct ON c.track_id = ct.id
+    CROSS JOIN trace_bounds tb
+    WHERE (ct.name GLOB '*thermal_zone*' OR ct.name GLOB '*Temperature*')
+      AND c.ts >= tb.t_start AND c.ts <= tb.t_end
+    GROUP BY ct.name
+    ORDER BY MAX(c.value) DESC
+    LIMIT 5
+  ),
+  cpu_freq_summary AS (
+    SELECT
+      'cpu_max_freq' as metric,
+      'CPU' || ct.name || ': ' || CAST(ROUND(MAX(c.value) / 1e6, 2) AS TEXT) || 'GHz' as value,
+      MAX(c.ts) as ts
+    FROM counter c
+    JOIN cpu_counter_track ct ON c.track_id = ct.id
+    CROSS JOIN trace_bounds tb
+    WHERE ct.name = 'cpufreq'
+      AND c.ts >= tb.t_start AND c.ts <= tb.t_end
+    GROUP BY ct.cpu
+    ORDER BY ct.cpu
+  ),
+  memory_info AS (
+    SELECT
+      'memory_pressure' as metric,
+      CAST(ROUND(MAX(c.value), 0) AS TEXT) as value,
+      MAX(c.ts) as ts
+    FROM counter c
+    JOIN counter_track ct ON c.track_id = ct.id
+    CROSS JOIN trace_bounds tb
+    WHERE (ct.name GLOB '*mem.*pressure*' OR ct.name GLOB '*MemFree*' OR ct.name GLOB '*MemAvailable*')
+      AND c.ts >= tb.t_start AND c.ts <= tb.t_end
+  ),
+  process_count AS (
+    SELECT
+      'active_processes' as metric,
+      CAST(COUNT(DISTINCT p.upid) AS TEXT) as value,
+      NULL as ts
+    FROM process p
+    JOIN thread t ON t.upid = p.upid
+    JOIN thread_state ts_tbl ON ts_tbl.utid = t.utid
+    CROSS JOIN trace_bounds tb
+    WHERE ts_tbl.ts >= tb.t_start AND ts_tbl.ts <= tb.t_end
+      AND ts_tbl.state = 'Running'
+  ),
+  oom_adj AS (
+    SELECT
+      'foreground_apps' as metric,
+      GROUP_CONCAT(p.name, ', ') as value,
+      NULL as ts
+    FROM (
+      SELECT DISTINCT p.name, p.upid
+      FROM counter c
+      JOIN process_counter_track pct ON c.track_id = pct.id
+      JOIN process p ON p.upid = pct.upid
+      CROSS JOIN trace_bounds tb
+      WHERE pct.name = 'oom_score_adj'
+        AND c.value <= 0
+        AND c.ts >= tb.t_start AND c.ts <= tb.t_end
+        AND p.name IS NOT NULL AND p.name != ''
+      LIMIT 10
+    ) p
+  )
+  SELECT metric, value, printf('%d', ts) as ts FROM screen_state
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM battery_info
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM charging_info
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM thermal_info
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM cpu_freq_summary
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM memory_info
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM process_count
+  UNION ALL SELECT metric, value, printf('%d', ts) as ts FROM oom_adj
+
+output:
+  format: structured

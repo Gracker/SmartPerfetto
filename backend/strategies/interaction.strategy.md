@@ -98,6 +98,25 @@ invoke_skill("click_response_detail", {
 | D (Disk Sleep) | `SyS_fsync` / `do_fsync` | fsync 刷盘（SQLite/SharedPreferences） |
 | D (Disk Sleep) | `filemap_fault` / `do_page_fault` | 页缺失 |
 
+### 第四步：多手势类型识别（次要 — 仅在用户明确提及时分析）
+
+以下手势类型属于进阶分析，仅在用户明确提到"长按"、"双击"等手势关键词时才进行分析：
+
+| 手势类型 | 识别方式 | 分析要点 |
+|---------|---------|---------|
+| **长按 (Long Press)** | ACTION_DOWN 到 ACTION_UP 之间持续时间 > 500ms，且无 MOVE 事件（或 MOVE < 3 次） | 长按响应由 ViewConfiguration.getLongPressTimeout() 控制（默认 500ms）。如果用户反馈长按响应慢，检查：① 主线程在 DOWN 后 500ms 内是否有阻塞导致 Looper 延迟处理 LongPress Runnable；② onLongClick 回调本身的执行耗时 |
+| **双击 (Double Tap)** | 两次 ACTION_DOWN 之间间隔 < 300ms（ViewConfiguration.getDoubleTapTimeout()） | 双击检测由 GestureDetector 处理。如果用户反馈双击不灵敏，检查：① 两次 tap 间隔是否接近 300ms 阈值；② 首次 tap 的 ACTION_UP 处理是否过慢导致第二次 DOWN 被错过 |
+
+**长按事件检测 SQL（仅在用户提及时使用）：**
+```
+execute_sql("WITH motion AS (SELECT read_time AS ts, event_action, process_name, SUM(CASE WHEN event_action='DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY read_time) AS gid FROM android_input_events WHERE event_type='MOTION'), gestures AS (SELECT gid, MIN(ts) AS down_ts, MAX(CASE WHEN event_action='UP' THEN ts END) AS up_ts, COUNT(CASE WHEN event_action='MOVE' THEN 1 END) AS move_cnt FROM motion WHERE gid>0 GROUP BY gid) SELECT printf('%d', down_ts) AS ts, ROUND((up_ts - down_ts)/1e6, 1) AS hold_ms FROM gestures WHERE up_ts IS NOT NULL AND (up_ts - down_ts) > 500000000 AND move_cnt <= 2 ORDER BY down_ts LIMIT 20")
+```
+
+**双击事件检测 SQL（仅在用户提及时使用）：**
+```
+execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER BY read_time) AS prev_ts FROM android_input_events WHERE event_type='MOTION' AND event_action='DOWN') SELECT printf('%d', ts) AS ts, ROUND((ts - prev_ts)/1e6, 1) AS gap_ms FROM downs WHERE prev_ts IS NOT NULL AND (ts - prev_ts) < 300000000 ORDER BY ts LIMIT 20")
+```
+
 ### 输出结构必须遵循：
 
 1. **概览**：总事件数、慢事件数、平均/P90/P99 延迟、总体评级

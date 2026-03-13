@@ -1,0 +1,127 @@
+# =============================================================================
+# 滚动响应延迟分析（原子 Skill）
+# =============================================================================
+# 测量滚动手势从输入到首帧渲染的响应延迟。
+# 依赖 android_input_event_dispatch 表（部分 trace 可能不包含）。
+
+name: scroll_response_latency
+version: "1.0"
+type: atomic
+category: input_response
+
+meta:
+  display_name: "滚动响应延迟 (区间)"
+  description: "测量滚动手势从输入事件到首帧渲染的响应延迟"
+  icon: "swipe_right"
+  tags: [scroll, response, latency, input, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+display:
+  level: key
+  layer: detail
+  title: "滚动响应延迟"
+  columns:
+    - name: gesture_ts
+      label: "手势时间"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_timeline
+    - name: process_name
+      label: "进程"
+      type: string
+    - name: response_latency_ms
+      label: "响应延迟"
+      type: duration
+      format: duration_ms
+    - name: first_frame_dur_ms
+      label: "首帧耗时"
+      type: duration
+      format: duration_ms
+    - name: rating
+      label: "评级"
+      type: string
+
+sql: |
+  WITH input_events AS (
+    SELECT
+      ied.ts as input_ts,
+      ied.event_type,
+      ied.event_action,
+      ied.window_id,
+      ied.event_seq,
+      p.name as process_name,
+      p.upid
+    FROM android_input_event_dispatch ied
+    LEFT JOIN process p ON p.upid = ied.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+  ),
+  move_events AS (
+    SELECT
+      input_ts,
+      process_name,
+      upid,
+      ROW_NUMBER() OVER (PARTITION BY upid ORDER BY input_ts) as move_idx
+    FROM input_events
+    WHERE event_action = 'ACTION_MOVE' OR event_action = '2'
+  ),
+  gesture_starts AS (
+    SELECT
+      m1.input_ts as gesture_ts,
+      m1.process_name,
+      m1.upid
+    FROM move_events m1
+    LEFT JOIN move_events m2 ON m1.upid = m2.upid AND m2.move_idx = m1.move_idx - 1
+    WHERE m2.input_ts IS NULL OR (m1.input_ts - m2.input_ts) > 500000000
+  ),
+  first_frames AS (
+    SELECT
+      g.gesture_ts,
+      g.process_name,
+      MIN(f.ts) as frame_ts,
+      (SELECT f2.ts + f2.dur FROM actual_frame_timeline_slice f2
+       WHERE f2.upid = g.upid AND f2.ts >= g.gesture_ts
+       ORDER BY f2.ts LIMIT 1) as frame_end_ts,
+      (SELECT f2.dur FROM actual_frame_timeline_slice f2
+       WHERE f2.upid = g.upid AND f2.ts >= g.gesture_ts
+       ORDER BY f2.ts LIMIT 1) as frame_dur
+    FROM gesture_starts g
+    LEFT JOIN actual_frame_timeline_slice f ON f.upid = g.upid AND f.ts >= g.gesture_ts
+    GROUP BY g.gesture_ts, g.process_name
+  )
+  SELECT
+    printf('%d', gesture_ts) as gesture_ts,
+    process_name,
+    printf('%d', frame_ts) as first_frame_ts,
+    ROUND((frame_ts - gesture_ts) / 1e6, 2) as response_latency_ms,
+    ROUND(frame_dur / 1e6, 2) as first_frame_dur_ms,
+    CASE
+      WHEN (frame_ts - gesture_ts) / 1e6 < 50 THEN '优秀'
+      WHEN (frame_ts - gesture_ts) / 1e6 < 100 THEN '良好'
+      WHEN (frame_ts - gesture_ts) / 1e6 < 200 THEN '需优化'
+      ELSE '严重'
+    END as rating
+  FROM first_frames
+  WHERE frame_ts IS NOT NULL
+  ORDER BY response_latency_ms DESC
+
+output:
+  format: structured

@@ -92,35 +92,99 @@ teaching:
 
       Note over Game,SF: 🎮 Unity/Unreal/Godot 等游戏引擎
   thread_roles:
+    # --- Unity ---
     - thread: UnityMain
       role: "Unity 主线程"
-      description: "Unity 游戏逻辑、脚本执行"
-      trace_tags: "PlayerLoop, Update, LateUpdate"
+      description: "Unity 游戏逻辑 + MonoBehaviour 脚本执行（Update/LateUpdate/FixedUpdate）"
+      trace_tags: "PlayerLoop, Update, LateUpdate, FixedUpdate, MonoBehaviour"
     - thread: UnityGfx
       role: "Unity 渲染线程"
-      description: "Unity 图形命令提交"
-      trace_tags: "GfxDevice, RenderThread"
+      description: "Unity GPU 命令提交（Graphics API 调用、CommandBuffer 执行）"
+      trace_tags: "GfxDevice, RenderThread, CommandBuffer"
+    - thread: UnityMultiRenderingThread
+      role: "Unity 多线程渲染"
+      description: "Unity Multithreaded Rendering 模式下的 GPU 命令提交线程（替代 UnityGfx）"
+      trace_tags: "GfxDevice, Gfx.WaitForPresent"
+    - thread: "UnityJobWorker*"
+      role: "Unity Job System 工作线程"
+      description: "Unity ECS/DOTS 并行任务执行（Burst 编译的 IJobParallelFor、ISystem 等）"
+      trace_tags: "JobHandle, BurstCompile, IJob"
+    # --- Unreal Engine ---
     - thread: GameThread
       role: "Unreal 游戏线程"
-      description: "Unreal 游戏逻辑"
-      trace_tags: "FEngineLoop"
+      description: "Unreal 游戏逻辑 + Blueprint 执行 + Tick 函数"
+      trace_tags: "FEngineLoop, Tick, Blueprint"
     - thread: RenderThread
-      role: "渲染线程"
-      description: "图形渲染"
+      role: "Unreal 渲染线程"
+      description: "Unreal 渲染命令生成（FRenderCommand 队列、Scene Proxy 更新）"
+      trace_tags: "FRenderCommand, SceneProxy, DrawPolicy"
     - thread: RHIThread
       role: "Unreal RHI 线程"
-      description: "Unreal 渲染硬件接口"
+      description: "Unreal 渲染硬件接口 — GPU API 实际提交（Vulkan/GLES command submit）"
+      trace_tags: "RHICmdList, SubmitCommandsHint, EndFrame"
+    - thread: "TaskGraph*"
+      role: "Unreal TaskGraph 线程"
+      description: "Unreal 异步任务系统（物理、动画、AI 等并行任务）"
+      trace_tags: "FTaskGraphInterface, FAsyncTask"
+    # --- Godot ---
+    - thread: GodotMain
+      role: "Godot 主线程"
+      description: "Godot 场景树遍历 + GDScript/C# 脚本执行 + 渲染命令生成"
+      trace_tags: "MainLoop, SceneTree, _process, _physics_process"
+    - thread: ServerThread
+      role: "Godot 物理线程"
+      description: "Godot 物理引擎（Bullet/GodotPhysics）服务线程"
+      trace_tags: "PhysicsServer, physics_process"
+    # --- Cocos ---
+    - thread: CocosThread
+      role: "Cocos 引擎线程"
+      description: "Cocos Creator/Cocos2d-x 游戏循环线程（如存在）"
+      trace_tags: "Director, CCScheduler, CCRenderer"
 
   key_slices:
+    # --- Unity ---
     - name: "PlayerLoop"
       thread: UnityMain
-      description: "Unity 游戏循环"
+      description: "Unity 游戏循环入口 — 包含所有 MonoBehaviour 回调"
+    - name: "Update"
+      thread: UnityMain
+      description: "Unity MonoBehaviour.Update() 回调帧"
+    - name: "LateUpdate"
+      thread: UnityMain
+      description: "Unity MonoBehaviour.LateUpdate()，在所有 Update 后执行（常用于相机跟随）"
+    - name: "FixedUpdate"
+      thread: UnityMain
+      description: "Unity 物理步进回调，固定时间间隔触发"
     - name: "GfxDevice"
       thread: UnityGfx
-      description: "Unity 图形设备操作"
+      description: "Unity 图形设备操作（draw call、state change）"
+    - name: "Gfx.WaitForPresent"
+      thread: UnityGfx
+      description: "Unity 等待 GPU 完成上一帧渲染（GPU bound 指标）"
+    # --- Unreal Engine ---
     - name: "FEngineLoop"
       thread: GameThread
-      description: "Unreal 引擎循环"
+      description: "Unreal 引擎主循环（包含 Tick、渲染提交、GC）"
+    - name: "TickGameWorld"
+      thread: GameThread
+      description: "Unreal 世界 Tick — 所有 Actor/Component 的 Tick 函数执行"
+    - name: "SubmitCommandsHint"
+      thread: RHIThread
+      description: "Unreal RHI 向 GPU 提交命令的标记点"
+    # --- Godot ---
+    - name: "MainLoop"
+      thread: GodotMain
+      description: "Godot 主循环入口 — 场景树处理 + 渲染"
+    - name: "PhysicsServer"
+      thread: ServerThread
+      description: "Godot 物理服务器步进"
+    # --- 通用 ---
+    - name: "Swappy"
+      thread: "*"
+      description: "Android Frame Pacing Library（Google Swappy）— 帧节奏控制"
+    - name: "FramePacing"
+      thread: "*"
+      description: "帧节奏/VSync 对齐标记"
 
 auto_pin:
   instructions:

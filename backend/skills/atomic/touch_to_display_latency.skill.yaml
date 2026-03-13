@@ -1,0 +1,122 @@
+# =============================================================================
+# 触摸到显示延迟分析（原子 Skill）
+# =============================================================================
+# 测量每个输入事件从触摸到帧渲染完成的端到端延迟。
+# 依赖 android_input_event_dispatch 表（部分 trace 可能不包含）。
+
+name: touch_to_display_latency
+version: "1.0"
+type: atomic
+category: input_response
+
+meta:
+  display_name: "触摸到显示延迟 (区间)"
+  description: "测量每个输入事件从触摸到帧渲染的端到端延迟"
+  icon: "touch_app"
+  tags: [touch, latency, display, follow_finger, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: event_type
+    type: string
+    required: false
+    description: "输入事件类型过滤"
+
+display:
+  level: detail
+  layer: detail
+  title: "触摸到显示延迟"
+  columns:
+    - name: input_ts
+      label: "输入时间"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_timeline
+    - name: process_name
+      label: "进程"
+      type: string
+    - name: event_type
+      label: "事件类型"
+      type: string
+    - name: event_action
+      label: "事件动作"
+      type: string
+    - name: dispatch_latency_ms
+      label: "分发延迟"
+      type: duration
+      format: duration_ms
+    - name: total_latency_ms
+      label: "总延迟"
+      type: duration
+      format: duration_ms
+    - name: render_latency_ms
+      label: "渲染延迟"
+      type: duration
+      format: duration_ms
+    - name: rating
+      label: "评级"
+      type: string
+
+sql: |
+  WITH input_dispatch AS (
+    SELECT
+      ied.ts as input_ts,
+      ied.event_type,
+      ied.event_action,
+      ied.dispatch_latency_ns,
+      ied.upid,
+      p.name as process_name
+    FROM android_input_event_dispatch ied
+    LEFT JOIN process p ON p.upid = ied.upid
+    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+      AND ('${event_type}' = '' OR ied.event_type = '${event_type}')
+  ),
+  input_with_frame AS (
+    SELECT
+      id.input_ts,
+      id.event_type,
+      id.event_action,
+      id.dispatch_latency_ns,
+      id.process_name,
+      (SELECT MIN(f.ts + f.dur) FROM actual_frame_timeline_slice f
+       WHERE f.upid = id.upid AND f.ts >= id.input_ts) as frame_present_ts
+    FROM input_dispatch id
+  )
+  SELECT
+    printf('%d', input_ts) as input_ts,
+    process_name,
+    event_type,
+    event_action,
+    ROUND(dispatch_latency_ns / 1e6, 2) as dispatch_latency_ms,
+    ROUND((frame_present_ts - input_ts) / 1e6, 2) as total_latency_ms,
+    ROUND((frame_present_ts - input_ts - COALESCE(dispatch_latency_ns, 0)) / 1e6, 2) as render_latency_ms,
+    CASE
+      WHEN (frame_present_ts - input_ts) / 1e6 < 32 THEN '优秀'
+      WHEN (frame_present_ts - input_ts) / 1e6 < 64 THEN '良好'
+      WHEN (frame_present_ts - input_ts) / 1e6 < 100 THEN '可接受'
+      WHEN (frame_present_ts - input_ts) / 1e6 < 150 THEN '需优化'
+      ELSE '严重'
+    END as rating
+  FROM input_with_frame
+  WHERE frame_present_ts IS NOT NULL
+  ORDER BY total_latency_ms DESC
+
+output:
+  format: structured

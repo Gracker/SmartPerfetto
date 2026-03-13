@@ -13,7 +13,7 @@
 # =============================================================================
 
 version: "1.0"
-description: "Pipeline skills index - 25 rendering pipeline types"
+description: "Pipeline skills index - 28 rendering pipeline types"
 
 families:
   hwui:
@@ -53,9 +53,10 @@ families:
       - FLUTTER_TEXTUREVIEW
 
   webview:
-    name: "WebView"
-    description: "WebView/Chromium rendering modes"
+    name: "WebView/Chromium"
+    description: "WebView/Chromium rendering modes (including standalone Chrome)"
     pipelines:
+      - CHROME_BROWSER_VIZ
       - WEBVIEW_GL_FUNCTOR
       - WEBVIEW_SURFACE_CONTROL
       - WEBVIEW_SURFACEVIEW_WRAPPER
@@ -70,6 +71,8 @@ families:
       - VIDEO_OVERLAY_HWC
       - HARDWARE_BUFFER_RENDERER
       - VARIABLE_REFRESH_RATE
+      - IMAGEREADER_PIPELINE
+      - SOFTWARE_COMPOSITING
 
 # Quick lookup: pipeline_id -> skill file
 pipeline_files:
@@ -98,3 +101,6 @@ pipeline_files:
   HARDWARE_BUFFER_RENDERER: hardware_buffer_renderer.skill.yaml
   COMPOSE_STANDARD: compose_standard.skill.yaml
   VARIABLE_REFRESH_RATE: variable_refresh_rate.skill.yaml
+  IMAGEREADER_PIPELINE: imagereader_pipeline.skill.yaml
+  CHROME_BROWSER_VIZ: chrome_browser_viz.skill.yaml
+  SOFTWARE_COMPOSITING: software_compositing.skill.yaml

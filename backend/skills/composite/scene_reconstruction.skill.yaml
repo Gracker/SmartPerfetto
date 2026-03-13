@@ -99,7 +99,11 @@ steps:
         CASE
           WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='actual_frame_timeline_slice') THEN 1
           ELSE 0
-        END AS has_frame_timeline
+        END AS has_frame_timeline,
+        CASE
+          WHEN EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name='process_counter_track') THEN 1
+          ELSE 0
+        END AS has_process_counter_track
     save_as: table_availability
 
   # ==========================================================================
@@ -110,7 +114,7 @@ steps:
     name: "屏幕状态变化"
     condition: table_availability.data[0]?.has_screen_state === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "屏幕状态"
       columns:
@@ -159,7 +163,7 @@ steps:
     name: "Top App 切换"
     condition: table_availability.data[0]?.has_battery_top === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "应用切换"
       columns:
@@ -203,6 +207,97 @@ steps:
     optional: true
 
   # ==========================================================================
+  # L2: Activity 生命周期事件
+  # ==========================================================================
+  - id: activity_lifecycle
+    type: atomic
+    name: "Activity 生命周期"
+    display:
+      level: hidden
+      layer: list
+      title: "Activity 生命周期"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: activity_name
+          label: "Activity"
+          type: string
+        - name: lifecycle_event
+          label: "生命周期事件"
+          type: string
+        - name: dur_ms
+          label: "耗时(ms)"
+          type: number
+    sql: |
+      WITH lifecycle_slices AS (
+        SELECT
+          s.ts,
+          s.dur,
+          s.name,
+          CASE
+            WHEN s.name GLOB '*activityStart*' THEN 'activityStart'
+            WHEN s.name GLOB '*activityResume*' THEN 'activityResume'
+            WHEN s.name GLOB '*activityPause*' THEN 'activityPause'
+            WHEN s.name GLOB '*activityStop*' THEN 'activityStop'
+            WHEN s.name GLOB '*activityDestroy*' THEN 'activityDestroy'
+            WHEN s.name GLOB '*performCreate*' THEN 'performCreate'
+            WHEN s.name GLOB '*performResume*' THEN 'performResume'
+            WHEN s.name GLOB '*performPause*' THEN 'performPause'
+            WHEN s.name GLOB '*performStop*' THEN 'performStop'
+            WHEN s.name GLOB '*performDestroy*' THEN 'performDestroy'
+            ELSE NULL
+          END AS lifecycle_event,
+          CASE
+            WHEN s.name LIKE '%:%' THEN SUBSTR(s.name, INSTR(s.name, ':') + 1)
+            ELSE s.name
+          END AS activity_name
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.is_main_thread = 1
+          AND (
+            s.name GLOB '*activityStart*'
+            OR s.name GLOB '*activityResume*'
+            OR s.name GLOB '*activityPause*'
+            OR s.name GLOB '*activityStop*'
+            OR s.name GLOB '*activityDestroy*'
+            OR s.name GLOB '*performCreate*'
+            OR s.name GLOB '*performResume*'
+            OR s.name GLOB '*performPause*'
+            OR s.name GLOB '*performStop*'
+            OR s.name GLOB '*performDestroy*'
+          )
+          AND s.dur > 0
+      ),
+      startup_activities AS (
+        SELECT
+          s.ts,
+          s.dur,
+          s.package AS activity_name,
+          'startup (' || s.startup_type || ')' AS lifecycle_event
+        FROM android_startups s
+        WHERE s.dur > 0
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_startups')
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        activity_name,
+        lifecycle_event,
+        ROUND(dur / 1e6, 1) AS dur_ms
+      FROM (
+        SELECT ts, activity_name, lifecycle_event, dur FROM lifecycle_slices WHERE lifecycle_event IS NOT NULL
+        UNION ALL
+        SELECT ts, activity_name, lifecycle_event, dur FROM startup_activities
+      )
+      ORDER BY ts
+      LIMIT 200
+    save_as: activity_lifecycle
+    optional: true
+
+  # ==========================================================================
   # L2: 用户手势识别 (点击/滑动/长按)
   # ==========================================================================
   - id: user_gestures
@@ -210,7 +305,7 @@ steps:
     name: "用户手势识别"
     condition: table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_startups === 1 && table_availability.data[0]?.has_frame_timeline === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "用户操作"
       columns:
@@ -433,7 +528,7 @@ steps:
     name: "滑动启动时刻"
     condition: table_availability.data[0]?.has_input_events === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "滑动启动"
       columns:
@@ -524,7 +619,7 @@ steps:
     name: "惯性滑动"
     condition: table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_frame_timeline === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "惯性滑动"
       columns:
@@ -742,7 +837,7 @@ steps:
     name: "Idle 区间"
     condition: table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_startups === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "空闲区间"
       columns:
@@ -793,7 +888,7 @@ steps:
             OR LOWER(name) LIKE '%unlock%screen%'
             OR LOWER(name) LIKE '%notificationpanel%expand%'
             OR LOWER(name) LIKE '%notificationpanel%collapse%'
-            OR LOWER(name) LIKE '%splitscreen%'
+            OR (LOWER(name) LIKE '%splitscreen%' AND dur > 500000000)
           )
           AND LOWER(name) NOT LIKE '%unlockcanvasandpost%'
           AND LOWER(name) NOT LIKE '%unlockandpost%'
@@ -838,7 +933,7 @@ steps:
     name: "App 启动事件"
     condition: table_availability.data[0]?.has_startups === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "App 启动"
       columns:
@@ -905,7 +1000,7 @@ steps:
     type: atomic
     name: "系统事件"
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "系统事件"
       columns:
@@ -913,7 +1008,8 @@ steps:
           label: "时间"
           type: timestamp
           unit: ns
-          clickAction: navigate_timeline
+          clickAction: navigate_range
+          durationColumn: dur
         - name: dur
           label: "持续"
           type: duration
@@ -921,6 +1017,9 @@ steps:
           unit: ns
         - name: event
           label: "事件"
+          type: string
+        - name: event_type
+          label: "类型"
           type: string
         - name: category
           label: "类别"
@@ -940,32 +1039,164 @@ steps:
           WHEN LOWER(name) LIKE '%splitscreen%' THEN '分屏操作'
           WHEN LOWER(name) LIKE '%enterpictureinpicture%' THEN '进入画中画'
           WHEN LOWER(name) LIKE '%exitpictureinpicture%' THEN '退出画中画'
-          WHEN LOWER(name) LIKE '%launchactivity%' THEN '启动 Activity'
-          WHEN LOWER(name) LIKE '%activityresume%' THEN 'Activity 恢复'
           ELSE NULL
         END AS event,
+        CASE
+          WHEN LOWER(name) LIKE '%keyguard%dismiss%'
+            OR LOWER(name) LIKE '%keyguard%unlock%'
+            OR LOWER(name) LIKE '%lockscreen%unlock%'
+            OR LOWER(name) LIKE '%unlock%screen%'
+            THEN 'screen_unlock'
+          WHEN LOWER(name) LIKE '%notificationpanel%' THEN 'notification'
+          WHEN LOWER(name) LIKE '%splitscreen%' THEN 'split_screen'
+          WHEN LOWER(name) LIKE '%pictureinpicture%' THEN 'pip'
+          ELSE 'system'
+        END AS event_type,
         'system' AS category
       FROM slice
-      WHERE dur > 0
-        AND (
-          LOWER(name) LIKE '%keyguard%dismiss%'
-          OR LOWER(name) LIKE '%keyguard%unlock%'
-          OR LOWER(name) LIKE '%lockscreen%unlock%'
-          OR LOWER(name) LIKE '%unlock%screen%'
-          OR LOWER(name) LIKE '%notificationpanel%expand%'
-          OR LOWER(name) LIKE '%notificationpanel%collapse%'
-          OR LOWER(name) LIKE '%splitscreen%'
-          OR LOWER(name) LIKE '%enterpictureinpicture%'
-          OR LOWER(name) LIKE '%exitpictureinpicture%'
-          OR LOWER(name) LIKE '%launchactivity%'
-          OR LOWER(name) LIKE '%activityresume%'
+      WHERE (
+          -- 解锁: 真实解锁 >= 100ms
+          (LOWER(name) LIKE '%keyguard%dismiss%' AND dur > 100000000)
+          OR (LOWER(name) LIKE '%keyguard%unlock%' AND dur > 100000000)
+          OR (LOWER(name) LIKE '%lockscreen%unlock%' AND dur > 100000000)
+          OR (LOWER(name) LIKE '%unlock%screen%' AND dur > 100000000)
+          -- 通知栏: 面板动画 >= 200ms
+          OR (LOWER(name) LIKE '%notificationpanel%expand%' AND dur > 200000000)
+          OR (LOWER(name) LIKE '%notificationpanel%collapse%' AND dur > 200000000)
+          -- 分屏: 用户可感知操作 >= 500ms
+          OR (LOWER(name) LIKE '%splitscreen%' AND dur > 500000000)
+          -- 画中画: 过渡动画 >= 300ms
+          OR (LOWER(name) LIKE '%enterpictureinpicture%' AND dur > 300000000)
+          OR (LOWER(name) LIKE '%exitpictureinpicture%' AND dur > 300000000)
         )
+        -- 排除干扰项
         AND LOWER(name) NOT LIKE '%unlockcanvasandpost%'
         AND LOWER(name) NOT LIKE '%unlockandpost%'
         AND LOWER(name) != 'unlock'
       ORDER BY ts
       LIMIT 100
     save_as: sys_events
+    optional: true
+
+  # ==========================================================================
+  # L2: 广播事件 (Broadcast/Alarm)
+  # ==========================================================================
+  - id: broadcast_events
+    type: atomic
+    name: "广播事件"
+    display:
+      level: hidden
+      layer: list
+      title: "广播事件"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: receiver_name
+          label: "接收者"
+          type: string
+        - name: broadcast_action
+          label: "广播类型"
+          type: string
+        - name: dur_ms
+          label: "耗时(ms)"
+          type: number
+    sql: |
+      SELECT
+        printf('%d', s.ts) AS ts,
+        CASE
+          WHEN s.name LIKE '%:%' THEN SUBSTR(s.name, INSTR(s.name, ':') + 1)
+          WHEN s.name LIKE '% %' THEN SUBSTR(s.name, INSTR(s.name, ' ') + 1)
+          ELSE p.name
+        END AS receiver_name,
+        CASE
+          WHEN s.name GLOB '*BroadcastQueue*' THEN 'BroadcastQueue'
+          WHEN s.name GLOB '*broadcastReceive*' THEN 'broadcastReceive'
+          WHEN s.name GLOB '*AlarmManager*' THEN 'AlarmManager'
+          ELSE s.name
+        END AS broadcast_action,
+        ROUND(s.dur / 1e6, 1) AS dur_ms
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE (
+        s.name GLOB '*BroadcastQueue*'
+        OR s.name GLOB '*broadcastReceive*'
+        OR s.name GLOB '*AlarmManager*'
+      )
+        AND s.dur > 1000000
+      ORDER BY s.ts
+      LIMIT 200
+    save_as: broadcast_events
+    optional: true
+
+  # ==========================================================================
+  # L2: 跨进程交互 (显著 Binder 事务 >10ms)
+  # ==========================================================================
+  - id: cross_process_interactions
+    type: atomic
+    name: "跨进程交互"
+    display:
+      level: hidden
+      layer: list
+      title: "跨进程交互"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: client_process
+          label: "客户端进程"
+          type: string
+        - name: server_process
+          label: "服务端进程"
+          type: string
+        - name: dur_ms
+          label: "耗时(ms)"
+          type: number
+        - name: interface_name
+          label: "接口名"
+          type: string
+    sql: |
+      WITH binder_txn AS (
+        SELECT
+          client.ts,
+          client.dur,
+          client_proc.name AS client_process,
+          server_proc.name AS server_process,
+          COALESCE(
+            (SELECT s2.name FROM slice s2 WHERE s2.id = client.id),
+            'binder transaction'
+          ) AS interface_name
+        FROM slice client
+        JOIN thread_track client_tt ON client.track_id = client_tt.id
+        JOIN thread client_t ON client_tt.utid = client_t.utid
+        JOIN process client_proc ON client_t.upid = client_proc.upid
+        JOIN flow f ON f.slice_out = client.id
+        JOIN slice server ON f.slice_in = server.id
+        JOIN thread_track server_tt ON server.track_id = server_tt.id
+        JOIN thread server_t ON server_tt.utid = server_t.utid
+        JOIN process server_proc ON server_t.upid = server_proc.upid
+        WHERE client.name GLOB '*binder transaction*'
+          AND client.dur > 10000000
+          AND client_proc.name IS NOT NULL
+          AND server_proc.name IS NOT NULL
+          AND client_proc.name != server_proc.name
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        client_process,
+        server_process,
+        ROUND(dur / 1e6, 1) AS dur_ms,
+        interface_name
+      FROM binder_txn
+      ORDER BY dur DESC
+      LIMIT 100
+    save_as: cross_process_interactions
     optional: true
 
   # ==========================================================================
@@ -976,7 +1207,7 @@ steps:
     name: "掉帧事件"
     condition: table_availability.data[0]?.has_frame_timeline === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "性能事件"
       columns:
@@ -1031,14 +1262,751 @@ steps:
     optional: true
 
   # ==========================================================================
-  # 合并所有事件生成时间线
+  # L2: 设备状态（CPU频率/内存压力/温度/充电）
+  # ==========================================================================
+  - id: device_state
+    type: atomic
+    name: "设备状态"
+    display:
+      level: detail
+      layer: list
+      title: "设备状态"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: event
+          label: "状态"
+          type: string
+        - name: value
+          label: "值"
+          type: string
+        - name: category
+          label: "类别"
+          type: string
+    sql: |
+      WITH time_bounds AS (
+        SELECT MIN(ts) AS t_start, MAX(ts) AS t_end
+        FROM (
+          SELECT ts FROM slice WHERE dur > 0
+          UNION ALL
+          SELECT ts FROM counter WHERE value IS NOT NULL
+        )
+      ),
+      -- CPU frequency ranges: report min/max freq per CPU cluster
+      cpu_freq AS (
+        SELECT
+          printf('%d', MIN(c.ts)) AS ts,
+          'CPU ' || ct.cpu || ' 频率范围' AS event,
+          CAST(CAST(MIN(c.value) / 1000 AS INT) AS TEXT) || ' - ' ||
+            CAST(CAST(MAX(c.value) / 1000 AS INT) AS TEXT) || ' MHz' AS value,
+          'cpu_freq' AS category
+        FROM counter c
+        JOIN cpu_counter_track ct ON c.track_id = ct.id
+        WHERE ct.name = 'cpufreq'
+        GROUP BY ct.cpu
+      ),
+      -- Memory pressure (low memory killer / pressure stall)
+      mem_pressure AS (
+        SELECT
+          printf('%d', c.ts) AS ts,
+          'MemPressure: ' || ct.name AS event,
+          CAST(ROUND(c.value) AS TEXT) AS value,
+          'memory' AS category
+        FROM counter c
+        JOIN counter_track ct ON c.track_id = ct.id
+        WHERE (ct.name LIKE '%mem%pressure%'
+          OR ct.name LIKE '%MemFree%'
+          OR ct.name LIKE '%SwapFree%'
+          OR ct.name = 'oom_score_adj')
+          AND c.value IS NOT NULL
+        ORDER BY c.ts
+        LIMIT 1
+      ),
+      -- Thermal zones
+      thermal AS (
+        SELECT
+          printf('%d', c.ts) AS ts,
+          '温度: ' || ct.name AS event,
+          CAST(ROUND(c.value / 1000.0, 1) AS TEXT) || ' °C' AS value,
+          'thermal' AS category
+        FROM counter c
+        JOIN counter_track ct ON c.track_id = ct.id
+        WHERE ct.name LIKE '%thermal_zone%'
+          AND c.value IS NOT NULL
+        GROUP BY ct.name
+        HAVING c.ts = MAX(c.ts)
+        LIMIT 10
+      ),
+      -- Battery / charging status from counter tracks
+      battery AS (
+        SELECT
+          printf('%d', c.ts) AS ts,
+          CASE
+            WHEN ct.name LIKE '%charge%' THEN '电池电量'
+            WHEN ct.name LIKE '%plugged%' THEN '充电状态'
+            WHEN ct.name LIKE '%voltage%' THEN '电池电压'
+            WHEN ct.name LIKE '%current%' THEN '电池电流'
+            ELSE ct.name
+          END AS event,
+          CASE
+            WHEN ct.name LIKE '%plugged%' THEN
+              CASE CAST(c.value AS INT)
+                WHEN 0 THEN '未充电'
+                WHEN 1 THEN 'AC 充电'
+                WHEN 2 THEN 'USB 充电'
+                WHEN 4 THEN '无线充电'
+                ELSE '充电(' || CAST(CAST(c.value AS INT) AS TEXT) || ')'
+              END
+            WHEN ct.name LIKE '%charge%' AND c.value <= 100 THEN CAST(CAST(c.value AS INT) AS TEXT) || '%'
+            ELSE CAST(ROUND(c.value) AS TEXT)
+          END AS value,
+          'battery' AS category
+        FROM counter c
+        JOIN counter_track ct ON c.track_id = ct.id
+        WHERE (ct.name LIKE '%battery%charge%'
+          OR ct.name LIKE '%battery%plugged%'
+          OR ct.name LIKE 'batt.%')
+          AND c.value IS NOT NULL
+        GROUP BY ct.name
+        HAVING c.ts = MIN(c.ts)
+        ORDER BY c.ts
+        LIMIT 10
+      ),
+      -- Foreground apps (oom_adj <= 0)
+      fg_apps AS (
+        SELECT
+          printf('%d', c.ts) AS ts,
+          '前台进程: ' || p.name AS event,
+          'oom_adj=' || CAST(CAST(c.value AS INT) AS TEXT) AS value,
+          'foreground_app' AS category
+        FROM counter c
+        JOIN process_counter_track pct ON c.track_id = pct.id
+        JOIN process p ON pct.upid = p.upid
+        WHERE pct.name = 'oom_score_adj'
+          AND c.value <= 0
+          AND p.name IS NOT NULL
+          AND p.name != ''
+          AND p.name NOT LIKE '%system_server%'
+          AND p.name NOT LIKE '%surfaceflinger%'
+          AND p.name NOT LIKE '%zygote%'
+        GROUP BY p.name
+        HAVING c.ts = MIN(c.ts)
+        ORDER BY c.ts
+        LIMIT 20
+      )
+      SELECT * FROM cpu_freq
+      UNION ALL SELECT * FROM mem_pressure
+      UNION ALL SELECT * FROM thermal
+      UNION ALL SELECT * FROM battery
+      UNION ALL SELECT * FROM fg_apps
+      ORDER BY ts
+      LIMIT 100
+    save_as: device_state
+    optional: true
+
+  # ==========================================================================
+  # L2: App 前后台状态跟踪（oom_adj 变化 + 进程生死）
+  # ==========================================================================
+  - id: app_state_tracking
+    type: atomic
+    name: "App 状态跟踪"
+    display:
+      level: detail
+      layer: list
+      title: "App 前后台状态"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: event
+          label: "事件"
+          type: string
+        - name: app_package
+          label: "应用"
+          type: string
+        - name: oom_adj
+          label: "oom_adj"
+          type: number
+        - name: state_label
+          label: "状态"
+          type: string
+        - name: category
+          label: "类别"
+          type: string
+    sql: |
+      WITH oom_changes AS (
+        SELECT
+          c.ts,
+          p.name AS app_package,
+          CAST(c.value AS INT) AS oom_adj,
+          LAG(CAST(c.value AS INT)) OVER (PARTITION BY p.name ORDER BY c.ts) AS prev_oom_adj
+        FROM counter c
+        JOIN process_counter_track pct ON c.track_id = pct.id
+        JOIN process p ON pct.upid = p.upid
+        WHERE pct.name = 'oom_score_adj'
+          AND p.name IS NOT NULL
+          AND p.name != ''
+          AND p.name NOT LIKE '%system_server%'
+          AND p.name NOT LIKE '%surfaceflinger%'
+          AND p.name NOT LIKE '%servicemanager%'
+          AND p.name NOT LIKE '%zygote%'
+          AND p.name NOT LIKE '%init%'
+          AND p.name NOT LIKE '%logd%'
+          AND p.name NOT LIKE '%vold%'
+          AND p.name NOT LIKE '%lmkd%'
+      ),
+      -- Filter to only significant transitions (foreground/visible/background boundaries)
+      significant_changes AS (
+        SELECT
+          ts, app_package, oom_adj, prev_oom_adj,
+          CASE
+            WHEN oom_adj <= 0 THEN '前台'
+            WHEN oom_adj <= 200 THEN '可见'
+            WHEN oom_adj <= 700 THEN '后台'
+            ELSE '缓存/即将回收'
+          END AS state_label,
+          CASE
+            WHEN prev_oom_adj IS NULL THEN '进程出现'
+            WHEN prev_oom_adj > 0 AND oom_adj <= 0 THEN '进入前台'
+            WHEN prev_oom_adj <= 0 AND oom_adj > 0 THEN '离开前台'
+            WHEN prev_oom_adj <= 200 AND oom_adj > 200 THEN '进入后台'
+            WHEN prev_oom_adj > 700 AND oom_adj <= 200 THEN '恢复可见'
+            ELSE NULL
+          END AS transition
+        FROM oom_changes
+        WHERE prev_oom_adj IS NULL
+          OR (prev_oom_adj > 0 AND oom_adj <= 0)
+          OR (prev_oom_adj <= 0 AND oom_adj > 0)
+          OR (prev_oom_adj <= 200 AND oom_adj > 200)
+          OR (prev_oom_adj > 700 AND oom_adj <= 200)
+      ),
+      -- Process start events (from process table start_ts)
+      proc_starts AS (
+        SELECT
+          p.start_ts AS ts,
+          p.name AS app_package,
+          -1000 AS oom_adj,
+          '进程创建' AS state_label,
+          '进程创建' AS transition
+        FROM process p
+        WHERE p.start_ts IS NOT NULL
+          AND p.start_ts > 0
+          AND p.name IS NOT NULL
+          AND p.name GLOB '*.*'
+          AND p.name NOT LIKE '%system_server%'
+          AND p.name NOT LIKE '%zygote%'
+      )
+      SELECT
+        printf('%d', ts) AS ts,
+        COALESCE(transition, state_label) AS event,
+        app_package,
+        oom_adj,
+        state_label,
+        'app_state' AS category
+      FROM (
+        SELECT ts, app_package, oom_adj, state_label, transition
+        FROM significant_changes
+        WHERE transition IS NOT NULL
+        UNION ALL
+        SELECT ts, app_package, oom_adj, state_label, transition
+        FROM proc_starts
+      )
+      ORDER BY ts
+      LIMIT 200
+    save_as: app_states
+    optional: true
+
+  # ==========================================================================
+  # L2: 操作链（按时间顺序合并所有用户可感知事件）
+  # ==========================================================================
+  - id: operation_chain
+    type: atomic
+    name: "操作链"
+    display:
+      level: hidden
+      layer: list
+      title: "操作链"
+      columns:
+        - name: time_offset
+          label: "时间偏移"
+          type: string
+        - name: ts
+          label: "时间戳"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: event
+          label: "事件"
+          type: string
+        - name: category
+          label: "类别"
+          type: string
+        - name: priority
+          label: "优先级"
+          type: number
+    sql: |
+      WITH time_bounds AS (
+        SELECT MIN(ts) AS t_start
+        FROM (
+          SELECT ts FROM slice WHERE dur > 0
+          UNION ALL
+          SELECT ts FROM counter WHERE value IS NOT NULL
+        )
+      ),
+      -- Screen on/off
+      screen_ev AS (
+        SELECT ts,
+          CASE screen_state WHEN 1 THEN '屏幕熄灭' WHEN 2 THEN '屏幕点亮' WHEN 3 THEN '屏幕休眠'
+            ELSE '屏幕状态 ' || screen_state END AS event,
+          'screen' AS category, 1 AS priority
+        FROM android_screen_state WHERE dur > 0
+        LIMIT 30
+      ),
+      -- App launches
+      launch_ev AS (
+        SELECT ts,
+          CASE startup_type WHEN 'cold' THEN '冷启动' WHEN 'warm' THEN '温启动' WHEN 'hot' THEN '热启动'
+            ELSE '启动' END || ' ' || package || ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event,
+          'app_launch' AS category, 2 AS priority
+        FROM android_startups WHERE dur > 0
+        LIMIT 30
+      ),
+      -- Top-app switches
+      topapp_ev AS (
+        SELECT ts,
+          '切换前台: ' || str_value AS event,
+          'app_switch' AS category, 3 AS priority
+        FROM android_battery_stats_event_slices
+        WHERE track_name = 'battery_stats.top' AND safe_dur > 100000000
+        LIMIT 30
+      ),
+      -- Gestures (simplified from input events)
+      gesture_base AS (
+        SELECT
+          read_time AS ts, event_action,
+          SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY read_time) AS gid
+        FROM android_input_events WHERE event_type = 'MOTION'
+      ),
+      gesture_agg AS (
+        SELECT gid, MIN(ts) AS ts, MAX(ts) - MIN(ts) AS dur,
+          COUNT(CASE WHEN event_action = 'MOVE' THEN 1 END) AS mc
+        FROM gesture_base WHERE gid > 0 GROUP BY gid HAVING COUNT(*) >= 2
+      ),
+      gesture_ev AS (
+        SELECT ts,
+          CASE
+            WHEN mc >= 3 THEN '滑动列表 (' || mc || '次移动, ' || CAST(dur / 1000000 AS INT) || 'ms)'
+            WHEN dur > 500000000 AND mc <= 2 THEN '长按 (' || CAST(dur / 1000000 AS INT) || 'ms)'
+            ELSE '点击'
+          END AS event,
+          'gesture' AS category, 4 AS priority
+        FROM gesture_agg
+        LIMIT 60
+      ),
+      -- Foreground transitions (oom_adj crossing 0)
+      fg_transitions AS (
+        SELECT c.ts,
+          CASE
+            WHEN CAST(c.value AS INT) <= 0 THEN '进入前台: ' || p.name
+            ELSE '离开前台: ' || p.name
+          END AS event,
+          'app_state' AS category, 5 AS priority
+        FROM counter c
+        JOIN process_counter_track pct ON c.track_id = pct.id
+        JOIN process p ON pct.upid = p.upid
+        WHERE pct.name = 'oom_score_adj'
+          AND p.name GLOB '*.*'
+          AND p.name NOT LIKE '%system_server%'
+          AND p.name NOT LIKE '%zygote%'
+          AND (
+            (CAST(c.value AS INT) <= 0
+              AND COALESCE(
+                (SELECT CAST(c2.value AS INT) FROM counter c2
+                 WHERE c2.track_id = c.track_id AND c2.ts < c.ts
+                 ORDER BY c2.ts DESC LIMIT 1), 999) > 0)
+            OR
+            (CAST(c.value AS INT) > 0
+              AND COALESCE(
+                (SELECT CAST(c2.value AS INT) FROM counter c2
+                 WHERE c2.track_id = c.track_id AND c2.ts < c.ts
+                 ORDER BY c2.ts DESC LIMIT 1), 999) <= 0)
+          )
+        LIMIT 30
+      ),
+      -- System events (quality-gated: per-event duration thresholds)
+      sys_ev AS (
+        SELECT ts,
+          CASE
+            WHEN LOWER(name) LIKE '%keyguard%dismiss%' OR LOWER(name) LIKE '%keyguard%unlock%'
+              OR LOWER(name) LIKE '%lockscreen%unlock%' OR LOWER(name) LIKE '%unlock%screen%'
+              THEN '解锁屏幕'
+            WHEN LOWER(name) LIKE '%notificationpanel%expand%' THEN '下拉通知栏'
+            WHEN LOWER(name) LIKE '%notificationpanel%collapse%' THEN '收起通知栏'
+            WHEN LOWER(name) LIKE '%splitscreen%' THEN '分屏操作'
+            WHEN LOWER(name) LIKE '%enterpictureinpicture%' THEN '进入画中画'
+            WHEN LOWER(name) LIKE '%exitpictureinpicture%' THEN '退出画中画'
+            ELSE NULL
+          END AS event,
+          'system' AS category, 2 AS priority
+        FROM slice
+        WHERE (
+            (LOWER(name) LIKE '%keyguard%dismiss%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%keyguard%unlock%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%lockscreen%unlock%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%unlock%screen%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%notificationpanel%expand%' AND dur > 200000000)
+            OR (LOWER(name) LIKE '%notificationpanel%collapse%' AND dur > 200000000)
+            OR (LOWER(name) LIKE '%splitscreen%' AND dur > 500000000)
+            OR (LOWER(name) LIKE '%enterpictureinpicture%' AND dur > 300000000)
+            OR (LOWER(name) LIKE '%exitpictureinpicture%' AND dur > 300000000)
+          )
+          AND LOWER(name) NOT LIKE '%unlockcanvasandpost%'
+          AND LOWER(name) NOT LIKE '%unlockandpost%'
+          AND LOWER(name) != 'unlock'
+        LIMIT 20
+      ),
+      all_chain AS (
+        SELECT * FROM screen_ev
+        UNION ALL SELECT * FROM launch_ev
+        UNION ALL SELECT * FROM topapp_ev
+        UNION ALL SELECT * FROM gesture_ev
+        UNION ALL SELECT * FROM fg_transitions
+        UNION ALL SELECT * FROM sys_ev WHERE event IS NOT NULL
+      )
+      SELECT
+        printf('%02d:%02d.%03d',
+          CAST((ts - (SELECT t_start FROM time_bounds)) / 60000000000 AS INT),
+          CAST(((ts - (SELECT t_start FROM time_bounds)) / 1000000000) % 60 AS INT),
+          CAST(((ts - (SELECT t_start FROM time_bounds)) / 1000000) % 1000 AS INT)
+        ) AS time_offset,
+        printf('%d', ts) AS ts,
+        event,
+        category,
+        priority
+      FROM all_chain
+      ORDER BY ts, priority
+      LIMIT 200
+    save_as: operation_chain
+    optional: true
+
+  # ==========================================================================
+  # 干净时间线 — 用户看到的主要输出
+  # ==========================================================================
+  - id: clean_timeline
+    type: atomic
+    name: "场景时间线"
+    condition: table_availability.data[0]?.has_screen_state === 1 || table_availability.data[0]?.has_input_events === 1 || table_availability.data[0]?.has_startups === 1
+    display:
+      level: detail
+      layer: list
+      title: "场景时间线"
+      columns:
+        - name: event_id
+          label: "ID"
+          type: string
+          hidden: true
+        - name: time_offset
+          label: "时间"
+          type: string
+        - name: ts
+          label: "时间戳"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_range
+          durationColumn: dur
+        - name: dur
+          label: "持续"
+          type: duration
+          format: duration_ms
+          unit: ns
+          hidden: true
+        - name: dur_ms
+          label: "耗时(ms)"
+          type: number
+        - name: event_type
+          label: "类型"
+          type: string
+          hidden: true
+        - name: event
+          label: "事件"
+          type: string
+        - name: app_package
+          label: "应用"
+          type: string
+        - name: rating
+          label: "评级"
+          type: string
+    sql: |
+      WITH time_bounds AS (
+        SELECT MIN(ts) AS t_start
+        FROM (
+          SELECT ts FROM slice WHERE dur > 0
+          UNION ALL
+          SELECT ts FROM counter WHERE value IS NOT NULL
+        )
+      ),
+      -- ========== 数据源 1: 屏幕状态 ==========
+      screen_ev AS (
+        SELECT
+          ts,
+          dur,
+          CASE screen_state
+            WHEN 1 THEN '屏幕熄灭'
+            WHEN 2 THEN '屏幕点亮'
+            WHEN 3 THEN '屏幕休眠'
+            ELSE '屏幕状态 ' || screen_state
+          END AS event,
+          CASE screen_state
+            WHEN 1 THEN 'screen_off'
+            WHEN 2 THEN 'screen_on'
+            WHEN 3 THEN 'screen_sleep'
+            ELSE 'screen'
+          END AS event_type,
+          NULL AS app_package,
+          'screen' AS category,
+          1 AS priority
+        FROM android_screen_state
+        WHERE dur > 0
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_screen_state')
+        LIMIT 30
+      ),
+      -- ========== 数据源 2: App 启动 ==========
+      launch_ev AS (
+        SELECT
+          s.ts,
+          s.dur,
+          CASE s.startup_type
+            WHEN 'cold' THEN '冷启动'
+            WHEN 'warm' THEN '温启动'
+            WHEN 'hot' THEN '热启动'
+            ELSE '启动'
+          END || ' ' ||
+          REPLACE(REPLACE(s.package, 'com.', ''), 'android.', '') ||
+          ' [' || CAST(s.dur / 1000000 AS INT) || 'ms]' AS event,
+          CASE s.startup_type
+            WHEN 'cold' THEN 'cold_start'
+            WHEN 'warm' THEN 'warm_start'
+            WHEN 'hot' THEN 'hot_start'
+            ELSE 'cold_start'
+          END AS event_type,
+          s.package AS app_package,
+          'app_launch' AS category,
+          2 AS priority
+        FROM android_startups s
+        WHERE s.dur > 0
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_startups')
+        LIMIT 30
+      ),
+      -- ========== 数据源 3: 用户手势 (tap/scroll/long_press) ==========
+      gesture_base AS (
+        SELECT
+          read_time AS ts, event_action, process_name,
+          SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY read_time) AS gid
+        FROM android_input_events
+        WHERE event_type = 'MOTION'
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_input_events')
+      ),
+      gesture_agg AS (
+        SELECT
+          gid,
+          MIN(ts) AS ts,
+          MAX(ts) - MIN(ts) AS dur,
+          COUNT(*) AS event_count,
+          COUNT(CASE WHEN event_action = 'MOVE' THEN 1 END) AS move_count,
+          MAX(process_name) AS app
+        FROM gesture_base
+        WHERE gid > 0
+        GROUP BY gid
+        HAVING COUNT(*) >= 2
+      ),
+      gesture_ev AS (
+        SELECT
+          ts,
+          dur,
+          CASE
+            WHEN move_count >= 3 THEN '滑动 (' || move_count || '次移动, ' || CAST(dur / 1000000 AS INT) || 'ms)'
+            WHEN dur > 500000000 AND move_count <= 2 THEN '长按 (' || CAST(dur / 1000000 AS INT) || 'ms)'
+            ELSE '点击'
+          END ||
+          CASE
+            WHEN app IS NOT NULL AND app != ''
+            THEN ' [' || REPLACE(REPLACE(app, 'com.', ''), 'android.', '') || ']'
+            ELSE ''
+          END AS event,
+          CASE
+            WHEN move_count >= 3 THEN 'scroll'
+            WHEN dur > 500000000 AND move_count <= 2 THEN 'long_press'
+            ELSE 'tap'
+          END AS event_type,
+          CASE
+            WHEN app IS NOT NULL AND app != '' THEN app
+            ELSE NULL
+          END AS app_package,
+          'gesture' AS category,
+          3 AS priority
+        FROM gesture_agg
+        LIMIT 60
+      ),
+      -- ========== 数据源 4: Top App 切换 ==========
+      topapp_ev AS (
+        SELECT
+          ts,
+          safe_dur AS dur,
+          '切换到 ' || REPLACE(REPLACE(str_value, 'com.', ''), 'android.', '') AS event,
+          'app_switch' AS event_type,
+          str_value AS app_package,
+          'app_switch' AS category,
+          4 AS priority
+        FROM android_battery_stats_event_slices
+        WHERE track_name = 'battery_stats.top'
+          AND safe_dur > 100000000
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_battery_stats_event_slices')
+        LIMIT 30
+      ),
+      -- ========== 数据源 5: 系统事件 (quality-gated) ==========
+      system_ev AS (
+        SELECT
+          ts,
+          dur,
+          CASE
+            WHEN LOWER(name) LIKE '%keyguard%dismiss%'
+              OR LOWER(name) LIKE '%keyguard%unlock%'
+              OR LOWER(name) LIKE '%lockscreen%unlock%'
+              OR LOWER(name) LIKE '%unlock%screen%'
+              THEN '解锁屏幕'
+            WHEN LOWER(name) LIKE '%notificationpanel%expand%' THEN '下拉通知栏'
+            WHEN LOWER(name) LIKE '%notificationpanel%collapse%' THEN '收起通知栏'
+            WHEN LOWER(name) LIKE '%splitscreen%' THEN '分屏操作'
+            WHEN LOWER(name) LIKE '%enterpictureinpicture%' THEN '进入画中画'
+            WHEN LOWER(name) LIKE '%exitpictureinpicture%' THEN '退出画中画'
+            ELSE NULL
+          END AS event,
+          CASE
+            WHEN LOWER(name) LIKE '%keyguard%' OR LOWER(name) LIKE '%lockscreen%'
+              OR LOWER(name) LIKE '%unlock%screen%' THEN 'screen_unlock'
+            WHEN LOWER(name) LIKE '%notificationpanel%' THEN 'notification'
+            WHEN LOWER(name) LIKE '%splitscreen%' THEN 'split_screen'
+            WHEN LOWER(name) LIKE '%pictureinpicture%' THEN 'pip'
+            ELSE 'system'
+          END AS event_type,
+          NULL AS app_package,
+          'system' AS category,
+          2 AS priority
+        FROM slice
+        WHERE (
+            (LOWER(name) LIKE '%keyguard%dismiss%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%keyguard%unlock%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%lockscreen%unlock%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%unlock%screen%' AND dur > 100000000)
+            OR (LOWER(name) LIKE '%notificationpanel%expand%' AND dur > 200000000)
+            OR (LOWER(name) LIKE '%notificationpanel%collapse%' AND dur > 200000000)
+            OR (LOWER(name) LIKE '%splitscreen%' AND dur > 500000000)
+            OR (LOWER(name) LIKE '%enterpictureinpicture%' AND dur > 300000000)
+            OR (LOWER(name) LIKE '%exitpictureinpicture%' AND dur > 300000000)
+          )
+          AND LOWER(name) NOT LIKE '%unlockcanvasandpost%'
+          AND LOWER(name) NOT LIKE '%unlockandpost%'
+          AND LOWER(name) != 'unlock'
+        LIMIT 20
+      ),
+      -- ========== 数据源 6: Idle 空闲 ==========
+      idle_ev AS (
+        SELECT
+          ts,
+          gap_ns AS dur,
+          '空闲 (' || CAST(gap_ns / 1000000 AS INT) || 'ms)' AS event,
+          'idle' AS event_type,
+          NULL AS app_package,
+          'idle' AS category,
+          5 AS priority
+        FROM (
+          SELECT
+            ts,
+            LEAD(ts) OVER (ORDER BY ts) AS next_ts,
+            LEAD(ts) OVER (ORDER BY ts) - ts AS gap_ns
+          FROM (
+            SELECT read_time AS ts FROM android_input_events
+            WHERE event_type = 'MOTION' AND event_action = 'DOWN'
+              AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_input_events')
+            UNION ALL
+            SELECT ts FROM android_startups WHERE dur > 0
+              AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_startups')
+          )
+        )
+        WHERE gap_ns >= 800000000
+        LIMIT 30
+      ),
+      -- ========== 合并 + 过滤 + 排序 ==========
+      all_events AS (
+        SELECT ts, dur, event, event_type, app_package, category, priority FROM screen_ev
+        UNION ALL
+        SELECT ts, dur, event, event_type, app_package, category, priority FROM launch_ev
+        UNION ALL
+        SELECT ts, dur, event, event_type, app_package, category, priority FROM gesture_ev
+        UNION ALL
+        SELECT ts, dur, event, event_type, app_package, category, priority FROM topapp_ev
+        UNION ALL
+        SELECT ts, dur, event, event_type, app_package, category, priority FROM system_ev WHERE event IS NOT NULL
+        UNION ALL
+        SELECT ts, dur, event, event_type, app_package, category, priority FROM idle_ev
+      ),
+      -- ========== 格式化输出 ==========
+      ranked AS (
+        SELECT *,
+          ROW_NUMBER() OVER (ORDER BY ts, priority) AS rn
+        FROM all_events
+      )
+      SELECT
+        'evt_' || rn AS event_id,
+        printf('%02d:%02d.%03d',
+          CAST((ts - (SELECT t_start FROM time_bounds)) / 60000000000 AS INT),
+          CAST(((ts - (SELECT t_start FROM time_bounds)) / 1000000000) % 60 AS INT),
+          CAST(((ts - (SELECT t_start FROM time_bounds)) / 1000000) % 1000 AS INT)
+        ) AS time_offset,
+        printf('%d', ts) AS ts,
+        printf('%d', dur) AS dur,
+        CAST(dur / 1000000 AS INT) AS dur_ms,
+        event_type,
+        event,
+        app_package,
+        CASE
+          -- 启动评级
+          WHEN event_type = 'cold_start' AND dur / 1e6 < 500 THEN '🟢 优秀'
+          WHEN event_type = 'cold_start' AND dur / 1e6 < 1000 THEN '🟡 良好'
+          WHEN event_type = 'cold_start' THEN '🔴 需优化'
+          WHEN event_type = 'warm_start' AND dur / 1e6 < 300 THEN '🟢 优秀'
+          WHEN event_type = 'warm_start' AND dur / 1e6 < 600 THEN '🟡 良好'
+          WHEN event_type = 'warm_start' THEN '🔴 需优化'
+          WHEN event_type = 'hot_start' AND dur / 1e6 < 100 THEN '🟢 优秀'
+          WHEN event_type = 'hot_start' AND dur / 1e6 < 200 THEN '🟡 良好'
+          WHEN event_type = 'hot_start' THEN '🔴 需优化'
+          -- 点击评级
+          WHEN event_type = 'tap' AND dur / 1e6 < 100 THEN '🟢'
+          WHEN event_type = 'tap' AND dur / 1e6 < 200 THEN '🟡'
+          WHEN event_type = 'tap' AND dur / 1e6 > 200 THEN '🔴'
+          -- 其他事件不评级
+          ELSE ''
+        END AS rating
+      FROM ranked
+      ORDER BY ts, priority
+      LIMIT 200
+    save_as: clean_timeline
+    optional: true
+
+  # ==========================================================================
+  # 合并所有事件生成时间线 (deprecated — superseded by clean_timeline)
   # ==========================================================================
   - id: merged_timeline
     type: atomic
     name: "合并时间线"
-    condition: table_availability.data[0]?.has_screen_state === 1 && table_availability.data[0]?.has_battery_top === 1 && table_availability.data[0]?.has_input_events === 1 && table_availability.data[0]?.has_startups === 1 && table_availability.data[0]?.has_frame_timeline === 1
+    condition: table_availability.data[0]?.has_screen_state === 1 || table_availability.data[0]?.has_input_events === 1 || table_availability.data[0]?.has_startups === 1 || table_availability.data[0]?.has_frame_timeline === 1
     display:
-      level: detail
+      level: hidden
       layer: list
       title: "操作时间线"
       columns:
@@ -1235,6 +2203,7 @@ steps:
       title: "场景还原报告"
     inputs:
       - trace_time_range
+      - clean_timeline
       - screen_state_changes
       - top_app_changes
       - user_gestures
@@ -1244,12 +2213,19 @@ steps:
       - app_launches
       - system_events
       - jank_events
+      - device_state
+      - app_state_tracking
+      - operation_chain
     prompt: |
       你是一位 Android 性能分析专家，你的任务是帮助初学者理解 Trace 数据。
       请基于以下数据还原用户的完整操作场景，并用通俗易懂的语言解释。
 
       ## Trace 时间范围
       ${trace_time_range}
+
+      ## 干净时间线（主要参考）
+      ${clean_timeline}
+      说明：这是经过质量过滤的事件时间线，请优先参考此数据构建叙述
 
       ## 屏幕状态变化
       ${screen_state_changes}
@@ -1280,6 +2256,18 @@ steps:
 
       ## 掉帧/性能事件
       ${jank_events}
+
+      ## 设备状态
+      ${device_state}
+      说明：设备硬件状态快照，包括 CPU 频率范围、内存压力、温度、充电状态和前台应用
+
+      ## App 前后台状态变化
+      ${app_state_tracking}
+      说明：应用的 oom_adj 变化记录，反映前台/可见/后台/缓存状态转换和进程创建事件
+
+      ## 操作链
+      ${operation_chain}
+      说明：按时间顺序排列的所有用户可感知事件，用于构建完整操作时间线
 
       请按以下格式输出分析报告：
 

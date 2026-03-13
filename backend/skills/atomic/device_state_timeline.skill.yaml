@@ -1,0 +1,303 @@
+# =============================================================================
+# 设备状态时间线（原子 Skill）
+# =============================================================================
+# 追踪设备状态随时间的变化：CPU 频率转换、GPU 频率、温度变化、内存压力。
+# 与 device_state_snapshot（快照）互补，本 Skill 侧重时序趋势。
+
+name: device_state_timeline
+version: "1.0"
+type: composite
+category: system_context
+
+meta:
+  display_name: "设备状态时间线"
+  description: "追踪设备状态随时间的变化（CPU 频率、GPU 频率、温度、内存压力）"
+  icon: "timeline"
+  tags: [device, state, timeline, thermal, cpu_freq, memory, trend, atomic]
+
+prerequisites:
+  required_tables:
+    - counter
+    - counter_track
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+steps:
+  # ==========================================================================
+  # Step 1: CPU 频率变化时间线
+  # ==========================================================================
+  - id: cpu_freq_transitions
+    type: atomic
+    name: "CPU 频率变化"
+    display:
+      level: detail
+      layer: list
+      title: "CPU 频率变化时间线"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: cpu
+          label: "CPU 核心"
+          type: number
+        - name: freq_mhz
+          label: "频率(MHz)"
+          type: number
+          format: compact
+        - name: prev_freq_mhz
+          label: "前一频率(MHz)"
+          type: number
+          format: compact
+        - name: delta_mhz
+          label: "变化(MHz)"
+          type: number
+          format: compact
+        - name: transition_type
+          label: "变化类型"
+          type: string
+    sql: |
+      WITH freq_changes AS (
+        SELECT
+          c.ts,
+          cct.cpu,
+          ROUND(c.value / 1000.0, 0) as freq_mhz,
+          LAG(ROUND(c.value / 1000.0, 0)) OVER (PARTITION BY cct.cpu ORDER BY c.ts) as prev_freq_mhz,
+          ROW_NUMBER() OVER (PARTITION BY cct.cpu ORDER BY c.ts) as rn,
+          COUNT(*) OVER (PARTITION BY cct.cpu) as total_samples
+        FROM counter c
+        JOIN cpu_counter_track cct ON c.track_id = cct.id
+        WHERE cct.name = 'cpufreq'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts <= ${end_ts})
+      )
+      SELECT
+        printf('%d', ts) as ts,
+        cpu,
+        freq_mhz,
+        prev_freq_mhz,
+        ROUND(freq_mhz - COALESCE(prev_freq_mhz, freq_mhz), 0) as delta_mhz,
+        CASE
+          WHEN prev_freq_mhz IS NULL THEN 'initial'
+          WHEN freq_mhz > prev_freq_mhz THEN 'boost'
+          WHEN freq_mhz < prev_freq_mhz THEN 'throttle'
+          ELSE 'stable'
+        END as transition_type
+      FROM freq_changes
+      WHERE prev_freq_mhz IS NULL
+         OR freq_mhz != prev_freq_mhz
+      ORDER BY ts ASC
+      LIMIT 500
+    save_as: cpu_freq_transitions
+    optional: true
+
+  # ==========================================================================
+  # Step 2: 温度变化时间线
+  # ==========================================================================
+  - id: thermal_events
+    type: atomic
+    name: "温度变化"
+    display:
+      level: detail
+      layer: list
+      title: "温度变化时间线"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: sensor_name
+          label: "传感器"
+          type: string
+        - name: temp_c
+          label: "温度(C)"
+          type: number
+          format: compact
+        - name: delta_c
+          label: "变化(C)"
+          type: number
+          format: compact
+        - name: severity
+          label: "状态"
+          type: string
+    sql: |
+      WITH thermal_samples AS (
+        SELECT
+          c.ts,
+          ct.name as sensor_name,
+          CASE WHEN c.value > 1000 THEN c.value / 1000.0 ELSE c.value END as temp_c,
+          LAG(CASE WHEN c.value > 1000 THEN c.value / 1000.0 ELSE c.value END)
+            OVER (PARTITION BY ct.name ORDER BY c.ts) as prev_temp_c,
+          ROW_NUMBER() OVER (PARTITION BY ct.name ORDER BY c.ts) as rn,
+          COUNT(*) OVER (PARTITION BY ct.name) as total_samples
+        FROM counter c
+        JOIN counter_track ct ON c.track_id = ct.id
+        WHERE (ct.name GLOB '*thermal_zone*' OR ct.name GLOB '*Temperature*'
+               OR ct.name GLOB '*temp*' OR ct.name GLOB '*tsens*')
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts <= ${end_ts})
+      )
+      SELECT
+        printf('%d', ts) as ts,
+        sensor_name,
+        ROUND(temp_c, 1) as temp_c,
+        ROUND(temp_c - COALESCE(prev_temp_c, temp_c), 1) as delta_c,
+        CASE
+          WHEN temp_c > 80 THEN 'critical'
+          WHEN temp_c > 60 THEN 'warning'
+          WHEN temp_c > 45 THEN 'normal'
+          ELSE 'cool'
+        END as severity
+      FROM thermal_samples
+      -- 采样：取均匀分布样本 + 高温点 + 大跳变
+      WHERE rn % MAX(1, total_samples / 100) = 0
+         OR temp_c > 60
+         OR ABS(temp_c - COALESCE(prev_temp_c, temp_c)) > 3
+      ORDER BY ts ASC
+      LIMIT 300
+    save_as: thermal_events
+    optional: true
+
+  # ==========================================================================
+  # Step 3: 内存压力 PSI 事件
+  # ==========================================================================
+  - id: memory_pressure_events
+    type: atomic
+    name: "内存压力变化"
+    display:
+      level: detail
+      layer: list
+      title: "内存压力变化时间线"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: counter_name
+          label: "指标"
+          type: string
+        - name: value
+          label: "值"
+          type: number
+          format: compact
+        - name: prev_value
+          label: "前一值"
+          type: number
+          format: compact
+        - name: delta
+          label: "变化"
+          type: number
+          format: compact
+    sql: |
+      WITH mem_samples AS (
+        SELECT
+          c.ts,
+          ct.name as counter_name,
+          c.value,
+          LAG(c.value) OVER (PARTITION BY ct.name ORDER BY c.ts) as prev_value,
+          ROW_NUMBER() OVER (PARTITION BY ct.name ORDER BY c.ts) as rn,
+          COUNT(*) OVER (PARTITION BY ct.name) as total_samples
+        FROM counter c
+        JOIN counter_track ct ON c.track_id = ct.id
+        WHERE (ct.name GLOB '*mem.*pressure*' OR ct.name GLOB '*MemFree*'
+               OR ct.name GLOB '*MemAvailable*' OR ct.name GLOB '*psi*mem*'
+               OR ct.name GLOB '*lowmemkiller*')
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts <= ${end_ts})
+      )
+      SELECT
+        printf('%d', ts) as ts,
+        counter_name,
+        ROUND(value, 2) as value,
+        ROUND(prev_value, 2) as prev_value,
+        ROUND(value - COALESCE(prev_value, value), 2) as delta
+      FROM mem_samples
+      WHERE rn % MAX(1, total_samples / 80) = 0
+         OR ABS(value - COALESCE(prev_value, value)) > value * 0.1
+      ORDER BY ts ASC
+      LIMIT 300
+    save_as: memory_pressure_events
+    optional: true
+
+  # ==========================================================================
+  # Step 4: GPU 频率变化时间线
+  # ==========================================================================
+  - id: gpu_freq_transitions
+    type: atomic
+    name: "GPU 频率变化"
+    display:
+      level: detail
+      layer: list
+      title: "GPU 频率变化时间线"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: counter_name
+          label: "指标"
+          type: string
+        - name: freq_mhz
+          label: "频率(MHz)"
+          type: number
+          format: compact
+        - name: prev_freq_mhz
+          label: "前一频率(MHz)"
+          type: number
+          format: compact
+        - name: delta_mhz
+          label: "变化(MHz)"
+          type: number
+          format: compact
+        - name: transition_type
+          label: "变化类型"
+          type: string
+    sql: |
+      WITH gpu_freq AS (
+        SELECT
+          c.ts,
+          ct.name as counter_name,
+          ROUND(c.value / 1000.0, 0) as freq_mhz,
+          LAG(ROUND(c.value / 1000.0, 0)) OVER (PARTITION BY ct.name ORDER BY c.ts) as prev_freq_mhz
+        FROM counter c
+        JOIN counter_track ct ON c.track_id = ct.id
+        WHERE (ct.name GLOB '*gpu_frequency*' OR ct.name GLOB '*gpu*freq*'
+               OR ct.name GLOB '*GPU*Freq*' OR ct.name GLOB '*gpu*clock*')
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts <= ${end_ts})
+      )
+      SELECT
+        printf('%d', ts) as ts,
+        counter_name,
+        freq_mhz,
+        prev_freq_mhz,
+        ROUND(freq_mhz - COALESCE(prev_freq_mhz, freq_mhz), 0) as delta_mhz,
+        CASE
+          WHEN prev_freq_mhz IS NULL THEN 'initial'
+          WHEN freq_mhz > prev_freq_mhz THEN 'boost'
+          WHEN freq_mhz < prev_freq_mhz THEN 'throttle'
+          ELSE 'stable'
+        END as transition_type
+      FROM gpu_freq
+      WHERE prev_freq_mhz IS NULL
+         OR freq_mhz != prev_freq_mhz
+      ORDER BY ts ASC
+      LIMIT 300
+    save_as: gpu_freq_transitions
+    optional: true
+
+output:
+  format: layered
+  default_expanded: [cpu_freq_transitions, thermal_events]

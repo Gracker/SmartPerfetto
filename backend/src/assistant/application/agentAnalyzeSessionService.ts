@@ -69,6 +69,10 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   runSequence?: number;
   activeRun?: AnalyzeSessionRunContext;
   lastRun?: AnalyzeSessionRunContext;
+  /** Cross-turn query history — appended on each turn, never overwritten */
+  queryHistory?: Array<{ turn: number; query: string; timestamp: number }>;
+  /** Cross-turn conclusion history — appended after each turn completes */
+  conclusionHistory?: Array<{ turn: number; conclusion: string; confidence: number; timestamp: number }>;
 }
 
 interface SessionContextManagerLike {
@@ -227,6 +231,27 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             entityStoreStats: restoredContext.getEntityStore().getStats(),
           });
 
+          // Reconstruct query/conclusion history from persisted turns
+          const restoredQueryHistory: Array<{ turn: number; query: string; timestamp: number }> = [];
+          const restoredConclusionHistory: Array<{ turn: number; conclusion: string; confidence: number; timestamp: number }> = [];
+          for (let i = 0; i < restoredTurns.length; i++) {
+            const t = restoredTurns[i];
+            if (t.query) {
+              restoredQueryHistory.push({ turn: i + 1, query: t.query, timestamp: t.timestamp || persistedSession.createdAt });
+            }
+            if (t.result && typeof (t.result as any).conclusion === 'string') {
+              restoredConclusionHistory.push({
+                turn: i + 1,
+                conclusion: (t.result as any).conclusion,
+                confidence: (t.result as any).confidence ?? 0,
+                timestamp: t.timestamp || persistedSession.createdAt,
+              });
+            }
+          }
+
+          // R4: Restore runtime arrays from SQLite for cross-restart report continuity
+          const runtimeArrays = this.sessionPersistenceService.loadRuntimeArrays(requestedSessionId);
+
           const restoredSession = {
             orchestrator: restoredOrchestrator,
             sessionId: requestedSessionId,
@@ -238,15 +263,19 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             createdAt: persistedSession.createdAt,
             lastActivityAt: Date.now(),
             logger: restoredLogger,
-            hypotheses: [],
+            hypotheses: runtimeArrays?.hypotheses || [],
             agentDialogue: [],
-            dataEnvelopes: [],
+            dataEnvelopes: runtimeArrays?.dataEnvelopes || [],
             agentResponses: [],
             conversationOrdinal: 0,
-            conversationSteps: [],
+            conversationSteps: runtimeArrays?.conversationSteps || [],
             runSequence: restoredSequence,
             activeRun: restoredRun,
             lastRun: restoredRun,
+            queryHistory: runtimeArrays?.queryHistory || restoredQueryHistory,
+            conclusionHistory: runtimeArrays?.conclusionHistory || restoredConclusionHistory,
+            sseEventSeq: 0,
+            sseEventBuffer: [],
           } as unknown as TSession;
 
           this.assistantAppService.setSession(requestedSessionId, restoredSession);
@@ -254,6 +283,9 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             turnQuery: query,
             previousQuery: latestTurn?.query || persistedSession.question,
             turnCount: restoredTurns.length,
+            runtimeArraysRestored: !!runtimeArrays,
+            restoredSteps: runtimeArrays?.conversationSteps?.length || 0,
+            restoredEnvelopes: runtimeArrays?.dataEnvelopes?.length || 0,
           });
           console.log(
             `[AgentRoutes] Restored agent session ${requestedSessionId} from persistence for multi-turn dialogue`
@@ -308,6 +340,10 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       conversationOrdinal: 0,
       conversationSteps: [],
       runSequence: 0,
+      queryHistory: [],
+      conclusionHistory: [],
+      sseEventSeq: 0,
+      sseEventBuffer: [],
     } as unknown as TSession;
 
     this.assistantAppService.setSession(sessionId, session);

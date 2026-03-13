@@ -45,7 +45,7 @@ import { registerAgentResumeRoutes } from './agentResumeRoutes';
 import { registerAgentSessionCatalogRoutes } from './agentSessionCatalogRoutes';
 import { registerTeachingRoutes } from './agentTeachingRoutes';
 import { AssistantApplicationService } from '../assistant/application/assistantApplicationService';
-import { StreamProjector } from '../assistant/stream/streamProjector';
+import { StreamProjector, SSE_RING_BUFFER_SIZE } from '../assistant/stream/streamProjector';
 import {
   AgentAnalyzeSessionService,
   AnalyzeSessionPreparationError,
@@ -155,6 +155,10 @@ function startSessionRun(
   session.activeRun = run;
   session.lastRun = run;
 
+  // Record query in cross-turn history (append-only, never overwritten)
+  if (!session.queryHistory) session.queryHistory = [];
+  session.queryHistory.push({ turn: nextSequence, query, timestamp: Date.now() });
+
   // Inject turn boundary marker for multi-turn conversations
   if (nextSequence > 1) {
     session.conversationOrdinal = (Number.isFinite(session.conversationOrdinal) ? session.conversationOrdinal : 0) + 1;
@@ -245,6 +249,14 @@ interface AnalysisSession {
   runSequence?: number;
   activeRun?: AnalyzeSessionRunContext;
   lastRun?: AnalyzeSessionRunContext;
+  /** Cross-turn query history — appended on each turn, never overwritten */
+  queryHistory: Array<{ turn: number; query: string; timestamp: number }>;
+  /** Cross-turn conclusion history — appended after each turn completes */
+  conclusionHistory: Array<{ turn: number; conclusion: string; confidence: number; timestamp: number }>;
+  /** F3: Monotonic SSE event counter for replay on reconnect */
+  sseEventSeq: number;
+  /** F3: Ring buffer of recent SSE events for replay on reconnect */
+  sseEventBuffer: import('../assistant/stream/streamProjector').BufferedSseEvent[];
 }
 const assistantAppService = new AssistantApplicationService<AnalysisSession>();
 const streamProjector = new StreamProjector();
@@ -793,6 +805,11 @@ router.get('/:sessionId/stream', (req, res) => {
     });
   }
 
+  // F3: Check for Last-Event-ID (reconnect replay support)
+  // Accepts both standard header (EventSource) and query param (fetch-based clients)
+  const lastEventIdRaw = req.headers['last-event-id'] || req.query.lastEventId;
+  const lastEventId = lastEventIdRaw ? parseInt(String(lastEventIdRaw), 10) : NaN;
+
   streamProjector.setSseHeaders(res);
   streamProjector.sendConnected(res, {
     sessionId,
@@ -803,6 +820,14 @@ router.get('/:sessionId/stream', (req, res) => {
     timestamp: Date.now(),
     ...buildStreamObservability(session),
   });
+
+  // F3: Replay missed events from ring buffer if reconnecting
+  if (!isNaN(lastEventId) && session.sseEventBuffer.length > 0) {
+    const replayed = streamProjector.replayBufferedEvents(res, session.sseEventBuffer, lastEventId);
+    if (replayed > 0) {
+      console.log(`[AgentRoutes] Replayed ${replayed} missed SSE events for ${sessionId} (after seqId ${lastEventId})`);
+    }
+  }
 
   // Add client to session
   assistantAppService.addSseClient(sessionId, res);
@@ -1271,6 +1296,34 @@ router.post('/:sessionId/intervene', async (req, res) => {
  *   focusCount: number  // Current number of tracked focuses
  * }
  */
+// P1-4: Cancel endpoint — allows frontend to signal the backend to stop analysis
+router.post('/:sessionId/cancel', (req, res) => {
+  const { sessionId } = req.params;
+  const session = assistantAppService.getSession(sessionId);
+
+  if (!session) {
+    return res.status(404).json({ success: false, error: 'Session not found' });
+  }
+
+  // Mark session as failed/cancelled
+  if (session.status === 'running' || session.status === 'pending') {
+    session.status = 'failed';
+    session.error = 'Cancelled by user';
+    markSessionRunStatus(session, 'failed', 'Cancelled by user');
+    // Close SSE connections to signal the frontend
+    for (const client of session.sseClients) {
+      try {
+        streamProjector.sendEvent(client, 'error', JSON.stringify({ message: 'Analysis cancelled by user' }));
+        client.end();
+      } catch { /* client may already be closed */ }
+    }
+    session.sseClients = [];
+    session.logger.info('AgentRoutes', 'Session cancelled by user', { sessionId });
+  }
+
+  return res.json({ success: true, sessionId, status: session.status });
+});
+
 router.post('/:sessionId/interaction', async (req, res) => {
   const { sessionId } = req.params;
   const session = assistantAppService.getSession(sessionId);
@@ -1464,6 +1517,7 @@ const SCENE_EXTRACTION_STEP_IDS = new Set([
   'top_app_changes',
   'system_events',
   'jank_events',
+  'clean_timeline',
 ]);
 
 function objectRowsToEnvelopePayload(rows: Array<Record<string, any>>): { columns: string[]; rows: any[][] } {
@@ -2004,9 +2058,30 @@ async function runAgentDrivenAnalysis(
     console.log('[AgentRoutes.AgentDriven] analyze completed, success:', result.success);
 
     session.result = result;
-    session.hypotheses = result.hypotheses;
+    // Accumulate hypotheses across turns (deduplicate by id)
+    const existingIds = new Set(session.hypotheses.map(h => h.id));
+    for (const h of result.hypotheses) {
+      if (!existingIds.has(h.id)) {
+        session.hypotheses.push(h);
+      } else {
+        // Update existing hypothesis with latest status
+        const idx = session.hypotheses.findIndex(eh => eh.id === h.id);
+        if (idx >= 0) session.hypotheses[idx] = h;
+      }
+    }
     session.status = result.success ? 'completed' : 'failed';
     markSessionRunStatus(session, result.success ? 'completed' : 'failed');
+
+    // Record conclusion in cross-turn history
+    if (!session.conclusionHistory) session.conclusionHistory = [];
+    if (result.conclusion) {
+      session.conclusionHistory.push({
+        turn: session.runSequence || 1,
+        conclusion: result.conclusion,
+        confidence: result.confidence ?? 0,
+        timestamp: Date.now(),
+      });
+    }
 
     // Ensure trackEvents/scenes are computed for completed sessions (even without SSE clients)
     if (shouldGenerateTracks) {
@@ -2024,88 +2099,103 @@ async function runAgentDrivenAnalysis(
       runSequence: session.activeRun?.sequence,
     });
 
-    // Persist session context (including EntityStore) for cross-restart recovery
+    // Persist session state atomically — single snapshot replaces 7-phase cascade
     try {
       const persistenceService = SessionPersistenceService.getInstance();
       const sessionContext = sessionContextManager.get(sessionId, traceId);
-      if (sessionContext) {
-        // First, ensure the session exists in persistence
+
+      // Take unified snapshot: ClaudeRuntime Maps + session-level arrays
+      const snapshot = typeof session.orchestrator.takeSnapshot === 'function'
+        ? session.orchestrator.takeSnapshot(sessionId, traceId, {
+            conversationSteps: session.conversationSteps || [],
+            queryHistory: session.queryHistory || [],
+            conclusionHistory: session.conclusionHistory || [],
+            agentDialogue: session.agentDialogue || [],
+            agentResponses: session.agentResponses || [],
+            dataEnvelopes: session.dataEnvelopes || [],
+            hypotheses: session.hypotheses || [],
+            runSequence: session.runSequence || 0,
+            conversationOrdinal: session.conversationOrdinal || 0,
+          })
+        : null;
+
+      if (snapshot && sessionContext) {
+        // Gather optional extras for agentv2-compat fields
+        const focusStoreSnapshot = typeof session.orchestrator.getFocusStore === 'function'
+          ? session.orchestrator.getFocusStore().serialize()
+          : undefined;
+        const traceAgentState = sessionContext.getTraceAgentState() || undefined;
+
+        // Single atomic write — replaces 6+ sequential read-modify-write cycles
+        const saved = persistenceService.saveSessionStateSnapshot(
+          sessionId, snapshot,
+          { sessionContext, focusStoreSnapshot, traceAgentState },
+        );
+        if (saved) {
+          logger.info('AgentDrivenAnalysis', 'Session state snapshot persisted atomically', {
+            sessionId,
+            steps: snapshot.conversationSteps.length,
+            envelopes: snapshot.dataEnvelopes.length,
+            notes: snapshot.analysisNotes.length,
+            entityStoreStats: sessionContext.getEntityStore().getStats(),
+          });
+        }
+      } else if (sessionContext) {
+        // Fallback for agentv2: use legacy individual persistence methods
         const existingSession = persistenceService.getSession(sessionId);
         if (!existingSession) {
-          // Create a new persisted session record
           persistenceService.saveSession({
             id: sessionId,
             traceId,
-            traceName: traceId, // Can be enhanced later
+            traceName: traceId,
             question: query,
             messages: [],
             createdAt: session.createdAt,
             updatedAt: Date.now(),
           });
         }
+        persistenceService.saveSessionContext(sessionId, sessionContext);
+        if (typeof session.orchestrator.getCachedArchitecture === 'function') {
+          const cachedArch = session.orchestrator.getCachedArchitecture(traceId);
+          if (cachedArch) persistenceService.saveArchitectureSnapshot(sessionId, cachedArch);
+        }
+        if (typeof session.orchestrator.getFocusStore === 'function') {
+          persistenceService.saveFocusStore(sessionId, session.orchestrator.getFocusStore());
+        }
+        const traceAgentState = sessionContext.getTraceAgentState();
+        if (traceAgentState) persistenceService.saveTraceAgentState(sessionId, traceAgentState);
+        persistenceService.saveRuntimeArrays(sessionId, {
+          conversationSteps: session.conversationSteps || [],
+          dataEnvelopes: session.dataEnvelopes || [],
+          hypotheses: session.hypotheses || [],
+          queryHistory: session.queryHistory || [],
+          conclusionHistory: session.conclusionHistory || [],
+        });
+      }
 
-	        // Save the full session context (includes EntityStore)
-	        const saved = persistenceService.saveSessionContext(sessionId, sessionContext);
-	        if (saved) {
-	          const storeStats = sessionContext.getEntityStore().getStats();
-	          logger.info('AgentDrivenAnalysis', 'Session context persisted to DB', {
-	            sessionId,
-	            entityStoreStats: storeStats,
-	          });
-	        }
+      // Persist turn messages to SQLite messages table (separate table, always needed)
+      if (sessionContext) {
+        try {
+          const turnIndex = session.runSequence || 1;
+          const userMsgId = `msg-${sessionId}-turn${turnIndex}-user`;
+          const assistantMsgId = `msg-${sessionId}-turn${turnIndex}-assistant`;
+          persistenceService.appendMessages(sessionId, [
+            { id: userMsgId, role: 'user', content: query, timestamp: Date.now() - (result.totalDurationMs || 0) },
+            { id: assistantMsgId, role: 'assistant', content: result.conclusion.substring(0, 10000), timestamp: Date.now() },
+          ]);
+        } catch (msgErr: any) {
+          logger.warn('AgentDrivenAnalysis', 'Failed to persist turn messages', { error: msgErr.message });
+        }
+      }
 
-	        // P0-2: Persist architecture cache for cross-restart recovery.
-	        // Without this, restored sessions re-detect architecture, which fails if trace_processor unloaded the trace.
-	        if (typeof session.orchestrator.getCachedArchitecture === 'function') {
-	          const cachedArch = session.orchestrator.getCachedArchitecture(traceId);
-	          if (cachedArch) {
-	            persistenceService.saveArchitectureSnapshot(sessionId, cachedArch);
-	          }
-	        }
-
-	        // Persist FocusStore so focus-aware incremental planning can survive restarts
-	        // ClaudeRuntime (agentv3) doesn't implement getFocusStore — skip gracefully.
-	        if (typeof session.orchestrator.getFocusStore === 'function') {
-	          const focusSaved = persistenceService.saveFocusStore(sessionId, session.orchestrator.getFocusStore());
-	          if (focusSaved) {
-	            logger.info('AgentDrivenAnalysis', 'FocusStore persisted to DB', {
-	              sessionId,
-	              focusStats: session.orchestrator.getFocusStore().getStats(),
-	            });
-	          }
-	        }
-
-	        // P0-4: Persist turn messages to SQLite messages table.
-	        // Without this, the messages table remains empty for agentv3 sessions.
-	        try {
-	          const turnIndex = session.runSequence || 1;
-	          const userMsgId = `msg-${sessionId}-turn${turnIndex}-user`;
-	          const assistantMsgId = `msg-${sessionId}-turn${turnIndex}-assistant`;
-	          persistenceService.appendMessages(sessionId, [
-	            { id: userMsgId, role: 'user', content: query, timestamp: Date.now() - (result.totalDurationMs || 0) },
-	            { id: assistantMsgId, role: 'assistant', content: result.conclusion.substring(0, 10000), timestamp: Date.now() },
-	          ]);
-	        } catch (msgErr: any) {
-	          logger.warn('AgentDrivenAnalysis', 'Failed to persist turn messages', { error: msgErr.message });
-	        }
-
-	        // Persist TraceAgentState (goal-driven agent scaffold) for cross-restart continuity.
-	        const traceAgentState = sessionContext.getTraceAgentState();
-	        if (traceAgentState) {
-	          const stateSaved = persistenceService.saveTraceAgentState(sessionId, traceAgentState);
-	          if (stateSaved) {
-	            logger.info('AgentDrivenAnalysis', 'TraceAgentState persisted to DB', {
-	              sessionId,
-	              version: traceAgentState.version,
-	              updatedAt: traceAgentState.updatedAt,
-	            });
-	          }
-	        }
-	      }
-	    } catch (persistError: any) {
-	      // Don't fail the analysis if persistence fails - just log the error
-	      logger.warn('AgentDrivenAnalysis', 'Failed to persist session context', {
-	        error: persistError.message,
+      // Stash snapshot on session for immediate use by sendAgentDrivenResult
+      if (snapshot) {
+        (session as any)._lastSnapshot = snapshot;
+      }
+    } catch (persistError: any) {
+      // Don't fail the analysis if persistence fails - just log the error
+      logger.warn('AgentDrivenAnalysis', 'Failed to persist session state', {
+        error: persistError.message,
       });
     }
 
@@ -2472,8 +2562,19 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
   if (!session) return;
   session.lastActivityAt = Date.now();
 
+  // F3: Assign monotonic sequence ID for replay on reconnect
+  const seqId = ++session.sseEventSeq;
+
   streamProjector.broadcastStreamingUpdate(sessionId, session.sseClients, update, {
     observability: buildStreamObservability(session),
+    seqId,
+    onBufferedEvent: (event) => {
+      session.sseEventBuffer.push(event);
+      // Trim ring buffer to cap
+      if (session.sseEventBuffer.length > SSE_RING_BUFFER_SIZE) {
+        session.sseEventBuffer.splice(0, session.sseEventBuffer.length - SSE_RING_BUFFER_SIZE);
+      }
+    },
     onDataEnvelopeValidationWarning: (payload) => {
       console.warn(
         `[AgentRoutes.broadcastToAgentDrivenClients] DataEnvelope validation warning (envelope ${payload.envelopeIndex}):`,
@@ -2490,6 +2591,11 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
         console.log(
           `[AgentRoutes.broadcastToAgentDrivenClients] Sending ${validEnvelopes.length} DataEnvelope(s) for session ${sessionId}`
         );
+        // P2-4: Tag envelopes with current turn number for multi-turn attribution
+        const turnNumber = session.runSequence || 1;
+        for (const env of validEnvelopes) {
+          if (env.meta) (env.meta as any).turn = turnNumber;
+        }
         session.dataEnvelopes.push(...validEnvelopes);
         trimSessionArray(session.dataEnvelopes, MAX_SESSION_DATA_ENVELOPES);
       }
@@ -2811,6 +2917,58 @@ function extractDetectedScenesFromEnvelopes(envelopes: DataEnvelope[]): Detected
           metadata: {
             source: 'scene_reconstruction:system_events',
             event: eventText,
+          },
+        });
+      }
+      continue;
+    }
+
+    // Step: clean_timeline (quality-gated unified timeline)
+    if (stepId === 'clean_timeline') {
+      const cleanTimelineTypeMapping: Record<string, SceneCategory> = {
+        'cold_start': 'cold_start',
+        'warm_start': 'warm_start',
+        'hot_start': 'hot_start',
+        'scroll': 'scroll',
+        'tap': 'tap',
+        'long_press': 'long_press',
+        'screen_on': 'screen_on',
+        'screen_off': 'screen_off',
+        'screen_sleep': 'screen_sleep',
+        'screen_unlock': 'screen_unlock',
+        'notification': 'notification',
+        'split_screen': 'split_screen',
+        'pip': 'navigation',
+        'app_switch': 'app_switch',
+        'idle': 'idle',
+      };
+
+      for (const row of rows) {
+        const eventType = String(row.event_type || '');
+        const sceneType = cleanTimelineTypeMapping[eventType];
+        if (!sceneType) continue;
+
+        const startTs = normalizeNs(row.ts);
+        const durNs = toBigInt(row.dur);
+        if (!startTs || durNs === null) continue;
+
+        const startNs = BigInt(startTs);
+        const endNs = startNs + durNs;
+        const durationMs = Number(durNs / 1_000_000n);
+
+        scenes.push({
+          type: sceneType,
+          startTs,
+          endTs: endNs.toString(),
+          durationMs,
+          confidence: 0.9,
+          appPackage: extractRowAppPackage(row),
+          metadata: {
+            source: 'scene_reconstruction:clean_timeline',
+            eventId: row.event_id,
+            timeOffset: row.time_offset,
+            rating: row.rating,
+            event: row.event,
           },
         });
       }
@@ -3429,6 +3587,20 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
       timestamp: Date.now(),
       // P1-11: Pass actual user conversation turn count (not SDK internal rounds)
       conversationTurns: session.runSequence || 1,
+      // P0-R1/R2: Cross-turn query and conclusion history for complete reports
+      queryHistory: session.queryHistory || [],
+      conclusionHistory: session.conclusionHistory || [],
+      // Report data from snapshot (single source of truth) — no fallback chains needed.
+      // The snapshot was taken during persistence and stashed on the session.
+      analysisNotes: (session as any)._lastSnapshot?.analysisNotes
+        ?? (typeof session.orchestrator.getSessionNotes === 'function'
+          ? session.orchestrator.getSessionNotes(session.sessionId) : []),
+      analysisPlan: (session as any)._lastSnapshot?.analysisPlan
+        ?? (typeof session.orchestrator.getSessionPlan === 'function'
+          ? session.orchestrator.getSessionPlan(session.sessionId) : null),
+      uncertaintyFlags: (session as any)._lastSnapshot?.uncertaintyFlags
+        ?? (typeof session.orchestrator.getSessionUncertaintyFlags === 'function'
+          ? session.orchestrator.getSessionUncertaintyFlags(session.sessionId) : []),
     };
     console.log(`[AgentRoutes] Generating HTML report, data keys:`, {
       hasResult: !!result,

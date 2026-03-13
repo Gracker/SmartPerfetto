@@ -1,0 +1,247 @@
+# =============================================================================
+# Compose Recomposition Hotspot 检测（原子 Skill）
+# =============================================================================
+# 检测 Jetpack Compose 重组热点 —— 过多或过慢的 Recomposition。
+# 分析 Recomposition/Compose 相关 Slice 的频率和耗时分布。
+
+name: compose_recomposition_hotspot
+version: "1.0"
+type: atomic
+category: rendering
+
+meta:
+  display_name: "Compose 重组热点检测"
+  description: "检测 Jetpack Compose 重组热点：过多或过慢的 Recomposition"
+  icon: "auto_fix_high"
+  tags: [compose, recomposition, jetpack, performance, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+steps:
+  # ========== 重组概览（按 Slice 名称聚合）==========
+  - id: recomposition_overview
+    type: atomic
+    name: "重组概览"
+    display:
+      level: overview
+      layer: overview
+      title: "Compose 重组概览"
+      columns:
+        - name: slice_name
+          label: "Slice 名称"
+          type: string
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: count
+          label: "次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总耗时"
+          type: duration
+          format: duration_ms
+        - name: avg_dur_ms
+          label: "平均耗时"
+          type: duration
+          format: duration_ms
+        - name: max_dur_ms
+          label: "最大耗时"
+          type: duration
+          format: duration_ms
+        - name: rating
+          label: "评级"
+          type: string
+    sql: |
+      SELECT
+        s.name as slice_name,
+        p.name as process_name,
+        COUNT(*) as count,
+        ROUND(SUM(s.dur) / 1e6, 2) as total_dur_ms,
+        ROUND(AVG(s.dur) / 1e6, 2) as avg_dur_ms,
+        ROUND(MAX(s.dur) / 1e6, 2) as max_dur_ms,
+        CASE
+          WHEN SUM(s.dur) / 1e6 > 100 THEN '严重'
+          WHEN SUM(s.dur) / 1e6 > 50 THEN '需优化'
+          WHEN COUNT(*) > 100 THEN '需优化'
+          ELSE '正常'
+        END as rating
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+        AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
+      GROUP BY s.name, p.name
+      ORDER BY SUM(s.dur) DESC
+    save_as: recomposition_overview
+
+  # ========== 慢重组（超过 8ms 帧预算）==========
+  - id: slow_recompositions
+    type: atomic
+    name: "慢重组"
+    display:
+      level: detail
+      layer: list
+      title: "慢重组事件（>8ms）"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_range
+          durationColumn: dur_ns
+        - name: slice_name
+          label: "Slice 名称"
+          type: string
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: dur_ms
+          label: "耗时"
+          type: duration
+          format: duration_ms
+        - name: dur_ns
+          label: "耗时(ns)"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: severity
+          label: "严重程度"
+          type: string
+    sql: |
+      SELECT
+        printf('%d', s.ts) as ts,
+        s.name as slice_name,
+        p.name as process_name,
+        t.name as thread_name,
+        ROUND(s.dur / 1e6, 2) as dur_ms,
+        printf('%d', s.dur) as dur_ns,
+        CASE
+          WHEN s.dur / 1e6 > 32 THEN 'critical'
+          WHEN s.dur / 1e6 > 16 THEN 'warning'
+          ELSE 'notice'
+        END as severity
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      JOIN process p ON t.upid = p.upid
+      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+        AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
+        AND s.dur > 8000000
+      ORDER BY s.dur DESC
+      LIMIT 50
+    save_as: slow_recompositions
+
+  # ========== 重组频率（每秒重组次数，检测过度重组）==========
+  - id: composition_frequency
+    type: atomic
+    name: "重组频率"
+    display:
+      level: detail
+      layer: list
+      title: "重组频率（每秒）"
+      columns:
+        - name: window_ts
+          label: "时间窗口"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: recomposition_count
+          label: "重组次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "窗口总耗时"
+          type: duration
+          format: duration_ms
+        - name: status
+          label: "状态"
+          type: string
+    sql: |
+      WITH recomp_events AS (
+        SELECT
+          s.ts,
+          s.dur,
+          s.name,
+          p.name as process_name,
+          p.upid
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+          AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
+      ),
+      trace_bounds AS (
+        SELECT
+          COALESCE(${start_ts}, MIN(ts)) as t_start,
+          COALESCE(${end_ts}, MAX(ts + dur)) as t_end
+        FROM recomp_events
+      ),
+      time_windows AS (
+        SELECT
+          t_start + (value * 1000000000) as window_start,
+          t_start + ((value + 1) * 1000000000) as window_end
+        FROM trace_bounds
+        JOIN (
+          WITH RECURSIVE cnt(value) AS (
+            SELECT 0
+            UNION ALL
+            SELECT value + 1 FROM cnt
+            WHERE value < 300
+          )
+          SELECT value FROM cnt
+        )
+        WHERE t_start + (value * 1000000000) < t_end
+      )
+      SELECT
+        printf('%d', tw.window_start) as window_ts,
+        re.process_name,
+        COUNT(re.ts) as recomposition_count,
+        ROUND(SUM(re.dur) / 1e6, 2) as total_dur_ms,
+        CASE
+          WHEN COUNT(re.ts) > 60 THEN '过度重组'
+          WHEN COUNT(re.ts) > 30 THEN '频繁重组'
+          WHEN COUNT(re.ts) > 10 THEN '正常'
+          ELSE '空闲'
+        END as status
+      FROM time_windows tw
+      LEFT JOIN recomp_events re ON re.ts >= tw.window_start AND re.ts < tw.window_end
+      WHERE re.process_name IS NOT NULL
+      GROUP BY tw.window_start, re.process_name
+      HAVING recomposition_count > 0
+      ORDER BY recomposition_count DESC
+      LIMIT 50
+    save_as: composition_frequency
+
+output:
+  format: structured

@@ -1,4 +1,5 @@
 import express from 'express';
+import { SessionPersistenceService } from '../services/sessionPersistenceService';
 
 interface AgentReportRoutesDeps {
   getSession: (sessionId: string) => any;
@@ -49,6 +50,19 @@ export function registerAgentReportRoutes(
       ? session.conversationSteps
       : [];
 
+    // Use snapshot as single source of truth for agentv3-specific state.
+    // Falls back to live getters for active sessions where snapshot hasn't been taken yet.
+    const snapshot = SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId);
+    const analysisNotes = snapshot?.analysisNotes
+      ?? (typeof session.orchestrator?.getSessionNotes === 'function'
+        ? session.orchestrator.getSessionNotes(sessionId) : []);
+    const analysisPlan = snapshot?.analysisPlan
+      ?? (typeof session.orchestrator?.getSessionPlan === 'function'
+        ? session.orchestrator.getSessionPlan(sessionId) : null);
+    const uncertaintyFlags = snapshot?.uncertaintyFlags
+      ?? (typeof session.orchestrator?.getSessionUncertaintyFlags === 'function'
+        ? session.orchestrator.getSessionUncertaintyFlags(sessionId) : []);
+
     const report = {
       sessionId,
       traceId: session.traceId,
@@ -83,6 +97,11 @@ export function registerAgentReportRoutes(
         timestamp: step.timestamp,
         sourceEventType: step.sourceEventType,
       })),
+      queryHistory: session.queryHistory || [],
+      conclusionHistory: session.conclusionHistory || [],
+      analysisNotes,
+      analysisPlan,
+      uncertaintyFlags,
       resultContract,
       logFile: session.logger.getLogFilePath(),
     };

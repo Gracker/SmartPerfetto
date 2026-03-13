@@ -73,8 +73,9 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 | 架构 | 调整动作 |
 |------|---------|
 | **Flutter** | 改用 `invoke_skill("flutter_scrolling_analysis")` 代替 `scrolling_analysis`。Flutter 的 1.ui/1.raster 线程模型与标准 RenderThread 不同，jank 帧的根因归属逻辑也不同 |
-| **WebView** | 使用标准 `scrolling_analysis`，但注意 CrRendererMain 线程的 slice 可能是卡顿主因 |
-| **标准 HWUI / Compose** | 使用标准 `scrolling_analysis` |
+| **WebView** | 使用标准 `scrolling_analysis`，但注意 CrRendererMain 线程的 slice 可能是卡顿主因。WebView 场景下，CrRendererMain 线程的阻塞（V8 GC、CSS Layout Thrashing）可能导致帧延迟。可调用 webview_v8_analysis Skill 检查 V8 性能 |
+| **标准 HWUI** | 使用标准 `scrolling_analysis` |
+| **Compose** | 使用标准 `scrolling_analysis`。如果检测到 Compose 架构，注意 Recomposition* slices 可能是卡顿主因。LazyColumn/LazyRow 的 prefetch 和 compose 阶段如果超时会导致掉帧。可调用 compose_recomposition_hotspot Skill 检测过度重组 |
 
 **Phase 1.7 — 根因分支深钻（基于 batch_frame_root_cause 的 reason_code 和 jank_responsibility）：**
 

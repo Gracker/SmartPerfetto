@@ -1,0 +1,509 @@
+# =============================================================================
+# ANR 主线程阻塞链深度分析（原子 Skill）
+# =============================================================================
+# 深度分析 ANR 事件中主线程的阻塞链：线程状态分布、blocked_function、
+# 唤醒链、Binder 阻塞、锁竞争等，帮助定位 ANR 根因。
+#
+# 分析窗口：
+# - 优先使用 anr_ts 前 5s 到后 1s 的窗口
+# - 其次使用 start_ts / end_ts
+# - 需要进程名定位主线程
+
+name: anr_main_thread_blocking
+version: "1.0"
+type: composite
+category: anr
+
+meta:
+  display_name: "ANR 主线程阻塞链分析"
+  description: "深度分析 ANR 事件中主线程的阻塞原因：线程状态、阻塞函数、唤醒链、Binder、锁竞争"
+  icon: "bug_report"
+  tags: [anr, blocking, main_thread, deadlock, binder, lock, atomic]
+
+prerequisites:
+  required_tables:
+    - thread_state
+    - thread
+    - process
+
+inputs:
+  - name: process_name
+    type: string
+    required: true
+    description: "目标进程名"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: anr_ts
+    type: timestamp
+    required: false
+    description: "ANR 事件时间戳(ns)，用于自动计算分析窗口"
+
+steps:
+  # ==========================================================================
+  # Step 1: 主线程状态分布
+  # ==========================================================================
+  - id: main_thread_state
+    type: atomic
+    name: "主线程状态分布"
+    display:
+      level: key
+      layer: overview
+      title: "ANR 窗口主线程状态分布"
+      columns:
+        - name: state
+          label: "线程状态"
+          type: string
+        - name: state_display
+          label: "状态说明"
+          type: string
+        - name: total_dur_ms
+          label: "总时间(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: count
+          label: "次数"
+          type: number
+          format: compact
+        - name: pct
+          label: "占比(%)"
+          type: percentage
+          format: percentage
+        - name: avg_dur_ms
+          label: "平均时间(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_dur_ms
+          label: "最大时间(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+    synthesize:
+      role: overview
+      fields:
+        - key: state_display
+          label: 状态
+        - key: pct
+          label: 占比
+          format: "{{value}}%"
+        - key: total_dur_ms
+          label: 总时间
+          format: "{{value}} ms"
+      insights:
+        - condition: "state === 'S' && pct > 50"
+          template: "主线程 {{pct}}% 时间处于 Sleep 状态，可能在等待锁或 Binder"
+        - condition: "state === 'D' && pct > 20"
+          template: "主线程 {{pct}}% 时间处于不可中断睡眠 (D)，可能存在 IO 阻塞"
+        - condition: "state === 'R' && pct > 80"
+          template: "主线程 {{pct}}% 时间处于 Runnable/Running，CPU 争抢或繁忙"
+    sql: |
+      WITH analysis_window AS (
+        SELECT
+          COALESCE(${start_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
+            (SELECT MIN(ts) FROM thread_state)
+          ) as w_start,
+          COALESCE(${end_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
+            (SELECT MAX(ts + dur) FROM thread_state)
+          ) as w_end
+      ),
+      main_thread AS (
+        SELECT t.utid, t.tid, p.upid
+        FROM thread t
+        JOIN process p ON t.upid = p.upid
+        WHERE p.name GLOB '${process_name}*'
+          AND (t.is_main_thread = 1 OR t.tid = p.pid)
+        LIMIT 1
+      ),
+      state_dist AS (
+        SELECT
+          ts_tbl.state,
+          COUNT(*) as count,
+          SUM(
+            MIN(ts_tbl.ts + ts_tbl.dur, (SELECT w_end FROM analysis_window))
+            - MAX(ts_tbl.ts, (SELECT w_start FROM analysis_window))
+          ) as total_dur_ns
+        FROM thread_state ts_tbl
+        CROSS JOIN analysis_window aw
+        CROSS JOIN main_thread mt
+        WHERE ts_tbl.utid = mt.utid
+          AND ts_tbl.ts + ts_tbl.dur > aw.w_start
+          AND ts_tbl.ts < aw.w_end
+        GROUP BY ts_tbl.state
+      ),
+      total AS (
+        SELECT SUM(total_dur_ns) as total_ns FROM state_dist
+      )
+      SELECT
+        sd.state,
+        CASE sd.state
+          WHEN 'Running' THEN 'Running (运行中)'
+          WHEN 'R' THEN 'Runnable (可运行)'
+          WHEN 'R+' THEN 'Runnable (Preempted)'
+          WHEN 'S' THEN 'Sleeping (睡眠/等待)'
+          WHEN 'D' THEN 'Uninterruptible Sleep (不可中断睡眠/IO)'
+          WHEN 'T' THEN 'Stopped (已停止)'
+          WHEN 'X' THEN 'Dead (已退出)'
+          ELSE sd.state
+        END as state_display,
+        ROUND(sd.total_dur_ns / 1e6, 2) as total_dur_ms,
+        sd.count,
+        ROUND(100.0 * sd.total_dur_ns / NULLIF((SELECT total_ns FROM total), 0), 1) as pct,
+        ROUND(sd.total_dur_ns / NULLIF(sd.count, 0) / 1e6, 2) as avg_dur_ms,
+        ROUND((SELECT MAX(
+            MIN(ts2.ts + ts2.dur, (SELECT w_end FROM analysis_window))
+            - MAX(ts2.ts, (SELECT w_start FROM analysis_window))
+          ) FROM thread_state ts2
+          CROSS JOIN analysis_window aw2
+          CROSS JOIN main_thread mt2
+          WHERE ts2.utid = mt2.utid
+            AND ts2.state = sd.state
+            AND ts2.ts + ts2.dur > aw2.w_start
+            AND ts2.ts < aw2.w_end
+        ) / 1e6, 2) as max_dur_ms
+      FROM state_dist sd
+      ORDER BY total_dur_ns DESC
+    save_as: main_thread_state
+
+  # ==========================================================================
+  # Step 2: 主线程 Sleep 阻塞函数 Top
+  # ==========================================================================
+  - id: blocked_functions
+    type: atomic
+    name: "阻塞函数分析"
+    display:
+      level: key
+      layer: list
+      title: "主线程 Sleep 阻塞函数 Top"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: blocked_function
+          label: "阻塞函数"
+          type: string
+        - name: dur_ms
+          label: "阻塞时间(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: count
+          label: "次数"
+          type: number
+          format: compact
+        - name: total_dur_ms
+          label: "总阻塞时间(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+    sql: |
+      WITH analysis_window AS (
+        SELECT
+          COALESCE(${start_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
+            (SELECT MIN(ts) FROM thread_state)
+          ) as w_start,
+          COALESCE(${end_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
+            (SELECT MAX(ts + dur) FROM thread_state)
+          ) as w_end
+      ),
+      main_thread AS (
+        SELECT t.utid
+        FROM thread t
+        JOIN process p ON t.upid = p.upid
+        WHERE p.name GLOB '${process_name}*'
+          AND (t.is_main_thread = 1 OR t.tid = p.pid)
+        LIMIT 1
+      )
+      SELECT
+        printf('%d', MIN(ts_tbl.ts)) as ts,
+        ts_tbl.blocked_function,
+        ROUND(MAX(ts_tbl.dur) / 1e6, 2) as dur_ms,
+        COUNT(*) as count,
+        ROUND(SUM(ts_tbl.dur) / 1e6, 2) as total_dur_ms
+      FROM thread_state ts_tbl
+      CROSS JOIN analysis_window aw
+      CROSS JOIN main_thread mt
+      WHERE ts_tbl.utid = mt.utid
+        AND ts_tbl.state = 'S'
+        AND ts_tbl.blocked_function IS NOT NULL
+        AND ts_tbl.blocked_function != ''
+        AND ts_tbl.ts + ts_tbl.dur > aw.w_start
+        AND ts_tbl.ts < aw.w_end
+      GROUP BY ts_tbl.blocked_function
+      ORDER BY total_dur_ms DESC
+      LIMIT 20
+    save_as: blocked_functions
+    optional: true
+
+  # ==========================================================================
+  # Step 3: 唤醒链分析 (waker_utid)
+  # ==========================================================================
+  - id: wakeup_chain
+    type: atomic
+    name: "唤醒链分析"
+    display:
+      level: key
+      layer: list
+      title: "主线程唤醒链（谁唤醒了主线程）"
+      columns:
+        - name: ts
+          label: "唤醒时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: waker_thread_name
+          label: "唤醒者线程"
+          type: string
+        - name: waker_process_name
+          label: "唤醒者进程"
+          type: string
+        - name: sleep_dur_ms
+          label: "Sleep 时长(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: blocked_function
+          label: "阻塞函数"
+          type: string
+        - name: wakeup_count
+          label: "唤醒次数"
+          type: number
+          format: compact
+    sql: |
+      WITH analysis_window AS (
+        SELECT
+          COALESCE(${start_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
+            (SELECT MIN(ts) FROM thread_state)
+          ) as w_start,
+          COALESCE(${end_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
+            (SELECT MAX(ts + dur) FROM thread_state)
+          ) as w_end
+      ),
+      main_thread AS (
+        SELECT t.utid
+        FROM thread t
+        JOIN process p ON t.upid = p.upid
+        WHERE p.name GLOB '${process_name}*'
+          AND (t.is_main_thread = 1 OR t.tid = p.pid)
+        LIMIT 1
+      ),
+      wakeups AS (
+        SELECT
+          ts_tbl.ts + ts_tbl.dur as wakeup_ts,
+          ts_tbl.dur as sleep_dur,
+          ts_tbl.blocked_function,
+          ts_tbl.waker_utid,
+          wt.name as waker_thread_name,
+          wp.name as waker_process_name
+        FROM thread_state ts_tbl
+        CROSS JOIN analysis_window aw
+        CROSS JOIN main_thread mt
+        LEFT JOIN thread wt ON ts_tbl.waker_utid = wt.utid
+        LEFT JOIN process wp ON wt.upid = wp.upid
+        WHERE ts_tbl.utid = mt.utid
+          AND ts_tbl.state IN ('S', 'D')
+          AND ts_tbl.waker_utid IS NOT NULL
+          AND ts_tbl.ts + ts_tbl.dur > aw.w_start
+          AND ts_tbl.ts < aw.w_end
+      )
+      SELECT
+        printf('%d', MIN(wakeup_ts)) as ts,
+        waker_thread_name,
+        waker_process_name,
+        ROUND(MAX(sleep_dur) / 1e6, 2) as sleep_dur_ms,
+        blocked_function,
+        COUNT(*) as wakeup_count
+      FROM wakeups
+      WHERE waker_thread_name IS NOT NULL
+      GROUP BY waker_thread_name, waker_process_name, blocked_function
+      ORDER BY MAX(sleep_dur) DESC
+      LIMIT 20
+    save_as: wakeup_chain
+    optional: true
+
+  # ==========================================================================
+  # Step 4: Binder 同步调用阻塞主线程
+  # ==========================================================================
+  - id: binder_blocking
+    type: atomic
+    name: "Binder 阻塞分析"
+    display:
+      level: key
+      layer: list
+      title: "主线程 Binder 同步调用"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: slice_name
+          label: "Binder 调用"
+          type: string
+        - name: dur_ms
+          label: "耗时(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: server_process
+          label: "服务端进程"
+          type: string
+        - name: server_thread
+          label: "服务端线程"
+          type: string
+    sql: |
+      WITH analysis_window AS (
+        SELECT
+          COALESCE(${start_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
+            (SELECT MIN(ts) FROM slice)
+          ) as w_start,
+          COALESCE(${end_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
+            (SELECT MAX(ts + dur) FROM slice)
+          ) as w_end
+      ),
+      main_thread AS (
+        SELECT t.utid, t.tid
+        FROM thread t
+        JOIN process p ON t.upid = p.upid
+        WHERE p.name GLOB '${process_name}*'
+          AND (t.is_main_thread = 1 OR t.tid = p.pid)
+        LIMIT 1
+      ),
+      binder_calls AS (
+        SELECT
+          s.ts,
+          s.dur,
+          s.name as slice_name,
+          -- 尝试从 binder reply 中获取服务端信息
+          (SELECT p2.name FROM slice s2
+           JOIN thread_track tt2 ON s2.track_id = tt2.id
+           JOIN thread t2 ON tt2.utid = t2.utid
+           JOIN process p2 ON t2.upid = p2.upid
+           WHERE s2.name GLOB 'binder reply*'
+             AND s2.ts >= s.ts AND s2.ts <= s.ts + s.dur
+           LIMIT 1) as server_process,
+          (SELECT t2.name FROM slice s2
+           JOIN thread_track tt2 ON s2.track_id = tt2.id
+           JOIN thread t2 ON tt2.utid = t2.utid
+           WHERE s2.name GLOB 'binder reply*'
+             AND s2.ts >= s.ts AND s2.ts <= s.ts + s.dur
+           LIMIT 1) as server_thread
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        CROSS JOIN analysis_window aw
+        CROSS JOIN main_thread mt
+        WHERE tt.utid = mt.utid
+          AND (s.name GLOB 'binder transaction*' OR s.name GLOB 'binder reply*'
+               OR s.name GLOB '*BinderProxy.transact*')
+          AND s.ts >= aw.w_start
+          AND s.ts + s.dur <= aw.w_end
+      )
+      SELECT
+        printf('%d', ts) as ts,
+        slice_name,
+        ROUND(dur / 1e6, 2) as dur_ms,
+        server_process,
+        server_thread
+      FROM binder_calls
+      ORDER BY dur DESC
+      LIMIT 20
+    save_as: binder_blocking
+    optional: true
+
+  # ==========================================================================
+  # Step 5: 锁竞争 (monitor_contention + futex_wait)
+  # ==========================================================================
+  - id: lock_contention
+    type: atomic
+    name: "锁竞争分析"
+    display:
+      level: detail
+      layer: list
+      title: "主线程锁等待 (Monitor/Futex)"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: lock_type
+          label: "锁类型"
+          type: string
+        - name: slice_name
+          label: "Slice 名称"
+          type: string
+        - name: dur_ms
+          label: "等待时间(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: thread_name
+          label: "线程"
+          type: string
+    sql: |
+      WITH analysis_window AS (
+        SELECT
+          COALESCE(${start_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} - 5000000000 ELSE NULL END,
+            (SELECT MIN(ts) FROM slice)
+          ) as w_start,
+          COALESCE(${end_ts},
+            CASE WHEN ${anr_ts} IS NOT NULL THEN ${anr_ts} + 1000000000 ELSE NULL END,
+            (SELECT MAX(ts + dur) FROM slice)
+          ) as w_end
+      ),
+      main_thread AS (
+        SELECT t.utid
+        FROM thread t
+        JOIN process p ON t.upid = p.upid
+        WHERE p.name GLOB '${process_name}*'
+          AND (t.is_main_thread = 1 OR t.tid = p.pid)
+        LIMIT 1
+      )
+      SELECT
+        printf('%d', s.ts) as ts,
+        CASE
+          WHEN s.name GLOB '*monitor_contention*' THEN 'monitor'
+          WHEN s.name GLOB '*Lock*' THEN 'monitor'
+          WHEN s.name GLOB '*futex*' THEN 'futex'
+          ELSE 'other'
+        END as lock_type,
+        s.name as slice_name,
+        ROUND(s.dur / 1e6, 2) as dur_ms,
+        t.name as thread_name
+      FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t ON tt.utid = t.utid
+      CROSS JOIN analysis_window aw
+      CROSS JOIN main_thread mt
+      WHERE tt.utid = mt.utid
+        AND (s.name GLOB '*monitor_contention*'
+             OR s.name GLOB '*Lock*contention*'
+             OR s.name GLOB '*futex_wait*'
+             OR s.name GLOB '*futex*')
+        AND s.ts >= aw.w_start
+        AND s.ts + s.dur <= aw.w_end
+      ORDER BY s.dur DESC
+      LIMIT 20
+    save_as: lock_contention
+    optional: true
+
+output:
+  format: layered
+  default_expanded: [main_thread_state, blocked_functions, wakeup_chain]

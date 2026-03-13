@@ -215,6 +215,17 @@ const CURRENT_SNAPSHOT_VERSION = 1;
  * - memory: Memory allocations and events
  * - generic: Extensible for any other entity type
  */
+// P2-B4: Per-type entity caps to prevent unbounded growth in long sessions
+const ENTITY_CAPS: Record<string, number> = {
+  frame: 200,
+  session: 50,
+  cpu_slice: 100,
+  binder: 100,
+  gc: 50,
+  memory: 50,
+  generic: 100,
+};
+
 export class EntityStore {
   private framesById = new Map<EntityId, FrameEntity>();
   private sessionsById = new Map<EntityId, SessionEntity>();
@@ -226,7 +237,8 @@ export class EntityStore {
   private memoriesById = new Map<EntityId, MemoryEntity>();
   private genericsById = new Map<EntityId, GenericEntity>();
 
-  // Incremental analysis tracking
+  // Incremental analysis tracking (P2-5: capped to prevent unbounded growth)
+  private static readonly ANALYZED_SET_CAP = 500;
   private analyzedFrameIds = new Set<EntityId>();
   private analyzedSessionIds = new Set<EntityId>();
   private lastCandidateFrameIds: EntityId[] = [];
@@ -234,6 +246,18 @@ export class EntityStore {
 
   // Generalized analyzed tracking (Phase 3)
   private analyzedEntityIds = new Map<string, Set<EntityId>>();
+
+  // P2-B4: Evict oldest entries when a map exceeds its cap
+  private enforceCapLRU<T extends BaseEntity>(map: Map<EntityId, T>, cap: number): void {
+    if (map.size <= cap) return;
+    // Sort by updated_at ascending, evict oldest
+    const entries = Array.from(map.entries())
+      .sort((a, b) => (a[1].updated_at || 0) - (b[1].updated_at || 0));
+    const toRemove = entries.slice(0, map.size - cap);
+    for (const [key] of toRemove) {
+      map.delete(key);
+    }
+  }
 
   // ==========================================================================
   // Frame Operations
@@ -249,11 +273,11 @@ export class EntityStore {
 
     const existing = this.framesById.get(id);
     if (existing) {
-      // Merge: newer non-null fields overwrite
       const merged = mergeEntity(existing, { ...entity, frame_id: id });
       this.framesById.set(id, merged);
     } else {
       this.framesById.set(id, { ...entity, frame_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.framesById, ENTITY_CAPS.frame);
     }
   }
 
@@ -278,6 +302,11 @@ export class EntityStore {
    */
   markFrameAnalyzed(id: EntityId | number): void {
     this.analyzedFrameIds.add(normalizeId(id));
+    // P2-5: Cap analyzed sets to prevent unbounded growth in long sessions
+    if (this.analyzedFrameIds.size > EntityStore.ANALYZED_SET_CAP) {
+      const iter = this.analyzedFrameIds.values();
+      this.analyzedFrameIds.delete(iter.next().value!);
+    }
   }
 
   /**
@@ -334,6 +363,7 @@ export class EntityStore {
       this.sessionsById.set(id, merged);
     } else {
       this.sessionsById.set(id, { ...entity, session_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.sessionsById, ENTITY_CAPS.session);
     }
   }
 
@@ -357,6 +387,10 @@ export class EntityStore {
    */
   markSessionAnalyzed(id: EntityId | number): void {
     this.analyzedSessionIds.add(normalizeId(id));
+    if (this.analyzedSessionIds.size > EntityStore.ANALYZED_SET_CAP) {
+      const iter = this.analyzedSessionIds.values();
+      this.analyzedSessionIds.delete(iter.next().value!);
+    }
   }
 
   /**
@@ -412,6 +446,7 @@ export class EntityStore {
       this.cpuSlicesById.set(id, merged);
     } else {
       this.cpuSlicesById.set(id, { ...entity, slice_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.cpuSlicesById, ENTITY_CAPS.cpu_slice);
     }
   }
 
@@ -440,6 +475,7 @@ export class EntityStore {
       this.bindersById.set(id, merged);
     } else {
       this.bindersById.set(id, { ...entity, transaction_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.bindersById, ENTITY_CAPS.binder);
     }
   }
 
@@ -468,6 +504,7 @@ export class EntityStore {
       this.gcsById.set(id, merged);
     } else {
       this.gcsById.set(id, { ...entity, gc_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.gcsById, ENTITY_CAPS.gc);
     }
   }
 
@@ -496,6 +533,7 @@ export class EntityStore {
       this.memoriesById.set(id, merged);
     } else {
       this.memoriesById.set(id, { ...entity, memory_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.memoriesById, ENTITY_CAPS.memory);
     }
   }
 
@@ -524,6 +562,7 @@ export class EntityStore {
       this.genericsById.set(id, merged);
     } else {
       this.genericsById.set(id, { ...entity, entity_id: id, updated_at: Date.now() });
+      this.enforceCapLRU(this.genericsById, ENTITY_CAPS.generic);
     }
   }
 
@@ -555,7 +594,12 @@ export class EntityStore {
     if (!this.analyzedEntityIds.has(entityType)) {
       this.analyzedEntityIds.set(entityType, new Set());
     }
-    this.analyzedEntityIds.get(entityType)!.add(normalizeId(id));
+    const set = this.analyzedEntityIds.get(entityType)!;
+    set.add(normalizeId(id));
+    if (set.size > EntityStore.ANALYZED_SET_CAP) {
+      const iter = set.values();
+      set.delete(iter.next().value!);
+    }
   }
 
   /**

@@ -1,0 +1,200 @@
+# =============================================================================
+# ImageReader Pipeline
+# =============================================================================
+# ImageReader API 渲染管线 — 应用通过 ImageReader 获取渲染帧进行二次处理。
+# 常见于 ML 推理、屏幕录制、自定义相机处理和部分 Chrome 渲染模式。
+# ImageReader 可与其他管线共存（如 Camera、MediaCodec），不互斥。
+# =============================================================================
+
+name: pipeline_imagereader_pipeline
+version: "1.0"
+type: pipeline_definition
+category: rendering
+
+meta:
+  pipeline_id: IMAGEREADER_PIPELINE
+  display_name: "ImageReader 渲染管线"
+  description: "通过 ImageReader API 获取渲染帧的管线，常见于 ML 推理、屏幕录制、自定义相机处理和部分 Chrome 渲染模式"
+  icon: "image"
+  family: specialized
+  doc_path: "rendering_pipelines/imagereader_pipeline.md"
+
+# ==========================================================================
+# Detection Rules
+# ==========================================================================
+detection:
+  required_signals:
+    - slice_pattern: "*ImageReader*"
+      min_count: 1
+
+  scoring_signals:
+    - signal: has_acquire_next_image
+      slice_pattern: "*acquireNextImage*"
+      weight: 30
+    - signal: has_ndk_imagereader
+      slice_pattern: "*AImageReader*"
+      weight: 25
+    - signal: has_hardware_buffer
+      slice_pattern: "*HardwareBuffer*"
+      weight: 20
+    - signal: has_on_image_available
+      slice_pattern: "*onImageAvailable*"
+      weight: 20
+    - signal: has_queue_buffer
+      slice_pattern: "*queueBuffer*"
+      weight: 15
+    - signal: has_media_codec
+      slice_pattern: "*MediaCodec*"
+      weight: 10
+
+  # ImageReader can coexist with other pipelines — no exclusions needed
+
+# ==========================================================================
+# Teaching Content
+# ==========================================================================
+teaching:
+  title: "ImageReader 渲染管线"
+  summary: |
+    ImageReader 允许应用直接访问渲染到 Surface 的图像数据。它底层基于 BufferQueue，
+    作为 consumer 端从 producer（Camera HAL、MediaCodec 解码器、GPU 渲染等）获取帧。
+
+    典型使用场景：
+    - ML 推理：获取 Camera/GPU 帧进行实时模型推理
+    - 屏幕录制：捕获渲染帧编码为视频
+    - 自定义相机处理：Camera2 API + ImageReader 实现自定义 ISP
+    - 部分 Chrome 渲染模式：通过 ImageReader 获取合成帧
+
+    关键特征：
+    - Java API: `ImageReader.newInstance()` + `onImageAvailable` 回调
+    - NDK API: `AImageReader_new()` + `AImageReader_ImageListener`
+    - 与 HardwareBuffer 结合可实现零拷贝跨进程/跨 GPU 帧传递
+    - maxImages 参数控制 BufferQueue 深度，影响内存占用和延迟
+
+  mermaid: |
+    sequenceDiagram
+      participant P as Producer<br/>(Camera/GPU/Codec)
+      participant BQ as BufferQueue
+      participant IR as ImageReader
+      participant App as App (Consumer)
+      participant Proc as Processing<br/>(ML/Encode/Display)
+
+      Note over P,Proc: 📍 ImageReader 帧获取流程
+      P->>BQ: dequeueBuffer
+      P->>P: 渲染/解码/捕获
+      P->>BQ: queueBuffer (帧就绪)
+
+      BQ->>IR: onImageAvailable 回调
+      activate IR
+      IR->>App: 通知新帧可用
+      deactivate IR
+
+      activate App
+      App->>IR: acquireNextImage
+      IR->>BQ: acquireBuffer (获取帧)
+      IR-->>App: Image (HardwareBuffer)
+      App->>Proc: 处理帧 (ML 推理/编码/展示)
+      App->>IR: Image.close()
+      IR->>BQ: releaseBuffer
+      deactivate App
+
+      Note over P,Proc: ⏱️ 关键耗时点：queueBuffer→回调延迟、帧处理耗时、Buffer 释放速度
+
+  thread_roles:
+    - thread: main
+      role: "应用主线程"
+      description: "配置 ImageReader, 注册回调, 管理生命周期"
+      trace_tags: "bindApplication, activityStart, ImageReader"
+    - thread: ImageReader
+      role: "ImageReader 回调"
+      description: "处理 onImageAvailable 回调, 获取和释放 Image"
+      trace_tags: "ImageReader, onImageAvailable, acquireNextImage"
+    - thread: Producer
+      role: "帧生产者"
+      description: "帧生产线程 — 可以是 Camera HAL, MediaCodec 解码器, 或 GPU 渲染线程"
+      trace_tags: "Camera, MediaCodec, dequeueBuffer, queueBuffer"
+
+  key_slices:
+    - name: "acquireNextImage"
+      thread: any
+      description: "获取下一帧 Image — 从 BufferQueue 获取渲染好的帧"
+    - name: "onImageAvailable"
+      thread: any
+      description: "帧可用回调 — ImageReader 通知应用有新帧"
+    - name: "queueBuffer"
+      thread: any
+      description: "提交 Buffer — 生产者将渲染好的帧提交到 BufferQueue"
+    - name: "HardwareBuffer"
+      thread: any
+      description: "硬件 Buffer 操作 — GPU/Camera/Codec 直接读写"
+
+# ==========================================================================
+# Auto Pin Configuration
+# ==========================================================================
+auto_pin:
+  instructions:
+    - pattern: "^main(\\s+\\d+)?$"
+      match_by: name
+      priority: 1
+      reason: "App 主线程 (配置 ImageReader)"
+      expand: true
+      smart_filter:
+        enabled: true
+        description: "仅 Pin 活跃渲染进程的主线程"
+
+    - pattern: "ImageReader"
+      match_by: name
+      priority: 2
+      reason: "ImageReader 回调线程 (帧获取)"
+      expand: true
+
+    - pattern: "Camera"
+      match_by: name
+      priority: 3
+      reason: "Camera 服务 (帧生产者)"
+
+    - pattern: "MediaCodec"
+      match_by: name
+      priority: 4
+      reason: "MediaCodec 解码 (帧生产者)"
+
+    - pattern: "^VSYNC-sf$"
+      match_by: name
+      priority: 5.5
+      reason: "VSync (SurfaceFlinger 消费/合成)"
+
+    - pattern: "^BufferTX"
+      match_by: name
+      priority: 6
+      reason: "BufferTX (SurfaceFlinger 事务)"
+
+    - pattern: "^[sS]urface[fF]linger"
+      match_by: name
+      priority: 7
+      reason: "SurfaceFlinger (最终合成/显示)"
+      main_thread_only: true
+
+# ==========================================================================
+# Analysis Configuration
+# ==========================================================================
+analysis:
+  common_issues:
+    - id: buffer_backpressure
+      name: "ImageReader Buffer 积压"
+      description: "acquireNextImage 获取帧速度跟不上生产速度，导致 BufferQueue 满"
+      detection_skill: gpu_analysis
+
+    - id: callback_heavy
+      name: "onImageAvailable 回调耗时"
+      description: "回调中做了重计算 (ML 推理), 阻塞后续帧获取"
+      detection_skill: cpu_analysis
+
+    - id: cross_process_delay
+      name: "HardwareBuffer 跨进程传递延迟"
+      description: "当 producer 和 consumer 在不同进程时，Buffer 传递延迟增大"
+      detection_skill: binder_analysis
+
+  recommended_skills:
+    - gpu_analysis
+    - memory_analysis
+    - binder_analysis
+    - cpu_analysis

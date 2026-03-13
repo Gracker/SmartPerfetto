@@ -9,6 +9,7 @@ import { getSkillAnalysisAdapter } from '../services/skillEngine/skillAnalysisAd
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import type { StreamingUpdate, Finding } from '../agent/types';
+import type { Hypothesis as ProtocolHypothesis } from '../agent/types/agentProtocol';
 import type { AnalysisResult, AnalysisOptions, IOrchestrator } from '../agent/core/orchestratorTypes';
 import type { ArchitectureInfo } from '../agent/detectors/types';
 
@@ -23,6 +24,7 @@ import { buildAgentDefinitions } from './claudeAgentDefinitions';
 import { getExtendedKnowledgeBase } from '../services/sqlKnowledgeBase';
 import type { AnalysisNote, AnalysisPlanV3, FailedApproach, Hypothesis, UncertaintyFlag } from './types';
 import { ArtifactStore } from './artifactStore';
+import type { SessionStateSnapshot, SessionFieldsForSnapshot } from './sessionStateSnapshot';
 import {
   extractTraceFeatures,
   extractKeyInsights,
@@ -105,38 +107,8 @@ function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
   }
 }
 
-// P2-G21: Session notes persistence — survives backend restart
-const SESSION_NOTES_DIR = path.resolve(__dirname, '../../logs/session_notes');
-
-function loadPersistedNotes(sessionId: string): AnalysisNote[] {
-  try {
-    const filePath = path.join(SESSION_NOTES_DIR, `${sessionId}.json`);
-    if (fs.existsSync(filePath)) {
-      return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-    }
-  } catch { /* start fresh */ }
-  return [];
-}
-
-function savePersistedNotes(sessionId: string, notes: AnalysisNote[]): void {
-  if (notes.length === 0) return;
-  try {
-    if (!fs.existsSync(SESSION_NOTES_DIR)) fs.mkdirSync(SESSION_NOTES_DIR, { recursive: true });
-    const tmpFile = path.join(SESSION_NOTES_DIR, `${sessionId}.json.tmp`);
-    const filePath = path.join(SESSION_NOTES_DIR, `${sessionId}.json`);
-    fs.writeFileSync(tmpFile, JSON.stringify(notes));
-    fs.renameSync(tmpFile, filePath);
-  } catch (err) {
-    console.warn('[ClaudeRuntime] Failed to persist notes:', (err as Error).message);
-  }
-}
-
-function deletePersistedNotes(sessionId: string): void {
-  try {
-    const filePath = path.join(SESSION_NOTES_DIR, `${sessionId}.json`);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-  } catch { /* non-fatal */ }
-}
+// Notes persistence now handled by unified SessionStateSnapshot — no separate disk I/O.
+// The old logs/session_notes/ directory is no longer written to.
 
 // P2-G1: ALLOWED_TOOLS is now auto-derived from createClaudeMcpServer() return value.
 // No longer hardcoded — adding a new MCP tool automatically includes it.
@@ -221,7 +193,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /** Per-session SQL error tracking for error-fix pair learning. */
   private sessionSqlErrors: Map<string, Array<{ errorSql: string; errorMessage: string; timestamp: number }>> = new Map();
   /** Per-session analysis plans for plan adherence tracking. */
-  private sessionPlans: Map<string, { current: AnalysisPlanV3 | null }> = new Map();
+  private sessionPlans: Map<string, { current: AnalysisPlanV3 | null; history: AnalysisPlanV3[] }> = new Map();
   /** Per-session hypotheses for hypothesis-verify cycle (P0-G4). */
   private sessionHypotheses: Map<string, Hypothesis[]> = new Map();
   /** Per-session uncertainty flags for non-blocking human interaction (P1-G1). */
@@ -592,6 +564,20 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Log compaction for diagnostics — helps debug cases where Claude seems to lose context
       if (sdkCompactDetected) {
         console.warn(`[ClaudeRuntime] Session ${sessionId}: analysis completed after SDK auto-compact. Findings count: ${mergedFindings.length}`);
+        // P1-C1: Write a compact recovery note so the next turn's system prompt
+        // carries critical findings that may have been lost during compaction
+        const sessionNotes = this.sessionNotes.get(sessionId);
+        if (sessionNotes) {
+          const findingSummary = mergedFindings.slice(0, 5).map(f => `- [${f.severity}] ${f.title}`).join('\n');
+          sessionNotes.push({
+            section: 'observation',
+            content: `[上下文压缩恢复] SDK 自动压缩已触发，以下为压缩前的关键发现摘要：\n${findingSummary || '无发现'}`,
+            priority: 'high',
+            timestamp: Date.now(),
+          });
+          // Evict if over cap
+          if (sessionNotes.length > 20) sessionNotes.shift();
+        }
       }
 
       // Verification + reflection-driven retry (P0-2 + P2-2)
@@ -793,13 +779,15 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           .catch(err => console.warn('[ClaudeRuntime] Negative pattern save failed:', (err as Error).message));
       }
 
-      // Notes persistence moved to finally block (P1-5) — saves on both success and failure.
+      // P0-1: Export actual hypotheses from this turn (not hardcoded empty array)
+      // Convert agentv3 Hypothesis to agentProtocol Hypothesis format for AnalysisResult
+      const turnHypotheses = (this.sessionHypotheses.get(sessionId) || []).map(h => this.toProtocolHypothesis(h));
 
       return {
         sessionId,
         success: true,
         findings: mergedFindings,
-        hypotheses: [],
+        hypotheses: turnHypotheses,
         conclusion: conclusionText,
         confidence: turnConfidence,
         rounds,
@@ -812,6 +800,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // P1-3: Preserve partial findings and generate partial conclusion on mid-stream errors
       const partialFindings = mergeFindings(allFindings);
       const hasPartialResults = partialFindings.length > 0;
+      // P0-1: Export actual hypotheses even on error paths
+      const errorHypotheses = (this.sessionHypotheses.get(sessionId) || []).map(h => this.toProtocolHypothesis(h));
 
       if (hasPartialResults) {
         const partialConclusion = `分析过程中出错 (${errMsg})，以下是已收集的部分发现：\n\n` +
@@ -825,7 +815,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           sessionId,
           success: true, // partial success — downstream can check confidence < 1
           findings: partialFindings,
-          hypotheses: [],
+          hypotheses: errorHypotheses,
           conclusion: partialConclusion,
           confidence: this.estimateConfidence(partialFindings) * 0.7, // penalize for incomplete
           rounds,
@@ -838,7 +828,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         sessionId,
         success: false,
         findings: partialFindings,
-        hypotheses: [],
+        hypotheses: errorHypotheses,
         conclusion: `分析过程中出错: ${errMsg}`,
         confidence: 0,
         rounds,
@@ -846,15 +836,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       };
     } finally {
       this.activeAnalyses.delete(sessionId);
-      // P1-5: Always persist notes regardless of success/failure.
-      // Notes may have been written via MCP during the turn; saving only on success
-      // creates inconsistency between disk notes and SQLite context on failure.
-      try {
-        const sessionNotes = this.sessionNotes.get(sessionId);
-        if (sessionNotes && sessionNotes.length > 0) {
-          savePersistedNotes(sessionId, sessionNotes);
-        }
-      } catch { /* non-fatal */ }
+      // Notes persistence now handled by unified SessionStateSnapshot in the route layer.
+      // No separate disk I/O needed here.
     }
   }
 
@@ -868,7 +851,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionMap.delete(sessionId);
     this.artifactStores.delete(sessionId);
     this.sessionNotes.delete(sessionId);
-    deletePersistedNotes(sessionId); // P2-G21
     this.sessionSqlErrors.delete(sessionId);
     this.sessionPlans.delete(sessionId);
     this.sessionHypotheses.delete(sessionId);
@@ -881,6 +863,144 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /** Clean up all session-scoped state for a given session. */
   cleanupSession(sessionId: string): void {
     this.removeSession(sessionId);
+  }
+
+  /** P1-R3: Public getter for session notes — used by report generation. */
+  getSessionNotes(sessionId: string): AnalysisNote[] {
+    return this.sessionNotes.get(sessionId) || [];
+  }
+
+  /** P1-R3: Public getter for current analysis plan — used by report generation. */
+  getSessionPlan(sessionId: string): AnalysisPlanV3 | null {
+    return this.sessionPlans.get(sessionId)?.current ?? null;
+  }
+
+  /** P1-R3: Public getter for uncertainty flags — used by report generation. */
+  getSessionUncertaintyFlags(sessionId: string): UncertaintyFlag[] {
+    return this.sessionUncertaintyFlags.get(sessionId) || [];
+  }
+
+  /** P1-1: Public getter for plan history — used for persistence. */
+  getSessionPlanHistory(sessionId: string): AnalysisPlanV3[] {
+    return this.sessionPlans.get(sessionId)?.history || [];
+  }
+
+  // ===========================================================================
+  // Snapshot — atomic serialization / deserialization boundary
+  // ===========================================================================
+
+  /**
+   * Take a snapshot of all session state for atomic persistence.
+   *
+   * Reads from ClaudeRuntime's 7 internal Maps (notes, plans, hypotheses,
+   * flags, artifacts, architectureCache, sessionMap) and merges with
+   * session-level arrays provided by the route layer.
+   *
+   * @param sessionId - The SmartPerfetto session ID
+   * @param traceId - The trace ID
+   * @param sessionFields - Session-level arrays from AnalysisSession (route layer)
+   */
+  takeSnapshot(
+    sessionId: string,
+    traceId: string,
+    sessionFields: SessionFieldsForSnapshot,
+  ): SessionStateSnapshot {
+    const notes = this.sessionNotes.get(sessionId) || [];
+    const planState = this.sessionPlans.get(sessionId);
+    const claudeHypotheses = this.sessionHypotheses.get(sessionId) || [];
+    const flags = this.sessionUncertaintyFlags.get(sessionId) || [];
+    const artifactStore = this.artifactStores.get(sessionId);
+    const architecture = this.architectureCache.get(traceId);
+    const sdkSessionId = this.sessionMap.get(sessionId)?.sdkSessionId;
+
+    return {
+      version: 1,
+      snapshotTimestamp: Date.now(),
+      sessionId,
+      traceId,
+
+      // Session fields (route layer) — fields match SessionFieldsForSnapshot exactly
+      ...sessionFields,
+
+      // ClaudeRuntime Maps
+      analysisNotes: notes,
+      analysisPlan: planState?.current ?? null,
+      planHistory: planState?.history ?? [],
+      uncertaintyFlags: flags,
+      claudeHypotheses: claudeHypotheses.length > 0 ? claudeHypotheses : undefined,
+
+      // Cached detection
+      architecture,
+      sdkSessionId,
+
+      // Artifacts
+      artifacts: artifactStore?.serialize(),
+    };
+  }
+
+  /**
+   * Restore all ClaudeRuntime Maps from a persisted snapshot.
+   *
+   * Called during session resume to repopulate the 7 internal Maps
+   * that are normally built up during analysis.
+   *
+   * @param sessionId - The SmartPerfetto session ID
+   * @param traceId - The trace ID (for architectureCache key)
+   * @param snapshot - The persisted snapshot to restore from
+   */
+  restoreFromSnapshot(sessionId: string, traceId: string, snapshot: SessionStateSnapshot): void {
+    if (snapshot.analysisNotes.length > 0) {
+      this.sessionNotes.set(sessionId, [...snapshot.analysisNotes]);
+    }
+
+    if (snapshot.analysisPlan || snapshot.planHistory.length > 0) {
+      this.sessionPlans.set(sessionId, {
+        current: snapshot.analysisPlan,
+        history: snapshot.planHistory,
+      });
+    }
+
+    if (snapshot.claudeHypotheses && snapshot.claudeHypotheses.length > 0) {
+      this.sessionHypotheses.set(sessionId, [...snapshot.claudeHypotheses]);
+    }
+
+    if (snapshot.uncertaintyFlags.length > 0) {
+      this.sessionUncertaintyFlags.set(sessionId, [...snapshot.uncertaintyFlags]);
+    }
+
+    if (snapshot.artifacts && snapshot.artifacts.length > 0) {
+      this.artifactStores.set(sessionId, ArtifactStore.fromSnapshot(snapshot.artifacts));
+    }
+
+    if (snapshot.architecture) {
+      this.architectureCache.set(traceId, snapshot.architecture);
+    }
+
+    if (snapshot.sdkSessionId) {
+      this.sessionMap.set(sessionId, { sdkSessionId: snapshot.sdkSessionId, updatedAt: Date.now() });
+    }
+  }
+
+  /** P0-1: Convert agentv3 Hypothesis to agentProtocol Hypothesis format for AnalysisResult. */
+  private toProtocolHypothesis(h: Hypothesis): ProtocolHypothesis {
+    const statusMap: Record<string, ProtocolHypothesis['status']> = {
+      formed: 'proposed',
+      confirmed: 'confirmed',
+      rejected: 'rejected',
+    };
+    const confidenceMap: Record<string, number> = { formed: 0.5, confirmed: 0.85, rejected: 0.1 };
+    return {
+      id: h.id,
+      description: h.statement,
+      status: statusMap[h.status] || 'proposed',
+      confidence: confidenceMap[h.status] ?? 0.5,
+      supportingEvidence: h.evidence && h.status === 'confirmed' ? [{ id: `${h.id}-ev`, type: 'observation' as const, description: h.evidence, source: 'claude', strength: 0.8 }] : [],
+      contradictingEvidence: h.evidence && h.status === 'rejected' ? [{ id: `${h.id}-ev`, type: 'observation' as const, description: h.evidence, source: 'claude', strength: 0.8 }] : [],
+      proposedBy: 'claude',
+      relevantAgents: ['claude'],
+      createdAt: h.formedAt,
+      updatedAt: h.resolvedAt || h.formedAt,
+    };
   }
 
   reset(): void {
@@ -1056,11 +1176,15 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 3: Session context + conversation history
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() || [];
-    const existingSdkSession = this.sessionMap.get(sessionId)?.sdkSessionId;
-    // P1-2: When SDK resume is active, the SDK already has full conversation history.
-    // Only inject a minimal context summary to avoid 1000-3000 token redundancy.
-    // When SDK session has expired (no resume), inject full context as fallback.
-    const hasActiveResume = !!existingSdkSession;
+    const sessionMapEntry = this.sessionMap.get(sessionId);
+    const existingSdkSession = sessionMapEntry?.sdkSessionId;
+    // P0-3: SDK sessions on Anthropic's side expire after ~4 hours.
+    // If the local sessionMap entry is stale, treat it as expired and inject full manual context.
+    // Without this check, `hasActiveResume` stays true for stale entries, causing the system
+    // to skip both SDK context (expired) AND manual context injection → silent context loss.
+    const SDK_SESSION_FRESHNESS_MS = 4 * 60 * 60 * 1000; // 4 hours
+    const sdkSessionFresh = !!sessionMapEntry && (Date.now() - (sessionMapEntry.updatedAt || 0) < SDK_SESSION_FRESHNESS_MS);
+    const hasActiveResume = !!existingSdkSession && sdkSessionFresh;
     const previousFindings = hasActiveResume
       ? [] // SDK already has these in conversation history
       : this.collectPreviousFindings(sessionContext);
@@ -1090,19 +1214,23 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       this.artifactStores.set(sessionId, new ArtifactStore());
     }
     const artifactStore = this.artifactStores.get(sessionId)!;
-    // P2-G21: Load persisted notes from disk if not in memory (survives restart)
+    // Notes restored from SessionStateSnapshot on resume — no separate disk I/O.
     let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
-      notes = loadPersistedNotes(sessionId);
+      notes = [];
       this.sessionNotes.set(sessionId, notes);
     }
 
     // Phase 6.5: Session-scoped analysis plan (P0-1: Planning capability)
     if (!this.sessionPlans.has(sessionId)) {
-      this.sessionPlans.set(sessionId, { current: null });
+      this.sessionPlans.set(sessionId, { current: null, history: [] });
     }
     const analysisPlan = this.sessionPlans.get(sessionId)!;
-    // P1-G12: Preserve previous plan for cross-turn context before resetting
+    // P1-B1: Preserve plan history (max 3 recent plans) for deeper cross-turn context
+    if (analysisPlan.current) {
+      analysisPlan.history.push(analysisPlan.current);
+      if (analysisPlan.history.length > 3) analysisPlan.history.shift();
+    }
     const previousPlan = analysisPlan.current ?? undefined;
     analysisPlan.current = null;
 
@@ -1203,6 +1331,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       patternContext,
       negativePatternContext,
       previousPlan,
+      planHistory: analysisPlan.history.length > 0 ? analysisPlan.history : undefined,
       selectionContext: options.selectionContext,
     });
 

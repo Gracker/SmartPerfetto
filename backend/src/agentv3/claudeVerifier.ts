@@ -404,6 +404,86 @@ export function verifySceneCompleteness(
       }
       break;
     }
+    case 'teaching': {
+      if (!/管线|pipeline|线程|thread|slice|架构|architecture|教学|explain|说明/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '教学场景分析缺少管线/线程/Slice 相关教学内容 — 应包含架构说明和关键概念解释',
+        });
+      }
+      break;
+    }
+    case 'scroll_response': {
+      if (!/响应|response|延迟|latency|首帧|input|输入|dispatch|瓶颈|bottleneck/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '滑动响应场景分析缺少延迟分解内容 — 应包含端到端响应延迟和瓶颈定位',
+        });
+      }
+      break;
+    }
+    case 'pipeline': {
+      if (!/管线|pipeline|架构|architecture|检测|detect|渲染|render/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '管线识别场景分析缺少管线检测内容 — 应包含渲染管线类型和架构图',
+        });
+      }
+      break;
+    }
+    case 'touch_tracking': {
+      if (!/跟手|tracking|input.*display|逐帧|per.frame|延迟|latency|vsync|相位/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '跟手度分析缺少逐帧 Input-to-Display 延迟数据 — 应包含每帧延迟测量和 VSync 相位分析',
+        });
+      }
+      break;
+    }
+    case 'game': {
+      if (!/游戏|game|帧率|fps|unity|unreal|godot|cocos|gpu/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '游戏性能分析缺少游戏引擎或帧率相关内容 — 应包含 FPS 分析和 GPU 状态',
+        });
+      }
+      break;
+    }
+    case 'memory': {
+      if (!/内存|memory|oom|lmk|泄漏|leak|gc|heap|rss|pss/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '内存分析缺少内存指标相关内容 — 应包含内存使用趋势和 GC/LMK 分析',
+        });
+      }
+      break;
+    }
+    case 'overview': {
+      if (!/场景|scene|还原|reconstruct|概览|overview|时间线|timeline|操作/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '场景概览分析缺少还原内容 — 应包含用户操作时间线和场景分类',
+        });
+      }
+      break;
+    }
+    case 'interaction': {
+      if (!/点击|click|tap|touch|响应|response|dispatch|handling|输入/.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '交互响应分析缺少点击/触摸延迟内容 — 应包含事件分发和处理延迟分析',
+        });
+      }
+      break;
+    }
   }
 
   return issues;

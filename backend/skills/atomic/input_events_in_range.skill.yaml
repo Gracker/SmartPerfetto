@@ -1,0 +1,96 @@
+# =============================================================================
+# 输入事件列表（原子 Skill）
+# =============================================================================
+# 提取 trace 中的原始输入事件（触摸、按键等），用于输入延迟分析。
+# 依赖 android_input_event_dispatch 表（部分 trace 可能不包含）。
+
+name: input_events_in_range
+version: "1.0"
+type: atomic
+category: input_response
+
+meta:
+  display_name: "输入事件列表 (区间)"
+  description: "提取区间内的原始输入事件（触摸、按键），分析分发延迟"
+  icon: "touch_app"
+  tags: [input, events, touch, key, atomic]
+
+prerequisites:
+  required_tables:
+    - slice
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名（支持 GLOB）"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: event_type
+    type: string
+    required: false
+    description: "事件类型过滤（motion/key）"
+  - name: event_action
+    type: string
+    required: false
+    description: "事件动作过滤（down/move/up）"
+
+display:
+  level: detail
+  layer: detail
+  title: "输入事件列表"
+  columns:
+    - name: event_ts
+      label: "事件时间"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_timeline
+    - name: event_type
+      label: "事件类型"
+      type: string
+    - name: event_action
+      label: "事件动作"
+      type: string
+    - name: dispatch_latency_ms
+      label: "分发延迟"
+      type: duration
+      format: duration_ms
+    - name: process_name
+      label: "目标进程"
+      type: string
+    - name: dispatch_status
+      label: "状态"
+      type: string
+
+sql: |
+  SELECT
+    printf('%d', ied.ts) as event_ts,
+    ied.event_type,
+    ied.event_action,
+    ROUND(ied.dispatch_latency_ns / 1e6, 2) as dispatch_latency_ms,
+    p.name as process_name,
+    ied.window_id,
+    ied.event_seq,
+    CASE
+      WHEN ied.dispatch_latency_ns / 1e6 > 100 THEN '严重延迟'
+      WHEN ied.dispatch_latency_ns / 1e6 > 50 THEN '延迟偏高'
+      WHEN ied.dispatch_latency_ns / 1e6 > 20 THEN '轻微延迟'
+      ELSE '正常'
+    END as dispatch_status
+  FROM android_input_event_dispatch ied
+  LEFT JOIN process p ON p.upid = ied.upid
+  WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+    AND (${start_ts} IS NULL OR ied.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR ied.ts <= ${end_ts})
+    AND ('${event_type}' = '' OR ied.event_type = '${event_type}')
+    AND ('${event_action}' = '' OR ied.event_action = '${event_action}')
+  ORDER BY ied.ts ASC
+
+output:
+  format: structured

@@ -94,6 +94,65 @@ fetch_artifact("art-N", detail="rows", offset=0, limit=50)  // 对每个关键 a
 ```
 **在所有关键 artifact 数据到手之前，不要开始写结论。**
 
+**Phase 2.8 — Compose 启动特有分析（当架构检测为 Compose 时）：**
+
+注意：Compose 应用的启动 hotspot 分布与传统 View 应用不同：
+- 传统 View: `inflate` → XML 解析 + 反射创建 View → 主要瓶颈在 LayoutInflater
+- Compose: 没有 inflate，改为 `Recomposition` + `Compose:` 系列 slice → 主要瓶颈在 composition 函数执行
+- Compose + View 混合: 同时存在 inflate 和 Recomposition slice
+
+**Compose 启动 hotspot 检查：**
+```
+execute_sql("SELECT name, dur/1e6 as dur_ms FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t ON tt.utid = t.utid JOIN process p ON t.upid = p.upid WHERE (t.is_main_thread = 1) AND s.ts >= <startup_ts> AND s.ts < <startup_end_ts> AND (s.name GLOB 'Compose:*' OR s.name GLOB 'Recompos*' OR s.name GLOB '*CompositionLocal*' OR s.name GLOB '*LazyList*') ORDER BY dur DESC LIMIT 20")
+```
+
+- 如果存在大量 `Recomposition` slice → 检查是否有不必要的重组（state reads 过多）
+- 如果 `Compose:*` slice 总耗时 > 启动总时长的 30% → Compose composition 是瓶颈
+- 如果同时存在 `inflate` 和 `Compose:*` → 混合应用，分别分析两部分的耗时占比
+
+**Phase 2.9 — Flutter 启动特殊处理（当架构检测为 Flutter 时）：**
+
+Flutter 冷启动包含独特的双线程初始化模型：
+- **主线程 (Android)**：正常的 Application/Activity 生命周期 + Flutter 引擎初始化（`FlutterEngine.create`、native library 加载）
+- **1.ui 线程 (Dart)**：Dart VM 初始化 + Framework warm-up + 首次 `Framework::BeginFrame`
+
+**关键 Slice：**
+- `flutter::Shell::OnPlatformViewCreated` — Flutter 引擎与平台视图绑定完成
+- `Framework::BeginFrame`（首次出现）— Dart 框架开始渲染第一帧，是 Flutter 层面的 TTID
+- `DartIsolate::CreateRunningRootIsolate` — Dart VM isolate 创建
+- `Engine::Run` — Dart 代码开始执行
+
+**分析要点：**
+1. Flutter 冷启动 = Android 启动耗时 + Flutter 引擎初始化 + Dart 首帧渲染
+2. 如果 `bindApplication` 到第一个 `Framework::BeginFrame` 之间有较大 gap，检查 native library 加载耗时
+3. 主线程阻塞分析仍适用于 Android 层面；Dart 层面的瓶颈需检查 1.ui 线程的 slice
+
+```
+execute_sql("SELECT name, dur/1e6 as dur_ms, track_id FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t ON tt.utid = t.utid JOIN process p ON t.upid = p.upid WHERE t.name IN ('1.ui', '1.raster') AND s.ts >= <startup_ts> AND s.ts < <startup_end_ts> AND (s.name GLOB '*Framework*BeginFrame*' OR s.name GLOB '*Shell*' OR s.name GLOB '*Engine*Run*' OR s.name GLOB '*DartIsolate*') ORDER BY s.ts LIMIT 20")
+```
+
+**Phase 2.10 — WebView 启动特殊处理（当架构检测为 WebView 时）：**
+
+WebView 冷启动包含 Chromium 渲染引擎的初始化：
+- **主线程 (Android)**：Activity 生命周期 + WebView 初始化（`WebViewChromium.init`）
+- **CrRendererMain 线程**：V8 引擎初始化、DOM 解析、CSS 布局、JavaScript 执行
+
+**关键 Slice：**
+- `WebViewChromium.init` — WebView 组件初始化入口
+- `v8.compile` / `v8.run` — V8 引擎编译和执行 JavaScript
+- `CrRendererMain` 线程首个 slice — Chromium 渲染进程开始工作
+- `ParseHTML` / `Layout` — DOM 解析和 CSS 布局
+
+**分析要点：**
+1. WebView 冷启动 = Android Activity 启动 + WebView/Chromium 初始化 + 页面加载渲染
+2. `WebViewChromium.init` 在 Android 主线程执行，可能占据数百毫秒（首次加载 Chromium 库）
+3. 页面渲染瓶颈在 CrRendererMain 线程：V8 GC、大量 DOM 节点、CSS Layout Thrashing
+4. 网络请求耗时通常不在 trace 中体现，需结合 TTFD 分析
+
+```
+execute_sql("SELECT name, dur/1e6 as dur_ms FROM slice s JOIN thread_track tt ON s.track_id = tt.id JOIN thread t ON tt.utid = t.utid JOIN process p ON t.upid = p.upid WHERE s.ts >= <startup_ts> AND s.ts < <startup_end_ts> AND (s.name GLOB '*WebViewChromium*' OR s.name GLOB '*v8.*' OR t.name = 'CrRendererMain' OR s.name GLOB '*ParseHTML*' OR s.name GLOB '*Layout*') ORDER BY dur DESC LIMIT 20")
+```
+
 **Phase 3 — 综合结论（基于根因诊断决策树）：**
 
 ### 预检查：识别测试/模拟器应用

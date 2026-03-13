@@ -858,7 +858,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const result = artifactStore.fetch(artifactId, effectiveDetail, offset, limit);
       if (!result) {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: `Artifact ${artifactId} not found` }) }],
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            success: false,
+            error: `Artifact ${artifactId} not found — it may have been evicted (LRU cap: 50) or lost after a backend restart. Use invoke_skill to re-execute the skill if you need this data again.`,
+          }) }],
           isError: true,
         };
       }
@@ -978,6 +981,30 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       mandatoryAspects: [
         { matchKeywords: ['anr', 'deadlock', 'block', '死锁', '阻塞', 'not_responding', 'anr_analysis'],
           suggestion: 'ANR 场景建议包含 ANR 原因定位阶段 (anr_analysis)' },
+      ],
+    },
+    teaching: {
+      mandatoryAspects: [
+        { matchKeywords: ['detect_architecture', 'architecture', '架构', 'pipeline', '管线', '教学'],
+          suggestion: '教学场景建议包含架构检测阶段 (detect_architecture)' },
+        { matchKeywords: ['teach', 'explain', '说明', '解释', 'thread', '线程', 'slice', 'mermaid', 'invoke_skill'],
+          suggestion: '教学场景建议包含管线教学内容获取阶段 (invoke_skill with pipeline skill)' },
+      ],
+    },
+    scroll_response: {
+      mandatoryAspects: [
+        { matchKeywords: ['input', 'gesture', 'motion', 'action_move', '输入', '手势', '触摸', 'input_events'],
+          suggestion: '滑动响应场景建议包含输入事件定位阶段 (input event detection)' },
+        { matchKeywords: ['latency', 'response', 'delay', '延迟', '响应', '分解', 'breakdown', '首帧'],
+          suggestion: '滑动响应场景建议包含端到端延迟分解阶段 (latency breakdown)' },
+      ],
+    },
+    pipeline: {
+      mandatoryAspects: [
+        { matchKeywords: ['detect_architecture', 'architecture', '架构', '检测', 'detection'],
+          suggestion: '管线识别场景建议包含架构自动检测阶段 (detect_architecture)' },
+        { matchKeywords: ['pipeline', '管线', 'mermaid', 'thread', '线程', 'teaching', '教学', 'invoke_skill'],
+          suggestion: '管线识别场景建议包含管线教学内容展示阶段 (pipeline skill invocation)' },
       ],
     },
   };
@@ -1401,12 +1428,32 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }))
       );
 
+      // P1-10: Also include verifier's learned misdiagnosis patterns
+      let learnedMisdiagnosis: Array<{ keywords: string[]; message: string; occurrences: number }> = [];
+      try {
+        const learnedPatternsFile = path.resolve(__dirname, '../../logs/learned_misdiagnosis_patterns.json');
+        if (fs.existsSync(learnedPatternsFile)) {
+          const raw = JSON.parse(fs.readFileSync(learnedPatternsFile, 'utf-8'));
+          const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60-day TTL
+          learnedMisdiagnosis = (raw as any[])
+            .filter((p: any) => p.createdAt >= cutoff && p.occurrences >= 2)
+            .slice(0, 10)
+            .map((p: any) => ({
+              keywords: p.keywords,
+              message: p.message,
+              occurrences: p.occurrences,
+            }));
+        }
+      } catch { /* non-fatal */ }
+
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           success: true,
           positivePatterns: positive,
           negativePatterns: negative,
-          message: `Found ${positive.length} positive and ${negative.length} negative patterns from past sessions.`,
+          learnedMisdiagnosis: learnedMisdiagnosis.length > 0 ? learnedMisdiagnosis : undefined,
+          message: `Found ${positive.length} positive and ${negative.length} negative patterns from past sessions.` +
+            (learnedMisdiagnosis.length > 0 ? ` Also ${learnedMisdiagnosis.length} learned misdiagnosis avoidance patterns.` : ''),
         }) }],
       };
     }
