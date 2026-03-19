@@ -81,7 +81,6 @@ sql: |
   JOIN android_startups s ON ts.startup_id = s.startup_id
   WHERE (s.package GLOB '${package}*' OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
     AND (ts.slice_name GLOB '*GC*' OR ts.slice_name GLOB '*gc*')

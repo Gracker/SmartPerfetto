@@ -12,7 +12,7 @@ thread_states AS (
     CASE
       WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN 'Q1'
       WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN 'Q2'
-      WHEN ts.state = 'R' THEN 'Q3'
+      WHEN ts.state IN ('R', 'R+') THEN 'Q3'
       WHEN ts.state IN ('D', 'DK') THEN 'Q4a'
       WHEN ts.state IN ('S', 'I') THEN 'Q4b'
       ELSE 'Other'

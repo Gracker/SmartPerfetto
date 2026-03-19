@@ -91,7 +91,7 @@ steps:
         ROUND(PERCENTILE(interval_ns, 0.5) / 1e6, 2) as period_ms,
         ROUND(1e9 / PERCENTILE(interval_ns, 0.5), 1) as refresh_hz
       FROM intervals
-      WHERE interval_ns BETWEEN 4000000 AND 50000000
+      WHERE interval_ns BETWEEN 5500000 AND 50000000
 
   # Step 2: 逐事件相位分析
   - id: phase_analysis

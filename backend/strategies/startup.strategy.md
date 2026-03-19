@@ -74,7 +74,7 @@ invoke_skill("startup_detail", {
   startup_type: "<cold/warm/hot>"
 })
 ```
-返回：四象限分析（Q1-Q4）、CPU 大小核占比、CPU 频率统计、可操作热点 Top5（含 self_ms）、**主线程状态分布（含 blocked_functions）**、**热点 Slice 线程状态分布（per-slice 根因定位）**、Binder/IO/调度延迟详情。
+返回：四象限分析（Q1-Q4）、CPU 大小核占比、CPU 频率统计、可操作热点 Top5（含 self_ms）、**主线程状态分布（含 blocked_functions）**、**热点 Slice 线程状态分布（per-slice 根因定位）**、**启动关键任务（全线程四象限+摆核）**、**线程阻塞关系图（block/wakeup 因果链）**、Binder/IO/调度延迟详情。
 
 **Phase 2.5 — 获取详细数据（必须执行，不可跳过）：**
 
@@ -87,10 +87,33 @@ invoke_skill 返回 artifact 摘要（仅含列名和行数）。**必须用 fet
 | CPU 频率 | `cpu_freq_analysis` / "CPU 频率" | 判断是否升频不足 |
 | 可操作热点 | `actionable_main_thread_slices` / "可操作热点" | 确定优化目标（注意 self_ms 列） |
 | **热点 Slice 线程状态** | `hot_slice_states` / "热点 Slice 线程状态" | **per-slice 根因定位（必须获取）**：每个热点 slice 内部的 Running/S/D 分布及 blocked_functions。这是判断 slice 慢在"计算"还是"阻塞"的唯一直接证据 |
+| **启动关键任务** | `critical_tasks` / "关键任务" | **全线程视角（必须获取）**：所有活跃线程的四象限+摆核+核迁移。回答"哪些线程消耗了多少 CPU""JIT/GC/RenderThread 是否与主线程争抢大核""核迁移是否频繁" |
+| **线程阻塞关系** | `thread_blocking_graph` / "阻塞关系" | **线程间因果（必须获取）**：主线程被谁阻塞？唤醒者是谁？唤醒者当时在做什么 slice？是 system_server/Binder/GC/锁竞争中的哪一种？ |
 | 主线程同步 Binder | `main_thread_sync_binder` / "同步 Binder" | Binder 阻塞量化 |
+| Binder 线程池 | `binder_pool` / "Binder 线程池" | 线程池利用率/饱和度 |
 | GC 事件 | `gc_during_startup` / "GC" | GC 影响量化 |
 | 主线程文件 IO | `main_thread_file_io` / "文件 IO" | IO 阻塞量化 |
 | 调度延迟 | `sched_latency` / "调度延迟" | Q3 根因量化 |
+| 摆核时序 | `cpu_placement_timeline` / "摆核时序" | 启动初期是否被困小核（按 50ms 桶的核类型变化） |
+| CPU 频率爬升 | `freq_rampup` / "频率爬升" | 初期 vs 稳态频率对比，检测升频延迟 |
+| JIT 影响 | `jit_analysis` / "JIT 影响" | 仅冷启动：JIT 编译量、大核竞争、Code Cache GC |
+
+**Phase 2.55 — Critical Task 分析（基于关键任务数据，不可跳过）：**
+
+获取 `critical_tasks` artifact 后，按以下维度分析：
+
+1. **CPU 争抢诊断**：如果所有线程总 CPU 时间 > 启动墙钟时间的 2 倍 → CPU 争抢激烈，需要减少并发
+2. **JIT 竞争诊断**：如果 JIT 线程 CPU 时间 > 20ms 且大核占比 > 50% → JIT 在抢大核，建议使用 Baseline Profile
+3. **RenderThread 诊断**：如果 RenderThread 大核占比 < 30% → 首帧渲染被困在小核
+4. **摆核诊断**：如果主线程跨 cluster 迁移 > 10 次 → L2 Cache 反复失效
+5. **GC 线程诊断**：如果 GC 角色总 CPU 时间 > 启动时长的 10% → GC 压力大
+
+获取 `thread_blocking_graph` artifact 后，按以下维度分析：
+
+1. **进程内阻塞**：blocked_thread 和 waker_thread 同进程 → 锁竞争/GC/join 等待
+2. **进程间阻塞**：waker_process = system_server → 系统服务处理延迟
+3. **阻塞链构建**：主线程[S:binder_wait] ← Binder线程 ← system_server/PackageManager → 完整因果链
+4. **唤醒者 slice 分析**：waker_current_slice 字段直接告诉你唤醒者在做什么，是最直接的根因证据
 
 获取方式（并行）：
 ```

@@ -73,18 +73,31 @@ steps:
       -- 合并结果，sf_vsync 优先，expected_frame 回退
       vsync_median AS (
         SELECT
-          CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 0.5)
-             FROM sf_vsync_intervals
-             WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-            (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0),
-            16666667
-          ) AS INTEGER) as vsync_period_ns,
           CASE
-            WHEN (SELECT COUNT(*) FROM sf_vsync_intervals WHERE interval_ns > 4000000 AND interval_ns < 50000000) > 0 THEN 'sf_vsync_counter'
-            WHEN (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0) IS NOT NULL THEN 'expected_frame_dur'
-            ELSE 'default_60hz'
-          END as source
+            WHEN raw_period BETWEEN 5500000 AND 6500000 THEN 6060606
+            WHEN raw_period BETWEEN 6500001 AND 7500000 THEN 6944444
+            WHEN raw_period BETWEEN 7500001 AND 9500000 THEN 8333333
+            WHEN raw_period BETWEEN 9500001 AND 12500000 THEN 11111111
+            WHEN raw_period BETWEEN 12500001 AND 20000000 THEN 16666667
+            WHEN raw_period BETWEEN 20000001 AND 35000000 THEN 33333333
+            ELSE raw_period
+          END AS vsync_period_ns,
+          source
+        FROM (
+          SELECT
+            CAST(COALESCE(
+              (SELECT PERCENTILE(interval_ns, 0.5)
+               FROM sf_vsync_intervals
+               WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+              (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0),
+              16666667
+            ) AS INTEGER) as raw_period,
+            CASE
+              WHEN (SELECT COUNT(*) FROM sf_vsync_intervals WHERE interval_ns > 5500000 AND interval_ns < 50000000) > 0 THEN 'sf_vsync_counter'
+              WHEN (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0) IS NOT NULL THEN 'expected_frame_dur'
+              ELSE 'default_60hz'
+            END as source
+        )
       )
       SELECT
         vsync_period_ns,

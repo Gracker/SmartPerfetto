@@ -32,7 +32,7 @@ const HARDCODED_MISDIAGNOSIS_PATTERNS: Array<{
   {
     pattern: /Buffer Stuffing.*(?:严重|critical|掉帧)/i,
     type: 'known_misdiagnosis',
-    message: 'Buffer Stuffing 标记可能是假阳性 — 需检查消费端帧间隔是否真的异常',
+    message: 'Buffer Stuffing 是管线背压问题，非 App 逻辑缺陷 — 感知掉帧率已排除 Buffer Stuffing，请勿将其等同于真实掉帧',
   },
   {
     pattern: /(?:单帧|single frame|1帧).*(?:异常|critical|严重)/i,

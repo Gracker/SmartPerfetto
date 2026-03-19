@@ -249,7 +249,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     try {
       const ctx = await this.prepareAnalysisContext(query, sessionId, traceId, options);
 
-      const bridge = createSseBridge((update: StreamingUpdate) => {
+      const { handleMessage: bridge, getAccumulatedAnswer } = createSseBridge((update: StreamingUpdate) => {
         this.emitUpdate(update);
         if (update.type === 'agent_response' && update.content?.result) {
           try {
@@ -297,7 +297,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       let finalResult: string | undefined;
 
       // Safety timeout with stream cancellation via Promise.race
-      const timeoutMs = (this.config.maxTurns || 15) * 20_000; // 20s per turn, not 60s
+      // 40s per turn: prioritize analysis accuracy and completeness over speed
+      // Scrolling deep-drill (hypothesis + SQL + knowledge + conclusion) needs ~6-8 min with LLM thinking
+      const timeoutMs = (this.config.maxTurns || 15) * 40_000;
       let timedOut = false;
 
       // Sub-agent timeout tracking — stop tasks that exceed subAgentTimeoutMs
@@ -557,7 +559,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         if (safetyTimer) clearTimeout(safetyTimer);
       }
 
-      conclusionText = finalResult || '';
+      // Use SDK terminal result if available; fall back to accumulated streamed answer tokens.
+      // On timeout, the SDK result message may never arrive, but answer_token events
+      // were already streamed to the frontend — use that text to populate the report.
+      conclusionText = finalResult || getAccumulatedAnswer() || '';
+      if (!finalResult && conclusionText) {
+        console.warn(`[ClaudeRuntime] Session ${sessionId}: SDK result was empty, recovered ${conclusionText.length} chars from streamed answer tokens`);
+      }
       allFindings.push(extractFindingsFromText(conclusionText));
       let mergedFindings = mergeFindings(allFindings);
 

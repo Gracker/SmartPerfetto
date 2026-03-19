@@ -50,11 +50,19 @@ function getFriendlyToolMessage(toolName: string, args: any): string {
   }
 }
 
+/** Return type for createSseBridge — message handler + accumulated answer accessor. */
+export interface SseBridge {
+  handleMessage: (msg: any) => void;
+  /** Returns all text classified as answer_token during this stream.
+   *  Used as fallback when the SDK terminal `result` message is empty (e.g. timeout). */
+  getAccumulatedAnswer: () => string;
+}
+
 /**
  * Creates a bridge function that translates Agent SDK messages into
  * SmartPerfetto StreamingUpdate events for SSE forwarding to the frontend.
  */
-export function createSseBridge(emit: UpdateEmitter) {
+export function createSseBridge(emit: UpdateEmitter): SseBridge {
   let lastToolUseId: string | undefined;
   /**
    * Track whether the current assistant turn uses tools.
@@ -89,6 +97,9 @@ export function createSseBridge(emit: UpdateEmitter) {
   let bufferFlushTimer: ReturnType<typeof setTimeout> | null = null;
   /** Once we've committed to answer_token mode for this turn, stream directly. */
   let streamingAsAnswer = false;
+  /** Accumulated answer text from the final (non-tool) turn — used as fallback
+   *  when SDK `result` message is empty (e.g. on timeout). */
+  let accumulatedAnswerText = '';
   // Buffer window: trade-off between streaming responsiveness and classification
   // accuracy. Shorter = more responsive but higher risk of misclassifying thought
   // as answer_token when tool_use arrives with network jitter.
@@ -119,13 +130,14 @@ export function createSseBridge(emit: UpdateEmitter) {
     cancelBufferTimer();
     if (textBuffer) {
       currentTurnStreamedText = true;
+      accumulatedAnswerText += textBuffer;
       emit({ type: 'answer_token', content: { token: textBuffer }, timestamp: Date.now() });
       textBuffer = '';
     }
     streamingAsAnswer = true;
   }
 
-  return function handleSdkMessage(msg: any): void {
+  function handleSdkMessage(msg: any): void {
     const now = Date.now();
 
     if (msg.type === 'system' && msg.subtype === 'init') {
@@ -148,6 +160,7 @@ export function createSseBridge(emit: UpdateEmitter) {
         } else if (streamingAsAnswer) {
           // Buffer timer already fired — stream as answer_token directly
           currentTurnStreamedText = true;
+          accumulatedAnswerText += event.delta.text;
           emit({ type: 'answer_token', content: { token: event.delta.text }, timestamp: now });
         } else {
           // Buffer text until we know if tool_use follows
@@ -169,6 +182,9 @@ export function createSseBridge(emit: UpdateEmitter) {
         // correctly. The frontend handles this gracefully — answer text
         // appearing before tool calls is visually acceptable.
         if (streamingAsAnswer) {
+          // Answer text was misclassified as conclusion — it was actually
+          // intermediate reasoning before tool calls. Clear accumulated text.
+          accumulatedAnswerText = '';
           streamingAsAnswer = false;
         }
       }
@@ -216,6 +232,7 @@ export function createSseBridge(emit: UpdateEmitter) {
             });
           } else {
             // Final answer text — stream as answer tokens
+            accumulatedAnswerText += block.text;
             emit({ type: 'answer_token', content: { token: block.text }, timestamp: now });
           }
         }
@@ -351,5 +368,10 @@ export function createSseBridge(emit: UpdateEmitter) {
 
     // Catch-all for unhandled message types
     console.log(`[SSEBridge] Unhandled SDK message type: ${msg.type}`, JSON.stringify(msg).substring(0, 200));
+  }
+
+  return {
+    handleMessage: handleSdkMessage,
+    getAccumulatedAnswer: () => accumulatedAnswerText,
   };
 }

@@ -99,7 +99,6 @@ sql: |
     AND bt.is_sync = 1
     AND (s.package GLOB '${package}*' OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
     AND bt.client_dur > ${min_dur_ns|5000000}

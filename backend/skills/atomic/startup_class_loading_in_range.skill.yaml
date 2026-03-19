@@ -72,13 +72,12 @@ sql: |
     COUNT(*) as count,
     SUM(cl.slice_dur) / 1e6 as total_dur_ms,
     ROUND(AVG(cl.slice_dur) / 1e6, 2) as avg_dur_ms,
-    s.startup_type,
+    '${startup_type}' as startup_type,
     ROUND(100.0 * SUM(cl.slice_dur) / s.dur, 1) as percent_of_startup
   FROM android_class_loading_for_startup cl
   JOIN android_startups s ON cl.startup_id = s.startup_id
   WHERE (s.package GLOB '${package}*' OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
   GROUP BY cl.slice_name

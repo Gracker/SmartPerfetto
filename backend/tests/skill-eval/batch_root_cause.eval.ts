@@ -38,6 +38,7 @@ describe('batch_frame_root_cause step', () => {
 
     // Reason codes must be from the known set
     const validCodes = new Set([
+      'buffer_stuffing',
       'binder_sync_blocking', 'small_core_placement', 'sched_delay_in_slice',
       'workload_heavy', 'big_core_low_freq', 'freq_ramp_slow',
       'scheduling_delay', 'blocking_io', 'lock_binder_wait',

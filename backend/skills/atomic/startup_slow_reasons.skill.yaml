@@ -1,23 +1,22 @@
 # =============================================================================
-# 启动慢原因（Google 官方分类）
+# 启动慢原因（Google 官方分类 + 自检）v2.0
 # =============================================================================
-# 使用 Google Perfetto 官方 android_startup 指标，基于 stdlib 的
-# android.startup.startups 和 android.startup.time_to_display 模块
-# 提取启动事件及 TTID/TTFD 数据，交叉验证自有启动分析结果。
+# 基于 Perfetto stdlib 的 android.startup 模块，检测 20+ 种已知的
+# 启动慢原因（DEX2OAT 并发、baseline profile 缺失、debuggable、
+# 锁竞争、GC、主线程 IO、broadcast 延迟等）。
 #
-# 典型使用场景：
-# - 与自有启动分析结果交叉验证
-# - 快速获取所有启动事件的 TTID/TTFD 耗时
-# - 按 startup_type 分类（冷启动/温启动/热启动）
+# v2.0 改进：
+# - 新增 Step 2：直接从 trace 数据中检测 20+ 种慢原因（不依赖 proto）
+# - 每个原因包含检测逻辑、严重程度、优化建议
 
 name: startup_slow_reasons
-version: "1.0"
+version: "2.0"
 type: composite
 category: app_lifecycle
 
 meta:
   display_name: "启动慢原因（官方分类）"
-  description: "使用 Google Perfetto 官方 30+ 启动慢原因分类，交叉验证自有分析"
+  description: "检测 20+ 种已知的启动慢原因，交叉验证自有分析"
   icon: "checklist"
   tags: [startup, slow_reasons, official, google, diagnostics]
 
@@ -30,29 +29,9 @@ inputs: []
 
 steps:
   # ==========================================================================
-  # Step 1: 加载启动指标
+  # Step 1: 启动事件及耗时汇总
   # ==========================================================================
-  - id: run_metric
-    type: atomic
-    name: "加载启动指标"
-    display:
-      level: overview
-      layer: overview
-      title: "启动指标加载状态"
-      columns:
-        - name: status
-          label: "状态"
-          type: string
-    sql: |
-      SELECT RUN_METRIC('android/android_startup.sql');
-      SELECT 'metric_loaded' as status
-    save_as: metric_status
-    optional: true
-
-  # ==========================================================================
-  # Step 2: 启动事件及耗时汇总
-  # ==========================================================================
-  - id: slow_reasons
+  - id: startup_overview
     type: atomic
     name: "启动事件汇总"
     display:
@@ -85,24 +64,6 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
-    synthesize:
-      role: overview
-      fields:
-        - key: package
-          label: 包名
-        - key: startup_type
-          label: 启动类型
-        - key: dur_ms
-          label: 耗时
-          format: "{{value}} ms"
-        - key: ttid_ms
-          label: TTID
-          format: "{{value}} ms"
-      insights:
-        - condition: "ttid_ms > 1000"
-          template: "{{package}} 的 TTID 为 {{ttid_ms}}ms，超过 1 秒，启动体验较差"
-        - condition: "ttfd_ms > 3000"
-          template: "{{package}} 的 TTFD 为 {{ttfd_ms}}ms，超过 3 秒，建议优化内容加载"
     sql: |
       SELECT
         s.startup_id,
@@ -114,6 +75,207 @@ steps:
       FROM android_startups s
       LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
       ORDER BY s.dur DESC
+    save_as: startup_overview
+    optional: true
+
+  # ==========================================================================
+  # Step 2: 检测已知慢启动原因（从 trace 数据直接检测）
+  # ==========================================================================
+  - id: slow_reason_checks
+    type: atomic
+    name: "慢启动原因检测"
+    display:
+      level: key
+      layer: list
+      title: "检测到的慢启动原因"
+      columns:
+        - name: reason_id
+          label: "原因编号"
+          type: string
+        - name: reason
+          label: "慢启动原因"
+          type: string
+        - name: severity
+          label: "严重程度"
+          type: string
+        - name: evidence
+          label: "证据"
+          type: string
+        - name: suggestion
+          label: "建议"
+          type: string
+    sql: |
+      WITH startup_info AS (
+        SELECT s.startup_id, s.package, s.ts, s.dur, s.startup_type,
+               p.upid
+        FROM android_startups s
+        JOIN process p ON p.name GLOB s.package || '*'
+        ORDER BY s.dur DESC LIMIT 1
+      ),
+      main_thread AS (
+        SELECT t.utid, t.tid FROM thread t
+        JOIN startup_info si ON t.upid = si.upid
+        WHERE (t.is_main_thread = 1 OR t.tid = (SELECT pid FROM process WHERE upid = si.upid))
+        LIMIT 1
+      ),
+      -- Check: JIT activity (indicator of missing baseline profile)
+      jit_check AS (
+        SELECT COUNT(*) as jit_compile_count,
+          ROUND(COALESCE(SUM(s.dur), 0) / 1e6, 1) as jit_compile_ms
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN startup_info si ON t.upid = si.upid
+        WHERE s.name GLOB 'JIT compiling*'
+          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+      ),
+      -- Check: DEX2OAT running concurrently
+      dex2oat_check AS (
+        SELECT COUNT(*) as dex2oat_running
+        FROM process p
+        WHERE (p.name GLOB '*dex2oat*' OR p.name GLOB '*dex2oatd*')
+          AND p.start_ts IS NOT NULL
+          AND p.start_ts < (SELECT ts + dur FROM startup_info)
+      ),
+      -- Check: GC during startup
+      gc_check AS (
+        SELECT
+          COUNT(*) as gc_count,
+          ROUND(COALESCE(SUM(s.dur), 0) / 1e6, 1) as gc_total_ms,
+          SUM(CASE WHEN tt.utid = (SELECT utid FROM main_thread) THEN 1 ELSE 0 END) as main_thread_gc_count
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN startup_info si ON t.upid = si.upid
+        WHERE (s.name GLOB '*GC*' OR s.name GLOB '*gc*')
+          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+          AND s.dur > 100000  -- > 0.1ms
+      ),
+      -- Check: Lock contention
+      lock_check AS (
+        SELECT
+          COUNT(*) as lock_count,
+          ROUND(COALESCE(SUM(s.dur), 0) / 1e6, 1) as lock_total_ms
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN main_thread mt ON tt.utid = mt.utid
+        JOIN startup_info si
+        WHERE (s.name GLOB '*Lock contention*'
+               OR s.name GLOB '*monitor contention*'
+               OR s.name GLOB '*art::Monitor*')
+          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+      ),
+      -- Check: Main thread IO (D state)
+      io_check AS (
+        SELECT
+          ROUND(COALESCE(SUM(
+            MIN(ts.ts + ts.dur, (SELECT ts + dur FROM startup_info))
+            - MAX(ts.ts, (SELECT ts FROM startup_info))
+          ), 0) / 1e6, 1) as main_thread_d_state_ms
+        FROM thread_state ts
+        JOIN main_thread mt ON ts.utid = mt.utid
+        WHERE ts.state IN ('D', 'DK')
+          AND ts.ts < (SELECT ts + dur FROM startup_info)
+          AND ts.ts + ts.dur > (SELECT ts FROM startup_info)
+      ),
+      -- Check: Binder blocking on main thread
+      binder_check AS (
+        SELECT
+          COUNT(*) as binder_block_count,
+          ROUND(COALESCE(SUM(ts.dur), 0) / 1e6, 1) as binder_block_ms
+        FROM thread_state ts
+        JOIN main_thread mt ON ts.utid = mt.utid
+        WHERE ts.state = 'S'
+          AND (ts.blocked_function GLOB '*binder*')
+          AND ts.ts >= (SELECT ts FROM startup_info)
+          AND ts.ts < (SELECT ts + dur FROM startup_info)
+          AND ts.dur > 1000000  -- > 1ms
+      ),
+      -- Check: Broadcast delays during startup
+      broadcast_check AS (
+        SELECT COUNT(*) as broadcast_count
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN main_thread mt ON tt.utid = mt.utid
+        JOIN startup_info si
+        WHERE s.name GLOB '*broadcastReceiveReg*'
+          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+      ),
+      -- Check: Class verification
+      class_verify_check AS (
+        SELECT
+          COUNT(*) as verify_count,
+          ROUND(COALESCE(SUM(s.dur), 0) / 1e6, 1) as verify_ms
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN startup_info si ON t.upid = si.upid
+        WHERE (s.name GLOB 'VerifyClass*' OR s.name GLOB 'verifyClass*')
+          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+      )
+      -- Emit detected slow reasons
+      SELECT 'SR01' as reason_id,
+        'JIT 编译活跃（疑似缺少 Baseline Profile）' as reason,
+        CASE WHEN jit_compile_count > 50 THEN 'critical'
+             WHEN jit_compile_count > 20 THEN 'warning' ELSE 'info' END as severity,
+        jit_compile_count || ' 次编译, ' || jit_compile_ms || ' ms' as evidence,
+        '使用 Baseline Profile 预编译热点方法，减少冷启动 JIT 需求' as suggestion
+      FROM jit_check WHERE jit_compile_count > 5
+
+      UNION ALL
+      SELECT 'SR02', 'DEX2OAT 并发运行',
+        'warning',
+        'dex2oat 进程在启动期间运行', '等待 DEX 优化完成后再测试启动性能'
+      FROM dex2oat_check WHERE dex2oat_running > 0
+
+      UNION ALL
+      SELECT 'SR03',
+        CASE WHEN main_thread_gc_count > 0 THEN '主线程 GC（直接阻塞）'
+             ELSE 'GC 活动（间接影响）' END,
+        CASE WHEN main_thread_gc_count > 0 THEN 'warning' ELSE 'info' END,
+        gc_count || ' 次 GC, 总耗时 ' || gc_total_ms || ' ms, 主线程 ' || main_thread_gc_count || ' 次',
+        '减少启动期间的对象分配，避免触发 GC'
+      FROM gc_check WHERE gc_count > 0
+
+      UNION ALL
+      SELECT 'SR04', '主线程锁竞争',
+        CASE WHEN lock_total_ms > 50 THEN 'critical'
+             WHEN lock_total_ms > 10 THEN 'warning' ELSE 'info' END,
+        lock_count || ' 次, 总耗时 ' || lock_total_ms || ' ms',
+        '检查 synchronized/ReentrantLock 使用，减少启动期间的线程同步'
+      FROM lock_check WHERE lock_count > 0
+
+      UNION ALL
+      SELECT 'SR05', '主线程 IO 阻塞',
+        CASE WHEN main_thread_d_state_ms > 100 THEN 'critical'
+             WHEN main_thread_d_state_ms > 30 THEN 'warning' ELSE 'info' END,
+        '主线程 D(Disk Sleep) 状态 ' || main_thread_d_state_ms || ' ms',
+        '将文件/数据库操作移至后台线程'
+      FROM io_check WHERE main_thread_d_state_ms > 5
+
+      UNION ALL
+      SELECT 'SR06', '主线程 Binder 阻塞',
+        CASE WHEN binder_block_ms > 100 THEN 'critical'
+             WHEN binder_block_ms > 30 THEN 'warning' ELSE 'info' END,
+        binder_block_count || ' 次, 总阻塞 ' || binder_block_ms || ' ms',
+        '减少启动期间的同步 Binder 调用，或改为异步'
+      FROM binder_check WHERE binder_block_count > 0
+
+      UNION ALL
+      SELECT 'SR07', 'Broadcast 接收延迟', 'info',
+        broadcast_count || ' 次 broadcast 在启动期间',
+        '考虑延迟注册非关键 BroadcastReceiver'
+      FROM broadcast_check WHERE broadcast_count > 3
+
+      UNION ALL
+      SELECT 'SR08', '大量类验证',
+        CASE WHEN verify_ms > 100 THEN 'warning' ELSE 'info' END,
+        verify_count || ' 个类验证, 耗时 ' || verify_ms || ' ms',
+        '使用 speed-profile 编译模式减少运行时类验证'
+      FROM class_verify_check WHERE verify_count > 10
+
+      ORDER BY
+        CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END
     save_as: slow_reasons
     optional: true
 

@@ -22,6 +22,7 @@ prerequisites:
     - android.frames.timeline
     - android.binder
     - android.garbage_collection
+    - android.monitor_contention
 
 inputs:
   - name: package
@@ -119,7 +120,7 @@ steps:
           format: compact
     sql: |
       WITH
-      -- VSync 周期：VSYNC-sf 中位数，无 IQR/吸附
+      -- VSync 周期：VSYNC-sf 中位数 + 标准刷新率吸附（30/60/90/120/144/165Hz）
       sf_vsync_intervals AS (
         SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) AS interval_ns
         FROM counter c
@@ -130,22 +131,35 @@ steps:
       ),
       vsync_median AS (
         SELECT
-          COALESCE(
-            (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
-             FROM sf_vsync_intervals
-             WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-            (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
-             FROM expected_frame_timeline_slice
-             WHERE dur > 5000000 AND dur < 50000000
-               AND (${start_ts} IS NULL OR ts >= ${start_ts})
-               AND (${end_ts} IS NULL OR ts < ${end_ts})),
-            16666667
-          ) AS vsync_period_ns,
           CASE
-            WHEN (SELECT COUNT(*) FROM sf_vsync_intervals WHERE interval_ns > 4000000 AND interval_ns < 50000000) > 0 THEN 'sf_vsync_counter'
-            WHEN (SELECT COUNT(*) FROM expected_frame_timeline_slice WHERE dur > 5000000 AND dur < 50000000) > 0 THEN 'expected_frame'
-            ELSE 'default'
-          END AS source
+            WHEN raw_period BETWEEN 5500000 AND 6500000 THEN 6060606
+            WHEN raw_period BETWEEN 6500001 AND 7500000 THEN 6944444
+            WHEN raw_period BETWEEN 7500001 AND 9500000 THEN 8333333
+            WHEN raw_period BETWEEN 9500001 AND 12500000 THEN 11111111
+            WHEN raw_period BETWEEN 12500001 AND 20000000 THEN 16666667
+            WHEN raw_period BETWEEN 20000001 AND 35000000 THEN 33333333
+            ELSE raw_period
+          END AS vsync_period_ns,
+          source
+        FROM (
+          SELECT
+            COALESCE(
+              (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
+               FROM sf_vsync_intervals
+               WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+              (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+               FROM expected_frame_timeline_slice
+               WHERE dur > 5000000 AND dur < 50000000
+                 AND (${start_ts} IS NULL OR ts >= ${start_ts})
+                 AND (${end_ts} IS NULL OR ts < ${end_ts})),
+              16666667
+            ) AS raw_period,
+            CASE
+              WHEN (SELECT COUNT(*) FROM sf_vsync_intervals WHERE interval_ns > 5500000 AND interval_ns < 50000000) > 0 THEN 'sf_vsync_counter'
+              WHEN (SELECT COUNT(*) FROM expected_frame_timeline_slice WHERE dur > 5000000 AND dur < 50000000) > 0 THEN 'expected_frame'
+              ELSE 'default'
+            END AS source
+        )
       ),
       frame_count AS (
         SELECT COUNT(*) as total_frames
@@ -169,11 +183,13 @@ steps:
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
   # ==========================================================================
-  # L1: 帧性能汇总 (基于 display_frame_token gap 检测掉帧)
+  # L1: 帧性能汇总 (双信号混合检测掉帧)
   # ==========================================================================
   # 核心原理：
-  # - 用户可见掉帧 = per-layer display_frame_token gap > 1（SF 跳过了该 layer 的 buffer）
-  # - Fallback: 无 display_frame_token 时回退到 present_ts interval > 1.5x VSync
+  # - 非 BS 帧：present_type IN ('Late Present', 'Dropped Frame') 为权威信号
+  # - BS 帧：present_type 始终为 Late Present，需用 present_ts 间隔二次验证
+  #   间隔 > 1.5x vsync = 真实掉帧；否则 = 管线背压（非感知掉帧）
+  # - vsync_missed 用 present_ts 间隔估算严重度（辅助信号）
   # - jank_type 用于判断责任归属（App vs SF）
   - id: performance_summary
     type: atomic
@@ -183,21 +199,23 @@ steps:
       fields:
         - key: total_frames
           label: 总帧数
-        - key: janky_frames
-          label: 掉帧数
+        - key: perceived_jank_frames
+          label: 感知掉帧
           format: "{{value}} ({{jank_rate}}%)"
+        - key: buffer_stuffing_frames
+          label: Buffer Stuffing
+          format: "{{value}} ({{buffer_stuffing_rate}}%)"
         - key: avg_fps
           label: 平均 FPS
-        - key: duration_ms
-          label: 持续时间
-          format: "{{value}} ms"
         - key: app_jank
           label: App 侧掉帧
         - key: sf_jank
           label: SF 侧掉帧
       insights:
         - condition: "jank_rate > 10"
-          template: "掉帧率 {{jank_rate}}% 较高，需要优化"
+          template: "感知掉帧率 {{jank_rate}}% 较高，需要优化"
+        - condition: "buffer_stuffing_rate > 50"
+          template: "Buffer Stuffing 占比 {{buffer_stuffing_rate}}%，管线背压显著（非 App 问题）"
         - condition: "app_jank > sf_jank"
           template: "App 侧掉帧 ({{app_jank}}) 多于 SF 侧 ({{sf_jank}})"
     display:
@@ -209,14 +227,23 @@ steps:
           label: "总帧数"
           type: number
           format: compact
-        - name: janky_frames
-          label: "掉帧数"
+        - name: perceived_jank_frames
+          label: "感知掉帧"
           type: number
           format: compact
         - name: jank_rate
-          label: "掉帧率"
+          label: "感知掉帧率"
           type: percentage
           format: percentage
+        - name: buffer_stuffing_frames
+          label: "Buffer Stuffing"
+          type: number
+          format: compact
+        - name: buffer_stuffing_rate
+          label: "BS 占比"
+          type: percentage
+          format: percentage
+          hidden: true
         - name: app_janky_frames
           label: "App 侧掉帧"
           type: number
@@ -257,12 +284,23 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       timing_config AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM vsync_intervals
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          16666667
-        ) AS INTEGER) AS vsync_period_ns
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
       ),
       time_range AS (
         SELECT
@@ -337,22 +375,18 @@ steps:
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
-      -- Per-layer token gap 掉帧检测（与 get_app_jank_frames 一致）
-      -- 主信号: display_frame_token gap > 1 = SF 跳过了该 layer 的 buffer
-      -- Fallback: 无 display_frame_token 时回退到 present_ts interval > 1.5x VSync
+      -- Per-layer 帧序列：双信号混合检测基础数据
+      -- present_type = SurfaceFlinger 的消费状态（非 BS 帧的权威信号）
+      -- present_ts interval = BS 帧的二次验证信号（区分真实掉帧 vs 管线背压）
       consumer_layer_frames AS (
         SELECT
           COALESCE(a.display_frame_token, a.surface_frame_token) as display_frame_token,
-          LAG(COALESCE(a.display_frame_token, a.surface_frame_token))
-            OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_display_token,
           a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
           LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
             OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_present_ts,
           COALESCE(a.jank_type, 'None') as jank_type,
-          a.layer_name,
-          COALESCE(a.display_frame_token, a.surface_frame_token)
-            - LAG(COALESCE(a.display_frame_token, a.surface_frame_token))
-              OVER (PARTITION BY a.layer_name ORDER BY a.ts) as token_gap
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
+          a.layer_name
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
@@ -361,78 +395,93 @@ steps:
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
+      -- 掉帧检测：双信号混合策略
+      -- 非 BS 帧：present_type IN ('Late Present', 'Dropped Frame') 为权威信号
+      -- BS 帧：present_type 始终为 Late Present，需用 present_ts 间隔作为二次验证
+      --        间隔 > 1.5x vsync = 真实掉帧（被 BS 掩盖）；否则 = 管线背压（非感知掉帧）
       consumer_gap_stats AS (
         SELECT
           COUNT(*) as total_frames,
+          -- 感知掉帧：双信号混合检测
           SUM(CASE
-            WHEN token_gap IS NOT NULL AND token_gap > 1 AND token_gap <= 10 THEN 1
-            WHEN token_gap IS NULL AND prev_present_ts IS NOT NULL
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND jank_type != 'Buffer Stuffing' THEN 1
+            WHEN jank_type = 'Buffer Stuffing'
+              AND prev_present_ts IS NOT NULL
               AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
               AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6 THEN 1
             ELSE 0
           END) as consumer_jank_frames,
+          -- App 侧掉帧（BS 帧的 jank_type 不可能是 Self Jank/App Deadline Missed，无需双信号）
+          SUM(CASE WHEN present_type IN ('Late Present', 'Dropped Frame')
+            AND jank_type IN ('Self Jank', 'App Deadline Missed') THEN 1 ELSE 0 END) as app_jank_frames,
+          -- Buffer Stuffing 总帧数（管线背压，含正常 BS 和异常 BS）
+          SUM(CASE WHEN jank_type = 'Buffer Stuffing' THEN 1 ELSE 0 END) as buffer_stuffing_frames,
+          -- vsync missed：双信号门控
           SUM(CASE
-            WHEN (token_gap IS NOT NULL AND token_gap > 1 AND token_gap <= 10
-                  OR (token_gap IS NULL AND prev_present_ts IS NOT NULL
-                      AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
-                      AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6))
-              AND jank_type IN ('Self Jank', 'App Deadline Missed')
-            THEN 1 ELSE 0
-          END) as app_jank_frames,
-          SUM(CASE
-            WHEN token_gap IS NOT NULL AND token_gap > 1 AND token_gap <= 10 THEN token_gap - 1
-            WHEN token_gap IS NULL AND prev_present_ts IS NOT NULL
+            WHEN (
+              (present_type IN ('Late Present', 'Dropped Frame') AND jank_type != 'Buffer Stuffing')
+              OR (jank_type = 'Buffer Stuffing' AND prev_present_ts IS NOT NULL
+                  AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
+                  AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6)
+            ) AND prev_present_ts IS NOT NULL
               AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
-              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6
-              THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM timing_config) - 1, 0) AS INTEGER), 0)
+            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM timing_config) - 1, 0) AS INTEGER), 0)
             ELSE 0
           END) as total_vsync_missed,
           MAX(CASE
-            WHEN token_gap IS NOT NULL AND token_gap > 1 AND token_gap <= 10 THEN token_gap - 1
-            WHEN token_gap IS NULL AND prev_present_ts IS NOT NULL
+            WHEN (
+              (present_type IN ('Late Present', 'Dropped Frame') AND jank_type != 'Buffer Stuffing')
+              OR (jank_type = 'Buffer Stuffing' AND prev_present_ts IS NOT NULL
+                  AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
+                  AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM timing_config) * 6)
+            ) AND prev_present_ts IS NOT NULL
               AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM timing_config) * 1.5
-              THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM timing_config) - 1, 0) AS INTEGER), 0)
+            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM timing_config) - 1, 0) AS INTEGER), 0)
             ELSE 0
           END) as max_vsync_missed
         FROM consumer_layer_frames
-        WHERE prev_display_token IS NOT NULL
       ),
       resolved_jank AS (
         SELECT
           COALESCE((SELECT consumer_jank_frames FROM consumer_gap_stats), (SELECT app_janky_frames FROM app_stats), 0) as janky_frames,
           COALESCE((SELECT app_jank_frames FROM consumer_gap_stats), (SELECT app_janky_frames FROM app_stats), 0) as app_janky_frames,
+          -- 感知掉帧 = consumer_jank_frames（双信号已过滤掉正常 BS 帧）
+          COALESCE((SELECT consumer_jank_frames FROM consumer_gap_stats), (SELECT app_janky_frames FROM app_stats), 0) as perceived_jank_frames,
+          COALESCE((SELECT buffer_stuffing_frames FROM consumer_gap_stats), 0) as buffer_stuffing_frames,
           COALESCE((SELECT max_vsync_missed FROM consumer_gap_stats), 0) as max_vsync_missed,
           COALESCE((SELECT total_vsync_missed FROM consumer_gap_stats), 0) as total_vsync_missed,
-          'frame_token_gap' as fps_source
+          'present_type' as fps_source
       )
       SELECT
         (SELECT total FROM app_stats) as total_frames,
+        -- 感知掉帧（排除 Buffer Stuffing）— 用户真正能感知到的掉帧
+        (SELECT perceived_jank_frames FROM resolved_jank) as perceived_jank_frames,
+        -- 感知掉帧率（主指标，用于 rating）
+        ROUND(
+          100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0),
+          2
+        ) as jank_rate,
+        -- Buffer Stuffing 帧数（管线背压，非 App 逻辑问题）
+        (SELECT buffer_stuffing_frames FROM resolved_jank) as buffer_stuffing_frames,
+        -- 总掉帧数（含 Buffer Stuffing，用于完整性展示）
         (SELECT janky_frames FROM resolved_jank) as janky_frames,
         (SELECT app_janky_frames FROM resolved_jank) as app_janky_frames,
         MAX(
-          (SELECT janky_frames FROM resolved_jank) -
+          (SELECT perceived_jank_frames FROM resolved_jank) -
           (SELECT app_janky_frames FROM resolved_jank),
           0
         ) as sf_jank_count,
-        -- 总掉帧率
-        ROUND(
-          100.0 * (SELECT janky_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0),
-          2
-        ) as jank_rate,
         -- App 侧掉帧率
         ROUND(
           100.0 * (SELECT app_janky_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0),
           2
         ) as app_jank_rate,
-        -- SF 侧掉帧率
+        -- Buffer Stuffing 率
         ROUND(
-          100.0 * MAX(
-            (SELECT janky_frames FROM resolved_jank) -
-            (SELECT app_janky_frames FROM resolved_jank),
-            0
-          ) / NULLIF((SELECT total FROM app_stats), 0),
+          100.0 * (SELECT buffer_stuffing_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0),
           2
-        ) as sf_jank_rate,
+        ) as buffer_stuffing_rate,
         (SELECT avg_present_interval FROM app_stats) as avg_frame_dur,
         (SELECT max_present_interval FROM app_stats) as max_frame_dur,
         (SELECT median_present_interval FROM app_stats) as median_frame_dur,
@@ -444,11 +493,12 @@ steps:
           CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER)
         ) as actual_fps,
         CAST(ROUND(1e9 / (SELECT vsync_period_ns FROM timing_config)) AS INTEGER) as refresh_rate,
+        -- 评级基于感知掉帧率（排除 Buffer Stuffing）
         CASE
-          WHEN (SELECT janky_frames FROM resolved_jank) = 0 THEN '优秀'
-          WHEN 100.0 * (SELECT janky_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 1 THEN '优秀'
-          WHEN 100.0 * (SELECT janky_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 5 THEN '良好'
-          WHEN 100.0 * (SELECT janky_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 15 THEN '一般'
+          WHEN (SELECT perceived_jank_frames FROM resolved_jank) = 0 THEN '优秀'
+          WHEN 100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 1 THEN '优秀'
+          WHEN 100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 5 THEN '良好'
+          WHEN 100.0 * (SELECT perceived_jank_frames FROM resolved_jank) / NULLIF((SELECT total FROM app_stats), 0) < 15 THEN '一般'
           ELSE '较差'
         END as rating,
         (SELECT fps_source FROM resolved_jank) as fps_source,
@@ -605,12 +655,23 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM vsync_intervals
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          16666667
-        ) AS INTEGER) AS vsync_period_ns
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
       ),
       app_frames AS (
         SELECT
@@ -618,14 +679,11 @@ steps:
           a.ts,
           CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as dur,
           COALESCE(a.jank_type, 'Unknown') as jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
           a.layer_name,
           a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
           LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
-            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts,
-          -- Per-layer token gap（与 get_app_jank_frames 一致）
-          COALESCE(a.display_frame_token, a.surface_frame_token)
-            - LAG(COALESCE(a.display_frame_token, a.surface_frame_token))
-              OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as token_gap
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_present_ts
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
@@ -634,45 +692,40 @@ steps:
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
+      -- 掉帧检测：双信号混合策略
       jank_analysis AS (
         SELECT
           jank_type,
           dur,
+          -- is_consumer_jank: 双信号混合检测
           CASE
-            WHEN prev_present_ts IS NULL THEN 1
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 1
-            ELSE 0
-          END as is_session_break,
-          -- is_consumer_jank: 主信号 token_gap > 1, fallback present_ts interval
-          CASE
-            WHEN prev_present_ts IS NULL THEN 0
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 0
-            WHEN token_gap IS NOT NULL AND token_gap > 1 AND token_gap <= 10 THEN 1
-            WHEN token_gap IS NULL
-              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5 THEN 1
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND jank_type != 'Buffer Stuffing' THEN 1
+            WHEN jank_type = 'Buffer Stuffing'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6 THEN 1
             ELSE 0
           END as is_consumer_jank
         FROM app_frames
-        WHERE prev_present_ts IS NOT NULL
       )
       SELECT
         jank_type,
         COUNT(*) as count,
-        -- 实际用户感知掉帧数（token gap > 1 或 fallback present_ts > 1.5x VSync）
+        -- 实际用户感知掉帧数（present_type 为 Late/Dropped）
         SUM(is_consumer_jank) as real_jank_count,
-        -- 假阳性数（jank_type 报告掉帧，但消费端未跳帧）
+        -- 假阳性数（jank_type 报告掉帧，但 present_type 未标记为 Late/Dropped）
         SUM(CASE WHEN jank_type != 'None' AND is_consumer_jank = 0 THEN 1 ELSE 0 END) as false_positive,
         CAST(SUM(CASE WHEN dur > 0 THEN dur ELSE 0 END) AS REAL) as total_dur,
         CAST(ROUND(AVG(CASE WHEN dur > 0 THEN dur ELSE NULL END)) AS INTEGER) as avg_dur,
         CASE
           WHEN jank_type GLOB '*App*' OR jank_type = 'Self Jank' THEN '标签:App'
           WHEN jank_type GLOB '*SurfaceFlinger*' THEN '标签:SurfaceFlinger'
-          WHEN jank_type GLOB '*Buffer*' THEN '标签:Buffer Stuffing(需验证)'
+          WHEN jank_type = 'Buffer Stuffing' THEN '标签:Buffer Stuffing(需验证)'
           WHEN jank_type = 'None' THEN '标签:None(可能漏检)'
           ELSE '标签:Other'
         END as responsibility
       FROM jank_analysis
-      WHERE is_session_break = 0
       GROUP BY jank_type
       ORDER BY real_jank_count DESC, count DESC
       LIMIT 10
@@ -745,12 +798,23 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM vsync_intervals
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          16666667
-        ) AS INTEGER) AS vsync_period_ns
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
       ),
       frame_gaps AS (
         SELECT
@@ -802,7 +866,7 @@ steps:
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
 
   # ==========================================================================
-  # L2: 区间掉帧统计 (基于消费端 display_frame_token 跳跃)
+  # L2: 区间掉帧统计 (基于 present_type 列检测掉帧)
   # ==========================================================================
   - id: session_jank
     type: atomic
@@ -820,15 +884,19 @@ steps:
           type: number
           format: compact
         - name: janky_count
-          label: "掉帧数"
+          label: "感知掉帧"
           type: number
           format: compact
         - name: jank_rate
-          label: "掉帧率"
+          label: "感知掉帧率"
           type: percentage
           format: percentage
         - name: app_janky_count
           label: "App 掉帧"
+          type: number
+          format: compact
+        - name: buffer_stuffing_count
+          label: "Buffer Stuffing"
           type: number
           format: compact
         - name: max_vsync_missed
@@ -850,12 +918,23 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config_for_session AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM vsync_intervals_for_session
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          16666667
-        ) AS INTEGER) AS vsync_period_ns
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM vsync_intervals_for_session
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
       ),
       frame_gaps AS (
         SELECT
@@ -863,9 +942,12 @@ steps:
           a.ts, a.dur, a.upid,
           a.layer_name,
           a.jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
           p.name as process_name,
           a.ts - LAG(a.ts + a.dur) OVER (PARTITION BY a.upid ORDER BY a.ts) as time_gap_ns,
-          LAG(COALESCE(a.display_frame_token, a.surface_frame_token)) OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_display_token
+          a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
+          LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_present_ts
         FROM actual_frame_timeline_slice a
         JOIN process p ON a.upid = p.upid
         WHERE (p.name GLOB '${package}*' OR '${package}' = '')
@@ -897,33 +979,49 @@ steps:
         HAVING COUNT(*) >= 10
           AND (MAX(ts + dur) - MIN(ts)) > 200000000
       ),
-      -- 基于 per-layer display_frame_token gap > 1 检测掉帧（与 get_app_jank_frames 一致）
+      -- 掉帧检测：双信号混合策略
       session_token_gap_jank AS (
         SELECT
           sr.session_id,
-          SUM(CASE WHEN sr.display_frame_token - sr.prev_display_token > 1
-                    AND sr.display_frame_token - sr.prev_display_token <= 10
-               THEN 1 ELSE 0 END) as consumer_jank_count,
-          SUM(CASE WHEN sr.display_frame_token - sr.prev_display_token > 1
-                    AND sr.display_frame_token - sr.prev_display_token <= 10
-                    AND sr.jank_type IN ('Self Jank', 'App Deadline Missed')
-               THEN 1 ELSE 0 END) as app_jank_count,
-          MAX(CASE WHEN sr.display_frame_token - sr.prev_display_token > 1
-               THEN sr.display_frame_token - sr.prev_display_token - 1
-               ELSE 0 END) as max_vsync_missed,
-          GROUP_CONCAT(DISTINCT CASE WHEN sr.display_frame_token - sr.prev_display_token > 1
-                                      AND sr.display_frame_token - sr.prev_display_token <= 10
-               THEN COALESCE(sr.jank_type, 'None') END) as jank_types
+          -- 感知掉帧：双信号混合检测
+          SUM(CASE
+            WHEN sr.present_type IN ('Late Present', 'Dropped Frame')
+              AND sr.jank_type != 'Buffer Stuffing' THEN 1
+            WHEN sr.jank_type = 'Buffer Stuffing'
+              AND sr.prev_present_ts IS NOT NULL
+              AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+              AND sr.present_ts - sr.prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config_for_session) * 6 THEN 1
+            ELSE 0 END) as consumer_jank_count,
+          SUM(CASE WHEN sr.present_type IN ('Late Present', 'Dropped Frame')
+            AND sr.jank_type IN ('Self Jank', 'App Deadline Missed') THEN 1 ELSE 0 END) as app_jank_count,
+          -- Buffer Stuffing 总帧数（管线背压，含正常 BS 和异常 BS）
+          SUM(CASE WHEN sr.jank_type = 'Buffer Stuffing' THEN 1 ELSE 0 END) as buffer_stuffing_count,
+          MAX(CASE
+            WHEN (
+              (sr.present_type IN ('Late Present', 'Dropped Frame') AND sr.jank_type != 'Buffer Stuffing')
+              OR (sr.jank_type = 'Buffer Stuffing' AND sr.prev_present_ts IS NOT NULL
+                  AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+                  AND sr.present_ts - sr.prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config_for_session) * 6)
+            ) AND sr.prev_present_ts IS NOT NULL
+              AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5
+            THEN MAX(CAST(ROUND((sr.present_ts - sr.prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_config_for_session) - 1, 0) AS INTEGER), 0)
+            ELSE 0 END) as max_vsync_missed,
+          GROUP_CONCAT(DISTINCT CASE
+            WHEN (sr.present_type IN ('Late Present', 'Dropped Frame') AND sr.jank_type != 'Buffer Stuffing')
+              OR (sr.jank_type = 'Buffer Stuffing' AND sr.prev_present_ts IS NOT NULL
+                  AND sr.present_ts - sr.prev_present_ts > (SELECT vsync_period_ns FROM vsync_config_for_session) * 1.5)
+            THEN COALESCE(sr.jank_type, 'None') END) as jank_types
         FROM sessions_raw sr
-        WHERE sr.prev_display_token IS NOT NULL
         GROUP BY sr.session_id
       )
       SELECT
         s.session_id,
         s.frame_count,
+        -- 感知掉帧 = consumer_jank_count（双信号已过滤正常 BS）
         COALESCE(stj.consumer_jank_count, 0) as janky_count,
         ROUND(100.0 * COALESCE(stj.consumer_jank_count, 0) / NULLIF(s.frame_count, 0), 2) as jank_rate,
         COALESCE(stj.app_jank_count, 0) as app_janky_count,
+        COALESCE(stj.buffer_stuffing_count, 0) as buffer_stuffing_count,
         COALESCE(stj.max_vsync_missed, 0) as max_vsync_missed,
         stj.jank_types
       FROM sessions s
@@ -934,11 +1032,12 @@ steps:
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment.data[0]?.has_data === 1"
 
   # ==========================================================================
-  # 内部步骤：获取所有掉帧的帧列表 (基于 display_frame_token gap 检测)
+  # 内部步骤：获取所有掉帧的帧列表 (双信号混合检测)
   # ==========================================================================
   # 核心原理：
-  # - Per-layer display_frame_token gap > 1 = SF 跳过了该 layer 的 buffer（缓冲区枯竭）
-  # - Fallback: 无 display_frame_token 时回退到 present_ts interval > 1.5x VSync
+  # - 非 BS 帧：present_type IN ('Late Present', 'Dropped Frame') 为权威信号
+  # - BS 帧：间隔 > 1.5x vsync = 真实掉帧（被 BS 掩盖）
+  # - vsync_missed 用 present_ts 间隔估算严重度（辅助信号）
   # - jank_type 用于标记责任归属（App 侧 vs SF 侧）
   - id: get_app_jank_frames
     type: atomic
@@ -1095,19 +1194,23 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       timing_config AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM vsync_intervals
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          16666667
-        ) AS INTEGER) AS vsync_period_ns
-      ),
-      -- 检测 trace 是否有 display_frame_token（Android 12+ 才有）
-      has_display_tokens AS (
-        SELECT COUNT(*) > 0 AS has_tokens
-        FROM actual_frame_timeline_slice
-        WHERE display_frame_token IS NOT NULL
-        LIMIT 1
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
       ),
       -- Per-layer 帧序列：按 layer_name 分组，计算 token gap + 时间 gap
       layer_frames AS (
@@ -1120,13 +1223,14 @@ steps:
           a.layer_name,
           a.jank_type,
           a.jank_severity_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
           -- Per-layer token gap：SF 跳过了多少个 DisplayFrame 没有消费该 layer 的 buffer
           a.display_frame_token - LAG(a.display_frame_token)
             OVER (PARTITION BY a.layer_name ORDER BY a.display_frame_token) AS token_gap,
           -- 时间 gap（会话切分用）
           a.ts - LAG(a.ts + a.dur)
             OVER (PARTITION BY a.layer_name ORDER BY a.ts) AS time_gap_ns,
-          -- present_ts（兼容性 + 报告展示 + fallback 用）
+          -- present_ts（vsync_missed 严重度估算 + 报告展示用）
           a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END AS present_ts,
           LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
             OVER (PARTITION BY a.layer_name ORDER BY a.ts) AS prev_present_ts
@@ -1150,9 +1254,9 @@ steps:
           SUM(new_session) OVER (PARTITION BY layer_name ORDER BY ts) as session_id
         FROM session_markers
       ),
-      -- Per-layer 掉帧检测：
-      -- 主信号：token_gap > 1（SF 在中间帧合成时该 layer 没有新 buffer = 缓冲区枯竭）
-      -- Fallback：无 display_frame_token 时回退到 present_ts interval > 1.5× VSync
+      -- Per-layer 掉帧检测：双信号混合策略
+      -- 非 BS 帧：present_type IN ('Late Present', 'Dropped Frame')
+      -- BS 帧：间隔 > 1.5x vsync = 真实掉帧（被 BS 掩盖的卡顿）
       jank_frames AS (
         SELECT
           sm.frame_token as frame_id,
@@ -1165,41 +1269,40 @@ steps:
           sm.jank_severity_type,
           sm.layer_name,
           sm.session_id,
-          -- token_gap 直接反映跳过的 display frame 数
+          -- token_gap 保留用于信息展示
           sm.token_gap,
-          -- vsync_missed：主信号用 token_gap，fallback 用 present_ts 间隔
+          -- vsync_missed：用 present_ts 间隔估算严重度（辅助信号）
           CASE
-            WHEN (SELECT has_tokens FROM has_display_tokens) AND sm.token_gap IS NOT NULL
-              THEN sm.token_gap - 1
-            ELSE MAX(CAST(ROUND(
-              (sm.present_ts - sm.prev_present_ts) * 1.0 / tc.vsync_period_ns - 1, 0
-            ) AS INTEGER), 0)
+            WHEN sm.prev_present_ts IS NOT NULL AND sm.present_ts - sm.prev_present_ts > tc.vsync_period_ns * 1.5
+              THEN MAX(CAST(ROUND((sm.present_ts - sm.prev_present_ts) * 1.0 / tc.vsync_period_ns - 1, 0) AS INTEGER), 0)
+            ELSE 1  -- at least 1 vsync missed if present_type is Late/Dropped
           END as vsync_missed,
           -- 责任归属
           CASE
             WHEN sm.jank_type IN ('Self Jank', 'App Deadline Missed') THEN 'APP'
             WHEN sm.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
-            WHEN sm.jank_type GLOB '*Buffer*' THEN 'BUFFER_STUFFING'
+            WHEN sm.jank_type = 'Buffer Stuffing' THEN 'BUFFER_STUFFING'
             WHEN sm.jank_type = 'None' OR sm.jank_type IS NULL THEN 'HIDDEN'
             ELSE 'UNKNOWN'
           END as jank_responsibility,
           -- 消费端呈现间隔（毫秒）— 报告展示用
-          ROUND((sm.present_ts - sm.prev_present_ts) / 1e6, 2) as present_interval_ms,
+          ROUND((sm.present_ts - COALESCE(sm.prev_present_ts, sm.present_ts)) / 1e6, 2) as present_interval_ms,
           -- 隐形掉帧标记
           CASE WHEN sm.jank_type = 'None' OR sm.jank_type IS NULL THEN 1 ELSE 0 END as is_hidden_jank
         FROM sessions_map sm
         CROSS JOIN timing_config tc
-        WHERE sm.prev_present_ts IS NOT NULL
-          AND (
-            -- 主信号：token_gap > 1 = per-layer 缓冲区枯竭
-            ((SELECT has_tokens FROM has_display_tokens) AND sm.token_gap > 1 AND sm.token_gap <= 10)
-            OR
-            -- Fallback：无 display_frame_token 时用 present_ts 间隔
-            (NOT (SELECT has_tokens FROM has_display_tokens)
-             AND (sm.present_ts - sm.prev_present_ts) > tc.vsync_period_ns * 1.5)
-          )
-          -- 排除会话间断
-          AND (sm.time_gap_ns IS NULL OR sm.time_gap_ns <= tc.vsync_period_ns * 6)
+        WHERE (
+          -- 非 BS：present_type 为权威信号
+          (sm.present_type IN ('Late Present', 'Dropped Frame') AND sm.jank_type != 'Buffer Stuffing')
+          OR
+          -- BS + 异常间隔：真实掉帧被 BS 掩盖
+          (sm.jank_type = 'Buffer Stuffing'
+           AND sm.prev_present_ts IS NOT NULL
+           AND (sm.present_ts - sm.prev_present_ts) > tc.vsync_period_ns * 1.5
+           AND (sm.present_ts - sm.prev_present_ts) <= tc.vsync_period_ns * 6)
+        )
+        -- 排除会话间断帧
+        AND (sm.time_gap_ns IS NULL OR sm.time_gap_ns <= tc.vsync_period_ns * 6)
       ),
       -- Guilty frame 溯源：找到导致缓冲区枯竭的慢帧
       -- BlastBufferQueue 三缓冲下，可见卡顿发生在慢帧 2-3 帧之后
@@ -1528,6 +1631,40 @@ steps:
           type: duration
           format: duration_ms
           hidden: true
+        - name: top_slice_little_pct
+          label: "小核占比%"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: top_slice_big_pct
+          label: "大核占比%"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: top_slice_runnable_pct
+          label: "Runnable占比%"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: gpu_fence_ms
+          label: "GPU Fence最长"
+          type: duration
+          format: duration_ms
+          hidden: true
+        - name: gpu_fence_total_ms
+          label: "GPU Fence总计"
+          type: duration
+          format: duration_ms
+          hidden: true
+        - name: shader_count
+          label: "Shader编译次数"
+          type: number
+          hidden: true
+        - name: shader_ms
+          label: "Shader编译耗时"
+          type: duration
+          format: duration_ms
+          hidden: true
         - name: binder_overlap_ms
           label: "Binder重叠"
           type: duration
@@ -1537,6 +1674,43 @@ steps:
           label: "GC重叠"
           type: duration
           format: duration_ms
+          hidden: true
+        - name: gc_count
+          label: "GC次数"
+          type: number
+          hidden: true
+        - name: frame_budget_ms
+          label: "帧预算"
+          type: duration
+          format: duration_ms
+          hidden: true
+        - name: cpu_freq_clusters_json
+          label: "CPU频率详情"
+          type: string
+          hidden: true
+        - name: freq_timeline_json
+          label: "频率变化时间线"
+          type: string
+          hidden: true
+        - name: main_slices_json
+          label: "主线程耗时操作"
+          type: string
+          hidden: true
+        - name: render_slices_json
+          label: "渲染线程耗时操作"
+          type: string
+          hidden: true
+        - name: binder_calls_json
+          label: "Binder调用"
+          type: string
+          hidden: true
+        - name: gc_events_json
+          label: "GC事件"
+          type: string
+          hidden: true
+        - name: lock_contention_json
+          label: "锁竞争"
+          type: string
           hidden: true
     sql: |
       -- 批量帧根因分类：对所有消费端真实掉帧执行简化版根因决策树
@@ -1560,21 +1734,26 @@ steps:
           ROUND(MAX(vsync_period_ns / 1e6 * 0.35, 2.0), 2) as freq_ramp_critical_ms,
           ROUND(MAX(vsync_period_ns / 1e6 * 0.18, 1.5), 2) as binder_overlap_critical_ms
         FROM (
-          SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 0.5)
-             FROM vsync_intervals
-             WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-            16666667
-          ) AS INTEGER) AS vsync_period_ns
+          SELECT CASE
+            WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+            WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+            WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+            WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+            WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+            WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+            ELSE raw_ns
+          END AS vsync_period_ns
+          FROM (
+            SELECT CAST(COALESCE(
+              (SELECT PERCENTILE(interval_ns, 0.5)
+               FROM vsync_intervals
+               WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+              16666667
+            ) AS INTEGER) AS raw_ns
+          )
         )
       ),
-      -- ========== 2. Per-layer 帧序列 + token-gap 掉帧检测（与 get_app_jank_frames 一致）==========
-      has_display_tokens AS (
-        SELECT COUNT(*) > 0 AS has_tokens
-        FROM actual_frame_timeline_slice
-        WHERE display_frame_token IS NOT NULL
-        LIMIT 1
-      ),
+      -- ========== 2. Per-layer 帧序列 + 双信号混合掉帧检测（与 get_app_jank_frames 一致）==========
       layer_frames AS (
         SELECT
           a.display_frame_token,
@@ -1582,6 +1761,7 @@ steps:
           a.ts + a.dur as frame_end,
           a.dur as frame_dur,
           a.jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
           a.upid,
           a.layer_name,
           a.display_frame_token - LAG(a.display_frame_token)
@@ -1609,6 +1789,7 @@ steps:
           SUM(new_session) OVER (PARTITION BY layer_name ORDER BY frame_start) as session_id
         FROM session_markers
       ),
+      -- 掉帧检测：双信号混合策略（与 jank_frames 保持一致）
       all_jank_frames AS (
         SELECT
           sm.frame_start,
@@ -1623,28 +1804,30 @@ steps:
           CASE
             WHEN sm.jank_type IN ('Self Jank', 'App Deadline Missed') THEN 'APP'
             WHEN sm.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
-            WHEN sm.jank_type GLOB '*Buffer*' THEN 'BUFFER_STUFFING'
+            WHEN sm.jank_type = 'Buffer Stuffing' THEN 'BUFFER_STUFFING'
             WHEN sm.jank_type = 'None' OR sm.jank_type IS NULL THEN 'HIDDEN'
             ELSE 'UNKNOWN'
           END as jank_responsibility,
           CASE
-            WHEN (SELECT has_tokens FROM has_display_tokens) AND sm.token_gap IS NOT NULL
-              THEN sm.token_gap - 1
-            ELSE MAX(CAST(ROUND(
-              (sm.present_ts - sm.prev_present_ts) * 1.0 / tc.vsync_period_ns - 1, 0
-            ) AS INTEGER), 0)
+            WHEN sm.prev_present_ts IS NOT NULL AND sm.present_ts - sm.prev_present_ts > tc.vsync_period_ns * 1.5
+              THEN MAX(CAST(ROUND((sm.present_ts - sm.prev_present_ts) * 1.0 / tc.vsync_period_ns - 1, 0) AS INTEGER), 0)
+            ELSE 1  -- at least 1 vsync missed if present_type is Late/Dropped
           END as vsync_missed
         FROM sessions_map sm
         CROSS JOIN timing_config tc
         JOIN process p ON sm.upid = p.upid
-        WHERE sm.prev_present_ts IS NOT NULL
-          AND (
-            ((SELECT has_tokens FROM has_display_tokens) AND sm.token_gap > 1 AND sm.token_gap <= 10)
-            OR
-            (NOT (SELECT has_tokens FROM has_display_tokens)
-             AND (sm.present_ts - sm.prev_present_ts) > tc.vsync_period_ns * 1.5)
-          )
-          AND (sm.time_gap_ns IS NULL OR sm.time_gap_ns <= tc.vsync_period_ns * 6)
+        WHERE (
+          -- 非 BS：present_type 为权威信号
+          (sm.present_type IN ('Late Present', 'Dropped Frame') AND (sm.jank_type IS NULL OR sm.jank_type != 'Buffer Stuffing'))
+          OR
+          -- BS + 异常间隔：真实掉帧被 BS 掩盖
+          (sm.jank_type = 'Buffer Stuffing'
+           AND sm.prev_present_ts IS NOT NULL
+           AND (sm.present_ts - sm.prev_present_ts) > tc.vsync_period_ns * 1.5
+           AND (sm.present_ts - sm.prev_present_ts) <= tc.vsync_period_ns * 6)
+        )
+        -- 排除会话间断帧
+        AND (sm.time_gap_ns IS NULL OR sm.time_gap_ns <= tc.vsync_period_ns * 6)
       ),
       -- 按严重度排序（与 get_app_jank_frames 完全一致的 rank_in_session 逻辑）
       ranked_jank_frames AS (
@@ -1911,7 +2094,219 @@ steps:
         ) gc ON gc.gc_ts < fl.frame_end AND gc.gc_ts + gc.gc_dur > fl.frame_start
         GROUP BY fl.frame_start
       ),
-      -- ========== 10. 综合分析 ==========
+      -- ========== 10. 批量详情 JSON 列（覆盖全部掉帧，避免 N+1 查询） ==========
+      -- 10a. 全簇 CPU 频率 (prime/big/little)
+      per_frame_cpu_clusters AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'core_type', core_type,
+            'avg_mhz', avg_mhz,
+            'max_mhz', max_mhz,
+            'min_mhz', min_mhz
+          )) as cpu_freq_clusters_json
+        FROM (
+          SELECT
+            fl.frame_start,
+            COALESCE(ct.core_type, 'little') as core_type,
+            CAST(ROUND(AVG(c.value) / 1000, 0) AS INTEGER) as avg_mhz,
+            CAST(ROUND(MAX(c.value) / 1000, 0) AS INTEGER) as max_mhz,
+            CAST(ROUND(MIN(c.value) / 1000, 0) AS INTEGER) as min_mhz
+          FROM jank_frame_list fl
+          JOIN counter c ON c.ts >= fl.frame_start AND c.ts < fl.frame_end
+          JOIN cpu_counter_track cct ON c.track_id = cct.id AND cct.name = 'cpufreq'
+          LEFT JOIN _cpu_topology ct ON cct.cpu = ct.cpu_id
+          GROUP BY fl.frame_start, COALESCE(ct.core_type, 'little')
+        )
+        GROUP BY frame_start
+      ),
+      -- 10b. 各 CPU 频率变化时间线（含初始状态 + 所有变化事件，频率单位 GHz）
+      per_frame_freq_changes AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'relative_ms', relative_ms,
+            'cpu', cpu,
+            'core_type', core_type,
+            'freq_ghz', freq_ghz,
+            'change', change_dir
+          )) as freq_timeline_json
+        FROM (
+          SELECT *,
+            ROW_NUMBER() OVER (PARTITION BY frame_start ORDER BY relative_ms, cpu) as rn
+          FROM (
+            SELECT
+              fl.frame_start,
+              ROUND((c.ts - fl.frame_start) / 1e6, 2) as relative_ms,
+              cct.cpu,
+              COALESCE(ct.core_type, 'little') as core_type,
+              ROUND(c.value / 1e6, 2) as freq_ghz,
+              c.value as freq_khz,
+              LAG(c.value) OVER (PARTITION BY fl.frame_start, cct.cpu ORDER BY c.ts) as prev_freq_khz,
+              CASE
+                WHEN c.value > COALESCE(LAG(c.value) OVER (PARTITION BY fl.frame_start, cct.cpu ORDER BY c.ts), c.value) THEN 'up'
+                WHEN c.value < COALESCE(LAG(c.value) OVER (PARTITION BY fl.frame_start, cct.cpu ORDER BY c.ts), c.value) THEN 'down'
+                ELSE 'stable'
+              END as change_dir
+            FROM jank_frame_list fl
+            JOIN counter c ON c.ts >= fl.frame_start AND c.ts < fl.frame_end
+            JOIN cpu_counter_track cct ON c.track_id = cct.id AND cct.name = 'cpufreq'
+            LEFT JOIN _cpu_topology ct ON cct.cpu = ct.cpu_id
+          )
+          WHERE freq_khz != COALESCE(prev_freq_khz, 0)
+        )
+        WHERE rn <= 30
+        GROUP BY frame_start
+      ),
+      -- 10c. 主线程 Top 8 耗时 Slice
+      per_frame_main_top_slices AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'name', slice_name,
+            'total_ms', dur_ms,
+            'count', cnt,
+            'max_ms', max_ms,
+            'ts', ts_str
+          )) as main_slices_json
+        FROM (
+          SELECT
+            fl.frame_start,
+            s.name as slice_name,
+            ROUND(SUM(s.dur) / 1e6, 2) as dur_ms,
+            COUNT(*) as cnt,
+            ROUND(MAX(s.dur) / 1e6, 2) as max_ms,
+            printf('%d', MIN(s.ts)) as ts_str,
+            ROW_NUMBER() OVER (PARTITION BY fl.frame_start ORDER BY SUM(s.dur) DESC) as rn
+          FROM jank_frame_list fl
+          JOIN per_frame_top_threads ptft ON ptft.frame_start = fl.frame_start AND ptft.rank = 1
+          JOIN thread_track tt ON tt.utid = ptft.utid
+          JOIN slice s ON s.track_id = tt.id
+            AND s.ts >= fl.frame_start - 5000000
+            AND s.ts < fl.frame_end
+            AND s.dur >= 500000
+          GROUP BY fl.frame_start, s.name
+          HAVING dur_ms > 0.5
+        )
+        WHERE rn <= 8
+        GROUP BY frame_start
+      ),
+      -- 10d. RenderThread Top 8 耗时 Slice
+      per_frame_render_top_slices AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'name', slice_name,
+            'total_ms', dur_ms,
+            'count', cnt,
+            'max_ms', max_ms,
+            'ts', ts_str
+          )) as render_slices_json
+        FROM (
+          SELECT
+            fl.frame_start,
+            s.name as slice_name,
+            ROUND(SUM(s.dur) / 1e6, 2) as dur_ms,
+            COUNT(*) as cnt,
+            ROUND(MAX(s.dur) / 1e6, 2) as max_ms,
+            printf('%d', MIN(s.ts)) as ts_str,
+            ROW_NUMBER() OVER (PARTITION BY fl.frame_start ORDER BY SUM(s.dur) DESC) as rn
+          FROM jank_frame_list fl
+          JOIN per_frame_top_threads ptft ON ptft.frame_start = fl.frame_start AND ptft.rank = 2
+          JOIN thread_track tt ON tt.utid = ptft.utid
+          JOIN slice s ON s.track_id = tt.id
+            AND s.ts >= fl.frame_start - 5000000
+            AND s.ts < fl.frame_end
+            AND s.dur >= 500000
+          GROUP BY fl.frame_start, s.name
+          HAVING dur_ms > 0.5
+        )
+        WHERE rn <= 8
+        GROUP BY frame_start
+      ),
+      -- 10e. Binder 调用详情（按 server_process 聚合，Top 5）
+      per_frame_binder_detail AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'server', server_process,
+            'count', cnt,
+            'dur_ms', dur_ms,
+            'max_ms', max_ms
+          )) as binder_calls_json
+        FROM (
+          SELECT
+            fl.frame_start,
+            bt.server_process,
+            COUNT(*) as cnt,
+            ROUND(SUM(bt.client_dur) / 1e6, 2) as dur_ms,
+            ROUND(MAX(bt.client_dur) / 1e6, 2) as max_ms,
+            ROW_NUMBER() OVER (PARTITION BY fl.frame_start ORDER BY SUM(bt.client_dur) DESC) as rn
+          FROM jank_frame_list fl
+          JOIN per_frame_top_threads ptft ON ptft.frame_start = fl.frame_start AND ptft.rank = 1
+          LEFT JOIN android_binder_txns bt ON bt.client_tid = ptft.tid
+            AND bt.client_ts >= fl.frame_start
+            AND bt.client_ts < fl.frame_end
+          WHERE bt.server_process IS NOT NULL
+          GROUP BY fl.frame_start, bt.server_process
+          HAVING dur_ms > 0.1
+        )
+        WHERE rn <= 5
+        GROUP BY frame_start
+      ),
+      -- 10f. GC 事件详情（按类型聚合）
+      per_frame_gc_detail AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'gc_type', gc_type,
+            'count', cnt,
+            'total_ms', total_dur_ms,
+            'overlap_ms', overlap_ms
+          )) as gc_events_json
+        FROM (
+          SELECT
+            fl.frame_start,
+            COALESCE(gc.gc_type, 'unknown') as gc_type,
+            COUNT(*) as cnt,
+            ROUND(SUM(gc.gc_dur) / 1e6, 2) as total_dur_ms,
+            ROUND(SUM(
+              MAX(MIN(gc.gc_ts + gc.gc_dur, fl.frame_end) - MAX(gc.gc_ts, fl.frame_start), 0)
+            ) / 1e6, 2) as overlap_ms
+          FROM jank_frame_list fl
+          LEFT JOIN (
+            SELECT gc.gc_ts, gc.gc_dur, gc.gc_type, t.tid
+            FROM android_garbage_collection_events gc
+            JOIN thread t ON gc.tid = t.tid
+            JOIN process p ON t.upid = p.upid
+            WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          ) gc ON gc.gc_ts < fl.frame_end AND gc.gc_ts + gc.gc_dur > fl.frame_start
+          WHERE gc.gc_ts IS NOT NULL
+          GROUP BY fl.frame_start, COALESCE(gc.gc_type, 'unknown')
+          HAVING overlap_ms > 0
+        )
+        GROUP BY frame_start
+      ),
+      -- 10g. 锁竞争详情（Top 5，需要 android_monitor_contention 表）
+      per_frame_lock_detail AS (
+        SELECT frame_start,
+          json_group_array(json_object(
+            'method', blocking_method,
+            'blocker', blocking_thread_name,
+            'wait_ms', wait_ms,
+            'main_blocked', main_blocked
+          )) as lock_contention_json
+        FROM (
+          SELECT
+            fl.frame_start,
+            amc.short_blocking_method as blocking_method,
+            amc.blocking_thread_name,
+            ROUND(amc.dur / 1e6, 2) as wait_ms,
+            CASE WHEN amc.is_blocked_thread_main THEN 1 ELSE 0 END as main_blocked,
+            ROW_NUMBER() OVER (PARTITION BY fl.frame_start ORDER BY amc.dur DESC) as rn
+          FROM jank_frame_list fl
+          JOIN android_monitor_contention amc ON amc.ts >= fl.frame_start AND amc.ts < fl.frame_end
+            AND (amc.process_name GLOB '${package}*' OR '${package}' = '')
+            AND amc.dur >= 200000
+        )
+        WHERE rn <= 5
+        GROUP BY frame_start
+      ),
+      -- ========== 11. 综合分析 ==========
       analysis AS (
         SELECT
           fl.frame_start,
@@ -1952,7 +2347,14 @@ steps:
           tc.frame_budget_ms,
           tc.slice_critical_ms,
           tc.freq_ramp_critical_ms,
-          tc.binder_overlap_critical_ms
+          tc.binder_overlap_critical_ms,
+          COALESCE(pfcc.cpu_freq_clusters_json, '[]') as cpu_freq_clusters_json,
+          COALESCE(pffc.freq_timeline_json, '[]') as freq_timeline_json,
+          COALESCE(pfmts.main_slices_json, '[]') as main_slices_json,
+          COALESCE(pfrts.render_slices_json, '[]') as render_slices_json,
+          COALESCE(pfbd.binder_calls_json, '[]') as binder_calls_json,
+          COALESCE(pfgd.gc_events_json, '[]') as gc_events_json,
+          COALESCE(pfld.lock_contention_json, '[]') as lock_contention_json
         FROM jank_frame_list fl
         CROSS JOIN timing_config tc
         LEFT JOIN top_slices ts ON ts.frame_start = fl.frame_start
@@ -1965,11 +2367,23 @@ steps:
         LEFT JOIN per_frame_gc pfgc ON pfgc.frame_start = fl.frame_start
         LEFT JOIN gpu_fence_per_frame gf ON gf.frame_start = fl.frame_start
         LEFT JOIN shader_per_frame sp ON sp.frame_start = fl.frame_start
+        LEFT JOIN per_frame_cpu_clusters pfcc ON pfcc.frame_start = fl.frame_start
+        LEFT JOIN per_frame_freq_changes pffc ON pffc.frame_start = fl.frame_start
+        LEFT JOIN per_frame_main_top_slices pfmts ON pfmts.frame_start = fl.frame_start
+        LEFT JOIN per_frame_render_top_slices pfrts ON pfrts.frame_start = fl.frame_start
+        LEFT JOIN per_frame_binder_detail pfbd ON pfbd.frame_start = fl.frame_start
+        LEFT JOIN per_frame_gc_detail pfgd ON pfgd.frame_start = fl.frame_start
+        LEFT JOIN per_frame_lock_detail pfld ON pfld.frame_start = fl.frame_start
       ),
       -- ========== 11. 根因分类（与 jank_frame_detail 相同优先级 CASE 树） ==========
       classified AS (
         SELECT *,
           CASE
+            -- P0: Buffer Stuffing 管线背压 — 短路跳过线程分析
+            -- App 未错过 deadline，但 BufferQueue 积压导致 dequeueBuffer 背压
+            -- 主线程 S 状态来自 syncFrameState 等待，非锁/Binder 问题
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              THEN 'buffer_stuffing'
             -- P1: Binder 同步阻塞（top slice 内有大量同步 Binder 重叠）
             WHEN top_slice_ms > slice_critical_ms AND binder_overlap_ms >= binder_overlap_critical_ms
               THEN 'binder_sync_blocking'
@@ -2029,6 +2443,7 @@ steps:
         jank_responsibility,
         reason_code,
         CASE
+          WHEN reason_code = 'buffer_stuffing' THEN 'Buffer Stuffing: 管线背压，帧耗时 ' || dur_ms || 'ms，BufferQueue 积压导致跳帧（非 App 问题）'
           WHEN reason_code = 'binder_sync_blocking' THEN '同步Binder阻塞: "' || top_slice_name || '" 中 Binder 重叠 ' || binder_overlap_ms || 'ms'
           WHEN reason_code = 'gc_jank' THEN 'GC暂停: 帧窗口内 GC 重叠 ' || gc_overlap_ms || 'ms (' || gc_count || ' 次)'
           WHEN reason_code = 'small_core_placement' THEN '小核调度: "' || top_slice_name || '" 小核占比 ' || little_run_pct || '%'
@@ -2044,6 +2459,7 @@ steps:
           ELSE '未分类 (帧耗时 ' || dur_ms || 'ms)'
         END as primary_cause,
         CASE
+          WHEN reason_code = 'buffer_stuffing' THEN '高'
           WHEN top_slice_ms > slice_critical_ms THEN '高'
           WHEN shader_count > 0 THEN '高'
           WHEN max_fence_dur_ns > vsync_period_ns * 0.5 THEN '中'
@@ -2069,98 +2485,33 @@ steps:
         big_avg_freq_mhz,
         big_max_freq_mhz,
         ramp_to_high_ms as ramp_ms,
-        -- Binder/GC 重叠
+        -- Top Slice CPU 分布
+        little_run_pct as top_slice_little_pct,
+        big_run_pct as top_slice_big_pct,
+        runnable_pct as top_slice_runnable_pct,
+        -- GPU / Shader
+        ROUND(max_fence_dur_ns / 1e6, 2) as gpu_fence_ms,
+        ROUND(total_fence_dur_ns / 1e6, 2) as gpu_fence_total_ms,
+        shader_count,
+        ROUND(total_shader_dur_ns / 1e6, 2) as shader_ms,
+        -- Binder/GC
         binder_overlap_ms,
-        gc_overlap_ms
+        gc_overlap_ms,
+        gc_count,
+        -- 帧预算参考
+        frame_budget_ms,
+        -- 批量详情 JSON 列（供展开行使用）
+        cpu_freq_clusters_json,
+        freq_timeline_json,
+        main_slices_json,
+        render_slices_json,
+        binder_calls_json,
+        gc_events_json,
+        lock_contention_json
       FROM classified
       ORDER BY session_id, frame_start
     save_as: batch_root_cause
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1 && environment?.data?.[0]?.has_data === 1 && ((perf_summary?.data?.[0]?.janky_frames || 0) > 0 || (jank_stats?.data?.[0]?.real_jank_count || 0) > 0)"
-
-  # ==========================================================================
-  # L3: 逐帧诊断 (所有掉帧帧 → jank_frame_detail)
-  # ==========================================================================
-  - id: diagnose_jank_frames
-    type: iterator
-    name: "逐帧诊断分析"
-    source: app_jank_frames
-    item_skill: jank_frame_detail
-    item_params:
-      start_ts: start_ts
-      end_ts: end_ts
-      main_start_ts: main_start_ts
-      main_end_ts: main_end_ts
-      render_start_ts: render_start_ts
-      render_end_ts: render_end_ts
-      dur_ms: dur_ms
-      frame_id: frame_id
-      jank_type: jank_type
-      package: process_name
-      pid: pid
-      session_id: session_id
-      layer_name: layer_name
-      token_gap: token_gap
-      vsync_missed: vsync_missed
-      jank_responsibility: jank_responsibility
-      jank_cause: jank_cause
-      frame_index: frame_index
-    display:
-      level: key
-      layer: overview
-      title: "帧诊断结果"
-    condition: "app_jank_frames?.data?.length > 0 && enable_frame_details === true"
-
-  # ==========================================================================
-  # L4: 逐帧详细分析 (Iterator)
-  # ==========================================================================
-  - id: analyze_jank_frames
-    type: iterator
-    name: "逐帧详细分析"
-    synthesize:
-      role: clusters
-      clusterBy: cause_type
-    display:
-      level: key
-      layer: deep
-      title: "帧详细分析"
-      columns:
-        - name: frame_id
-          label: "帧 ID"
-          type: string
-        - name: cause_type
-          label: "原因类型"
-          type: string
-        - name: diagnosis
-          label: "诊断结论"
-          type: string
-        - name: confidence
-          label: "置信度"
-          type: percentage
-          format: percentage
-    source: app_jank_frames
-    item_skill: jank_frame_detail
-    condition: "enable_frame_details === true"
-    item_params:
-      start_ts: start_ts
-      end_ts: end_ts
-      main_start_ts: main_start_ts
-      main_end_ts: main_end_ts
-      main_dur_ms: main_dur_ms
-      render_start_ts: render_start_ts
-      render_end_ts: render_end_ts
-      render_dur_ms: render_dur_ms
-      package: process_name
-      pid: pid
-      frame_id: frame_id
-      frame_index: frame_index
-      jank_type: jank_type
-      dur_ms: dur_ms
-      session_id: session_id
-      layer_name: layer_name
-      token_gap: token_gap
-      vsync_missed: vsync_missed
-      jank_responsibility: jank_responsibility
-      jank_cause: jank_cause
 
   # ==========================================================================
   # Root Cause Classification - Aggregate analysis for final conclusion
@@ -2206,7 +2557,7 @@ steps:
           type: string
     sql: |
       WITH
-      -- Per-layer token-gap 掉帧检测（与 performance_summary/get_app_jank_frames 保持同口径）
+      -- 双信号混合掉帧检测（与 performance_summary/get_app_jank_frames 保持同口径）
       vsync_intervals AS (
         SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
         FROM counter c
@@ -2216,36 +2567,60 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_config AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM vsync_intervals
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          16666667
-        ) AS INTEGER) AS vsync_period_ns
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
+      ),
+      -- 掉帧检测：双信号混合策略
+      frame_jank_data AS (
+        SELECT
+          a.jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
+          a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
+          LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts) as prev_present_ts,
+          a.ts - LAG(a.ts + a.dur)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts) as time_gap_ns
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+          AND p.name NOT LIKE '/system/%'
+          AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR a.ts < ${end_ts})
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
       token_gap_jank AS (
         SELECT
-          SUM(CASE WHEN token_gap > 1 AND token_gap <= 10 THEN 1 ELSE 0 END) as total_jank_count,
-          SUM(CASE WHEN token_gap > 1 AND token_gap <= 10
-                     AND jank_type IN ('Self Jank', 'App Deadline Missed')
-                   THEN 1 ELSE 0 END) as app_jank_count,
-          SUM(CASE WHEN token_gap > 1 AND token_gap <= 10
-                     AND jank_type GLOB '*SurfaceFlinger*'
-                   THEN 1 ELSE 0 END) as sf_jank_count
-        FROM (
-          SELECT
-            a.jank_type,
-            a.display_frame_token - LAG(a.display_frame_token)
-              OVER (PARTITION BY a.layer_name ORDER BY a.display_frame_token) AS token_gap
-          FROM actual_frame_timeline_slice a
-          LEFT JOIN process p ON a.upid = p.upid
-          WHERE (p.name GLOB '${package}*' OR '${package}' = '')
-            AND p.name NOT LIKE '/system/%'
-            AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
-            AND (${end_ts} IS NULL OR a.ts < ${end_ts})
-            AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
-        )
-        WHERE token_gap IS NOT NULL
+          -- 感知掉帧总数：双信号混合检测
+          SUM(CASE
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND jank_type != 'Buffer Stuffing' THEN 1
+            WHEN jank_type = 'Buffer Stuffing'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6
+              AND (time_gap_ns IS NULL OR time_gap_ns <= (SELECT vsync_period_ns FROM vsync_config) * 6) THEN 1
+            ELSE 0 END) as total_jank_count,
+          -- App 侧掉帧（BS 帧的 jank_type 不可能是 Self Jank/App Deadline Missed）
+          SUM(CASE WHEN present_type IN ('Late Present', 'Dropped Frame')
+            AND jank_type IN ('Self Jank', 'App Deadline Missed') THEN 1 ELSE 0 END) as app_jank_count,
+          SUM(CASE WHEN present_type IN ('Late Present', 'Dropped Frame')
+            AND jank_type GLOB '*SurfaceFlinger*' THEN 1 ELSE 0 END) as sf_jank_count
+        FROM frame_jank_data
       ),
       app_frames AS (
         SELECT

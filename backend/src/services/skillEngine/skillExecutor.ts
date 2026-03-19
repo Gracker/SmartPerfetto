@@ -1674,29 +1674,163 @@ export class SkillExecutor {
       sections['渲染线程四象限'] = { title: '渲染线程四象限 (Q1大核运行/Q2小核运行/Q3调度等待/Q4a IO阻塞/Q4b 锁等待)', data: [renderData] };
     }
 
-    // Section 4: CPU frequency
-    const cpuFields = ['big_avg_freq_mhz', 'big_max_freq_mhz', 'ramp_ms'];
-    const cpuData: Record<string, any> = {};
-    let hasCpuData = false;
-    for (const f of cpuFields) {
-      if (row[f] != null) { cpuData[f] = row[f]; hasCpuData = true; }
-    }
-    if (hasCpuData) {
-      sections['CPU 频率'] = { title: 'CPU 频率', data: [cpuData] };
+    // Section 4: CPU frequency (full cluster detail from JSON, fallback to scalar fields)
+    const cpuClusters = this.parseJsonColumn(row, 'cpu_freq_clusters_json');
+    if (cpuClusters.length > 0) {
+      sections['CPU 频率'] = {
+        title: 'CPU 频率 (Prime / Big / Little)',
+        data: cpuClusters.map((c: any) => ({
+          核心类型: c.core_type,
+          平均频率: (c.avg_mhz / 1000).toFixed(2) + 'GHz',
+          最高频率: (c.max_mhz / 1000).toFixed(2) + 'GHz',
+          最低频率: (c.min_mhz / 1000).toFixed(2) + 'GHz',
+        })),
+      };
+    } else {
+      // Fallback to legacy scalar fields
+      const cpuData: Record<string, any> = {};
+      let hasCpuData = false;
+      for (const f of ['big_avg_freq_mhz', 'big_max_freq_mhz', 'ramp_ms']) {
+        if (row[f] != null) { cpuData[f] = row[f]; hasCpuData = true; }
+      }
+      if (hasCpuData) {
+        sections['CPU 频率'] = { title: 'CPU 频率', data: [cpuData] };
+      }
     }
 
-    // Section 5: Interference factors
-    const interferenceFields = ['binder_overlap_ms', 'gc_overlap_ms'];
+    // Section 5: Top Slice CPU mix
+    const cpuMixFields = ['top_slice_little_pct', 'top_slice_big_pct', 'top_slice_runnable_pct'];
+    const cpuMixData: Record<string, any> = {};
+    let hasCpuMix = false;
+    for (const f of cpuMixFields) {
+      if (row[f] != null && Number(row[f]) > 0) {
+        cpuMixData[f.replace('top_slice_', '')] = row[f] + '%';
+        hasCpuMix = true;
+      }
+    }
+    if (hasCpuMix) {
+      sections['关键操作 CPU 分布'] = { title: '关键操作 CPU 分布 (大核/小核/Runnable)', data: [cpuMixData] };
+    }
+
+    // Section 6: GPU / Shader
+    const gpuFields = ['gpu_fence_ms', 'gpu_fence_total_ms', 'shader_count', 'shader_ms'];
+    const gpuData: Record<string, any> = {};
+    let hasGpu = false;
+    for (const f of gpuFields) {
+      if (row[f] != null && Number(row[f]) > 0) { gpuData[f] = row[f]; hasGpu = true; }
+    }
+    if (hasGpu) {
+      sections['GPU / Shader'] = { title: 'GPU / Shader', data: [gpuData] };
+    }
+
+    // Section 7: Interference factors (Binder + GC)
     const interferenceData: Record<string, any> = {};
     let hasInterference = false;
-    for (const f of interferenceFields) {
-      if (row[f] != null && Number(row[f]) > 0) { interferenceData[f] = row[f]; hasInterference = true; }
+    if (row['binder_overlap_ms'] != null && Number(row['binder_overlap_ms']) > 0) {
+      interferenceData['binder_overlap_ms'] = row['binder_overlap_ms'];
+      hasInterference = true;
+    }
+    if (row['gc_overlap_ms'] != null && Number(row['gc_overlap_ms']) > 0) {
+      interferenceData['gc_overlap_ms'] = row['gc_overlap_ms'];
+      hasInterference = true;
+    }
+    if (row['gc_count'] != null && Number(row['gc_count']) > 0) {
+      interferenceData['gc_count'] = row['gc_count'];
+      hasInterference = true;
     }
     if (hasInterference) {
-      sections['干扰因素'] = { title: '干扰因素', data: [interferenceData] };
+      sections['干扰因素'] = { title: '干扰因素 (Binder/GC)', data: [interferenceData] };
+    }
+
+    // Section 8: Frame budget reference
+    if (row['frame_budget_ms'] != null) {
+      sections['帧预算'] = { title: '帧预算参考', data: [{ frame_budget_ms: row['frame_budget_ms'] + 'ms' }] };
+    }
+
+    // Section 9: CPU frequency timeline (initial state + all changes, per CPU)
+    const freqTimeline = this.parseJsonColumn(row, 'freq_timeline_json');
+    if (freqTimeline.length > 0) {
+      sections['CPU 频率变化'] = {
+        title: '各 CPU 频率变化时间线',
+        data: freqTimeline.map((e: any) => ({
+          相对时间: e.relative_ms + 'ms',
+          CPU: e.cpu,
+          核心类型: e.core_type,
+          频率: e.freq_ghz + 'GHz',
+          变化: e.change === 'up' ? '↑升频' : e.change === 'down' ? '↓降频' : '初始',
+        })),
+      };
+    }
+
+    // Section 10: Main thread top slices
+    const mainSlices = this.parseJsonColumn(row, 'main_slices_json');
+    if (mainSlices.length > 0) {
+      sections['主线程耗时操作'] = {
+        title: '主线程耗时操作 (Top 8)',
+        data: mainSlices.map((s: any) => ({
+          操作: s.name, 总耗时: s.total_ms + 'ms', 次数: s.count, 最大耗时: s.max_ms + 'ms',
+        })),
+      };
+    }
+
+    // Section 11: RenderThread top slices
+    const renderSlices = this.parseJsonColumn(row, 'render_slices_json');
+    if (renderSlices.length > 0) {
+      sections['RenderThread 耗时操作'] = {
+        title: 'RenderThread 耗时操作 (Top 8)',
+        data: renderSlices.map((s: any) => ({
+          操作: s.name, 总耗时: s.total_ms + 'ms', 次数: s.count, 最大耗时: s.max_ms + 'ms',
+        })),
+      };
+    }
+
+    // Section 12: Binder call details
+    const binderCalls = this.parseJsonColumn(row, 'binder_calls_json');
+    if (binderCalls.length > 0) {
+      sections['Binder 调用详情'] = {
+        title: 'Binder 调用（按耗时降序）',
+        data: binderCalls.map((b: any) => ({
+          目标进程: b.server, 调用次数: b.count, 总耗时: b.dur_ms + 'ms', 最大耗时: b.max_ms + 'ms',
+        })),
+      };
+    }
+
+    // Section 13: GC event details
+    const gcEvents = this.parseJsonColumn(row, 'gc_events_json');
+    if (gcEvents.length > 0) {
+      sections['GC 事件详情'] = {
+        title: 'GC 事件（按类型聚合）',
+        data: gcEvents.map((g: any) => ({
+          类型: g.gc_type, 次数: g.count, 总耗时: g.total_ms + 'ms', 帧重叠: g.overlap_ms + 'ms',
+        })),
+      };
+    }
+
+    // Section 14: Lock contention details
+    const lockContention = this.parseJsonColumn(row, 'lock_contention_json');
+    if (lockContention.length > 0) {
+      sections['锁竞争详情'] = {
+        title: '锁竞争（按等待时间降序）',
+        data: lockContention.map((l: any) => ({
+          阻塞方法: l.method, 阻塞线程: l.blocker, 等待: l.wait_ms + 'ms',
+          主线程阻塞: l.main_blocked ? '是' : '否',
+        })),
+      };
     }
 
     return sections;
+  }
+
+  /** Safely parse a JSON string column from a batch row. */
+  private parseJsonColumn(row: Record<string, any>, columnName: string): any[] {
+    const raw = row[columnName];
+    if (!raw || raw === '[]') return [];
+    try {
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
   }
 
   /**

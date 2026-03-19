@@ -27,10 +27,10 @@ steps:
 
 ## Skill locations
 
-- `backend/skills/atomic/` — single-step detection (57 skills)
+- `backend/skills/atomic/` — single-step detection (80 skills)
 - `backend/skills/composite/` — combined analysis (28 skills)
 - `backend/skills/deep/` — deep analysis (2 skills)
-- `backend/skills/pipelines/` — render pipeline detection + teaching (25 skills)
+- `backend/skills/pipelines/` — render pipeline detection + teaching (30 skills)
 - `backend/skills/modules/` — module config (app/framework/hardware/kernel)
 - `backend/skills/vendors/` — vendor adaptation (pixel/samsung/xiaomi/honor/oppo/vivo/qualcomm/mtk)
 

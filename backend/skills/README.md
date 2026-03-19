@@ -10,7 +10,7 @@ skills/
 │   ├── vrr_detection.skill.yaml   # VRR/LTPO 检测
 │   ├── game_fps_analysis.skill.yaml # 游戏帧率分析
 │   ├── gpu_metrics.skill.yaml     # GPU 指标分析
-│   └── ...                  # 共 32 个原子技能
+│   └── ...                  # 共 80 个原子技能
 ├── composite/               # 组合 Skills (多步骤分析，所有设备通用)
 │   ├── startup_analysis.skill.yaml    # 启动分析
 │   ├── scrolling_analysis.skill.yaml  # 滑动卡顿分析
@@ -21,12 +21,12 @@ skills/
 │   ├── io_pressure.skill.yaml         # IO 压力分析
 │   ├── navigation_analysis.skill.yaml # 界面跳转分析
 │   ├── surfaceflinger_analysis.skill.yaml # SF 合成分析
-│   └── ...                  # 共 27 个组合技能
+│   └── ...                  # 共 28 个组合技能
 ├── pipelines/               # 渲染管线检测 Skills (含教学内容)
 │   ├── android_view_standard_blast.skill.yaml
 │   ├── surfaceview_blast.skill.yaml
 │   ├── flutter_surfaceview_skia.skill.yaml
-│   └── ...                  # 共 25 个管线技能
+│   └── ...                  # 共 30 个管线技能
 ├── deep/                    # 深度分析 Skills (调用栈级)
 │   ├── cpu_profiling.skill.yaml
 │   └── callstack_analysis.skill.yaml
@@ -48,6 +48,7 @@ skills/
 │   ├── pixel/              # Google Pixel
 │   ├── samsung/            # Samsung OneUI
 │   └── ...
+├── fragments/               # 可复用 SQL 片段 (CTEs)
 ├── docs/                    # SOP 文档
 │   ├── startup.sop.md
 │   └── scrolling.sop.md

@@ -113,7 +113,7 @@ steps:
           END as bucket_order
         FROM vsync_intervals
         WHERE interval_ns IS NOT NULL
-          AND interval_ns > 0
+          AND interval_ns > 5500000   -- 排除半周期 toggle 污染
           AND interval_ns < 100000000  -- 过滤异常值
       )
       SELECT
@@ -176,7 +176,7 @@ steps:
           END as bucket
         FROM vsync_intervals
         WHERE interval_ns IS NOT NULL
-          AND interval_ns > 0
+          AND interval_ns > 5500000
           AND interval_ns < 100000000
       ),
       bucket_counts AS (
@@ -252,7 +252,7 @@ steps:
           END) OVER (ORDER BY ts) as prev_bucket
         FROM vsync_intervals
         WHERE interval_ns IS NOT NULL
-          AND interval_ns > 5000000
+          AND interval_ns > 5500000
           AND interval_ns < 100000000
       )
       SELECT

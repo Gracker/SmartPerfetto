@@ -83,14 +83,13 @@ sql: |
     SUM(ts.slice_dur) / 1e6 as total_dur_ms,
     ROUND(AVG(ts.slice_dur) / 1e6, 2) as avg_dur_ms,
     ROUND(MAX(ts.slice_dur) / 1e6, 2) as max_dur_ms,
-    s.startup_type,
+    '${startup_type}' as startup_type,
     ROUND(100.0 * SUM(ts.slice_dur) / s.dur, 1) as percent_of_startup
   FROM android_thread_slices_for_all_startups ts
   JOIN android_startups s ON ts.startup_id = s.startup_id
   WHERE ts.is_main_thread = 1
     AND (s.package GLOB '${package}*' OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
     AND ts.slice_dur > ${min_dur_ns|500000}

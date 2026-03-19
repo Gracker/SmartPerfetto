@@ -83,7 +83,6 @@ sql: |
         SELECT startup_id FROM android_startups
         WHERE (package GLOB '${package}*' OR '${package}' = '')
           AND (${startup_id} IS NULL OR startup_id = ${startup_id})
-          AND ('${startup_type}' = '' OR startup_type = '${startup_type}')
           AND (${start_ts} IS NULL OR ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ts + dur <= ${end_ts})
       )
@@ -101,7 +100,6 @@ sql: |
   JOIN android_startups s ON b.startup_id = s.startup_id
   WHERE (s.package GLOB '${package}*' OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
   GROUP BY b.reason

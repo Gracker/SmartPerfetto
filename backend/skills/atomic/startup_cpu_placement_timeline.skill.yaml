@@ -1,0 +1,130 @@
+# =============================================================================
+# 启动 CPU 摆核时序分析（原子 Skill）
+# =============================================================================
+# 按 50ms 时间桶分析主线程的核类型变化，检测 "启动初期被困小核" 的问题。
+#
+# 典型场景：
+# - 冷启动 fork 后继承 Zygote 的 CPU affinity，初期可能在小核
+# - cgroup 设置延迟：AMS 还没把新进程加入 top-app cgroup
+# - uclamp_min 生效延迟：schedutil 需要几个调度周期才把频率/核心提上来
+#
+# 输出：每个时间桶内主线程在大核/小核上的运行时间分布
+
+name: startup_cpu_placement_timeline
+version: "1.0"
+type: atomic
+category: app_lifecycle
+
+meta:
+  display_name: "启动摆核时序分析"
+  description: "按时间桶分析主线程的核类型变化，检测启动初期被困小核"
+  icon: "timeline"
+  tags: [startup, cpu, placement, timeline, migration, atomic]
+
+prerequisites:
+  modules:
+    - sched
+
+inputs:
+  - name: package
+    type: string
+    required: true
+  - name: start_ts
+    type: timestamp
+    required: true
+  - name: end_ts
+    type: timestamp
+    required: true
+  - name: bucket_ms
+    type: number
+    required: false
+
+display:
+  level: detail
+  layer: deep
+  title: "主线程摆核时序"
+  columns:
+    - name: bucket_idx
+      label: "时间桶"
+      type: number
+    - name: bucket_offset_ms
+      label: "偏移(ms)"
+      type: number
+    - name: big_core_ms
+      label: "大核运行(ms)"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: little_core_ms
+      label: "小核运行(ms)"
+      type: duration
+      format: duration_ms
+      unit: ms
+    - name: big_core_pct
+      label: "大核占比"
+      type: percentage
+      format: percentage
+    - name: used_cpus
+      label: "使用 CPU"
+      type: string
+    - name: core_types
+      label: "核类型"
+      type: string
+
+sql: |
+  WITH main_thread AS (
+    SELECT t.utid
+    FROM thread t
+    JOIN process p ON t.upid = p.upid
+    WHERE p.name GLOB '${package}*' AND t.tid = p.pid
+    LIMIT 1
+  ),
+  -- Generate time buckets (max 30 buckets)
+  bucket_size AS (
+    SELECT MAX(${bucket_ms|50} * 1000000, (${end_ts} - ${start_ts}) / 30) as bucket_ns
+  ),
+  buckets AS (
+    SELECT
+      0 as bucket_idx,
+      ${start_ts} as bucket_start,
+      MIN(${start_ts} + (SELECT bucket_ns FROM bucket_size), ${end_ts}) as bucket_end
+    UNION ALL
+    SELECT
+      bucket_idx + 1,
+      bucket_end,
+      MIN(bucket_end + (SELECT bucket_ns FROM bucket_size), ${end_ts})
+    FROM buckets
+    WHERE bucket_end < ${end_ts} AND bucket_idx < 29
+  ),
+  -- Main thread sched data
+  main_sched AS (
+    SELECT ss.ts, ss.dur, ss.cpu,
+      COALESCE(ct.core_type, 'little') as core_type
+    FROM sched_slice ss
+    CROSS JOIN main_thread mt
+    LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
+    WHERE ss.utid = mt.utid
+      AND ss.ts < ${end_ts} AND ss.ts + ss.dur > ${start_ts}
+  )
+  SELECT
+    b.bucket_idx,
+    ROUND((b.bucket_start - ${start_ts}) / 1e6, 0) as bucket_offset_ms,
+    ROUND(COALESCE(SUM(CASE WHEN ms.core_type IN ('prime', 'big', 'medium')
+      THEN (MIN(ms.ts + ms.dur, b.bucket_end) - MAX(ms.ts, b.bucket_start)) ELSE 0 END) / 1e6, 0), 2) as big_core_ms,
+    ROUND(COALESCE(SUM(CASE WHEN ms.core_type = 'little'
+      THEN (MIN(ms.ts + ms.dur, b.bucket_end) - MAX(ms.ts, b.bucket_start)) ELSE 0 END) / 1e6, 0), 2) as little_core_ms,
+    ROUND(100.0 *
+      COALESCE(SUM(CASE WHEN ms.core_type IN ('prime', 'big', 'medium')
+        THEN (MIN(ms.ts + ms.dur, b.bucket_end) - MAX(ms.ts, b.bucket_start)) ELSE 0 END), 0) /
+      NULLIF(
+        COALESCE(SUM(MIN(ms.ts + ms.dur, b.bucket_end) - MAX(ms.ts, b.bucket_start)), 0), 0
+      ), 1) as big_core_pct,
+    GROUP_CONCAT(DISTINCT ms.cpu) as used_cpus,
+    GROUP_CONCAT(DISTINCT ms.core_type) as core_types
+  FROM buckets b
+  LEFT JOIN main_sched ms ON ms.ts < b.bucket_end AND ms.ts + ms.dur > b.bucket_start
+  GROUP BY b.bucket_idx
+  ORDER BY b.bucket_idx
+
+output:
+  format: structured

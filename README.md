@@ -2,24 +2,24 @@
 
 AI-driven Android performance analysis platform built on [Perfetto](https://perfetto.dev/).
 
-SmartPerfetto combines Perfetto's trace visualization with an intelligent agent system that automatically analyzes performance traces, identifies root causes of jank/ANR/startup issues, and provides actionable optimization suggestions.
+SmartPerfetto combines Perfetto's trace visualization with an intelligent agent system powered by Claude Agent SDK. It automatically analyzes performance traces, identifies root causes of jank/ANR/startup issues, and provides actionable optimization suggestions with evidence-backed reasoning.
 
 ## Features
 
 - **Intelligent Analysis** — Ask questions in natural language ("分析滑动卡顿", "why is startup slow?") and get structured, evidence-backed answers
-- **Multi-Agent Architecture** — Domain-specialized agents (Frame, CPU, Memory, Binder) collaborate to collect and synthesize evidence
-- **Strategy-Driven Pipelines** — Common scenarios (scrolling, startup) execute deterministic multi-stage analysis without LLM uncertainty
-- **Layered Results** — Analysis results from high-level overview (L1) down to per-frame root cause (L4)
-- **YAML Skill System** — 86 analysis skills across atomic, composite, pipeline, and deep categories; vendor-specific overrides for Pixel/Samsung/Xiaomi/etc.
+- **Claude Agent SDK (agentv3)** — Claude as orchestrator with 18 MCP tools for trace data access, planning, hypothesis testing, and verification
+- **140 YAML Skills** — Reusable analysis pipelines (80 atomic + 28 composite + 30 pipeline + 2 deep) with layered results (L1 overview → L4 deep root cause)
+- **Scene-Aware Strategies** — 12 scene-specific analysis strategies (scrolling, startup, ANR, memory, game, ...) injected into system prompts
+- **4-Layer Verification** — Heuristic + plan adherence + hypothesis resolution + LLM verification, with reflection-driven retry
 - **Real-time Streaming** — SSE-based progress updates as analysis progresses through stages
-- **Perfetto Integration** — Shared `trace_processor_shell` via HTTP RPC; timeline navigation from analysis results
+- **Perfetto Integration** — Shared `trace_processor_shell` via HTTP RPC; click-to-navigate from analysis results to timeline
 
 ## Quick Start
 
 ```bash
 # Configure AI backend
 cp backend/.env.example backend/.env
-# Edit backend/.env with your API key (see "Environment" section below)
+# Edit backend/.env with your Anthropic API key
 
 # One command to start everything (builds trace_processor_shell automatically)
 ./scripts/start-dev.sh
@@ -28,7 +28,6 @@ cp backend/.env.example backend/.env
 Access:
 - **Perfetto UI**: http://localhost:10000
 - **Backend API**: http://localhost:3000
-- **Standalone Web Shell**: http://localhost:3000/assistant-shell
 
 ### Usage
 
@@ -39,9 +38,6 @@ Access:
    - "分析滑动卡顿" (Analyze scroll jank)
    - "启动为什么慢？" (Why is startup slow?)
    - "CPU 调度有没有问题？" (Any CPU scheduling issues?)
-
-For a lightweight independent shell (without Perfetto UI integration), open:
-- `http://localhost:3000/assistant-shell`
 
 ## Architecture
 
@@ -57,25 +53,28 @@ For a lightweight independent shell (without Perfetto UI integration), open:
 │                    Backend (Express @ :3000)                     │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │                  AgentRuntime                              │   │
-│  │                                                            │   │
-│  │  Query → StrategyRegistry.match()                          │   │
-│  │           ├─ Match: Multi-Stage Pipeline (deterministic)   │   │
-│  │           └─ No Match: Hypothesis-Driven Rounds (LLM)     │   │
-│  └─────────────┬────────────────────────────────────────────┘   │
-│                │                                                  │
-│  ┌─────────────▼────────────────────────────────────────────┐   │
-│  │           Domain Agents                                    │   │
-│  │   Frame │ CPU │ Memory │ Binder │ Startup │ System        │   │
-│  └─────────────┬────────────────────────────────────────────┘   │
-│                │                                                  │
-│  ┌─────────────▼────────────────────────────────────────────┐   │
-│  │           Skill Engine (YAML Skills)                       │   │
-│  │   atomic/ │ composite/ │ deep/ │ modules/ │ vendors/      │   │
-│  └─────────────┬────────────────────────────────────────────┘   │
-│                │ SQL                                              │
-│  ┌─────────────▼────────────────────────────────────────────┐   │
-│  │        trace_processor_shell (HTTP RPC, port pool 9100-9900) │ │
+│  │                 agentv3 Runtime                            │   │
+│  │                                                           │   │
+│  │  ClaudeRuntime (orchestrator)                             │   │
+│  │    ├─ Scene Classifier (keyword-based, <1ms)              │   │
+│  │    ├─ System Prompt Builder (dynamic, 4500 token budget)  │   │
+│  │    ├─ Claude Agent SDK (MCP protocol)                     │   │
+│  │    ├─ SSE Bridge (SDK stream → frontend events)           │   │
+│  │    └─ Verifier (4-layer) + Reflection Retry               │   │
+│  │                                                           │   │
+│  │  MCP Server (18 tools)                                    │   │
+│  │    execute_sql │ invoke_skill │ detect_architecture       │   │
+│  │    lookup_sql_schema │ lookup_knowledge │ submit_plan     │   │
+│  │    submit_hypothesis │ fetch_artifact │ ...               │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │           Skill Engine (140 YAML Skills)                  │   │
+│  │   atomic/ (80) │ composite/ (28) │ pipelines/ (30) │ ... │   │
+│  └──────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────────────────────────────────────────────────────────┐   │
+│  │     trace_processor_shell (HTTP RPC, port pool 9100-9900) │   │
 │  └──────────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -84,12 +83,13 @@ For a lightweight independent shell (without Perfetto UI integration), open:
 
 | Component | Purpose |
 |-----------|---------|
-| **AgentRuntime** | Main coordinator: strategy matching + hypothesis-driven multi-round analysis |
-| **StrategyRegistry** | Matches queries to deterministic analysis strategies (scrolling, launch, etc.) |
-| **Domain Agents** | Specialized agents for Frame/CPU/Memory/Binder/Startup/System analysis |
-| **Skill Engine** | Executes YAML-defined analysis skills with SQL queries and display config |
-| **CircuitBreaker** | Protection against low-confidence loops, requests user intervention |
-| **ModelRouter** | Multi-model support (DeepSeek/OpenAI/Anthropic/GLM) with fallback chains |
+| **ClaudeRuntime** | Main orchestrator: scene classification → dynamic system prompt → Claude Agent SDK → verification loop |
+| **MCP Server** | 18 tools bridging Claude to trace data (SQL, Skills, schema lookup, knowledge, planning, hypothesis) |
+| **Skill Engine** | Executes YAML-defined analysis pipelines with SQL queries, producing layered results (L1-L4) |
+| **Scene Classifier** | Keyword-based routing (<1ms) to scene-specific strategies (scrolling, startup, ANR, ...) |
+| **Verifier** | 4-layer quality check (heuristic + plan + hypothesis + LLM) with up to 2 reflection retries |
+| **Artifact Store** | Caches skill results as compact references (~3000 tokens saved per skill invocation) |
+| **SQL Summarizer** | Compresses SQL results to stats + samples (~85% token savings) |
 
 ## Directory Structure
 
@@ -97,36 +97,38 @@ For a lightweight independent shell (without Perfetto UI integration), open:
 SmartPerfetto/
 ├── backend/
 │   ├── src/
-│   │   ├── agent/              # AI Agent system
-│   │   │   ├── core/           # Orchestrator, circuit breaker, model router
-│   │   │   ├── strategies/     # Staged analysis strategies
-│   │   │   ├── decision/       # Decision tree execution
-│   │   │   ├── agents/         # Domain agents + planner/evaluator
-│   │   │   │   ├── base/       # Agent base classes
-│   │   │   │   └── domain/     # Frame, CPU, Memory, Binder agents
-│   │   │   ├── experts/        # Cross-domain expert analysis
-│   │   │   ├── tools/          # SQL executor, skill invoker, etc.
-│   │   │   ├── detectors/      # Architecture detection (Compose/Flutter/WebView)
-│   │   │   ├── context/        # Session context & policies
-│   │   │   ├── compaction/     # Token overflow protection
-│   │   │   ├── hooks/          # Middleware (logging, timing)
-│   │   │   ├── communication/  # Agent message bus
-│   │   │   ├── state/          # Checkpoints, session store
-│   │   │   └── fork/           # Session forking
+│   │   ├── agentv3/           # Primary AI runtime (Claude Agent SDK)
+│   │   │   ├── claudeRuntime.ts        # Main orchestrator
+│   │   │   ├── claudeMcpServer.ts      # 18 MCP tools
+│   │   │   ├── claudeSystemPrompt.ts   # Dynamic system prompt builder
+│   │   │   ├── claudeSseBridge.ts      # SDK → SSE streaming bridge
+│   │   │   ├── claudeVerifier.ts       # 4-layer verification
+│   │   │   ├── sceneClassifier.ts      # Keyword scene classification
+│   │   │   ├── strategyLoader.ts       # Strategy/template loader
+│   │   │   ├── artifactStore.ts        # Skill result caching
+│   │   │   └── sqlSummarizer.ts        # SQL result compression
+│   │   ├── agent/              # Shared components
+│   │   │   ├── detectors/      # Architecture detection (Flutter/Compose/WebView)
+│   │   │   ├── context/        # Multi-turn context, entity tracking
+│   │   │   └── core/           # IOrchestrator interface, conclusion generation
 │   │   ├── services/           # Core services
 │   │   │   └── skillEngine/    # YAML skill executor & loader
 │   │   └── routes/             # API endpoints
 │   ├── skills/                 # Analysis skills (YAML)
-│   │   ├── atomic/             # Single-step detection (32 skills)
-│   │   ├── composite/          # Multi-step analysis (27 skills)
-│   │   ├── pipelines/          # Rendering pipeline detection (25 skills)
+│   │   ├── atomic/             # Single-step detection (80 skills)
+│   │   ├── composite/          # Multi-step analysis (28 skills)
+│   │   ├── pipelines/          # Rendering pipeline detection (30 skills)
 │   │   ├── deep/               # Deep analysis (2 skills)
-│   │   ├── modules/            # Module configs (app/framework/hardware/kernel)
-│   │   └── vendors/            # Vendor overrides (pixel/samsung/xiaomi/...)
-│   ├── data/                   # Session storage (SQLite)
+│   │   ├── fragments/          # Reusable SQL fragments (CTEs)
+│   │   ├── modules/            # Module expert configs
+│   │   └── vendors/            # Vendor-specific overrides
+│   ├── strategies/             # Scene strategies + prompt templates
+│   │   ├── *.strategy.md       # 12 scene-specific strategies
+│   │   └── *.template.md       # 15 reusable prompt templates
 │   └── logs/sessions/          # Session logs (JSONL)
-├── perfetto/                   # Perfetto UI (submodule)
+├── perfetto/                   # Perfetto UI (forked submodule)
 │   └── ui/src/plugins/com.smartperfetto.AIAssistant/
+├── rendering_pipelines/        # 30 rendering pipeline reference docs
 └── scripts/                    # Dev scripts
 ```
 
@@ -139,67 +141,38 @@ SmartPerfetto/
 | POST | `/api/agent/v1/analyze` | Start analysis |
 | GET | `/api/agent/v1/:id/stream` | SSE real-time updates |
 | GET | `/api/agent/v1/:id/status` | Get analysis status |
-| POST | `/api/agent/v1/:id/respond` | Respond to circuit breaker |
 | POST | `/api/agent/v1/scene-reconstruct` | Scene reconstruction |
-| GET | `/assistant-shell` | Standalone assistant web shell (minimal UI) |
 
-`POST /api/agent/v1/analyze` returns `runId`, `requestId`, `runSequence`.  
-SSE events (`connected`, `conversation_step`, `data`, `analysis_completed`, `error`, `end`) carry the same observability fields for end-to-end correlation.
+### SSE Events
 
-### Logging
+| Event | Description |
+|-------|-------------|
+| `progress` | Phase transitions (starting/analyzing/concluding) |
+| `agent_response` | MCP tool results (SQL/Skill data) |
+| `thought` | Intermediate reasoning |
+| `answer_token` | Final text streaming |
+| `analysis_completed` | Analysis complete (carries reportUrl) |
+| `error` | Exceptions |
+
+### Supporting
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/agent/v1/logs/:sessionId` | Get session logs |
-| GET | `/api/agent/v1/logs/:sessionId/errors` | Get only errors |
-
-### Trace
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/traces/register-rpc` | Register RPC port |
-
-## Skills (YAML)
-
-Analysis logic is defined in YAML skills with SQL queries and display configuration:
-
-```yaml
-name: scrolling_analysis
-type: composite
-inputs:
-  - name: package
-    type: string
-    required: false
-  - name: max_frames_per_session
-    type: number
-    required: false
-
-steps:
-  - id: performance_summary
-    sql: "SELECT COUNT(*) as total_frames, ..."
-    display:
-      level: summary
-      title: "滑动性能概览"
-      columns:
-        - { name: total_frames, type: number }
-        - { name: jank_rate, type: percentage, format: percentage }
-
-  - id: diagnose_jank_frames
-    type: iterator
-    source: app_jank_frames
-    max_items: "${max_frames_per_session|8}"
-    item_skill: janky_frame_analysis
-```
+| POST | `/api/traces/register-rpc` | Register trace_processor RPC port |
+| GET | `/api/skills/*` | Skill listing and metadata |
+| GET | `/api/export/*` | Report export |
+| GET | `/api/sessions/*` | Session management |
+| GET | `/api/agent/v1/logs/:sessionId` | Session logs |
 
 ## Environment
 
 ```bash
 # backend/.env
 PORT=3000
-AI_SERVICE=deepseek          # deepseek | openai | anthropic | glm
-SMARTPERFETTO_API_KEY=replace_with_strong_secret
-DEEPSEEK_API_KEY=your_deepseek_api_key_here
-DEEPSEEK_MODEL=deepseek-chat
+CLAUDE_MODEL=claude-sonnet-4-6          # Optional, default
+# CLAUDE_MAX_TURNS=15                   # Optional
+# CLAUDE_ENABLE_SUB_AGENTS=true         # Optional feature flag
+# CLAUDE_ENABLE_VERIFICATION=false      # Default: true
 ```
 
 ## Debugging
@@ -207,9 +180,6 @@ DEEPSEEK_MODEL=deepseek-chat
 ```bash
 # View session logs
 curl http://localhost:3000/api/agent/v1/logs/{sessionId}
-
-# View only errors
-curl http://localhost:3000/api/agent/v1/logs/{sessionId}/errors
 ```
 
 Logs are stored in `backend/logs/sessions/*.jsonl`.
@@ -229,9 +199,20 @@ Logs are stored in `backend/logs/sessions/*.jsonl`.
 # First clone
 git submodule update --init --recursive
 
-# Sync updates
-cd perfetto && git checkout smartperfetto && git pull fork smartperfetto
-
-# Push both repos
+# Push both repos (perfetto → fork remote, main → origin)
 ./scripts/push-all.sh
+
+# Sync upstream Perfetto changes
+./scripts/sync-perfetto-upstream.sh
 ```
+
+> **Important**: Always push perfetto to `fork` remote, never to `origin` (Google upstream).
+
+## Documentation
+
+- [Technical Architecture](docs/technical-architecture.md) — Why SmartPerfetto exists, how each layer works, developer extension guide
+- [MCP Tools Reference](docs/mcp-tools-reference.md) — 18 MCP tools: parameters, return values, behavior details
+- [Skill System Guide](docs/skill-system-guide.md) — YAML Skill DSL: format, step types, fragments, display config
+- [Project Description](docs/PROJECT_DESCRIPTION.md) — High-level project overview for external audiences
+- [Rendering Pipelines](rendering_pipelines/) — 30 Android rendering pipeline reference docs
+- [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.md) — DataEnvelope v2.0 specification

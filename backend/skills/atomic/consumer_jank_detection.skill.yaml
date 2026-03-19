@@ -62,17 +62,28 @@ steps:
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
       ),
       vsync_median AS (
-        SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
-           FROM sf_vsync_intervals
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
-           FROM expected_frame_timeline_slice
-           WHERE dur > 5000000 AND dur < 50000000
-             AND (${start_ts} IS NULL OR ts >= ${start_ts})
-             AND (${end_ts} IS NULL OR ts < ${end_ts})),
-          16666667
-        ) AS INTEGER) as vsync_period_ns
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            (SELECT PERCENTILE(interval_ns, 0.5)
+             FROM sf_vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+             FROM expected_frame_timeline_slice
+             WHERE dur > 5000000 AND dur < 50000000
+               AND (${start_ts} IS NULL OR ts >= ${start_ts})
+               AND (${end_ts} IS NULL OR ts < ${end_ts})),
+            16666667
+          ) AS INTEGER) AS raw_ns
+        )
       )
       SELECT
         vsync_period_ns,
@@ -143,7 +154,7 @@ steps:
         SELECT CAST(COALESCE(
           (SELECT PERCENTILE(interval_ns, 0.5)
            FROM vsync_ticks
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
+           WHERE interval_ns > 5500000 AND interval_ns < 50000000),
           (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
@@ -306,7 +317,7 @@ steps:
         SELECT CAST(COALESCE(
           (SELECT PERCENTILE(interval_ns, 0.5)
            FROM vsync_ticks
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
+           WHERE interval_ns > 5500000 AND interval_ns < 50000000),
           (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
@@ -438,7 +449,7 @@ steps:
         SELECT CAST(COALESCE(
           (SELECT PERCENTILE(interval_ns, 0.5)
            FROM vsync_ticks
-           WHERE interval_ns > 4000000 AND interval_ns < 50000000),
+           WHERE interval_ns > 5500000 AND interval_ns < 50000000),
           (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000

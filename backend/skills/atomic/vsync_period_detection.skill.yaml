@@ -75,7 +75,7 @@ steps:
           COUNT(*) AS sample_count
         FROM vsync_sf_raw
         WHERE interval_ns IS NOT NULL
-          AND interval_ns > 4000000
+          AND interval_ns > 5500000
           AND interval_ns < 50000000
       ),
 
@@ -88,37 +88,52 @@ steps:
         CROSS JOIN params p
         WHERE e.ts >= p.start_ts
           AND e.ts <= p.end_ts
-          AND e.dur > 4000000
+          AND e.dur > 5000000
           AND e.dur < 50000000
       ),
 
-      -- Choose best source
+      -- Choose best source, then snap to standard Hz
       detected_period AS (
         SELECT
           CASE
-            WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10
-              THEN (SELECT median_period_ns FROM vsync_sf_stats)
-            WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10
-              THEN (SELECT median_period_ns FROM frame_timeline_stats)
-            ELSE 16666667  -- Default 60Hz
+            WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+            WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+            WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+            WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+            WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+            WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+            ELSE raw_ns
           END AS vsync_period_ns,
-          CASE
-            WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10 THEN 'vsync_sf'
-            WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10 THEN 'frame_timeline'
-            ELSE 'default'
-          END AS detection_method,
-          CASE
-            WHEN (SELECT sample_count FROM vsync_sf_stats) >= 100 THEN 0.95
-            WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10 THEN 0.85
-            WHEN (SELECT sample_count FROM frame_timeline_stats) >= 100 THEN 0.80
-            WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10 THEN 0.70
-            ELSE 0.50
-          END AS confidence,
-          COALESCE(
-            (SELECT sample_count FROM vsync_sf_stats),
-            (SELECT sample_count FROM frame_timeline_stats),
-            0
-          ) AS sample_count
+          detection_method,
+          confidence,
+          sample_count
+        FROM (
+          SELECT
+            CASE
+              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10
+                THEN (SELECT median_period_ns FROM vsync_sf_stats)
+              WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10
+                THEN (SELECT median_period_ns FROM frame_timeline_stats)
+              ELSE 16666667
+            END AS raw_ns,
+            CASE
+              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10 THEN 'vsync_sf'
+              WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10 THEN 'frame_timeline'
+              ELSE 'default'
+            END AS detection_method,
+            CASE
+              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 100 THEN 0.95
+              WHEN (SELECT sample_count FROM vsync_sf_stats) >= 10 THEN 0.85
+              WHEN (SELECT sample_count FROM frame_timeline_stats) >= 100 THEN 0.80
+              WHEN (SELECT sample_count FROM frame_timeline_stats) >= 10 THEN 0.70
+              ELSE 0.50
+            END AS confidence,
+            COALESCE(
+              (SELECT sample_count FROM vsync_sf_stats),
+              (SELECT sample_count FROM frame_timeline_stats),
+              0
+            ) AS sample_count
+        )
       )
 
       SELECT

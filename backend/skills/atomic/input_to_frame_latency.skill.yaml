@@ -101,12 +101,27 @@ steps:
       ),
       filtered AS (
         SELECT interval_ns FROM vsync_intervals
-        WHERE interval_ns BETWEEN 4000000 AND 50000000
+        WHERE interval_ns BETWEEN 5500000 AND 50000000
+      ),
+      snapped AS (
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END AS vsync_period_ns
+        FROM (
+          SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) AS raw_ns
+          FROM filtered
+        )
       )
       SELECT
-        CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) as vsync_period_ns,
-        ROUND(1e9 / PERCENTILE(interval_ns, 0.5), 1) as refresh_rate_hz
-      FROM filtered
+        vsync_period_ns,
+        CAST(ROUND(1e9 / vsync_period_ns) AS INTEGER) as refresh_rate_hz
+      FROM snapped
 
   # Step 2: 检测输入采样率
   - id: input_sampling_rate

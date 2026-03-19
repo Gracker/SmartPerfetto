@@ -95,7 +95,7 @@ inputs:
   - name: jank_responsibility
     type: string
     required: false
-    description: "掉帧责任归属: APP（BufferTX=0）或 SF（BufferTX>0）"
+    description: "掉帧责任归属: APP / SF / BUFFER_STUFFING / HIDDEN / UNKNOWN"
   - name: jank_cause
     type: string
     required: false
@@ -1343,6 +1343,9 @@ steps:
         SELECT
           *,
           CASE
+            -- P0: Buffer Stuffing 管线背压 — 短路跳过线程分析
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              THEN 'buffer_stuffing'
             -- P1: Binder 同步阻塞（特定可操作，阻塞可能占据 slice 大部分时间）
             WHEN slice_dur > slice_critical_ms
               AND binder_overlap_ms >= binder_overlap_critical_ms
@@ -1453,6 +1456,8 @@ steps:
             ELSE '帧耗时 ${dur_ms}ms 超过 VSync 周期(' || frame_budget_ms || 'ms)'
           END as primary_cause,
           CASE
+            WHEN reason_code = 'buffer_stuffing' THEN
+              'Buffer Stuffing: 管线背压，帧耗时 ' || frame_dur_ms || 'ms，BufferQueue 积压导致跳帧（非 App 问题）'
             WHEN reason_code = 'binder_sync_blocking' THEN
               'Binder 同步阻塞：关键操作与同步Binder重叠 ' || binder_overlap_ms || 'ms（累计 ' ||
               binder_sync_total_ms || 'ms' ||
@@ -1500,6 +1505,7 @@ steps:
             ELSE NULL
           END as deep_reason,
           CASE
+            WHEN reason_code = 'buffer_stuffing' THEN '非 App 问题：BufferQueue 管线背压导致跳帧。检查帧率设置是否匹配显示刷新率，或优化渲染管线吞吐'
             WHEN reason_code = 'binder_sync_blocking' THEN '优化方向：减少主线程同步 Binder（异步化/批量化/结果缓存）并压缩关键路径 IPC'
             WHEN reason_code = 'small_core_placement' THEN '优化方向：保证关键滚动路径优先使用大核，减少后台线程对主线程的抢占'
             WHEN reason_code = 'sched_delay_in_slice' OR reason_code = 'scheduling_delay' THEN '优化方向：降低同窗并发与高优线程竞争，缩短主线程 Runnable 等待'
@@ -1521,6 +1527,7 @@ steps:
           END as optimization_hint,
           reason_code,
           CASE
+            WHEN reason_code = 'buffer_stuffing' THEN 'Buffer Stuffing 管线背压（jank_type=' || jank_type || '）'
             WHEN reason_code = 'binder_sync_blocking' THEN '同步 Binder 重叠 ' || COALESCE(binder_overlap_ms, 0) || 'ms'
             WHEN reason_code = 'small_core_placement' THEN '关键操作小核占比 ' || COALESCE(top_slice_little_pct, 0) || '%'
             WHEN reason_code = 'sched_delay_in_slice' THEN '关键操作 Runnable 占比 ' || COALESCE(top_slice_runnable_pct, 0) || '%'
@@ -1636,6 +1643,7 @@ steps:
           ELSE 'unknown'
         END as mechanism_group,
         CASE
+          WHEN reason_code = 'buffer_stuffing' THEN 'none'
           WHEN reason_code IN ('binder_sync_blocking', 'blocking_io', 'lock_binder_wait') THEN 'blocking_wait'
           WHEN reason_code = 'gc_jank' THEN 'gc_pause'
           WHEN reason_code = 'small_core_placement' THEN 'core_placement'
@@ -1657,11 +1665,13 @@ steps:
           ELSE 'none'
         END as supply_constraint,
         CASE
+          WHEN reason_code = 'buffer_stuffing' THEN 'buffer_pipeline'
           WHEN cause_type IN ('slice', 'blocking', 'io_blocking', 'sched_latency', 'cpu_contention', 'small_core', 'freq_limit', 'cpu_overload', 'gc_pause') THEN 'app_producer'
           WHEN cause_type IN ('gpu_fence', 'render_wait', 'shader_compile') THEN 'sf_consumer'
           ELSE 'unknown'
         END as trigger_layer,
         CASE
+          WHEN reason_code = 'buffer_stuffing' THEN 'buffer_queue_backpressure'
           WHEN cause_type = 'gpu_fence' THEN 'gpu_fence_wait'
           WHEN cause_type = 'shader_compile' THEN 'shader_compile_stall'
           WHEN cause_type = 'render_wait' THEN 'render_pipeline_wait'

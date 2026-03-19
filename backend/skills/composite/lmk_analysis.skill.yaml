@@ -462,7 +462,7 @@ steps:
           le.kill_ts,
           MIN(p.start_ts) AS restart_ts
         FROM lmk_events le
-        JOIN process p ON p.name = le.process_name
+        JOIN process p ON p.name GLOB le.process_name || '*'
         WHERE p.start_ts > le.kill_ts
         GROUP BY le.process_name, le.kill_ts
       )
@@ -545,7 +545,7 @@ steps:
             le.process_name,
             AVG((MIN(p.start_ts) - le.ts) / 1e6) AS avg_delay_ms
           FROM android_lmk_events le
-          JOIN process p ON p.name = le.process_name AND p.start_ts > le.ts
+          JOIN process p ON p.name GLOB le.process_name || '*' AND p.start_ts > le.ts
           WHERE CASE WHEN '${package}' != ''
                      THEN le.process_name GLOB '*${package}*'
                      ELSE 1 END

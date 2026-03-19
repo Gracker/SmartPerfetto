@@ -343,6 +343,38 @@ steps:
       ORDER BY core_type DESC
     save_as: cpu_freq
 
+  # ========== CPU 频率爬升分析 ==========
+  - id: freq_rampup
+    type: skill
+    name: "CPU 频率爬升"
+    skill: startup_freq_rampup
+    params:
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+    display:
+      level: detail
+      layer: deep
+      title: "CPU 频率爬升分析"
+      columns:
+        - name: core_type
+          label: "核类型"
+          type: string
+        - name: early_avg_freq_mhz
+          label: "初期均频(MHz)"
+          type: number
+        - name: steady_avg_freq_mhz
+          label: "稳态均频(MHz)"
+          type: number
+        - name: rampup_pct
+          label: "爬升幅度"
+          type: percentage
+          format: percentage
+        - name: assessment
+          label: "评估"
+          type: string
+    save_as: freq_rampup
+    optional: true
+
   # ========== 四大象限分析 ==========
   - id: quadrant_analysis
     type: atomic
@@ -469,6 +501,44 @@ steps:
       FROM quadrant_data
       GROUP BY 1
     save_as: quadrant
+
+  # ========== 主线程摆核时序（按时间桶分析核类型变化） ==========
+  - id: cpu_placement_timeline
+    type: skill
+    name: "摆核时序分析"
+    skill: startup_cpu_placement_timeline
+    params:
+      package: "${package}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      bucket_ms: 50
+    display:
+      level: detail
+      layer: deep
+      title: "主线程摆核时序（50ms 桶）"
+      columns:
+        - name: bucket_offset_ms
+          label: "偏移(ms)"
+          type: number
+        - name: big_core_ms
+          label: "大核(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: little_core_ms
+          label: "小核(ms)"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: big_core_pct
+          label: "大核占比"
+          type: percentage
+          format: percentage
+        - name: used_cpus
+          label: "CPU"
+          type: string
+    save_as: cpu_placement
+    optional: true
 
   # ========== 主线程关键 Slice ==========
   - id: main_thread_slices
@@ -746,6 +816,32 @@ steps:
           type: boolean
     save_as: main_sync_binder
 
+  # ========== Binder 线程池分析 ==========
+  - id: binder_pool
+    type: skill
+    name: "Binder 线程池分析"
+    skill: startup_binder_pool_analysis
+    params:
+      package: "${package}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+    display:
+      level: detail
+      layer: deep
+      title: "Binder 线程池分析"
+      columns:
+        - name: metric
+          label: "指标"
+          type: string
+        - name: value
+          label: "值"
+          type: string
+        - name: assessment
+          label: "评估"
+          type: string
+    save_as: binder_pool
+    optional: true
+
   # ========== 调度延迟分析 ==========
   - id: sched_latency
     type: skill
@@ -827,6 +923,142 @@ steps:
           format: truncate
     save_as: thread_states
 
+  # ========== 关键任务发现（全线程四象限 + 摆核） ==========
+  - id: critical_tasks
+    type: skill
+    name: "启动关键任务"
+    skill: startup_critical_tasks
+    params:
+      package: "${package}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      top_k: 15
+    display:
+      level: key
+      layer: deep
+      title: "启动关键任务（全线程四象限）"
+      columns:
+        - name: thread_name
+          label: "线程"
+          type: string
+        - name: role
+          label: "角色"
+          type: string
+        - name: total_cpu_ms
+          label: "CPU 时间"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: q1_big_running_ms
+          label: "Q1 大核运行"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: q2_little_running_ms
+          label: "Q2 小核运行"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: q3_runnable_ms
+          label: "Q3 等待调度"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: q4b_sleeping_ms
+          label: "Q4b 睡眠等待"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: running_pct
+          label: "运行占比"
+          type: percentage
+          format: percentage
+        - name: big_core_pct
+          label: "大核占比"
+          type: percentage
+          format: percentage
+        - name: migrations
+          label: "核迁移"
+          type: number
+        - name: cross_cluster_migrations
+          label: "跨 cluster"
+          type: number
+    save_as: critical_tasks
+    optional: true
+
+  # ========== 线程阻塞关系图 ==========
+  - id: thread_blocking_graph
+    type: skill
+    name: "线程阻塞关系"
+    skill: startup_thread_blocking_graph
+    params:
+      package: "${package}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+      min_block_ms: 1
+      top_k: 20
+    display:
+      level: detail
+      layer: deep
+      title: "线程阻塞关系图"
+      columns:
+        - name: blocked_thread
+          label: "被阻塞线程"
+          type: string
+        - name: blocked_state
+          label: "阻塞状态"
+          type: string
+        - name: blocked_function
+          label: "阻塞函数"
+          type: string
+          format: code
+        - name: waker_thread
+          label: "唤醒者"
+          type: string
+        - name: waker_process
+          label: "唤醒者进程"
+          type: string
+        - name: waker_current_slice
+          label: "唤醒者操作"
+          type: string
+        - name: total_block_ms
+          label: "总阻塞"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: block_count
+          label: "次数"
+          type: number
+    save_as: blocking_graph
+    optional: true
+
+  # ========== JIT 影响分析 ==========
+  - id: jit_analysis
+    type: skill
+    name: "JIT 影响分析"
+    skill: startup_jit_analysis
+    params:
+      package: "${package}"
+      start_ts: "${start_ts}"
+      end_ts: "${end_ts}"
+    display:
+      level: detail
+      layer: deep
+      title: "JIT 影响分析"
+      columns:
+        - name: metric
+          label: "指标"
+          type: string
+        - name: value
+          label: "值"
+          type: string
+        - name: assessment
+          label: "评估"
+          type: string
+    save_as: jit_analysis
+    optional: true
+    condition: "'${startup_type}' = 'cold'"
+
   # ========== 热点 Slice 线程状态分布（per-slice 根因定位） ==========
   - id: hot_slice_states
     type: skill
@@ -880,7 +1112,7 @@ steps:
       level: key
       layer: deep
       title: "问题诊断"
-    inputs: [startup_basic, cpu_core, quadrant, main_slices, actionable_main_slices, main_file_io, binder_calls, main_sync_binder, sched_delay, thread_states, hot_slice_states]
+    inputs: [startup_basic, cpu_core, cpu_freq, freq_rampup, quadrant, cpu_placement, main_slices, actionable_main_slices, main_file_io, binder_calls, main_sync_binder, binder_pool, sched_delay, thread_states, critical_tasks, blocking_graph, jit_analysis, hot_slice_states]
     rules:
       # 大核占比偏低 + Runnable 明显（仅在判定来源可信时触发）
       - condition: "cpu_core.data[0]?.big_core_pct < 20 && quadrant.data[0]?.q3_runnable_ms > 50 && !(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
@@ -998,6 +1230,91 @@ steps:
         suggestions:
           - "将数据库/文件操作移至后台线程"
           - "使用异步 IO 或延迟加载"
+
+      # === Critical Task 诊断规则 ===
+
+      # JIT 线程与主线程争抢大核
+      - condition: "(critical_tasks?.data?.find(t => t.role === 'jit')?.total_cpu_ms || 0) > 20 && (critical_tasks?.data?.find(t => t.role === 'jit')?.big_core_pct || 0) > 50"
+        severity: warning
+        diagnosis: "JIT 线程 CPU 时间 ${critical_tasks.data.find(t => t.role === 'jit').total_cpu_ms}ms（大核占比 ${critical_tasks.data.find(t => t.role === 'jit').big_core_pct}%），可能与主线程争抢大核"
+        confidence: medium
+        suggestions:
+          - "使用 Baseline Profile 减少冷启动 JIT 编译需求"
+          - "检查是否缺少 .prof 或 .dm 文件"
+
+      # RenderThread 被调度到小核
+      - condition: "(critical_tasks?.data?.find(t => t.role === 'render')?.total_cpu_ms || 0) > 5 && (critical_tasks?.data?.find(t => t.role === 'render')?.big_core_pct || 0) < 30"
+        severity: info
+        diagnosis: "RenderThread 大核占比仅 ${critical_tasks.data.find(t => t.role === 'render').big_core_pct}%，首帧渲染可能因小核性能不足而变慢"
+        confidence: medium
+        suggestions:
+          - "检查 RenderThread 是否被调度到小核运行"
+          - "大量 GPU 指令在小核上提交会增加 TTID"
+
+      # 主线程核迁移频繁
+      - condition: "(critical_tasks?.data?.find(t => t.role === 'main')?.cross_cluster_migrations || 0) > 10"
+        severity: warning
+        diagnosis: "主线程跨 cluster 核迁移 ${critical_tasks.data.find(t => t.role === 'main').cross_cluster_migrations} 次，L2 Cache 反复失效导致性能损失"
+        confidence: high
+        suggestions:
+          - "频繁跨 cluster 迁移说明调度器未稳定分配核心"
+          - "检查是否有其他线程/进程在启动期间与主线程争抢 CPU"
+
+      # 多线程总 CPU 时间远超启动墙钟时间（CPU 争抢激烈）
+      - condition: "critical_tasks?.data?.length > 0 && critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0) > ${dur_ms} * 2"
+        severity: info
+        diagnosis: "所有线程总 CPU 时间 ${Math.round(critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0))}ms 是启动墙钟时间 ${dur_ms}ms 的 ${(critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0) / ${dur_ms}).toFixed(1)} 倍，CPU 争抢激烈"
+        confidence: medium
+        suggestions:
+          - "减少启动期间的后台线程并发"
+          - "延迟非关键初始化到首帧之后"
+
+      # 主线程被 system_server 阻塞（从 blocking_graph 中检测跨进程阻塞）
+      - condition: "(blocking_graph?.data?.find(b => b.blocked_role === 'main' && b.waker_process === 'system_server')?.total_block_ms || 0) > 30"
+        severity: warning
+        diagnosis: "主线程被 system_server 阻塞 ${blocking_graph.data.find(b => b.blocked_role === 'main' && b.waker_process === 'system_server').total_block_ms}ms（函数：${blocking_graph.data.find(b => b.blocked_role === 'main' && b.waker_process === 'system_server').blocked_function}）"
+        confidence: high
+        suggestions:
+          - "system_server 处理延迟可能因系统负载高"
+          - "检查启动期间是否有密集的跨进程 Binder 调用"
+
+      # 主线程被 GC 线程阻塞
+      - condition: "(blocking_graph?.data?.find(b => b.blocked_role === 'main' && b.waker_thread === 'HeapTaskDaemon')?.total_block_ms || 0) > 10"
+        severity: warning
+        diagnosis: "主线程被 GC 阻塞 ${blocking_graph.data.find(b => b.blocked_role === 'main' && b.waker_thread === 'HeapTaskDaemon').total_block_ms}ms"
+        confidence: high
+        suggestions:
+          - "减少启动期间的对象分配"
+          - "避免在 Application.onCreate() 中创建大量临时对象"
+
+      # === Phase C 精细化诊断规则 ===
+
+      # 启动初期大核频率显著偏低（升频延迟）
+      - condition: "freq_rampup?.data?.find(r => r.core_type === 'big' || r.core_type === 'prime')?.rampup_pct > 50"
+        severity: info
+        diagnosis: "启动初期大核频率比稳态低 ${freq_rampup.data.find(r => r.core_type === 'big' || r.core_type === 'prime').rampup_pct}%，存在升频延迟"
+        confidence: medium
+        suggestions:
+          - "冷启动初期 CPU 可能从低频 idle 唤醒，Governor 需要几个调度周期才升频"
+          - "Qualcomm WALT 和 Pixel schedutil 的升频速度不同，可查看厂商特定优化"
+
+      # 启动初期主线程被困小核（摆核时序检测）
+      - condition: "cpu_placement?.data?.length > 2 && (cpu_placement.data[0]?.big_core_pct || 0) < 20 && (cpu_placement.data[2]?.big_core_pct || 0) > 60"
+        severity: warning
+        diagnosis: "启动前 100ms 主线程大核占比仅 ${cpu_placement.data[0].big_core_pct}%，之后升至 ${cpu_placement.data[2].big_core_pct}%。启动初期被困在小核"
+        confidence: medium
+        suggestions:
+          - "可能因 Zygote fork 继承了小核亲和性，或 top-app cgroup 设置有延迟"
+          - "bindApplication 阶段的性能受此影响最大"
+
+      # Binder 线程池利用率过高
+      - condition: "binder_pool?.data?.find(r => r.metric === '线程池利用率')?.value?.includes('⚠️')"
+        severity: warning
+        diagnosis: "Binder 线程池利用率过高，新的 Binder 回复可能排队等待"
+        confidence: medium
+        suggestions:
+          - "减少启动期间并行的 Binder 调用"
+          - "将非关键 IPC 延迟到首帧之后"
 
 output:
   display:

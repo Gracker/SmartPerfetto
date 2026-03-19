@@ -82,7 +82,7 @@ sql: |
     ROUND(AVG(bt.client_dur) / 1e6, 2) as avg_dur_ms,
     ROUND(MAX(bt.client_dur) / 1e6, 2) as max_dur_ms,
     SUM(CASE WHEN bt.is_main_thread THEN 1 ELSE 0 END) as main_thread_calls,
-    s.startup_type,
+    '${startup_type}' as startup_type,
     ROUND(100.0 * SUM(bt.client_dur) / s.dur, 1) as percent_of_startup
   FROM android_binder_txns bt
   JOIN android_startups s ON (
@@ -91,7 +91,6 @@ sql: |
   )
   WHERE (s.package GLOB '${package}*' OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
   GROUP BY bt.server_process, bt.aidl_name, s.startup_id

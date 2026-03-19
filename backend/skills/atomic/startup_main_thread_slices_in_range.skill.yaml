@@ -91,14 +91,13 @@ sql: |
       ts.slice_dur,
       ts.slice_id,
       s.dur as startup_dur,
-      s.startup_type,
+      '${startup_type}' as startup_type,
       s.package
     FROM android_thread_slices_for_all_startups ts
     JOIN android_startups s ON ts.startup_id = s.startup_id
     WHERE ts.is_main_thread = 1
       AND (s.package GLOB '${package}*' OR '${package}' = '')
       AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-      AND ('${startup_type}' = '' OR s.startup_type = '${startup_type}')
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
       AND ts.slice_dur > ${min_dur_ns|1000000}
@@ -126,7 +125,7 @@ sql: |
     startup_type,
     package
   FROM with_self
-  GROUP BY slice_name, startup_type
+  GROUP BY slice_name
   ORDER BY total_dur_ms DESC
   LIMIT ${top_k|15}
 

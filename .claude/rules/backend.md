@@ -13,7 +13,7 @@ Key components:
 | File | Purpose |
 |------|---------|
 | claudeRuntime.ts | Main orchestrator — `IOrchestrator`, wraps `sdkQuery()` |
-| claudeMcpServer.ts | 15 MCP tools for trace data access |
+| claudeMcpServer.ts | 18 MCP tools for trace data access (8 core + 10 conditional) |
 | claudeSystemPrompt.ts | Dynamic system prompt — scene-specific strategy injection |
 | strategyLoader.ts | Load `*.strategy.md` and `*.template.md` — parse frontmatter + variable substitution |
 | claudeSseBridge.ts | SDK stream → SSE events bridge |

@@ -43,7 +43,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 ```
 
 **Core Concepts:**
-- **Primary Runtime: agentv3** — Claude Agent SDK as orchestrator (15 MCP tools)
+- **Primary Runtime: agentv3** — Claude Agent SDK as orchestrator (18 MCP tools)
 - **Deprecated Fallback: agentv2** — activated only by `AI_SERVICE=deepseek`
 - Scene Classifier → scene-specific system prompts (scrolling/startup/anr/general)
 - Analysis logic in YAML Skills (`backend/skills/`) — L1→L2→L3→L4 layered results
