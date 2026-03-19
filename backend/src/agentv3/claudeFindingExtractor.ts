@@ -12,6 +12,16 @@ const SEVERITY_MAP: Record<string, Finding['severity']> = {
 const SEVERITY_REGEX = /\*?\*?\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\*?\*?\s*(.+)/g;
 
 /**
+ * Strip fenced code blocks (``` ... ```) from text to prevent extracting
+ * false findings from Mermaid diagrams, SQL snippets, etc.
+ * E.g., Mermaid nodes like `E["[HIGH] ...]"` contain [SEVERITY] patterns
+ * that the regex would incorrectly match as findings.
+ */
+function stripCodeBlocks(text: string): string {
+  return text.replace(/```[\s\S]*?```/g, '');
+}
+
+/**
  * Extract Finding objects from Claude's free-text analysis output.
  * Scans for lines matching the pattern: **[SEVERITY] Title**
  */
@@ -19,13 +29,17 @@ export function extractFindingsFromText(text: string): Finding[] {
   const findings: Finding[] = [];
   if (!text) return findings;
 
+  // Strip code blocks to avoid extracting findings from Mermaid/SQL/code content
+  const cleanText = stripCodeBlocks(text);
+
   SEVERITY_REGEX.lastIndex = 0;
 
   let match: RegExpExecArray | null;
-  while ((match = SEVERITY_REGEX.exec(text)) !== null) {
+  while ((match = SEVERITY_REGEX.exec(cleanText)) !== null) {
     const severity = SEVERITY_MAP[match[1]] ?? 'info';
     const title = match[2].replace(/\*+/g, '').trim();
-    const afterTitle = text.substring(match.index + match[0].length, match.index + match[0].length + 500);
+    // Use cleanText for description/evidence extraction (code blocks already stripped)
+    const afterTitle = cleanText.substring(match.index + match[0].length, match.index + match[0].length + 500);
     const evidence = extractEvidence(afterTitle);
 
     findings.push({
@@ -101,8 +115,15 @@ function extractDescription(text: string): string {
 }
 
 function extractEvidence(text: string): string | undefined {
-  const match = text.match(/(?:证据[：:]|Evidence:)\s*(.+?)(?=\n(?:建议|Suggestion|\*\*\[)|$)/s);
-  return match ? match[1].trim().substring(0, 500) : undefined;
+  // Try explicit "证据:" or "Evidence:" label first
+  const explicit = text.match(/(?:证据[：:]|Evidence:)\s*(.+?)(?=\n(?:建议|Suggestion|\*\*\[)|$)/s);
+  if (explicit) return explicit[1].trim().substring(0, 500);
+
+  // Also match "根因推理链:" format (used by strategy-compliant conclusions)
+  const rootCause = text.match(/(?:根因推理链[：:]|根因[：:])\s*(.+?)(?=\n(?:建议|结论|Suggestion|\*\*\[)|$)/s);
+  if (rootCause) return rootCause[1].trim().substring(0, 500);
+
+  return undefined;
 }
 
 function extractRecommendations(text: string): Finding['recommendations'] | undefined {

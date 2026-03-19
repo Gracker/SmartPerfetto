@@ -33,7 +33,7 @@ import {
   buildPatternContextSection,
   buildNegativePatternSection,
 } from './analysisPatternMemory';
-import { verifyConclusion, generateCorrectionPrompt } from './claudeVerifier';
+import { verifyConclusion, generateCorrectionPrompt, isConclusionIncomplete } from './claudeVerifier';
 import {
   captureEntitiesFromResponses,
   applyCapturedEntities,
@@ -644,8 +644,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
             try {
               const correctionPrompt = generateCorrectionPrompt(allIssues, conclusionText);
+              // When the conclusion is incomplete (just reasoning notes, no structured report),
+              // the agent ran out of turns before generating a report. Give substantially more
+              // budget so the correction can produce a complete structured output.
+              const conclusionNeedsFullGeneration = isConclusionIncomplete(conclusionText);
               // P2-2: Give more turn budget on second attempt (may need additional data)
-              const correctionTurns = attempt === 0 ? 5 : 8;
+              const correctionTurns = conclusionNeedsFullGeneration
+                ? (attempt === 0 ? 10 : 12)   // Full report generation needs more turns
+                : (attempt === 0 ? 5 : 8);    // Normal correction (fixing specific issues)
               const correctionStream = sdkQueryWithRetry({
                 prompt: correctionPrompt,
                 options: {
@@ -664,8 +670,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               }, { emitUpdate: (update) => this.emitUpdate(update) });
 
               // P1-G8: Independent timeout for correction retries — prevents indefinite hangs.
-              // Each turn gets 10s budget (correction is focused work, not open exploration).
-              const correctionTimeoutMs = correctionTurns * 10_000;
+              // When generating a full report from scratch (conclusionNeedsFullGeneration),
+              // each turn needs more time (25s) since structured report output is verbose.
+              // Normal corrections (fixing specific issues) use 10s per turn.
+              const correctionTimeoutMs = correctionTurns * (conclusionNeedsFullGeneration ? 25_000 : 10_000);
               let correctionTimedOut = false;
               const correctionTimer = setTimeout(() => {
                 correctionTimedOut = true;

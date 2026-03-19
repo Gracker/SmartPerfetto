@@ -41,6 +41,8 @@ import {
   verifySceneCompleteness,
   generateCorrectionPrompt,
   learnFromVerificationResults,
+  normalizeLLMSeverity,
+  isConclusionIncomplete,
 } from '../claudeVerifier';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -337,6 +339,20 @@ describe('verifySceneCompleteness', () => {
     expect(issues).toHaveLength(0);
   });
 
+  it('should warn scrolling with significant jank but no deep drill', () => {
+    const findings = [makeFinding({ title: 'Jank', description: '掉帧 freq_ramp_slow 64帧 47%' })];
+    const conclusion = '滑动分析：136 帧掉帧，freq_ramp_slow 占 47%，workload_heavy 占 9%。';
+    const issues = verifySceneCompleteness('scrolling', findings, conclusion);
+    expect(issues.some(i => i.message.includes('Phase 1.9') || i.message.includes('深钻'))).toBe(true);
+  });
+
+  it('should pass scrolling with deep drill evidence present', () => {
+    const findings = [makeFinding({ title: 'Jank', description: '掉帧 freq_ramp_slow 64帧 47%' })];
+    const conclusion = '滑动分析：136 帧掉帧。blocking_chain_analysis 显示主线程被 Binder 阻塞。lookup_knowledge cpu-scheduler。';
+    const issues = verifySceneCompleteness('scrolling', findings, conclusion);
+    expect(issues.filter(i => i.message.includes('深钻'))).toHaveLength(0);
+  });
+
   it('should warn startup scene missing TTID/TTFD', () => {
     const findings = [makeFinding({ title: 'CPU busy', description: 'Some CPU work' })];
     const issues = verifySceneCompleteness('startup', findings, 'Done');
@@ -344,7 +360,8 @@ describe('verifySceneCompleteness', () => {
   });
 
   it('should pass startup scene with TTID mention', () => {
-    const findings = [makeFinding({ title: 'Startup analysis', description: 'TTID=850ms 冷启动' })];
+    // Use "启动" without "冷启动" to avoid triggering cold-start-specific checks
+    const findings = [makeFinding({ title: 'Startup analysis', description: 'TTID=850ms 启动分析' })];
     const issues = verifySceneCompleteness('startup', findings, '启动性能分析');
     expect(issues).toHaveLength(0);
   });
@@ -383,6 +400,49 @@ describe('generateCorrectionPrompt', () => {
     const prompt = generateCorrectionPrompt(issues, '结论');
     // No ERROR items → empty numbered list, but warnings section present
     expect(prompt).toContain('过多 CRITICAL');
+  });
+
+  it('should use "generate from scratch" prompt when conclusion is incomplete', () => {
+    const issues = [
+      { type: 'unresolved_hypothesis' as const, severity: 'error' as const, message: '假设未解决' },
+    ];
+    // Short conclusion = just reasoning notes, no structured report
+    const shortConclusion = '正在分析数据，发现 136 帧掉帧。准备输出结论。';
+    const prompt = generateCorrectionPrompt(issues, shortConclusion);
+    expect(prompt).toContain('结论尚未生成');
+    expect(prompt).toContain('完整的结构化分析报告');
+  });
+
+  it('should use normal correction prompt when conclusion is complete', () => {
+    const issues = [
+      { type: 'missing_evidence' as const, severity: 'error' as const, message: 'CRITICAL 缺少证据' },
+    ];
+    const fullConclusion = '## 滑动性能分析报告\n\n### 1. 概览\n' + '详细内容'.repeat(300);
+    const prompt = generateCorrectionPrompt(issues, fullConclusion);
+    expect(prompt).not.toContain('结论尚未生成');
+    expect(prompt).toContain('请修正以下问题');
+  });
+});
+
+// ── New tests: isConclusionIncomplete ────────────────────────────────────
+
+describe('isConclusionIncomplete', () => {
+  it('should detect short reasoning notes as incomplete', () => {
+    expect(isConclusionIncomplete('正在分析数据。准备出结论。')).toBe(true);
+  });
+
+  it('should detect text without headings as incomplete', () => {
+    const noHeadings = '分析发现 CPU 频率问题。'.repeat(100);
+    expect(isConclusionIncomplete(noHeadings)).toBe(true);
+  });
+
+  it('should accept structured report as complete', () => {
+    const fullReport = '## 滑动性能分析报告\n\n### 1. 概览\n' + '详细分析内容。'.repeat(200);
+    expect(isConclusionIncomplete(fullReport)).toBe(false);
+  });
+
+  it('should detect empty string as incomplete', () => {
+    expect(isConclusionIncomplete('')).toBe(true);
   });
 });
 
@@ -431,5 +491,152 @@ describe('learnFromVerificationResults', () => {
     })];
     learnFromVerificationResults(issues, findings);
     expect(mockFs.writeFileSync).toHaveBeenCalled();
+  });
+});
+
+// ── New tests: Check 7 (truncation detection) ────────────────────────────
+
+describe('verifyHeuristic — Check 7: Truncation detection', () => {
+  it('should warn when conclusion ends mid-sentence', () => {
+    // Last line must be > 15 chars to trigger truncation check
+    const conclusion = 'A'.repeat(80) + '\n分析发现主线程 ChaosTask 耗时较长但缺少根因分析链条和深层阻塞';
+    const issues = verifyHeuristic([], conclusion);
+    expect(issues.some(i => i.type === 'truncation')).toBe(true);
+  });
+
+  it('should not warn when conclusion ends with Chinese period', () => {
+    const conclusion = 'A'.repeat(80) + '\n分析完成，主线程无明显瓶颈。';
+    const issues = verifyHeuristic([], conclusion);
+    expect(issues.filter(i => i.type === 'truncation')).toHaveLength(0);
+  });
+
+  it('should not warn when conclusion ends with English period', () => {
+    const conclusion = 'A'.repeat(80) + '\nAnalysis complete, no significant bottleneck found.';
+    const issues = verifyHeuristic([], conclusion);
+    expect(issues.filter(i => i.type === 'truncation')).toHaveLength(0);
+  });
+
+  it('should not warn when conclusion ends with table row', () => {
+    const conclusion = 'A'.repeat(80) + '\n| Binder 阻塞 | < 5ms | ✅ 可排除 |';
+    const issues = verifyHeuristic([], conclusion);
+    expect(issues.filter(i => i.type === 'truncation')).toHaveLength(0);
+  });
+
+  it('should not warn when conclusion ends with arrow or checkmark', () => {
+    const conclusion = 'A'.repeat(80) + '\n└── CPU 频率（正常，无升频不足）✅';
+    const issues = verifyHeuristic([], conclusion);
+    expect(issues.filter(i => i.type === 'truncation')).toHaveLength(0);
+  });
+
+  it('should not warn on short conclusions (< 100 chars)', () => {
+    const conclusion = '短结论，未完';
+    const issues = verifyHeuristic([], conclusion);
+    // Should trigger "conclusion too short" error but NOT truncation
+    expect(issues.filter(i => i.type === 'truncation')).toHaveLength(0);
+  });
+});
+
+// ── New tests: Startup scene completeness (cold-start specific) ──────────
+
+describe('verifySceneCompleteness — startup cold-start checks', () => {
+  it('should warn cold start missing Phase 2.6 slow reasons', () => {
+    const findings = [makeFinding({ title: '冷启动分析', description: 'bindApplication 477ms, TTID=1912ms 冷启动' })];
+    const issues = verifySceneCompleteness('startup', findings, '冷启动总耗时 1338ms');
+    expect(issues.some(i => i.message.includes('Phase 2.6') && i.message.includes('官方'))).toBe(true);
+  });
+
+  it('should not warn cold start with slow reasons present', () => {
+    const findings = [makeFinding({ title: '冷启动分析', description: 'TTID=850ms 冷启动' })];
+    const conclusion = '冷启动分析完成。startup_slow_reasons 检查未发现 DEX2OAT 问题。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
+    expect(issues.filter(i => i.message.includes('Phase 2.6'))).toHaveLength(0);
+  });
+
+  it('should warn cold start missing JIT analysis', () => {
+    const findings = [makeFinding({ title: '冷启动分析', description: 'bindApplication 477ms 冷启动' })];
+    const issues = verifySceneCompleteness('startup', findings, '冷启动总耗时 1338ms');
+    expect(issues.some(i => i.message.includes('JIT'))).toBe(true);
+  });
+
+  it('should not warn cold start when JIT mentioned', () => {
+    const findings = [makeFinding({ title: '冷启动分析', description: '冷启动 bindApplication' })];
+    const conclusion = '冷启动完成，JIT 编译影响可排除（< 5ms），startup_slow_reasons 正常。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
+    expect(issues.filter(i => i.message.includes('JIT'))).toHaveLength(0);
+  });
+
+  it('should warn Q4 heavy without blocking chain analysis', () => {
+    const findings = [makeFinding({ title: '启动分析', description: 'Q4 Sleeping 35% 启动' })];
+    const conclusion = '启动分析发现 S(Sleeping) = 470ms (35.1%)，推测为 join 等待。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
+    expect(issues.some(i => i.message.includes('阻塞链'))).toBe(true);
+  });
+
+  it('should not warn Q4 heavy when blocking chain present', () => {
+    const findings = [makeFinding({ title: '启动分析', description: 'Q4 Sleeping 35% 启动' })];
+    const conclusion = '启动分析：S(Sleeping) = 470ms (35.1%)。blocking_chain_analysis 显示 waker_current_slice 为 pool-3-thread 唤醒者。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
+    expect(issues.filter(i => i.message.includes('阻塞链'))).toHaveLength(0);
+  });
+
+  it('should not trigger cold-start checks for warm start', () => {
+    const findings = [makeFinding({ title: '温启动分析', description: 'TTID=300ms 温启动 startup' })];
+    const conclusion = '温启动总耗时 300ms。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
+    // Should not have Phase 2.6 or JIT warnings (these are cold-start only)
+    expect(issues.filter(i => i.message.includes('Phase 2.6'))).toHaveLength(0);
+    expect(issues.filter(i => i.message.includes('JIT'))).toHaveLength(0);
+  });
+
+  it('should not trigger cold-start checks when warm start mentions bindApplication', () => {
+    // bindApplication can appear in warm-start analysis text (e.g., agent discussing its absence)
+    const findings = [makeFinding({ title: '温启动分析', description: 'TTID=300ms 温启动 startup' })];
+    const conclusion = '温启动分析：无 bindApplication slice，确认为温启动。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
+    expect(issues.filter(i => i.message.includes('Phase 2.6'))).toHaveLength(0);
+    expect(issues.filter(i => i.message.includes('JIT'))).toHaveLength(0);
+  });
+});
+
+// ── New tests: normalizeLLMSeverity ──────────────────────────────────────
+
+describe('normalizeLLMSeverity', () => {
+  it('should map "error" to "error"', () => {
+    expect(normalizeLLMSeverity('error')).toBe('error');
+  });
+
+  it('should map "critical" to "error"', () => {
+    expect(normalizeLLMSeverity('critical')).toBe('error');
+  });
+
+  it('should map "high" to "warning" (importance, not action-required)', () => {
+    expect(normalizeLLMSeverity('high')).toBe('warning');
+  });
+
+  it('should map "warning" to "warning"', () => {
+    expect(normalizeLLMSeverity('warning')).toBe('warning');
+  });
+
+  it('should map "medium" to "warning"', () => {
+    expect(normalizeLLMSeverity('medium')).toBe('warning');
+  });
+
+  it('should map "low" to "warning"', () => {
+    expect(normalizeLLMSeverity('low')).toBe('warning');
+  });
+
+  it('should map "info" to "warning"', () => {
+    expect(normalizeLLMSeverity('info')).toBe('warning');
+  });
+
+  it('should handle case-insensitive input', () => {
+    expect(normalizeLLMSeverity('CRITICAL')).toBe('error');
+    expect(normalizeLLMSeverity('High')).toBe('warning');
+    expect(normalizeLLMSeverity('WARNING')).toBe('warning');
+  });
+
+  it('should handle undefined/empty gracefully', () => {
+    expect(normalizeLLMSeverity(undefined as any)).toBe('warning');
+    expect(normalizeLLMSeverity('')).toBe('warning');
   });
 });

@@ -298,6 +298,28 @@ export function verifyHeuristic(
     }
   }
 
+  // Check 7: Detect potential conclusion truncation.
+  // Common when Claude hits output token limits — the conclusion ends mid-sentence.
+  // Proper endings: sentence-final punctuation, table row, code fence, emoji checkmarks.
+  const trimmedConclusion = conclusion.trim();
+  if (trimmedConclusion.length > 100) {
+    const lastLine = trimmedConclusion.split('\n').pop()?.trim() || '';
+    if (lastLine.length > 15) {
+      // Note: `|` is NOT in the char class — table rows are handled by the dedicated /^\|.*\|$/ check
+      const hasProperEnding = /[。.!！?？）\]】`✅✓☑→]$/.test(lastLine) ||
+                              /^```$/.test(lastLine) ||
+                              /^\|.*\|$/.test(lastLine) ||
+                              /^---+$/.test(lastLine);
+      if (!hasProperEnding) {
+        issues.push({
+          type: 'truncation',
+          severity: 'warning',
+          message: `结论文本可能被截断 — 最后一行不以完整语句结尾: "...${lastLine.slice(-40)}"`,
+        });
+      }
+    }
+  }
+
   return issues;
 }
 
@@ -400,6 +422,30 @@ export function verifySceneCompleteness(
           message: '滑动场景分析缺少帧/卡顿相关内容 — 应包含帧渲染分析和 VSync 数据',
         });
       }
+
+      // Phase 1.9: Deep drill should be executed for major root causes
+      // Check if any deep-drill evidence is present (blocking_chain, lookup_knowledge, binder_root_cause)
+      const hasDeepDrill = /blocking_chain|lookup_knowledge|binder_root_cause|阻塞链|waker|cpu.scheduler|rendering.pipeline|thermal.throttling/i.test(allText);
+      // Check if there are significant jank frames (the analysis mentions percentage distributions)
+      const hasSignificantJank = /(?:[2-9]\d|[1-9]\d{2,})\s*帧|(?:[1-9]\d+)\s*%.*(?:freq_ramp|workload|sched_delay|lock_binder|binder_wait)/i.test(allText);
+      if (hasSignificantJank && !hasDeepDrill) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '滑动分析有大量掉帧但缺少 Phase 1.9 根因深钻 — 应对占比 >15% 的根因类别调用 blocking_chain_analysis/lookup_knowledge/binder_root_cause 获取机制级证据',
+        });
+      }
+
+      // Check if unknown reason_code frames are analyzed when present
+      const hasUnknown = /unknown.*(?:[5-9]|[1-9]\d+)\s*%|(?:[5-9]|[1-9]\d+)\s*%.*unknown|未分类.*(?:[5-9]|[1-9]\d+)\s*帧/i.test(allText);
+      const hasUnknownAnalysis = /unknown.*代表帧|unknown.*分析|jank_frame_detail.*unknown|未分类.*原因/i.test(allText);
+      if (hasUnknown && !hasUnknownAnalysis) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'warning',
+          message: '滑动分析发现 unknown 根因帧占比较高但未对其进行代表帧分析 — 应调用 jank_frame_detail 获取更多线索',
+        });
+      }
       break;
     }
     case 'startup': {
@@ -409,6 +455,49 @@ export function verifySceneCompleteness(
           severity: 'warning',
           message: '启动场景分析缺少 TTID/TTFD 数据 — 应包含启动耗时测量',
         });
+      }
+
+      // Cold-start specific checks
+      // Note: do NOT include 'bindapplication' here — it appears in warm-start traces too
+      // (e.g., when agent mentions bindApplication duration in a warm-start context)
+      const isColdStart = /冷启动|cold\s*start|cold_start/i.test(allText);
+      if (isColdStart) {
+        // Phase 2.6: startup_slow_reasons cross-validation (mandatory for cold start)
+        const hasSlowReasons = /startup_slow_reasons|官方.*原因|官方.*分类|dex2oat|baseline.?profile|debuggable/i.test(allText);
+        if (!hasSlowReasons) {
+          issues.push({
+            type: 'missing_check',
+            severity: 'warning',
+            message: '冷启动分析缺少 Phase 2.6 官方启动慢原因交叉验证 — 应调用 startup_slow_reasons 检查 DEX2OAT/baseline profile/debuggable 等因素',
+          });
+        }
+
+        // JIT analysis (mandatory mention for cold start, even if impact is minimal)
+        const hasJitAnalysis = /jit|编译.*缓存|code.?cache|解释执行|interpreter/i.test(allText);
+        if (!hasJitAnalysis) {
+          issues.push({
+            type: 'missing_check',
+            severity: 'warning',
+            message: '冷启动分析缺少 JIT 编译影响分析 — 应在结论中评估 JIT 编译量和大核竞争（即使影响不大也应明确排除）',
+          });
+        }
+      }
+
+      // Q4 heavy + missing blocking chain analysis
+      // Detect Q4/Sleeping with high percentages (>=30%) in the text.
+      // Use \b word boundary on "sleeping" to avoid matching non-scheduler contexts.
+      const q4Keywords = /(?:q4|\bsleeping\b|睡眠|s\(sleeping\))/i;
+      const highPct = /(?:[3-9]\d|[1-9]\d{2,})\s*%/;
+      const hasQ4Heavy = new RegExp(`${q4Keywords.source}.*${highPct.source}|${highPct.source}.*${q4Keywords.source}`, 'i').test(allText);
+      if (hasQ4Heavy) {
+        const hasBlockingChain = /blocking_chain|阻塞链|waker.*thread|唤醒.*线程|唤醒者|waker_current_slice/i.test(allText);
+        if (!hasBlockingChain) {
+          issues.push({
+            type: 'missing_check',
+            severity: 'warning',
+            message: '启动分析发现 Q4(Sleeping) 占比高但缺少阻塞链深钻 — 应调用 blocking_chain_analysis 追踪阻塞源头（不能仅依赖间接推断）',
+          });
+        }
       }
       break;
     }
@@ -508,6 +597,23 @@ export function verifySceneCompleteness(
 }
 
 /**
+ * Normalize LLM-returned severity to the standard 'error' | 'warning' union.
+ * LLMs may return non-standard values like "critical", "high", "medium", "low", "info".
+ * Without normalization, these slip through `severity === 'error'` checks and bypass
+ * the correction retry logic — this was the root cause of P0-3 (truncation detected
+ * but never corrected).
+ */
+export function normalizeLLMSeverity(raw: string): VerificationIssue['severity'] {
+  const lower = (raw ?? '').toLowerCase();
+  // Only 'critical' and 'error' map to 'error' (triggers correction retry).
+  // 'high' maps to 'warning' — LLMs use 'high' as importance level, not action-required.
+  // Mapping 'high' → 'error' caused over-correction: too many ERRORs triggered retries
+  // that degraded the conclusion output.
+  if (lower === 'error' || lower === 'critical') return 'error';
+  return 'warning';
+}
+
+/**
  * Run LLM-based verification using a lightweight model (haiku).
  * Validates evidence support, severity consistency, and completeness.
  * Returns undefined if LLM call fails (graceful degradation).
@@ -522,13 +628,18 @@ export async function verifyWithLLM(
       .map(f => `[${f.severity.toUpperCase()}] ${f.title}: ${f.description?.substring(0, 150) || ''}`)
       .join('\n');
 
+    const conclusionPreview = conclusion.substring(0, 3000);
+    const truncationNote = conclusion.length > 3000
+      ? '\n\n[... 后续内容已省略以节省验证成本，请仅验证以上部分 ...]'
+      : '';
+
     const prompt = `你是一个 Android 性能分析验证器。请验证以下分析结论的质量。
 
 ## 发现列表
 ${findingSummary}
 
 ## 结论
-${conclusion.substring(0, 3000)}
+${conclusionPreview}${truncationNote}
 
 ## 验证检查项
 请逐项检查并仅报告发现的问题（如果全部通过则返回空列表）：
@@ -562,7 +673,16 @@ ${conclusion.substring(0, 3000)}
     const jsonMatch = result.match(/\[[\s\S]*?\]/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]) as VerificationIssue[];
-      return parsed.filter(i => i.type && i.message);
+      // LLM may return non-standard severity levels (e.g. "critical", "high", "medium")
+      // that don't match the VerificationIssue type union ('error' | 'warning').
+      // Normalize to prevent these from silently bypassing the correction retry logic
+      // (which filters on severity === 'error').
+      return parsed
+        .filter(i => i.type && i.message)
+        .map(i => ({
+          ...i,
+          severity: normalizeLLMSeverity(i.severity),
+        }));
     }
     return [];
   } catch (err) {
@@ -572,9 +692,24 @@ ${conclusion.substring(0, 3000)}
 }
 
 /**
+ * Detect whether a conclusion looks like an incomplete/truncated analysis
+ * (e.g., just reasoning notes rather than a structured report).
+ * Used to select between normal correction prompt and "generate from scratch" prompt.
+ */
+export function isConclusionIncomplete(conclusion: string): boolean {
+  if (conclusion.length < 1000) return true;
+  // A proper structured report should have markdown headings
+  if (!/##\s/.test(conclusion)) return true;
+  return false;
+}
+
+/**
  * Generate a correction prompt for reflection-driven retry.
  * Called when verification finds ERROR-level issues.
- * Returns a prompt that asks Claude to fix the specific issues.
+ *
+ * When the original conclusion is clearly incomplete (just reasoning notes,
+ * < 1000 chars, no structured headings), generates a stronger prompt that
+ * asks for a complete report from scratch using already-collected data.
  */
 export function generateCorrectionPrompt(
   issues: VerificationIssue[],
@@ -590,6 +725,31 @@ export function generateCorrectionPrompt(
   const warningList = warningIssues.length > 0
     ? '\n\n注意事项:\n' + warningIssues.map(i => `- ${i.message}`).join('\n')
     : '';
+
+  // When the conclusion is just reasoning notes (no structured headings, < 1000 chars),
+  // the agent ran out of turns before generating a report. Use a stronger prompt that
+  // instructs it to generate the complete report from scratch using collected data.
+  if (isConclusionIncomplete(originalConclusion)) {
+    return `## 验证反馈 — 分析结论未生成，请输出完整报告
+
+你的分析过程已收集了足够的数据，但**结论尚未生成**（当前仅有推理过程笔记）。
+
+${issueList ? `待解决问题：\n${issueList}\n` : ''}${warningList}
+
+### 要求
+1. **先解决所有未完成事项**（未解决的假设请调用 resolve_hypothesis，未完成的阶段请 update_plan_phase）
+2. **然后直接输出完整的结构化分析报告**，格式遵循 system prompt 中的输出模板：
+   - 概览（帧数、掉帧数、帧率、评级）
+   - 全帧根因分布表（按 reason_code 聚合）
+   - 代表帧分析（每个根因类别的最严重帧，含四象限+频率+根因推理链）
+   - 优化建议（按优先级排序）
+3. **使用已收集的数据**，不需要重新调用 invoke_skill 获取概览数据
+
+### 已有推理上下文
+${originalConclusion.substring(0, 2000)}
+
+请直接输出完整报告。`;
+  }
 
   return `## 验证反馈 — 请修正以下问题
 
