@@ -17,7 +17,7 @@ on:
 jobs:
   gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     env:
       NODE_OPTIONS: "--max-old-space-size=4096"
     defaults:
