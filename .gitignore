@@ -30,6 +30,7 @@ perfetto/out/
 *.db-shm
 *.db-wal
 backend/data/sessions/*.db
+backend/data/sessions.db
 
 # Uploaded trace files (user data, not needed in repo)
 backend/uploads/*
