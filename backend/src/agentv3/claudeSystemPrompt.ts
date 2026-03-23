@@ -102,7 +102,15 @@ function buildSelectionContextSection(sel: SelectionContext): string {
   return '';
 }
 
-export function buildSystemPrompt(context: ClaudeAnalysisContext): string {
+/**
+ * Build the system prompt for a Claude analysis session.
+ * @param context Analysis context with all injected data
+ * @param maxTokens Override the default token budget (default: 4500).
+ *   Use a lower value (e.g., 3000) during correction retries to leave
+ *   more room for SDK conversation history after auto-compact.
+ */
+export function buildSystemPrompt(context: ClaudeAnalysisContext, maxTokens?: number): string {
+  const effectiveMaxTokens = maxTokens ?? MAX_PROMPT_TOKENS;
   const sections: string[] = [];
 
   const roleContent = loadPromptTemplate('prompt-role');
@@ -322,7 +330,7 @@ ${context.knowledgeBaseContext}
   let prompt = sections.join('\n\n');
   let tokens = estimateTokens(prompt);
 
-  if (tokens > MAX_PROMPT_TOKENS) {
+  if (tokens > effectiveMaxTokens) {
     // Drop full sections by their opening text marker (lowest value first)
     const droppableSections = [
       '## Perfetto SQL 知识库参考',  // Claude can use lookup_sql_schema tool instead
@@ -333,7 +341,7 @@ ${context.knowledgeBaseContext}
       '## 历史分析计划',              // P2-3: Plan history is supplementary context, droppable under pressure
     ];
     for (const marker of droppableSections) {
-      if (tokens <= MAX_PROMPT_TOKENS) break;
+      if (tokens <= effectiveMaxTokens) break;
       const idx = sections.findIndex(s => s.startsWith(marker));
       if (idx >= 0) {
         sections.splice(idx, 1);
@@ -341,8 +349,8 @@ ${context.knowledgeBaseContext}
         tokens = estimateTokens(prompt);
       }
     }
-    if (tokens > MAX_PROMPT_TOKENS) {
-      console.warn(`[SystemPrompt] Prompt exceeds budget after trimming: ~${tokens} tokens (budget: ${MAX_PROMPT_TOKENS})`);
+    if (tokens > effectiveMaxTokens) {
+      console.warn(`[SystemPrompt] Prompt exceeds budget after trimming: ~${tokens} tokens (budget: ${effectiveMaxTokens})`);
     }
   }
 

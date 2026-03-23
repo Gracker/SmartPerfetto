@@ -26,6 +26,7 @@ import {
 import { loadScenarios, loadAllScenarios, LoadOptions } from './scenarioLoader';
 import { CodeGrader } from './codeGrader';
 import { ModelGrader, ModelGraderOptions } from './modelGrader';
+import { ProcessGrader } from './processGrader';
 
 // Default trace directory
 const DEFAULT_TRACE_DIR = path.join(__dirname, '../../../test-traces');
@@ -81,13 +82,13 @@ export class EvaluationRunner {
     };
 
     // Initialize default graders
-    this.graders = [new CodeGrader()];
+    this.graders = [new CodeGrader(), new ProcessGrader({ backendUrl: this.options.backendUrl })];
 
     // Add model grader if enabled and API key available
-    if (this.options.useModelGrader && process.env.DEEPSEEK_API_KEY) {
+    if (this.options.useModelGrader && (process.env.ANTHROPIC_API_KEY || process.env.DEEPSEEK_API_KEY)) {
       try {
         this.graders.push(new ModelGrader(this.options.modelGraderOptions));
-        this.log('ModelGrader initialized');
+        this.log(`ModelGrader initialized (backend: ${process.env.ANTHROPIC_API_KEY ? 'anthropic' : 'deepseek'})`);
       } catch (error: any) {
         console.warn(`Warning: Could not initialize ModelGrader: ${error.message}`);
       }

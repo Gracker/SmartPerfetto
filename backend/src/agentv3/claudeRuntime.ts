@@ -22,9 +22,10 @@ import { detectFocusApps } from './focusAppDetector';
 import { classifyScene } from './sceneClassifier';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
 import { getExtendedKnowledgeBase } from '../services/sqlKnowledgeBase';
-import type { AnalysisNote, AnalysisPlanV3, FailedApproach, Hypothesis, UncertaintyFlag } from './types';
+import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, FailedApproach, Hypothesis, UncertaintyFlag } from './types';
 import { ArtifactStore } from './artifactStore';
 import type { SessionStateSnapshot, SessionFieldsForSnapshot } from './sessionStateSnapshot';
+import { AgentMetricsCollector, persistSessionMetrics } from './agentMetrics';
 import {
   extractTraceFeatures,
   extractKeyInsights,
@@ -245,6 +246,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     let conclusionText = '';
     let sdkSessionId: string | undefined;
     let rounds = 0;
+    const metricsCollector = new AgentMetricsCollector(sessionId);
 
     try {
       const ctx = await this.prepareAnalysisContext(query, sessionId, traceId, options);
@@ -315,7 +317,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       // P2-1: Turn-level autonomy watchdog — detect repetitive tool failures
       // P1-G2: Per-tool tracking — each tool gets its own failure tracking
-      const toolCallHistory: Array<{ name: string; success: boolean }> = [];
+      const toolCallHistory: Array<{ name: string; success: boolean; startTime?: number }> = [];
       const WATCHDOG_WINDOW = 3; // consecutive same-tool failures to trigger warning
       const watchdogFiredTools = new Set<string>(); // tracks which tools have triggered warnings
 
@@ -410,7 +412,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if (msg.type === 'assistant' && Array.isArray((msg as any).message?.content)) {
             for (const block of (msg as any).message.content) {
               if (block.type === 'tool_use') {
-                toolCallHistory.push({ name: block.name, success: true }); // assume success, update on result
+                toolCallHistory.push({ name: block.name, success: true, startTime: Date.now() }); // assume success, update on result
               }
             }
           }
@@ -419,7 +421,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
             const isFailed = resultStr.includes('"success":false') || resultStr.includes('"isError":true');
             if (toolCallHistory.length > 0) {
-              toolCallHistory[toolCallHistory.length - 1].success = !isFailed;
+              const lastTool = toolCallHistory[toolCallHistory.length - 1];
+              lastTool.success = !isFailed;
+              // Record tool execution in metrics collector (stream-observed timing)
+              const toolName = lastTool.name.replace(MCP_NAME_PREFIX, '');
+              const durationMs = lastTool.startTime ? Date.now() - lastTool.startTime : 0;
+              metricsCollector.recordToolFromStream(toolName, durationMs, !isFailed);
             }
             // Check for consecutive same-tool failures (P1-G2: per-tool tracking)
             if (toolCallHistory.length >= WATCHDOG_WINDOW) {
@@ -659,12 +666,19 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               const correctionTurns = conclusionNeedsFullGeneration
                 ? (attempt === 0 ? 10 : 12)   // Full report generation needs more turns
                 : (attempt === 0 ? 5 : 8);    // Normal correction (fixing specific issues)
+              // Rebuild system prompt with reduced budget for correction retries.
+              // After SDK auto-compact or verification failure, conversation history is longer,
+              // so we shrink the system prompt to leave more room (4500 → 3000 tokens).
+              const correctionSystemPrompt = sdkCompactDetected
+                ? buildSystemPrompt(ctx.analysisContextForRebuild, 3000)
+                : ctx.systemPrompt;
+
               const correctionStream = sdkQueryWithRetry({
                 prompt: correctionPrompt,
                 options: {
                   model: this.config.model,
                   maxTurns: correctionTurns,
-                  systemPrompt: ctx.systemPrompt,
+                  systemPrompt: correctionSystemPrompt,
                   mcpServers: { smartperfetto: ctx.mcpServer },
                   includePartialMessages: true,
                   permissionMode: 'bypassPermissions' as const,
@@ -865,6 +879,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       this.activeAnalyses.delete(sessionId);
       // Notes persistence now handled by unified SessionStateSnapshot in the route layer.
       // No separate disk I/O needed here.
+
+      // Persist session metrics (fire-and-forget, non-blocking)
+      try {
+        metricsCollector.recordTurn(); // Record final turn
+        persistSessionMetrics(metricsCollector.summarize());
+      } catch (metricsErr) {
+        console.warn('[ClaudeRuntime] Failed to persist metrics:', (metricsErr as Error).message);
+      }
     }
   }
 
@@ -1341,7 +1363,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       .map((e: any) => ({ errorSql: e.errorSql, errorMessage: e.errorMessage, fixedSql: e.fixedSql }));
 
     // Phase 13: System prompt assembly
-    const systemPrompt = buildSystemPrompt({
+    const analysisContextForRebuild: ClaudeAnalysisContext = {
       query,
       architecture,
       packageName: effectivePackageName,
@@ -1360,7 +1382,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       previousPlan,
       planHistory: analysisPlan.history.length > 0 ? analysisPlan.history : undefined,
       selectionContext: options.selectionContext,
-    });
+    };
+    const systemPrompt = buildSystemPrompt(analysisContextForRebuild);
 
     return {
       mcpServer,
@@ -1376,6 +1399,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       hypotheses,
       sceneType,
       allowedTools, // P2-G1: auto-derived from MCP server registration
+      analysisContextForRebuild, // Used by correction retry to rebuild prompt with reduced budget
     };
   }
 

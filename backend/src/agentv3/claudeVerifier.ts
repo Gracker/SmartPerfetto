@@ -432,8 +432,8 @@ export function verifySceneCompleteness(
       if (hasSignificantJank && !hasDeepDrill) {
         issues.push({
           type: 'missing_check',
-          severity: 'warning',
-          message: '滑动分析有大量掉帧但缺少 Phase 1.9 根因深钻 — 应对占比 >15% 的根因类别调用 blocking_chain_analysis/lookup_knowledge/binder_root_cause 获取机制级证据',
+          severity: 'error',
+          message: '滑动分析有掉帧但缺少 Phase 1.9 根因深钻 — reason_code 只是分类标签，不是真正的根因。必须对占比 >15% 的根因类别调用 blocking_chain_analysis/lookup_knowledge/binder_root_cause/jank_frame_detail 获取机制级证据，回答"WHY 这帧慢"',
         });
       }
 

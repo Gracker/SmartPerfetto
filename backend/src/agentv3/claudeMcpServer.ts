@@ -290,9 +290,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const executeSql = tool(
     'execute_sql',
     'Execute a raw SQL query against the Perfetto trace_processor for the currently loaded trace. ' +
-    'Returns columnar results. Use this for ad-hoc queries not covered by existing skills. ' +
-    'Prefer invoke_skill when a matching skill exists — it produces richer, layered output. ' +
-    'Set summary=true for large result sets to get column statistics + top sample rows instead of raw data.',
+    'Returns columnar results. Set summary=true for large result sets to get column statistics + sample rows.\n\n' +
+    'Use when: ad-hoc queries not covered by existing skills, verifying hypotheses with specific SQL, checking raw data.\n' +
+    'Don\'t use when: a matching skill exists (use invoke_skill instead — richer layered output), or you need schema info (use lookup_sql_schema first).\n\n' +
+    'Examples:\n' +
+    '1. Count jank frames: sql="SELECT COUNT(*) as jank_count FROM actual_frame_timeline_slice WHERE jank_type != \'None\'", summary=false\n' +
+    '2. CPU frequency overview: sql="SELECT cpu, MIN(value) as min_freq, MAX(value) as max_freq, AVG(value) as avg_freq FROM counter JOIN counter_track ON counter.track_id=counter_track.id WHERE counter_track.name GLOB \'cpu*freq\' GROUP BY cpu", summary=true\n' +
+    '3. Thread state in time range: sql="SELECT state, SUM(dur)/1e6 as total_ms FROM thread_state WHERE utid=123 AND ts BETWEEN 1000 AND 2000 GROUP BY state", summary=false',
     {
       sql: z.string().describe(
         'The SQL query to execute. Use Perfetto stdlib tables/functions (e.g. android_jank_cuj, slice, thread, process).'
@@ -419,8 +423,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'invoke_skill',
     'Execute a named SmartPerfetto skill pipeline against the current trace. ' +
     'Skills are pre-built analysis routines that produce layered results (overview → list → diagnosis → deep). ' +
-    'Use list_skills first to find the right skill ID. ' +
-    'Common params: process_name, start_ts, end_ts, max_frames_per_session.',
+    'Use list_skills first to find the right skill ID.\n\n' +
+    'Use when: a pre-built skill covers your analysis need — always prefer this over raw SQL for supported scenarios.\n' +
+    'Don\'t use when: you need a custom query not covered by any skill (use execute_sql), or exploring what skills exist (use list_skills).\n\n' +
+    'Examples:\n' +
+    '1. Full scrolling analysis: skillId="scrolling_analysis", params={process_name: "com.example.app"}\n' +
+    '2. Single jank frame detail: skillId="jank_frame_detail", params={frame_number: 42, process_name: "com.example.app"}\n' +
+    '3. Startup analysis: skillId="startup_analysis", params={process_name: "com.example.app"}',
     {
       skillId: z.string().describe('Skill identifier (e.g. "scrolling_analysis", "jank_frame_detail", "cpu_analysis")'),
       params: z.record(z.string(), z.any()).optional().describe(
@@ -729,7 +738,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const lookupSqlSchema = tool(
     'lookup_sql_schema',
     'Search the Perfetto SQL stdlib index for table, view, and function definitions matching a keyword. ' +
-    'Use this to discover available SQL entities before writing raw SQL queries.',
+    'Use this to discover available SQL entities before writing raw SQL queries.\n\n' +
+    'Use when: you need to find table/view/function names before writing SQL, or verifying column names exist.\n' +
+    'Don\'t use when: you already know the exact table name, or need the full stdlib module list (use list_stdlib_modules).\n\n' +
+    'Examples:\n' +
+    '1. Find frame-related tables: keyword="frame_timeline"\n' +
+    '2. Find binder tables: keyword="binder"\n' +
+    '3. Find thread state columns: keyword="thread_state"',
     {
       keyword: z.string().describe(
         'Search keyword (e.g. "jank", "slice", "thread_state", "android_frames")'
@@ -842,7 +857,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'fetch_artifact',
     'Retrieve detailed data for a previously stored artifact from invoke_skill results. ' +
     'Supports pagination for large datasets — use offset/limit to page through rows without token overflow. ' +
-    'Response includes totalRows and hasMore to guide pagination. ALL data is accessible; nothing is hidden.',
+    'Response includes totalRows and hasMore to guide pagination. ALL data is accessible; nothing is hidden.\n\n' +
+    'Use when: you need detailed data from a previous invoke_skill result (artifacts are referenced by ID in skill responses).\n' +
+    'Don\'t use when: you need new data (use invoke_skill or execute_sql instead).\n\n' +
+    'Examples:\n' +
+    '1. Get summary of skill result: artifactId="art-1", detail="summary"\n' +
+    '2. Page through jank frames: artifactId="art-2", detail="rows", offset=0, limit=50\n' +
+    '3. Get next page: artifactId="art-2", detail="rows", offset=50, limit=50',
     {
       artifactId: z.string().describe('Artifact ID (e.g. "art-1") from a previous invoke_skill response'),
       detail: z.enum(['summary', 'rows', 'full']).optional().describe(
@@ -1112,7 +1133,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'submit_plan',
     'Submit your structured analysis plan BEFORE starting any analysis. ' +
     'Define phases with goals and expected tools. The system tracks plan adherence and warns on deviation. ' +
-    'You MUST call this tool as your first action in every analysis.',
+    'You MUST call this tool as your first action in every analysis.\n\n' +
+    'Use when: starting any new analysis — this is mandatory before execute_sql or invoke_skill.\n' +
+    'Don\'t use when: plan already submitted (use revise_plan to modify, update_plan_phase to track progress).\n\n' +
+    'Examples:\n' +
+    '1. Scrolling plan: phases=[{id:"p1", name:"概览采集", goal:"获取帧统计和卡顿分布", expectedTools:["invoke_skill"]}, ' +
+    '{id:"p2", name:"根因分析", goal:"逐帧诊断卡顿原因", expectedTools:["invoke_skill","execute_sql"]}, ' +
+    '{id:"p3", name:"深入验证", goal:"验证根因假设", expectedTools:["execute_sql","fetch_artifact"]}], ' +
+    'successCriteria="识别卡顿根因并提供量化证据"',
     {
       phases: z.array(z.object({
         id: z.string().describe('Phase identifier (e.g. "p1", "p2")'),

@@ -27,6 +27,7 @@ export * from './types';
 // Graders
 export { CodeGrader, createCodeGrader } from './codeGrader';
 export { ModelGrader, createModelGrader, ModelGraderOptions } from './modelGrader';
+export { ProcessGrader, createProcessGrader } from './processGrader';
 
 // Scenario Loading
 export {

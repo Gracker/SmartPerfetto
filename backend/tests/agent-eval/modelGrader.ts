@@ -1,13 +1,18 @@
 /**
  * Model-based Grader
  *
- * Uses LLM (DeepSeek) to evaluate agent responses based on:
+ * Uses LLM to evaluate agent responses based on:
  * - Answer relevance and accuracy
  * - Topic coverage (should/shouldn't mention)
  * - Answer quality (technical, recommendations, data citation)
  * - Rubric-based detailed grading
  *
+ * Supports two backends:
+ * - Claude Haiku (preferred): via Anthropic SDK, fixed version for reproducibility
+ * - DeepSeek (legacy fallback): via OpenAI-compatible SDK
+ *
  * Uses temperature=0 for more consistent results.
+ * Results include grader metadata for reproducibility tracking.
  */
 
 import {
@@ -22,14 +27,26 @@ import {
 // Import OpenAI for DeepSeek compatibility
 import OpenAI from 'openai';
 
+/** Grader metadata for reproducibility — attached to every grade result. */
+interface GraderMetadata {
+  model: string;
+  temperature: number;
+  backend: 'anthropic' | 'deepseek';
+  promptVersion: string;
+  timestamp: number;
+}
+
+/** Current prompt version — bump when changing grading prompts. */
+const PROMPT_VERSION = '1.0.0';
+
 export interface ModelGraderOptions {
-  /** API Key (defaults to DEEPSEEK_API_KEY env var) */
+  /** API Key (defaults to ANTHROPIC_API_KEY, then DEEPSEEK_API_KEY) */
   apiKey?: string;
 
-  /** Base URL (defaults to DeepSeek API) */
+  /** Base URL (defaults to Anthropic API, falls back to DeepSeek) */
   baseUrl?: string;
 
-  /** Model to use */
+  /** Model to use (defaults to claude-haiku-4-5-20251001) */
   model?: string;
 
   /** Temperature (0 for determinism) */
@@ -37,6 +54,9 @@ export interface ModelGraderOptions {
 
   /** Max tokens for response */
   maxTokens?: number;
+
+  /** Force DeepSeek backend (legacy, defaults to false) */
+  useDeepSeek?: boolean;
 }
 
 export class ModelGrader implements Grader {
@@ -47,21 +67,52 @@ export class ModelGrader implements Grader {
   private model: string;
   private temperature: number;
   private maxTokens: number;
+  private backend: 'anthropic' | 'deepseek';
 
   constructor(options: ModelGraderOptions = {}) {
-    const apiKey = options.apiKey || process.env.DEEPSEEK_API_KEY;
-    if (!apiKey) {
-      throw new Error('DEEPSEEK_API_KEY is required for ModelGrader');
+    // Prefer Anthropic (Claude Haiku) over DeepSeek
+    const useDeepSeek = options.useDeepSeek ?? false;
+    const anthropicKey = process.env.ANTHROPIC_API_KEY;
+    const deepseekKey = process.env.DEEPSEEK_API_KEY;
+
+    if (!useDeepSeek && anthropicKey) {
+      // Claude Haiku via Anthropic's OpenAI-compatible endpoint
+      this.client = new OpenAI({
+        apiKey: options.apiKey || anthropicKey,
+        baseURL: options.baseUrl || 'https://api.anthropic.com/v1/',
+        defaultHeaders: { 'anthropic-version': '2023-06-01' },
+      });
+      this.model = options.model || 'claude-haiku-4-5-20251001';
+      this.backend = 'anthropic';
+    } else if (deepseekKey || options.apiKey) {
+      // DeepSeek fallback
+      const apiKey = options.apiKey || deepseekKey;
+      if (!apiKey) {
+        throw new Error('ANTHROPIC_API_KEY or DEEPSEEK_API_KEY is required for ModelGrader');
+      }
+      this.client = new OpenAI({
+        apiKey,
+        baseURL: options.baseUrl || 'https://api.deepseek.com/v1',
+      });
+      this.model = options.model || 'deepseek-chat';
+      this.backend = 'deepseek';
+    } else {
+      throw new Error('ANTHROPIC_API_KEY or DEEPSEEK_API_KEY is required for ModelGrader');
     }
 
-    this.client = new OpenAI({
-      apiKey,
-      baseURL: options.baseUrl || 'https://api.deepseek.com/v1',
-    });
-
-    this.model = options.model || 'deepseek-chat';
     this.temperature = options.temperature ?? 0; // Deterministic by default
     this.maxTokens = options.maxTokens || 2000;
+  }
+
+  /** Get current grader metadata for reproducibility tracking. */
+  private getMetadata(): GraderMetadata {
+    return {
+      model: this.model,
+      temperature: this.temperature,
+      backend: this.backend,
+      promptVersion: PROMPT_VERSION,
+      timestamp: Date.now(),
+    };
   }
 
   async grade(response: AgentResponse, scenario: TestScenario): Promise<GradeResult> {
@@ -478,7 +529,7 @@ Respond in JSON format:
       passed,
       criterionScores,
       feedback,
-      raw: details,
+      raw: { ...details, _graderMetadata: this.getMetadata() },
     };
   }
 }
