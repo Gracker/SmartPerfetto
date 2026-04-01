@@ -196,6 +196,8 @@ invoke_skill("memory_pressure_in_range", {
 | kswapd_events > 0 且 kswapd_total_ms 显著 | kswapd 活跃 | Page Cache 正在被回收，文件读取被迫回落到磁盘 |
 | direct_reclaim_events > 0 | 存在直接回收 | 应用线程在分配内存时被阻塞等待内存回收，直接导致 D 状态 |
 | lmk_events > 0 | 存在 LMK 杀进程 | 系统内存极度紧张，已在杀进程释放内存 |
+| page_cache_add_events 很高 | >500 次 | 大量 Page Cache miss（`mm_filemap_add_to_page_cache` ftrace 事件），说明文件页不在缓存中，必须从磁盘读取 |
+| page_cache_delete_events > 0 | 存在页驱逐 | Page Cache 页面被驱逐（`mm_filemap_delete_from_page_cache`），直接证明内存压力导致 Page Cache 被回收 |
 
 **对根因结论的影响**：
 

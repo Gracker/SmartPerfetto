@@ -205,6 +205,26 @@ steps:
         FROM alloc_stalls
       ),
 
+      -- Page cache activity (mm_filemap_add_to_page_cache = cache miss → disk read)
+      page_cache_adds AS (
+        SELECT COUNT(*) AS add_count
+        FROM raw r
+        CROSS JOIN params p
+        WHERE r.name = 'mm_filemap_add_to_page_cache'
+          AND r.ts >= p.start_ts
+          AND r.ts <= p.end_ts
+      ),
+
+      -- Page cache evictions (mm_filemap_delete_from_page_cache = page evicted)
+      page_cache_deletes AS (
+        SELECT COUNT(*) AS delete_count
+        FROM raw r
+        CROSS JOIN params p
+        WHERE r.name = 'mm_filemap_delete_from_page_cache'
+          AND r.ts >= p.start_ts
+          AND r.ts <= p.end_ts
+      ),
+
       -- Calculate overall pressure score
       pressure_score AS (
         SELECT
@@ -228,6 +248,11 @@ steps:
           CASE
             WHEN (SELECT alloc_stall_count FROM alloc_stall_summary) > 3 THEN 20
             WHEN (SELECT alloc_stall_count FROM alloc_stall_summary) > 0 THEN 10
+            ELSE 0
+          END +
+          CASE
+            WHEN (SELECT delete_count FROM page_cache_deletes) > 100 THEN 15
+            WHEN (SELECT delete_count FROM page_cache_deletes) > 10 THEN 5
             ELSE 0
           END AS score
       )
@@ -253,6 +278,10 @@ steps:
         -- Allocation stall metrics
         (SELECT alloc_stall_count FROM alloc_stall_summary) AS alloc_stall_events,
         ROUND((SELECT alloc_stall_max_ns FROM alloc_stall_summary) / 1000000.0, 2) AS alloc_stall_max_ms,
+
+        -- Page cache activity
+        (SELECT add_count FROM page_cache_adds) AS page_cache_add_events,
+        (SELECT delete_count FROM page_cache_deletes) AS page_cache_delete_events,
 
         -- PSI metrics (if available)
         (SELECT max_psi_value FROM psi_summary) AS psi_max,
@@ -301,6 +330,12 @@ steps:
         - name: alloc_stall_events
           type: number
           description: Number of allocation stalls
+        - name: page_cache_add_events
+          type: number
+          description: Page cache adds (mm_filemap_add_to_page_cache = cache miss, disk read)
+        - name: page_cache_delete_events
+          type: number
+          description: Page cache evictions (mm_filemap_delete_from_page_cache = memory pressure)
 
 diagnostics:
   - id: high_memory_pressure
