@@ -51,6 +51,7 @@ steps:
     display:
       level: key
       layer: overview
+      show: false
       title: "主线程状态分布（指定时间范围）"
       columns:
         - name: state

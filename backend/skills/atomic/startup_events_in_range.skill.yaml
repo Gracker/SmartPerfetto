@@ -54,7 +54,6 @@ display:
       type: duration
       format: duration_ms
       unit: ms
-      hidden: true
     - name: start_ts
       label: "开始时间"
       type: timestamp
@@ -67,10 +66,11 @@ display:
       unit: ns
       clickAction: navigate_timeline
     - name: dur_ns
-      label: "耗时"
+      label: "耗时(ns)"
       type: duration
       format: duration_ms
       unit: ns
+      hidden: true
     - name: ttid_ms
       label: "TTID"
       type: duration
@@ -210,7 +210,7 @@ sql: |
     dur / 1e6 as dur_ms,
     printf('%d', ts) as start_ts,
     printf('%d', ts + dur) as end_ts,
-    CAST(dur AS INTEGER) as dur_ns,
+    printf('%d', dur) as dur_ns,
     time_to_initial_display / 1e6 as ttid_ms,
     time_to_full_display / 1e6 as ttfd_ms,
     CASE startup_type

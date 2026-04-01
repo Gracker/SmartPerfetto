@@ -166,8 +166,8 @@ fetch_artifact("art-N", detail="rows", offset=0, limit=50)  // 对每个关键 a
 **Phase 2.56 — 内存压力检测（D 状态异常偏高时应执行 ⚠️）：**
 
 **触发条件**（满足任一即执行）：
-- D 状态占启动时长 >40%（正常冷启动中 DEX/OAT 文件通常命中 Page Cache，D 状态不应这么高）
-- D 状态 20-40% 且 `hot_slice_states` 中 `filemap_fault`/`do_page_fault` 占 blocked_functions 行数 >50%（页缺失密集，暗示 Page Cache 不足）
+- D 状态占启动时长 >10%（正常冷启动中 DEX/OAT 文件命中 Page Cache 后 D 状态应很低；>10% 已足以暗示 IO 问题，需排查是否为内存压力导致 Page Cache 失效）
+- 存在 kswapd 线程活动（无论 D 状态占比多少，kswapd 活跃即说明系统在回收内存）
 
 **排除场景**（以下场景即使无内存压力也可能产生高 D 状态，Phase 2.56 仍应执行但结论中需结合 Phase 2.6 的 `startup_slow_reasons` 信号综合判断）：
 - `dex2oat` 并发活跃 → OAT 文件正在重新编译（首次安装/升级/Profile 缺失）
@@ -519,7 +519,7 @@ TTID 和 TTFD 是两个不同的指标，必须区分：
 
    | 维度 | 触发条件 | 数据来源 |
    |------|---------|---------|
-   | 内存压力 | Phase 2.56 被执行（D 状态 >40% 或 filemap_fault 密集）| memory_pressure_in_range |
+   | 内存压力 | Phase 2.56 被执行（D 状态 >10% 或 kswapd 活跃）| memory_pressure_in_range |
    | Binder 线程池 | binder_pool artifact 存在 | Binder 线程池利用率（optional artifact） |
    | Thermal | 均频远低于峰值（>10% 差距）| thermal_zone counters（需 execute_sql 查询） |
    | IO 子系统 | D 状态 >30% 且 memory_pressure 排除 | 文件 IO 类型、blocked_functions |
