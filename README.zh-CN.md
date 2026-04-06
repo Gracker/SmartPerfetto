@@ -182,7 +182,7 @@ curl http://localhost:3000/api/agent/v1/logs/{sessionId}
 - [MCP 工具参考](docs/mcp-tools-reference.md) — 17 个 MCP 工具的参数和行为
 - [Skill 系统指南](docs/skill-system-guide.md) — YAML Skill DSL 参考
 - [数据合约](backend/docs/DATA_CONTRACT_DESIGN.md) — DataEnvelope v2.0 规范
-- [渲染管线](rendering_pipelines/) — 30 份 Android 渲染管线参考文档
+- [渲染管线](docs/rendering_pipelines/) — 30 份 Android 渲染管线参考文档
 
 ## 贡献
 

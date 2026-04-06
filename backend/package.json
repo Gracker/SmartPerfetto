@@ -30,11 +30,9 @@
     "test:scrolling": "tsx src/scripts/runScrollingTest.ts",
     "test:scrolling:real": "tsx src/scripts/runScrollingTestRealData.ts",
     "verify:agent-sse-scrolling": "tsx src/scripts/verifyAgentSseScrolling.ts",
-    "generate-types": "tsx scripts/generate-skill-types.ts",
-    "sync-types": "tsx scripts/sync-types-to-frontend.ts",
     "generate:frontend-types": "tsx scripts/generateFrontendTypes.ts",
     "check:types": "tsx scripts/checkTypesSync.ts",
-    "types": "npm run generate-types && npm run sync-types && npm run generate:frontend-types"
+    "types": "npm run generate:frontend-types"
   },
   "keywords": [
     "perfetto",
@@ -43,7 +41,7 @@
     "ai"
   ],
   "author": "",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.63",
     "@types/better-sqlite3": "^7.6.13",

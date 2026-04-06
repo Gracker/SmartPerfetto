@@ -448,14 +448,9 @@ else
 fi
 
 if [ "$SKIP_BUILD" = false ]; then
-  # Generate skill types (YAML -> TypeScript)
-  echo "Generating skill types..."
+  # Generate frontend types from backend data contract
+  echo "Generating frontend types..."
   cd "$PROJECT_ROOT/backend"
-  npm run generate-types 2>&1 | tee -a "$BACKEND_LOG" || echo "Warning: Skill type generation failed, continuing..."
-  npm run sync-types 2>&1 | tee -a "$BACKEND_LOG" || echo "Warning: Type sync failed, continuing..."
-
-  # Generate frontend types from data contract
-  echo "Generating frontend types from data contract..."
   npm run generate:frontend-types 2>&1 | tee -a "$BACKEND_LOG" || echo "Warning: Frontend type generation failed, continuing..."
 
   # Build backend

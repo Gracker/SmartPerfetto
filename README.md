@@ -242,7 +242,7 @@ curl http://localhost:3000/api/agent/v1/logs/{sessionId}
 - [MCP Tools Reference](docs/mcp-tools-reference.md) — 17 MCP tools with parameters and behavior
 - [Skill System Guide](docs/skill-system-guide.md) — YAML Skill DSL reference
 - [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.md) — DataEnvelope v2.0 specification
-- [Rendering Pipelines](rendering_pipelines/) — 30 Android rendering pipeline reference docs
+- [Rendering Pipelines](docs/rendering_pipelines/) — 30 Android rendering pipeline reference docs
 
 ## Contributing
 
