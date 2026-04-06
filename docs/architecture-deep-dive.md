@@ -12,7 +12,7 @@
 
 SmartPerfetto 就是这个尝试的产物。它在 Perfetto UI 上加了一个 AI 分析面板，用户用自然语言提问（如「分析滑动性能」），背后由 Claude Agent 通过 MCP（Model Context Protocol，Anthropic 提出的工具调用协议）调用 trace_processor 执行 SQL，自主完成多轮数据收集和分析。
 
-写这篇文章的目的，是把构建过程中的工程决策和教训记录下来。从最初的「直接调 API」到现在的最多 20 个 MCP 工具（9 常驻 + 11 条件注入）+ 158 个 YAML Skill + 三层验证体系，中间的每个设计选择都有具体的反例在推动——试过不行才换的方案。这些踩坑记录对做 AI Agent 应用或者做 Android 性能工具的工程师可以直接借鉴。
+写这篇文章的目的，是把构建过程中的工程决策和教训记录下来。从最初的「直接调 API」到现在的最多 20 个 MCP 工具（9 常驻 + 11 条件注入）+ 165 个 YAML Skill + 三层验证体系，中间的每个设计选择都有具体的反例在推动——试过不行才换的方案。这些踩坑记录对做 AI Agent 应用或者做 Android 性能工具的工程师可以直接借鉴。
 
 ## 开篇：同一个 Trace，两条分析路径
 
@@ -463,28 +463,28 @@ steps:
 
 ### 为什么不把每个 Skill 暴露为独立的 MCP Tool？
 
-一个自然的问题是：为什么不直接把 80 个 atomic 分析能力注册为 80 个 MCP Tool，让 Claude 直接调用？
+一个自然的问题是：为什么不直接把 87 个 atomic 分析能力注册为 87 个 MCP Tool，让 Claude 直接调用？
 
-实际试过会发现一个问题：MCP 的 tool list 会随着工具数量线性增长。80 个工具意味着每次 API 调用都要在请求中附带 80 个工具的描述（名称、参数 schema、使用说明），这个固定开销会占据大量 token。更重要的是，当 Claude 面对 80 个工具时，它的选择准确率会下降——工具太多，它不知道该用哪个。
+实际试过会发现一个问题：MCP 的 tool list 会随着工具数量线性增长。87 个工具意味着每次 API 调用都要在请求中附带 87 个工具的描述（名称、参数 schema、使用说明），这个固定开销会占据大量 token。更重要的是，当 Claude 面对 87 个工具时，它的选择准确率会下降——工具太多，它不知道该用哪个。
 
 SmartPerfetto 的设计是 Claude 只看到 2 个和 Skill 相关的 MCP Tool：
 
 - `invoke_skill(skillId, params)` — 执行指定的 Skill
 - `list_skills(category?)` — 按场景类别查询可用的 Skill 列表
 
-通过 `list_skills(category="scrolling")` 按需发现能力，再用 `invoke_skill` 调用。**2 个 MCP Tool 封装了 158+ 个分析能力，工具列表的 token 开销是固定的。**
+通过 `list_skills(category="scrolling")` 按需发现能力，再用 `invoke_skill` 调用。**2 个 MCP Tool 封装了 165+ 个分析能力，工具列表的 token 开销是固定的。**
 
 另一个好处是 YAML 格式降低了贡献门槛。性能分析专家如果对某个分析场景有经验，可以直接写 YAML Skill 定义 SQL 查询和输出格式，不需要懂 TypeScript 或修改后端代码。修改后在开发模式下刷新浏览器即可生效（热加载），迭代周期在秒级。
 
 ### Skill 系统的结构
 
-Skill 数量从项目初期的十几个增长到现在的 158 个，增长的驱动力不是「尽可能多」，而是分析实践中不断遇到新的场景需要覆盖——比如最初只有标准 HWUI 的帧分析，后来遇到 Flutter 应用需要专门的 Skill，再遇到厂商差异需要 override，再遇到启动分析中 JIT、class loading、Binder pool 各自需要独立的检测逻辑。
+Skill 数量从项目初期的十几个增长到现在的 165 个，增长的驱动力不是「尽可能多」，而是分析实践中不断遇到新的场景需要覆盖——比如最初只有标准 HWUI 的帧分析，后来遇到 Flutter 应用需要专门的 Skill，再遇到厂商差异需要 override，再遇到启动分析中 JIT、class loading、Binder pool 各自需要独立的检测逻辑。
 
 当前的 Skill 按类型分布如下：
 
 | 类型 | 数量 | 位置 | 说明 |
 |------|------|------|------|
-| **Atomic** | 80 | `skills/atomic/` | 单一检测能力（VSync 周期、CPU 拓扑、GPU 频率、GC 事件等） |
+| **Atomic** | 87 | `skills/atomic/` | 单一检测能力（VSync 周期、CPU 拓扑、GPU 频率、GC 事件等） |
 | **Composite** | 29 | `skills/composite/` | 多步组合分析（如 scrolling_analysis 编排多个 atomic Skill） |
 | **Pipeline** | 29 | `skills/pipelines/` | 渲染管线检测 + 教学（24+ 种 Android 渲染架构识别） |
 | **Module** | 18 | `skills/modules/` | 按模块分类的分析（app / framework / hardware / kernel） |
@@ -512,7 +512,7 @@ hidden   — 辅助数据（中间计算结果，默认折叠）
                按需展开查看
 ```
 
-Skill 的每个 step 通过 `display.level` 声明自己的展示层级（实际使用最多的是 `detail` — 240 处、`key` — 170 处、`summary` — 81 处）。前端根据 `DataEnvelope` 中的列类型（`timestamp`、`duration`、`percentage`、`bytes` 等）和交互动作（`navigate_timeline` 跳转到 trace 位置、`navigate_range` 选中时间范围、`copy` 复制数据）自动渲染表格和图表——新增一个 Skill，前端不需要写额外的代码。这是 158 个 Skill 而前端代码量仍然可控的关键。
+Skill 的每个 step 通过 `display.level` 声明自己的展示层级（实际使用最多的是 `detail` — 240 处、`key` — 170 处、`summary` — 81 处）。前端根据 `DataEnvelope` 中的列类型（`timestamp`、`duration`、`percentage`、`bytes` 等）和交互动作（`navigate_timeline` 跳转到 trace 位置、`navigate_range` 选中时间范围、`copy` 复制数据）自动渲染表格和图表——新增一个 Skill，前端不需要写额外的代码。这是 165 个 Skill 而前端代码量仍然可控的关键。
 
 ### Step 类型
 

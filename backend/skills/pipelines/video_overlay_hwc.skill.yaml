@@ -42,7 +42,8 @@ teaching:
   summary: |
     使用 HWC (Hardware Composer) 的视频 Overlay 层进行视频渲染。
     视频帧直接从解码器输出到独立的 HWC 层，通常可绕过或显著减少 GPU 合成负担，
-    在设备/内容满足 overlay 条件时实现更低延迟与更好功耗。
+    在设备/内容满足 overlay 条件时实现更低延迟与更好功耗。若回退到 CLIENT，
+    代表合成路径和功耗变差，但不应直接推断“受保护内容一定无法播放”。
 
   mermaid: |
     sequenceDiagram
@@ -70,7 +71,7 @@ teaching:
       Note over HWC: 视频层直接送显示
       deactivate SF
 
-      Note over App,SF: 🎥 硬件 Overlay 零拷贝显示，最低功耗
+      Note over App,SF: 🎥 满足条件时可走硬件 Overlay；实际策略受内容、DRM 与 HWC 能力影响
   thread_roles:
     - thread: MediaCodec
       role: "视频解码"
@@ -85,7 +86,7 @@ teaching:
       description: "视频解码"
     - name: "HWC"
       thread: SurfaceFlinger
-      description: "硬件合成器配置"
+      description: "硬件合成器配置（overlay/client 决策依设备策略变化）"
 
 auto_pin:
   instructions:

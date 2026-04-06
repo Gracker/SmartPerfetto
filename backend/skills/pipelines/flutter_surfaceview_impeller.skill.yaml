@@ -17,23 +17,31 @@ category: rendering
 meta:
   pipeline_id: FLUTTER_SURFACEVIEW_IMPELLER
   display_name: "Flutter SurfaceView (Impeller)"
-  description: "Flutter + Impeller 引擎，预编译 Shader，低首帧延迟"
+  description: "Flutter + Impeller，引擎常见于 SurfaceView render mode"
   icon: "flutter"
   family: flutter
   doc_path: "rendering_pipelines/flutter_surfaceview.md"
 
 detection:
-  required_signals:
-    - thread: "1.ui"
-      min_count: 1
-
   scoring_signals:
     - signal: has_impeller
+      slice_pattern: "*Impeller*"
+      weight: 45
+    - signal: has_entity_pass_hint
       slice_pattern: "*EntityPass*"
-      weight: 80
+      weight: 20
     - signal: has_flutter_raster
-      thread_pattern: "1.raster"
-      weight: 15
+      thread_pattern: "*raster*"
+      weight: 12
+    - signal: has_flutter_ui_hint
+      thread_pattern: "*ui*"
+      weight: 8
+    - signal: has_dart_worker
+      thread_pattern: "DartWorker*"
+      weight: 18
+    - signal: has_flutter_jit
+      slice_pattern: "*io.flutter*"
+      weight: 12
 
   exclude_if:
     - slice_pattern: "*SkGpu*"
@@ -43,21 +51,21 @@ teaching:
   title: "Flutter SurfaceView (Impeller) 渲染管线"
   summary: |
     Flutter 使用 Impeller 渲染引擎，通过 SurfaceView 独立渲染。
-    Impeller 使用预编译 Shader (AOT)，消除了 Skia 的即时编译卡顿，
-    大幅改善首帧性能。新版本 Flutter 趋向以 Impeller 作为默认渲染后端。
+    在 Android 上 Impeller 常使用 Vulkan（不支持时也可能回退到 OpenGL ES 路径），
+    通过更可预测的 shader/pipeline 建立流程减少 Skia 时代的运行时编译卡顿。
 
   mermaid: |
     sequenceDiagram
       participant VA as VSync-app
-      participant UI as 1.ui (Dart)
+      participant UI as ui/main (Dart)
       participant IO as 1.io
-      participant Raster as 1.raster
+      participant Raster as raster
       participant BQ as BufferQueue
       participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
       Note over VA,SF: 📍 Flutter Frame Production (Impeller)
-      VA->>UI: 🔔 VSync → Engine::BeginFrame
+      VA->>UI: 🔔 VSync → BeginFrame (常见)
       activate UI
       UI->>UI: Dart VM 执行 (build → layout → paint)
       UI->>UI: 生成 Layer Tree
@@ -65,8 +73,8 @@ teaching:
       deactivate UI
 
       activate Raster
-      Raster->>Raster: EntityPass::Render (Impeller)
-      Raster->>Raster: Vulkan GPU 光栅化
+      Raster->>Raster: Impeller raster / draw passes
+      Raster->>Raster: Vulkan 或 OpenGL ES GPU 光栅化
       Raster->>BQ: queueBuffer
       deactivate Raster
 
@@ -78,18 +86,18 @@ teaching:
       SF->>SF: HWC Composite
       deactivate SF
 
-      Note over IO: 1.io 线程负责图片解码、资源加载
+      Note over IO: IO 线程负责图片解码、资源加载
       Note over VA,SF: ✨ Impeller 预编译 Shader，无首帧卡顿
 
   thread_roles:
-    - thread: "1.ui"
+    - thread: "ui / main / 1.ui"
       role: "Dart UI 线程"
-      description: "执行 Dart 代码，Build/Layout/Paint，生成 Layer Tree"
-      trace_tags: "Engine::BeginFrame, FrameworkAnimator"
-    - thread: "1.raster"
+      description: "执行 Dart 代码，Build/Layout/Paint，生成 Layer Tree；线程名依版本变化"
+      trace_tags: "Engine::BeginFrame 等常见提示信号，不保证稳定"
+    - thread: "raster / 1.raster"
       role: "Impeller 光栅化"
-      description: "使用 Impeller (Vulkan) 光栅化 Layer Tree"
-      trace_tags: "Rasterizer::DrawToSurfaces, EntityPass::Render"
+      description: "使用 Impeller 光栅化 Layer Tree，常见后端为 Vulkan"
+      trace_tags: "Rasterizer::DrawToSurfaces, EntityPass::* 等提示信号"
     - thread: "1.io"
       role: "Flutter IO"
       description: "图片解码、资源加载"
@@ -99,15 +107,15 @@ teaching:
       description: "将 Flutter Layer 与系统 UI 合成"
 
   key_slices:
-    - name: "Engine::BeginFrame"
-      thread: "1.ui"
-      description: "帧开始，驱动 Dart 运行"
-    - name: "EntityPass::Render"
-      thread: "1.raster"
-      description: "Impeller 实体渲染"
+    - name: "Engine::BeginFrame (hint)"
+      thread: "ui / main / 1.ui"
+      description: "帧开始提示信号，线程名与可见性依版本变化"
+    - name: "EntityPass::* (hint)"
+      thread: "raster / 1.raster"
+      description: "Impeller 渲染提示信号，不应作为唯一判据"
     - name: "Rasterizer::DrawToSurfaces"
-      thread: "1.raster"
-      description: "光栅化到 Surface"
+      thread: "raster / 1.raster"
+      description: "常见的光栅化输出提示信号"
 
 auto_pin:
   instructions:

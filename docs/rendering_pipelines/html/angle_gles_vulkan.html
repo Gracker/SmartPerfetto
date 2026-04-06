@@ -210,9 +210,9 @@
         <h1>ANGLE Rendering Pipeline (GLES-over-Vulkan)</h1>
 <br>
 <p>> [!WARNING]</p>
-<p>> <b>Android 15+ 强制采用</b>: 从 Android 15 开始，新设备将<b>强制</b>使用 ANGLE 作为 OpenGL ES 的默认实现。如果您的 App 依赖厂商特定的 GLES 扩展（如 <code>GL_QCOM_*</code>），必须测试 ANGLE 兼容性或迁移到 Vulkan。</p>
+<p>> <b>Android 15+ 推荐采用</b>: Android 15+ 将 ANGLE 作为重要的 GLES 兼容/统一实现方向纳入生态推进，但仍要以设备、OEM 与 provider 配置为准。如果您的 App 依赖厂商特定的 GLES 扩展（如 <code>GL_QCOM_*</code>），必须测试 ANGLE 兼容性或迁移到 Vulkan。</p>
 <br>
-<p><b>ANGLE</b> (Almost Native Graphics Layer Engine) 是 Google 开发的开源图形抽象层，将 OpenGL ES API 翻译为底层原生 API (Vulkan/Metal/D3D)。从 Android 10 开始部分设备启用，<b>Android 15+ 成为强制默认 GLES 实现</b>。</p>
+<p><b>ANGLE</b> (Almost Native Graphics Layer Engine) 是 Google 开发的开源图形抽象层，将 OpenGL ES API 翻译为底层原生 API (Vulkan/Metal/D3D)。从 Android 10 开始它已经可以在部分设备或调试路径中启用；到 Android 15+，它在生态中的重要性进一步提升，但是否默认启用仍要看具体设备。</p>
 <br>
 <h2>1. 为什么需要 ANGLE？</h2>
 <br>
@@ -288,12 +288,12 @@ adb shell settings delete global angle_gl_driver_all_apps
 <p>|:---|:---|:---|</p>
 <p>| <b>Draw Call 开销</b> | 较高 (状态机) | 较低 (显式状态) |</p>
 <p>| <b>多线程</b> | 有限 | 完全支持 |</p>
-<p>| <b>Shader 编译</b> | 运行时 | 预编译 SPIR-V |</p>
+<p>| <b>Shader 编译</b> | 运行时 | GLSL → SPIR-V 翻译 + Vulkan pipeline cache |</p>
 <p>| <b>调试工具</b> | 厂商特定 | RenderDoc 统一 |</p>
 <br>
 <h3>5.2 开销</h3>
 <br>
-<li>  **翻译层开销**: ~5-10% CPU 开销 (复杂场景)</li>
+<li>  **翻译层开销**: 存在额外状态转换和命令翻译成本，但具体开销强依赖 workload，不宜写死固定百分比。</li>
 <li>  **首次 Shader 编译**: 稍慢 (GLSL → SPIR-V → GPU Binary)</li>
 <li>  **内存**: 略高 (需要维护翻译状态)</li>
 <br>
@@ -301,9 +301,9 @@ adb shell settings delete global angle_gl_driver_all_apps
 <br>
 <p>在 Perfetto 中 ANGLE 的特征：</p>
 <br>
-<p>1.  <b>GPU Track</b>: 看到 <code>vkQueue*</code> 而非 <code>glDraw*</code></p>
-<p>2.  <b>ANGLE Thread</b>: 可能有独立的翻译线程</p>
-<p>3.  <b>Shader Compile</b>: <code>ANGLE Shader Compile</code> Slice</p>
+<p>1.  <b>GPU / Vulkan 侧信号</b>: 可能更多看到 <code>vkQueue*</code> / <code>vkCmd*</code> 而非纯 <code>glDraw*</code></p>
+<p>2.  <b>ANGLE Thread</b>: 可能有独立的翻译 / 状态管理线程</p>
+<p>3.  <b>Shader Compile</b>: 某些 build / tracing 配置下可能出现 <code>ANGLE</code> 相关编译 slice</p>
 <br>
 <h3>6.1 常见问题定位</h3>
 <br>
@@ -326,12 +326,12 @@ ORDER BY dur DESC LIMIT 20;
 <br>
 <p>| Android 版本 | ANGLE 状态 |</p>
 <p>|:---|:---|</p>
-<p>| <b>Android 16</b> (API 36) | <b>强制默认</b> + VPA 统一 Vulkan 特性 |</p>
-<p>| <b>Android 15</b> (API 35) | <b>强制默认</b>，新设备无法绕过 |</p>
-<p>| Android 14 (API 34) | 多数设备默认 |</p>
-<p>| Android 13 (API 33) | 多数设备默认 |</p>
-<p>| Android 12 (API 31) | 更广泛默认启用 |</p>
-<p>| Android 11 (API 30) | 部分设备默认启用 |</p>
+<p>| <b>Android 16</b> (API 36) | 生态方向继续推进 ANGLE / AVP，但仍依设备策略 |</p>
+<p>| <b>Android 15</b> (API 35) | ANGLE 重要性提升，默认与否看设备 / OEM |</p>
+<p>| Android 14 (API 34) | 更多设备开始实验 / 采用 |</p>
+<p>| Android 13 (API 33) | 部分设备可见 |</p>
+<p>| Android 12 (API 31) | 持续改进 |</p>
+<p>| Android 11 (API 30) | 部分设备可见 |</p>
 <p>| Android 10 (API 29) | 实验性，需手动启用 |</p>
 <br>
     </div>

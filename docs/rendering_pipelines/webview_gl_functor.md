@@ -1,6 +1,6 @@
 # WebView GL Functor Pipeline (Standard/Shared)
 
-在普通的 App 页面中嵌入 WebView（如新闻详情页），默认使用的是 **GL Functor** 模式。
+在普通的 App 页面中嵌入 WebView（如新闻详情页）时，**GL Functor / in-process draw callback** 是最常见的经典路径之一，但是否命中这条路径仍取决于 WebView 版本、特性开关和设备条件。
 
 ## 0. 初始化与桥接 (WebViewFactory)
 
@@ -10,7 +10,7 @@
 Android 系统通过 `WebViewFactory` 类动态加载 WebView 实现（通常是 Google WebView 或 Chrome）。
 1.  **WebViewFactory.getProvider()**:
     *   这是 Framework 的入口。
-    *   它会 `dlopen` 系统 WebView 的 Native 库 (`libwebviewchromium.so`)。
+    *   它会 `dlopen` WebView 实现对应的 Native 库（如 `libmonochrome.so` 或 `libwebviewchromium.so`，取决于 Trichrome/Monochrome 架构）。
     *   实例化 `WebViewChromiumFactoryProvider`。
 2.  **AwContents**:
     *   这是 Chromium 侧与 Android `WebView` 类对应的一对一核心对象。
@@ -25,12 +25,13 @@ Android 系统通过 `WebViewFactory` 类动态加载 WebView 实现（通常是
 
 此模式的核心特点是：WebView **蹭车**。它没有独立的 Surface，而是把自己的绘制指令注入到 App 的 `RenderThread` 中执行。
 
-### 第一阶段：Renderer Process (渲染器进程)
+### 第一阶段：Chromium 渲染侧
 1.  **Parse/Style/Layout**: 解析 HTML/CSS，计算页面布局。
 2.  **Paint**: 生成 DisplayItemList。
 3.  **Commit**: 提交给 Compositor Thread。
-4.  **Tiling/Raster**: 在渲染进程生成 DrawQuad 指令（注意，这里通常生成的是“元指令”，还不是最终像素）。
-5.  **Invalidate**: 通过 IPC 通知 App 进程：“我准备好了，你重绘一下”。
+4.  **Tiling**: Compositor Thread 将图层切分为 Tile。
+5.  **Raster**: Raster Worker 将 Tile 光栅化；WebView 的 browser code、GPU / network 等服务通常仍在宿主 app 进程内，renderer 进程是否独立取决于当前 multiprocess 配置。
+6.  **Invalidate**: 通过 IPC / 回调通知宿主进程：“我准备好了，你重绘一下”。
 
 ### 第二阶段：App UI Thread (主线程)
 1.  **onDraw**: View 树遍历到 WebView。
@@ -54,7 +55,7 @@ sequenceDiagram
     participant HW as Hardware VSync
     participant UI as App UI Thread
     participant RT as App RenderThread
-    participant WP as WebView (Renderer)
+    participant WP as Chromium Code (in RT)
     participant SF as SurfaceFlinger
     participant HWC as HWC
 
@@ -72,7 +73,7 @@ sequenceDiagram
         
         activate RT
         RT->>RT: DrawFrame
-        RT->>WP: Invoke Functor (DrawGL)
+        RT->>WP: Invoke Functor (DrawGL, in-process callback)
         
         activate WP
         WP->>WP: Execute GL Commands (Shared Context)
@@ -103,11 +104,11 @@ sequenceDiagram
 | 线程名称 | 关键职责 | 常见 Trace 标签 |
 |:---|:---|:---|
 | **main** (App) | View 构建, WebView.onDraw 记录 DrawFunctor | `Choreographer#doFrame` |
-| **RenderThread** (App) | GPU 渲染, **同步调用 WebView DrawGL** | `DrawFrame`, `DrawFunctor`, `invoke` |
+| **RenderThread** (App) | GPU 渲染, **同步调用 WebView draw callback** | 常见 `DrawFrame`；`DrawFunctor` / `DrawGL` 仅在部分 trace 中可见 |
 | **CrRendererMain** | Blink 主线程, HTML/CSS 解析布局 | `ThreadControllerImpl::RunTask` |
 | **Compositor** | CC 合成, 生成 DrawQuad | `Scheduler::BeginFrame` |
-| **VizCompositorThread** | GPU 指令 (OOP-Raster 模式) | `Gpu::DrawQuads` |
-| **SurfaceFlinger** | 合成最终画面 | `handleMessageRefresh` |
+| **VizCompositorThread** | 条件触发的独立合成模式下可能出现 | 仅在特定模式 / tracing 下可见 |
+| **SurfaceFlinger** | 合成最终画面 | 常见 `latchBuffer` / FrameTimeline / SF 主循环片段 |
 
 ---
 
@@ -115,46 +116,33 @@ sequenceDiagram
 
 从 Android Q 开始，Framework 引入了 **Hardware Draw Functor API**，作为传统 GL Functor 的演进版本。
 
-### 3.1 与传统 GL Functor 的区别
+### 4.1 与传统 GL Functor 的区别
 
 | 特性 | Legacy GL Functor | Hardware Draw Functor |
 |:---|:---|:---|
-| **Fence 控制** | 隐式 | **显式** (App 可控制 acquireFence) |
-| **同步模式** | 强制同步 | 支持异步 |
-| **Vulkan 支持** | ❌ 仅 GLES | ✅ GLES + Vulkan |
-| **线程安全** | 有限 | 完全线程安全 |
+| **Fence / 提交模型** | 较偏隐式 | 更现代，但仍受 Framework / provider 私有接口约束 |
+| **同步模式** | 以同步 draw callback 为主 | 能力更灵活，但未必完全异步 |
+| **Vulkan 支持** | 传统上偏 GLES | 现代实现可能接入 Vulkan |
+| **线程安全** | 依赖具体 provider 实现 | 不宜直接写成“完全线程安全” |
 
-### 3.2 核心 API (Native)
+### 4.2 核心 API (Native)
 
 ```c
-// 创建 Functor
-typedef int (*AWDrawFn)(long functor, void* data, 
-                         AWDrawFnCallbackInfo* callbackInfo);
-
-// 注册回调
-AHardwareBufferFunctorProvider_create(
-    AWDrawFn drawFn,
-    void* userData,
-    int64_t* outFunctorId
-);
-
-// 提交给 RenderThread
-AHardwareBufferFunctorProvider_apply(
-    int64_t functorId,
-    AHardwareBuffer* buffer,
-    int acquireFenceFd  // 显式 Fence
-);
+// Hardware Draw Functor 使用私有接口 (draw_fn.h)
+// 核心回调结构（非公开 NDK API，属于 WebView provider 与 Framework 的私有接口）：
+// - AwDrawFn_DrawGL: GL 模式的绘制回调
+// - AwDrawFn_DrawVk: Vulkan 模式的绘制回调
+// App 的 RenderThread 通过函数指针回调执行 Chromium 的渲染代码
 ```
 
-### 3.3 性能优势
+### 4.3 性能优势
 
-1.  **Fence Pipelining**: WebView 可以在 GPU 还没完成时就返回，RenderThread 不被阻塞。
-2.  **Vulkan Path**: 现代浏览器内核 (Viz) 可以走 Vulkan 路径，Command Buffer 更高效。
-3.  **Trace 可见性**: 在 Perfetto 中可以看到 `HardwareDrawFunctor` 独立 Slice，便于分析。
+1.  **Fence-based GPU Sync**: 引入更现代的 fence / 提交控制后，CPU 等待方式可能减少，但 RenderThread 是否仍受 WebView 绘制阶段拖累，要以实际 trace 为准。
+2.  **Vulkan Path**: 现代浏览器内核可以走 Vulkan 路径，但是否启用与是否暴露到系统 trace 是两件事。
+3.  **Trace 可见性**: `HardwareDrawFunctor`、`DrawFn_DrawGL`、`DrawFn_DrawVk` 等名称都可能出现在特定 build / tracing 配置中，不应被当作稳定 contract。
 
-### 3.4 兼容性说明
+### 4.4 兼容性说明
 
 *   **Android 10 (Q)**: 引入基础 API。
 *   **Android 11 (R)**: 完善异步模式。
 *   **Android 12 (S)**: 与 BLAST 深度整合。
-

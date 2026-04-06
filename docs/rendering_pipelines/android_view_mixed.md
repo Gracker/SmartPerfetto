@@ -24,13 +24,12 @@
 *   **Pipeline B (Media)**: 独立于 Vsync（或尝试对齐），解码视频帧，直接 `queueBuffer` 到由于 SurfaceView 创建的独立 BufferQueue。
 
 ### 阶段二：打洞与合成 (Hole Punching & Composite)
-1.  **Hole Punching**:
-    *   View 系统在 SurfaceView 所在的区域绘制透明像素 (`#00000000`)。
-    *   这告诉 SurfaceFlinger：“这块区域我不管，透下去显示后面的内容”。
+1.  **Hole Punching / 独立层配合**:
+    *   常见实现会让宿主窗口在 SurfaceView 区域不再绘制最终内容，或通过独立 layer / 裁剪策略为 SurfaceView 留出显示区域。具体机制不应简单固化为某个 `clipOut()` 调用。
 2.  **SurfaceFlinger Latch**:
     *   SF 同时接收到两个 Surface 的 Buffer 更新。
-    *   **Layer 0 (Top)**: App UI (带透明洞)。
-    *   **Layer -1 (Bottom)**: 视频内容。
+    *   **Layer Z=0 (Top)**: App UI (带 clipOut 裁剪区域)。
+    *   **Layer Z=-1 (Bottom)**: 视频内容 (relative Z-order，非全局 layer ID)。
 3.  **Hardware Composite**:
     *   HWC 将这两层叠加，用户看到的是一张完整的界面。
 
@@ -95,6 +94,6 @@ sequenceDiagram
 ```
 
 ## 4. 性能特征
-*   **UI 卡顿不影响视频**: 即使主线程因为 RecyclerView 极其复杂而掉帧，视频流通常依然流畅（因为它是独立的 Surface）。
-*   **同步挑战**: 如果列表快速滚动，SurfaceView 的位置变化（由 UI 控制）需要和视频帧内容（由 Player 控制）完美同步，否则会出现视频“飘移”或黑边。
-    *   *解法*: Android 12+ 强制使用 BLAST Sync 解决此问题。
+*   **UI 卡顿不一定立刻拖慢视频**: 由于 SurfaceView 是独立 Surface，主线程卡顿时媒体面通常更容易保持连续；但如果几何变换、系统负载、Buffer 压力或 HWC 策略受影响，视频也可能一起抖动。
+*   **同步挑战**: 如果列表快速滚动，SurfaceView 的位置变化（由 UI 控制）需要尽量与视频帧内容（由 Player 控制）对齐，否则会出现视频“飘移”或黑边。
+    *   *解法*: Android 12+ 上 BLAST / Transaction 模型通常能显著减少这类竞态，但并不意味着所有设备都能保证“每一帧 UI 与每一帧视频完美同显”。

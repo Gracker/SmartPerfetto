@@ -1,37 +1,39 @@
 # Vulkan Native Rendering Pipeline
 
 > [!NOTE]
-> **Android 15+ 推荐路径**: Vulkan 已成为 Android 15+ 的默认图形 API。新设备将强制通过 **ANGLE** 处理 GLES 调用，并统一支持 **Vulkan Profiles for Android (VPA)**。
+> **Android 15+ 推荐路径**: Vulkan 已成为 Android 的主低层图形 API，Android 15+ 也进一步推进了 AVP/ANGLE 等能力；但这不等于“所有图形栈默认都是 Vulkan + 强制 ANGLE”。OpenGL ES fallback、设备差异和 OEM 策略仍然存在。
 
 随着 Android 10+ 对 Vulkan 的支持日益成熟，越来越多的高性能应用（游戏、模拟器、UI 框架如 Impeller）开始直接使用 Vulkan API 进行渲染，绕过传统的 GLES 状态机。
 
-## 0. Vulkan Profiles for Android (VPA) — Android 15+
+## 0. Android Vulkan Profile (AVP) — Android 15+
 
-**VPA** 是 Google 为解决 Vulkan 碎片化问题引入的标准化方案。
+> *注: 历史资料中常见 VPA (Vulkan Profiles for Android) 的旧称，新的官方文档更倾向使用 AVP (Android Vulkan Profile / Profiles) 命名。*
+
+**AVP** 是 Google 为解决 Vulkan 碎片化问题引入的标准化方案。
 
 ### 0.1 问题背景
 
 | 问题 | 传统 Vulkan | VPA 解决方案 |
 |:---|:---|:---|
-| **特性碎片化** | 每个设备支持不同的 Extension | 定义标准 Profile (如 `VPA_android_baseline_2022`) |
+| **特性碎片化** | 每个设备支持不同的 Extension | 定义标准 Profile (如 `VP_ANDROID_baseline_2022`) |
 | **能力查询成本** | 运行时逐一查询 | 声明式 Profile 匹配 |
 | **开发复杂度** | 需要大量 fallback 代码 | 保证 Profile 内特性全支持 |
 
 ### 0.2 标准 Profile 层级
 
 ```
-VPA_android_baseline_2021  ← 基础层
+VP_ANDROID_baseline_2021  ← 基础层
        ↓
-VPA_android_baseline_2022  ← 推荐层 (Android 14+)
+VP_ANDROID_baseline_2022  ← 推荐层 (Android 14+)
        ↓
-VPA_android_baseline_2024  ← 最新层 (Android 16+)
+VP_ANDROID_baseline_2024  ← 最新层 (Android 16+, 计划中)
 ```
 
 ### 0.3 使用方式
 
 ```c
 // 检查设备是否支持目标 Profile
-VpProfileProperties profileProps = { VPA_ANDROID_BASELINE_2022, 1 };
+VpProfileProperties profileProps = { VP_ANDROID_BASELINE_2022, 1 };
 VkBool32 supported;
 vpGetPhysicalDeviceProfileSupport(instance, physicalDevice, &profileProps, &supported);
 
@@ -79,9 +81,9 @@ Vulkan 的最大特征是**一切皆显式**。从内存分配到同步原语 (F
 1.  **vkQueuePresentKHR**:
     *   请求将渲染好的 Image 展示到屏幕。
     *   *Wait*: 等待 `RenderFinished` 信号量（确保 GPU 画完了）。
-2.  **Android Integration (BLAST)**:
-    *   在 Android 10+，Vulkan Driver 底层会将这个 Present 操作转换为 `queueBuffer`。
-    *   BLAST Adapter 捕获 Buffer，封装为 Transaction 提交给 SF。
+2.  **Android Integration (Surface / Transaction path)**:
+    *   Vulkan `Present` 最终会落到 Android 的 Surface / Buffer / Transaction 体系中。
+    *   在现代 Android 设备上，这通常意味着通过 BLAST / Transaction 模型进入 SurfaceFlinger，但具体中间层、trace 名称和阻塞点依驱动与平台实现而异。
 
 ---
 
@@ -121,12 +123,12 @@ sequenceDiagram
 
 1.  **Cpu Overhead**: 极低。由于 Command Buffer 可以复用，且 Driver 开销小，CPU 占用远低于 GLES。
 2.  **Pipeline Barriers**: 开发者必须精确控制 Image Layout Transition (e.g., `COLOR_ATTACHMENT_OPTIMAL` -> `PRESENT_SRC_KHR`)，否则会导致显存读写竞争或画面撕裂花屏。
-3.  **Frame Pacing**: 结合 Swappy 库，Vulkan 可以实现微秒级的帧这一预测。
+3.  **Frame Pacing**: 结合 Swappy 库，Vulkan 可以更好地利用 Choreographer、presentation timestamp 和 sync fence 做帧节奏控制。
 
 ## 5. 调试工具
 
 *   **RenderDoc**: 抓帧神器，查看具体 DrawCall 和资源。
-*   **Gapid**: Google 官方图形调试工具。
+*   **AGI (Android GPU Inspector)**: Google 官方图形调试工具（GAPID 的继承者）。
 *   **Validation Layers**: 开发阶段必须开启，Vulkan 出错通常直接 Crash 或黑屏，Layer 是唯一的报错来源。
 
 ## 6. Presentation Mode 详解 (帧率与延迟)
@@ -136,8 +138,8 @@ Vulkan Swapchain 支持多种 Presentation Mode，直接影响帧率稳定性和
 | Mode | 行为 | 延迟 | 撕裂 | 适用场景 |
 |:---|:---|:---|:---|:---|
 | **FIFO** | 严格 VSync，帧队列先进先出 | 较高 (1-2帧) | ❌ 无 | 电影播放、省电 |
-| **FIFO_RELAXED** | VSync，但允许迟到帧跳过等待 | 中等 | ⚠️ 可能 | 游戏 (偶尔掉帧可接受) |
-| **MAILBOX** | 新帧覆盖旧帧，立即上屏 | 最低 | ❌ 无 | 竞技游戏、输入敏感 |
+| **FIFO_RELAXED** | 与 FIFO 类似，但若帧迟于 VSync 则立即展示（可能撕裂） | 中等 | ⚠️ 可能 | 游戏 (偶尔掉帧可接受) |
+| **MAILBOX** | 新帧覆盖旧帧，下一个 VSync 展示最新帧（丢弃中间帧） | 较低 | ❌ 无 | 竞技游戏、输入敏感 |
 | **IMMEDIATE** | 无 VSync，立即 Present | 极低 | ⚠️ 常见 | 基准测试 |
 
 ### 6.1 检测支持的 Mode
@@ -149,7 +151,7 @@ vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &count, modes
 ```
 
 ### 6.2 Android 特性
-*   **默认 FIFO**: Android 为了省电，默认强制 FIFO。
+*   **FIFO 常见**: Android 上 FIFO 往往是最普遍、最保守的选择，但具体可用 mode 与默认策略取决于驱动和设备。
 *   **MAILBOX 支持**: 需要 Android 10+ 且部分厂商 Driver 支持。
 *   **VRR (可变刷新率)**: 需要搭配 Display 的 VRR 能力，详见 [VRR 管线](variable_refresh_rate.md)。
 
@@ -197,5 +199,5 @@ SwappyVk_setSwapIntervalNS(device, swapchain, 16666666);
 
 ### 7.4 Trace 特征
 在 Perfetto 中：
-*   **Swappy**: 独立 Track，显示帧提交时间。
+*   **Swappy**: 如果应用接入并且 trace 配置合适，可能看到独立 track / slice。
 *   **FrameTimeline**: Android 12+ 的原生帧时间线支持。

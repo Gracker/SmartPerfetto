@@ -1,18 +1,21 @@
 # SmartPerfetto MCP Tools Reference
 
-> 18 个 MCP 工具的完整参考文档。Claude 通过这些工具与 trace 数据交互。
+> 20 个 MCP 工具的完整参考文档。Claude 通过这些工具与 trace 数据交互。
 
 ---
 
 ## 概览
 
-SmartPerfetto 通过 MCP (Model Context Protocol) 向 Claude 暴露 18 个工具，分为三类：
+SmartPerfetto 通过 MCP (Model Context Protocol) 向 Claude 暴露最多 20 个工具，分为四类：
 
 | 类别 | 数量 | 说明 | Plan 门控 |
 |------|------|------|-----------|
 | **核心数据访问** | 8 | 始终可用 | execute_sql / invoke_skill 需先 submit_plan |
 | **规划与假设** | 8 | 按需启用 (enableAgentDefinitions) | — |
-| **记忆与模式** | 2 | 始终可用 | — |
+| **记忆与模式** | 1 | 始终可用 | — |
+| **对比模式** | 3 | 双 trace 对比时启用 (referenceTraceId) | — |
+
+**注意：** 非全分析模式（Lightweight Mode）下仅提供 3 个工具：execute_sql、invoke_skill、lookup_sql_schema，所有规划/假设/笔记工具不可用。
 
 ### 工具调用生命周期
 
@@ -405,7 +408,7 @@ Claude 想调用工具
 
 ---
 
-## 记忆与模式工具 (2 个)
+## 记忆与模式工具 (1 个)
 
 ### 17. recall_patterns
 
@@ -448,11 +451,75 @@ Claude 想调用工具
 
 ---
 
-### 18. (学习系统 — 自动运行)
+---
+
+## 对比模式工具 (3 个)
+
+> 仅在双 trace 对比模式下可用（请求中提供了 `referenceTraceId`）。
+
+### 18. execute_sql_on
+
+对指定 trace 执行 SQL 查询（当前 trace 或参考 trace）。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `trace` | enum | 是 | `'current'` 或 `'reference'` — 指定在哪个 trace 上执行 |
+| `sql` | string | 是 | Perfetto SQL 查询 |
+| `summary` | boolean | 否 | `true` 返回统计摘要 (默认 false) |
+
+**使用时机：** 需要单独查询某一侧 trace 的数据，而非通过 `compare_skill` 批量对比。
+
+---
+
+### 19. compare_skill
+
+对当前 trace 和参考 trace 并行执行同一 Skill，返回并排对比结果。
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `skillId` | string | 是 | 要执行的 Skill ID |
+| `params` | Record<string, any> | 否 | Skill 参数 |
+
+**返回值：**
+
+```typescript
+{
+  success: true,
+  current: { /* 当前 trace 的 Skill 结果 */ },
+  reference: { /* 参考 trace 的 Skill 结果 */ },
+  schemaAligned: true  // 两侧结果的列结构是否对齐
+}
+```
+
+**使用时机：** 对比两个 trace 的同一指标（如滑动帧率、启动耗时），是对比分析的首选工具。
+
+---
+
+### 20. get_comparison_context
+
+获取两个 trace 的元数据对比信息。
+
+**无参数。**
+
+**返回值：**
+
+```typescript
+{
+  current: { traceId, device, duration, ... },
+  reference: { traceId, device, duration, ... },
+  diff: { /* 元数据差异摘要 */ }
+}
+```
+
+**使用时机：** 对比分析开始时，先了解两个 trace 的基本信息差异（设备、时长、采集配置等）。
+
+---
+
+## 自动学习机制
 
 非显式工具，而是内置在 execute_sql 和 verify 流程中的自动学习机制：
 
-- **SQL 错误-修复对**：execute_sql 失败 → 记录错误 → 后续成功查询匹配 → 持久化
+- **SQL 错误-修复对**：execute_sql 失败 → 记录错误 → 后续成功查询匹配 → 持久化到 `logs/sql_learning/error_fix_pairs.json`（30 天 TTL，最多 200 对）
 - **误诊模式提取**：验证发现 issue → 提取关键词 → 出现 ≥2 次 → 加入启发式检查
 - **模式记忆保存**：分析完成且 confidence > 0.3 → 保存为正面模式
 

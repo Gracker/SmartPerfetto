@@ -24,7 +24,7 @@
 ## 2. 核心差异
 与硬件加速相比，软件渲染 **完全不使用 GPU** 进行绘图（合成阶段 SF 仍然可能用 GPU）。所有的像素计算（画线、画图、混合）都由 CPU 上的 **Skia** 库完成。
 
-## 2. 软件渲染时序图
+## 3. 软件渲染时序图
 
 这是一个全 CPU 的过程，不涉及 RenderThread 的 GPU 指令提交。
 
@@ -32,7 +32,7 @@
 sequenceDiagram
     participant HW as Hardware VSync
     participant UI as App UI Thread
-    participant CPU as Skia/Topaz (CPU)
+    participant CPU as Skia (CPU)
     participant BBQ as BLAST Adapter
     participant SF as SurfaceFlinger
     participant HWC as HWC / Display
@@ -46,7 +46,7 @@ sequenceDiagram
         Note over UI, CPU: 2. CPU 软件光栅化
         activate UI
         UI->>BBQ: lockCanvas() -> dequeueBuffer
-        Note right of BBQ: 返回 acquireFence
+        Note right of BBQ: 返回 releaseFence (前消费者已释放)
         BBQ-->>UI: Raw Bitmap Ptr (Mapped)
         
         UI->>CPU: pure java/skia draw calls
@@ -64,6 +64,7 @@ sequenceDiagram
     activate SF
     SF->>SF: latchBuffer
     SF->>SF: Upload to GPU (Texture)
+    Note right of SF: 如果 HWC overlay 直接处理则可跳过
     SF->>HWC: validate & present
     deactivate SF
 
@@ -72,11 +73,11 @@ sequenceDiagram
         Note over HWC: 4. Scanout
         HWC->>HWC: Scanout
         HWC-->>SF: presentFence
-        SF-->>BBQ: acquireFence (Buffer 可复用)
+        SF-->>BBQ: releaseFence (Buffer 可复用)
     end
 ```
 
-## 3. 详细步骤 (Trace 视角)
+## 4. 详细步骤 (Trace 视角)
 
 1.  **Vsync-App**: 主线程唤醒。
 2.  **Surface.lockCanvas()**:
@@ -87,14 +88,14 @@ sequenceDiagram
     *   `View.draw()` 调用 `Canvas` API。
     *   底层调用 `SkCanvas` (C++)。
     *   CPU 密集型操作。
-    *   *Trace*: `draw`, `Skia DoDraw`.
+    *   *Trace*: `draw`, `lockCanvas`, `unlockCanvasAndPost`.
 4.  **Surface.unlockCanvasAndPost()**:
     *   **Unmap**: 解除内存映射。
     *   **Queue**: 提交 Buffer。
     *   **Transaction**: 将 Buffer 封装在 Transaction 中发送给 SF。
     *   *Trace*: `unlockCanvasAndPost`, `queueBuffer`.
 
-## 4. 性能特征
+## 5. 性能特征
 *   **带宽瓶颈**: 从 CPU 内存拷贝像素到 GraphicBuffer 非常慢。
 *   **CPU 瓶颈**: 复杂图形（阴影、大图缩放）会占满 CPU。
 *   **部分更新 (Dirty Rect)**: 软件渲染通常支持“只重绘变化区域”，这是它唯一的优势。

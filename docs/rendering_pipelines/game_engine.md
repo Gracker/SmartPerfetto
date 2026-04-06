@@ -4,7 +4,7 @@
 
 ## 1. 游戏渲染流程详解 (Deep Execution Flow)
 
-游戏引擎的渲染循环 (Game Loop) 与普通 App 的事件驱动模型不同，它是一个死循环，尽可能快地跑（或者跑在固定帧率）。
+游戏引擎的渲染循环 (Game Loop) 与普通 App 的事件驱动模型不同。它通常采用固定步长或 frame pacing 驱动的循环，并不总是“越快越好”；现代 Android 游戏常结合 Choreographer、Swappy 或引擎自有节拍器来约束提交节奏。
 
 ### 第一阶段：Logic Thread (主逻辑线程)
 这是 C# 脚本或 Lua 逻辑运行的地方：
@@ -27,7 +27,7 @@
     *   `glBindTexture`
     *   `glDrawElements` (真正的 GPU 提交)
     *   *Trace*: 你会看到密密麻麻的 `glDraw` 调用。
-4.  **Swap**: 调用 `eglSwapBuffers`，把 Back Buffer 提交给 SurfaceFlinger。
+4.  **Swap**: 调用 `eglSwapBuffers` (OpenGL ES) 或 `vkQueuePresentKHR` (Vulkan)，把 Back Buffer 提交给 SurfaceFlinger。
 
 ---
 
@@ -49,11 +49,11 @@
 | **GameThread** (UE) | Unreal 主逻辑线程 | `GameThread::Tick` |
 | **RenderThread** (UE) | Unreal 渲染线程 | `FRenderingThread` |
 | **RHIThread** (UE) | 底层图形 API 调用 | `FRHICommandList::Execute` |
-| **SurfaceFlinger** | 系统合成 | `handleMessageRefresh` |
+| **SurfaceFlinger** | 系统合成 | 常见 `latchBuffer` / FrameTimeline / SF 主循环片段 |
 
 ---
 
-## 2. 渲染循环时序图 (Game Loop)
+## 3. 渲染循环时序图 (Game Loop)
 
 这是一个典型的“多线程流水线”渲染。
 
@@ -62,7 +62,7 @@ sequenceDiagram
     participant Logic as Game Logic (Main)
     participant Render as Render Thread (Gfx)
     participant Driver as Driver (Vulkan/GL)
-    participant BBQ as BLASTBufferQueue
+    participant BBQ as Buffer / Transaction Path
     participant SF as SurfaceFlinger
 
     Note over Logic, Render: Pipelined Frame N
@@ -81,27 +81,27 @@ sequenceDiagram
     Render->>BBQ: vkQueuePresent / eglSwap
     deactivate Render
     
-    Note over BBQ: BLAST Transaction
-    BBQ->>SF: applyTransaction(buffer)
+    Note over BBQ: Buffer / Transaction Submit
+    BBQ->>SF: submit buffer / transaction
     SF->>SF: Latch & Composite
 ```
 
-## 3. 关键技术：Swappy (Android Game Development Kit)
+## 4. 关键技术：Swappy (Android Game Development Kit)
 
 为了解决“游戏逻辑帧率”和“屏幕刷新率”不匹配导致的 **Jank**（卡顿）或 **Latency**（延迟），Google 推出了 **Swappy Frame Pacing Library**。
 
 *   **问题**: 游戏跑 40fps，屏幕 60Hz。如果直接提交，会导致部分帧显示 16ms，部分显示 33ms，视觉抖动。
-*   **Swappy**: 自动插入 `eglPresentationTimeANDROID` 或 Vulkan 扩展，告诉 SurfaceFlinger：“这帧请在未来的某个精确时间点（Timestamp）显示”。
+*   **Swappy**: 在 OpenGL ES / Vulkan 路径结合 Choreographer、presentation timestamp 和同步栅栏改善帧节奏；底层扩展和等待行为会随驱动与设备能力变化。
 *   **Trace**: 在 Perfetto 中会看到 `Swappy` 相关的 Section，以及 `Choreographer` 的反馈回路。
 
-## 4. BufferQueue 模式
+## 5. BufferQueue 模式
 
 游戏引擎几乎总是使用 **SurfaceView** (或 `GameActivity` 提供的 Surface)。
 因此，它们也完全受益于 **BLAST** 架构：
 1.  **Resize同步**: 当用户改变窗口大小时（如折叠屏展开），引擎的 Resize 和 Surface 的 Resize 是原子同步的。
 2.  **低延迟**: 直接通过 SurfaceControl 提交，由 HWC 合成。
 
-## 5. Trace 分析特征
+## 6. Trace 分析特征
 
 1.  **UnityMain**: 看到 `BaseBehaviour.Update`, `Physics.Simulate`。
 2.  **UnityGfxDevice**:看到 `Camera.Render`, `DrawBatch`。

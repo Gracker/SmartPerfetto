@@ -42,7 +42,8 @@ teaching:
   summary: |
     Camera2 API 和 HAL3 相机架构，支持多流同时处理（预览、拍照、录像）。
     涉及相机硬件、ISP、编码器等多个组件的协同工作。
-    需要关注帧率稳定性和延迟。
+    需要关注帧率稳定性和延迟。Camera trace 的可见性强依赖设备、
+    OEM 和启用的数据源，不应把缺失某个 `Camera*` slice 直接等价为“没有相机压力”。
 
   mermaid: |
     sequenceDiagram
@@ -77,7 +78,7 @@ teaching:
   thread_roles:
     - thread: Camera
       role: "相机服务"
-      description: "Camera2 API 和相机服务"
+      description: "Camera2 API 和相机服务（线程名 / slice 名依设备而异）"
     - thread: CaptureSession
       role: "采集会话"
       description: "相机采集会话管理"
@@ -85,10 +86,10 @@ teaching:
   key_slices:
     - name: "Camera"
       thread: any
-      description: "相机操作"
+      description: "相机相关操作（是否可见依设备 / tracing 配置）"
     - name: "CaptureSession"
       thread: any
-      description: "采集会话"
+      description: "采集会话（名称与可见性依版本 / OEM 变化）"
     - name: "createCaptureSession"
       thread: any
       description: "创建采集会话（常见于启动/切换摄像头/重配流）"

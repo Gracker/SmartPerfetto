@@ -7,12 +7,12 @@
 *   **ASurfaceControl**: 代表 SurfaceFlinger 中的一个 Layer（图层）。它可以是一个 Buffer 容器（显示内容），也可以是一个纯容器（Color Layer / Container Layer）。
 *   **ASurfaceTransaction**: 代表一组原子操作。你可以一次性修改多个 SurfaceControl 的属性（位置、大小、Buffer、Z-Order），然后 commit。
 
-## 2. 也是 "BLAST"
+## 2. 与 BLAST 的关系
 
-NDK 的 SurfaceControl API 实际上就是 BLAST 协议的直接体现。
+NDK 的 SurfaceControl API 与 BLAST 共享同一个“事务式更新 Surface / Layer 状态”的体系，但二者不应简单画等号。BLAST 是现代 Android 图形栈里围绕 Buffer + Transaction 协同更新的一条常见路径；`ASurfaceControl` / `ASurfaceTransaction` 则是应用直接操控 Layer/事务的低级接口。
 
-*   **Atomicity**: `ASurfaceTransaction_apply()` 保证了在这个 Transaction 内的所有修改，要么全生效，要么全不生效。
-*   **Sync**: 可以通过 `ASurfaceTransaction_setBuffer` 绑定 Buffer，确保画面内容和窗口属性同步更新。
+*   **Atomicity**: `ASurfaceTransaction_apply()` 让同一事务中的多个属性更新以统一快照的方式提交给系统。
+*   **Sync**: 可以通过 `ASurfaceTransaction_setBuffer` 将 Buffer 与几何/可见性等属性一并提交；最终何时 latch 和显示，仍由 SurfaceFlinger / HWC / fence 状态共同决定。
 
 ## 3. 典型使用流程
 
@@ -20,9 +20,11 @@ NDK 的 SurfaceControl API 实际上就是 BLAST 协议的直接体现。
 你需要一个父 SurfaceControl（通常来自 `SurfaceView.getSurfaceControl()`）或者直接挂载到 Display。
 
 ```c
-ASurfaceControl* child = ASurfaceControl_create(
-    parent, "MyOverlay", "ASurfaceControl", width, height, format, ...
-);
+// 从现有 SurfaceControl 创建子 Layer
+ASurfaceControl* child = ASurfaceControl_create(parent, "MyOverlay");
+
+// 或从 ANativeWindow 创建
+ASurfaceControl* child = ASurfaceControl_createFromWindow(window, "MyOverlay");
 ```
 
 ### 步骤 2: 配置 Transaction
@@ -65,7 +67,7 @@ ASurfaceTransaction_apply(transaction);
 
 *   **WebView Out-of-process Rasterization**: 浏览器在独立进程合成页面，直接通过 SurfaceControl 发给 SF，不经过 App 主线程。
 *   **Custom Video Player**: 可以实现极其复杂的视频弹幕融合效果。
-*   **Dynamic UI**: 如 Flutter 这种自绘引擎，利用 SurfaceControl 实现高效的 PlatformView 嵌入。
+*   **Dynamic UI**: 自绘引擎、浏览器内核、视频/动画系统都可能利用 SurfaceControl 构造独立 layer；是否用于 Flutter PlatformView 取决于具体集成策略，而不是固定结论。
 
 ## 6. 注意事项
 
@@ -79,10 +81,9 @@ ASurfaceTransaction_apply(transaction);
 ### 7.1 核心 API
 
 ```c
-// 获取下一帧的预期 VSync 时间 (Android 11+)
-int64_t vsyncId;
-int64_t expectedPresentTime;
-ASurfaceTransaction_getNextFrameInfo(transaction, &vsyncId, &expectedPresentTime);
+// 通过 Choreographer 获取 VSync ID (Android 12+)
+// App 在 AChoreographer_postVsyncCallback 回调中获取 vsyncId
+// 然后传给 ASurfaceTransaction_setFrameTimeline
 
 // 设置目标帧时间线 (Android 12+)
 ASurfaceTransaction_setFrameTimeline(
@@ -96,15 +97,15 @@ ASurfaceTransaction_setFrameTimeline(
 ```mermaid
 sequenceDiagram
     participant App
-    participant BBQ as BLAST Adapter
+    participant SC as SurfaceControl
     participant SF as SurfaceFlinger
 
-    App->>BBQ: getNextFrameInfo() -> vsyncId=42
+    App->>App: Choreographer callback -> vsyncId=42
     App->>App: Draw (耗时 8ms)
-    App->>BBQ: setFrameTimeline(vsyncId=42)
-    App->>BBQ: apply()
+    App->>SC: setFrameTimeline(vsyncId=42)
+    App->>SC: apply()
     
-    BBQ->>SF: Transaction (vsyncId=42)
+    SC->>SF: Transaction (vsyncId=42)
     SF->>SF: 收到，但当前是 vsync 41
     SF->>SF: 等待 vsync 42...
     SF->>SF: vsync 42 到达，Latch & Composite
@@ -121,4 +122,3 @@ sequenceDiagram
 *   **视频播放器**: 24fps/30fps 视频在 60Hz 屏幕上避免 3:2 pulldown 抖动。
 *   **游戏引擎**: 在 GPU 负载高时主动降频，而非被动掉帧。
 *   **省电模式**: 低功耗场景主动请求 30fps 渲染。
-

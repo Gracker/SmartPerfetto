@@ -42,8 +42,8 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 | Component | Purpose |
 |-----------|---------|
 | **ClaudeRuntime** | Main orchestrator: scene classification → dynamic system prompt → Claude Agent SDK → verification |
-| **MCP Server** | 17 tools bridging Claude to trace data (SQL, Skills, schema lookup, planning, hypothesis) |
-| **Skill Engine** | 157 YAML-defined analysis pipelines producing layered results (L1 overview → L4 deep root cause) |
+| **MCP Server** | 20 tools bridging Claude to trace data (SQL, Skills, schema lookup, planning, hypothesis, comparison) |
+| **Skill Engine** | 165 YAML-defined analysis pipelines producing layered results (L1 overview → L4 deep root cause) |
 | **Scene Classifier** | Keyword-based routing (<1ms) to 12 scene-specific strategies |
 | **Verifier** | 4-layer quality check (heuristic + plan + hypothesis + LLM) with reflection retry |
 | **Artifact Store** | Caches skill results as compact references (~3000 tokens saved per invocation) |
@@ -71,31 +71,34 @@ User Query: "分析滑动卡顿"
         └─ SSE streaming → Frontend real-time display
 ```
 
-### Skill Categories (157 total)
+### Skill Categories (165 total)
 
 | Category | Count | Description |
 |----------|-------|-------------|
-| **Atomic** | 80 | Single SQL query (VSync detection, CPU topology, GPU metrics, ...) |
-| **Composite** | 28 | Multi-step analysis (scrolling, startup, ANR, memory, ...) |
+| **Atomic** | 87 | Single SQL query (VSync detection, CPU topology, GPU metrics, ...) |
+| **Composite** | 29 | Multi-step analysis (scrolling, startup, ANR, memory, ...) |
 | **Pipeline** | 29 | Rendering pipeline detection + teaching (29 Android render architectures) |
 | **Module** | 18 | Module analysis (app/framework/hardware/kernel) |
 | **Deep** | 2 | CPU profiling, callstack analysis |
 
-### MCP Tools (17)
+### MCP Tools (20)
 
 **Always-on (9):**
 execute_sql, invoke_skill, list_skills, detect_architecture, lookup_sql_schema, query_perfetto_source, list_stdlib_modules, lookup_knowledge, recall_patterns
 
-**Conditional (8, feature-flag dependent):**
+**Conditional — Full analysis (8):**
 submit_plan, update_plan_phase, revise_plan, submit_hypothesis, resolve_hypothesis, write_analysis_note, fetch_artifact, flag_uncertainty
+
+**Conditional — Comparison mode (3):**
+execute_sql_on, compare_skill, get_comparison_context
 
 ## Technology Stack
 
 - **Backend:** Node.js, Express, TypeScript (strict)
 - **Frontend:** Mithril.js (Perfetto UI framework)
-- **AI Runtime:** Claude Agent SDK (Anthropic) via MCP protocol (17 tools)
+- **AI Runtime:** Claude Agent SDK (Anthropic) via MCP protocol (20 tools)
 - **Trace Processing:** trace_processor_shell (Perfetto, WASM + HTTP RPC)
-- **Testing:** Jest, ts-jest (44 test files, 1029 tests)
+- **Testing:** Jest, ts-jest (90 test files)
 - **Build:** esbuild, npm scripts
 
 ## Key Design Decisions
@@ -104,7 +107,7 @@ submit_plan, update_plan_phase, revise_plan, submit_hypothesis, resolve_hypothes
 2. **Claude as autonomous orchestrator** — Claude decides which tools to call, not hardcoded pipelines
 3. **Evidence-first verification** — 4-layer check ensures every CRITICAL finding has data backing
 4. **Layered results (L1-L4)** — Progressive detail from overview to per-frame root cause
-5. **DataEnvelope v2.0** — Schema-driven rendering; frontend auto-renders 140 skills without per-skill UI code
+5. **DataEnvelope v2.0** — Schema-driven rendering; frontend auto-renders 165 skills without per-skill UI code
 6. **Token engineering** — Artifact store + SQL summarizer + progressive prompt dropping keeps context efficient
 
 ## Getting Started

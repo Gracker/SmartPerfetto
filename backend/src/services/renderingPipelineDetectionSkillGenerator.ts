@@ -490,7 +490,7 @@ function buildSubvariantsSql(): string {
         END as buffer_mode,
         CASE
           WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name IN ('ui', '1.ui')), 0) > 0
-               AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*EntityPass*'), 0) > 0
+               AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*Impeller*' OR slice_name GLOB '*EntityPass*'), 0) > 0
           THEN 'IMPELLER'
           WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name IN ('ui', '1.ui')), 0) > 0
                AND COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*SkGpu*' OR slice_name GLOB '*SkiaGpu*'), 0) > 0
@@ -501,7 +501,11 @@ function buildSubvariantsSql(): string {
           ELSE 'N/A'
         END as flutter_engine,
         CASE
-          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts WHERE thread_name = 'VizCompositor' OR thread_name GLOB 'VizCompositor*'), 0) > 0
+          WHEN COALESCE((SELECT SUM(cnt) FROM thread_counts
+                         WHERE thread_name = 'VizCompositorThread'
+                            OR thread_name GLOB 'VizCompositorThread*'
+                            OR thread_name = 'VizCompositor'
+                            OR thread_name GLOB 'VizCompositor*'), 0) > 0
           THEN 'SURFACE_CONTROL'
           WHEN COALESCE((SELECT SUM(cnt) FROM slice_counts WHERE slice_name GLOB '*DrawGL*' OR slice_name GLOB '*DrawFunctor*'), 0) > 0
           THEN 'GL_FUNCTOR'

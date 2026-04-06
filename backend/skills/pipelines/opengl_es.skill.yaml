@@ -44,12 +44,15 @@ detection:
     - slice_pattern: "*vkQueuePresentKHR*"
     - slice_pattern: "*ANGLE*"
     - thread: "1.ui"
+    - thread: CrRendererMain   # WebView uses EGL internally
+    - thread: UnityMain        # Game Engine → GAME_ENGINE
 
 teaching:
   title: "OpenGL ES 渲染管线"
   summary: |
     直接使用 OpenGL ES 和 EGL API 进行渲染。适用于自定义游戏引擎、
     3D 应用等需要精细控制 GPU 的场景。通过 eglSwapBuffers 提交帧。
+    在新设备上也要考虑 ANGLE 作为可选后端的可能性，但不应假设所有 GLES 都会被强制翻译到 Vulkan。
 
   mermaid: |
     sequenceDiagram

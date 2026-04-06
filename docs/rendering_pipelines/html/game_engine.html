@@ -213,7 +213,7 @@
 <br>
 <h2>1. 游戏渲染流程详解 (Deep Execution Flow)</h2>
 <br>
-<p>游戏引擎的渲染循环 (Game Loop) 与普通 App 的事件驱动模型不同，它是一个死循环，尽可能快地跑（或者跑在固定帧率）。</p>
+<p>游戏引擎的渲染循环 (Game Loop) 与普通 App 的事件驱动模型不同。它通常采用固定步长或 frame pacing 驱动的循环，并不总是“越快越好”；现代 Android 游戏常结合 Choreographer、Swappy 或引擎自有节拍器来约束提交节奏。</p>
 <br>
 <h3>第一阶段：Logic Thread (主逻辑线程)</h3>
 <p>这是 C# 脚本或 Lua 逻辑运行的地方：</p>
@@ -236,7 +236,7 @@
 <li>  `glBindTexture`</li>
 <li>  `glDrawElements` (真正的 GPU 提交)</li>
 <li>  *Trace*: 你会看到密密麻麻的 `glDraw` 调用。</li>
-<p>4.  <b>Swap</b>: 调用 <code>eglSwapBuffers</code>，把 Back Buffer 提交给 SurfaceFlinger。</p>
+<p>4.  <b>Swap</b>: 调用 <code>eglSwapBuffers</code> (OpenGL ES) 或 <code>vkQueuePresentKHR</code> (Vulkan)，把 Back Buffer 提交给 SurfaceFlinger。</p>
 <br>
 <hr>
 <br>
@@ -248,34 +248,41 @@
 <li>  **Render Thread (Native)**: 提交图形指令 (GLES / Vulkan)。</li>
 <li>  **Worker Threads**: 物理模拟、音频、资源加载。</li>
 <br>
-<p>| 线程 | 职责 | Android 对应 |</p>
-<p>| :--- | :--- | :--- |</p>
-<p>| <b>Main (UnityMain)</b> | 游戏循环 (Update) | 可能是 <code>Activity.Main</code> 也可能是独立线程 |</p>
-<p>| <b>Render (UnityGfx)</b> | 渲染循环 (Draw) | 独立的 GL/Vulkan 线程 |</p>
+<h3>线程角色详情 (Thread Roles)</h3>
+<br>
+<p>| 线程名称 | 关键职责 | 常见 Trace 标签 |</p>
+<p>|:---|:---|:---|</p>
+<p>| <b>UnityMain / Main</b> | 游戏逻辑, Update/LateUpdate, 物理模拟 | <code>PlayerLoop</code>, <code>Update.PhysicsFixedUpdate</code> |</p>
+<p>| <b>UnityGfx / Gfx</b> | 渲染命令提交, Batching, GPU 调度 | <code>Gfx.WaitForPresent</code>, <code>RenderThread</code> |</p>
+<p>| <b>UnityJobWorker</b> | 多线程任务, Burst 编译任务 | <code>JobSystem</code>, <code>ParallelFor</code> |</p>
+<p>| <b>GameThread</b> (UE) | Unreal 主逻辑线程 | <code>GameThread::Tick</code> |</p>
+<p>| <b>RenderThread</b> (UE) | Unreal 渲染线程 | <code>FRenderingThread</code> |</p>
+<p>| <b>RHIThread</b> (UE) | 底层图形 API 调用 | <code>FRHICommandList::Execute</code> |</p>
+<p>| <b>SurfaceFlinger</b> | 系统合成 | 常见 <code>latchBuffer</code> / FrameTimeline / SF 主循环片段 |</p>
 <br>
 <hr>
 <br>
-<h2>2. 渲染循环时序图 (Game Loop)</h2>
+<h2>3. 渲染循环时序图 (Game Loop)</h2>
 <br>
 <p>这是一个典型的“多线程流水线”渲染。</p>
 <br>
 <br>
-<h2>3. 关键技术：Swappy (Android Game Development Kit)</h2>
+<h2>4. 关键技术：Swappy (Android Game Development Kit)</h2>
 <br>
 <p>为了解决“游戏逻辑帧率”和“屏幕刷新率”不匹配导致的 <b>Jank</b>（卡顿）或 <b>Latency</b>（延迟），Google 推出了 <b>Swappy Frame Pacing Library</b>。</p>
 <br>
 <li>  **问题**: 游戏跑 40fps，屏幕 60Hz。如果直接提交，会导致部分帧显示 16ms，部分显示 33ms，视觉抖动。</li>
-<li>  **Swappy**: 自动插入 `eglPresentationTimeANDROID` 或 Vulkan 扩展，告诉 SurfaceFlinger：“这帧请在未来的某个精确时间点（Timestamp）显示”。</li>
+<li>  **Swappy**: 在 OpenGL ES 路径通过 `eglPresentationTimeANDROID` 设定目标呈现时间戳，在 Vulkan 路径通过 `VK_GOOGLE_display_timing` 扩展实现同样效果，告诉 SurfaceFlinger：”这帧请在未来的某个精确时间点（Timestamp）显示”。</li>
 <li>  **Trace**: 在 Perfetto 中会看到 `Swappy` 相关的 Section，以及 `Choreographer` 的反馈回路。</li>
 <br>
-<h2>4. BufferQueue 模式</h2>
+<h2>5. BufferQueue 模式</h2>
 <br>
 <p>游戏引擎几乎总是使用 <b>SurfaceView</b> (或 <code>GameActivity</code> 提供的 Surface)。</p>
 <p>因此，它们也完全受益于 <b>BLAST</b> 架构：</p>
 <p>1.  <b>Resize同步</b>: 当用户改变窗口大小时（如折叠屏展开），引擎的 Resize 和 Surface 的 Resize 是原子同步的。</p>
 <p>2.  <b>低延迟</b>: 直接通过 SurfaceControl 提交，由 HWC 合成。</p>
 <br>
-<h2>5. Trace 分析特征</h2>
+<h2>6. Trace 分析特征</h2>
 <br>
 <p>1.  <b>UnityMain</b>: 看到 <code>BaseBehaviour.Update</code>, <code>Physics.Simulate</code>。</p>
 <p>2.  <b>UnityGfxDevice</b>:看到 <code>Camera.Render</code>, <code>DrawBatch</code>。</p>
@@ -289,7 +296,7 @@
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "Logic", "name": "Game Logic (Main)"}, {"id": "Render", "name": "Render Thread (Gfx)"}, {"id": "Driver", "name": "Driver (Vulkan/GL)"}, {"id": "BBQ", "name": "BLASTBufferQueue"}, {"id": "SF", "name": "SurfaceFlinger"}], "events": [{"type": "flow", "src": "Logic", "dst": "Logic", "time": 20, "endTime": 50, "label": "1. Input/AI/Connect", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Logic", "start": 20, "end": 50, "label": "1. Input/AI/Connect", "color": "#4db6ac"}, {"type": "flow", "src": "Logic", "dst": "Logic", "time": 55, "endTime": 85, "label": "2. Update Transforms", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Logic", "start": 55, "end": 85, "label": "2. Update Transforms", "color": "#4db6ac"}, {"type": "flow", "src": "Logic", "dst": "Render", "time": 90, "endTime": 120, "label": "CommandBuffer (DrawList)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Logic", "start": 20, "end": 145, "label": "Active", "color": "#4db6ac"}, {"type": "flow", "src": "Render", "dst": "Render", "time": 155, "endTime": 185, "label": "3. Cull / Sort", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Render", "start": 155, "end": 185, "label": "3. Cull / Sort", "color": "#ef5350"}, {"type": "flow", "src": "Render", "dst": "Render", "time": 190, "endTime": 220, "label": "4. Set Pass / Shader", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Render", "start": 190, "end": 220, "label": "4. Set Pass / Shader", "color": "#ef5350"}, {"type": "flow", "src": "Render", "dst": "Driver", "time": 225, "endTime": 255, "label": "5. DrawCall (x1000)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Render", "dst": "BBQ", "time": 260, "endTime": 290, "label": "vkQueuePresent / eglSwap", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Render", "start": 155, "end": 315, "label": "CommandBuffer (DrawList)", "color": "#ef5350"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 325, "endTime": 355, "label": "applyTransaction(buffer)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 360, "endTime": 390, "label": "Latch & Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 360, "end": 390, "label": "Latch & Composite", "color": "#e57373"}]};
+    const timelineData = {"participants": [{"id": "Logic", "name": "Game Logic (Main)"}, {"id": "Render", "name": "Render Thread (Gfx)"}, {"id": "Driver", "name": "Driver (Vulkan/GL)"}, {"id": "BBQ", "name": "Buffer / Transaction Path"}, {"id": "SF", "name": "SurfaceFlinger"}], "events": [{"type": "flow", "src": "Logic", "dst": "Logic", "time": 20, "endTime": 50, "label": "1. Input/AI/Connect", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Logic", "start": 20, "end": 50, "label": "1. Input/AI/Connect", "color": "#4db6ac"}, {"type": "flow", "src": "Logic", "dst": "Logic", "time": 55, "endTime": 85, "label": "2. Update Transforms", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Logic", "start": 55, "end": 85, "label": "2. Update Transforms", "color": "#4db6ac"}, {"type": "flow", "src": "Logic", "dst": "Render", "time": 90, "endTime": 120, "label": "CommandBuffer (DrawList)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Logic", "start": 20, "end": 145, "label": "Active", "color": "#4db6ac"}, {"type": "flow", "src": "Render", "dst": "Render", "time": 155, "endTime": 185, "label": "3. Cull / Sort", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Render", "start": 155, "end": 185, "label": "3. Cull / Sort", "color": "#ef5350"}, {"type": "flow", "src": "Render", "dst": "Render", "time": 190, "endTime": 220, "label": "4. Set Pass / Shader", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Render", "start": 190, "end": 220, "label": "4. Set Pass / Shader", "color": "#ef5350"}, {"type": "flow", "src": "Render", "dst": "Driver", "time": 225, "endTime": 255, "label": "5. DrawCall (x1000)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Render", "dst": "BBQ", "time": 260, "endTime": 290, "label": "vkQueuePresent / eglSwap", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Render", "start": 155, "end": 315, "label": "CommandBuffer (DrawList)", "color": "#ef5350"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 325, "endTime": 355, "label": "submit buffer / transaction", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 360, "endTime": 390, "label": "Latch & Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 360, "end": 390, "label": "Latch & Composite", "color": "#e57373"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;

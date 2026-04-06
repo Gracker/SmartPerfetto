@@ -209,7 +209,7 @@
     <div class="doc-content">
         <h1>SurfaceView Rendering Pipeline (Direct Producer via BLAST)</h1>
 <br>
-<p><code>SurfaceView</code> 是 Android 历史上最高效的视图组件。在 Android 10+ 之后，它底层已全面迁移到 <b>BLAST</b> 架构，主要为了解决 historically 的“同步问题”（Sync Issue）。</p>
+<p><code>SurfaceView</code> 是 Android 历史上最高效的视图组件之一。在 Android 11+ / 12+ 的现代设备上，它通常受益于 <b>BLAST</b> / Transaction 模型带来的几何与 Buffer 更新协同，但不应把所有机型都描述成“完全同一种 BLAST 内部实现”。</p>
 <br>
 <h2>1. 生产者-消费者流程详解 (Deep Execution Flow)</h2>
 <br>
@@ -227,16 +227,16 @@
 <p>注意，SurfaceView 的消费者<b>不是</b> App 进程，而是系统进程 SurfaceFlinger：</p>
 <p>1.  <b>Acquire</b>: SF 收到 Buffer 可用的通知，拿走 Buffer。</p>
 <p>2.  <b>Latch & Composite</b>: SF 在下一个 Vsync 到达时，把这个 Buffer 和 App 的主窗口（上面挖了个洞）叠在一起。</p>
-<li>  *优势*: 这一步完全不经过 App 主线程，所以即使 App 主线程卡死（ANR），SurfaceView 里的视频依然能流畅播放。</li>
+<li>  *优势*: 这一步通常不经过 App 主线程，所以在主线程卡顿时，SurfaceView 内容往往更容易保持连续；但若系统资源紧张、窗口几何频繁变化或 producer 自身受阻，画面仍可能抖动。</li>
 <br>
 <hr>
 <br>
 <h2>2. 核心机制：挖洞 (Punch Through) & BLAST</h2>
 <br>
 <p>SurfaceView 在 WMS 侧是一个独立的图层 (Layer)。</p>
-<li>  App 的主窗口 (DecorView) 在 SurfaceView 所在的坐标区域绘制透明像素（`#00000000`）。</li>
-<li>  SurfaceView 的 Surface 被放置在主窗口 Surface 的 **下方** (Z-Order -1)。</li>
-<li>  **BLAST 的改进**: App 的 UI 变化（比如 SurfaceView 的尺寸改变、位置移动）和 SurfaceView 本身的内容更新，可以通过同一个 Transaction ID 进行同步提交，即使它们在不同的线程。</li>
+<li>  App 的主窗口通常不会在 SurfaceView 区域绘制最终内容，或会通过独立 layer / 裁剪策略为其留出显示区域。</li>
+<li>  SurfaceView 的独立 Surface 会以相对 Z-order 与主窗口配合显示。</li>
+<li>  **BLAST 的改进**: App 的 UI 变化（比如 SurfaceView 的尺寸改变、位置移动）和 SurfaceView 内容更新更容易被系统放入同一事务模型中协调，但这是一种“减竞态”机制，不是对逐帧完美同步的绝对保证。</li>
 <br>
 <h3>Z-Order 示意图</h3>
 <br>
@@ -252,25 +252,18 @@
 <br>
 <hr>
 <br>
-<h2>2. 详细渲染时序图 (BLAST Sync)</h2>
+<h2>3. 详细渲染时序图 (BLAST Sync)</h2>
 <br>
 <p>这个图展示了 BLAST 如何让独立的 Producer 和 App 的 UI 变化保持同步。</p>
 <br>
 <br>
-<p>1.  <b>queueBuffer</b>: 这里的 <code>queueBuffer</code> 不再直接唤醒 SurfaceFlinger，而是唤醒本地的 <code>BLASTBufferQueue</code> 适配器。</p>
+<p>1.  <b>queueBuffer</b>: 在现代实现中，<code>queueBuffer</code> 往往会先进入本地事务/适配层，再由系统侧统一处理。</p>
 <p>2.  <b>Transaction</b>: 所有的 buffer 提交最终都变成了一个 <code>SurfaceControl.Transaction</code>。</p>
-<p>3.  <b>Sync</b>: 如果使用了 <code>SurfaceView.setFrameTimeline()</code> 等高级 API，App 甚至可以强制要求“这一帧视频”必须和“这一帧 UI 滚动”一起出现，从而消除黑边。</p>
-<br>
-<h3>阶段二：Consumer (SurfaceFlinger)</h3>
-<p>注意：这里 <b>完全不经过</b> App 的 UI Thread 或 RenderThread。</p>
-<br>
-<p>4.  <b>onMessageReceived</b>: SF 收到 Buffer 产生的信号。</p>
-<p>5.  <b>acquireBuffer</b>: SF 锁定该 Buffer。</p>
-<p>6.  <b>Composition</b>: SF 将 Main Surface (有洞) 和 SV Surface (内容) 叠加。</p>
+<p>3.  <b>Sync</b>: 如果结合 <code>setFrameTimeline()</code> 等高级 API，App 可以向系统表达更强的帧对齐意图，但系统最终是否能做到同帧着陆，仍取决于生产时序、Buffer 可用性和显示策略。</p>
 <br>
 <hr>
 <br>
-<h2>3. Buffer 流转示意图</h2>
+<h2>4. Buffer 流转示意图</h2>
 <br>
 <div class="mermaid">graph LR
     subgraph App Process
@@ -284,15 +277,14 @@
         SF --> |composite| HWC[Display]
     end</div>
 <br>
-<h2>4. 优缺点与 Trace 特征</h2>
+<h2>5. 优缺点与 Trace 特征</h2>
 <br>
 <li>  **优点**:</li>
-<li>  **完美同步 (vs Legacy)**: 彻底解决了 SurfaceView 跟手性差、缩放闪烁的问题。</li>
-<li>  **低功耗**: 保持了 Direct Composition 的优势。</li>
+<li>  **同步更稳 (vs Legacy)**: 通常能明显减少 SurfaceView 跟手性差、缩放闪烁等问题，但不是所有场景都能“彻底解决”。</li>
+<li>  **低功耗**: 保持了 Direct Composition / 独立 Layer 的优势。</li>
 <li>  **Trace 特征**:</li>
-<li>  你会看到 `BLASTBufferQueue` 相关的 trace tag 频繁出现。</li>
-<li>  SurfaceFlinger 的 `setTransactionState` 会非常繁忙。</li>
-<li>  如果开启了 Sync，能在 trace 中看到 `TransactionReady` 等待信号。</li>
+<li>  可能看到 `BLASTBufferQueue`、`queueBuffer`、`setTransactionState` 等系统侧信号，但这些名字不应作为唯一判据。</li>
+<li>  如果开启了更强的同步路径，可能会看到与 Transaction / wait / frame timeline 相关的系统 slice。</li>
 <br>
     </div>
 </div>
@@ -302,7 +294,7 @@
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "PT", "name": "Producer Thread"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "UI", "name": "App UI Thread"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC / Display"}], "events": [{"type": "flow", "src": "PT", "dst": "PT", "time": 20, "endTime": 50, "label": "Video/Game Loop", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "PT", "start": 20, "end": 50, "label": "Video/Game Loop", "color": "#ba68c8"}, {"type": "flow", "src": "PT", "dst": "BBQ", "time": 55, "endTime": 85, "label": "dequeueBuffer() -> acquireFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "PT", "dst": "PT", "time": 90, "endTime": 120, "label": "Draw (EGL/Vulkan)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "PT", "start": 90, "end": 120, "label": "Draw (EGL/Vulkan)", "color": "#ba68c8"}, {"type": "flow", "src": "PT", "dst": "BBQ", "time": 125, "endTime": 155, "label": "queueBuffer(releaseFence)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "PT", "start": 90, "end": 180, "label": "Video/Game Loop", "color": "#ba68c8"}, {"type": "flow", "src": "BBQ", "dst": "BBQ", "time": 190, "endTime": 220, "label": "acquireNextBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "BBQ", "start": 190, "end": 220, "label": "acquireNextBuffer", "color": "#ffb74d"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 225, "endTime": 255, "label": "Transaction(Buffer, releaseFence, Layer=-1)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "UI", "time": 300, "endTime": 330, "label": "VSync-App Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "SF", "time": 335, "endTime": 365, "label": "Transaction(Window Geometry, Layer=0)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 635, "endTime": 665, "label": "Wait releaseFence", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 665, "label": "Wait releaseFence", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 670, "endTime": 700, "label": "latchBuffer (Merge Layers)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 670, "end": 700, "label": "latchBuffer (Merge Layers)", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 705, "endTime": 735, "label": "validate & present", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 760, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 770, "endTime": 800, "label": "Scanout (Composite Layers)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 770, "end": 800, "label": "Scanout (Composite Layers)", "color": "#7986cb"}, {"type": "flow", "src": "HWC", "dst": "SF", "time": 805, "endTime": 835, "label": "presentFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "BBQ", "time": 840, "endTime": 870, "label": "acquireFence (Buffer \u53ef\u590d\u7528)", "color": "rgba(255,255,255,0.2)"}]};
+    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "PT", "name": "Producer Thread"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "UI", "name": "App UI Thread"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC / Display"}], "events": [{"type": "flow", "src": "PT", "dst": "PT", "time": 20, "endTime": 50, "label": "Video/Game Loop", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "PT", "start": 20, "end": 50, "label": "Video/Game Loop", "color": "#ba68c8"}, {"type": "flow", "src": "PT", "dst": "BBQ", "time": 55, "endTime": 85, "label": "dequeueBuffer() -> releaseFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "PT", "dst": "PT", "time": 90, "endTime": 120, "label": "Draw (EGL/Vulkan)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "PT", "start": 90, "end": 120, "label": "Draw (EGL/Vulkan)", "color": "#ba68c8"}, {"type": "flow", "src": "PT", "dst": "BBQ", "time": 125, "endTime": 155, "label": "queueBuffer(acquireFence)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "PT", "start": 90, "end": 180, "label": "Video/Game Loop", "color": "#ba68c8"}, {"type": "flow", "src": "BBQ", "dst": "BBQ", "time": 190, "endTime": 220, "label": "acquireNextBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "BBQ", "start": 190, "end": 220, "label": "acquireNextBuffer", "color": "#ffb74d"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 225, "endTime": 255, "label": "Transaction(Buffer, acquireFence, Layer=-1)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "UI", "time": 300, "endTime": 330, "label": "VSync-App Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "SF", "time": 335, "endTime": 365, "label": "Transaction(Window Geometry, Layer=0)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 635, "endTime": 665, "label": "Wait acquireFence", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 665, "label": "Wait acquireFence", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 670, "endTime": 700, "label": "latchBuffer (Merge Layers)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 670, "end": 700, "label": "latchBuffer (Merge Layers)", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 705, "endTime": 735, "label": "validate & present", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 760, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 770, "endTime": 800, "label": "Scanout (Composite Layers)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 770, "end": 800, "label": "Scanout (Composite Layers)", "color": "#7986cb"}, {"type": "flow", "src": "HWC", "dst": "SF", "time": 805, "endTime": 835, "label": "presentFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "BBQ", "time": 840, "endTime": 870, "label": "releaseFence (Buffer \u53ef\u590d\u7528)", "color": "rgba(255,255,255,0.2)"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;

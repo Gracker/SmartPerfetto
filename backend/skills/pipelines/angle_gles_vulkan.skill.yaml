@@ -24,7 +24,7 @@ meta:
 
 detection:
   required_signals:
-    # GLES-over-Vulkan 必须能看到 Vulkan present（否则更可能是 GLES-over-GL）
+    # GLES-over-Vulkan 常见会看到 Vulkan present；若完全没有 Vulkan 侧痕迹，更可能是 GLES 原生或 ANGLE 的其他后端
     - slice_pattern: "*vkQueuePresentKHR*"
       min_count: 1
 
@@ -38,7 +38,8 @@ teaching:
   summary: |
     使用 ANGLE 库将 OpenGL ES 调用翻译为 Vulkan 命令。
     这种模式提供了更好的驱动兼容性和可能的性能提升，
-    同时应用代码仍然使用熟悉的 OpenGL ES API。
+    同时应用代码仍然使用熟悉的 OpenGL ES API。ANGLE 在 Android 15+
+    生态中的重要性提升，但是否默认启用仍依设备和 OEM 策略而异。
 
     经验要点:
     - Android 生态中 ANGLE 常由 Chromium/WebView/自研内核启用（也可能被游戏引擎/应用直接集成）

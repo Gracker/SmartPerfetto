@@ -1,7 +1,7 @@
 # OpenGL ES Rendering Pipeline (GL Thread)
 
 > [!WARNING]
-> **Android 15+ 注意**: 从 Android 15 开始，新设备将**强制使用 ANGLE** 作为 OpenGL ES 后端。您的 GLES 调用实际上会被翻译为 Vulkan 指令。详见 [ANGLE Pipeline](angle_gles_vulkan.md)。对于新项目，**建议直接使用 Vulkan**。
+> **Android 15+ 注意**: Android 15+ 将 Vulkan 继续作为主低层图形 API 推进，并把 ANGLE 作为重要可选层纳入生态方向；但这不等于“所有新设备都会强制把 GLES 走 ANGLE”。如果你的 App 依赖 GLES，请同时验证 native GLES、ANGLE 和旧设备 fallback。详见 [ANGLE Pipeline](angle_gles_vulkan.md)。
 
 典型的 OpenGL 应用（如地图模块 `scrolling-gl-map`）通常运行在专门的 `GLThread` 上。
 现代 `GLSurfaceView` 也是基于 `SurfaceView` 的，因此在底层同样受益于 BLAST 带来的同步特性。
@@ -81,13 +81,13 @@ GL 线程在没有任务时会 wait 也就是休眠。
 
 OpenGL ES 在 Android 上的同步依赖 **Fence** 机制，这是跨 GPU/CPU/Display 的关键桥梁。
 
-### 5.1 Acquire Fence (获取栅栏)
-*   **来源**: 当 `eglSwapBuffers` 调用 `dequeueBuffer` 获取新 Buffer 时，系统可能返回一个 acquireFence。
+### 5.1 Release Fence (释放栅栏)
+*   **来源**: 当 `eglSwapBuffers` 调用 `dequeueBuffer` 获取新 Buffer 时，系统可能返回一个 release fence。
 *   **含义**: "这个 Buffer 还在被 Display/SF 使用，等 Fence signal 后才能写"。
-*   **Trace**: 在 Perfetto 中看到 `dequeueBuffer` 耗时很长，往往是在等待 acquireFence。
+*   **Trace**: 在 Perfetto 中看到 `dequeueBuffer` 耗时很长，往往是在等待 release fence。
 
-### 5.2 Release Fence (释放栅栏)
-*   **来源**: 当 `eglSwapBuffers` 调用 `queueBuffer` 时，App 会传递一个 releaseFence 给 SF。
+### 5.2 Acquire Fence (获取栅栏)
+*   **来源**: 当 `eglSwapBuffers` 调用 `queueBuffer` 时，App 会传递一个 acquire fence 给 SF。
 *   **含义**: "GPU 还没画完这个 Buffer，等 Fence signal 后才能读/显示"。
 *   **Trace**: SF 在 `latchBuffer` 时如果 Fence 未 signal，会等待。
 
@@ -106,7 +106,7 @@ int fd = eglDupNativeFenceFDANDROID(display, sync);
 
 ## 6. ANGLE：GLES-over-Vulkan
 
-在 Android 11+ 上，部分设备启用了 **ANGLE** (Almost Native Graphics Layer Engine) 作为 OpenGL ES 的默认实现。
+在 Android 14+ / 15+ 上，部分设备会更多地采用 **ANGLE** (Almost Native Graphics Layer Engine) 作为 OpenGL ES 后端或调试/兼容路径（Android 10 起已可手动启用）。
 
 *   **原理**: GLES API 调用被翻译为 Vulkan 指令。
 *   **优势**: 更一致的驱动行为，更少的 GPU 厂商 bug。

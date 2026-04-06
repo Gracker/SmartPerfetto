@@ -209,7 +209,7 @@
     <div class="doc-content">
         <h1>WebView GL Functor Pipeline (Standard/Shared)</h1>
 <br>
-<p>在普通的 App 页面中嵌入 WebView（如新闻详情页），默认使用的是 <b>GL Functor</b> 模式。</p>
+<p>在普通的 App 页面中嵌入 WebView（如新闻详情页）时，<b>GL Functor / in-process draw callback</b> 是最常见的经典路径之一，但是否命中这条路径仍取决于 WebView 版本、特性开关和设备条件。</p>
 <br>
 <h2>0. 初始化与桥接 (WebViewFactory)</h2>
 <br>
@@ -219,7 +219,7 @@
 <p>Android 系统通过 <code>WebViewFactory</code> 类动态加载 WebView 实现（通常是 Google WebView 或 Chrome）。</p>
 <p>1.  <b>WebViewFactory.getProvider()</b>:</p>
 <li>  这是 Framework 的入口。</li>
-<li>  它会 `dlopen` 系统 WebView 的 Native 库 (`libwebviewchromium.so`)。</li>
+<li>  它会 `dlopen` WebView 实现对应的 Native 库（如 `libmonochrome.so` 或 `libwebviewchromium.so`，取决于 Trichrome/Monochrome 架构）。</li>
 <li>  实例化 `WebViewChromiumFactoryProvider`。</li>
 <p>2.  <b>AwContents</b>:</p>
 <li>  这是 Chromium 侧与 Android `WebView` 类对应的一对一核心对象。</li>
@@ -234,12 +234,13 @@
 <br>
 <p>此模式的核心特点是：WebView <b>蹭车</b>。它没有独立的 Surface，而是把自己的绘制指令注入到 App 的 <code>RenderThread</code> 中执行。</p>
 <br>
-<h3>第一阶段：Renderer Process (渲染器进程)</h3>
+<h3>第一阶段：Chromium 渲染侧</h3>
 <p>1.  <b>Parse/Style/Layout</b>: 解析 HTML/CSS，计算页面布局。</p>
 <p>2.  <b>Paint</b>: 生成 DisplayItemList。</p>
 <p>3.  <b>Commit</b>: 提交给 Compositor Thread。</p>
-<p>4.  <b>Tiling/Raster</b>: 在渲染进程生成 DrawQuad 指令（注意，这里通常生成的是“元指令”，还不是最终像素）。</p>
-<p>5.  <b>Invalidate</b>: 通过 IPC 通知 App 进程：“我准备好了，你重绘一下”。</p>
+<p>4.  <b>Tiling</b>: Compositor Thread 将图层切分为 Tile。</p>
+<p>5.  <b>Raster</b>: Raster Worker 将 Tile 光栅化；WebView 的 browser code、GPU / network 等服务通常仍在宿主 app 进程内，renderer 进程是否独立取决于当前 multiprocess 配置。</p>
+<p>6.  <b>Invalidate</b>: 通过 IPC / 回调通知宿主进程：“我准备好了，你重绘一下”。</p>
 <br>
 <h3>第二阶段：App UI Thread (主线程)</h3>
 <p>1.  <b>onDraw</b>: View 树遍历到 WebView。</p>
@@ -259,53 +260,53 @@
 <p>注意 <code>Invoke Functor</code> 这一步，它是在 App 的渲染循环中同步执行的。</p>
 <br>
 <br>
-<h2>3. Hardware Draw Functor API (Android 10+)</h2>
+<h2>3. 线程角色详情 (Thread Roles)</h2>
+<br>
+<p>| 线程名称 | 关键职责 | 常见 Trace 标签 |</p>
+<p>|:---|:---|:---|</p>
+<p>| <b>main</b> (App) | View 构建, WebView.onDraw 记录 DrawFunctor | <code>Choreographer#doFrame</code> |</p>
+<p>| <b>RenderThread</b> (App) | GPU 渲染, <b>同步调用 WebView draw callback</b> | 常见 <code>DrawFrame</code>；<code>DrawFunctor</code> / <code>DrawGL</code> 仅在部分 trace 中可见 |</p>
+<p>| <b>CrRendererMain</b> | Blink 主线程, HTML/CSS 解析布局 | <code>ThreadControllerImpl::RunTask</code> |</p>
+<p>| <b>Compositor</b> | CC 合成, 生成 DrawQuad | <code>Scheduler::BeginFrame</code> |</p>
+<p>| <b>VizCompositorThread</b> | 条件触发的独立合成模式下可能出现 | 仅在特定模式 / tracing 下可见 |</p>
+<p>| <b>SurfaceFlinger</b> | 合成最终画面 | 常见 <code>latchBuffer</code> / FrameTimeline / SF 主循环片段 |</p>
+<br>
+<hr>
+<br>
+<h2>4. Hardware Draw Functor API (Android 10+)</h2>
 <br>
 <p>从 Android Q 开始，Framework 引入了 <b>Hardware Draw Functor API</b>，作为传统 GL Functor 的演进版本。</p>
 <br>
-<h3>3.1 与传统 GL Functor 的区别</h3>
+<h3>4.1 与传统 GL Functor 的区别</h3>
 <br>
 <p>| 特性 | Legacy GL Functor | Hardware Draw Functor |</p>
 <p>|:---|:---|:---|</p>
-<p>| <b>Fence 控制</b> | 隐式 | <b>显式</b> (App 可控制 acquireFence) |</p>
-<p>| <b>同步模式</b> | 强制同步 | 支持异步 |</p>
-<p>| <b>Vulkan 支持</b> | ❌ 仅 GLES | ✅ GLES + Vulkan |</p>
-<p>| <b>线程安全</b> | 有限 | 完全线程安全 |</p>
+<p>| <b>Fence / 提交模型</b> | 较偏隐式 | 更现代，但仍受 Framework / provider 私有接口约束 |</p>
+<p>| <b>同步模式</b> | 以同步 draw callback 为主 | 能力更灵活，但未必完全异步 |</p>
+<p>| <b>Vulkan 支持</b> | 传统上偏 GLES | 现代实现可能接入 Vulkan |</p>
+<p>| <b>线程安全</b> | 依赖具体 provider 实现 | 不宜直接写成“完全线程安全” |</p>
 <br>
-<h3>3.2 核心 API (Native)</h3>
+<h3>4.2 核心 API (Native)</h3>
 <br>
 <pre><code>
-// 创建 Functor
-typedef int (*AWDrawFn)(long functor, void* data, 
-                         AWDrawFnCallbackInfo* callbackInfo);
-
-// 注册回调
-AHardwareBufferFunctorProvider_create(
-    AWDrawFn drawFn,
-    void* userData,
-    int64_t* outFunctorId
-);
-
-// 提交给 RenderThread
-AHardwareBufferFunctorProvider_apply(
-    int64_t functorId,
-    AHardwareBuffer* buffer,
-    int acquireFenceFd  // 显式 Fence
-);
+// Hardware Draw Functor 使用私有接口 (draw_fn.h)
+// 核心回调结构（非公开 NDK API，属于 WebView provider 与 Framework 的私有接口）：
+// - AwDrawFn_DrawGL: GL 模式的绘制回调
+// - AwDrawFn_DrawVk: Vulkan 模式的绘制回调
+// App 的 RenderThread 通过函数指针回调执行 Chromium 的渲染代码
 </code></pre>
 <br>
-<h3>3.3 性能优势</h3>
+<h3>4.3 性能优势</h3>
 <br>
-<p>1.  <b>Fence Pipelining</b>: WebView 可以在 GPU 还没完成时就返回，RenderThread 不被阻塞。</p>
-<p>2.  <b>Vulkan Path</b>: 现代浏览器内核 (Viz) 可以走 Vulkan 路径，Command Buffer 更高效。</p>
-<p>3.  <b>Trace 可见性</b>: 在 Perfetto 中可以看到 <code>HardwareDrawFunctor</code> 独立 Slice，便于分析。</p>
+<p>1.  <b>Fence-based GPU Sync</b>: 引入更现代的 fence / 提交控制后，CPU 等待方式可能减少，但 RenderThread 是否仍受 WebView 绘制阶段拖累，要以实际 trace 为准。</p>
+<p>2.  <b>Vulkan Path</b>: 现代浏览器内核可以走 Vulkan 路径，但是否启用与是否暴露到系统 trace 是两件事。</p>
+<p>3.  <b>Trace 可见性</b>: <code>HardwareDrawFunctor</code>、<code>DrawFn_DrawGL</code>、<code>DrawFn_DrawVk</code> 等名称都可能出现在特定 build / tracing 配置中，不应被当作稳定 contract。</p>
 <br>
-<h3>3.4 兼容性说明</h3>
+<h3>4.4 兼容性说明</h3>
 <br>
 <li>  **Android 10 (Q)**: 引入基础 API。</li>
 <li>  **Android 11 (R)**: 完善异步模式。</li>
 <li>  **Android 12 (S)**: 与 BLAST 深度整合。</li>
-<br>
 <br>
     </div>
 </div>
@@ -315,7 +316,7 @@ AHardwareBufferFunctorProvider_apply(
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "UI", "name": "App UI Thread"}, {"id": "RT", "name": "App RenderThread"}, {"id": "WP", "name": "WebView (Renderer)"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC"}], "events": [{"type": "flow", "src": "HW", "dst": "UI", "time": 20, "endTime": 50, "label": "Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "UI", "time": 55, "endTime": 85, "label": "Build DisplayList (Op: DrawFunctor)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "UI", "start": 55, "end": 85, "label": "Build DisplayList (Op: DrawFunctor)", "color": "#ba68c8"}, {"type": "flow", "src": "UI", "dst": "RT", "time": 90, "endTime": 120, "label": "SyncFrameState", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "UI", "start": 55, "end": 145, "label": "Signal", "color": "#ba68c8"}, {"type": "flow", "src": "RT", "dst": "RT", "time": 155, "endTime": 185, "label": "DrawFrame", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 155, "end": 185, "label": "DrawFrame", "color": "#4db6ac"}, {"type": "flow", "src": "RT", "dst": "WP", "time": 190, "endTime": 220, "label": "Invoke Functor (DrawGL)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "WP", "dst": "WP", "time": 225, "endTime": 255, "label": "Execute GL Commands (Shared Context)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "WP", "start": 225, "end": 255, "label": "Execute GL Commands (Shared Context)", "color": "#4fc3f7"}, {"type": "flow", "src": "WP", "dst": "RT", "time": 260, "endTime": 290, "label": "Return", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "WP", "start": 225, "end": 315, "label": "Invoke Functor (DrawGL)", "color": "#4fc3f7"}, {"type": "flow", "src": "RT", "dst": "SF", "time": 325, "endTime": 355, "label": "queueBuffer (App Window)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 155, "end": 380, "label": "SyncFrameState", "color": "#4db6ac"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 635, "endTime": 665, "label": "latchBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 665, "label": "latchBuffer", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 670, "endTime": 700, "label": "Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 725, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 735, "endTime": 765, "label": "Display Panel", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 735, "end": 765, "label": "Display Panel", "color": "#7986cb"}]};
+    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "UI", "name": "App UI Thread"}, {"id": "RT", "name": "App RenderThread"}, {"id": "WP", "name": "Chromium Code (in RT)"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC"}], "events": [{"type": "flow", "src": "HW", "dst": "UI", "time": 20, "endTime": 50, "label": "Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "UI", "time": 55, "endTime": 85, "label": "Build DisplayList (Op: DrawFunctor)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "UI", "start": 55, "end": 85, "label": "Build DisplayList (Op: DrawFunctor)", "color": "#ba68c8"}, {"type": "flow", "src": "UI", "dst": "RT", "time": 90, "endTime": 120, "label": "SyncFrameState", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "UI", "start": 55, "end": 145, "label": "Signal", "color": "#ba68c8"}, {"type": "flow", "src": "RT", "dst": "RT", "time": 155, "endTime": 185, "label": "DrawFrame", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 155, "end": 185, "label": "DrawFrame", "color": "#4db6ac"}, {"type": "flow", "src": "RT", "dst": "WP", "time": 190, "endTime": 220, "label": "Invoke Functor (DrawGL, in-process callback)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "WP", "dst": "WP", "time": 225, "endTime": 255, "label": "Execute GL Commands (Shared Context)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "WP", "start": 225, "end": 255, "label": "Execute GL Commands (Shared Context)", "color": "#4fc3f7"}, {"type": "flow", "src": "WP", "dst": "RT", "time": 260, "endTime": 290, "label": "Return", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "WP", "start": 225, "end": 315, "label": "Invoke Functor (DrawGL, in-process callback)", "color": "#4fc3f7"}, {"type": "flow", "src": "RT", "dst": "SF", "time": 325, "endTime": 355, "label": "queueBuffer (App Window)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 155, "end": 380, "label": "SyncFrameState", "color": "#4db6ac"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 635, "endTime": 665, "label": "latchBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 665, "label": "latchBuffer", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 670, "endTime": 700, "label": "Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 725, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 735, "endTime": 765, "label": "Display Panel", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 735, "end": 765, "label": "Display Panel", "color": "#7986cb"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;

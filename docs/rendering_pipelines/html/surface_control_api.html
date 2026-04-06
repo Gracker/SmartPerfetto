@@ -216,12 +216,12 @@
 <li>  **ASurfaceControl**: 代表 SurfaceFlinger 中的一个 Layer（图层）。它可以是一个 Buffer 容器（显示内容），也可以是一个纯容器（Color Layer / Container Layer）。</li>
 <li>  **ASurfaceTransaction**: 代表一组原子操作。你可以一次性修改多个 SurfaceControl 的属性（位置、大小、Buffer、Z-Order），然后 commit。</li>
 <br>
-<h2>2. 也是 "BLAST"</h2>
+<h2>2. 与 BLAST 的关系</h2>
 <br>
-<p>NDK 的 SurfaceControl API 实际上就是 BLAST 协议的直接体现。</p>
+<p>NDK 的 SurfaceControl API 与 BLAST 共享同一个“事务式更新 Surface / Layer 状态”的体系，但二者不应简单画等号。BLAST 是现代 Android 图形栈里围绕 Buffer + Transaction 协同更新的一条常见路径；<code>ASurfaceControl</code> / <code>ASurfaceTransaction</code> 则是应用直接操控 Layer/事务的低级接口。</p>
 <br>
-<li>  **Atomicity**: `ASurfaceTransaction_apply()` 保证了在这个 Transaction 内的所有修改，要么全生效，要么全不生效。</li>
-<li>  **Sync**: 可以通过 `ASurfaceTransaction_setBuffer` 绑定 Buffer，确保画面内容和窗口属性同步更新。</li>
+<li>  **Atomicity**: `ASurfaceTransaction_apply()` 让同一事务中的多个属性更新以统一快照的方式提交给系统。</li>
+<li>  **Sync**: 可以通过 `ASurfaceTransaction_setBuffer` 将 Buffer 与几何/可见性等属性一并提交；最终何时 latch 和显示，仍由 SurfaceFlinger / HWC / fence 状态共同决定。</li>
 <br>
 <h2>3. 典型使用流程</h2>
 <br>
@@ -229,9 +229,11 @@
 <p>你需要一个父 SurfaceControl（通常来自 <code>SurfaceView.getSurfaceControl()</code>）或者直接挂载到 Display。</p>
 <br>
 <pre><code>
-ASurfaceControl* child = ASurfaceControl_create(
-    parent, "MyOverlay", "ASurfaceControl", width, height, format, ...
-);
+// 从现有 SurfaceControl 创建子 Layer
+ASurfaceControl* child = ASurfaceControl_create(parent, "MyOverlay");
+
+// 或从 ANativeWindow 创建
+ASurfaceControl* child = ASurfaceControl_createFromWindow(window, "MyOverlay");
 </code></pre>
 <br>
 <h3>步骤 2: 配置 Transaction</h3>
@@ -274,7 +276,7 @@ ASurfaceTransaction_apply(transaction);
 <br>
 <li>  **WebView Out-of-process Rasterization**: 浏览器在独立进程合成页面，直接通过 SurfaceControl 发给 SF，不经过 App 主线程。</li>
 <li>  **Custom Video Player**: 可以实现极其复杂的视频弹幕融合效果。</li>
-<li>  **Dynamic UI**: 如 Flutter 这种自绘引擎，利用 SurfaceControl 实现高效的 PlatformView 嵌入。</li>
+<li>  **Dynamic UI**: 自绘引擎、浏览器内核、视频/动画系统都可能利用 SurfaceControl 构造独立 layer；是否用于 Flutter PlatformView 取决于具体集成策略，而不是固定结论。</li>
 <br>
 <h2>6. 注意事项</h2>
 <br>
@@ -288,10 +290,9 @@ ASurfaceTransaction_apply(transaction);
 <h3>7.1 核心 API</h3>
 <br>
 <pre><code>
-// 获取下一帧的预期 VSync 时间 (Android 11+)
-int64_t vsyncId;
-int64_t expectedPresentTime;
-ASurfaceTransaction_getNextFrameInfo(transaction, &vsyncId, &expectedPresentTime);
+// 通过 Choreographer 获取 VSync ID (Android 12+)
+// App 在 AChoreographer_postVsyncCallback 回调中获取 vsyncId
+// 然后传给 ASurfaceTransaction_setFrameTimeline
 
 // 设置目标帧时间线 (Android 12+)
 ASurfaceTransaction_setFrameTimeline(
@@ -315,7 +316,6 @@ ASurfaceTransaction_setFrameTimeline(
 <li>  **游戏引擎**: 在 GPU 负载高时主动降频，而非被动掉帧。</li>
 <li>  **省电模式**: 低功耗场景主动请求 30fps 渲染。</li>
 <br>
-<br>
     </div>
 </div>
 
@@ -324,7 +324,7 @@ ASurfaceTransaction_setFrameTimeline(
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "App", "name": "App"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "SF", "name": "SurfaceFlinger"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "App", "dst": "BBQ", "time": 300, "endTime": 330, "label": "getNextFrameInfo() -> vsyncId=42", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "App", "dst": "App", "time": 335, "endTime": 365, "label": "Draw (\u8017\u65f6 8ms)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "App", "start": 335, "end": 365, "label": "Draw (\u8017\u65f6 8ms)", "color": "#81c784"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "App", "dst": "BBQ", "time": 600, "endTime": 630, "label": "setFrameTimeline(vsyncId=42)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "App", "dst": "BBQ", "time": 635, "endTime": 665, "label": "apply()", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 900}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 900, "endTime": 930, "label": "Transaction (vsyncId=42)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 1200}, {"type": "flow", "src": "SF", "dst": "SF", "time": 1200, "endTime": 1230, "label": "\u6536\u5230\uff0c\u4f46\u5f53\u524d\u662f vsync 41", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 1200, "end": 1230, "label": "\u6536\u5230\uff0c\u4f46\u5f53\u524d\u662f vsync 41", "color": "#e57373"}, {"type": "vsync", "time": 1500}, {"type": "flow", "src": "SF", "dst": "SF", "time": 1500, "endTime": 1530, "label": "\u7b49\u5f85 vsync 42...", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 1500, "end": 1530, "label": "\u7b49\u5f85 vsync 42...", "color": "#e57373"}, {"type": "vsync", "time": 1800}, {"type": "flow", "src": "SF", "dst": "SF", "time": 1800, "endTime": 1830, "label": "vsync 42 \u5230\u8fbe\uff0cLatch & Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 1800, "end": 1830, "label": "vsync 42 \u5230\u8fbe\uff0cLatch & Composite", "color": "#e57373"}]};
+    const timelineData = {"participants": [{"id": "App", "name": "App"}, {"id": "SC", "name": "SurfaceControl"}, {"id": "SF", "name": "SurfaceFlinger"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "App", "dst": "App", "time": 300, "endTime": 330, "label": "Choreographer callback -> vsyncId=42", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "App", "start": 300, "end": 330, "label": "Choreographer callback -> vsyncId=42", "color": "#81c784"}, {"type": "flow", "src": "App", "dst": "App", "time": 335, "endTime": 365, "label": "Draw (\u8017\u65f6 8ms)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "App", "start": 335, "end": 365, "label": "Draw (\u8017\u65f6 8ms)", "color": "#81c784"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "App", "dst": "SC", "time": 600, "endTime": 630, "label": "setFrameTimeline(vsyncId=42)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "App", "dst": "SC", "time": 635, "endTime": 665, "label": "apply()", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 900}, {"type": "flow", "src": "SC", "dst": "SF", "time": 900, "endTime": 930, "label": "Transaction (vsyncId=42)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 1200}, {"type": "flow", "src": "SF", "dst": "SF", "time": 1200, "endTime": 1230, "label": "\u6536\u5230\uff0c\u4f46\u5f53\u524d\u662f vsync 41", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 1200, "end": 1230, "label": "\u6536\u5230\uff0c\u4f46\u5f53\u524d\u662f vsync 41", "color": "#e57373"}, {"type": "vsync", "time": 1500}, {"type": "flow", "src": "SF", "dst": "SF", "time": 1500, "endTime": 1530, "label": "\u7b49\u5f85 vsync 42...", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 1500, "end": 1530, "label": "\u7b49\u5f85 vsync 42...", "color": "#e57373"}, {"type": "vsync", "time": 1800}, {"type": "flow", "src": "SF", "dst": "SF", "time": 1800, "endTime": 1830, "label": "vsync 42 \u5230\u8fbe\uff0cLatch & Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 1800, "end": 1830, "label": "vsync 42 \u5230\u8fbe\uff0cLatch & Composite", "color": "#e57373"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;

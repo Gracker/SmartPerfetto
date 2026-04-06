@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flutter TextureView Pipeline (PlatformView)</title>
+    <title>Flutter TextureView Pipeline (Render Mode / Host Composition)</title>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
     <style>
@@ -191,7 +191,7 @@
 <body>
 
 <div class="header">
-    <h1>Flutter TextureView Pipeline (PlatformView) - Android Rendering Pipeline</h1>
+    <h1>Flutter TextureView Pipeline (Render Mode / Host Composition) - Android Rendering Pipeline</h1>
     <div class="legend" id="legend"></div>
 </div>
 
@@ -207,13 +207,13 @@
 
 <div class="doc-section">
     <div class="doc-content">
-        <h1>Flutter TextureView Pipeline (PlatformView)</h1>
+        <h1>Flutter TextureView Pipeline (Render Mode / Host Composition)</h1>
 <br>
-<p>当需要将 Flutter 视图嵌入复杂的 Android View 层级中，或者需要对 Flutter View 进行半透明、旋转、裁剪动画时，会回退到 <code>TextureView</code> 模式。</p>
+<p>当宿主需要将 Flutter 视图嵌入复杂的 Android View 层级中，或者需要对 Flutter 根视图做半透明、旋转、裁剪等 View 级变换时，常会使用 <code>TextureView</code> render mode。它和 PlatformView 的 HC / TLHC 不是同一个概念，但两者组合后通常会进一步放大合成成本。</p>
 <br>
 <h2>1. 混合渲染流程详解 (Deep Execution Flow)</h2>
 <br>
-<p>在此模式下，Flutter 降级为一个普通的“内容生产者”，它的每一帧都必须经过 Android 原生渲染管线的“转手”。</p>
+<p>在此模式下，Flutter 更像一个向 <code>SurfaceTexture</code> 供帧的内容生产者，最终仍要经过宿主侧的 View / RenderThread 合成链路。</p>
 <br>
 <h3>第一阶段：Flutter 生产 (Dart & Raster)</h3>
 <p>与 SurfaceView 模式类似，Dart 进行 Build/Layout/Paint，Raster 进行光栅化。</p>
@@ -227,19 +227,19 @@
 <p>1.  <b>Frame Available</b>: <code>SurfaceTexture</code> 在任意线程触发回调。</p>
 <p>2.  <b>Lock</b>: 需要竞争锁来跨线程通知。</p>
 <br>
-<p>#### Modern (3.29+ Merged Model)</p>
-<p>在 3.29+ 中，因为 Flutter UI 任务本身就跑在 Main Thread，所以 SurfaceTexture 的创建和管理也被强制绑定到了 <b>Main Thread</b>。</p>
-<p>1.  <b>Ownership</b>: 所有的 PlatformView SurfaceTexture 现在归 Main Thread 所有。</p>
-<p>2.  <b>No Lock</b>: Raster Thread 提交后 (<code>queueBuffer</code>)，<code>onFrameAvailable</code> 回调直接在 Main Thread 响应，消除了上下文切换和锁竞争。</p>
-<p>3.  <b>Invalidate</b>: 主线程立即收到信号，直接调用 <code>invalidate()</code>。</p>
-<p>4.  <b>Wait Vsync</b>: 虽然消除了锁，但“等待下一个 Vsync”的物理限制依然存在（因为是 TextureView）。</p>
+<p>#### Modern (Merged Model)</p>
+<p>在较新的 merged model 中，Flutter UI task runner 默认更常与 Main Looper 对齐，这减少了 Platform Channel / 配置阶段的跨线程开销；但 <code>SurfaceTexture</code> 的创建、监听回调线程和消费线程仍取决于具体实现，不应简单写成“强制绑定 Main Thread”。</p>
+<p>1.  <b>Ownership</b>: merged model 降低 UI 与 platform task runner 之间的切换成本。</p>
+<p>2.  <b>Reduced Overhead</b>: <code>onFrameAvailable</code> 回调线程取决于 <code>SurfaceTexture</code> / listener 的绑定方式；即便 merged model 生效，Raster Thread → SurfaceTexture → 宿主 RenderThread 的同步和调度仍然存在。</p>
+<p>3.  <b>Invalidate</b>: 宿主通常仍需要通过 View invalidation 进入下一轮宿主合成。</p>
+<p>4.  <b>Wait Vsync</b>: 由于最终需要落到宿主 View 树，这条路径通常仍受宿主帧节奏约束。</p>
 <br>
 <h3>第三阶段：RenderThread Composite (渲染线程合成)</h3>
-<p>1.  <b>updateTexImage</b>: App 的 <code>RenderThread</code> 在绘制这一帧 View 树时，发现有个 <code>TextureView</code>。它调用 <code>updateTexImage</code> 从 SurfaceTexture 中把 Flutter 刚画的那帧“吸”出来，变成一个 OpenGL 纹理。</p>
+<p>1.  <b>updateTexImage / acquire latest image</b>: 宿主侧在绘制这一帧 View 树时，常会消费 <code>SurfaceTexture</code> 的最新图像；是否稳定可见 <code>updateTexImage</code>，取决于版本和 trace 配置。</p>
 <p>2.  <b>Draw</b>: 把它当做一张图片画在 App 的主 Framebuffer 上。</p>
 <p>3.  <b>BLAST</b>: 最终，App 的主 Framebuffer 通过 BLAST 提交给 SurfaceFlinger。</p>
 <br>
-<p><b>结论</b>: 一帧 Flutter 画面，要先被 Flutter 画一次，再被 Android 画一次，才能上屏。</p>
+<p><b>结论</b>: Flutter 画面通常要先生成到 <code>SurfaceTexture</code>，再由宿主侧参与一次纹理采样/合成，因此整体带宽和同步成本通常高于 <code>SurfaceView</code> render mode。</p>
 <br>
 <hr>
 <br>
@@ -256,7 +256,7 @@
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "Dart", "name": "Dart Runner"}, {"id": "Raster", "name": "Raster Thread"}, {"id": "ST", "name": "SurfaceTexture"}, {"id": "Main", "name": "Android Main"}, {"id": "RT", "name": "Android RT"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC"}], "events": [{"type": "flow", "src": "Dart", "dst": "Raster", "time": 20, "endTime": 50, "label": "LayerTree", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 20, "end": 75, "label": "Active", "color": "#4db6ac"}, {"type": "flow", "src": "Raster", "dst": "ST", "time": 85, "endTime": 115, "label": "queueBuffer(Frame N)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Raster", "start": 85, "end": 140, "label": "LayerTree", "color": "#ef5350"}, {"type": "flow", "src": "ST", "dst": "Main", "time": 150, "endTime": 180, "label": "onFrameAvailable()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Main", "dst": "Main", "time": 185, "endTime": 215, "label": "invalidate()", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Main", "start": 185, "end": 215, "label": "invalidate()", "color": "#ef5350"}, {"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "Main", "time": 300, "endTime": 330, "label": "VSync-App", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Main", "dst": "RT", "time": 335, "endTime": 365, "label": "SyncFrameState", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "RT", "dst": "ST", "time": 370, "endTime": 400, "label": "updateTexImage()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "ST", "dst": "RT", "time": 405, "endTime": 435, "label": "Bind Texture (Copy)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "RT", "dst": "RT", "time": 440, "endTime": 470, "label": "Draw View Hierarchy", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 440, "end": 470, "label": "Draw View Hierarchy", "color": "#4db6ac"}, {"type": "flow", "src": "RT", "dst": "SF", "time": 475, "endTime": 505, "label": "queueBuffer(App Window)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 370, "end": 530, "label": "SyncFrameState", "color": "#4db6ac"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 635, "endTime": 665, "label": "Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 690, "label": "VSync-SF", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 700, "endTime": 730, "label": "Scanout", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 700, "end": 730, "label": "Scanout", "color": "#7986cb"}]};
+    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "Dart", "name": "Dart Runner"}, {"id": "Raster", "name": "Raster Thread"}, {"id": "ST", "name": "SurfaceTexture"}, {"id": "Main", "name": "Android Main"}, {"id": "RT", "name": "Android RT"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "Dart", "time": 300, "endTime": 330, "label": "VSync-App (Flutter)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Dart", "dst": "Dart", "time": 335, "endTime": 365, "label": "Build/Layout/Paint", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 335, "end": 365, "label": "Build/Layout/Paint", "color": "#4db6ac"}, {"type": "flow", "src": "Dart", "dst": "Raster", "time": 370, "endTime": 400, "label": "LayerTree", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 335, "end": 425, "label": "VSync-App (Flutter)", "color": "#4db6ac"}, {"type": "flow", "src": "Raster", "dst": "ST", "time": 435, "endTime": 465, "label": "queueBuffer(Frame N)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Raster", "start": 435, "end": 490, "label": "LayerTree", "color": "#ef5350"}, {"type": "flow", "src": "ST", "dst": "Main", "time": 500, "endTime": 530, "label": "onFrameAvailable()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Main", "dst": "Main", "time": 535, "endTime": 565, "label": "invalidate()", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Main", "start": 535, "end": 565, "label": "invalidate()", "color": "#ef5350"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "Main", "time": 600, "endTime": 630, "label": "VSync-App", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Main", "dst": "RT", "time": 635, "endTime": 665, "label": "SyncFrameState", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "RT", "dst": "ST", "time": 670, "endTime": 700, "label": "updateTexImage()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "ST", "dst": "RT", "time": 705, "endTime": 735, "label": "Bind Texture (Zero-Copy via EGLImage)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "RT", "dst": "RT", "time": 740, "endTime": 770, "label": "Draw View Hierarchy", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 740, "end": 770, "label": "Draw View Hierarchy", "color": "#4db6ac"}, {"type": "flow", "src": "RT", "dst": "SF", "time": 775, "endTime": 805, "label": "queueBuffer(App Window)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "RT", "start": 670, "end": 830, "label": "SyncFrameState", "color": "#4db6ac"}, {"type": "vsync", "time": 900}, {"type": "flow", "src": "HW", "dst": "SF", "time": 900, "endTime": 930, "label": "VSync-SF", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 935, "endTime": 965, "label": "Composite", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 935, "end": 990, "label": "VSync-SF", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 1000, "endTime": 1030, "label": "Scanout", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 1000, "end": 1030, "label": "Scanout", "color": "#7986cb"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;

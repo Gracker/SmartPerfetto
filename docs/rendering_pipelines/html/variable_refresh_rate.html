@@ -210,9 +210,9 @@
         <h1>Variable Refresh Rate (VRR) Pipeline</h1>
 <br>
 <p>> [!NOTE]</p>
-<p>> <b>Android 16 Enhanced ARR</b>: Android 16 引入了增强的 Adaptive Refresh Rate (ARR) API，简化了开发者控制帧率的方式，并提供更好的功耗优化。</p>
+<p>> <b>ARR (Adaptive Refresh Rate)</b>: Android 15 QPR1 引入了 ARR 基础支持，Android 16 增加了 <code>hasArrSupport()</code> 和 <code>getSuggestedFrameRate()</code> 等便利 API。</p>
 <br>
-<p><b>可变刷新率 (VRR)</b> 是 Android 11+ 引入的显示技术，允许屏幕刷新率动态变化 (如 1Hz ~ 120Hz)，对渲染管线和性能分析带来根本性影响。</p>
+<p>Android 11 引入了 <code>setFrameRate()</code> 帧率声明 API，Android 12+ 逐步完善 VRR / ARR 管线支持。<b>可变刷新率 (VRR)</b> 允许屏幕刷新率在设备支持的模式集合内动态变化，对渲染管线和性能分析带来根本性影响。实际支持范围、切换延迟和最低刷新率取决于面板、OEM 策略和内容场景。</p>
 <br>
 <h2>1. 核心概念</h2>
 <br>
@@ -220,7 +220,7 @@
 <br>
 <p>| 特性 | 固定刷新率 | VRR |</p>
 <p>|:---|:---|:---|</p>
-<p>| <b>VSync 周期</b> | 固定 (如 16.6ms @ 60Hz) | <b>动态</b> (1ms ~ 100ms) |</p>
+<p>| <b>VSync 周期</b> | 固定 (如 16.6ms @ 60Hz) | <b>动态</b>（取决于设备支持的刷新模式） |</p>
 <p>| <b>掉帧表现</b> | 跳到下一个 VSync (明显卡顿) | 延长当前帧 (平滑过渡) |</p>
 <p>| <b>功耗</b> | 静态时仍 60Hz 刷新 | 静态时可降至 1Hz |</p>
 <p>| <b>复杂度</b> | 简单 | App/SF/Display 三方协调 |</p>
@@ -278,12 +278,13 @@ surface.setFrameRate(0f, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
 <pre><code>
 // Android 16+ Enhanced ARR
 // 声明场景类型，系统自动优化
-surface.setFrameRateCategory(Surface.FRAME_RATE_CATEGORY_HIGH_HINT);  // 游戏/动画
-surface.setFrameRateCategory(Surface.FRAME_RATE_CATEGORY_NORMAL);     // 普通滚动
-surface.setFrameRateCategory(Surface.FRAME_RATE_CATEGORY_LOW);        // 静态/省电
+// Android 15 QPR1+ View-level Frame Rate Category
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_HIGH);    // 游戏/动画
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_NORMAL);  // 普通滚动
+view.setRequestedFrameRate(View.REQUESTED_FRAME_RATE_CATEGORY_LOW);     // 静态/省电
 
-// 投票机制：多个 Surface 投票，系统综合决策
-window.setFrameRateVote(120, Window.FRAME_RATE_VOTE_TYPE_PREFERRED);
+// 投票机制：多个 View 各自声明帧率需求，系统综合决策
+// View hierarchy 中每个 View 的 setRequestedFrameRate() 会被自动聚合
 </code></pre>
 <br>
 <h3>3.3 SurfaceControl API</h3>
@@ -340,10 +341,11 @@ Frame:  |   F1   |   F2   |    F3 (慢)      |   F4   |
 SELECT * FROM slice 
 WHERE name = 'DrawFrame' AND dur &gt; 16666666;  -- ❌
 
--- 正确的掉帧检测 (VRR 感知)
-SELECT * FROM slice s
-JOIN frame_timeline ft ON s.frame_id = ft.id
-WHERE ft.actual_present_time &gt; ft.expected_present_time + 2000000;  -- ✅
+-- 正确的掉帧检测 (VRR 感知, Perfetto stdlib)
+INCLUDE PERFETTO MODULE android.frames;
+SELECT frame_id, ts, dur, jank_type
+FROM android_frames
+WHERE jank_type != 'None';  -- ✅ 使用 stdlib 的 jank 检测
 </code></pre>
 <br>
 <h2>7. 常见问题</h2>
@@ -370,21 +372,20 @@ WHERE ft.actual_present_time &gt; ft.expected_present_time + 2000000;  -- ✅
 <br>
 <p>| Android 版本 | VRR 支持 |</p>
 <p>|:---|:---|</p>
-<p>| <b>Android 16</b> (API 36) | <b>Enhanced ARR</b> + 投票机制 + 更智能功耗策略 |</p>
-<p>| <b>Android 15</b> (API 35) | 改进 ARR API，更低延迟切换 |</p>
-<p>| Android 14 (API 34) | 1Hz LTPO 完整支持 |</p>
+<p>| <b>Android 16</b> (API 36) | ARR / frame-rate API 继续演进（仍依硬件支持） |</p>
+<p>| <b>Android 15</b> (API 35) | 改进 ARR / view-level frame-rate 能力 |</p>
+<p>| Android 14 (API 34) | VRR 策略继续完善（需硬件支持） |</p>
 <p>| Android 13 (API 33) | 改进省电策略 |</p>
 <p>| Android 12 (API 31) | FrameTimeline 深度整合 |</p>
 <p>| Android 11 (API 30) | 基础 VRR API |</p>
 <br>
 <h2>9. 开发者建议</h2>
 <br>
-<p>1.  <b>明确帧率意图</b>: 不要依赖系统猜测，主动调用 <code>setFrameRate()</code> 或 <code>setFrameRateCategory()</code></p>
+<p>1.  <b>明确帧率意图</b>: 不要依赖系统猜测，主动调用 <code>setFrameRate()</code> 或对应版本可用的 view-level frame-rate API</p>
 <p>2.  <b>静态检测</b>: 检测无动画时主动降频</p>
 <p>3.  <b>视频锁帧</b>: 视频播放使用 <code>FIXED_SOURCE</code> 模式</p>
 <p>4.  <b>测试覆盖</b>: 在 60Hz/90Hz/120Hz 设备上分别测试</p>
 <p>5.  <b>升级到 Android 16 API</b>: 使用 Enhanced ARR 减少代码复杂度</p>
-<br>
 <br>
 <br>
     </div>

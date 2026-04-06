@@ -1,6 +1,6 @@
-# Flutter SurfaceView Pipeline (Impeller/BLAST)
+# Flutter SurfaceView Pipeline (Common Render Mode)
 
-这是 Flutter 在 Android 上的默认和推荐模式（Modern Android）。它利用 `SurfaceView` 独立的 Surface 和 BLAST 机制，实现了高性能、低延迟的渲染。
+这是 Flutter 在 Android 上最常见的高性能 render mode。`FlutterFragment` / `FlutterView` 的默认 render mode 通常是 `SurfaceView`，它利用独立 Surface 与 SurfaceFlinger 合成；宿主原生 View 仍然可能走标准 Android View / RenderThread 链路。
 
 ## 1. 独立合成流程详解 (Deep Execution Flow)
 
@@ -19,17 +19,18 @@
 ### 第二阶段：Raster Thread (光栅化)
 1.  **LayerTree Processing**: 拿到 Dart 发来的指令树，进行优化和合成。
 2.  **Rasterization (Impeller)**:
-    *   使用 Vulkan (或 Metal) 直接生成 Command Buffer。
-    *   不需要像 Skia 那样即时(JIT)编译 Shader，因其 Shader 是预编译的(AOT)，极大减少了首帧卡顿。
+    *   Android 上 Impeller 常见后端是 Vulkan；在不支持的设备上也可能回退到 OpenGL ES 路径。
+    *   Impeller 倾向于使用预编译 shader / 更可预测的 pipeline 建立流程，通常能减少 Skia 时代的运行时 shader 编译卡顿，但具体收益仍依设备和效果而异。
 3.  **Present (直接提交)**:
     *   通过 `vkQueuePresentKHR` (Vulkan) 或 `eglSwapBuffers` (GL)。
     *   **关键**: 这一步直接写入到一张独立的 SurfaceBuffer 中。
+    > *注: 指 Flutter 自身的渲染内容。宿主 App 的原生 View（如系统状态栏）仍走标准 RenderThread 路径。*
 
 ### 第三阶段：BLAST Submission (系统合成)
-1.  **queueBuffer**: Vulkan 驱动底层调用 `queueBuffer`。
-2.  **BLAST Adapter**: 这是一个运行在 App 进程中的组件。它捕获这个 Buffer，并将其封装进一个 `SurfaceControl.Transaction`。
+1.  **queueBuffer / Present**: Flutter 渲染结果通过底层图形栈提交到 Surface。
+2.  **BLAST Adapter**: 在较新的 Android 设备上，Surface 更新通常会通过 BLAST / Transaction 模型进入 SurfaceFlinger。
 3.  **Atomic Sync**: 如果这个 Transaction 包含了 Window 的位置变化（比如 resize），它们会原子生效。
-4.  **SurfaceFlinger**: 收到 Transaction，直接合成到屏幕，**不经过 App RenderThread**。
+4.  **SurfaceFlinger**: 收到 Transaction，直接合成到屏幕，**Flutter 内容不经过 App RenderThread**（宿主原生 View 仍走 RenderThread）。
 
 ---
 
@@ -61,22 +62,22 @@ sequenceDiagram
         deactivate Dart
         
         activate Raster
-        Raster->>BBQ: dequeueBuffer() -> acquireFence
+        Raster->>BBQ: dequeueBuffer() -> releaseFence
         Raster->>Raster: Impeller Rasterize (GPU)
-        Raster->>BBQ: queueBuffer(releaseFence)
+        Raster->>BBQ: queueBuffer(acquireFence)
         deactivate Raster
     end
     
     %% 3. BLAST Submission
     Note over BBQ, SF: 3. BLAST Transaction
     BBQ->>BBQ: Acquire
-    BBQ->>SF: Transaction(Buffer, releaseFence)
+    BBQ->>SF: Transaction(Buffer, acquireFence)
 
     %% 4. VSync-SF
     Note over HW, SF: 4. VSync-SF 合成
     HW->>SF: VSync-SF Signal
     activate SF
-    SF->>SF: Wait releaseFence
+    SF->>SF: Wait acquireFence
     SF->>SF: latchBuffer
     SF->>HWC: Composite Layer
     deactivate SF
@@ -86,7 +87,7 @@ sequenceDiagram
         Note over HWC: 5. Scanout
         HWC->>HWC: Scanout
         HWC-->>SF: presentFence
-        SF-->>BBQ: acquireFence
+        SF-->>BBQ: releaseFence
     end
 ```
 
@@ -94,11 +95,11 @@ sequenceDiagram
 
 | 线程名称 | 关键职责 | 常见 Trace 标签 |
 |:---|:---|:---|
-| **1.ui / ui** | Dart 代码执行, Build/Layout/Paint | `Engine::BeginFrame`, `FrameworkAnimator` |
-| **1.raster / raster** | Layer Tree 光栅化, GPU 指令生成 | `Rasterizer::DrawToSurfaces`, `EntityPass::Render` |
-| **1.io** | 图片解码, 资源加载 | `ImageDecoder`, `SkiaUnrefQueue` |
+| **ui / main / 1.ui** | Dart 代码执行, Build/Layout/Paint | 常见可见 `Engine::BeginFrame`，但线程/标签不稳定 |
+| **raster / 1.raster** | Layer Tree 光栅化, GPU 指令生成 | 常见可见 `Rasterizer::DrawToSurfaces`、`EntityPass::*`，但不保证稳定 |
+| **1.io** | 图片解码, 资源加载 | `ImageDecoder`（Skia 引擎下还有 `SkiaUnrefQueue`） |
 | **1.platform** | 平台通道调用 | `MethodChannel` |
-| **SurfaceFlinger** | 合成 Flutter Layer 与系统 UI | `handleMessageRefresh`, `latchBuffer` |
+| **SurfaceFlinger** | 合成 Flutter Layer 与系统 UI | 常见可见 `latchBuffer` / FrameTimeline / SF 主循环片段 |
 
 ---
 
@@ -106,7 +107,7 @@ sequenceDiagram
 
 当 Flutter 应用需要嵌入原生 Android View（如 Google Maps、WebView）时，SurfaceView 模式存在根本性限制。
 
-### 3.1 为什么不兼容
+### 4.1 为什么不兼容
 
 | 问题 | 根因 |
 |:---|:---|
@@ -114,22 +115,17 @@ sequenceDiagram
 | **手势穿透** | 触摸事件分发路径不一致 |
 | **裁剪/圆角** | SurfaceView 不支持 `clipPath` 等 View 变换 |
 
-### 3.2 自动降级机制
+### 4.2 PlatformView 不是“自动降级到 TextureView”
 
-当检测到 `PlatformView` 存在时，Flutter 引擎会**自动降级**到 TextureView 模式：
+Flutter Android 上需要区分两套配置：
 
-```dart
-// flutter/engine: shell/platform/android/io/flutter/embedding/android/FlutterView.java
-if (platformViewsController.usesVirtualDisplays()) {
-    // TextureView 模式 (Hybrid Composition Virtual Display)
-} else {
-    // Hybrid Composition (Android View 直接嵌入)
-}
-```
+1.  **Flutter 根视图 render mode**: `SurfaceView` 或 `TextureView`
+2.  **Platform Views composition mode**: `Hybrid Composition` 或 `Texture Layer Hybrid Composition`
 
-### 3.3 开发者建议
+嵌入 `PlatformView` 时，Flutter 不一定“自动切到 TextureView render mode”。更常见的是在当前 render mode 下，针对具体平台视图选择 HC / TLHC 等组合方式；是否切换、代价多大，取决于宿主、Flutter 版本、视图类型和具体实现。
 
-1.  **尽量减少 PlatformView 数量**: 每增加一个，性能损失约 5-10%。
+### 4.3 开发者建议
+
+1.  **尽量减少 PlatformView 数量**: 多个 PlatformView 往往会引入额外合成、同步和输入成本，但开销没有稳定的固定百分比。
 2.  **优先使用 Flutter 原生组件**: 如 `flutter_map` 代替 Google Maps。
-3.  **监控降级**: 在 Perfetto 中检查是否意外启用了 TextureView 模式（看是否有 `SurfaceTexture` 相关 Slice）。
-
+3.  **监控组合方式**: 在 Perfetto 中可观察 `SurfaceTexture`、宿主 RenderThread、平台视图线程与 Flutter raster 的相对关系，但不要把单个 slice 名当成唯一判据。

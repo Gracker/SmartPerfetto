@@ -1,10 +1,10 @@
-# Flutter TextureView Pipeline (PlatformView)
+# Flutter TextureView Pipeline (Render Mode / Host Composition)
 
-当需要将 Flutter 视图嵌入复杂的 Android View 层级中，或者需要对 Flutter View 进行半透明、旋转、裁剪动画时，会回退到 `TextureView` 模式。
+当宿主需要将 Flutter 视图嵌入复杂的 Android View 层级中，或者需要对 Flutter 根视图做半透明、旋转、裁剪等 View 级变换时，常会使用 `TextureView` render mode。它和 PlatformView 的 HC / TLHC 不是同一个概念，但两者组合后通常会进一步放大合成成本。
 
 ## 1. 混合渲染流程详解 (Deep Execution Flow)
 
-在此模式下，Flutter 降级为一个普通的“内容生产者”，它的每一帧都必须经过 Android 原生渲染管线的“转手”。
+在此模式下，Flutter 更像一个向 `SurfaceTexture` 供帧的内容生产者，最终仍要经过宿主侧的 View / RenderThread 合成链路。
 
 ### 第一阶段：Flutter 生产 (Dart & Raster)
 与 SurfaceView 模式类似，Dart 进行 Build/Layout/Paint，Raster 进行光栅化。
@@ -18,19 +18,19 @@
 1.  **Frame Available**: `SurfaceTexture` 在任意线程触发回调。
 2.  **Lock**: 需要竞争锁来跨线程通知。
 
-#### Modern (3.29+ Merged Model)
-在 3.29+ 中，因为 Flutter UI 任务本身就跑在 Main Thread，所以 SurfaceTexture 的创建和管理也被强制绑定到了 **Main Thread**。
-1.  **Ownership**: 所有的 PlatformView SurfaceTexture 现在归 Main Thread 所有。
-2.  **No Lock**: Raster Thread 提交后 (`queueBuffer`)，`onFrameAvailable` 回调直接在 Main Thread 响应，消除了上下文切换和锁竞争。
-3.  **Invalidate**: 主线程立即收到信号，直接调用 `invalidate()`。
-4.  **Wait Vsync**: 虽然消除了锁，但“等待下一个 Vsync”的物理限制依然存在（因为是 TextureView）。
+#### Modern (Merged Model)
+在较新的 merged model 中，Flutter UI task runner 默认更常与 Main Looper 对齐，这减少了 Platform Channel / 配置阶段的跨线程开销；但 `SurfaceTexture` 的创建、监听回调线程和消费线程仍取决于具体实现，不应简单写成“强制绑定 Main Thread”。
+1.  **Ownership**: merged model 降低 UI 与 platform task runner 之间的切换成本。
+2.  **Reduced Overhead**: `onFrameAvailable` 回调线程取决于 `SurfaceTexture` / listener 的绑定方式；即便 merged model 生效，Raster Thread → SurfaceTexture → 宿主 RenderThread 的同步和调度仍然存在。
+3.  **Invalidate**: 宿主通常仍需要通过 View invalidation 进入下一轮宿主合成。
+4.  **Wait Vsync**: 由于最终需要落到宿主 View 树，这条路径通常仍受宿主帧节奏约束。
 
 ### 第三阶段：RenderThread Composite (渲染线程合成)
-1.  **updateTexImage**: App 的 `RenderThread` 在绘制这一帧 View 树时，发现有个 `TextureView`。它调用 `updateTexImage` 从 SurfaceTexture 中把 Flutter 刚画的那帧“吸”出来，变成一个 OpenGL 纹理。
+1.  **updateTexImage / acquire latest image**: 宿主侧在绘制这一帧 View 树时，常会消费 `SurfaceTexture` 的最新图像；是否稳定可见 `updateTexImage`，取决于版本和 trace 配置。
 2.  **Draw**: 把它当做一张图片画在 App 的主 Framebuffer 上。
 3.  **BLAST**: 最终，App 的主 Framebuffer 通过 BLAST 提交给 SurfaceFlinger。
 
-**结论**: 一帧 Flutter 画面，要先被 Flutter 画一次，再被 Android 画一次，才能上屏。
+**结论**: Flutter 画面通常要先生成到 `SurfaceTexture`，再由宿主侧参与一次纹理采样/合成，因此整体带宽和同步成本通常高于 `SurfaceView` render mode。
 
 ---
 
@@ -49,9 +49,11 @@ sequenceDiagram
     participant SF as SurfaceFlinger
     participant HWC as HWC
 
-    %% 1. Flutter Produce
-    Note over Dart, Raster: 1. Flutter Generation
+    %% 1. Flutter Produce (VSync 驱动)
+    Note over HW, Raster: 1. Flutter Generation
+    HW->>Dart: VSync-App (Flutter)
     activate Dart
+    Dart->>Dart: Build/Layout/Paint
     Dart->>Raster: LayerTree
     deactivate Dart
     activate Raster
@@ -72,7 +74,7 @@ sequenceDiagram
         Note over RT: 3. Android Composite
         activate RT
         RT->>ST: updateTexImage()
-        ST-->>RT: Bind Texture (Copy)
+        ST-->>RT: Bind Texture (Zero-Copy via EGLImage)
         RT->>RT: Draw View Hierarchy
         RT->>SF: queueBuffer(App Window)
         deactivate RT

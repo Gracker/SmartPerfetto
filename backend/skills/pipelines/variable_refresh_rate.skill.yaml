@@ -35,16 +35,16 @@ detection:
       weight: 40
     - signal: has_set_frame_rate
       slice_pattern: "*setFrameRate*"
-      weight: 18
+      weight: 15
     - signal: has_frame_rate_vote
       slice_pattern: "*FrameRateVote*"
-      weight: 12
+      weight: 5
     - signal: has_set_frame_rate_category
       slice_pattern: "*setFrameRateCategory*"
-      weight: 13
+      weight: 6
     - signal: has_frame_rate_category
       slice_pattern: "*FRAME_RATE_CATEGORY*"
-      weight: 12
+      weight: 6
     - signal: has_display_mode
       slice_pattern: "*DisplayMode*"
       weight: 8
@@ -57,7 +57,8 @@ teaching:
   summary: |
     可变刷新率 (VRR/ARR) 允许屏幕动态调整刷新率以匹配内容帧率。
     结合 FrameTimeline，系统可以精确追踪每一帧的预期和实际显示时间，
-    实现更流畅的显示效果和更好的功耗表现。
+    实现更流畅的显示效果和更好的功耗表现。API 名称、可用性和
+    切换策略依 Android 版本、设备和 OEM 实现变化，不应把单个 slice 名当成稳定 contract。
 
     关键机制（随 Android 版本持续演进）:
     - Android 11+：应用侧可通过 Surface.setFrameRate 表达“期望帧率/稳定性/场景”（具体能力依设备）
@@ -115,7 +116,7 @@ teaching:
       description: "帧率分类/场景提示（不同版本/厂商实现可能不同）"
     - name: "FrameRateVote"
       thread: SurfaceFlinger
-      description: "帧率投票"
+      description: "可能出现的帧率投票提示信号"
 
 auto_pin:
   instructions:

@@ -34,11 +34,15 @@ detection:
       slice_pattern: "*UCCore*"
       weight: 20
 
+  exclude_if:
+    - thread: "1.ui"           # Flutter engine present → use Flutter pipeline
+
 teaching:
   title: "WebView TextureView (定制内核) 渲染管线"
   summary: |
     使用腾讯 X5、UC 等第三方定制 WebView 内核，通常使用 TextureView
-    进行渲染。这些内核可能有自己的渲染优化策略，但整体架构与标准 WebView 类似。
+    进行渲染。这些内核可能有自己的渲染优化策略，但整体上仍属于
+    “SurfaceTexture producer + 宿主侧再次合成”的架构；回调线程和消费线程实现差异很大。
 
   mermaid: |
     sequenceDiagram
@@ -54,7 +58,7 @@ teaching:
       Main->>X5: 加载网页
       activate X5
       X5->>TV: 渲染到 TextureView
-      X5->>TV: updateTexImage
+      X5->>TV: queueBuffer / produce frame
       deactivate X5
 
       Main->>RT: syncFrameState
@@ -86,9 +90,9 @@ teaching:
     - name: "SurfaceTexture"
       thread: any
       description: "TextureView/SurfaceTexture 生产-消费链路"
-    - name: "updateTexImage"
+    - name: "updateTexImage (hint)"
       thread: RenderThread
-      description: "消费侧更新纹理（通常发生在合成阶段）"
+      description: "消费侧更新纹理的常见提示信号"
     - name: "syncFrameState"
       thread: RenderThread
       description: "宿主 UI 与 RenderThread 同步，驱动纹理合成"

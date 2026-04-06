@@ -5,8 +5,8 @@
 # =============================================================================
 # Flutter TextureView Pipeline
 # =============================================================================
-# Flutter PlatformView fallback using TextureView.
-# Used when embedding native Android views in Flutter.
+# Flutter TextureView render mode / host composition path.
+# Distinct from PlatformView composition mode, but often appears in similar embedding scenarios.
 # =============================================================================
 
 name: pipeline_flutter_textureview
@@ -17,51 +17,55 @@ category: rendering
 meta:
   pipeline_id: FLUTTER_TEXTUREVIEW
   display_name: "Flutter TextureView"
-  description: "Flutter PlatformView 降级模式，嵌入原生 Android View"
+  description: "Flutter TextureView render mode，宿主侧纹理合成路径"
   icon: "flutter"
   family: flutter
   doc_path: "rendering_pipelines/flutter_textureview.md"
 
 detection:
-  required_signals:
-    - thread: "1.ui"
-      min_count: 1
-
   scoring_signals:
     - signal: has_surface_texture
       slice_pattern: "*SurfaceTexture*"
       weight: 30
     - signal: has_update_tex_image
       slice_pattern: "*updateTexImage*"
-      weight: 35
+      weight: 15
+    - signal: has_host_render_thread
+      thread_pattern: "RenderThread*"
+      weight: 12
+    - signal: has_flutter_raster
+      thread_pattern: "*raster*"
+      weight: 10
 
 teaching:
   title: "Flutter TextureView 渲染管线"
   summary: |
-    当 Flutter 需要嵌入原生 Android View (PlatformView) 时，
-    会降级到 TextureView 模式。这种模式有额外的纹理上传开销，
-    性能不如 SurfaceView 模式。应尽量减少 PlatformView 使用。
+    Flutter 使用 TextureView render mode 时，内容先进入 SurfaceTexture，
+    再由宿主侧参与一次纹理采样/合成。它与 PlatformView 的 HC / TLHC
+    不是同一个概念，但二者组合后往往会放大宿主合成开销。
 
   mermaid: |
     sequenceDiagram
       participant VA as VSync-app
-      participant UI as 1.ui (Dart)
-      participant Raster as 1.raster
+      participant UI as ui/main (Dart)
+      participant Raster as raster
       participant RT as RenderThread (Host)
       participant BQ as BufferQueue
       participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Note over VA,SF: 📍 Flutter PlatformView (TextureView)
-      VA->>UI: 🔔 VSync → Engine::BeginFrame
+      Note over VA,SF: 📍 Flutter TextureView render mode
+      VA->>UI: 🔔 VSync → BeginFrame (常见)
       activate UI
       UI->>UI: Dart 构建 Widget Tree
-      UI->>Raster: 提交 Layer Tree + PlatformView
+      UI->>Raster: 提交 Layer Tree
       deactivate UI
 
       activate Raster
       Raster->>Raster: 光栅化 Flutter 内容
-      Raster-->>RT: 通知 PlatformView 更新
+      Raster->>Raster: queueBuffer → SurfaceTexture
+      Note over Raster,RT: onFrameAvailable → Main → invalidate → RT
+      RT->>RT: updateTexImage
       deactivate Raster
 
       activate RT
@@ -75,31 +79,31 @@ teaching:
       SF->>SF: HWC Composite
       deactivate SF
 
-      Note over VA,SF: ⚠️ PlatformView 需要同步，可能有性能开销
+      Note over VA,SF: ⚠️ 额外的宿主纹理采样/合成可能带来性能开销
   thread_roles:
-    - thread: "1.ui"
+    - thread: "ui / main / 1.ui"
       role: "Dart UI 线程"
-      description: "Flutter UI 构建"
-    - thread: "1.raster"
+      description: "Flutter UI 构建；线程名依版本变化"
+    - thread: "raster / 1.raster"
       role: "Flutter 光栅化"
-      description: "Flutter 内容光栅化"
+      description: "Flutter 内容光栅化；线程名依版本变化"
     - thread: RenderThread
       role: "Android 合成"
       description: "将 Flutter 纹理与原生 View 合成"
 
   key_slices:
     - name: "Engine::BeginFrame"
-      thread: "1.ui"
-      description: "帧开始，驱动 Dart 构建与布局"
+      thread: "ui / main / 1.ui"
+      description: "帧开始提示信号，线程名与可见性依版本变化"
     - name: "Rasterizer::DrawToSurfaces"
-      thread: "1.raster"
-      description: "Flutter 光栅化输出（与 PlatformView 合成前后可能出现同步）"
+      thread: "raster / 1.raster"
+      description: "Flutter 光栅化输出（线程名与 slice 名不稳定）"
     - name: "SurfaceTexture"
       thread: any
-      description: "PlatformView/TextureView 的纹理生产-消费链路"
-    - name: "updateTexImage"
+      description: "TextureView / SurfaceTexture 的纹理生产-消费链路"
+    - name: "updateTexImage (hint)"
       thread: RenderThread
-      description: "宿主侧更新纹理并参与合成"
+      description: "宿主侧常见的纹理消费提示信号"
 
 auto_pin:
   instructions:
@@ -122,7 +126,7 @@ auto_pin:
     - pattern: "SurfaceTexture|updateTexImage|onFrameAvailable"
       match_by: name
       priority: 3.5
-      reason: "SurfaceTexture (PlatformView/TextureView 出图关键)"
+      reason: "SurfaceTexture (TextureView 出图关键提示)"
 
     - pattern: "^RenderThread(\\s+\\d+)?$"
       match_by: name
@@ -152,8 +156,8 @@ auto_pin:
 analysis:
   common_issues:
     - id: platformview_overhead
-      name: "PlatformView 开销"
-      description: "嵌入原生 View 的额外开销"
+      name: "TextureView / host composition 开销"
+      description: "宿主侧纹理采样与合成的额外开销"
       detection_skill: render_thread_slices
 
   recommended_skills:

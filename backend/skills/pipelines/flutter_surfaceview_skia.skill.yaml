@@ -6,7 +6,7 @@
 # Flutter SurfaceView Skia Pipeline
 # =============================================================================
 # Flutter with Skia rendering engine using SurfaceView.
-# Legacy rendering mode with JIT shader compilation.
+# Legacy rendering mode with runtime shader compilation.
 # =============================================================================
 
 name: pipeline_flutter_surfaceview_skia
@@ -17,26 +17,31 @@ category: rendering
 meta:
   pipeline_id: FLUTTER_SURFACEVIEW_SKIA
   display_name: "Flutter SurfaceView (Skia)"
-  description: "Flutter + Skia 引擎，JIT Shader 编译"
+  description: "Flutter + Skia 引擎，运行时 Shader 编译 (Runtime Shader Compilation)"
   icon: "flutter"
   family: flutter
   doc_path: "rendering_pipelines/flutter_surfaceview.md"
 
 detection:
-  required_signals:
-    - thread: "1.ui"
-      min_count: 1
-
   scoring_signals:
     - signal: has_skgpu
       slice_pattern: "*SkGpu*"
-      weight: 40
+      weight: 35
     - signal: has_skiagpu
       slice_pattern: "*SkiaGpu*"
-      weight: 35
+      weight: 30
     - signal: has_flutter_raster
-      thread_pattern: "1.raster"
-      weight: 15
+      thread_pattern: "*raster*"
+      weight: 10
+    - signal: has_flutter_ui_hint
+      thread_pattern: "*ui*"
+      weight: 8
+    - signal: has_dart_worker
+      thread_pattern: "DartWorker*"
+      weight: 18
+    - signal: has_flutter_jit
+      slice_pattern: "*io.flutter*"
+      weight: 12
 
   exclude_if:
     - slice_pattern: "*EntityPass*"
@@ -45,21 +50,21 @@ teaching:
   title: "Flutter SurfaceView (Skia) 渲染管线"
   summary: |
     Flutter 使用 Skia 渲染引擎，通过 SurfaceView 独立渲染。
-    Skia 使用 JIT 编译 Shader，首次使用新效果时可能有编译卡顿。
-    在部分应用/版本中仍可能使用该模式，需重点关注 Shader 编译与光栅化耗时。
+    Skia 使用运行时 Shader 编译 (Runtime Shader Compilation)，首次使用新效果时可能有编译卡顿。
+    在旧版本、特定配置或 Impeller fallback 场景中仍可能使用该模式，需重点关注 Shader 编译与光栅化耗时。
 
   mermaid: |
     sequenceDiagram
       participant VA as VSync-app
-      participant UI as 1.ui (Dart)
+      participant UI as ui/main (Dart)
       participant IO as 1.io
-      participant Raster as 1.raster (Skia)
+      participant Raster as raster (Skia)
       participant BQ as BufferQueue
       participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
       Note over VA,SF: 📍 Flutter Frame Production (Skia)
-      VA->>UI: 🔔 VSync → Engine::BeginFrame
+      VA->>UI: 🔔 VSync → BeginFrame (常见)
       activate UI
       UI->>UI: Dart VM 执行 (build → layout → paint)
       UI->>UI: 生成 Layer Tree
@@ -79,12 +84,12 @@ teaching:
       deactivate SF
 
       Note over IO: 1.io 线程负责图片解码
-      Note over VA,SF: ⚠️ Skia JIT 编译可能导致首帧卡顿
+      Note over VA,SF: ⚠️ Skia 运行时 Shader 编译可能导致首帧卡顿
   thread_roles:
-    - thread: "1.ui"
+    - thread: "ui / main / 1.ui"
       role: "Dart UI 线程"
-      description: "执行 Dart 代码，生成 Layer Tree"
-    - thread: "1.raster"
+      description: "执行 Dart 代码，生成 Layer Tree；线程名依版本变化"
+    - thread: "raster / 1.raster"
       role: "Skia 光栅化"
       description: "使用 Skia 光栅化"
     - thread: "1.io"
@@ -93,11 +98,11 @@ teaching:
 
   key_slices:
     - name: "SkGpu"
-      thread: "1.raster"
-      description: "Skia GPU 渲染"
+      thread: "raster / 1.raster"
+      description: "Skia GPU 渲染提示信号"
     - name: "Rasterizer"
-      thread: "1.raster"
-      description: "光栅化操作"
+      thread: "raster / 1.raster"
+      description: "光栅化操作提示信号"
 
 auto_pin:
   instructions:
@@ -142,7 +147,7 @@ analysis:
   common_issues:
     - id: shader_compilation
       name: "Shader 编译卡顿"
-      description: "JIT Shader 编译导致首次使用卡顿"
+      description: "运行时 Shader 编译 (Runtime Shader Compilation) 导致首次使用卡顿"
       detection_skill: jank_frame_detail
 
   recommended_skills:

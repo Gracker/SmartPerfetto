@@ -13,12 +13,14 @@
     *   参数 `view` 通常就是一个 `SurfaceView` 或包含 SurfaceView 的 `FrameLayout`。
     *   **关键点**: 这个 View 是在 App 进程中创建的。
 
+> *注: 此管线主要适用于宿主 App 通过 `onShowCustomView()` 托管全屏视频的场景。内联视频和部分 provider 的全屏实现也可能走其他路径，不能一概写成“所有内联视频都不经过这里”。*
+
 ### 第二阶段：Media Player Rendering
 1.  **Set Surface**: 底层的 MediaPlayer (或 ExoPlayer) 获取这个 SurfaceView 的 `SurfaceHolder`。
 2.  **Decode & Render**: 视频解码器直接向这个 Surface 生产 Buffer。
-3.  **App Submission**:
-    *   App 进程负责将这个 Surface 提交给 SurfaceFlinger。
-    *   App 负责处理它的 Z-Order（通常覆盖在 WebView 之上）。
+3.  **App Hosting**:
+    *   App 负责托管这个 SurfaceView 的生命周期、布局和 Z-order。
+    *   真正的视频 Buffer 提交通常由 Player / MediaCodec / Surface producer 完成，而不是“App UI 线程亲自提交”。
 
 ---
 
@@ -64,5 +66,6 @@ sequenceDiagram
 
 ## 3. 总结
 *   **Producer**: App Process (MediaPlayer/ExoPlayer)。
-*   **Role**: WebView 只是充当了一个“信令通道”，告诉 App 何时把 SurfaceView 显示出来。
+    *MediaCodec 通过 Surface 模式（`releaseOutputBuffer(render=true)`）零拷贝传递解码帧。*
+*   **Role**: 在渲染层面，WebView 更多负责信令和占位（触发全屏、容器切换、与宿主协作）；媒体控制、DRM、字幕和手势逻辑的归属要看宿主与播放器集成方式，不能统一归因给 WebView。
 *   **Performance**: 等同于原生 SurfaceView 播放视频，性能极高。

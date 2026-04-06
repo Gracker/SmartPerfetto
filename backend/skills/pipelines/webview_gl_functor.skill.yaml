@@ -23,37 +23,37 @@ meta:
   doc_path: "rendering_pipelines/webview_gl_functor.md"
 
 detection:
-  # Required: Must have both RenderThread (App) and CrRendererMain (Chromium)
-  # Without these, cannot be WebView GL Functor mode
   required_signals:
     - thread: RenderThread
-      min_count: 1
-    - thread: CrRendererMain
       min_count: 1
 
   scoring_signals:
     - signal: has_draw_gl
       slice_pattern: "*DrawGL*"
-      weight: 35
+      weight: 25
+    - signal: has_draw_fn_draw_gl
+      slice_pattern: "*DrawFn_DrawGL*"
+      weight: 20
     - signal: has_draw_functor
       slice_pattern: "*DrawFunctor*"
-      weight: 35
+      weight: 15
     - signal: has_cr_renderer
       thread_pattern: "CrRendererMain*"
-      weight: 15
+      weight: 25
     - signal: has_render_thread
       thread_pattern: "RenderThread*"
       weight: 10
 
   exclude_if:
-    - thread: VizCompositor
+    - thread_pattern: "VizCompositorThread*"
+    - thread: "1.ui"           # Flutter engine present → use Flutter pipeline
 
 teaching:
   title: "WebView GL Functor 渲染管线"
   summary: |
     传统 WebView 渲染模式，WebView 内容通过 GL Functor 机制嵌入到
-    App 的 RenderThread 中渲染。App 需要等待 WebView 完成绘制，
-    可能导致主线程和 RenderThread 阻塞。
+    App 的 RenderThread 中渲染。browser code 通常仍在宿主 app 进程内，
+    App 需要等待 WebView 完成 draw callback，可能拖慢 RenderThread。
 
   mermaid: |
     sequenceDiagram
@@ -74,7 +74,7 @@ teaching:
 
       activate RT
       RT->>RT: DrawFrame 开始
-      RT->>CR: 调用 WebView DrawGL
+      RT->>CR: 调用 WebView draw callback
       deactivate RT
 
       activate CR
@@ -102,19 +102,19 @@ teaching:
     - thread: RenderThread
       role: "App 渲染"
       description: "渲染 App UI，等待 WebView Functor"
-      trace_tags: "DrawFrame, DrawFunctor"
+      trace_tags: "DrawFrame, DrawFunctor/DrawGL（是否可见依 tracing 配置）"
     - thread: CrRendererMain
       role: "Chromium 主渲染"
       description: "WebView/Chromium 内容渲染"
       trace_tags: "Blink, V8"
 
   key_slices:
-    - name: "DrawGL"
+    - name: "DrawGL / DrawFn_DrawGL (hint)"
       thread: RenderThread
-      description: "GL Functor 调用"
-    - name: "DrawFunctor"
+      description: "GL Functor 调用提示信号"
+    - name: "DrawFunctor (hint)"
       thread: RenderThread
-      description: "Functor 绘制"
+      description: "Functor 绘制提示信号"
     - name: "Blink"
       thread: CrRendererMain
       description: "Blink 渲染引擎"

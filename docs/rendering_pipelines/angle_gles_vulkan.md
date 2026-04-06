@@ -1,9 +1,9 @@
 # ANGLE Rendering Pipeline (GLES-over-Vulkan)
 
 > [!WARNING]
-> **Android 15+ 强制采用**: 从 Android 15 开始，新设备将**强制**使用 ANGLE 作为 OpenGL ES 的默认实现。如果您的 App 依赖厂商特定的 GLES 扩展（如 `GL_QCOM_*`），必须测试 ANGLE 兼容性或迁移到 Vulkan。
+> **Android 15+ 推荐采用**: Android 15+ 将 ANGLE 作为重要的 GLES 兼容/统一实现方向纳入生态推进，但仍要以设备、OEM 与 provider 配置为准。如果您的 App 依赖厂商特定的 GLES 扩展（如 `GL_QCOM_*`），必须测试 ANGLE 兼容性或迁移到 Vulkan。
 
-**ANGLE** (Almost Native Graphics Layer Engine) 是 Google 开发的开源图形抽象层，将 OpenGL ES API 翻译为底层原生 API (Vulkan/Metal/D3D)。从 Android 10 开始部分设备启用，**Android 15+ 成为强制默认 GLES 实现**。
+**ANGLE** (Almost Native Graphics Layer Engine) 是 Google 开发的开源图形抽象层，将 OpenGL ES API 翻译为底层原生 API (Vulkan/Metal/D3D)。从 Android 10 开始它已经可以在部分设备或调试路径中启用；到 Android 15+，它在生态中的重要性进一步提升，但是否默认启用仍要看具体设备。
 
 ## 1. 为什么需要 ANGLE？
 
@@ -101,12 +101,12 @@ sequenceDiagram
 |:---|:---|:---|
 | **Draw Call 开销** | 较高 (状态机) | 较低 (显式状态) |
 | **多线程** | 有限 | 完全支持 |
-| **Shader 编译** | 运行时 | 预编译 SPIR-V |
+| **Shader 编译** | 运行时 | GLSL → SPIR-V 翻译 + Vulkan pipeline cache |
 | **调试工具** | 厂商特定 | RenderDoc 统一 |
 
 ### 5.2 开销
 
-*   **翻译层开销**: ~5-10% CPU 开销 (复杂场景)
+*   **翻译层开销**: 存在额外状态转换和命令翻译成本，但具体开销强依赖 workload，不宜写死固定百分比。
 *   **首次 Shader 编译**: 稍慢 (GLSL → SPIR-V → GPU Binary)
 *   **内存**: 略高 (需要维护翻译状态)
 
@@ -114,9 +114,9 @@ sequenceDiagram
 
 在 Perfetto 中 ANGLE 的特征：
 
-1.  **GPU Track**: 看到 `vkQueue*` 而非 `glDraw*`
-2.  **ANGLE Thread**: 可能有独立的翻译线程
-3.  **Shader Compile**: `ANGLE Shader Compile` Slice
+1.  **GPU / Vulkan 侧信号**: 可能更多看到 `vkQueue*` / `vkCmd*` 而非纯 `glDraw*`
+2.  **ANGLE Thread**: 可能有独立的翻译 / 状态管理线程
+3.  **Shader Compile**: 某些 build / tracing 配置下可能出现 `ANGLE` 相关编译 slice
 
 ### 6.1 常见问题定位
 
@@ -139,10 +139,10 @@ ORDER BY dur DESC LIMIT 20;
 
 | Android 版本 | ANGLE 状态 |
 |:---|:---|
-| **Android 16** (API 36) | **强制默认** + VPA 统一 Vulkan 特性 |
-| **Android 15** (API 35) | **强制默认**，新设备无法绕过 |
-| Android 14 (API 34) | 多数设备默认 |
-| Android 13 (API 33) | 多数设备默认 |
-| Android 12 (API 31) | 更广泛默认启用 |
-| Android 11 (API 30) | 部分设备默认启用 |
+| **Android 16** (API 36) | 生态方向继续推进 ANGLE / AVP，但仍依设备策略 |
+| **Android 15** (API 35) | ANGLE 重要性提升，默认与否看设备 / OEM |
+| Android 14 (API 34) | 更多设备开始实验 / 采用 |
+| Android 13 (API 33) | 部分设备可见 |
+| Android 12 (API 31) | 持续改进 |
+| Android 11 (API 30) | 部分设备可见 |
 | Android 10 (API 29) | 实验性，需手动启用 |

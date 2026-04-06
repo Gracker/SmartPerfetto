@@ -7,7 +7,7 @@
 传统软件渲染 (`Surface.lockCanvas()`) 存在几个根本性问题：
 
 | **渲染引擎** | CPU (Skia Software) | **GPU (Hardware Accelerated)** |
-| **内存拷贝** | CPU → GraphicBuffer 拷贝 | **零拷贝** (GPU 直接写入 Buffer) |
+| **内存拷贝** | CPU → GraphicBuffer 拷贝 | **直写** (GPU 直接渲染到 Buffer，跳过 CPU 拷贝) |
 | **格式限制** | 仅 RGBA_8888 | 支持多种格式 (RGBA_F16, 10bit, etc.) |
 | **HDR 支持** | ❌ | ✅ 原生 HDR |
 | **Fence 控制** | 隐式 | **显式** |
@@ -124,6 +124,8 @@ sequenceDiagram
 | 内存带宽 | 2x (拷贝) | 1x (直写) |
 | HDR 内容 | 不支持 | 原生支持 |
 | 多线程 | 需要同步 | 原生支持 |
+
+> *注: 以上数据为示意值，实际性能取决于设备和内容复杂度。*
 
 ## 6. 使用场景
 

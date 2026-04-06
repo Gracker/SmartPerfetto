@@ -4,7 +4,7 @@
 
 常见的例子包括：
 1.  **Dialog**: 打开一个 Dialog 时，背后的 Activity 依然可见，此时两者都在绘制。
-2.  **分屏/多窗口模式**: 两个 Activity 同时处于 `RESUMED` 状态。
+2.  **分屏/多窗口模式**: 两个 Activity 同时处于 `RESUMED` 状态 (Android 10+ Multi-resume)。
 3.  **悬浮窗**: System Alert Window 覆盖在 Activity 之上。
 
 ## 1. 核心瓶颈：串行化 (Serialization)
@@ -19,7 +19,7 @@ Android 的 `Choreographer` 是线程单例的。当 Vsync 信号到来时，主
 ### RenderThread Contention (渲染线程争抢)
 更致命的是，一个 App 进程只有一个 `RenderThread`。
 *   **Serial Draw**: 所有窗口的 GPU 命令生成任务必须排队执行。
-*   **Context Switching**: 虽然在同一个 RenderThread 中通常**共享同一个 EGLContext**，但 GL 状态机的切换（State Change）和资源绑定（Bind Texture）开销是不可避免的。
+*   **Context Switching**: 在同一个 RenderThread 中**共享同一个 EGLContext**，但每个 Window 有独立的 EGLSurface。切换窗口时需要 `eglMakeCurrent` 绑定不同的 EGLSurface，GL 状态机切换和资源绑定开销不可避免。
 
 ## 2. 深度执行流程 (Deep Execution Flow)
 

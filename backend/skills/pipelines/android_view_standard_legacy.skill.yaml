@@ -45,6 +45,8 @@ detection:
     - slice_pattern: "*applyTransaction*"
     - thread: "1.ui"
     - thread: CrRendererMain
+    - thread: UnityMain        # Game Engine
+    - thread: UnityGfx         # Game Engine
 
 teaching:
   title: "Android View 标准渲染管线 (Legacy)"

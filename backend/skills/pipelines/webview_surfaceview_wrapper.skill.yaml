@@ -43,6 +43,9 @@ detection:
       slice_pattern: "*MediaCodec*"
       weight: 13
 
+  exclude_if:
+    - thread: "1.ui"           # Flutter engine present → use Flutter pipeline
+
 teaching:
   title: "WebView SurfaceView Wrapper 渲染管线"
   summary: |

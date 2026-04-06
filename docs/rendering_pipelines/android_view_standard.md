@@ -1,9 +1,9 @@
 # Standard AOSP Rendering Pipeline (Deep Dive: BLAST)
 
 > [!NOTE]
-> **适用版本**: 本文档基于 **Android 12+ BLAST 成熟架构**。Android 16 新增的 `RuntimeColorFilter` / `RuntimeXfermode` API 允许开发者创建自定义图形效果（如 Threshold、Sepia、Hue Saturation），进一步扩展了 RenderThread 的能力。
+> **适用版本**: 本文档描述的是 Android 11+ / 12+ 上常见的 HWUI + BLAST 主链路。BLAST 已成为现代 Android 的主流事务模型，但内部类名、线程分布和 Perfetto slice 名会随 Android 版本、OEM 和 trace 配置变化。
 
-这是 Android 现代硬件加速渲染链路（Android 10+, 尤其是 Android 12+ 之后）。与旧版相比，最核心的变化是引入了 **BLAST (Buffer Layer State Transition)** 机制，取代了传统的 Binder-based BufferQueue 提交模式。
+这是 Android 现代硬件加速渲染链路（Android 11+，尤其是 Android 12+ 之后更常见的形态）。与旧版相比，最核心的变化是引入了 **BLAST (Buffer Layer State Transition)** 事务模型，将 Buffer 更新与窗口属性更新更紧密地绑定；但具体实现细节并不等价于“所有设备都暴露同一套 `BLASTBufferQueue::*` trace 标签”。
 
 ## 1. 全链路执行流程详解 (Deep Execution Flow)
 
@@ -56,7 +56,7 @@ RenderThread 拿到蓝图后，开始干活：
 
 ---
 
-## 2. 详细渲染时序图 (BLAST Sequence)
+## 3. 详细渲染时序图 (BLAST Sequence)
 
 这张图展示了引入 BLAST 后的变化：Buffer 的提交变成了 Transaction 的一部分。
 
@@ -82,11 +82,11 @@ sequenceDiagram
         deactivate App
         
         activate RT
-        RT->>BBQ: dequeueBuffer() -> acquireFence
-        Note right of RT: 等待 acquireFence (上一帧 SF 还在用)
+        RT->>BBQ: dequeueBuffer() -> releaseFence
+        Note right of RT: 返回 releaseFence (前消费者释放信号)
         RT->>RT: Flush GL/Vulkan Commands to GPU
-        RT->>BBQ: queueBuffer(releaseFence)
-        Note right of RT: releaseFence 表示 GPU 何时画完
+        RT->>BBQ: queueBuffer(acquireFence)
+        Note right of RT: acquireFence 表示 GPU 何时画完
         deactivate RT
     end
 
@@ -94,7 +94,7 @@ sequenceDiagram
     rect rgb(230, 250, 230)
         Note over BBQ, SF: 3. BLAST Submission
         BBQ->>BBQ: acquireNextBuffer
-        BBQ->>SF: Transaction(Buffer, releaseFence)
+        BBQ->>SF: Transaction(Buffer, acquireFence)
         SF-->>SF: Queue Transaction
     end
 
@@ -102,7 +102,7 @@ sequenceDiagram
     Note over HW, SF: 4. VSync-SF (合成)
     HW->>SF: VSync-SF Signal
     activate SF
-    SF->>SF: Wait releaseFence (确保 GPU 画完)
+    SF->>SF: Wait acquireFence (确保 GPU 画完)
     SF->>SF: latchBuffer
     SF->>HWC: validate & present
     deactivate SF
@@ -114,27 +114,27 @@ sequenceDiagram
     end
     
     HWC-->>SF: presentFence (帧已上屏)
-    SF-->>BBQ: 返回 acquireFence (供下一帧使用)
+    SF-->>BBQ: 返回 releaseFence (供下一帧使用)
     BBQ-->>RT: Buffer 可复用
 ```
 
 ---
 
-## 3. 渲染步骤深度拆解 (Trace 视角)
+## 4. 渲染步骤深度拆解 (Trace 视角)
 
-以下步骤对应 Perfetto Trace 中的实际 Slice 标签。
+以下步骤对应 Perfetto Trace 中**常见但不保证稳定**的 slice / 线程信号。
 
 ### 阶段一：Sync & RenderThread (生产)
 
 当 `Vsync-App` 触发，UI 线程完成后：
 
 1.  **DrawFrame**: RenderThread 开始绘制。
-    *   *Trace*: `DrawFrame`
+    *   *Trace*: 常见能看到 `DrawFrame` 一类 RenderThread slice。
 2.  **dequeueBuffer**: RT 向本地的 BBQ 申请 Buffer。
-    *   *注意*: 在 BLAST 模式下，BufferQueue 的逻辑主要在 App 进程内（BLASTBufferQueue 是 Consumer）。
-    *   *Trace*: `dequeueBuffer`, `BLASTBufferQueue::dequeueBuffer `
+    *   *注意*: 在 BLAST 模式下，BBQ 在 App 进程内同时持有 Producer 和 Consumer 两端。
+    *   *Trace*: 常见能看到 `dequeueBuffer`；`BLASTBufferQueue::dequeueBuffer` 取决于版本和 trace 配置。
 3.  **queueBuffer**: 绘制完成，还给 BBQ。
-    *   *Trace*: `queueBuffer`, `BLASTBufferQueue::onFrameAvailable`
+    *   *Trace*: 常见能看到 `queueBuffer`；`BLASTBufferQueue::onFrameAvailable` 并非稳定锚点。
 
 ### 阶段二：BLAST Adapter (转换)
 
@@ -144,21 +144,21 @@ sequenceDiagram
 5.  **Build Transaction**: BBQ 创建一个 `SurfaceControl.Transaction`。
     *   `t.setBuffer(buffer)`: 设置新的 Buffer。
     *   `t.setAcquireFence(fence)`: 设置同步栅栏。
-6.  **applyTransaction**: 将 Transaction 发送给 SurfaceFlinger。
-    *   *Trace*: `SurfaceControl::applyTransaction` (可以看到 Binder 调用)
+6.  **apply Transaction / submit state**: 将 Transaction 发送给 SurfaceFlinger。
+    *   *Trace*: 可能看到 `setTransactionState`、binder transaction、Transaction apply 等系统侧信号；具体名称依版本而异。
 
 ### 阶段三：SurfaceFlinger (事务处理)
 
 7.  **setTransactionState**: SF 收到 Transaction，放入待处理队列。
     *   *Trace*: `setTransactionState`
-8.  **handleMessageInvalidate/Refresh**: Vsync-SF 到达。
+8.  **SurfaceFlinger 主循环处理**: Vsync-SF 到达后，SF 进入事务处理、latch 与合成流程。
 9.  **flushTransaction**: SF 统一应用所有挂起的 Transaction（包括 App Buffer 更新、Window 位置变化等）。
-    *   **原子性**: 保证 Buffer 更新和窗口大小变化是**同时**生效的，彻底解决了旧架构中的画面撕裂和尺寸不同步问题。
+    *   **原子性**: 让 Buffer 更新和窗口大小变化更容易在同一提交边界内生效，从而显著减少旧架构中的画面撕裂和尺寸不同步问题。
 10. **latchBuffer**: 锁定当前显示的 Buffer。
 
 ---
 
-## 3.5 BlastBufferQueue Buffer 生命周期 (Deep Dive)
+## 4.5 BlastBufferQueue Buffer 生命周期 (Deep Dive)
 
 这是理解 BLAST 异步机制的核心。BBQ 内部维护一个 **Buffer 槽位池**（通常 3 个槽位，支持 Triple Buffering）。
 
@@ -178,8 +178,8 @@ stateDiagram-v2
 
 | 操作 | 触发者 | 槽位变化 | Fence |
 |:---|:---|:---|:---|
-| **dequeueBuffer** | RenderThread | FREE → DEQUEUED (App 占用 +1) | 返回 acquireFence |
-| **queueBuffer** | RenderThread | DEQUEUED → QUEUED (App 占用 -1, 待消费 +1) | 传入 releaseFence |
+| **dequeueBuffer** | RenderThread | FREE → DEQUEUED (App 占用 +1) | 返回 releaseFence |
+| **queueBuffer** | RenderThread | DEQUEUED → QUEUED (App 占用 -1, 待消费 +1) | 传入 acquireFence |
 | **acquireBuffer** | BBQ 内部 | QUEUED → ACQUIRED (待消费 -1, 消费中 +1) | — |
 | **releaseBuffer** | SF (通过回调) | ACQUIRED → FREE (消费中 -1) | presentFence 通知完成 |
 
@@ -195,11 +195,11 @@ sequenceDiagram
     %% 1. App 生产
     RT->>BBQ: dequeueBuffer(slot=0)
     Note right of BBQ: slot[0]: FREE → DEQUEUED
-    BBQ-->>RT: Buffer ptr + acquireFence
+    BBQ-->>RT: Buffer ptr + releaseFence
     
     RT->>RT: GPU Draw (异步)
     
-    RT->>BBQ: queueBuffer(slot=0, releaseFence)
+    RT->>BBQ: queueBuffer(slot=0, acquireFence)
     Note right of BBQ: slot[0]: DEQUEUED → QUEUED
     
     %% 2. BBQ 内部消费
@@ -207,13 +207,13 @@ sequenceDiagram
     Note right of BBQ: slot[0]: QUEUED → ACQUIRED
     
     %% 3. 异步发送到 SF
-    BBQ->>Binder: Transaction{Buffer, releaseFence}
+    BBQ->>Binder: Transaction{Buffer, acquireFence}
     Note over Binder: 异步 Binder 调用 (非阻塞)
     Binder->>SF: setTransactionState()
     
     %% 4. VSync-SF 触发
     SF->>SF: VSync-SF
-    SF->>SF: Wait releaseFence
+    SF->>SF: Wait acquireFence
     SF->>SF: latchBuffer
     SF->>SF: Composite
     
@@ -226,8 +226,8 @@ sequenceDiagram
 
 ### 关键点：为什么是异步的？
 
-1.  **Binder 非阻塞**: `applyTransaction` 是异步 Binder 调用，RenderThread 不等待 SF 处理完。
-2.  **Fence 同步**: GPU 完成通过 releaseFence 告知 SF，而非 CPU 等待。
+1.  **Binder 非阻塞**: Transaction 提交通常是异步的，RenderThread 不一定等待 SF 完成整个消费过程。
+2.  **Fence 同步**: GPU 完成通过 acquireFence 告知 SF，而非 CPU 等待。
 3.  **槽位复用**: App 可以继续 dequeue 下一个槽位（如 slot=1），无需等待 slot=0 被 SF 释放。
 
 ### Triple Buffering 示意
@@ -241,19 +241,19 @@ Slot:   slot[0]    slot[1]    slot[2]    slot[0]  ← 循环复用
 SF:        ...    [Latch F0] [Latch F1] [Latch F2] ...
 ```
 
-## 4. 线程任务详情 (Thread Roles)
+## 5. 线程任务详情 (Thread Roles)
 
 | 线程名称 | 关键职责 | 常见 Trace 标签 |
 | :--- | :--- | :--- |
-| **RenderThread** | 生成 GPU 指令, **通过 BLAST 提交事务** | `DrawFrame`, `queueBuffer`, `applyTransaction` |
-| **SurfaceFlinger** | 处理 Transactions, Latch Buffers, 合成 | `setTransactionState`, `handleMessageRefresh`, `latchBuffer` |
+| **RenderThread** | 生成 GPU 指令, 通过现代事务模型提交 Buffer | 常见 `DrawFrame`, `queueBuffer`, `syncFrameState` |
+| **SurfaceFlinger** | 处理 Transactions, Latch Buffers, 合成 | 常见 `setTransactionState`, `latchBuffer` 或 FrameTimeline/SF 主循环片段 |
 | **Binder Driver** | 传输 Transaction 数据 | `binder transaction` |
 
 ---
 
 ## 6. FrameTimeline & Jank Detection (Android 12+)
 
-在 AOSP 16 中，性能分析不再单纯依赖 "Vsync 周期"，而是基于 **FrameTimeline**。
+在 Android 12+ 中，性能分析不再单纯依赖 "Vsync 周期"，而是基于 **FrameTimeline**。
 
 ### 核心机制
 1.  **VsyncId**: 每个 Vsync 信号都有一个唯一的 ID。
@@ -268,4 +268,3 @@ SF:        ...    [Latch F0] [Latch F1] [Latch F2] ...
 *   **Expected Timeline**: 绿条，表示“这帧这应该在这里结束”。
 *   **Actual Timeline**: 实心条，表示“这帧实际在这里结束”。
 *   **Jank Tag**: 如果 Actual > Expected，系统会自动标记 `Jank` 或 `BigJank`。
-

@@ -301,7 +301,7 @@ Agent 的能力边界不取决于模型参数量或 benchmark 分数，而取决
 
 **1. 观测能力——Agent 能"看到"什么数据**
 
-同一个模型，给它 `scrolling_analysis` Skill 的 L2 结构化帧数据 vs 让它自己写 SQL 查原始表，分析质量差距非常显著。Agent 的上限由你给它的数据工具决定。SmartPerfetto 用 157 个 YAML Skill 封装了领域专家的查询逻辑，Agent 通过 `invoke_skill` 拿到的是处理过的、结构化的分析数据，而不是原始的百万行 trace 事件。
+同一个模型，给它 `scrolling_analysis` Skill 的 L2 结构化帧数据 vs 让它自己写 SQL 查原始表，分析质量差距非常显著。Agent 的上限由你给它的数据工具决定。SmartPerfetto 用 165 个 YAML Skill 封装了领域专家的查询逻辑，Agent 通过 `invoke_skill` 拿到的是处理过的、结构化的分析数据，而不是原始的百万行 trace 事件。
 
 **2. 约束框架——Agent 在什么范围内决策**
 
@@ -1102,16 +1102,16 @@ Phase 13:  → buildSystemPrompt(context) → 最终 prompt
 
 | 分类 | 数量 | 说明 |
 |------|------|------|
-| Atomic | 81 | 单步检测/统计，一条或几条 SQL 完成 |
+| Atomic | 87 | 单步检测/统计，一条或几条 SQL 完成 |
 | Composite | 29 | 组合多个 atomic skill，支持 iterator/conditional |
 | Deep | 2 | 深度剖析（callstack、CPU profiling） |
-| Pipeline | 28 | 渲染管线检测 + 教学（24 种架构），另有 1 个基础模板不计入 |
+| Pipeline | 29 | 渲染管线检测 + 教学（24+ 种架构） |
 | Module | 18 | 模块化配置：app/framework/hardware/kernel |
-| **合计** | **158** | |
+| **合计** | **165** | |
 
 ---
 
-### Atomic Skills（81 个）
+### Atomic Skills（87 个）
 
 单步数据提取和检测，是所有高层 Skill 的构建基础。
 

@@ -99,18 +99,18 @@ teaching:
     - name: "DrawFrame"
       thread: RenderThread
       description: "渲染窗口内容（常伴随缩放/裁剪）"
-    - name: "applyTransaction"
+    - name: "SurfaceControl / Transaction (hint)"
       thread: any
-      description: "提交窗口几何/Buffer 相关 Transaction（PIP/Freeform 频繁发生）"
+      description: "窗口几何/Buffer 相关事务提示信号，名称依版本和 OEM 变化"
     - name: "WMS.resizeTask"
       thread: any
       description: "Freeform resize 相关标记（不同版本/厂商可能不同）"
     - name: "Transaction.apply"
       thread: any
       description: "Transaction 应用（可结合 SyncId 观察是否为同步提交）"
-    - name: "SurfaceFlinger.waitForSync"
+    - name: "SurfaceFlinger sync/wait (hint)"
       thread: any
-      description: "等待同步提交（过长时常表示 App/生产侧响应慢）"
+      description: "等待同步提交的提示信号，具体名字依版本而异"
 
 auto_pin:
   instructions:

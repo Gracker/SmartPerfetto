@@ -229,7 +229,11 @@
     Stack --> WinA
     Stack --> WinB</div>
 <br>
+<p>> *注: Android 12+ 已用 TaskFragment/RootTask 替代了 ActivityStack，具体层级名称因版本而异。*</p>
+<br>
 <h2>2. PIP (画中画) 渲染流程</h2>
+<br>
+<p>> PIP 模式从 Android 8.0 (API 26) 引入。</p>
 <br>
 <h3>2.1 进入 PIP</h3>
 <p>1.  <b>Enter</b>: App 调用 <code>enterPictureInPictureMode()</code>。</p>
@@ -245,7 +249,7 @@
 <p>4.  <b>Composite</b>: SF 将其作为一个小 Layer 合成到屏幕上。</p>
 <br>
 <h3>2.3 性能考量</h3>
-<li>  **Overdraw**: PIP 窗口悬浮在桌面或其他 App 之上，这一定会带来 Overdraw。</li>
+<li>  **Overdraw / 额外合成成本**: PIP 窗口悬浮在桌面或其他 App 之上，通常会带来额外合成成本；但实际代价取决于 HWC 是否能复用底层 layer、窗口覆盖面积以及设备策略。</li>
 <li>  **Touch Input**: 输入事件会被分发给 PIP 窗口，App 需要处理小窗口下的点击逻辑。</li>
 <li>  **Resource Budget**: 系统通常会限制 PIP 窗口的 CPU/GPU 优先级，确保主前台应用（Background Task）流畅。</li>
 <br>
@@ -256,14 +260,14 @@
 <li>  **Multiple Resizing**: 用户可以随意拉伸窗口。</li>
 <li>  **Latency**: 窗口边框的拖拽通常由 SystemUI 渲染（作为一个独立的 Layer），而 App 内容跟随 resize。</li>
 <li>  如果 App 响应慢，会出现“黑边”或“内容拉伸”。</li>
-<li>  **BLAST Sync** 极其关键：WMS 会将“窗口边框大小”和“App 内容 Buffer”同步提交，消除这些瑕疵。</li>
+<li>  **BLAST / Sync 机制很关键**: WMS 往往会尽量把“窗口边框大小”和“App 内容 Buffer”放入同一同步路径中，以减少这些瑕疵，但不能保证所有设备都完全消除黑边或拉伸。</li>
 <br>
 <h2>4. Trace 分析特征</h2>
 <br>
 <p>在 System Trace 中：</p>
 <p>1.  <b>BufferQueue</b>: 每个独立窗口都有自己的 BufferQueue。</p>
 <p>2.  <b>Vsync-App</b>: 所有可见窗口都会收到 Vsync。</p>
-<p>3.  <b>Composition</b>: SurfaceFlinger 的 <code>handleMessageRefresh</code> 处理所有可见 Layer 的合成。如果只有 PIP 窗口更新，背景不动，HWC 可能可以直接复用背景 Layer 的 Cache。</p>
+<p>3.  <b>Composition</b>: SurfaceFlinger 会处理所有可见 Layer 的合成。如果只有 PIP 窗口更新、背景保持不动，HWC 有时可以复用背景 layer 的结果；具体 trace 名称和策略依 Android 版本 / OEM 而异。</p>
 <br>
 <h2>5. Freeform Resize 同步竞态 (Deep Dive)</h2>
 <br>
@@ -274,26 +278,25 @@
 <br>
 <h3>5.2 BLAST Sync 解决方案</h3>
 <br>
-<p>Android 12+ 通过 <b>BLAST Sync</b> 解决此问题：</p>
+<p>Android 12+ 通过 <b>BLAST / Sync</b> 机制显著缓解此问题：</p>
 <br>
 <p>1.  <b>Sync Token</b>: WMS 为这次 resize 生成一个 Token。</p>
 <p>2.  <b>App Barrier</b>: App 完成新尺寸的渲染后，带着同一个 Token 提交 Buffer。</p>
-<p>3.  <b>SF 等待</b>: SF 收到 Window Bounds Transaction 时，会<b>等待</b>对应 Token 的 Buffer 到达。</p>
-<p>4.  <b>原子应用</b>: 两者同时生效，无撕裂。</p>
+<p>3.  <b>SF 等待</b>: SF 收到 Window Bounds Transaction 时，通常会尝试等待或关联对应 Token / SyncId 的 Buffer。</p>
+<p>4.  <b>原子应用</b>: 两者更容易在同一提交边界内生效，从而降低撕裂、黑边和内容拉伸概率。</p>
 <br>
 <h3>5.3 Trace 定位</h3>
 <br>
 <p>在 Perfetto 中查找：</p>
-<li>  `WMS.resizeTask`: 标记 resize 开始。</li>
+<li>  `wm_task_moved` / `WindowManager` 相关 slice（具体标签因 Android 版本和 OEM 而异）: 标记 resize 开始。</li>
 <li>  `Transaction.apply`: 查看是否带有 `SyncId`。</li>
-<li>  `SurfaceFlinger.waitForSync`: 如果这个 Slice 很长，说明 App 响应慢。</li>
+<li>  `SurfaceFlinger` 进程中的 Transaction 等待 slice（具体标签因版本而异）: 如果这个 Slice 很长，说明 App 响应慢。</li>
 <br>
 <h3>5.4 优化建议</h3>
 <br>
 <p>1.  <b>减少 Configuration Change 开销</b>: 避免在 <code>onConfigurationChanged</code> 中做重计算。</p>
 <p>2.  <b>预渲染策略</b>: 如 Chrome 会预渲染几个常见尺寸的 Bitmap Cache。</p>
 <p>3.  <b>Skeleton UI</b>: 在 resize 过程中显示骨架屏而非空白。</p>
-<br>
 <br>
     </div>
 </div>

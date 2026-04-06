@@ -46,6 +46,7 @@ detection:
   exclude_if:
     - thread: "1.ui"
     - thread: CrRendererMain
+    - thread: UnityMain        # Game Engine → GAME_ENGINE
 
 teaching:
   title: "Android View 混合渲染管线"
@@ -53,6 +54,7 @@ teaching:
     同时使用 View 系统和 SurfaceView 进行渲染。View 部分通过 RenderThread，
     SurfaceView 有独立的渲染线程 (GLThread/MediaCodec)。常见于视频播放器、
     内嵌游戏等需要混合原生 UI 和自定义渲染的场景。
+    两条链路通常比纯 View 更解耦，但窗口几何和内容同步仍需以实际 trace 判断。
 
   mermaid: |
     sequenceDiagram
@@ -88,7 +90,7 @@ teaching:
       SF->>SF: HWC 合成
       deactivate SF
 
-      Note over VA,SF: ⚠️ 两条独立链路，需注意同步问题
+      Note over VA,SF: ⚠️ 两条独立链路，需注意同步问题；BLAST 只会降低竞态，不保证逐帧完美同显
   thread_roles:
     - thread: main
       role: "UI 协调"
@@ -112,7 +114,7 @@ teaching:
       description: "帧回调入口，协调 View 与 SurfaceView 的布局/动画"
     - name: "syncFrameState"
       thread: RenderThread
-      description: "主线程与 RenderThread 同步 DisplayList/RenderNode"
+      description: "主线程与 RenderThread 同步 DisplayList/RenderNode（仅描述 View 子链路）"
     - name: "DrawFrame"
       thread: RenderThread
       description: "View 层渲染"

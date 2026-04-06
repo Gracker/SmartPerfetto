@@ -50,7 +50,8 @@ teaching:
   summary: |
     使用 NDK SurfaceControl API 直接控制 Surface 和 Transaction。
     提供最低级别的合成控制，可以创建子 Surface、控制 Z-order、
-    原子性更新多个属性。常用于高级合成场景。
+    原子性更新多个属性。它与 BLAST 共享同一事务式更新体系，
+    但不应被简单理解为“SurfaceControl API 就等于 BLAST”。
 
   mermaid: |
     sequenceDiagram
@@ -74,7 +75,7 @@ teaching:
       TX-->>SF: Transaction 提交
       VS->>SF: 🔔 VSync-sf
       activate SF
-      SF->>SF: setTransactionState
+      SF->>SF: 接收并处理 Transaction
       SF->>SF: latchBuffer
       SF->>SF: HWC 合成
       deactivate SF
@@ -100,7 +101,7 @@ teaching:
       description: "提交 Transaction（原子性更新多个属性）"
     - name: "setTransactionState"
       thread: SurfaceFlinger
-      description: "SurfaceFlinger 应用 Transaction 状态"
+      description: "SurfaceFlinger 处理 Transaction 的常见提示信号；名称依版本和 tracing 变化"
 
 auto_pin:
   instructions:

@@ -25,29 +25,36 @@ meta:
 detection:
   scoring_signals:
     - signal: has_viz_compositor
-      thread_pattern: "VizCompositor"
-      weight: 75
+      thread_pattern: "VizCompositorThread*"
+      weight: 55
+    - signal: has_cr_renderer
+      thread_pattern: "CrRendererMain*"
+      weight: 12
     - signal: has_surface_control
       slice_pattern: "*SurfaceControl*"
       weight: 15
+
+  exclude_if:
+    - thread: "1.ui"           # Flutter engine present → use Flutter pipeline
 
 teaching:
   title: "WebView Surface Control 渲染管线"
   summary: |
     现代 WebView 使用 Viz (Visual Compositor) 和 OOP-R (Out-of-Process Rasterization)
-    进行渲染，通过 SurfaceControl 独立提交到 SurfaceFlinger。
-    这种模式不阻塞 App RenderThread，性能更好。
+    进行渲染时，可能通过 SurfaceControl 独立提交到 SurfaceFlinger。
+    browser code 与 GPU / network services 通常仍在宿主 app 进程内；
+    是否启用该模式、是否完全不阻塞宿主 RenderThread，要以具体设备和 trace 为准。
 
   mermaid: |
     sequenceDiagram
       participant CR as CrRendererMain
-      participant Viz as VizCompositor
+      participant Viz as VizCompositorThread
       participant SC as SurfaceControl
       participant TX as Transaction
       participant VS as VSync-sf
       participant SF as SurfaceFlinger
 
-      Note over CR,SF: 📍 WebView Surface Control (独立合成)
+      Note over CR,SF: 📍 WebView Surface Control (条件成立时的独立合成)
       CR->>CR: Blink 渲染网页
       CR->>Viz: 提交合成任务
 
@@ -67,17 +74,17 @@ teaching:
 
       Note over CR,SF: ✨ 独立于 App RenderThread，不阻塞 UI
   thread_roles:
-    - thread: VizCompositor
+    - thread: VizCompositorThread
       role: "Viz 合成器"
-      description: "Chromium 可视化合成器，独立合成"
+      description: "Chromium 可视化合成器，线程名可能表现为 VizCompositorThread 或相近名称"
     - thread: CrRendererMain
       role: "Chromium 渲染"
       description: "WebView 内容渲染"
 
   key_slices:
-    - name: "VizCompositor"
-      thread: VizCompositor
-      description: "Viz 合成操作"
+    - name: "VizCompositorThread (hint)"
+      thread: VizCompositorThread
+      description: "Viz 合成提示信号，未必稳定可见"
     - name: "SurfaceControl"
       thread: any
       description: "SurfaceControl 事务"
@@ -107,7 +114,7 @@ auto_pin:
         enabled: true
         description: "仅 Pin 属于当前 app 的 Chromium 渲染进程"
 
-    - pattern: "VizCompositor"
+    - pattern: "VizCompositorThread|VizCompositor"
       match_by: name
       priority: 4
       reason: "Viz 合成器 (传输)"

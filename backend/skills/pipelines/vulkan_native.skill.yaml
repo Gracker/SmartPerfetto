@@ -48,14 +48,15 @@ detection:
       weight: 4
     - signal: has_vk_acquire
       slice_pattern: "*vkAcquireNextImage*"
-      weight: 15
+      weight: 5
 
 teaching:
   title: "Vulkan Native 渲染管线"
   summary: |
     使用 Vulkan API 进行高性能渲染。Vulkan 提供更低的 CPU 开销、
     更好的多线程支持和更精细的 GPU 控制。适用于高端游戏和专业图形应用。
-    Swappy 库提供帧节拍控制。
+    Swappy 库可提供更稳的帧节拍控制。不要把 `vkAcquireNextImageKHR` /
+    `vkQueuePresentKHR` 是否阻塞当作固定行为，它们在不同设备上可能表现不同。
 
   mermaid: |
     sequenceDiagram
@@ -99,7 +100,7 @@ teaching:
   key_slices:
     - name: "vkQueuePresentKHR"
       thread: any
-      description: "提交帧到显示"
+      description: "提交帧到显示；可见但不代表其阻塞行为稳定"
     - name: "vkCmdDraw*"
       thread: any
       description: "Vulkan 绘制命令"

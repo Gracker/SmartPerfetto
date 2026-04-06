@@ -66,6 +66,7 @@ teaching:
   summary: |
     游戏引擎 (Unity, Unreal, Godot) 有自己的游戏循环和渲染架构。
     通常有独立的游戏逻辑线程和渲染线程，使用 OpenGL/Vulkan 直接渲染。
+    常结合 frame pacing / Choreographer / Swappy 控制节奏，
     帧率目标通常为 30/60/90/120 FPS。
 
   mermaid: |

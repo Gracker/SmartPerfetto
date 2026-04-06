@@ -216,7 +216,7 @@
 <p>传统软件渲染 (<code>Surface.lockCanvas()</code>) 存在几个根本性问题：</p>
 <br>
 <p>| <b>渲染引擎</b> | CPU (Skia Software) | <b>GPU (Hardware Accelerated)</b> |</p>
-<p>| <b>内存拷贝</b> | CPU → GraphicBuffer 拷贝 | <b>零拷贝</b> (GPU 直接写入 Buffer) |</p>
+<p>| <b>内存拷贝</b> | CPU → GraphicBuffer 拷贝 | <b>直写</b> (GPU 直接渲染到 Buffer，跳过 CPU 拷贝) |</p>
 <p>| <b>格式限制</b> | 仅 RGBA_8888 | 支持多种格式 (RGBA_F16, 10bit, etc.) |</p>
 <p>| <b>HDR 支持</b> | ❌ | ✅ 原生 HDR |</p>
 <p>| <b>Fence 控制</b> | 隐式 | <b>显式</b> |</p>
@@ -306,6 +306,8 @@ ASurfaceTransaction_setBuffer(transaction, sc, hardwareBuffer, fenceFd);
 <p>| 内存带宽 | 2x (拷贝) | 1x (直写) |</p>
 <p>| HDR 内容 | 不支持 | 原生支持 |</p>
 <p>| 多线程 | 需要同步 | 原生支持 |</p>
+<br>
+<p>> *注: 以上数据为示意值，实际性能取决于设备和内容复杂度。*</p>
 <br>
 <h2>6. 使用场景</h2>
 <br>

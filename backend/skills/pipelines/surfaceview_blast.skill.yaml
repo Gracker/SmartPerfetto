@@ -41,13 +41,15 @@ detection:
   exclude_if:
     - thread: "1.ui"
     - thread: CrRendererMain
+    - thread: UnityMain        # Game Engine → GAME_ENGINE
+    - thread: UnityGfx         # Game Engine → GAME_ENGINE
 
 teaching:
   title: "SurfaceView (BLAST) 渲染管线"
   summary: |
     使用独立的 Surface 进行渲染，常见于 OpenGL 游戏、视频播放器。
     SurfaceView 有自己的 Layer，不受 View 系统约束，可以在独立线程渲染。
-    BLAST 模式提供原子性 Buffer 提交。
+    现代 Android 上常通过 BLAST / Transaction 模型协同 Buffer 与几何更新，但具体内部 trace 细节依版本而异。
 
   mermaid: |
     sequenceDiagram
@@ -75,7 +77,7 @@ teaching:
       SF->>SF: HWC 合成 (独立 Layer)
       deactivate SF
 
-      Note over App,SF: ✨ 独立于 App UI，不阻塞 RenderThread
+      Note over App,SF: ✨ 独立于 App UI；但同步与合成效果仍取决于窗口变换、HWC 与系统负载
   thread_roles:
     - thread: GLThread
       role: "独立渲染线程"
@@ -93,7 +95,7 @@ teaching:
       description: "获取可写 Buffer（可能阻塞在 BufferQueue）"
     - name: "queueBuffer"
       thread: any
-      description: "提交 Buffer（BLAST 模式下常与 Transaction 绑定）"
+      description: "提交 Buffer（现代系统中常与 Transaction 路径协同）"
     - name: "SurfaceView"
       thread: any
       description: "SurfaceView 操作"

@@ -233,12 +233,12 @@
 <h2>2. 核心差异</h2>
 <p>与硬件加速相比，软件渲染 <b>完全不使用 GPU</b> 进行绘图（合成阶段 SF 仍然可能用 GPU）。所有的像素计算（画线、画图、混合）都由 CPU 上的 <b>Skia</b> 库完成。</p>
 <br>
-<h2>2. 软件渲染时序图</h2>
+<h2>3. 软件渲染时序图</h2>
 <br>
 <p>这是一个全 CPU 的过程，不涉及 RenderThread 的 GPU 指令提交。</p>
 <br>
 <br>
-<h2>3. 详细步骤 (Trace 视角)</h2>
+<h2>4. 详细步骤 (Trace 视角)</h2>
 <br>
 <p>1.  <b>Vsync-App</b>: 主线程唤醒。</p>
 <p>2.  <b>Surface.lockCanvas()</b>:</p>
@@ -249,14 +249,14 @@
 <li>  `View.draw()` 调用 `Canvas` API。</li>
 <li>  底层调用 `SkCanvas` (C++)。</li>
 <li>  CPU 密集型操作。</li>
-<li>  *Trace*: `draw`, `Skia DoDraw`.</li>
+<li>  *Trace*: `draw`, `lockCanvas`, `unlockCanvasAndPost`.</li>
 <p>4.  <b>Surface.unlockCanvasAndPost()</b>:</p>
 <li>  **Unmap**: 解除内存映射。</li>
 <li>  **Queue**: 提交 Buffer。</li>
 <li>  **Transaction**: 将 Buffer 封装在 Transaction 中发送给 SF。</li>
 <li>  *Trace*: `unlockCanvasAndPost`, `queueBuffer`.</li>
 <br>
-<h2>4. 性能特征</h2>
+<h2>5. 性能特征</h2>
 <li>  **带宽瓶颈**: 从 CPU 内存拷贝像素到 GraphicBuffer 非常慢。</li>
 <li>  **CPU 瓶颈**: 复杂图形（阴影、大图缩放）会占满 CPU。</li>
 <li>  **部分更新 (Dirty Rect)**: 软件渲染通常支持“只重绘变化区域”，这是它唯一的优势。</li>
@@ -269,7 +269,7 @@
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "UI", "name": "App UI Thread"}, {"id": "CPU", "name": "Skia/Topaz (CPU)"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC / Display"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "UI", "time": 300, "endTime": 330, "label": "VSync-App Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "BBQ", "time": 335, "endTime": 365, "label": "lockCanvas() -> dequeueBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "BBQ", "dst": "UI", "time": 370, "endTime": 400, "label": "Raw Bitmap Ptr (Mapped)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "CPU", "time": 405, "endTime": 435, "label": "pure java/skia draw calls", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "CPU", "dst": "CPU", "time": 440, "endTime": 470, "label": "Rasterize to Bitmap (Slow)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "CPU", "start": 440, "end": 470, "label": "Rasterize to Bitmap (Slow)", "color": "#81c784"}, {"type": "flow", "src": "UI", "dst": "BBQ", "time": 475, "endTime": 505, "label": "unlockCanvasAndPost()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 510, "endTime": 540, "label": "Transaction(Buffer)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "UI", "start": 335, "end": 565, "label": "VSync-App Signal", "color": "#ba68c8"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 635, "endTime": 665, "label": "latchBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 665, "label": "latchBuffer", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 670, "endTime": 700, "label": "Upload to GPU (Texture)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 670, "end": 700, "label": "Upload to GPU (Texture)", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 705, "endTime": 735, "label": "validate & present", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 760, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 770, "endTime": 800, "label": "Scanout", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 770, "end": 800, "label": "Scanout", "color": "#7986cb"}, {"type": "flow", "src": "HWC", "dst": "SF", "time": 805, "endTime": 835, "label": "presentFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "BBQ", "time": 840, "endTime": 870, "label": "acquireFence (Buffer \u53ef\u590d\u7528)", "color": "rgba(255,255,255,0.2)"}]};
+    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "UI", "name": "App UI Thread"}, {"id": "CPU", "name": "Skia (CPU)"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC / Display"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "UI", "time": 300, "endTime": 330, "label": "VSync-App Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "BBQ", "time": 335, "endTime": 365, "label": "lockCanvas() -> dequeueBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "BBQ", "dst": "UI", "time": 370, "endTime": 400, "label": "Raw Bitmap Ptr (Mapped)", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "UI", "dst": "CPU", "time": 405, "endTime": 435, "label": "pure java/skia draw calls", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "CPU", "dst": "CPU", "time": 440, "endTime": 470, "label": "Rasterize to Bitmap (Slow)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "CPU", "start": 440, "end": 470, "label": "Rasterize to Bitmap (Slow)", "color": "#81c784"}, {"type": "flow", "src": "UI", "dst": "BBQ", "time": 475, "endTime": 505, "label": "unlockCanvasAndPost()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 510, "endTime": 540, "label": "Transaction(Buffer)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "UI", "start": 335, "end": 565, "label": "VSync-App Signal", "color": "#ba68c8"}, {"type": "vsync", "time": 600}, {"type": "flow", "src": "HW", "dst": "SF", "time": 600, "endTime": 630, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 635, "endTime": 665, "label": "latchBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 665, "label": "latchBuffer", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 670, "endTime": 700, "label": "Upload to GPU (Texture)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 670, "end": 700, "label": "Upload to GPU (Texture)", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 705, "endTime": 735, "label": "validate & present", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 635, "end": 760, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 770, "endTime": 800, "label": "Scanout", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 770, "end": 800, "label": "Scanout", "color": "#7986cb"}, {"type": "flow", "src": "HWC", "dst": "SF", "time": 805, "endTime": 835, "label": "presentFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "BBQ", "time": 840, "endTime": 870, "label": "releaseFence (Buffer \u53ef\u590d\u7528)", "color": "rgba(255,255,255,0.2)"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;

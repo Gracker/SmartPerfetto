@@ -12,18 +12,18 @@ TextureView 是一个“伪装者”，它表面上是 View，背后却走了一
 2.  **queueBuffer**: 提交给 `SurfaceTexture` (这是 TextureView 的私有队列)。
 3.  **Callback**: 触发 `onFrameAvailable` 回调，**通知 App 主线程**。
 
-### 第二阶段：App Main Thread (中转站)
-这是 TextureView 性能问题的根源 —— 它必须切回主线程：
-1.  **Receive Callback**: 主线程收到“有新帧”的消息。
+### 第二阶段：App UI / Listener Thread (中转站)
+TextureView 的性能问题通常来自“宿主侧还要再合成一次”，而不是某条固定的主线程回调：
+1.  **Receive Callback**: `onFrameAvailable` 会在 listener 绑定的线程收到“有新帧”的消息，很多实现最终会回到 UI 线程触发 invalidation。
 2.  **Invalidate**: 告诉 View 系统，“我（TextureView）脏了，下一帧重画我”。
-3.  **Wait**: 等待 Choreographer 的 Vsync 信号。
+3.  **Wait**: 等待宿主下一轮 View / RenderThread 合成。
 
 ### 第三阶段：RenderThread (最终上屏)
-1.  **updateTexImage**: 在绘制 TextureView 时，RenderThread 会调用这个方法。
-    *   它把 SurfaceTexture 里的最新 Buffer，**转录**成一个 OpenGL 纹理 (OES Texture)。
+1.  **updateTexImage**: 在很多实现里，RenderThread 会在绘制 TextureView 时消费 `SurfaceTexture` 的最新图像。
+    *   它通常把最新 Buffer 绑定成一个可采样的外部纹理 (OES / EGLImage 路径)，不宜简单写成“稳定可见的一次复制”。
 2.  **Draw**: 把它当做一张普通的贴图，画在 App 的主窗口上。
 3.  **Composite**: 随 App 主窗口一起提交给 SurfaceFlinger。
-    *   *代价*: 因为要在 App 渲染管线里走一遭，所以如果 App 主线程卡顿，视频也会跟着卡。
+    *   *代价*: 因为要在宿主渲染管线里再走一遭，所以宿主 UI/RenderThread 的卡顿更容易传导到 TextureView 内容。
 
 ---
 
@@ -31,10 +31,10 @@ TextureView 是一个“伪装者”，它表面上是 View，背后却走了一
 
 TextureView 不再拥有独立的 Window/Layer。
 *   它提供一个 `SurfaceTexture` 给 Producer。
-*   Producer 生产的图像，被转化为 OpenGL 的 **OES 纹理**。
-*   App 的 `RenderThread` 在绘制 View 树时，将被动地把这个纹理“画”在自己的 Buffer 上。
+*   Producer 生产的图像通常以 `SurfaceTexture` 可消费的形式进入宿主。
+*   App 的 `RenderThread` 在绘制 View 树时，会把这个纹理再次采样/合成到自己的 Buffer 上。
 
-## 2. 详细渲染时序图
+## 3. 详细渲染时序图
 
 这条链路涉及 **跨线程同步**。注意：最终提交 App 窗口时，App 会使用 BLAST Transaction 提交。
 
@@ -51,7 +51,7 @@ sequenceDiagram
 
     %% 1. Production
     Note over Prod: 1. Producer 生产帧
-    Prod->>ST: queueBuffer(releaseFence)
+    Prod->>ST: queueBuffer(acquireFence)
     ST-->>Main: onFrameAvailable() (Callback)
 
     %% 2. VSync-App
@@ -67,10 +67,10 @@ sequenceDiagram
         Note over RT: 3. Texture 合成
         activate RT
         RT->>ST: updateTexImage() -> acquireBuffer
-        Note right of ST: 等待 releaseFence
+        Note right of ST: 等待 acquireFence
         ST-->>RT: Bind OES Texture
         RT->>RT: Draw UI + Texture
-        RT->>BBQ: queueBuffer(releaseFence)
+        RT->>BBQ: queueBuffer(acquireFence)
         deactivate RT
     end
     
@@ -80,7 +80,7 @@ sequenceDiagram
     Note over HW, SF: 4. VSync-SF 合成
     HW->>SF: VSync-SF Signal
     activate SF
-    SF->>SF: Wait releaseFence
+    SF->>SF: Wait acquireFence
     SF->>SF: latchBuffer
     SF->>HWC: Composite App Layer
     deactivate SF
@@ -88,7 +88,7 @@ sequenceDiagram
     %% 5. Display
     HWC->>HWC: Scanout
     HWC-->>SF: presentFence
-    SF-->>BBQ: acquireFence
+    SF-->>BBQ: releaseFence
 ```
 
 1.  **Producer (e.g. Decoder)**:
@@ -101,7 +101,7 @@ sequenceDiagram
     *   RenderThread 开始 `DrawFrame`。
     *   **关键步骤**: 调用 `SurfaceTexture.updateTexImage()`。
         *   这会从 `BufferQueue` 中 `acquire` 最新的一帧。
-        *   将 Buffer 绑定到 GLES 上下文。
+        *   将图像绑定到当前图形上下文可采样的纹理对象。
 4.  **GPU Draw**:
     *   RenderThread 使用 Shader 采样该 OES 纹理。
     *   合成到 App 的主 Framebuffer 中。
@@ -110,7 +110,7 @@ sequenceDiagram
 
 ---
 
-## 3. Buffer 流转示意图
+## 4. Buffer 流转示意图
 
 ```mermaid
 sequenceDiagram
@@ -127,9 +127,9 @@ sequenceDiagram
     SF->>HWC: Composite
 ```
 
-## 4. 总结
+## 5. 总结
 *   **灵活性**: 极高，可以当做普通 View 处理。
-*   **性能**: 较差。
-    *   多一次 GPU Copy。
-    *   受主线程卡顿影响。
-    *   内存占用更高（App Buffer + Texture Buffer）。
+*   **性能**: 通常弱于 SurfaceView。
+    *   多一次宿主侧纹理采样/合成。
+    *   更容易受宿主主线程 / RenderThread 卡顿影响。
+    *   内存占用通常更高（宿主 Buffer + Texture Buffer）。

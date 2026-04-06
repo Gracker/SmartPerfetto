@@ -18,7 +18,7 @@ category: rendering
 meta:
   pipeline_id: ANDROID_VIEW_STANDARD_BLAST
   display_name: "标准 Android View (BLAST)"
-  description: "Android 12+ 常见（部分 Android 11+ 可见）：HWUI + BLASTBufferQueue，Transaction 原子提交"
+  description: "Android 11+/12+ 常见的 HWUI + 现代 Transaction/BLAST 提交流程"
   icon: "android"
   family: hwui
   doc_path: "rendering_pipelines/android_view_standard.md"
@@ -34,12 +34,6 @@ detection:
       min_count: 1
 
   scoring_signals:
-    - signal: has_blast_buffer_queue
-      slice_pattern: "*BLASTBufferQueue*"
-      weight: 40
-    - signal: has_apply_transaction
-      slice_pattern: "*applyTransaction*"
-      weight: 30
     - signal: has_draw_frame
       slice_pattern: "DrawFrame*"
       weight: 25
@@ -49,6 +43,15 @@ detection:
     - signal: has_sync_frame
       slice_pattern: "*syncFrameState*"
       weight: 15
+    - signal: has_queue_buffer
+      slice_pattern: "*queueBuffer*"
+      weight: 12
+    - signal: has_blast_buffer_queue_hint
+      slice_pattern: "*BLASTBufferQueue*"
+      weight: 10
+    - signal: has_set_transaction_state
+      slice_pattern: "*setTransactionState*"
+      weight: 10
 
   exclude_if:
     - thread: "1.ui"           # Flutter
@@ -63,8 +66,8 @@ detection:
 teaching:
   title: "Android View 标准渲染管线 (BLAST)"
   summary: |
-    Android 12+ 设备上常见的渲染管线：View 系统由 RenderThread 通过 BLASTBufferQueue
-    将 Buffer 提交绑定到 Transaction，提升原子性更新与同步性，减少撕裂/尺寸不同步等问题。
+    Android 11+/12+ 设备上常见的渲染管线：View 系统由 RenderThread 通过现代 Transaction/BLAST
+    提交流程更新 Buffer 和窗口状态，提升原子性更新与同步性，减少撕裂/尺寸不同步等问题。
     相比传统 BufferQueue 提交流程，它通常能减少由“提交不同步/额外缓冲/等待”导致的卡顿与延迟，
     但具体收益会随设备实现与负载变化，建议以 trace 为准。
 
@@ -96,15 +99,15 @@ teaching:
       RT->>BQ: dequeueBuffer
       RT->>RT: DrawFrame (执行 GPU 命令)
       RT->>RT: Flush GPU Commands
-      RT->>BQ: queueBuffer + applyTransaction
+      RT->>BQ: queueBuffer / transaction submit
       deactivate RT
 
       Note over BQ,SF: 📍 Frame N Consumption Phase
       BQ-->>TX: Buffer Ready (BLAST Transaction)
       VS->>SF: 🔔 VSync-sf 信号触发
       activate SF
-      TX->>SF: setTransactionState
-      SF->>SF: handleMessageRefresh
+      TX->>SF: setTransactionState (常见)
+      SF->>SF: SF main loop / composite
       SF->>SF: latchBuffer (获取 Buffer)
       SF->>SF: HWC Composite (合成)
       SF->>SF: Present to Display
@@ -120,11 +123,11 @@ teaching:
     - thread: RenderThread
       role: "GPU 渲染"
       description: "执行 GL/Vulkan 绘制命令，管理 GPU 资源，提交 BLAST Transaction"
-      trace_tags: "DrawFrame, syncFrameState, queueBuffer, applyTransaction"
+      trace_tags: "DrawFrame, syncFrameState, queueBuffer（具体 trace 名称依版本变化）"
     - thread: SurfaceFlinger
       role: "合成显示"
       description: "接收 Transaction，Latch Buffer，HWC 合成多个 Layer"
-      trace_tags: "setTransactionState, handleMessageRefresh, latchBuffer"
+      trace_tags: "setTransactionState, latchBuffer, FrameTimeline/SF 主循环片段"
 
   key_slices:
     - name: "Choreographer#doFrame"
@@ -136,12 +139,12 @@ teaching:
     - name: "syncFrameState"
       thread: RenderThread
       description: "UI 线程与 RenderThread 同步 DisplayList"
-    - name: "BLASTBufferQueue"
+    - name: "BLASTBufferQueue (hint)"
       thread: RenderThread
-      description: "BLAST 适配器处理 Buffer"
-    - name: "applyTransaction"
-      thread: RenderThread
-      description: "提交 Transaction 到 SurfaceFlinger"
+      description: "BLAST 适配器提示信号，可能不可见"
+    - name: "setTransactionState (hint)"
+      thread: SurfaceFlinger
+      description: "系统侧事务处理提示信号，具体名称依版本而异"
 
 # ==========================================================================
 # Auto Pin Configuration

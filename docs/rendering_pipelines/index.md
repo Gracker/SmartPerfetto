@@ -3,26 +3,26 @@
 本项目涵盖了 Android 系统中几乎所有的核心出图链路。理解这些链路对于性能调优至关重要。
 
 > [!IMPORTANT]
-> **文档版本**: 本文档已更新至 **Android 16 (Baklava)** 架构。以下为 Android 版本与渲染架构的对应关系。
+> **阅读方式**: 下面的矩阵描述的是 AOSP / 官方文档中的主流方向与常见能力，不代表所有设备、OEM ROM 或 GMS 配置都完全一致。涉及 ANGLE、VRR、AVP/AVP、SurfaceControl 等能力时，请以具体设备和 trace 为准。
 
 ## 版本与架构矩阵
 
-| Android 版本 | 核心架构 | 关键特性 |
+| Android 版本 | 常见主链路 | 关键特性 |
 |:---|:---|:---|
-| **Android 16** (API 36) | BLAST + ANGLE 默认 + VPA | Enhanced ARR, RuntimeColorFilter, GPU syscall filtering |
-| **Android 15** (API 35) | BLAST + ANGLE 强制采用 | Vulkan Profiles (VPA), ANGLE 作为默认 GLES |
-| **Android 14** (API 34) | BLAST + HardwareBufferRenderer | 现代软件渲染 API |
-| **Android 12-13** (API 31-33) | BLAST 成熟期 | FrameTimeline, 完整 BLAST Sync |
-| **Android 10-11** (API 29-30) | BLAST 引入期 | BLASTBufferQueue, SurfaceControl NDK |
-| **Android 9 及以下** | Legacy BufferQueue | 传统 queueBuffer 模式 (已弃用) |
+| **Android 16** (API 36) | BLAST + 持续演进的 FrameTimeline / ARR / AVP 能力 | ARR API 继续演进，部分图形 API 和着色器能力增强 |
+| **Android 15** (API 35) | BLAST + Vulkan 作为主低层图形 API + ANGLE 可选层 | Android Vulkan Profile (AVP) / ANGLE adoption trend |
+| **Android 14** (API 34) | BLAST + HardwareBufferRenderer 等现代接口 | 现代软件渲染 API、SurfaceControl/Transaction 能力继续完善 |
+| **Android 12-13** (API 31-33) | BLAST 成熟期 | FrameTimeline、Transaction/合成可观测性增强 |
+| **Android 10-11** (API 29-30) | 过渡期：Legacy BufferQueue 与 BLAST/SurfaceControl 共存 | BLASTBufferQueue、SurfaceControl NDK 引入 |
+| **Android 9 及以下** | Legacy BufferQueue | 传统 queueBuffer 模式 |
 
 ### Android 15/16 新特性快速索引
 
 | 特性 | 适用版本 | 文档链接 |
 |:---|:---|:---|
-| ANGLE 强制采用 | Android 15+ | [ANGLE Pipeline](angle_gles_vulkan.md) |
-| Vulkan Profiles (VPA) | Android 15+ | [Vulkan Native](vulkan_native.md) |
-| Enhanced Adaptive Refresh Rate | Android 16 | [VRR Pipeline](variable_refresh_rate.md) |
+| ANGLE 可选层 / 采用趋势 | Android 15+ | [ANGLE Pipeline](angle_gles_vulkan.md) |
+| Android Vulkan Profile (AVP) | Android 15+ | [Vulkan Native](vulkan_native.md) |
+| Adaptive Refresh Rate / VRR 能力演进 | Android 15-16 | [VRR Pipeline](variable_refresh_rate.md) |
 | RuntimeColorFilter / RuntimeXfermode | Android 16 | [Standard Pipeline](android_view_standard.md) |
 | HardwareBufferRenderer | Android 14+ | [Hardware Buffer Renderer](hardware_buffer_renderer.md) |
 
@@ -47,7 +47,7 @@
 - **[Android View (Mixed) Pipeline](android_view_mixed.md)**: **[NEW]** 混合渲染模式 (Hybrid Composition)。
 - [SurfaceView (Direct Producer) Pipeline](surfaceview.md)
 - [TextureView (App-side Composition) Pipeline](textureview.md)
-- **[Flutter Architecture (Impeller/Thread Merging)](flutter_architecture.md)**: 3.29+ 架构下的主线程合并与 Impeller 渲染。
+- **[Flutter Architecture (Impeller / Merged Threads / Render Modes)](flutter_architecture.md)**: Flutter Android 上的线程模型、render mode 与 Platform Views 组合关系。
     *   [Flutter SurfaceView (Direct)](flutter_surfaceview.md)
     *   [Flutter TextureView (Copy)](flutter_textureview.md)
 - [OpenGL ES (GL Thread) Pipeline](opengl_es.md)
@@ -70,41 +70,39 @@ graph TD
     subgraph "App Process"
         UI[UI Thread]
         RT[RenderThread]
+        Browser[Chromium Browser Code]
+        Services[GPU / Network / Utility Services<br/>通常 in-process]
         SV[SurfaceView (Wrapper)]
         TV[TextureView (Custom)]
     end
     
-    subgraph "Chromium Process (Sandboxed)"
+    subgraph "Optional Renderer Process (Sandboxed)"
         Main[CrRendererMain]
         Comp[Compositor Thread]
         Tile[Raster Worker]
     end
-    
-    subgraph "GPU Process"
-        GPU[Viz / GPU Main]
-        SC[SurfaceControl (Direct)]
-    end
 
-    UI -->|IPC| Main
+    UI --> Browser
+    Browser -->|IPC| Main
     Main -->|Commit| Comp
     Comp -->|Task| Tile
-    Comp -->|CommandBuffer| GPU
-    GPU -->|GL/Vulkan| RT
-    GPU -.->|Buffer| SC
+    Browser --> Services
+    Comp -->|CommandBuffer / Shared Context / SurfaceControl| Services
+    Services -->|GL / Vulkan / Buffer| RT
     UI -.->|Holder| SV
-    GPU -.->|Frame| TV
+    Comp -.->|SurfaceTexture| TV
 ```
 
 ### WebView Pipelines
 
-| 模式 | 场景 | Buffer 生产者 | 关键特征 | 文档 |
+| 模式 | 场景 | 常见 Buffer 生产者 | 关键特征 | 文档 |
 | :--- | :--- | :--- | :--- | :--- |
-| **1. GL Functor** | 普通新闻/H5 | **App RenderThread** | 此模式下 App 渲染线程会 Sync 等待 WebView | [文档](webview_gl_functor.md) |
-| **2. SurfaceView Wrapper** | 全屏视频 | **App Player** | 视频直接上屏，WebView 仅负责占位 | [文档](webview_surfaceview_wrapper.md) |
-| **3. SurfaceControl** | 现代 Vulkan | **Viz (GPU)** | 独立合成，App 侧挖洞 (Hole Punch) | [文档](webview_surface_control.md) |
-| **4. Custom TextureView** | 国内定制内核 | **App RenderThread** | 渲染到 SurfaceTexture，主线程回调拷贝 | [文档](webview_textureview_custom.md) |
+| **1. GL Functor** | 普通新闻/H5 | **宿主 RenderThread + Chromium 回调协作** | App RenderThread 内联执行 WebView 绘制，可能被网页绘制拖慢 | [文档](webview_gl_functor.md) |
+| **2. SurfaceView Wrapper** | 全屏视频 / `onShowCustomView()` | **App Player / MediaCodec** | App 托管 SurfaceView，WebView 主要负责信令和容器 | [文档](webview_surfaceview_wrapper.md) |
+| **3. SurfaceControl** | 条件满足时的现代独立合成 | **Chromium 合成线程 / 服务线程** | 独立 child layer 合成，是否启用取决于 Chromium feature、设备和版本 | [文档](webview_surface_control.md) |
+| **4. Custom TextureView** | 国内定制内核 | **SDK Kernel / SurfaceTexture producer** | 渲染到 SurfaceTexture，宿主侧再采样合成 | [文档](webview_textureview_custom.md) |
 
-### 7. 专业架构 Review (高级性能工程师视角)
+### 专业架构 Review (高级性能工程师视角)
 基于目前的测试桩架构，我认为尚有以下变体可以进一步细化，以逼近真实生产环境：
 
 1.  **WebView SurfaceControl 深度模拟**: 目前项目中 GeckoView 对 SurfaceView 的使用接近 SurfaceControl，但建议增加一个专门模拟 `SurfaceControl.Transaction` 异步提交延迟的桩，这能更真实地反映现代浏览器内核与 SF 的交互瓶颈。

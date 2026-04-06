@@ -209,7 +209,7 @@
     <div class="doc-content">
         <h1>Camera Rendering Pipeline (Camera2 & HAL3)</h1>
 <br>
-<p>Camera 是 Android 系统中数据量最大、实时性要求最高的子系统之一。理解 Camera 管线对于优化“通过取景器预览”的流畅度以及实现高效的图像分析（如扫码、人脸识别）至关重要。</p>
+<p>Camera 是 Android 系统中数据量最大、实时性要求最高的子系统之一。理解 Camera 管线对于优化取景器预览、录像和图像分析（如扫码、人脸识别）至关重要。需要特别注意的是：Camera 在 Perfetto 中的可观测性高度依赖设备、OEM 与启用的数据源，不能假设所有 trace 都会暴露同一组 <code>Camera*</code> slice。</p>
 <br>
 <h2>1. 核心架构：多流并发 (Multi-Stream)</h2>
 <br>
@@ -251,7 +251,7 @@
 <br>
 <p>#### Case B: Recording (录像)</p>
 <li>  **MediaCodec Input Surface**: HAL 填充 Buffer -> MediaCodec (Encoder) -> H.264/265 bitstream。</li>
-<li>  *路径*: 全程 Hardware Tunneling，不经过 CPU。</li>
+<li>  *路径*: 全程硬件加速零拷贝（HAL 直接向 Encoder 的 Input Surface 写入 GraphicBuffer），不经过 CPU。</li>
 <br>
 <p>#### Case C: Analysis (AI/CV)</p>
 <li>  **ImageReader**: HAL 填充 Buffer -> App `onImageAvailable`。</li>
@@ -268,23 +268,23 @@
 <h2>4. 性能特征与调优</h2>
 <br>
 <h3>4.1 ZSL (Zero Shutter Lag)</h3>
-<p>为了解决“按下快门到真正拍照”的延迟：</p>
-<li>  Camera 实际上一直在后台以全分辨率拍图，存入一个环形缓冲区 (Ring Buffer)。</li>
-<li>  当用户按快门时，系统直接从缓冲区里“捞”出最近的一帧 JPEG。</li>
-<li>  这就是为什么现在的手机拍照几乎是瞬时的。</li>
+<p>为了解决”按下快门到真正拍照”的延迟：</p>
+<li>  Camera HAL 一直在后台以全分辨率捕获 **reprocessable YUV/RAW** 帧，存入一个环形缓冲区 (Ring Buffer)。</li>
+<li>  当用户按快门时，系统从缓冲区中”捞”出最近的一帧，通过 **Reprocessing Pipeline**（ISP 再处理：降噪、HDR 合成等）生成最终的 JPEG/HEIC 输出。</li>
+<li>  *注*: ZSL 缓冲区存储的是未压缩的 YUV 或 RAW 数据（而非 JPEG），以保留最大后处理空间。Reprocessing 通过 `CameraCaptureSession.createReprocessableCaptureSession()` 配置。</li>
 <br>
 <h3>4.2 SurfaceView vs TextureView</h3>
-<li>  **必须使用 SurfaceView** 的场景：4K/60fps 预览、DRM 内容、追求极致省电。</li>
+<li>  **更倾向 SurfaceView** 的场景：高帧率/高分辨率预览、追求更低延迟或更低功耗时，SurfaceView 往往更有优势。</li>
 <li>  **可以使用 TextureView** 的场景：需要对预览画面做滤镜（美颜）、需要预览画面做动画（缩放/圆角）。</li>
 <br>
 <h3>4.3 内存抖动</h3>
-<li>  **ImageReader**: 务必复用。很多初学者在 `onImageAvailable` 里 `new byte[]` 来拷贝数据，这是性能杀手。应该直接使用 NDK 或 RenderScript/Vulkan 直接处理 `ByteBuffer`。</li>
+<li>  **ImageReader**: 务必复用。很多初学者在 `onImageAvailable` 里 `new byte[]` 来拷贝数据，这是性能杀手。应该优先使用 NDK、GPU、Vulkan、OpenGL ES 或其他现代加速路径直接处理 `ByteBuffer`；RenderScript 已废弃，不应再作为推荐方案。</li>
 <br>
 <h2>5. 常见 Trace 分析</h2>
 <p>在 Perfetto 中：</p>
-<li>  **CameraProvider**: 查看 HAL 层的耗时。</li>
-<li>  **CameraService**: 查看 Request 下发频率。</li>
-<li>  **dma_buf**: 监控 GraphicBuffer 的内存分配（Camera 预览通常也是大内存消耗户）。</li>
+<li>  **CameraProvider / CameraService / vendor camera threads**: 若数据源启用且设备支持，可用于观察 HAL / service / request 流转。</li>
+<li>  **dma_buf**: 可用于监控 GraphicBuffer / DMA-BUF 的内存分配，Camera 预览通常也是大内存消耗户。</li>
+<li>  **注意**: 缺少 `CameraProvider` 或 `CaptureSession` slice 并不代表没有 Camera 压力，很多设备只暴露更粗粒度的 proto / vendor 事件。</li>
 <br>
 <h2>6. HAL3 Request-Buffer 生命周期 (Deep Dive)</h2>
 <br>
@@ -324,8 +324,8 @@
 <br>
 <h3>6.4 典型掉帧场景</h3>
 <br>
-<p>1.  <b>Buffer Starvation</b>: Consumer (<code>ImageReader</code>) 处理太慢，<code>image.close()</code> 不及时，导致 HAL 无法 Dequeue。</p>
-<li>  *Trace*: `CameraProvider` 中看到 `dequeueBuffer` 阻塞。</li>
+<p>1.  <b>Buffer Starvation</b>: Consumer (<code>ImageReader</code>) 处理太慢，<code>image.close()</code> 不及时，导致 HAL 无法获取空闲 Buffer。</p>
+<li>  *Trace*: 可能看到 Camera / BufferQueue / binder / consumer 相关等待，但不保证稳定出现 `CameraProvider::dequeueBuffer` 这类 slice。</li>
 <p>2.  <b>Pipeline Stall</b>: ISP 处理某些特效（HDR、夜景）耗时过长，超过帧间隔。</p>
 <li>  *Trace*: `onCaptureCompleted` 到 `onCaptureStarted` 间隔不稳定。</li>
 <p>3.  <b>Binder Congestion</b>: CameraService 与 App 之间的 IPC 拥塞。</p>

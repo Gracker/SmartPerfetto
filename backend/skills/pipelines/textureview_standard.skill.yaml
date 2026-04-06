@@ -30,18 +30,29 @@ detection:
       weight: 25
     - signal: has_update_tex_image
       slice_pattern: "*updateTexImage*"
-      min_count: 5
-      weight: 35
+      min_count: 1
+      weight: 15
+    - signal: has_on_frame_available
+      slice_pattern: "*onFrameAvailable*"
+      weight: 8
     - signal: has_render_thread
       thread_pattern: "RenderThread*"
       weight: 20
+
+  exclude_if:
+    - thread: "1.ui"           # Flutter TextureView → FLUTTER_TEXTUREVIEW
+    - thread: "1.raster"       # Flutter raster thread
+    - thread: CrRendererMain   # WebView TextureView → WEBVIEW_TEXTUREVIEW_CUSTOM
+    - slice_pattern: "*TBS*"   # X5 WebView
+    - slice_pattern: "*X5*"    # X5 WebView
+    - slice_pattern: "*UCCore*"  # UC WebView
 
 teaching:
   title: "TextureView 渲染管线"
   summary: |
     使用 SurfaceTexture 将渲染内容作为纹理集成到 View 层次中。
     支持 View 的所有变换（缩放、裁剪、透明度），但会增加纹理采样/合成带宽开销。
-    适合需要与 View 混合显示的场景。
+    适合需要与 View 混合显示的场景。`updateTexImage` / `onFrameAvailable` 常见但不是稳定 contract。
 
   mermaid: |
     sequenceDiagram
@@ -56,8 +67,8 @@ teaching:
 
       Note over VA,SF: 📍 TextureView 渲染链路
       Producer->>ST: 渲染内容到 SurfaceTexture
-      Producer->>ST: updateTexImage
-      ST-->>RT: onFrameAvailable 回调
+      Producer->>ST: queueBuffer
+      ST-->>RT: onFrameAvailable / listener callback
 
       VA->>Main: 🔔 VSync-app
       activate Main
@@ -87,9 +98,9 @@ teaching:
       description: "将 SurfaceTexture 内容作为纹理绘制"
 
   key_slices:
-    - name: "updateTexImage"
+    - name: "updateTexImage (hint)"
       thread: RenderThread
-      description: "更新纹理内容"
+      description: "常见的纹理消费信号；名称可见性依版本而异"
     - name: "SurfaceTexture"
       thread: any
       description: "SurfaceTexture 操作"
@@ -208,8 +219,8 @@ auto_pin:
 analysis:
   common_issues:
     - id: texture_upload_slow
-      name: "纹理上传慢"
-      description: "updateTexImage 耗时过长"
+      name: "纹理更新/采样慢"
+      description: "宿主侧纹理更新、采样或合成耗时过长"
       detection_skill: render_thread_slices
 
   recommended_skills:

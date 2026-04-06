@@ -238,24 +238,32 @@ steps:
           -- HWUI Family
           -- =====================================================================
           -- ANDROID_VIEW_STANDARD_BLAST: HWUI + BLAST
+          -- Max 0.80 (lowered from 1.00): STANDARD is fallback, not black hole
           CASE
             WHEN (SELECT render_thread_count FROM thread_data) > 0
                  AND (SELECT blast_bq_count + apply_transaction_count FROM slice_data) > 0
-            THEN 0.40 +
-                 CASE WHEN (SELECT draw_frame_count FROM slice_data) > 0 THEN 0.25 ELSE 0 END +
-                 CASE WHEN (SELECT choreographer_count FROM slice_data) > 0 THEN 0.20 ELSE 0 END +
-                 CASE WHEN (SELECT sync_frame_count FROM slice_data) > 0 THEN 0.15 ELSE 0 END
+                 AND (SELECT flutter_ui_count FROM thread_data) = 0
+                 AND (SELECT chrome_count + cr_renderer_count + viz_compositor_count FROM thread_data) = 0
+                 AND (SELECT unity_main_count + unity_gfx_count + unreal_game_count + unreal_rhi_count + godot_count FROM thread_data) = 0
+            THEN 0.35 +
+                 CASE WHEN (SELECT draw_frame_count FROM slice_data) > 0 THEN 0.20 ELSE 0 END +
+                 CASE WHEN (SELECT choreographer_count FROM slice_data) > 0 THEN 0.15 ELSE 0 END +
+                 CASE WHEN (SELECT sync_frame_count FROM slice_data) > 0 THEN 0.10 ELSE 0 END
             ELSE 0
           END as score_android_view_standard_blast,
 
           -- ANDROID_VIEW_STANDARD_LEGACY: HWUI + Legacy (no BLAST)
+          -- Max 0.65 (lowered from 0.80): pre-Android 12, increasingly rare
           CASE
             WHEN (SELECT render_thread_count FROM thread_data) > 0
                  AND (SELECT blast_bq_count + apply_transaction_count FROM slice_data) = 0
                  AND (SELECT queue_buffer_count FROM slice_data) > 0
-            THEN 0.35 +
-                 CASE WHEN (SELECT draw_frame_count FROM slice_data) > 0 THEN 0.25 ELSE 0 END +
-                 CASE WHEN (SELECT choreographer_count FROM slice_data) > 0 THEN 0.20 ELSE 0 END
+                 AND (SELECT flutter_ui_count FROM thread_data) = 0
+                 AND (SELECT chrome_count + cr_renderer_count + viz_compositor_count FROM thread_data) = 0
+                 AND (SELECT unity_main_count + unity_gfx_count + unreal_game_count + unreal_rhi_count + godot_count FROM thread_data) = 0
+            THEN 0.30 +
+                 CASE WHEN (SELECT draw_frame_count FROM slice_data) > 0 THEN 0.20 ELSE 0 END +
+                 CASE WHEN (SELECT choreographer_count FROM slice_data) > 0 THEN 0.15 ELSE 0 END
             ELSE 0
           END as score_android_view_standard_legacy,
 
@@ -272,6 +280,7 @@ steps:
             WHEN (SELECT render_thread_count FROM thread_data) > 0
                  AND (SELECT surfaceview_count FROM slice_data) > 0
                  AND (SELECT draw_frame_count FROM slice_data) > 0
+                 AND (SELECT chrome_count + cr_renderer_count + viz_compositor_count FROM thread_data) = 0
             THEN 0.50 + CASE WHEN (SELECT media_thread_count FROM thread_data) > 0 THEN 0.20 ELSE 0 END
             ELSE 0
           END as score_android_view_mixed,
@@ -299,6 +308,7 @@ steps:
                  AND (SELECT blast_bq_count FROM slice_data) > 0
                  AND (SELECT flutter_ui_count FROM thread_data) = 0
                  AND (SELECT chrome_count + cr_renderer_count FROM thread_data) = 0
+                 AND (SELECT unity_main_count + unity_gfx_count + unreal_game_count + unreal_rhi_count + godot_count FROM thread_data) = 0
             THEN 0.55 + CASE WHEN (SELECT gl_thread_count FROM thread_data) > 0 THEN 0.20 ELSE 0 END
             ELSE 0
           END as score_surfaceview_blast,
@@ -306,6 +316,8 @@ steps:
           -- TEXTUREVIEW_STANDARD: SurfaceTexture updateTexImage
           CASE
             WHEN (SELECT texture_view_count FROM slice_data) > 5
+                 AND (SELECT flutter_ui_count FROM thread_data) = 0
+                 AND (SELECT custom_webview_count FROM slice_data) = 0
             THEN 0.60 + CASE WHEN (SELECT render_thread_count FROM thread_data) > 0 THEN 0.20 ELSE 0 END
             ELSE 0
           END as score_textureview_standard,
@@ -326,6 +338,8 @@ steps:
                  AND (SELECT vk_present_count FROM slice_data) = 0
                  AND (SELECT angle_count FROM slice_data) = 0
                  AND (SELECT flutter_ui_count FROM thread_data) = 0
+                 AND (SELECT chrome_count + cr_renderer_count + viz_compositor_count FROM thread_data) = 0
+                 AND (SELECT unity_main_count + unity_gfx_count + unreal_game_count + unreal_rhi_count + godot_count FROM thread_data) = 0
             THEN 0.50 +
                  CASE WHEN (SELECT gl_draw_count FROM slice_data) > 0 THEN 0.20 ELSE 0 END +
                  CASE WHEN (SELECT gl_thread_count FROM thread_data) > 0 THEN 0.15 ELSE 0 END
@@ -369,11 +383,12 @@ steps:
             ELSE 0
           END as score_flutter_surfaceview_skia,
 
-          -- FLUTTER_TEXTUREVIEW: Flutter PlatformView fallback
+          -- FLUTTER_TEXTUREVIEW: Flutter TextureView rendering
           CASE
             WHEN (SELECT flutter_ui_count FROM thread_data) > 0
-                 AND (SELECT texture_view_count FROM slice_data) > 0
-            THEN 0.65
+                 AND (SELECT texture_view_count FROM slice_data) > 5
+            THEN 0.75 +
+                 CASE WHEN (SELECT render_thread_count FROM thread_data) > 0 THEN 0.10 ELSE 0 END
             ELSE 0
           END as score_flutter_textureview,
 

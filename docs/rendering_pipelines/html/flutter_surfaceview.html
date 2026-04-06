@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Flutter SurfaceView Pipeline (Impeller/BLAST)</title>
+    <title>Flutter SurfaceView Pipeline (Common Render Mode)</title>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet">
     <style>
@@ -191,7 +191,7 @@
 <body>
 
 <div class="header">
-    <h1>Flutter SurfaceView Pipeline (Impeller/BLAST) - Android Rendering Pipeline</h1>
+    <h1>Flutter SurfaceView Pipeline (Common Render Mode) - Android Rendering Pipeline</h1>
     <div class="legend" id="legend"></div>
 </div>
 
@@ -207,9 +207,9 @@
 
 <div class="doc-section">
     <div class="doc-content">
-        <h1>Flutter SurfaceView Pipeline (Impeller/BLAST)</h1>
+        <h1>Flutter SurfaceView Pipeline (Common Render Mode)</h1>
 <br>
-<p>这是 Flutter 在 Android 上的默认和推荐模式（Modern Android）。它利用 <code>SurfaceView</code> 独立的 Surface 和 BLAST 机制，实现了高性能、低延迟的渲染。</p>
+<p>这是 Flutter 在 Android 上最常见的高性能 render mode。<code>FlutterFragment</code> / <code>FlutterView</code> 的默认 render mode 通常是 <code>SurfaceView</code>，它利用独立 Surface 与 SurfaceFlinger 合成；宿主原生 View 仍然可能走标准 Android View / RenderThread 链路。</p>
 <br>
 <h2>1. 独立合成流程详解 (Deep Execution Flow)</h2>
 <br>
@@ -228,17 +228,18 @@
 <h3>第二阶段：Raster Thread (光栅化)</h3>
 <p>1.  <b>LayerTree Processing</b>: 拿到 Dart 发来的指令树，进行优化和合成。</p>
 <p>2.  <b>Rasterization (Impeller)</b>:</p>
-<li>  使用 Vulkan (或 Metal) 直接生成 Command Buffer。</li>
-<li>  不需要像 Skia 那样即时(JIT)编译 Shader，因其 Shader 是预编译的(AOT)，极大减少了首帧卡顿。</li>
+<li>  Android 上 Impeller 常见后端是 Vulkan；在不支持的设备上也可能回退到 OpenGL ES 路径。</li>
+<li>  Impeller 倾向于使用预编译 shader / 更可预测的 pipeline 建立流程，通常能减少 Skia 时代的运行时 shader 编译卡顿，但具体收益仍依设备和效果而异。</li>
 <p>3.  <b>Present (直接提交)</b>:</p>
 <li>  通过 `vkQueuePresentKHR` (Vulkan) 或 `eglSwapBuffers` (GL)。</li>
 <li>  **关键**: 这一步直接写入到一张独立的 SurfaceBuffer 中。</li>
+<p>    > *注: 指 Flutter 自身的渲染内容。宿主 App 的原生 View（如系统状态栏）仍走标准 RenderThread 路径。*</p>
 <br>
 <h3>第三阶段：BLAST Submission (系统合成)</h3>
-<p>1.  <b>queueBuffer</b>: Vulkan 驱动底层调用 <code>queueBuffer</code>。</p>
-<p>2.  <b>BLAST Adapter</b>: 这是一个运行在 App 进程中的组件。它捕获这个 Buffer，并将其封装进一个 <code>SurfaceControl.Transaction</code>。</p>
+<p>1.  <b>queueBuffer / Present</b>: Flutter 渲染结果通过底层图形栈提交到 Surface。</p>
+<p>2.  <b>BLAST Adapter</b>: 在较新的 Android 设备上，Surface 更新通常会通过 BLAST / Transaction 模型进入 SurfaceFlinger。</p>
 <p>3.  <b>Atomic Sync</b>: 如果这个 Transaction 包含了 Window 的位置变化（比如 resize），它们会原子生效。</p>
-<p>4.  <b>SurfaceFlinger</b>: 收到 Transaction，直接合成到屏幕，<b>不经过 App RenderThread</b>。</p>
+<p>4.  <b>SurfaceFlinger</b>: 收到 Transaction，直接合成到屏幕，<b>Flutter 内容不经过 App RenderThread</b>（宿主原生 View 仍走 RenderThread）。</p>
 <br>
 <hr>
 <br>
@@ -247,11 +248,23 @@
 <p>这张图展示了从 Dart 构建到最终 BLAST 合成的全过程。</p>
 <br>
 <br>
-<h2>3. Platform View 兼容性限制</h2>
+<h2>3. 线程角色详情 (Thread Roles)</h2>
+<br>
+<p>| 线程名称 | 关键职责 | 常见 Trace 标签 |</p>
+<p>|:---|:---|:---|</p>
+<p>| <b>ui / main / 1.ui</b> | Dart 代码执行, Build/Layout/Paint | 常见可见 <code>Engine::BeginFrame</code>，但线程/标签不稳定 |</p>
+<p>| <b>raster / 1.raster</b> | Layer Tree 光栅化, GPU 指令生成 | 常见可见 <code>Rasterizer::DrawToSurfaces</code>、<code>EntityPass::*</code>，但不保证稳定 |</p>
+<p>| <b>1.io</b> | 图片解码, 资源加载 | <code>ImageDecoder</code>（Skia 引擎下还有 <code>SkiaUnrefQueue</code>） |</p>
+<p>| <b>1.platform</b> | 平台通道调用 | <code>MethodChannel</code> |</p>
+<p>| <b>SurfaceFlinger</b> | 合成 Flutter Layer 与系统 UI | 常见可见 <code>latchBuffer</code> / FrameTimeline / SF 主循环片段 |</p>
+<br>
+<hr>
+<br>
+<h2>4. Platform View 兼容性限制</h2>
 <br>
 <p>当 Flutter 应用需要嵌入原生 Android View（如 Google Maps、WebView）时，SurfaceView 模式存在根本性限制。</p>
 <br>
-<h3>3.1 为什么不兼容</h3>
+<h3>4.1 为什么不兼容</h3>
 <br>
 <p>| 问题 | 根因 |</p>
 <p>|:---|:---|</p>
@@ -259,25 +272,20 @@
 <p>| <b>手势穿透</b> | 触摸事件分发路径不一致 |</p>
 <p>| <b>裁剪/圆角</b> | SurfaceView 不支持 <code>clipPath</code> 等 View 变换 |</p>
 <br>
-<h3>3.2 自动降级机制</h3>
+<h3>4.2 PlatformView 不是“自动降级到 TextureView”</h3>
 <br>
-<p>当检测到 <code>PlatformView</code> 存在时，Flutter 引擎会<b>自动降级</b>到 TextureView 模式：</p>
+<p>Flutter Android 上需要区分两套配置：</p>
 <br>
-<pre><code>
-// flutter/engine: shell/platform/android/io/flutter/embedding/android/FlutterView.java
-if (platformViewsController.usesVirtualDisplays()) {
-    // TextureView 模式 (Hybrid Composition Virtual Display)
-} else {
-    // Hybrid Composition (Android View 直接嵌入)
-}
-</code></pre>
+<p>1.  <b>Flutter 根视图 render mode</b>: <code>SurfaceView</code> 或 <code>TextureView</code></p>
+<p>2.  <b>Platform Views composition mode</b>: <code>Hybrid Composition</code> 或 <code>Texture Layer Hybrid Composition</code></p>
 <br>
-<h3>3.3 开发者建议</h3>
+<p>嵌入 <code>PlatformView</code> 时，Flutter 不一定“自动切到 TextureView render mode”。更常见的是在当前 render mode 下，针对具体平台视图选择 HC / TLHC 等组合方式；是否切换、代价多大，取决于宿主、Flutter 版本、视图类型和具体实现。</p>
 <br>
-<p>1.  <b>尽量减少 PlatformView 数量</b>: 每增加一个，性能损失约 5-10%。</p>
+<h3>4.3 开发者建议</h3>
+<br>
+<p>1.  <b>尽量减少 PlatformView 数量</b>: 多个 PlatformView 往往会引入额外合成、同步和输入成本，但开销没有稳定的固定百分比。</p>
 <p>2.  <b>优先使用 Flutter 原生组件</b>: 如 <code>flutter_map</code> 代替 Google Maps。</p>
-<p>3.  <b>监控降级</b>: 在 Perfetto 中检查是否意外启用了 TextureView 模式（看是否有 <code>SurfaceTexture</code> 相关 Slice）。</p>
-<br>
+<p>3.  <b>监控组合方式</b>: 在 Perfetto 中可观察 <code>SurfaceTexture</code>、宿主 RenderThread、平台视图线程与 Flutter raster 的相对关系，但不要把单个 slice 名当成唯一判据。</p>
 <br>
     </div>
 </div>
@@ -287,7 +295,7 @@ if (platformViewsController.usesVirtualDisplays()) {
 <script>
     mermaid.initialize({ startOnLoad: true });
 
-    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "Main", "name": "Android Main"}, {"id": "Dart", "name": "Dart Runner (UI)"}, {"id": "Raster", "name": "Raster Thread"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "Main", "time": 300, "endTime": 330, "label": "VSync-App Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Main", "dst": "Dart", "time": 335, "endTime": 365, "label": "Engine.ScheduleFrame()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Dart", "dst": "Dart", "time": 370, "endTime": 400, "label": "Build -> Layout -> Paint", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 370, "end": 400, "label": "Build -> Layout -> Paint", "color": "#4db6ac"}, {"type": "flow", "src": "Dart", "dst": "Raster", "time": 405, "endTime": 435, "label": "Submit LayerTree", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 370, "end": 460, "label": "Engine.ScheduleFrame()", "color": "#4db6ac"}, {"type": "flow", "src": "Raster", "dst": "BBQ", "time": 470, "endTime": 500, "label": "dequeueBuffer() -> acquireFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Raster", "dst": "Raster", "time": 505, "endTime": 535, "label": "Impeller Rasterize (GPU)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Raster", "start": 505, "end": 535, "label": "Impeller Rasterize (GPU)", "color": "#ef5350"}, {"type": "flow", "src": "Raster", "dst": "BBQ", "time": 540, "endTime": 570, "label": "queueBuffer(releaseFence)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Raster", "start": 470, "end": 595, "label": "Submit LayerTree", "color": "#ef5350"}, {"type": "flow", "src": "BBQ", "dst": "BBQ", "time": 605, "endTime": 635, "label": "Acquire", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "BBQ", "start": 605, "end": 635, "label": "Acquire", "color": "#ffb74d"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 640, "endTime": 670, "label": "Transaction(Buffer, releaseFence)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 900}, {"type": "flow", "src": "HW", "dst": "SF", "time": 900, "endTime": 930, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 935, "endTime": 965, "label": "Wait releaseFence", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 935, "end": 965, "label": "Wait releaseFence", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 970, "endTime": 1000, "label": "latchBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 970, "end": 1000, "label": "latchBuffer", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 1005, "endTime": 1035, "label": "Composite Layer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 935, "end": 1060, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 1070, "endTime": 1100, "label": "Scanout", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 1070, "end": 1100, "label": "Scanout", "color": "#7986cb"}, {"type": "flow", "src": "HWC", "dst": "SF", "time": 1105, "endTime": 1135, "label": "presentFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "BBQ", "time": 1140, "endTime": 1170, "label": "acquireFence", "color": "rgba(255,255,255,0.2)"}]};
+    const timelineData = {"participants": [{"id": "HW", "name": "Hardware VSync"}, {"id": "Main", "name": "Android Main"}, {"id": "Dart", "name": "Dart Runner (UI)"}, {"id": "Raster", "name": "Raster Thread"}, {"id": "BBQ", "name": "BLAST Adapter"}, {"id": "SF", "name": "SurfaceFlinger"}, {"id": "HWC", "name": "HWC"}], "events": [{"type": "vsync", "time": 300}, {"type": "flow", "src": "HW", "dst": "Main", "time": 300, "endTime": 330, "label": "VSync-App Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Main", "dst": "Dart", "time": 335, "endTime": 365, "label": "Engine.ScheduleFrame()", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Dart", "dst": "Dart", "time": 370, "endTime": 400, "label": "Build -> Layout -> Paint", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 370, "end": 400, "label": "Build -> Layout -> Paint", "color": "#4db6ac"}, {"type": "flow", "src": "Dart", "dst": "Raster", "time": 405, "endTime": 435, "label": "Submit LayerTree", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Dart", "start": 370, "end": 460, "label": "Engine.ScheduleFrame()", "color": "#4db6ac"}, {"type": "flow", "src": "Raster", "dst": "BBQ", "time": 470, "endTime": 500, "label": "dequeueBuffer() -> releaseFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "Raster", "dst": "Raster", "time": 505, "endTime": 535, "label": "Impeller Rasterize (GPU)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Raster", "start": 505, "end": 535, "label": "Impeller Rasterize (GPU)", "color": "#ef5350"}, {"type": "flow", "src": "Raster", "dst": "BBQ", "time": 540, "endTime": 570, "label": "queueBuffer(acquireFence)", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "Raster", "start": 470, "end": 595, "label": "Submit LayerTree", "color": "#ef5350"}, {"type": "flow", "src": "BBQ", "dst": "BBQ", "time": 605, "endTime": 635, "label": "Acquire", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "BBQ", "start": 605, "end": 635, "label": "Acquire", "color": "#ffb74d"}, {"type": "flow", "src": "BBQ", "dst": "SF", "time": 640, "endTime": 670, "label": "Transaction(Buffer, acquireFence)", "color": "rgba(255,255,255,0.2)"}, {"type": "vsync", "time": 900}, {"type": "flow", "src": "HW", "dst": "SF", "time": 900, "endTime": 930, "label": "VSync-SF Signal", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 935, "endTime": 965, "label": "Wait acquireFence", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 935, "end": 965, "label": "Wait acquireFence", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "SF", "time": 970, "endTime": 1000, "label": "latchBuffer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 970, "end": 1000, "label": "latchBuffer", "color": "#e57373"}, {"type": "flow", "src": "SF", "dst": "HWC", "time": 1005, "endTime": 1035, "label": "Composite Layer", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "SF", "start": 935, "end": 1060, "label": "VSync-SF Signal", "color": "#e57373"}, {"type": "flow", "src": "HWC", "dst": "HWC", "time": 1070, "endTime": 1100, "label": "Scanout", "color": "rgba(255,255,255,0.2)"}, {"type": "slice", "track": "HWC", "start": 1070, "end": 1100, "label": "Scanout", "color": "#7986cb"}, {"type": "flow", "src": "HWC", "dst": "SF", "time": 1105, "endTime": 1135, "label": "presentFence", "color": "rgba(255,255,255,0.2)"}, {"type": "flow", "src": "SF", "dst": "BBQ", "time": 1140, "endTime": 1170, "label": "releaseFence", "color": "rgba(255,255,255,0.2)"}]};
     const PX_PER_MS = 2.0; 
     const ROW_H = 28;
     const SLICE_H = 18;
