@@ -1,0 +1,96 @@
+# =============================================================================
+# CPU Idle C-State 分析 (Atomic Skill)
+# =============================================================================
+# 分析 CPU idle 状态分布，检测深度 idle 对唤醒延迟的影响
+
+name: cpu_idle_analysis
+version: "1.0"
+type: atomic
+category: cpu
+
+meta:
+  display_name: "CPU Idle C-State 分析"
+  description: "分析 CPU idle 状态分布，检测深度 idle 对唤醒延迟的影响"
+  icon: "cpu"
+  tags: [cpu, idle, cstate, wakeup, latency, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: cpu_ids
+    type: string
+    required: false
+    description: "CPU ID 列表（逗号分隔，如 '4,5,6,7'）"
+
+display:
+  level: detail
+  layer: overview
+  title: "CPU Idle 分析"
+  columns:
+    - name: cpu
+      label: "CPU"
+      type: number
+    - name: idle_state
+      label: "Idle 状态"
+      type: number
+    - name: entry_count
+      label: "进入次数"
+      type: number
+    - name: total_idle_ms
+      label: "总 Idle 时长"
+      type: duration
+      format: duration_ms
+    - name: avg_idle_ms
+      label: "平均 Idle 时长"
+      type: duration
+      format: duration_ms
+    - name: max_idle_ms
+      label: "最大 Idle 时长"
+      type: duration
+      format: duration_ms
+
+sql: |
+  WITH all_idle_events AS (
+    -- 不在时间窗口内过滤，避免 LEAD() 丢失跨边界的 idle 区间
+    SELECT
+      cct.cpu,
+      c.ts,
+      CAST(c.value AS INTEGER) as idle_state,
+      LEAD(c.ts) OVER (PARTITION BY cct.cpu ORDER BY c.ts) as next_ts
+    FROM counter c
+    JOIN cpu_counter_track cct ON c.track_id = cct.id
+    WHERE cct.name = 'cpuidle'
+      AND ('${cpu_ids|}'  = '' OR cct.cpu IN (${cpu_ids|}))
+  ),
+  idle_durations AS (
+    SELECT
+      cpu,
+      idle_state,
+      -- 将 idle 区间裁剪到分析窗口内
+      MIN(next_ts, COALESCE(${end_ts}, next_ts)) - MAX(ts, COALESCE(${start_ts}, ts)) as dur
+    FROM all_idle_events
+    WHERE idle_state >= 0
+      AND next_ts IS NOT NULL
+      -- 只要区间与分析窗口有交集
+      AND (${start_ts} IS NULL OR next_ts > ${start_ts})
+      AND (${end_ts} IS NULL OR ts < ${end_ts})
+  )
+  SELECT
+    cpu,
+    idle_state,
+    COUNT(*) as entry_count,
+    ROUND(SUM(dur) / 1e6, 1) as total_idle_ms,
+    ROUND(AVG(dur) / 1e6, 2) as avg_idle_ms,
+    ROUND(MAX(dur) / 1e6, 2) as max_idle_ms
+  FROM idle_durations
+  GROUP BY cpu, idle_state
+  ORDER BY cpu, idle_state
+
+output:
+  format: structured

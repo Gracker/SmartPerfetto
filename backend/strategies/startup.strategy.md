@@ -279,6 +279,25 @@ invoke_skill("blocking_chain_analysis", { start_ts: "<slice_start>", end_ts: "<s
 - 如果 blocked_function 含 binder，进一步调用 `binder_root_cause` 定位服务端原因
 - 用 `lookup_knowledge` 获取相关机制解释（如锁竞争、Binder IPC）
 
+**Phase 2.75 — 首帧后可交互性检查（TTFD 存在或 dur > 2s 时执行）：**
+
+首帧显示（TTID）后，App 可能仍在执行异步数据加载、首屏动画、权限检查等操作，导致"看到了但用不了"。
+
+```sql
+SELECT name, dur/1e6 as dur_ms, t.name as thread
+FROM slice s
+JOIN thread_track tt ON s.track_id = tt.id
+JOIN thread t ON tt.utid = t.utid
+JOIN process p ON t.upid = p.upid
+WHERE p.name GLOB '{process_name}*'
+  AND (t.is_main_thread = 1 OR t.name = 'RenderThread')
+  AND s.ts BETWEEN {end_ts} AND {end_ts} + 500000000
+  AND s.dur > 5000000
+ORDER BY s.dur DESC LIMIT 15
+```
+
+关注：网络请求回调、数据库查询、图片异步加载完成后的 UI 刷新、权限弹窗阻塞。
+
 **Phase 2.8 — Compose 启动特有分析（当架构检测为 Compose 时）：**
 
 注意：Compose 应用的启动 hotspot 分布与传统 View 应用不同：
@@ -399,7 +418,8 @@ Android 启动有两个串行大阶段，**分析结论必须覆盖两个阶段*
 | 线程状态 | blocked_functions 特征 | 根因类型 | 典型场景 |
 |---------|----------------------|---------|---------|
 | S (Sleeping) | `futex_wait_queue` / `futex_wait` | **锁等待** | art_lock_contention、monitor 竞争、ReentrantLock、synchronized 块 |
-| S (Sleeping) | `binder_wait_for_work` / `binder_ioctl` | **同步 Binder 阻塞** | 跨进程 IPC 等待 system_server 响应 |
+| S (Sleeping) | `binder_ioctl` / `binder_ioctl_write_read` | **同步 Binder 阻塞** | 跨进程 IPC 等待（客户端等待服务端响应） |
+| S (Sleeping) | `binder_wait_for_work` | **Binder 线程池空闲等待** | 正常行为。注意：如果在主线程看到此函数，说明主线程异常充当了 Binder 服务端 |
 | S (Sleeping) | `do_epoll_wait` / `ep_poll` | **Looper 空闲/等待事件** | 正常空闲（非问题）或等待异步回调 |
 | S (Sleeping) | `pipe_wait` / `pipe_read` | **管道等待** | 等待子线程/进程通信 |
 | S (Sleeping) | `SyS_nanosleep` / `hrtimer_nanosleep` | **主动 sleep** | 代码中的 Thread.sleep()/SystemClock.sleep() |

@@ -251,7 +251,7 @@ steps:
           SUM(
             MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})
           ) / 1e6 as dur_ms,
-          COALESCE(ct.core_type, 'little') as core_type
+          COALESCE(ct.core_type, 'unknown') as core_type
         FROM sched_slice ss
         JOIN main_thread mt ON ss.utid = mt.utid
         LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
@@ -312,7 +312,7 @@ steps:
           ss.cpu,
           ss.ts,
           ss.dur,
-          COALESCE(ct.core_type, 'little') as core_type
+          COALESCE(ct.core_type, 'unknown') as core_type
         FROM sched_slice ss
         JOIN main_thread mt ON ss.utid = mt.utid
         LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
@@ -454,7 +454,7 @@ steps:
           ts.utid,
           ts.state,
           ts.cpu,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           SUM(
             MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts})
           ) / 1e6 as dur_ms

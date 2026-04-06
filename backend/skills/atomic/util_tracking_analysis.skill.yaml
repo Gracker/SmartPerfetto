@@ -1,0 +1,84 @@
+# =============================================================================
+# Util 建模分析 (Atomic Skill)
+# =============================================================================
+# 分析 EAS util tracking 信号（eas_util/sugov_util），检测 WALT/PELT 建模滞后
+
+name: util_tracking_analysis
+version: "1.0"
+type: atomic
+category: cpu
+
+meta:
+  display_name: "Util 建模分析"
+  description: "分析 EAS util tracking 信号（eas_util/sugov_util），检测 WALT/PELT 建模滞后"
+  icon: "cpu"
+  tags: [eas, util, walt, pelt, scheduling, atomic]
+
+inputs:
+  - name: package
+    type: string
+    required: true
+    description: "目标进程名"
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+
+display:
+  level: detail
+  layer: deep
+  title: "Util 建模分析"
+  columns:
+    - name: offset_ms
+      label: "偏移(ms)"
+      type: number
+    - name: cpu
+      label: "CPU"
+      type: number
+    - name: running_ms
+      label: "运行时间"
+      type: duration
+      format: duration_ms
+    - name: freq_mhz
+      label: "频率(MHz)"
+      type: number
+
+sql: |
+  -- 分析启动/滑动前 100ms 的频率 vs 实际负载，检测 util 建模延迟
+  -- 如果任务一直在 Running 但频率低，说明 util_avg 还没反映真实负载
+  WITH task_running AS (
+    SELECT ss.ts, ss.dur, ss.cpu
+    FROM sched_slice ss
+    JOIN thread t ON ss.utid = t.utid
+    JOIN process p ON t.upid = p.upid
+    WHERE t.is_main_thread = 1
+      AND p.name GLOB '${package}*'
+      AND ss.ts BETWEEN ${start_ts} AND CAST(${start_ts} AS INTEGER) + 100000000
+  ),
+  freq_at_time AS (
+    SELECT c.ts, CAST(c.value AS INTEGER) as freq, cct.cpu
+    FROM counter c
+    JOIN cpu_counter_track cct ON c.track_id = cct.id
+    WHERE cct.name GLOB 'cpu*freq*'
+      AND c.ts BETWEEN ${start_ts} AND CAST(${start_ts} AS INTEGER) + 100000000
+  )
+  SELECT
+    ROUND((tr.ts - ${start_ts}) / 1e6, 1) as offset_ms,
+    tr.cpu,
+    ROUND(tr.dur / 1e6, 2) as running_ms,
+    COALESCE(
+      (SELECT f.freq / 1000 FROM freq_at_time f
+       WHERE f.cpu = tr.cpu AND f.ts <= tr.ts
+       ORDER BY f.ts DESC LIMIT 1),
+      0
+    ) as freq_mhz
+  FROM task_running tr
+  ORDER BY tr.ts
+  LIMIT 30
+
+output:
+  format: structured

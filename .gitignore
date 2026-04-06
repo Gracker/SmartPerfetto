@@ -117,3 +117,8 @@ backend/test-output/
 # Feature development notes (personal)
 # ===================
 Feature-Dev/
+
+# ===================
+# Private files (personal docs, not for public)
+# ===================
+private/

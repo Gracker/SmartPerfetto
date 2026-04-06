@@ -41,14 +41,22 @@ keywords:
   - impeller
 ---
 
+**Android 版本注意**：
+- FrameTimeline 数据需要 Android 12+ (API 31)
+- blocked_functions 需要内核 CONFIG_SCHEDSTATS=y（高通量产内核常关闭）
+- monitor_contention 需要 Android 13+ (API 33)
+- input events 需要 Android 14+ (API 34)
+- Android 14+ token 不再严格连续递增，token_gap 检测可能需调整
+
 #### 滑动/卡顿分析（用户提到 滑动、卡顿、掉帧、jank、scroll、fps）
 
 **⚠️ 核心原则：**
 1. **逐帧根因诊断是最重要的**。概览统计（帧率、卡顿率）只是入口，真正有价值的是每一个掉帧帧的根因分析。
-2. **Per-Layer Buffer 枯竭检测（token-gap 模型）**：
-   - 掉帧检测基于 `display_frame_token` 序列缺口：当 App Layer 在连续 SF DisplayFrame 中出现 token 跳跃（gap > 1），说明 SF 在中间帧合成时该 Layer 没有新 Buffer = 缓冲区枯竭 = 用户可见卡顿
+2. **掉帧检测以 present_ts 间隔为主**（> 1.5x VSync = 用户可感知卡顿），token_gap 为辅助信号。Buffer Stuffing 帧的 present_type 可以是 Late/Early/On-Time，需用 present_ts 间隔做二次验证。
+   - **Per-Layer Buffer 枯竭检测（token-gap 辅助模型）**：当 App Layer 在连续 SF DisplayFrame 中出现 token 跳跃（gap > 1），说明 SF 在中间帧合成时该 Layer 没有新 Buffer = 缓冲区枯竭
    - `token_gap = 1` → 正常（每帧都有新 buffer），`token_gap = N` → 跳过 N-1 个 DisplayFrame
    - 这是 per-layer 检测，不受 SF 全局合成状态影响（SF 可能在消费其他 Layer 的 buffer）
+   - **Prediction Error 帧处理**：Prediction Error 帧不应一律忽略。检查 prediction_type = 'Expired Prediction' 的比例：>5% 时标注"FrameTimeline 预测精度不足"。在管线 2-3 帧缓冲下用户可能感知延迟
 3. **Guilty Frame 溯源**：
    - BlastBufferQueue 三缓冲下，可见卡顿通常出现在慢帧 2-3 帧之后（管线排空）
    - `guilty_frame_id` 字段指向导致管线枯竭的实际慢帧（向前回溯 ≤5 帧，取最慢的超预算帧）

@@ -72,7 +72,7 @@ sql: |
   -- JIT 线程的 CPU 时间和核类型
   jit_cpu AS (
     SELECT
-      COALESCE(ct.core_type, 'little') as core_type,
+      COALESCE(ct.core_type, 'unknown') as core_type,
       SUM(MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})) / 1e6 as running_ms
     FROM sched_slice ss
     JOIN jit_threads jt ON ss.utid = jt.utid

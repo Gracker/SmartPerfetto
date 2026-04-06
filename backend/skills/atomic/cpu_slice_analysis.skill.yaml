@@ -88,7 +88,7 @@ steps:
           ss.utid,
           ss.dur,
           ss.cpu,
-          COALESCE(ct.core_type, 'little') as core_type
+          COALESCE(ct.core_type, 'unknown') as core_type
         FROM sched_slice ss
         LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
         WHERE (${start_ts} IS NULL OR ss.ts >= ${start_ts})

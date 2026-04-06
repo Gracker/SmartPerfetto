@@ -215,7 +215,7 @@ steps:
       thread_states AS (
         SELECT
           ts.state,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           ts.blocked_function,
           SUM(
             MIN(ts.ts + ts.dur, aw.end_ts) - MAX(ts.ts, aw.start_ts)

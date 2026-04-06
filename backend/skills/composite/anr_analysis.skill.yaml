@@ -226,7 +226,7 @@ steps:
       cpu_time AS (
         SELECT
           ss.cpu,
-          COALESCE(c.core_type, 'little') as core_type,
+          COALESCE(c.core_type, 'unknown') as core_type,
           SUM(
             CASE
               WHEN ss.ts < ${anr_ctx.data[0].anr_ts} AND ss.ts + ss.dur > ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns}

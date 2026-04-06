@@ -224,8 +224,8 @@ steps:
           ts.cpu,
           ts.dur,
           CASE
-            WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN 'Q1_大核运行'
-            WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN 'Q2_小核运行'
+            WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN 'Q1_大核运行'
+            WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN 'Q2_小核运行'
             WHEN ts.state = 'R' THEN 'Q3_等待调度'
             WHEN ts.state IN ('D', 'DK') THEN 'Q4a_IO阻塞'
             WHEN ts.state IN ('S', 'I') THEN 'Q4b_休眠等待'
@@ -350,7 +350,7 @@ steps:
       freq_data AS (
         SELECT
           t.cpu,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           c.value as freq_khz
         FROM counter c
         JOIN cpu_counter_track t ON c.track_id = t.id
@@ -546,7 +546,7 @@ steps:
           c.ts,
           t.cpu,
           c.value as freq_khz,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           LAG(c.value) OVER (PARTITION BY t.cpu ORDER BY c.ts) as prev_freq_khz
         FROM counter c
         JOIN cpu_counter_track t ON c.track_id = t.id
@@ -981,7 +981,7 @@ steps:
         SELECT
           ts.state,
           ts.cpu,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           (
             CASE
               WHEN ts.ts + ts.dur < b.slice_end_ns THEN ts.ts + ts.dur
@@ -1153,8 +1153,8 @@ steps:
       -- 9. CPU 簇负载检测（动态核心计数，适配所有 SoC 拓扑）
       cluster_core_counts AS (
         SELECT
-          COUNT(DISTINCT CASE WHEN COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN ts.cpu END) as big_cores,
-          COUNT(DISTINCT CASE WHEN COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN ts.cpu END) as little_cores
+          COUNT(DISTINCT CASE WHEN COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN ts.cpu END) as big_cores,
+          COUNT(DISTINCT CASE WHEN COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN ts.cpu END) as little_cores
         FROM thread_state ts
         LEFT JOIN _cpu_topology ct ON ts.cpu = ct.cpu_id
         WHERE ts.ts < ${end_ts}
@@ -1164,10 +1164,10 @@ steps:
       ),
       cluster_load AS (
         SELECT
-          ROUND(100.0 * SUM(CASE WHEN COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN
+          ROUND(100.0 * SUM(CASE WHEN COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN
             MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts})
           ELSE 0 END) / NULLIF((${end_ts} - ${start_ts}) * MAX((SELECT big_cores FROM cluster_core_counts), 1), 0), 1) as big_load_pct,
-          ROUND(100.0 * SUM(CASE WHEN COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN
+          ROUND(100.0 * SUM(CASE WHEN COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN
             MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts})
           ELSE 0 END) / NULLIF((${end_ts} - ${start_ts}) * MAX((SELECT little_cores FROM cluster_core_counts), 1), 0), 1) as little_load_pct
         FROM thread_state ts

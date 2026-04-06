@@ -58,7 +58,7 @@ sql: |
   -- Early phase: first 100ms of startup
   WITH early_freq AS (
     SELECT
-      COALESCE(ct.core_type, 'little') as core_type,
+      COALESCE(ct.core_type, 'unknown') as core_type,
       ROUND(SUM(c.value * cf.dur) / NULLIF(SUM(cf.dur), 0) / 1000, 0) as avg_freq_mhz,
       ROUND(MAX(c.value) / 1000, 0) as max_freq_mhz
     FROM cpu_frequency_counters cf
@@ -71,7 +71,7 @@ sql: |
   -- Steady phase: 100ms to end
   steady_freq AS (
     SELECT
-      COALESCE(ct.core_type, 'little') as core_type,
+      COALESCE(ct.core_type, 'unknown') as core_type,
       ROUND(SUM(c.value * cf.dur) / NULLIF(SUM(cf.dur), 0) / 1000, 0) as avg_freq_mhz,
       ROUND(MAX(c.value) / 1000, 0) as max_freq_mhz
     FROM cpu_frequency_counters cf

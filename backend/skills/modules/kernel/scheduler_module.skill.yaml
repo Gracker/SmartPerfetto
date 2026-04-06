@@ -152,7 +152,7 @@ steps:
       )
       SELECT
         cct.cpu,
-        COALESCE(ci.core_type, 'little') AS core_type,
+        COALESCE(ci.core_type, 'unknown') AS core_type,
         CAST(AVG(c.value) / 1000 AS INTEGER) AS avg_freq_mhz,
         CAST(MAX(c.value) / 1000 AS INTEGER) AS max_freq_mhz,
         CAST(MIN(c.value) / 1000 AS INTEGER) AS min_freq_mhz

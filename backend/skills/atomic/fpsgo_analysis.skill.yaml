@@ -1,0 +1,75 @@
+# =============================================================================
+# FPSGO 策略分析 (Atomic Skill) — MTK
+# =============================================================================
+# 检测 MTK FPSGO 帧感知调度框架的运行状态（FSTB/FBT/急拉/频率地板）
+
+name: fpsgo_analysis
+version: "1.0"
+type: atomic
+category: vendor
+
+meta:
+  display_name: "FPSGO 策略分析 (MTK)"
+  description: "检测 MTK FPSGO 帧感知调度框架的运行状态（FSTB/FBT/急拉/频率地板）"
+  icon: "settings"
+  tags: [mtk, fpsgo, fstb, fbt, boost, vendor, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+display:
+  level: summary
+  layer: overview
+  title: "FPSGO 策略状态"
+  columns:
+    - name: category
+      label: "策略类别"
+      type: string
+    - name: event_name
+      label: "事件名"
+      type: string
+    - name: count
+      label: "次数"
+      type: number
+    - name: total_ms
+      label: "总时长"
+      type: duration
+      format: duration_ms
+
+sql: |
+  SELECT
+    CASE
+      WHEN s.name GLOB '*fstb*' OR s.name GLOB '*FSTB*' THEN 'FSTB (帧稳定)'
+      WHEN s.name GLOB '*fbt*' OR s.name GLOB '*FBT*' THEN 'FBT (急拉)'
+      WHEN s.name GLOB '*boost*' OR s.name GLOB '*rescue*' THEN 'Boost/Rescue'
+      WHEN s.name GLOB '*fpsgo*' THEN 'FPSGO (其他)'
+      WHEN s.name GLOB '*ged*' OR s.name GLOB '*GED*' THEN 'GED (GPU调度)'
+      WHEN s.name GLOB '*perf_idx*' OR s.name GLOB '*PerfService*' OR s.name GLOB '*PowerHal*' THEN 'PerfService/PowerHal'
+      ELSE 'Other Vendor'
+    END as category,
+    s.name as event_name,
+    COUNT(*) as count,
+    ROUND(SUM(s.dur) / 1e6, 1) as total_ms
+  FROM slice s
+  WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR s.ts < ${end_ts})
+    AND (
+      s.name GLOB '*fpsgo*' OR s.name GLOB '*FSTB*' OR s.name GLOB '*fbt*'
+      OR s.name GLOB '*fstb*' OR s.name GLOB '*boost*' OR s.name GLOB '*rescue*'
+      OR s.name GLOB '*ged*' OR s.name GLOB '*GED*'
+      OR s.name GLOB '*perf_idx*' OR s.name GLOB '*PerfService*'
+      OR s.name GLOB '*PowerHal*' OR s.name GLOB '*sched_boost*'
+    )
+  GROUP BY category, s.name
+  HAVING count >= 1
+  ORDER BY category, count DESC
+
+output:
+  format: structured

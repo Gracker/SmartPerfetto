@@ -154,7 +154,7 @@ sql: |
       pt.role,
       ts.state,
       ts.cpu,
-      COALESCE(ct.core_type, 'little') as core_type,
+      COALESCE(ct.core_type, 'unknown') as core_type,
       SUM(
         MIN(ts.ts + ts.dur, ${end_ts}) - MAX(ts.ts, ${start_ts})
       ) / 1e6 as dur_ms
@@ -196,9 +196,9 @@ sql: |
     SELECT
       pt.utid,
       ss.cpu,
-      COALESCE(ct.core_type, 'little') as core_type,
+      COALESCE(ct.core_type, 'unknown') as core_type,
       LAG(ss.cpu) OVER (PARTITION BY pt.utid ORDER BY ss.ts) as prev_cpu,
-      LAG(COALESCE(ct.core_type, 'little')) OVER (PARTITION BY pt.utid ORDER BY ss.ts) as prev_core_type
+      LAG(COALESCE(ct.core_type, 'unknown')) OVER (PARTITION BY pt.utid ORDER BY ss.ts) as prev_core_type
     FROM sched_slice ss
     JOIN process_threads pt ON ss.utid = pt.utid
     LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id

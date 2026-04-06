@@ -167,7 +167,7 @@ steps:
           SUM(
             MIN(ss.ts + ss.dur, ${binder_end_ts}) - MAX(ss.ts, ${binder_ts})
           ) / 1e6 as dur_ms,
-          COALESCE(ct.core_type, 'little') as core_type
+          COALESCE(ct.core_type, 'unknown') as core_type
         FROM sched_slice ss
         JOIN main_thread mt ON ss.utid = mt.utid
         LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
@@ -252,7 +252,7 @@ steps:
       quadrant_data AS (
         SELECT
           CASE
-            WHEN state = 'Running' AND COALESCE((SELECT core_type FROM _cpu_topology WHERE cpu_id = thread_states.cpu), 'little') IN ('prime', 'big') THEN 'Q1_big_running'
+            WHEN state = 'Running' AND COALESCE((SELECT core_type FROM _cpu_topology WHERE cpu_id = thread_states.cpu), 'unknown') IN ('prime', 'big') THEN 'Q1_big_running'
             WHEN state = 'Running' THEN 'Q2_little_running'
             WHEN state IN ('R', 'R+') THEN 'Q3_runnable'
             WHEN state IN ('S', 'D', 'I') THEN 'Q4_sleeping'

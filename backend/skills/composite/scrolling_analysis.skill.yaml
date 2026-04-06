@@ -2007,7 +2007,7 @@ steps:
         SELECT
           ts_top.frame_start,
           tst.state,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           (MIN(tst.ts + tst.dur, ts_top.slice_ts + ts_top.slice_dur_ns) - MAX(tst.ts, ts_top.slice_ts)) as overlap_ns
         FROM top_slices ts_top
         JOIN per_frame_thread_roles ptr ON ptr.frame_start = ts_top.frame_start AND ptr.role = 'main'
@@ -2033,7 +2033,7 @@ steps:
         SELECT
           fl.frame_start,
           tst.state,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           (MIN(tst.ts + tst.dur, fl.frame_end) - MAX(tst.ts, fl.frame_start)) as overlap_ns
         FROM jank_frame_list fl
         JOIN per_frame_thread_roles ptr ON ptr.frame_start = fl.frame_start AND ptr.role = 'main'
@@ -2063,7 +2063,7 @@ steps:
         SELECT
           fl.frame_start,
           tst.state,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           (MIN(tst.ts + tst.dur, fl.frame_end) - MAX(tst.ts, fl.frame_start)) as overlap_ns
         FROM jank_frame_list fl
         JOIN per_frame_thread_roles ptr ON ptr.frame_start = fl.frame_start AND ptr.role = 'render'
@@ -2211,7 +2211,7 @@ steps:
         FROM (
           SELECT
             fl.frame_start,
-            COALESCE(ct.core_type, 'little') as core_type,
+            COALESCE(ct.core_type, 'unknown') as core_type,
             CAST(ROUND(AVG(c.value) / 1000, 0) AS INTEGER) as avg_mhz,
             CAST(ROUND(MAX(c.value) / 1000, 0) AS INTEGER) as max_mhz,
             CAST(ROUND(MIN(c.value) / 1000, 0) AS INTEGER) as min_mhz
@@ -2219,7 +2219,7 @@ steps:
           JOIN counter c ON c.ts >= fl.frame_start AND c.ts < fl.frame_end
           JOIN cpu_counter_track cct ON c.track_id = cct.id AND cct.name = 'cpufreq'
           LEFT JOIN _cpu_topology ct ON cct.cpu = ct.cpu_id
-          GROUP BY fl.frame_start, COALESCE(ct.core_type, 'little')
+          GROUP BY fl.frame_start, COALESCE(ct.core_type, 'unknown')
         )
         GROUP BY frame_start
       ),
@@ -2241,7 +2241,7 @@ steps:
               fl.frame_start,
               ROUND((c.ts - fl.frame_start) / 1e6, 2) as relative_ms,
               cct.cpu,
-              COALESCE(ct.core_type, 'little') as core_type,
+              COALESCE(ct.core_type, 'unknown') as core_type,
               ROUND(c.value / 1e6, 2) as freq_ghz,
               c.value as freq_khz,
               LAG(c.value) OVER (PARTITION BY fl.frame_start, cct.cpu ORDER BY c.ts) as prev_freq_khz,
@@ -2811,8 +2811,8 @@ steps:
     sql: |
       WITH main_quadrant AS (
         SELECT
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_ns,
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_ns,
           SUM(CASE WHEN ts.state = 'R' THEN ts.dur ELSE 0 END) as q3_ns,
           SUM(CASE WHEN ts.state IN ('D', 'DK') THEN ts.dur ELSE 0 END) as q4a_ns,
           SUM(CASE WHEN ts.state IN ('S', 'I') THEN ts.dur ELSE 0 END) as q4b_ns,
@@ -2829,8 +2829,8 @@ steps:
       ),
       render_quadrant AS (
         SELECT
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_ns,
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_ns,
           SUM(CASE WHEN ts.state = 'R' THEN ts.dur ELSE 0 END) as q3_ns,
           SUM(CASE WHEN ts.state IN ('D', 'DK') THEN ts.dur ELSE 0 END) as q4a_ns,
           SUM(CASE WHEN ts.state IN ('S', 'I') THEN ts.dur ELSE 0 END) as q4b_ns,
@@ -3073,8 +3073,8 @@ steps:
       -- 主线程四象限分析
       main_thread_analysis AS (
         SELECT
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_big_core_ns,
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_small_core_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_big_core_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_small_core_ns,
           SUM(CASE WHEN ts.state = 'R' THEN ts.dur ELSE 0 END) as q3_runnable_ns,
           SUM(CASE WHEN ts.state IN ('S', 'D', 'DK', 'I') THEN ts.dur ELSE 0 END) as q4_sleep_ns,
           SUM(ts.dur) as total_dur_ns
@@ -3091,8 +3091,8 @@ steps:
       -- RenderThread 分析
       render_thread_analysis AS (
         SELECT
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_big_core_ns,
-          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'little') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_small_core_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN ts.dur ELSE 0 END) as q1_big_core_ns,
+          SUM(CASE WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN ts.dur ELSE 0 END) as q2_small_core_ns,
           SUM(CASE WHEN ts.state = 'R' THEN ts.dur ELSE 0 END) as q3_runnable_ns,
           SUM(CASE WHEN ts.state IN ('S', 'D', 'DK', 'I') THEN ts.dur ELSE 0 END) as q4_sleep_ns,
           SUM(ts.dur) as total_dur_ns

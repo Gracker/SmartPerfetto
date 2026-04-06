@@ -46,3 +46,17 @@ When the main thread encounters `GC: Wait For Completion`, it is blocked waiting
 - **Avoid finalizers and weak references in hot paths**: They add GC pressure
 - **Increase heap if justified**: `android:largeHeap="true"` raises ceiling but does not fix the root cause
 - **Profile with allocation tracking**: Identify top allocating call sites and eliminate unnecessary allocations
+
+### Android 10+ CC GC (Concurrent Copying)
+
+Android 10+ 默认使用 CC GC，而非传统 CMS。
+
+**Trace 中的名称映射**：
+- `young concurrent copying GC` → Young (minor) GC 的 CC 实现
+- `concurrent copying GC` → Full GC 的 CC 实现
+- `GC: Wait For Completion` → CC GC 中等待并发标记/复制完成后的最终同步
+
+**CC GC 暂停模型**：
+- `FlipThreadRoots` 暂停：~1-3ms，所有线程短暂停顿完成根集翻转
+- 并发标记/复制阶段：不暂停应用线程，但消耗 CPU 和内存带宽
+- 频繁的 young CC GC（>5 次/秒）说明分配率过高

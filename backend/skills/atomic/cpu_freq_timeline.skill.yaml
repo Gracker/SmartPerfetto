@@ -50,7 +50,7 @@ steps:
           c.ts,
           t.cpu,
           c.value as freq_khz,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           LAG(c.value) OVER (PARTITION BY t.cpu ORDER BY c.ts) as prev_freq_khz
         FROM counter c
         JOIN cpu_counter_track t ON c.track_id = t.id
@@ -111,7 +111,7 @@ steps:
       freq_data AS (
         SELECT
           t.cpu,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           c.value as freq_khz,
           LAG(c.value) OVER (PARTITION BY t.cpu ORDER BY c.ts) as prev_freq_khz
         FROM counter c

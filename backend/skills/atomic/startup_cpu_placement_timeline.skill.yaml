@@ -99,7 +99,7 @@ sql: |
   -- Main thread sched data
   main_sched AS (
     SELECT ss.ts, ss.dur, ss.cpu,
-      COALESCE(ct.core_type, 'little') as core_type
+      COALESCE(ct.core_type, 'unknown') as core_type
     FROM sched_slice ss
     CROSS JOIN main_thread mt
     LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id

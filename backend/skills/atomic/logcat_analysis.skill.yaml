@@ -1,0 +1,80 @@
+# =============================================================================
+# Logcat 异常信号检测 (Atomic Skill)
+# =============================================================================
+# 检测 trace 期间的 Logcat 中 ANR/GC/Binder/StrictMode 等关键系统警告
+
+name: logcat_analysis
+version: "1.0"
+type: atomic
+category: system
+
+meta:
+  display_name: "Logcat 异常信号检测"
+  description: "检测 trace 期间的 Logcat 中 ANR/GC/Binder/StrictMode 等关键系统警告"
+  icon: "warning"
+  tags: [logcat, anr, gc, binder, warning, atomic]
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: package
+    type: string
+    required: false
+    description: "目标进程名"
+
+display:
+  level: summary
+  layer: overview
+  title: "Logcat 异常信号"
+  columns:
+    - name: ts_str
+      label: "时间"
+      type: string
+    - name: prio
+      label: "优先级"
+      type: string
+    - name: tag
+      label: "Tag"
+      type: string
+    - name: msg_preview
+      label: "消息"
+      type: string
+
+sql: |
+  SELECT
+    printf('%d', ts) as ts_str,
+    CASE prio
+      WHEN 5 THEN 'WARN'
+      WHEN 6 THEN 'ERROR'
+      WHEN 7 THEN 'FATAL'
+      ELSE 'INFO'
+    END as prio,
+    tag,
+    SUBSTR(msg, 1, 200) as msg_preview
+  FROM android_logs
+  WHERE (${start_ts} IS NULL OR ts >= ${start_ts})
+    AND (${end_ts} IS NULL OR ts < ${end_ts})
+    AND prio >= 5
+    AND ('${package|}' = '' OR msg GLOB '*${package|}*' OR tag GLOB '*${package|}*'
+         OR tag IN ('ActivityManager', 'Choreographer', 'art', 'lowmemorykiller'))
+    AND (
+      tag GLOB '*ActivityManager*'
+      OR tag GLOB '*art*'
+      OR tag GLOB '*Binder*'
+      OR tag GLOB '*Choreographer*'
+      OR tag GLOB '*StrictMode*'
+      OR tag GLOB '*SurfaceFlinger*'
+      OR tag GLOB '*lowmemorykiller*'
+      OR tag GLOB '*WindowManager*'
+    )
+  ORDER BY ts
+  LIMIT 50
+
+output:
+  format: structured

@@ -47,7 +47,7 @@ steps:
       cpu_time AS (
         SELECT
           ss.cpu,
-          COALESCE(ct.core_type, 'little') as core_type,
+          COALESCE(ct.core_type, 'unknown') as core_type,
           ss.utid,
           -- clamp dur 到范围内，处理跨边界的 sched_slice
           SUM(MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})) as total_dur
@@ -92,7 +92,7 @@ steps:
     sql: |
       SELECT
         t.cpu,
-        COALESCE(ct.core_type, 'little') as core_type,
+        COALESCE(ct.core_type, 'unknown') as core_type,
         ROUND(AVG(c.value), 2) as avg_runqueue,
         MAX(c.value) as max_runqueue
       FROM counter c
