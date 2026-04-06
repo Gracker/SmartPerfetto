@@ -64,11 +64,13 @@ Thumbs.db
 # ===================
 # Misc
 # ===================
-# Runtime data
+# Runtime data & PID files
 pids/
 *.pid
 *.seed
 *.pid.lock
+.backend.pid
+.frontend.pid
 
 # Coverage
 coverage/
@@ -93,7 +95,9 @@ temp/
 # ===================
 # Local settings (project-specific, not shared)
 .claude/settings.local.json
-# But track settings.json for shared plugin/marketplace config
+.claude/settings.template.json
+.claude/install-plugins.sh
+# Track settings.json (project-level plugins) and rules/ (dev guidelines)
 
 # ===================
 # Agent runtime data (generated at runtime)
@@ -117,6 +121,11 @@ backend/test-output/
 # Feature development notes (personal)
 # ===================
 Feature-Dev/
+
+# ===================
+# Presentations (internal, not for public)
+# ===================
+rendering_pipelines/presentation.*
 
 # ===================
 # Private files (personal docs, not for public)
