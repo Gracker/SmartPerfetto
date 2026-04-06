@@ -16,7 +16,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
 
 ```bash
 # 1. Clone with submodules
-git clone --recursive https://github.com/AndroidPerformance/Smart-Perfetto.git
+git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 # 2. Configure environment
@@ -164,7 +164,7 @@ Scopes: skills, agentv3, frontend, strategies, ci
 
 ## Getting Help
 
-- Open an [Issue](https://github.com/AndroidPerformance/Smart-Perfetto/issues) for bugs or feature requests
+- Open an [Issue](https://github.com/Gracker/SmartPerfetto/issues) for bugs or feature requests
 - Check [Technical Architecture](docs/technical-architecture.md) for deep dives
 - Check [MCP Tools Reference](docs/mcp-tools-reference.md) for tool documentation
 

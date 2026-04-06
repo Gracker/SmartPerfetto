@@ -76,6 +76,6 @@ Skills 仍然有价值：
 
 ## 源项目
 
-导出自 [SmartPerfetto](https://github.com/AndroidPerformance/Smart-Perfetto)，一个 AI 驱动的 Android 性能分析平台。
+导出自 [SmartPerfetto](https://github.com/Gracker/SmartPerfetto)，一个 AI 驱动的 Android 性能分析平台。
 
 原始格式为自定义 YAML Skills（声明式 SQL 管线 + 运行时编排），此处转换为 Anthropic 标准 SKILL.md 格式（Claude 行为指令 + SQL 模板）。

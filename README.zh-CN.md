@@ -29,7 +29,7 @@
 最快的启动方式，无需安装编译工具链，只需要 Docker 和 API Key。
 
 ```bash
-git clone --recursive https://github.com/AndroidPerformance/Smart-Perfetto.git
+git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
@@ -51,7 +51,7 @@ docker compose up --build
 - Anthropic API Key — [console.anthropic.com](https://console.anthropic.com/)
 
 ```bash
-git clone --recursive https://github.com/AndroidPerformance/Smart-Perfetto.git
+git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env

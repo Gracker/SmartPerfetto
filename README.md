@@ -8,7 +8,7 @@ Load a Perfetto trace, ask a question in natural language, and get structured, e
 
 <!-- TODO: Uncomment after GitHub org is set up
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Build](https://github.com/AndroidPerformance/Smart-Perfetto/actions/workflows/backend-agent-regression-gate.yml/badge.svg)](https://github.com/AndroidPerformance/Smart-Perfetto/actions)
+[![Build](https://github.com/Gracker/SmartPerfetto/actions/workflows/backend-agent-regression-gate.yml/badge.svg)](https://github.com/Gracker/SmartPerfetto/actions)
 -->
 
 > **Project Status: Active Development (Pre-release)**
@@ -34,7 +34,7 @@ Load a Perfetto trace, ask a question in natural language, and get structured, e
 The fastest way to get SmartPerfetto running. No build tools required — just Docker and an API key.
 
 ```bash
-git clone --recursive https://github.com/AndroidPerformance/Smart-Perfetto.git
+git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
@@ -56,7 +56,7 @@ Full development environment with hot reload and debugging.
 - Anthropic API key — [console.anthropic.com](https://console.anthropic.com/)
 
 ```bash
-git clone --recursive https://github.com/AndroidPerformance/Smart-Perfetto.git
+git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
