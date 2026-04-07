@@ -301,7 +301,7 @@ Agent 的能力边界不取决于模型参数量或 benchmark 分数，而取决
 
 **1. 观测能力——Agent 能"看到"什么数据**
 
-同一个模型，给它 `scrolling_analysis` Skill 的 L2 结构化帧数据 vs 让它自己写 SQL 查原始表，分析质量差距非常显著。Agent 的上限由你给它的数据工具决定。SmartPerfetto 用 165 个 YAML Skill 封装了领域专家的查询逻辑，Agent 通过 `invoke_skill` 拿到的是处理过的、结构化的分析数据，而不是原始的百万行 trace 事件。
+同一个模型，给它 `scrolling_analysis` Skill 的 L2 结构化帧数据 vs 让它自己写 SQL 查原始表，分析质量差距非常显著。Agent 的上限由你给它的数据工具决定。SmartPerfetto 用 164 个 YAML Skill 封装了领域专家的查询逻辑，Agent 通过 `invoke_skill` 拿到的是处理过的、结构化的分析数据，而不是原始的百万行 trace 事件。
 
 **2. 约束框架——Agent 在什么范围内决策**
 
@@ -436,7 +436,7 @@ graph.add_edge("overview", "check_gc")
 
 **1. 条件化工具加载——减少 Agent 的决策空间**
 
-SmartPerfetto 的 MCP 工具总数可达 ~20 个（8 个 always-on + 最多 12 个条件注入），但一次分析只注入其中的子集：
+SmartPerfetto 的 MCP 工具总数最多 20 个（9 个 always-on + 11 个条件注入），但一次分析只注入其中的子集：
 
 ```typescript
 // claudeMcpServer.ts — 按模式切换工具集
@@ -445,7 +445,7 @@ if (options.lightweight) {
   // 事实性查询（如"帧率是多少"）：只给 3 个工具
   toolEntries = [executeSql, invokeSkill, lookupSqlSchema];
 } else {
-  // 完整分析：8 个 always-on + 按上下文条件注入
+  // 完整分析：9 个 always-on (含 recall_patterns) + 按上下文条件注入
   // 比较模式 → 注入 compare_skill, execute_sql_on, get_comparison_context
   // 假设管理 → 注入 submit_hypothesis, resolve_hypothesis, flag_uncertainty
   // 规划工具 → 注入 submit_plan, update_plan_phase, revise_plan
@@ -1105,9 +1105,9 @@ Phase 13:  → buildSystemPrompt(context) → 最终 prompt
 | Atomic | 87 | 单步检测/统计，一条或几条 SQL 完成 |
 | Composite | 29 | 组合多个 atomic skill，支持 iterator/conditional |
 | Deep | 2 | 深度剖析（callstack、CPU profiling） |
-| Pipeline | 29 | 渲染管线检测 + 教学（24+ 种架构） |
+| Pipeline | 28 | 渲染管线检测 + 教学（24+ 种架构） |
 | Module | 18 | 模块化配置：app/framework/hardware/kernel |
-| **合计** | **165** | |
+| **合计** | **164** | |
 
 ---
 
