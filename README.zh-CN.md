@@ -12,8 +12,8 @@
 
 ## 核心能力
 
-- **AI Agent 分析** — Claude Agent SDK 编排 17 个 MCP 工具，查询 trace 数据、执行分析 Skill、推理性能问题
-- **148 个分析 Skill** — 基于 YAML 的声明式分析管线（87 原子 + 29 组合 + 30 管线 + 2 深度），四层结果（L1 概览 → L4 深度根因）
+- **AI Agent 分析** — Claude Agent SDK 编排 20 个 MCP 工具，查询 trace 数据、执行分析 Skill、推理性能问题
+- **146 个分析 Skill** — 基于 YAML 的声明式分析管线（87 原子 + 29 组合 + 28 管线 + 2 深度），四层结果（L1 概览 → L4 深度根因）
 - **12 种场景策略** — 场景专属分析剧本（滑动、启动、ANR、交互、内存、游戏等）
 - **21 种卡顿根因码** — 优先级排序的决策树，双信号检测（present_type + present_ts interval）
 - **多架构支持** — 标准 HWUI、Flutter（TextureView/SurfaceView、Impeller/Skia）、Jetpack Compose、WebView
@@ -102,14 +102,14 @@ SmartPerfetto 在 **Android 12+** 设备上捕获的 trace 效果最佳：
 │  │    ClaudeRuntime → 场景分类 → 动态 System Prompt            │   │
 │  │    → Claude Agent SDK (MCP) → 4 层验证 + 反思重试            │   │
 │  │                                                           │   │
-│  │  MCP Server (17 工具: 9 常驻 + 8 条件)                     │   │
+│  │  MCP Server (20 工具: 9 常驻 + 11 条件)                    │   │
 │  │    execute_sql │ invoke_skill │ detect_architecture       │   │
 │  │    lookup_sql_schema │ lookup_knowledge │ ...             │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │  Skill 引擎 (148 个 YAML Skill)                           │   │
-│  │  原子(87) │ 组合(29) │ 管线(30) │ 深度(2) │ 厂商覆盖      │   │
+│  │  Skill 引擎 (146 个 YAML Skill)                           │   │
+│  │  原子(87) │ 组合(29) │ 管线(28) │ 深度(2) │ 厂商覆盖      │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
@@ -179,10 +179,10 @@ curl http://localhost:3000/api/agent/v1/logs/{sessionId}
 ## 文档
 
 - [技术架构](docs/technical-architecture.md) — 系统设计和扩展指南
-- [MCP 工具参考](docs/mcp-tools-reference.md) — 17 个 MCP 工具的参数和行为
+- [MCP 工具参考](docs/mcp-tools-reference.md) — 20 个 MCP 工具的参数和行为
 - [Skill 系统指南](docs/skill-system-guide.md) — YAML Skill DSL 参考
 - [数据合约](backend/docs/DATA_CONTRACT_DESIGN.md) — DataEnvelope v2.0 规范
-- [渲染管线](docs/rendering_pipelines/) — 30 份 Android 渲染管线参考文档
+- [渲染管线](docs/rendering_pipelines/) — 23 份 Android 渲染管线参考文档
 
 ## 贡献
 

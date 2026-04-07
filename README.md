@@ -17,8 +17,8 @@ Load a Perfetto trace, ask a question in natural language, and get structured, e
 
 ## Features
 
-- **AI Agent Analysis** — Claude Agent SDK orchestrates 17 MCP tools to query trace data, execute skills, and reason about performance issues
-- **148 Analysis Skills** — YAML-based declarative pipelines (87 atomic + 29 composite + 30 pipeline + 2 deep) with layered results (L1 overview → L4 deep root cause)
+- **AI Agent Analysis** — Claude Agent SDK orchestrates 20 MCP tools to query trace data, execute skills, and reason about performance issues
+- **146 Analysis Skills** — YAML-based declarative pipelines (87 atomic + 29 composite + 28 pipeline + 2 deep) with layered results (L1 overview → L4 deep root cause)
 - **12 Scene Strategies** — Scene-specific analysis playbooks (scrolling, startup, ANR, interaction, memory, game, and more)
 - **21 Jank Root Cause Codes** — Priority-ordered decision tree with dual-signal detection (present_type + present_ts interval)
 - **Multi-Architecture** — Standard HWUI, Flutter (TextureView/SurfaceView, Impeller/Skia), Jetpack Compose, WebView
@@ -112,15 +112,15 @@ SmartPerfetto works best with traces captured on **Android 12+** with these atra
 │  │    ├─ SSE Bridge (SDK stream → frontend events)           │   │
 │  │    └─ Verifier (4-layer) + Reflection Retry               │   │
 │  │                                                           │   │
-│  │  MCP Server (17 tools: 9 always-on + 8 conditional)       │   │
+│  │  MCP Server (20 tools: 9 always-on + 11 conditional)      │   │
 │  │    execute_sql │ invoke_skill │ detect_architecture       │   │
 │  │    lookup_sql_schema │ lookup_knowledge │ submit_plan     │   │
 │  │    submit_hypothesis │ fetch_artifact │ ...               │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
-│  │           Skill Engine (148 YAML Skills)                  │   │
-│  │   atomic/ (87) │ composite/ (29) │ pipelines/ (30) │ ... │   │
+│  │           Skill Engine (146 YAML Skills)                  │   │
+│  │   atomic/ (87) │ composite/ (29) │ pipelines/ (28) │ ... │   │
 │  └──────────────────────────────────────────────────────────┘   │
 │                                                                  │
 │  ┌──────────────────────────────────────────────────────────┐   │
@@ -134,7 +134,7 @@ SmartPerfetto works best with traces captured on **Android 12+** with these atra
 | Component | Purpose |
 |-----------|---------|
 | **ClaudeRuntime** | Main orchestrator: scene classification → dynamic system prompt → Claude Agent SDK → verification loop |
-| **MCP Server** | 17 tools bridging Claude to trace data (SQL, Skills, schema lookup, knowledge, planning, hypothesis) |
+| **MCP Server** | 20 tools bridging Claude to trace data (SQL, Skills, schema lookup, knowledge, planning, hypothesis, comparison) |
 | **Skill Engine** | Executes YAML-defined analysis pipelines with SQL queries, producing layered results (L1-L4) |
 | **Scene Classifier** | Keyword-based routing (<1ms) to scene-specific strategies (scrolling, startup, ANR, ...) |
 | **Verifier** | 4-layer quality check (heuristic + plan + hypothesis + LLM) with up to 2 reflection retries |
@@ -148,10 +148,10 @@ SmartPerfetto/
 ├── backend/
 │   ├── src/agentv3/        # AI runtime (Claude Agent SDK orchestrator)
 │   ├── src/services/       # Core services (trace processor, skill engine)
-│   ├── skills/             # 148 YAML analysis skills
+│   ├── skills/             # 146 YAML analysis skills
 │   │   ├── atomic/         #   Single-step detection (87)
 │   │   ├── composite/      #   Multi-step analysis (29)
-│   │   ├── pipelines/      #   Render pipeline detection (30)
+│   │   ├── pipelines/      #   Render pipeline detection (28)
 │   │   ├── deep/           #   Deep causal analysis (2)
 │   │   ├── modules/        #   Module configs (app/framework/hardware/kernel)
 │   │   └── vendors/        #   Vendor overrides (pixel/samsung/xiaomi/...)
@@ -239,10 +239,10 @@ curl http://localhost:3000/api/agent/v1/logs/{sessionId}
 ## Documentation
 
 - [Technical Architecture](docs/technical-architecture.md) — System design and extension guide
-- [MCP Tools Reference](docs/mcp-tools-reference.md) — 17 MCP tools with parameters and behavior
+- [MCP Tools Reference](docs/mcp-tools-reference.md) — 20 MCP tools with parameters and behavior
 - [Skill System Guide](docs/skill-system-guide.md) — YAML Skill DSL reference
 - [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.md) — DataEnvelope v2.0 specification
-- [Rendering Pipelines](docs/rendering_pipelines/) — 30 Android rendering pipeline reference docs
+- [Rendering Pipelines](docs/rendering_pipelines/) — 23 Android rendering pipeline reference docs
 
 ## Contributing
 
