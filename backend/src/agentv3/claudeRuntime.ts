@@ -133,8 +133,28 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Wrap sdkQuery with exponential backoff retry for transient API errors.
- * Only retries the initial call — mid-stream errors are handled by existing try/catch.
+ * Handle returned by sdkQueryWithRetry. `stream` is the (retry-wrapped)
+ * async iterable of SDK messages; `close()` aborts the underlying SDK
+ * subprocess and any in-flight MCP tool calls.
+ *
+ * Callers MUST invoke `close()` (typically from a timeout handler and as a
+ * `finally` safety net) to prevent zombie MCP tool executions from running
+ * after the session has been torn down.
+ */
+interface SdkQueryHandle {
+  stream: ReturnType<typeof sdkQuery>;
+  close: () => void;
+}
+
+/**
+ * Wrap sdkQuery with exponential backoff retry for transient API errors
+ * and expose a `close()` handle so timeout/abort paths can terminate the
+ * SDK subprocess instead of just breaking out of the `for await` loop.
+ *
+ * Without `close()`, a consumer that `break`s out of the iterator leaves
+ * the SDK free to continue executing queued MCP tool calls (e.g.
+ * `execute_sql`). Those "ghost" calls hit trace_processor after the
+ * session logger has closed, producing orphan errors no one handles.
  */
 function sdkQueryWithRetry(
   params: Parameters<typeof sdkQuery>[0],
@@ -143,23 +163,33 @@ function sdkQueryWithRetry(
     baseDelayMs?: number;
     emitUpdate?: (update: StreamingUpdate) => void;
   } = {},
-): ReturnType<typeof sdkQuery> {
+): SdkQueryHandle {
   const { maxRetries = 2, baseDelayMs = 2000, emitUpdate } = options;
+
+  // Tracks the Query instance currently being iterated so `close()` can
+  // forward termination to the underlying SDK subprocess across retries.
+  let currentQuery: ReturnType<typeof sdkQuery> | undefined;
+  let closed = false;
 
   // We can't directly retry an async iterable, so we use a generator wrapper.
   // On the first call to next(), we attempt sdkQuery. If it throws, we retry.
   async function* retryableStream() {
     let lastErr: Error | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      if (closed) return;
       try {
-        const stream = sdkQuery(params);
+        currentQuery = sdkQuery(params);
         // Yield all messages from the stream
-        for await (const msg of stream) {
+        for await (const msg of currentQuery) {
+          if (closed) return;
           yield msg;
         }
         return; // Success — exit generator
       } catch (err) {
         lastErr = err as Error;
+        // If the caller invoked close(), treat the resulting error as
+        // intentional termination rather than a retryable failure.
+        if (closed) return;
         if (isRetryableError(lastErr) && attempt < maxRetries) {
           const delay = baseDelayMs * Math.pow(2, attempt);
           console.warn(`[ClaudeRuntime] API error (attempt ${attempt + 1}/${maxRetries + 1}): ${lastErr.message}. Retrying in ${delay}ms...`);
@@ -177,7 +207,18 @@ function sdkQueryWithRetry(
     if (lastErr) throw lastErr;
   }
 
-  return retryableStream() as ReturnType<typeof sdkQuery>;
+  return {
+    stream: retryableStream() as ReturnType<typeof sdkQuery>,
+    close: () => {
+      if (closed) return; // Idempotent — safe to call from timeout handler AND finally.
+      closed = true;
+      try {
+        currentQuery?.close();
+      } catch (err) {
+        console.warn('[ClaudeRuntime] sdkQueryWithRetry close() failed (non-fatal):', (err as Error).message);
+      }
+    },
+  };
 }
 
 /**
@@ -337,7 +378,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       const sdkEnv = createSdkEnv();
 
-      const stream = sdkQueryWithRetry({
+      const { stream, close: closeSdk } = sdkQueryWithRetry({
         prompt: query,
         options: {
           model: this.config.model,
@@ -700,23 +741,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const timeoutPromise = new Promise<void>((_, reject) => {
         safetyTimer = setTimeout(() => {
           timedOut = true;
-          // Cancel the SDK stream to stop consuming API credits.
-          // Try async generator .return() first, then .abort() if available.
-          // Use .then/.catch instead of await (setTimeout callback is not async).
-          const cancelStream = () => {
-            try {
-              if (typeof (stream as any).return === 'function') {
-                const ret = (stream as any).return();
-                if (ret && typeof ret.catch === 'function') ret.catch(() => {});
-              }
-              if (typeof (stream as any).abort === 'function') {
-                (stream as any).abort();
-              }
-            } catch (cancelErr) {
-              console.warn('[ClaudeRuntime] Stream cancellation error (non-fatal):', (cancelErr as Error).message);
-            }
-          };
-          cancelStream();
+          // Forcefully terminate the SDK subprocess — without this, queued
+          // MCP tool calls (e.g. execute_sql) keep executing in the background
+          // after the session logger has closed, producing orphan SQL errors.
+          closeSdk();
           reject(new Error(`Analysis safety timeout after ${timeoutMs / 1000}s`));
         }, timeoutMs);
       });
@@ -725,7 +753,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         await Promise.race([processStream(), timeoutPromise]);
       } catch (err) {
         if (timedOut) {
-          console.error('[ClaudeRuntime] Analysis safety timeout reached — stream may still be active');
+          console.error('[ClaudeRuntime] Analysis safety timeout reached — SDK subprocess has been closed');
           this.emitUpdate({
             type: 'progress',
             content: { phase: 'concluding', message: '分析超时，正在生成已有结果的结论...' },
@@ -735,8 +763,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           throw err;
         }
       } finally {
-        // Clear the safety timer to prevent memory leak on normal completion
         if (safetyTimer) clearTimeout(safetyTimer);
+        closeSdk();
       }
 
       // Use SDK terminal result if available; fall back to accumulated streamed answer tokens.
@@ -840,7 +868,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 ? buildSystemPrompt(ctx.analysisContextForRebuild, 3000)
                 : ctx.systemPrompt;
 
-              const correctionStream = sdkQueryWithRetry({
+              const { stream: correctionStream, close: closeCorrection } = sdkQueryWithRetry({
                 prompt: correctionPrompt,
                 options: {
                   model: this.config.model,
@@ -870,6 +898,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               const correctionTimer = setTimeout(() => {
                 correctionTimedOut = true;
                 console.warn(`[ClaudeRuntime] Correction retry ${attempt + 1} timed out after ${correctionTimeoutMs}ms`);
+                // Forcefully terminate the SDK subprocess so any queued MCP
+                // tool calls (execute_sql, invoke_skill) stop running after
+                // the main analyze() flow has moved on. Without this, those
+                // calls hit trace_processor after the session has closed and
+                // surface as orphan SQL errors with no owner.
+                closeCorrection();
               }, correctionTimeoutMs);
 
               let correctedResult = '';
@@ -890,6 +924,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 }
               } finally {
                 clearTimeout(correctionTimer);
+                // Safety net: guarantee the correction SDK subprocess is
+                // closed on every exit (success, break, throw). Idempotent.
+                closeCorrection();
               }
 
               if (correctionTimedOut) {
@@ -1163,7 +1200,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const existingSdkSessionId = this.sessionMap.get(sessionMapKey)?.sdkSessionId;
       const sdkEnv = createSdkEnv();
 
-      const stream = sdkQueryWithRetry({
+      const { stream, close: closeSdk } = sdkQueryWithRetry({
         prompt: query,
         options: {
           model: quickConfig.model,
@@ -1195,12 +1232,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const timeoutPromise = new Promise<void>((_, reject) => {
         safetyTimer = setTimeout(() => {
           timedOut = true;
-          try {
-            if (typeof (stream as any).return === 'function') {
-              const ret = (stream as any).return();
-              if (ret && typeof ret.catch === 'function') ret.catch(() => {});
-            }
-          } catch { /* non-fatal */ }
+          // Forcefully terminate SDK subprocess so queued MCP tool calls
+          // stop running after analyzeQuick returns (prevents orphan queries).
+          closeSdk();
           reject(new Error(`Quick analysis timeout after ${timeoutMs / 1000}s`));
         }, timeoutMs);
       });
@@ -1230,12 +1264,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         await Promise.race([processStream(), timeoutPromise]);
       } catch (err) {
         if (timedOut) {
-          console.warn('[ClaudeRuntime] Quick analysis timeout reached');
+          console.warn('[ClaudeRuntime] Quick analysis timeout reached — SDK subprocess has been closed');
         } else {
           throw err;
         }
       } finally {
         if (safetyTimer) clearTimeout(safetyTimer);
+        closeSdk();
       }
 
       const conclusionText = finalResult || getAccumulatedAnswer() || '';
