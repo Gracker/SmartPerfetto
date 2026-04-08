@@ -131,8 +131,12 @@ export const DEFAULT_DOMAIN_MANIFEST: DomainManifest = {
     },
     {
       id: 'non_startup_scene',
-      sceneTypeGroups: ['all'],
-      excludeSceneTypes: ['cold_start', 'warm_start', 'hot_start'],
+      // Whitelist gesture-like scene types only. Earlier this rule used
+      // sceneTypeGroups: ['all'] with excludeSceneTypes for the three startup
+      // types, which would also catch idle / screen_on/off/sleep / app_switch
+      // / scroll_start and route them through scrolling_analysis — none of
+      // those scenes have a meaningful Stage 2 analysis path.
+      sceneTypeGroups: ['scroll', 'interaction'],
       agentId: 'frame_agent',
       domain: 'scroll',
       directSkillId: 'scrolling_analysis',

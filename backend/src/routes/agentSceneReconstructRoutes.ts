@@ -23,6 +23,7 @@ import { getTraceProcessorService } from '../services/traceProcessorService';
 import { SkillExecutor } from '../services/skillEngine/skillExecutor';
 import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skillEngine/skillLoader';
 import { getSceneDeepDiveRoute } from '../agent/config/domainManifest';
+import { SceneStoryService } from '../agent/scene/sceneStoryService';
 
 export interface SceneReconstructConversationStep {
   eventId: string;
@@ -66,6 +67,11 @@ interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSe
   streamProjector: StreamProjector;
   ensureToolsRegistered: () => void;
   getModelRouter: () => ModelRouter;
+  /**
+   * Legacy `/analyze`-style runner. Kept here for backward compatibility with
+   * the keyword-triggered path; the primary `/scene-reconstruct` POST handler
+   * now uses sceneStoryService.start() instead.
+   */
   runAgentDrivenAnalysis: (
     sessionId: string,
     query: string,
@@ -77,6 +83,8 @@ interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSe
   isSceneReplayOnlyQuery: (query: string) => boolean;
   buildSceneReplayNarrative: (scenes: any[]) => string;
   normalizeNarrativeForClient: (narrative: string) => string;
+  /** Scene-specific pipeline. Replaces runAgentDrivenAnalysis for /scene-reconstruct. */
+  sceneStoryService: SceneStoryService;
 }
 
 export function registerSceneReconstructRoutes<TSession extends SceneReconstructSession>(
@@ -165,13 +173,21 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       } as unknown as TSession;
       deps.assistantAppService.setSession(analysisId, session);
 
-      deps.runAgentDrivenAnalysis(analysisId, query, traceId, {
-        ...options,
-        generateTracks,
-        executeStateTimeline: true,
-        traceProcessorService,
-      }).catch((error) => {
-        console.error(`[AgentRoutes] Scene reconstruction (agent-driven) error for ${analysisId}:`, error);
+      // Drive scene reconstruction through the dedicated SceneStoryService
+      // instead of runAgentDrivenAnalysis. The SkillExecutor is created
+      // per-request because there's no module-level async init point in
+      // this codebase for the skill registry.
+      void (async () => {
+        await ensureSkillRegistryInitialized();
+        const skillExecutor = new SkillExecutor(traceProcessorService);
+        skillExecutor.registerSkills(skillRegistry.getAllSkills());
+        await deps.sceneStoryService.start({
+          sessionId: analysisId,
+          traceId,
+          skillExecutor,
+        });
+      })().catch((error) => {
+        console.error(`[AgentRoutes] Scene reconstruction (story pipeline) error for ${analysisId}:`, error);
         const currentSession = deps.assistantAppService.getSession(analysisId);
         if (currentSession) {
           currentSession.logger.error('AgentRoutes', 'Scene reconstruction failed', error);
@@ -184,6 +200,10 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
           });
         }
       });
+      // generateTracks is intentionally unused by the new pipeline; track
+      // lanes flow through the existing `data` SSE events emitted by
+      // SceneStoryService during Stage 1.
+      void generateTracks;
 
       res.json({
         success: true,
@@ -372,6 +392,27 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         error: error.message || 'Deep-dive analysis failed',
       });
     }
+  });
+
+  // User-requested cancel for an in-flight Scene Story run. Distinct from
+  // DELETE which tears down the whole session — cancel keeps the session
+  // and any partial results so the frontend can render whatever jobs
+  // already completed before the cancel landed.
+  router.post('/scene-reconstruct/:analysisId/cancel', (req, res) => {
+    const { analysisId } = req.params;
+    const session = deps.assistantAppService.getSession(analysisId);
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        error: 'Scene reconstruction session not found',
+      });
+    }
+    const cancelled = deps.sceneStoryService.cancel(analysisId);
+    res.json({
+      success: true,
+      cancelled,
+      sessionStatus: session.status,
+    });
   });
 
   router.delete('/scene-reconstruct/:analysisId', (req, res) => {

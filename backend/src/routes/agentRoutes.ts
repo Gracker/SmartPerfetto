@@ -42,6 +42,7 @@ import { resolveConclusionScene } from '../agent/core/conclusionSceneTemplates';
 import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { sanitizeNarrativeForClient } from './narrativeSanitizer';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
+import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { registerAgentLogsRoutes } from './agentLogsRoutes';
 import { registerAgentQuickSceneRoutes } from './agentQuickSceneRoutes';
 import { registerAgentReportRoutes } from './agentReportRoutes';
@@ -1527,6 +1528,14 @@ registerAgentResumeRoutes(router, {
 // Scene Reconstruction Endpoints
 // ============================================================================
 
+// Singleton — sceneStoryService holds per-session JobRunner state for cancel
+// lookup, so it must outlive a single request. SkillExecutor is still created
+// per-request inside the route handler.
+const sceneStoryService = new SceneStoryService({
+  broadcast: broadcastToAgentDrivenClients,
+  getSession: (id) => assistantAppService.getSession(id) as any,
+});
+
 registerSceneReconstructRoutes(router, {
   assistantAppService,
   streamProjector,
@@ -1538,6 +1547,7 @@ registerSceneReconstructRoutes(router, {
   isSceneReplayOnlyQuery,
   buildSceneReplayNarrative,
   normalizeNarrativeForClient,
+  sceneStoryService,
 });
 
 registerAgentQuickSceneRoutes(router, {
