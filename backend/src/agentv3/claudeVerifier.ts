@@ -748,6 +748,7 @@ function repairTruncatedJson(json: string): string {
 export async function verifyWithLLM(
   findings: Finding[],
   conclusion: string,
+  options?: { model?: string },
 ): Promise<VerificationIssue[] | undefined> {
   try {
     const findingSummary = findings
@@ -782,7 +783,7 @@ ${conclusionPreview}${truncationNote}
     const stream = sdkQuery({
       prompt,
       options: {
-        model: 'claude-haiku-4-5',
+        model: options?.model ?? 'claude-haiku-4-5',
         maxTurns: 1,
         permissionMode: 'bypassPermissions' as const,
         allowDangerouslySkipPermissions: true,
@@ -932,6 +933,8 @@ export async function verifyConclusion(
     plan?: AnalysisPlanV3 | null;
     hypotheses?: Hypothesis[];
     sceneType?: SceneType;
+    /** Override model for the LLM verification call. Defaults to 'claude-haiku-4-5'. */
+    lightModel?: string;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
@@ -974,7 +977,7 @@ export async function verifyConclusion(
 
   let llmIssues: VerificationIssue[] | undefined;
   if (enableLLM && !canSkipLLM) {
-    llmIssues = await verifyWithLLM(findings, conclusion);
+    llmIssues = await verifyWithLLM(findings, conclusion, { model: options.lightModel });
   } else if (enableLLM && canSkipLLM) {
     console.log(
       `[Verifier] LLM verification skipped: errors=${hasErrors}, highRiskWarnings=${hasHighRiskWarnings}, ` +

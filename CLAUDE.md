@@ -112,14 +112,18 @@ Note: agentv3 sends `conclusion` first (user sees result immediately), then `ana
 ## Environment
 
 ```bash
-# backend/.env
+# backend/.env — see .env.example for full provider list (GLM/DeepSeek/Qwen/Kimi/Doubao/OpenAI/Gemini/Ollama...)
 PORT=3000
-CLAUDE_MODEL=claude-sonnet-4-6          # Optional, default
-# CLAUDE_MAX_TURNS=15                   # Optional
-# CLAUDE_MAX_BUDGET_USD=5               # Optional, per-analysis budget cap
-# CLAUDE_EFFORT=high                    # Optional, SDK effort level
-# SMARTPERFETTO_API_KEY=xxx             # Optional, bearer token auth
-# AI_SERVICE=deepseek                   # Legacy agentv2 only
+ANTHROPIC_API_KEY=sk-ant-xxx              # Anthropic direct, or proxy auth token
+# ANTHROPIC_BASE_URL=http://localhost:3000 # Third-party LLM via API proxy (one-api/new-api/LiteLLM)
+CLAUDE_MODEL=claude-sonnet-4-6            # Optional, default (or provider model name via proxy)
+# CLAUDE_LIGHT_MODEL=claude-haiku-4-5     # Optional, for verifier/classifier/summarizer
+# CLAUDE_MAX_TURNS=15                     # Optional
+# CLAUDE_MAX_BUDGET_USD=5                 # Optional, per-analysis budget cap (Anthropic only)
+# CLAUDE_EFFORT=high                      # Optional, SDK effort level (Anthropic only)
+# CLAUDE_SUB_AGENT_MODEL=sonnet           # Optional, sub-agent model (haiku/sonnet/opus/inherit)
+# SMARTPERFETTO_API_KEY=xxx               # Optional, bearer token auth
+# AI_SERVICE=deepseek                     # Legacy agentv2 only
 
 # Agent safety limits (optional)
 # AGENT_SQL_MAX_ROWS=1000

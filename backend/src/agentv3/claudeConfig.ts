@@ -9,6 +9,10 @@ export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
 export interface ClaudeAgentConfig {
   model: string;
+  /** Lightweight model for auxiliary single-turn calls (verifier, classifier, summarizer).
+   *  When using a third-party proxy that maps only one model, set CLAUDE_LIGHT_MODEL
+   *  to the same value as CLAUDE_MODEL so all SDK calls route to the same endpoint. */
+  lightModel: string;
   maxTurns: number;
   maxBudgetUsd?: number;
   cwd: string;
@@ -19,9 +23,13 @@ export interface ClaudeAgentConfig {
   enableVerification: boolean;
   /** Per sub-agent timeout in ms. Sub-agents exceeding this are stopped via stopTask(). Default: 120000 (2min) */
   subAgentTimeoutMs: number;
+  /** Sub-agent model shorthand. Defaults to 'sonnet'.
+   *  Accepted values: 'haiku' | 'sonnet' | 'opus' | 'inherit' (inherit orchestrator model). */
+  subAgentModel?: 'inherit' | 'haiku' | 'sonnet' | 'opus';
 }
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEFAULT_LIGHT_MODEL = 'claude-haiku-4-5';
 // Scrolling pipeline: 1 time-range + 1 scrolling_analysis + 2-3 deep-drill (blocking_chain/binder_root_cause)
 // + 1-2 jank_frame_detail + hypothesis submit/resolve + conclusion = ~20-25 turns
 const DEFAULT_MAX_TURNS = 30;
@@ -30,6 +38,7 @@ const DEFAULT_EFFORT: EffortLevel = 'high';
 export function loadClaudeConfig(overrides?: Partial<ClaudeAgentConfig>): ClaudeAgentConfig {
   return {
     model: overrides?.model ?? process.env.CLAUDE_MODEL ?? DEFAULT_MODEL,
+    lightModel: process.env.CLAUDE_LIGHT_MODEL ?? DEFAULT_LIGHT_MODEL,
     maxTurns: overrides?.maxTurns
       ?? (process.env.CLAUDE_MAX_TURNS ? parseInt(process.env.CLAUDE_MAX_TURNS, 10) : DEFAULT_MAX_TURNS),
     maxBudgetUsd: overrides?.maxBudgetUsd
@@ -40,6 +49,7 @@ export function loadClaudeConfig(overrides?: Partial<ClaudeAgentConfig>): Claude
     enableVerification: overrides?.enableVerification ?? (process.env.CLAUDE_ENABLE_VERIFICATION !== 'false'),
     subAgentTimeoutMs: overrides?.subAgentTimeoutMs
       ?? (process.env.CLAUDE_SUB_AGENT_TIMEOUT_MS ? parseInt(process.env.CLAUDE_SUB_AGENT_TIMEOUT_MS, 10) : 120_000),
+    subAgentModel: (process.env.CLAUDE_SUB_AGENT_MODEL as ClaudeAgentConfig['subAgentModel']) || undefined,
   };
 }
 

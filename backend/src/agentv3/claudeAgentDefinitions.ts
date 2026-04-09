@@ -53,6 +53,10 @@ export interface SubAgentContext {
   packageName?: string;
   /** Full allowedTools from createClaudeMcpServer — sub-agent tools are derived from this. */
   allowedTools?: string[];
+  /** Override sub-agent model shorthand. Defaults to 'sonnet'.
+   *  Accepted values: 'haiku' | 'sonnet' | 'opus' | 'inherit' (inherit from orchestrator).
+   *  When using a third-party proxy, the proxy maps these shorthands to actual model names. */
+  subAgentModel?: AgentDefinition['model'];
 }
 
 /**
@@ -123,7 +127,7 @@ ${archGuidance}
 - 使用中文输出
 - 每个发现标注严重程度 [CRITICAL]/[HIGH]/[MEDIUM]/[LOW]/[INFO]`,
     tools: subAgentTools,
-    model: 'sonnet',
+    model: ctx?.subAgentModel ?? 'sonnet',
     maxTurns: 8,
   };
 }
@@ -159,7 +163,7 @@ ${archGuidance}
 - 使用中文输出
 - 每个发现标注严重程度 [CRITICAL]/[HIGH]/[MEDIUM]/[LOW]/[INFO]`,
     tools: subAgentTools,
-    model: 'sonnet',
+    model: ctx?.subAgentModel ?? 'sonnet',
     maxTurns: 8,
   };
 }
@@ -192,7 +196,7 @@ ${archGuidance}
 - 使用中文输出
 - 每个发现标注严重程度 [CRITICAL]/[HIGH]/[MEDIUM]/[LOW]/[INFO]`,
     tools: subAgentTools,
-    model: 'sonnet',
+    model: ctx?.subAgentModel ?? 'sonnet',
     maxTurns: 8,
   };
 }

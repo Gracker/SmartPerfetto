@@ -317,7 +317,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Run classifier in parallel with focus app detection
       const cachedArch = this.architectureCache.get(traceId);
       const [classifierResult, focusResult] = await Promise.all([
-        classifyQueryComplexity(classifierInput),
+        classifyQueryComplexity(classifierInput, this.config),
         detectFocusApps(this.traceProcessorService, traceId).catch((err) => {
           console.warn('[ClaudeRuntime] Focus app detection failed (graceful):', (err as Error).message);
           return { apps: [], primaryApp: undefined, method: 'none' as const };
@@ -813,6 +813,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               plan: ctx.analysisPlan.current,
               hypotheses: ctx.hypotheses,
               sceneType: ctx.sceneType,
+              lightModel: this.config.lightModel,
             });
             console.log(`[ClaudeRuntime] Verification (attempt ${attempt + 1}): ${verification.passed ? 'PASSED' : 'ISSUES FOUND'} (${verification.durationMs}ms, ${verification.heuristicIssues.length} heuristic + ${verification.llmIssues?.length || 0} LLM issues)`);
 
@@ -1897,6 +1898,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         architecture,
         packageName: effectivePackageName,
         allowedTools,
+        subAgentModel: this.config.subAgentModel,
       });
     }
 

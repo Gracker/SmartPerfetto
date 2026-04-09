@@ -17,7 +17,7 @@ Load a Perfetto trace, ask a question in natural language, and get structured, e
 
 ## Features
 
-- **AI Agent Analysis** — Claude Agent SDK orchestrates 20 MCP tools to query trace data, execute skills, and reason about performance issues
+- **AI Agent Analysis** — Claude Agent SDK orchestrates 20 MCP tools to query trace data, execute skills, and reason about performance issues. Supports [third-party LLMs](#use-with-other-llm-providers) (GLM, DeepSeek, Qwen, Kimi, OpenAI, Gemini, etc.) via API proxy
 - **146 Analysis Skills** — YAML-based declarative pipelines (87 atomic + 29 composite + 28 pipeline + 2 deep) with layered results (L1 overview → L4 deep root cause)
 - **12 Scene Strategies** — Scene-specific analysis playbooks (scrolling, startup, ANR, interaction, memory, game, and more)
 - **21 Jank Root Cause Codes** — Priority-ordered decision tree with dual-signal detection (present_type + present_ts interval)
@@ -38,7 +38,7 @@ git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
-# Edit backend/.env — set ANTHROPIC_API_KEY
+# Edit backend/.env — set ANTHROPIC_API_KEY (or configure a third-party LLM, see below)
 
 docker compose up --build
 ```
@@ -53,14 +53,14 @@ Full development environment with hot reload and debugging.
 - Node.js 18+ (`node -v`)
 - Python 3 (Perfetto build tools)
 - C++ toolchain — macOS: `xcode-select --install` / Linux: `sudo apt install build-essential python3`
-- Anthropic API key — [console.anthropic.com](https://console.anthropic.com/)
+- LLM API key — [Anthropic](https://console.anthropic.com/) (recommended), or any [supported LLM provider](#use-with-other-llm-providers)
 
 ```bash
 git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
-# Edit backend/.env — set ANTHROPIC_API_KEY
+# Edit backend/.env — set ANTHROPIC_API_KEY (or configure a third-party LLM, see below)
 
 # First-time setup (builds trace_processor_shell, ~3-5 min)
 ./scripts/start-dev.sh
@@ -88,6 +88,64 @@ SmartPerfetto works best with traces captured on **Android 12+** with these atra
 | Scrolling | `gfx`, `view`, `input`, `sched` | `binder_driver`, `freq`, `disk` |
 | Startup | `am`, `dalvik`, `wm`, `sched` | `binder_driver`, `freq`, `disk` |
 | ANR | `am`, `wm`, `sched`, `binder_driver` | `dalvik`, `disk` |
+
+## Use with Other LLM Providers
+
+SmartPerfetto works with **any LLM that supports function calling** — not just Claude. Connect to Chinese LLM providers, OpenAI, Google Gemini, or local models via an API proxy.
+
+### How It Works
+
+The Claude Agent SDK accepts an `ANTHROPIC_BASE_URL` environment variable. Point it at an API proxy that translates Anthropic Messages API format to the provider's OpenAI-compatible API:
+
+```
+SmartPerfetto → Claude Agent SDK → ANTHROPIC_BASE_URL → API Proxy → LLM Provider
+```
+
+### Setup
+
+1. **Deploy an API proxy** that supports Anthropic-to-OpenAI format translation:
+   - [one-api](https://github.com/songquanpeng/one-api) — popular, supports 50+ providers
+   - [new-api](https://github.com/Calcium-Ion/new-api) — one-api fork with more features
+   - [LiteLLM](https://github.com/BerriAI/litellm) — Python-based, Anthropic format support
+
+2. **Configure the proxy** with your provider's API key and endpoint
+
+3. **Edit `backend/.env`** — uncomment the provider block in `.env.example`:
+
+```bash
+# Point at your proxy
+ANTHROPIC_BASE_URL=http://localhost:3000
+ANTHROPIC_API_KEY=sk-proxy-xxx
+
+# Set model names (must match what the proxy expects)
+CLAUDE_MODEL=glm-4-plus
+CLAUDE_LIGHT_MODEL=glm-4-flash
+```
+
+### Supported Providers
+
+| Provider | Main Model | Light Model | Proxy Backend URL |
+|----------|-----------|-------------|-------------------|
+| **GLM (智谱AI)** | `glm-4-plus` | `glm-4-flash` | `https://open.bigmodel.cn/api/paas/v4` |
+| **DeepSeek** | `deepseek-chat` | `deepseek-chat` | `https://api.deepseek.com/v1` |
+| **Qwen (通义千问)** | `qwen-max` | `qwen-turbo` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **Kimi (月之暗面)** | `moonshot-v1-128k` | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` |
+| **Doubao (豆包)** | `ep-xxx` (endpoint ID) | `ep-xxx` | `https://ark.cn-beijing.volces.com/api/v3` |
+| **Minimax** | `abab6.5s-chat` | `abab5.5-chat` | `https://api.minimax.chat/v1` |
+| **Baichuan (百川)** | `Baichuan4` | `Baichuan3-Turbo` | `https://api.baichuan-ai.com/v1` |
+| **Hunyuan (腾讯混元)** | `hunyuan-pro` | `hunyuan-lite` | `https://api.hunyuan.cloud.tencent.com/v1` |
+| **OpenAI** | `gpt-4o` | `gpt-4o-mini` | `https://api.openai.com/v1` |
+| **Google Gemini** | `gemini-2.5-pro` | `gemini-2.0-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **Ollama (local)** | `qwen2.5:72b` | `qwen2.5:7b` | `http://localhost:11434/v1` |
+
+See [`backend/.env.example`](backend/.env.example) for complete configuration examples with console URLs and notes.
+
+### Notes
+
+- **`CLAUDE_LIGHT_MODEL`** is used for auxiliary single-turn calls (query classification, conclusion verification, scene summarization). If your proxy only maps one model, set it to the same value as `CLAUDE_MODEL`.
+- **Sub-agents** (`CLAUDE_ENABLE_SUB_AGENTS`) are disabled by default for all users (research preview in the Claude Agent SDK). When enabled, the SDK internally resolves model shorthands like `'sonnet'` → `'claude-sonnet-4-6'` and makes separate API calls — these go through your proxy. Whether it works depends on your proxy's Anthropic format translation fidelity. If you want to try it, set `CLAUDE_ENABLE_SUB_AGENTS=true` and ensure your proxy maps Anthropic model names correctly.
+- **Extended thinking** (`CLAUDE_EFFORT`) is a Claude-specific feature. Non-Claude providers will ignore it.
+- **Function calling quality** varies by provider. Models with strong function calling (GLM-4, DeepSeek V3, Qwen-Max, GPT-4o) work best with SmartPerfetto's 20-tool MCP server.
 
 ## Architecture
 

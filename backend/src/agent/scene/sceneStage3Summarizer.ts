@@ -18,7 +18,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv } from '../../agentv3/claudeConfig';
+import { createSdkEnv, loadClaudeConfig } from '../../agentv3/claudeConfig';
 import {
   DisplayedScene,
   SceneAnalysisJob,
@@ -29,7 +29,6 @@ export interface Stage3SummaryInput {
   jobs: SceneAnalysisJob[];
 }
 
-const HAIKU_MODEL = 'claude-haiku-4-5';
 const HAIKU_TIMEOUT_MS = 60_000;
 
 /**
@@ -50,7 +49,7 @@ export async function runStage3Summary(
     const stream = sdkQuery({
       prompt,
       options: {
-        model: HAIKU_MODEL,
+        model: loadClaudeConfig().lightModel,
         maxTurns: 1,
         permissionMode: 'bypassPermissions' as const,
         allowDangerouslySkipPermissions: true,

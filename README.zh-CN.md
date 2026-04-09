@@ -12,7 +12,7 @@
 
 ## 核心能力
 
-- **AI Agent 分析** — Claude Agent SDK 编排 20 个 MCP 工具，查询 trace 数据、执行分析 Skill、推理性能问题
+- **AI Agent 分析** — Claude Agent SDK 编排 20 个 MCP 工具，查询 trace 数据、执行分析 Skill、推理性能问题。支持通过 API 代理接入[第三方大模型](#接入第三方大模型)（GLM、DeepSeek、Qwen、Kimi、OpenAI、Gemini 等）
 - **146 个分析 Skill** — 基于 YAML 的声明式分析管线（87 原子 + 29 组合 + 28 管线 + 2 深度），四层结果（L1 概览 → L4 深度根因）
 - **12 种场景策略** — 场景专属分析剧本（滑动、启动、ANR、交互、内存、游戏等）
 - **21 种卡顿根因码** — 优先级排序的决策树，双信号检测（present_type + present_ts interval）
@@ -33,7 +33,7 @@ git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
-# 编辑 backend/.env — 设置 ANTHROPIC_API_KEY
+# 编辑 backend/.env — 设置 ANTHROPIC_API_KEY（或配置第三方大模型，见下文）
 
 docker compose up --build
 ```
@@ -48,14 +48,14 @@ docker compose up --build
 - Node.js 18+（`node -v`）
 - Python 3（Perfetto 构建工具依赖）
 - C++ 工具链 — macOS: `xcode-select --install` / Linux: `sudo apt install build-essential python3`
-- Anthropic API Key — [console.anthropic.com](https://console.anthropic.com/)
+- 大模型 API Key — [Anthropic](https://console.anthropic.com/)（推荐），或任意[支持的第三方大模型](#接入第三方大模型)
 
 ```bash
 git clone --recursive https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
 
 cp backend/.env.example backend/.env
-# 编辑 backend/.env — 设置 ANTHROPIC_API_KEY
+# 编辑 backend/.env — 设置 ANTHROPIC_API_KEY（或配置第三方大模型，见下文）
 
 # 首次启动（自动编译 trace_processor_shell，约 3-5 分钟）
 ./scripts/start-dev.sh
@@ -83,6 +83,64 @@ SmartPerfetto 在 **Android 12+** 设备上捕获的 trace 效果最佳：
 | 滑动 | `gfx`, `view`, `input`, `sched` | `binder_driver`, `freq`, `disk` |
 | 启动 | `am`, `dalvik`, `wm`, `sched` | `binder_driver`, `freq`, `disk` |
 | ANR | `am`, `wm`, `sched`, `binder_driver` | `dalvik`, `disk` |
+
+## 接入第三方大模型
+
+SmartPerfetto 支持**任何具备函数调用（Function Calling）能力的大模型** — 不仅限于 Claude。你可以通过 API 代理接入国内大模型、OpenAI、Google Gemini 或本地模型。
+
+### 原理
+
+Claude Agent SDK 支持 `ANTHROPIC_BASE_URL` 环境变量。将其指向一个 API 代理，由代理将 Anthropic Messages API 格式转换为目标厂商的 OpenAI 兼容 API：
+
+```
+SmartPerfetto → Claude Agent SDK → ANTHROPIC_BASE_URL → API 代理 → 大模型厂商
+```
+
+### 配置步骤
+
+1. **部署 API 代理**（支持 Anthropic → OpenAI 格式转换）：
+   - [one-api](https://github.com/songquanpeng/one-api) — 最流行，支持 50+ 厂商
+   - [new-api](https://github.com/Calcium-Ion/new-api) — one-api 增强版
+   - [LiteLLM](https://github.com/BerriAI/litellm) — Python，原生 Anthropic 格式支持
+
+2. **在代理中配置**目标厂商的 API Key 和 endpoint
+
+3. **编辑 `backend/.env`** — 取消注释 `.env.example` 中对应厂商的配置块：
+
+```bash
+# 指向你的代理
+ANTHROPIC_BASE_URL=http://localhost:3000
+ANTHROPIC_API_KEY=sk-proxy-xxx
+
+# 设置模型名（需与代理中配置的一致）
+CLAUDE_MODEL=glm-4-plus
+CLAUDE_LIGHT_MODEL=glm-4-flash
+```
+
+### 支持的厂商
+
+| 厂商 | 主力模型 | 轻量模型 | 代理后端 URL |
+|------|---------|---------|-------------|
+| **智谱 GLM** | `glm-4-plus` | `glm-4-flash` | `https://open.bigmodel.cn/api/paas/v4` |
+| **DeepSeek** | `deepseek-chat` | `deepseek-chat` | `https://api.deepseek.com/v1` |
+| **通义千问 Qwen** | `qwen-max` | `qwen-turbo` | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| **月之暗面 Kimi** | `moonshot-v1-128k` | `moonshot-v1-8k` | `https://api.moonshot.cn/v1` |
+| **豆包 Doubao** | `ep-xxx`（接入点 ID） | `ep-xxx` | `https://ark.cn-beijing.volces.com/api/v3` |
+| **Minimax** | `abab6.5s-chat` | `abab5.5-chat` | `https://api.minimax.chat/v1` |
+| **百川 Baichuan** | `Baichuan4` | `Baichuan3-Turbo` | `https://api.baichuan-ai.com/v1` |
+| **腾讯混元** | `hunyuan-pro` | `hunyuan-lite` | `https://api.hunyuan.cloud.tencent.com/v1` |
+| **OpenAI** | `gpt-4o` | `gpt-4o-mini` | `https://api.openai.com/v1` |
+| **Google Gemini** | `gemini-2.5-pro` | `gemini-2.0-flash` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| **Ollama（本地）** | `qwen2.5:72b` | `qwen2.5:7b` | `http://localhost:11434/v1` |
+
+完整配置示例（含各厂商控制台 URL 和特殊说明）见 [`backend/.env.example`](backend/.env.example)。
+
+### 注意事项
+
+- **`CLAUDE_LIGHT_MODEL`** 用于辅助的单轮调用（查询分类、结论验证、场景摘要）。如果代理只映射了一个模型，设为与 `CLAUDE_MODEL` 相同即可。
+- **Sub-agent**（`CLAUDE_ENABLE_SUB_AGENTS`）默认对所有用户关闭（Claude Agent SDK 中仍处于 research preview 阶段）。开启后，SDK 内部会将模型缩写（如 `'sonnet'` → `'claude-sonnet-4-6'`）解析为完整模型名并发起独立 API 调用 — 这些调用同样经过你的代理。能否正常工作取决于代理的 Anthropic 格式转换保真度。如果想尝试，设置 `CLAUDE_ENABLE_SUB_AGENTS=true` 并确保代理正确映射了 Anthropic 模型名。
+- **Extended Thinking**（`CLAUDE_EFFORT`）是 Claude 专有特性，非 Claude 厂商会忽略此参数。
+- **Function Calling 质量**因厂商而异。Function Calling 能力较强的模型（GLM-4、DeepSeek V3、Qwen-Max、GPT-4o）与 SmartPerfetto 的 20 工具 MCP Server 配合效果最佳。
 
 ## 架构
 

@@ -15,7 +15,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv } from './claudeConfig';
+import { createSdkEnv, type ClaudeAgentConfig } from './claudeConfig';
 import { loadPromptTemplate, renderTemplate } from './strategyLoader';
 import type { ComplexityClassifierInput, QueryComplexity } from './types';
 
@@ -27,6 +27,7 @@ const DETERMINISTIC_SCENES = new Set(['scrolling', 'startup', 'anr', 'interactio
  */
 export async function classifyQueryComplexity(
   input: ComplexityClassifierInput,
+  config?: Pick<ClaudeAgentConfig, 'lightModel'>,
 ): Promise<{ complexity: QueryComplexity; reason: string; source: 'hard_rule' | 'ai' }> {
   const hardResult = applyHardRules(input);
   if (hardResult) {
@@ -35,7 +36,7 @@ export async function classifyQueryComplexity(
   }
 
   try {
-    const aiResult = await classifyWithHaiku(input.query);
+    const aiResult = await classifyWithHaiku(input.query, config?.lightModel);
     console.log(`[ComplexityClassifier] AI → ${aiResult.complexity}: ${aiResult.reason}`);
     return { ...aiResult, source: 'ai' };
   } catch (err) {
@@ -75,6 +76,7 @@ function applyHardRules(
  */
 async function classifyWithHaiku(
   query: string,
+  model?: string,
 ): Promise<{ complexity: QueryComplexity; reason: string }> {
   const template = loadPromptTemplate('prompt-complexity-classifier');
   const prompt = template
@@ -84,7 +86,7 @@ async function classifyWithHaiku(
   const stream = sdkQuery({
     prompt,
     options: {
-      model: 'claude-haiku-4-5',
+      model: model ?? 'claude-haiku-4-5',
       maxTurns: 1,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
