@@ -280,6 +280,9 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
           sessionId: analysisId,
           traceId,
           skillExecutor,
+          options: {
+            forceRefresh: options.forceRefresh ?? false,
+          },
         });
       })().catch((error) => {
         console.error(`[AgentRoutes] Scene reconstruction (story pipeline) error for ${analysisId}:`, error);

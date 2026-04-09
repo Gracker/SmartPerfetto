@@ -1717,16 +1717,29 @@ async function detectStartups(
   tps: ReturnType<typeof getTraceProcessorService>,
   traceId: string,
 ): Promise<DetectedScene[]> {
+  // Reclassify startup_type: platform may report 'warm' even when
+  // bindApplication exists (process killed + ActivityRecord survives).
   const result = await tps.query(traceId, `
     SELECT
-      ts,
-      dur,
-      package,
-      startup_type,
-      CAST(dur / 1000000 AS INT) AS dur_ms
-    FROM android_startups
-    WHERE dur > 0
-    ORDER BY ts
+      s.ts,
+      s.dur,
+      s.package,
+      CASE
+        WHEN EXISTS (
+          SELECT 1 FROM android_startup_threads st
+          JOIN thread_track tt ON tt.utid = st.utid
+          JOIN slice sl ON sl.track_id = tt.id
+          WHERE st.startup_id = s.startup_id
+            AND st.is_main_thread = 1
+            AND sl.name = 'bindApplication'
+            AND sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur
+        ) THEN 'cold'
+        ELSE s.startup_type
+      END AS startup_type,
+      CAST(s.dur / 1000000 AS INT) AS dur_ms
+    FROM android_startups s
+    WHERE s.dur > 0
+    ORDER BY s.ts
   `);
 
   const scenes: DetectedScene[] = [];

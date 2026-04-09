@@ -282,7 +282,20 @@ steps:
           s.ts,
           s.dur,
           s.package AS activity_name,
-          'startup (' || s.startup_type || ')' AS lifecycle_event
+          'startup (' ||
+            CASE
+              WHEN EXISTS (
+                SELECT 1 FROM android_startup_threads st
+                JOIN thread_track tt ON tt.utid = st.utid
+                JOIN slice sl ON sl.track_id = tt.id
+                WHERE st.startup_id = s.startup_id
+                  AND st.is_main_thread = 1
+                  AND sl.name = 'bindApplication'
+                  AND sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur
+              ) THEN 'cold'
+              ELSE s.startup_type
+            END
+          || ')' AS lifecycle_event
         FROM android_startups s
         WHERE s.dur > 0
           AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_startups')
@@ -977,12 +990,33 @@ steps:
         SELECT 1 AS dummy WHERE EXISTS (
           SELECT 1 FROM sqlite_master WHERE type='table' AND name='android_startups'
         )
+      ),
+      -- Reclassify startup_type: platform may report 'warm' even when
+      -- bindApplication exists (process killed + ActivityRecord survives).
+      -- bindApplication on main thread = cold start, period.
+      validated_startups AS (
+        SELECT
+          s.*,
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM android_startup_threads st
+              JOIN thread_track tt ON tt.utid = st.utid
+              JOIN slice sl ON sl.track_id = tt.id
+              WHERE st.startup_id = s.startup_id
+                AND st.is_main_thread = 1
+                AND sl.name = 'bindApplication'
+                AND sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur
+            ) THEN 'cold'
+            ELSE s.startup_type
+          END AS validated_type
+        FROM android_startups s
+        WHERE s.dur > 0
       )
       SELECT
         s.startup_id,
         printf('%d', s.ts) AS ts,
         printf('%d', s.dur) AS dur,
-        CASE s.startup_type
+        CASE s.validated_type
           WHEN 'cold' THEN '冷启动'
           WHEN 'warm' THEN '温启动'
           WHEN 'hot' THEN '热启动'
@@ -990,13 +1024,12 @@ steps:
         END || ' ' ||
         REPLACE(REPLACE(s.package, 'com.', ''), 'android.', '') ||
         ' [' || CAST(s.dur / 1000000 AS INT) || 'ms]' AS event,
-        s.startup_type,
+        s.validated_type AS startup_type,
         s.package,
         NULL AS ttid_ms,
         NULL AS ttfd_ms,
         'app_launch' AS category
-      FROM android_startups s
-      WHERE s.dur > 0
+      FROM validated_startups s
       ORDER BY s.ts
       LIMIT 50
     save_as: launches
@@ -1556,13 +1589,29 @@ steps:
         FROM android_screen_state WHERE dur > 0
         LIMIT 30
       ),
-      -- App launches
+      -- App launches (reclassify: bindApplication on main thread → cold)
+      launch_validated AS (
+        SELECT s.ts, s.dur, s.package, s.startup_id,
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM android_startup_threads st
+              JOIN thread_track tt ON tt.utid = st.utid
+              JOIN slice sl ON sl.track_id = tt.id
+              WHERE st.startup_id = s.startup_id
+                AND st.is_main_thread = 1
+                AND sl.name = 'bindApplication'
+                AND sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur
+            ) THEN 'cold'
+            ELSE s.startup_type
+          END AS startup_type
+        FROM android_startups s WHERE s.dur > 0
+      ),
       launch_ev AS (
         SELECT ts,
           CASE startup_type WHEN 'cold' THEN '冷启动' WHEN 'warm' THEN '温启动' WHEN 'hot' THEN '热启动'
             ELSE '启动' END || ' ' || package || ' [' || CAST(dur / 1000000 AS INT) || 'ms]' AS event,
           'app_launch' AS category, 2 AS priority
-        FROM android_startups WHERE dur > 0
+        FROM launch_validated
         LIMIT 30
       ),
       -- Top-app switches
@@ -1743,7 +1792,26 @@ steps:
         )
       ),
       -- Screen state removed: now shown in dedicated Device State lane (state_timeline skill)
-      -- ========== 数据源 1: App 启动 ==========
+      -- ========== 数据源 1: App 启动 (reclassify: bindApplication → cold) ==========
+      launch_type_validated AS (
+        SELECT
+          s.ts, s.dur, s.package, s.startup_id,
+          CASE
+            WHEN EXISTS (
+              SELECT 1 FROM android_startup_threads st
+              JOIN thread_track tt ON tt.utid = st.utid
+              JOIN slice sl ON sl.track_id = tt.id
+              WHERE st.startup_id = s.startup_id
+                AND st.is_main_thread = 1
+                AND sl.name = 'bindApplication'
+                AND sl.ts + sl.dur > st.ts AND sl.ts < st.ts + st.dur
+            ) THEN 'cold'
+            ELSE s.startup_type
+          END AS startup_type
+        FROM android_startups s
+        WHERE s.dur > 0
+          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_startups')
+      ),
       launch_ev AS (
         SELECT
           s.ts,
@@ -1765,9 +1833,7 @@ steps:
           s.package AS app_package,
           'app_launch' AS category,
           2 AS priority
-        FROM android_startups s
-        WHERE s.dur > 0
-          AND EXISTS (SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='android_startups')
+        FROM launch_type_validated s
         LIMIT 30
       ),
       -- ========== 数据源 3: 用户手势 (tap/scroll/long_press) ==========

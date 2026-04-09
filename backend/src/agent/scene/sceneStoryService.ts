@@ -114,6 +114,8 @@ export interface SceneStoryStartArgs {
 export interface SceneStoryStartOptions {
   /** Override the analysis cap; defaults to a heuristic based on trace length. */
   analysisCap?: number;
+  /** Skip cache lookup and run a fresh pipeline. */
+  forceRefresh?: boolean;
 }
 
 /**
@@ -158,7 +160,8 @@ export class SceneStoryService {
    * wraps it for safety).
    */
   async start(args: SceneStoryStartArgs): Promise<void> {
-    const { sessionId, traceId, skillExecutor } = args;
+    const { sessionId, traceId, skillExecutor, options } = args;
+    const forceRefresh = options?.forceRefresh ?? false;
     const session = this.deps.getSession(sessionId);
     if (!session) {
       throw new Error(`SceneStoryService.start: session ${sessionId} not found`);
@@ -187,16 +190,18 @@ export class SceneStoryService {
       // RPC traces skip the hash and check the memory cache by traceId.
       traceHash = await this.deps.computeHash(traceId);
 
-      // Disk (by hash) or memory (by traceId) cache lookup.
-      const cached = await this.lookupCachedReport(traceHash, traceId);
-      if (cached) {
-        this.emitCachedReport(sessionId, session, cached);
-        return;
+      if (!forceRefresh) {
+        // Disk (by hash) or memory (by traceId) cache lookup.
+        const cached = await this.lookupCachedReport(traceHash, traceId);
+        if (cached) {
+          this.emitCachedReport(sessionId, session, cached);
+          return;
+        }
       }
 
       // 3) In-flight pipeline dedupe — only file-backed traces have a hash
       // key, so concurrent RPC requests fall through and run independently.
-      if (traceHash) {
+      if (traceHash && !forceRefresh) {
         const inFlight = this.pendingByHash.get(traceHash);
         if (inFlight) {
           const shared = await inFlight;
