@@ -62,7 +62,9 @@ export class SceneStage1Runner {
     traceId: string,
     onEnvelope?: (env: DataEnvelope) => void,
   ): Promise<Stage1RunResult> {
-    const rawResult = await this.deps.execute('scene_reconstruction', traceId, {});
+    const rawResult = await this.deps.execute('scene_reconstruction', traceId, {
+      trace_id: traceId,
+    });
 
     if (!rawResult.success) {
       throw new Error(
