@@ -293,7 +293,7 @@ Claude 想调用工具
 | `phases[].expectedTools` | string[] | 是 | 预期使用的工具列表 |
 | `successCriteria` | string | 是 | 整体成功标准 |
 
-**场景模板验证：** 提交后会检查计划是否覆盖当前场景的必查项：
+**场景模板验证（hard-gate）：** 提交后会检查计划是否覆盖当前场景的必查项：
 
 | 场景 | 必查项 |
 |------|--------|
@@ -301,14 +301,20 @@ Claude 想调用工具
 | startup | 启动时间 + 阶段分解 + 启动类型验证 |
 | anr | ANR 原因定位 |
 | teaching | 架构检测 + 管线教学 |
+| pipeline | 架构检测 + 管线展示 |
+| scroll_response | 输入事件定位 + 延迟分解 |
+| memory | 内存使用趋势/GC 分析 |
+| game | 帧率分析/GPU 状态 |
+| overview | 场景检测 + 深钻 |
+| touch-tracking | 逐帧 Input-to-Display 延迟 |
 
-缺少必查项时返回 `sceneWarnings` 提示修订。
+**行为：** 第 1 次提交缺少必查项 → 返回 `success: false` + `missingAspects`（hard-gate 拒绝）。第 2 次提交无论如何接受（防止死循环）。
 
 ---
 
 ### 10. update_plan_phase
 
-更新阶段状态。
+更新阶段状态。**同时执行 Restatement 注入**——当存在下一个 pending 阶段时，response 会携带该阶段的关键约束和推荐工具（从 strategy frontmatter 的 `phase_hints` 加载），利用 tool response 在上下文末尾的高注意力位置重申策略约束。
 
 | 参数 | 类型 | 必填 | 说明 |
 |------|------|------|------|
@@ -317,6 +323,16 @@ Claude 想调用工具
 | `summary` | string | 否* | 完成/跳过时**必填**：关键证据或原因 |
 
 *summary 不足 15 字时返回质量警告。
+
+**Restatement 响应字段（自动注入）：**
+
+| 字段 | 说明 |
+|------|------|
+| `next_phase_reminder.constraints` | 下一阶段的关键约束（从 strategy `phase_hints` 匹配） |
+| `next_phase_reminder.criticalTools` | 下一阶段推荐的核心工具 |
+| `next.expectedTools` | 无 hint 匹配时的 fallback：phase 自身声明的预期工具 |
+
+匹配逻辑：先按 `phase_hints[].keywords` 关键词匹配 → 匹配失败时 unconditional fallback 到下一个 `critical: true` 的未覆盖 hint。
 
 ---
 

@@ -42,6 +42,23 @@ keywords:
   - 不流畅
   - surfaceflinger
   - impeller
+
+phase_hints:
+  - id: overview
+    keywords: ['概览', 'overview', '帧', 'frame', 'jank', '卡顿', 'scrolling_analysis', '统计']
+    constraints: '必须调用 scrolling_analysis 获取全帧统计。注意区分 buffer_stuffing（非真实掉帧）和感知掉帧。'
+    critical_tools: ['scrolling_analysis']
+    critical: false
+  - id: root_cause_drill
+    keywords: ['根因', 'root cause', '诊断', 'diagnos', '深钻', 'deep', 'drill', '代表帧', 'representative', '逐帧']
+    constraints: '对占比 >15% 且绝对帧数 >3 的 reason_code，必须选最严重帧执行 jank_frame_detail/blocking_chain_analysis 深钻。禁止仅靠 batch_frame_root_cause 统计分类直接出结论。workload_heavy 必须最后兜底。'
+    critical_tools: ['jank_frame_detail', 'blocking_chain_analysis', 'lookup_knowledge']
+    critical: true
+  - id: conclusion
+    keywords: ['结论', 'conclusion', '输出', 'output', '报告', 'report', '总结']
+    constraints: '输出必须包含：全帧根因分布表（按 reason_code 聚合）+ 代表帧分析（含四象限+频率+根因推理链）+ 按优先级排序的优化建议。每个 CRITICAL/HIGH 必须有量化证据+因果链。'
+    critical_tools: []
+    critical: false
 ---
 
 **Android 版本注意**：

@@ -15,7 +15,8 @@ Key components:
 | claudeRuntime.ts | Main orchestrator — `IOrchestrator`, wraps `sdkQuery()` |
 | claudeMcpServer.ts | 20 MCP tools for trace data access (9 always-on + 11 conditional) |
 | claudeSystemPrompt.ts | Dynamic system prompt — scene-specific strategy injection |
-| strategyLoader.ts | Load `*.strategy.md` and `*.template.md` — parse frontmatter + variable substitution |
+| strategyLoader.ts | Load `*.strategy.md` and `*.template.md` — parse frontmatter (incl. `phase_hints`) + variable substitution |
+| queryComplexityClassifier.ts | Query complexity routing — hard rules (7 deterministic scenes) + Haiku fallback |
 | claudeSseBridge.ts | SDK stream → SSE events bridge |
 | sceneClassifier.ts | Keyword scene classification (12 scenes from strategy frontmatter, <1ms) |
 | claudeVerifier.ts | 4-layer verification (heuristic + plan + hypothesis + scene + LLM) |

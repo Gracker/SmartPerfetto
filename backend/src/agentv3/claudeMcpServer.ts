@@ -20,7 +20,7 @@ import type { SceneType } from './sceneClassifier';
 import { summarizeSqlResult } from './sqlSummarizer';
 import { matchPatterns, matchNegativePatterns, extractTraceFeatures } from './analysisPatternMemory';
 import { getPerfettoStdlibModules } from '../services/perfettoStdlibScanner';
-import { loadPromptTemplate } from './strategyLoader';
+import { loadPromptTemplate, getPhaseHints } from './strategyLoader';
 import type { ArtifactStore } from './artifactStore';
 
 /** MCP tool name prefix — derived from the server name 'smartperfetto'.
@@ -298,6 +298,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
    * and planning tools are exempt to allow plan formation.
    */
   const analysisPlanRef = options.analysisPlan;
+  /** Track submit_plan attempts for hard-gate: reject first incomplete plan, accept on retry. */
+  let planSubmitAttempts = 0;
   function requirePlan(toolName: string): string | null {
     if (!analysisPlanRef) return null; // Planning feature not enabled
     if (analysisPlanRef.current) return null; // Plan already submitted
@@ -1153,6 +1155,30 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           suggestion: '管线识别场景建议包含管线教学内容展示阶段 (pipeline skill invocation)' },
       ],
     },
+    memory: {
+      mandatoryAspects: [
+        { matchKeywords: ['memory', 'oom', 'gc', '内存', 'heap', 'lmk', 'memory_analysis'],
+          suggestion: '内存场景建议包含内存使用趋势和 GC 分析阶段 (memory_analysis)' },
+      ],
+    },
+    game: {
+      mandatoryAspects: [
+        { matchKeywords: ['game', 'fps', '游戏', 'gpu', 'frame', '帧率'],
+          suggestion: '游戏场景建议包含帧率分析和 GPU 状态检查阶段' },
+      ],
+    },
+    overview: {
+      mandatoryAspects: [
+        { matchKeywords: ['scene', 'overview', '场景', '概览', 'detect', '检测', 'timeline'],
+          suggestion: '概览场景建议包含场景检测和问题场景深钻阶段' },
+      ],
+    },
+    'touch-tracking': {
+      mandatoryAspects: [
+        { matchKeywords: ['input', 'touch', '跟手', '延迟', 'latency', 'per_frame', 'tracking'],
+          suggestion: '跟手度场景建议包含逐帧 Input-to-Display 延迟测量阶段' },
+      ],
+    },
   };
 
   // Planning tools: submit_plan + update_plan_phase (P0-1: Explicit planning capability)
@@ -1175,7 +1201,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         name: z.string().describe('Phase name (e.g. "Overview Collection")'),
         goal: z.string().describe('What this phase aims to achieve'),
         expectedTools: z.array(z.string()).describe('Tool names this phase will use (e.g. ["invoke_skill", "execute_sql"])'),
-      })).describe('Ordered list of analysis phases'),
+      })).min(1).describe('Ordered list of analysis phases (at least 1 phase required)'),
       successCriteria: z.string().describe('What constitutes a successful analysis (e.g. "Identify root cause of jank frames with evidence")'),
     },
     async ({ phases, successCriteria }) => {
@@ -1188,7 +1214,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         submittedAt: Date.now(),
         toolCallLog: [],
       };
-      analysisPlanRef.current = plan;
 
       // P1-G11: Validate plan against scene template
       const planWarnings: string[] = [];
@@ -1202,6 +1227,29 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           }
         }
       }
+
+      planSubmitAttempts++;
+
+      // Hard-gate: first attempt with missing mandatory aspects → reject (don't write plan).
+      // Second attempt → accept regardless (prevents infinite rejection loop).
+      if (planWarnings.length > 0 && planSubmitAttempts === 1) {
+        console.log(`[MCP] Plan rejected (attempt ${planSubmitAttempts}): missing ${planWarnings.length} aspects for ${options.sceneType}`);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: `计划缺少 ${options.sceneType} 场景的必要分析阶段`,
+              missingAspects: planWarnings,
+              hint: '请补充缺失的分析阶段后重新调用 submit_plan。',
+            }),
+          }],
+          isError: true,
+        };
+      }
+
+      // Accept plan (first attempt with no warnings, or second+ attempt)
+      analysisPlanRef.current = plan;
 
       emitUpdate?.({
         type: 'plan_submitted',
@@ -1281,6 +1329,58 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const response: Record<string, any> = { success: true };
       if (!nextPhase) response.allPhasesComplete = true;
       if (summaryFeedback) response.summaryFeedback = summaryFeedback;
+
+      // Restatement injection: leverage tool response's high-attention position
+      // to re-state next-phase constraints from strategy frontmatter phase_hints.
+      if (nextPhase && options.sceneType) {
+        const hints = getPhaseHints(options.sceneType);
+        if (hints.length > 0) {
+          const phaseText = `${nextPhase.name} ${nextPhase.goal}`.toLowerCase();
+
+          // 1. Try keyword matching against next phase name+goal
+          let matchedHint = hints.find(h =>
+            h.keywords.some(kw => phaseText.includes(kw.toLowerCase()))
+          );
+
+          // 2. Unconditional fallback: if no match, inject the next unvisited critical hint.
+          //    Critical phases (e.g., scrolling Phase 1.9, startup Phase 2.6) are too important
+          //    to skip reminders just because the agent used unexpected phase names.
+          if (!matchedHint) {
+            const coveredHintIds = new Set<string>();
+            for (const p of plan.phases.filter(pp => pp.status === 'completed' || pp.status === 'skipped')) {
+              const pText = `${p.name} ${p.summary || ''}`.toLowerCase();
+              for (const h of hints) {
+                if (h.keywords.some(kw => pText.includes(kw.toLowerCase()))) {
+                  coveredHintIds.add(h.id);
+                }
+              }
+            }
+            matchedHint = hints.find(h => h.critical && !coveredHintIds.has(h.id));
+          }
+
+          if (matchedHint) {
+            response.next_phase_reminder = {
+              phaseId: nextPhase.id,
+              name: nextPhase.name,
+              constraints: matchedHint.constraints,
+              criticalTools: matchedHint.criticalTools,
+            };
+            console.log(`[MCP] Phase hint injected: ${matchedHint.id} for ${options.sceneType}`);
+          } else {
+            console.log(`[MCP] Phase hint not found for: "${nextPhase.name}" in ${options.sceneType}`);
+          }
+        }
+
+        // Always include basic next phase info for non-hint scenarios
+        if (!response.next_phase_reminder) {
+          response.next = {
+            phaseId: nextPhase.id,
+            name: nextPhase.name,
+            expectedTools: nextPhase.expectedTools,
+          };
+        }
+      }
+
       return {
         content: [{
           type: 'text' as const,
@@ -1309,6 +1409,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       updatedSuccessCriteria: z.string().optional().describe('Updated success criteria (only if the goal changed)'),
     },
     async ({ reason, updatedPhases, updatedSuccessCriteria }) => {
+      // Reset submit attempts so a revised plan can trigger hard-gate validation again
+      planSubmitAttempts = 0;
       const plan = analysisPlanRef.current;
       if (!plan) {
         return {

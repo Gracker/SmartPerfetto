@@ -33,6 +33,28 @@ keywords:
 compound_patterns:
   - "打开.*(应用|app|软件)"
   - "打开.*(速度|时间|耗时)"
+
+phase_hints:
+  - id: detail_breakdown
+    keywords: ['detail', '详情', '分解', 'breakdown', '阶段', 'startup_detail', '耗时']
+    constraints: '必须用 Phase 1 的 ttid_ts/ttfd_ts 作为 startup_detail 的时间边界参数。使用 self_ms（排除子切片）而非 wall-time。'
+    critical_tools: ['startup_detail']
+    critical: false
+  - id: critical_artifacts
+    keywords: ['artifact', 'critical', '关键', '任务', 'task', '热点', 'hot', '阻塞', 'block']
+    constraints: '此阶段不可跳过。必须获取关键 artifact（热点函数、阻塞调用、锁竞争）作为深钻输入。'
+    critical_tools: ['execute_sql', 'fetch_artifact']
+    critical: true
+  - id: slow_reasons_validation
+    keywords: ['slow', 'reason', '原因', '交叉', 'cross', '验证', 'dex2oat', 'baseline', 'debuggable']
+    constraints: '冷启动必须调用 startup_slow_reasons 检查 DEX2OAT/baseline profile/debuggable 等官方因素。Q4(Sleeping) >25% 必须用 blocking_chain_analysis 追踪阻塞源。'
+    critical_tools: ['startup_slow_reasons', 'blocking_chain_analysis']
+    critical: true
+  - id: conclusion
+    keywords: ['结论', 'conclusion', '输出', 'output', '报告', 'report', '总结']
+    constraints: '输出必须包含：启动类型判定(cold/warm/hot) + TTID/TTFD 数值 + 阶段耗时分解 + 根因编号引用(A1-A18/B1-B12) + 双受众格式([App層]+[系統/平台層])。'
+    critical_tools: []
+    critical: false
 ---
 
 #### 启动分析（用户提到 启动、冷启动、热启动、launch、startup）

@@ -780,19 +780,71 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Log compaction for diagnostics — helps debug cases where Claude seems to lose context
       if (sdkCompactDetected) {
         console.warn(`[ClaudeRuntime] Session ${sessionId}: analysis completed after SDK auto-compact. Findings count: ${mergedFindings.length}`);
-        // P1-C1: Write a compact recovery note so the next turn's system prompt
-        // carries critical findings that may have been lost during compaction
+        // P1-C1: Write a structured compact recovery note so the next turn's system prompt
+        // carries plan progress + findings + entity context that may have been lost.
+        // Sections are added in priority order with a budget cap — no mid-section truncation.
         const sessionNotes = this.sessionNotes.get(sessionId);
         if (sessionNotes) {
-          const findingSummary = mergedFindings.slice(0, 5).map(f => `- [${f.severity}] ${f.title}`).join('\n');
+          const MAX_NOTE_CHARS = 800;
+          const sections: string[] = [];
+          let usedChars = 0;
+
+          const tryAdd = (section: string): boolean => {
+            if (usedChars + section.length + 1 > MAX_NOTE_CHARS) return false;
+            sections.push(section);
+            usedChars += section.length + 1;
+            return true;
+          };
+
+          tryAdd('[上下文压缩恢复] SDK 自动压缩已触发。');
+
+          // Section 1 (highest priority): Plan progress
+          const plan = ctx.analysisPlan.current;
+          if (plan) {
+            const planLines = plan.phases.map(p => {
+              const icon = p.status === 'completed' ? '✓' : p.status === 'skipped' ? '⊘' : p.status === 'in_progress' ? '→' : '○';
+              const summary = p.summary ? ` — ${p.summary.substring(0, 60)}` : '';
+              return `${icon} ${p.id}: ${p.name}${summary}`;
+            });
+            tryAdd(`分析进度:\n${planLines.join('\n')}`);
+
+            // Section 2: Next phase info
+            const nextPhase = plan.phases.find(p => p.status === 'pending' || p.status === 'in_progress');
+            if (nextPhase) {
+              const tools = nextPhase.expectedTools.length > 0 ? ` (工具: ${nextPhase.expectedTools.join(', ')})` : '';
+              tryAdd(`当前/下一阶段: ${nextPhase.name} — ${nextPhase.goal}${tools}`);
+            }
+          }
+
+          // Section 3: Key findings (only confident ones)
+          const confidentFindings = mergedFindings.filter(f => (f.confidence ?? 0.5) >= 0.5);
+          if (confidentFindings.length > 0) {
+            const summary = confidentFindings.slice(0, 5)
+              .map(f => `- [${f.severity}] ${f.title}`)
+              .join('\n');
+            tryAdd(`关键发现:\n${summary}`);
+          } else if (mergedFindings.length > 0) {
+            const summary = mergedFindings.slice(0, 3)
+              .map(f => `- [${f.severity}] ${f.title}`)
+              .join('\n');
+            tryAdd(`关键发现:\n${summary}`);
+          }
+
+          // Section 4 (lowest priority): Entity context
+          const entitySnapshot = this.buildEntityContext(ctx.entityStore);
+          if (entitySnapshot && entitySnapshot.length < 200) {
+            tryAdd(`已知实体:\n${entitySnapshot}`);
+          }
+
           sessionNotes.push({
-            section: 'observation',
-            content: `[上下文压缩恢复] SDK 自动压缩已触发，以下为压缩前的关键发现摘要：\n${findingSummary || '无发现'}`,
+            section: 'next_step',
+            content: sections.join('\n'),
             priority: 'high',
             timestamp: Date.now(),
           });
-          // Evict if over cap
           if (sessionNotes.length > 20) sessionNotes.shift();
+
+          console.log(`[ClaudeRuntime] Compact recovery note: ${sections.length} sections, ${usedChars} chars`);
         }
       }
 

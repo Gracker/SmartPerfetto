@@ -19,8 +19,13 @@ import { createSdkEnv, type ClaudeAgentConfig } from './claudeConfig';
 import { loadPromptTemplate, renderTemplate } from './strategyLoader';
 import type { ComplexityClassifierInput, QueryComplexity } from './types';
 
-/** Scenes that always require full analysis (prescriptive multi-step workflows). */
-const DETERMINISTIC_SCENES = new Set(['scrolling', 'startup', 'anr', 'interaction', 'scroll-response']);
+/** Scenes that always require full analysis (prescriptive multi-step workflows).
+ *  Note: memory/game/overview/touch-tracking are intentionally NOT included — they have
+ *  valid quick-query use cases (e.g., "内存多少？", "帧率是多少？"). Only `general` uses Haiku fallback. */
+const DETERMINISTIC_SCENES = new Set([
+  'scrolling', 'startup', 'anr', 'interaction', 'scroll_response',
+  'teaching', 'pipeline',
+]);
 
 /**
  * Classify query complexity using hard rules + optional AI classification.

@@ -22,6 +22,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 
+/** Phase-level restatement hint — loaded from strategy frontmatter `phase_hints`. */
+export interface PhaseHint {
+  id: string;
+  keywords: string[];
+  constraints: string;
+  criticalTools: string[];
+  /** When true, this hint is injected as unconditional fallback if keyword matching fails. */
+  critical: boolean;
+}
+
 export interface StrategyDefinition {
   scene: string;
   priority: number;
@@ -32,6 +42,8 @@ export interface StrategyDefinition {
   requiredCapabilities: string[];
   /** Capability IDs that enhance analysis but are not required */
   optionalCapabilities: string[];
+  /** Phase-level hints for mid-analysis restatement injection. */
+  phaseHints: PhaseHint[];
   content: string;
 }
 
@@ -53,6 +65,15 @@ function parseStrategyFile(filePath: string): StrategyDefinition | null {
   const compoundPatternStrings = (frontmatter.compound_patterns as string[] | undefined) || [];
   const compoundPatterns = compoundPatternStrings.map(p => new RegExp(p, 'i'));
 
+  const rawHints = (frontmatter.phase_hints as Array<Record<string, unknown>> | undefined) || [];
+  const phaseHints: PhaseHint[] = rawHints.map(h => ({
+    id: (h.id as string) || '',
+    keywords: (h.keywords as string[]) || [],
+    constraints: (h.constraints as string) || '',
+    criticalTools: (h.critical_tools as string[]) || [],
+    critical: (h.critical as boolean) ?? false,
+  }));
+
   return {
     scene: frontmatter.scene as string,
     priority: (frontmatter.priority as number) ?? 99,
@@ -61,6 +82,7 @@ function parseStrategyFile(filePath: string): StrategyDefinition | null {
     compoundPatterns,
     requiredCapabilities: (frontmatter.required_capabilities as string[]) || [],
     optionalCapabilities: (frontmatter.optional_capabilities as string[]) || [],
+    phaseHints,
     content,
   };
 }
@@ -88,6 +110,11 @@ export function getStrategyContent(scene: string): string | undefined {
 
 export function getRegisteredScenes(): StrategyDefinition[] {
   return Array.from(loadStrategies().values());
+}
+
+/** Get phase-level restatement hints for a scene. Returns [] if scene has no hints. */
+export function getPhaseHints(scene: string): PhaseHint[] {
+  return loadStrategies().get(scene)?.phaseHints || [];
 }
 
 /** Clear cached strategies and templates — useful for dev/test reloads. */

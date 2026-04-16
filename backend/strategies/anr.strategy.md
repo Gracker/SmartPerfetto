@@ -26,6 +26,13 @@ keywords:
   - 冻屏
   - freeze
   - 卡死
+
+phase_hints:
+  - id: freeze_verdict
+    keywords: ['verdict', '判定', 'freeze', 'diagnosis', '诊断', '原因', 'anr_analysis', '系统', 'system']
+    constraints: 'freeze_verdict 是第一优先级门控。system freeze → 系统原因排查；app_specific → 进入 App 根因决策树（5 步子流程）。禁止在未确认 freeze_verdict 前直接分析 App 代码。'
+    critical_tools: ['anr_analysis']
+    critical: true
 ---
 
 #### ANR 分析（用户提到 ANR、无响应、not responding、死锁、冻屏）

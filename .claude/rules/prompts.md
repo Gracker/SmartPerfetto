@@ -4,7 +4,7 @@
 
 All prompt content must live in Markdown files, never in TypeScript source:
 
-- Scene strategies → `backend/strategies/*.strategy.md` (YAML frontmatter + markdown body, 12 scenes)
+- Scene strategies → `backend/strategies/*.strategy.md` (YAML frontmatter + markdown body, 12 scenes). Frontmatter may include `phase_hints` for mid-analysis restatement injection.
 - Selection context → `backend/strategies/selection-*.template.md` (uses `{{variable}}` placeholders)
 - Prompt templates → `backend/strategies/prompt-*.template.md` and `arch-*.template.md`
 - Knowledge templates → `backend/strategies/knowledge-*.template.md` (6 templates: rendering-pipeline, binder-ipc, gc-dynamics, cpu-scheduler, thermal-throttling, lock-contention) — loaded on-demand by `lookup_knowledge` MCP tool
@@ -12,7 +12,7 @@ All prompt content must live in Markdown files, never in TypeScript source:
 
 ## Template system
 
-- `strategyLoader.ts` provides: `getStrategyContent()`, `loadPromptTemplate()`, `loadSelectionTemplate()`, `renderTemplate()`
+- `strategyLoader.ts` provides: `getStrategyContent()`, `loadPromptTemplate()`, `loadSelectionTemplate()`, `renderTemplate()`, `getPhaseHints()`
 - `loadSelectionTemplate(kind)` delegates to `loadPromptTemplate('selection-' + kind)` — unified cache
 - Variables use `{{variable}}` syntax in templates
 - Skill parameters use `${param|default}` syntax in YAML
