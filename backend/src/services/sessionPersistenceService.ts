@@ -26,20 +26,30 @@ import { FocusStore, FocusStoreSnapshot } from '../agent/context/focusStore';
 import { TraceAgentState } from '../agent/state/traceAgentState';
 import type { SessionStateSnapshot } from '../agentv3/sessionStateSnapshot';
 
-const DB_DIR = path.join(process.cwd(), 'data', 'sessions');
-const DB_PATH = path.join(DB_DIR, 'sessions.db');
+// DB path is resolved lazily (in the constructor) rather than at module load.
+// Module-load resolution would capture `process.cwd()` at the time of the first
+// `import`, which breaks the CLI path: the CLI's bootstrap pins cwd to the
+// backend root so all services share one data dir, but that chdir happens
+// *after* imports have already resolved. Lazy resolution lets both HTTP (cwd
+// already == backend) and CLI (cwd set by bootstrap) land on the same path.
+function resolveDbDir(): string {
+  return path.join(process.cwd(), 'data', 'sessions');
+}
 
 export class SessionPersistenceService {
   private db: Database.Database;
   private static instance: SessionPersistenceService;
 
   private constructor() {
+    const dbDir = resolveDbDir();
+    const dbPath = path.join(dbDir, 'sessions.db');
+
     // Ensure data directory exists
-    if (!fs.existsSync(DB_DIR)) {
-      fs.mkdirSync(DB_DIR, { recursive: true });
+    if (!fs.existsSync(dbDir)) {
+      fs.mkdirSync(dbDir, { recursive: true });
     }
 
-    this.db = new Database(DB_PATH);
+    this.db = new Database(dbPath);
     this.db.pragma('journal_mode = WAL');
     this.initializeSchema();
   }
