@@ -203,6 +203,20 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             restoredContext.setTraceAgentState(traceAgentStateSnapshot);
           }
 
+          // Restore ClaudeRuntime's internal Maps (analysisNotes, analysisPlan,
+          // uncertaintyFlags, claudeHypotheses, artifacts, architecture,
+          // sdkSessionId) from the unified snapshot. Mirrors what
+          // agentResumeRoutes.ts does for the explicit /resume endpoint so
+          // that both paths (HTTP multi-turn analyze, CLI `smartperfetto resume`)
+          // restore the full agent state, not just SessionContext. Without
+          // this step the next turn runs with empty internal Maps and Claude
+          // forgets its prior notes / plan across process boundaries.
+          const stateSnapshot =
+            this.sessionPersistenceService.loadSessionStateSnapshot(requestedSessionId);
+          if (stateSnapshot && typeof restoredOrchestrator.restoreFromSnapshot === 'function') {
+            restoredOrchestrator.restoreFromSnapshot(requestedSessionId, traceId, stateSnapshot);
+          }
+
           const restoredTurns = restoredContext.getAllTurns();
           const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
           const recoveredResult = this.buildRecoveredResultFromContext(
@@ -255,6 +269,10 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
           // R4: Restore runtime arrays from SQLite for cross-restart report continuity
           const runtimeArrays = this.sessionPersistenceService.loadRuntimeArrays(requestedSessionId);
 
+          // Source priority for session arrays: snapshot (newer unified format)
+          // > runtimeArrays (legacy fallback) > reconstructed from turns.
+          // agentDialogue + agentResponses live only in the snapshot — prior
+          // code hardcoded them to [], which is what Codex flagged as lost state.
           const restoredSession = {
             orchestrator: restoredOrchestrator,
             sessionId: requestedSessionId,
@@ -266,17 +284,22 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             createdAt: persistedSession.createdAt,
             lastActivityAt: Date.now(),
             logger: restoredLogger,
-            hypotheses: runtimeArrays?.hypotheses || [],
-            agentDialogue: [],
-            dataEnvelopes: runtimeArrays?.dataEnvelopes || [],
-            agentResponses: [],
-            conversationOrdinal: 0,
-            conversationSteps: runtimeArrays?.conversationSteps || [],
-            runSequence: restoredSequence,
+            hypotheses: stateSnapshot?.hypotheses || runtimeArrays?.hypotheses || [],
+            agentDialogue: stateSnapshot?.agentDialogue || [],
+            dataEnvelopes: stateSnapshot?.dataEnvelopes || runtimeArrays?.dataEnvelopes || [],
+            agentResponses: stateSnapshot?.agentResponses || [],
+            conversationOrdinal: stateSnapshot?.conversationOrdinal || 0,
+            conversationSteps:
+              stateSnapshot?.conversationSteps || runtimeArrays?.conversationSteps || [],
+            runSequence: stateSnapshot?.runSequence || restoredSequence,
             activeRun: restoredRun,
             lastRun: restoredRun,
-            queryHistory: runtimeArrays?.queryHistory || restoredQueryHistory,
-            conclusionHistory: runtimeArrays?.conclusionHistory || restoredConclusionHistory,
+            queryHistory:
+              stateSnapshot?.queryHistory || runtimeArrays?.queryHistory || restoredQueryHistory,
+            conclusionHistory:
+              stateSnapshot?.conclusionHistory
+              || runtimeArrays?.conclusionHistory
+              || restoredConclusionHistory,
             sseEventSeq: 0,
             sseEventBuffer: [],
           } as unknown as TSession;

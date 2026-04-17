@@ -19,6 +19,7 @@ import {
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../services/agentReportData';
 import { persistAgentTurn } from '../services/persistAgentSession';
+import { normalizeNarrativeForClient as sharedNormalizeNarrative } from '../services/agentResultNormalizer';
 import { reportStore, persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { authenticate } from '../middleware/auth';
@@ -3747,21 +3748,11 @@ function buildSceneReplayNarrative(scenes: DetectedScene[]): string {
   ].filter(Boolean).join('\n');
 }
 
+// Delegates to the shared normalizer so CLI's buildReportHtml gets identical
+// conclusion text for the same run. The HTTP-specific pieces (scene replay,
+// sceneIdHint) stay inline in sendAgentDrivenResult.
 function normalizeNarrativeForClient(narrative: string): string {
-  const raw = String(narrative || '');
-  const trimmed = raw.trim();
-  if (!trimmed) return raw;
-
-  let normalized = raw;
-  if (shouldNormalizeConclusionOutput(trimmed)) {
-    try {
-      normalized = normalizeConclusionOutput(trimmed).trim() || raw;
-    } catch {
-      normalized = raw;
-    }
-  }
-
-  return sanitizeNarrativeForClient(normalized) || normalized;
+  return sharedNormalizeNarrative(narrative);
 }
 
 /**

@@ -31,6 +31,7 @@ import { createSessionLogger } from '../../services/sessionLogger';
 import { SessionPersistenceService } from '../../services/sessionPersistenceService';
 import { getHTMLReportGenerator } from '../../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../../services/agentReportData';
+import { normalizeResultForReport } from '../../services/agentResultNormalizer';
 import { persistAgentTurn } from '../../services/persistAgentSession';
 import type { StreamingUpdate } from '../../agent/types';
 import type { ModelRouter } from '../../agent';
@@ -203,27 +204,29 @@ export class CliAnalyzeService {
   }
 
   /**
-   * Build the HTML report for a completed turn. Report data is assembled by
-   * the shared `buildAgentDrivenReportData` builder — same code path the
-   * HTTP route uses — so CLI and web UI emit identical reports.
+   * Build the HTML report for a completed turn. Routes through the shared
+   * `normalizeResultForReport` + `buildAgentDrivenReportData` pipeline the
+   * HTTP path uses, so CLI and web UI emit identical reports for the same
+   * session (same sanitized conclusion text, same derived conclusionContract).
    */
   private buildReportHtml(
     session: AnalyzeManagedSession,
     result: AnalysisResult,
   ): { html?: string; error?: string } {
     try {
+      const normalized = normalizeResultForReport(result);
       const reportData = buildAgentDrivenReportData({
         session,
         result: {
           sessionId: session.sessionId,
-          success: result.success,
-          findings: result.findings,
-          hypotheses: result.hypotheses,
-          conclusion: result.conclusion,
-          conclusionContract: result.conclusionContract,
-          confidence: result.confidence,
-          rounds: result.rounds,
-          totalDurationMs: result.totalDurationMs,
+          success: normalized.success,
+          findings: normalized.findings,
+          hypotheses: normalized.hypotheses,
+          conclusion: normalized.conclusion,
+          conclusionContract: normalized.conclusionContract,
+          confidence: normalized.confidence,
+          rounds: normalized.rounds,
+          totalDurationMs: normalized.totalDurationMs,
         },
       });
       const html = getHTMLReportGenerator().generateAgentDrivenHTML(reportData);
