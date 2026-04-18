@@ -26,6 +26,18 @@ export interface ClaudeAgentConfig {
   /** Sub-agent model shorthand. Defaults to 'sonnet'.
    *  Accepted values: 'haiku' | 'sonnet' | 'opus' | 'inherit' (inherit orchestrator model). */
   subAgentModel?: 'inherit' | 'haiku' | 'sonnet' | 'opus';
+  /** Per-turn timeout (ms) for the full analysis pipeline. Default: 60_000 (60s/turn).
+   *  Raise via CLAUDE_FULL_PER_TURN_MS for slower LLMs (DeepSeek / Ollama / GLM). */
+  fullPathPerTurnMs: number;
+  /** Per-turn timeout (ms) for the quick analysis pipeline. Default: 40_000 (40s/turn).
+   *  Override via CLAUDE_QUICK_PER_TURN_MS. */
+  quickPathPerTurnMs: number;
+  /** Timeout (ms) for the single-turn verifier LLM call. Default: 60_000.
+   *  Override via CLAUDE_VERIFIER_TIMEOUT_MS (raise when CLAUDE_LIGHT_MODEL is not Haiku). */
+  verifierTimeoutMs: number;
+  /** Timeout (ms) for the single-turn query complexity classifier. Default: 30_000.
+   *  Override via CLAUDE_CLASSIFIER_TIMEOUT_MS. */
+  classifierTimeoutMs: number;
 }
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -50,6 +62,14 @@ export function loadClaudeConfig(overrides?: Partial<ClaudeAgentConfig>): Claude
     subAgentTimeoutMs: overrides?.subAgentTimeoutMs
       ?? (process.env.CLAUDE_SUB_AGENT_TIMEOUT_MS ? parseInt(process.env.CLAUDE_SUB_AGENT_TIMEOUT_MS, 10) : 120_000),
     subAgentModel: (process.env.CLAUDE_SUB_AGENT_MODEL as ClaudeAgentConfig['subAgentModel']) || undefined,
+    fullPathPerTurnMs: overrides?.fullPathPerTurnMs
+      ?? (process.env.CLAUDE_FULL_PER_TURN_MS ? parseInt(process.env.CLAUDE_FULL_PER_TURN_MS, 10) : 60_000),
+    quickPathPerTurnMs: overrides?.quickPathPerTurnMs
+      ?? (process.env.CLAUDE_QUICK_PER_TURN_MS ? parseInt(process.env.CLAUDE_QUICK_PER_TURN_MS, 10) : 40_000),
+    verifierTimeoutMs: overrides?.verifierTimeoutMs
+      ?? (process.env.CLAUDE_VERIFIER_TIMEOUT_MS ? parseInt(process.env.CLAUDE_VERIFIER_TIMEOUT_MS, 10) : 60_000),
+    classifierTimeoutMs: overrides?.classifierTimeoutMs
+      ?? (process.env.CLAUDE_CLASSIFIER_TIMEOUT_MS ? parseInt(process.env.CLAUDE_CLASSIFIER_TIMEOUT_MS, 10) : 30_000),
   };
 }
 

@@ -27,7 +27,7 @@ import { classifyScene, type SceneType } from './sceneClassifier';
 import { classifyQueryComplexity } from './queryComplexityClassifier';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
 import { getExtendedKnowledgeBase } from '../services/sqlKnowledgeBase';
-import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, ComplexityClassifierInput, FailedApproach, Hypothesis, TraceCompleteness, UncertaintyFlag } from './types';
+import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, ComplexityClassifierInput, FailedApproach, Hypothesis, QueryComplexity, TraceCompleteness, UncertaintyFlag } from './types';
 import { ArtifactStore } from './artifactStore';
 import type { SessionStateSnapshot, SessionFieldsForSnapshot } from './sessionStateSnapshot';
 import { AgentMetricsCollector, persistSessionMetrics } from './agentMetrics';
@@ -314,18 +314,38 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         hasPriorFullAnalysis: previousTurns.some(t => t.intent?.complexity !== 'simple'),
       };
 
-      // Run classifier in parallel with focus app detection
       const cachedArch = this.architectureCache.get(traceId);
-      const [classifierResult, focusResult] = await Promise.all([
-        classifyQueryComplexity(classifierInput, this.config),
-        detectFocusApps(this.traceProcessorService, traceId).catch((err) => {
-          console.warn('[ClaudeRuntime] Focus app detection failed (graceful):', (err as Error).message);
-          return { apps: [], primaryApp: undefined, method: 'none' as const };
-        }),
-      ]);
 
-      const queryComplexity = classifierResult.complexity;
-      console.log(`[ClaudeRuntime] Query complexity: ${queryComplexity} (source: ${classifierResult.source}, reason: ${classifierResult.reason})`);
+      // Focus detection runs for every path — kick it off once and let the classifier
+      // (if needed) share the wait. Explicit 'fast'/'full' skips the classifier entirely.
+      const explicitMode = options.analysisMode;
+      const focusPromise = detectFocusApps(this.traceProcessorService, traceId).catch((err) => {
+        console.warn('[ClaudeRuntime] Focus app detection failed (graceful):', (err as Error).message);
+        return { apps: [], primaryApp: undefined, method: 'none' as const };
+      });
+
+      let queryComplexity: QueryComplexity;
+      let classifierSource: 'user_explicit' | 'hard_rule' | 'ai';
+      let classifierReason: string;
+
+      if (explicitMode === 'fast' || explicitMode === 'full') {
+        queryComplexity = explicitMode === 'fast' ? 'quick' : 'full';
+        classifierSource = 'user_explicit';
+        classifierReason = `user requested ${explicitMode}`;
+      } else {
+        const classifierResult = await classifyQueryComplexity(classifierInput, this.config);
+        queryComplexity = classifierResult.complexity;
+        classifierSource = classifierResult.source;
+        classifierReason = classifierResult.reason;
+      }
+
+      const focusResult = await focusPromise;
+      const displayMode: 'fast' | 'full' | 'auto' = explicitMode ?? 'auto';
+      console.log(
+        `[ClaudeRuntime] Query complexity: ${queryComplexity} ` +
+        `(mode: ${displayMode}, source: ${classifierSource}, reason: ${classifierReason})`,
+      );
+      metricsCollector.recordAnalysisMode(displayMode, classifierSource);
 
       // Quick path: lightweight analysis for simple factual queries
       if (queryComplexity === 'quick') {
@@ -403,10 +423,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       let finalResult: string | undefined;
 
-      // Safety timeout with stream cancellation via Promise.race
-      // 40s per turn: prioritize analysis accuracy and completeness over speed
-      // Scrolling deep-drill (hypothesis + SQL + knowledge + conclusion) needs ~6-8 min with LLM thinking
-      const timeoutMs = (this.config.maxTurns || 15) * 40_000;
+      // Safety timeout with stream cancellation via Promise.race.
+      // Per-turn budget is env-configurable (CLAUDE_FULL_PER_TURN_MS, default 60s) so slower
+      // LLMs (DeepSeek / Ollama / GLM) have room per turn without false timeouts.
+      // Scrolling deep-drill (hypothesis + SQL + knowledge + conclusion) still needs ~6-8 min.
+      const timeoutMs = (this.config.maxTurns || 15) * this.config.fullPathPerTurnMs;
       let timedOut = false;
 
       // Sub-agent timeout tracking — stop tasks that exceed subAgentTimeoutMs
@@ -866,6 +887,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               hypotheses: ctx.hypotheses,
               sceneType: ctx.sceneType,
               lightModel: this.config.lightModel,
+              verifierTimeoutMs: this.config.verifierTimeoutMs,
             });
             console.log(`[ClaudeRuntime] Verification (attempt ${attempt + 1}): ${verification.passed ? 'PASSED' : 'ISSUES FOUND'} (${verification.durationMs}ms, ${verification.heuristicIssues.length} heuristic + ${verification.llmIssues?.length || 0} LLM issues)`);
 
@@ -1250,7 +1272,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
 
       const sessionMapKey = sessionId;
-      const existingSdkSessionId = this.sessionMap.get(sessionMapKey)?.sdkSessionId;
+      const sessionMapEntry = this.sessionMap.get(sessionMapKey);
+      // Apply the same 4h freshness rule as the full path (see `SDK_SESSION_FRESHNESS_MS` below in
+      // prepareAnalysisContext). A stale quick entry silently resumed here would cause context loss.
+      const SDK_SESSION_FRESHNESS_MS = 4 * 60 * 60 * 1000;
+      const existingSdkSessionId = sessionMapEntry
+        && (Date.now() - (sessionMapEntry.updatedAt || 0) < SDK_SESSION_FRESHNESS_MS)
+        ? sessionMapEntry.sdkSessionId
+        : undefined;
       const sdkEnv = createSdkEnv();
 
       const { stream, close: closeSdk } = sdkQueryWithRetry({
@@ -1278,7 +1307,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       let quickSdkSessionId: string | undefined;
       let quickRounds = 0;
 
-      const timeoutMs = quickConfig.maxTurns * 20_000;
+      // Quick path per-turn budget from env CLAUDE_QUICK_PER_TURN_MS (default 40s/turn).
+      const timeoutMs = quickConfig.maxTurns * quickConfig.quickPathPerTurnMs;
       let timedOut = false;
       let safetyTimer: ReturnType<typeof setTimeout> | undefined;
 

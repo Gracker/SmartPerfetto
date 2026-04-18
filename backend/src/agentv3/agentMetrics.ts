@@ -93,6 +93,10 @@ export interface SessionMetrics {
   cache?: CacheMetrics;
   /** Per-turn performance metrics for optimization analysis. */
   turnMetrics?: TurnMetricsSummary;
+  /** Analysis mode the orchestrator ran in ('fast' quick path / 'full' pipeline / 'auto' classifier-driven). */
+  analysisMode?: 'fast' | 'full' | 'auto';
+  /** Origin of the complexity decision — explicit user choice, deterministic rule, or AI classifier. */
+  classifierSource?: 'user_explicit' | 'hard_rule' | 'ai';
 }
 
 // =============================================================================
@@ -106,6 +110,8 @@ export class AgentMetricsCollector {
   private turnCount = 0;
   private cacheMetrics: CacheMetrics | null = null;
   private turnMetricsSummary: TurnMetricsSummary | null = null;
+  private analysisMode: 'fast' | 'full' | 'auto' | null = null;
+  private classifierSource: 'user_explicit' | 'hard_rule' | 'ai' | null = null;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -211,6 +217,15 @@ export class AgentMetricsCollector {
     this.turnMetricsSummary = summary;
   }
 
+  /** Record the analysis mode (explicit from UI/CLI or inferred by classifier). */
+  recordAnalysisMode(
+    mode: 'fast' | 'full' | 'auto',
+    source: 'user_explicit' | 'hard_rule' | 'ai',
+  ): void {
+    this.analysisMode = mode;
+    this.classifierSource = source;
+  }
+
   /** Generate session metrics summary. */
   summarize(): SessionMetrics {
     const endTime = Date.now();
@@ -249,6 +264,8 @@ export class AgentMetricsCollector {
       },
       ...(this.cacheMetrics ? { cache: this.cacheMetrics } : {}),
       ...(this.turnMetricsSummary ? { turnMetrics: this.turnMetricsSummary } : {}),
+      ...(this.analysisMode ? { analysisMode: this.analysisMode } : {}),
+      ...(this.classifierSource ? { classifierSource: this.classifierSource } : {}),
     };
   }
 }

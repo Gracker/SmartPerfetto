@@ -748,9 +748,10 @@ function repairTruncatedJson(json: string): string {
 export async function verifyWithLLM(
   findings: Finding[],
   conclusion: string,
-  options?: { model?: string },
+  options?: { model?: string; timeoutMs?: number },
 ): Promise<VerificationIssue[] | undefined> {
-  const VERIFY_TIMEOUT_MS = 30_000; // 30s — Haiku single-turn should finish well within this
+  // Default 60s; Haiku usually finishes in 2-5s, but slower LLMs need more headroom.
+  const VERIFY_TIMEOUT_MS = options?.timeoutMs ?? 60_000;
   try {
     const findingSummary = findings
       .slice(0, 15)
@@ -954,6 +955,8 @@ export async function verifyConclusion(
     sceneType?: SceneType;
     /** Override model for the LLM verification call. Defaults to 'claude-haiku-4-5'. */
     lightModel?: string;
+    /** Override verification LLM timeout (ms). Default: 60s. Raise for slower light models. */
+    verifierTimeoutMs?: number;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
@@ -996,7 +999,7 @@ export async function verifyConclusion(
 
   let llmIssues: VerificationIssue[] | undefined;
   if (enableLLM && !canSkipLLM) {
-    llmIssues = await verifyWithLLM(findings, conclusion, { model: options.lightModel });
+    llmIssues = await verifyWithLLM(findings, conclusion, { model: options.lightModel, timeoutMs: options.verifierTimeoutMs });
   } else if (enableLLM && canSkipLLM) {
     console.log(
       `[Verifier] LLM verification skipped: errors=${hasErrors}, highRiskWarnings=${hasHighRiskWarnings}, ` +

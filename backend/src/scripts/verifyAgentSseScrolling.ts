@@ -20,6 +20,8 @@ interface VerifyOptions {
   outputPath?: string;
   keepSession: boolean;
   keepTrace: boolean;
+  /** Analysis mode override forwarded as options.analysisMode to the backend. */
+  analysisMode?: 'fast' | 'full' | 'auto';
 }
 
 interface SseSummary {
@@ -55,6 +57,7 @@ function printUsage(): void {
   console.log('  --timeout-ms <number>             SSE timeout in ms (default: 600000)');
   console.log('  --max-rounds <number>             Analysis max rounds (default: 3)');
   console.log('  --confidence-threshold <number>   Analysis confidence threshold (default: 0.5)');
+  console.log('  --mode <fast|full|auto>           Override analysisMode sent to backend (default: unset → classifier)');
   console.log('  --output <path>                   JSON report output path');
   console.log('  --keep-session                    Do not delete session after verification');
   console.log('  --keep-trace                      Do not delete loaded trace after verification');
@@ -144,6 +147,18 @@ function parseArgs(argv: string[]): VerifyOptions {
         throw new Error(`Invalid --confidence-threshold value: ${next}`);
       }
       options.confidenceThreshold = parsed;
+      i += 1;
+      continue;
+    }
+
+    if (arg === '--mode') {
+      if (!next) {
+        throw new Error('--mode requires a value');
+      }
+      if (next !== 'fast' && next !== 'full' && next !== 'auto') {
+        throw new Error(`Invalid --mode value: ${next} (expected fast|full|auto)`);
+      }
+      options.analysisMode = next;
       i += 1;
       continue;
     }
@@ -426,6 +441,7 @@ async function main(): Promise<void> {
         options: {
           maxRounds: options.maxRounds,
           confidenceThreshold: options.confidenceThreshold,
+          ...(options.analysisMode ? { analysisMode: options.analysisMode } : {}),
         },
       }),
     });
@@ -438,9 +454,12 @@ async function main(): Promise<void> {
 
     const sse = await collectSseSummary(baseUrl, sessionId, options.timeoutMs);
 
-    // Quick-mode analyses skip plan submission and architecture detection,
-    // so those checks are informational only — not required for pass/fail.
-    const isQuickMode = sse.planSubmittedCount === 0 && sse.agentResponseCount <= 3;
+    // Quick-mode analyses skip plan submission and architecture detection
+    // (lightweight MCP does not register submit_plan / detect_architecture),
+    // so their absence is a semantic signature of the quick path.
+    // Don't use `agentResponseCount <= 3` — quick max_turns is 5, so a well-behaved
+    // quick run can legitimately emit up to ~5 agent_response events.
+    const isQuickMode = sse.planSubmittedCount === 0 && sse.architectureDetectedCount === 0;
 
     const requiredChecks = {
       hasProgressEvents: sse.progressCount > 0,
@@ -456,8 +475,17 @@ async function main(): Promise<void> {
       hasArchitectureDetected: sse.architectureDetectedCount > 0,
     };
 
-    const checks = { ...requiredChecks, ...fullModeChecks };
+    // Mode expectation: if the caller pinned `--mode fast|full`, verify the backend honored it.
+    // Catches regressions where a fast CLI flag silently falls back to the full pipeline (or vice versa).
+    const modeExpectationChecks: Record<string, boolean> = {};
+    if (options.analysisMode === 'fast') {
+      modeExpectationChecks.fastModeHonored = isQuickMode;
+    } else if (options.analysisMode === 'full') {
+      modeExpectationChecks.fullModeHonored = !isQuickMode;
+    }
+    const checks = { ...requiredChecks, ...fullModeChecks, ...modeExpectationChecks };
     const passed = Object.values(requiredChecks).every(Boolean)
+      && Object.values(modeExpectationChecks).every(Boolean)
       && (isQuickMode || Object.values(fullModeChecks).every(Boolean));
     const sessionLogFile = findSessionLogFile(sessionId);
 

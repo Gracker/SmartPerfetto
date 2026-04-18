@@ -2234,6 +2234,7 @@ async function runAgentDrivenAnalysis(
         blockedStrategyIds: options.blockedStrategyIds,
         adb: options.adb,
         selectionContext: options.selectionContext,
+        analysisMode: options.analysisMode,
       });
     });
     console.log('[AgentRoutes.AgentDriven] analyze completed, success:', result.success);

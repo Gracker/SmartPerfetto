@@ -279,6 +279,14 @@ export interface AnalysisOptions {
    * When provided, enables dual-trace analysis with comparison-specific MCP tools.
    */
   referenceTraceId?: string;
+
+  /**
+   * Analysis mode override from UI/CLI.
+   * - 'fast': force quick path (5 turns, lightweight MCP, skip verifier/sub-agents)
+   * - 'full': force full pipeline (30 turns, verifier, optional sub-agents)
+   * - 'auto' or undefined: defer to queryComplexityClassifier
+   */
+  analysisMode?: 'fast' | 'full' | 'auto';
 }
 
 // =============================================================================
