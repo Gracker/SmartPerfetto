@@ -23,7 +23,7 @@ Key files:
 - `auto_pin_utils.ts` — Auto-pin utility functions
 - `data_formatter.ts` — Data formatting utilities
 - `conclusion_contract_aliases.ts` — Conclusion contract type aliases
-- `types.ts` — AIPanelState, Message, AISession, StreamingFlowState
+- `types.ts` — AIPanelState (incl. `analysisMode: 'fast' | 'full' | 'auto'`), Message, AISession, StreamingFlowState
 - `index.ts` — Plugin entry point
 
 Subdirectories:
@@ -35,6 +35,16 @@ Subdirectories:
 - Lazy-load from same-origin `assets/mermaid.min.js` (CSP compliant)
 - Base64 encoded chart source in `data-mermaid-b64` attribute
 - Error handling + source code collapse display
+
+## Analysis Mode Chip
+
+`ai_panel.ts::renderAnalysisModeChips()` renders a segmented control above the input wrapper:
+`[⚡ 快速] [🔍 完整] [🤖 智能]`
+
+- `AIPanelState.analysisMode` is sticky via `localStorage['ai-analysis-mode']` (default `'auto'`).
+- `onAnalysisModeChange()` clears `agentSessionId` on mid-session mode switch so the backend opens a fresh SDK session (avoids 5-turn quick vs 30-turn full context mix) and appends a system message toast.
+- Fast chip is **disabled** under comparison mode (`state.referenceTraceId` set): `buildQuickSystemPrompt` does not accept `selectionContext` and the lightweight MCP registration skips comparison tools.
+- Request body: `options.analysisMode` is sent with every `POST /api/agent/v1/analyze`.
 
 ## Perfetto submodule
 

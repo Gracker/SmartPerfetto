@@ -76,6 +76,38 @@ After the test completes, additionally verify:
 
 This is separate from the basic regression test — regression tests verify skills produce data; e2e tests verify the Agent reasons correctly over that data.
 
+## Fast / Full Mode E2E
+
+`verifyAgentSseScrolling.ts` accepts `--mode fast|full|auto` to override `options.analysisMode` and asserts the backend honored it via `fastModeHonored` / `fullModeHonored` checks.
+
+**Fast mode (5-turn lightweight, ~$0.05-0.25/query):**
+```bash
+cd backend && npx tsx src/scripts/verifyAgentSseScrolling.ts \
+  --mode fast \
+  --trace ../test-traces/scroll-demo-customer-scroll.pftrace \
+  --query "这个 trace 的应用包名和主要进程是什么？" \
+  --output test-output/e2e-fast.json
+# Assertion: fastModeHonored=true (planSubmittedCount === 0 && architectureDetectedCount === 0)
+```
+
+**Full mode (override deterministic hard rule):**
+```bash
+cd backend && npx tsx src/scripts/verifyAgentSseScrolling.ts \
+  --mode full \
+  --trace ../test-traces/scroll-demo-customer-scroll.pftrace \
+  --query "分析滑动性能" \
+  --output test-output/e2e-full.json
+# Assertion: fullModeHonored=true, planSubmittedCount > 0
+```
+
+**Classifier unit tests (keyword pre-filter + hard rules + priority):**
+```bash
+cd backend && npx jest src/agentv3/__tests__/queryComplexityClassifier.followup.test.ts
+# 27 cases covering DRILL_DOWN_KEYWORDS / CONFIRM_KEYWORDS + each hard rule branch
+```
+
+**Known fast-mode limitation**: Heavy queries like `分析启动性能` / `分析滑动性能` can exhaust the 5-turn budget when Claude calls `invoke_skill` and spends turns parsing ~200 KB skill JSON. Steer heavy queries to `--mode full`, or use targeted factual queries (包名 / 启动类型 / 帧率数值) with `--mode fast`.
+
 ## Other test commands
 
 ```bash

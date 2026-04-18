@@ -102,6 +102,22 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 
 Note: agentv3 sends `conclusion` first (user sees result immediately), then `analysis_completed` follows after report generation.
 
+## Analysis Mode (fast / full / auto)
+
+`POST /api/agent/v1/analyze` accepts `options.analysisMode`:
+
+| Mode | Turns | MCP tools | Verifier / sub-agents | Typical cost |
+|------|:-----:|:---------:|:---:|---:|
+| `fast` | 5 | 3 lightweight (`execute_sql`, `invoke_skill`, `lookup_sql_schema`) | skipped | $0.05–0.25 |
+| `full` | 30 | 20 (full toolkit) | enabled | $0.3–1.0 |
+| `auto` (default) | routed | per chosen path | per chosen path | varies |
+
+`auto` routing order: `applyKeywordRules` (drill-down keyword → full / short confirm keyword → quick) → `applyHardRules` (selection / comparison / findings / prior-full / 7 deterministic scenes) → Haiku fallback.
+
+**Frontend** (`ai_panel.ts`): chip selector persisted in `localStorage['ai-analysis-mode']`. Switching mode mid-session clears `agentSessionId` so the backend opens a fresh SDK session (avoids 5-turn quick / 30-turn full context mix).
+
+**Known limitation**: fast mode + heavy query (e.g. `分析启动性能`) can exhaust the 5-turn budget when Claude calls `invoke_skill` and spends turns parsing large (~200 KB) skill JSON. Prefer `execute_sql` for simple factual queries in fast mode, or steer heavy queries to full mode.
+
 ## Session Management
 
 - In-memory `Map<sessionId, AnalysisSession>` with 30-min cleanup
@@ -122,6 +138,11 @@ CLAUDE_MODEL=claude-sonnet-4-6            # Optional, default (or provider model
 # CLAUDE_MAX_BUDGET_USD=5                 # Optional, per-analysis budget cap (Anthropic only)
 # CLAUDE_EFFORT=high                      # Optional, SDK effort level (Anthropic only)
 # CLAUDE_SUB_AGENT_MODEL=sonnet           # Optional, sub-agent model (haiku/sonnet/opus/inherit)
+# Per-turn timeouts — raise for slower LLMs (DeepSeek / Ollama / GLM / Qwen)
+# CLAUDE_FULL_PER_TURN_MS=60000           # Optional, full-path per-turn budget (default 60s)
+# CLAUDE_QUICK_PER_TURN_MS=40000          # Optional, quick-path per-turn budget (default 40s)
+# CLAUDE_VERIFIER_TIMEOUT_MS=60000        # Optional, verifier LLM single-turn timeout (default 60s)
+# CLAUDE_CLASSIFIER_TIMEOUT_MS=30000      # Optional, query complexity classifier timeout (default 30s)
 # SMARTPERFETTO_API_KEY=xxx               # Optional, bearer token auth
 # AI_SERVICE=deepseek                     # Legacy agentv2 only
 
