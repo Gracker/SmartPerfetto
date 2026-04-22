@@ -1,6 +1,0 @@
-{
-  "timestamp": "2026-01-05T22:03:41.182Z",
-  "traceId": "4fea6122-eb1e-4d59-ae76-c05c56ac1514",
-  "tracePath": "/Users/chris/Code/SmartPerfetto/SmartPerfetto/test-traces/app_aosp_scrolling_heavy_jank.pftrace",
-  "useMockLLM": true
-}

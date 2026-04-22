@@ -131,3 +131,25 @@ rendering_pipelines/presentation.*
 # Private files (personal docs, not for public)
 # ===================
 private/
+.omx/
+
+# ===================
+# Claude Code scratch worktrees (219MB+ on active sessions)
+# ===================
+.claude/worktrees/
+
+# ===================
+# Agent/skill scratch context (regenerated on run)
+# ===================
+backend/.context/
+backend/data/scene-reports/
+
+# ===================
+# Root-level uploads (anchored to repo root only; backend/uploads/ keeps its own rule above)
+# ===================
+/uploads/
+
+# ===================
+# Superset working directory
+# ===================
+.superset/
