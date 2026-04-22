@@ -216,24 +216,9 @@ SmartPerfetto/
 │   ├── strategies/         # Scene strategies + prompt templates (.md)
 │   └── __tests__/          # Unit tests (1029 tests)
 │
-├── perfetto/               # Forked Perfetto UI (submodule)
-│   └── ui/src/plugins/com.smartperfetto.AIAssistant/
-│
-└── Skills-Standard/        # Standalone skills (Anthropic SKILL.md format)
-    ├── scrolling-analysis/
-    └── startup-analysis/
+└── perfetto/               # Forked Perfetto UI (submodule)
+    └── ui/src/plugins/com.smartperfetto.AIAssistant/
 ```
-
-## Skills-Standard (Standalone Skills)
-
-The `Skills-Standard/` directory contains analysis skills exported as standalone [Anthropic SKILL.md](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/skills) packages. These work independently with any Claude-powered tool that has SQL access to Perfetto traces — **no SmartPerfetto backend required**.
-
-| Skill | Description |
-|-------|-------------|
-| **scrolling-analysis** | Jank detection with 21 root cause codes, dual-signal detection, Flutter/Compose/WebView support |
-| **startup-analysis** | Launch performance with TTID/TTFD diagnosis, 4-quadrant analysis, blocking chain tracing |
-
-See [Skills-Standard/README.md](Skills-Standard/README.md) for installation and usage.
 
 ## Development
 

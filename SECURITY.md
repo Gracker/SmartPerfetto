@@ -35,7 +35,7 @@ release before the full disclosure window elapses.
 **In scope:**
 - SmartPerfetto backend (`backend/`)
 - SmartPerfetto Perfetto plugin (`perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/`)
-- Skill system (`backend/skills/`, `Skills-Standard/`)
+- Skill system (`backend/skills/`)
 - CI/CD workflows (`.github/workflows/`)
 - Shell scripts in `scripts/` and `backend/scripts/`
 

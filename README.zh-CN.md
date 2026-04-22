@@ -176,17 +176,6 @@ CLAUDE_LIGHT_MODEL=glm-4-flash
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-## Skills-Standard（独立 Skill 包）
-
-`Skills-Standard/` 目录包含导出为 [Anthropic SKILL.md](https://docs.anthropic.com/en/docs/agents-and-tools/claude-code/skills) 标准格式的分析 Skill。这些 Skill 可以独立使用，只要你的 Claude 工具链具备对 Perfetto trace 的 SQL 查询能力 — **无需 SmartPerfetto 后端**。
-
-| Skill | 描述 |
-|-------|------|
-| **scrolling-analysis** | 滑动卡顿检测，21 种根因码，双信号检测，Flutter/Compose/WebView 支持 |
-| **startup-analysis** | 启动性能分析，TTID/TTFD 诊断，四象限分析，阻塞链追踪 |
-
-详见 [Skills-Standard/README.md](Skills-Standard/README.md)。
-
 ## 开发指南
 
 ### 开发工作流

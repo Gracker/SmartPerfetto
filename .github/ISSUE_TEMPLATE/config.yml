@@ -3,6 +3,3 @@ contact_links:
   - name: Documentation
     url: https://github.com/Gracker/SmartPerfetto/tree/main/docs
     about: Check existing documentation before opening an issue
-  - name: Skills-Standard
-    url: https://github.com/Gracker/SmartPerfetto/tree/main/Skills-Standard
-    about: Standalone skill packages for use without SmartPerfetto backend

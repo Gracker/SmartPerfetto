@@ -28,7 +28,7 @@
 <!-- Check all that apply — helps reviewers route attention -->
 
 - [ ] `backend/src/agentv3/` (primary runtime: ClaudeRuntime, MCP server, verifier)
-- [ ] `backend/skills/` (YAML skills, strategies)
+- [ ] `backend/skills/` (YAML skills)
 - [ ] `backend/strategies/` (`*.strategy.md`, `*.template.md`, `knowledge-*`)
 - [ ] `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` (frontend)
 - [ ] `scripts/` / `backend/scripts/` (tooling, generators)
@@ -45,7 +45,6 @@
 - [ ] `cd backend && npm run validate:skills` → passes (for YAML skill changes)
 - [ ] `cd backend && npm run validate:strategies` → passes (for strategy changes)
 - [ ] New `.ts` / `.yaml` / `.sh` / `.strategy.md` files carry SPDX AGPL v3 header
-- [ ] `Skills-Standard/` kept in sync with `backend/skills/` (if applicable)
 
 ## Test Plan
 
