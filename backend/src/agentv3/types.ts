@@ -251,6 +251,31 @@ export interface ToolCallRecord {
 // Analysis Pattern Memory Types (P2-2: Long-term memory)
 // =============================================================================
 
+/**
+ * Lifecycle state of a pattern. Controls injection weight and whether the
+ * pattern participates in supersede actions. Older entries that pre-date the
+ * state machine implicitly behave as `confirmed` for backward compatibility.
+ */
+export type PatternStatus =
+  | 'provisional'      // freshly saved, no feedback yet
+  | 'confirmed'        // positive feedback OR auto-promoted after 24h without negatives
+  | 'rejected'         // user explicitly rejected the conclusion
+  | 'disputed'         // reverse feedback within 10s–24h window
+  | 'disputed_late';   // reverse feedback >24h after first feedback
+
+/**
+ * Provenance fields linking an entry to the run that produced it.
+ * Per-turn primary key allows future feedback to map back to the right entry
+ * without ambiguity when a session has multiple turns.
+ */
+export interface PatternProvenance {
+  analysisRunId?: string;
+  sessionId?: string;
+  turnIndex?: number;
+  /** sha256 of trace file content (NOT the upload UUID — see scene/traceHash.ts). */
+  traceContentHash?: string;
+}
+
 /** A persistent analysis pattern learned from previous sessions. */
 export interface AnalysisPatternEntry {
   id: string;
@@ -269,12 +294,26 @@ export interface AnalysisPatternEntry {
   /** Number of times this pattern was matched */
   matchCount: number;
   /**
-   * Stable failure-mode hash (PR4 / Self-Improving v3.3) — populated by the
-   * migration for historical entries and by L1 pattern saving for new ones.
-   * Optional so older entries on disk parse cleanly; injection logic should
-   * treat absence as "unknown" and skip cross-artifact deduplication.
+   * Stable failure-mode hash. Populated by the migration for historical
+   * entries and by L1 pattern saving for new ones. Optional so older entries
+   * on disk parse cleanly; injection logic treats absence as "unknown" and
+   * skips cross-artifact deduplication.
    */
   failureModeHash?: string;
+  /** Lifecycle state. Defaults to 'confirmed' when absent (legacy entries). */
+  status?: PatternStatus;
+  /** First feedback timestamp — used to choose the `disputed` vs `disputed_late` window. */
+  firstFeedbackAt?: number;
+  /** Most recent feedback timestamp. */
+  lastFeedbackAt?: number;
+  /** Provenance fields tying this entry to the originating run. */
+  provenance?: PatternProvenance;
+  /**
+   * Bucket key for quota-fair eviction. Format depends on bucket type:
+   * positive = `${sceneType}::${archType}::${domainHash}`,
+   * negative = `${sceneType}::${archType}::${failureModeHash}`.
+   */
+  bucketKey?: string;
 }
 
 /** A negative pattern — records what strategies/approaches FAILED for similar traces. */
@@ -294,6 +333,14 @@ export interface NegativePatternEntry {
   matchCount: number;
   /** Stable failure-mode hash. See AnalysisPatternEntry.failureModeHash. */
   failureModeHash?: string;
+  /** Lifecycle state. Defaults to 'confirmed' when absent (legacy entries). */
+  status?: PatternStatus;
+  firstFeedbackAt?: number;
+  lastFeedbackAt?: number;
+  /** Provenance fields tying this entry to the originating run. */
+  provenance?: PatternProvenance;
+  /** Bucket key for quota-fair eviction (negative form: scene::arch::failureModeHash). */
+  bucketKey?: string;
 }
 
 /** A specific approach that failed during analysis. */

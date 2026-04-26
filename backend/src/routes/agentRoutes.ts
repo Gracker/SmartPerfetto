@@ -82,6 +82,7 @@ import {
   enrichFeedbackEntry,
   type SessionLookup as FeedbackSessionLookup,
 } from '../agentv3/selfImprove/feedbackEnricher';
+import { applyFeedbackToPattern } from '../agentv3/analysisPatternMemory';
 
 const router = express.Router();
 
@@ -1175,11 +1176,31 @@ router.post('/:sessionId/feedback', async (req, res) => {
   try {
     fs.mkdirSync(FEEDBACK_DIR, { recursive: true });
     fs.appendFileSync(FEEDBACK_FILE, JSON.stringify(entry) + '\n');
-    res.json({ success: true, schemaVersion: entry.schemaVersion });
   } catch (err) {
     console.error('[Feedback] Failed to save feedback:', (err as Error).message);
-    res.status(500).json({ success: false, error: 'Failed to save feedback' });
+    return res.status(500).json({ success: false, error: 'Failed to save feedback' });
   }
+
+  // Feed the rating into the pattern state machine when the client
+  // identified the pattern. Best-effort: log and continue if it fails so
+  // the JSONL audit trail is the canonical record either way.
+  let patternStatusAfter: string | null = null;
+  if (validated.value.patternId) {
+    try {
+      patternStatusAfter = await applyFeedbackToPattern(
+        validated.value.patternId,
+        validated.value.rating,
+      );
+    } catch (err) {
+      console.warn('[Feedback] Pattern state update failed:', (err as Error).message);
+    }
+  }
+
+  res.json({
+    success: true,
+    schemaVersion: entry.schemaVersion,
+    patternStatus: patternStatusAfter,
+  });
 });
 
 /**

@@ -36,6 +36,8 @@ import {
   extractKeyInsights,
   saveAnalysisPattern,
   saveNegativePattern,
+  saveQuickPathPattern,
+  promoteQuickPatternIfMatching,
   buildPatternContextSection,
   buildNegativePatternSection,
 } from './analysisPatternMemory';
@@ -1086,10 +1088,30 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         findingTitles: mergedFindings.map(f => f.title),
         findingCategories: mergedFindings.map(f => f.category).filter(Boolean) as string[],
       });
-      if (mergedFindings.length > 0 && turnConfidence > 0.3) {
+      // Per Self-Improving v3.3 §4.4: full-path patterns now save as
+      // 'provisional' regardless of confidence. The state machine + 24h
+      // auto-confirm decides whether they earn injection weight.
+      if (mergedFindings.length > 0) {
         const insights = extractKeyInsights(mergedFindings, conclusionText);
-        saveAnalysisPattern(fullFeatures, insights, sceneType, ctx.architecture?.type, turnConfidence)
+        const patternExtras = {
+          status: 'provisional' as const,
+          provenance: {
+            sessionId,
+            turnIndex: ctx.previousTurns.length,
+          },
+        };
+        saveAnalysisPattern(fullFeatures, insights, sceneType, ctx.architecture?.type, turnConfidence, patternExtras)
           .catch(err => console.warn('[ClaudeRuntime] Pattern save failed:', (err as Error).message));
+
+        // Try to promote any matching quick-path pattern that has been waiting
+        // for full-path verification. Best-effort — failure does not block.
+        promoteQuickPatternIfMatching({
+          fullPathFeatures: fullFeatures,
+          fullPathInsights: insights,
+          sceneType,
+          architectureType: ctx.architecture?.type,
+          verifierPassed: true,
+        }).catch(err => console.warn('[ClaudeRuntime] Quick→full promote failed:', (err as Error).message));
       }
 
       // Derive sql_error FailedApproach entries from persistent SQL errors
@@ -1384,6 +1406,25 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       );
 
       console.log(`[ClaudeRuntime] Quick analysis completed: ${quickRounds} rounds, ${Date.now() - startTime}ms, ${conclusionText.length} chars`);
+
+      // Quick path writes to a separate 7-day bucket — see Self-Improving v3.3 §6.
+      // Insights are weaker (no verifier, 5-turn budget), so they only surface
+      // as fallbacks at injection time. A future full-path run on similar
+      // features may promote the bucket entry to long-term memory.
+      if (mergedFindings.length > 0) {
+        const insights = extractKeyInsights(mergedFindings, conclusionText);
+        const quickFeatures = extractTraceFeatures({
+          architectureType: cachedArch?.type,
+          sceneType,
+          packageName: effectivePackageName,
+          findingTitles: mergedFindings.map(f => f.title),
+          findingCategories: mergedFindings.map(f => f.category).filter(Boolean) as string[],
+        });
+        saveQuickPathPattern(quickFeatures, insights, sceneType, cachedArch?.type, {
+          status: 'provisional',
+          provenance: { sessionId, turnIndex: previousTurns.length },
+        }).catch(err => console.warn('[ClaudeRuntime] Quick pattern save failed:', (err as Error).message));
+      }
 
       return {
         sessionId,

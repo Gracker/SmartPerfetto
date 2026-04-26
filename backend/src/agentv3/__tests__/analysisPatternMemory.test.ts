@@ -22,24 +22,34 @@ import { jest, describe, it, expect, beforeEach } from '@jest/globals';
 
 let mockPatterns: any[] = [];
 let mockNegativePatterns: any[] = [];
+let mockQuickPatterns: any[] = [];
 
 // Temporary storage for atomic write simulation (writeFile to .tmp, then rename)
 let tmpWriteBuffer: Map<string, string> = new Map();
 
 jest.mock('fs', () => {
   const actual = jest.requireActual<typeof import('fs')>('fs');
+  // The negative file substring also matches the positive file path, so check
+  // 'negative' first and 'quick' before the broader 'analysis_patterns'.
+  const isNegativeFile = (p: string) => p.includes('analysis_negative_patterns.json');
+  const isQuickFile = (p: string) => p.includes('analysis_quick_patterns.json');
+  const isPositiveFile = (p: string) =>
+    p.includes('analysis_patterns.json') && !isNegativeFile(p) && !isQuickFile(p);
   return {
     ...actual,
     existsSync: jest.fn((...args: unknown[]) => {
       const p = args[0] as string;
-      if (typeof p === 'string' && p.includes('analysis_patterns.json') && !p.endsWith('.tmp')) return mockPatterns.length > 0;
-      if (typeof p === 'string' && p.includes('analysis_negative_patterns.json') && !p.endsWith('.tmp')) return mockNegativePatterns.length > 0;
+      if (typeof p !== 'string' || p.endsWith('.tmp')) return false;
+      if (isNegativeFile(p)) return mockNegativePatterns.length > 0;
+      if (isQuickFile(p)) return mockQuickPatterns.length > 0;
+      if (isPositiveFile(p)) return mockPatterns.length > 0;
       return false;
     }),
     readFileSync: jest.fn((...args: unknown[]) => {
       const p = args[0] as string;
-      if (typeof p === 'string' && p.includes('analysis_negative_patterns.json')) return JSON.stringify(mockNegativePatterns);
-      if (typeof p === 'string' && p.includes('analysis_patterns.json')) return JSON.stringify(mockPatterns);
+      if (typeof p === 'string' && isNegativeFile(p)) return JSON.stringify(mockNegativePatterns);
+      if (typeof p === 'string' && isQuickFile(p)) return JSON.stringify(mockQuickPatterns);
+      if (typeof p === 'string' && isPositiveFile(p)) return JSON.stringify(mockPatterns);
       return '[]';
     }),
     mkdirSync: jest.fn(),
@@ -47,20 +57,19 @@ jest.mock('fs', () => {
       writeFile: jest.fn(async (...args: unknown[]) => {
         const p = args[0] as string;
         const data = args[1] as string;
-        // Buffer .tmp writes for the rename step
         tmpWriteBuffer.set(p, data);
       }),
       rename: jest.fn(async (...args: unknown[]) => {
         const src = args[0] as string;
         const dest = args[1] as string;
-        // Apply buffered data to mock store on rename (simulates atomic write)
         const data = tmpWriteBuffer.get(src);
         if (data) {
-          if (typeof dest === 'string' && dest.includes('analysis_patterns.json')) {
-            mockPatterns = JSON.parse(data);
-          }
-          if (typeof dest === 'string' && dest.includes('analysis_negative_patterns.json')) {
+          if (typeof dest === 'string' && isNegativeFile(dest)) {
             mockNegativePatterns = JSON.parse(data);
+          } else if (typeof dest === 'string' && isQuickFile(dest)) {
+            mockQuickPatterns = JSON.parse(data);
+          } else if (typeof dest === 'string' && isPositiveFile(dest)) {
+            mockPatterns = JSON.parse(data);
           }
           tmpWriteBuffer.delete(src);
         }
@@ -76,6 +85,11 @@ import {
   matchNegativePatterns,
   saveAnalysisPattern,
   saveNegativePattern,
+  saveQuickPathPattern,
+  matchQuickPatternsAsBackup,
+  promoteQuickPatternIfMatching,
+  applyFeedbackToPattern,
+  sweepAutoConfirm,
   buildPatternContextSection,
   buildNegativePatternSection,
 } from '../analysisPatternMemory';
@@ -85,6 +99,7 @@ import {
 beforeEach(() => {
   mockPatterns = [];
   mockNegativePatterns = [];
+  mockQuickPatterns = [];
 });
 
 // ── Feature Extraction ───────────────────────────────────────────────────
@@ -459,5 +474,292 @@ describe('buildNegativePatternSection', () => {
     expect(section).toContain('历史踩坑记录');
     expect(section).toContain('避免');
     expect(section).toContain('替代方案');
+  });
+});
+
+// ── Self-Improving v3.3 — state machine + buckets + promote + feedback ───
+
+describe('saveAnalysisPattern with extras', () => {
+  it('defaults new entries to status=provisional', async () => {
+    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['root cause: jank'], 'scrolling', 'STANDARD');
+    expect(mockPatterns).toHaveLength(1);
+    expect(mockPatterns[0].status).toBe('provisional');
+  });
+
+  it('honors explicit status from extras', async () => {
+    await saveAnalysisPattern(
+      ['arch:STANDARD', 'scene:scrolling'],
+      ['insight'],
+      'scrolling',
+      'STANDARD',
+      0.7,
+      { status: 'confirmed' },
+    );
+    expect(mockPatterns[0].status).toBe('confirmed');
+  });
+
+  it('attaches failureModeHash + provenance + bucketKey when provided', async () => {
+    await saveAnalysisPattern(
+      ['arch:STANDARD'],
+      ['insight'],
+      'scrolling',
+      'STANDARD',
+      undefined,
+      {
+        failureModeHash: 'cafebabe12345678',
+        bucketKey: 'scrolling::STANDARD::tencent',
+        provenance: { sessionId: 's1', turnIndex: 0 },
+      },
+    );
+    expect(mockPatterns[0].failureModeHash).toBe('cafebabe12345678');
+    expect(mockPatterns[0].bucketKey).toBe('scrolling::STANDARD::tencent');
+    expect(mockPatterns[0].provenance).toEqual({ sessionId: 's1', turnIndex: 0 });
+  });
+
+  it('does not downgrade an already-confirmed entry on re-save', async () => {
+    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['v1'], 'scrolling', 'STANDARD', 0.7, { status: 'confirmed' });
+    expect(mockPatterns[0].status).toBe('confirmed');
+    // Re-save with overlapping features → triggers the merge branch.
+    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['v2'], 'scrolling', 'STANDARD');
+    expect(mockPatterns[0].status).toBe('confirmed');
+  });
+});
+
+describe('matchPatterns status weighting', () => {
+  it('drops entries with status=rejected', async () => {
+    mockPatterns = [{
+      id: 'p1', traceFeatures: ['arch:STANDARD', 'scene:scrolling'],
+      sceneType: 'scrolling', keyInsights: ['x'], confidence: 0.9,
+      createdAt: Date.now(), matchCount: 5, status: 'rejected',
+    }];
+    expect(matchPatterns(['arch:STANDARD', 'scene:scrolling'])).toEqual([]);
+  });
+
+  it('confirmed entries score higher than provisional for same features', async () => {
+    const now = Date.now();
+    mockPatterns = [
+      { id: 'p_conf', traceFeatures: ['arch:STANDARD', 'scene:scrolling'], sceneType: 'scrolling', keyInsights: ['a'], confidence: 0.9, createdAt: now, matchCount: 0, status: 'confirmed' },
+      { id: 'p_prov', traceFeatures: ['arch:STANDARD', 'scene:scrolling'], sceneType: 'scrolling', keyInsights: ['b'], confidence: 0.9, createdAt: now, matchCount: 0, status: 'provisional' },
+    ];
+    const matches = matchPatterns(['arch:STANDARD', 'scene:scrolling']);
+    expect(matches[0].id).toBe('p_conf');
+    expect(matches[1].id).toBe('p_prov');
+    expect(matches[0].score).toBeGreaterThan(matches[1].score);
+  });
+
+  it('legacy entries (no status field) behave as confirmed', async () => {
+    mockPatterns = [{
+      id: 'legacy', traceFeatures: ['arch:STANDARD', 'scene:scrolling'],
+      sceneType: 'scrolling', keyInsights: ['x'], confidence: 0.7, createdAt: Date.now(), matchCount: 0,
+    }];
+    const matches = matchPatterns(['arch:STANDARD', 'scene:scrolling']);
+    expect(matches.length).toBe(1);
+    // Legacy gets full status weight (1.0) — score should be similar to a confirmed entry.
+    expect(matches[0].score).toBeGreaterThan(0.5);
+  });
+});
+
+describe('quick-path bucket', () => {
+  it('saves and retrieves quick-path entries', async () => {
+    await saveQuickPathPattern(['arch:FLUTTER', 'scene:scrolling'], ['quick insight'], 'scrolling', 'FLUTTER');
+    expect(mockQuickPatterns).toHaveLength(1);
+    const matches = matchQuickPatternsAsBackup(['arch:FLUTTER', 'scene:scrolling']);
+    expect(matches.length).toBe(1);
+  });
+
+  it('quick-path matches score lower than long-term confirmed for same features', async () => {
+    const now = Date.now();
+    mockPatterns = [{
+      id: 'long', traceFeatures: ['arch:FLUTTER', 'scene:scrolling'],
+      sceneType: 'scrolling', keyInsights: ['l'], confidence: 0.9, createdAt: now, matchCount: 0, status: 'confirmed',
+    }];
+    mockQuickPatterns = [{
+      id: 'quick', traceFeatures: ['arch:FLUTTER', 'scene:scrolling'],
+      sceneType: 'scrolling', keyInsights: ['q'], confidence: 0.3, createdAt: now, matchCount: 0, status: 'confirmed',
+    }];
+    const longMatch = matchPatterns(['arch:FLUTTER', 'scene:scrolling'])[0];
+    const quickMatch = matchQuickPatternsAsBackup(['arch:FLUTTER', 'scene:scrolling'])[0];
+    expect(longMatch.score).toBeGreaterThan(quickMatch.score);
+  });
+});
+
+describe('promoteQuickPatternIfMatching', () => {
+  const features = ['arch:FLUTTER', 'scene:scrolling'];
+
+  it('returns false when verifierPassed is false', async () => {
+    mockQuickPatterns = [{
+      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['root cause: jank'],
+      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
+    }];
+    const promoted = await promoteQuickPatternIfMatching({
+      fullPathFeatures: features,
+      fullPathInsights: ['root cause: jank'],
+      sceneType: 'scrolling',
+      architectureType: 'FLUTTER',
+      verifierPassed: false,
+    });
+    expect(promoted).toBe(false);
+    expect(mockPatterns).toHaveLength(0);
+  });
+
+  it('promotes when similarity ≥0.65 and at least one insight overlaps', async () => {
+    mockQuickPatterns = [{
+      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['root cause: dropped frames'],
+      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
+    }];
+    const promoted = await promoteQuickPatternIfMatching({
+      fullPathFeatures: features,
+      fullPathInsights: ['root cause: dropped frames', 'extra detail'],
+      sceneType: 'scrolling',
+      architectureType: 'FLUTTER',
+      verifierPassed: true,
+    });
+    expect(promoted).toBe(true);
+    expect(mockPatterns).toHaveLength(1);
+    expect(mockPatterns[0].status).toBe('confirmed');
+  });
+
+  it('refuses to promote when no insight overlaps', async () => {
+    mockQuickPatterns = [{
+      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['something unrelated'],
+      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
+    }];
+    const promoted = await promoteQuickPatternIfMatching({
+      fullPathFeatures: features,
+      fullPathInsights: ['totally different insight'],
+      sceneType: 'scrolling',
+      architectureType: 'FLUTTER',
+      verifierPassed: true,
+    });
+    expect(promoted).toBe(false);
+  });
+
+  it('refuses to promote when scene/arch differ', async () => {
+    mockQuickPatterns = [{
+      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['x'],
+      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
+    }];
+    const promoted = await promoteQuickPatternIfMatching({
+      fullPathFeatures: features,
+      fullPathInsights: ['x'],
+      sceneType: 'startup', // mismatch
+      architectureType: 'FLUTTER',
+      verifierPassed: true,
+    });
+    expect(promoted).toBe(false);
+  });
+
+  it('refuses to promote rejected/disputed quick entries', async () => {
+    mockQuickPatterns = [{
+      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['x'],
+      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'rejected',
+    }];
+    const promoted = await promoteQuickPatternIfMatching({
+      fullPathFeatures: features,
+      fullPathInsights: ['x'],
+      sceneType: 'scrolling',
+      architectureType: 'FLUTTER',
+      verifierPassed: true,
+    });
+    expect(promoted).toBe(false);
+  });
+});
+
+describe('applyFeedbackToPattern state machine', () => {
+  const baseEntry = {
+    id: 'p1', traceFeatures: ['arch:STANDARD'], sceneType: 'scrolling',
+    keyInsights: ['x'], confidence: 0.7, matchCount: 0,
+  };
+
+  it('returns null when patternId not found', async () => {
+    const result = await applyFeedbackToPattern('missing', 'positive');
+    expect(result).toBeNull();
+  });
+
+  it('flips provisional → confirmed on positive feedback', async () => {
+    mockPatterns = [{ ...baseEntry, status: 'provisional', createdAt: Date.now() }];
+    const status = await applyFeedbackToPattern('p1', 'positive');
+    expect(status).toBe('confirmed');
+    expect(mockPatterns[0].status).toBe('confirmed');
+    expect(mockPatterns[0].lastFeedbackAt).toBeDefined();
+  });
+
+  it('flips provisional → rejected on negative feedback', async () => {
+    mockPatterns = [{ ...baseEntry, status: 'provisional', createdAt: Date.now() }];
+    const status = await applyFeedbackToPattern('p1', 'negative');
+    expect(status).toBe('rejected');
+  });
+
+  it('reverse feedback within 10s is treated as misclick (last-write-wins)', async () => {
+    const t0 = 1_700_000_000_000;
+    mockPatterns = [{
+      ...baseEntry, status: 'confirmed', createdAt: t0 - 1000,
+      firstFeedbackAt: t0, lastFeedbackAt: t0,
+    }];
+    const status = await applyFeedbackToPattern('p1', 'negative', t0 + 5_000);
+    expect(status).toBe('rejected');
+  });
+
+  it('reverse feedback in the 10s–24h window enters disputed', async () => {
+    const t0 = 1_700_000_000_000;
+    mockPatterns = [{
+      ...baseEntry, status: 'confirmed', createdAt: t0 - 1000,
+      firstFeedbackAt: t0, lastFeedbackAt: t0,
+    }];
+    const status = await applyFeedbackToPattern('p1', 'negative', t0 + 60 * 60 * 1000); // 1h later
+    expect(status).toBe('disputed');
+  });
+
+  it('reverse feedback >24h later enters disputed_late', async () => {
+    const t0 = 1_700_000_000_000;
+    mockPatterns = [{
+      ...baseEntry, status: 'confirmed', createdAt: t0 - 1000,
+      firstFeedbackAt: t0, lastFeedbackAt: t0,
+    }];
+    const status = await applyFeedbackToPattern('p1', 'negative', t0 + 48 * 60 * 60 * 1000); // 2 days later
+    expect(status).toBe('disputed_late');
+  });
+
+  it('rejected entries stay rejected regardless of subsequent positives', async () => {
+    mockPatterns = [{ ...baseEntry, status: 'rejected', createdAt: Date.now() }];
+    const status = await applyFeedbackToPattern('p1', 'positive');
+    expect(status).toBe('rejected');
+  });
+
+  it('finds patterns across positive / quick / negative buckets', async () => {
+    mockQuickPatterns = [{ ...baseEntry, id: 'q1', status: 'provisional', createdAt: Date.now() }];
+    const status = await applyFeedbackToPattern('q1', 'positive');
+    expect(status).toBe('confirmed');
+    expect(mockQuickPatterns[0].status).toBe('confirmed');
+  });
+});
+
+describe('sweepAutoConfirm', () => {
+  it('promotes provisional entries past the 24h window to confirmed', async () => {
+    const now = 1_700_000_000_000;
+    mockPatterns = [
+      { id: 'old', traceFeatures: ['x'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
+        createdAt: now - 2 * 24 * 60 * 60 * 1000, matchCount: 0, status: 'provisional' },
+      { id: 'fresh', traceFeatures: ['y'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
+        createdAt: now - 60 * 1000, matchCount: 0, status: 'provisional' },
+    ];
+    await sweepAutoConfirm(now);
+    const old = mockPatterns.find(p => p.id === 'old');
+    const fresh = mockPatterns.find(p => p.id === 'fresh');
+    expect(old.status).toBe('confirmed');
+    expect(fresh.status).toBe('provisional');
+  });
+
+  it('does not touch confirmed/rejected entries', async () => {
+    const now = 1_700_000_000_000;
+    mockPatterns = [
+      { id: 'conf', traceFeatures: ['x'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
+        createdAt: now - 2 * 24 * 60 * 60 * 1000, matchCount: 0, status: 'confirmed' },
+      { id: 'rej', traceFeatures: ['x'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
+        createdAt: now - 2 * 24 * 60 * 60 * 1000, matchCount: 0, status: 'rejected' },
+    ];
+    await sweepAutoConfirm(now);
+    expect(mockPatterns.find(p => p.id === 'conf').status).toBe('confirmed');
+    expect(mockPatterns.find(p => p.id === 'rej').status).toBe('rejected');
   });
 });
