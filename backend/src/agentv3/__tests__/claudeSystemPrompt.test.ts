@@ -296,6 +296,21 @@ describe('buildSystemPrompt', () => {
       expect(prompt).toContain('bad_table');
     });
 
+    it('should cap SQL error fix pairs at 10 entries', () => {
+      const pairs = Array.from({ length: 15 }, (_, i) => ({
+        errorSql: `SELECT * FROM bad_${i}`,
+        errorMessage: `no such table: bad_${i}`,
+        fixedSql: `SELECT * FROM good_${i}`,
+      }));
+      const prompt = buildSystemPrompt(makeContext({ sqlErrorFixPairs: pairs }));
+      // First 10 entries injected
+      expect(prompt).toContain('bad_0');
+      expect(prompt).toContain('bad_9');
+      // 11th onwards must NOT appear (cap is exclusive of index 10)
+      expect(prompt).not.toContain('bad_10');
+      expect(prompt).not.toContain('bad_14');
+    });
+
     it('should inject pattern context', () => {
       const prompt = buildSystemPrompt(makeContext({
         patternContext: '## 历史分析经验（跨会话记忆）\n\n有用的经验',

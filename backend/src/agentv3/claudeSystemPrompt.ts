@@ -432,7 +432,9 @@ ${context.conversationSummary}`);
   // the relevant skills directly.
 
   if (context.sqlErrorFixPairs && context.sqlErrorFixPairs.length > 0) {
-    const pairLines = context.sqlErrorFixPairs.slice(0, 5).map((p, i) =>
+    // Whole section is droppable under token pressure (see L477), so the cap
+    // can be generous in normal operation.
+    const pairLines = context.sqlErrorFixPairs.slice(0, 10).map((p, i) =>
       `${i + 1}. ERROR: \`${p.errorMessage.substring(0, 100)}\`\n   BAD: \`${p.errorSql.substring(0, 150)}\`\n   FIX: \`${p.fixedSql.substring(0, 150)}\``
     ).join('\n');
     sections.push(`## SQL 踩坑记录（避免重复犯错）\n\n${pairLines}`);
