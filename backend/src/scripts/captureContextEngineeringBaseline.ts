@@ -29,11 +29,14 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+type OutputFormat = 'json' | 'markdown';
+
 interface CliOptions {
   stage: string;
   outPath: string;
   sinceMins: number;
   metricsDir: string;
+  format: OutputFormat;
 }
 
 interface PersistedSessionMetrics {
@@ -75,7 +78,8 @@ function printUsage(): void {
   console.log('');
   console.log('Options:');
   console.log('  --stage <name>       Baseline stage label (current / post-P0 / post-v2.1) — required');
-  console.log('  --out <path>         Output JSON path — required');
+  console.log('  --out <path>         Output report path — required');
+  console.log('  --format <kind>      Output format: json (default) or markdown');
   console.log(`  --since-mins <n>     Only include sessions whose mtime is within the last N minutes (default: ${DEFAULT_SINCE_MINS})`);
   console.log(`  --metrics-dir <dir>  Override metrics directory (default: ${DEFAULT_METRICS_DIR})`);
   console.log('  --help               Show this help');
@@ -85,6 +89,7 @@ function parseArgs(argv: string[]): CliOptions {
   const opts: Partial<CliOptions> = {
     sinceMins: DEFAULT_SINCE_MINS,
     metricsDir: DEFAULT_METRICS_DIR,
+    format: 'json',
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -102,6 +107,14 @@ function parseArgs(argv: string[]): CliOptions {
     if (arg === '--out') {
       if (!next) throw new Error('--out requires a value');
       opts.outPath = path.resolve(process.cwd(), next);
+      i += 1;
+      continue;
+    }
+    if (arg === '--format') {
+      if (next !== 'json' && next !== 'markdown') {
+        throw new Error(`--format must be 'json' or 'markdown' (got: ${next})`);
+      }
+      opts.format = next;
       i += 1;
       continue;
     }
@@ -197,10 +210,87 @@ function main(): void {
   };
 
   fs.mkdirSync(path.dirname(opts.outPath), { recursive: true });
-  fs.writeFileSync(opts.outPath, `${JSON.stringify(report, null, 2)}\n`);
-  console.log(`Wrote ${sessions.length} session(s) to ${opts.outPath}`);
+  const body = opts.format === 'markdown'
+    ? renderMarkdown(report)
+    : `${JSON.stringify(report, null, 2)}\n`;
+  fs.writeFileSync(opts.outPath, body);
+  console.log(`Wrote ${sessions.length} session(s) to ${opts.outPath} (${opts.format})`);
   console.log(`Mean cache hit rate: ${report.aggregate.meanCacheHitRate ?? 'n/a'}`);
   console.log(`Total cost: $${(report.aggregate.totalCostUsd ?? 0).toFixed(4)}`);
+}
+
+interface AggregateReport {
+  stage: string;
+  capturedAt: string;
+  sinceMins: number;
+  metricsDir: string;
+  aggregate: ReturnType<typeof aggregate>;
+  sessions: Array<{
+    sessionId: string;
+    analysisMode?: string;
+    classifierSource?: string;
+    durationMs: number;
+    turns: number;
+    totalToolCalls: number;
+    cache?: PersistedSessionMetrics['cache'];
+  }>;
+}
+
+function fmtMs(ms: number): string {
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function fmtPct(ratio: number | null | undefined): string {
+  if (ratio == null) return 'n/a';
+  return `${(ratio * 100).toFixed(1)}%`;
+}
+
+function fmtUsd(usd: number | null | undefined): string {
+  if (usd == null) return 'n/a';
+  return `$${usd.toFixed(4)}`;
+}
+
+function renderMarkdown(report: AggregateReport): string {
+  const a = report.aggregate;
+  const lines: string[] = [];
+  lines.push(`# Context Engineering Baseline — ${report.stage}`);
+  lines.push('');
+  lines.push(`Captured: \`${report.capturedAt}\` (window: last ${report.sinceMins} min)`);
+  lines.push(`Source: \`${report.metricsDir}\``);
+  lines.push('');
+  lines.push('## Aggregate');
+  lines.push('');
+  lines.push('| Metric | Value |');
+  lines.push('|--------|-------|');
+  lines.push(`| sessions | ${a.sessionCount} |`);
+  lines.push(`| sessions with cache data | ${a.cacheCapableCount} |`);
+  lines.push(`| total turns | ${a.totalTurns} |`);
+  lines.push(`| total tool calls | ${a.totalToolCalls} |`);
+  lines.push(`| total duration | ${fmtMs(a.totalDurationMs)} |`);
+  lines.push(`| mean duration | ${a.meanDurationMs == null ? 'n/a' : fmtMs(a.meanDurationMs)} |`);
+  lines.push(`| mean turns | ${a.meanTurns == null ? 'n/a' : a.meanTurns.toFixed(1)} |`);
+  lines.push(`| **mean cache hit rate** | **${fmtPct(a.meanCacheHitRate)}** |`);
+  lines.push(`| total input tokens | ${a.totalInputTokens.toLocaleString()} |`);
+  lines.push(`| total cache-read tokens | ${a.totalCacheReadInputTokens.toLocaleString()} |`);
+  lines.push(`| total cache-creation tokens | ${a.totalCacheCreationInputTokens.toLocaleString()} |`);
+  lines.push(`| **total cost** | **${fmtUsd(a.totalCostUsd)}** |`);
+  lines.push('');
+
+  if (report.sessions.length === 0) {
+    lines.push('_(no sessions in window)_');
+  } else {
+    lines.push('## Sessions');
+    lines.push('');
+    lines.push('| sessionId | mode | turns | tool calls | duration | cache hit | cost |');
+    lines.push('|-----------|------|------:|-----------:|---------:|----------:|-----:|');
+    for (const s of report.sessions) {
+      lines.push(
+        `| \`${s.sessionId}\` | ${s.analysisMode ?? '—'} | ${s.turns} | ${s.totalToolCalls} | ${fmtMs(s.durationMs)} | ${fmtPct(s.cache?.cacheHitRate ?? null)} | ${fmtUsd(s.cache?.totalCostUsd ?? null)} |`,
+      );
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 try {
