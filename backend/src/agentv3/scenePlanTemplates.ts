@@ -122,3 +122,47 @@ export function getScenePlanTemplate(scene: SceneType): ScenePlanTemplate | unde
 export function listScenePlanTemplateKeys(): SceneType[] {
   return Object.keys(SCENE_PLAN_TEMPLATES);
 }
+
+export interface PlanValidationResult {
+  /** Human-readable suggestions for any uncovered aspect (one per aspect). */
+  warnings: string[];
+  /**
+   * Stable handles for the missing aspects, derived from the first
+   * matchKeyword. Lets callers (e.g. revise_plan diff) tell whether the
+   * same aspects keep recurring across attempts.
+   */
+  missingAspectIds: string[];
+}
+
+/**
+ * Detect mandatory aspects of a scene's plan template that a submitted
+ * `phases` array fails to mention. Returns empty arrays for scenes without
+ * a template or when all aspects are covered.
+ *
+ * Pure function — both `submit_plan` and `revise_plan` delegate here so
+ * the hard-gate cannot be bypassed by silently re-issuing a plan via the
+ * revise endpoint.
+ */
+export function validatePlanAgainstSceneTemplate(
+  phases: ReadonlyArray<{ name: string; goal: string; expectedTools: string[] }>,
+  scene: SceneType | undefined,
+): PlanValidationResult {
+  const template = scene ? getScenePlanTemplate(scene) : undefined;
+  if (!template) return { warnings: [], missingAspectIds: [] };
+
+  const planText = phases
+    .map(p => `${p.name} ${p.goal} ${p.expectedTools.join(' ')}`)
+    .join(' ')
+    .toLowerCase();
+
+  const warnings: string[] = [];
+  const missingAspectIds: string[] = [];
+  for (const aspect of template.mandatoryAspects) {
+    const covered = aspect.matchKeywords.some(kw => planText.includes(kw.toLowerCase()));
+    if (!covered) {
+      warnings.push(aspect.suggestion);
+      missingAspectIds.push(aspect.matchKeywords[0]);
+    }
+  }
+  return { warnings, missingAspectIds };
+}

@@ -23,7 +23,7 @@ import { loadSkillNotes } from './selfImprove/skillNotesInjector';
 import { getPerfettoStdlibModules } from '../services/perfettoStdlibScanner';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import { loadPromptTemplate, getPhaseHints } from './strategyLoader';
-import { getScenePlanTemplate } from './scenePlanTemplates';
+import { validatePlanAgainstSceneTemplate } from './scenePlanTemplates';
 import type { ArtifactStore } from './artifactStore';
 
 /** MCP tool name prefix — derived from the server name 'smartperfetto'.
@@ -1192,18 +1192,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         toolCallLog: [],
       };
 
-      // P1-G11: Validate plan against scene template
-      const planWarnings: string[] = [];
-      const template = options.sceneType ? getScenePlanTemplate(options.sceneType) : undefined;
-      if (template) {
-        const planText = phases.map(p => `${p.name} ${p.goal} ${p.expectedTools.join(' ')}`).join(' ').toLowerCase();
-        for (const aspect of template.mandatoryAspects) {
-          const covered = aspect.matchKeywords.some(kw => planText.includes(kw.toLowerCase()));
-          if (!covered) {
-            planWarnings.push(aspect.suggestion);
-          }
-        }
-      }
+      // P1-G11: Validate plan against scene template (shared with revise_plan)
+      const { warnings: planWarnings } = validatePlanAgainstSceneTemplate(phases, options.sceneType);
 
       planSubmitAttempts++;
 
@@ -1458,16 +1448,29 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       });
 
       const pending = plan.phases.filter(p => p.status === 'pending');
+      // P1-G11: Run scene-template validation on the revised plan too — otherwise
+      // an agent could submit a compliant plan and then revise mandatory phases
+      // away to bypass the hard-gate. Phase 2.3 will upgrade these warnings to
+      // a real reject when sceneType is known.
+      const { warnings: revisedPlanWarnings } = validatePlanAgainstSceneTemplate(
+        plan.phases,
+        options.sceneType,
+      );
+      const reviseResponse: Record<string, unknown> = {
+        success: true,
+        message: `Plan revised (revision #${plan.revisionHistory.length}): ${reason}`,
+        totalPhases: plan.phases.length,
+        pendingPhases: pending.length,
+        nextPhase: pending[0]?.id,
+      };
+      if (revisedPlanWarnings.length > 0) {
+        reviseResponse.sceneWarnings = revisedPlanWarnings;
+        console.log(`[MCP] Revised plan has ${revisedPlanWarnings.length} unmet aspects for ${options.sceneType ?? 'unknown scene'}`);
+      }
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({
-            success: true,
-            message: `Plan revised (revision #${plan.revisionHistory.length}): ${reason}`,
-            totalPhases: plan.phases.length,
-            pendingPhases: pending.length,
-            nextPhase: pending[0]?.id,
-          }),
+          text: JSON.stringify(reviseResponse),
         }],
       };
     }
