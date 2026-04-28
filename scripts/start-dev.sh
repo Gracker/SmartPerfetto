@@ -90,6 +90,7 @@ cleanup() {
   kill_pid_and_children "$FRONTEND_PID" "frontend"
 
   # Clean up any child processes
+  pkill -f "$PROJECT_ROOT/backend/node_modules/.bin/tsx watch src/index.ts" 2>/dev/null || true
   pkill -f "tsc.*perfetto.*watch" 2>/dev/null || true
   pkill -f "rollup.*perfetto.*watch" 2>/dev/null || true
   pkill -f "node.*perfetto/ui/build.js" 2>/dev/null || true
@@ -325,35 +326,38 @@ extract_frontend_version() {
 }
 
 # Strong readiness check for Perfetto frontend:
-# - index.html responds 200
-# - versioned frontend_bundle.js responds 200
-# - bundle is reasonably large (guard against truncated output)
-# - bundle tail contains sourceMappingURL marker
+# - index.html responds 200 and exposes the current version directory
+# - local versioned frontend_bundle.js exists and is reasonably large
+# - versioned manifest.json responds 200, proving the HTTP server is serving
+#   the same dist directory without downloading the 20MB+ frontend bundle
 is_frontend_bundle_ready() {
   local version="$1"
-  local bundle_url="http://localhost:10000/$version/frontend_bundle.js"
-  local tmp_file="/tmp/smartperfetto_frontend_bundle_$$.js"
+  local bundle_file=""
+  local manifest_url="http://localhost:10000/$version/manifest.json"
 
-  local code
-  code=$(curl -sS -o "$tmp_file" -w "%{http_code}" "$bundle_url" 2>/dev/null || echo "000")
-  if [ "$code" != "200" ]; then
-    rm -f "$tmp_file" 2>/dev/null || true
+  for candidate in \
+    "$PERFETTO_DIR/out/ui/ui/dist/$version/frontend_bundle.js" \
+    "$PERFETTO_DIR/out/ui/dist/$version/frontend_bundle.js"; do
+    if [ -f "$candidate" ]; then
+      bundle_file="$candidate"
+      break
+    fi
+  done
+
+  if [ -z "$bundle_file" ]; then
     return 1
   fi
 
   local size
-  size=$(wc -c < "$tmp_file" 2>/dev/null || echo 0)
+  size=$(wc -c < "$bundle_file" 2>/dev/null || echo 0)
   if [ "${size:-0}" -lt 5000000 ]; then
-    rm -f "$tmp_file" 2>/dev/null || true
     return 1
   fi
 
-  if ! tail -c 256 "$tmp_file" | grep -q "sourceMappingURL=frontend_bundle.js.map"; then
-    rm -f "$tmp_file" 2>/dev/null || true
+  if ! curl -fsS -o /dev/null "$manifest_url" 2>/dev/null; then
     return 1
   fi
 
-  rm -f "$tmp_file" 2>/dev/null || true
   return 0
 }
 
@@ -455,6 +459,7 @@ kill_processes_on_port 10000
 
 # Kill any zombie tsc/rollup watch processes from previous runs
 echo "Cleaning up zombie watch processes..."
+pkill -f "$PROJECT_ROOT/backend/node_modules/.bin/tsx watch src/index.ts" 2>/dev/null || true
 pkill -f "tsc.*perfetto.*watch" 2>/dev/null || true
 pkill -f "rollup.*perfetto.*watch" 2>/dev/null || true
 pkill -f "node.*perfetto/ui/build.js" 2>/dev/null || true
