@@ -21,6 +21,7 @@ import { summarizeSqlResult } from './sqlSummarizer';
 import { matchPatterns, matchNegativePatterns, extractTraceFeatures } from './analysisPatternMemory';
 import { loadSkillNotes } from './selfImprove/skillNotesInjector';
 import { getPerfettoStdlibModules } from '../services/perfettoStdlibScanner';
+import { injectStdlibIncludes } from './sqlIncludeInjector';
 import { loadPromptTemplate, getPhaseHints } from './strategyLoader';
 import type { ArtifactStore } from './artifactStore';
 
@@ -326,6 +327,25 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     return dataToolCallCount <= REASONING_NUDGE_MAX_CALLS ? REASONING_NUDGE : '';
   }
 
+  // Auto-inject `INCLUDE PERFETTO MODULE ...;` for stdlib tables/functions
+  // referenced in raw SQL. Shared between execute_sql and execute_sql_on
+  // so comparison-mode queries get the same treatment. See
+  // sqlIncludeInjector.ts for the full rationale.
+  async function runRawSqlWithIncludeInjection(targetTraceId: string, sql: string) {
+    const { sql: finalSql, injected } = injectStdlibIncludes(sql);
+    if (emitUpdate && injected.length > 0) {
+      emitUpdate({
+        type: 'progress',
+        content: {
+          phase: 'analyzing',
+          message: `自动加载 stdlib 模块: ${injected.join(', ')}`,
+        },
+        timestamp: Date.now(),
+      });
+    }
+    return traceProcessorService.query(targetTraceId, finalSql);
+  }
+
   const executeSql = tool(
     'execute_sql',
     'Execute a raw SQL query against the Perfetto trace_processor for the currently loaded trace. ' +
@@ -352,7 +372,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
       try {
         const sqlStart = Date.now();
-        const result = await traceProcessorService.query(traceId, sql);
+        const result = await runRawSqlWithIncludeInjection(traceId, sql);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
         const success = !result.error;
@@ -1761,7 +1781,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const traceLabel = trace === 'reference' ? '[参考 Trace]' : '[当前 Trace]';
       try {
         const sqlStart = Date.now();
-        const result = await traceProcessorService.query(targetTraceId, sql);
+        const result = await runRawSqlWithIncludeInjection(targetTraceId, sql);
         const truncated = result.rows.length > 200;
         const rows = truncated ? result.rows.slice(0, 200) : result.rows;
         const success = !result.error;

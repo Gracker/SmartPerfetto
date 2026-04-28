@@ -180,7 +180,10 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
       // Stdlib modules are loaded on demand:
       // - Skills handle their own prerequisites via INCLUDE PERFETTO MODULE
-      // - execute_sql auto-injects critical INCLUDEs before every raw SQL query
+      //   (skillExecutor.buildSqlWithModuleIncludes)
+      // - Raw `execute_sql` / `execute_sql_on` calls go through
+      //   sqlIncludeInjector (backend/src/agentv3/sqlIncludeInjector.ts),
+      //   which scans the SQL and prepends required INCLUDEs.
       // Background preload was removed because it competes with Agent queries
       // for the single-threaded trace_processor_shell, causing socket hang ups
       // on large traces (200MB+).

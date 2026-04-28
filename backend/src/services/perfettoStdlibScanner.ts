@@ -19,14 +19,49 @@ import * as path from 'path';
 
 // Path to the Perfetto stdlib directory
 // From backend/src/services/ -> ../../../perfetto/src/trace_processor/perfetto_sql/stdlib
-const STDLIB_PATH = path.resolve(
+export const STDLIB_PATH = path.resolve(
   __dirname,
   '../../../perfetto/src/trace_processor/perfetto_sql/stdlib'
 );
 
+export const STDLIB_PRELUDE_DIR = 'prelude';
+
 // Directories to exclude from scanning
 // - prelude: Automatically loaded by Perfetto, should not be manually included
 const EXCLUDED_DIRS = new Set(['prelude']);
+
+/**
+ * Walk the stdlib directory tree and invoke `callback` for each `.sql`
+ * file. Returns the absolute file path plus the path relative to
+ * `STDLIB_PATH` (with native separators) so callers can derive their own
+ * naming scheme. Shared between the module-name scanner here and
+ * `sqlIncludeInjector` which needs to read SQL contents.
+ */
+export function walkStdlibSqlFiles(
+  callback: (absPath: string, relPath: string) => void,
+  options: { includePrelude?: boolean } = {},
+): void {
+  if (!fs.existsSync(STDLIB_PATH)) return;
+  const includePrelude = options.includePrelude ?? false;
+  const walk = (dir: string): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!includePrelude && entry.name === STDLIB_PRELUDE_DIR) continue;
+        walk(abs);
+      } else if (entry.isFile() && entry.name.endsWith('.sql')) {
+        callback(abs, path.relative(STDLIB_PATH, abs));
+      }
+    }
+  };
+  walk(STDLIB_PATH);
+}
 
 /**
  * Recursively scans a directory for SQL files and extracts module names.
