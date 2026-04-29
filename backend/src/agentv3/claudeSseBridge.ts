@@ -62,6 +62,12 @@ export interface SseBridge {
   getAccumulatedAnswer: () => string;
 }
 
+const RECOVERABLE_RESULT_SUBTYPES = new Set(['error_max_turns']);
+
+function isRecoverableResultSubtype(subtype: unknown): boolean {
+  return typeof subtype === 'string' && RECOVERABLE_RESULT_SUBTYPES.has(subtype);
+}
+
 /**
  * Creates a bridge function that translates Agent SDK messages into
  * SmartPerfetto StreamingUpdate events for SSE forwarding to the frontend.
@@ -269,6 +275,16 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
         emit({
           type: 'conclusion',
           content: { conclusion: msg.result || '', durationMs: msg.duration_ms, turns: msg.num_turns, costUsd: msg.total_cost_usd },
+          timestamp: now,
+        });
+      } else if (isRecoverableResultSubtype(msg.subtype)) {
+        emit({
+          type: 'progress',
+          content: {
+            phase: 'concluding',
+            message: '分析达到轮次上限，正在整理已收集结果...',
+            subtype: msg.subtype,
+          },
           timestamp: now,
         });
       } else {
