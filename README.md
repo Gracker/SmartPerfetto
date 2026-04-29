@@ -50,6 +50,8 @@ The project is open source and in active development. The UI, backend runtime, a
 
 Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine and an LLM API key; you do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. The Docker Hub image is published nightly from `main` and includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`.
 
+Windows users should use Docker Desktop with the WSL2 backend. The published image is a Linux container image and runs through Docker Desktop; no separate Windows build is required.
+
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
@@ -72,7 +74,7 @@ Uploads and logs are stored in Docker volumes, so they survive container restart
 
 ### Local Script
 
-Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 18+**, `curl`, `lsof`, `pkill`, and an LLM API key. Windows users should use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) or Docker.
+Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 18+**, `curl`, `lsof`, `pkill`, and an LLM API key. For Windows source development, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install), not native Windows shell.
 
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
