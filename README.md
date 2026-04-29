@@ -72,6 +72,14 @@ cp backend/.env.example backend/.env
 docker compose up --build
 ```
 
+To use the nightly pre-built image instead of compiling locally:
+
+```bash
+cp backend/.env.example .env
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up
+```
+
 ### Two Scripts — Which One to Use?
 
 | Script | Use when |

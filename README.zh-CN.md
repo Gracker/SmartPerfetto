@@ -72,6 +72,14 @@ cp backend/.env.example backend/.env
 docker compose up --build
 ```
 
+如果想直接使用 nightly 预构建镜像，避免本地编译：
+
+```bash
+cp backend/.env.example .env
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up
+```
+
 ### 两个脚本——用哪个？
 
 | 脚本 | 使用场景 |

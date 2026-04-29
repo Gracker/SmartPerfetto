@@ -2,8 +2,10 @@ name: Docker Build and Publish
 
 on:
   push:
-    branches: [ "main" ]
     tags: [ 'v*.*.*' ]
+  schedule:
+    # Nightly publish from main at 02:30 Asia/Shanghai.
+    - cron: '30 18 * * *'
   workflow_dispatch:
 
 env:
@@ -40,8 +42,10 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=nightly,enable=${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
             type=semver,pattern={{version}}
+            type=sha,prefix=sha-
 
       - name: Build and push Docker image
         id: build-and-push
