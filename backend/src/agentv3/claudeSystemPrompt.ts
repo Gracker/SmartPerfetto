@@ -101,7 +101,7 @@ function buildSceneStrategySection(sceneType: SceneType | undefined): string {
  * Build a system prompt section describing the user's current Perfetto UI selection.
  * This guides Claude to scope SQL queries and analysis to the selected region.
  */
-function buildSelectionContextSection(sel: SelectionContext): string {
+export function buildSelectionContextSection(sel: SelectionContext): string {
   if (sel.kind === 'area') {
     const template = loadSelectionTemplate('area');
     if (!template) return '';
@@ -537,6 +537,7 @@ export function buildQuickSystemPrompt(opts: {
   packageName?: string;
   focusApps?: DetectedFocusApp[];
   focusMethod?: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none';
+  selectionContext?: SelectionContext;
 }): string {
   const template = loadPromptTemplate('prompt-quick');
   if (!template) {
@@ -551,5 +552,9 @@ export function buildQuickSystemPrompt(opts: {
     ? buildFocusAppSection(opts.focusApps, opts.focusMethod)
     : '';
 
-  return renderTemplate(template, { architectureContext, focusAppContext });
+  const selectionSection = opts.selectionContext
+    ? buildSelectionContextSection(opts.selectionContext)
+    : '';
+
+  return renderTemplate(template, { architectureContext, focusAppContext, selectionSection });
 }

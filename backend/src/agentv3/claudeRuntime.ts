@@ -18,7 +18,7 @@ import type { AnalysisResult, AnalysisOptions, IOrchestrator } from '../agent/co
 import type { ArchitectureInfo } from '../agent/detectors/types';
 
 import { createClaudeMcpServer, loadLearnedSqlFixPairs, MCP_NAME_PREFIX } from './claudeMcpServer';
-import { buildSystemPrompt, buildQuickSystemPrompt } from './claudeSystemPrompt';
+import { buildSystemPrompt, buildQuickSystemPrompt, buildSelectionContextSection } from './claudeSystemPrompt';
 import { createSseBridge } from './claudeSseBridge';
 import { extractFindingsFromText, extractFindingsFromSkillResult, mergeFindings } from './claudeFindingExtractor';
 import { loadClaudeConfig, resolveEffort, createSdkEnv, createQuickConfig, type ClaudeAgentConfig } from './claudeConfig';
@@ -414,10 +414,20 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Reuse composite key from prepareAnalysisContext for comparison mode session identity isolation
       const existingSdkSessionId = this.sessionMap.get(ctx.sessionMapKey)?.sdkSessionId;
 
+      // When resuming an SDK session, systemPrompt is ignored by the SDK (mutually exclusive).
+      // Prepend selectionContext directly into the prompt so the AI sees it in the conversation.
+      let effectivePrompt = query;
+      if (existingSdkSessionId && options.selectionContext) {
+        const selSection = buildSelectionContextSection(options.selectionContext);
+        if (selSection) {
+          effectivePrompt = `${selSection}\n\n${query}`;
+        }
+      }
+
       const sdkEnv = createSdkEnv();
 
       const { stream, close: closeSdk } = sdkQueryWithRetry({
-        prompt: query,
+        prompt: effectivePrompt,
         options: {
           model: this.config.model,
           maxTurns: this.config.maxTurns,
@@ -1306,6 +1316,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         packageName: effectivePackageName,
         focusApps: focusResult.apps.length > 0 ? focusResult.apps : undefined,
         focusMethod: focusResult.method,
+        selectionContext: options.selectionContext,
       });
 
       const quickConfig = createQuickConfig(this.config);
