@@ -44,11 +44,35 @@ The project is open source and in active development. The UI, backend runtime, a
 | Testing | Jest, skill validation, strategy validation, 6-trace scene regression gate |
 | Deployment | Docker Compose or local dev scripts |
 
-## Quick Start
+## For Users
 
-Prerequisites: **Node.js 18+**, `curl`, `lsof`, `pkill`, and an LLM API key.
+### Docker (Recommended)
 
-> **Platform support**: macOS and Linux (Ubuntu/Debian) are fully supported. Windows users should use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) or Docker.
+Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine and an LLM API key; you do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. The Docker Hub image is published nightly from `main` and includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`.
+
+```bash
+git clone https://github.com/Gracker/SmartPerfetto.git
+cd SmartPerfetto
+cp backend/.env.example .env
+# Edit .env — set ANTHROPIC_API_KEY, or ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY for a proxy
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d
+```
+
+- Frontend: [http://localhost:10000](http://localhost:10000)
+- Backend health: [http://localhost:3000/health](http://localhost:3000/health)
+
+Stop the container with:
+
+```bash
+docker compose -f docker-compose.hub.yml down
+```
+
+Uploads and logs are stored in Docker volumes, so they survive container restarts.
+
+### Local Script
+
+Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 18+**, `curl`, `lsof`, `pkill`, and an LLM API key. Windows users should use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) or Docker.
 
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
@@ -60,32 +84,27 @@ cp backend/.env.example backend/.env
 ./start.sh
 ```
 
-- Frontend: [http://localhost:10000](http://localhost:10000)
-- Backend: [http://localhost:3000](http://localhost:3000)
+The repo ships with a pre-built Perfetto UI in `frontend/`, so the local script also avoids submodule initialization and the long Perfetto UI compile.
 
-The repo ships with a pre-built Perfetto UI in `frontend/` — **no submodule init, no C++ toolchain, no 30-minute compile**. Load a `.pftrace` file, open the **AI Assistant** panel, and start analyzing.
+## For Developers
 
-### Docker
+### Runtime Scripts
+
+| Script | Use when |
+|--------|----------|
+| `./start.sh` | ✅ Default — regular use, backend changes, strategy/skill edits |
+| `./scripts/start-dev.sh` | Only when modifying the AI plugin UI (`ai_panel.ts`, `styles.scss` etc.) — requires `perfetto/` submodule |
+
+### Source Docker Build
+
+Use this only when testing Docker changes or building an unreleased local checkout:
 
 ```bash
 cp backend/.env.example backend/.env
 docker compose up --build
 ```
 
-To use the nightly pre-built image instead of compiling locally:
-
-```bash
-cp backend/.env.example .env
-docker compose -f docker-compose.hub.yml pull
-docker compose -f docker-compose.hub.yml up
-```
-
-### Two Scripts — Which One to Use?
-
-| Script | Use when |
-|--------|----------|
-| `./start.sh` | ✅ Default — regular use, backend changes, strategy/skill edits |
-| `./scripts/start-dev.sh` | Only when modifying the AI plugin UI (`ai_panel.ts`, `styles.scss` etc.) — requires `perfetto/` submodule |
+The source build uses the committed `frontend/` bundle and does not rebuild the `perfetto/` submodule.
 
 ### Frontend Development (modifying AI plugin code)
 
