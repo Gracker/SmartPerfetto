@@ -48,6 +48,8 @@ The project is open source and in active development. The UI, backend runtime, a
 
 Prerequisites: **Node.js 18+**, `curl`, `lsof`, `pkill`, and an LLM API key.
 
+> **Platform support**: macOS and Linux (Ubuntu/Debian) are fully supported. Windows users should use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) or Docker.
+
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
