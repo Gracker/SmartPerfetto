@@ -166,6 +166,32 @@ SmartPerfetto works best with Android 12+ traces that include FrameTimeline data
 | Startup | `am`, `dalvik`, `wm`, `sched` | `binder_driver`, `freq`, `disk` |
 | ANR | `am`, `wm`, `sched`, `binder_driver` | `dalvik`, `disk` |
 
+## CLI Usage
+
+SmartPerfetto also ships a terminal CLI for trace analysis without opening the browser UI. It uses the same agentv3 runtime as the web experience and writes local sessions, transcripts, and reports under `~/.smartperfetto/`.
+
+```bash
+# One-time setup: downloads trace_processor_shell if it is missing.
+./start.sh
+# After the binary is ready, stop the server with Ctrl+C if you only need the CLI.
+
+cd backend
+npm install
+npm run build
+npm link
+
+# Analyze a trace, then continue the conversation.
+smartperfetto analyze trace.pftrace --query "Analyze scrolling jank"
+smartperfetto resume <sessionId> --query "Why is RenderThread slow?"
+smartperfetto list
+smartperfetto report <sessionId> --open
+
+# Or run an interactive Claude-Code-style REPL.
+smartperfetto
+```
+
+For development without rebuilding first, use `./backend/scripts/smartperfetto-dev ...`. See [CLI Reference](docs/reference/cli.md) for all commands, REPL slash commands, storage layout, and resume behavior.
+
 ## API Integration
 
 The browser UI talks to the backend through REST and SSE. If you want to build your own UI or automation, start with these endpoints:
@@ -241,6 +267,7 @@ Do not hardcode prompt content in TypeScript. Put scene logic in `backend/strate
 - [Quick Start](docs/getting-started/quick-start.md)
 - [Architecture Overview](docs/architecture/overview.md)
 - [API Reference](docs/reference/api.md)
+- [CLI Reference](docs/reference/cli.md)
 - [MCP Tools Reference](docs/reference/mcp-tools.md)
 - [Skill System Guide](docs/reference/skill-system.md)
 - [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.md)

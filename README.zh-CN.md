@@ -166,6 +166,32 @@ SmartPerfetto 最适合分析包含 FrameTimeline 数据的 Android 12+ trace。
 | 启动 | `am`, `dalvik`, `wm`, `sched` | `binder_driver`, `freq`, `disk` |
 | ANR | `am`, `wm`, `sched`, `binder_driver` | `dalvik`, `disk` |
 
+## CLI 用法
+
+SmartPerfetto 同时提供终端 CLI，可以不打开浏览器 UI 直接分析 trace。CLI 复用和 Web 端相同的 agentv3 运行时，并把本地 session、transcript 和报告写到 `~/.smartperfetto/`。
+
+```bash
+# 一次性准备：如果 trace_processor_shell 不存在，先下载它。
+./start.sh
+# binary 准备好之后，如果只使用 CLI，可以按 Ctrl+C 关掉服务。
+
+cd backend
+npm install
+npm run build
+npm link
+
+# 分析 trace，并继续追问。
+smartperfetto analyze trace.pftrace --query "分析滑动卡顿"
+smartperfetto resume <sessionId> --query "为什么 RenderThread 这么慢？"
+smartperfetto list
+smartperfetto report <sessionId> --open
+
+# 或者直接进入 Claude-Code 风格的交互 REPL。
+smartperfetto
+```
+
+开发期不想先构建，可以使用 `./backend/scripts/smartperfetto-dev ...`。完整命令、REPL slash 命令、存储布局和 resume 语义见 [CLI 参考](docs/reference/cli.md)。
+
 ## API 接入
 
 浏览器 UI 通过 REST 和 SSE 与后端通信。如果你要自建 UI 或自动化流程，可以从这些接口开始：
@@ -241,6 +267,7 @@ npm run test:core
 - [快速开始](docs/getting-started/quick-start.md)
 - [架构总览](docs/architecture/overview.md)
 - [API 参考](docs/reference/api.md)
+- [CLI 参考](docs/reference/cli.md)
 - [MCP 工具参考](docs/reference/mcp-tools.md)
 - [Skill 系统指南](docs/reference/skill-system.md)
 - [数据合约](backend/docs/DATA_CONTRACT_DESIGN.md)

@@ -257,11 +257,18 @@ refactor 也把这个名单扩大了）：
 
 ## 2. 安装
 
+> **首次使用前先准备 `trace_processor_shell`**：在仓库根目录执行一次
+> `./start.sh`，脚本会在缺失时下载
+> `perfetto/out/ui/trace_processor_shell`。看到服务启动后，如果只使用 CLI，
+> 可以按 Ctrl+C 停掉服务；binary 会保留下来供 CLI 复用。也可以通过
+> `TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell` 指定自定义 binary。
+
 仓库内开发（最简单）：
 
 ```bash
 cd backend
 npm install
+npm run build
 npm link          # 把 `smartperfetto` 放到 PATH 上
 ```
 
@@ -274,7 +281,7 @@ smartperfetto --help
 开发期不想每次都 `npm run build`，用 tsx wrapper：
 
 ```bash
-backend/scripts/smartperfetto-dev analyze <trace>
+./backend/scripts/smartperfetto-dev analyze <trace>
 ```
 
 凭证来源，按优先级：

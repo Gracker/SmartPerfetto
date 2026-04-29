@@ -16,12 +16,16 @@ import { getPerfettoStdlibModules, groupModulesByNamespace } from './perfettoStd
 
 const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 
-// Path to the trace_processor_shell binary
-// Use the locally built version from perfetto/out/ui which has the viz stdlib modules
-// Can be overridden via TRACE_PROCESSOR_PATH environment variable
+// Path to the trace_processor_shell binary.
+// Use the locally built version from perfetto/out/ui which has the viz stdlib modules.
+// Can be overridden via TRACE_PROCESSOR_PATH environment variable.
+// Keep this as a runtime getter: CLI loads .env after module imports, so a module-level
+// process.env read would miss TRACE_PROCESSOR_PATH from backend/.env / --env-file.
 // Path: backend/src/services/ -> ../../../ -> perfetto/out/ui/
-const TRACE_PROCESSOR_PATH = process.env.TRACE_PROCESSOR_PATH ||
-  path.resolve(__dirname, '../../../perfetto/out/ui/trace_processor_shell');
+export function getTraceProcessorPath(): string {
+  return process.env.TRACE_PROCESSOR_PATH ||
+    path.resolve(__dirname, '../../../perfetto/out/ui/trace_processor_shell');
+}
 
 // Tier 0: absolute minimum stdlib modules needed for any analysis to start.
 // Only the 3 most heavily referenced modules (19-32 skill/TS usages each).
@@ -154,8 +158,9 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     }
 
     // Check if trace_processor_shell exists
-    if (!fs.existsSync(TRACE_PROCESSOR_PATH)) {
-      throw new Error(`trace_processor_shell not found at: ${TRACE_PROCESSOR_PATH}`);
+    const traceProcessorPath = getTraceProcessorPath();
+    if (!fs.existsSync(traceProcessorPath)) {
+      throw new Error(`trace_processor_shell not found at: ${traceProcessorPath}`);
     }
 
     if (this.isDestroyed) {
@@ -210,9 +215,10 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         this.tracePath
       ];
 
-      console.log(`[TraceProcessor] Starting: ${TRACE_PROCESSOR_PATH} ${args.join(' ')}`);
+      const traceProcessorPath = getTraceProcessorPath();
+      console.log(`[TraceProcessor] Starting: ${traceProcessorPath} ${args.join(' ')}`);
 
-      this.process = spawn(TRACE_PROCESSOR_PATH, args, {
+      this.process = spawn(traceProcessorPath, args, {
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false,
       });

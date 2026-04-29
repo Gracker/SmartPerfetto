@@ -21,6 +21,7 @@
  *   - sdkSessionId surfacing for subsequent resume
  */
 
+import * as fs from 'fs';
 import { AssistantApplicationService } from '../../assistant/application/assistantApplicationService';
 import {
   AgentAnalyzeSessionService,
@@ -33,6 +34,7 @@ import { getHTMLReportGenerator } from '../../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../../services/agentReportData';
 import { normalizeResultForReport } from '../../services/agentResultNormalizer';
 import { persistAgentTurn } from '../../services/persistAgentSession';
+import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
 import type { StreamingUpdate } from '../../agent/types';
 import type { ModelRouter } from '../../agent';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
@@ -72,6 +74,8 @@ export interface RunTurnOutput {
  *   visible to the web UI and vice versa).
  */
 export class CliAnalyzeService {
+  private static checkedTraceProcessorPath: string | null = null;
+
   // Independent AssistantApplicationService instance — intentionally separate
   // from the HTTP route's instance. The 30-min idle cleanup timer is registered
   // *only* from agentRoutes.ts at server startup, not from this constructor,
@@ -107,6 +111,7 @@ export class CliAnalyzeService {
   }
 
   async loadTrace(tracePath: string): Promise<string> {
+    this.assertTraceProcessorAvailable();
     return getTraceProcessorService().loadTraceFromFilePath(tracePath);
   }
 
@@ -117,6 +122,7 @@ export class CliAnalyzeService {
    * `uploads/traces/` (caller should then degrade to a fresh load).
    */
   async reloadTraceById(traceId: string): Promise<boolean> {
+    this.assertTraceProcessorAvailable();
     const info = await getTraceProcessorService().getOrLoadTrace(traceId);
     return info !== undefined;
   }
@@ -234,6 +240,36 @@ export class CliAnalyzeService {
     } catch (err) {
       return { error: (err as Error).message };
     }
+  }
+
+  private assertTraceProcessorAvailable(): void {
+    const traceProcessorPath = getTraceProcessorPath();
+    if (CliAnalyzeService.checkedTraceProcessorPath === traceProcessorPath) return;
+
+    if (!fs.existsSync(traceProcessorPath)) {
+      throw new Error(
+        [
+          `trace_processor_shell binary not found at: ${traceProcessorPath}`,
+          '',
+          'Run `./start.sh` once from the repo root to download it, then stop the server with Ctrl+C.',
+          'Alternatively, set TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell.',
+        ].join('\n'),
+      );
+    }
+
+    try {
+      fs.accessSync(traceProcessorPath, fs.constants.X_OK);
+    } catch {
+      throw new Error(
+        [
+          `trace_processor_shell is not executable: ${traceProcessorPath}`,
+          '',
+          `Run \`chmod +x ${traceProcessorPath}\`, or set TRACE_PROCESSOR_PATH to an executable binary.`,
+        ].join('\n'),
+      );
+    }
+
+    CliAnalyzeService.checkedTraceProcessorPath = traceProcessorPath;
   }
 
   /**

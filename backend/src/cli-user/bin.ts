@@ -15,6 +15,8 @@
  */
 
 import { Command } from 'commander';
+import * as fs from 'fs';
+import * as path from 'path';
 import { bootstrap } from './bootstrap';
 import { createRenderer } from './repl/renderer';
 import { CliAnalyzeService } from './services/cliAnalyzeService';
@@ -35,13 +37,45 @@ interface GlobalOpts {
   resume?: string;
 }
 
+function readPackageVersion(): string {
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'),
+    ) as { version?: unknown };
+    return typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+function installFatalHandlers(): void {
+  process.on('uncaughtException', (err) => {
+    console.error(`Fatal: uncaught exception: ${err.message}`);
+    if (process.env.DEBUG) console.error(err.stack);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    console.error(`Fatal: unhandled promise rejection: ${message}`);
+    if (process.env.DEBUG && reason instanceof Error) console.error(reason.stack);
+    process.exit(1);
+  });
+
+  process.once('SIGTERM', () => {
+    process.exit(143);
+  });
+}
+
 function main(): void {
+  installFatalHandlers();
+
   const program = new Command();
 
   program
     .name('smartperfetto')
     .description('SmartPerfetto CLI — terminal-based Android Perfetto trace analysis')
-    .version('0.1.0')
+    .version(readPackageVersion())
     .option('--session-dir <path>', 'override session storage root (default: ~/.smartperfetto)')
     .option('--env-file <path>', 'path to .env file (default: backend/.env)')
     .option('--verbose', 'show verbose event stream', false)
