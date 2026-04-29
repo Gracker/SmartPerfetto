@@ -24,6 +24,7 @@ import { getPerfettoStdlibModules } from '../services/perfettoStdlibScanner';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import { loadPromptTemplate, getPhaseHints } from './strategyLoader';
 import { matchPhaseHintForNextPhase } from './phaseHintMatcher';
+import { buildActivePhaseReminder } from './activePhaseReminder';
 import { validatePlanAgainstSceneTemplate, MIN_WAIVER_REASON_CHARS } from './scenePlanTemplates';
 import type { ArtifactStore } from './artifactStore';
 
@@ -959,10 +960,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      // Phase 3-4 of v2.1 — high-risk path recitation. `full` and `rows` detail
+      // levels return large payloads that push the agent's working memory; in
+      // those cases append a one-line plan reminder so the agent doesn't drift
+      // away from the active phase's constraints. Summary mode skips the
+      // reminder (compact responses already keep the agent on-track).
+      const reminder = (effectiveDetail === 'full' || effectiveDetail === 'rows')
+        ? buildActivePhaseReminder(analysisPlanRef?.current, options.sceneType)
+        : '';
+      const payload = JSON.stringify({ success: true, detail: effectiveDetail, ...result });
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ success: true, detail: effectiveDetail, ...result }),
+          text: reminder ? payload + reminder : payload,
         }],
       };
     },
