@@ -86,8 +86,9 @@ COPY --from=frontend-builder /app/perfetto/out/ui/ui ./perfetto/out/ui/ui
 COPY --from=frontend-builder /app/perfetto/ui/run-dev-server ./perfetto/ui/run-dev-server
 COPY --from=frontend-builder /app/perfetto/tools/node ./perfetto/tools/node
 
-# Create required directories
-RUN mkdir -p backend/uploads backend/logs/sessions backend/data
+# Create required directories and fix ownership for non-root user
+RUN mkdir -p backend/uploads backend/logs/sessions backend/data && \
+    chown -R node:node /app
 
 # Environment defaults
 ENV PORT=3000
@@ -102,6 +103,8 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
 
 # Start both services
 COPY scripts/docker-entrypoint.sh /app/docker-entrypoint.sh
-RUN chmod +x /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh && chown node:node /app/docker-entrypoint.sh
+
+USER node
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
