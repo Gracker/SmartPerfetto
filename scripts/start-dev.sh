@@ -80,7 +80,7 @@ start_with_logs() {
   shift 3
 
   "$@" > >(
-    tee -a "$log_file" | sed -l "s/^/[$tag] /" | tee -a "$COMBINED_LOG"
+    tee -a "$log_file" | sed -u "s/^/[$tag] /" | tee -a "$COMBINED_LOG"
   ) 2>&1 &
   printf -v "$pid_var" '%s' "$!"
 }
