@@ -9,6 +9,9 @@ RUN npm ci
 COPY backend/ ./
 RUN npm run build
 
+# Remove devDependencies to drastically reduce the final image size
+RUN npm prune --production
+
 # ============================
 # Stage 2: Build Perfetto UI (with AI Assistant plugin)
 # ============================
@@ -30,6 +33,9 @@ RUN tools/install-build-deps --ui
 
 # Build frontend
 RUN tools/node ui/build.js
+
+# Remove source maps and intermediate typescript files to reduce final image size by ~100MB
+RUN find out/ui/ui -name "*.map" -delete && rm -rf out/ui/ui/tsc
 
 # ============================
 # Stage 3: Download trace_processor_shell
