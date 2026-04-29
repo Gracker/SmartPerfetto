@@ -181,15 +181,32 @@ else
     TRACE_PROCESSOR_VERSION="v54.0"
     TRACE_PROCESSOR_SHA256_MAC_ARM64="23638faac4ca695e86039a01fade05ff4a38ffa89672afc7a4e4077318603507"
     TRACE_PROCESSOR_SHA256_MAC_AMD64="a15360712875344d8bb8e4c461cd7ce9ec250f71a76f89e6ae327c5185eb4855"
+    PERFETTO_SHELL_SHA256_LINUX_AMD64="a7aa1f738bbe2926a70f0829d00837f5720be8cafe26de78f962094fa24a3da4"
+    PERFETTO_SHELL_SHA256_LINUX_ARM64="53af6216259df603115f1eefa94f034eef9c29cf851df15302ad29160334ca81"
   fi
+  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
   ARCH=$(uname -m)
-  if [ "$ARCH" = "arm64" ]; then
-    URL="https://commondatastorage.googleapis.com/perfetto-luci-artifacts/${TRACE_PROCESSOR_VERSION}/mac-arm64/trace_processor_shell"
-    SHA256="$TRACE_PROCESSOR_SHA256_MAC_ARM64"
-  else
-    URL="https://commondatastorage.googleapis.com/perfetto-luci-artifacts/${TRACE_PROCESSOR_VERSION}/mac-amd64/trace_processor_shell"
-    SHA256="$TRACE_PROCESSOR_SHA256_MAC_AMD64"
-  fi
+  case "$OS" in
+    darwin)
+      case "$ARCH" in
+        arm64)         PLAT="mac-arm64";   SHA256="$TRACE_PROCESSOR_SHA256_MAC_ARM64" ;;
+        x86_64|amd64)  PLAT="mac-amd64";   SHA256="$TRACE_PROCESSOR_SHA256_MAC_AMD64" ;;
+        *) echo "ERROR: Unsupported Mac architecture: $ARCH"; exit 1 ;;
+      esac
+      ;;
+    linux)
+      case "$ARCH" in
+        x86_64|amd64)  PLAT="linux-amd64"; SHA256="${PERFETTO_SHELL_SHA256_LINUX_AMD64:-a7aa1f738bbe2926a70f0829d00837f5720be8cafe26de78f962094fa24a3da4}" ;;
+        arm64|aarch64) PLAT="linux-arm64"; SHA256="${PERFETTO_SHELL_SHA256_LINUX_ARM64:-53af6216259df603115f1eefa94f034eef9c29cf851df15302ad29160334ca81}" ;;
+        *) echo "ERROR: Unsupported Linux architecture: $ARCH"; exit 1 ;;
+      esac
+      ;;
+    *)
+      echo "ERROR: Unsupported OS: $OS. Use Docker or WSL2 on Windows."
+      exit 1
+      ;;
+  esac
+  URL="https://commondatastorage.googleapis.com/perfetto-luci-artifacts/${TRACE_PROCESSOR_VERSION}/${PLAT}/trace_processor_shell"
   mkdir -p "$(dirname "$TRACE_PROCESSOR")"
   curl -fL --retry 3 "$URL" -o "$TRACE_PROCESSOR"
   echo "$SHA256  $TRACE_PROCESSOR" | shasum -a 256 -c || { echo "SHA256 mismatch!"; rm -f "$TRACE_PROCESSOR"; exit 1; }
