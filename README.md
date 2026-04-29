@@ -55,13 +55,13 @@ cp backend/.env.example backend/.env
 # Edit backend/.env — set ANTHROPIC_API_KEY (direct) or
 # ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY (API proxy)
 
-./scripts/start-dev.sh
+./start.sh
 ```
 
 - Frontend: [http://localhost:10000](http://localhost:10000)
 - Backend: [http://localhost:3000](http://localhost:3000)
 
-The repo ships with a pre-built Perfetto UI in `frontend/` — no submodule init, no C++ toolchain, no 30-minute compile. Load a `.pftrace` file, open the **AI Assistant** panel, and start analyzing.
+The repo ships with a pre-built Perfetto UI in `frontend/` — **no submodule init, no C++ toolchain, no 30-minute compile**. Load a `.pftrace` file, open the **AI Assistant** panel, and start analyzing.
 
 ### Docker
 
@@ -70,22 +70,31 @@ cp backend/.env.example backend/.env
 docker compose up --build
 ```
 
+### Two Scripts — Which One to Use?
+
+| Script | Use when |
+|--------|----------|
+| `./start.sh` | ✅ Default — regular use, backend changes, strategy/skill edits |
+| `./scripts/start-dev.sh` | Only when modifying the AI plugin UI (`ai_panel.ts`, `styles.scss` etc.) — requires `perfetto/` submodule |
+
 ### Frontend Development (modifying AI plugin code)
 
-The pre-built frontend in `frontend/` is compiled from `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/`. To rebuild after editing the plugin:
+When you need to edit the AI Assistant plugin UI:
 
 ```bash
-# Initialize the perfetto submodule (one-time)
+# One-time: initialize the perfetto submodule
 git submodule update --init --recursive
 
-./scripts/start-dev.sh   # builds frontend from source + starts with hot reload
+# Start with hot reload (rebuilds frontend on save)
+./scripts/start-dev.sh
 ```
 
-After making changes and verifying them, update the pre-built frontend:
+After verifying your changes in the browser, update the pre-built frontend and commit:
 
 ```bash
-cp -r perfetto/out/ui/ui/dist/* frontend/
-# commit the updated frontend/ directory
+./scripts/update-frontend.sh
+git add frontend/
+git commit -m "chore(frontend): update prebuilt"
 ```
 
 ## Configure an LLM

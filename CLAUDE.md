@@ -12,16 +12,23 @@ AI-driven Perfetto analysis platform for Android performance data.
 Tech: TypeScript strict, follow existing patterns
 Dev:  tsx watch (backend) + build.js --watch (frontend) — auto-rebuild on save
 Test: cd backend && npm run test:scene-trace-regression  ← MANDATORY after every change
-Start: ./scripts/start-dev.sh (first-time) | ./scripts/restart-backend.sh (.env/npm changes only)
-Build: cd backend && npm run build
+Start (users):      ./start.sh                          ← pre-built frontend, no submodule
+Start (UI dev):     ./scripts/start-dev.sh              ← requires perfetto submodule, hot reload
+Update prebuilt:    ./scripts/update-frontend.sh        ← run after modifying AI plugin UI
+Restart backend:    ./scripts/restart-backend.sh        ← .env/npm changes only
+Build backend:      cd backend && npm run build
 ```
 
 ## Post-change Dev Workflow
 
-Both backend (`tsx watch`) and frontend (`build.js --watch`) auto-rebuild on file save. After code changes:
-- **All .ts / .yaml changes**: Tell user to refresh the browser. No restart needed.
+Backend (`tsx watch`) auto-rebuilds on file save. Frontend hot-reload only works in `start-dev.sh` mode.
+
+**Default assumption**: user runs `./start.sh` (pre-built frontend).
+
+- **Backend `.ts` / `.yaml` / `.md` changes**: restart-backend.sh not needed — tsx watch reloads automatically. Tell user to refresh browser.
+- **Frontend plugin changes** (`ai_panel.ts`, `styles.scss` etc.): must be running `./scripts/start-dev.sh` for hot reload. After verifying, run `./scripts/update-frontend.sh` to update `frontend/`.
 - **Only use `./scripts/restart-backend.sh`** for: `.env` changes, `npm install`, or tsx watch stuck.
-- **Only use `./scripts/start-dev.sh`** for: first-time setup or both services crashed.
+- **Only use `./scripts/start-dev.sh`** for: modifying AI plugin UI (requires submodule).
 - **Default assumption**: User only refreshes browser after changes.
 
 ## Verification (done-conditions)

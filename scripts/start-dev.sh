@@ -3,8 +3,11 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
-# SmartPerfetto Development Startup Script
-# Starts both backend and frontend with persistent logging
+# SmartPerfetto Frontend Development Script
+# Builds Perfetto UI from source (requires perfetto submodule) + starts backend with watch.
+# Use this when modifying the AI Assistant plugin code (ai_panel.ts, styles.scss, etc.)
+#
+# For regular use (no submodule needed), run: ./start.sh
 #
 # Usage:
 #   ./start-dev.sh           # Full build and start
@@ -190,29 +193,27 @@ require_command curl
 require_command lsof
 require_command pkill
 
-# Check if pre-built frontend exists — skip submodule checks if so
-PREBUILT_FRONTEND="$PROJECT_ROOT/frontend/server.js"
-USE_PREBUILT_FRONTEND=false
-if [ -f "$PREBUILT_FRONTEND" ]; then
-  USE_PREBUILT_FRONTEND=true
-  echo "Pre-built frontend found at $PREBUILT_FRONTEND — skipping Perfetto submodule build."
-else
-  # Verify Perfetto's bundled tools exist (only needed when building from source)
-  if [ ! -x "$PERFETTO_PNPM" ]; then
-    echo "ERROR: Perfetto's bundled pnpm not found at $PERFETTO_PNPM"
-    echo "       Is the perfetto submodule initialized? Try: git submodule update --init"
-    exit 1
-  fi
-  if [ ! -x "$PERFETTO_NODE" ]; then
-    echo "ERROR: Perfetto's bundled node not found at $PERFETTO_NODE"
-    echo "       Is the perfetto submodule initialized? Try: git submodule update --init"
-    exit 1
-  fi
-  if [ ! -x "$UI_DIR/run-dev-server" ]; then
-    echo "ERROR: frontend runner not found at $UI_DIR/run-dev-server"
-    echo "       Sync the perfetto submodule and ensure scripts are executable."
-    exit 1
-  fi
+# Verify Perfetto's bundled tools exist (required for frontend dev mode)
+if [ ! -x "$PERFETTO_PNPM" ]; then
+  echo "ERROR: Perfetto's bundled pnpm not found at $PERFETTO_PNPM"
+  echo "       Is the perfetto submodule initialized? Try: git submodule update --init --recursive"
+  echo ""
+  echo "  TIP: For regular use without submodule, run: ./start.sh"
+  exit 1
+fi
+if [ ! -x "$PERFETTO_NODE" ]; then
+  echo "ERROR: Perfetto's bundled node not found at $PERFETTO_NODE"
+  echo "       Is the perfetto submodule initialized? Try: git submodule update --init --recursive"
+  echo ""
+  echo "  TIP: For regular use without submodule, run: ./start.sh"
+  exit 1
+fi
+if [ ! -x "$UI_DIR/run-dev-server" ]; then
+  echo "ERROR: frontend runner not found at $UI_DIR/run-dev-server"
+  echo "       Sync the perfetto submodule and ensure scripts are executable."
+  echo ""
+  echo "  TIP: For regular use without submodule, run: ./start.sh"
+  exit 1
 fi
 
 # Validate UI lockfile is compatible with Perfetto's bundled pnpm.
@@ -665,45 +666,41 @@ if [ "$SKIP_BUILD" = false ]; then
     exit 1
   fi
 
-  if [ "$USE_PREBUILT_FRONTEND" = false ]; then
-    # Validate UI lockfile format before installing deps
-    echo "Validating UI lockfile format..."
-    if ! validate_ui_lockfile; then
-      exit 1
-    fi
+  # Validate UI lockfile format before installing deps
+  echo "Validating UI lockfile format..."
+  if ! validate_ui_lockfile; then
+    exit 1
+  fi
 
-    # Install UI build dependencies (uses Perfetto's bundled pnpm v8)
-    # .last_install is a marker file created by install-build-deps containing lockfile hash
-    echo "Checking UI build dependencies..."
-    if ! is_ui_deps_current; then
-      if [ -f "$UI_DIR/node_modules/.last_install" ]; then
-        echo "UI dependency marker is stale. Reinstalling dependencies..."
-      fi
-      if ! install_ui_deps; then
-        exit 1
-      fi
-    else
-      echo "UI node_modules up to date."
+  # Install UI build dependencies (uses Perfetto's bundled pnpm v8)
+  # .last_install is a marker file created by install-build-deps containing lockfile hash
+  echo "Checking UI build dependencies..."
+  if ! is_ui_deps_current; then
+    if [ -f "$UI_DIR/node_modules/.last_install" ]; then
+      echo "UI dependency marker is stale. Reinstalling dependencies..."
     fi
-
-    # Build frontend using Perfetto's build system
-    echo "Building frontend..."
-    cd "$PERFETTO_DIR"
-    if ! "$PERFETTO_NODE" ui/build.js 2>&1 | tee -a "$FRONTEND_LOG"; then
-      echo "=============================================="
-      echo "Frontend build failed!"
-      echo ""
-      echo "If you see 'Cannot find module' errors:"
-      echo "  rm -rf ui/node_modules"
-      echo "  Then re-run this script."
-      echo ""
-      echo "IMPORTANT: Never run 'pnpm install' directly in ui/."
-      echo "           Always use: tools/pnpm install --shamefully-hoist"
-      echo "=============================================="
+    if ! install_ui_deps; then
       exit 1
     fi
   else
-    echo "Using pre-built frontend — skipping UI build."
+    echo "UI node_modules up to date."
+  fi
+
+  # Build frontend using Perfetto's build system
+  echo "Building frontend..."
+  cd "$PERFETTO_DIR"
+  if ! "$PERFETTO_NODE" ui/build.js 2>&1 | tee -a "$FRONTEND_LOG"; then
+    echo "=============================================="
+    echo "Frontend build failed!"
+    echo ""
+    echo "If you see 'Cannot find module' errors:"
+    echo "  rm -rf ui/node_modules"
+    echo "  Then re-run this script."
+    echo ""
+    echo "IMPORTANT: Never run 'pnpm install' directly in ui/."
+    echo "           Always use: tools/pnpm install --shamefully-hoist"
+    echo "=============================================="
+    exit 1
   fi
 else
   echo "Skipping build (--quick mode)..."
@@ -740,15 +737,10 @@ if [ "$BACKEND_READY" = false ]; then
   echo "WARNING: Backend health check failed after 30s. It may still be starting..."
 fi
 
-# Start frontend
+# Start frontend (Perfetto run-dev-server with watch mode)
 echo "Starting frontend..."
-if [ "$USE_PREBUILT_FRONTEND" = true ]; then
-  cd "$PROJECT_ROOT/frontend"
-  start_with_logs FRONTEND_PID "FRONTEND" "$FRONTEND_LOG" node server.js
-else
-  cd "$UI_DIR"
-  start_with_logs FRONTEND_PID "FRONTEND" "$FRONTEND_LOG" ./run-dev-server
-fi
+cd "$UI_DIR"
+start_with_logs FRONTEND_PID "FRONTEND" "$FRONTEND_LOG" ./run-dev-server
 
 # Wait for frontend to start and verify health
 echo "Waiting for frontend to start..."
