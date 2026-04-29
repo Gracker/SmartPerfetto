@@ -557,12 +557,15 @@ export function verifySceneCompleteness(
       }
 
       // Root cause ID references (A1-A18, B1-B12 from knowledge-startup-root-causes)
-      // Two-step match: first find a valid ID, then require nearby context words
+      // Two-step match: first find a valid ID, then require nearby context words.
+      // `allText` is already toLowerCased above, so the ID patterns must use
+      // lowercase a/b (the previous version used uppercase A/B and silently
+      // never matched — see commit history of v2.1 cleanup).
       // NOTE: Do NOT suggest lookup_knowledge in the message — loading the 41KB template
       // during a correction retry can blow up the session context and prevent report generation
-      const validIdPattern = /\b(?:A(?:1[0-8]?|[2-9])|B(?:1[0-2]?|[2-9]))\b/;
+      const validIdPattern = /\b(?:a(?:1[0-8]?|[2-9])|b(?:1[0-2]?|[2-9]))\b/;
       const hasIdWithContext = validIdPattern.test(allText) &&
-        /(?:根因|疑似|对应|导致|阻塞|← [AB]\d).{0,30}\b(?:A(?:1[0-8]?|[2-9])|B(?:1[0-2]?|[2-9]))\b|\b(?:A(?:1[0-8]?|[2-9])|B(?:1[0-2]?|[2-9]))\b.{0,30}(?:根因|初始化|阻塞|竞争|开销|加载|压力|节流|干扰|延迟)/i.test(allText);
+        /(?:根因|疑似|对应|导致|阻塞|← [ab]\d).{0,30}\b(?:a(?:1[0-8]?|[2-9])|b(?:1[0-2]?|[2-9]))\b|\b(?:a(?:1[0-8]?|[2-9])|b(?:1[0-2]?|[2-9]))\b.{0,30}(?:根因|初始化|阻塞|竞争|开销|加载|压力|节流|干扰|延迟)/i.test(allText);
       if (!hasIdWithContext) {
         issues.push({
           type: 'missing_check',

@@ -177,9 +177,16 @@ async function callTool(tools: Map<string, ToolDef>, name: string, params: Recor
 
 describe('createClaudeMcpServer', () => {
   describe('tool registration', () => {
-    it('should register 15 MCP tools', () => {
+    it('should register the full MCP toolset (range guard, not exact count)', () => {
+      // Asserting an exact count breaks every time we add or retire a tool;
+      // assert a sane range plus the must-have anchors so a regression that
+      // *removes* a critical tool still fails loudly.
       const { tools } = createTestServer();
-      expect(tools.size).toBe(15);
+      expect(tools.size).toBeGreaterThanOrEqual(15);
+      expect(tools.size).toBeLessThanOrEqual(25);
+      for (const required of ['execute_sql', 'invoke_skill', 'lookup_sql_schema', 'submit_plan']) {
+        expect(tools.has(required)).toBe(true);
+      }
     });
 
     it('should auto-derive allowedTools matching registered tools (P2-G1)', () => {

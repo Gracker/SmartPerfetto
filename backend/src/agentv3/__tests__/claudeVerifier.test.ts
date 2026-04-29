@@ -380,10 +380,17 @@ describe('verifySceneCompleteness', () => {
     expect(issues.some(i => i.message.includes('TTID/TTFD'))).toBe(true);
   });
 
-  it('should pass startup scene with TTID mention', () => {
-    // Use "启动" without "冷启动" to avoid triggering cold-start-specific checks
-    const findings = [makeFinding({ title: 'Startup analysis', description: 'TTID=850ms 启动分析' })];
-    const issues = verifySceneCompleteness('startup', findings, '启动性能分析');
+  it('should pass startup scene with TTID mention and root-cause id reference', () => {
+    // Avoid "冷启动" so cold-start-specific checks don't fire. The startup
+    // scene-completeness check requires a root-cause id reference
+    // (A1-A18 / B1-B12) followed within 30 chars by a context word
+    // ("阻塞" / "加载" / "压力" / etc.) so a bare "A2" alone won't pass.
+    const findings = [makeFinding({
+      title: 'Startup analysis',
+      description: 'TTID=850ms。根因 A2: 磁盘 IO 阻塞。',
+    })];
+    const conclusion = '启动性能分析。根因 A2 磁盘 IO 阻塞导致 TTID 延长。';
+    const issues = verifySceneCompleteness('startup', findings, conclusion);
     expect(issues).toHaveLength(0);
   });
 
