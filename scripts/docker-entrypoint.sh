@@ -23,7 +23,7 @@ fi
 # Start backend
 echo "Starting backend on port ${PORT:-3000}..."
 cd /app/backend
-node dist/server.js &
+node dist/index.js &
 BACKEND_PID=$!
 
 # Wait for backend health
