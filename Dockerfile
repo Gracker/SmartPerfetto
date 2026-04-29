@@ -73,7 +73,6 @@ RUN . /tmp/pin.env && \
 FROM node:22-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -93,8 +92,6 @@ COPY backend/strategies ./backend/strategies
 
 # Copy frontend build output
 COPY --from=frontend-builder /app/perfetto/out/ui/ui ./perfetto/out/ui/ui
-COPY --from=frontend-builder /app/perfetto/ui/run-dev-server ./perfetto/ui/run-dev-server
-COPY --from=frontend-builder /app/perfetto/tools/node ./perfetto/tools/node
 
 # Create required directories and fix ownership for non-root user
 RUN mkdir -p backend/uploads backend/logs/sessions backend/data && \
