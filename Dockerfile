@@ -21,6 +21,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app/perfetto
 COPY perfetto/ ./
 
+# Fake a git repository so install-build-deps's git clean doesn't fail
+RUN git init
+
 # Install UI deps using Perfetto's bundled pnpm
 RUN tools/install-build-deps --ui
 
