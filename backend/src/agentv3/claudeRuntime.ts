@@ -535,6 +535,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // `CLAUDE_PRECOMPACT_WARN_ENABLED=false`.
       let preCompactWarned = false;
       const preCompactWarnEnabled = process.env.CLAUDE_PRECOMPACT_WARN_ENABLED !== 'false';
+      const emitUpdate = this.emitUpdate.bind(this);
 
       function checkContextPressure(): void {
         if (!preCompactWarnEnabled || preCompactWarned) return;
@@ -553,7 +554,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             `(pressure=${decision.pressureTokens} / ${decision.thresholdTokens} tokens, ratio=${decision.pressureRatio.toFixed(2)}). ` +
             `Phase 3-3 will eventually interrupt+resume here; for now we only log.`,
           );
-          this.emitUpdate({
+          emitUpdate({
             type: 'progress',
             content: {
               phase: 'analyzing',
