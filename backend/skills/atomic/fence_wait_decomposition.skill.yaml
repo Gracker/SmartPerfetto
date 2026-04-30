@@ -1,0 +1,313 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Fence Wait Decomposition (S01 §3 fence + S05/S06 fence 三分法)
+# =============================================================================
+# 按 acquire/present/release 三种 fence 分类计时。
+#
+# Article 关键事实（S01）：
+# - acquire fence (Producer→Consumer, per-buffer): GPU 写入完成？SF latch 等
+# - present fence (HWC→SF, per-display per-frame): 这一整轮 present 何时扫描到屏幕
+# - release fence (HWC→Producer 经 SF, per-layer per-frame): 上一帧 buffer 何时能复用
+#
+# 三种 fence 不能混用：
+# - "用户什么时候看到这一帧"用 present fence
+# - "App 的 dequeueBuffer 为什么一直等"用 release fence
+# - "SF 读到半成品"才去怀疑 acquire fence
+#
+# 典型使用场景：
+# - dequeueBuffer 长等 → 查 release fence 是否回得慢
+# - present fence 偏晚 + latch 不晚 → 系统收尾段问题
+# - 多 layer 场景下 "新旧混合" → 查哪条 layer 的 acquire fence 晚
+# =============================================================================
+
+name: fence_wait_decomposition
+version: "1.0"
+type: composite
+category: diagnostics
+
+meta:
+  display_name: "Fence 等待分解（acquire/present/release）"
+  description: "按 3 种 fence 分类计时，归因 jank 到具体 fence 类型（S01 §3 fence）"
+  icon: "schedule"
+  tags: [fence, acquire, present, release, surfaceflinger, gpu, s01]
+  s_article_ref: "S01"
+
+prerequisites:
+  required_tables:
+    - slice
+    - thread
+    - process
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+  - name: package
+    type: string
+    required: false
+    description: "应用包名（可选，用于过滤 dequeueBuffer 等待）"
+
+steps:
+  # Step 1: Acquire fence wait（SF latch 阶段等 GPU 完成）
+  - id: acquire_fence_wait
+    type: atomic
+    name: "Acquire Fence 等待（SF latch）"
+    display:
+      level: summary
+      layer: overview
+      title: "Acquire Fence 等待概览"
+      columns:
+        - name: total_acquire_buffer
+          label: "acquireBuffer 总次数"
+          type: number
+        - name: avg_acquire_ms
+          label: "平均 acquireBuffer 耗时"
+          type: duration
+          format: duration_ms
+        - name: p95_acquire_ms
+          label: "P95 acquireBuffer 耗时"
+          type: duration
+          format: duration_ms
+        - name: max_acquire_ms
+          label: "最大 acquireBuffer 耗时"
+          type: duration
+          format: duration_ms
+    sql: |
+      WITH
+      sf_proc AS (
+        SELECT upid FROM process WHERE name = 'surfaceflinger' LIMIT 1
+      ),
+      acquire_slices AS (
+        SELECT s.dur as dur_ns
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM sf_proc)
+          AND (s.name GLOB '*acquireBuffer*' OR s.name GLOB '*latchBuffer*')
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+          AND s.dur > 0
+      ),
+      sorted_acquire AS (
+        SELECT dur_ns, ROW_NUMBER() OVER (ORDER BY dur_ns) as rn,
+               COUNT(*) OVER () as total
+        FROM acquire_slices
+      )
+      SELECT
+        (SELECT COUNT(*) FROM acquire_slices) as total_acquire_buffer,
+        COALESCE((SELECT ROUND(AVG(dur_ns) / 1e6, 2) FROM acquire_slices), 0) as avg_acquire_ms,
+        COALESCE((
+          SELECT ROUND(dur_ns / 1e6, 2)
+          FROM sorted_acquire
+          WHERE rn = CAST(total * 0.95 AS INTEGER)
+          LIMIT 1
+        ), 0) as p95_acquire_ms,
+        COALESCE((SELECT ROUND(MAX(dur_ns) / 1e6, 2) FROM acquire_slices), 0) as max_acquire_ms
+    save_as: acquire_fence_wait
+
+  # Step 2: Present fence timing（HWC presentDisplay → 实际 scan-out）
+  - id: present_fence_timing
+    type: atomic
+    name: "Present Fence 时机（HWC presentDisplay）"
+    display:
+      level: summary
+      layer: overview
+      title: "Present Fence 概览"
+      columns:
+        - name: total_present_display
+          label: "presentDisplay 总次数"
+          type: number
+        - name: avg_present_ms
+          label: "平均 presentDisplay 耗时"
+          type: duration
+          format: duration_ms
+        - name: p95_present_ms
+          label: "P95 presentDisplay 耗时"
+          type: duration
+          format: duration_ms
+        - name: late_present_count
+          label: "presentDisplay > 16ms 次数"
+          type: number
+    sql: |
+      WITH
+      sf_proc AS (
+        SELECT upid FROM process WHERE name = 'surfaceflinger' LIMIT 1
+      ),
+      present_slices AS (
+        SELECT s.dur as dur_ns
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM sf_proc)
+          AND s.name GLOB '*presentDisplay*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+          AND s.dur > 0
+      ),
+      sorted_present AS (
+        SELECT dur_ns, ROW_NUMBER() OVER (ORDER BY dur_ns) as rn,
+               COUNT(*) OVER () as total
+        FROM present_slices
+      )
+      SELECT
+        (SELECT COUNT(*) FROM present_slices) as total_present_display,
+        COALESCE((SELECT ROUND(AVG(dur_ns) / 1e6, 2) FROM present_slices), 0) as avg_present_ms,
+        COALESCE((
+          SELECT ROUND(dur_ns / 1e6, 2)
+          FROM sorted_present
+          WHERE rn = CAST(total * 0.95 AS INTEGER)
+          LIMIT 1
+        ), 0) as p95_present_ms,
+        COALESCE((SELECT COUNT(*) FROM present_slices WHERE dur_ns > 16e6), 0) as late_present_count
+    save_as: present_fence_timing
+
+  # Step 3: Release fence impact（dequeueBuffer 等待）
+  - id: release_fence_impact
+    type: atomic
+    name: "Release Fence 影响（App dequeueBuffer 等待）"
+    display:
+      level: summary
+      layer: overview
+      title: "Release Fence 等待概览"
+      columns:
+        - name: total_dequeue_buffer
+          label: "dequeueBuffer 总次数"
+          type: number
+        - name: avg_dequeue_ms
+          label: "平均 dequeueBuffer 耗时"
+          type: duration
+          format: duration_ms
+        - name: p95_dequeue_ms
+          label: "P95 dequeueBuffer 耗时"
+          type: duration
+          format: duration_ms
+        - name: blocked_dequeue_count
+          label: "dequeueBuffer > 5ms 次数（疑似卡 release fence）"
+          type: number
+    sql: |
+      WITH
+      target_app_filter AS (
+        SELECT p.upid
+        FROM process p
+        WHERE '${package}' = '' OR p.name GLOB '${package}*'
+      ),
+      dequeue_slices AS (
+        SELECT s.dur as dur_ns
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM target_app_filter)
+          AND s.name GLOB '*dequeueBuffer*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+          AND s.dur > 0
+      ),
+      sorted_dequeue AS (
+        SELECT dur_ns, ROW_NUMBER() OVER (ORDER BY dur_ns) as rn,
+               COUNT(*) OVER () as total
+        FROM dequeue_slices
+      )
+      SELECT
+        (SELECT COUNT(*) FROM dequeue_slices) as total_dequeue_buffer,
+        COALESCE((SELECT ROUND(AVG(dur_ns) / 1e6, 2) FROM dequeue_slices), 0) as avg_dequeue_ms,
+        COALESCE((
+          SELECT ROUND(dur_ns / 1e6, 2)
+          FROM sorted_dequeue
+          WHERE rn = CAST(total * 0.95 AS INTEGER)
+          LIMIT 1
+        ), 0) as p95_dequeue_ms,
+        COALESCE((SELECT COUNT(*) FROM dequeue_slices WHERE dur_ns > 5e6), 0) as blocked_dequeue_count
+    save_as: release_fence_impact
+
+  # Step 4: Fence 三分综合归因
+  - id: fence_attribution_hint
+    type: atomic
+    name: "Fence 三分归因提示"
+    display:
+      level: summary
+      layer: overview
+      title: "Fence 三分归因建议"
+      columns:
+        - name: dominant_fence_issue
+          label: "主导 Fence 问题"
+          type: string
+        - name: hint
+          label: "诊断建议"
+          type: string
+    sql: |
+      WITH
+      sf_proc AS (
+        SELECT upid FROM process WHERE name = 'surfaceflinger' LIMIT 1
+      ),
+      acquire_p95_ns AS (
+        SELECT (SELECT dur_ns FROM (
+          SELECT s.dur as dur_ns, ROW_NUMBER() OVER (ORDER BY s.dur) as rn,
+                 COUNT(*) OVER () as total
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          WHERE t.upid IN (SELECT upid FROM sf_proc)
+            AND (s.name GLOB '*acquireBuffer*' OR s.name GLOB '*latchBuffer*')
+            AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+            AND s.dur > 0
+        ) WHERE rn = CAST(total * 0.95 AS INTEGER) LIMIT 1) as v
+      ),
+      present_p95_ns AS (
+        SELECT (SELECT dur_ns FROM (
+          SELECT s.dur as dur_ns, ROW_NUMBER() OVER (ORDER BY s.dur) as rn,
+                 COUNT(*) OVER () as total
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          WHERE t.upid IN (SELECT upid FROM sf_proc)
+            AND s.name GLOB '*presentDisplay*'
+            AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+            AND s.dur > 0
+        ) WHERE rn = CAST(total * 0.95 AS INTEGER) LIMIT 1) as v
+      ),
+      release_p95_ns AS (
+        SELECT (SELECT dur_ns FROM (
+          SELECT s.dur as dur_ns, ROW_NUMBER() OVER (ORDER BY s.dur) as rn,
+                 COUNT(*) OVER () as total
+          FROM slice s
+          WHERE s.name GLOB '*dequeueBuffer*'
+            AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+            AND s.dur > 0
+        ) WHERE rn = CAST(total * 0.95 AS INTEGER) LIMIT 1) as v
+      )
+      SELECT
+        CASE
+          WHEN COALESCE((SELECT v FROM release_p95_ns), 0) > 5e6
+            THEN 'release_fence (dequeueBuffer 阻塞)'
+          WHEN COALESCE((SELECT v FROM present_p95_ns), 0) > 5e6
+            THEN 'present_fence (系统收尾段慢)'
+          WHEN COALESCE((SELECT v FROM acquire_p95_ns), 0) > 5e6
+            THEN 'acquire_fence (Producer GPU 写入慢)'
+          ELSE 'no_dominant_fence_issue'
+        END as dominant_fence_issue,
+        CASE
+          WHEN COALESCE((SELECT v FROM release_p95_ns), 0) > 5e6
+            THEN '上一帧 buffer 卡 ACQUIRED 状态：HWC 还在显示/SF 没释放/triple buffer 不足'
+          WHEN COALESCE((SELECT v FROM present_p95_ns), 0) > 5e6
+            THEN 'Panel 模式切换/刷新率切换/扫描输出本身延迟（DSI/DP）'
+          WHEN COALESCE((SELECT v FROM acquire_p95_ns), 0) > 5e6
+            THEN 'Producer GPU 写入慢；多 layer 场景看哪条 layer fence 晚'
+          ELSE '三种 fence 都在正常范围；问题可能在锚点 ②③④⑤（生产段）或 ⑨⑩（HWC 决策段）'
+        END as hint
+    save_as: fence_attribution_hint
+
+output:
+  fields:
+    - name: acquire_fence_wait
+      label: "Acquire fence 等待（SF latch 阶段）"
+    - name: present_fence_timing
+      label: "Present fence 时机（HWC presentDisplay）"
+    - name: release_fence_impact
+      label: "Release fence 影响（App dequeueBuffer 等待）"
+    - name: fence_attribution_hint
+      label: "Fence 三分综合归因建议"

@@ -1,0 +1,255 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Buffer Transaction Lifecycle (S01 §⑥ + BufferTx 真实计数点)
+# =============================================================================
+# 追踪 BLAST Transaction 在 SF 进程的实际计数点和生命周期。
+# 关键事实（S01 §⑥）：BufferTx counter +1 发生在 SF Transaction 到达时，
+# 不在 queueBuffer 返回时。这个细节在故障归因时经常被混淆。
+#
+# 典型使用场景：
+# - 诊断"queueBuffer 看起来按时但 SF latch 晚"——是 Transaction 提交慢
+# - 查 buffer 在 pipeline 内的滞留时间分布
+# - 区分多 layer 场景下哪个 layer 的 transaction 卡住
+# =============================================================================
+
+name: buffer_transaction_lifecycle
+version: "1.0"
+type: composite
+category: diagnostics
+
+meta:
+  display_name: "Buffer Transaction 生命周期"
+  description: "追踪 BLAST Transaction 在 SF 侧的真实计数点（S01 §⑥），区分 queueBuffer 与 Transaction 到达时机"
+  icon: "swap_horiz"
+  tags: [surfaceflinger, transaction, blast, buffer, lifecycle, s01]
+  s_article_ref: "S01"
+
+prerequisites:
+  required_tables:
+    - slice
+    - thread
+    - process
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: true
+    description: "分析起始时间戳(ns)"
+  - name: end_ts
+    type: timestamp
+    required: true
+    description: "分析结束时间戳(ns)"
+  - name: package
+    type: string
+    required: false
+    description: "应用包名（可选，用于过滤目标 layer）"
+
+steps:
+  # Step 1: SF 侧 applyTransaction 计数（BLAST Transaction 真实到达时机）
+  - id: apply_transaction_summary
+    type: atomic
+    name: "SF applyTransaction 概览"
+    display:
+      level: summary
+      layer: overview
+      title: "SF Transaction 真实计数点"
+      columns:
+        - name: total_apply_transactions
+          label: "applyTransaction 总次数"
+          type: number
+        - name: total_set_transaction_state
+          label: "setTransactionState 总次数"
+          type: number
+        - name: total_blast_bq
+          label: "BLASTBufferQueue slice 总次数"
+          type: number
+        - name: total_queue_buffer
+          label: "queueBuffer 总次数"
+          type: number
+        - name: avg_apply_to_latch_ms
+          label: "平均 Transaction→Latch 间隔"
+          type: duration
+          format: duration_ms
+    sql: |
+      WITH
+      sf_proc AS (
+        SELECT upid FROM process WHERE name = 'surfaceflinger' LIMIT 1
+      ),
+      sf_apply_tx AS (
+        SELECT s.ts, s.dur
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM sf_proc)
+          AND s.name GLOB '*applyTransaction*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      sf_set_tx_state AS (
+        SELECT s.ts
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM sf_proc)
+          AND s.name GLOB '*setTransactionState*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      sf_latch AS (
+        SELECT s.ts
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM sf_proc)
+          AND (s.name GLOB '*latchBuffer*' OR s.name GLOB '*acquireBuffer*')
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      app_blast AS (
+        SELECT s.ts
+        FROM slice s
+        WHERE s.name GLOB '*BLASTBufferQueue*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      app_queue_buf AS (
+        SELECT s.ts
+        FROM slice s
+        WHERE s.name GLOB '*queueBuffer*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      apply_to_latch_pairs AS (
+        -- 对每个 applyTransaction 找下一个 latch（粗略代理 Transaction→Latch 间隔）
+        SELECT
+          a.ts as apply_ts,
+          (SELECT MIN(l.ts) FROM sf_latch l WHERE l.ts >= a.ts) as next_latch_ts
+        FROM sf_apply_tx a
+      )
+      SELECT
+        (SELECT COUNT(*) FROM sf_apply_tx) as total_apply_transactions,
+        (SELECT COUNT(*) FROM sf_set_tx_state) as total_set_transaction_state,
+        (SELECT COUNT(*) FROM app_blast) as total_blast_bq,
+        (SELECT COUNT(*) FROM app_queue_buf) as total_queue_buffer,
+        COALESCE((
+          SELECT ROUND(AVG(next_latch_ts - apply_ts) / 1e6, 2)
+          FROM apply_to_latch_pairs
+          WHERE next_latch_ts IS NOT NULL
+        ), 0) as avg_apply_to_latch_ms
+    save_as: apply_transaction_summary
+
+  # Step 2: queueBuffer → Transaction 到达延迟分布
+  - id: queue_to_transaction_delay
+    type: atomic
+    name: "queueBuffer → Transaction 到达延迟"
+    display:
+      level: detail
+      layer: detail
+      title: "App queueBuffer 到 SF Transaction 真实到达的延迟"
+      columns:
+        - name: bucket
+          label: "延迟区间"
+          type: string
+        - name: count
+          label: "次数"
+          type: number
+    sql: |
+      WITH
+      sf_proc AS (
+        SELECT upid FROM process WHERE name = 'surfaceflinger' LIMIT 1
+      ),
+      app_queue_buf AS (
+        SELECT s.ts as queue_ts
+        FROM slice s
+        WHERE s.name GLOB '*queueBuffer*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      sf_apply_tx AS (
+        SELECT s.ts as apply_ts
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM sf_proc)
+          AND s.name GLOB '*applyTransaction*'
+          AND s.ts >= ${start_ts} AND s.ts < ${end_ts}
+      ),
+      delays AS (
+        SELECT
+          q.queue_ts,
+          (SELECT MIN(a.apply_ts) FROM sf_apply_tx a WHERE a.apply_ts >= q.queue_ts) as next_apply_ts
+        FROM app_queue_buf q
+      ),
+      delay_ms AS (
+        SELECT
+          CAST((next_apply_ts - queue_ts) / 1e6 AS REAL) as ms
+        FROM delays
+        WHERE next_apply_ts IS NOT NULL
+      )
+      SELECT bucket, COUNT(*) as count FROM (
+        SELECT
+          CASE
+            WHEN ms < 1 THEN '< 1ms'
+            WHEN ms < 5 THEN '1-5ms'
+            WHEN ms < 10 THEN '5-10ms'
+            WHEN ms < 16 THEN '10-16ms'
+            WHEN ms < 32 THEN '16-32ms'
+            ELSE '> 32ms'
+          END as bucket
+        FROM delay_ms
+      ) GROUP BY bucket ORDER BY
+        CASE bucket
+          WHEN '< 1ms' THEN 1
+          WHEN '1-5ms' THEN 2
+          WHEN '5-10ms' THEN 3
+          WHEN '10-16ms' THEN 4
+          WHEN '16-32ms' THEN 5
+          ELSE 6
+        END
+    save_as: queue_to_transaction_delay
+
+  # Step 3: Per-layer transaction counts（多 layer 时哪个 layer transaction 多）
+  - id: per_layer_transactions
+    type: atomic
+    name: "按 Layer 分组的 Transaction 计数"
+    display:
+      level: list
+      layer: list
+      title: "Per-layer Transaction 分布"
+      columns:
+        - name: layer_name
+          label: "Layer 名"
+          type: string
+        - name: frame_count
+          label: "帧数"
+          type: number
+        - name: jank_count
+          label: "Jank 数"
+          type: number
+        - name: avg_dur_ms
+          label: "平均帧耗时"
+          type: duration
+          format: duration_ms
+    sql: |
+      SELECT
+        layer_name,
+        COUNT(*) as frame_count,
+        SUM(CASE WHEN jank_type IS NOT NULL AND jank_type != 'None' THEN 1 ELSE 0 END) as jank_count,
+        ROUND(AVG(dur) / 1e6, 2) as avg_dur_ms
+      FROM actual_frame_timeline_slice
+      WHERE ts >= ${start_ts} AND ts < ${end_ts}
+        AND layer_name IS NOT NULL
+        AND (
+          ('${package}' = '')
+          OR (layer_name GLOB '*' || '${package}' || '*')
+        )
+      GROUP BY layer_name
+      ORDER BY frame_count DESC
+      LIMIT 20
+    save_as: per_layer_transactions
+
+output:
+  fields:
+    - name: apply_transaction_summary
+      label: "Transaction 概览（S01 §⑥ 真实计数点）"
+    - name: queue_to_transaction_delay
+      label: "queueBuffer → Transaction 延迟分布"
+    - name: per_layer_transactions
+      label: "Per-layer Transaction 分布"

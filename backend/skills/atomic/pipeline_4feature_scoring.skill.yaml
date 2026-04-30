@@ -1,0 +1,291 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Pipeline 4-Feature Scoring (S01 §4 特征分型综合评分)
+# =============================================================================
+# 标准化输出 4 特征分型分数：
+# 1. Producer 线程数（应用进程主要 Producer 线程数量）
+# 2. Layer 数（SF 进程下 App 相关 layer 数量）
+# 3. queueBuffer 路径（BBQ→Transaction / Legacy / HOST_RESAMPLE / Software / SC 直推）
+# 4. 额外节奏点（Swappy / AChoreographer / setFrameRate / Camera HAL / Codec pacing）
+#
+# 这是 S01 总览的核心分型方法："4 维同时对得上，分型基本就定了"。
+# rendering_pipeline_detection 的 layer_signals/extra_rhythm_signals/bufferqueue_path_signals
+# 提供了基础信号，本 skill 把它们综合成分数+建议的分型结论。
+# =============================================================================
+
+name: pipeline_4feature_scoring
+version: "1.0"
+type: composite
+category: rendering
+
+meta:
+  display_name: "Pipeline 4 特征分型综合评分"
+  description: "按 S01 §4 特征分型（Producer 线程数/Layer 数/queueBuffer 路径/额外节奏点）综合评分输出分型结论"
+  icon: "category"
+  tags: [pipeline, classification, four-features, s01]
+  s_article_ref: "S01"
+
+prerequisites:
+  required_tables:
+    - thread
+    - process
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "应用包名（可选）"
+
+steps:
+  # Step 1: Producer 线程统计
+  - id: producer_thread_signature
+    type: atomic
+    name: "Producer 线程数（特征 1）"
+    display:
+      level: summary
+      layer: overview
+      title: "Producer 线程签名"
+      columns:
+        - name: producer_thread_count
+          label: "Producer 线程数"
+          type: number
+        - name: producer_thread_names
+          label: "Producer 线程名样本"
+          type: string
+        - name: signature_type
+          label: "Producer 签名类型"
+          type: string
+    sql: |
+      WITH
+      dominant_process AS (
+        SELECT p.upid, p.name as process_name
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE p.name IS NOT NULL
+          AND p.name NOT LIKE 'com.android.systemui%'
+          AND p.name NOT LIKE 'system_server%'
+          AND s.name IS NOT NULL
+          AND (
+            (t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*')
+            OR (s.name GLOB '*Choreographer#doFrame*')
+            OR (s.name GLOB '*eglSwapBuffers*')
+            OR (s.name GLOB '*vkQueuePresentKHR*')
+          )
+        GROUP BY p.upid
+        HAVING COUNT(*) > 5
+        ORDER BY COUNT(*) DESC
+        LIMIT 1
+      ),
+      producer_threads AS (
+        SELECT t.name as thread_name
+        FROM thread t
+        WHERE t.upid IN (SELECT upid FROM dominant_process)
+          AND t.name IS NOT NULL
+          AND (
+            t.name = 'RenderThread'
+            OR t.name = 'main'
+            OR t.name = '1.ui'
+            OR t.name = '1.raster'
+            OR t.name = '1.io'
+            OR t.name GLOB 'GLThread*'
+            OR t.name GLOB 'CrRendererMain*'
+            OR t.name GLOB 'VizCompositorThread*'
+            OR t.name = 'Compositor'
+            OR t.name GLOB 'CompositorTileWorker*'
+            OR t.name GLOB 'UnityMain*'
+            OR t.name GLOB 'UnityGfx*'
+            OR t.name = 'GameThread'
+            OR t.name = 'RHIThread'
+            OR t.name = 'RenderThread'
+            OR t.name GLOB 'GodotMain*'
+            OR t.name GLOB 'mqt_js*'
+            OR t.name GLOB 'mqt_native*'
+            OR t.name GLOB '*Vulkan*'
+            OR t.name GLOB 'VkQueue*'
+          )
+      )
+      SELECT
+        COALESCE((SELECT COUNT(*) FROM producer_threads), 0) as producer_thread_count,
+        COALESCE((SELECT GROUP_CONCAT(thread_name, '; ') FROM producer_threads), '') as producer_thread_names,
+        CASE
+          WHEN (SELECT COUNT(*) FROM producer_threads WHERE thread_name IN ('1.ui', '1.raster', '1.io')) >= 2 THEN 'flutter_engine_threads'
+          WHEN (SELECT COUNT(*) FROM producer_threads WHERE thread_name GLOB 'CrRendererMain*' OR thread_name GLOB 'VizCompositorThread*') > 0 THEN 'chromium_threads'
+          WHEN (SELECT COUNT(*) FROM producer_threads WHERE thread_name = 'GameThread' OR thread_name = 'RHIThread' OR thread_name GLOB 'UnityMain*' OR thread_name GLOB 'UnityGfx*') > 0 THEN 'native_engine_threads'
+          WHEN (SELECT COUNT(*) FROM producer_threads WHERE thread_name GLOB 'mqt_js*' OR thread_name GLOB 'mqt_native*') > 0 THEN 'react_native_threads'
+          WHEN (SELECT COUNT(*) FROM producer_threads WHERE thread_name = 'RenderThread') > 0 THEN 'standard_renderthread'
+          WHEN (SELECT COUNT(*) FROM producer_threads WHERE thread_name = 'main') > 0
+               AND (SELECT COUNT(*) FROM producer_threads WHERE thread_name = 'RenderThread') = 0 THEN 'main_only_software'
+          ELSE 'unknown'
+        END as signature_type
+    save_as: producer_thread_signature
+
+  # Step 2: Layer 签名（特征 2）
+  - id: layer_signature
+    type: atomic
+    name: "Layer 数（特征 2）"
+    display:
+      level: summary
+      layer: overview
+      title: "SF 侧 Layer 签名"
+      columns:
+        - name: app_layer_count
+          label: "App layer 数"
+          type: number
+        - name: layer_signature_type
+          label: "Layer 签名类型"
+          type: string
+    sql: |
+      WITH
+      dominant_pkg AS (
+        SELECT
+          CASE
+            WHEN '${package}' <> '' THEN '${package}'
+            ELSE (
+              SELECT CASE
+                       WHEN instr(p.name, ':') > 0 THEN substr(p.name, 1, instr(p.name, ':') - 1)
+                       ELSE p.name
+                     END
+              FROM slice s
+              JOIN thread_track tt ON s.track_id = tt.id
+              JOIN thread t ON tt.utid = t.utid
+              JOIN process p ON t.upid = p.upid
+              WHERE t.name = 'RenderThread' AND s.name GLOB 'DrawFrame*'
+              GROUP BY p.upid
+              ORDER BY COUNT(*) DESC
+              LIMIT 1
+            )
+          END as pkg
+      ),
+      app_layers AS (
+        SELECT DISTINCT layer_name
+        FROM actual_frame_timeline_slice
+        WHERE layer_name IS NOT NULL
+          AND layer_name GLOB '*' || (SELECT pkg FROM dominant_pkg) || '*'
+      )
+      SELECT
+        COALESCE((SELECT COUNT(*) FROM app_layers), 0) as app_layer_count,
+        CASE
+          WHEN COALESCE((SELECT COUNT(*) FROM app_layers), 0) = 0 THEN 'no_layer_or_functor_path'
+          WHEN COALESCE((SELECT COUNT(*) FROM app_layers), 0) = 1 THEN 'single_layer_baseline_or_textureview'
+          WHEN COALESCE((SELECT COUNT(*) FROM app_layers), 0) = 2 THEN 'dual_layer_surfaceview_or_dialog'
+          ELSE 'multi_layer_complex'
+        END as layer_signature_type
+    save_as: layer_signature
+
+  # Step 3: BufferQueue 路径签名（特征 3）
+  - id: bufferqueue_path
+    type: atomic
+    name: "BufferQueue 路径（特征 3）"
+    display:
+      level: summary
+      layer: overview
+      title: "BufferQueue 路径签名"
+      columns:
+        - name: bq_path_type
+          label: "BufferQueue 路径类型"
+          type: string
+        - name: blast_count
+          label: "BLAST slice 数"
+          type: number
+        - name: legacy_count
+          label: "Legacy queueBuffer 数"
+          type: number
+        - name: software_count
+          label: "Software lockCanvas 数"
+          type: number
+        - name: ndk_sc_count
+          label: "NDK ASurfaceTransaction 数"
+          type: number
+    sql: |
+      WITH
+      blast AS (
+        SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*BLASTBufferQueue*'
+      ),
+      apply_tx AS (
+        SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*applyTransaction*'
+      ),
+      qb AS (
+        SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*queueBuffer*'
+      ),
+      lock_canvas AS (
+        SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*lockCanvas*' OR name GLOB '*unlockCanvasAndPost*'
+      ),
+      asurface_tx AS (
+        SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*ASurfaceTransaction*'
+      ),
+      update_tex AS (
+        SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*updateTexImage*'
+      )
+      SELECT
+        CASE
+          WHEN (SELECT cnt FROM blast) > 0 AND (SELECT cnt FROM apply_tx) > 0 THEN 'BBQ_TRANSACTION_INPROC (BLAST)'
+          WHEN (SELECT cnt FROM asurface_tx) > 0 AND (SELECT cnt FROM blast) = 0 THEN 'SURFACECONTROL_TRANSACTION_DIRECT (NDK)'
+          WHEN (SELECT cnt FROM update_tex) > 0 THEN 'HOST_RESAMPLE (TextureView)'
+          WHEN (SELECT cnt FROM lock_canvas) > 0 AND (SELECT cnt FROM blast) = 0 THEN 'ACQUIRE_FENCE_NONE_INPROC (Software)'
+          WHEN (SELECT cnt FROM qb) > 0 AND (SELECT cnt FROM blast) = 0 AND (SELECT cnt FROM apply_tx) = 0 THEN 'BUFFERQUEUE_INPROC (Legacy)'
+          ELSE 'UNKNOWN'
+        END as bq_path_type,
+        (SELECT cnt FROM blast) as blast_count,
+        (SELECT cnt FROM qb) - (SELECT cnt FROM blast) as legacy_count,
+        (SELECT cnt FROM lock_canvas) as software_count,
+        (SELECT cnt FROM asurface_tx) as ndk_sc_count
+    save_as: bufferqueue_path
+
+  # Step 4: 额外节奏源（特征 4）
+  - id: extra_rhythm
+    type: atomic
+    name: "额外节奏源（特征 4）"
+    display:
+      level: summary
+      layer: overview
+      title: "额外节奏源签名"
+      columns:
+        - name: rhythm_source
+          label: "主导节奏源"
+          type: string
+        - name: vsync_app_only
+          label: "仅 vsync-app"
+          type: string
+    sql: |
+      WITH
+      swappy AS (SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*Swappy*' OR name GLOB '*SwappyVk_*'),
+      achoreographer AS (SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*AChoreographer*'),
+      set_frame_rate AS (SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*setFrameRate*' OR name GLOB '*setFrameRateCategory*'),
+      engine_loop AS (SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*PlayerLoop*' OR name GLOB '*FEngineLoop*' OR name GLOB '*MainLoop*'),
+      camera AS (SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*processCaptureRequest*' OR name GLOB '*processCaptureResult*'),
+      codec AS (SELECT COUNT(*) as cnt FROM slice WHERE name GLOB '*releaseOutputBuffer*')
+      SELECT
+        CASE
+          WHEN (SELECT cnt FROM swappy) > 0 THEN 'swappy_pacing'
+          WHEN (SELECT cnt FROM achoreographer) > 0 THEN 'achoreographer'
+          WHEN (SELECT cnt FROM engine_loop) > 0 THEN 'engine_main_loop'
+          WHEN (SELECT cnt FROM camera) > 0 THEN 'camera_sensor_trigger'
+          WHEN (SELECT cnt FROM codec) > 0 THEN 'video_codec_pacing'
+          WHEN (SELECT cnt FROM set_frame_rate) > 0 THEN 'set_frame_rate_voted'
+          ELSE 'vsync_app_only'
+        END as rhythm_source,
+        CASE
+          WHEN (SELECT cnt FROM swappy) = 0
+               AND (SELECT cnt FROM achoreographer) = 0
+               AND (SELECT cnt FROM engine_loop) = 0
+               AND (SELECT cnt FROM camera) = 0
+               AND (SELECT cnt FROM codec) = 0
+          THEN 'yes' ELSE 'no'
+        END as vsync_app_only
+    save_as: extra_rhythm
+
+output:
+  fields:
+    - name: producer_thread_signature
+      label: "特征 1: Producer 线程签名"
+    - name: layer_signature
+      label: "特征 2: Layer 签名"
+    - name: bufferqueue_path
+      label: "特征 3: BufferQueue 路径"
+    - name: extra_rhythm
+      label: "特征 4: 额外节奏源"
