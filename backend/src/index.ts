@@ -27,6 +27,7 @@ import strategyAdminRoutes from './routes/strategyAdminRoutes';
 import reportRoutes from './routes/reportRoutes';
 import agentRoutes from './routes/agentRoutes';
 import advancedAIRoutes from './routes/advancedAIRoutes';
+import providerRoutes from './routes/providerRoutes';
 import {
   assertTraceAnalysisConfiguredForStartup,
   getTraceAnalysisConfigurationStatus,
@@ -128,6 +129,7 @@ app.use('/api/admin', strategyAdminRoutes);
 app.use('/api/reports', reportRoutes);
 app.use(AGENT_API_V1_BASE, agentRoutes);
 app.use('/api/advanced-ai', advancedAIRoutes);
+app.use('/api/v1/providers', providerRoutes);
 app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
 
 const assistantShellDir = path.resolve(__dirname, '../public/assistant-shell');
