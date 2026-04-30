@@ -80,7 +80,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/uuid": "^9.0.8",
     "axios": "^1.13.2",
-    "better-sqlite3": "^12.5.0",
+    "better-sqlite3": "^12.9.0",
     "commander": "^14.0.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
