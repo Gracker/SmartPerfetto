@@ -10,7 +10,7 @@
     "start": "cd backend && npm start"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.12",

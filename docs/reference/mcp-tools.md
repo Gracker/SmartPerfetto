@@ -226,7 +226,7 @@ Claude 想调用工具
 }
 ```
 
-**搜索范围：** `perfetto/src/trace_processor/perfetto_sql/stdlib/**/*.sql`，每个文件最多 8 个匹配。
+**搜索范围：** source checkout 下优先搜索 `perfetto/src/trace_processor/perfetto_sql/stdlib/**/*.sql`，每个文件最多 8 个匹配；npm/Docker 运行时如果没有 stdlib 源码，会退回到已打包的 SQL schema index。
 
 ---
 

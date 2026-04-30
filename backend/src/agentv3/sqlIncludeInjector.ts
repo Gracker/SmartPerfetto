@@ -13,20 +13,14 @@
  * never implemented. Skill SQL has its own `buildSqlWithModuleIncludes`
  * (skillExecutor.ts:1187); this module is the equivalent for raw SQL.
  *
- * Source of truth: the Perfetto stdlib `.sql` source files
- * (`perfetto/src/trace_processor/perfetto_sql/stdlib/**`). We do NOT use
- * `perfettoSqlIndex.json` because its `sql` field is truncated and parsing
- * it would silently miss core tables like `android_frames` /
- * `android_startups`.
+ * Source of truth: backend/data/perfettoStdlibSymbols.json, generated from the
+ * Perfetto stdlib `.sql` source files. Source checkouts can still scan the live
+ * stdlib tree via PERFETTO_STDLIB_PATH for maintainer debugging.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-
 import {
-  STDLIB_PATH,
-  STDLIB_PRELUDE_DIR,
-  walkStdlibSqlFiles,
+  clearModuleCache,
+  getPerfettoStdlibSymbolIndex,
 } from '../services/perfettoStdlibScanner';
 
 export interface InjectionResult {
@@ -45,83 +39,25 @@ interface SymbolIndex {
 
 let cachedIndex: SymbolIndex | null = null;
 
-// Match a stdlib symbol declaration: `CREATE [OR REPLACE] PERFETTO
-// (TABLE|VIEW|FUNCTION|MACRO) <name>`. Anchored at the start of a line
-// (after optional whitespace) and requires the `PERFETTO` keyword, which
-// excludes both inline-comment text and trace_processor-internal `CREATE
-// TABLE _foo` helpers. INDEX is not a queryable name, so it is excluded.
-const CREATE_REGEX =
-  /^\s*CREATE\s+(?:OR\s+REPLACE\s+)?PERFETTO\s+(?:TABLE|VIEW|FUNCTION|MACRO)\s+([A-Za-z_][A-Za-z0-9_]*)/gim;
-
-function isInternalSymbol(name: string): boolean {
-  return name.startsWith('_');
-}
-
-function relPathToModulePath(relPath: string): string {
-  // e.g. "slices/self_dur.sql" -> "slices.self_dur"
-  return relPath.replace(/\\/g, '/').replace(/\.sql$/, '').replace(/\//g, '.');
-}
-
-function parseSymbols(sql: string): string[] {
-  const out: string[] = [];
-  for (const match of sql.matchAll(CREATE_REGEX)) {
-    const name = match[1];
-    if (!isInternalSymbol(name)) out.push(name.toLowerCase());
-  }
-  return out;
-}
-
 /**
- * Lazily build the symbol index by scanning the Perfetto stdlib source tree.
+ * Lazily load the stdlib symbol index.
  * Called once per process; subsequent calls return the cache. Synchronous
- * I/O is fine here because (1) it happens once, (2) ~250 small files, and
- * (3) it's invoked from MCP tool handlers that are already async-boundaried.
+ * I/O is fine here because it happens once and is invoked from MCP tool
+ * handlers that are already async-boundaried.
  */
 function getSymbolIndex(): SymbolIndex {
   if (cachedIndex) return cachedIndex;
-
-  const tableToModule = new Map<string, string>();
-  const builtins = new Set<string>();
-
-  if (!fs.existsSync(STDLIB_PATH)) {
+  const index = getPerfettoStdlibSymbolIndex();
+  cachedIndex = {
+    tableToModule: index.tableToModule,
+    builtins: index.builtins,
+  };
+  if (cachedIndex.tableToModule.size === 0) {
     console.warn(
-      `[sqlIncludeInjector] Stdlib path not found: ${STDLIB_PATH}. ` +
-      `Auto-INCLUDE injection disabled; raw SQL must use explicit INCLUDE PERFETTO MODULE.`
+      '[sqlIncludeInjector] Stdlib symbol index is empty. ' +
+      'Auto-INCLUDE injection disabled; raw SQL must use explicit INCLUDE PERFETTO MODULE.'
     );
-    cachedIndex = { tableToModule, builtins };
-    return cachedIndex;
   }
-
-  const startTime = Date.now();
-  walkStdlibSqlFiles((abs, rel) => {
-    const isPrelude = rel.split(path.sep)[0] === STDLIB_PRELUDE_DIR;
-    let content: string;
-    try {
-      content = fs.readFileSync(abs, 'utf-8');
-    } catch {
-      return;
-    }
-    const symbols = parseSymbols(content);
-    if (symbols.length === 0) return;
-    if (isPrelude) {
-      for (const sym of symbols) builtins.add(sym);
-    } else {
-      const modulePath = relPathToModulePath(rel);
-      for (const sym of symbols) {
-        // First-writer wins. Stdlib should not double-define names; if it
-        // does, the first parsed file owns the name.
-        if (!tableToModule.has(sym)) tableToModule.set(sym, modulePath);
-      }
-    }
-  }, { includePrelude: true });
-
-  const elapsed = Date.now() - startTime;
-  console.log(
-    `[sqlIncludeInjector] Indexed ${tableToModule.size} stdlib symbols + ` +
-    `${builtins.size} prelude builtins in ${elapsed}ms`
-  );
-
-  cachedIndex = { tableToModule, builtins };
   return cachedIndex;
 }
 
@@ -330,6 +266,7 @@ export function injectStdlibIncludes(sql: string): InjectionResult {
 
 export function _resetCacheForTesting(): void {
   cachedIndex = null;
+  clearModuleCache();
 }
 
 export function _getSymbolIndexForTesting(): {

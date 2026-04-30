@@ -16,7 +16,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 ### 1.1 与主后端的关系
 
-CLI 是 `smart-perfetto-backend` npm 包的第二个 bin 入口，**复用 agentv3
+CLI 是 `@gracker/smartperfetto` npm 包的终端入口，**复用 agentv3
 的所有核心模块**（orchestrator、skill 引擎、HTML 报告生成器、SQLite
 持久化），但不共用 Express 路由层。
 
@@ -98,6 +98,8 @@ backend/src/cli-user/
 ### 1.3 数据流 —— analyze（新建 session）
 
 ```
+smp -f <trace> -p "..."
+# 等价高级命令：
 smartperfetto analyze <trace> --query "..."
        │
        ▼
@@ -257,24 +259,48 @@ refactor 也把这个名单扩大了）：
 
 ## 2. 安装
 
-仓库内开发（最简单）：
+正式用户安装：
+
+```bash
+# 需要 Node.js 20+
+npm install -g @gracker/smartperfetto
+smp --help
+smp -f trace.pftrace -p "分析启动性能"
+```
+
+`smp` 是推荐短命令，`smartperfetto` 是同一个 CLI 的长命令名。第一次分析时，
+如果没有 `TRACE_PROCESSOR_PATH` 且本机缺少 binary，CLI 会自动下载固定版本的
+`trace_processor_shell` 到 `~/.smartperfetto/bin/trace_processor_shell`。
+
+当前源码 checkout 的本地安装方式（发布前验证用）：
+
+```bash
+npm install -g ./backend
+smp --help
+```
+
+也可以手动 build + link：
 
 ```bash
 cd backend
 npm install
-npm link          # 把 `smartperfetto` 放到 PATH 上
+npm run build
+npm link          # 把 `smp` / `smartperfetto` 放到 PATH 上
 ```
 
-验证：
-```bash
-which smartperfetto    # dist/cli-user/bin.js 的符号链接
-smartperfetto --help
-```
-
-开发期不想每次都 `npm run build`，用 tsx wrapper：
+面向真实用户的正式入口应该始终是安装后的 `smp` / `smartperfetto` 可执行命令，
+不是仓库里的 debug 脚本。debug 脚本只给维护者确认 CLI 编译产物或源码路径：
 
 ```bash
-backend/scripts/smartperfetto-dev analyze <trace>
+# 先编译，再运行 dist/cli-user/bin.js；最接近用户安装后的行为
+cd backend
+npm run cli:build-run -- --help
+npm run cli:build-run -- analyze <trace> --query "分析滑动卡顿"
+# cli:debug 是同义别名
+
+# 直接用 tsx 跑源码，只用于快速迭代，不验证 dist 产物
+npm run cli:dev -- --help
+./backend/scripts/smartperfetto-dev analyze <trace>
 ```
 
 凭证来源，按优先级：
@@ -296,6 +322,8 @@ Claude Agent SDK；agentv2 路径 CLI 不支持会抛错）。
 
 无参数启动：
 ```bash
+smp
+smp --resume <sessionId>     # REPL 启动时预加载 session
 smartperfetto
 smartperfetto --resume <sessionId>     # REPL 启动时预加载 session
 ```
@@ -326,6 +354,10 @@ smartperfetto --resume <sessionId>     # REPL 启动时预加载 session
 ### 3.2 One-shot 子命令（脚本 / CI 用）
 
 ```bash
+# 推荐短命令
+smp -f <trace> -p "question"
+smp -f <trace> --prompt "question"
+
 # 新建 session
 smartperfetto analyze <trace> [-q "question"]
 
@@ -347,6 +379,9 @@ smartperfetto rm <sessionId> [--yes]
 
 | Flag | 默认 | 用途 |
 |---|---|---|
+| `-f, --file <trace>` | 无 | 顶层 one-shot 分析入口，等价于 `analyze <trace>` |
+| `-p, --prompt <question>` | 默认分析问题 | 顶层 one-shot prompt |
+| `-q, --query <question>` | 默认分析问题 | `--prompt` 的兼容别名 |
 | `--session-dir <path>` | `~/.smartperfetto` | 覆盖 session 存储根目录 |
 | `--env-file <path>` | 自动搜 | 指定 `.env` 文件 |
 | `--verbose` | off | 显示 tool_dispatched / agent_response 明细 |

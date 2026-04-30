@@ -59,6 +59,9 @@ export function bootstrap(options: BootstrapOptions = {}): BootstrapResult {
     }
     loadEnv(envFile);
     const paths = computePaths(sessionDir);
+    // Keep helper services that read SMARTPERFETTO_HOME directly (for example
+    // the CLI-managed trace_processor_shell cache) aligned with --session-dir.
+    process.env.SMARTPERFETTO_HOME = paths.home;
     ensureLayout(paths);
     memoizedResult = { paths };
   }
@@ -109,8 +112,8 @@ function loadEnv(explicitFile?: string): void {
 
 /**
  * Walk up from this module's __dirname to find the backend package root
- * (the one containing a `package.json` named `smart-perfetto-backend` with
- * the `smartperfetto` bin entry). Used both to locate `.env` and to pin
+ * (the one containing a SmartPerfetto CLI `package.json` with the `smp` or
+ * `smartperfetto` bin entry). Used both to locate `.env` and to pin
  * `process.cwd()` so CWD-relative paths in the service layer resolve to
  * the right `backend/data/` and `backend/logs/` dirs.
  *
@@ -125,7 +128,7 @@ function findBackendRoot(): string | null {
     if (fs.existsSync(pkgPath)) {
       try {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-        if (pkg.name === 'smart-perfetto-backend' && pkg.bin?.smartperfetto) {
+        if (isSmartPerfettoPackage(pkg)) {
           return dir;
         }
       } catch {
@@ -137,6 +140,14 @@ function findBackendRoot(): string | null {
     dir = parent;
   }
   return null;
+}
+
+function isSmartPerfettoPackage(pkg: any): boolean {
+  const hasCliBin = Boolean(pkg?.bin?.smp || pkg?.bin?.smartperfetto);
+  return hasCliBin && (
+    pkg.name === '@gracker/smartperfetto' ||
+    pkg.name === 'smart-perfetto-backend'
+  );
 }
 
 function assertLlmCredentials(): void {

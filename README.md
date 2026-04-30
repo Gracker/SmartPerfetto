@@ -4,7 +4,7 @@
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/github/license/Gracker/SmartPerfetto)](LICENSE)
 [![Backend Regression Gate](https://github.com/Gracker/SmartPerfetto/actions/workflows/backend-agent-regression-gate.yml/badge.svg)](https://github.com/Gracker/SmartPerfetto/actions/workflows/backend-agent-regression-gate.yml)
-[![Node.js >=18](https://img.shields.io/badge/Node.js-%3E%3D18-brightgreen)](package.json)
+[![Node.js >=20](https://img.shields.io/badge/Node.js-%3E%3D20-brightgreen)](package.json)
 [![TypeScript strict](https://img.shields.io/badge/TypeScript-strict-3178c6)](backend/tsconfig.json)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose-2496ed)](docker-compose.yml)
 [![Perfetto UI fork](https://img.shields.io/badge/Perfetto-UI%20fork-4285f4)](https://perfetto.dev/)
@@ -36,7 +36,7 @@ The project is open source and in active development. The UI, backend runtime, a
 | Area | Technology |
 |------|------------|
 | Frontend | Forked Perfetto UI with the `com.smartperfetto.AIAssistant` plugin |
-| Backend | Node.js 18+, TypeScript strict mode, Express |
+| Backend | Node.js 20+, TypeScript strict mode, Express |
 | Agent runtime | Claude Agent SDK, MCP tools, scene strategies, verifier, SSE streaming |
 | Trace engine | Perfetto `trace_processor_shell` over HTTP RPC |
 | Analysis logic | YAML skills under `backend/skills/` plus Markdown strategies under `backend/strategies/` |
@@ -74,7 +74,7 @@ Uploads and logs are stored in Docker volumes, so they survive container restart
 
 ### Local Script
 
-Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 18+**, `curl`, `lsof`, `pkill`, and an LLM API key. For Windows source development, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install), not native Windows shell.
+Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 20+**, `curl`, `lsof`, `pkill`, and an LLM API key. For Windows source development, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install), not native Windows shell.
 
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
@@ -177,6 +177,26 @@ SmartPerfetto works best with Android 12+ traces that include FrameTimeline data
 | Startup | `am`, `dalvik`, `wm`, `sched` | `binder_driver`, `freq`, `disk` |
 | ANR | `am`, `wm`, `sched`, `binder_driver` | `dalvik`, `disk` |
 
+## CLI Usage
+
+SmartPerfetto also ships a terminal CLI for trace analysis without opening the browser UI. It uses the same agentv3 runtime as the web experience and writes local sessions, transcripts, and reports under `~/.smartperfetto/`.
+
+```bash
+# Requires Node.js 20+
+npm install -g @gracker/smartperfetto
+
+# Analyze a trace, then continue the conversation or open the report.
+smp -f trace.pftrace -p "Analyze scrolling jank"
+smp resume <sessionId> --query "Why is RenderThread slow?"
+smp list
+smp report <sessionId> --open
+
+# Or run an interactive Claude-Code-style REPL.
+smp
+```
+
+The first analysis downloads the pinned `trace_processor_shell` binary automatically if it is not already available. `smartperfetto` remains available as the long command name; source checkout scripts are only for maintainers debugging the CLI. See [CLI Reference](docs/reference/cli.md) for all commands, REPL slash commands, storage layout, and resume behavior.
+
 ## API Integration
 
 The browser UI talks to the backend through REST and SSE. If you want to build your own UI or automation, start with these endpoints:
@@ -231,6 +251,7 @@ Common commands:
 
 cd backend
 npm run build
+npm run cli:build-run -- --help
 npm run test:scene-trace-regression
 npm run validate:skills
 npm run validate:strategies
@@ -252,6 +273,7 @@ Do not hardcode prompt content in TypeScript. Put scene logic in `backend/strate
 - [Quick Start](docs/getting-started/quick-start.md)
 - [Architecture Overview](docs/architecture/overview.md)
 - [API Reference](docs/reference/api.md)
+- [CLI Reference](docs/reference/cli.md)
 - [MCP Tools Reference](docs/reference/mcp-tools.md)
 - [Skill System Guide](docs/reference/skill-system.md)
 - [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.md)

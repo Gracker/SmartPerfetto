@@ -14,7 +14,10 @@ perfetto/out/
 # Runtime data
 backend/uploads/*
 backend/uploads/
-backend/data/
+backend/data/*
+!backend/data/perfettoSqlIndex.light.json
+!backend/data/perfettoSqlIndex.json
+!backend/data/perfettoStdlibSymbols.json
 backend/data/sessions/*.db
 backend/data/sessions.db
 *.db-shm

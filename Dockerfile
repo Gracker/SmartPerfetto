@@ -6,7 +6,9 @@ FROM node:22-bookworm AS backend-builder
 WORKDIR /app/backend
 COPY backend/package*.json ./
 RUN npm ci
+COPY scripts/trace-processor-pin.env /app/scripts/trace-processor-pin.env
 COPY backend/ ./
+COPY backend/data/perfettoSqlIndex.light.json backend/data/perfettoSqlIndex.json backend/data/perfettoStdlibSymbols.json ./data/
 RUN npm run build
 
 # ============================
@@ -16,7 +18,7 @@ RUN npm run build
 # scripts/trace-processor-pin.env (single source of truth across
 # start-dev.sh, this Dockerfile, and the CI workflow). LUCI artifacts URL
 # is version-locked; do NOT switch back to get.perfetto.dev/trace_processor
-# (latest, unpinned — drifts from the perfetto submodule's SQL stdlib).
+# (latest, unpinned — drifts from the generated SQL stdlib index).
 FROM debian:bookworm-slim AS tp-downloader
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -58,6 +60,9 @@ COPY --from=tp-downloader /tmp/trace_processor_shell /app/perfetto/out/ui/trace_
 COPY --from=backend-builder /app/backend/dist ./backend/dist
 COPY --from=backend-builder /app/backend/node_modules ./backend/node_modules
 COPY --from=backend-builder /app/backend/package.json ./backend/
+COPY --from=backend-builder /app/backend/data/perfettoSqlIndex.light.json ./backend/data/perfettoSqlIndex.light.json
+COPY --from=backend-builder /app/backend/data/perfettoSqlIndex.json ./backend/data/perfettoSqlIndex.json
+COPY --from=backend-builder /app/backend/data/perfettoStdlibSymbols.json ./backend/data/perfettoStdlibSymbols.json
 
 # Copy backend runtime files (skills, strategies, templates)
 COPY backend/skills ./backend/skills

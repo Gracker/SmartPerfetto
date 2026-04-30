@@ -2,7 +2,7 @@
 
 ## 环境要求
 
-- Node.js 18+
+- Node.js 20+
 - Python 3
 - Git submodule
 - `curl`, `lsof`, `pkill`

@@ -20,7 +20,10 @@ import type { SceneType } from './sceneClassifier';
 import { summarizeSqlResult } from './sqlSummarizer';
 import { matchPatterns, matchNegativePatterns, extractTraceFeatures } from './analysisPatternMemory';
 import { loadSkillNotes } from './selfImprove/skillNotesInjector';
-import { getPerfettoStdlibModules } from '../services/perfettoStdlibScanner';
+import {
+  getPerfettoStdlibModules,
+  getPerfettoStdlibPath,
+} from '../services/perfettoStdlibScanner';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import { loadPromptTemplate, getPhaseHints } from './strategyLoader';
 import { matchPhaseHintForNextPhase } from './phaseHintMatcher';
@@ -1080,19 +1083,52 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // Enables Claude to self-learn by finding how official code uses tables/functions.
   const queryPerfettoSource = tool(
     'query_perfetto_source',
-    'Search the Perfetto SQL stdlib source code for usage patterns. Use this when you encounter an unfamiliar table/function, get an SQL error, or need to find how the official codebase uses a specific table or column. Returns matching lines with file context.',
+    'Search the Perfetto SQL stdlib source code for usage patterns. Packaged builds fall back to the bundled SQL schema index when the source tree is unavailable. Use this when you encounter an unfamiliar table/function, get an SQL error, or need to find how the official codebase uses a specific table or column.',
     {
       keyword: z.string().describe('Search keyword (table name, function name, column name, or SQL pattern)'),
       max_results: z.number().optional().describe('Maximum number of matching files to return (default: 5)'),
     },
     async ({ keyword, max_results }) => {
       const maxFiles = max_results ?? 5;
-      const stdlibDir = path.resolve(__dirname, '../../../perfetto/src/trace_processor/perfetto_sql/stdlib');
+      const stdlibDir = getPerfettoStdlibPath();
 
       if (!fs.existsSync(stdlibDir)) {
+        const lowerKeyword = keyword.toLowerCase();
+        const schema = loadSqlSchema();
+        const results = schema.templates
+          .filter(t => {
+            const searchable = `${t.name} ${t.category} ${t.description ?? ''}`.toLowerCase();
+            return searchable.includes(lowerKeyword);
+          })
+          .slice(0, maxFiles)
+          .map(t => ({
+            file: t.id,
+            matches: [
+              [
+                `name: ${t.name}`,
+                `category: ${t.category}`,
+                `type: ${t.type ?? 'unknown'}`,
+                `description: ${t.description ?? ''}`,
+              ].join('\n'),
+            ],
+          }));
+
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: 'Perfetto stdlib directory not found' }) }],
-          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: true,
+              keyword,
+              source: 'bundled_schema_index',
+              matchedFiles: results.length,
+              results: results.map(r => ({
+                file: r.file,
+                matchCount: r.matches.length,
+                matches: r.matches,
+              })),
+              note: 'Perfetto stdlib source tree is unavailable in this runtime; returned bundled schema-index matches instead.',
+            }),
+          }],
         };
       }
 
@@ -1141,6 +1177,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             text: JSON.stringify({
               success: true,
               keyword,
+              source: 'stdlib_source',
               matchedFiles: results.length,
               results: results.map(r => ({
                 file: r.file,
