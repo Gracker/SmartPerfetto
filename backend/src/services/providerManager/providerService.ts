@@ -53,9 +53,17 @@ export class ProviderService {
     return this.store.get(id);
   }
 
+  private static VALID_TYPES: ProviderType[] = ['anthropic', 'bedrock', 'vertex', 'deepseek', 'openai', 'ollama', 'custom'];
+
   create(input: ProviderCreateInput): ProviderConfig {
     if (!input.name?.trim()) throw new Error('Provider name is required');
     if (!input.type) throw new Error('Provider type is required');
+    if (!ProviderService.VALID_TYPES.includes(input.type as ProviderType)) {
+      throw new Error(`Invalid provider type: ${input.type}. Must be one of: ${ProviderService.VALID_TYPES.join(', ')}`);
+    }
+    if (!input.models?.primary || !input.models?.light) {
+      throw new Error('models.primary and models.light are required');
+    }
 
     const now = new Date().toISOString();
     const provider: ProviderConfig = {
@@ -193,6 +201,8 @@ export class ProviderService {
     if (provider.tuning?.quickPerTurnMs) env.CLAUDE_QUICK_PER_TURN_MS = String(provider.tuning.quickPerTurnMs);
     if (provider.tuning?.verifierTimeoutMs) env.CLAUDE_VERIFIER_TIMEOUT_MS = String(provider.tuning.verifierTimeoutMs);
     if (provider.tuning?.classifierTimeoutMs) env.CLAUDE_CLASSIFIER_TIMEOUT_MS = String(provider.tuning.classifierTimeoutMs);
+    if (provider.tuning?.enableSubAgents !== undefined) env.CLAUDE_ENABLE_SUB_AGENTS = String(provider.tuning.enableSubAgents);
+    if (provider.tuning?.enableVerification !== undefined) env.CLAUDE_ENABLE_VERIFICATION = String(provider.tuning.enableVerification);
 
     return env;
   }

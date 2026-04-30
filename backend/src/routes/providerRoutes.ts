@@ -4,8 +4,11 @@
 import express from 'express';
 import { getProviderService, officialTemplates } from '../services/providerManager';
 import type { ProviderCreateInput, ProviderUpdateInput } from '../services/providerManager';
+import { authenticate } from '../middleware/auth';
 
 const router = express.Router();
+
+router.use(authenticate);
 
 router.get('/', (req, res) => {
   const svc = getProviderService();
@@ -39,7 +42,7 @@ router.post('/', (req, res) => {
     const svc = getProviderService();
     const input: ProviderCreateInput = req.body;
     const provider = svc.create(input);
-    res.status(201).json({ success: true, provider });
+    res.status(201).json({ success: true, provider: svc.get(provider.id) });
   } catch (err: any) {
     res.status(400).json({ success: false, error: err.message });
   }
@@ -49,8 +52,8 @@ router.patch('/:id', (req, res) => {
   try {
     const svc = getProviderService();
     const input: ProviderUpdateInput = req.body;
-    const provider = svc.update(req.params.id, input);
-    res.json({ success: true, provider });
+    svc.update(req.params.id, input);
+    res.json({ success: true, provider: svc.get(req.params.id) });
   } catch (err: any) {
     const status = err.message.includes('not found') ? 404 : 400;
     res.status(status).json({ success: false, error: err.message });

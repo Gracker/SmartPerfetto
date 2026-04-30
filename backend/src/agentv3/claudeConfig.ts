@@ -269,6 +269,9 @@ export function createSdkEnv(sessionOverrideProviderId?: string): Record<string,
     ? svc.getEnvForProvider(sessionOverrideProviderId)
     : svc.getEffectiveEnv();
 
+  if (sessionOverrideProviderId && !providerEnv) {
+    console.warn(`[createSdkEnv] Provider ${sessionOverrideProviderId} not found, falling back to env`);
+  }
   if (providerEnv) Object.assign(env, providerEnv);
 
   delete env.CLAUDECODE;

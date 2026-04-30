@@ -20,8 +20,8 @@ export class ProviderStore {
       const raw = fs.readFileSync(this.filePath, 'utf-8');
       const arr: ProviderConfig[] = JSON.parse(raw);
       for (const p of arr) this.providers.set(p.id, p);
-    } catch {
-      // Corrupted file — start fresh
+    } catch (err) {
+      console.warn('[ProviderStore] Failed to load providers.json, starting fresh:', (err as Error).message);
     }
   }
 
