@@ -1,0 +1,38 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "workspaces": {
+    ".": {
+      "entry": [
+        "package.json",
+        ".github/workflows/*.yml",
+        ".github/dependabot.yml",
+        "Dockerfile",
+        "docker-compose*.yml",
+        "start.sh",
+        "scripts/*.sh"
+      ],
+      "project": ["package.json", ".github/**/*.yml", "Dockerfile", "docker-compose*.yml", "start.sh", "scripts/*.sh"]
+    },
+    "backend": {
+      "entry": [
+        "src/index.ts",
+        "src/cli-user/bin.ts",
+        "src/scripts/**/*.ts",
+        "src/**/*.test.ts",
+        "src/**/__tests__/**/*.ts",
+        "tests/**/*.ts"
+      ],
+      "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
+    }
+  },
+  "ignore": [
+    "frontend/**",
+    "perfetto/**",
+    "docs/**",
+    "backend/public/**",
+    "backend/skills/**",
+    "backend/strategies/**"
+  ],
+  "ignoreDependencies": ["@types/*"],
+  "ignoreBinaries": ["shellcheck", "tsc"]
+}
