@@ -698,7 +698,7 @@ if [ "$SKIP_BUILD" = false ]; then
   # Build frontend using Perfetto's build system
   echo "Building frontend..."
   cd "$PERFETTO_DIR"
-  if ! "$PERFETTO_NODE" ui/build.js 2>&1 | tee -a "$FRONTEND_LOG"; then
+  if ! "$PERFETTO_NODE" ui/build.js --no-depscheck --no-wasm --only-wasm-memory64 2>&1 | tee -a "$FRONTEND_LOG"; then
     echo "=============================================="
     echo "Frontend build failed!"
     echo ""

@@ -33,9 +33,17 @@ echo "Updating frontend/ ..."
 cp "$DIST_DIR/index.html"          "$FRONTEND_DIR/index.html"
 cp "$DIST_DIR/service_worker.js"   "$FRONTEND_DIR/service_worker.js" 2>/dev/null || true
 
-# Sync versioned directory (exclude source maps to keep repo lean)
+# Sync versioned directory.
+# Exclude source maps (repo size) and WASM/engine bundles — these require a
+# full GN+ninja build and must NOT be overwritten by --only-wasm-memory64
+# builds which produce 38KB stubs instead of the real 244KB bundles.
+# engine_bundle.js and traceconv_bundle.js are preserved from the previous
+# full build committed in git.
 rsync -a --delete \
   --exclude="*.map" \
+  --exclude="*.wasm" \
+  --exclude="engine_bundle.js" \
+  --exclude="traceconv_bundle.js" \
   "$VERSION_DIR/" \
   "$FRONTEND_DIR/$VERSION/"
 

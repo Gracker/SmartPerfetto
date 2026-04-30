@@ -665,7 +665,7 @@ function isDedicatedSceneReplayRequest(query: string): boolean {
 router.post('/analyze', async (req, res) => {
   try {
     const requestId = getRequestId(req);
-    const { traceId, query, sessionId: requestedSessionId, options = {}, selectionContext: rawSelectionContext, referenceTraceId, traceContext: rawTraceContext } = req.body;
+    const { traceId, query, sessionId: requestedSessionId, options = {}, selectionContext: rawSelectionContext, referenceTraceId, traceContext: rawTraceContext, providerId } = req.body;
 
     if (!traceId) {
       return res.status(400).json({
@@ -802,6 +802,7 @@ router.post('/analyze', async (req, res) => {
       runContext,
       referenceTraceId,
       traceContext: traceContext && traceContext.length > 0 ? traceContext : undefined,
+      providerId,
     }).catch((error) => {
       const session = assistantAppService.getSession(sessionId);
       if (session) {
@@ -2275,6 +2276,7 @@ async function runAgentDrivenAnalysis(
         selectionContext: options.selectionContext,
         analysisMode: options.analysisMode,
         traceContext: options.traceContext,
+        providerId: options.providerId,
       });
     });
     console.log('[AgentRoutes.AgentDriven] analyze completed, success:', result.success);

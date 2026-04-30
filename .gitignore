@@ -156,3 +156,4 @@ backend/data/self_improve/
 # Superset working directory
 # ===================
 .superset/
+providers.json

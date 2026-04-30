@@ -299,6 +299,10 @@ export interface AnalysisOptions {
    */
   analysisMode?: 'fast' | 'full' | 'auto';
 
+  /** Provider override for this analysis session. When set, env vars are sourced
+   *  from this provider instead of the global active provider. */
+  providerId?: string;
+
   /**
    * Pre-queried trace datasets from the frontend (populated by quick-action buttons).
    * Injected into the AI prompt as Markdown tables so the AI can analyze immediately

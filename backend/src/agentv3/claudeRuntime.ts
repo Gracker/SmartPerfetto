@@ -36,6 +36,7 @@ import {
   explainClaudeRuntimeError,
   loadClaudeConfig,
   resolveEffort,
+  resolveRuntimeConfig,
   type ClaudeAgentConfig,
 } from './claudeConfig';
 import { detectFocusApps } from './focusAppDetector';
@@ -376,6 +377,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         return { apps: [], primaryApp: undefined, method: 'none' as const };
       });
 
+      const runtimeConfig = resolveRuntimeConfig(this.config, options.providerId);
+
       let queryComplexity: QueryComplexity;
       let classifierSource: 'user_explicit' | 'hard_rule' | 'ai';
       let classifierReason: string;
@@ -385,7 +388,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         classifierSource = 'user_explicit';
         classifierReason = `user requested ${explicitMode}`;
       } else {
-        const classifierResult = await classifyQueryComplexity(classifierInput, this.config);
+        const classifierResult = await classifyQueryComplexity(classifierInput, runtimeConfig);
         queryComplexity = classifierResult.complexity;
         classifierSource = classifierResult.source;
         classifierReason = classifierResult.reason;
@@ -441,7 +444,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       this.emitUpdate({
         type: 'progress',
-        content: { phase: 'starting', message: `使用 ${this.config.model} 开始分析 (effort: ${ctx.effectiveEffort})...` },
+        content: { phase: 'starting', message: `使用 ${runtimeConfig.model} 开始分析 (effort: ${ctx.effectiveEffort})...` },
         timestamp: Date.now(),
       });
 
@@ -463,26 +466,26 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         effectivePrompt = `${traceSection}\n\n${effectivePrompt}`;
       }
 
-      const sdkEnv = createSdkEnv();
+      const sdkEnv = createSdkEnv(options.providerId);
 
       const { stream, close: closeSdk } = sdkQueryWithRetry({
         prompt: effectivePrompt,
         options: {
-          model: this.config.model,
-          maxTurns: this.config.maxTurns,
+          model: runtimeConfig.model,
+          maxTurns: runtimeConfig.maxTurns,
           systemPrompt: ctx.systemPrompt,
           mcpServers: { smartperfetto: ctx.mcpServer },
           includePartialMessages: true,
           permissionMode: 'bypassPermissions' as const,
           allowDangerouslySkipPermissions: true,
-          cwd: this.config.cwd,
+          cwd: runtimeConfig.cwd,
           effort: ctx.effectiveEffort,
           allowedTools: ctx.allowedTools,
           env: sdkEnv,
           stderr: (data: string) => {
             console.warn(`[ClaudeRuntime] SDK stderr [${sessionId}]: ${data.trimEnd()}`);
           },
-          ...(this.config.maxBudgetUsd ? { maxBudgetUsd: this.config.maxBudgetUsd } : {}),
+          ...(runtimeConfig.maxBudgetUsd ? { maxBudgetUsd: runtimeConfig.maxBudgetUsd } : {}),
           ...(existingSdkSessionId ? { resume: existingSdkSessionId } : {}),
           ...(ctx.agents ? { agents: ctx.agents } : {}),
         },
@@ -496,12 +499,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Per-turn budget is env-configurable (CLAUDE_FULL_PER_TURN_MS, default 60s) so slower
       // LLMs (DeepSeek / Ollama / GLM) have room per turn without false timeouts.
       // Scrolling deep-drill (hypothesis + SQL + knowledge + conclusion) still needs ~6-8 min.
-      const timeoutMs = (this.config.maxTurns || 15) * this.config.fullPathPerTurnMs;
+      const timeoutMs = (runtimeConfig.maxTurns || 15) * runtimeConfig.fullPathPerTurnMs;
       let timedOut = false;
 
       // Sub-agent timeout tracking — stop tasks that exceed subAgentTimeoutMs
       const activeSubAgentTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-      const subAgentTimeoutMs = this.config.subAgentTimeoutMs;
+      const subAgentTimeoutMs = runtimeConfig.subAgentTimeoutMs;
 
       // P2-1: Turn-level autonomy watchdog — detect repetitive tool failures
       // P1-G2: Per-tool tracking — each tool gets its own failure tracking
@@ -952,8 +955,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Default ON. Up to 2 correction retries, but second only if new/different errors.
       // Run unconditionally when enabled — plan adherence, hypothesis resolution,
       // and conclusion-length checks must fire even when zero findings are extracted.
-      console.log(`[ClaudeRuntime] Pre-verification: conclusionText=${conclusionText.length} chars, sdkSessionId=${sdkSessionId ? 'set' : 'MISSING'}, enableVerification=${this.config.enableVerification}`);
-      if (this.config.enableVerification) {
+      console.log(`[ClaudeRuntime] Pre-verification: conclusionText=${conclusionText.length} chars, sdkSessionId=${sdkSessionId ? 'set' : 'MISSING'}, enableVerification=${runtimeConfig.enableVerification}`);
+      if (runtimeConfig.enableVerification) {
         const MAX_CORRECTION_ATTEMPTS = 2;
         let previousErrorSignatures = new Set<string>();
 
@@ -961,12 +964,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           for (let attempt = 0; attempt < MAX_CORRECTION_ATTEMPTS; attempt++) {
             const verification = await verifyConclusion(mergedFindings, conclusionText, {
               emitUpdate: (update) => this.emitUpdate(update),
-              enableLLM: true, // P1-G6: LLM verification on all passes — 2nd correction quality is most uncertain
+              enableLLM: true,
               plan: ctx.analysisPlan.current,
               hypotheses: ctx.hypotheses,
               sceneType: ctx.sceneType,
-              lightModel: this.config.lightModel,
-              verifierTimeoutMs: this.config.verifierTimeoutMs,
+              lightModel: runtimeConfig.lightModel,
+              verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
             });
             console.log(`[ClaudeRuntime] Verification (attempt ${attempt + 1}): ${verification.passed ? 'PASSED' : 'ISSUES FOUND'} (${verification.durationMs}ms, ${verification.heuristicIssues.length} heuristic + ${verification.llmIssues?.length || 0} LLM issues)`);
 
@@ -1025,14 +1028,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               const { stream: correctionStream, close: closeCorrection } = sdkQueryWithRetry({
                 prompt: correctionPrompt,
                 options: {
-                  model: this.config.model,
+                  model: runtimeConfig.model,
                   maxTurns: correctionTurns,
                   systemPrompt: correctionSystemPrompt,
                   mcpServers: { smartperfetto: ctx.mcpServer },
                   includePartialMessages: true,
                   permissionMode: 'bypassPermissions' as const,
                   allowDangerouslySkipPermissions: true,
-                  cwd: this.config.cwd,
+                  cwd: runtimeConfig.cwd,
                   effort: ctx.effectiveEffort,
                   allowedTools: ctx.allowedTools,
                   resume: sdkSessionId,
@@ -1420,7 +1423,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         selectionContext: options.selectionContext,
       });
 
-      const quickConfig = createQuickConfig(this.config);
+      const quickConfig = createQuickConfig(resolveRuntimeConfig(this.config, options.providerId));
 
       const { handleMessage: bridge, getAccumulatedAnswer } = createSseBridge((update: StreamingUpdate) => {
         this.emitUpdate(update);
@@ -1441,7 +1444,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         && (Date.now() - (sessionMapEntry.updatedAt || 0) < SDK_SESSION_FRESHNESS_MS)
         ? sessionMapEntry.sdkSessionId
         : undefined;
-      const sdkEnv = createSdkEnv();
+      const sdkEnv = createSdkEnv(options.providerId);
 
       // Prepend pre-queried trace data so the AI skips basic SQL turns in fast mode
       let quickPrompt = query;

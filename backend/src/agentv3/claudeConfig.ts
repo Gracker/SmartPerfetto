@@ -254,13 +254,70 @@ export function createQuickConfig(baseConfig: ClaudeAgentConfig): ClaudeAgentCon
 
 /**
  * Create a sanitized copy of process.env for SDK subprocess spawning.
- * Strips Claude Code nesting-detection env vars so the SDK subprocess
- * doesn't refuse to start when the backend runs inside a Claude Code session.
+ * When a providerId is given, overlays that provider's env vars.
+ * When no providerId is given, uses the active provider from providerManager.
+ * Falls back to raw process.env when no provider is configured.
  */
-export function createSdkEnv(): Record<string, string | undefined> {
+export function createSdkEnv(sessionOverrideProviderId?: string): Record<string, string | undefined> {
   const env = { ...process.env };
+
+  // Lazy import to avoid circular dependency at module load time
+  const { getProviderService } = require('../services/providerManager');
+  const svc = getProviderService();
+
+  const providerEnv = sessionOverrideProviderId
+    ? svc.getEnvForProvider(sessionOverrideProviderId)
+    : svc.getEffectiveEnv();
+
+  if (sessionOverrideProviderId && !providerEnv) {
+    console.warn(`[createSdkEnv] Provider ${sessionOverrideProviderId} not found, falling back to env`);
+  }
+  if (providerEnv) Object.assign(env, providerEnv);
+
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   delete env.CLAUDE_CODE_SESSION_ACCESS_TOKEN;
   return env;
+}
+
+/**
+ * Resolve the effective ClaudeAgentConfig based on the active provider or session override.
+ * Unlike loadClaudeConfig() which only reads process.env at construction time,
+ * this reads the currently active provider's env vars at call time.
+ */
+export function resolveRuntimeConfig(baseConfig: ClaudeAgentConfig, providerId?: string): ClaudeAgentConfig {
+  // Lazy import to avoid circular dependency
+  const { getProviderService } = require('../services/providerManager');
+  const svc = getProviderService();
+
+  const providerEnv = providerId
+    ? svc.getEnvForProvider(providerId)
+    : svc.getEffectiveEnv();
+
+  if (!providerEnv) return baseConfig;
+
+  return {
+    ...baseConfig,
+    model: providerEnv.CLAUDE_MODEL || baseConfig.model,
+    lightModel: providerEnv.CLAUDE_LIGHT_MODEL || baseConfig.lightModel,
+    maxTurns: providerEnv.CLAUDE_MAX_TURNS
+      ? parseInt(providerEnv.CLAUDE_MAX_TURNS, 10) : baseConfig.maxTurns,
+    maxBudgetUsd: providerEnv.CLAUDE_MAX_BUDGET_USD
+      ? parseFloat(providerEnv.CLAUDE_MAX_BUDGET_USD) : baseConfig.maxBudgetUsd,
+    effort: (providerEnv.CLAUDE_EFFORT || baseConfig.effort) as EffortLevel,
+    enableSubAgents: providerEnv.CLAUDE_ENABLE_SUB_AGENTS
+      ? providerEnv.CLAUDE_ENABLE_SUB_AGENTS === 'true' : baseConfig.enableSubAgents,
+    enableVerification: providerEnv.CLAUDE_ENABLE_VERIFICATION !== undefined
+      ? providerEnv.CLAUDE_ENABLE_VERIFICATION !== 'false' : baseConfig.enableVerification,
+    fullPathPerTurnMs: providerEnv.CLAUDE_FULL_PER_TURN_MS
+      ? parseInt(providerEnv.CLAUDE_FULL_PER_TURN_MS, 10) : baseConfig.fullPathPerTurnMs,
+    quickPathPerTurnMs: providerEnv.CLAUDE_QUICK_PER_TURN_MS
+      ? parseInt(providerEnv.CLAUDE_QUICK_PER_TURN_MS, 10) : baseConfig.quickPathPerTurnMs,
+    verifierTimeoutMs: providerEnv.CLAUDE_VERIFIER_TIMEOUT_MS
+      ? parseInt(providerEnv.CLAUDE_VERIFIER_TIMEOUT_MS, 10) : baseConfig.verifierTimeoutMs,
+    classifierTimeoutMs: providerEnv.CLAUDE_CLASSIFIER_TIMEOUT_MS
+      ? parseInt(providerEnv.CLAUDE_CLASSIFIER_TIMEOUT_MS, 10) : baseConfig.classifierTimeoutMs,
+    subAgentModel: (providerEnv.CLAUDE_SUB_AGENT_MODEL as ClaudeAgentConfig['subAgentModel'])
+      || baseConfig.subAgentModel,
+  };
 }
