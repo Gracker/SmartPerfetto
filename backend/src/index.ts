@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 // Load environment variables FIRST before importing routes
-dotenv.config();
+dotenv.config({ override: true });
 
 import { installEpipeGuard } from './utils/epipeGuard';
 
