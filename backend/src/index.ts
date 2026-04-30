@@ -31,7 +31,11 @@ import {
   assertTraceAnalysisConfiguredForStartup,
   getTraceAnalysisConfigurationStatus,
 } from './services/traceAnalysisSkill';
-import { isClaudeCodeEnabled, hasClaudeCredentials } from './agentv3/claudeConfig';
+import {
+  getClaudeRuntimeDiagnostics,
+  hasClaudeCredentials,
+  isClaudeCodeEnabled,
+} from './agentv3/claudeConfig';
 import {
   getLegacyApiUsageSnapshot,
 } from './services/legacyApiTelemetry';
@@ -65,6 +69,7 @@ app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 // Health check endpoint
 app.get('/health', (req, res) => {
   const useAgentV3 = isClaudeCodeEnabled();
+  const claudeDiagnostics = getClaudeRuntimeDiagnostics();
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
@@ -76,10 +81,20 @@ app.get('/health', (req, res) => {
       model: useAgentV3
         ? (process.env.CLAUDE_MODEL || 'claude-sonnet-4-6')
         : (process.env.DEEPSEEK_MODEL || 'deepseek-chat'),
+      providerMode: useAgentV3 ? claudeDiagnostics.providerMode : 'deepseek_legacy',
       configured: useAgentV3
         ? hasClaudeCredentials()
         : !!process.env.DEEPSEEK_API_KEY,
       authRequired: !!process.env.SMARTPERFETTO_API_KEY,
+      diagnostics: useAgentV3
+        ? claudeDiagnostics
+        : {
+            runtime: 'agentv2',
+            providerMode: 'deepseek_legacy',
+            model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+            configured: !!process.env.DEEPSEEK_API_KEY,
+            configHint: 'AI_SERVICE=deepseek uses the deprecated agentv2 fallback. New provider integrations should use agentv3 with an Anthropic-compatible proxy.',
+          },
     },
   });
 });

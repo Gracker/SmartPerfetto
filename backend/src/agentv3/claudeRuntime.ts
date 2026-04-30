@@ -30,7 +30,14 @@ import {
   SDK_MAX_TURNS_SUBTYPE,
 } from './analysisTermination';
 import { extractFindingsFromText, extractFindingsFromSkillResult, mergeFindings } from './claudeFindingExtractor';
-import { loadClaudeConfig, resolveEffort, createSdkEnv, createQuickConfig, type ClaudeAgentConfig } from './claudeConfig';
+import {
+  createQuickConfig,
+  createSdkEnv,
+  explainClaudeRuntimeError,
+  loadClaudeConfig,
+  resolveEffort,
+  type ClaudeAgentConfig,
+} from './claudeConfig';
 import { detectFocusApps } from './focusAppDetector';
 import { classifyScene, type SceneType } from './sceneClassifier';
 import { classifyQueryComplexity } from './queryComplexityClassifier';
@@ -1264,7 +1271,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationMessage,
       };
     } catch (error) {
-      const errMsg = (error as Error).message || 'Unknown error';
+      const errMsg = explainClaudeRuntimeError((error as Error).message || 'Unknown error');
       console.error('[ClaudeRuntime] Analysis failed:', errMsg);
 
       // P1-3: Preserve partial findings and generate partial conclusion on mid-stream errors
@@ -1625,7 +1632,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationMessage,
       };
     } catch (error) {
-      const errMsg = (error as Error).message || 'Unknown error';
+      const errMsg = explainClaudeRuntimeError((error as Error).message || 'Unknown error');
       console.error('[ClaudeRuntime] Quick analysis failed:', errMsg);
       this.emitUpdate({ type: 'error', content: { message: `快速问答失败: ${errMsg}` }, timestamp: Date.now() });
       return {

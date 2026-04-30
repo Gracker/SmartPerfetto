@@ -25,6 +25,34 @@ CLAUDE_LIGHT_MODEL=your-light-model
 
 模型必须稳定支持流式输出和 tool/function calling。代理层可以使用 one-api、new-api 或 LiteLLM。
 
+### 运行时与 Provider 诊断
+
+SmartPerfetto 当前不会自动读取 CC Switch、Codex CLI、Gemini CLI 或 OpenCode 的登录态。那些工具管理的是各自 CLI 的配置文件；SmartPerfetto 的 Web/CLI 分析路径默认仍由 Claude Agent SDK 驱动。
+
+接入 MiMo、DeepSeek、OpenAI、Kimi、MiniMax 等第三方模型时，请让代理层暴露 Anthropic Messages 兼容接口，然后配置：
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:3000
+ANTHROPIC_API_KEY=sk-proxy-xxx
+CLAUDE_MODEL=your-provider-main-model
+CLAUDE_LIGHT_MODEL=your-provider-light-model
+```
+
+修改 `.env` 后需要重启后端。可通过健康检查确认当前配置：
+
+```bash
+curl http://localhost:3000/health
+```
+
+响应中的 `aiEngine.providerMode` 会显示：
+
+| providerMode | 含义 |
+|---|---|
+| `anthropic_direct` | 使用 `ANTHROPIC_API_KEY` 直连 Anthropic |
+| `anthropic_compatible_proxy` | 使用 `ANTHROPIC_BASE_URL` 接入兼容代理 |
+| `aws_bedrock` | 使用 AWS Bedrock |
+| `unconfigured` | 尚未配置可用凭证 |
+
 ## 分析预算与超时
 
 慢模型或本地模型通常需要更长的 per-turn timeout：
