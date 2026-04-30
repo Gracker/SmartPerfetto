@@ -18,7 +18,7 @@ DIST_DIR="$PROJECT_ROOT/perfetto/out/ui/ui/dist"
 FRONTEND_DIR="$PROJECT_ROOT/frontend"
 
 # Find the versioned dist directory
-VERSION_DIR=$(ls -d "$DIST_DIR"/v54.0-* 2>/dev/null | head -1)
+VERSION_DIR=$(find "$DIST_DIR" -maxdepth 1 -type d -name 'v54.0-*' -print -quit 2>/dev/null || true)
 if [ -z "$VERSION_DIR" ]; then
   echo "ERROR: No compiled frontend found at $DIST_DIR"
   echo "       Run ./scripts/start-dev.sh first to build the frontend."

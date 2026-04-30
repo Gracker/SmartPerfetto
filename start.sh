@@ -61,7 +61,7 @@ start_with_logs() {
   local log_file="$3"
   shift 3
   "$@" > >(while IFS= read -r line; do echo "[${prefix}] $line" | tee -a "$log_file"; done) 2>&1 &
-  eval "$pid_var=$!"
+  printf -v "$pid_var" '%s' "$!"
 }
 
 cleanup() {
@@ -172,7 +172,8 @@ else
   echo "=============================================="
   PIN_ENV="$PROJECT_ROOT/scripts/trace-processor-pin.env"
   if [ -f "$PIN_ENV" ]; then
-    source "$PIN_ENV"
+    # shellcheck source=scripts/trace-processor-pin.env
+    . "$PIN_ENV"
     # pin.env uses PERFETTO_VERSION / PERFETTO_SHELL_SHA256_* variable names
     TRACE_PROCESSOR_VERSION="${PERFETTO_VERSION:-v54.0}"
     TRACE_PROCESSOR_SHA256_MAC_ARM64="${PERFETTO_SHELL_SHA256_MAC_ARM64:-23638faac4ca695e86039a01fade05ff4a38ffa89672afc7a4e4077318603507}"

@@ -51,13 +51,20 @@ echo "  Perfetto UI: http://localhost:10000"
 echo "  Backend API: http://localhost:${PORT:-3000}"
 echo "=============================================="
 
+shutdown() {
+  kill "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
+  exit 0
+}
+
 # Handle shutdown gracefully
-trap 'kill $BACKEND_PID $FRONTEND_PID 2>/dev/null; exit 0' SIGTERM SIGINT
+trap shutdown SIGTERM SIGINT
 
 # Wait for either process to exit
-wait -n $BACKEND_PID $FRONTEND_PID
+set +e
+wait -n "$BACKEND_PID" "$FRONTEND_PID"
 EXIT_CODE=$?
+set -e
 
 # If one exits, stop the other
-kill $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
-exit $EXIT_CODE
+kill "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
+exit "$EXIT_CODE"

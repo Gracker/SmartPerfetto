@@ -62,9 +62,9 @@ echo "Latest upstream commits:"
 git log --oneline origin/main -5
 echo ""
 
-read -p "Merge $COMMIT_COUNT commits? (Y/n) " -n 1 -r
+read -r -p "Merge $COMMIT_COUNT commits? (Y/n) " -n 1
 echo
-if [[ $REPLY =~ ^[Nn]$ ]]; then
+if [[ "$REPLY" =~ ^[Nn]$ ]]; then
   echo "Cancelled."
   exit 0
 fi

@@ -160,7 +160,12 @@ mkdir -p "$LOGS_DIR"
 if [ "$CLEAN_LOGS" = true ]; then
   echo "Cleaning old log files (keeping last 10)..."
   for prefix in backend frontend combined; do
-    ls -t "$LOGS_DIR"/${prefix}_*.log 2>/dev/null | tail -n +11 | xargs rm -f 2>/dev/null || true
+    find "$LOGS_DIR" -maxdepth 1 -type f -name "${prefix}_*.log" -print 2>/dev/null \
+      | sort -r \
+      | tail -n +11 \
+      | while IFS= read -r old_log; do
+          rm -f "$old_log"
+        done
   done
 fi
 

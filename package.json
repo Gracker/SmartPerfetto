@@ -11,7 +11,7 @@
     "lint": "biome lint package.json backend/package.json biome.json knip.json",
     "format:check": "biome check --formatter-enabled=true --linter-enabled=false --assist-enabled=false package.json backend/package.json biome.json knip.json",
     "deadcode": "knip --dependencies --max-show-issues 50 --no-config-hints",
-    "shellcheck": "shellcheck start.sh scripts/*.sh",
+    "shellcheck": "shellcheck -x start.sh scripts/*.sh",
     "quality": "npm run lint && npm run format:check && npm run deadcode && npm run shellcheck"
   },
   "engines": {
