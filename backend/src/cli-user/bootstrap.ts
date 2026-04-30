@@ -92,7 +92,7 @@ function loadEnv(explicitFile?: string): void {
     if (!fs.existsSync(resolved)) {
       throw new Error(`--env-file not found: ${resolved}`);
     }
-    dotenv.config({ path: resolved, quiet: true });
+    dotenv.config({ path: resolved, quiet: true, override: true });
     return;
   }
 
@@ -102,12 +102,12 @@ function loadEnv(explicitFile?: string): void {
   const backendRoot = findBackendRoot();
   if (backendRoot) {
     const envPath = path.join(backendRoot, '.env');
-    if (fs.existsSync(envPath)) dotenv.config({ path: envPath, quiet: true });
+    if (fs.existsSync(envPath)) dotenv.config({ path: envPath, quiet: true, override: true });
   }
 
   // Last chance: user-level override.
   const userEnv = path.join(process.env.HOME || '', '.smartperfetto', 'env');
-  if (fs.existsSync(userEnv)) dotenv.config({ path: userEnv, quiet: true });
+  if (fs.existsSync(userEnv)) dotenv.config({ path: userEnv, quiet: true, override: true });
 }
 
 /**

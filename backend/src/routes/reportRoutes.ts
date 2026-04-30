@@ -12,6 +12,7 @@
 import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from '../services/reportCausalMapAssets';
 
 const router = express.Router();
 
@@ -30,6 +31,30 @@ type PersistedReport = {
 };
 
 export const reportStore = new Map<string, PersistedReport>();
+
+const LEGACY_MERMAID_UPGRADE_CSS = REPORT_CAUSAL_MAP_CSS;
+
+const LEGACY_MERMAID_UPGRADE_SCRIPT = REPORT_CAUSAL_MAP_SCRIPT;
+
+export function upgradeLegacyReportHtml(html: string): string {
+  if (!html || !html.includes('<pre class="mermaid">')) return html;
+  if (html.includes('parseMermaidFlowSource(') || html.includes('class="causal-map"')) return html;
+
+  let upgraded = html;
+  upgraded = upgraded.replace(
+    '</style>',
+    `${LEGACY_MERMAID_UPGRADE_CSS}\n</style>`,
+  );
+  upgraded = upgraded.replace(
+    /<pre class="mermaid">([\s\S]*?)<\/pre>/g,
+    '<div class="mermaid-wrapper"><pre class="mermaid">$1</pre></div>',
+  );
+  upgraded = upgraded.replace(
+    /if \(typeof mermaid !== 'undefined'\) \{[\s\S]*?mermaid\.run\(\{ querySelector: 'pre\.mermaid' \}\);\s*\}/,
+    LEGACY_MERMAID_UPGRADE_SCRIPT.trim(),
+  );
+  return upgraded;
+}
 
 /** Save a report to disk. Called externally when reports are generated. */
 export function persistReport(reportId: string, entry: PersistedReport): void {
@@ -64,7 +89,7 @@ function loadReportFromDisk(reportId: string): PersistedReport | null {
       sessionId = meta.sessionId || '';
     }
 
-    const entry = { html, generatedAt, sessionId };
+    const entry = { html: upgradeLegacyReportHtml(html), generatedAt, sessionId };
     // Cache in memory for subsequent access
     reportStore.set(reportId, entry);
     return entry;
@@ -130,7 +155,7 @@ router.get('/:reportId/export', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.send(report.html);
+    res.send(upgradeLegacyReportHtml(report.html));
   } catch (error: any) {
     console.error('[ReportRoutes] Export report error:', error);
     res.status(500).json({
@@ -179,7 +204,7 @@ router.get('/:reportId', (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
-    res.send(report.html);
+    res.send(upgradeLegacyReportHtml(report.html));
   } catch (error: any) {
     console.error('[ReportRoutes] Get report error:', error);
     res.status(500).json({
