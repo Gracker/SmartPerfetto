@@ -158,7 +158,7 @@ export function createRenderer(opts: RendererOptions): Renderer {
     console.log(`\n${green('✓')} session ${bold(meta.sessionId)}`);
     console.log(`  ${dim('dir:')}    ${meta.sessionDir}`);
     console.log(`  ${dim('report:')} ${meta.reportPath}`);
-    console.log(dim(`\n  open ${meta.reportPath}  ·  smartperfetto resume ${meta.sessionId}`));
+    console.log(dim(`\n  open ${meta.reportPath}  ·  smp resume ${meta.sessionId}`));
   }
 
   return { onEvent, printConclusion, printError, printCompletion };

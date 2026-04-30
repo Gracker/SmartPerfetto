@@ -694,6 +694,10 @@ export interface SubAgentResult {
   tokensUsed?: { input: number; output: number };
   metrics?: Record<string, any>;
   error?: string;
+  /** True when this turn produced a usable but incomplete result. */
+  partial?: boolean;
+  terminationReason?: string;
+  terminationMessage?: string;
 }
 
 // =============================================================================

@@ -20,12 +20,17 @@ if [ -f "$PROJECT_ROOT/.backend.pid" ]; then
   if kill -0 "$BACKEND_PID" 2>/dev/null; then
     kill "$BACKEND_PID" 2>/dev/null || true
     sleep 1
-    kill -0 "$BACKEND_PID" 2>/dev/null && kill -9 "$BACKEND_PID" 2>/dev/null || true
+    if kill -0 "$BACKEND_PID" 2>/dev/null; then
+      kill -9 "$BACKEND_PID" 2>/dev/null || true
+    fi
   fi
 fi
 
 # Also kill any tsx/node processes on port 3000
-lsof -ti:3000 2>/dev/null | xargs kill 2>/dev/null || true
+PORT_PIDS=$(lsof -ti:3000 2>/dev/null || true)
+if [ -n "$PORT_PIDS" ]; then
+  echo "$PORT_PIDS" | xargs kill 2>/dev/null || true
+fi
 sleep 1
 
 # Start backend with tsx watch (hot-reload enabled)

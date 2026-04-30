@@ -45,7 +45,15 @@ const DEFAULT_LIGHT_MODEL = 'claude-haiku-4-5';
 // Scrolling pipeline: 1 time-range + 1 scrolling_analysis + 2-3 deep-drill (blocking_chain/binder_root_cause)
 // + 1-2 jank_frame_detail + hypothesis submit/resolve + conclusion = ~20-25 turns
 const DEFAULT_MAX_TURNS = 30;
+const DEFAULT_QUICK_MAX_TURNS = 5;
 const DEFAULT_EFFORT: EffortLevel = 'high';
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 export function loadClaudeConfig(overrides?: Partial<ClaudeAgentConfig>): ClaudeAgentConfig {
   return {
@@ -154,6 +162,62 @@ export function hasClaudeCredentials(): boolean {
   );
 }
 
+export function getClaudeRuntimeDiagnostics() {
+  const bedrock = detectBedrock();
+  const credentialSources: string[] = [];
+  if (process.env.ANTHROPIC_API_KEY) credentialSources.push('anthropic_api_key');
+  if (process.env.ANTHROPIC_BASE_URL) credentialSources.push('anthropic_compatible_proxy');
+  if (bedrock.enabled) credentialSources.push(`bedrock:${bedrock.authMethod}`);
+
+  const providerMode = process.env.ANTHROPIC_BASE_URL
+    ? 'anthropic_compatible_proxy'
+    : bedrock.enabled
+      ? 'aws_bedrock'
+      : process.env.ANTHROPIC_API_KEY
+        ? 'anthropic_direct'
+        : 'unconfigured';
+
+  return {
+    runtime: 'claude-agent-sdk',
+    providerMode,
+    model: process.env.CLAUDE_MODEL || DEFAULT_MODEL,
+    lightModel: process.env.CLAUDE_LIGHT_MODEL || DEFAULT_LIGHT_MODEL,
+    configured: hasClaudeCredentials(),
+    credentialSources,
+    baseUrlConfigured: !!process.env.ANTHROPIC_BASE_URL,
+    bedrock: {
+      enabled: bedrock.enabled,
+      authMethod: bedrock.authMethod,
+      region: bedrock.region,
+      baseUrlConfigured: !!bedrock.baseUrl,
+    },
+    configHint: process.env.ANTHROPIC_BASE_URL
+      ? 'Using Anthropic-compatible proxy. Ensure the mapped model supports streaming and tool/function calling.'
+      : 'Set ANTHROPIC_API_KEY for Anthropic direct access, or ANTHROPIC_BASE_URL + ANTHROPIC_API_KEY for a third-party Anthropic-compatible proxy.',
+  };
+}
+
+export function explainClaudeRuntimeError(message: string): string {
+  const lower = message.toLowerCase();
+  const quotaOrAuth =
+    lower.includes('out of') ||
+    lower.includes('extra usage') ||
+    lower.includes('rate limit') ||
+    lower.includes('quota') ||
+    lower.includes('not logged in') ||
+    lower.includes('unauthorized') ||
+    lower.includes('401') ||
+    lower.includes('process exited with code 1');
+
+  if (!quotaOrAuth) return message;
+
+  return `${message}\n\n` +
+    'SmartPerfetto is currently using the Claude Agent SDK runtime. ' +
+    'If your Claude subscription/API quota is unavailable, configure an Anthropic-compatible proxy instead: ' +
+    'set ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY, CLAUDE_MODEL, and CLAUDE_LIGHT_MODEL in backend/.env, then restart the backend. ' +
+    'Provider switchers such as CC Switch manage Claude Code/Codex/Gemini CLI configs, but SmartPerfetto does not automatically read Codex CLI or Gemini CLI credentials.';
+}
+
 /**
  * Check if ClaudeRuntime (agentv3) is the active orchestrator.
  * Defaults to true — agentv2 is deprecated. Set AI_SERVICE=deepseek to use legacy path.
@@ -180,7 +244,7 @@ isClaudeCodeEnabled._warned = false;
 export function createQuickConfig(baseConfig: ClaudeAgentConfig): ClaudeAgentConfig {
   return {
     ...baseConfig,
-    maxTurns: 5,
+    maxTurns: parsePositiveIntEnv('CLAUDE_QUICK_MAX_TURNS', DEFAULT_QUICK_MAX_TURNS),
     effort: 'low',
     enableVerification: false,
     enableSubAgents: false,

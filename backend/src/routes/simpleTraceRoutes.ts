@@ -6,12 +6,82 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
+import net from 'net';
 import { v4 as uuidv4 } from 'uuid';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import { getPortPool } from '../services/portPool';
 import { TraceProcessorFactory } from '../services/workingTraceProcessor';
 
 const router = Router();
+const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+const URL_UPLOAD_TIMEOUT_MS = 300000;
+
+async function finalizeTraceUpload(
+  traceId: string,
+  filename: string,
+  size: number,
+  finalPath: string,
+) {
+  const tps = getTraceProcessorService();
+
+  if (tps) {
+    await tps.initializeUploadWithId(traceId, filename, size);
+    console.log(`[TraceProcessor] Initialized upload with traceId: ${traceId}`);
+  }
+
+  const metadataPath = path.join(path.dirname(finalPath), `${traceId}.json`);
+  const metadata = {
+    id: traceId,
+    filename,
+    size,
+    uploadedAt: new Date().toISOString(),
+    status: 'ready',
+    path: finalPath,
+  };
+  await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
+  console.log(`[TraceProcessor] Created metadata: ${metadataPath}`);
+
+  if (tps) {
+    try {
+      await tps.completeUpload(traceId);
+      console.log(`[TraceProcessor] Loaded trace ${traceId}`);
+    } catch (tpError: any) {
+      console.error(`[TraceProcessor] Failed to load trace ${traceId}:`, tpError.message);
+    }
+  }
+
+  return tps?.getTraceWithPort(traceId);
+}
+
+function getFilenameFromUrl(rawUrl: string, fallback = 'trace.perfetto'): string {
+  try {
+    const url = new URL(rawUrl);
+    const name = path.basename(url.pathname);
+    return name || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function isBlockedTraceUrl(url: URL): boolean {
+  const hostname = url.hostname.toLowerCase();
+  if (hostname === 'localhost') return true;
+
+  const ipVersion = net.isIP(hostname);
+  if (ipVersion === 4) {
+    const parts = hostname.split('.').map(part => Number.parseInt(part, 10));
+    if (parts[0] === 10 || parts[0] === 127 || parts[0] === 0) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
+  } else if (ipVersion === 6) {
+    if (hostname === '::1') return true;
+    if (hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80')) return true;
+  }
+
+  return false;
+}
 
 // GET /api/traces/health - Health check for auto-upload feature
 // This endpoint allows the frontend to quickly check if the backend is available
@@ -37,7 +107,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB
+    fileSize: MAX_UPLOAD_BYTES, // 500MB
   },
 });
 
@@ -59,48 +129,14 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     // Generate trace ID upfront for consistency
     const traceId = uuidv4();
 
-    // Load trace into TraceProcessorService for SQL analysis
-    // Use the traceId we generated so everything is consistent
-    const tps = getTraceProcessorService();
-
-    if (tps) {
-      // Initialize upload in the service with our traceId
-      await tps.initializeUploadWithId(traceId, file.originalname, file.size);
-      console.log(`[TraceProcessor] Initialized upload with traceId: ${traceId}`);
-    }
-
     // Move file to traces directory with proper name
     const finalPath = path.join(tracesDir, `${traceId}.trace`);
     await fs.rename(file.path, finalPath);
 
     console.log(`File uploaded successfully: ${file.originalname} -> ${traceId}`);
 
-    // Create metadata JSON file for the trace
-    const metadataPath = path.join(tracesDir, `${traceId}.json`);
-    const metadata = {
-      id: traceId,
-      filename: file.originalname,
-      size: file.size,
-      uploadedAt: new Date().toISOString(),
-      status: 'ready',
-      path: finalPath,
-    };
-    await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
-    console.log(`[TraceProcessor] Created metadata: ${metadataPath}`);
-
-    // Complete the upload which will process the trace
-    if (tps) {
-      try {
-        await tps.completeUpload(traceId);
-        console.log(`[TraceProcessor] Loaded trace ${traceId}`);
-      } catch (tpError: any) {
-        console.error(`[TraceProcessor] Failed to load trace ${traceId}:`, tpError.message);
-        // Continue anyway - file is saved
-      }
-    }
-
     // Get trace status and processor port from service
-    const traceInfo = tps?.getTraceWithPort(traceId);
+    const traceInfo = await finalizeTraceUpload(traceId, file.originalname, file.size, finalPath);
 
     res.json({
       success: true,
@@ -120,6 +156,92 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     console.error('Upload error:', error);
     res.status(500).json({
       error: 'Upload failed',
+      details: error.message
+    });
+  }
+});
+
+// POST /api/traces/upload-url - Fetch a remote trace from the backend side.
+router.post('/upload-url', async (req, res) => {
+  try {
+    const rawUrl = typeof req.body?.url === 'string' ? req.body.url : '';
+    if (!rawUrl) {
+      return res.status(400).json({
+        error: 'No URL provided'
+      });
+    }
+
+    const url = new URL(rawUrl);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return res.status(400).json({
+        error: 'Only http and https trace URLs are supported'
+      });
+    }
+    if (isBlockedTraceUrl(url)) {
+      return res.status(400).json({
+        error: 'Local and private trace URLs are not supported'
+      });
+    }
+
+    const filename = typeof req.body?.filename === 'string' && req.body.filename.trim()
+      ? path.basename(req.body.filename.trim())
+      : getFilenameFromUrl(rawUrl);
+
+    console.log(`Fetching URL trace: ${rawUrl}`);
+    const response = await fetch(rawUrl, {
+      signal: AbortSignal.timeout(URL_UPLOAD_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      return res.status(502).json({
+        error: 'Failed to fetch trace URL',
+        details: `${response.status} ${response.statusText}`
+      });
+    }
+
+    const contentLength = response.headers.get('content-length');
+    if (contentLength && Number.parseInt(contentLength, 10) > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        error: 'Trace file too large',
+        details: `Remote trace exceeds ${MAX_UPLOAD_BYTES} bytes`
+      });
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.byteLength > MAX_UPLOAD_BYTES) {
+      return res.status(413).json({
+        error: 'Trace file too large',
+        details: `Remote trace exceeds ${MAX_UPLOAD_BYTES} bytes`
+      });
+    }
+
+    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
+    await fs.mkdir(tracesDir, { recursive: true });
+
+    const traceId = uuidv4();
+    const finalPath = path.join(tracesDir, `${traceId}.trace`);
+    await fs.writeFile(finalPath, buffer);
+
+    console.log(`URL trace fetched successfully: ${rawUrl} -> ${traceId}`);
+
+    const traceInfo = await finalizeTraceUpload(traceId, filename, buffer.byteLength, finalPath);
+
+    res.json({
+      success: true,
+      trace: {
+        id: traceId,
+        filename,
+        size: buffer.byteLength,
+        uploadedAt: traceInfo?.uploadTime || new Date().toISOString(),
+        status: traceInfo?.status || 'ready',
+        port: traceInfo?.port,
+        processorStatus: traceInfo?.processor?.status,
+      }
+    });
+
+  } catch (error: any) {
+    console.error('URL upload error:', error);
+    res.status(500).json({
+      error: 'URL upload failed',
       details: error.message
     });
   }

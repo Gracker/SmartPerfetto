@@ -34,7 +34,7 @@ export async function runReportCommand(args: ReportCommandArgs): Promise<number>
 
   if (!fs.existsSync(sp.report)) {
     console.error(`Error: no report.html in ${sp.dir}`);
-    console.error('(Report was not generated — re-run `smartperfetto analyze` or `resume` to retry.)');
+    console.error('(Report was not generated — re-run `smp -f <trace> -p "question"` or `smp resume` to retry.)');
     return 1;
   }
 

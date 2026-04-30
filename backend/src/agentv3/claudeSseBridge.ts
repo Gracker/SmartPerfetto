@@ -3,6 +3,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { StreamingUpdate } from '../agent/types';
+import {
+  isSdkMaxTurnsSubtype,
+  MAX_TURNS_TERMINATION_REASON,
+  SDK_MAX_TURNS_SUBTYPE,
+} from './analysisTermination';
 
 export type UpdateEmitter = (update: StreamingUpdate) => void;
 
@@ -60,12 +65,6 @@ export interface SseBridge {
   /** Returns all text classified as answer_token during this stream.
    *  Used as fallback when the SDK terminal `result` message is empty (e.g. timeout). */
   getAccumulatedAnswer: () => string;
-}
-
-const RECOVERABLE_RESULT_SUBTYPES = new Set(['error_max_turns']);
-
-function isRecoverableResultSubtype(subtype: unknown): boolean {
-  return typeof subtype === 'string' && RECOVERABLE_RESULT_SUBTYPES.has(subtype);
 }
 
 /**
@@ -277,13 +276,29 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
           content: { conclusion: msg.result || '', durationMs: msg.duration_ms, turns: msg.num_turns, costUsd: msg.total_cost_usd },
           timestamp: now,
         });
-      } else if (isRecoverableResultSubtype(msg.subtype)) {
+      } else if (isSdkMaxTurnsSubtype(msg.subtype)) {
         emit({
           type: 'progress',
           content: {
             phase: 'concluding',
-            message: '分析达到轮次上限，正在整理已收集结果...',
+            message: '分析达到轮次上限，正在整理已收集结果，结论可能不完整...',
             subtype: msg.subtype,
+            partial: true,
+            terminationReason: MAX_TURNS_TERMINATION_REASON,
+            turns: msg.num_turns,
+          },
+          timestamp: now,
+        });
+        emit({
+          type: 'degraded',
+          content: {
+            module: 'claudeSseBridge',
+            fallback: 'partial_result_after_max_turns',
+            error: SDK_MAX_TURNS_SUBTYPE,
+            message: '分析达到轮次上限，结果可能不完整',
+            partial: true,
+            terminationReason: MAX_TURNS_TERMINATION_REASON,
+            turns: msg.num_turns,
           },
           timestamp: now,
         });

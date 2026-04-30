@@ -23,6 +23,18 @@ describe('createSseBridge', () => {
       type: 'progress',
       content: expect.objectContaining({
         phase: 'concluding',
+        partial: true,
+        subtype: 'error_max_turns',
+        terminationReason: 'max_turns',
+        turns: 84,
+      }),
+    }));
+    expect(updates).toContainEqual(expect.objectContaining({
+      type: 'degraded',
+      content: expect.objectContaining({
+        partial: true,
+        terminationReason: 'max_turns',
+        error: 'error_max_turns',
       }),
     }));
   });

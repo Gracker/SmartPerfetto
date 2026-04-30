@@ -1,18 +1,44 @@
 {
-  "name": "smart-perfetto-backend",
+  "name": "@gracker/smartperfetto",
   "version": "1.0.0",
-  "description": "SmartPerfetto backend API server",
+  "description": "SmartPerfetto CLI and backend runtime",
   "main": "dist/index.js",
   "bin": {
+    "smp": "./dist/cli-user/bin.js",
     "smartperfetto": "./dist/cli-user/bin.js"
+  },
+  "files": [
+    "dist/**/*",
+    "!dist/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "data/perfettoSqlIndex.light.json",
+    "data/perfettoSqlIndex.json",
+    "data/perfettoStdlibSymbols.json",
+    "skills/**/*",
+    "strategies/**/*",
+    ".env.example",
+    "LICENSE",
+    "package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20.0.0"
   },
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/index.ts",
-    "build": "tsc",
+    "clean": "node scripts/clean-dist.cjs",
+    "build": "npm run clean && tsc && node scripts/copy-runtime-assets.cjs",
     "start": "node dist/index.js",
     "cli:dev": "tsx src/cli-user/bin.ts",
+    "cli:build-run": "npm run build && node dist/cli-user/bin.js",
+    "cli:debug": "npm run build && node dist/cli-user/bin.js",
+    "cli:pack-check": "npm run build && node scripts/check-cli-pack.cjs",
+    "stdlib:generate-symbol-index": "node scripts/generate-stdlib-symbol-index.cjs",
+    "prepack": "npm run build",
     "test": "jest",
-    "test:core": "jest --runInBand --forceExit src/agent/communication/__tests__/agentMessageBus.test.ts src/agent/core/executors/__tests__/strategyExecutor.test.ts src/agent/core/executors/__tests__/hypothesisExecutor.test.ts src/agent/context/__tests__/enhancedSessionContext.test.ts src/tests/adbTools.test.ts src/services/__tests__/sessionLogger.test.ts src/services/__tests__/traceAnalysisSkillConfig.test.ts src/agent/agents/domain/__tests__/registry.test.ts",
+    "test:core": "jest --runInBand --forceExit src/agent/communication/__tests__/agentMessageBus.test.ts src/agent/core/executors/__tests__/strategyExecutor.test.ts src/agent/core/executors/__tests__/hypothesisExecutor.test.ts src/agent/context/__tests__/enhancedSessionContext.test.ts src/tests/adbTools.test.ts src/services/__tests__/sessionLogger.test.ts src/services/__tests__/traceAnalysisSkillConfig.test.ts src/agent/agents/domain/__tests__/registry.test.ts src/agentv3/__tests__/sqlIncludeInjector.test.ts",
     "test:watch": "jest --watch",
     "test:coverage": "jest --coverage",
     "test:unit": "jest --testPathPatterns=src/tests",

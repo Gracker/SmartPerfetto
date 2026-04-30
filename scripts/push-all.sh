@@ -31,7 +31,7 @@ if ! git remote | grep -q "^fork$"; then
 fi
 
 # Check if there are commits to push
-if [ -n "$(git log fork/$PERFETTO_BRANCH..HEAD --oneline 2>/dev/null)" ]; then
+if [ -n "$(git log "fork/${PERFETTO_BRANCH}..HEAD" --oneline 2>/dev/null)" ]; then
   echo "Pushing perfetto ($PERFETTO_BRANCH) to fork..."
   git push fork "$PERFETTO_BRANCH"
   echo "Perfetto submodule pushed."
@@ -45,7 +45,7 @@ cd "$PROJECT_ROOT"
 echo ""
 echo "=== Pushing main project ==="
 
-if [ -n "$(git log origin/$CURRENT_BRANCH..HEAD --oneline 2>/dev/null)" ]; then
+if [ -n "$(git log "origin/${CURRENT_BRANCH}..HEAD" --oneline 2>/dev/null)" ]; then
   echo "Pushing main project ($CURRENT_BRANCH) to origin..."
   git push origin "$CURRENT_BRANCH"
   echo "Main project pushed."

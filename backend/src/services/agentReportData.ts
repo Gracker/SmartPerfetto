@@ -37,6 +37,9 @@ interface ReportResultLike {
   confidence: number;
   rounds: number;
   totalDurationMs: number;
+  partial?: boolean;
+  terminationReason?: string;
+  terminationMessage?: string;
 }
 
 export interface BuildAgentReportDataInput {

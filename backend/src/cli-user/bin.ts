@@ -15,6 +15,8 @@
  */
 
 import { Command } from 'commander';
+import * as fs from 'fs';
+import * as path from 'path';
 import { bootstrap } from './bootstrap';
 import { createRenderer } from './repl/renderer';
 import { CliAnalyzeService } from './services/cliAnalyzeService';
@@ -28,6 +30,9 @@ import { runRmCommand } from './commands/rm';
 import { DEFAULT_ANALYSIS_QUERY } from './constants';
 
 interface GlobalOpts {
+  file?: string;
+  prompt?: string;
+  query?: string;
   sessionDir?: string;
   envFile?: string;
   verbose?: boolean;
@@ -35,13 +40,54 @@ interface GlobalOpts {
   resume?: string;
 }
 
+function readPackageVersion(): string {
+  try {
+    const packageJson = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'),
+    ) as { version?: unknown };
+    return typeof packageJson.version === 'string' ? packageJson.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+}
+
+function installFatalHandlers(): void {
+  process.on('uncaughtException', (err) => {
+    console.error(`Fatal: uncaught exception: ${err.message}`);
+    if (process.env.DEBUG) console.error(err.stack);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason) => {
+    const message = reason instanceof Error ? reason.message : String(reason);
+    console.error(`Fatal: unhandled promise rejection: ${message}`);
+    if (process.env.DEBUG && reason instanceof Error) console.error(reason.stack);
+    process.exit(1);
+  });
+
+  process.once('SIGTERM', () => {
+    process.exit(143);
+  });
+}
+
+function programName(): string {
+  const invoked = path.basename(process.argv[1] || '');
+  if (!invoked || invoked === 'bin.js' || invoked === 'bin.ts') return 'smp';
+  return invoked;
+}
+
 function main(): void {
+  installFatalHandlers();
+
   const program = new Command();
 
   program
-    .name('smartperfetto')
+    .name(programName())
     .description('SmartPerfetto CLI — terminal-based Android Perfetto trace analysis')
-    .version('0.1.0')
+    .version(readPackageVersion())
+    .option('-f, --file <trace>', 'trace file to analyze (shortcut for `analyze <trace>`)')
+    .option('-p, --prompt <question>', 'analysis prompt (shortcut for --query)')
+    .option('-q, --query <question>', 'analysis question (alias for --prompt)')
     .option('--session-dir <path>', 'override session storage root (default: ~/.smartperfetto)')
     .option('--env-file <path>', 'path to .env file (default: backend/.env)')
     .option('--verbose', 'show verbose event stream', false)
@@ -151,6 +197,22 @@ function main(): void {
   // scripted / one-shot use.
   program.action(async () => {
     const g = globals();
+    if (g.file) {
+      await runAndExit(() => runAnalyzeCommand({
+        trace: g.file!,
+        query: g.prompt || g.query || DEFAULT_ANALYSIS_QUERY,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+        verbose: Boolean(g.verbose),
+        noColor: g.color === false,
+      }));
+      return;
+    }
+    if (g.prompt || g.query) {
+      console.error('Fatal: --prompt/--query requires --file <trace> for one-shot analysis.');
+      process.exit(2);
+    }
+
     const { paths } = bootstrap({ envFile: g.envFile, sessionDir: g.sessionDir });
     const renderer = createRenderer({ verbose: Boolean(g.verbose), useColor: g.color !== false });
     const service = new CliAnalyzeService();

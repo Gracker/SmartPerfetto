@@ -11,6 +11,9 @@ on:
       - "start.sh"
       - "scripts/**"
       - "backend/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "scripts/trace-processor-pin.env"
       - "test-traces/**"
       - ".github/dependabot.yml"
       - ".github/workflows/**"
@@ -25,6 +28,9 @@ on:
       - "start.sh"
       - "scripts/**"
       - "backend/**"
+      - "Dockerfile"
+      - ".dockerignore"
+      - "scripts/trace-processor-pin.env"
       - "test-traces/**"
       - ".github/dependabot.yml"
       - ".github/workflows/**"
@@ -94,8 +100,21 @@ jobs:
       - name: Build backend
         run: npm run build
 
+      - name: Check CLI package contents
+        run: node scripts/check-cli-pack.cjs
+
       - name: Run core tests
         run: npm run test:core
+
+  docker-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker backend stage
+        run: docker build --target backend-builder -t smartperfetto-backend-builder-smoke .
 
   scene-trace-regression:
     if: github.event_name == 'workflow_dispatch'

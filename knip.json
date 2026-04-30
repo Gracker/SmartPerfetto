@@ -15,6 +15,7 @@
     },
     "backend": {
       "entry": [
+        "package.json",
         "src/index.ts",
         "src/cli-user/bin.ts",
         "src/scripts/**/*.ts",
@@ -22,7 +23,9 @@
         "src/**/__tests__/**/*.ts",
         "tests/**/*.ts"
       ],
-      "project": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
+      "project": ["package.json", "src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
+      "ignoreDependencies": ["jest", "tsx"],
+      "ignoreBinaries": ["jest", "tsx"]
     }
   },
   "ignore": [
