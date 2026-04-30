@@ -51,6 +51,7 @@ echo "  Perfetto UI: http://localhost:10000"
 echo "  Backend API: http://localhost:${PORT:-3000}"
 echo "=============================================="
 
+# shellcheck disable=SC2317 # Invoked indirectly by trap.
 shutdown() {
   kill "$BACKEND_PID" "$FRONTEND_PID" 2>/dev/null || true
   exit 0

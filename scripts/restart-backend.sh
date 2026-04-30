@@ -20,7 +20,9 @@ if [ -f "$PROJECT_ROOT/.backend.pid" ]; then
   if kill -0 "$BACKEND_PID" 2>/dev/null; then
     kill "$BACKEND_PID" 2>/dev/null || true
     sleep 1
-    kill -0 "$BACKEND_PID" 2>/dev/null && kill -9 "$BACKEND_PID" 2>/dev/null || true
+    if kill -0 "$BACKEND_PID" 2>/dev/null; then
+      kill -9 "$BACKEND_PID" 2>/dev/null || true
+    fi
   fi
 fi
 

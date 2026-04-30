@@ -42,7 +42,9 @@ kill_pid_and_children() {
   pkill -TERM -P "$pid" 2>/dev/null || true
   kill "$pid" 2>/dev/null || true
   sleep 1
-  kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+  if kill -0 "$pid" 2>/dev/null; then
+    kill -9 "$pid" 2>/dev/null || true
+  fi
 }
 
 kill_processes_on_port() {
