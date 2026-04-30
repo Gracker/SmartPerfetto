@@ -23,28 +23,33 @@ if (!fs.existsSync(REPORTS_DIR)) {
 }
 
 // In-memory cache backed by disk persistence
-export const reportStore = new Map<string, {
+type PersistedReport = {
   html: string;
   generatedAt: number;
   sessionId: string;
-}>();
+};
+
+export const reportStore = new Map<string, PersistedReport>();
 
 /** Save a report to disk. Called externally when reports are generated. */
-export function persistReport(reportId: string, entry: { html: string; generatedAt: number; sessionId: string }): void {
+export function persistReport(reportId: string, entry: PersistedReport): void {
   reportStore.set(reportId, entry);
   try {
     const filePath = path.join(REPORTS_DIR, `${reportId}.html`);
     fs.writeFileSync(filePath, entry.html, 'utf-8');
     // Write metadata alongside
     const metaPath = path.join(REPORTS_DIR, `${reportId}.meta.json`);
-    fs.writeFileSync(metaPath, JSON.stringify({ generatedAt: entry.generatedAt, sessionId: entry.sessionId }));
+    fs.writeFileSync(metaPath, JSON.stringify({
+      generatedAt: entry.generatedAt,
+      sessionId: entry.sessionId,
+    }));
   } catch (err) {
     console.warn('[ReportRoutes] Failed to persist report to disk:', (err as Error).message);
   }
 }
 
 /** Load a report from disk if not in memory cache. */
-function loadReportFromDisk(reportId: string): { html: string; generatedAt: number; sessionId: string } | null {
+function loadReportFromDisk(reportId: string): PersistedReport | null {
   try {
     const filePath = path.join(REPORTS_DIR, `${reportId}.html`);
     if (!fs.existsSync(filePath)) return null;
@@ -99,6 +104,41 @@ const reportCleanupInterval = setInterval(() => {
   } catch { /* non-fatal */ }
 }, 30 * 60 * 1000);
 reportCleanupInterval.unref?.();
+
+/**
+ * GET /api/reports/:reportId/export
+ *
+ * Download the persisted HTML report artifact. The frontend/report page uses this
+ * endpoint together with the File System Access API so the user can choose the
+ * local destination and filename.
+ */
+router.get('/:reportId/export', (req, res) => {
+  try {
+    const { reportId } = req.params;
+
+    const report = reportStore.get(reportId) || loadReportFromDisk(reportId);
+    if (!report) {
+      return res.status(404).json({
+        success: false,
+        error: 'Report not found',
+      });
+    }
+
+    const filename = `smartperfetto-${reportId}.html`;
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.send(report.html);
+  } catch (error: any) {
+    console.error('[ReportRoutes] Export report error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to export report',
+    });
+  }
+});
 
 /**
  * GET /api/reports/:reportId

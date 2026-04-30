@@ -20,6 +20,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import { computePaths, ensureLayout, type CliPaths } from './io/paths';
+import { hasClaudeCredentials } from '../agentv3/claudeConfig';
 
 export interface BootstrapOptions {
   envFile?: string;
@@ -139,13 +140,11 @@ function findBackendRoot(): string | null {
 }
 
 function assertLlmCredentials(): void {
-  const hasKey = Boolean(process.env.ANTHROPIC_API_KEY);
-  const hasProxy = Boolean(process.env.ANTHROPIC_BASE_URL);
-  if (hasKey || hasProxy) return;
+  if (hasClaudeCredentials()) return;
   throw new Error(
     [
       'Missing Claude credentials.',
-      'Set ANTHROPIC_API_KEY (or ANTHROPIC_BASE_URL for proxy setups) before running.',
+      'Set ANTHROPIC_API_KEY (or ANTHROPIC_BASE_URL for proxy, or envs for AWS Bedrock) before running.',
       'The CLI reads backend/.env by default; pass --env-file <path> to override.',
     ].join(' '),
   );

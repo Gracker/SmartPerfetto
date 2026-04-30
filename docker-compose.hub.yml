@@ -1,7 +1,6 @@
 services:
   smartperfetto:
-    # 替换为你在 Docker Hub 上的实际镜像名称，例如 yourusername/smartperfetto:latest
-    image: gracker/smartperfetto:latest
+    image: w553000664/smartperfetto:latest
     ports:
       - "3000:3000"    # Backend API
       - "10000:10000"  # Perfetto UI

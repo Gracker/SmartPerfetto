@@ -3,6 +3,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { StreamingUpdate } from '../agent/types';
+import {
+  isSdkMaxTurnsSubtype,
+  MAX_TURNS_TERMINATION_REASON,
+  SDK_MAX_TURNS_SUBTYPE,
+} from './analysisTermination';
 
 export type UpdateEmitter = (update: StreamingUpdate) => void;
 
@@ -269,6 +274,32 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
         emit({
           type: 'conclusion',
           content: { conclusion: msg.result || '', durationMs: msg.duration_ms, turns: msg.num_turns, costUsd: msg.total_cost_usd },
+          timestamp: now,
+        });
+      } else if (isSdkMaxTurnsSubtype(msg.subtype)) {
+        emit({
+          type: 'progress',
+          content: {
+            phase: 'concluding',
+            message: '分析达到轮次上限，正在整理已收集结果，结论可能不完整...',
+            subtype: msg.subtype,
+            partial: true,
+            terminationReason: MAX_TURNS_TERMINATION_REASON,
+            turns: msg.num_turns,
+          },
+          timestamp: now,
+        });
+        emit({
+          type: 'degraded',
+          content: {
+            module: 'claudeSseBridge',
+            fallback: 'partial_result_after_max_turns',
+            error: SDK_MAX_TURNS_SUBTYPE,
+            message: '分析达到轮次上限，结果可能不完整',
+            partial: true,
+            terminationReason: MAX_TURNS_TERMINATION_REASON,
+            turns: msg.num_turns,
+          },
           timestamp: now,
         });
       } else {

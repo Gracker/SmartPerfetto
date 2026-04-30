@@ -13,8 +13,10 @@ echo "SmartPerfetto (Docker)"
 echo "=============================================="
 
 # Verify API key is configured
-if [ -z "${ANTHROPIC_API_KEY:-}" ] && [ "${AI_SERVICE:-}" != "openai" ] && [ "${AI_SERVICE:-}" != "deepseek" ]; then
-  echo "WARNING: ANTHROPIC_API_KEY is not set."
+ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
+if { [ -z "$ANTHROPIC_KEY" ] || [ "$ANTHROPIC_KEY" = "your_anthropic_api_key_here" ] || [ "$ANTHROPIC_KEY" = "sk-ant-xxx" ]; } && \
+   [ "${AI_SERVICE:-}" != "openai" ] && [ "${AI_SERVICE:-}" != "deepseek" ]; then
+  echo "WARNING: ANTHROPIC_API_KEY is missing or still uses the example placeholder."
   echo "AI analysis will not work without an API key."
   echo "Set it in .env or pass via: docker compose run -e ANTHROPIC_API_KEY=sk-..."
   echo ""
@@ -36,10 +38,10 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-# Start frontend (Perfetto UI dev server)
+# Start frontend (pre-built Perfetto UI static server)
 echo "Starting frontend on port 10000..."
 cd /app/perfetto/out/ui/ui
-npx --yes http-server -p 10000 -c-1 &
+PORT=10000 node server.js &
 FRONTEND_PID=$!
 
 echo ""

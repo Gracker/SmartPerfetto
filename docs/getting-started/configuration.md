@@ -40,8 +40,8 @@ CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 | 模式 | 行为 | 适用场景 |
 |---|---|---|
-| `fast` | 5 turns，3 个轻量 MCP 工具，跳过 verifier 和 sub-agent | 包名、进程、简单事实查询 |
-| `full` | 30 turns，完整 MCP 工具，启用 verifier 和可选 sub-agent | 启动、滑动、ANR、复杂根因分析 |
+| `fast` | 默认 5 turns（`CLAUDE_QUICK_MAX_TURNS` 可调），3 个轻量 MCP 工具，跳过 verifier 和 sub-agent | 包名、进程、简单事实查询 |
+| `full` | 默认 30 turns（`CLAUDE_MAX_TURNS` 可调），完整 MCP 工具，启用 verifier 和可选 sub-agent | 启动、滑动、ANR、复杂根因分析 |
 | `auto` | 关键词规则、硬规则和轻量分类器自动选择 | 默认模式 |
 
 前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 SDK session。

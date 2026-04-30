@@ -20,6 +20,15 @@ import type { ArchitectureInfo } from '../agent/detectors/types';
 import { createClaudeMcpServer, loadLearnedSqlFixPairs, MCP_NAME_PREFIX } from './claudeMcpServer';
 import { buildSystemPrompt, buildQuickSystemPrompt, buildSelectionContextSection } from './claudeSystemPrompt';
 import { createSseBridge } from './claudeSseBridge';
+import {
+  buildMaxTurnsFallbackConclusion,
+  buildMaxTurnsTerminationMessage,
+  capPartialConfidence,
+  isSdkMaxTurnsSubtype,
+  MAX_TURNS_TERMINATION_REASON,
+  prependPartialNotice,
+  SDK_MAX_TURNS_SUBTYPE,
+} from './analysisTermination';
 import { extractFindingsFromText, extractFindingsFromSkillResult, mergeFindings } from './claudeFindingExtractor';
 import { loadClaudeConfig, resolveEffort, createSdkEnv, createQuickConfig, type ClaudeAgentConfig } from './claudeConfig';
 import { detectFocusApps } from './focusAppDetector';
@@ -473,6 +482,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       }, { emitUpdate: (update) => this.emitUpdate(update) });
 
       let finalResult: string | undefined;
+      let terminationReason: AnalysisResult['terminationReason'];
+      let terminationMessage: string | undefined;
 
       // Safety timeout with stream cancellation via Promise.race.
       // Per-turn budget is env-configurable (CLAUDE_FULL_PER_TURN_MS, default 60s) so slower
@@ -814,8 +825,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             currentTurnMetrics = null;
 
             rounds = (msg as any).num_turns || rounds;
-            if ((msg as any).subtype === 'success') {
+            const resultSubtype = (msg as any).subtype;
+            if (resultSubtype === 'success') {
               finalResult = (msg as any).result;
+            } else if (isSdkMaxTurnsSubtype(resultSubtype)) {
+              terminationReason = MAX_TURNS_TERMINATION_REASON;
+              terminationMessage = buildMaxTurnsTerminationMessage({
+                mode: 'full',
+                turns: rounds,
+                maxTurns: this.config.maxTurns,
+              });
             }
             // Record SDK token usage and prompt cache metrics
             metricsCollector.recordSdkUsage({
@@ -1102,7 +1121,47 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         mergedFindings = mergeFindings(allFindings);
       }
 
-      const turnConfidence = this.estimateConfidence(mergedFindings);
+      const isPartialResult = terminationReason === MAX_TURNS_TERMINATION_REASON;
+      if (isPartialResult) {
+        terminationMessage ||= buildMaxTurnsTerminationMessage({
+          mode: 'full',
+          turns: rounds,
+          maxTurns: this.config.maxTurns,
+        });
+        conclusionText = conclusionText.trim()
+          ? prependPartialNotice(conclusionText, terminationMessage)
+          : buildMaxTurnsFallbackConclusion({
+              mode: 'full',
+              turns: rounds,
+              maxTurns: this.config.maxTurns,
+            });
+        allFindings.push(extractFindingsFromText(conclusionText));
+        mergedFindings = mergeFindings(allFindings);
+        failedApproaches.push({
+          type: 'strategy_failure',
+          approach: `analysis reached ${this.config.maxTurns} full-mode turns`,
+          reason: 'SDK returned error_max_turns before a normal success result',
+        });
+        this.emitUpdate({
+          type: 'degraded',
+          content: {
+            module: 'claudeRuntime',
+            fallback: 'partial_result_after_max_turns',
+            error: SDK_MAX_TURNS_SUBTYPE,
+            message: terminationMessage,
+            partial: true,
+            terminationReason,
+            turns: rounds,
+            maxTurns: this.config.maxTurns,
+          },
+          timestamp: Date.now(),
+        });
+      }
+
+      const baseConfidence = this.estimateConfidence(mergedFindings);
+      const turnConfidence = isPartialResult
+        ? capPartialConfidence(baseConfidence, mergedFindings.length > 0)
+        : baseConfidence;
 
       ctx.sessionContext.addTurn(
         query,
@@ -1119,6 +1178,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           findings: mergedFindings,
           confidence: turnConfidence,
           message: conclusionText,
+          partial: isPartialResult || undefined,
+          terminationReason,
+          terminationMessage,
         },
         mergedFindings,
       );
@@ -1142,7 +1204,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Per Self-Improving v3.3 §4.4: full-path patterns now save as
       // 'provisional' regardless of confidence. The state machine + 24h
       // auto-confirm decides whether they earn injection weight.
-      if (mergedFindings.length > 0) {
+      if (!isPartialResult && mergedFindings.length > 0) {
         const insights = extractKeyInsights(mergedFindings, conclusionText);
         const patternExtras = {
           status: 'provisional' as const,
@@ -1197,6 +1259,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         confidence: turnConfidence,
         rounds,
         totalDurationMs: Date.now() - startTime,
+        partial: isPartialResult || undefined,
+        terminationReason,
+        terminationMessage,
       };
     } catch (error) {
       const errMsg = (error as Error).message || 'Unknown error';
@@ -1225,6 +1290,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           confidence: this.estimateConfidence(partialFindings) * 0.7, // penalize for incomplete
           rounds,
           totalDurationMs: Date.now() - startTime,
+          partial: true,
+          terminationReason: 'execution_error',
+          terminationMessage: errMsg,
         };
       }
 
@@ -1238,6 +1306,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         confidence: 0,
         rounds,
         totalDurationMs: Date.now() - startTime,
+        terminationReason: 'execution_error',
+        terminationMessage: errMsg,
       };
     } finally {
       this.activeAnalyses.delete(sessionId);
@@ -1396,6 +1466,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       let finalResult: string | undefined;
       let quickSdkSessionId: string | undefined;
       let quickRounds = 0;
+      let terminationReason: AnalysisResult['terminationReason'];
+      let terminationMessage: string | undefined;
 
       // Quick path per-turn budget from env CLAUDE_QUICK_PER_TURN_MS (default 40s/turn).
       const timeoutMs = quickConfig.maxTurns * quickConfig.quickPathPerTurnMs;
@@ -1426,8 +1498,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
           if (msg.type === 'result') {
             quickRounds = (msg as any).num_turns || quickRounds;
-            if ((msg as any).subtype === 'success') {
+            const resultSubtype = (msg as any).subtype;
+            if (resultSubtype === 'success') {
               finalResult = (msg as any).result;
+            } else if (isSdkMaxTurnsSubtype(resultSubtype)) {
+              terminationReason = MAX_TURNS_TERMINATION_REASON;
+              terminationMessage = buildMaxTurnsTerminationMessage({
+                mode: 'fast',
+                turns: quickRounds,
+                maxTurns: quickConfig.maxTurns,
+              });
             }
           }
         }
@@ -1446,8 +1526,42 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         closeSdk();
       }
 
-      const conclusionText = finalResult || getAccumulatedAnswer() || '';
-      const mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
+      let conclusionText = finalResult || getAccumulatedAnswer() || '';
+      let mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
+      const isPartialResult = terminationReason === MAX_TURNS_TERMINATION_REASON;
+      if (isPartialResult) {
+        terminationMessage ||= buildMaxTurnsTerminationMessage({
+          mode: 'fast',
+          turns: quickRounds,
+          maxTurns: quickConfig.maxTurns,
+        });
+        conclusionText = conclusionText.trim()
+          ? prependPartialNotice(conclusionText, terminationMessage)
+          : buildMaxTurnsFallbackConclusion({
+              mode: 'fast',
+              turns: quickRounds,
+              maxTurns: quickConfig.maxTurns,
+            });
+        mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
+        this.emitUpdate({
+          type: 'degraded',
+          content: {
+            module: 'claudeRuntime',
+            fallback: 'partial_result_after_max_turns',
+            error: SDK_MAX_TURNS_SUBTYPE,
+            message: terminationMessage,
+            partial: true,
+            terminationReason,
+            turns: quickRounds,
+            maxTurns: quickConfig.maxTurns,
+          },
+          timestamp: Date.now(),
+        });
+      }
+      const quickConfidenceBase = mergedFindings.length > 0 ? 0.8 : 0.5;
+      const quickConfidence = isPartialResult
+        ? capPartialConfidence(quickConfidenceBase, mergedFindings.length > 0)
+        : quickConfidenceBase;
 
       if (conclusionText.length > 0 && conclusionText.length < 20) {
         console.warn(`[ClaudeRuntime] Quick: suspiciously short answer (${conclusionText.length} chars)`);
@@ -1467,8 +1581,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           agentId: 'claude-agent',
           success: true,
           findings: mergedFindings,
-          confidence: mergedFindings.length > 0 ? 0.8 : 0.5,
+          confidence: quickConfidence,
           message: conclusionText,
+          partial: isPartialResult || undefined,
+          terminationReason,
+          terminationMessage,
         },
         mergedFindings,
       );
@@ -1479,7 +1596,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Insights are weaker (no verifier, 5-turn budget), so they only surface
       // as fallbacks at injection time. A future full-path run on similar
       // features may promote the bucket entry to long-term memory.
-      if (mergedFindings.length > 0) {
+      if (!isPartialResult && mergedFindings.length > 0) {
         const insights = extractKeyInsights(mergedFindings, conclusionText);
         const quickFeatures = extractTraceFeatures({
           architectureType: cachedArch?.type,
@@ -1500,9 +1617,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         findings: mergedFindings,
         hypotheses: [],
         conclusion: conclusionText,
-        confidence: mergedFindings.length > 0 ? 0.8 : 0.5,
+        confidence: quickConfidence,
         rounds: quickRounds,
         totalDurationMs: Date.now() - startTime,
+        partial: isPartialResult || undefined,
+        terminationReason,
+        terminationMessage,
       };
     } catch (error) {
       const errMsg = (error as Error).message || 'Unknown error';

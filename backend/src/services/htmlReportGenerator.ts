@@ -91,6 +91,9 @@ export interface AgentDrivenReportData {
     confidence: number;
     rounds: number;
     totalDurationMs: number;
+    partial?: boolean;
+    terminationReason?: string;
+    terminationMessage?: string;
   };
   hypotheses: Array<{
     id: string;
@@ -4029,17 +4032,29 @@ export class HTMLReportGenerator {
       max-width: 1200px; margin: 0 auto; background: white;
       border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); overflow: hidden;
     }
-    .header {
-      background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
-      color: white; padding: 20px;
-    }
-    .header h1 { font-size: 28px; margin-bottom: 10px; }
-    .header .meta { opacity: 0.9; font-size: 14px; }
-    .header .meta span { margin-right: 20px; }
-    .badge {
-      display: inline-block; padding: 4px 12px; border-radius: 12px;
-      font-size: 12px; font-weight: 600;
-    }
+	    .header {
+	      background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+	      color: white; padding: 20px;
+	    }
+	    .header h1 { font-size: 28px; margin-bottom: 10px; }
+	    .header .meta { opacity: 0.9; font-size: 14px; }
+	    .header .meta span { margin-right: 20px; }
+	    .report-actions {
+	      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;
+	    }
+	    .report-action-btn {
+	      border: 1px solid rgba(255,255,255,0.45); background: rgba(255,255,255,0.18);
+	      color: white; border-radius: 8px; padding: 8px 12px; cursor: pointer;
+	      font-size: 13px; font-weight: 600;
+	    }
+	    .report-action-btn:hover { background: rgba(255,255,255,0.28); }
+	    .report-save-status {
+	      align-self: center; min-height: 18px; font-size: 12px; opacity: 0.9;
+	    }
+	    .badge {
+	      display: inline-block; padding: 4px 12px; border-radius: 12px;
+	      font-size: 12px; font-weight: 600;
+	    }
     .badge-agent { background: rgba(255,255,255,0.2); }
     .section { padding: 20px; border-bottom: 1px solid #eaeaea; }
     .section:last-child { border-bottom: none; }
@@ -4238,12 +4253,16 @@ export class HTMLReportGenerator {
   <div class="container">
     <div class="header">
       <h1>🤖 SmartPerfetto Agent-Driven 分析报告</h1>
-      <div class="meta">
-        <span>📁 Trace ID: ${this.escapeHtml(traceId)}</span>
-        <span>⏱️ ${new Date(timestamp).toLocaleString('zh-CN')}</span>
-        <span class="badge badge-agent">Agent-Driven Architecture</span>
-      </div>
-    </div>
+	      <div class="meta">
+	        <span>📁 Trace ID: ${this.escapeHtml(traceId)}</span>
+	        <span>⏱️ ${new Date(timestamp).toLocaleString('zh-CN')}</span>
+	        <span class="badge badge-agent">Agent-Driven Architecture</span>
+	      </div>
+	      <div class="report-actions">
+	        <button class="report-action-btn" type="button" onclick="saveSmartPerfettoReport()">💾 保存网页文件</button>
+	        <span class="report-save-status" id="report-save-status"></span>
+	      </div>
+	    </div>
 
     <div class="section">
       <h2 class="section-title">执行概览</h2>
@@ -4323,9 +4342,60 @@ export class HTMLReportGenerator {
       <p>由 SmartPerfetto Agent-Driven Orchestrator 生成</p>
       <p style="margin-top: 5px; font-size: 12px;">Powered by Claude Agent SDK + MCP Tools</p>
     </div>
-  </div>
-  <script>
-    function toggleTableRows(btn, hiddenCount) {
+	  </div>
+	  <script>
+	    async function saveSmartPerfettoReport() {
+	      var statusEl = document.getElementById('report-save-status');
+	      function setStatus(text) {
+	        if (statusEl) statusEl.textContent = text || '';
+	      }
+	      var url = new URL(window.location.href);
+	      var reportId = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || 'smartperfetto-report');
+	      var suggestedName = 'smartperfetto-' + reportId + '.html';
+	      var exportUrl = url.pathname.replace(/\\/$/, '') + '/export';
+
+	      try {
+	        setStatus('正在准备保存...');
+	        var response = await fetch(exportUrl, {cache: 'no-store'});
+	        if (!response.ok) {
+	          throw new Error('导出失败: HTTP ' + response.status);
+	        }
+	        var blob = await response.blob();
+	        if (window.showSaveFilePicker) {
+	          var handle = await window.showSaveFilePicker({
+	            suggestedName: suggestedName,
+	            types: [{
+	              description: 'HTML 网页报告',
+	              accept: {'text/html': ['.html', '.htm']},
+	            }],
+	          });
+	          var writable = await handle.createWritable();
+	          await writable.write(blob);
+	          await writable.close();
+	        } else {
+	          var objectUrl = URL.createObjectURL(blob);
+	          var a = document.createElement('a');
+	          a.href = objectUrl;
+	          a.download = suggestedName;
+	          document.body.appendChild(a);
+	          a.click();
+	          document.body.removeChild(a);
+	          URL.revokeObjectURL(objectUrl);
+	        }
+	        setStatus('已保存 ' + suggestedName);
+	        setTimeout(function() { setStatus(''); }, 3500);
+	      } catch (err) {
+	        if (err && err.name === 'AbortError') {
+	          setStatus('已取消保存');
+	          setTimeout(function() { setStatus(''); }, 2000);
+	          return;
+	        }
+	        console.error('[SmartPerfetto] 保存报告失败:', err);
+	        setStatus((err && err.message) ? err.message : '保存失败');
+	      }
+	    }
+
+	    function toggleTableRows(btn, hiddenCount) {
       var tableContainer = btn.parentElement;
       var table = tableContainer.querySelector('table');
       var hiddenRows = table.querySelectorAll('.hidden-row');

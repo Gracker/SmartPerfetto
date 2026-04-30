@@ -200,6 +200,13 @@ export interface IOrchestrator {
 // Analysis Result
 // =============================================================================
 
+export type AnalysisTerminationReason =
+  | 'max_turns'
+  | 'max_budget_usd'
+  | 'max_structured_output_retries'
+  | 'execution_error'
+  | 'timeout';
+
 export interface AnalysisResult {
   sessionId: string;
   success: boolean;
@@ -210,6 +217,10 @@ export interface AnalysisResult {
   confidence: number;
   rounds: number;
   totalDurationMs: number;
+  /** True when the result is usable but incomplete (for example SDK max-turn exhaustion). */
+  partial?: boolean;
+  terminationReason?: AnalysisTerminationReason;
+  terminationMessage?: string;
 }
 
 // =============================================================================
@@ -342,7 +353,14 @@ export interface AnalysisPlanPayload {
 // =============================================================================
 
 export interface StreamingEventPayloads {
-  degraded: { module: string; fallback: string; error?: string };
+  degraded: {
+    module: string;
+    fallback: string;
+    error?: string;
+    message?: string;
+    partial?: boolean;
+    terminationReason?: AnalysisTerminationReason;
+  };
   answer_token: AnswerTokenPayload;
   stage_transition: {
     stageIndex: number;

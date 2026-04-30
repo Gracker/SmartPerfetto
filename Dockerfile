@@ -68,7 +68,7 @@ RUN . /tmp/pin.env && \
     /tmp/trace_processor_shell --version | head -n 1
 
 # ============================
-# Stage 4: Runtime
+# Stage 3: Runtime
 # ============================
 FROM node:22-bookworm-slim
 

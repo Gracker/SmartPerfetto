@@ -466,6 +466,9 @@ function buildRecoveredResultFromContext(
     confidence,
     rounds: 1,
     totalDurationMs: 0,
+    partial: turn.result.partial,
+    terminationReason: turn.result.terminationReason as AgentRuntimeAnalysisResult['terminationReason'],
+    terminationMessage: turn.result.terminationMessage,
   };
 }
 
@@ -987,6 +990,9 @@ router.get('/:sessionId/status', (req, res) => {
         confidence: recoveredResult.confidence,
         totalDurationMs: recoveredResult.totalDurationMs,
         rounds: recoveredResult.rounds,
+        partial: recoveredResult.partial,
+        terminationReason: recoveredResult.terminationReason,
+        terminationMessage: recoveredResult.terminationMessage,
         findings: recoveredResult.findings,
         findingsCount: recoveredResult.findings.length,
         resultContract,
@@ -2310,6 +2316,8 @@ async function runAgentDrivenAnalysis(
       rounds: result.rounds,
       findingsCount: result.findings.length,
       hypothesesCount: result.hypotheses.length,
+      partial: result.partial,
+      terminationReason: result.terminationReason,
       runId: session.activeRun?.runId,
       requestId: session.activeRun?.requestId,
       runSequence: session.activeRun?.sequence,
@@ -2448,6 +2456,7 @@ function buildConversationStepUpdate(
 
   switch (update.type) {
     case 'progress':
+    case 'degraded':
     case 'stage_transition':
     case 'round_start':
     case 'strategy_decision':
@@ -2457,6 +2466,7 @@ function buildConversationStepUpdate(
       role = 'system';
       text =
         sanitizeConversationText(contentRecord.message) ||
+        sanitizeConversationText(contentRecord.fallback && `降级处理: ${contentRecord.fallback}`) ||
         sanitizeConversationText(contentRecord.reasoning) ||
         sanitizeConversationText(contentRecord.phase && `阶段: ${contentRecord.phase}`);
       if (!text && update.type === 'hypothesis_generated' && Array.isArray(contentRecord.hypotheses)) {
@@ -2557,6 +2567,12 @@ function buildConversationStepUpdate(
   }
   if (typeof contentRecord.strategyId === 'string' && contentRecord.strategyId.trim()) {
     metadata.strategyId = contentRecord.strategyId.trim();
+  }
+  if (contentRecord.partial === true) {
+    metadata.partial = true;
+  }
+  if (typeof contentRecord.terminationReason === 'string' && contentRecord.terminationReason.trim()) {
+    metadata.terminationReason = contentRecord.terminationReason.trim();
   }
   if (session.activeRun?.runId) {
     metadata.runId = session.activeRun.runId;
@@ -3893,6 +3909,9 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
       confidence: result.confidence,
       rounds: result.rounds,
       totalDurationMs: result.totalDurationMs,
+      partial: result.partial,
+      terminationReason: result.terminationReason,
+      terminationMessage: result.terminationMessage,
       findings: clientFindings,
       resultContract,
       hypotheses: result.hypotheses.map((h: AgentRuntimeAnalysisResult['hypotheses'][number]) => ({
