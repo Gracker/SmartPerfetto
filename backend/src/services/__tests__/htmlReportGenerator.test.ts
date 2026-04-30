@@ -124,4 +124,41 @@ describe('HTMLReportGenerator', () => {
     expect(formatted).toContain('1.91 ms');
     expect(formatted).not.toContain('μs');
   });
+
+  test('renders mermaid diagrams with stronger visual defaults for causal chains', () => {
+    const generator = new HTMLReportGenerator();
+    const html = generator.generateAgentDrivenHTML({
+      traceId: 'trace-3',
+      query: '分析因果链',
+      timestamp: Date.now(),
+      hypotheses: [],
+      dialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      result: {
+        sessionId: 'session-3',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: [
+          '### 根因分析：因果链',
+          '```mermaid',
+          'graph TB',
+          'A[输入] --> B[处理]',
+          'B --> C[结果]',
+          '```',
+        ].join('\n'),
+        confidence: 0.85,
+        rounds: 1,
+        totalDurationMs: 500,
+      },
+    });
+
+    expect(html).toContain('class="mermaid-wrapper"');
+    expect(html).toContain('function parseMermaidFlowSource(source)');
+    expect(html).toContain("className = 'causal-map'");
+    expect(html).toContain("textContent = '因果链流程图'");
+    expect(html).toContain("textContent = '查看原始 Mermaid 图'");
+    expect(html).toContain("querySelector: 'pre.mermaid[data-render-mode=\"mermaid\"]'");
+  });
 });

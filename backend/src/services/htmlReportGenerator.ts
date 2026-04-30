@@ -28,6 +28,7 @@ import {
   buildColumnDefinitions,
   inferColumnDefinition,
 } from '../types/dataContract';
+import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from './reportCausalMapAssets';
 
 export interface ReportData {
   sessionId: string;
@@ -159,7 +160,7 @@ export class HTMLReportGenerator {
       if (info === 'mermaid') {
         const code = String(token.content || '').trim();
         if (!code) return '<div class="mermaid-error">Mermaid 源码为空</div>';
-        return `<pre class="mermaid">${md.utils.escapeHtml(code)}</pre>`;
+        return `<div class="mermaid-wrapper"><pre class="mermaid">${md.utils.escapeHtml(code)}</pre></div>`;
       }
       return defaultFence(tokens, idx, options, env, self);
     };
@@ -4208,7 +4209,7 @@ export class HTMLReportGenerator {
     .empty-state { padding: 20px; text-align: center; color: #9ca3af; font-size: 13px; }
     .footer { padding: 20px; text-align: center; color: #999; font-size: 13px; background: #f8f9fa; }
     /* Markdown rendered content (markdown-it output) — compact typography */
-    pre.mermaid { background: #f8f9fa; padding: 16px; border-radius: 8px; text-align: center; margin: 10px 0; }
+    ${REPORT_CAUSAL_MAP_CSS}
     .answer-box p, .finding-description p { margin: 2px 0; line-height: 1.5; }
     .answer-box ul, .answer-box ol,
     .finding-description ul, .finding-description ol { margin: 2px 0; padding-left: 20px; }
@@ -4513,16 +4514,7 @@ export class HTMLReportGenerator {
   </script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script>
-    if (typeof mermaid !== 'undefined') {
-      // Sanitize HTML tags in mermaid code before rendering.
-      // LLMs often generate <br/> for line breaks in node labels,
-      // which breaks securityLevel:'strict'. Replace with newlines.
-      document.querySelectorAll('pre.mermaid').forEach(function(el) {
-        el.textContent = (el.textContent || '').replace(/<br\s*\/?>/gi, '\n');
-      });
-      mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' });
-      mermaid.run({ querySelector: 'pre.mermaid' });
-    }
+    ${REPORT_CAUSAL_MAP_SCRIPT}
   </script>
 </body>
 </html>`;
