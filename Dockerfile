@@ -1,7 +1,7 @@
 # ============================
 # Stage 1: Build backend
 # ============================
-FROM node:22-bookworm AS backend-builder
+FROM node:25-bookworm AS backend-builder
 
 WORKDIR /app/backend
 COPY backend/package*.json ./
@@ -17,7 +17,7 @@ RUN npm prune --production
 # ============================
 # Stage 2: Build Perfetto UI (with AI Assistant plugin)
 # ============================
-FROM node:22-bookworm AS frontend-builder
+FROM node:25-bookworm AS frontend-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
@@ -72,7 +72,7 @@ RUN . /tmp/pin.env && \
 # ============================
 # Stage 3: Runtime
 # ============================
-FROM node:22-bookworm-slim
+FROM node:25-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
