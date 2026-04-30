@@ -28,7 +28,7 @@ The project is open source and in active development. The UI, backend runtime, a
 - Analyzes Android Perfetto traces for scrolling jank, startup, ANR, interaction latency, memory, game, and rendering-pipeline issues.
 - Keeps Perfetto's timeline and SQL power, then adds an AI assistant panel inside the Perfetto UI.
 - Uses a TypeScript backend to run agent workflows, query `trace_processor_shell`, invoke YAML analysis skills, and stream results to the browser.
-- Supports Anthropic directly and other tool-calling LLMs through an Anthropic-compatible API proxy.
+- Supports Anthropic directly and other tool-calling LLMs through an Anthropic-compatible API proxy, including providers that expose OpenAI-compatible or Anthropic-compatible endpoints such as Xiaomi MiMo.
 - Ships with 160+ YAML skill/config files and scene strategies for Android performance investigation.
 
 ## Tech Stack
@@ -145,7 +145,7 @@ CLAUDE_MODEL=your-main-model
 CLAUDE_LIGHT_MODEL=your-light-model
 ```
 
-Known proxy options include [one-api](https://github.com/songquanpeng/one-api), [new-api](https://github.com/Calcium-Ion/new-api), and [LiteLLM](https://github.com/BerriAI/litellm). The selected model must support streaming and tool/function calling reliably. See [backend/.env.example](backend/.env.example) for provider examples and tuning options.
+Known proxy options include [one-api](https://github.com/songquanpeng/one-api), [new-api](https://github.com/Calcium-Ion/new-api), and [LiteLLM](https://github.com/BerriAI/litellm). The selected model must support streaming and tool/function calling reliably. This is also the recommended path for providers like Xiaomi MiMo when your account exposes an OpenAI-compatible endpoint: connect the provider in the proxy, then point `ANTHROPIC_BASE_URL` at the proxy's Anthropic-compatible endpoint and set `CLAUDE_MODEL` to the mapped MiMo model ID. If your MiMo gateway already exposes an Anthropic-compatible Messages endpoint directly, you can point `ANTHROPIC_BASE_URL` there without an extra proxy. See [backend/.env.example](backend/.env.example) for provider examples and tuning options.
 
 ## Basic Usage
 
