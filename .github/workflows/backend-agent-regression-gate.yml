@@ -4,22 +4,36 @@ on:
   workflow_dispatch:
   pull_request:
     paths:
+      - "package.json"
+      - "package-lock.json"
+      - "biome.json"
+      - "knip.json"
+      - "start.sh"
+      - "scripts/**"
       - "backend/**"
       - "Dockerfile"
       - ".dockerignore"
       - "scripts/trace-processor-pin.env"
       - "test-traces/**"
-      - ".github/workflows/backend-agent-regression-gate.yml"
+      - ".github/dependabot.yml"
+      - ".github/workflows/**"
   push:
     branches:
       - main
     paths:
+      - "package.json"
+      - "package-lock.json"
+      - "biome.json"
+      - "knip.json"
+      - "start.sh"
+      - "scripts/**"
       - "backend/**"
       - "Dockerfile"
       - ".dockerignore"
       - "scripts/trace-processor-pin.env"
       - "test-traces/**"
-      - ".github/workflows/backend-agent-regression-gate.yml"
+      - ".github/dependabot.yml"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -31,6 +45,29 @@ permissions:
 # reference $PERFETTO_VERSION / $PERFETTO_LUCI_URL_BASE / $PERFETTO_SHELL_SHA256_LINUX_AMD64.
 
 jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: "package-lock.json"
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run quality checks
+        run: npm run quality
+
   gate:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
