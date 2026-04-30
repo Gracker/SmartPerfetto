@@ -31,7 +31,7 @@ import {
   assertTraceAnalysisConfiguredForStartup,
   getTraceAnalysisConfigurationStatus,
 } from './services/traceAnalysisSkill';
-import { isClaudeCodeEnabled } from './agentv3/claudeConfig';
+import { isClaudeCodeEnabled, hasClaudeCredentials } from './agentv3/claudeConfig';
 import {
   getLegacyApiUsageSnapshot,
 } from './services/legacyApiTelemetry';
@@ -77,7 +77,7 @@ app.get('/health', (req, res) => {
         ? (process.env.CLAUDE_MODEL || 'claude-sonnet-4-6')
         : (process.env.DEEPSEEK_MODEL || 'deepseek-chat'),
       configured: useAgentV3
-        ? !!process.env.ANTHROPIC_API_KEY
+        ? hasClaudeCredentials()
         : !!process.env.DEEPSEEK_API_KEY,
       authRequired: !!process.env.SMARTPERFETTO_API_KEY,
     },

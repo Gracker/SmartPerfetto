@@ -89,6 +89,71 @@ export function resolveEffort(config: ClaudeAgentConfig, sceneType?: SceneType):
   return config.effort;
 }
 
+export interface BedrockStatus {
+  enabled: boolean;
+  hasAuth: boolean;
+  authMethod?: 'bearer_token' | 'iam_credentials' | 'profile_or_chain';
+  region: string;
+  baseUrl?: string;
+  missing?: string[];
+}
+
+/**
+ * Detects whether AWS Bedrock is configured and whether its authentication
+ * credentials are complete. Supports three auth paths:
+ *   1. Bearer token: AWS_BEARER_TOKEN_BEDROCK
+ *   2. IAM credentials: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (+ optional AWS_SESSION_TOKEN)
+ *   3. AWS profile / default credential chain: AWS_PROFILE or implicit chain resolution
+ */
+export function detectBedrock(): BedrockStatus {
+  const enabled = Boolean(process.env.CLAUDE_CODE_USE_BEDROCK);
+  if (!enabled) return { enabled: false, hasAuth: false, region: 'us-east-1' };
+
+  const region = process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1';
+  const baseUrl = process.env.ANTHROPIC_BEDROCK_BASE_URL || undefined;
+
+  if (process.env.AWS_BEARER_TOKEN_BEDROCK) {
+    return { enabled: true, hasAuth: true, authMethod: 'bearer_token', region, baseUrl };
+  }
+
+  if (process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY) {
+    return { enabled: true, hasAuth: true, authMethod: 'iam_credentials', region, baseUrl };
+  }
+
+  if (process.env.AWS_PROFILE) {
+    return { enabled: true, hasAuth: true, authMethod: 'profile_or_chain', region, baseUrl };
+  }
+
+  // CLAUDE_CODE_USE_BEDROCK is set but no explicit credentials found.
+  // The SDK will still attempt the default AWS credential chain (EC2 metadata,
+  // ECS task role, ~/.aws/credentials, etc.), so we treat this as potentially valid.
+  const missing: string[] = [];
+  if (!process.env.AWS_BEARER_TOKEN_BEDROCK) missing.push('AWS_BEARER_TOKEN_BEDROCK');
+  if (!process.env.AWS_ACCESS_KEY_ID) missing.push('AWS_ACCESS_KEY_ID');
+  if (!process.env.AWS_PROFILE) missing.push('AWS_PROFILE');
+
+  return {
+    enabled: true,
+    hasAuth: true,
+    authMethod: 'profile_or_chain',
+    region,
+    baseUrl,
+    missing,
+  };
+}
+
+/**
+ * Returns true when any supported Claude credential source is present:
+ * direct API key, proxy base URL, or AWS Bedrock.
+ */
+export function hasClaudeCredentials(): boolean {
+  return !!(
+    process.env.ANTHROPIC_API_KEY ||
+    process.env.ANTHROPIC_BASE_URL ||
+    detectBedrock().enabled
+  );
+}
+
 /**
  * Check if ClaudeRuntime (agentv3) is the active orchestrator.
  * Defaults to true — agentv2 is deprecated. Set AI_SERVICE=deepseek to use legacy path.
