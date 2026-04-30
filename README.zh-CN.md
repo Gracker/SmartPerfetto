@@ -147,6 +147,19 @@ CLAUDE_LIGHT_MODEL=your-light-model
 
 常见代理包括 [one-api](https://github.com/songquanpeng/one-api)、[new-api](https://github.com/Calcium-Ion/new-api) 和 [LiteLLM](https://github.com/BerriAI/litellm)。选择的模型需要稳定支持流式输出和 tool/function calling。完整厂商示例和调优参数见 [backend/.env.example](backend/.env.example)。
 
+> 注意：CC Switch、Codex CLI、Gemini CLI、OpenCode 等工具可以管理各自 CLI 的 provider 配置，但 SmartPerfetto 后端当前不会自动读取这些 CLI 的登录态或配置文件。Web 和 CLI 分析路径默认使用 Claude Agent SDK；接入 MiMo、DeepSeek、OpenAI、Kimi、MiniMax 等第三方模型时，请通过 `ANTHROPIC_BASE_URL` 暴露 Anthropic Messages 兼容接口。
+
+如果 Claude Code 订阅额度用尽，或希望验证第三方模型，可以优先使用代理方式：
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:3000
+ANTHROPIC_API_KEY=sk-proxy-xxx
+CLAUDE_MODEL=your-provider-main-model
+CLAUDE_LIGHT_MODEL=your-provider-light-model
+```
+
+修改配置后需要重启后端。`GET /health` 会返回 `aiEngine.providerMode` 和 `aiEngine.diagnostics`，用于确认当前是 Anthropic 直连、AWS Bedrock 还是 Anthropic 兼容代理。
+
 ### 轮次预算
 
 SmartPerfetto 区分 fast 和 full 两套轮次预算：

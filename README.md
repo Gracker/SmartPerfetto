@@ -147,6 +147,19 @@ CLAUDE_LIGHT_MODEL=your-light-model
 
 Known proxy options include [one-api](https://github.com/songquanpeng/one-api), [new-api](https://github.com/Calcium-Ion/new-api), and [LiteLLM](https://github.com/BerriAI/litellm). The selected model must support streaming and tool/function calling reliably. See [backend/.env.example](backend/.env.example) for provider examples and tuning options.
 
+> Note: provider switchers such as CC Switch, Codex CLI, Gemini CLI, and OpenCode manage their own CLI configuration files and login state. SmartPerfetto does not automatically read those CLI credentials. The web and CLI analysis paths currently use the Claude Agent SDK runtime; use `ANTHROPIC_BASE_URL` when connecting third-party providers such as MiMo, DeepSeek, OpenAI, Kimi, or MiniMax.
+
+If your Claude Code subscription quota is unavailable, or if you want to evaluate a third-party model, prefer the proxy path:
+
+```bash
+ANTHROPIC_BASE_URL=http://localhost:3000
+ANTHROPIC_API_KEY=sk-proxy-xxx
+CLAUDE_MODEL=your-provider-main-model
+CLAUDE_LIGHT_MODEL=your-provider-light-model
+```
+
+Restart the backend after changing provider settings. `GET /health` returns `aiEngine.providerMode` and `aiEngine.diagnostics` so you can confirm whether the runtime is using Anthropic direct access, AWS Bedrock, or an Anthropic-compatible proxy.
+
 ### Turn Budgets
 
 SmartPerfetto has separate turn budgets for fast and full analysis:
