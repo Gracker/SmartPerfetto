@@ -20,6 +20,7 @@ import {
   type MemoryRootCauseContract,
   type IoNetworkWakeupContract,
   type GpuSurfaceFlingerContract,
+  type StartupAnrMethodGraphContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -775,5 +776,80 @@ describe('Plan 16 — GpuSurfaceFlingerContract', () => {
     expect(contract.surfaceFlingerCompositions?.[0].hwcFallback).toBe(true);
     expect(contract.vendorProfilerImports?.[0].kind).toBe('agi');
     expect(contract.surfaceFlingerLatency?.droppedFrames).toBe(12);
+  });
+});
+
+describe('Plan 17 — StartupAnrMethodGraphContract', () => {
+  it('merges startup phases, ANR attribution and method trace graph', () => {
+    const contract: StartupAnrMethodGraphContract = {
+      ...makeSparkProvenance({source: 'startup-anr-graph'}),
+      range: {startNs: 0, endNs: 10_000_000_000},
+      startupPhases: [
+        {
+          phase: 'application_create',
+          range: {startNs: 100_000_000, endNs: 700_000_000},
+          artVerifierDurNs: 50_000_000,
+          jitDurNs: 80_000_000,
+          classLoadingDurNs: 30_000_000,
+          initializersFired: ['Coil', 'WorkManager'],
+          evidence: {skillId: 'startup_slow_reasons'},
+        },
+        {
+          phase: 'first_frame',
+          range: {startNs: 800_000_000, endNs: 1_500_000_000},
+          recompositionCount: 12,
+        },
+      ],
+      anrAttributions: [
+        {
+          process: 'com.example.app',
+          ts: 7_500_000_000,
+          reason: 'input dispatch timeout',
+          threadSamples: [
+            {
+              threadName: 'main',
+              state: 'BLOCKED',
+              topFrames: ['m1', 'm2'],
+            },
+          ],
+          methodTraceEvidence: {skillId: 'matrix_methodtrace_import'},
+        },
+      ],
+      methodTraceGraph: [
+        {
+          id: 'm1',
+          method: 'View.measure',
+          selfNs: 1_200_000,
+          totalNs: 5_500_000,
+          children: ['m2'],
+          source: 'matrix',
+        },
+        {
+          id: 'm2',
+          method: 'TextView.onMeasure',
+          selfNs: 4_300_000,
+          totalNs: 4_300_000,
+          source: 'matrix',
+        },
+      ],
+      decisionTree: {
+        nodeId: 'startup_root',
+        label: 'startup decision tree',
+        children: [],
+      },
+      coverage: [
+        {sparkId: 32, planId: '17', status: 'scaffolded'},
+        {sparkId: 33, planId: '17', status: 'scaffolded'},
+        {sparkId: 49, planId: '17', status: 'scaffolded'},
+        {sparkId: 68, planId: '17', status: 'scaffolded'},
+        {sparkId: 69, planId: '17', status: 'scaffolded'},
+        {sparkId: 72, planId: '17', status: 'scaffolded'},
+        {sparkId: 78, planId: '17', status: 'scaffolded'},
+        {sparkId: 132, planId: '17', status: 'scaffolded'},
+      ],
+    };
+    expect(contract.startupPhases?.[0].initializersFired).toContain('Coil');
+    expect(contract.anrAttributions?.[0].reason).toBe('input dispatch timeout');
+    expect(contract.methodTraceGraph?.[0].children).toEqual(['m2']);
   });
 });

@@ -990,6 +990,90 @@ export interface GpuSurfaceFlingerContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 17 — Startup, ANR, Method-Trace Graph
+//          (Spark #32, #33, #49, #68, #69, #72, #78, #132)
+// =============================================================================
+
+/** Startup phase identifier (mirrors `android.startup.startups` stdlib). */
+export type StartupPhase =
+  | 'process_create'
+  | 'application_create'
+  | 'first_activity_create'
+  | 'first_frame'
+  | 'reportFullyDrawn'
+  | string;
+
+/** Per-phase startup attribution row. */
+export interface StartupPhaseRow {
+  phase: StartupPhase;
+  range: NsTimeRange;
+  /** ART/JIT/dex2oat dur if known (Spark #132). */
+  artVerifierDurNs?: number;
+  jitDurNs?: number;
+  classLoadingDurNs?: number;
+  /** Compose recomposition storms during the phase (Spark #68). */
+  recompositionCount?: number;
+  /** App Startup library initializers fired (Spark #69). */
+  initializersFired?: string[];
+  evidence?: SparkEvidenceRef;
+}
+
+/** ANR attribution from `traces.txt` (Spark #49) merged with trace evidence. */
+export interface AnrAttribution {
+  process: string;
+  /** ANR detection ts. */
+  ts: number;
+  /** Threads sampled in `traces.txt` snapshot. */
+  threadSamples?: Array<{
+    threadName: string;
+    state: string;
+    /** Top frame ids referencing the method-trace graph. */
+    topFrames?: string[];
+  }>;
+  /** Why the ANR fired (input dispatch timeout, broadcast timeout, …). */
+  reason?: string;
+  /** Evidence link to method-trace graph. */
+  methodTraceEvidence?: SparkEvidenceRef;
+}
+
+/**
+ * Method-trace graph row (Spark #72, #78). Method-trace inputs come from
+ * Matrix / BTrace / RheaTrace / KOOM or from bytecode instrumentation.
+ */
+export interface MethodTraceNode {
+  id: string;
+  method: string;
+  /** Flat self-time across the window (ns). */
+  selfNs: number;
+  /** Total time including children (ns). */
+  totalNs: number;
+  /** Child node ids. */
+  children?: string[];
+  /** Source SDK that emitted the node. */
+  source?: 'matrix' | 'btrace' | 'rheatrace' | 'koom' | 'bytecode' | string;
+}
+
+/**
+ * StartupAnrMethodGraphContract (Plan 17)
+ *
+ * Combines startup decision tree, ANR attribution, and method-trace graph.
+ * Skills can populate any subset; missing facets must surface as
+ * `unsupportedReason`.
+ */
+export interface StartupAnrMethodGraphContract extends SparkProvenance {
+  range: NsTimeRange;
+  /** Startup phase rows (Spark #32, #68, #69, #132). */
+  startupPhases?: StartupPhaseRow[];
+  /** ANR attributions (Spark #33, #49). */
+  anrAttributions?: AnrAttribution[];
+  /** Method-trace nodes (Spark #72, #78). */
+  methodTraceGraph?: MethodTraceNode[];
+  /** Optional decision-tree summary mirroring jank tree shape. */
+  decisionTree?: JankDecisionNode;
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
