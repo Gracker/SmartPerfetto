@@ -121,6 +121,28 @@ PERFETTO_PATH=/path/to/perfetto
 ./scripts/start-dev.sh --build-from-source
 ```
 
+如果下载卡在 `commondatastorage.googleapis.com` 或 Google artifact bucket 无法访问，有三种出口：
+
+```bash
+# 1. 使用已有 binary，脚本会跳过下载
+TRACE_PROCESSOR_PATH=/absolute/path/to/trace_processor_shell ./start.sh
+
+# 2. 使用保持相同目录结构的可信镜像
+TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts ./start.sh
+
+# 3. 使用当前平台的精确 binary URL
+TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.sh
+```
+
+镜像下载仍会按 `scripts/trace-processor-pin.env` 中固定的 SHA256 校验；如果只是想快速使用，优先选择 Docker Hub 镜像，因为镜像内已经包含固定版本的 `trace_processor_shell`。
+
+macOS 如果拦截 `trace_processor_shell`，可能会看到 `cannot be opened because the developer cannot be verified`、终端输出 `killed`，或脚本提示 `--version smoke test failed`。打开 **系统设置 → 隐私与安全性 → 安全性**，对 `trace_processor_shell` 点 **仍要打开 / Allow Anyway**，重新运行脚本并在弹窗里选择 **打开**。如果你确认 binary 来源可信，也可以：
+
+```bash
+xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
+chmod +x /absolute/path/to/trace_processor_shell
+```
+
 ## 请求限流
 
 内存级限流，适合公开试用环境的基础保护：

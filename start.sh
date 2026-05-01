@@ -13,6 +13,11 @@
 # Usage:
 #   ./start.sh           # Start with pre-built frontend
 #   ./start.sh --clean   # Clean old logs before starting
+#
+# trace_processor_shell overrides:
+#   TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell ./start.sh
+#   TRACE_PROCESSOR_DOWNLOAD_BASE=https://mirror/perfetto-luci-artifacts ./start.sh
+#   TRACE_PROCESSOR_DOWNLOAD_URL=https://mirror/trace_processor_shell ./start.sh
 
 set -euo pipefail
 
@@ -34,6 +39,36 @@ require_command() {
     echo "ERROR: required command '$cmd' is not installed."
     exit 1
   fi
+}
+
+print_macos_trace_processor_permission_help() {
+  local path="$1"
+  if [ "$(uname -s)" != "Darwin" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo "macOS may have blocked trace_processor_shell because it was downloaded from the internet."
+  echo "Fix it from System Settings:"
+  echo "  Privacy & Security -> Security -> Allow Anyway for trace_processor_shell"
+  echo "Then re-run ./start.sh and choose Open if macOS asks again."
+  echo ""
+  echo "For a binary you trust, you can also remove the quarantine attribute:"
+  echo "  xattr -dr com.apple.quarantine \"$path\""
+  echo "  chmod +x \"$path\""
+}
+
+hash_sha256() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+    return 0
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$file" | awk '{print $1}'
+    return 0
+  fi
+  node -e "const fs=require('fs');const crypto=require('crypto');console.log(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "$file"
 }
 
 kill_pid_and_children() {
@@ -85,6 +120,123 @@ on_exit() {
   cleanup "$code"
 }
 
+print_trace_processor_download_help() {
+  local url="$1"
+  local dest="$2"
+
+  echo "=============================================="
+  echo "ERROR: Failed to download trace_processor_shell."
+  echo ""
+  echo "Attempted URL:"
+  echo "  $url"
+  echo ""
+  echo "This usually means the network cannot reach Google's Perfetto LUCI artifact bucket."
+  echo ""
+  echo "Fix options:"
+  echo "  1. Use the Docker image (recommended for users):"
+  echo "     docker compose -f docker-compose.hub.yml pull"
+  echo "     docker compose -f docker-compose.hub.yml up -d"
+  echo ""
+  echo "  2. If you already have trace_processor_shell, run:"
+  echo "     TRACE_PROCESSOR_PATH=/absolute/path/to/trace_processor_shell ./start.sh"
+  echo ""
+  echo "  3. Or place the pinned binary here and re-run ./start.sh:"
+  echo "     $dest"
+  echo ""
+  echo "  4. If you have a mirror with the same path layout, run:"
+  echo "     TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts ./start.sh"
+  echo ""
+  echo "  5. If you have an exact binary URL for this platform, run:"
+  echo "     TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.sh"
+  echo "=============================================="
+}
+
+ensure_trace_processor_path() {
+  local path="$1"
+  if [ ! -f "$path" ]; then
+    echo "ERROR: trace_processor_shell not found at TRACE_PROCESSOR_PATH:"
+    echo "  $path"
+    exit 1
+  fi
+  if [ ! -x "$path" ]; then
+    echo "ERROR: trace_processor_shell is not executable:"
+    echo "  $path"
+    echo ""
+    echo "Run:"
+    echo "  chmod +x \"$path\""
+    exit 1
+  fi
+  if ! "$path" --version >/dev/null 2>&1; then
+    echo "ERROR: trace_processor_shell failed the --version smoke test:"
+    echo "  $path"
+    print_macos_trace_processor_permission_help "$path"
+    exit 1
+  fi
+}
+
+download_trace_processor_prebuilt() {
+  local dest="$1"
+  local pin_env="$PROJECT_ROOT/scripts/trace-processor-pin.env"
+  local os arch plat sha url_base url tmp actual_sha
+
+  if [ -f "$pin_env" ]; then
+    # shellcheck source=scripts/trace-processor-pin.env
+    . "$pin_env"
+  fi
+
+  case "$(uname -s)" in
+    Darwin) os=mac ;;
+    Linux)  os=linux ;;
+    *) echo "ERROR: Unsupported OS: $(uname -s). Use Docker or WSL2 on Windows."; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64)  arch=amd64 ;;
+    arm64|aarch64) arch=arm64 ;;
+    *) echo "ERROR: Unsupported architecture: $(uname -m)"; exit 1 ;;
+  esac
+  plat="${os}-${arch}"
+
+  case "$plat" in
+    linux-amd64) sha="${PERFETTO_SHELL_SHA256_LINUX_AMD64:-a7aa1f738bbe2926a70f0829d00837f5720be8cafe26de78f962094fa24a3da4}" ;;
+    linux-arm64) sha="${PERFETTO_SHELL_SHA256_LINUX_ARM64:-53af6216259df603115f1eefa94f034eef9c29cf851df15302ad29160334ca81}" ;;
+    mac-amd64)   sha="${PERFETTO_SHELL_SHA256_MAC_AMD64:-a15360712875344d8bb8e4c461cd7ce9ec250f71a76f89e6ae327c5185eb4855}" ;;
+    mac-arm64)   sha="${PERFETTO_SHELL_SHA256_MAC_ARM64:-23638faac4ca695e86039a01fade05ff4a38ffa89672afc7a4e4077318603507}" ;;
+  esac
+
+  PERFETTO_VERSION="${PERFETTO_VERSION:-v54.0}"
+  url_base="${TRACE_PROCESSOR_DOWNLOAD_BASE:-${PERFETTO_LUCI_URL_BASE:-https://commondatastorage.googleapis.com/perfetto-luci-artifacts}}"
+  url="${TRACE_PROCESSOR_DOWNLOAD_URL:-${url_base%/}/${PERFETTO_VERSION}/${plat}/trace_processor_shell}"
+  tmp=$(mktemp -t trace_processor_shell.XXXXXX)
+
+  echo "trace_processor_shell not found. Downloading pinned prebuilt..."
+  echo "  platform: $plat"
+  echo "  version:  $PERFETTO_VERSION"
+  echo "  url:      $url"
+
+  if ! curl -fL --retry 3 --connect-timeout 15 --max-time 120 "$url" -o "$tmp"; then
+    rm -f "$tmp"
+    print_trace_processor_download_help "$url" "$dest"
+    exit 1
+  fi
+
+  actual_sha=$(hash_sha256 "$tmp")
+  if [ "$actual_sha" != "$sha" ]; then
+    rm -f "$tmp"
+    echo "ERROR: trace_processor_shell SHA256 mismatch."
+    echo "  expected: $sha"
+    echo "  actual:   $actual_sha"
+    echo ""
+    echo "If you intentionally use a custom binary, set TRACE_PROCESSOR_PATH instead."
+    exit 1
+  fi
+
+  chmod +x "$tmp"
+  ensure_trace_processor_path "$tmp"
+  mkdir -p "$(dirname "$dest")"
+  mv "$tmp" "$dest"
+  echo "Downloaded: $("$dest" --version 2>/dev/null | head -1)"
+}
+
 # ── Parse args ────────────────────────────────────────────────────────────────
 
 for arg in "$@"; do
@@ -94,6 +246,11 @@ for arg in "$@"; do
       echo "Usage: ./start.sh [--clean]"
       echo ""
       echo "  --clean   Remove old log files before starting"
+      echo ""
+      echo "Environment:"
+      echo "  TRACE_PROCESSOR_PATH           Use an existing trace_processor_shell"
+      echo "  TRACE_PROCESSOR_DOWNLOAD_BASE  Mirror base with Perfetto LUCI path layout"
+      echo "  TRACE_PROCESSOR_DOWNLOAD_URL   Exact trace_processor_shell URL for this platform"
       echo ""
       echo "For AI plugin development (with hot reload), use: ./scripts/start-dev.sh"
       exit 0
@@ -169,57 +326,24 @@ sleep 1
 
 # ── trace_processor_shell ─────────────────────────────────────────────────────
 
-TRACE_PROCESSOR="$PROJECT_ROOT/perfetto/out/ui/trace_processor_shell"
-if [ -f "$TRACE_PROCESSOR" ]; then
+TRACE_PROCESSOR_DEFAULT="$PROJECT_ROOT/perfetto/out/ui/trace_processor_shell"
+TRACE_PROCESSOR="${TRACE_PROCESSOR_PATH:-$TRACE_PROCESSOR_DEFAULT}"
+if [ -n "${TRACE_PROCESSOR_PATH:-}" ]; then
+  ensure_trace_processor_path "$TRACE_PROCESSOR"
   echo "trace_processor_shell: $("$TRACE_PROCESSOR" --version 2>/dev/null | head -1)"
 else
-  # Download prebuilt
-  echo "=============================================="
-  echo "trace_processor_shell not found. Downloading prebuilt..."
-  echo "=============================================="
-  PIN_ENV="$PROJECT_ROOT/scripts/trace-processor-pin.env"
-  if [ -f "$PIN_ENV" ]; then
-    # shellcheck source=scripts/trace-processor-pin.env
-    . "$PIN_ENV"
-    # pin.env uses PERFETTO_VERSION / PERFETTO_SHELL_SHA256_* variable names
-    TRACE_PROCESSOR_VERSION="${PERFETTO_VERSION:-v54.0}"
-    TRACE_PROCESSOR_SHA256_MAC_ARM64="${PERFETTO_SHELL_SHA256_MAC_ARM64:-23638faac4ca695e86039a01fade05ff4a38ffa89672afc7a4e4077318603507}"
-    TRACE_PROCESSOR_SHA256_MAC_AMD64="${PERFETTO_SHELL_SHA256_MAC_AMD64:-a15360712875344d8bb8e4c461cd7ce9ec250f71a76f89e6ae327c5185eb4855}"
+  if [ -f "$TRACE_PROCESSOR" ]; then
+    chmod +x "$TRACE_PROCESSOR" 2>/dev/null || true
+    if "$TRACE_PROCESSOR" --version >/dev/null 2>&1; then
+      echo "trace_processor_shell: $("$TRACE_PROCESSOR" --version 2>/dev/null | head -1)"
+    else
+      echo "Existing trace_processor_shell is invalid; replacing it."
+      rm -f "$TRACE_PROCESSOR"
+      download_trace_processor_prebuilt "$TRACE_PROCESSOR"
+    fi
   else
-    TRACE_PROCESSOR_VERSION="v54.0"
-    TRACE_PROCESSOR_SHA256_MAC_ARM64="23638faac4ca695e86039a01fade05ff4a38ffa89672afc7a4e4077318603507"
-    TRACE_PROCESSOR_SHA256_MAC_AMD64="a15360712875344d8bb8e4c461cd7ce9ec250f71a76f89e6ae327c5185eb4855"
-    PERFETTO_SHELL_SHA256_LINUX_AMD64="a7aa1f738bbe2926a70f0829d00837f5720be8cafe26de78f962094fa24a3da4"
-    PERFETTO_SHELL_SHA256_LINUX_ARM64="53af6216259df603115f1eefa94f034eef9c29cf851df15302ad29160334ca81"
+    download_trace_processor_prebuilt "$TRACE_PROCESSOR"
   fi
-  OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-  ARCH=$(uname -m)
-  case "$OS" in
-    darwin)
-      case "$ARCH" in
-        arm64)         PLAT="mac-arm64";   SHA256="$TRACE_PROCESSOR_SHA256_MAC_ARM64" ;;
-        x86_64|amd64)  PLAT="mac-amd64";   SHA256="$TRACE_PROCESSOR_SHA256_MAC_AMD64" ;;
-        *) echo "ERROR: Unsupported Mac architecture: $ARCH"; exit 1 ;;
-      esac
-      ;;
-    linux)
-      case "$ARCH" in
-        x86_64|amd64)  PLAT="linux-amd64"; SHA256="${PERFETTO_SHELL_SHA256_LINUX_AMD64:-a7aa1f738bbe2926a70f0829d00837f5720be8cafe26de78f962094fa24a3da4}" ;;
-        arm64|aarch64) PLAT="linux-arm64"; SHA256="${PERFETTO_SHELL_SHA256_LINUX_ARM64:-53af6216259df603115f1eefa94f034eef9c29cf851df15302ad29160334ca81}" ;;
-        *) echo "ERROR: Unsupported Linux architecture: $ARCH"; exit 1 ;;
-      esac
-      ;;
-    *)
-      echo "ERROR: Unsupported OS: $OS. Use Docker or WSL2 on Windows."
-      exit 1
-      ;;
-  esac
-  URL="https://commondatastorage.googleapis.com/perfetto-luci-artifacts/${TRACE_PROCESSOR_VERSION}/${PLAT}/trace_processor_shell"
-  mkdir -p "$(dirname "$TRACE_PROCESSOR")"
-  curl -fL --retry 3 "$URL" -o "$TRACE_PROCESSOR"
-  echo "$SHA256  $TRACE_PROCESSOR" | shasum -a 256 -c || { echo "SHA256 mismatch!"; rm -f "$TRACE_PROCESSOR"; exit 1; }
-  chmod +x "$TRACE_PROCESSOR"
-  echo "Downloaded: $("$TRACE_PROCESSOR" --version 2>/dev/null | head -1)"
 fi
 
 # ── Install backend deps if needed ────────────────────────────────────────────

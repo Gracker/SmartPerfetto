@@ -24,6 +24,9 @@ RUN npm prune --production
 # (latest, unpinned — drifts from the generated SQL stdlib index).
 FROM debian:bookworm-slim AS tp-downloader
 
+ARG TRACE_PROCESSOR_DOWNLOAD_BASE=
+ARG TRACE_PROCESSOR_DOWNLOAD_URL=
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -38,8 +41,10 @@ RUN . /tmp/pin.env && \
       aarch64) PLAT=linux-arm64; SHA="$PERFETTO_SHELL_SHA256_LINUX_ARM64" ;; \
       *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
+    URL_BASE="${TRACE_PROCESSOR_DOWNLOAD_BASE:-$PERFETTO_LUCI_URL_BASE}" && \
+    URL="${TRACE_PROCESSOR_DOWNLOAD_URL:-${URL_BASE%/}/${PERFETTO_VERSION}/${PLAT}/trace_processor_shell}" && \
     curl -fL --max-time 120 -o /tmp/trace_processor_shell \
-      "${PERFETTO_LUCI_URL_BASE}/${PERFETTO_VERSION}/${PLAT}/trace_processor_shell" && \
+      "$URL" && \
     echo "${SHA}  /tmp/trace_processor_shell" | sha256sum -c - && \
     chmod +x /tmp/trace_processor_shell && \
     /tmp/trace_processor_shell --version | head -n 1

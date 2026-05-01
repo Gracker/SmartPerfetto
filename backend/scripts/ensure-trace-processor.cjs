@@ -84,6 +84,20 @@ function isExecutable(filePath) {
   }
 }
 
+function formatMacPermissionHint(filePath) {
+  if (process.platform !== 'darwin') return '';
+  return [
+    '',
+    'macOS may have blocked trace_processor_shell because it was downloaded from the internet.',
+    'Open System Settings -> Privacy & Security -> Security, click "Allow Anyway" for trace_processor_shell,',
+    'then run the command again and choose "Open" if macOS asks.',
+    '',
+    'For a binary you trust, you can also run:',
+    `  xattr -dr com.apple.quarantine "${filePath}"`,
+    `  chmod +x "${filePath}"`,
+  ].join('\n');
+}
+
 function download(url, destination, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
     const request = https.get(url, (response) => {
@@ -124,13 +138,46 @@ function runVersionSmoke(filePath) {
     execFile(filePath, ['--version'], (error, stdout, stderr) => {
       const output = `${stdout || ''}${stderr || ''}`.trim();
       if (error) {
-        reject(new Error(`trace_processor_shell --version failed: ${output || error.message}`));
+        reject(new Error(
+          `trace_processor_shell --version failed: ${output || error.message}${formatMacPermissionHint(filePath)}`
+        ));
         return;
       }
       console.log(`trace_processor_shell ready: ${output.trim().split(/\r?\n/)[0]}`);
       resolve();
     });
   });
+}
+
+function resolveDownloadUrl(pins, platform) {
+  const version = pins.PERFETTO_VERSION;
+  const defaultUrlBase = pins.PERFETTO_LUCI_URL_BASE;
+  if (!version || !defaultUrlBase) {
+    throw new Error(`Missing PERFETTO_VERSION or PERFETTO_LUCI_URL_BASE in ${pinFile}`);
+  }
+
+  const exactUrl = process.env.TRACE_PROCESSOR_DOWNLOAD_URL;
+  if (exactUrl) {
+    return { version, url: exactUrl };
+  }
+
+  const urlBase = process.env.TRACE_PROCESSOR_DOWNLOAD_BASE || defaultUrlBase;
+  return { version, url: `${urlBase.replace(/\/+$/, '')}/${version}/${platform}/trace_processor_shell` };
+}
+
+function formatDownloadHelp(url) {
+  return [
+    '',
+    'trace_processor_shell download failed.',
+    `Attempted URL: ${url}`,
+    '',
+    'If Google storage is unreachable from your network, use one of:',
+    '  TRACE_PROCESSOR_PATH=/absolute/path/to/trace_processor_shell',
+    '  TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts',
+    '  TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell',
+    '',
+    'Custom downloads are still SHA256-verified against scripts/trace-processor-pin.env.',
+  ].join('\n');
 }
 
 async function main() {
@@ -146,17 +193,16 @@ async function main() {
     console.log('Existing trace_processor_shell does not match the pinned binary; replacing it.');
   }
 
-  const version = pins.PERFETTO_VERSION;
-  const urlBase = pins.PERFETTO_LUCI_URL_BASE;
-  if (!version || !urlBase) {
-    throw new Error(`Missing PERFETTO_VERSION or PERFETTO_LUCI_URL_BASE in ${pinFile}`);
-  }
-
-  const url = `${urlBase}/${version}/${platform}/trace_processor_shell`;
+  const { version, url } = resolveDownloadUrl(pins, platform);
   const tmpPath = path.join(os.tmpdir(), `smartperfetto-trace_processor_shell-${process.pid}-${Date.now()}`);
 
-  console.log(`Downloading pinned trace_processor_shell ${version} (${platform})...`);
-  await download(url, tmpPath);
+  console.log(`Downloading pinned trace_processor_shell ${version} (${platform}) from ${url}...`);
+  try {
+    await download(url, tmpPath);
+  } catch (error) {
+    fs.rmSync(tmpPath, { force: true });
+    throw new Error(`${error.message || error}${formatDownloadHelp(url)}`);
+  }
 
   const actual = sha256File(tmpPath);
   if (actual !== sha256) {

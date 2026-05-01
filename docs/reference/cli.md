@@ -271,6 +271,12 @@ smp -f trace.pftrace -p "分析启动性能"
 `smp` 是推荐短命令，`smartperfetto` 是同一个 CLI 的长命令名。第一次分析时，
 如果没有 `TRACE_PROCESSOR_PATH` 且本机缺少 binary，CLI 会自动下载固定版本的
 `trace_processor_shell` 到 `~/.smartperfetto/bin/trace_processor_shell`。
+如果网络无法访问 Google artifact bucket，可以设置 `TRACE_PROCESSOR_PATH` 指向已有
+binary，或设置 `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL`
+指向可信镜像；下载内容仍会按固定 SHA256 校验。
+macOS 如果拦截该 binary，在 **系统设置 → 隐私与安全性 → 安全性** 中对
+`trace_processor_shell` 点 **仍要打开 / Allow Anyway**，重新运行命令并在弹窗里选择
+**打开**；确认来源可信时也可以执行 `xattr -dr com.apple.quarantine /path/to/trace_processor_shell`。
 
 当前源码 checkout 的本地安装方式（发布前验证用）：
 

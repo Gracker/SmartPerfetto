@@ -23,7 +23,7 @@ export async function installTraceProcessorPrebuilt(destination: string): Promis
     throw new Error(`No trace_processor_shell SHA256 pin for platform: ${platform}`);
   }
 
-  const url = `${pin.urlBase}/${pin.version}/${platform}/trace_processor_shell`;
+  const url = resolveDownloadUrl(pin, platform);
   const tmp = path.join(os.tmpdir(), `smartperfetto-trace_processor_shell-${process.pid}-${Date.now()}`);
 
   try {
@@ -42,7 +42,7 @@ export async function installTraceProcessorPrebuilt(destination: string): Promis
     fs.chmodSync(tmp, 0o755);
     const smoke = spawnSync(tmp, ['--version'], { stdio: 'ignore' });
     if (smoke.status !== 0) {
-      throw new Error('Downloaded trace_processor_shell failed the --version smoke test.');
+      throw new Error(`Downloaded trace_processor_shell failed the --version smoke test.${formatMacPermissionHint(tmp)}`);
     }
 
     fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -53,6 +53,9 @@ export async function installTraceProcessorPrebuilt(destination: string): Promis
       fs.rmSync(tmp, { force: true });
     } catch {
       // ignore cleanup failure
+    }
+    if (err instanceof Error) {
+      throw new Error(`${err.message}${formatDownloadHelp(url)}`);
     }
     throw err;
   }
@@ -108,6 +111,45 @@ function requirePinValue(values: Record<string, string>, key: string, filePath: 
   const value = values[key];
   if (!value) throw new Error(`Missing ${key} in trace_processor_shell pin file: ${filePath}`);
   return value;
+}
+
+function resolveDownloadUrl(pin: PinConfig, platform: string): string {
+  const exactUrl = process.env.TRACE_PROCESSOR_DOWNLOAD_URL;
+  if (exactUrl) return exactUrl;
+
+  const urlBase = process.env.TRACE_PROCESSOR_DOWNLOAD_BASE || pin.urlBase;
+  return `${urlBase.replace(/\/+$/, '')}/${pin.version}/${platform}/trace_processor_shell`;
+}
+
+function formatDownloadHelp(url: string): string {
+  return [
+    '',
+    '',
+    'trace_processor_shell download failed.',
+    `Attempted URL: ${url}`,
+    '',
+    'If Google storage is unreachable from your network, use one of:',
+    '  TRACE_PROCESSOR_PATH=/absolute/path/to/trace_processor_shell',
+    '  TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts',
+    '  TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell',
+    '',
+    'Custom downloads are still SHA256-verified against the pinned SmartPerfetto binary.',
+  ].join('\n');
+}
+
+function formatMacPermissionHint(filePath: string): string {
+  if (process.platform !== 'darwin') return '';
+  return [
+    '',
+    '',
+    'macOS may have blocked trace_processor_shell because it was downloaded from the internet.',
+    'Open System Settings -> Privacy & Security -> Security, click "Allow Anyway" for trace_processor_shell,',
+    'then run the command again and choose "Open" if macOS asks.',
+    '',
+    'For a binary you trust, you can also run:',
+    `  xattr -dr com.apple.quarantine "${filePath}"`,
+    `  chmod +x "${filePath}"`,
+  ].join('\n');
 }
 
 function detectPlatform(): string {

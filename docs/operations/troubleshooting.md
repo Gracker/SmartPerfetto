@@ -36,6 +36,47 @@ curl http://localhost:3000/api/traces
 curl http://localhost:3000/api/traces/stats
 ```
 
+## trace_processor_shell 下载失败
+
+如果启动时出现 `trace_processor_shell not found`，随后卡在 `commondatastorage.googleapis.com` 或 `Failed to connect`，说明本机网络无法访问 Perfetto 的 Google artifact bucket。最省事的用户路径是直接运行 Docker Hub 镜像，镜像内已经带固定版本的 `trace_processor_shell`：
+
+```bash
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up -d
+```
+
+本地脚本运行也可以跳过 Google 下载：
+
+```bash
+# 使用已有 binary
+TRACE_PROCESSOR_PATH=/absolute/path/to/trace_processor_shell ./start.sh
+
+# 使用保持相同目录结构的可信镜像
+TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts ./start.sh
+
+# 使用当前平台的精确 binary URL
+TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.sh
+```
+
+镜像或 URL 下载的内容仍会按 `scripts/trace-processor-pin.env` 中的固定 SHA256 校验。不要随意使用来源不明且校验不匹配的 binary。
+
+## macOS 拦截 trace_processor_shell
+
+如果 macOS 提示 `trace_processor_shell` 来自身份不明的开发者、终端只显示 `killed`，或脚本提示 `--version smoke test failed`，说明系统安全策略拦截了这个下载的可执行文件。
+
+处理方式：
+
+1. 打开 **系统设置 → 隐私与安全性 → 安全性**。
+2. 找到 `trace_processor_shell`，点击 **仍要打开 / Allow Anyway**。
+3. 重新运行 `./start.sh`，如果 macOS 再弹窗，选择 **打开**。
+
+如果你确认 binary 来源可信，也可以在终端移除隔离属性：
+
+```bash
+xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
+chmod +x /absolute/path/to/trace_processor_shell
+```
+
 ## 端口冲突
 
 默认端口：

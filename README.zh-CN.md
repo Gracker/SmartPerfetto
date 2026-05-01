@@ -86,7 +86,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 
 ### Docker 运行（推荐）
 
-只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine，并在 `.env` 里配置大模型凭证；不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。Docker Hub 镜像每天从 `main` 自动发布，镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`。
+只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine，并在 `.env` 里配置大模型凭证；不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。Docker Hub 镜像每天从 `main` 自动发布，镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`，也能避开本地首次启动时访问 Google artifact bucket 失败的问题。
 
 容器在没有本地 `.env` 文件时也能启动，用于 health/UI smoke check；真正执行 AI 分析需要配置 `ANTHROPIC_API_KEY`，或配置 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_API_KEY`。
 
@@ -117,6 +117,13 @@ docker compose -f docker-compose.hub.yml down
 如果你希望直接从源码 checkout 启动，使用这个方式。前置条件：**Node.js 24 LTS**、`curl`、`lsof`、`pkill`，以及 Claude Code 登录态或大模型凭证。Windows 源码开发请使用 [WSL2](https://learn.microsoft.com/zh-cn/windows/wsl/install)，不要使用原生 Windows shell。
 
 仓库已经带上 `.nvmrc` 和 `.node-version`，npm 也开启了 `engine-strict=true`。`./start.sh`、`./scripts/start-dev.sh` 和 `./scripts/restart-backend.sh` 会优先通过 nvm 或 fnm 自动切到 Node 24。如果后端依赖曾经用其他 Node ABI 安装过，脚本会在启动前自动重装 `backend/node_modules`，避免 `better-sqlite3` 这类 native module 在 Node 20/24/25 之间混用。
+
+macOS 用户如果看到 `trace_processor_shell failed the --version smoke test`、`cannot be opened because the developer cannot be verified` 或终端里只显示 `killed`，通常是系统安全策略拦截了下载的 `trace_processor_shell`。打开 **系统设置 → 隐私与安全性 → 安全性**，对 `trace_processor_shell` 点 **仍要打开 / Allow Anyway**，然后重新运行 `./start.sh` 并在弹窗里选择 **打开**。如果你确认 binary 来源可信，也可以用命令移除隔离属性：
+
+```bash
+xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
+chmod +x /absolute/path/to/trace_processor_shell
+```
 
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
@@ -267,7 +274,7 @@ smp report <sessionId> --open
 smp
 ```
 
-第一次分析时，如果本机还没有 `trace_processor_shell`，CLI 会自动下载固定版本。`smartperfetto` 仍保留为长命令名；源码 checkout 里的脚本只用于维护者调试 CLI。完整命令、REPL slash 命令、存储布局和 resume 语义见 [CLI 参考](docs/reference/cli.md)。
+第一次分析时，如果本机还没有 `trace_processor_shell`，CLI 会自动下载固定版本。若网络无法访问 Google artifact bucket，可以设置 `TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell` 使用本机已有 binary，或设置 `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL` 指向可信镜像；下载内容仍会按固定 SHA256 校验。`smartperfetto` 仍保留为长命令名；源码 checkout 里的脚本只用于维护者调试 CLI。完整命令、REPL slash 命令、存储布局和 resume 语义见 [CLI 参考](docs/reference/cli.md)。
 
 ## API 接入
 

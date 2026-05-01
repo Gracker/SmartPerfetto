@@ -54,7 +54,7 @@ docker compose -f docker-compose.hub.yml up -d
 ./start.sh
 ```
 
-首次启动会安装依赖，并下载 version-pinned 的 `trace_processor_shell` 预编译产物。服务地址：
+首次启动会安装依赖，并下载 version-pinned 的 `trace_processor_shell` 预编译产物。若当前网络无法访问 Google artifact bucket，优先改用 Docker 方式；或者设置 `TRACE_PROCESSOR_PATH` 指向已有 binary，设置 `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL` 指向可信镜像后再运行。服务地址：
 
 | 服务 | 地址 |
 |---|---|

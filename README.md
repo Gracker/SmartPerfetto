@@ -86,7 +86,7 @@ After editing env files, start or restart the backend. For Docker, run `docker c
 
 ### Docker (Recommended)
 
-Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine and LLM provider credentials in `.env`; you do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. The Docker Hub image is published nightly from `main` and includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`.
+Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine and LLM provider credentials in `.env`; you do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. The Docker Hub image is published nightly from `main` and includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`, so it also avoids first-run access to Google's artifact bucket on the host.
 
 The container starts without a local `.env` file for health/UI smoke checks, but AI analysis needs `ANTHROPIC_API_KEY` or `ANTHROPIC_BASE_URL` plus `ANTHROPIC_API_KEY`.
 
@@ -117,6 +117,13 @@ Uploads and logs are stored in Docker volumes, so they survive container restart
 Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 24 LTS**, `curl`, `lsof`, `pkill`, and either Claude Code login or LLM provider credentials. For Windows source development, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install), not native Windows shell.
 
 The repository includes `.nvmrc` and `.node-version`, and npm is configured with `engine-strict=true`. `./start.sh`, `./scripts/start-dev.sh`, and `./scripts/restart-backend.sh` will try to activate Node 24 through nvm or fnm. If backend dependencies were installed under another Node ABI, the scripts reinstall `backend/node_modules` automatically before starting the server. This prevents native modules such as `better-sqlite3` from being reused across Node 20/24/25.
+
+On macOS, if `trace_processor_shell` fails the `--version` smoke test, macOS says the developer cannot be verified, or the terminal only prints `killed`, Gatekeeper may have blocked the downloaded binary. Open **System Settings → Privacy & Security → Security**, click **Allow Anyway** for `trace_processor_shell`, then re-run `./start.sh` and choose **Open** if macOS asks again. For a binary you trust, you can also remove the quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
+chmod +x /absolute/path/to/trace_processor_shell
+```
 
 ```bash
 git clone https://github.com/Gracker/SmartPerfetto.git
@@ -267,7 +274,7 @@ smp report <sessionId> --open
 smp
 ```
 
-The first analysis downloads the pinned `trace_processor_shell` binary automatically if it is not already available. `smartperfetto` remains available as the long command name; source checkout scripts are only for maintainers debugging the CLI. See [CLI Reference](docs/reference/cli.md) for all commands, REPL slash commands, storage layout, and resume behavior.
+The first analysis downloads the pinned `trace_processor_shell` binary automatically if it is not already available. If your network cannot reach Google's artifact bucket, set `TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell` to use a local binary, or set `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL` to a trusted mirror; downloaded binaries are still checked against the pinned SHA256. `smartperfetto` remains available as the long command name; source checkout scripts are only for maintainers debugging the CLI. See [CLI Reference](docs/reference/cli.md) for all commands, REPL slash commands, storage layout, and resume behavior.
 
 ## API Integration
 

@@ -37,6 +37,23 @@ require_command() {
   fi
 }
 
+print_macos_trace_processor_permission_help() {
+  local path="$1"
+  if [ "$(uname -s)" != "Darwin" ]; then
+    return 0
+  fi
+
+  echo ""
+  echo "macOS may have blocked trace_processor_shell because it was downloaded from the internet."
+  echo "Fix it from System Settings:"
+  echo "  Privacy & Security -> Security -> Allow Anyway for trace_processor_shell"
+  echo "Then re-run the script and choose Open if macOS asks again."
+  echo ""
+  echo "For a binary you trust, you can also remove the quarantine attribute:"
+  echo "  xattr -dr com.apple.quarantine \"$path\""
+  echo "  chmod +x \"$path\""
+}
+
 kill_pid_and_children() {
   local pid="$1"
   local name="$2"
@@ -140,6 +157,11 @@ while [ $# -gt 0 ]; do
       echo "                          (alias: --no-prebuilt; env: TRACE_PROCESSOR_PREBUILT=0)"
       echo "  --prebuilt-only         Refuse to fall back to source build if prebuilt fails"
       echo "  --help, -h              Show this help message"
+      echo ""
+      echo "Environment:"
+      echo "  TRACE_PROCESSOR_PATH           Use an existing trace_processor_shell"
+      echo "  TRACE_PROCESSOR_DOWNLOAD_BASE  Mirror base with Perfetto LUCI path layout"
+      echo "  TRACE_PROCESSOR_DOWNLOAD_URL   Exact trace_processor_shell URL for this platform"
       exit 0
       ;;
     *)
@@ -485,14 +507,22 @@ download_trace_processor_prebuilt() {
     return 1
   fi
 
-  url="${PERFETTO_LUCI_URL_BASE}/${PERFETTO_VERSION}/${platform}/trace_processor_shell"
+  local url_base="${TRACE_PROCESSOR_DOWNLOAD_BASE:-${PERFETTO_LUCI_URL_BASE}}"
+  url="${TRACE_PROCESSOR_DOWNLOAD_URL:-${url_base%/}/${PERFETTO_VERSION}/${platform}/trace_processor_shell}"
   tmp=$(mktemp -t trace_processor_shell.XXXXXX) || return 1
 
   echo "Prebuilt: downloading ${platform} ${PERFETTO_VERSION}..."
+  echo "Prebuilt: url ${url}"
   rc=0
   curl -fL --max-time 60 -o "$tmp" "$url" || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "Prebuilt: download failed (curl exit $rc)."
+    echo ""
+    echo "Common fixes:"
+    echo "  - Set TRACE_PROCESSOR_PATH=/absolute/path/to/trace_processor_shell"
+    echo "  - Set TRACE_PROCESSOR_DOWNLOAD_BASE=https://your-mirror/perfetto-luci-artifacts"
+    echo "  - Set TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell"
+    echo "  - Use --build-from-source if the perfetto submodule and build deps are available"
     rm -f "$tmp"
     return 1
   fi
@@ -509,6 +539,7 @@ download_trace_processor_prebuilt() {
   chmod +x "$tmp"
   if ! "$tmp" --version >/dev/null 2>&1; then
     echo "Prebuilt: --version smoke test failed (binary may be incompatible with this host)"
+    print_macos_trace_processor_permission_help "$tmp"
     rm -f "$tmp"
     return 1
   fi
@@ -650,13 +681,29 @@ smartperfetto_ensure_backend_deps "$PROJECT_ROOT"
 # Acquire trace_processor_shell. Default = download version-pinned prebuilt
 # from Perfetto's LUCI artifacts (SHA256-verified, ~5s); fall back to source
 # build if download / verification / smoke test fails. Pin source of truth:
-# scripts/trace-processor-pin.env. Use --build-from-source or
-# TRACE_PROCESSOR_PREBUILT=0 to skip prebuilt; --prebuilt-only to disable
-# the fallback. The binary is then treated as a pinned local artifact —
-# delete it to re-acquire after a perfetto submodule upgrade.
-TRACE_PROCESSOR="$PERFETTO_DIR/out/ui/trace_processor_shell"
-if ! fetch_or_build_trace_processor "$TRACE_PROCESSOR"; then
-  exit 1
+# scripts/trace-processor-pin.env. Use TRACE_PROCESSOR_PATH to point at an
+# existing binary, --build-from-source or TRACE_PROCESSOR_PREBUILT=0 to skip
+# prebuilt, and --prebuilt-only to disable source fallback. The repo-local
+# binary is treated as a pinned local artifact — delete it to re-acquire after
+# a perfetto submodule upgrade.
+TRACE_PROCESSOR="${TRACE_PROCESSOR_PATH:-$PERFETTO_DIR/out/ui/trace_processor_shell}"
+if [ -n "${TRACE_PROCESSOR_PATH:-}" ]; then
+  if [ ! -x "$TRACE_PROCESSOR" ]; then
+    echo "ERROR: TRACE_PROCESSOR_PATH is not an executable file:"
+    echo "  $TRACE_PROCESSOR"
+    exit 1
+  fi
+  if ! "$TRACE_PROCESSOR" --version >/dev/null 2>&1; then
+    echo "ERROR: TRACE_PROCESSOR_PATH failed the --version smoke test:"
+    echo "  $TRACE_PROCESSOR"
+    print_macos_trace_processor_permission_help "$TRACE_PROCESSOR"
+    exit 1
+  fi
+  echo "trace_processor_shell found via TRACE_PROCESSOR_PATH: $TRACE_PROCESSOR"
+else
+  if ! fetch_or_build_trace_processor "$TRACE_PROCESSOR"; then
+    exit 1
+  fi
 fi
 
 "$TRACE_PROCESSOR" --version | head -n 1 || true
