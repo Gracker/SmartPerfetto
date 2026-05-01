@@ -19,6 +19,7 @@ import {
   type CpuThermalPmuContract,
   type MemoryRootCauseContract,
   type IoNetworkWakeupContract,
+  type GpuSurfaceFlingerContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -721,5 +722,58 @@ describe('Plan 15 — IoNetworkWakeupContract', () => {
     expect(contract.networkAttribution?.[0].waitReason).toBe('tcp_recv');
     expect(contract.wakelockBaseline?.[0].wakeCount).toBe(24);
     expect(contract.wakeupEdges?.[0].reason).toMatch(/irq/);
+  });
+});
+
+describe('Plan 16 — GpuSurfaceFlingerContract', () => {
+  it('captures render stages, composition outcomes and vendor imports', () => {
+    const contract: GpuSurfaceFlingerContract = {
+      ...makeSparkProvenance({source: 'gpu-surfaceflinger'}),
+      range: {startNs: 0, endNs: 1_000_000_000},
+      renderStages: [
+        {stage: 'vertex_shading', durNs: 4_000_000, vendorBucket: 'mali_g78'},
+        {stage: 'fragment_shading', durNs: 12_000_000, vendorBucket: 'mali_g78'},
+      ],
+      surfaceFlingerCompositions: [
+        {
+          vsyncId: 1024,
+          ts: 100_000_000,
+          hwcFallback: true,
+          bufferStuffing: false,
+          compositionDurNs: 6_500_000,
+          layerCount: 6,
+        },
+      ],
+      gpuMemory: [
+        {ts: 500_000_000, process: 'composer', bytes: 200_000_000, bucket: 'gl'},
+      ],
+      vendorProfilerImports: [
+        {
+          kind: 'agi',
+          artifactId: 'art-agi-1',
+          range: {startNs: 0, endNs: 1_000_000_000},
+          summary: 'AGI counters captured.',
+        },
+      ],
+      surfaceFlingerLatency: {
+        layerName: 'com.example.app/MainActivity',
+        framesAnalyzed: 600,
+        p95DesiredPresentNs: 16_667_000,
+        droppedFrames: 12,
+      },
+      coverage: [
+        {sparkId: 14, planId: '16', status: 'scaffolded'},
+        {sparkId: 19, planId: '16', status: 'scaffolded'},
+        {sparkId: 46, planId: '16', status: 'scaffolded'},
+        {sparkId: 65, planId: '16', status: 'scaffolded'},
+        {sparkId: 66, planId: '16', status: 'scaffolded'},
+        {sparkId: 106, planId: '16', status: 'scaffolded'},
+        {sparkId: 107, planId: '16', status: 'scaffolded'},
+      ],
+    };
+    expect(contract.renderStages?.[1].vendorBucket).toBe('mali_g78');
+    expect(contract.surfaceFlingerCompositions?.[0].hwcFallback).toBe(true);
+    expect(contract.vendorProfilerImports?.[0].kind).toBe('agi');
+    expect(contract.surfaceFlingerLatency?.droppedFrames).toBe(12);
   });
 });

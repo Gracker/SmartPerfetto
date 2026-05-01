@@ -917,6 +917,79 @@ export interface IoNetworkWakeupContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 16 — GPU, SurfaceFlinger, Composition Root Cause
+//          (Spark #14, #19, #46, #65, #66, #106, #107)
+// =============================================================================
+
+/** GPU render-stage breakdown row (Spark #14). */
+export interface GpuRenderStage {
+  /** Stage name (`vertex_shading`, `fragment_shading`, `compute`, …). */
+  stage: string;
+  /** Aggregated duration on the GPU in ns. */
+  durNs: number;
+  /** Optional process attribution. */
+  process?: string;
+  /** Vendor-specific bucket (Mali / Adreno / PowerVR). */
+  vendorBucket?: string;
+}
+
+/** SurfaceFlinger composition outcome row. */
+export interface SurfaceFlingerComposition {
+  vsyncId: number;
+  ts: number;
+  /** Whether HWC took the layer or composition fell back to GPU. */
+  hwcFallback?: boolean;
+  /** Whether buffer-stuffing was detected. */
+  bufferStuffing?: boolean;
+  /** Total composition duration on SF main thread (ns). */
+  compositionDurNs?: number;
+  /** Number of layers composited. */
+  layerCount?: number;
+}
+
+/** GPU memory snapshot (Spark #14). */
+export interface GpuMemorySnapshot {
+  ts: number;
+  process?: string;
+  bytes: number;
+  bucket?: string;
+}
+
+/** Vendor profiler import (Spark #65, #66, #106, #107). */
+export interface GpuProfilerImport {
+  /** Source kind: AGI / Mali / Snapdragon / PowerVR / GameBench. */
+  kind: 'agi' | 'mali' | 'snapdragon' | 'powervr' | 'gamebench' | string;
+  artifactId?: string;
+  /** Time window covered by the import. */
+  range?: NsTimeRange;
+  /** Brief summary string. */
+  summary?: string;
+}
+
+/**
+ * GpuSurfaceFlingerContract (Plan 16)
+ *
+ * Joint root-cause contract for GPU + SurfaceFlinger + composition. Skills
+ * fill in only the facets they trust; the remainder must use
+ * `unsupportedReason` rather than zero-fill.
+ */
+export interface GpuSurfaceFlingerContract extends SparkProvenance {
+  range: NsTimeRange;
+  renderStages?: GpuRenderStage[];
+  surfaceFlingerCompositions?: SurfaceFlingerComposition[];
+  gpuMemory?: GpuMemorySnapshot[];
+  vendorProfilerImports?: GpuProfilerImport[];
+  /** Latency snapshot from `dumpsys SurfaceFlinger --latency` (Spark #46). */
+  surfaceFlingerLatency?: {
+    layerName: string;
+    framesAnalyzed: number;
+    p95DesiredPresentNs: number;
+    droppedFrames: number;
+  };
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
