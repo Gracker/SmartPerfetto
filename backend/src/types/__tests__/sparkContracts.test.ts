@@ -9,6 +9,7 @@ import {
   type StdlibSkillCoverageContract,
   type TraceSummaryV2Contract,
   type SmartPerfettoSqlPackageContract,
+  type ArtifactSchemaContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -173,5 +174,57 @@ describe('Plan 03 — SmartPerfettoSqlPackageContract', () => {
     expect(contract.symbols).toHaveLength(2);
     expect(contract.symbols[0].dependencies).toContain('android.frames.timeline');
     expect(contract.bootSnippet).toMatch(/INCLUDE PERFETTO MODULE/);
+  });
+});
+
+describe('Plan 04 — ArtifactSchemaContract', () => {
+  it('records compression strategy with full provenance', () => {
+    const contract: ArtifactSchemaContract = {
+      ...makeSparkProvenance({source: 'artifact-schema'}),
+      artifactId: 'art-42',
+      columns: [
+        {name: 'frame_id', type: 'number', source: 'frame_timeline'},
+        {name: 'dur_ns', type: 'duration', unit: 'ns', source: 'frame_timeline'},
+        {name: 'jank_type', type: 'enum', source: 'frame_timeline'},
+      ],
+      compression: {
+        strategy: 'top_k',
+        originalRowCount: 5000,
+        compressedRowCount: 50,
+        ratio: 0.01,
+        topK: 50,
+      },
+      rankBy: 'dur_ns',
+      coverage: [
+        {sparkId: 24, planId: '04', status: 'scaffolded'},
+        {sparkId: 25, planId: '04', status: 'scaffolded'},
+        {sparkId: 26, planId: '04', status: 'scaffolded'},
+        {sparkId: 28, planId: '04', status: 'scaffolded'},
+      ],
+    };
+    expect(contract.compression.strategy).toBe('top_k');
+    expect(contract.compression.ratio).toBeCloseTo(0.01);
+    expect(contract.columns[1].unit).toBe('ns');
+  });
+
+  it('preserves CUJ window when strategy is cuj_window', () => {
+    const contract: ArtifactSchemaContract = {
+      ...makeSparkProvenance({source: 'artifact-schema'}),
+      artifactId: 'art-9',
+      columns: [{name: 'ts', type: 'timestamp', unit: 'ns'}],
+      compression: {
+        strategy: 'cuj_window',
+        originalRowCount: 100000,
+        compressedRowCount: 1200,
+        ratio: 0.012,
+        window: {startNs: 1_000_000_000, endNs: 3_000_000_000},
+      },
+      range: {startNs: 1_000_000_000, endNs: 3_000_000_000},
+      coverage: [{sparkId: 24, planId: '04', status: 'scaffolded'}],
+    };
+    expect(contract.compression.window).toEqual({
+      startNs: 1_000_000_000,
+      endNs: 3_000_000_000,
+    });
   });
 });

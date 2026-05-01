@@ -273,6 +273,74 @@ export interface SmartPerfettoSqlPackageContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 04 — Artifact Schema, Hierarchical Summarization, Compression
+//          (Spark #24, #25, #26, #28)
+// =============================================================================
+
+/** Sampling/clustering strategy applied to a compressed artifact. */
+export type ArtifactSamplingStrategy =
+  | 'full'
+  | 'top_k'
+  | 'p95_tail'
+  | 'p99_tail'
+  | 'random'
+  | 'cluster_representative'
+  | 'cuj_window';
+
+/** Per-column metadata required for schema-aware JSON output (Spark #28). */
+export interface ArtifactColumnSpec {
+  name: string;
+  /** Semantic type aligned with `dataContract.ColumnType`. */
+  type: string;
+  /** Unit string (`ns`, `ms`, `bytes`, `count`, `percent`). */
+  unit?: string;
+  /** Where the value comes from (skill id, stdlib symbol, computation). */
+  source?: string;
+  /** Free-form note about sampling or clustering applied to the column. */
+  samplingNote?: string;
+}
+
+/** Compression record so consumers can decide whether to fetch full payload. */
+export interface ArtifactCompressionInfo {
+  strategy: ArtifactSamplingStrategy;
+  /** Original (pre-compression) row count. */
+  originalRowCount: number;
+  /** Row count after compression. */
+  compressedRowCount: number;
+  /** Effective sampling ratio (compressedRowCount / originalRowCount). */
+  ratio: number;
+  /** Window applied for `cuj_window` strategy. */
+  window?: NsTimeRange;
+  /** Top-K bound for `top_k` strategy. */
+  topK?: number;
+  /** Random seed for reproducibility on `random` strategy. */
+  randomSeed?: number;
+}
+
+/**
+ * ArtifactSchemaContract (Plan 04)
+ *
+ * Sidecar metadata attached to entries in the artifact store. The full data
+ * remains in `ArtifactStore.fetch(id, 'full')`; this contract describes the
+ * compressed view emitted to the LLM context window.
+ */
+export interface ArtifactSchemaContract extends SparkProvenance {
+  /** Pointer to the artifact in `ArtifactStore`. */
+  artifactId: string;
+  /** Column-level schema; required for AI quoting (Spark #28). */
+  columns: ArtifactColumnSpec[];
+  /** Compression record. `strategy: 'full'` means no compression applied. */
+  compression: ArtifactCompressionInfo;
+  /** Time range covered by the artifact (CUJ window). */
+  range?: NsTimeRange;
+  /** When `top_k` or `p95_tail`, the metric used to rank rows. */
+  rankBy?: string;
+  /** Cluster representatives chosen by `cluster_representative` strategy. */
+  clusterRepresentatives?: number[];
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
