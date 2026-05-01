@@ -6,6 +6,7 @@ import type { ArchitectureInfo } from '../agent/detectors/types';
 import type { Finding } from '../agent/types';
 import type { DetectedFocusApp } from './focusAppDetector';
 import type { SceneType } from './sceneClassifier';
+import type { OutputLanguage } from './outputLanguage';
 
 // =============================================================================
 // Query Complexity Classification
@@ -83,6 +84,8 @@ export interface ClaudeAnalysisContext {
   comparison?: ComparisonContext;
   /** Trace data completeness diagnosis — injected at session init, informs data gap guidance */
   traceCompleteness?: TraceCompleteness;
+  /** User-facing output language for answers, reports, and insight text. */
+  outputLanguage?: OutputLanguage;
 }
 
 // =============================================================================

@@ -29,6 +29,7 @@ import {
   inferColumnDefinition,
 } from '../types/dataContract';
 import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from './reportCausalMapAssets';
+import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 
 export interface ReportData {
   sessionId: string;
@@ -145,6 +146,30 @@ export class HTMLReportGenerator {
   // Monotonic counter to ensure DOM ids are unique within a generated report.
   // Using Date.now() is not reliable because multiple sections can be rendered within the same millisecond.
   private domIdSeq = 0;
+
+  private getOutputLanguage(): OutputLanguage {
+    return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+  }
+
+  private getReportLocale(language: OutputLanguage): string {
+    return language === 'en' ? 'en-US' : 'zh-CN';
+  }
+
+  private getLocalizedCausalMapScript(language: OutputLanguage): string {
+    if (language !== 'en') return REPORT_CAUSAL_MAP_SCRIPT;
+    return REPORT_CAUSAL_MAP_SCRIPT
+      .replace("'其他节点'", "'Other Nodes'")
+      .replace("'跨链路影响关系'", "'Cross-lane Impact Relationships'")
+      .replace("'因果链流程图'", "'Causal Chain Flow'")
+      .replace(
+        "'实线表示主链路推进，虚线关系会单独列出，便于看清跨模块影响。'",
+        "'Solid lines show the main path; dashed relationships are listed separately to make cross-module impact easier to inspect.'",
+      )
+      .replace("' 个节点 · '", "' nodes · '")
+      .replace("' 条链路'", "' paths'")
+      .replace("'这里专门展示资源竞争、旁路阻塞、跨链路影响。'", "'This section highlights resource contention, side-channel blocking, and cross-path impact.'")
+      .replace("'查看原始 Mermaid 图'", "'View original Mermaid diagram'");
+  }
 
   // Shared markdown-it instance for report rendering.
   // Uses html:false for XSS safety, breaks:true for \n → <br>, with mermaid fence handler.
@@ -1646,18 +1671,22 @@ export class HTMLReportGenerator {
    * This method uses the column definitions from the envelope's display config
    * to render the table with proper formatting and styling.
    */
-  private generateTableFromEnvelope(envelope: DataEnvelope, traceStartNs: bigint | null): string {
+  private generateTableFromEnvelope(
+    envelope: DataEnvelope,
+    traceStartNs: bigint | null,
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     const { data, display } = envelope;
 
     // Ensure we have table data
     if (!data.columns || !data.rows || data.rows.length === 0) {
-      return '<div class="empty-state">无数据</div>';
+      return `<div class="empty-state">${localize(outputLanguage, '无数据', 'No data')}</div>`;
     }
 
     // 【FIX】Check for expandableData and use expandable rendering if present
     // This enables click-to-expand rows in Agent-Driven HTML reports (like frontend does)
     if (data.expandableData && data.expandableData.length > 0) {
-      return this.generateExpandableTableFromEnvelope(envelope, traceStartNs);
+      return this.generateExpandableTableFromEnvelope(envelope, traceStartNs, outputLanguage);
     }
 
     // Build column definitions (use explicit ones from display, or infer from column names)
@@ -1740,7 +1769,7 @@ export class HTMLReportGenerator {
         </table>
         ${hasMore ? `
           <div class="table-rows-more" onclick="toggleTableRows(this, ${totalRows - defaultVisibleRows})">
-            <span>▼ 显示更多 ${totalRows - defaultVisibleRows} 条记录</span>
+            <span>▼ ${localize(outputLanguage, `显示更多 ${totalRows - defaultVisibleRows} 条记录`, `Show ${totalRows - defaultVisibleRows} more rows`)}</span>
           </div>
         ` : ''}
       </div>
@@ -1751,12 +1780,16 @@ export class HTMLReportGenerator {
    * Generate expandable table from DataEnvelope.expandableData while respecting display columns/metadata.
    * This matches frontend behavior: show only visible columns, expand rows to show deep sections.
    */
-  private generateExpandableTableFromEnvelope(envelope: DataEnvelope, traceStartNs: bigint | null): string {
+  private generateExpandableTableFromEnvelope(
+    envelope: DataEnvelope,
+    traceStartNs: bigint | null,
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     const { data, display } = envelope;
-    const title = display.title || envelope.meta?.stepId || envelope.meta?.source || '数据表';
+    const title = display.title || envelope.meta?.stepId || envelope.meta?.source || localize(outputLanguage, '数据表', 'Data Table');
 
     if (!data.columns || !data.rows || !data.expandableData) {
-      return '<div class="empty-state">无数据</div>';
+      return `<div class="empty-state">${localize(outputLanguage, '无数据', 'No data')}</div>`;
     }
 
     const columns = data.columns;
@@ -1805,7 +1838,7 @@ export class HTMLReportGenerator {
         <div class="header" style="background: #f8fafc; padding: 16px; border-bottom: 1px solid var(--border-color);">
           <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: var(--text-main); display: flex; align-items: center;">
             ${this.escapeHtml(title)}
-            <span class="badge" style="margin-left: 12px; font-weight: normal; font-size: 12px; background: #e0e7ff; color: #4338ca;">${rows.length} 条记录</span>
+            <span class="badge" style="margin-left: 12px; font-weight: normal; font-size: 12px; background: #e0e7ff; color: #4338ca;">${localize(outputLanguage, `${rows.length} 条记录`, `${rows.length} rows`)}</span>
           </h3>
         </div>
 
@@ -1819,7 +1852,7 @@ export class HTMLReportGenerator {
                   const tooltip = colDef.tooltip ? ` title="${this.escapeHtml(colDef.tooltip)}"` : '';
                   return `<th${tooltip}>${this.escapeHtml(label)}</th>`;
                 }).join('')}
-                <th style="width: 80px;">详情</th>
+                <th style="width: 80px;">${localize(outputLanguage, '详情', 'Details')}</th>
               </tr>
             </thead>
             <tbody>
@@ -1827,7 +1860,7 @@ export class HTMLReportGenerator {
                 const exp = expandableData[idx];
                 const hasDetails = !!(exp && exp.result && exp.result.sections && Object.keys(exp.result.sections).length > 0);
                 const itemData = exp && exp.item ? exp.item : rowObjects[idx];
-                const detailData = exp ? { ...exp, item: itemData } : { item: itemData, result: { success: false, error: '无详情数据' } };
+                const detailData = exp ? { ...exp, item: itemData } : { item: itemData, result: { success: false, error: localize(outputLanguage, '无详情数据', 'No detail data') } };
                 const rowId = `envelope_row_${this.domIdSeq++}`;
                 const totalColumns = visibleColumnDefs.length + 1; // +1 for 详情列
 
@@ -1841,7 +1874,7 @@ export class HTMLReportGenerator {
                     }).join('')}
                     <td>
                       <button class="expand-btn" onclick="toggleExpandableRow('${rowId}')" style="background: none; border: none; cursor: pointer; color: #4338ca; font-size: 12px; font-weight: 600; padding: 4px 8px;">
-                        <span class="expand-icon">▼</span> ${hasDetails ? '展开' : '详情'}
+                        <span class="expand-icon">▼</span> ${hasDetails ? localize(outputLanguage, '展开', 'Expand') : localize(outputLanguage, '详情', 'Details')}
                       </button>
                     </td>
                   </tr>
@@ -4009,6 +4042,9 @@ export class HTMLReportGenerator {
    */
   generateAgentDrivenHTML(data: AgentDrivenReportData): string {
     const { traceId, query, result, hypotheses, dialogue, conversationTimeline, timestamp, queryHistory, conclusionHistory } = data;
+    const outputLanguage = this.getOutputLanguage();
+    const htmlLang = outputLanguage === 'en' ? 'en' : 'zh-CN';
+    const locale = this.getReportLocale(outputLanguage);
     const dataEnvelopes = this.prepareAgentDrivenEnvelopes(data.dataEnvelopes || []);
     const agentResponses = data.agentResponses || [];
     const traceStartNs = data.traceStartNs ? this.parseNs(data.traceStartNs) : null;
@@ -4018,11 +4054,11 @@ export class HTMLReportGenerator {
     );
 
     return `<!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="${htmlLang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SmartPerfetto Agent-Driven 分析报告 - ${new Date(timestamp).toLocaleString('zh-CN')}</title>
+  <title>${localize(outputLanguage, 'SmartPerfetto Agent-Driven 分析报告', 'SmartPerfetto Agent-Driven Analysis Report')} - ${new Date(timestamp).toLocaleString(locale)}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -4253,54 +4289,54 @@ export class HTMLReportGenerator {
 <body>
   <div class="container">
     <div class="header">
-      <h1>🤖 SmartPerfetto Agent-Driven 分析报告</h1>
+      <h1>🤖 ${localize(outputLanguage, 'SmartPerfetto Agent-Driven 分析报告', 'SmartPerfetto Agent-Driven Analysis Report')}</h1>
 	      <div class="meta">
 	        <span>📁 Trace ID: ${this.escapeHtml(traceId)}</span>
-	        <span>⏱️ ${new Date(timestamp).toLocaleString('zh-CN')}</span>
+	        <span>⏱️ ${new Date(timestamp).toLocaleString(locale)}</span>
 	        <span class="badge badge-agent">Agent-Driven Architecture</span>
 	      </div>
 	      <div class="report-actions">
-	        <button class="report-action-btn" type="button" onclick="saveSmartPerfettoReport()">💾 保存网页文件</button>
+	        <button class="report-action-btn" type="button" onclick="saveSmartPerfettoReport()">💾 ${localize(outputLanguage, '保存网页文件', 'Save HTML Report')}</button>
 	        <span class="report-save-status" id="report-save-status"></span>
 	      </div>
 	    </div>
 
     <div class="section">
-      <h2 class="section-title">执行概览</h2>
+      <h2 class="section-title">${localize(outputLanguage, '执行概览', 'Execution Overview')}</h2>
       <div class="metrics">
         <div class="metric-card">
           <div class="value">${(result.totalDurationMs / 1000).toFixed(1)}s</div>
-          <div class="label">总耗时</div>
+          <div class="label">${localize(outputLanguage, '总耗时', 'Total Duration')}</div>
         </div>
         <div class="metric-card">
           <div class="value">${(result.confidence * 100).toFixed(0)}%</div>
-          <div class="label">置信度</div>
+          <div class="label">${localize(outputLanguage, '置信度', 'Confidence')}</div>
         </div>
         <div class="metric-card">
           <div class="value">${data.conversationTurns ?? result.rounds}</div>
-          <div class="label">对话轮次</div>
+          <div class="label">${localize(outputLanguage, '对话轮次', 'Conversation Turns')}</div>
         </div>
         <div class="metric-card">
           <div class="value">${result.findings.length}</div>
-          <div class="label">发现问题</div>
+          <div class="label">${localize(outputLanguage, '发现问题', 'Findings')}</div>
         </div>
         <div class="metric-card">
           <div class="value">${hypotheses.length}</div>
-          <div class="label">假设数</div>
+          <div class="label">${localize(outputLanguage, '假设数', 'Hypotheses')}</div>
         </div>
         <div class="metric-card">
           <div class="value">${dataEnvelopes.length}</div>
-          <div class="label">数据表</div>
+          <div class="label">${localize(outputLanguage, '数据表', 'Data Tables')}</div>
         </div>
       </div>
     </div>
 
     <div class="section">
-      <h2 class="section-title">用户问题</h2>
+      <h2 class="section-title">${localize(outputLanguage, '用户问题', 'User Question')}</h2>
       ${(queryHistory && queryHistory.length > 1)
         ? queryHistory.map(qh => `
       <div class="hypothesis-card" style="margin-bottom: 8px;">
-        <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">第 ${qh.turn} 轮</div>
+        <div style="font-size: 12px; color: #6b7280; margin-bottom: 4px;">${localize(outputLanguage, `第 ${qh.turn} 轮`, `Turn ${qh.turn}`)}</div>
         <div class="hypothesis-title" style="color: #166534;">${this.escapeHtml(qh.query)}</div>
       </div>`).join('')
         : `
@@ -4309,26 +4345,26 @@ export class HTMLReportGenerator {
       </div>`}
     </div>
 
-    ${this.renderHypothesesSection(hypotheses)}
+    ${this.renderHypothesesSection(hypotheses, outputLanguage)}
 
-    ${this.renderAnalysisPlanSection(data.analysisPlan)}
+    ${this.renderAnalysisPlanSection(data.analysisPlan, outputLanguage)}
 
-    ${this.renderAnalysisNotesSection(data.analysisNotes)}
+    ${this.renderAnalysisNotesSection(data.analysisNotes, outputLanguage)}
 
-    ${this.renderUncertaintyFlagsSection(data.uncertaintyFlags)}
+    ${this.renderUncertaintyFlagsSection(data.uncertaintyFlags, outputLanguage)}
 
-    ${this.renderConversationTimelineSection(normalizedConversationTimeline)}
+    ${this.renderConversationTimelineSection(normalizedConversationTimeline, outputLanguage)}
 
-    ${this.renderDataEnvelopesSection(dataEnvelopes, traceStartNs)}
+    ${this.renderDataEnvelopesSection(dataEnvelopes, traceStartNs, outputLanguage)}
 
     ${this.renderFindingsSection(result.findings, dataEnvelopes)}
 
     <div class="section">
-      <h2 class="section-title">分析结论</h2>
+      <h2 class="section-title">${localize(outputLanguage, '分析结论', 'Analysis Conclusion')}</h2>
       ${(conclusionHistory && conclusionHistory.length > 1)
         ? conclusionHistory.map(ch => `
       <div style="margin-bottom: 16px;">
-        <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; padding: 4px 8px; background: #f3f4f6; border-radius: 4px; display: inline-block;">第 ${ch.turn} 轮 · 置信度 ${(ch.confidence * 100).toFixed(0)}%</div>
+        <div style="font-size: 13px; font-weight: 600; color: #374151; margin-bottom: 6px; padding: 4px 8px; background: #f3f4f6; border-radius: 4px; display: inline-block;">${localize(outputLanguage, `第 ${ch.turn} 轮 · 置信度 ${(ch.confidence * 100).toFixed(0)}%`, `Turn ${ch.turn} · Confidence ${(ch.confidence * 100).toFixed(0)}%`)}</div>
         <div class="answer-box">
           ${this.formatAnswer(ch.conclusion)}
         </div>
@@ -4340,7 +4376,7 @@ export class HTMLReportGenerator {
     </div>
 
     <div class="footer">
-      <p>由 SmartPerfetto Agent-Driven Orchestrator 生成</p>
+      <p>${localize(outputLanguage, '由 SmartPerfetto Agent-Driven Orchestrator 生成', 'Generated by SmartPerfetto Agent-Driven Orchestrator')}</p>
       <p style="margin-top: 5px; font-size: 12px;">Powered by Claude Agent SDK + MCP Tools</p>
     </div>
 	  </div>
@@ -4356,17 +4392,17 @@ export class HTMLReportGenerator {
 	      var exportUrl = url.pathname.replace(/\\/$/, '') + '/export';
 
 	      try {
-	        setStatus('正在准备保存...');
+	        setStatus('${localize(outputLanguage, '正在准备保存...', 'Preparing save...')}');
 	        var response = await fetch(exportUrl, {cache: 'no-store'});
 	        if (!response.ok) {
-	          throw new Error('导出失败: HTTP ' + response.status);
+	          throw new Error('${localize(outputLanguage, '导出失败', 'Export failed')}: HTTP ' + response.status);
 	        }
 	        var blob = await response.blob();
 	        if (window.showSaveFilePicker) {
 	          var handle = await window.showSaveFilePicker({
 	            suggestedName: suggestedName,
 	            types: [{
-	              description: 'HTML 网页报告',
+	              description: '${localize(outputLanguage, 'HTML 网页报告', 'HTML report')}',
 	              accept: {'text/html': ['.html', '.htm']},
 	            }],
 	          });
@@ -4383,16 +4419,16 @@ export class HTMLReportGenerator {
 	          document.body.removeChild(a);
 	          URL.revokeObjectURL(objectUrl);
 	        }
-	        setStatus('已保存 ' + suggestedName);
+	        setStatus('${localize(outputLanguage, '已保存 ', 'Saved ')}' + suggestedName);
 	        setTimeout(function() { setStatus(''); }, 3500);
 	      } catch (err) {
 	        if (err && err.name === 'AbortError') {
-	          setStatus('已取消保存');
+	          setStatus('${localize(outputLanguage, '已取消保存', 'Save canceled')}');
 	          setTimeout(function() { setStatus(''); }, 2000);
 	          return;
 	        }
-	        console.error('[SmartPerfetto] 保存报告失败:', err);
-	        setStatus((err && err.message) ? err.message : '保存失败');
+	        console.error('[SmartPerfetto] ${localize(outputLanguage, '保存报告失败', 'Failed to save report')}:', err);
+	        setStatus((err && err.message) ? err.message : '${localize(outputLanguage, '保存失败', 'Save failed')}');
 	      }
 	    }
 
@@ -4407,9 +4443,9 @@ export class HTMLReportGenerator {
         });
         var span = btn.querySelector('span');
         if (isHidden) {
-          span.innerHTML = '▲ 收起更多';
+          span.innerHTML = '▲ ${localize(outputLanguage, '收起更多', 'Collapse rows')}';
         } else {
-          span.innerHTML = '▼ 显示更多 ' + hiddenCount + ' 条记录';
+          span.innerHTML = '▼ ${localize(outputLanguage, '显示更多', 'Show')} ' + hiddenCount + ' ${localize(outputLanguage, '条记录', 'more rows')}';
         }
       }
     }
@@ -4437,8 +4473,8 @@ export class HTMLReportGenerator {
 
         if (btn) {
           btn.innerHTML = isHidden
-            ? '<span class="expand-icon">▲</span> 收起'
-            : '<span class="expand-icon">▼</span> 展开';
+            ? '<span class="expand-icon">▲</span> ${localize(outputLanguage, '收起', 'Collapse')}'
+            : '<span class="expand-icon">▼</span> ${localize(outputLanguage, '展开', 'Expand')}';
         }
       }
     }
@@ -4457,8 +4493,8 @@ export class HTMLReportGenerator {
 
       buttons.forEach(function(btn) {
         btn.innerHTML = expand
-          ? '<span class="expand-icon">▲</span> 收起'
-          : '<span class="expand-icon">▼</span> 展开';
+          ? '<span class="expand-icon">▲</span> ${localize(outputLanguage, '收起', 'Collapse')}'
+          : '<span class="expand-icon">▼</span> ${localize(outputLanguage, '展开', 'Expand')}';
       });
     }
 
@@ -4505,7 +4541,7 @@ export class HTMLReportGenerator {
       });
 
       btn.setAttribute('data-expanded', expanding ? 'true' : 'false');
-      btn.textContent = expanding ? '收起' : '展开全部';
+      btn.textContent = expanding ? '${localize(outputLanguage, '收起', 'Collapse')}' : '${localize(outputLanguage, '展开全部', 'Expand all')}';
 
       var activeFilterBtn = section.querySelector('.timeline-filter-btn.active');
       var phase = activeFilterBtn ? (activeFilterBtn.getAttribute('data-phase') || 'all') : 'all';
@@ -4514,7 +4550,7 @@ export class HTMLReportGenerator {
   </script>
   <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
   <script>
-    ${REPORT_CAUSAL_MAP_SCRIPT}
+    ${this.getLocalizedCausalMapScript(outputLanguage)}
   </script>
 </body>
 </html>`;
@@ -4586,13 +4622,17 @@ export class HTMLReportGenerator {
   /**
    * Render the DataEnvelopes section with all collected SQL result tables
    */
-  private renderDataEnvelopesSection(envelopes: DataEnvelope[], traceStartNs: bigint | null): string {
+  private renderDataEnvelopesSection(
+    envelopes: DataEnvelope[],
+    traceStartNs: bigint | null,
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     if (!envelopes || envelopes.length === 0) return '';
 
     return `
     <div class="section">
-      <h2 class="section-title">📊 数据详情</h2>
-      ${envelopes.map((envelope, index) => this.renderSingleEnvelope(envelope, index, traceStartNs)).join('')}
+      <h2 class="section-title">📊 ${localize(outputLanguage, '数据详情', 'Data Details')}</h2>
+      ${envelopes.map((envelope, index) => this.renderSingleEnvelope(envelope, index, traceStartNs, outputLanguage)).join('')}
     </div>
     `;
   }
@@ -4600,10 +4640,15 @@ export class HTMLReportGenerator {
   /**
    * Render a single DataEnvelope as a card with table
    */
-  private renderSingleEnvelope(envelope: DataEnvelope, index: number, traceStartNs: bigint | null): string {
+  private renderSingleEnvelope(
+    envelope: DataEnvelope,
+    index: number,
+    traceStartNs: bigint | null,
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     if (!envelope || !envelope.data) return '';
 
-    const title = envelope.display?.title || `数据表 ${index + 1}`;
+    const title = envelope.display?.title || localize(outputLanguage, `数据表 ${index + 1}`, `Data Table ${index + 1}`);
     const source = envelope.meta?.source || '';
     const skillId = envelope.meta?.skillId || '';
     const stepId = envelope.meta?.stepId || '';
@@ -4613,7 +4658,7 @@ export class HTMLReportGenerator {
     if (stepId) metaParts.push(this.escapeHtml(stepId));
     if (source && source !== skillId) metaParts.push(this.escapeHtml(source));
 
-    const tableHtml = this.generateTableFromEnvelope(envelope, traceStartNs);
+    const tableHtml = this.generateTableFromEnvelope(envelope, traceStartNs, outputLanguage);
 
     return `
       <div class="envelope-card">
@@ -4729,12 +4774,15 @@ export class HTMLReportGenerator {
   /**
    * P1-R3: Render analysis plan section from agentv3 submit_plan data
    */
-  private renderAnalysisPlanSection(plan?: AgentDrivenReportData['analysisPlan']): string {
+  private renderAnalysisPlanSection(
+    plan?: AgentDrivenReportData['analysisPlan'],
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     if (!plan || !plan.phases || plan.phases.length === 0) return '';
     return `
     <div class="section" style="background: #fafafa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
       <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-        <span style="color: #2563eb;">📋</span> 分析计划
+        <span style="color: #2563eb;">📋</span> ${localize(outputLanguage, '分析计划', 'Analysis Plan')}
       </h2>
       <div style="display: flex; flex-direction: column; gap: 6px;">
         ${plan.phases.map(p => {
@@ -4747,19 +4795,22 @@ export class HTMLReportGenerator {
           </div>`;
         }).join('')}
       </div>
-      <div style="margin-top: 8px; font-size: 13px; color: #6b7280;">成功标准: ${this.escapeHtml(plan.successCriteria)}</div>
+      <div style="margin-top: 8px; font-size: 13px; color: #6b7280;">${localize(outputLanguage, '成功标准', 'Success Criteria')}: ${this.escapeHtml(plan.successCriteria)}</div>
     </div>`;
   }
 
   /**
    * P1-R3: Render analysis notes from agentv3 write_analysis_note data
    */
-  private renderAnalysisNotesSection(notes?: AgentDrivenReportData['analysisNotes']): string {
+  private renderAnalysisNotesSection(
+    notes?: AgentDrivenReportData['analysisNotes'],
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     if (!notes || notes.length === 0) return '';
     return `
     <div class="section" style="background: #fafafa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
       <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-        <span style="color: #d97706;">📝</span> 分析笔记
+        <span style="color: #d97706;">📝</span> ${localize(outputLanguage, '分析笔记', 'Analysis Notes')}
         <span style="font-size: 12px; color: #666; font-weight: normal;">(${notes.length})</span>
       </h2>
       <div style="display: flex; flex-direction: column; gap: 6px;">
@@ -4775,20 +4826,23 @@ export class HTMLReportGenerator {
   /**
    * P1-R3: Render uncertainty flags from agentv3 flag_uncertainty data
    */
-  private renderUncertaintyFlagsSection(flags?: AgentDrivenReportData['uncertaintyFlags']): string {
+  private renderUncertaintyFlagsSection(
+    flags?: AgentDrivenReportData['uncertaintyFlags'],
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     if (!flags || flags.length === 0) return '';
     return `
     <div class="section" style="background: #fffbeb; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
       <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-        <span style="color: #f59e0b;">⚠</span> 不确定性标记
+        <span style="color: #f59e0b;">⚠</span> ${localize(outputLanguage, '不确定性标记', 'Uncertainty Flags')}
         <span style="font-size: 12px; color: #666; font-weight: normal;">(${flags.length})</span>
       </h2>
       <div style="display: flex; flex-direction: column; gap: 6px;">
         ${flags.map(f => `
           <div style="padding: 8px 12px; background: white; border-radius: 6px; border: 1px solid #fcd34d;">
             <div style="font-weight: 500;">${this.escapeHtml(f.topic)}</div>
-            <div style="font-size: 13px; color: #6b7280; margin-top: 2px;">假设: ${this.escapeHtml(f.assumption)}</div>
-            <div style="font-size: 13px; color: #92400e; margin-top: 2px;">待确认: ${this.escapeHtml(f.question)}</div>
+            <div style="font-size: 13px; color: #6b7280; margin-top: 2px;">${localize(outputLanguage, '假设', 'Assumption')}: ${this.escapeHtml(f.assumption)}</div>
+            <div style="font-size: 13px; color: #92400e; margin-top: 2px;">${localize(outputLanguage, '待确认', 'Question')}: ${this.escapeHtml(f.question)}</div>
           </div>`).join('')}
       </div>
     </div>`;
@@ -4804,7 +4858,7 @@ export class HTMLReportGenerator {
     confidence: number;
     supportingEvidence: any[];
     contradictingEvidence: any[];
-  }>): string {
+  }>, outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE): string {
     if (!hypotheses || hypotheses.length === 0) return '';
 
     // 过滤掉低价值假设（只保留 confirmed 或 confidence >= 0.6 的）
@@ -4817,7 +4871,7 @@ export class HTMLReportGenerator {
     return `
     <div class="section" style="background: #fafafa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
       <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
-        <span style="color: #6366f1;">💡</span> 分析假设
+        <span style="color: #6366f1;">💡</span> ${localize(outputLanguage, '分析假设', 'Analysis Hypotheses')}
         <span style="font-size: 12px; color: #666; font-weight: normal;">(${meaningfulHypotheses.length})</span>
       </h2>
       <div style="display: flex; flex-direction: column; gap: 8px;">
@@ -4928,19 +4982,22 @@ export class HTMLReportGenerator {
     return [...byOrdinal.values()].sort((a, b) => a.ordinal - b.ordinal);
   }
 
-  private getConversationPhaseLabel(phase: 'progress' | 'thinking' | 'tool' | 'result' | 'error'): string {
+  private getConversationPhaseLabel(
+    phase: 'progress' | 'thinking' | 'tool' | 'result' | 'error',
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+  ): string {
     switch (phase) {
       case 'thinking':
-        return '思考';
+        return localize(outputLanguage, '思考', 'Thinking');
       case 'tool':
-        return '工具';
+        return localize(outputLanguage, '工具', 'Tool');
       case 'result':
-        return '结果';
+        return localize(outputLanguage, '结果', 'Result');
       case 'error':
-        return '错误';
+        return localize(outputLanguage, '错误', 'Error');
       case 'progress':
       default:
-        return '进度';
+        return localize(outputLanguage, '进度', 'Progress');
     }
   }
 
@@ -4953,7 +5010,8 @@ export class HTMLReportGenerator {
       text: string;
       timestamp: number;
       sourceEventType?: string;
-    }>
+    }>,
+    outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
   ): string {
     if (!Array.isArray(timeline) || timeline.length === 0) return '';
 
@@ -4963,25 +5021,25 @@ export class HTMLReportGenerator {
 
     return `
     <div class="section" id="${sectionId}">
-      <h2 class="section-title">🧵 对话时间线</h2>
+      <h2 class="section-title">🧵 ${localize(outputLanguage, '对话时间线', 'Conversation Timeline')}</h2>
       <div class="timeline-toolbar">
         <div class="timeline-filters">
-          <button class="timeline-filter-btn active" type="button" data-phase="all" onclick="filterConversationTimeline('${sectionId}', 'all', this)">全部</button>
-          <button class="timeline-filter-btn" type="button" data-phase="progress" onclick="filterConversationTimeline('${sectionId}', 'progress', this)">进度</button>
-          <button class="timeline-filter-btn" type="button" data-phase="thinking" onclick="filterConversationTimeline('${sectionId}', 'thinking', this)">思考</button>
-          <button class="timeline-filter-btn" type="button" data-phase="tool" onclick="filterConversationTimeline('${sectionId}', 'tool', this)">工具</button>
-          <button class="timeline-filter-btn" type="button" data-phase="result" onclick="filterConversationTimeline('${sectionId}', 'result', this)">结果</button>
-          <button class="timeline-filter-btn" type="button" data-phase="error" onclick="filterConversationTimeline('${sectionId}', 'error', this)">错误</button>
+          <button class="timeline-filter-btn active" type="button" data-phase="all" onclick="filterConversationTimeline('${sectionId}', 'all', this)">${localize(outputLanguage, '全部', 'All')}</button>
+          <button class="timeline-filter-btn" type="button" data-phase="progress" onclick="filterConversationTimeline('${sectionId}', 'progress', this)">${localize(outputLanguage, '进度', 'Progress')}</button>
+          <button class="timeline-filter-btn" type="button" data-phase="thinking" onclick="filterConversationTimeline('${sectionId}', 'thinking', this)">${localize(outputLanguage, '思考', 'Thinking')}</button>
+          <button class="timeline-filter-btn" type="button" data-phase="tool" onclick="filterConversationTimeline('${sectionId}', 'tool', this)">${localize(outputLanguage, '工具', 'Tool')}</button>
+          <button class="timeline-filter-btn" type="button" data-phase="result" onclick="filterConversationTimeline('${sectionId}', 'result', this)">${localize(outputLanguage, '结果', 'Result')}</button>
+          <button class="timeline-filter-btn" type="button" data-phase="error" onclick="filterConversationTimeline('${sectionId}', 'error', this)">${localize(outputLanguage, '错误', 'Error')}</button>
         </div>
-        ${shouldCollapse ? `<button class="timeline-collapse-btn" type="button" onclick="toggleConversationTimelineCollapse('${sectionId}', this)">展开全部</button>` : ''}
+        ${shouldCollapse ? `<button class="timeline-collapse-btn" type="button" onclick="toggleConversationTimelineCollapse('${sectionId}', this)">${localize(outputLanguage, '展开全部', 'Expand all')}</button>` : ''}
       </div>
       <div class="timeline-list">
         ${timeline.map((item, idx) => `
           <div class="timeline-item phase-${item.phase}${shouldCollapse && idx >= defaultVisibleCount ? ' timeline-hidden timeline-collapsed' : ''}" data-phase="${this.escapeHtml(item.phase)}" data-collapsed="${shouldCollapse && idx >= defaultVisibleCount ? 'true' : 'false'}">
             <div class="timeline-step">#${item.ordinal}</div>
             <div class="timeline-meta">
-              <span class="timeline-phase">${this.escapeHtml(this.getConversationPhaseLabel(item.phase))}</span>
-              <span class="timeline-role">${this.escapeHtml(item.role === 'system' ? '系统' : '助手')}</span>
+              <span class="timeline-phase">${this.escapeHtml(this.getConversationPhaseLabel(item.phase, outputLanguage))}</span>
+              <span class="timeline-role">${this.escapeHtml(item.role === 'system' ? localize(outputLanguage, '系统', 'System') : localize(outputLanguage, '助手', 'Assistant'))}</span>
             </div>
             <div class="timeline-text">${this.escapeHtml(item.text)}</div>
           </div>

@@ -8,6 +8,7 @@ import type { ArchitectureInfo } from '../agent/detectors/types';
 import type { DetectedFocusApp } from './focusAppDetector';
 import { formatDurationNs } from './focusAppDetector';
 import { getStrategyContent, loadPromptTemplate, loadSelectionTemplate, renderTemplate } from './strategyLoader';
+import { DEFAULT_OUTPUT_LANGUAGE, type OutputLanguage } from './outputLanguage';
 
 /**
  * Rough token estimate for mixed Chinese/English text.
@@ -29,6 +30,13 @@ function estimateTokens(text: string): number {
 
 /** Maximum system prompt token budget. Sections are progressively dropped if exceeded. */
 const MAX_PROMPT_TOKENS = 4500;
+
+function buildOutputLanguageSection(language: OutputLanguage): string {
+  const templateName = language === 'en' ? 'prompt-language-en' : 'prompt-language-zh';
+  return loadPromptTemplate(templateName)
+    ?? loadPromptTemplate('prompt-language-zh')
+    ?? '';
+}
 
 /**
  * Build architecture description section. Used by both full and quick prompts.
@@ -322,8 +330,13 @@ export function buildSystemPromptParts(
   };
 
   // ── Tier 1: STATIC ───────────────────────────────────────────────────────
+  const outputLanguage = context.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
+
   const roleContent = loadPromptTemplate('prompt-role');
   push(1, 'role', roleContent ?? '# 角色\n\n你是 SmartPerfetto 的 Android 性能分析专家。');
+
+  const outputLanguageSection = buildOutputLanguageSection(outputLanguage);
+  if (outputLanguageSection) push(1, 'output_language', outputLanguageSection);
 
   const outputFormat = loadPromptTemplate('prompt-output-format');
   if (outputFormat) push(1, 'output_format', outputFormat);
@@ -543,11 +556,14 @@ export function buildQuickSystemPrompt(opts: {
   focusApps?: DetectedFocusApp[];
   focusMethod?: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none';
   selectionContext?: SelectionContext;
+  outputLanguage?: OutputLanguage;
 }): string {
   const template = loadPromptTemplate('prompt-quick');
   if (!template) {
     return '你是 Android 性能 trace 分析专家。请简洁直接地回答用户的问题。';
   }
+
+  const outputLanguageSection = buildOutputLanguageSection(opts.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE);
 
   const architectureContext = opts.architecture
     ? buildArchitectureSection(opts.architecture, opts.packageName, false)
@@ -561,5 +577,5 @@ export function buildQuickSystemPrompt(opts: {
     ? buildSelectionContextSection(opts.selectionContext)
     : '';
 
-  return renderTemplate(template, { architectureContext, focusAppContext, selectionSection });
+  return renderTemplate(template, { outputLanguageSection, architectureContext, focusAppContext, selectionSection });
 }

@@ -30,6 +30,7 @@ import { matchPhaseHintForNextPhase } from './phaseHintMatcher';
 import { buildActivePhaseReminder } from './activePhaseReminder';
 import { validatePlanAgainstSceneTemplate, MIN_WAIVER_REASON_CHARS } from './scenePlanTemplates';
 import type { ArtifactStore } from './artifactStore';
+import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 
 /** MCP tool name prefix — derived from the server name 'smartperfetto'.
  * Shared constant to avoid duplication across runtime, MCP server, and agent definitions. */
@@ -93,7 +94,8 @@ const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * Prompts Claude to explicitly reason about observations before next action.
  * Cost: ~20 tokens per data tool call, ~200-300 total per analysis.
  */
-const REASONING_NUDGE = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
+const REASONING_NUDGE_ZH = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
+const REASONING_NUDGE_EN = '\n\n[REFLECT] Before the next action: what is the key finding from this data? Does it support or refute your hypothesis? If there is an important inference, record it with submit_hypothesis or write_analysis_note.';
 
 export function loadLearnedSqlFixPairs(maxPairs = 10): SqlErrorFixPair[] {
   try {
@@ -267,6 +269,8 @@ export interface ClaudeMcpServerOptions {
    *  passes the same instance for every tool call so the running totals are
    *  shared across the analysis. See skillNotesInjector.ts. */
   skillNotesBudget?: import('./selfImprove/skillNotesInjector').SkillNotesBudget;
+  /** User-facing output language for backend-emitted progress and hints. */
+  outputLanguage?: OutputLanguage;
 }
 
 /**
@@ -280,6 +284,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const skillAdapter = getSkillAnalysisAdapter(traceProcessorService);
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
+  const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
 
   /** Normalize skill params: ensure process_name ↔ package are both set. */
   function normalizeSkillParams(params: Record<string, any> | undefined, defaultPackage?: string): Record<string, any> {
@@ -319,7 +324,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (analysisPlanRef.current) return null; // Plan already submitted
     return JSON.stringify({
       success: false,
-      error: `必须先调用 submit_plan 提交分析计划，然后才能使用 ${toolName}。请先制定你的分析计划，包含分析阶段、目标和预期工具。`,
+      error: localize(
+        outputLanguage,
+        `必须先调用 submit_plan 提交分析计划，然后才能使用 ${toolName}。请先制定你的分析计划，包含分析阶段、目标和预期工具。`,
+        `You must call submit_plan before using ${toolName}. Create an analysis plan with phases, goals, and expected tools first.`,
+      ),
       action_required: 'submit_plan',
     });
   }
@@ -330,7 +339,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   let dataToolCallCount = 0;
   function getReasoningNudge(): string {
     dataToolCallCount++;
-    return dataToolCallCount <= REASONING_NUDGE_MAX_CALLS ? REASONING_NUDGE : '';
+    if (dataToolCallCount > REASONING_NUDGE_MAX_CALLS) return '';
+    return outputLanguage === 'en' ? REASONING_NUDGE_EN : REASONING_NUDGE_ZH;
   }
 
   // Auto-inject `INCLUDE PERFETTO MODULE ...;` for stdlib tables/functions
@@ -344,7 +354,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         type: 'progress',
         content: {
           phase: 'analyzing',
-          message: `自动加载 stdlib 模块: ${injected.join(', ')}`,
+          message: localize(
+            outputLanguage,
+            `自动加载 stdlib 模块: ${injected.join(', ')}`,
+            `Auto-loaded stdlib module(s): ${injected.join(', ')}`,
+          ),
         },
         timestamp: Date.now(),
       });
@@ -387,7 +401,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (emitUpdate && sqlDuration > 500) {
           emitUpdate({
             type: 'progress',
-            content: { phase: 'analyzing', message: `SQL 查询完成 (${result.rows.length} 行, ${sqlDuration}ms)` },
+            content: {
+              phase: 'analyzing',
+              message: localize(
+                outputLanguage,
+                `SQL 查询完成 (${result.rows.length} 行, ${sqlDuration}ms)`,
+                `SQL query completed (${result.rows.length} rows, ${sqlDuration}ms)`,
+              ),
+            },
             timestamp: Date.now(),
           });
         }
@@ -399,7 +420,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (emitUpdate && !success && result.error) {
           emitUpdate({
             type: 'progress',
-            content: { phase: 'analyzing', message: `SQL 查询错误: ${result.error.substring(0, 200)}` },
+            content: {
+              phase: 'analyzing',
+              message: localize(
+                outputLanguage,
+                `SQL 查询错误: ${result.error.substring(0, 200)}`,
+                `SQL query error: ${result.error.substring(0, 200)}`,
+              ),
+            },
             timestamp: Date.now(),
           });
         }
@@ -473,7 +501,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const errMsg = (err as Error).message;
         emitUpdate?.({
           type: 'progress',
-          content: { phase: 'analyzing', message: `SQL 查询失败: ${errMsg}` },
+          content: {
+            phase: 'analyzing',
+            message: localize(outputLanguage, `SQL 查询失败: ${errMsg}`, `SQL query failed: ${errMsg}`),
+          },
           timestamp: Date.now(),
         });
         return {
@@ -530,7 +561,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
         emitUpdate?.({
           type: 'progress',
-          content: { phase: 'analyzing', message: `运行分析技能: ${skillId}...` },
+          content: {
+            phase: 'analyzing',
+            message: localize(outputLanguage, `运行分析技能: ${skillId}...`, `Running analysis skill: ${skillId}...`),
+          },
           timestamp: Date.now(),
         });
 
@@ -542,7 +576,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           type: 'progress',
           content: {
             phase: 'analyzing',
-            message: `技能 ${skillId} 完成 (${skillDuration}ms, ${result.displayResults?.length || 0} 个结果层)`,
+            message: localize(
+              outputLanguage,
+              `技能 ${skillId} 完成 (${skillDuration}ms, ${result.displayResults?.length || 0} 个结果层)`,
+              `Skill ${skillId} completed (${skillDuration}ms, ${result.displayResults?.length || 0} result layers)`,
+            ),
           },
           timestamp: Date.now(),
         });
@@ -702,7 +740,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const errMsg = (err as Error).message;
         emitUpdate?.({
           type: 'progress',
-          content: { phase: 'analyzing', message: `技能 ${skillId} 执行失败: ${errMsg}` },
+          content: {
+            phase: 'analyzing',
+            message: localize(outputLanguage, `技能 ${skillId} 执行失败: ${errMsg}`, `Skill ${skillId} failed: ${errMsg}`),
+          },
           timestamp: Date.now(),
         });
         return {
@@ -1261,13 +1302,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             type: 'text' as const,
             text: JSON.stringify({
               success: false,
-              error: `计划缺少 ${options.sceneType ?? '当前'} 场景的必要分析阶段`,
+              error: localize(
+                outputLanguage,
+                `计划缺少 ${options.sceneType ?? '当前'} 场景的必要分析阶段`,
+                `The plan is missing mandatory analysis phases for the ${options.sceneType ?? 'current'} scene`,
+              ),
               missingAspectIds,
               missingAspectSuggestions: planWarnings,
               attempt: planSubmitAttempts,
               maxAttempts: MAX_PLAN_ATTEMPTS,
               tooShortWaivers: tooShortWaivers.length > 0 ? tooShortWaivers : undefined,
-              hint: `修复 plan 添加缺失阶段并重新调用 submit_plan，或在 waivers 中给出 ≥${MIN_WAIVER_REASON_CHARS} 字符的理由说明为什么无法覆盖。`,
+              hint: localize(
+                outputLanguage,
+                `修复 plan 添加缺失阶段并重新调用 submit_plan，或在 waivers 中给出 ≥${MIN_WAIVER_REASON_CHARS} 字符的理由说明为什么无法覆盖。`,
+                `Add the missing phases and call submit_plan again, or provide a waiver reason of at least ${MIN_WAIVER_REASON_CHARS} characters explaining why it cannot be covered.`,
+              ),
             }),
           }],
           isError: true,
@@ -1307,11 +1356,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
       if (tooShortWaivers.length > 0) {
         response.tooShortWaivers = tooShortWaivers;
-        response.waiverHint = `已忽略 ${tooShortWaivers.length} 条理由不足 ${MIN_WAIVER_REASON_CHARS} 字符的 waiver。`;
+        response.waiverHint = localize(
+          outputLanguage,
+          `已忽略 ${tooShortWaivers.length} 条理由不足 ${MIN_WAIVER_REASON_CHARS} 字符的 waiver。`,
+          `Ignored ${tooShortWaivers.length} waiver(s) whose reason is shorter than ${MIN_WAIVER_REASON_CHARS} characters.`,
+        );
       }
       if (forcedAccept) {
         response.unresolvedAspects = missingAspectIds;
-        response.warning = `已强制接受 plan（达到第 ${MAX_PLAN_ATTEMPTS} 次尝试上限），但未覆盖的 aspect 会在最终 verifier 中报错。`;
+        response.warning = localize(
+          outputLanguage,
+          `已强制接受 plan（达到第 ${MAX_PLAN_ATTEMPTS} 次尝试上限），但未覆盖的 aspect 会在最终 verifier 中报错。`,
+          `Plan force-accepted after reaching the ${MAX_PLAN_ATTEMPTS}-attempt limit, but uncovered aspects will be reported by the final verifier.`,
+        );
       }
       return {
         content: [{
@@ -1337,7 +1394,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const plan = analysisPlanRef.current;
       if (!plan) {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: 'No plan submitted yet. Call submit_plan first.' }) }],
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(outputLanguage, '还没有提交 plan，请先调用 submit_plan。', 'No plan submitted yet. Call submit_plan first.'),
+            }),
+          }],
           isError: true,
         };
       }
@@ -1345,7 +1408,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const phase = plan.phases.find(p => p.id === phaseId);
       if (!phase) {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: `Phase "${phaseId}" not found in plan` }) }],
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(outputLanguage, `plan 中没有找到阶段 "${phaseId}"`, `Phase "${phaseId}" not found in plan`),
+            }),
+          }],
           isError: true,
         };
       }
@@ -1369,7 +1438,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       // P2-1: Feedback on summary quality for completed/skipped phases
       let summaryFeedback: string | undefined;
       if ((status === 'completed' || status === 'skipped') && (!summary || summary.length < 15)) {
-        summaryFeedback = 'Warning: phase summary is too brief. Include specific evidence (数据、数值、发现) for plan adherence verification.';
+        summaryFeedback = localize(
+          outputLanguage,
+          'Warning: phase summary is too brief. Include specific evidence (数据、数值、发现) for plan adherence verification.',
+          'Warning: phase summary is too brief. Include specific evidence (data, numbers, findings) for plan adherence verification.',
+        );
       }
 
       // Compact return: only include feedback when needed (normal path = minimal ACK)
@@ -1452,7 +1525,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const plan = analysisPlanRef.current;
       if (!plan) {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: 'No plan submitted yet. Call submit_plan first.' }) }],
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(outputLanguage, '还没有提交 plan，请先调用 submit_plan。', 'No plan submitted yet. Call submit_plan first.'),
+            }),
+          }],
           isError: true,
         };
       }
@@ -1467,7 +1546,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             type: 'text' as const,
             text: JSON.stringify({
               success: false,
-              error: `Completed phases must be preserved: ${missingCompleted.map(p => p.id).join(', ')}. Include them in updatedPhases.`,
+              error: localize(
+                outputLanguage,
+                `已完成阶段必须保留: ${missingCompleted.map(p => p.id).join(', ')}。请把它们放入 updatedPhases。`,
+                `Completed phases must be preserved: ${missingCompleted.map(p => p.id).join(', ')}. Include them in updatedPhases.`,
+              ),
             }),
           }],
           isError: true,
@@ -1525,7 +1608,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       );
       const reviseResponse: Record<string, unknown> = {
         success: true,
-        message: `Plan revised (revision #${plan.revisionHistory.length}): ${reason}`,
+        message: localize(
+          outputLanguage,
+          `Plan 已修订（第 ${plan.revisionHistory.length} 次）: ${reason}`,
+          `Plan revised (revision #${plan.revisionHistory.length}): ${reason}`,
+        ),
         totalPhases: plan.phases.length,
         pendingPhases: pending.length,
         nextPhase: pending[0]?.id,
@@ -1653,7 +1740,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         type: 'progress',
         content: {
           phase: 'analyzing',
-          message: `⚠️ 不确定性标记: ${topic}\n假设: ${assumption}\n建议确认: ${question}`,
+          message: localize(
+            outputLanguage,
+            `⚠️ 不确定性标记: ${topic}\n假设: ${assumption}\n建议确认: ${question}`,
+            `⚠️ Uncertainty flagged: ${topic}\nAssumption: ${assumption}\nSuggested confirmation: ${question}`,
+          ),
         },
         timestamp: Date.now(),
       });
@@ -1663,7 +1754,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           type: 'text' as const,
           text: JSON.stringify({
             success: true,
-            message: `Uncertainty flagged. Proceeding with assumption: "${assumption}". User will see this flag and can correct in next turn.`,
+            message: localize(
+              outputLanguage,
+              `已标记不确定性。将基于假设继续: "${assumption}"。用户会看到该标记，并可在下一轮纠正。`,
+              `Uncertainty flagged. Proceeding with assumption: "${assumption}". The user will see this flag and can correct it in the next turn.`,
+            ),
             flagCount: uncertaintyFlagsRef.length,
           }),
         }],
@@ -1787,7 +1882,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return { content: [{ type: 'text' as const, text: planError }] };
       }
       const targetTraceId = trace === 'reference' ? referenceTraceId : traceId;
-      const traceLabel = trace === 'reference' ? '[参考 Trace]' : '[当前 Trace]';
+      const traceLabel = trace === 'reference'
+        ? localize(outputLanguage, '[参考 Trace]', '[reference trace]')
+        : localize(outputLanguage, '[当前 Trace]', '[current trace]');
       try {
         const sqlStart = Date.now();
         const result = await runRawSqlWithIncludeInjection(targetTraceId, sql);
@@ -1856,7 +1953,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
         emitUpdate?.({
           type: 'progress',
-          content: { phase: 'analyzing', message: `对比技能 ${skillId}：在两个 Trace 上并行执行...` },
+          content: {
+            phase: 'analyzing',
+            message: localize(
+              outputLanguage,
+              `对比技能 ${skillId}：在两个 Trace 上并行执行...`,
+              `Comparing skill ${skillId}: running on both traces in parallel...`,
+            ),
+          },
           timestamp: Date.now(),
         });
 
@@ -1872,16 +1976,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const refStepIds = new Set((refResult.displayResults || []).map(r => r.stepId));
         const comparableSteps = [...currentStepIds].filter(id => refStepIds.has(id));
         const incompatibleSteps = [
-          ...[...currentStepIds].filter(id => !refStepIds.has(id)).map(id => `${id} (仅当前 Trace)`),
-          ...[...refStepIds].filter(id => !currentStepIds.has(id)).map(id => `${id} (仅参考 Trace)`),
+          ...[...currentStepIds]
+            .filter(id => !refStepIds.has(id))
+            .map(id => `${id} ${localize(outputLanguage, '(仅当前 Trace)', '(current trace only)')}`),
+          ...[...refStepIds]
+            .filter(id => !currentStepIds.has(id))
+            .map(id => `${id} ${localize(outputLanguage, '(仅参考 Trace)', '(reference trace only)')}`),
         ];
 
         // Emit data envelopes for both sides (labeled)
         if (emitUpdate && currentResult.displayResults?.length) {
-          emitSkillDataEnvelopes(currentResult.displayResults as SkillDisplayResult[], `${skillId}[当前]`, emitUpdate);
+          emitSkillDataEnvelopes(
+            currentResult.displayResults as SkillDisplayResult[],
+            `${skillId}${localize(outputLanguage, '[当前]', '[current]')}`,
+            emitUpdate,
+          );
         }
         if (emitUpdate && refResult.displayResults?.length) {
-          emitSkillDataEnvelopes(refResult.displayResults as SkillDisplayResult[], `${skillId}[参考]`, emitUpdate);
+          emitSkillDataEnvelopes(
+            refResult.displayResults as SkillDisplayResult[],
+            `${skillId}${localize(outputLanguage, '[参考]', '[reference]')}`,
+            emitUpdate,
+          );
         }
 
         // Build compact comparison summary for Claude
@@ -1914,7 +2030,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             comparableSteps,
             incompatibleSteps: incompatibleSteps.length > 0 ? incompatibleSteps : undefined,
           },
-          hint: '使用 execute_sql_on 深钻具体差异指标，或使用 fetch_artifact 获取详细数据。',
+          hint: localize(
+            outputLanguage,
+            '使用 execute_sql_on 深钻具体差异指标，或使用 fetch_artifact 获取详细数据。',
+            'Use execute_sql_on to drill into specific delta metrics, or fetch_artifact for detailed data.',
+          ),
         });
 
         return { content: [{ type: 'text' as const, text: consumeWatchdogWarning(text + getReasoningNudge()) }] };

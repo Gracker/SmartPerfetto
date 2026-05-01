@@ -46,6 +46,12 @@ CLAUDE_MODEL=your-main-model
 CLAUDE_LIGHT_MODEL=your-light-model
 ```
 
+SmartPerfetto defaults to Simplified Chinese for AI answers, streamed progress, and generated reports. Set this if the primary users prefer English:
+
+```env
+SMARTPERFETTO_OUTPUT_LANGUAGE=en
+```
+
 After editing env files, start or restart the backend. For Docker, run `docker compose -f docker-compose.hub.yml up -d` or `docker compose -f docker-compose.hub.yml restart`. For local source runs, use `./start.sh`, or `./scripts/restart-backend.sh` if the backend is already running. For explicit SmartPerfetto env/proxy credentials, verify the active provider with [http://localhost:3000/health](http://localhost:3000/health). For the local Claude Code path, verify by running a normal `claude` request in the same terminal; the first AI analysis call will use the SDK's Claude Code auth/config path.
 
 ## Perfetto Resources
@@ -202,6 +208,16 @@ CLAUDE_LIGHT_MODEL=your-provider-light-model
 ```
 
 Restart the backend after changing provider settings. `GET /health` returns `aiEngine.providerMode` and `aiEngine.diagnostics` so you can confirm whether the runtime is using Anthropic direct access, AWS Bedrock, or an Anthropic-compatible proxy.
+
+### Output Language
+
+User-facing output defaults to Simplified Chinese. To make AI answers, streamed progress text, and generated Agent-Driven reports English, set:
+
+```bash
+SMARTPERFETTO_OUTPUT_LANGUAGE=en
+```
+
+Accepted values include `zh-CN` and `en`. Restart the backend after changing `.env`.
 
 ### Turn Budgets
 

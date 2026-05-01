@@ -23,6 +23,7 @@ import type { Finding, StreamingUpdate } from '../agent/types';
 import type { VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis } from './types';
 import { expectedToolNames } from './types';
 import type { SceneType } from './sceneClassifier';
+import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 
 /** Hardcoded known misdiagnosis patterns — common false positives in performance analysis. */
 const HARDCODED_MISDIAGNOSIS_PATTERNS: Array<{
@@ -901,6 +902,7 @@ export function isConclusionIncomplete(conclusion: string): boolean {
 export function generateCorrectionPrompt(
   issues: VerificationIssue[],
   originalConclusion: string,
+  outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): string {
   const errorIssues = issues.filter(i => i.severity === 'error');
   const warningIssues = issues.filter(i => i.severity === 'warning');
@@ -910,13 +912,39 @@ export function generateCorrectionPrompt(
     .join('\n');
 
   const warningList = warningIssues.length > 0
-    ? '\n\n注意事项:\n' + warningIssues.map(i => `- ${i.message}`).join('\n')
+    ? localize(
+      outputLanguage,
+      '\n\n注意事项:\n' + warningIssues.map(i => `- ${i.message}`).join('\n'),
+      '\n\nNotes:\n' + warningIssues.map(i => `- ${i.message}`).join('\n'),
+    )
     : '';
 
   // When the conclusion is just reasoning notes (no structured headings, < 1000 chars),
   // the agent ran out of turns before generating a report. Use a stronger prompt that
   // instructs it to generate the complete report from scratch using collected data.
   if (isConclusionIncomplete(originalConclusion)) {
+    if (outputLanguage === 'en') {
+      return `## Verification Feedback - Final report was not generated
+
+The analysis has collected enough data, but the final conclusion was not generated yet. The current content only contains reasoning notes.
+
+${issueList ? `Issues to resolve:\n${issueList}\n` : ''}${warningList}
+
+### Requirements
+1. Resolve all unfinished bookkeeping first: unresolved hypotheses must call resolve_hypothesis, and unfinished phases must call update_plan_phase.
+2. Then output a complete structured analysis report in English, following the system prompt output template:
+   - Overview (frame count, jank count, FPS, rating)
+   - Full-frame root-cause distribution table aggregated by reason_code
+   - Representative-frame analysis for each major root-cause category, including quadrant state, frequency, and causal reasoning chain
+   - Optimization suggestions sorted by priority
+3. Use the data already collected. Do not rerun invoke_skill just to fetch overview data again.
+
+### Existing Reasoning Context
+${originalConclusion.substring(0, 2000)}
+
+Output the complete report directly in English.`;
+    }
+
     return `## 验证反馈 — 分析结论未生成，请输出完整报告
 
 你的分析过程已收集了足够的数据，但**结论尚未生成**（当前仅有推理过程笔记）。
@@ -936,6 +964,28 @@ ${issueList ? `待解决问题：\n${issueList}\n` : ''}${warningList}
 ${originalConclusion.substring(0, 2000)}
 
 请直接输出完整报告。`;
+  }
+
+  if (outputLanguage === 'en') {
+    return `## Verification Feedback - Fix the following issues
+
+Your analysis conclusion did not pass quality verification. The following ERROR-level issues must be fixed:
+
+${issueList}${warningList}
+
+### Fix Requirements
+1. Re-check the analysis conclusion.
+2. Fix every ERROR issue:
+   - **missing_evidence**: Add concrete data evidence for CRITICAL/HIGH findings, including timestamps, numbers, or tool results.
+   - **plan_deviation**: Execute unfinished plan phases or explicitly explain why they were skipped.
+   - **missing_reasoning**: Produce a complete analysis conclusion.
+   - **unresolved_hypothesis**: Call resolve_hypothesis and mark every unresolved hypothesis as confirmed or rejected.
+3. Output the corrected complete conclusion in English.
+
+### Original Conclusion To Fix
+${originalConclusion.substring(0, 2000)}
+
+Output only the corrected conclusion. If extra data is needed, call tools to fetch it.`;
   }
 
   return `## 验证反馈 — 请修正以下问题
@@ -977,10 +1027,13 @@ export async function verifyConclusion(
     lightModel?: string;
     /** Override verification LLM timeout (ms). Default: 60s. Raise for slower light models. */
     verifierTimeoutMs?: number;
+    /** User-facing output language for verifier progress messages. */
+    outputLanguage?: OutputLanguage;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
   const { emitUpdate, enableLLM = true, plan, hypotheses, sceneType } = options;
+  const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
 
   // Layer 1: Heuristic checks
   const heuristicIssues = verifyHeuristic(findings, conclusion);
@@ -1044,7 +1097,11 @@ export async function verifyConclusion(
       type: 'progress',
       content: {
         phase: 'concluding',
-        message: `验证发现 ${allIssues.length} 个问题:\n${issueMessages}`,
+        message: localize(
+          outputLanguage,
+          `验证发现 ${allIssues.length} 个问题:\n${issueMessages}`,
+          `Verification found ${allIssues.length} issue(s):\n${issueMessages}`,
+        ),
       },
       timestamp: Date.now(),
     });

@@ -13,6 +13,7 @@ import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
 import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from '../services/reportCausalMapAssets';
+import { localize, parseOutputLanguage } from '../agentv3/outputLanguage';
 
 const router = express.Router();
 
@@ -177,12 +178,13 @@ router.get('/:reportId', (req, res) => {
     // Try memory cache first, then disk
     let report = reportStore.get(reportId) || loadReportFromDisk(reportId);
     if (!report) {
+      const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
       return res.status(404).send(`
         <!DOCTYPE html>
-        <html>
+        <html lang="${outputLanguage === 'en' ? 'en' : 'zh-CN'}">
         <head>
           <meta charset="UTF-8">
-          <title>报告未找到</title>
+          <title>${localize(outputLanguage, '报告未找到', 'Report Not Found')}</title>
           <style>
             body { font-family: sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #f5f7fa; }
             .error { text-align: center; padding: 40px; background: white; border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); }
@@ -192,8 +194,8 @@ router.get('/:reportId', (req, res) => {
         </head>
         <body>
           <div class="error">
-            <h1>报告未找到</h1>
-            <p>该报告可能已过期或不存在。请重新生成分析报告。</p>
+            <h1>${localize(outputLanguage, '报告未找到', 'Report Not Found')}</h1>
+            <p>${localize(outputLanguage, '该报告可能已过期或不存在。请重新生成分析报告。', 'This report may have expired or may not exist. Generate the analysis report again.')}</p>
           </div>
         </body>
         </html>

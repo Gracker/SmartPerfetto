@@ -8,54 +8,61 @@ import {
   MAX_TURNS_TERMINATION_REASON,
   SDK_MAX_TURNS_SUBTYPE,
 } from './analysisTermination';
+import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 
 export type UpdateEmitter = (update: StreamingUpdate) => void;
 
-/** Map MCP tool names to user-friendly Chinese descriptions. */
-function getFriendlyToolMessage(toolName: string, args: any): string {
+/** Map MCP tool names to user-friendly descriptions. */
+function getFriendlyToolMessage(toolName: string, args: any, language: OutputLanguage): string {
   switch (toolName) {
     case 'mcp__smartperfetto__execute_sql': {
       const sql = String(args?.sql || '').toLowerCase();
       const tableMatch = sql.match(/from\s+(\w+)/i);
       const table = tableMatch?.[1] || '';
-      const tableHints: Record<string, string> = {
-        actual_frame_timeline_event: '帧渲染数据',
-        expected_frame_timeline_event: '预期帧数据',
-        frame_slice: '帧 Slice',
-        slice: 'Trace Slice',
-        thread_state: '线程状态',
-        thread: '线程信息',
-        process: '进程信息',
-        counter: '计数器',
-        sched_slice: 'CPU 调度',
-        android_launches: '应用启动',
-        android_app_process_starts: '进程启动',
-        cpu_counter_track: 'CPU 频率',
-        gpu_counter_track: 'GPU 频率',
-        memory_counter: '内存计数',
-        android_binder_transaction: 'Binder 事务',
+      const tableHints: Record<string, { zh: string; en: string }> = {
+        actual_frame_timeline_event: { zh: '帧渲染数据', en: 'frame rendering data' },
+        expected_frame_timeline_event: { zh: '预期帧数据', en: 'expected frame data' },
+        frame_slice: { zh: '帧 Slice', en: 'frame slices' },
+        slice: { zh: 'Trace Slice', en: 'trace slices' },
+        thread_state: { zh: '线程状态', en: 'thread states' },
+        thread: { zh: '线程信息', en: 'thread metadata' },
+        process: { zh: '进程信息', en: 'process metadata' },
+        counter: { zh: '计数器', en: 'counters' },
+        sched_slice: { zh: 'CPU 调度', en: 'CPU scheduling' },
+        android_launches: { zh: '应用启动', en: 'app launches' },
+        android_app_process_starts: { zh: '进程启动', en: 'process starts' },
+        cpu_counter_track: { zh: 'CPU 频率', en: 'CPU frequency' },
+        gpu_counter_track: { zh: 'GPU 频率', en: 'GPU frequency' },
+        memory_counter: { zh: '内存计数', en: 'memory counters' },
+        android_binder_transaction: { zh: 'Binder 事务', en: 'Binder transactions' },
       };
-      const hint = tableHints[table] || (table ? table : '');
-      return hint ? `执行 SQL 查询: ${hint}` : '执行 SQL 查询';
+      const hint = tableHints[table]
+        ? localize(language, tableHints[table].zh, tableHints[table].en)
+        : (table ? table : '');
+      return hint
+        ? localize(language, `执行 SQL 查询: ${hint}`, `Run SQL query: ${hint}`)
+        : localize(language, '执行 SQL 查询', 'Run SQL query');
     }
     case 'mcp__smartperfetto__invoke_skill': {
       const skillId = args?.skillId;
-      return skillId ? `调用分析技能: ${skillId}` : '调用分析技能';
+      return skillId
+        ? localize(language, `调用分析技能: ${skillId}`, `Run analysis skill: ${skillId}`)
+        : localize(language, '调用分析技能', 'Run analysis skill');
     }
     case 'mcp__smartperfetto__list_skills':
-      return '查询可用技能列表';
+      return localize(language, '查询可用技能列表', 'List available skills');
     case 'mcp__smartperfetto__detect_architecture':
-      return '检测渲染架构';
+      return localize(language, '检测渲染架构', 'Detect rendering architecture');
     case 'mcp__smartperfetto__lookup_sql_schema':
-      return `查询 SQL 表结构: ${args?.keyword || ''}`;
+      return localize(language, `查询 SQL 表结构: ${args?.keyword || ''}`, `Look up SQL schema: ${args?.keyword || ''}`);
     case 'mcp__smartperfetto__write_analysis_note':
-      return `记录分析笔记: ${args?.section || ''}`;
+      return localize(language, `记录分析笔记: ${args?.section || ''}`, `Write analysis note: ${args?.section || ''}`);
     case 'mcp__smartperfetto__fetch_artifact':
-      return `获取数据详情: ${args?.artifactId || ''}`;
+      return localize(language, `获取数据详情: ${args?.artifactId || ''}`, `Fetch artifact details: ${args?.artifactId || ''}`);
     case 'mcp__smartperfetto__query_perfetto_source':
-      return `搜索 Perfetto 源码: ${args?.keyword || ''}`;
+      return localize(language, `搜索 Perfetto 源码: ${args?.keyword || ''}`, `Search Perfetto source: ${args?.keyword || ''}`);
     default:
-      return `调用工具: ${toolName}`;
+      return localize(language, `调用工具: ${toolName}`, `Call tool: ${toolName}`);
   }
 }
 
@@ -71,7 +78,10 @@ export interface SseBridge {
  * Creates a bridge function that translates Agent SDK messages into
  * SmartPerfetto StreamingUpdate events for SSE forwarding to the frontend.
  */
-export function createSseBridge(emit: UpdateEmitter): SseBridge {
+export function createSseBridge(
+  emit: UpdateEmitter,
+  language: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
+): SseBridge {
   let lastToolUseId: string | undefined;
   /**
    * Track whether the current assistant turn uses tools.
@@ -152,7 +162,12 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
     if (msg.type === 'system' && msg.subtype === 'init') {
       emit({
         type: 'progress',
-        content: { phase: 'starting', message: 'Claude 分析引擎已初始化', model: msg.model, tools: msg.tools },
+        content: {
+          phase: 'starting',
+          message: localize(language, 'Claude 分析引擎已初始化', 'Claude analysis engine initialized'),
+          model: msg.model,
+          tools: msg.tools,
+        },
         timestamp: now,
       });
       return;
@@ -225,7 +240,7 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
       for (const block of content) {
         if (block.type === 'tool_use') {
           lastToolUseId = block.id;
-          const friendlyMsg = getFriendlyToolMessage(block.name, block.input);
+          const friendlyMsg = getFriendlyToolMessage(block.name, block.input, language);
           emit({
             type: 'agent_task_dispatched',
             content: { taskId: block.id, toolName: block.name, args: block.input, message: friendlyMsg },
@@ -281,7 +296,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
           type: 'progress',
           content: {
             phase: 'concluding',
-            message: '分析达到轮次上限，正在整理已收集结果，结论可能不完整...',
+            message: localize(
+              language,
+              '分析达到轮次上限，正在整理已收集结果，结论可能不完整...',
+              'Analysis reached the turn limit. Organizing collected evidence; the conclusion may be incomplete...',
+            ),
             subtype: msg.subtype,
             partial: true,
             terminationReason: MAX_TURNS_TERMINATION_REASON,
@@ -295,7 +314,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
             module: 'claudeSseBridge',
             fallback: 'partial_result_after_max_turns',
             error: SDK_MAX_TURNS_SUBTYPE,
-            message: '分析达到轮次上限，结果可能不完整',
+            message: localize(
+              language,
+              '分析达到轮次上限，结果可能不完整',
+              'Analysis reached the turn limit; results may be incomplete',
+            ),
             partial: true,
             terminationReason: MAX_TURNS_TERMINATION_REASON,
             turns: msg.num_turns,
@@ -323,9 +346,9 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
       const description = msg.description || 'sub-agent';
       const taskId = msg.task_id;
       const descriptions: Record<string, string> = {
-        'frame-expert': '帧渲染与掉帧诊断',
-        'system-expert': '系统级性能分析 (CPU/内存/Binder)',
-        'startup-expert': '应用启动分析',
+        'frame-expert': localize(language, '帧渲染与掉帧诊断', 'Frame rendering and jank diagnosis'),
+        'system-expert': localize(language, '系统级性能分析 (CPU/内存/Binder)', 'System performance analysis (CPU/memory/Binder)'),
+        'startup-expert': localize(language, '应用启动分析', 'App startup analysis'),
       };
       // Match known agent names from the task description
       const agentName = Object.keys(descriptions).find(name => description.includes(name)) || description;
@@ -334,7 +357,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
       if (taskId) taskIdToAgentName.set(taskId, agentName);
       emit({
         type: 'sub_agent_started',
-        content: { agentName, description: desc, message: `委托子代理 [${agentName}]: ${desc}` },
+        content: {
+          agentName,
+          description: desc,
+          message: localize(language, `委托子代理 [${agentName}]: ${desc}`, `Delegated to sub-agent [${agentName}]: ${desc}`),
+        },
         timestamp: now,
       });
       return;
@@ -347,7 +374,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
         type: 'progress',
         content: {
           phase: 'analyzing',
-          message: `子代理进度: ${description}${lastTool ? ` (${lastTool})` : ''}`,
+          message: localize(
+            language,
+            `子代理进度: ${description}${lastTool ? ` (${lastTool})` : ''}`,
+            `Sub-agent progress: ${description}${lastTool ? ` (${lastTool})` : ''}`,
+          ),
         },
         timestamp: now,
       });
@@ -367,7 +398,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
           type: 'sub_agent_completed',
           content: {
             agentName,
-            message: `子代理 [${agentName}] 完成证据收集${usage ? ` (${usage.tool_uses} 次工具调用, ${Math.round(usage.duration_ms / 1000)}s)` : ''}`,
+            message: localize(
+              language,
+              `子代理 [${agentName}] 完成证据收集${usage ? ` (${usage.tool_uses} 次工具调用, ${Math.round(usage.duration_ms / 1000)}s)` : ''}`,
+              `Sub-agent [${agentName}] completed evidence collection${usage ? ` (${usage.tool_uses} tool calls, ${Math.round(usage.duration_ms / 1000)}s)` : ''}`,
+            ),
           },
           timestamp: now,
         });
@@ -377,7 +412,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
           type: 'progress',
           content: {
             phase: 'analyzing',
-            message: `子代理 [${agentName}] ${status}: ${summary}`,
+            message: localize(
+              language,
+              `子代理 [${agentName}] ${status}: ${summary}`,
+              `Sub-agent [${agentName}] ${status}: ${summary}`,
+            ),
           },
           timestamp: now,
         });
@@ -394,7 +433,11 @@ export function createSseBridge(emit: UpdateEmitter): SseBridge {
         type: 'progress',
         content: {
           phase: 'analyzing',
-          message: '⚠ 对话历史已被自动压缩（上下文窗口接近上限），早期分析细节可能丢失',
+          message: localize(
+            language,
+            '⚠ 对话历史已被自动压缩（上下文窗口接近上限），早期分析细节可能丢失',
+            '⚠ Conversation history was auto-compacted because the context window is near its limit; early analysis details may be lost',
+          ),
         },
         timestamp: now,
       });

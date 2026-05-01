@@ -26,6 +26,9 @@ jest.mock('../strategyLoader', () => ({
   }),
   loadPromptTemplate: jest.fn((name: string) => {
     if (name === 'prompt-role') return '# 角色\n\n你是 SmartPerfetto Android 性能分析专家。';
+    if (name === 'prompt-language-zh') return '## 输出语言\n\n所有面向用户的回答必须使用简体中文。';
+    if (name === 'prompt-language-en') return '## Output Language\n\nAll user-facing answers MUST be written in English.';
+    if (name === 'prompt-quick') return '# 角色\n\n你是 Android 性能 trace 分析专家。\n\n{{outputLanguageSection}}\n\n{{architectureContext}}\n\n{{focusAppContext}}\n\n{{selectionSection}}';
     if (name === 'prompt-methodology') return '## 分析方法论\n\n{{sceneStrategy}}';
     if (name === 'prompt-output-format') return '## 输出格式\n\n使用 Markdown 格式输出。';
     if (name.startsWith('arch-')) return `### ${name} 架构分析指导\n\n专项指导内容`;
@@ -49,7 +52,7 @@ jest.mock('../focusAppDetector', () => ({
   formatDurationNs: jest.fn((ns: number) => `${(ns / 1e6).toFixed(1)}ms`),
 }));
 
-import { buildSystemPrompt, buildSystemPromptParts } from '../claudeSystemPrompt';
+import { buildQuickSystemPrompt, buildSystemPrompt, buildSystemPromptParts } from '../claudeSystemPrompt';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -78,6 +81,25 @@ describe('buildSystemPrompt', () => {
     it('should include output format section', () => {
       const prompt = buildSystemPrompt(makeContext());
       expect(prompt).toContain('输出格式');
+    });
+
+    it('should default to Simplified Chinese output language guidance', () => {
+      const prompt = buildSystemPrompt(makeContext());
+      expect(prompt).toContain('## 输出语言');
+      expect(prompt).toContain('简体中文');
+    });
+
+    it('should inject English output language guidance when requested', () => {
+      const prompt = buildSystemPrompt(makeContext({ outputLanguage: 'en' }));
+      expect(prompt).toContain('## Output Language');
+      expect(prompt).toContain('MUST be written in English');
+      expect(prompt).not.toContain('所有面向用户的回答必须使用简体中文');
+    });
+
+    it('should inject output language guidance into quick prompts', () => {
+      const prompt = buildQuickSystemPrompt({ outputLanguage: 'en' });
+      expect(prompt).toContain('## Output Language');
+      expect(prompt).toContain('MUST be written in English');
     });
   });
 

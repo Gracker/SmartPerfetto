@@ -57,4 +57,29 @@ describe('createSseBridge', () => {
       }),
     }));
   });
+
+  it('localizes max-turn progress messages in English', () => {
+    const updates: StreamingUpdate[] = [];
+    const bridge = createSseBridge((update) => updates.push(update), 'en');
+
+    bridge.handleMessage({
+      type: 'result',
+      subtype: 'error_max_turns',
+      errors: [],
+      num_turns: 10,
+    });
+
+    expect(updates).toContainEqual(expect.objectContaining({
+      type: 'progress',
+      content: expect.objectContaining({
+        message: expect.stringContaining('turn limit'),
+      }),
+    }));
+    expect(updates).toContainEqual(expect.objectContaining({
+      type: 'degraded',
+      content: expect.objectContaining({
+        message: expect.stringContaining('results may be incomplete'),
+      }),
+    }));
+  });
 });

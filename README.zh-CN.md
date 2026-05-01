@@ -46,6 +46,12 @@ CLAUDE_MODEL=your-main-model
 CLAUDE_LIGHT_MODEL=your-light-model
 ```
 
+SmartPerfetto 默认用简体中文输出 AI 回答、流式进度和生成的报告。如果主要使用者是英文用户，可以配置：
+
+```env
+SMARTPERFETTO_OUTPUT_LANGUAGE=en
+```
+
 改完 env 文件后需要启动或重启后端。Docker 运行用 `docker compose -f docker-compose.hub.yml up -d` 或 `docker compose -f docker-compose.hub.yml restart`；本地源码运行用 `./start.sh`，如果后端已经在跑则用 `./scripts/restart-backend.sh`。显式 SmartPerfetto env/proxy 凭证可以打开 [http://localhost:3000/health](http://localhost:3000/health) 确认 provider 是否生效；本地 Claude Code 路径则以同一终端里 `claude` 能正常请求为准，第一次 AI 分析会走 SDK 的 Claude Code auth/config 路径。
 
 ## Perfetto 参考资源
@@ -202,6 +208,16 @@ CLAUDE_LIGHT_MODEL=your-provider-light-model
 ```
 
 修改配置后需要重启后端。`GET /health` 会返回 `aiEngine.providerMode` 和 `aiEngine.diagnostics`，用于确认当前是 Anthropic 直连、AWS Bedrock 还是 Anthropic 兼容代理。
+
+### 输出语言
+
+面向用户的输出默认是简体中文。如果希望 AI 回答、流式进度文案和生成的 Agent-Driven 报告都使用英文，配置：
+
+```bash
+SMARTPERFETTO_OUTPUT_LANGUAGE=en
+```
+
+可用值包括 `zh-CN` 和 `en`。修改 `.env` 后需要重启 backend。
 
 ### 轮次预算
 

@@ -4,6 +4,7 @@
 
 import type { SceneType } from './sceneClassifier';
 import { getRegisteredScenes } from './strategyLoader';
+import { DEFAULT_OUTPUT_LANGUAGE, outputLanguageDisplayName, parseOutputLanguage, type OutputLanguage } from './outputLanguage';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
@@ -38,6 +39,8 @@ export interface ClaudeAgentConfig {
   /** Timeout (ms) for the single-turn query complexity classifier. Default: 30_000.
    *  Override via CLAUDE_CLASSIFIER_TIMEOUT_MS. */
   classifierTimeoutMs: number;
+  /** User-facing output language. Default: zh-CN. Override via SMARTPERFETTO_OUTPUT_LANGUAGE=en. */
+  outputLanguage: OutputLanguage;
 }
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -79,6 +82,8 @@ export function loadClaudeConfig(overrides?: Partial<ClaudeAgentConfig>): Claude
       ?? (process.env.CLAUDE_VERIFIER_TIMEOUT_MS ? parseInt(process.env.CLAUDE_VERIFIER_TIMEOUT_MS, 10) : 60_000),
     classifierTimeoutMs: overrides?.classifierTimeoutMs
       ?? (process.env.CLAUDE_CLASSIFIER_TIMEOUT_MS ? parseInt(process.env.CLAUDE_CLASSIFIER_TIMEOUT_MS, 10) : 30_000),
+    outputLanguage: overrides?.outputLanguage
+      ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
   };
 }
 
@@ -183,6 +188,12 @@ export function getClaudeRuntimeDiagnostics() {
     providerMode,
     model: process.env.CLAUDE_MODEL || DEFAULT_MODEL,
     lightModel: process.env.CLAUDE_LIGHT_MODEL || DEFAULT_LIGHT_MODEL,
+    outputLanguage: {
+      value: parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
+      displayName: outputLanguageDisplayName(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE)),
+      env: 'SMARTPERFETTO_OUTPUT_LANGUAGE',
+      default: DEFAULT_OUTPUT_LANGUAGE,
+    },
     configured: hasClaudeCredentials(),
     credentialSources,
     baseUrlConfigured: !!process.env.ANTHROPIC_BASE_URL,
