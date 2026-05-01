@@ -852,6 +852,71 @@ export interface MemoryRootCauseContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 15 — IO, Network, Wakelock, Wakeup Attribution
+//          (Spark #15, #18, #20, #56)
+// =============================================================================
+
+/** IO blocking event row (Spark #15). */
+export interface IoBlockEvent {
+  ts: number;
+  durNs: number;
+  process?: string;
+  thread?: string;
+  /** Filesystem operation (read, write, fsync, …). */
+  op: string;
+  /** Filename or device path when known. */
+  path?: string;
+  /** Bytes transferred. */
+  bytes?: number;
+  /** Filesystem driver (ext4, f2fs, …). */
+  fs?: string;
+}
+
+/** Network packet/wait grouping. */
+export interface NetworkAttribution {
+  /** Local endpoint description. */
+  endpoint: string;
+  process?: string;
+  ts: number;
+  durNs: number;
+  /** Protocol layer (`tcp`, `udp`, `http`). */
+  protocol?: string;
+  /** Bytes sent / received. */
+  bytesIn?: number;
+  bytesOut?: number;
+  /** Wait reason matched to a thread state. */
+  waitReason?: string;
+}
+
+/** Battery / wakelock baseline row (Spark #18). */
+export interface WakelockBaselineRow {
+  process?: string;
+  uid?: number;
+  /** Cumulative wake-time (ms). */
+  totalMs: number;
+  /** Wake count over baseline window. */
+  wakeCount: number;
+  /** Per-wake median duration (ms). */
+  medianMs?: number;
+}
+
+/**
+ * IoNetworkWakeupContract (Plan 15)
+ *
+ * Bundles IO, network and wakelock attribution. All facets optional so the
+ * Skill can run on traces that captured only a subset.
+ */
+export interface IoNetworkWakeupContract extends SparkProvenance {
+  range: NsTimeRange;
+  ioEvents?: IoBlockEvent[];
+  networkAttribution?: NetworkAttribution[];
+  wakelockBaseline?: WakelockBaselineRow[];
+  /** Wakeup edges that originated from IO / network (Spark #20). */
+  wakeupEdges?: SchedulerWakeupEdge[];
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

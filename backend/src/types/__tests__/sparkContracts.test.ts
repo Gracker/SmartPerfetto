@@ -18,6 +18,7 @@ import {
   type BinderRootCauseChainContract,
   type CpuThermalPmuContract,
   type MemoryRootCauseContract,
+  type IoNetworkWakeupContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -659,5 +660,66 @@ describe('Plan 14 — MemoryRootCauseContract', () => {
     expect(contract.lmkEvents?.[0].reason).toBe('visible_app_critical');
     expect(contract.externalArtifacts?.[0].retainedBytes).toBe(80_000_000);
     expect(contract.baselineDiff?.topContributors).toHaveLength(2);
+  });
+});
+
+describe('Plan 15 — IoNetworkWakeupContract', () => {
+  it('blends IO, network, wakelock baseline and wakeup edges', () => {
+    const contract: IoNetworkWakeupContract = {
+      ...makeSparkProvenance({source: 'io-network-wakeup'}),
+      range: {startNs: 0, endNs: 5_000_000_000},
+      ioEvents: [
+        {
+          ts: 100_000_000,
+          durNs: 50_000_000,
+          process: 'com.example.app',
+          thread: 'main',
+          op: 'fsync',
+          path: '/data/data/com.example.app/databases/main.db',
+          bytes: 4096,
+          fs: 'f2fs',
+        },
+      ],
+      networkAttribution: [
+        {
+          endpoint: 'api.example.com:443',
+          process: 'com.example.app',
+          ts: 200_000_000,
+          durNs: 800_000_000,
+          protocol: 'tcp',
+          bytesIn: 50_000,
+          bytesOut: 1_200,
+          waitReason: 'tcp_recv',
+        },
+      ],
+      wakelockBaseline: [
+        {
+          process: 'com.example.app',
+          uid: 10100,
+          totalMs: 12_000,
+          wakeCount: 24,
+          medianMs: 250,
+        },
+      ],
+      wakeupEdges: [
+        {
+          fromUtid: 5,
+          toUtid: 12,
+          ts: 100_500_000,
+          latencyNs: 200_000,
+          reason: 'irq[mmc0]',
+        },
+      ],
+      coverage: [
+        {sparkId: 15, planId: '15', status: 'scaffolded'},
+        {sparkId: 18, planId: '15', status: 'scaffolded'},
+        {sparkId: 20, planId: '15', status: 'scaffolded'},
+        {sparkId: 56, planId: '15', status: 'scaffolded'},
+      ],
+    };
+    expect(contract.ioEvents?.[0].fs).toBe('f2fs');
+    expect(contract.networkAttribution?.[0].waitReason).toBe('tcp_recv');
+    expect(contract.wakelockBaseline?.[0].wakeCount).toBe(24);
+    expect(contract.wakeupEdges?.[0].reason).toMatch(/irq/);
   });
 });
