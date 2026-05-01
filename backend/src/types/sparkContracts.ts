@@ -394,6 +394,65 @@ export interface TimelineBinningContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 06 — Anonymization Mapping 与 Large-Trace Streaming (Spark #29, #30)
+// =============================================================================
+
+/** Domain of a redacted identifier. */
+export type AnonymizationDomain =
+  | 'package'
+  | 'process'
+  | 'thread'
+  | 'path'
+  | 'user_id'
+  | 'device_id';
+
+/** One identifier→placeholder mapping. */
+export interface AnonymizationMapping {
+  domain: AnonymizationDomain;
+  /** Original (sensitive) identifier. */
+  original: string;
+  /** Stable placeholder used in the redacted output. */
+  placeholder: string;
+  /** Optional collision counter when multiple originals share a placeholder. */
+  collisionIndex?: number;
+}
+
+/** Streaming pipeline progress for huge traces (Spark #30). */
+export interface LargeTraceStreamProgress {
+  /** Total bytes the importer is expected to process. */
+  totalBytes: number;
+  /** Bytes processed so far. */
+  processedBytes: number;
+  /** Streaming chunks emitted so far. */
+  chunksEmitted: number;
+  /** True when the entire trace has been ingested. */
+  done: boolean;
+  /** Per-chunk wall-time in ms (last chunk). */
+  lastChunkMs?: number;
+}
+
+/**
+ * AnonymizationContract (Plan 06)
+ *
+ * Container that travels with redacted artifacts. Holds:
+ *  - Stable mappings so the same package always becomes the same placeholder.
+ *  - Streaming progress when the trace is too large for in-memory ingestion.
+ *  - Redaction state — `state: 'redacted'` is required before exporting to a
+ *    public report; consumers must error otherwise.
+ */
+export interface AnonymizationContract extends SparkProvenance {
+  /** Redaction state — drives downstream gating. */
+  state: 'raw' | 'partial' | 'redacted';
+  /** Per-domain mapping table. */
+  mappings: AnonymizationMapping[];
+  /** Domains that are still raw (not yet mapped). */
+  pendingDomains?: AnonymizationDomain[];
+  /** Streaming progress when ingesting >1GB traces. */
+  streamProgress?: LargeTraceStreamProgress;
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

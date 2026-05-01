@@ -11,6 +11,7 @@ import {
   type SmartPerfettoSqlPackageContract,
   type ArtifactSchemaContract,
   type TimelineBinningContract,
+  type AnonymizationContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -265,5 +266,49 @@ describe('Plan 05 — TimelineBinningContract', () => {
     expect(contract.rle).toHaveLength(3);
     expect(contract.rle![1].delta).toBe(30);
     expect(contract.originalSampleCount).toBeGreaterThan(contract.rle!.length);
+  });
+});
+
+describe('Plan 06 — AnonymizationContract', () => {
+  it('captures stable identifier mappings across domains', () => {
+    const contract: AnonymizationContract = {
+      ...makeSparkProvenance({source: 'anonymizer'}),
+      state: 'redacted',
+      mappings: [
+        {
+          domain: 'package',
+          original: 'com.example.confidential',
+          placeholder: 'app_a',
+        },
+        {domain: 'process', original: 'main', placeholder: 'proc_a'},
+        {
+          domain: 'path',
+          original: '/data/data/com.example.confidential/files/x.db',
+          placeholder: '/data/data/app_a/files/file_1',
+        },
+      ],
+      coverage: [{sparkId: 29, planId: '06', status: 'scaffolded'}],
+    };
+    expect(contract.state).toBe('redacted');
+    expect(contract.mappings).toHaveLength(3);
+  });
+
+  it('tracks streaming progress for large traces', () => {
+    const contract: AnonymizationContract = {
+      ...makeSparkProvenance({source: 'large-trace-streamer'}),
+      state: 'partial',
+      mappings: [],
+      pendingDomains: ['path', 'user_id'],
+      streamProgress: {
+        totalBytes: 2_000_000_000,
+        processedBytes: 1_200_000_000,
+        chunksEmitted: 24,
+        done: false,
+        lastChunkMs: 350,
+      },
+      coverage: [{sparkId: 30, planId: '06', status: 'scaffolded'}],
+    };
+    expect(contract.streamProgress?.done).toBe(false);
+    expect(contract.pendingDomains).toContain('path');
   });
 });
