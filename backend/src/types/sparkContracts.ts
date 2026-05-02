@@ -1443,6 +1443,154 @@ export interface AndroidperformanceAospRagContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 50 — App/Device/Build/CUJ Baseline Store
+//          (Spark #34, #67, #105, #150, #176, #177, #178)
+//
+// Reuse contract: `TraceSummaryBaselineRef` (Plan 02) and
+// `TraceSummaryMetric.metricId` (Plan 02) are reused here. Plan 50 adds
+// durable persistence + cross-baseline diff + CI gate semantics on top.
+// =============================================================================
+
+/**
+ * Per-metric aggregate within a baseline. Numeric fields ignore meaning
+ * when `unsupportedReason` is set — this keeps missing-data paths explicit
+ * (e.g. metric not collected on this device, sample count below threshold).
+ */
+export interface BaselineMetric {
+  /** Reuses TraceSummaryMetric.metricId namespace, e.g. `frames.jank_count.p95`. */
+  metricId: string;
+  /** Unit string: `ns` | `ms` | `count` | `percent` | `bytes`. */
+  unit: string;
+  median: number;
+  p95: number;
+  p99: number;
+  max: number;
+  /** Sample count contributing to this metric. */
+  sampleCount: number;
+  /** Optional ns range when bounded to a window. */
+  range?: NsTimeRange;
+  /**
+   * Why this metric is unavailable for this baseline. When set, consumers
+   * must ignore the numeric fields above.
+   */
+  unsupportedReason?: string;
+}
+
+/**
+ * A baseline is a curated aggregate over N traces matching the same key.
+ *
+ * Extends `TraceSummaryBaselineRef` (Plan 02) so consumers do not see
+ * a parallel `baselineId` / `sampleCount` / `capturedAt` shape. The base
+ * type provides those fields; this contract adds curation, redaction,
+ * window, and metrics.
+ *
+ * Note: `sampleCount` is optional via the base type. The Plan 50 service
+ * layer (`baselineStore.ts`) enforces `sampleCount >= 3` when status
+ * advances to `'published'`. The schema does not enforce that floor so
+ * older snapshots remain readable.
+ */
+export interface BaselineRecord
+  extends SparkProvenance,
+    TraceSummaryBaselineRef {
+  // Inherited from TraceSummaryBaselineRef:
+  //   baselineId, artifactId, capturedAt, sampleCount?
+  // New fields below.
+  key: PerfBaselineKey;
+  status: CurationStatus;
+  /**
+   * Redaction state. Must be `'redacted'` when published AND `key` carries
+   * identifiable info (raw appId/deviceId). When the key is anonymized at
+   * capture time, `'raw'` is acceptable for `published` status.
+   */
+  redactionState: 'raw' | 'partial' | 'redacted';
+  /** First trace timestamp in the baseline window (epoch ms). */
+  windowStartMs: number;
+  /** Last trace timestamp in the baseline window (epoch ms). */
+  windowEndMs: number;
+  metrics: BaselineMetric[];
+  /** Optional pointer to the SoC/OEM matrix this baseline belongs to. */
+  matrixId?: string;
+  /** Notes from the curator (manual annotation). */
+  curatorNote?: string;
+}
+
+/**
+ * Per-metric delta entry — supports missing-data paths via
+ * `unsupportedReason`. When severity is `'unsupported'`, callers must
+ * ignore the numeric fields.
+ */
+export interface BaselineDiffDelta {
+  metricId: string;
+  unit: string;
+  /** Numeric fields are optional so missing-data paths remain visible. */
+  baseValue?: number;
+  candidateValue?: number;
+  deltaAbs?: number;
+  deltaPct?: number;
+  /** Detected regression severity. `unsupported` when delta cannot be computed. */
+  severity: 'none' | 'info' | 'warning' | 'regression' | 'unsupported';
+  /**
+   * Why this delta could not be computed, e.g. `'missing on baseline'`,
+   * `'sample count below 3'`, `'divide-by-zero'`. Required when severity
+   * is `'unsupported'`.
+   */
+  unsupportedReason?: string;
+}
+
+/** Diff between two baselines (or trace-vs-baseline). */
+export interface BaselineDiffArtifact extends SparkProvenance {
+  baseBaselineId: string;
+  /** Either another baseline or a single trace under analysis. */
+  candidate:
+    | {kind: 'baseline'; id: string}
+    | {kind: 'trace'; traceId: string};
+  deltas: BaselineDiffDelta[];
+  /** Top contributors to the largest regressions, ordered worst-first. */
+  topRegressions?: Array<{
+    metricId: string;
+    deltaPct: number;
+    evidence?: SparkEvidenceRef;
+  }>;
+}
+
+/**
+ * Regression gate output for CI integration (Spark #105).
+ *
+ * `diff` is optional when `status` is `'skipped'` — earlier drafts forced
+ * a meaningless diff for skipped gates. The skipped gate must instead
+ * record `skipReason` so triagers can audit why the gate did not run.
+ */
+export interface RegressionGateResult extends SparkProvenance {
+  /** Stable gate id, e.g. `ci-pr-12345`. */
+  gateId: string;
+  baselineId: string;
+  status: 'pass' | 'fail' | 'flaky' | 'skipped';
+  /** Diff that drove the decision. Optional only when status is `'skipped'`. */
+  diff?: BaselineDiffArtifact;
+  /** Why the gate was skipped (only when status='skipped'). */
+  skipReason?: string;
+  /** Threshold rule that triggered (when status is `'fail'`). */
+  rule?: {metricId: string; threshold: number; observed: number};
+}
+
+/**
+ * BaselineStoreContract (Plan 50)
+ *
+ * Surface of the durable baseline store. Lists all baselines with
+ * optional cross-baseline matrix descriptors for SoC/OEM comparison.
+ */
+export interface BaselineStoreContract extends SparkProvenance {
+  baselines: BaselineRecord[];
+  /** Cross-baseline matrices for SoC/OEM/build comparison (Spark #177, #178). */
+  matrix?: Array<{
+    matrixId: string;
+    baselineIds: string[];
+    description?: string;
+  }>;
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 

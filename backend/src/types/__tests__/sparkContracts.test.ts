@@ -34,6 +34,12 @@ import {
   type RagRetrievalHit,
   type RagRetrievalResult,
   type AndroidperformanceAospRagContract,
+  type BaselineMetric,
+  type BaselineRecord,
+  type BaselineDiffDelta,
+  type BaselineDiffArtifact,
+  type RegressionGateResult,
+  type BaselineStoreContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -1153,5 +1159,144 @@ describe('Plan 55 — AndroidperformanceAospRagContract', () => {
     };
     expect(contract.index.aosp.chunkCount).toBe(8192);
     expect(contract.coverage).toHaveLength(3);
+  });
+});
+
+describe('Plan 50 — BaselineStoreContract', () => {
+  it('BaselineMetric records aggregated stats with sample count', () => {
+    const metric: BaselineMetric = {
+      metricId: 'frames.jank_count.p95',
+      unit: 'count',
+      median: 4,
+      p95: 11,
+      p99: 17,
+      max: 23,
+      sampleCount: 12,
+    };
+    expect(metric.metricId).toBe('frames.jank_count.p95');
+    expect(metric.sampleCount).toBe(12);
+  });
+
+  it('BaselineMetric carries unsupportedReason for unsupported devices', () => {
+    const metric: BaselineMetric = {
+      metricId: 'gpu.render_stage.fragment_ns',
+      unit: 'ns',
+      median: 0,
+      p95: 0,
+      p99: 0,
+      max: 0,
+      sampleCount: 0,
+      unsupportedReason: 'GPU render stages not collected on this device',
+    };
+    expect(metric.unsupportedReason).toBeDefined();
+  });
+
+  it('BaselineRecord extends TraceSummaryBaselineRef and adds curation', () => {
+    const baseline: BaselineRecord = {
+      ...makeSparkProvenance({source: 'plan-50-test'}),
+      // Inherited from TraceSummaryBaselineRef
+      baselineId: 'com.example.feed/pixel-9-android-15/main-abc1234/scroll_feed',
+      artifactId: 'artifact-baseline-001',
+      capturedAt: 1714600000000,
+      sampleCount: 12,
+      // New Plan 50 fields
+      key: {
+        appId: 'com.example.feed',
+        deviceId: 'pixel-9-android-15',
+        buildId: 'main-abc1234',
+        cuj: 'scroll_feed',
+      },
+      status: 'reviewed',
+      redactionState: 'partial',
+      windowStartMs: 1714000000000,
+      windowEndMs: 1714600000000,
+      metrics: [
+        {
+          metricId: 'frames.jank_count.p95',
+          unit: 'count',
+          median: 4,
+          p95: 11,
+          p99: 17,
+          max: 23,
+          sampleCount: 12,
+        },
+      ],
+    };
+    expect(baseline.key.cuj).toBe('scroll_feed');
+    expect(baseline.metrics).toHaveLength(1);
+  });
+
+  it('BaselineDiffDelta supports unsupported severity with reason', () => {
+    const delta: BaselineDiffDelta = {
+      metricId: 'frames.jank_count.p95',
+      unit: 'count',
+      severity: 'unsupported',
+      unsupportedReason: 'sample count below 3',
+    };
+    expect(delta.baseValue).toBeUndefined();
+    expect(delta.severity).toBe('unsupported');
+  });
+
+  it('BaselineDiffArtifact handles trace-vs-baseline candidate', () => {
+    const diff: BaselineDiffArtifact = {
+      ...makeSparkProvenance({source: 'plan-50-test'}),
+      baseBaselineId: 'com.example/pixel/main/scroll',
+      candidate: {kind: 'trace', traceId: 'trace-pr-12345'},
+      deltas: [
+        {
+          metricId: 'frames.jank_count.p95',
+          unit: 'count',
+          baseValue: 11,
+          candidateValue: 24,
+          deltaAbs: 13,
+          deltaPct: 1.18,
+          severity: 'regression',
+        },
+      ],
+    };
+    expect(diff.candidate.kind).toBe('trace');
+    expect(diff.deltas[0].severity).toBe('regression');
+  });
+
+  it('RegressionGateResult skipped status omits diff but records skipReason', () => {
+    const gate: RegressionGateResult = {
+      ...makeSparkProvenance({source: 'plan-50-test'}),
+      gateId: 'ci-pr-12345',
+      baselineId: 'com.example/pixel/main/scroll',
+      status: 'skipped',
+      skipReason: 'baseline missing for this build (first run)',
+    };
+    expect(gate.diff).toBeUndefined();
+    expect(gate.skipReason).toBe(
+      'baseline missing for this build (first run)',
+    );
+  });
+
+  it('BaselineStoreContract holds matrix descriptors for SoC comparison', () => {
+    const contract: BaselineStoreContract = {
+      ...makeSparkProvenance({source: 'plan-50-test'}),
+      baselines: [],
+      matrix: [
+        {
+          matrixId: 'mtk-soc-comparison',
+          baselineIds: [
+            'com.example/dimensity-9300/main/scroll',
+            'com.example/dimensity-8200/main/scroll',
+          ],
+          description: 'MTK Dimensity series comparison for scroll CUJ',
+        },
+      ],
+      coverage: [
+        {sparkId: 34, planId: '50', status: 'scaffolded'},
+        {sparkId: 67, planId: '50', status: 'scaffolded'},
+        {sparkId: 105, planId: '50', status: 'scaffolded'},
+        {sparkId: 150, planId: '50', status: 'scaffolded'},
+        {sparkId: 176, planId: '50', status: 'scaffolded'},
+        {sparkId: 177, planId: '50', status: 'scaffolded'},
+        {sparkId: 178, planId: '50', status: 'scaffolded'},
+      ],
+    };
+    expect(contract.matrix?.[0].baselineIds).toHaveLength(2);
+    expect(contract.coverage).toHaveLength(7);
   });
 });
