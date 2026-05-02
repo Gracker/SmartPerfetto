@@ -1345,6 +1345,34 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     { annotations: { readOnlyHint: true } },
   );
 
+  // lookup_aosp_source (Plan 55 M1): retrieve indexed AOSP source
+  // chunks. Public read-only. License gate at ingestion guarantees
+  // every retrieved chunk carries an explicit license; the agent
+  // contract still applies — when the result is `unsupportedReason
+  // === 'license_blocked'` (or empty index), do NOT summarize, do
+  // NOT cite as evidence, say the source is unavailable.
+  const lookupAospSource = tool(
+    'lookup_aosp_source',
+    'Retrieve indexed AOSP source chunks (frameworks/base, system/, etc.) to ground analysis claims in the actual implementation. ' +
+    'Returns ranked snippets with license + commit-anchored chunkId. ' +
+    'When the result carries `unsupportedReason` (license_blocked, index empty), the agent must say the source is unavailable and must NOT summarize, paraphrase, or invent content.',
+    {
+      query: z.string().describe('Search query — typically a function or class name, or a behavior description.'),
+      top_k: z.number().int().min(1).max(20).optional().describe('Maximum hits returned (1-20, default 5).'),
+    },
+    async ({ query, top_k }) => {
+      const store = getRagStore();
+      const result = store.search(query, {
+        topK: top_k ?? 5,
+        kinds: ['aosp'],
+      });
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(result) }],
+      };
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   // recall_project_memory (Plan 44): pure-read recall over project +
   // world memory entries. Strict invariant: handler MUST NOT cause any
   // disk writes; ProjectMemory.recallProjectMemory() is enforced via
@@ -2446,6 +2474,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public');
     registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public');
     registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public');
+    registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public');
     registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public');
     registry.registerSdk(compareBaselines, 'compare_baselines', 'public');
     registry.registerSdk(recallProjectMemory, 'recall_project_memory', 'public');
