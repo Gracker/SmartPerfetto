@@ -30,6 +30,10 @@ import {
   type CaseRef,
   type MemoryPromotionTrigger,
   type MemoryPromotionPolicy,
+  type RagChunk,
+  type RagRetrievalHit,
+  type RagRetrievalResult,
+  type AndroidperformanceAospRagContract,
 } from '../sparkContracts';
 
 describe('sparkContracts — shared provenance', () => {
@@ -1059,5 +1063,95 @@ describe('First-tier shared base types', () => {
     };
     expect(policy.trigger).toBe('skill_eval_pass');
     expect(policy.evalCaseId).toBe('scrolling/jank/heavy_mixed');
+  });
+});
+
+describe('Plan 55 — AndroidperformanceAospRagContract', () => {
+  it('accepts a minimal blog chunk without license', () => {
+    const chunk: RagChunk = {
+      chunkId: 'sha256:blog001',
+      kind: 'androidperformance.com',
+      uri: 'https://androidperformance.com/perfetto-binder',
+      title: 'Binder transaction analysis with Perfetto',
+      snippet: 'When the UI thread blocks on a binder call, ...',
+      indexedAt: 1714600000000,
+    };
+    expect(chunk.kind).toBe('androidperformance.com');
+    expect(chunk.license).toBeUndefined();
+  });
+
+  it('AOSP chunk carries license and verifiedAt for audit', () => {
+    const chunk: RagChunk = {
+      chunkId: 'sha256:aosp042',
+      kind: 'aosp',
+      uri: 'frameworks/base/services/.../HwcLayer.cpp',
+      title: 'HwcLayer composition fallback',
+      snippet: 'When a layer falls back to GPU composition, ...',
+      license: 'Apache-2.0',
+      indexedAt: 1714600000000,
+      verifiedAt: 1714686400000,
+    };
+    expect(chunk.license).toBe('Apache-2.0');
+    expect(chunk.verifiedAt).toBeGreaterThan(chunk.indexedAt);
+  });
+
+  it('chunk carries unsupportedReason when license expires', () => {
+    const chunk: RagChunk = {
+      chunkId: 'sha256:oemxyz',
+      kind: 'oem_sdk',
+      uri: 'docs/proprietary-sdk/intro.md',
+      snippet: '[REDACTED]',
+      license: 'proprietary',
+      indexedAt: 1714600000000,
+      unsupportedReason: 'license expired 2026-04-30',
+    };
+    expect(chunk.unsupportedReason).toBe('license expired 2026-04-30');
+  });
+
+  it('RagRetrievalHit can carry per-hit unsupportedReason without chunk', () => {
+    const hit: RagRetrievalHit = {
+      chunkId: 'sha256:evicted',
+      score: 0.42,
+      unsupportedReason: 'chunk evicted from store',
+    };
+    expect(hit.chunk).toBeUndefined();
+    expect(hit.unsupportedReason).toBe('chunk evicted from store');
+  });
+
+  it('RagRetrievalResult records retrieval-level unsupportedReason', () => {
+    const retrieval: RagRetrievalResult = {
+      ...makeSparkProvenance({
+        source: 'plan-55-test',
+        unsupportedReason: 'all sources blocked by license policy',
+      }),
+      query: 'binder dispatch latency',
+      results: [],
+      probed: ['aosp', 'oem_sdk'],
+      retrievedAt: 1714600000000,
+    };
+    expect(retrieval.results).toHaveLength(0);
+    expect(isUnsupported(retrieval)).toBe(true);
+    expect(retrieval.probed).toContain('aosp');
+  });
+
+  it('AndroidperformanceAospRagContract tracks per-source index counts', () => {
+    const contract: AndroidperformanceAospRagContract = {
+      ...makeSparkProvenance({source: 'plan-55-test'}),
+      index: {
+        'androidperformance.com': {chunkCount: 1024, lastIndexedAt: 1714600000000},
+        aosp: {chunkCount: 8192, lastIndexedAt: 1714600000000},
+        oem_sdk: {chunkCount: 0},
+        project_memory: {chunkCount: 256},
+        world_memory: {chunkCount: 32},
+        case_library: {chunkCount: 12},
+      },
+      coverage: [
+        {sparkId: 181, planId: '55', status: 'scaffolded'},
+        {sparkId: 182, planId: '55', status: 'scaffolded'},
+        {sparkId: 183, planId: '55', status: 'scaffolded'},
+      ],
+    };
+    expect(contract.index.aosp.chunkCount).toBe(8192);
+    expect(contract.coverage).toHaveLength(3);
   });
 });

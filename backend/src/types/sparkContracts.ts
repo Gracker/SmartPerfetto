@@ -1342,6 +1342,107 @@ export interface DomainSkillEvalContract extends SparkProvenance {
 }
 
 // =============================================================================
+// Plan 55 — androidperformance.com / AOSP / OEM SDK RAG (Spark #181-#183)
+//
+// Note: `RagSourceKind` and `RagDocumentRef` live in the first-tier shared
+// base types block at the top of this file — Plan 44 also imports them.
+// =============================================================================
+
+/**
+ * One indexed knowledge chunk in the RAG store.
+ *
+ * License is required at ingestion when `kind` is `aosp` or `oem_sdk`; the
+ * Plan 55 ingester rejects those chunks if license is missing. For other
+ * kinds (blog, project_memory, world_memory, case_library) license is
+ * optional because the source has its own implicit policy.
+ */
+export interface RagChunk {
+  /** Stable chunk id (sha-256 prefix of source + offset). */
+  chunkId: string;
+  /** Source kind — uses the strict enum from shared base types. */
+  kind: RagSourceKind;
+  /** Original URL or local path. */
+  uri: string;
+  /** Display title of the parent document. */
+  title?: string;
+  /** Tokenized snippet shown to the LLM. */
+  snippet: string;
+  /** Embedding vector if the ingester produced one. Length is model-specific. */
+  embedding?: number[];
+  /** Raw token count of the snippet (for context budgeting). */
+  tokenCount?: number;
+  /**
+   * License of the source. Required for `aosp` / `oem_sdk` kinds.
+   * Optional otherwise — see comment above.
+   */
+  license?: string;
+  /** When the chunk was indexed (epoch ms). */
+  indexedAt: number;
+  /** Author or curator. */
+  author?: string;
+  /** When the source was last verified fresh (epoch ms). */
+  verifiedAt?: number;
+  /**
+   * Why this chunk is unavailable for retrieval, e.g. `'license expired'`,
+   * `'consent revoked'`, `'source 404'`. When set, retrieval must skip the
+   * chunk but the entry stays for audit so previous citations remain
+   * traceable.
+   */
+  unsupportedReason?: string;
+}
+
+/** A single retrieval hit — supports per-hit missing-data paths. */
+export interface RagRetrievalHit {
+  chunkId: string;
+  /** Similarity score 0..1. */
+  score: number;
+  /** Optional when the hit could not be materialized at retrieval time. */
+  chunk?: RagChunk;
+  /**
+   * Why this hit could not be materialized, e.g. `'chunk evicted'`,
+   * `'license blocked at retrieval time'`. When set, `chunk` is expected to
+   * be undefined and the agent must not invent content.
+   */
+  unsupportedReason?: string;
+}
+
+/**
+ * Output of a single retrieval call. Carries provenance so consumers can
+ * audit which kinds were probed and when.
+ */
+export interface RagRetrievalResult extends SparkProvenance {
+  /** The query string used for retrieval. */
+  query: string;
+  /** Ranked hits — possibly empty if the whole retrieval failed. */
+  results: RagRetrievalHit[];
+  /** Which source kinds were probed in this retrieval call. */
+  probed: RagSourceKind[];
+  /** When the retrieval ran (epoch ms). */
+  retrievedAt: number;
+  // Note: `unsupportedReason` is inherited from SparkProvenance and indicates
+  // whole-retrieval failure (e.g. `'index empty'`, `'all sources blocked by
+  // license policy'`, `'embedding service unavailable'`). When set,
+  // `results` is expected to be empty.
+}
+
+/**
+ * AndroidperformanceAospRagContract (Plan 55)
+ *
+ * Surface of the RAG service. Tracks index population per source kind plus
+ * the most recent retrieval result for inline citation by reports.
+ */
+export interface AndroidperformanceAospRagContract extends SparkProvenance {
+  /** Number of chunks per source kind currently indexed. */
+  index: Record<
+    RagSourceKind,
+    {chunkCount: number; lastIndexedAt?: number}
+  >;
+  /** Sample retrieval result attached when the contract is emitted via MCP. */
+  lastRetrieval?: RagRetrievalResult;
+  coverage: SparkCoverageEntry[];
+}
+
+// =============================================================================
 // Helpers
 // =============================================================================
 
