@@ -12,8 +12,12 @@
     "format:check": "biome check --formatter-enabled=true --linter-enabled=false --assist-enabled=false package.json backend/package.json biome.json knip.json",
     "deadcode": "knip --dependencies --max-show-issues 50 --no-config-hints",
     "shellcheck": "shellcheck -x start.sh scripts/*.sh",
+    "rust:fmt": "cargo fmt --manifest-path rust/flamegraph-analyzer/Cargo.toml -- --check",
+    "rust:check": "cargo check --manifest-path rust/flamegraph-analyzer/Cargo.toml",
+    "rust:test": "cargo test --manifest-path rust/flamegraph-analyzer/Cargo.toml",
+    "rust:verify": "npm run rust:fmt && npm run rust:check && npm run rust:test",
     "quality": "npm run lint && npm run format:check && npm run deadcode && npm run shellcheck",
-    "verify:pr": "npm run quality && npm --prefix backend run verify:pr"
+    "verify:pr": "npm run quality && npm run rust:verify && npm --prefix backend run verify:pr"
   },
   "engines": {
     "node": ">=24.0.0 <25.0.0"

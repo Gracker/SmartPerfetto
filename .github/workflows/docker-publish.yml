@@ -41,6 +41,12 @@ jobs:
       - name: Run root quality checks
         run: npm run quality
 
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust analyzer checks
+        run: npm run rust:verify
+
       - name: Run PR verification gate
         run: cd backend && npm run verify:pr
 

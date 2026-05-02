@@ -15,7 +15,17 @@ RUN npm run build
 RUN npm prune --production
 
 # ============================
-# Stage 2: Download trace_processor_shell
+# Stage 2: Build Rust flamegraph analyzer
+# ============================
+FROM rust:1-bookworm AS flamegraph-analyzer-builder
+
+WORKDIR /app/rust/flamegraph-analyzer
+COPY rust/flamegraph-analyzer/Cargo.toml rust/flamegraph-analyzer/Cargo.lock ./
+COPY rust/flamegraph-analyzer/src ./src
+RUN cargo build --release
+
+# ============================
+# Stage 3: Download trace_processor_shell
 # ============================
 # Pinned to PERFETTO_VERSION + per-platform SHA256 from
 # scripts/trace-processor-pin.env (single source of truth across
@@ -50,7 +60,7 @@ RUN . /tmp/pin.env && \
     /tmp/trace_processor_shell --version | head -n 1
 
 # ============================
-# Stage 3: Runtime
+# Stage 4: Runtime
 # ============================
 FROM node:24-bookworm-slim
 
@@ -70,6 +80,10 @@ COPY --from=backend-builder /app/backend/package.json ./backend/
 COPY --from=backend-builder /app/backend/data/perfettoSqlIndex.light.json ./backend/data/perfettoSqlIndex.light.json
 COPY --from=backend-builder /app/backend/data/perfettoSqlIndex.json ./backend/data/perfettoSqlIndex.json
 COPY --from=backend-builder /app/backend/data/perfettoStdlibSymbols.json ./backend/data/perfettoStdlibSymbols.json
+
+# Copy Rust flamegraph analyzer. The backend auto-discovers this path before
+# falling back to TypeScript analysis.
+COPY --from=flamegraph-analyzer-builder /app/rust/flamegraph-analyzer/target/release/flamegraph-analyzer ./rust/flamegraph-analyzer/target/release/flamegraph-analyzer
 
 # Copy backend runtime files (skills, strategies, templates)
 COPY backend/skills ./backend/skills

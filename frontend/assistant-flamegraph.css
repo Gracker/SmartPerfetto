@@ -1,0 +1,651 @@
+/* SmartPerfetto flamegraph extension for the prebuilt Perfetto AI Assistant. */
+
+.sp-flamegraph-tab.ai-view-tab {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--chat-text, #333);
+  font: inherit;
+  font-weight: 400;
+}
+
+.sp-flamegraph-tab.ai-view-tab::before {
+  content: "";
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  background:
+    linear-gradient(to top, transparent 0 18%, currentColor 18% 42%, transparent 42%),
+    linear-gradient(to top, transparent 0 34%, currentColor 34% 68%, transparent 68%),
+    linear-gradient(to top, transparent 0 12%, currentColor 12% 86%, transparent 86%);
+  background-position:
+    0 0,
+    5px 0,
+    10px 0;
+  background-repeat: no-repeat;
+  background-size: 3px 100%;
+  opacity: 0.82;
+}
+
+.sp-flamegraph-tab.ai-view-tab.active {
+  background: var(--chat-solid-primary, #3d5688);
+  color: var(--chat-user-text, #fff);
+  font-weight: 600;
+}
+
+.sp-flamegraph-body {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background:
+    radial-gradient(
+      circle at 88% -10%,
+      color-mix(in srgb, var(--chat-primary, #3d5688) 10%, transparent),
+      transparent 24rem
+    ),
+    var(--chat-bg, #fff);
+  color: var(--chat-text, #202124);
+  font-family: inherit;
+}
+
+.sp-flamegraph-body.active {
+  display: block;
+}
+
+.sp-flamegraph-shell {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.sp-flamegraph-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 14px;
+  padding: 14px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--chat-primary, #3d5688) 7%, transparent), transparent 58%),
+    color-mix(in srgb, var(--chat-bg, #fff) 86%, var(--chat-bg-secondary, #edf0f1));
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--chat-bg, #fff) 80%, transparent) inset;
+}
+
+.sp-flamegraph-title {
+  min-width: 0;
+}
+
+.sp-flamegraph-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 5px;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sp-flamegraph-kicker span {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--chat-warning, #e89e00);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--chat-warning, #e89e00) 18%, transparent);
+}
+
+.sp-flamegraph-title h2 {
+  margin: 0;
+  color: var(--chat-text, #202124);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.sp-flamegraph-title p {
+  margin: 5px 0 0;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.sp-flamegraph-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sp-flamegraph-btn {
+  border: 1px solid var(--chat-border, #dadce0);
+  border-radius: 999px;
+  padding: 7px 13px;
+  cursor: pointer;
+  background: var(--chat-bg, #fff);
+  color: var(--chat-text, #202124);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  transition:
+    transform 0.12s ease,
+    filter 0.12s ease,
+    border-color 0.12s ease;
+}
+
+.sp-flamegraph-btn:hover:not(:disabled) {
+  border-color: var(--chat-primary, #3d5688);
+}
+
+.sp-flamegraph-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.sp-flamegraph-btn.primary {
+  border-color: var(--chat-solid-primary, #3d5688);
+  background: var(--chat-solid-primary, #3d5688);
+  color: var(--chat-user-text, #fff);
+}
+
+.sp-flamegraph-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.sp-flamegraph-note {
+  border-left: 3px solid color-mix(in srgb, var(--chat-primary, #3d5688) 50%, var(--chat-border, #dadce0));
+  padding: 2px 0 2px 10px;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.sp-flamegraph-status {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  border: 1px solid color-mix(in srgb, var(--chat-warning, #e89e00) 26%, var(--chat-border, #dadce0));
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--chat-warning, #e89e00) 8%, var(--chat-bg, #fff));
+  color: var(--chat-text, #202124);
+  line-height: 1.55;
+  font-size: 12px;
+}
+
+.sp-flamegraph-status.error {
+  border-color: color-mix(in srgb, var(--chat-error, #ca2626) 28%, var(--chat-border, #dadce0));
+  background: color-mix(in srgb, var(--chat-error, #ca2626) 6%, var(--chat-bg, #fff));
+}
+
+.sp-flamegraph-status-mark {
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: var(--chat-warning, #e89e00);
+}
+
+.sp-flamegraph-status.error .sp-flamegraph-status-mark {
+  background: var(--chat-error, #ca2626);
+}
+
+.sp-flamegraph-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sp-flamegraph-metric {
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--chat-bg, #fff) 90%, var(--chat-bg-secondary, #edf0f1));
+}
+
+.sp-flamegraph-metric span {
+  display: block;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 11px;
+}
+
+.sp-flamegraph-metric strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--chat-text, #202124);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.sp-flamegraph-card {
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 14px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--chat-bg, #fff) 92%, var(--chat-bg-secondary, #edf0f1));
+}
+
+.sp-flamegraph-card h3 {
+  margin: 0 0 10px;
+  color: var(--chat-text, #202124);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sp-flamegraph-ai {
+  color: var(--chat-text, #202124);
+  line-height: 1.65;
+  font-size: 13px;
+}
+
+.sp-flamegraph-markdown {
+  white-space: normal;
+}
+
+.sp-flamegraph-markdown > :first-child {
+  margin-top: 0;
+}
+
+.sp-flamegraph-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.sp-flamegraph-markdown p {
+  margin: 0 0 10px;
+}
+
+.sp-flamegraph-markdown h4,
+.sp-flamegraph-markdown h5,
+.sp-flamegraph-markdown h6 {
+  margin: 15px 0 8px;
+  color: var(--chat-text, #202124);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.sp-flamegraph-markdown h4 {
+  font-size: 15px;
+}
+
+.sp-flamegraph-markdown h5,
+.sp-flamegraph-markdown h6 {
+  font-size: 13px;
+}
+
+.sp-flamegraph-markdown ul,
+.sp-flamegraph-markdown ol {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 12px;
+  padding-left: 20px;
+}
+
+.sp-flamegraph-markdown li {
+  padding-left: 2px;
+}
+
+.sp-flamegraph-markdown blockquote {
+  margin: 10px 0;
+  border-left: 3px solid color-mix(in srgb, var(--chat-primary, #3d5688) 44%, var(--chat-border, #dadce0));
+  border-radius: 0 10px 10px 0;
+  padding: 8px 11px;
+  background: color-mix(in srgb, var(--chat-primary, #3d5688) 6%, transparent);
+  color: var(--chat-text-secondary, #5f6368);
+}
+
+.sp-flamegraph-markdown code {
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 5px;
+  padding: 1px 5px;
+  background: color-mix(in srgb, var(--chat-bg, #fff) 68%, var(--chat-bg-secondary, #edf0f1));
+  color: var(--chat-text, #202124);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.sp-flamegraph-markdown pre {
+  overflow: auto;
+  margin: 10px 0 12px;
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 12px;
+  padding: 11px;
+  background: color-mix(in srgb, var(--chat-bg-secondary, #edf0f1) 72%, var(--chat-bg, #fff));
+}
+
+.sp-flamegraph-markdown pre code {
+  display: block;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+
+.sp-flamegraph-markdown a {
+  color: var(--chat-primary, #3d5688);
+  font-weight: 650;
+  text-decoration: none;
+}
+
+.sp-flamegraph-markdown a:hover {
+  text-decoration: underline;
+}
+
+.sp-flamegraph-markdown hr {
+  margin: 14px 0;
+  border: 0;
+  border-top: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+}
+
+.sp-flamegraph-table-scroll {
+  overflow: auto;
+  margin: 10px 0 12px;
+}
+
+.sp-flamegraph-markdown table {
+  width: 100%;
+  min-width: 360px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sp-flamegraph-markdown th,
+.sp-flamegraph-markdown td {
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  padding: 7px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.sp-flamegraph-markdown th {
+  background: color-mix(in srgb, var(--chat-primary, #3d5688) 8%, var(--chat-bg-secondary, #edf0f1));
+  color: var(--chat-text, #202124);
+}
+
+.sp-flamegraph-empty {
+  padding: 34px 24px;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 13px;
+}
+
+.sp-flamegraph-perfetto-notice p {
+  margin: 0;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.sp-flamegraph-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.sp-flamegraph-facts span {
+  border: 1px solid color-mix(in srgb, var(--chat-primary, #3d5688) 22%, var(--chat-border, #dadce0));
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: color-mix(in srgb, var(--chat-primary, #3d5688) 5%, var(--chat-bg, #fff));
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 11px;
+}
+
+.sp-flamegraph-empty-state {
+  display: grid;
+  grid-template-columns: minmax(148px, 0.38fr) minmax(0, 1fr);
+  gap: 18px;
+  align-items: stretch;
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 18px;
+  padding: 16px;
+  background:
+    linear-gradient(145deg, color-mix(in srgb, var(--chat-bg-secondary, #edf0f1) 76%, transparent), transparent 66%),
+    var(--chat-bg, #fff);
+}
+
+.sp-flamegraph-empty-visual {
+  position: relative;
+  display: grid;
+  min-height: 190px;
+  overflow: hidden;
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 16px;
+  background:
+    radial-gradient(
+      circle at 22% 18%,
+      color-mix(in srgb, var(--chat-warning, #e89e00) 18%, transparent),
+      transparent 9rem
+    ),
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--chat-bg-secondary, #edf0f1) 76%, transparent),
+      var(--chat-bg, #fff)
+    );
+}
+
+.sp-flamegraph-empty-visual::before {
+  content: "";
+  position: absolute;
+  inset: 18px;
+  border-radius: 14px;
+  border: 1px dashed color-mix(in srgb, var(--chat-text-secondary, #5f6368) 30%, transparent);
+}
+
+.sp-flamegraph-sample-ghost {
+  align-self: center;
+  display: grid;
+  gap: 7px;
+  padding: 0 24px;
+}
+
+.sp-flamegraph-sample-ghost span {
+  display: block;
+  width: var(--w);
+  height: 16px;
+  border-radius: 5px;
+  background: var(
+    --ghost-color,
+    color-mix(in srgb, var(--chat-warning, #e89e00) 26%, var(--chat-bg-tertiary, #e3e9eb))
+  );
+  opacity: 0.62;
+}
+
+.sp-flamegraph-sample-ghost span:nth-child(2) {
+  --ghost-color: color-mix(in srgb, var(--chat-warning, #e89e00) 34%, var(--chat-bg-tertiary, #e3e9eb));
+}
+
+.sp-flamegraph-sample-ghost span:nth-child(3) {
+  --ghost-color: color-mix(in srgb, var(--chat-primary, #3d5688) 28%, var(--chat-bg-tertiary, #e3e9eb));
+}
+
+.sp-flamegraph-sample-ghost span:nth-child(4) {
+  --ghost-color: color-mix(in srgb, var(--chat-warning, #e89e00) 24%, var(--chat-bg-tertiary, #e3e9eb));
+}
+
+.sp-flamegraph-sample-ghost span:nth-child(5) {
+  --ghost-color: color-mix(in srgb, var(--chat-primary, #3d5688) 22%, var(--chat-bg-tertiary, #e3e9eb));
+}
+
+.sp-flamegraph-zero-badge {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  border: 1px solid color-mix(in srgb, var(--chat-error, #ca2626) 30%, var(--chat-border, #dadce0));
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: color-mix(in srgb, var(--chat-error, #ca2626) 7%, var(--chat-bg, #fff));
+  color: var(--chat-error, #ca2626);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.sp-flamegraph-empty-copy {
+  min-width: 0;
+  align-self: center;
+}
+
+.sp-flamegraph-empty-eyebrow {
+  margin-bottom: 7px;
+  color: var(--chat-warning, #e89e00);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sp-flamegraph-empty-state h3 {
+  margin: 0;
+  color: var(--chat-text, #202124);
+  font-size: 18px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.sp-flamegraph-empty-state p {
+  max-width: 760px;
+  margin: 9px 0 0;
+  color: var(--chat-text-secondary, #5f6368);
+  line-height: 1.7;
+  font-size: 13px;
+}
+
+.sp-flamegraph-compare {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.sp-flamegraph-compare div {
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 12px;
+  padding: 10px;
+  background: color-mix(in srgb, var(--chat-bg, #fff) 88%, var(--chat-bg-secondary, #edf0f1));
+}
+
+.sp-flamegraph-compare strong,
+.sp-flamegraph-compare span {
+  display: block;
+}
+
+.sp-flamegraph-compare strong {
+  color: var(--chat-text, #202124);
+  font-size: 12px;
+}
+
+.sp-flamegraph-compare span {
+  margin-top: 4px;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sp-flamegraph-empty-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 12px;
+}
+
+.sp-flamegraph-empty-facts span {
+  border: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: var(--chat-bg, #fff);
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 11px;
+}
+
+.sp-flamegraph-howto {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+  margin-top: 13px;
+}
+
+.sp-flamegraph-howto b,
+.sp-flamegraph-howto span {
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 11px;
+}
+
+.sp-flamegraph-howto b {
+  padding-left: 0;
+  color: var(--chat-text, #202124);
+}
+
+.sp-flamegraph-howto span {
+  border: 1px solid color-mix(in srgb, var(--chat-warning, #e89e00) 28%, var(--chat-border, #dadce0));
+  background: color-mix(in srgb, var(--chat-warning, #e89e00) 7%, var(--chat-bg, #fff));
+  color: var(--chat-text, #202124);
+}
+
+.sp-flamegraph-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.sp-flamegraph-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  border-top: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  padding: 9px 0;
+}
+
+.sp-flamegraph-row:first-child,
+.sp-flamegraph-path:first-child {
+  border-top: 0;
+}
+
+.sp-flamegraph-row span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sp-flamegraph-row small,
+.sp-flamegraph-path small {
+  display: block;
+  margin-top: 3px;
+  color: var(--chat-text-secondary, #5f6368);
+  overflow-wrap: anywhere;
+}
+
+.sp-flamegraph-row b,
+.sp-flamegraph-path b {
+  color: var(--chat-warning, #e89e00);
+}
+
+.sp-flamegraph-path {
+  border-top: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  padding: 10px 0;
+}
+
+@media (max-width: 980px) {
+  .sp-flamegraph-hero,
+  .sp-flamegraph-empty-state,
+  .sp-flamegraph-compare,
+  .sp-flamegraph-grid,
+  .sp-flamegraph-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .sp-flamegraph-hero {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sp-flamegraph-actions {
+    justify-content: flex-start;
+  }
+}
