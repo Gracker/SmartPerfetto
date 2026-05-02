@@ -211,6 +211,19 @@ export function getClaudeRuntimeDiagnostics() {
 
 export function explainClaudeRuntimeError(message: string): string {
   const lower = message.toLowerCase();
+  const malformedProxyResponse =
+    lower.includes('empty or malformed response') ||
+    (lower.includes('http 200') && lower.includes('proxy')) ||
+    lower.includes('malformed response');
+
+  if (malformedProxyResponse) {
+    return `${message}\n\n` +
+      'SmartPerfetto is using the Claude Agent SDK runtime, which requires an Anthropic-compatible Messages API with correct streaming semantics. ' +
+      'This error usually means the configured proxy/gateway returned HTTP 200 but the response did not match the Anthropic SDK stream format. ' +
+      'For DeepSeek/OpenAI-compatible endpoints, either use a gateway that fully translates to Anthropic Messages API, or set AI_SERVICE=deepseek to use the legacy OpenAI-compatible fallback. ' +
+      'If you recently changed backend/.env or npm dependencies, restart the backend.';
+  }
+
   const quotaOrAuth =
     lower.includes('out of') ||
     lower.includes('extra usage') ||
@@ -288,6 +301,15 @@ export function createSdkEnv(sessionOverrideProviderId?: string): Record<string,
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   delete env.CLAUDE_CODE_SESSION_ACCESS_TOKEN;
+
+  // Keep embedded SDK subprocesses deterministic and isolated from Claude
+  // Code account/bootstrap traffic. Third-party Anthropic-compatible proxies
+  // often reject these first-party-only calls, producing noisy 401s and, in
+  // some cases, confusing proxy errors unrelated to the actual analysis turn.
+  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ??= '1';
+  env.DISABLE_TELEMETRY ??= '1';
+  env.CLAUDE_CODE_ENABLE_TELEMETRY ??= '0';
+  env.DISABLE_ERROR_REPORTING ??= '1';
   return env;
 }
 

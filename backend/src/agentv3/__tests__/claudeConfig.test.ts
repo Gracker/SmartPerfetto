@@ -113,6 +113,16 @@ describe('explainClaudeRuntimeError', () => {
     expect(message).toContain('CC Switch');
   });
 
+  it('adds proxy guidance for malformed HTTP 200 responses', () => {
+    const message = explainClaudeRuntimeError(
+      'API Error: API returned an empty or malformed response (HTTP 200) — check for a proxy or gateway intercepting the request',
+    );
+
+    expect(message).toContain('empty or malformed response');
+    expect(message).toContain('Anthropic-compatible Messages API');
+    expect(message).toContain('AI_SERVICE=deepseek');
+  });
+
   it('leaves unrelated errors unchanged', () => {
     const message = 'trace processor failed';
 

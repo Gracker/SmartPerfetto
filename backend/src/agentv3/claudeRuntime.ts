@@ -501,6 +501,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           systemPrompt: ctx.systemPrompt,
           mcpServers: { smartperfetto: ctx.mcpServer },
           includePartialMessages: true,
+          // SDK isolation: SmartPerfetto owns prompts/tools explicitly. Do not
+          // load user/project ~/.claude settings, hooks, memories, plugins, or
+          // built-in Claude Code tools; those can inject unrelated context and
+          // break third-party Anthropic-compatible proxies.
+          settingSources: [],
+          tools: [],
           permissionMode: 'bypassPermissions' as const,
           allowDangerouslySkipPermissions: true,
           cwd: runtimeConfig.cwd,
@@ -1110,6 +1116,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   systemPrompt: correctionSystemPrompt,
                   mcpServers: { smartperfetto: ctx.mcpServer },
                   includePartialMessages: true,
+                  settingSources: [],
+                  tools: [],
                   permissionMode: 'bypassPermissions' as const,
                   allowDangerouslySkipPermissions: true,
                   cwd: runtimeConfig.cwd,
@@ -1572,6 +1580,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           systemPrompt,
           mcpServers: { smartperfetto: mcpServer },
           includePartialMessages: true,
+          settingSources: [],
+          tools: [],
           permissionMode: 'bypassPermissions' as const,
           allowDangerouslySkipPermissions: true,
           cwd: quickConfig.cwd,

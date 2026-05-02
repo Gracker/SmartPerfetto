@@ -48,6 +48,8 @@ export async function executeReviewAgentViaSdk(
     options: {
       model,
       maxTurns: MAX_TURNS,
+      settingSources: [],
+      tools: [],
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       env: createSdkEnv(),

@@ -149,6 +149,8 @@ async function classifyWithHaiku(
     options: {
       model: model ?? 'claude-haiku-4-5',
       maxTurns: 1,
+      settingSources: [],
+      tools: [],
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
       env: createSdkEnv(),
