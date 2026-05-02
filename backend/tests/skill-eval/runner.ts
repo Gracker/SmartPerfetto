@@ -556,6 +556,29 @@ export function getTestTracePath(traceName: string): string {
   return path.join('test-traces', traceName);
 }
 
+/**
+ * Run `describe(name, fn)` only when the trace fixture is present on disk.
+ * Otherwise marks the suite as skipped with the missing-fixture reason in the
+ * suite name. Used by skill-eval suites whose binary fixtures are not always
+ * checked in — keeps `npm test` clean on workstations without the fixtures
+ * while still exercising the suite when fixtures are available.
+ *
+ * Mirrors `loadTrace`'s path semantics: jest runs from backend/, traces live in
+ * <repo-root>/test-traces, so we resolve relative to cwd then '..'.
+ */
+export function describeWithTrace(
+  suiteName: string,
+  traceName: string,
+  fn: () => void,
+): void {
+  const absolute = path.resolve(process.cwd(), '..', getTestTracePath(traceName));
+  if (fs.existsSync(absolute)) {
+    describe(suiteName, fn);
+  } else {
+    describe.skip(`${suiteName} [skipped: missing trace fixture ${traceName}]`, fn);
+  }
+}
+
 /** Find a step result across all 4 layer types (overview → list → session → deep). */
 export function findStepInLayers(layers: any, stepId: string): { success?: boolean; error?: string; data?: any[] } | null {
   if (layers?.overview?.[stepId]) return layers.overview[stepId];

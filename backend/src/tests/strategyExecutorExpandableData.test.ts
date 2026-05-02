@@ -56,7 +56,10 @@ describe('StrategyExecutor expandableData synthesis', () => {
       },
     ] as any[];
 
-    const merged = (executor as any).attachExpandableDataToDeferredTables([tableEnvelope], tasks, responses) as any[];
+    // attachExpandableDataToDeferredTables was extracted into StrategyFrameEnvelopeCoordinator;
+    // the executor delegates to it. Reach through via the coordinator field.
+    const coordinator = (executor as any).frameEnvelopeCoordinator;
+    const merged = coordinator.attachExpandableDataToDeferredTables([tableEnvelope], tasks, responses) as any[];
     expect(merged).toHaveLength(1);
     expect(merged[0].data.expandableData).toHaveLength(2);
 

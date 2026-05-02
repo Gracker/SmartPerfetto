@@ -13,9 +13,13 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('jank_frame_detail skill', () => {
+// Use Android trace file with heavy jank - should have FrameTimeline data.
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('jank_frame_detail skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
   let testFrameParams: {
     start_ts: string;
@@ -24,9 +28,6 @@ describe('jank_frame_detail skill', () => {
     dur_ms: number;
     jank_type: string;
   } | null = null;
-
-  // Use Android trace file with heavy jank - should have FrameTimeline data
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('jank_frame_detail');
@@ -711,7 +712,7 @@ describe('jank_frame_detail skill', () => {
 // Edge Cases Tests
 // ===========================================================================
 
-describe('jank_frame_detail edge cases', () => {
+describeWithTrace('jank_frame_detail edge cases', TRACE_FILE, () => {
   describe('with different trace files', () => {
     let evaluator: SkillEvaluator;
 

@@ -9,14 +9,15 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('scrolling_analysis skill', () => {
+// 使用 Android trace 文件测试 - 需要有 FrameTimeline 数据的 Android trace.
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
   let hasFrameTimelineData = false;
-
-  // 使用 Android trace 文件测试 - 需要有 FrameTimeline 数据的 Android trace
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('scrolling_analysis');
@@ -370,7 +371,7 @@ describe('scrolling_analysis skill', () => {
 // 边界情况测试
 // ===========================================================================
 
-describe('scrolling_analysis edge cases', () => {
+describeWithTrace('scrolling_analysis edge cases', TRACE_FILE, () => {
   describe('with package filter', () => {
     let evaluator: SkillEvaluator;
 

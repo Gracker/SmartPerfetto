@@ -9,12 +9,13 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('cpu_analysis skill', () => {
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('cpu_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
-
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('cpu_analysis');

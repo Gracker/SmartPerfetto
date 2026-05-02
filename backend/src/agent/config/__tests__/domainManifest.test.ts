@@ -72,8 +72,31 @@ describe('domainManifest', () => {
     expect(nonStartupRoute?.directSkillId).toBe('scrolling_analysis');
   });
 
-  it('treats all-group route as wildcard for unknown scene types', () => {
+  it('default manifest no longer wildcard-routes unknown scene types (commit f5942f28)', () => {
+    // The default manifest deliberately whitelists scroll/interaction groups
+    // instead of using sceneTypeGroups: ['all'] — wildcards used to mis-route
+    // idle/screen_on/scroll_start through scrolling_analysis, none of which
+    // have a meaningful Stage 2 path.
     const route = resolveSceneReconstructionRoute('memory_pressure_spike', DEFAULT_DOMAIN_MANIFEST);
+    expect(route).toBeNull();
+  });
+
+  it('still treats all-group route as wildcard when manifest opts in', () => {
+    const customManifest = {
+      ...DEFAULT_DOMAIN_MANIFEST,
+      sceneReconstructionRoutes: [
+        {
+          id: 'wildcard_route',
+          sceneTypeGroups: ['all'] as const,
+          agentId: 'frame_agent',
+          domain: 'scroll',
+          directSkillId: 'scrolling_analysis',
+          descriptionTemplate: 'fallback',
+          paramMapping: {},
+        } as any,
+      ],
+    };
+    const route = resolveSceneReconstructionRoute('memory_pressure_spike', customManifest);
     expect(route?.directSkillId).toBe('scrolling_analysis');
   });
 });

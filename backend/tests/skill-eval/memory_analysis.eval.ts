@@ -9,16 +9,17 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('memory_analysis skill', () => {
+// Use Android trace file - may or may not have GC events.
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
   let hasGCData = false;
   let hasFrameTimelineData = false;
   let targetProcessName = '';
-
-  // Use Android trace file - may or may not have GC events
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('memory_analysis');
@@ -503,7 +504,7 @@ describe('memory_analysis skill', () => {
 // Edge Case Tests
 // ===========================================================================
 
-describe('memory_analysis edge cases', () => {
+describeWithTrace('memory_analysis edge cases', TRACE_FILE, () => {
   describe('with package filter', () => {
     let evaluator: SkillEvaluator;
 

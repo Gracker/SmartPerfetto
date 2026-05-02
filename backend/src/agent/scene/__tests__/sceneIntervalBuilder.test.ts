@@ -119,13 +119,13 @@ describe('buildDisplayedScenes', () => {
     expect(scenes[0].sceneType).toBe('idle');
   });
 
-  it('produces app_switch scenes from top_app_changes', () => {
+  it('produces app_foreground scenes from top_app_changes for non-launcher packages', () => {
     const envs = [
       envelope('top_app_changes', [{ ts: '0', dur: '300000000', app_package: 'com.other' }]),
     ];
     const { scenes } = buildDisplayedScenes(envs);
     expect(scenes.length).toBe(1);
-    expect(scenes[0].sceneType).toBe('app_switch');
+    expect(scenes[0].sceneType).toBe('app_foreground');
     expect(scenes[0].processName).toBe('com.other');
   });
 

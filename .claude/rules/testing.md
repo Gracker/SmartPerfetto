@@ -111,12 +111,38 @@ cd backend && npx jest src/agentv3/__tests__/queryComplexityClassifier.followup.
 ## Other test commands
 
 ```bash
-cd backend && npm test                    # All tests (~8 min)
-npm test -- --testPathPattern="__tests__" # Unit tests only (~2 min)
-npm test -- tests/skill-eval              # Skill evals only (~5 min)
-npm run validate:strategies               # Validate strategy YAML frontmatter
-npm run validate:skills                   # Validate skill contracts
+cd backend && npm test                     # All tests (~8 min)
+npm test -- --testPathPatterns="__tests__" # Unit tests only (~2 min)
+npm test -- tests/skill-eval               # Skill evals only (~5 min)
+npm run validate:strategies                # Validate strategy YAML frontmatter
+npm run validate:skills                    # Validate skill contracts
 ```
+
+> Jest 30+ renamed `--testPathPattern` → `--testPathPatterns` (plural). The
+> singular form silently fails; if you copy older invocations, switch flag.
+
+## Skill-eval fixture skip behavior
+
+Skill-eval suites (`tests/skill-eval/*.eval.ts`) wrap their top-level
+`describe(...)` calls in `describeWithTrace(suiteName, traceName, fn)` (defined
+in `tests/skill-eval/runner.ts`). The wrapper:
+
+- runs the suite when `<repo-root>/test-traces/<traceName>` exists
+- otherwise marks the suite skipped with `[skipped: missing trace fixture <name>]`
+
+Why: some large `.pftrace` fixtures (`app_aosp_scrolling_heavy_jank.pftrace`,
+`app_aosp_scrolling_light.pftrace`) were intentionally removed in commit
+`52feac55` and have no in-repo replacement. The wrapper keeps `npm test` clean
+on workstations without these fixtures while still exercising the suite when
+they're available. **The PR gate (`verify:pr`) does NOT depend on skill-eval —
+only `test:core` + `scene-trace-regression`.**
+
+When adding a new top-level `describe(...)` block to an `.eval.ts` file, wrap
+it with `describeWithTrace` if the suite calls `loadTrace`. Hoist the
+`TRACE_FILE` constant to module scope so the wrapper can reach it.
+
+`app_start_heavy.pftrace` was renamed to `lacunh_heavy.pftrace` in the same
+commit — use the new name in any new tests.
 
 ## Agent finding verification
 

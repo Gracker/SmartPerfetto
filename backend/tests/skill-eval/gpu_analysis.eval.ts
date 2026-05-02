@@ -21,18 +21,19 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('gpu_analysis skill', () => {
+// Use a general Android trace file - GPU data availability varies by device/trace.
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('gpu_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
   let hasGpuFrequencyData = false;
   let hasGpuMemoryData = false;
   let hasFrameTimelineData = false;
   let hasAndroidFramesModule = false;
   let hasAndroidGpuMemoryModule = false;
-
-  // Use a general Android trace file - GPU data availability varies by device/trace
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('gpu_analysis');
@@ -386,7 +387,7 @@ describe('gpu_analysis skill', () => {
 // Edge Cases and Error Handling Tests
 // ===========================================================================
 
-describe('gpu_analysis edge cases', () => {
+describeWithTrace('gpu_analysis edge cases', TRACE_FILE, () => {
   describe('with various parameter combinations', () => {
     let evaluator: SkillEvaluator;
     let hasGpuMemModule = false;
@@ -480,7 +481,7 @@ describe('gpu_analysis edge cases', () => {
 // Skill Definition Validation Tests
 // ===========================================================================
 
-describe('gpu_analysis skill definition', () => {
+describeWithTrace('gpu_analysis skill definition', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
 
   beforeAll(async () => {

@@ -9,14 +9,15 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('binder_analysis skill', () => {
+// Use Android trace file that should have Binder transactions.
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('binder_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
   let hasBinderData = false;
-
-  // Use Android trace file that should have Binder transactions
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('binder_analysis');
@@ -560,7 +561,7 @@ describe('binder_analysis skill', () => {
 // Edge Cases Tests
 // ===========================================================================
 
-describe('binder_analysis edge cases', () => {
+describeWithTrace('binder_analysis edge cases', TRACE_FILE, () => {
   describe('with package filter', () => {
     let evaluator: SkillEvaluator;
 
@@ -600,7 +601,8 @@ describe('binder_analysis edge cases', () => {
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('binder_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_start_heavy.pftrace'));
+      // Renamed from app_start_heavy.pftrace in commit 52feac55.
+      await evaluator.loadTrace(getTestTracePath('lacunh_heavy.pftrace'));
 
       try {
         const result = await evaluator.executeSQL(`

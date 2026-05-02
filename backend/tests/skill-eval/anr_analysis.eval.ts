@@ -9,15 +9,15 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('anr_analysis skill', () => {
+// Use a trace file that may or may not contain ANR data.
+// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
+const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+
+describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
   let hasAnrData = false;
-
-  // Use a trace file that may or may not contain ANR data
-  // Most test traces are for scrolling performance, not ANR scenarios
-  const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('anr_analysis');
@@ -433,7 +433,7 @@ describe('anr_analysis skill', () => {
 // Edge Cases Tests
 // ===========================================================================
 
-describe('anr_analysis edge cases', () => {
+describeWithTrace('anr_analysis edge cases', TRACE_FILE, () => {
   describe('with different filter combinations', () => {
     let evaluator: SkillEvaluator;
 
@@ -518,7 +518,7 @@ describe('anr_analysis edge cases', () => {
 // Skill Definition Validation Tests
 // ===========================================================================
 
-describe('anr_analysis skill definition', () => {
+describeWithTrace('anr_analysis skill definition', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
 
   beforeAll(async () => {

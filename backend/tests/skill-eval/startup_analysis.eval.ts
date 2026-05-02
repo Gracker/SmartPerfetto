@@ -9,12 +9,13 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
-import { SkillEvaluator, createSkillEvaluator, getTestTracePath } from './runner';
+import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-describe('startup_analysis skill', () => {
+// Renamed from `app_start_heavy.pftrace` in commit 52feac55. Use the new name.
+const TRACE_FILE = 'lacunh_heavy.pftrace';
+
+describeWithTrace('startup_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
-
-  const TRACE_FILE = 'app_start_heavy.pftrace';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('startup_analysis');

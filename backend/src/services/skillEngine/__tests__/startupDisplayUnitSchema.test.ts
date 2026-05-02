@@ -23,11 +23,14 @@ describe('startup display unit contracts', () => {
     const skill = loadYaml('skills/atomic/startup_events_in_range.skill.yaml');
     const columns = skill.display?.columns || [];
 
+    // dur_ms is the visible human-readable column; dur_ns is hidden, used by
+    // start_ts.clickAction navigate_range. Original spec had this swapped, but
+    // commit 0bae10a5 fixed dur_ns 32-bit overflow by showing dur_ms instead.
     const durMs = getColumn(columns, 'dur_ms');
     expect(durMs.type).toBe('duration');
     expect(durMs.format).toBe('duration_ms');
     expect(durMs.unit).toBe('ms');
-    expect(durMs.hidden).toBe(true);
+    expect(durMs.hidden).not.toBe(true);
 
     const startTs = getColumn(columns, 'start_ts');
     expect(startTs.type).toBe('timestamp');
@@ -39,6 +42,7 @@ describe('startup display unit contracts', () => {
     expect(durNs.type).toBe('duration');
     expect(durNs.format).toBe('duration_ms');
     expect(durNs.unit).toBe('ns');
+    expect(durNs.hidden).toBe(true);
 
     const ttid = getColumn(columns, 'ttid_ms');
     expect(ttid.type).toBe('duration');
@@ -82,17 +86,22 @@ describe('startup display unit contracts', () => {
       expect(col.unit).toBe('ms');
     }
 
+    // quadrant_analysis exposes per-quadrant *_ms columns + per-quadrant *_pct
+    // columns (Q1 big-running / Q2 little-running / Q3 runnable / Q4a io / Q4b sleep)
+    // — there is no generic dur_ms / quadrant / percentage column.
     const quadrantCols = getStep('quadrant_analysis').display?.columns || [];
-    const quadrantDur = getColumn(quadrantCols, 'dur_ms');
-    expect(quadrantDur.type).toBe('duration');
-    expect(quadrantDur.format).toBe('duration_ms');
-    expect(quadrantDur.unit).toBe('ms');
+    for (const name of ['q1_big_running_ms', 'q2_little_running_ms', 'q3_runnable_ms', 'q4a_io_blocked_ms', 'q4b_sleeping_ms', 'total_ms']) {
+      const col = getColumn(quadrantCols, name);
+      expect(col.type).toBe('duration');
+      expect(col.format).toBe('duration_ms');
+      expect(col.unit).toBe('ms');
+    }
 
-    const quadrantName = getColumn(quadrantCols, 'quadrant');
-    expect(quadrantName.type).toBe('string');
+    const threadType = getColumn(quadrantCols, 'thread_type');
+    expect(threadType.type).toBe('string');
 
-    const percentage = getColumn(quadrantCols, 'percentage');
-    expect(percentage.type).toBe('percentage');
-    expect(percentage.format).toBe('percentage');
+    const q1Pct = getColumn(quadrantCols, 'q1_pct');
+    expect(q1Pct.type).toBe('percentage');
+    expect(q1Pct.format).toBe('percentage');
   });
 });
