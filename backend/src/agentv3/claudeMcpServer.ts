@@ -42,6 +42,7 @@ import {
   type RegressionRule,
 } from '../services/baselineDiffer';
 import {ProjectMemory} from './projectMemory';
+import {CaseLibrary} from '../services/caseLibrary';
 
 /**
  * Process-wide RagStore singleton, lazily initialized on first MCP tool
@@ -86,6 +87,19 @@ function getProjectMemory(): ProjectMemory {
   if (!cachedProjectMemory)
     cachedProjectMemory = new ProjectMemory(PROJECT_MEMORY_PATH);
   return cachedProjectMemory;
+}
+
+/** Process-wide CaseLibrary singleton (Plan 54). Storage path matches
+ * the other long-lived agent-state JSON files. */
+const CASE_LIBRARY_PATH = path.resolve(
+  __dirname,
+  '../../logs/case_library.json',
+);
+let cachedCaseLibrary: CaseLibrary | null = null;
+function getCaseLibrary(): CaseLibrary {
+  if (!cachedCaseLibrary)
+    cachedCaseLibrary = new CaseLibrary(CASE_LIBRARY_PATH);
+  return cachedCaseLibrary;
 }
 
 /** MCP tool name prefix — derived from the server name 'smartperfetto'.
@@ -1363,6 +1377,87 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     { annotations: { readOnlyHint: true } },
   );
 
+  // recall_similar_case (Plan 54): pure-read recall over the case
+  // library. The agent uses this to ground claims in prior curated
+  // cases ("similar root cause to case-...") instead of repeating
+  // analysis. Read-only. Note: `cite_case_in_report` (the session-side
+  // writer counterpart) is intentionally deferred — it requires
+  // deeper integration with the report generation path and lands as
+  // its own commit later.
+  const recallSimilarCase = tool(
+    'recall_similar_case',
+    'Recall published or reviewed cases that share tags with the current trace, optionally restricted to the same App/Device/Build/CUJ key. ' +
+    'Read-only over the case library. Returns up to top_k cases ranked by tag-overlap score; published cases rank above reviewed when scores tie. ' +
+    'When the result is empty the agent must NOT fabricate prior cases — say "no matching prior case in the library" explicitly.',
+    {
+      tags: z.array(z.string()).optional().describe('Tag tokens to score against. Without tags, results rank by published > reviewed > others.'),
+      app_id: z.string().optional().describe('Restrict to cases whose key.appId matches.'),
+      device_id: z.string().optional().describe('Restrict to cases whose key.deviceId matches.'),
+      cuj: z.string().optional().describe('Restrict to cases whose key.cuj matches.'),
+      include_unpublished: z.boolean().optional().describe('Include reviewed/draft cases (default false — only published surface to the agent).'),
+      top_k: z.number().int().min(1).max(20).optional().describe('Maximum cases returned (1-20, default 5).'),
+    },
+    async ({ tags, app_id, device_id, cuj, include_unpublished, top_k }) => {
+      const library = getCaseLibrary();
+      const wantedTags = tags ? new Set(tags) : null;
+      const limit = top_k ?? 5;
+
+      // Pull either published-only or published+reviewed depending on the
+      // include_unpublished flag. Drafts and private cases never surface
+      // through this tool — those are operator-side concerns.
+      const allCases = include_unpublished
+        ? [
+            ...library.listCases({status: 'published'}),
+            ...library.listCases({status: 'reviewed'}),
+          ]
+        : library.listCases({status: 'published'});
+
+      const candidates: Array<{caseScore: number; case: typeof allCases[number]}> = [];
+      for (const c of allCases) {
+        if (app_id && c.key?.appId !== app_id) continue;
+        if (device_id && c.key?.deviceId !== device_id) continue;
+        if (cuj && c.key?.cuj !== cuj) continue;
+        let score = 0;
+        if (wantedTags) {
+          for (const t of c.tags) if (wantedTags.has(t)) score += 1;
+          if (score === 0) continue;
+          score = score / Math.max(wantedTags.size, 1);
+        } else {
+          // Without tags, prefer published over reviewed; both above 0.
+          score = c.status === 'published' ? 1 : 0.5;
+        }
+        candidates.push({caseScore: score, case: c});
+      }
+
+      candidates.sort((a, b) => {
+        if (a.caseScore !== b.caseScore) return b.caseScore - a.caseScore;
+        // Tie-break: published before reviewed before others.
+        const rank = (s: string): number =>
+          s === 'published' ? 0 : s === 'reviewed' ? 1 : 2;
+        return rank(a.case.status) - rank(b.case.status);
+      });
+
+      const hits = candidates.slice(0, limit).map(c => ({
+        caseId: c.case.caseId,
+        score: c.caseScore,
+        title: c.case.title,
+        status: c.case.status,
+        tags: c.case.tags,
+        findings: c.case.findings,
+        traceArtifactId: c.case.traceArtifactId,
+        traceUnavailableReason: c.case.traceUnavailableReason,
+      }));
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({success: true, hits, count: hits.length}),
+        }],
+      };
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
   // query_perfetto_source: Search the Perfetto stdlib for SQL patterns and usage examples.
   // Enables Claude to self-learn by finding how official code uses tables/functions.
   const queryPerfettoSource = tool(
@@ -2347,6 +2442,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       { tool: lookupBaseline, name: 'lookup_baseline' },
       { tool: compareBaselines, name: 'compare_baselines' },
       { tool: recallProjectMemory, name: 'recall_project_memory' },
+      { tool: recallSimilarCase, name: 'recall_similar_case' },
     );
     if (writeAnalysisNote) toolEntries.push({ tool: writeAnalysisNote, name: 'write_analysis_note' });
     if (fetchArtifact) toolEntries.push({ tool: fetchArtifact, name: 'fetch_artifact' });
