@@ -12,6 +12,7 @@ on:
       - "scripts/**"
       - "backend/**"
       - "frontend/**"
+      - "rust/**"
       - "Dockerfile"
       - ".dockerignore"
       - "docker-compose*.yml"
@@ -31,6 +32,7 @@ on:
       - "scripts/**"
       - "backend/**"
       - "frontend/**"
+      - "rust/**"
       - "Dockerfile"
       - ".dockerignore"
       - "docker-compose*.yml"
@@ -69,6 +71,12 @@ jobs:
 
       - name: Run quality checks
         run: npm run quality
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run Rust analyzer checks
+        run: npm run rust:verify
 
   gate:
     runs-on: ubuntu-24.04

@@ -25,6 +25,9 @@ build/
 # Perfetto build output (3.9GB, can rebuild with ./ui/run-dev-server)
 perfetto/out/
 
+# Rust build output
+target/
+
 # ===================
 # Runtime data
 # ===================
