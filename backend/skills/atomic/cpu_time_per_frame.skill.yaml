@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# 每帧 CPU 时间（B 级 atomic）
+# =============================================================================
+# 使用 android.frames.per_frame_metrics 的 android_cpu_time_per_frame 视图。
+# 给出每帧渲染期间该应用 CPU 累计 active 时间，是判断 CPU 占用与帧时长关联的直接信号。
+
+name: cpu_time_per_frame
+version: "1.0"
+type: atomic
+category: rendering
+tier: B
+
+meta:
+  display_name: "每帧 CPU 时间"
+  description: "每帧渲染期间该应用 CPU 累计活跃时长"
+  icon: "schedule"
+  tags: [frame, cpu, time_per_frame, atomic]
+
+prerequisites:
+  modules:
+    - android.frames.per_frame_metrics
+
+inputs: []
+
+steps:
+  - id: cpu_time
+    type: atomic
+    name: "每帧 CPU 时间"
+    display:
+      level: list
+      layer: number
+      title: "Frame × CPU 时间"
+      columns:
+        - name: frame_id
+          label: "Frame"
+          type: number
+        - name: cpu_time_ms
+          label: "CPU 时间(ms)"
+          type: duration
+          format: duration_ms
+    sql: |
+      SELECT
+        frame_id,
+        ROUND(cpu_time / 1e6, 2) AS cpu_time_ms
+      FROM android_cpu_time_per_frame
+      ORDER BY cpu_time DESC
+      LIMIT 100

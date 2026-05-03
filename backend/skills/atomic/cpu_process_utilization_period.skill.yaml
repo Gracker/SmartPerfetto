@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# 进程级 CPU 利用率周期（B 级 atomic）
+# =============================================================================
+# 使用 linux.cpu.utilization.process 的 cpu_process_utilization_per_period 视图。
+# 比 thread 粒度更高（按进程聚合），适合 哪个进程吃 CPU 最多 的快速排序。
+
+name: cpu_process_utilization_period
+version: "1.0"
+type: atomic
+category: cpu
+tier: B
+
+meta:
+  display_name: "进程 CPU 利用率"
+  description: "按进程聚合的 CPU 利用率周期采样"
+  icon: "leaderboard"
+  tags: [cpu, process, utilization, atomic]
+
+prerequisites:
+  modules:
+    - linux.cpu.utilization.process
+
+inputs: []
+
+steps:
+  - id: process_util
+    type: atomic
+    name: "进程 CPU 利用率"
+    display:
+      level: list
+      layer: number
+      title: "Top CPU 占用进程"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: utilization
+          label: "利用率"
+          type: number
+          format: compact
+    sql: |
+      SELECT
+        process_name,
+        ROUND(utilization, 4) AS utilization
+      FROM cpu_process_utilization_per_period
+      ORDER BY utilization DESC
+      LIMIT 30

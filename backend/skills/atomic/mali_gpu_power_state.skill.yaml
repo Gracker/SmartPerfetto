@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Mali GPU 电源状态（B 级 atomic）
+# =============================================================================
+# 使用 android.gpu.mali_power_state 模块统计 Mali GPU 的电源状态变化。
+# Mali 是 ARM 系 SoC（MTK/三星 Exynos）主流 GPU，识别 idle/active 状态是 GPU 功耗分析前置。
+
+name: mali_gpu_power_state
+version: "1.0"
+type: atomic
+category: gpu
+tier: B
+
+meta:
+  display_name: "Mali GPU 电源状态"
+  description: "Mali GPU 电源状态变化序列"
+  icon: "memory"
+  tags: [gpu, mali, power, state, atomic]
+
+prerequisites:
+  modules:
+    - android.gpu.mali_power_state
+
+inputs: []
+
+steps:
+  - id: mali_state
+    type: atomic
+    name: "Mali 状态时间线"
+    display:
+      level: list
+      layer: number
+      title: "Mali GPU 电源状态"
+      columns:
+        - name: ts
+          label: "时间"
+          type: timestamp
+        - name: dur_ms
+          label: "时长(ms)"
+          type: duration
+          format: duration_ms
+        - name: power_state
+          label: "状态"
+          type: string
+    sql: |
+      SELECT
+        ts,
+        ROUND(dur / 1e6, 2) AS dur_ms,
+        power_state
+      FROM android_mali_gpu_power_state
+      ORDER BY ts ASC

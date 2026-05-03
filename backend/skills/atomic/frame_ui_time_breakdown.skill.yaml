@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# 每帧 UI 时间分解（B 级 atomic）
+# =============================================================================
+# 使用 android.frames.per_frame_metrics 的 android_frames_ui_time 视图分解每帧 UI thread 总耗时。
+
+name: frame_ui_time_breakdown
+version: "1.0"
+type: atomic
+category: rendering
+tier: B
+
+meta:
+  display_name: "每帧 UI 时间"
+  description: "每帧 UI thread 总耗时"
+  icon: "view_in_ar"
+  tags: [frame, ui_time, main_thread, atomic]
+
+prerequisites:
+  modules:
+    - android.frames.per_frame_metrics
+
+inputs: []
+
+steps:
+  - id: ui_time
+    type: atomic
+    name: "每帧 UI 耗时"
+    display:
+      level: list
+      layer: number
+      title: "Frame × UI Thread 时长"
+      columns:
+        - name: frame_id
+          label: "Frame"
+          type: number
+        - name: ui_time_ms
+          label: "UI 时间(ms)"
+          type: duration
+          format: duration_ms
+    sql: |
+      SELECT
+        frame_id,
+        ROUND(ui_time / 1e6, 2) AS ui_time_ms
+      FROM android_frames_ui_time
+      ORDER BY ui_time DESC
+      LIMIT 100

@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# 帧 Overrun 汇总（B 级 atomic）
+# =============================================================================
+# 使用 android.frames.per_frame_metrics 模块的 android_frames_overrun 视图列出每个 overrun 帧。
+# Overrun 是 SurfaceFlinger frame timeline 的核心 jank 信号。
+
+name: frame_overrun_summary
+version: "1.0"
+type: atomic
+category: rendering
+tier: B
+
+meta:
+  display_name: "Frame Overrun 汇总"
+  description: "超 budget 的帧（jank 候选）"
+  icon: "warning"
+  tags: [frame, overrun, jank, atomic]
+
+prerequisites:
+  modules:
+    - android.frames.per_frame_metrics
+
+inputs: []
+
+steps:
+  - id: overrun_frames
+    type: atomic
+    name: "Overrun 帧列表"
+    display:
+      level: list
+      layer: number
+      title: "超 budget 帧列表"
+      columns:
+        - name: frame_id
+          label: "Frame ID"
+          type: number
+        - name: ts
+          label: "时间"
+          type: timestamp
+        - name: dur_ms
+          label: "实际时长(ms)"
+          type: duration
+          format: duration_ms
+        - name: overrun_ms
+          label: "超额(ms)"
+          type: duration
+          format: duration_ms
+    sql: |
+      SELECT
+        frame_id,
+        ts,
+        ROUND(dur / 1e6, 2) AS dur_ms,
+        ROUND(overrun / 1e6, 2) AS overrun_ms
+      FROM android_frames_overrun
+      ORDER BY overrun DESC
+      LIMIT 100

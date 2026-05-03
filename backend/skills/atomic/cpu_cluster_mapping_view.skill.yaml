@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# CPU 大小核映射（B 级 atomic）
+# =============================================================================
+# 使用 android.cpu.cluster_type 的 android_cpu_cluster_mapping 视图给出 CPU 编号到 cluster 类型 (big/medium/little) 的映射。
+# 是所有按大小核分析 skill 的前置数据。
+
+name: cpu_cluster_mapping_view
+version: "1.0"
+type: atomic
+category: cpu
+tier: B
+
+meta:
+  display_name: "CPU 大小核映射"
+  description: "CPU 编号 → cluster 类型映射"
+  icon: "view_module"
+  tags: [cpu, cluster, big_little, topology, atomic]
+
+prerequisites:
+  modules:
+    - android.cpu.cluster_type
+
+inputs: []
+
+steps:
+  - id: cluster_mapping
+    type: atomic
+    name: "CPU Cluster 映射"
+    display:
+      level: list
+      layer: number
+      title: "CPU 拓扑（大小核）"
+      columns:
+        - name: cpu
+          label: "CPU"
+          type: number
+        - name: cluster_type
+          label: "Cluster"
+          type: string
+    sql: |
+      SELECT cpu, cluster_type
+      FROM android_cpu_cluster_mapping
+      ORDER BY cpu ASC
