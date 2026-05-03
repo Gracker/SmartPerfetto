@@ -11,6 +11,7 @@ name: scheduling_analysis
 version: "1.0"
 type: atomic
 category: kernel
+tier: B
 
 meta:
   display_name: "调度延迟分析"

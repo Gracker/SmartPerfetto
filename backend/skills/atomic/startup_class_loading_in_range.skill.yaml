@@ -10,6 +10,7 @@ name: startup_class_loading_in_range
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "启动类加载分析 (区间)"

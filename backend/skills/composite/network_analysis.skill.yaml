@@ -26,6 +26,7 @@ name: network_analysis
 version: "3.0"
 type: composite
 category: network
+tier: S
 
 meta:
   display_name: "网络活动分析"

@@ -22,6 +22,7 @@ name: vsync_config
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "VSync 配置分析"

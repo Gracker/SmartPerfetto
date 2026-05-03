@@ -6,6 +6,7 @@ name: sf_frame_consumption
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "SurfaceFlinger 帧消费分析"

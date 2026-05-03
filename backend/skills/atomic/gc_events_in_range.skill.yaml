@@ -23,6 +23,7 @@ name: gc_events_in_range
 version: "1.0"
 type: atomic
 category: memory
+tier: B
 
 meta:
   display_name: "GC 事件查询"

@@ -11,6 +11,7 @@ name: binder_in_range
 version: "1.0"
 type: atomic
 category: kernel
+tier: B
 
 meta:
   display_name: "Binder 事务分析 (区间)"

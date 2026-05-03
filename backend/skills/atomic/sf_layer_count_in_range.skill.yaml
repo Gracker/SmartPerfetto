@@ -17,6 +17,7 @@ name: sf_layer_count_in_range
 version: "1.0"
 type: composite
 category: diagnostics
+tier: B
 
 meta:
   display_name: "SF 图层数统计"

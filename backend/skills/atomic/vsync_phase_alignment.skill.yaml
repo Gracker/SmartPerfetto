@@ -17,6 +17,7 @@ name: vsync_phase_alignment
 version: "2.0"
 type: atomic
 category: input_response
+tier: A
 
 meta:
   display_name: "VSync 相位对齐分析"

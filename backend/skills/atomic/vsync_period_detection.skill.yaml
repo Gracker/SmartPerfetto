@@ -23,6 +23,7 @@ description: |
   Returns detected period, refresh rate (computed dynamically), and confidence score.
 
 category: frame
+tier: B
 tags:
   - vsync
   - refresh_rate

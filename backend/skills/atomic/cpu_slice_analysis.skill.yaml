@@ -12,6 +12,7 @@ name: cpu_slice_analysis
 version: "2.0"
 type: composite
 category: hardware
+tier: B
 
 meta:
   display_name: "CPU Slice 分析"

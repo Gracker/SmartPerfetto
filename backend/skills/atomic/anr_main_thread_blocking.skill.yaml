@@ -17,6 +17,7 @@ name: anr_main_thread_blocking
 version: "1.0"
 type: composite
 category: anr
+tier: S
 
 meta:
   display_name: "ANR 主线程阻塞链分析"

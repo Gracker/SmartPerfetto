@@ -28,6 +28,7 @@ name: cpu_topology_view
 version: "1.0"
 type: composite
 category: hardware
+tier: B
 
 meta:
   display_name: "CPU 拓扑视图初始化"

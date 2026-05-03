@@ -12,6 +12,7 @@ name: binder_blocking_in_range
 version: "1.0"
 type: atomic
 category: ipc
+tier: B
 
 meta:
   display_name: "Binder 阻塞分析"

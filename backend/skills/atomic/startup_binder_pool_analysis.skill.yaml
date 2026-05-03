@@ -18,6 +18,7 @@ name: startup_binder_pool_analysis
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "Binder 线程池分析"

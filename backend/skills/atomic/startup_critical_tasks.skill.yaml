@@ -27,6 +27,7 @@ name: startup_critical_tasks
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: A
 
 meta:
   display_name: "启动关键任务发现"

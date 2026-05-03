@@ -10,6 +10,7 @@ name: startup_gc_in_range
 version: "1.0"
 type: atomic
 category: memory
+tier: B
 
 meta:
   display_name: "启动 GC 分析 (区间)"

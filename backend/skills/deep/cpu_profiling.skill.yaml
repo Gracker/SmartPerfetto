@@ -25,6 +25,7 @@ name: cpu_profiling
 version: "3.0"
 type: deep
 category: deep_analysis
+tier: S
 
 meta:
   display_name: "CPU 深度调优"

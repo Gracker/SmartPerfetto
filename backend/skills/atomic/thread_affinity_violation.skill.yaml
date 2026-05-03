@@ -12,6 +12,7 @@ name: thread_affinity_violation
 version: "1.0"
 type: atomic
 category: cpu
+tier: B
 
 meta:
   display_name: "线程亲和性异常"

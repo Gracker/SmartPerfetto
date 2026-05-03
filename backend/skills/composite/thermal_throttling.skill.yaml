@@ -28,6 +28,7 @@
 name: thermal_throttling
 version: "3.0"
 type: composite
+tier: S
 
 meta:
   display_name: "热节流分析"

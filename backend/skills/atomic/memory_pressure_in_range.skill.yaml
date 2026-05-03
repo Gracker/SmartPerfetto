@@ -26,6 +26,7 @@ description: |
   that may contribute to jank or performance issues.
 
 category: memory
+tier: A
 tags:
   - memory
   - pressure

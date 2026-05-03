@@ -17,6 +17,7 @@ name: click_response_detail
 version: "2.0"
 type: composite
 category: interaction
+tier: S
 
 meta:
   display_name: "点击详情分析"

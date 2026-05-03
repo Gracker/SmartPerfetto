@@ -27,6 +27,7 @@ name: lock_contention_analysis
 version: "3.0"
 type: composite
 category: performance
+tier: S
 
 meta:
   display_name: "锁竞争分析"

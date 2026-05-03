@@ -21,6 +21,7 @@ name: startup_thread_blocking_graph
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "启动线程阻塞关系图"

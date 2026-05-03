@@ -22,6 +22,7 @@ name: input_to_frame_latency
 version: "2.0"
 type: atomic
 category: input_response
+tier: A
 
 meta:
   display_name: "逐帧 Input-to-Display 延迟"

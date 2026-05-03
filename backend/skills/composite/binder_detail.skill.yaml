@@ -15,6 +15,7 @@ name: binder_detail
 version: "2.0"
 type: composite
 category: kernel
+tier: S
 
 meta:
   display_name: "Binder 详情分析"

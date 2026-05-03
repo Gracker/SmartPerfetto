@@ -5,6 +5,7 @@
 name: surfaceflinger_analysis
 version: "3.0"
 type: composite
+tier: S
 
 meta:
   display_name: "SurfaceFlinger 分析"

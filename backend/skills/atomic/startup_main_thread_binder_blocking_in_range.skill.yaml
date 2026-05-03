@@ -10,6 +10,7 @@ name: startup_main_thread_binder_blocking_in_range
 version: "1.0"
 type: atomic
 category: ipc
+tier: B
 
 meta:
   display_name: "启动主线程 Binder 阻塞 (区间)"

@@ -11,6 +11,7 @@ name: thermal_predictor
 version: "1.0"
 type: atomic
 category: thermal
+tier: B
 
 meta:
   display_name: "热控风险预测"

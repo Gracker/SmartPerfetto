@@ -10,6 +10,7 @@ name: startup_main_thread_sync_binder_in_range
 version: "1.0"
 type: atomic
 category: ipc
+tier: B
 
 meta:
   display_name: "启动主线程同步 Binder (区间)"

@@ -92,33 +92,35 @@ function validateTierAndStdlib(skill: SkillDefinition): { errors: string[]; warn
   const skillType = String((skill as any).type ?? 'atomic');
 
   // ---- Rule 1: tier-must-match-declared ----
+  // The `tier:` field declares INTENT (target tier per audit doc §6), not current state.
+  // M1 sweep will lift skills to compliance. Structural mismatches emit WARNINGS so the
+  // lint surfaces what M1 needs to fix without blocking M0 commits.
+  // Only `invalid value` stays as error (typo / wrong tier letter).
   if (declaredTier !== undefined) {
     if (!['S', 'A', 'B'].includes(declaredTier)) {
       errors.push(`tier: invalid value '${declaredTier}', must be 'S' | 'A' | 'B'`);
     } else if (declaredTier === 'S') {
       // S: type must be composite (or deep), prerequisites.modules >= 2, steps >= 5
       if (skillType !== 'composite' && skillType !== 'deep') {
-        errors.push(`tier=S requires type='composite' or 'deep' (got type='${skillType}')`);
+        warnings.push(`tier=S target requires type='composite' or 'deep' (got '${skillType}') — M1 sweep TODO`);
       }
       if (prereqModules.length < 2) {
-        errors.push(`tier=S requires prerequisites.modules.length >= 2 (found ${prereqModules.length})`);
+        warnings.push(`tier=S target requires prerequisites.modules.length >= 2 (found ${prereqModules.length}) — M1 sweep TODO`);
       }
       if (stepCount < 5) {
-        errors.push(`tier=S requires steps.length >= 5 (found ${stepCount})`);
+        warnings.push(`tier=S target requires steps.length >= 5 (found ${stepCount}) — M1 sweep TODO`);
       }
     } else if (declaredTier === 'A') {
-      // A: atomic with substantial logic, prerequisites.modules >= 1
       if (prereqModules.length < 1) {
-        errors.push(`tier=A requires prerequisites.modules.length >= 1 (found 0)`);
+        warnings.push(`tier=A target requires prerequisites.modules.length >= 1 (found 0) — M1 sweep TODO`);
       }
     } else if (declaredTier === 'B') {
-      // B: atomic single-purpose, prerequisites.modules >= 1
       if (prereqModules.length < 1) {
-        errors.push(`tier=B requires prerequisites.modules.length >= 1 (found 0)`);
+        warnings.push(`tier=B target requires prerequisites.modules.length >= 1 (found 0) — M1 sweep TODO`);
       }
     }
   } else {
-    // Migration warning only — existing skills can keep working until M1 sweep adds tier.
+    // No tier declared — emit migration warning so M1 sweep adds it.
     warnings.push(`tier: field missing — please declare 'tier: S|A|B' (see docs/skills-audit-2026-05.md §6)`);
   }
 

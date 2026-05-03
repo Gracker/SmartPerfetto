@@ -31,6 +31,7 @@ name: startup_analysis
 version: "1.0"
 type: composite
 category: app_lifecycle
+tier: S
 
 meta:
   display_name: "应用启动分析"

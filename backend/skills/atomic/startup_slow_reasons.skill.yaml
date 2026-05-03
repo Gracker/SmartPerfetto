@@ -19,6 +19,7 @@ name: startup_slow_reasons
 version: "3.0"
 type: composite
 category: app_lifecycle
+tier: S
 
 meta:
   display_name: "启动慢原因（官方分类）"

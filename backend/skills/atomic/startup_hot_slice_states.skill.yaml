@@ -10,6 +10,7 @@ name: startup_hot_slice_states
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "热点 Slice 线程状态分布"

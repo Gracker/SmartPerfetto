@@ -25,6 +25,7 @@ name: cpu_topology_detection
 version: "1.0"
 type: atomic
 category: hardware
+tier: B
 
 meta:
   display_name: "CPU 拓扑检测"

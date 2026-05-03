@@ -22,6 +22,7 @@ name: callstack_analysis
 version: "3.0"
 type: deep
 category: deep_analysis
+tier: S
 
 meta:
   display_name: "调用栈分析 (Flamegraph)"

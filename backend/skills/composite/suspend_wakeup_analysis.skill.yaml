@@ -30,6 +30,7 @@ name: suspend_wakeup_analysis
 version: "3.0"
 type: composite
 category: power
+tier: S
 
 meta:
   display_name: "休眠唤醒分析"

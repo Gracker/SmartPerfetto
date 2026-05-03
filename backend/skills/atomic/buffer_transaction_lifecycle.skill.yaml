@@ -19,6 +19,7 @@ name: buffer_transaction_lifecycle
 version: "1.0"
 type: composite
 category: diagnostics
+tier: B
 
 meta:
   display_name: "Buffer Transaction 生命周期"

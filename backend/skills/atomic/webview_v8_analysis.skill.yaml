@@ -12,6 +12,7 @@ name: webview_v8_analysis
 version: "1.0"
 type: atomic
 category: rendering
+tier: A
 
 meta:
   display_name: "WebView V8 性能分析"

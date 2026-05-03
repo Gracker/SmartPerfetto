@@ -12,6 +12,7 @@ name: device_state_timeline
 version: "1.0"
 type: composite
 category: system_context
+tier: A
 
 meta:
   display_name: "设备状态时间线"

@@ -11,6 +11,7 @@ name: util_tracking_analysis
 version: "1.0"
 type: atomic
 category: cpu
+tier: B
 
 meta:
   display_name: "Util 建模分析"

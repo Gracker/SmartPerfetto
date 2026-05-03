@@ -18,6 +18,7 @@ name: cpu_throttling_in_range
 version: "2.0"
 type: composite
 category: thermal
+tier: B
 
 meta:
   display_name: "CPU 限频检测"

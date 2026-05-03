@@ -12,6 +12,7 @@ name: page_fault_in_range
 version: "1.0"
 type: atomic
 category: memory
+tier: B
 
 meta:
   display_name: "缺页异常分析"

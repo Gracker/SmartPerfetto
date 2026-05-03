@@ -11,6 +11,7 @@ name: cache_miss_impact
 version: "1.0"
 type: atomic
 category: cpu
+tier: B
 
 meta:
   display_name: "缓存未命中影响"

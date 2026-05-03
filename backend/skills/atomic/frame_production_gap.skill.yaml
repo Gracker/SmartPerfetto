@@ -21,6 +21,7 @@ name: frame_production_gap
 version: "1.0"
 type: composite
 category: diagnostics
+tier: A
 
 meta:
   display_name: "帧生产 Gap 分析"

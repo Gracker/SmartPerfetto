@@ -11,6 +11,7 @@ name: fpsgo_analysis
 version: "1.0"
 type: atomic
 category: vendor
+tier: B
 
 meta:
   display_name: "FPSGO 策略分析 (MTK)"

@@ -12,6 +12,7 @@ name: wakelock_tracking
 version: "1.0"
 type: atomic
 category: power
+tier: B
 
 meta:
   display_name: "Wake Lock 追踪"

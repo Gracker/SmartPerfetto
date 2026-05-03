@@ -20,6 +20,7 @@ name: pipeline_4feature_scoring
 version: "1.0"
 type: composite
 category: rendering
+tier: B
 
 meta:
   display_name: "Pipeline 4 特征分型综合评分"

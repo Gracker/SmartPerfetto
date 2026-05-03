@@ -27,6 +27,7 @@ name: cpu_analysis
 version: "1.0"
 type: composite
 category: hardware
+tier: S
 
 meta:
   display_name: "CPU 分析"

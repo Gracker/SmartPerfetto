@@ -26,6 +26,7 @@ name: vrr_detection
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "VRR/LTPO 检测"

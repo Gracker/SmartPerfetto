@@ -7,6 +7,7 @@ name: jank_frame_detail
 version: "2.0"
 type: composite
 category: rendering
+tier: S
 
 meta:
   display_name: "掉帧详情分析"

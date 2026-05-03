@@ -26,6 +26,7 @@ name: io_pressure
 version: "3.0"
 type: composite
 category: io
+tier: S
 
 meta:
   display_name: "IO 压力分析"

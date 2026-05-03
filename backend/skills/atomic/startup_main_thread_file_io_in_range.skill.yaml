@@ -10,6 +10,7 @@ name: startup_main_thread_file_io_in_range
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "启动主线程文件 IO (区间)"

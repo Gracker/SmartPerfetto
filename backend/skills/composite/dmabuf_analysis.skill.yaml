@@ -24,6 +24,7 @@ name: dmabuf_analysis
 version: "3.0"
 type: composite
 category: memory
+tier: S
 
 meta:
   display_name: "DMA-BUF 内存分析"

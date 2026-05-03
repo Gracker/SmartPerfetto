@@ -6,6 +6,7 @@ name: lock_contention_in_range
 version: "1.0"
 type: atomic
 category: performance
+tier: A
 
 meta:
   display_name: "锁竞争分析 (区间)"

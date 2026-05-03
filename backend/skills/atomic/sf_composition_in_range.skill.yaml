@@ -12,6 +12,7 @@ name: sf_composition_in_range
 version: "1.0"
 type: atomic
 category: framework
+tier: B
 
 meta:
   display_name: "SF 合成分析"

@@ -10,6 +10,7 @@ name: startup_events_in_range
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: A
 
 meta:
   display_name: "启动事件列表 (区间)"

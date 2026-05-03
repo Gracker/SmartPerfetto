@@ -17,6 +17,7 @@ name: gpu_metrics
 version: "1.0"
 type: atomic
 category: hardware
+tier: A
 
 meta:
   display_name: "GPU 指标分析"

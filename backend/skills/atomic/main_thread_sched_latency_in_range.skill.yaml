@@ -11,6 +11,7 @@ name: main_thread_sched_latency_in_range
 version: "1.0"
 type: atomic
 category: kernel
+tier: B
 
 meta:
   display_name: "主线程调度延迟 (区间)"

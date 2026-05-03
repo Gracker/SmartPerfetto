@@ -23,6 +23,7 @@ name: memory_analysis
 version: "2.1"
 type: composite
 category: memory
+tier: S
 
 meta:
   display_name: "内存性能分析"

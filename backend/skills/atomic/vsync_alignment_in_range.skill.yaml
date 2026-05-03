@@ -12,6 +12,7 @@ name: vsync_alignment_in_range
 version: "1.0"
 type: atomic
 category: display
+tier: B
 
 meta:
   display_name: "VSync 对齐分析"

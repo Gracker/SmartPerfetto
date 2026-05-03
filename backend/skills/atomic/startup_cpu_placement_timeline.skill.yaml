@@ -18,6 +18,7 @@ name: startup_cpu_placement_timeline
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "启动摆核时序分析"

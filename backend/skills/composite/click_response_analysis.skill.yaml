@@ -28,6 +28,7 @@ name: click_response_analysis
 version: "1.0"
 type: composite
 category: interaction
+tier: S
 
 meta:
   display_name: "点击响应分析"

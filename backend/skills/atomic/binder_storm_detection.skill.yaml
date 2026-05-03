@@ -12,6 +12,7 @@ name: binder_storm_detection
 version: "1.0"
 type: atomic
 category: binder
+tier: A
 
 meta:
   display_name: "Binder 风暴检测"

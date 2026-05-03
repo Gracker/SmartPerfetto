@@ -12,6 +12,7 @@ name: gpu_render_in_range
 version: "1.0"
 type: atomic
 category: gpu
+tier: B
 
 meta:
   display_name: "GPU 渲染分析"

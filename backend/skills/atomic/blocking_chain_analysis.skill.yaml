@@ -18,6 +18,7 @@ name: blocking_chain_analysis
 version: "1.0"
 type: composite
 category: diagnostics
+tier: A
 
 meta:
   display_name: "阻塞链分析"

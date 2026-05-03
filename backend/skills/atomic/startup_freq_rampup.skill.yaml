@@ -14,6 +14,7 @@ name: startup_freq_rampup
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "启动 CPU 频率爬升"

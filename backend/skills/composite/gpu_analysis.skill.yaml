@@ -5,6 +5,7 @@
 name: gpu_analysis
 version: "3.0"
 type: composite
+tier: S
 
 meta:
   display_name: "GPU 分析"

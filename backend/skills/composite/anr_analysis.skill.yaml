@@ -28,6 +28,7 @@ name: anr_analysis
 version: "1.0"
 type: composite
 category: app_lifecycle
+tier: S
 
 meta:
   display_name: "ANR 分析"

@@ -12,6 +12,7 @@ name: compose_recomposition_hotspot
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "Compose 重组热点检测"

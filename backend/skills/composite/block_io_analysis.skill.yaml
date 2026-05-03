@@ -24,6 +24,7 @@ name: block_io_analysis
 version: "3.0"
 type: composite
 category: io
+tier: S
 
 meta:
   display_name: "Block I/O 分析"

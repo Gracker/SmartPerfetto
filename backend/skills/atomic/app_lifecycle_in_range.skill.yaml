@@ -11,6 +11,7 @@ name: app_lifecycle_in_range
 version: "1.0"
 type: atomic
 category: app_lifecycle
+tier: B
 
 meta:
   display_name: "应用生命周期事件 (区间)"

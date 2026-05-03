@@ -12,6 +12,7 @@ name: system_load_in_range
 version: "1.0"
 type: atomic
 category: system
+tier: B
 
 meta:
   display_name: "系统负载分析"

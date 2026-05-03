@@ -14,6 +14,7 @@ name: pipeline_key_slices_overlay
 version: "1.0"
 type: atomic
 category: pipeline
+tier: B
 
 meta:
   display_name: "管线关键 Slice 时间线"

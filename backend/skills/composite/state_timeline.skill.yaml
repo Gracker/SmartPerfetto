@@ -6,6 +6,7 @@ name: state_timeline
 version: "1.0"
 type: composite
 category: interaction
+tier: S
 
 meta:
   display_name: "连续状态时间线"

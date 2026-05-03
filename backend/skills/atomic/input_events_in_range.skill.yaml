@@ -20,6 +20,7 @@ name: input_events_in_range
 version: "2.0"
 type: atomic
 category: input_response
+tier: B
 
 meta:
   display_name: "输入事件列表 (区间)"

@@ -12,6 +12,7 @@ name: cpu_freq_timeline
 version: "2.0"
 type: composite
 category: hardware
+tier: B
 
 meta:
   display_name: "CPU 频率变化时间线"

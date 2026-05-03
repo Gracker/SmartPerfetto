@@ -11,6 +11,7 @@ name: frame_pipeline_variance
 version: "1.0"
 type: atomic
 category: frame
+tier: B
 
 meta:
   display_name: "帧管线方差分析"

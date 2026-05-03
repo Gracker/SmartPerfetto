@@ -14,6 +14,7 @@ name: scroll_session_analysis
 version: "1.0"
 type: composite
 category: interaction
+tier: S
 
 meta:
   display_name: "滑动会话分析"

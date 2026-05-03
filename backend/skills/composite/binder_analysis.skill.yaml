@@ -24,6 +24,7 @@ name: binder_analysis
 version: "1.0"
 type: composite
 category: kernel
+tier: S
 
 meta:
   display_name: "Binder 分析"

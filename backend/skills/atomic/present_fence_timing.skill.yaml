@@ -6,6 +6,7 @@ name: present_fence_timing
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "Present Fence 时序分析"

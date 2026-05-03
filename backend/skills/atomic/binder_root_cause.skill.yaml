@@ -21,6 +21,7 @@ name: binder_root_cause
 version: "1.0"
 type: composite
 category: ipc
+tier: B
 
 meta:
   display_name: "Binder 根因归因"

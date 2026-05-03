@@ -11,6 +11,7 @@ name: futex_wait_distribution
 version: "1.0"
 type: atomic
 category: lock
+tier: B
 
 meta:
   display_name: "Futex 等待分布"

@@ -16,6 +16,7 @@ name: frame_blocking_calls
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "帧阻塞调用分析"

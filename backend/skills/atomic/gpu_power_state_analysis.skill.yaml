@@ -12,6 +12,7 @@ name: gpu_power_state_analysis
 version: "1.0"
 type: atomic
 category: gpu
+tier: B
 
 meta:
   display_name: "GPU 功耗状态分析"

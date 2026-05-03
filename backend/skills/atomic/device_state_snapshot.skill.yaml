@@ -11,6 +11,7 @@ name: device_state_snapshot
 version: "1.0"
 type: atomic
 category: system_context
+tier: B
 
 meta:
   display_name: "设备环境状态快照"

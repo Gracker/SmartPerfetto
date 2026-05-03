@@ -20,6 +20,7 @@ name: consumer_jank_detection
 version: "1.0"
 type: atomic
 category: rendering
+tier: A
 
 meta:
   display_name: "Consumer Jank 检测"

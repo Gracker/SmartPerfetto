@@ -12,6 +12,7 @@ name: render_pipeline_latency
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "渲染流水线时延"

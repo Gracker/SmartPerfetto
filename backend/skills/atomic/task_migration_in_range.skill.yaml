@@ -14,6 +14,7 @@ name: task_migration_in_range
 version: "2.0"
 type: composite
 category: kernel
+tier: B
 
 meta:
   display_name: "任务迁移分析"

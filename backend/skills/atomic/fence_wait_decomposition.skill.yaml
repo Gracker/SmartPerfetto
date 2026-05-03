@@ -27,6 +27,7 @@ name: fence_wait_decomposition
 version: "1.0"
 type: composite
 category: diagnostics
+tier: A
 
 meta:
   display_name: "Fence 等待分解（acquire/present/release）"

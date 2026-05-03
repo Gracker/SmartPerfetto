@@ -11,6 +11,7 @@ name: logcat_analysis
 version: "1.0"
 type: atomic
 category: system
+tier: B
 
 meta:
   display_name: "Logcat 异常信号检测"

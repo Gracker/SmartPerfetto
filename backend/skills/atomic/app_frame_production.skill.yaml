@@ -6,6 +6,7 @@ name: app_frame_production
 version: "1.0"
 type: atomic
 category: rendering
+tier: B
 
 meta:
   display_name: "应用帧生产分析"

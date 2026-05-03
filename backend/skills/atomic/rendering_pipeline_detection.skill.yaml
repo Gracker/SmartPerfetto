@@ -50,6 +50,7 @@ name: rendering_pipeline_detection
 version: "2.0"
 type: composite
 category: rendering
+tier: S
 
 meta:
   display_name: "渲染管线检测 (24 类型)"
