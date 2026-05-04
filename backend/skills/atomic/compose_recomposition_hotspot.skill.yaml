@@ -20,6 +20,14 @@ meta:
   icon: "auto_fix_high"
   tags: [compose, recomposition, jetpack, performance, atomic]
 
+triggers:
+  keywords:
+    zh: [Compose, 重组, 重组热点, CompositionLocal, Jetpack Compose]
+    en: [compose, recomposition, recomposition hotspot, CompositionLocal]
+  patterns:
+    - ".*[Cc]ompose.*(recomposition|重组).*"
+    - ".*(重组|CompositionLocal).*"
+
 prerequisites:
   required_tables:
     - slice

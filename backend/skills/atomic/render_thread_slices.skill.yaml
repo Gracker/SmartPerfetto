@@ -23,6 +23,14 @@ meta:
     - WebView Functor: 宿主 RenderThread（含 Functor replay）
     未来按 pipeline_id 切换 thread filter SQL。
 
+triggers:
+  keywords:
+    zh: [RenderThread, 渲染线程, 渲染 slice, GPU 指令, raster]
+    en: [renderthread, render thread, render slices, raster thread]
+  patterns:
+    - ".*(RenderThread|渲染线程|raster).*"
+    - ".*render.*(thread|slice).*"
+
 prerequisites:
   required_tables:
     - slice

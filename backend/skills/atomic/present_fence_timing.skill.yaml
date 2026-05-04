@@ -19,6 +19,14 @@ meta:
     Tunneled Video 下 App 看不到 present，要走 HAL trace tag；XR 下端到端延迟用 motion-to-photon。
     未来按 pipeline_id 切换 present 时序解析（HWC vs HAL sideband vs XR compositor）。
 
+triggers:
+  keywords:
+    zh: [present fence, release fence, fence 等待, 显示 fence, HWC]
+    en: [present fence, release fence, fence wait, hwc fence]
+  patterns:
+    - ".*(present|release).*fence.*"
+    - ".*fence.*(等待|wait).*"
+
 prerequisites:
   required_tables:
     - slice

@@ -19,6 +19,14 @@ meta:
   icon: "view_in_ar"
   tags: [frame, ui_time, main_thread, atomic]
 
+triggers:
+  keywords:
+    zh: [UI 时间, 主线程帧耗时, app vsync delay, 帧 UI 拆解]
+    en: [frame ui time, main thread frame time, app vsync delay]
+  patterns:
+    - ".*(UI|主线程).*帧.*(耗时|时间).*"
+    - ".*frame.*(ui|main thread|vsync delay).*"
+
 prerequisites:
   modules:
     - android.frames.per_frame_metrics

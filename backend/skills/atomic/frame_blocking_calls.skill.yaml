@@ -29,6 +29,14 @@ meta:
     "阻塞调用"分析当前 pipeline-agnostic（main thread）。未来按 pipeline_id 切换：
     Flutter 看 1.ui 阻塞；Game 看 GameThread；RN 看 mqt_js。
 
+triggers:
+  keywords:
+    zh: [帧阻塞, 阻塞调用, Binder 阻塞, 文件 IO, futex, 锁竞争]
+    en: [frame blocking, blocking calls, binder blocking, file io, futex]
+  patterns:
+    - ".*帧.*(阻塞|Binder|IO|futex|锁).*"
+    - ".*frame.*(blocking|binder|io|futex).*"
+
 prerequisites:
   modules:
     - android.frames.timeline

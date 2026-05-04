@@ -20,6 +20,14 @@ meta:
   icon: "warning"
   tags: [frame, overrun, jank, atomic]
 
+triggers:
+  keywords:
+    zh: [frame overrun, 帧超时, 超预算, 掉帧汇总]
+    en: [frame overrun, frame budget, overrun summary, dropped frame]
+  patterns:
+    - ".*(overrun|budget).*frame.*"
+    - ".*(帧|掉帧).*(超时|超预算).*"
+
 prerequisites:
   modules:
     - android.frames.per_frame_metrics

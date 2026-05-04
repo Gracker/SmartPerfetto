@@ -37,6 +37,14 @@ meta:
     - Video: codec underflow（releaseOutputBuffer pool 耗尽）vs HWC overlay degradation
     - Game: 三线程 lag 归因（GameThread/RenderThread/RHIThread）
 
+triggers:
+  keywords:
+    zh: [消费端卡顿, present interval, SurfaceFlinger, 显示端卡顿, 帧呈现]
+    en: [consumer jank, present interval, surfaceflinger, display jank]
+  patterns:
+    - ".*(消费端|显示端).*(卡顿|掉帧).*"
+    - ".*(consumer|present|display).*jank.*"
+
 prerequisites:
   required_tables:
     - actual_frame_timeline_slice

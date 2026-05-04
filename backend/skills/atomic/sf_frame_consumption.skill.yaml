@@ -19,6 +19,14 @@ meta:
     多 layer 类型（SurfaceView/Multi-Window/Mixed/Flutter HC）时 SF 合成成本要归因到具体 layer。
     未来按 pipeline_id 切换 layer 维度的合成耗时分组 SQL。
 
+triggers:
+  keywords:
+    zh: [SurfaceFlinger, SF 帧消费, 消费端, present, 显示节奏]
+    en: [surfaceflinger frame consumption, sf consumption, present cadence]
+  patterns:
+    - ".*(SurfaceFlinger|SF).*(消费|present|帧).*"
+    - ".*surfaceflinger.*(consumption|present|frame).*"
+
 prerequisites:
   required_tables:
     - actual_frame_timeline_slice

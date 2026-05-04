@@ -26,6 +26,14 @@ meta:
     标准 HWUI input→display；Flutter 1.ui begin→1.raster done→present；
     Game 引擎 swapBuffers→present；Camera HAL processCaptureRequest→preview present。
 
+triggers:
+  keywords:
+    zh: [渲染流水线, 渲染时延, 端到端延迟, RenderThread, 主线程]
+    en: [render pipeline latency, rendering latency, end-to-end frame latency]
+  patterns:
+    - ".*(渲染|pipeline).*(时延|延迟|耗时).*"
+    - ".*render.*pipeline.*latency.*"
+
 prerequisites:
   modules:
     - android.frames.timeline

@@ -34,6 +34,14 @@ meta:
   icon: "sync"
   tags: [vrr, ltpo, refresh_rate, adaptive, atomic]
 
+triggers:
+  keywords:
+    zh: [VRR, LTPO, 可变刷新率, 刷新率, AdaptiveSync, VSYNC]
+    en: [vrr, ltpo, variable refresh rate, adaptive sync, vsync]
+  patterns:
+    - ".*(VRR|LTPO|可变刷新率|刷新率).*"
+    - ".*(variable refresh|adaptive sync|vrr|ltpo).*"
+
 prerequisites:
   required_tables:
     - counter

@@ -30,6 +30,14 @@ meta:
   icon: "sync"
   tags: [vsync, config, refresh_rate, atomic]
 
+triggers:
+  keywords:
+    zh: [VSync, 刷新率, vsync 周期, display config, 帧周期]
+    en: [vsync config, refresh rate, vsync period, display config]
+  patterns:
+    - ".*(VSync|vsync|刷新率|帧周期).*"
+    - ".*(vsync|refresh rate).*config.*"
+
 prerequisites:
   required_tables:
     - expected_frame_timeline_slice

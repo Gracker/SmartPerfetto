@@ -58,6 +58,14 @@ meta:
   icon: "layers"
   tags: [rendering, pipeline, detection, teaching]
 
+triggers:
+  keywords:
+    zh: [渲染管线, 管线检测, SurfaceView, TextureView, Flutter, WebView, 游戏渲染]
+    en: [rendering pipeline, pipeline detection, surfaceview, textureview, flutter, webview]
+  patterns:
+    - ".*(渲染管线|SurfaceView|TextureView|WebView|Flutter).*"
+    - ".*(rendering pipeline|surfaceview|textureview|webview|flutter).*"
+
 prerequisites:
   required_tables:
     - slice

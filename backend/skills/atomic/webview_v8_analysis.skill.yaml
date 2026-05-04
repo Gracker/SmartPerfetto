@@ -20,6 +20,14 @@ meta:
   icon: "javascript"
   tags: [webview, v8, javascript, gc, compilation, atomic]
 
+triggers:
+  keywords:
+    zh: [WebView, V8, JavaScript, JS 长任务, Chromium, 网页卡顿]
+    en: [webview, v8, javascript, js long task, chromium]
+  patterns:
+    - ".*(WebView|V8|JavaScript|JS).*(卡顿|长任务|GC).*"
+    - ".*(webview|v8|javascript|chromium).*(jank|gc|long task).*"
+
 prerequisites:
   required_tables:
     - slice

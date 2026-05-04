@@ -29,6 +29,14 @@ meta:
   tags: [pipeline, classification, four-features, s01]
   s_article_ref: "S01"
 
+triggers:
+  keywords:
+    zh: [渲染管线评分, 四特征, 管线分类, pipeline scoring, queueBuffer]
+    en: [pipeline scoring, rendering pipeline classification, four features, queueBuffer]
+  patterns:
+    - ".*(渲染管线|pipeline).*(评分|分类|识别).*"
+    - ".*(pipeline|rendering).*(score|classification).*"
+
 prerequisites:
   required_tables:
     - slice

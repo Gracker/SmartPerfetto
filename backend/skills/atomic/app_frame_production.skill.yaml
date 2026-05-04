@@ -19,6 +19,14 @@ meta:
     "App 帧生产"在双/三线程时归因不同：Flutter 1.ui+1.raster；Game GameThread+RenderThread+RHI；
     RN mqt_js→Bridge/JSI→main。未来按 pipeline_id 切换主线程过滤 SQL。
 
+triggers:
+  keywords:
+    zh: [应用帧, 帧生产, 生产端, doFrame, 帧耗时]
+    en: [app frame, frame production, producer frame, doFrame]
+  patterns:
+    - ".*(应用帧|帧生产|生产端).*"
+    - ".*(app|producer).*(frame|production).*"
+
 prerequisites:
   required_tables:
     - actual_frame_timeline_slice

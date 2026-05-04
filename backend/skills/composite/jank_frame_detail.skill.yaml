@@ -15,6 +15,14 @@ meta:
   icon: "broken_image"
   tags: [jank, detail, composite]
 
+triggers:
+  keywords:
+    zh: [卡顿帧, 帧详情, 单帧根因, 掉帧原因, jank 详情]
+    en: [jank frame detail, frame root cause, dropped frame detail]
+  patterns:
+    - ".*(卡顿帧|掉帧).*(详情|根因|原因).*"
+    - ".*jank.*frame.*(detail|root cause).*"
+
 prerequisites:
   modules:
     - android.binder

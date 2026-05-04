@@ -31,6 +31,14 @@ meta:
   icon: "gamepad"
   tags: [game, fps, frame, performance, atomic]
 
+triggers:
+  keywords:
+    zh: [游戏, FPS, 帧率, Unity, Unreal, Cocos, 游戏卡顿]
+    en: [game fps, frame rate, unity, unreal, cocos, game jank]
+  patterns:
+    - ".*(游戏|Unity|Unreal|Cocos).*(FPS|帧率|卡顿).*"
+    - ".*(game|unity|unreal).*(fps|frame rate|jank).*"
+
 prerequisites:
   required_tables:
     - actual_frame_timeline_slice

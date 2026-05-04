@@ -20,6 +20,14 @@ meta:
   icon: "schedule"
   tags: [frame, cpu, time_per_frame, atomic]
 
+triggers:
+  keywords:
+    zh: [逐帧 CPU, 每帧 CPU, CPU 时间, 帧 CPU]
+    en: [per-frame cpu, frame cpu time, cpu per frame]
+  patterns:
+    - ".*(逐帧|每帧).*CPU.*"
+    - ".*(frame|per-frame).*cpu.*"
+
 prerequisites:
   modules:
     - android.frames.per_frame_metrics
