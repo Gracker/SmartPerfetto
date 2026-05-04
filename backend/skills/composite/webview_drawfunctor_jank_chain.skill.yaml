@@ -100,6 +100,22 @@ steps:
           COALESCE(${start_ts}, 0) AS start_ts,
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
       ),
+      webview_processes AS (
+        SELECT DISTINCT p.upid
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        CROSS JOIN input i
+        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*' OR p.name GLOB '*webview*' OR p.name GLOB '*sandboxed_process*')
+          AND s.ts >= i.start_ts
+          AND s.ts < i.end_ts
+          AND (
+            t.name GLOB '*CrRendererMain*' OR t.name GLOB '*Compositor*' OR
+            s.name GLOB '*DrawGL*' OR s.name GLOB '*DrawFn_DrawGL*' OR
+            s.name GLOB '*DrawFunctor*' OR s.name GLOB '*AwDrawFn*'
+          )
+      ),
       webview_slices AS (
         SELECT
           s.ts,
@@ -121,6 +137,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
         WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*' OR p.name GLOB '*webview*' OR p.name GLOB '*sandboxed_process*')
+          AND p.upid IN (SELECT upid FROM webview_processes)
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND s.dur > 0
@@ -204,6 +221,22 @@ steps:
           COALESCE(${start_ts}, 0) AS start_ts,
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
       ),
+      webview_processes AS (
+        SELECT DISTINCT p.upid
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        CROSS JOIN input i
+        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*' OR p.name GLOB '*webview*' OR p.name GLOB '*sandboxed_process*')
+          AND s.ts >= i.start_ts
+          AND s.ts < i.end_ts
+          AND (
+            t.name GLOB '*CrRendererMain*' OR t.name GLOB '*Compositor*' OR
+            s.name GLOB '*DrawGL*' OR s.name GLOB '*DrawFn_DrawGL*' OR
+            s.name GLOB '*DrawFunctor*' OR s.name GLOB '*AwDrawFn*'
+          )
+      ),
       frame_budget AS (
         SELECT COALESCE(
           (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
@@ -235,6 +268,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
         WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*' OR p.name GLOB '*webview*' OR p.name GLOB '*sandboxed_process*')
+          AND p.upid IN (SELECT upid FROM webview_processes)
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND s.dur > 0

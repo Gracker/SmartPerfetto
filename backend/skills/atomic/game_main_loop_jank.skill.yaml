@@ -114,6 +114,24 @@ steps:
           COALESCE(${start_ts}, 0) AS start_ts,
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
       ),
+      engine_processes AS (
+        SELECT DISTINCT p.upid
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        CROSS JOIN input i
+        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+          AND s.ts >= i.start_ts
+          AND s.ts < i.end_ts
+          AND (
+            t.name GLOB '*Unity*' OR t.name GLOB '*GameThread*' OR t.name GLOB '*RHIThread*' OR
+            s.name GLOB '*Unity*' OR s.name GLOB '*PlayerLoop*' OR s.name GLOB '*Camera.Render*' OR s.name GLOB '*Gfx.WaitForPresent*' OR
+            s.name GLOB '*FrameGameThread*' OR s.name GLOB '*Unreal*' OR
+            s.name GLOB '*Director::mainLoop*' OR s.name GLOB '*cocos2d*' OR s.name GLOB '*Cocos*' OR
+            s.name GLOB '*Main::iteration*' OR s.name GLOB '*physics_process*' OR s.name GLOB '*idle_process*'
+          )
+      ),
       engine_slices AS (
         SELECT
           s.ts,
@@ -142,6 +160,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
         WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+          AND p.upid IN (SELECT upid FROM engine_processes)
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND s.dur > 0
@@ -223,6 +242,24 @@ steps:
           COALESCE(${target_frame_ms}, 16.67) AS target_frame_ms,
           COALESCE(${start_ts}, 0) AS start_ts,
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
+      ),
+      engine_processes AS (
+        SELECT DISTINCT p.upid
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        CROSS JOIN input i
+        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+          AND s.ts >= i.start_ts
+          AND s.ts < i.end_ts
+          AND (
+            t.name GLOB '*Unity*' OR t.name GLOB '*GameThread*' OR t.name GLOB '*RHIThread*' OR
+            s.name GLOB '*Unity*' OR s.name GLOB '*PlayerLoop*' OR s.name GLOB '*Camera.Render*' OR s.name GLOB '*Gfx.WaitForPresent*' OR
+            s.name GLOB '*FrameGameThread*' OR s.name GLOB '*Unreal*' OR
+            s.name GLOB '*Director::mainLoop*' OR s.name GLOB '*cocos2d*' OR s.name GLOB '*Cocos*' OR
+            s.name GLOB '*Main::iteration*' OR s.name GLOB '*physics_process*' OR s.name GLOB '*idle_process*'
+          )
       )
       SELECT
         printf('%d', s.ts) AS ts,
@@ -251,6 +288,7 @@ steps:
       JOIN process p ON t.upid = p.upid
       CROSS JOIN input i
       WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        AND p.upid IN (SELECT upid FROM engine_processes)
         AND s.ts >= i.start_ts
         AND s.ts < i.end_ts
         AND s.dur / 1e6 > i.target_frame_ms * 1.5
