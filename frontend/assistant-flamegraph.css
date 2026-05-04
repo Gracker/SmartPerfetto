@@ -963,3 +963,200 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* === Layered analysis additions === */
+
+.sp-critical-path-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sp-critical-path-source {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.4;
+  background: var(--chat-border-light, #f1f3f4);
+  color: var(--chat-text-secondary, #5f6368);
+  font-weight: 500;
+}
+
+.sp-critical-path-source.present {
+  background: color-mix(in srgb, var(--chat-success, #1e8e3e) 14%, var(--chat-bg, #fff));
+  color: var(--chat-success, #1e8e3e);
+}
+
+.sp-critical-path-source.empty {
+  background: color-mix(in srgb, var(--chat-text-secondary, #5f6368) 8%, var(--chat-bg, #fff));
+  color: var(--chat-text-secondary, #5f6368);
+}
+
+.sp-critical-path-source.missing {
+  background: color-mix(in srgb, var(--chat-warning, #e89e00) 14%, var(--chat-bg, #fff));
+  color: var(--chat-warning, #e89e00);
+}
+
+.sp-critical-path-children {
+  margin-top: 8px;
+  padding: 8px 0 0;
+}
+
+.sp-critical-path-children > summary {
+  cursor: pointer;
+  color: var(--chat-primary, #3d5688);
+  font-size: 11px;
+  font-weight: 600;
+  list-style-position: inside;
+}
+
+.sp-critical-path-frame-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  border-top: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  padding: 9px 0;
+  align-items: center;
+}
+
+.sp-critical-path-frame-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sp-critical-path-frame-row b {
+  font-size: 12px;
+}
+
+.sp-critical-path-frame-row p {
+  margin: 4px 0 0;
+  color: var(--chat-text-secondary, #5f6368);
+  font-size: 11px;
+}
+
+.sp-critical-path-frame-row > div:last-child {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  font-size: 11px;
+}
+
+.sp-critical-path-hypothesis {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0;
+  border-top: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+}
+
+.sp-critical-path-hypothesis:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sp-critical-path-hypothesis-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.sp-critical-path-hypothesis-head b {
+  flex: 1 1 auto;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.sp-critical-path-strength {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.sp-critical-path-hypothesis.strong .sp-critical-path-strength {
+  background: color-mix(in srgb, var(--chat-success, #1e8e3e) 14%, var(--chat-bg, #fff));
+  color: var(--chat-success, #1e8e3e);
+}
+
+.sp-critical-path-hypothesis.weak .sp-critical-path-strength {
+  background: color-mix(in srgb, var(--chat-warning, #e89e00) 14%, var(--chat-bg, #fff));
+  color: var(--chat-warning, #e89e00);
+}
+
+.sp-critical-path-hypothesis.speculative .sp-critical-path-strength {
+  background: color-mix(in srgb, var(--chat-text-secondary, #5f6368) 12%, var(--chat-bg, #fff));
+  color: var(--chat-text-secondary, #5f6368);
+}
+
+.sp-critical-path-hypothesis-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--chat-text-secondary, #5f6368);
+}
+
+.sp-critical-path-sql-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--chat-border-light, #f8f9fa);
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.sp-critical-path-sql-block pre {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--chat-text, #202124);
+}
+
+.sp-critical-path-copy-btn {
+  align-self: flex-start;
+  border: 0;
+  border-radius: 4px;
+  padding: 4px 10px;
+  background: var(--chat-primary, #3d5688);
+  color: var(--chat-user-text, #fff);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sp-critical-path-copy-btn:hover {
+  filter: brightness(1.1);
+}
+
+.sp-critical-path-slice-row {
+  display: grid;
+  grid-template-columns: auto auto auto auto 1fr;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid var(--chat-border-light, var(--chat-border, #dadce0));
+  padding: 8px 0;
+  font-size: 12px;
+}
+
+.sp-critical-path-slice-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sp-critical-path-slice-row.running {
+  color: var(--chat-text-secondary, #5f6368);
+}
+
+.sp-critical-path-slice-row .sp-critical-path-iowait {
+  color: var(--chat-warning, #e89e00);
+  font-size: 11px;
+  font-weight: 600;
+}

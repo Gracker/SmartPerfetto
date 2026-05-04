@@ -212,6 +212,25 @@
       state.open = false;
       renderDrawer();
     });
+
+    drawer.querySelectorAll('.sp-critical-path-copy-btn').forEach((button) => {
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        const sql = button.getAttribute('data-sql');
+        if (!sql) return;
+        try {
+          await navigator.clipboard.writeText(sql);
+          const originalText = button.textContent;
+          button.textContent = '✓ 已复制';
+          setTimeout(() => {
+            button.textContent = originalText;
+          }, 1600);
+        } catch (error) {
+          button.textContent = '复制失败';
+          console.error('[CriticalPath] clipboard error:', error);
+        }
+      });
+    });
   }
 
   function renderStatus(message, isError) {
@@ -229,11 +248,13 @@
 
   function renderAnalysis(analysis, aiSummary) {
     const task = analysis.task || {};
+    const counterfactual = analysis.quantification?.counterfactual;
     return `
       <div class="sp-critical-path-metrics">
         ${renderMetric('Task', `${formatMs(analysis.totalMs)}`)}
         ${renderMetric('外部链路', `${formatMs(analysis.blockingMs)}`)}
         ${renderMetric('占比', `${formatPercent(analysis.externalBlockingPercentage)}`)}
+        ${counterfactual ? renderMetric('反事实上界', `${formatMs(counterfactual.upperBoundMs)}`, '消除最长段后的上界估算') : ''}
       </div>
 
       <section class="sp-critical-path-card">
@@ -242,8 +263,9 @@
         <div class="sp-critical-path-facts">
           <span>${escapeHtml(task.processName || '-')} / ${escapeHtml(task.threadName || '-')}</span>
           <span>${escapeHtml(task.state || 'unknown')}</span>
-          ${task.waker?.threadName || task.waker?.interruptContext ? `<span>Waker: ${escapeHtml(task.waker.interruptContext ? 'Interrupt' : `${task.waker.processName || '-'} / ${task.waker.threadName || '-'}`)}</span>` : ''}
+          ${renderWakerChip(analysis.directWaker, task)}
         </div>
+        ${renderSemanticSources(analysis.semanticSources || {})}
       </section>
 
       ${renderAiSummary(aiSummary)}
@@ -255,13 +277,19 @@
 
       <section class="sp-critical-path-card">
         <h3>唤醒链</h3>
-        ${renderChain(analysis.wakeupChain || [])}
+        ${renderChain(analysis.wakeupChain || [], 0)}
       </section>
 
       <section class="sp-critical-path-card">
         <h3>关联模块</h3>
         ${renderModules(analysis.moduleBreakdown || [])}
       </section>
+
+      ${renderFrameImpacts(analysis.quantification?.frameImpacts || [])}
+
+      ${renderHypotheses(analysis.quantification?.hypotheses || [])}
+
+      ${renderSlices(analysis.slices || [])}
 
       <section class="sp-critical-path-card">
         <h3>下一步</h3>
@@ -270,6 +298,115 @@
 
       ${Array.isArray(analysis.warnings) && analysis.warnings.length ? renderStatus(analysis.warnings.join('；'), false) : ''}
     `;
+  }
+
+  function renderWakerChip(directWaker, task) {
+    if (directWaker) {
+      const kindLabel = ({irq: 'IRQ', swapper: 'swapper', thread: 'thread', unknown: '未知'})[directWaker.kind] || directWaker.kind;
+      const name = directWaker.threadName ? ` ${directWaker.threadName}` : '';
+      const proc = directWaker.processName ? ` (${directWaker.processName})` : '';
+      const irq = directWaker.irqContext ? ' · IRQ' : '';
+      return `<span>Waker: ${escapeHtml(kindLabel)}${escapeHtml(name)}${escapeHtml(proc)}${escapeHtml(irq)}</span>`;
+    }
+    if (task.waker?.threadName || task.waker?.interruptContext) {
+      const label = task.waker.interruptContext ? 'Interrupt' : `${task.waker.processName || '-'} / ${task.waker.threadName || '-'}`;
+      return `<span>Waker: ${escapeHtml(label)}</span>`;
+    }
+    return '';
+  }
+
+  function renderSemanticSources(sources) {
+    const entries = Object.entries(sources);
+    if (!entries.length) return '';
+    const labels = {binder: 'Binder', monitor: 'Monitor', io: 'IO', gc: 'GC', cpu: 'CPU竞争'};
+    return `
+      <div class="sp-critical-path-sources">
+        ${entries
+          .map(([key, status]) => {
+            const label = labels[key] || key;
+            const cls = status === 'present' ? 'present' : status === 'empty' ? 'empty' : 'missing';
+            return `<span class="sp-critical-path-source ${cls}" title="${escapeHtml(status)}">${escapeHtml(label)}</span>`;
+          })
+          .join('')}
+      </div>
+    `;
+  }
+
+  function renderFrameImpacts(impacts) {
+    if (!impacts.length) return '';
+    return `
+      <section class="sp-critical-path-card">
+        <h3>关联帧</h3>
+        ${impacts
+          .map(
+            (impact) => `
+            <div class="sp-critical-path-frame-row">
+              <div>
+                <b>frame ${escapeHtml(String(impact.frameId ?? '-'))}</b>
+                <p>预期 ${formatMs(impact.expectedDeadlineDurMs)} · 重叠 ${formatMs(impact.overlapMs)}</p>
+              </div>
+              <div>
+                <span>${escapeHtml(impact.jankType || '-')}</span>
+                <span>${escapeHtml(impact.presentType || '-')}</span>
+              </div>
+            </div>
+          `
+          )
+          .join('')}
+      </section>
+    `;
+  }
+
+  function renderHypotheses(hypotheses) {
+    if (!hypotheses.length) return '';
+    return `
+      <section class="sp-critical-path-card">
+        <h3>可证伪假设</h3>
+        ${hypotheses
+          .map(
+            (hyp, idx) => `
+            <div class="sp-critical-path-hypothesis ${escapeHtml(hyp.strength || 'weak')}">
+              <div class="sp-critical-path-hypothesis-head">
+                <b>${escapeHtml(hyp.statement)}</b>
+                <span class="sp-critical-path-strength">${escapeHtml(hyp.strength || 'weak')}</span>
+              </div>
+              ${hyp.notes && hyp.notes.length ? `<div class="sp-critical-path-hypothesis-notes">${hyp.notes.map(n => `<span>${escapeHtml(n)}</span>`).join('')}</div>` : ''}
+              <div class="sp-critical-path-sql-block">
+                <pre>${escapeHtml(hyp.verificationSql)}</pre>
+                <button type="button" class="sp-critical-path-copy-btn" data-hyp-idx="${idx}" data-sql="${encodeAttr(hyp.verificationSql)}">复制 SQL</button>
+              </div>
+            </div>
+          `
+          )
+          .join('')}
+      </section>
+    `;
+  }
+
+  function renderSlices(slices) {
+    if (!slices || slices.length <= 1) return '';
+    return `
+      <section class="sp-critical-path-card">
+        <h3>选区切片 (${slices.length} segments)</h3>
+        ${slices
+          .map(
+            (slice) => `
+            <div class="sp-critical-path-slice-row ${escapeHtml(slice.kind || 'unknown')}">
+              <span>${escapeHtml(slice.kind || 'unknown')}</span>
+              <span>${formatMs(slice.durationMs)}</span>
+              <span>${escapeHtml(slice.state || '-')}</span>
+              ${slice.ioWait ? '<span class="sp-critical-path-iowait">io_wait</span>' : ''}
+              ${slice.skippedReason ? `<small>${escapeHtml(slice.skippedReason)}</small>` : ''}
+            </div>
+          `
+          )
+          .join('')}
+      </section>
+    `;
+  }
+
+  function encodeAttr(value) {
+    return String(value || '').replace(/"/g, '&quot;');
   }
 
   function renderAiSummary(aiSummary) {
@@ -287,9 +424,9 @@
     `;
   }
 
-  function renderMetric(label, value) {
+  function renderMetric(label, value, tooltip) {
     return `
-      <div class="sp-critical-path-metric">
+      <div class="sp-critical-path-metric"${tooltip ? ` title="${escapeHtml(tooltip)}"` : ''}>
         <span>${escapeHtml(label)}</span>
         <strong>${escapeHtml(value)}</strong>
       </div>
@@ -317,23 +454,33 @@
     return `<div class="sp-critical-path-evidence">${values.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>`;
   }
 
-  function renderChain(items) {
+  const MAX_RECURSION_DEPTH = 3;
+
+  function renderChain(items, depth) {
     if (!items.length) return '<div class="sp-critical-path-muted">没有取到外部 critical path 段。</div>';
+    const indent = depth || 0;
     return items
       .slice(0, 24)
       .map(
         (item, index) => `
-        <div class="sp-critical-path-chain-row">
-          <div class="sp-critical-path-chain-index">${index + 1}</div>
+        <div class="sp-critical-path-chain-row" style="${indent ? `margin-left: ${indent * 16}px;` : ''}">
+          <div class="sp-critical-path-chain-index">${escapeHtml(String(indent ? '↳' : index + 1))}</div>
           <div>
             <b>${escapeHtml(item.processName || '-')} / ${escapeHtml(item.threadName || '-')}</b>
             <p>${formatMs(item.durationMs)} · +${formatMs(item.startOffsetMs)} · ${escapeHtml(item.state || 'unknown')}</p>
             ${renderEvidence([...(item.modules || []), ...(item.reasons || []), ...(item.slices || [])])}
+            ${item.semantics && item.semantics.binderTxns && item.semantics.binderTxns.length ? renderBinderHint(item.semantics.binderTxns[0]) : ''}
+            ${item.children && item.children.length && indent < MAX_RECURSION_DEPTH ? `<details class="sp-critical-path-children"><summary>子链路 (${item.children.length})</summary>${renderChain(item.children, indent + 1)}</details>` : ''}
           </div>
         </div>
       `
       )
       .join('');
+  }
+
+  function renderBinderHint(txn) {
+    const label = txn.side === 'server' ? 'binder server' : txn.side === 'both' ? 'binder client+server' : 'binder client';
+    return `<div class="sp-critical-path-evidence"><span>${escapeHtml(label)}</span><span>${escapeHtml(txn.methodName || '-')}</span><span>${formatMs(txn.durMs || 0)}</span></div>`;
   }
 
   function renderModules(items) {
