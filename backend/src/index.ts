@@ -67,9 +67,19 @@ const NODE_ENV = serverConfig.nodeEnv;
 // Fail fast for trace-analysis-specific credentials when strict startup validation is enabled.
 assertTraceAnalysisConfiguredForStartup();
 
-// Middleware
+// Middleware — dynamic CORS: allow any origin whose port is 10000 (Perfetto frontend)
 app.use(cors({
-  origin: serverConfig.corsOrigins,
+  origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) => {
+    // No Origin header (server-to-server, curl, etc.) → allow
+    if (!requestOrigin) return callback(null, true);
+    try {
+      const url = new URL(requestOrigin);
+      if (url.port === '10000') {
+        return callback(null, true);
+      }
+    } catch { /* malformed origin → block */ }
+    callback(new Error(`CORS blocked: ${requestOrigin}`));
+  },
   credentials: true,
 }));
 
