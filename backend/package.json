@@ -96,7 +96,7 @@
     "multer": "^2.0.2",
     "openai": "^6.36.0",
     "uuid": "^9.0.1",
-    "zod": "^4.4.1"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
