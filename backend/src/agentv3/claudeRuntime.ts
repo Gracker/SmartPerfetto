@@ -19,7 +19,11 @@ import type { ArchitectureInfo } from '../agent/detectors/types';
 
 import { createClaudeMcpServer, loadLearnedSqlFixPairs, MCP_NAME_PREFIX } from './claudeMcpServer';
 import { buildSystemPrompt, buildQuickSystemPrompt, buildSelectionContextSection } from './claudeSystemPrompt';
-import { createSseBridge } from './claudeSseBridge';
+import {
+  createSseBridge,
+  extractSdkToolResultBlocks,
+  stringifySdkToolResult,
+} from './claudeSseBridge';
 import {
   buildMaxTurnsFallbackConclusion,
   buildMaxTurnsTerminationMessage,
@@ -291,7 +295,7 @@ function sdkQueryWithRetry(
 
 /**
  * Claude Agent SDK runtime for SmartPerfetto.
- * Replaces the agentv2 governance pipeline with Claude-as-orchestrator.
+ * Claude SDK orchestrator implementation behind the shared IOrchestrator contract.
  * Implements the same EventEmitter + analyze() interface as AgentRuntime.
  */
 export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
@@ -537,7 +541,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       // P2-1: Turn-level autonomy watchdog — detect repetitive tool failures
       // P1-G2: Per-tool tracking — each tool gets its own failure tracking
-      const toolCallHistory: Array<{ name: string; success: boolean; startTime?: number; input?: unknown }> = [];
+      const toolCallHistory: Array<{
+        id?: string;
+        name: string;
+        success: boolean;
+        completed?: boolean;
+        startTime?: number;
+        input?: unknown;
+      }> = [];
       const WATCHDOG_WINDOW = 3; // consecutive same-tool failures to trigger warning
       const watchdogFiredTools = new Set<string>(); // tracks which tools have triggered warnings
 
@@ -618,6 +629,18 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             timestamp: Date.now(),
           });
         }
+      }
+
+      function findToolCallForResult(toolUseId?: string): typeof toolCallHistory[number] | undefined {
+        if (toolUseId) {
+          for (let i = toolCallHistory.length - 1; i >= 0; i--) {
+            if (toolCallHistory[i].id === toolUseId) return toolCallHistory[i];
+          }
+        }
+        for (let i = toolCallHistory.length - 1; i >= 0; i--) {
+          if (!toolCallHistory[i].completed) return toolCallHistory[i];
+        }
+        return toolCallHistory[toolCallHistory.length - 1];
       }
 
       function finalizeTurnMetrics(): void {
@@ -738,6 +761,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 toolNames.push(block.name.replace(MCP_NAME_PREFIX, ''));
                 // P2-1: Watchdog — track tool calls for repetitive failure detection
                 toolCallHistory.push({
+                  id: block.id,
                   name: block.name,
                   success: true,
                   startTime: Date.now(),
@@ -755,124 +779,132 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           }
 
           if (msg.type === 'user' && (msg as any).tool_use_result !== undefined) {
-            const result = (msg as any).tool_use_result;
-            const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
-            // Per-turn metrics: track tool result payload size
-            if (currentTurnMetrics) {
-              currentTurnMetrics.toolResultPayloadBytes += Buffer.byteLength(resultStr, 'utf-8');
-            }
-            const isFailed = resultStr.includes('"success":false') || resultStr.includes('"isError":true');
-            if (toolCallHistory.length > 0) {
-              const lastTool = toolCallHistory[toolCallHistory.length - 1];
-              lastTool.success = !isFailed;
-              // Record tool execution in metrics collector (stream-observed timing)
-              const toolName = lastTool.name.replace(MCP_NAME_PREFIX, '');
-              const durationMs = lastTool.startTime ? Date.now() - lastTool.startTime : 0;
-              metricsCollector.recordToolFromStream(toolName, durationMs, !isFailed);
-            }
-            // Check for consecutive same-tool failures (P1-G2: per-tool tracking)
-            if (toolCallHistory.length >= WATCHDOG_WINDOW) {
-              const recent = toolCallHistory.slice(-WATCHDOG_WINDOW);
-              const allSameTool = recent.every(t => t.name === recent[0].name);
-              const allFailed = recent.every(t => !t.success);
-              const toolName = recent[0].name.replace(MCP_NAME_PREFIX, '');
-              if (allSameTool && allFailed && !watchdogFiredTools.has(toolName)) {
-                watchdogFiredTools.add(toolName);
-                console.warn(`[ClaudeRuntime] Watchdog: ${WATCHDOG_WINDOW} consecutive failures for ${toolName}`);
-                // P1-2: Inject warning into next MCP tool result (Claude reads this)
-                ctx.watchdogWarning.current = localize(
-                  this.config.outputLanguage,
-                  `${toolName} 已连续失败 ${WATCHDOG_WINDOW} 次。请切换分析策略：尝试不同的 SQL 查询、使用其他 skill、或调整参数。不要重复相同的失败操作。`,
-                  `${toolName} has failed ${WATCHDOG_WINDOW} times in a row. Switch analysis strategy: try a different SQL query, use another skill, or adjust parameters. Do not repeat the same failed action.`,
-                );
-                // P1: Record for negative memory
-                failedApproaches.push({
-                  type: 'tool_failure',
-                  approach: `连续调用 ${toolName} ${WATCHDOG_WINDOW} 次均失败`,
-                  reason: '同一工具重复失败，需要切换策略',
-                });
-                this.emitUpdate({
-                  type: 'progress',
-                  content: {
-                    phase: 'analyzing',
-                    message: localize(
-                      this.config.outputLanguage,
-                      `⚠ 检测到 ${toolName} 连续 ${WATCHDOG_WINDOW} 次失败，已注入策略切换指令`,
-                      `⚠ Detected ${WATCHDOG_WINDOW} consecutive failures for ${toolName}; injected a strategy-switch instruction`,
-                    ),
-                  },
-                  timestamp: Date.now(),
-                });
-              }
-            }
-            // Track tool call for plan adherence with phase matching (P0-1 + P1-1)
-            // P1-G5: Best-fit phase-tool matching — search all eligible phases, not just first
-            if (ctx.analysisPlan.current && toolCallHistory.length > 0) {
-              const lastTool = toolCallHistory[toolCallHistory.length - 1];
-              const plan = ctx.analysisPlan.current;
-              const shortToolName = lastTool.name.replace(MCP_NAME_PREFIX, '');
-              const callSummary = summarizeToolCallInput(shortToolName, lastTool.input);
-              const candidate: ToolCallRecord = {
-                toolName: lastTool.name,
-                timestamp: Date.now(),
-                ...callSummary,
-              };
-              // Priority: in_progress phase first, then any pending phase whose expectations match
-              const activePhase = plan.phases.find(p => p.status === 'in_progress');
-              let matchedPhaseId: string | undefined;
-              if (activePhase && phaseMatchesCall(activePhase, candidate)) {
-                matchedPhaseId = activePhase.id;
-              } else {
-                const pendingMatch = plan.phases.find(p =>
-                  p.status === 'pending' && phaseMatchesCall(p, candidate),
-                );
-                matchedPhaseId = pendingMatch?.id;
-              }
-              plan.toolCallLog.push({ ...candidate, matchedPhaseId });
-              // P2-8: Cap toolCallLog to prevent unbounded growth within a turn
-              if (plan.toolCallLog.length > 100) {
-                plan.toolCallLog.splice(0, plan.toolCallLog.length - 100);
-              }
-            }
+            const resultBlocks = extractSdkToolResultBlocks(msg);
+            const observedResults = resultBlocks.length > 0
+              ? resultBlocks
+              : [{ result: (msg as any).tool_use_result, isError: undefined, toolUseId: undefined }];
 
-            // P0-G16: Circuit breaker — overall failure rate monitoring
-            // Unlike watchdog (same-tool consecutive failures), this monitors aggregate health.
-            // Fires when >60% of recent tool calls fail, regardless of which tools.
-            // P1-G9: Circuit breaker can fire even with pending watchdog warning
-            // (CB is higher priority — its "simplify scope" message overwrites per-tool warnings)
-            if (circuitBreakerFires < MAX_CIRCUIT_BREAKER_FIRES
-                && toolCallHistory.length >= CIRCUIT_BREAKER_WINDOW
-                && toolCallHistory.length - lastCircuitBreakerFireIdx >= 3) {
-              const recentWindow = toolCallHistory.slice(-CIRCUIT_BREAKER_WINDOW);
-              const failCount = recentWindow.filter(t => !t.success).length;
-              const failRate = failCount / recentWindow.length;
-              if (failRate >= CIRCUIT_BREAKER_THRESHOLD) {
-                circuitBreakerFires++;
-                lastCircuitBreakerFireIdx = toolCallHistory.length;
-                ctx.watchdogWarning.current = localize(
-                  this.config.outputLanguage,
-                  `⚠️ 分析断路器触发：最近 ${CIRCUIT_BREAKER_WINDOW} 次工具调用中 ${failCount} 次失败 (${(failRate * 100).toFixed(0)}%)。` +
-                    '请：1) 简化分析范围，2) 使用更基础的查询，3) 如果数据不可用则基于已有证据出结论。不要继续尝试失败的操作。',
-                  `⚠️ Analysis circuit breaker triggered: ${failCount} of the last ${CIRCUIT_BREAKER_WINDOW} tool calls failed (${(failRate * 100).toFixed(0)}%). ` +
-                    'Simplify the scope, use more basic queries, and conclude from existing evidence if data is unavailable. Do not keep retrying failed actions.',
-                );
-                failedApproaches.push({
-                  type: 'strategy_failure',
-                  approach: `整体工具调用失败率过高 (${(failRate * 100).toFixed(0)}%)`,
-                  reason: `最近 ${CIRCUIT_BREAKER_WINDOW} 次调用中 ${failCount} 次失败`,
-                });
-                this.emitUpdate({
-                  type: 'progress',
-                  content: {
-                    phase: 'analyzing',
-                    message: localize(
-                      this.config.outputLanguage,
-                      `⚠ 分析断路器触发：工具调用失败率 ${(failRate * 100).toFixed(0)}%，建议简化分析范围`,
-                      `⚠ Analysis circuit breaker triggered: tool failure rate ${(failRate * 100).toFixed(0)}%; simplify the analysis scope`,
-                    ),
-                  },
+            for (const observed of observedResults) {
+              const resultStr = stringifySdkToolResult(observed.result);
+              // Per-turn metrics: track tool result payload size
+              if (currentTurnMetrics) {
+                currentTurnMetrics.toolResultPayloadBytes += Buffer.byteLength(resultStr, 'utf-8');
+              }
+              const isFailed = observed.isError === true ||
+                resultStr.includes('"success":false') ||
+                resultStr.includes('"isError":true');
+              const matchedTool = findToolCallForResult(observed.toolUseId);
+              if (matchedTool) {
+                matchedTool.success = !isFailed;
+                matchedTool.completed = true;
+                // Record tool execution in metrics collector (stream-observed timing)
+                const toolName = matchedTool.name.replace(MCP_NAME_PREFIX, '');
+                const durationMs = matchedTool.startTime ? Date.now() - matchedTool.startTime : 0;
+                metricsCollector.recordToolFromStream(toolName, durationMs, !isFailed);
+              }
+              // Check for consecutive same-tool failures (P1-G2: per-tool tracking)
+              if (toolCallHistory.length >= WATCHDOG_WINDOW) {
+                const recent = toolCallHistory.slice(-WATCHDOG_WINDOW);
+                const allSameTool = recent.every(t => t.name === recent[0].name);
+                const allFailed = recent.every(t => !t.success);
+                const toolName = recent[0].name.replace(MCP_NAME_PREFIX, '');
+                if (allSameTool && allFailed && !watchdogFiredTools.has(toolName)) {
+                  watchdogFiredTools.add(toolName);
+                  console.warn(`[ClaudeRuntime] Watchdog: ${WATCHDOG_WINDOW} consecutive failures for ${toolName}`);
+                  // P1-2: Inject warning into next MCP tool result (Claude reads this)
+                  ctx.watchdogWarning.current = localize(
+                    this.config.outputLanguage,
+                    `${toolName} 已连续失败 ${WATCHDOG_WINDOW} 次。请切换分析策略：尝试不同的 SQL 查询、使用其他 skill、或调整参数。不要重复相同的失败操作。`,
+                    `${toolName} has failed ${WATCHDOG_WINDOW} times in a row. Switch analysis strategy: try a different SQL query, use another skill, or adjust parameters. Do not repeat the same failed action.`,
+                  );
+                  // P1: Record for negative memory
+                  failedApproaches.push({
+                    type: 'tool_failure',
+                    approach: `连续调用 ${toolName} ${WATCHDOG_WINDOW} 次均失败`,
+                    reason: '同一工具重复失败，需要切换策略',
+                  });
+                  this.emitUpdate({
+                    type: 'progress',
+                    content: {
+                      phase: 'analyzing',
+                      message: localize(
+                        this.config.outputLanguage,
+                        `⚠ 检测到 ${toolName} 连续 ${WATCHDOG_WINDOW} 次失败，已注入策略切换指令`,
+                        `⚠ Detected ${WATCHDOG_WINDOW} consecutive failures for ${toolName}; injected a strategy-switch instruction`,
+                      ),
+                    },
+                    timestamp: Date.now(),
+                  });
+                }
+              }
+              // Track tool call for plan adherence with phase matching (P0-1 + P1-1)
+              // P1-G5: Best-fit phase-tool matching — search all eligible phases, not just first
+              if (ctx.analysisPlan.current && matchedTool) {
+                const plan = ctx.analysisPlan.current;
+                const shortToolName = matchedTool.name.replace(MCP_NAME_PREFIX, '');
+                const callSummary = summarizeToolCallInput(shortToolName, matchedTool.input);
+                const candidate: ToolCallRecord = {
+                  toolName: matchedTool.name,
                   timestamp: Date.now(),
-                });
+                  ...callSummary,
+                };
+                // Priority: in_progress phase first, then any pending phase whose expectations match
+                const activePhase = plan.phases.find(p => p.status === 'in_progress');
+                let matchedPhaseId: string | undefined;
+                if (activePhase && phaseMatchesCall(activePhase, candidate)) {
+                  matchedPhaseId = activePhase.id;
+                } else {
+                  const pendingMatch = plan.phases.find(p =>
+                    p.status === 'pending' && phaseMatchesCall(p, candidate),
+                  );
+                  matchedPhaseId = pendingMatch?.id;
+                }
+                plan.toolCallLog.push({ ...candidate, matchedPhaseId });
+                // P2-8: Cap toolCallLog to prevent unbounded growth within a turn
+                if (plan.toolCallLog.length > 100) {
+                  plan.toolCallLog.splice(0, plan.toolCallLog.length - 100);
+                }
+              }
+
+              // P0-G16: Circuit breaker — overall failure rate monitoring
+              // Unlike watchdog (same-tool consecutive failures), this monitors aggregate health.
+              // Fires when >60% of recent tool calls fail, regardless of which tools.
+              // P1-G9: Circuit breaker can fire even with pending watchdog warning
+              // (CB is higher priority — its "simplify scope" message overwrites per-tool warnings)
+              if (circuitBreakerFires < MAX_CIRCUIT_BREAKER_FIRES
+                  && toolCallHistory.length >= CIRCUIT_BREAKER_WINDOW
+                  && toolCallHistory.length - lastCircuitBreakerFireIdx >= 3) {
+                const recentWindow = toolCallHistory.slice(-CIRCUIT_BREAKER_WINDOW);
+                const failCount = recentWindow.filter(t => !t.success).length;
+                const failRate = failCount / recentWindow.length;
+                if (failRate >= CIRCUIT_BREAKER_THRESHOLD) {
+                  circuitBreakerFires++;
+                  lastCircuitBreakerFireIdx = toolCallHistory.length;
+                  ctx.watchdogWarning.current = localize(
+                    this.config.outputLanguage,
+                    `⚠️ 分析断路器触发：最近 ${CIRCUIT_BREAKER_WINDOW} 次工具调用中 ${failCount} 次失败 (${(failRate * 100).toFixed(0)}%)。` +
+                      '请：1) 简化分析范围，2) 使用更基础的查询，3) 如果数据不可用则基于已有证据出结论。不要继续尝试失败的操作。',
+                    `⚠️ Analysis circuit breaker triggered: ${failCount} of the last ${CIRCUIT_BREAKER_WINDOW} tool calls failed (${(failRate * 100).toFixed(0)}%). ` +
+                      'Simplify the scope, use more basic queries, and conclude from existing evidence if data is unavailable. Do not keep retrying failed actions.',
+                  );
+                  failedApproaches.push({
+                    type: 'strategy_failure',
+                    approach: `整体工具调用失败率过高 (${(failRate * 100).toFixed(0)}%)`,
+                    reason: `最近 ${CIRCUIT_BREAKER_WINDOW} 次调用中 ${failCount} 次失败`,
+                  });
+                  this.emitUpdate({
+                    type: 'progress',
+                    content: {
+                      phase: 'analyzing',
+                      message: localize(
+                        this.config.outputLanguage,
+                        `⚠ 分析断路器触发：工具调用失败率 ${(failRate * 100).toFixed(0)}%，建议简化分析范围`,
+                        `⚠ Analysis circuit breaker triggered: tool failure rate ${(failRate * 100).toFixed(0)}%; simplify the analysis scope`,
+                      ),
+                    },
+                    timestamp: Date.now(),
+                  });
+                }
               }
             }
           }
@@ -1879,6 +1911,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Cached detection
       architecture,
       sdkSessionId,
+      agentRuntimeKind: 'claude-agent-sdk',
+      agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
 
       // Artifacts
       artifacts: artifactStore?.serialize(),

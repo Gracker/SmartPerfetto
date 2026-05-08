@@ -43,23 +43,37 @@ interface ErrorResponse {
   details?: string;
 }
 
+type AIServiceProvider = 'openai' | 'claude' | 'deepseek';
+
+function resolveAIServiceProvider(): AIServiceProvider | undefined {
+  const configured = process.env.SMARTPERFETTO_LLM_PROVIDER;
+  if (configured === 'openai' || configured === 'claude' || configured === 'deepseek') {
+    return configured;
+  }
+  if (process.env.OPENAI_API_KEY) return 'openai';
+  if (process.env.ANTHROPIC_API_KEY) return 'claude';
+  if (process.env.DEEPSEEK_API_KEY) return 'deepseek';
+  return undefined;
+}
+
 class AIService {
   private openai?: OpenAI;
   private claudeUrl?: string;
   private deepseek?: OpenAI;
+  private provider?: AIServiceProvider;
   private sqlValidator: SQLValidator;
 
   constructor() {
-    const aiService = process.env.AI_SERVICE;
+    this.provider = resolveAIServiceProvider();
     this.sqlValidator = new SQLValidator();
 
-    if (aiService === 'openai' && process.env.OPENAI_API_KEY) {
+    if (this.provider === 'openai' && process.env.OPENAI_API_KEY) {
       this.openai = new OpenAI({
         apiKey: process.env.OPENAI_API_KEY,
       });
-    } else if (aiService === 'claude' && process.env.ANTHROPIC_API_KEY) {
+    } else if (this.provider === 'claude' && process.env.ANTHROPIC_API_KEY) {
       this.claudeUrl = 'https://api.anthropic.com/v1/messages';
-    } else if (aiService === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
+    } else if (this.provider === 'deepseek' && process.env.DEEPSEEK_API_KEY) {
       const deepseekBaseURL = String(
         process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com'
       ).replace(/\/+$/, '');
@@ -196,12 +210,11 @@ If data is missing, say what is needed.`;
     }
 
     const systemPrompt = options?.systemPrompt || this.buildDefaultChatSystemPrompt();
-    const aiService = process.env.AI_SERVICE;
 
-    if (aiService === 'claude') {
+    if (this.provider === 'claude') {
       return await this.callClaude(prompt, systemPrompt);
     }
-    if (aiService === 'deepseek') {
+    if (this.provider === 'deepseek') {
       return await this.callDeepseek(prompt, systemPrompt);
     }
     return await this.callOpenAI(prompt, systemPrompt);
@@ -239,11 +252,10 @@ Rules:
 - If the request cannot be answered with the available schema/data, still return JSON and explain the missing data in "notes".`;
 
     let response: string;
-    const aiService = process.env.AI_SERVICE;
 
-    if (aiService === 'claude') {
+    if (this.provider === 'claude') {
       response = await this.callClaude(prompt, safeSystemPrompt, { temperature: 0 });
-    } else if (aiService === 'deepseek') {
+    } else if (this.provider === 'deepseek') {
       response = await this.callDeepseek(prompt, safeSystemPrompt, { temperature: 0 });
     } else {
       const safePrompt = redactTextForLLM(prompt).text;
@@ -263,10 +275,10 @@ Rules:
 
     // Parse JSON response (with one repair retry for robustness)
     const parsed = await this.parseOrRepairSqlJson(response, (repairPrompt) => {
-      if (aiService === 'claude') {
+      if (this.provider === 'claude') {
         return this.callClaude(repairPrompt, safeSystemPrompt, { temperature: 0 });
       }
-      if (aiService === 'deepseek') {
+      if (this.provider === 'deepseek') {
         return this.callDeepseek(repairPrompt, safeSystemPrompt, { temperature: 0 });
       }
       const safeRepairPrompt = redactTextForLLM(repairPrompt).text;

@@ -30,7 +30,6 @@ import {
 import {
   registerCoreTools,
   StreamingUpdate,
-  createAgentRuntime,
   AgentRuntimeAnalysisResult,
   ModelRouter,
   Hypothesis,
@@ -234,6 +233,8 @@ interface AnalysisSession {
   status: 'pending' | 'running' | 'awaiting_user' | 'completed' | 'failed';
   error?: string;
   traceId: string;
+  /** Provider Manager profile used for this SDK session. null means env/default fallback is pinned. */
+  providerId?: string | null;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
   referenceTraceId?: string;
   query: string;
@@ -740,7 +741,6 @@ router.post('/analyze', async (req, res) => {
 
     const analyzeSessionService = new AgentAnalyzeSessionService<AnalysisSession>({
       assistantAppService,
-      getModelRouter,
       createSessionLogger,
       sessionPersistenceService: SessionPersistenceService.getInstance(),
       buildRecoveredResultFromContext,
@@ -754,6 +754,7 @@ router.post('/analyze', async (req, res) => {
         traceId,
         query,
         requestedSessionId,
+        providerId,
         options,
       });
       sessionId = prepared.sessionId;
@@ -802,7 +803,7 @@ router.post('/analyze', async (req, res) => {
       runContext,
       referenceTraceId,
       traceContext: traceContext && traceContext.length > 0 ? traceContext : undefined,
-      providerId,
+      providerId: sessionForRun.providerId !== undefined ? sessionForRun.providerId : providerId,
     }).catch((error) => {
       const session = assistantAppService.getSession(sessionId);
       if (session) {
@@ -1577,7 +1578,6 @@ registerAgentResumeRoutes(router, {
   buildSessionObservability,
   buildRecoveredResultFromContext,
   buildTurnSummary,
-  getModelRouter,
 });
 
 // ============================================================================
@@ -1606,7 +1606,6 @@ registerSceneReconstructRoutes(router, {
   assistantAppService,
   streamProjector,
   ensureToolsRegistered,
-  getModelRouter,
   runAgentDrivenAnalysis,
   broadcastToAgentDrivenClients,
   sendAgentDrivenResult,

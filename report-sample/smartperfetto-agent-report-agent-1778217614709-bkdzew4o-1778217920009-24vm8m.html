@@ -1,0 +1,4145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SmartPerfetto Agent-Driven 分析报告 - 2026/5/8 13:25:19</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      line-height: 1.5; color: #333; background: #f5f7fa; padding: 15px;
+    }
+    .container {
+      max-width: 1200px; margin: 0 auto; background: white;
+      border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); overflow: hidden;
+    }
+	    .header {
+	      background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+	      color: white; padding: 20px;
+	    }
+	    .header h1 { font-size: 28px; margin-bottom: 10px; }
+	    .header .meta { opacity: 0.9; font-size: 14px; }
+	    .header .meta span { margin-right: 20px; }
+	    .report-actions {
+	      display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;
+	    }
+	    .report-action-btn {
+	      border: 1px solid rgba(255,255,255,0.45); background: rgba(255,255,255,0.18);
+	      color: white; border-radius: 8px; padding: 8px 12px; cursor: pointer;
+	      font-size: 13px; font-weight: 600;
+	    }
+	    .report-action-btn:hover { background: rgba(255,255,255,0.28); }
+	    .report-save-status {
+	      align-self: center; min-height: 18px; font-size: 12px; opacity: 0.9;
+	    }
+	    .badge {
+	      display: inline-block; padding: 4px 12px; border-radius: 12px;
+	      font-size: 12px; font-weight: 600;
+	    }
+    .badge-agent { background: rgba(255,255,255,0.2); }
+    .section { padding: 20px; border-bottom: 1px solid #eaeaea; }
+    .section:last-child { border-bottom: none; }
+    .section-title {
+      font-size: 20px; font-weight: 600; margin-bottom: 20px; color: #2c3e50;
+      display: flex; align-items: center;
+    }
+    .section-title::before {
+      content: ''; width: 4px; height: 20px; background: #8b5cf6;
+      margin-right: 12px; border-radius: 2px;
+    }
+    .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; }
+    .metric-card { background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; }
+    .metric-card .value { font-size: 28px; font-weight: 700; color: #8b5cf6; }
+    .metric-card .label { font-size: 14px; color: #666; margin-top: 5px; }
+    .hypothesis-card {
+      background: #faf5ff; padding: 15px; border-radius: 8px; margin-bottom: 12px;
+      border-left: 4px solid #8b5cf6;
+    }
+    .hypothesis-card.confirmed { border-color: #10b981; background: #f0fdf4; }
+    .hypothesis-card.rejected { border-color: #ef4444; background: #fef2f2; }
+    .hypothesis-title { font-weight: 600; color: #6d28d9; margin-bottom: 8px; }
+    .hypothesis-meta { display: flex; gap: 15px; font-size: 13px; color: #666; }
+    .confidence-bar {
+      height: 8px; background: #e5e7eb; border-radius: 4px; margin-top: 8px; overflow: hidden;
+    }
+    .confidence-fill { height: 100%; background: #8b5cf6; border-radius: 4px; }
+    .dialogue-item {
+      display: flex; gap: 12px; padding: 12px; margin-bottom: 8px;
+      background: #f8f9fa; border-radius: 8px;
+    }
+    .dialogue-item.task { background: #eff6ff; border-left: 3px solid #3b82f6; }
+    .dialogue-item.response { background: #f0fdf4; border-left: 3px solid #10b981; }
+    .dialogue-agent { font-weight: 600; color: #6d28d9; min-width: 120px; }
+    .dialogue-content { flex: 1; font-size: 13px; }
+    .dialogue-findings { margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.03); border-radius: 4px; }
+    .dialogue-findings .finding-tag {
+      display: inline-block; padding: 2px 8px; margin: 2px; border-radius: 4px;
+      font-size: 11px; font-weight: 500;
+    }
+    .finding { margin-bottom: 12px; padding: 15px; border-radius: 8px; border-left: 4px solid; }
+    .finding.critical { background: #fef2f2; border-color: #dc2626; }
+    .finding.warning { background: #fff7ed; border-color: #ea580c; }
+    .finding.info { background: #eff6ff; border-color: #2563eb; }
+    .finding.high { background: #fef2f2; border-color: #dc2626; }
+    .finding.medium { background: #fff7ed; border-color: #ea580c; }
+    .finding.low { background: #f0fdf4; border-color: #10b981; }
+    .finding .title { font-weight: 600; margin-bottom: 5px; }
+    .finding .description { font-size: 13px; color: #555; margin-bottom: 8px; line-height: 1.6; }
+    .finding .evidence-list { margin-top: 8px; }
+    .finding .evidence-item { font-size: 12px; color: #555; padding: 4px 0; padding-left: 16px; position: relative; }
+    .finding .evidence-item::before { content: '•'; position: absolute; left: 4px; color: #8b5cf6; }
+    .finding .recommendations { margin-top: 10px; padding: 10px; background: rgba(139,92,246,0.05); border-radius: 6px; }
+    .finding .recommendations .rec-item {
+      font-size: 12px; color: #4c1d95; padding: 3px 0; padding-left: 20px; position: relative;
+    }
+    .finding .recommendations .rec-item::before { content: '💡'; position: absolute; left: 0; font-size: 11px; }
+    .finding .details-grid { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
+    .finding .details-grid .detail-key { color: #666; font-weight: 500; }
+    .finding .details-grid .detail-value { color: #333; font-family: monospace; font-size: 11px; }
+    .envelope-card {
+      margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;
+    }
+    .envelope-header {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 12px 16px; background: #f9fafb; border-bottom: 1px solid #e5e7eb;
+    }
+    .envelope-title { font-weight: 600; font-size: 14px; color: #374151; }
+    .envelope-meta { font-size: 11px; color: #9ca3af; }
+    .envelope-body { padding: 0; }
+    .evidence-section { margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 6px; }
+    .evidence-item { font-size: 12px; color: #666; margin-bottom: 4px; }
+    .evidence-support { color: #10b981; }
+    .evidence-contradict { color: #ef4444; }
+    .answer-box {
+      background: #f8f9fa; padding: 20px; border-radius: 8px;
+      font-size: 14px; line-height: 1.5;
+    }
+    .timeline-list {
+      display: flex; flex-direction: column; gap: 10px;
+      max-height: 420px; overflow-y: auto; padding-right: 4px;
+    }
+    .timeline-toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 10px;
+    }
+    .timeline-filters {
+      display: flex; flex-wrap: wrap; gap: 6px;
+    }
+    .timeline-filter-btn, .timeline-collapse-btn {
+      border: 1px solid #d1d5db; background: white; color: #374151;
+      border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+    }
+    .timeline-filter-btn.active {
+      background: #eef2ff; color: #4338ca; border-color: #c7d2fe; font-weight: 600;
+    }
+    .timeline-item {
+      display: grid; grid-template-columns: 64px 180px 1fr;
+      gap: 12px; align-items: center; padding: 10px 12px;
+      border-radius: 8px; border: 1px solid #e5e7eb; background: #f8fafc;
+    }
+    .timeline-item.timeline-hidden { display: none; }
+    .timeline-step {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      font-size: 12px; color: #475569;
+    }
+    .timeline-meta {
+      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    }
+    .timeline-phase {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; color: #334155; background: #e2e8f0;
+    }
+    .timeline-role {
+      font-size: 12px; color: #475569;
+    }
+    .timeline-item.phase-progress .timeline-phase { background: #dbeafe; color: #1d4ed8; }
+    .timeline-item.phase-thinking .timeline-phase { background: #ede9fe; color: #6d28d9; }
+    .timeline-item.phase-tool .timeline-phase { background: #cffafe; color: #0e7490; }
+    .timeline-item.phase-result .timeline-phase { background: #dcfce7; color: #166534; }
+    .timeline-item.phase-error .timeline-phase { background: #fee2e2; color: #b91c1c; }
+    .timeline-text {
+      font-size: 13px; color: #1f2937; line-height: 1.5;
+    }
+    .table-container { overflow-x: auto; }
+    .table-container table {
+      width: 100%; border-collapse: collapse; font-size: 12px;
+    }
+    .table-container th {
+      padding: 8px 10px; background: #f1f5f9; border-bottom: 2px solid #e2e8f0;
+      text-align: left; font-weight: 600; color: #475569; white-space: nowrap;
+    }
+    .table-container td {
+      padding: 6px 10px; border-bottom: 1px solid #f1f5f9; color: #334155;
+    }
+    .table-container tr:hover td { background: #f8fafc; }
+    .table-metadata { padding: 8px 10px; font-size: 12px; color: #666; }
+    .table-rows-more {
+      padding: 8px; text-align: center; cursor: pointer;
+      color: #8b5cf6; font-size: 12px; font-weight: 500;
+      border-top: 1px solid #f1f5f9;
+    }
+    .table-rows-more:hover { background: #faf5ff; }
+    .cell-duration { font-family: monospace; color: #7c3aed; }
+    .cell-timestamp { font-family: monospace; color: #2563eb; }
+    .cell-number { font-family: monospace; text-align: right; }
+    .cell-percentage { font-family: monospace; color: #059669; }
+    .cell-bytes { font-family: monospace; color: #d97706; }
+    .cell-warning { color: #ea580c; font-weight: 500; }
+    .cell-critical { color: #dc2626; font-weight: 600; }
+    .empty-state { padding: 20px; text-align: center; color: #9ca3af; font-size: 13px; }
+    .footer { padding: 20px; text-align: center; color: #999; font-size: 13px; background: #f8f9fa; }
+    /* Markdown rendered content (markdown-it output) — compact typography */
+
+.mermaid-wrapper {
+  margin: 12px 0 22px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+}
+pre.mermaid {
+  background:
+    radial-gradient(circle at top right, rgba(96, 165, 250, 0.16), transparent 32%),
+    linear-gradient(180deg, #f8fbff 0%, #f3f7fb 100%);
+  border: 1px solid #dbe7f3;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 8px 20px rgba(15, 23, 42, 0.06);
+  padding: 20px;
+  border-radius: 16px;
+  text-align: center;
+  margin: 0;
+  min-width: fit-content;
+}
+.causal-map {
+  --causal-line: #2563eb;
+  --causal-line-soft: #bfdbfe;
+  background:
+    radial-gradient(circle at top right, rgba(37, 99, 235, 0.12), transparent 28%),
+    linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+  border: 1px solid #dbe7f3;
+  border-radius: 24px;
+  padding: 22px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+}
+.causal-map-hero {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 18px;
+}
+.causal-map-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #dbeafe 0%, #eef2ff 100%);
+  border: 1px solid #bfdbfe;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+}
+.causal-map-badge::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14);
+}
+.causal-map-note {
+  font-size: 12px;
+  color: #475569;
+  line-height: 1.6;
+}
+.causal-map-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+.causal-group {
+  position: relative;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #dbe3ef;
+  border-radius: 18px;
+  padding: 18px 16px 16px;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.06);
+  overflow: hidden;
+}
+.causal-group::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: linear-gradient(180deg, #60a5fa 0%, #a78bfa 100%);
+  opacity: 0.7;
+}
+.causal-group[data-role="impact"] {
+  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
+}
+.causal-group-header {
+  margin-bottom: 14px;
+  padding-left: 4px;
+}
+.causal-group-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 6px;
+}
+.causal-group-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.causal-group-title::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14);
+}
+.causal-group-meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #64748b;
+}
+.causal-flow-row {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding-left: 10px;
+  margin-bottom: 14px;
+}
+.causal-flow-row:last-child {
+  margin-bottom: 0;
+}
+.causal-flow-row::before {
+  content: '';
+  position: absolute;
+  left: 17px;
+  top: 18px;
+  bottom: 18px;
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #93c5fd 0%, #c7d2fe 100%);
+}
+.causal-step {
+  position: relative;
+  padding-left: 24px;
+}
+.causal-step::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 18px;
+  width: 14px;
+  height: 2px;
+  background: var(--causal-line-soft);
+}
+.causal-step::after {
+  content: '';
+  position: absolute;
+  left: 5px;
+  top: 13px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 3px solid var(--causal-line);
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+.causal-node {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: var(--node-bg, #ffffff);
+  border: 1.5px solid var(--node-accent, #cbd5e1);
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.08);
+}
+.causal-node-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--node-text, #0f172a);
+  line-height: 1.35;
+}
+.causal-node-meta {
+  margin-top: 5px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: rgba(15, 23, 42, 0.76);
+  white-space: pre-line;
+}
+.causal-arrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 4px 0 6px 24px;
+  color: var(--causal-line);
+  font-size: 12px;
+  font-weight: 700;
+}
+.causal-arrow-line {
+  position: relative;
+  width: 2px;
+  height: 20px;
+  border-radius: 999px;
+  background: currentColor;
+  margin-left: -13px;
+}
+.causal-arrow-line::after {
+  content: '';
+  position: absolute;
+  left: -4px;
+  bottom: -3px;
+  border-top: 7px solid currentColor;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+}
+.causal-arrow-label {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
+  white-space: nowrap;
+}
+.causal-cross-links {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px dashed #cbd5e1;
+}
+.causal-cross-links-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 14px;
+  margin-bottom: 12px;
+}
+.causal-cross-links-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: #0f172a;
+}
+.causal-cross-links-note {
+  font-size: 12px;
+  color: #64748b;
+}
+.causal-cross-links-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+.causal-link-row {
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid #dbe7f3;
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 100%);
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.04);
+}
+.causal-link-path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.causal-chip {
+  padding: 7px 10px;
+  border-radius: 14px;
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.causal-chip[data-tone="from"] {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+.causal-chip[data-tone="to"] {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+.causal-chip[data-tone="label"] {
+  border-color: #e9d5ff;
+  background: #faf5ff;
+  color: #6d28d9;
+}
+.causal-link-dash {
+  position: relative;
+  flex: 1;
+  min-width: 30px;
+  border-top: 2px dashed #64748b;
+  height: 0;
+}
+.causal-link-dash::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: -5px;
+  border-left: 6px solid #64748b;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+.causal-map-source {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px dashed #dbe3ef;
+}
+.causal-map-source summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #475569;
+  font-weight: 700;
+  list-style: none;
+}
+.causal-map-source summary::-webkit-details-marker {
+  display: none;
+}
+.causal-map-source pre {
+  margin-top: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0f172a;
+  color: #e2e8f0;
+  overflow-x: auto;
+  font-size: 12px;
+  line-height: 1.55;
+}
+pre.mermaid svg {
+  display: block;
+  height: auto;
+  margin: 0 auto;
+  overflow: visible;
+}
+pre.mermaid .label,
+pre.mermaid .nodeLabel,
+pre.mermaid .edgeLabel,
+pre.mermaid .cluster-label {
+  color: #0f172a !important;
+  font-weight: 600;
+}
+pre.mermaid .edgeLabel rect,
+pre.mermaid .labelBkg {
+  fill: rgba(255, 255, 255, 0.96) !important;
+  stroke: #cbd5e1 !important;
+  stroke-width: 1px !important;
+  rx: 999px !important;
+  ry: 999px !important;
+}
+pre.mermaid .edgePath path.path,
+pre.mermaid .flowchart-link {
+  stroke: #334155 !important;
+  stroke-width: 2.8px !important;
+  stroke-linecap: round !important;
+}
+pre.mermaid marker path,
+pre.mermaid .marker path,
+pre.mermaid .arrowheadPath {
+  fill: #334155 !important;
+  stroke: #334155 !important;
+  stroke-width: 1.6px !important;
+}
+pre.mermaid .node rect,
+pre.mermaid .node circle,
+pre.mermaid .node ellipse,
+pre.mermaid .node polygon,
+pre.mermaid .node path {
+  stroke-width: 2px !important;
+}
+pre.mermaid .cluster rect {
+  fill: rgba(226, 232, 240, 0.36) !important;
+  stroke: #94a3b8 !important;
+  stroke-width: 1.8px !important;
+  rx: 14px !important;
+  ry: 14px !important;
+}
+pre.mermaid .cluster-label text,
+pre.mermaid .cluster span {
+  fill: #1e293b !important;
+  color: #1e293b !important;
+  font-weight: 700 !important;
+}
+@media (max-width: 900px) {
+  pre.mermaid {
+    padding: 16px;
+  }
+  .causal-map {
+    padding: 18px;
+  }
+  .causal-map-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+    .answer-box p, .finding-description p { margin: 2px 0; line-height: 1.5; }
+    .answer-box ul, .answer-box ol,
+    .finding-description ul, .finding-description ol { margin: 2px 0; padding-left: 20px; }
+    .answer-box li, .finding-description li { margin: 1px 0; line-height: 1.5; }
+    .answer-box li > ul, .answer-box li > ol,
+    .finding-description li > ul, .finding-description li > ol { margin: 0; }
+    .answer-box blockquote, .finding-description blockquote {
+      margin: 6px 0; padding: 8px 14px; background: #eef6ff;
+      border-left: 4px solid #3b82f6; color: #1e40af; border-radius: 0 4px 4px 0;
+    }
+    .answer-box blockquote p, .finding-description blockquote p { margin: 1px 0; }
+    .answer-box code, .finding-description code {
+      background: rgba(0,0,0,0.06); padding: 1px 5px; border-radius: 3px; font-size: 13px;
+    }
+    .answer-box pre, .finding-description pre {
+      background: #1e1e2e; color: #cdd6f4; padding: 12px; border-radius: 8px;
+      overflow-x: auto; font-size: 13px; line-height: 1.4; margin: 6px 0;
+    }
+    .answer-box pre code, .finding-description pre code {
+      background: none; padding: 0; color: inherit; font-size: inherit;
+    }
+    .answer-box hr, .finding-description hr {
+      border: none; border-top: 1px solid #e5e7eb; margin: 8px 0;
+    }
+    .answer-box h2, .finding-description h2 { margin: 12px 0 4px; font-size: 15px; color: #111827; }
+    .answer-box h3, .finding-description h3 { margin: 10px 0 3px; font-size: 14px; color: #1f2937; }
+    .answer-box h4, .finding-description h4 { margin: 8px 0 2px; font-size: 13.5px; color: #374151; }
+    .answer-box h5, .finding-description h5 { margin: 6px 0 2px; font-size: 13px; color: #374151; font-weight: 600; }
+    .answer-box table, .finding-description table {
+      width: 100%; border-collapse: collapse; margin: 6px 0; font-size: 13px;
+    }
+    .answer-box th, .finding-description th {
+      padding: 6px 10px; border: 1px solid #e2e8f0; text-align: left;
+      font-weight: 600; color: #374151; background: #f8fafc;
+    }
+    .answer-box td, .finding-description td {
+      padding: 5px 10px; border: 1px solid #e2e8f0;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>🤖 SmartPerfetto Agent-Driven 分析报告</h1>
+	      <div class="meta">
+	        <span>📁 Trace ID: e9fa715f-7eaf-48a0-9543-ce25f1a30449</span>
+	        <span>⏱️ 2026/5/8 13:25:19</span>
+	        <span class="badge badge-agent">Agent-Driven Architecture</span>
+	      </div>
+	      <div class="report-actions">
+	        <button class="report-action-btn" type="button" onclick="saveSmartPerfettoReport()">💾 保存网页文件</button>
+	        <span class="report-save-status" id="report-save-status"></span>
+	      </div>
+	    </div>
+
+    <div class="section">
+      <h2 class="section-title">执行概览</h2>
+      <div class="metrics">
+        <div class="metric-card">
+          <div class="value">305.2s</div>
+          <div class="label">总耗时</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">76%</div>
+          <div class="label">置信度</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">1</div>
+          <div class="label">对话轮次</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">6</div>
+          <div class="label">发现问题</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">0</div>
+          <div class="label">假设数</div>
+        </div>
+        <div class="metric-card">
+          <div class="value">24</div>
+          <div class="label">数据表</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2 class="section-title">用户问题</h2>
+
+      <div class="hypothesis-card">
+        <div class="hypothesis-title" style="color: #166534;">分析启动性能</div>
+      </div>
+    </div>
+
+
+
+
+    <div class="section" style="background: #fafafa; border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+      <h2 class="section-title" style="font-size: 16px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span style="color: #2563eb;">📋</span> 分析计划
+      </h2>
+      <div style="display: flex; flex-direction: column; gap: 6px;">
+        <div style="display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="color: #059669; font-weight: 600;">✓</span>
+            <span style="font-weight: 500;">启动概览采集</span>
+            <span style="color: #6b7280; font-size: 13px;"> — Phase1 已完成：启动事件 startup_id=2，包名 com.example.launch.aosp.heavy，Perfetto 标记冷启动并存在 R009_TYPE_RECLASSIFIED；dur=1338.65ms，TTID=1912.20ms（&gt;dur，R008_TTID_GT_DUR），TTFD 缺失。主线程状态 Running=843.41ms(63%), S=468.82ms(35%), D=22.98ms(1.7%), R=4.59ms(0.3%)；主线程热点以 clientTransactionExecuted(844.48ms)、activityStart(832.19ms)、performCreate(827.61ms)、LoadSimulator_ActivityInit(710.06ms)、ChaosTask(479.86ms)、SimulateInflation(178.84ms) 为主，包含明显模拟负载特征。同步 Binder 总量低（主线程最大单次仅 1.74ms），IO 中 SqliteLoad 49.51ms，后台 GC 91.28ms。初步假设：慢点主要在 Activity 创建阶段的模拟任务与合成负载。</span>
+          </div><div style="display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="color: #059669; font-weight: 600;">✓</span>
+            <span style="font-weight: 500;">启动详情深入分析</span>
+            <span style="color: #6b7280; font-size: 13px;"> — Phase2 已完成。关键数据：Q1=841ms(62.8%), Q2=0%, Q3=4.6ms(0.3%), Q4a=23ms(1.7%), Q4b=470ms(35.1%)。主线程 100% 跑在大核 CPU7，均频 3313MHz/峰值 4608MHz，初期 4002MHz → 稳态 3261MHz，爬升正常。可操作热点 Top5：ChaosTask(self=456ms, 34.1%)、LoadSimulator_ActivityInit(self=250ms, 18.7%)、LoadSimulator_AppInit(self=207ms, 15.5%)、SimulateInflation(self=175ms, 13.1%)、SqliteLoad(self=14ms, 1%)。hot_slice_states 显示 ChaosTask 100% Running、SimulateInflation 98.4% Running、RealInflation 99.5% Running、LoadSimulator_ActivityInit Running=63% + S=35.2%。主线程状态 blocked_functions 全为 &quot;-&quot;。Binder 主线程同步 &lt;5ms，线程池仅 1 个线程但当前非瓶颈。critical_tasks 显示 worker 线程多核迁移频繁（30-88次），主线程 0 次迁移。JIT artifact 和 thread_blocking_graph 均为空。R008: TTID=1912ms &gt; dur=1339ms，需分析差值 573ms 去向。</span>
+          </div><div style="display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="color: #059669; font-weight: 600;">✓</span>
+            <span style="font-weight: 500;">启动慢原因检测与交叉验证</span>
+            <span style="color: #6b7280; font-size: 13px;"> — startup_slow_reasons 检测返回 0 条命中（slow_reason_checks 为空）。与自有分析一致：热点均为自定义模拟负载（LoadSimulator/ChaosTask/MQ_Chain），不属于 SR01-SR20 标准慢启动模式。</span>
+          </div><div style="display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="color: #9ca3af; font-weight: 600;">⊘</span>
+            <span style="font-weight: 500;">内存压力检测</span>
+            <span style="color: #6b7280; font-size: 13px;"> — D 状态仅 1.7%（远低于 10% 触发阈值），但已主动调用 memory_pressure_in_range 确认：pressure_level=none, pressure_score=0, kswapd/direct_reclaim/lmk 全为 0。系统内存压力可完全排除。</span>
+          </div><div style="display: flex; align-items: baseline; gap: 8px; padding: 6px 12px; background: white; border-radius: 6px; border: 1px solid #e5e7eb;">
+            <span style="color: #059669; font-weight: 600;">✓</span>
+            <span style="font-weight: 500;">综合结论</span>
+            <span style="color: #6b7280; font-size: 13px;"> — Phase3 完成。已输出完整结构化报告：概览（含数据质量提示 R008/R009/测试应用标记）、关键发现（CPU-bound 模拟负载 A4 + 阻塞型模拟负载 C2 + R008 TTID 差值分析）、根因分析树、优化建议（App 层 + 系统/平台层）。结论基于 self_ms 归因，hot_slice_states 交叉验证，SR01-SR20 无命中，内存压力可排除，Binder/GC/调度延迟均为非瓶颈。</span>
+          </div>
+      </div>
+      <div style="margin-top: 8px; font-size: 13px; color: #6b7280;">成功标准: 确定启动性能瓶颈根因，输出完整的结构化报告（概览+关键发现+根因分析树+优化建议），每个CRITICAL/HIGH发现包含根因推理链和SR交叉验证</div>
+    </div>
+
+
+
+
+
+
+    <div class="section" id="conversation_timeline_section">
+      <h2 class="section-title">🧵 对话时间线</h2>
+      <div class="timeline-toolbar">
+        <div class="timeline-filters">
+          <button class="timeline-filter-btn active" type="button" data-phase="all" onclick="filterConversationTimeline('conversation_timeline_section', 'all', this)">全部</button>
+          <button class="timeline-filter-btn" type="button" data-phase="progress" onclick="filterConversationTimeline('conversation_timeline_section', 'progress', this)">进度</button>
+          <button class="timeline-filter-btn" type="button" data-phase="thinking" onclick="filterConversationTimeline('conversation_timeline_section', 'thinking', this)">思考</button>
+          <button class="timeline-filter-btn" type="button" data-phase="tool" onclick="filterConversationTimeline('conversation_timeline_section', 'tool', this)">工具</button>
+          <button class="timeline-filter-btn" type="button" data-phase="result" onclick="filterConversationTimeline('conversation_timeline_section', 'result', this)">结果</button>
+          <button class="timeline-filter-btn" type="button" data-phase="error" onclick="filterConversationTimeline('conversation_timeline_section', 'error', this)">错误</button>
+        </div>
+        <button class="timeline-collapse-btn" type="button" onclick="toggleConversationTimelineCollapse('conversation_timeline_section', this)">展开全部</button>
+      </div>
+      <div class="timeline-list">
+
+          <div class="timeline-item phase-progress" data-phase="progress" data-collapsed="false">
+            <div class="timeline-step">#1</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">OpenAI Agents SDK 分析中 (mimo-v2.5-pro)...</div>
+          </div>
+
+          <div class="timeline-item phase-tool" data-phase="tool" data-collapsed="false">
+            <div class="timeline-step">#2</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: submit_plan</div>
+          </div>
+
+          <div class="timeline-item phase-result" data-phase="result" data-collapsed="false">
+            <div class="timeline-step">#3</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#25050f)</div>
+          </div>
+
+          <div class="timeline-item phase-tool" data-phase="tool" data-collapsed="false">
+            <div class="timeline-step">#4</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: invoke_skill</div>
+          </div>
+
+          <div class="timeline-item phase-progress" data-phase="progress" data-collapsed="false">
+            <div class="timeline-step">#5</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">运行分析技能: startup_analysis...</div>
+          </div>
+
+          <div class="timeline-item phase-progress" data-phase="progress" data-collapsed="false">
+            <div class="timeline-step">#6</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">技能 startup_analysis 完成 (518ms, 15 个结果层)</div>
+          </div>
+
+          <div class="timeline-item phase-result" data-phase="result" data-collapsed="false">
+            <div class="timeline-step">#7</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">收到 11 份数据结果: 检测到的启动事件 / 启动数据质量</div>
+          </div>
+
+          <div class="timeline-item phase-result" data-phase="result" data-collapsed="false">
+            <div class="timeline-step">#8</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#ae4fe1)</div>
+          </div>
+
+          <div class="timeline-item phase-tool" data-phase="tool" data-collapsed="false">
+            <div class="timeline-step">#9</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: invoke_skill</div>
+          </div>
+
+          <div class="timeline-item phase-progress" data-phase="progress" data-collapsed="false">
+            <div class="timeline-step">#10</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">运行分析技能: startup_analysis...</div>
+          </div>
+
+          <div class="timeline-item phase-progress" data-phase="progress" data-collapsed="false">
+            <div class="timeline-step">#11</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">技能 startup_analysis 完成 (162ms, 15 个结果层)</div>
+          </div>
+
+          <div class="timeline-item phase-result" data-phase="result" data-collapsed="false">
+            <div class="timeline-step">#12</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">收到 11 份数据结果: 检测到的启动事件 / 启动数据质量</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#13</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#0172ec)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#14</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#15</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#740998)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#16</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#17</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#18</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#19</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#20</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#21</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#22</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#23</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#24</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#fc52c4)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#25</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#9dce40)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#26</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#2ef569)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#27</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#c35f00)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#28</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#2e797d)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#29</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#7c0e4b)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#30</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#4d3ac2)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#31</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#b0ee14)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#32</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#33</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#ed04ef)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#34</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: invoke_skill</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#35</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">运行分析技能: startup_detail...</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#36</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">技能 startup_detail 完成 (965ms, 14 个结果层)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#37</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">收到 10 份数据结果: 启动 #2 详情 / 大小核占比</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#38</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#a88eb8)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#39</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#40</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#41</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#42</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#43</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#44</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#45</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#46</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#47</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#48</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#49</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#50</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#51</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#42d42a)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#52</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#568972)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#53</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#b4558f)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#54</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#a06407)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#55</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#80cc34)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#56</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#76b3ba)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#57</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#0ec190)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#58</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#40ba5b)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#59</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#e413bd)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#60</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#a651db)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#61</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#eccb50)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#62</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#e7eac4)</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#63</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">OpenAI 模型提前结束但 plan 未完成，继续执行剩余阶段：启动详情深入分析、启动慢原因检测与交叉验证、内存压力检测</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#64</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#65</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: invoke_skill</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#66</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">运行分析技能: startup_slow_reasons...</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#67</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">技能 startup_slow_reasons 完成 (19ms, 2 个结果层)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#68</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">收到 1 份数据结果: 启动事件及 TTID/TTFD 耗时</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#69</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#c57a2a)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#70</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#ef939e)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#71</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: fetch_artifact</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#72</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: execute_sql</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#73</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: invoke_skill</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#74</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">收到 1 份数据结果: SQL Query (18 rows)</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#75</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">运行分析技能: memory_pressure_in_range...</div>
+          </div>
+
+          <div class="timeline-item phase-progress timeline-hidden timeline-collapsed" data-phase="progress" data-collapsed="true">
+            <div class="timeline-step">#76</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">进度</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">技能 memory_pressure_in_range 完成 (83ms, 1 个结果层)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#77</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">系统</span>
+            </div>
+            <div class="timeline-text">收到 1 份数据结果: Memory Pressure Analysis</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#78</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#819c1a)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#79</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#003097)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#80</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#e7413f)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#81</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#82</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#83</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: lookup_knowledge</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#84</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#5bb750)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#85</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#1aa133)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#86</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#8973a5)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#87</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#88</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#352230)</div>
+          </div>
+
+          <div class="timeline-item phase-tool timeline-hidden timeline-collapsed" data-phase="tool" data-collapsed="true">
+            <div class="timeline-step">#89</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">工具</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">调用工具: update_plan_phase</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#90</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">工具调用完成 (#fc1995)</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#91</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">最终结论已生成</div>
+          </div>
+
+          <div class="timeline-item phase-result timeline-hidden timeline-collapsed" data-phase="result" data-collapsed="true">
+            <div class="timeline-step">#92</div>
+            <div class="timeline-meta">
+              <span class="timeline-phase">结果</span>
+              <span class="timeline-role">助手</span>
+            </div>
+            <div class="timeline-text">最终回答生成完成</div>
+          </div>
+
+      </div>
+    </div>
+
+
+
+    <div class="section">
+      <h2 class="section-title">📊 数据详情</h2>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">检测到的启动事件</div>
+          <div class="envelope-meta">startup_analysis / get_startups / startup_analysis:get_startups</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>启动 ID</th><th>包名</th><th>启动类型</th><th>开始时间</th><th>结束时间</th><th>耗时</th><th>TTID</th><th>TTFD</th><th>评级</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="numeric">2</td><td class="">com.example.launch.aosp.heavy</td><td class="">冷启动</td><td class="timestamp"><span title="564166786132658">1.644s</span></td><td class="timestamp"><span title="564168124787136">2.983s</span></td><td class="numeric">1338654478</td><td class="numeric">1912.20 ms</td><td class="numeric">-</td><td class="">需优化</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动数据质量</div>
+          <div class="envelope-meta">startup_analysis / startup_quality / startup_analysis:startup_quality</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>样本数</th><th>阻断问题</th><th>告警问题</th><th>门禁状态</th><th>问题编码</th><th>说明</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="numeric">1</td><td class="numeric">0</td><td class="numeric">2</td><td class="">WARN</td><td class="">R008_TTID_GT_DUR,R009_TYPE_RECLASSIFIED</td><td class="">检测到可疑指标，结论需谨慎解读</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动延迟归因分析</div>
+          <div class="envelope-meta">startup_analysis / startup_breakdown / startup_analysis:startup_breakdown</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>延迟原因</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>最大耗时</th><th>占比</th><th>类别</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">activity_start</td><td class="numeric">899</td><td class="numeric">722.48 ms</td><td class="numeric">0.80 ms</td><td class="numeric">95.18 ms</td><td class="percentage">54.0%</td><td class="">Other</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">bind_application</td><td class="numeric">471</td><td class="numeric">477.88 ms</td><td class="numeric">1.01 ms</td><td class="numeric">21.39 ms</td><td class="percentage">35.7%</td><td class="">IO</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">inflate</td><td class="numeric">236</td><td class="numeric">104.23 ms</td><td class="numeric">0.44 ms</td><td class="numeric">0.81 ms</td><td class="percentage">7.8%</td><td class="">Layout</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">choreographer_do_frame</td><td class="numeric">47</td><td class="numeric">9.07 ms</td><td class="numeric">0.19 ms</td><td class="numeric">4.79 ms</td><td class="percentage">70.0%</td><td class="">Other</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">binder</td><td class="numeric">260</td><td class="numeric">9.05 ms</td><td class="numeric">0.03 ms</td><td class="numeric">1.72 ms</td><td class="percentage">70.0%</td><td class="">IPC</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">client_transaction_executed</td><td class="numeric">4</td><td class="numeric">5.51 ms</td><td class="numeric">1.38 ms</td><td class="numeric">5.47 ms</td><td class="percentage">40.0%</td><td class="">IO</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">activity_resume</td><td class="numeric">57</td><td class="numeric">3.20 ms</td><td class="numeric">0.06 ms</td><td class="numeric">0.34 ms</td><td class="percentage">20.0%</td><td class="">Other</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">Running</td><td class="numeric">6</td><td class="numeric">2.92 ms</td><td class="numeric">0.49 ms</td><td class="numeric">1.31 ms</td><td class="percentage">20.0%</td><td class="">Other</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">art_lock_contention</td><td class="numeric">107</td><td class="numeric">2.86 ms</td><td class="numeric">0.03 ms</td><td class="numeric">0.84 ms</td><td class="percentage">20.0%</td><td class="">IO</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">dlopen</td><td class="numeric">30</td><td class="numeric">1.17 ms</td><td class="numeric">0.04 ms</td><td class="numeric">0.23 ms</td><td class="percentage">10.0%</td><td class="">IO</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">resources_manager_get_resources</td><td class="numeric">3</td><td class="numeric">0.24 ms</td><td class="numeric">0.08 ms</td><td class="numeric">0.12 ms</td><td class="percentage">0.0%</td><td class="">Other</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">mutex_contention</td><td class="numeric">24</td><td class="numeric">0.05 ms</td><td class="numeric">0.00 ms</td><td class="numeric">0.00 ms</td><td class="percentage">0.0%</td><td class="">IO</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 2)">
+            <span>▼ 显示更多 2 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">主线程耗时操作 Top15</div>
+          <div class="envelope-meta">startup_analysis / main_thread_slices / startup_analysis:main_thread_slices</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>操作名称</th><th>线程</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>最大耗时</th><th>启动占比</th><th>启动类型</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">clientTransactionExecuted</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">844.48 ms</td><td class="numeric">844.48 ms</td><td class="numeric">844.48 ms</td><td class="percentage">63.1%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">activityStart</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">832.19 ms</td><td class="numeric">832.19 ms</td><td class="numeric">832.19 ms</td><td class="percentage">62.2%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">performCreate:com.example.launch.aosp.MainActivity</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">827.61 ms</td><td class="numeric">827.61 ms</td><td class="numeric">827.61 ms</td><td class="percentage">61.8%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">LoadSimulator_ActivityInit</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">710.06 ms</td><td class="numeric">710.06 ms</td><td class="numeric">710.06 ms</td><td class="percentage">53.0%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">ChaosTask</td><td class="">unch.aosp.heavy</td><td class="numeric">70</td><td class="numeric">479.86 ms</td><td class="numeric">6.86 ms</td><td class="numeric">15.97 ms</td><td class="percentage">35.8%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">SimulateInflation</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">178.84 ms</td><td class="numeric">178.84 ms</td><td class="numeric">178.84 ms</td><td class="percentage">13.4%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">RealInflation</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">104.32 ms</td><td class="numeric">104.32 ms</td><td class="numeric">104.32 ms</td><td class="percentage">7.8%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">SqliteLoad</td><td class="">unch.aosp.heavy</td><td class="numeric">10</td><td class="numeric">13.93 ms</td><td class="numeric">1.39 ms</td><td class="numeric">2.33 ms</td><td class="percentage">100.0%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">Choreographer#doFrame -1</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">12.48 ms</td><td class="numeric">12.48 ms</td><td class="numeric">12.48 ms</td><td class="percentage">90.0%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">Choreographer#doFrame - resynced to 1411741 in 17.8ms</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">12.33 ms</td><td class="numeric">12.33 ms</td><td class="numeric">12.33 ms</td><td class="percentage">90.0%</td><td class=""></td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">traversal</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">12.33 ms</td><td class="numeric">12.33 ms</td><td class="numeric">12.33 ms</td><td class="percentage">90.0%</td><td class=""></td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">activityResume</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">6.80 ms</td><td class="numeric">6.80 ms</td><td class="numeric">6.80 ms</td><td class="percentage">50.0%</td><td class=""></td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="">performStart:com.example.launch.aosp.MainActivity</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">5.38 ms</td><td class="numeric">5.38 ms</td><td class="numeric">5.38 ms</td><td class="percentage">40.0%</td><td class=""></td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="">Lifecycle_onStart</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">5.20 ms</td><td class="numeric">5.20 ms</td><td class="numeric">5.20 ms</td><td class="percentage">40.0%</td><td class=""></td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="">BitmapDecode</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">5.20 ms</td><td class="numeric">5.20 ms</td><td class="numeric">5.20 ms</td><td class="percentage">40.0%</td><td class=""></td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 5)">
+            <span>▼ 显示更多 5 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">主线程文件 IO Top15</div>
+          <div class="envelope-meta">startup_analysis / main_thread_file_io / startup_analysis:main_thread_file_io</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>IO 操作</th><th>线程</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>最大耗时</th><th>启动占比</th><th>启动类型</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">SqliteLoad</td><td class="">unch.aosp.heavy</td><td class="numeric">61</td><td class="numeric">49.51 ms</td><td class="numeric">0.81 ms</td><td class="numeric">2.33 ms</td><td class="percentage">3.7%</td><td class=""></td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">readSP</td><td class="">unch.aosp.heavy</td><td class="numeric">1</td><td class="numeric">0.67 ms</td><td class="numeric">0.67 ms</td><td class="numeric">0.67 ms</td><td class="percentage">10.0%</td><td class=""></td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动期间 Binder 调用</div>
+          <div class="envelope-meta">startup_analysis / startup_binder / startup_analysis:startup_binder</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>服务进程</th><th>AIDL 方法</th><th>调用次数</th><th>总耗时</th><th>平均耗时</th><th>最大耗时</th><th>主线程调用</th><th>启动占比</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">/system/bin/servicemanager</td><td class="">-</td><td class="numeric">20</td><td class="numeric">5.67 ms</td><td class="numeric">0.28 ms</td><td class="numeric">1.99 ms</td><td class="numeric">7</td><td class="percentage">40.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">system_server</td><td class="">AIDL::java::IWindowSession::relayout::server</td><td class="numeric">1</td><td class="numeric">1.74 ms</td><td class="numeric">1.74 ms</td><td class="numeric">1.74 ms</td><td class="numeric">1</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">system_server</td><td class="">AIDL::java::IProcessManager::#13::server</td><td class="numeric">1</td><td class="numeric">1.70 ms</td><td class="numeric">1.70 ms</td><td class="numeric">1.70 ms</td><td class="numeric">0</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">system_server</td><td class="">AIDL::java::IContentProvider::#21::server</td><td class="numeric">11</td><td class="numeric">1.58 ms</td><td class="numeric">0.14 ms</td><td class="numeric">0.64 ms</td><td class="numeric">10</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">/vendor/bin/hw/vendor.qti.hardware.display.allocator-service</td><td class="">-</td><td class="numeric">9</td><td class="numeric">1.21 ms</td><td class="numeric">0.13 ms</td><td class="numeric">0.29 ms</td><td class="numeric">0</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">system_server</td><td class="">AIDL::java::IPackageManager::getPackageInfo::server</td><td class="numeric">4</td><td class="numeric">1.05 ms</td><td class="numeric">0.26 ms</td><td class="numeric">0.40 ms</td><td class="numeric">0</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">/vendor/bin/vendor.qti.qspmhal-service</td><td class="">-</td><td class="numeric">3</td><td class="numeric">1.00 ms</td><td class="numeric">0.33 ms</td><td class="numeric">0.81 ms</td><td class="numeric">0</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">system_server</td><td class="">AIDL::java::IWindowSession::addToDisplayAsUser::server</td><td class="numeric">1</td><td class="numeric">0.95 ms</td><td class="numeric">0.95 ms</td><td class="numeric">0.95 ms</td><td class="numeric">1</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">/system/bin/surfaceflinger</td><td class="">AIDL::cpp::ISurfaceComposer::getDynamicDisplayInfoFromId::cppServer</td><td class="numeric">1</td><td class="numeric">0.46 ms</td><td class="numeric">0.46 ms</td><td class="numeric">0.46 ms</td><td class="numeric">1</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">system_server</td><td class="">AIDL::java::IWindowManager::openSession::server</td><td class="numeric">1</td><td class="numeric">0.42 ms</td><td class="numeric">0.42 ms</td><td class="numeric">0.42 ms</td><td class="numeric">1</td><td class="percentage">0.0%</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">system_server</td><td class="">AIDL::java::IContentService::registerContentObserver::server</td><td class="numeric">3</td><td class="numeric">0.33 ms</td><td class="numeric">0.11 ms</td><td class="numeric">0.16 ms</td><td class="numeric">0</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">system_server</td><td class="">AIDL::java::IActivityManager::setRenderThread::server</td><td class="numeric">1</td><td class="numeric">0.30 ms</td><td class="numeric">0.30 ms</td><td class="numeric">0.30 ms</td><td class="numeric">1</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="">system_server</td><td class="">AIDL::java::IPackageManager::getApplicationInfo::server</td><td class="numeric">3</td><td class="numeric">0.26 ms</td><td class="numeric">0.09 ms</td><td class="numeric">0.11 ms</td><td class="numeric">2</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="">/system_ext/bin/gppservice</td><td class="">-</td><td class="numeric">2</td><td class="numeric">0.25 ms</td><td class="numeric">0.12 ms</td><td class="numeric">0.19 ms</td><td class="numeric">2</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="">system_server</td><td class="">AIDL::java::IPackageManager::hasSystemFeature::server</td><td class="numeric">3</td><td class="numeric">0.24 ms</td><td class="numeric">0.08 ms</td><td class="numeric">0.16 ms</td><td class="numeric">3</td><td class="percentage">0.0%</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 5)">
+            <span>▼ 显示更多 5 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">主线程同步 Binder 调用</div>
+          <div class="envelope-meta">startup_analysis / main_thread_sync_binder / startup_analysis:main_thread_sync_binder</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>服务进程</th><th>AIDL 方法</th><th>调用次数</th><th>总耗时</th><th>平均耗时</th><th>最大耗时</th><th>启动占比</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">system_server</td><td class="">AIDL::java::IWindowSession::relayout::server</td><td class="numeric">1</td><td class="numeric">1.74 ms</td><td class="numeric">1.74 ms</td><td class="numeric">1.74 ms</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">system_server</td><td class="">AIDL::java::IContentProvider::#21::server</td><td class="numeric">10</td><td class="numeric">1.49 ms</td><td class="numeric">0.15 ms</td><td class="numeric">0.64 ms</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">system_server</td><td class="">AIDL::java::IWindowSession::addToDisplayAsUser::server</td><td class="numeric">1</td><td class="numeric">0.95 ms</td><td class="numeric">0.95 ms</td><td class="numeric">0.95 ms</td><td class="percentage">10.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">/system/bin/servicemanager</td><td class="">-</td><td class="numeric">7</td><td class="numeric">0.62 ms</td><td class="numeric">0.09 ms</td><td class="numeric">0.14 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">/system/bin/surfaceflinger</td><td class="">AIDL::cpp::ISurfaceComposer::getDynamicDisplayInfoFromId::cppServer</td><td class="numeric">1</td><td class="numeric">0.46 ms</td><td class="numeric">0.46 ms</td><td class="numeric">0.46 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">system_server</td><td class="">AIDL::java::IWindowManager::openSession::server</td><td class="numeric">1</td><td class="numeric">0.42 ms</td><td class="numeric">0.42 ms</td><td class="numeric">0.42 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">system_server</td><td class="">AIDL::java::IActivityManager::setRenderThread::server</td><td class="numeric">1</td><td class="numeric">0.30 ms</td><td class="numeric">0.30 ms</td><td class="numeric">0.30 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">/system_ext/bin/gppservice</td><td class="">-</td><td class="numeric">2</td><td class="numeric">0.25 ms</td><td class="numeric">0.12 ms</td><td class="numeric">0.19 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">system_server</td><td class="">AIDL::java::IPackageManager::hasSystemFeature::server</td><td class="numeric">3</td><td class="numeric">0.24 ms</td><td class="numeric">0.08 ms</td><td class="numeric">0.16 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">system_server</td><td class="">AIDL::java::IActivityClientController::setTaskDescription::server</td><td class="numeric">1</td><td class="numeric">0.22 ms</td><td class="numeric">0.22 ms</td><td class="numeric">0.22 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">system_server</td><td class="">AIDL::java::IPackageManager::getApplicationInfo::server</td><td class="numeric">2</td><td class="numeric">0.19 ms</td><td class="numeric">0.10 ms</td><td class="numeric">0.11 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">system_server</td><td class="">AIDL::java::IActivityTaskManager::getActivityClientController::server</td><td class="numeric">1</td><td class="numeric">0.19 ms</td><td class="numeric">0.19 ms</td><td class="numeric">0.19 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="">/system/bin/surfaceflinger</td><td class="">AIDL::cpp::IDisplayEventConnection::getLatestVsyncEventData::cppServer</td><td class="numeric">2</td><td class="numeric">0.19 ms</td><td class="numeric">0.09 ms</td><td class="numeric">0.10 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="">system_server</td><td class="">AIDL::java::IInputMethodManager::addClient::server</td><td class="numeric">1</td><td class="numeric">0.15 ms</td><td class="numeric">0.15 ms</td><td class="numeric">0.15 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="">system_server</td><td class="">AIDL::java::IPackageManager::getActivityInfo::server</td><td class="numeric">2</td><td class="numeric">0.14 ms</td><td class="numeric">0.07 ms</td><td class="numeric">0.08 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 5)">
+            <span>▼ 显示更多 5 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动期间主线程状态</div>
+          <div class="envelope-meta">startup_analysis / main_thread_state_during_startup / startup_analysis:main_thread_state_during_startup</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>状态</th><th>状态说明</th><th>总耗时</th><th>占比</th><th>次数</th><th>阻塞函数</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">Running</td><td class="">Running (CPU执行)</td><td class="numeric">843.41 ms</td><td class="percentage">63.0%</td><td class="numeric">456</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">S</td><td class="">Sleeping (主动睡眠)</td><td class="numeric">468.82 ms</td><td class="percentage">35.0%</td><td class="numeric">330</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">D</td><td class="">Disk Sleep (IO等待)</td><td class="numeric">22.98 ms</td><td class="percentage">1.7%</td><td class="numeric">125</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">R</td><td class="">Runnable (等待调度)</td><td class="numeric">4.59 ms</td><td class="percentage">30.0%</td><td class="numeric">451</td><td class="">-</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动期间 GC</div>
+          <div class="envelope-meta">startup_analysis / gc_during_startup / startup_analysis:gc_during_startup</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>GC 类型</th><th>线程</th><th>主线程</th><th>次数</th><th>总耗时</th><th>平均耗时</th><th>启动占比</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">Background concurrent copying GC</td><td class="">HeapTaskDaemon</td><td class="">0</td><td class="numeric">4</td><td class="numeric">91.28 ms</td><td class="numeric">22.82 ms</td><td class="percentage">6.8%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">Background young concurrent copying GC</td><td class="">HeapTaskDaemon</td><td class="">0</td><td class="numeric">4</td><td class="numeric">61.61 ms</td><td class="numeric">15.40 ms</td><td class="percentage">4.6%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">GC: Wait For Completion Alloc</td><td class="">pool-3-thread-3</td><td class="">0</td><td class="numeric">4</td><td class="numeric">28.48 ms</td><td class="numeric">7.12 ms</td><td class="percentage">2.1%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">GC: Wait For Completion ClassLinkerForRegisterDexFile</td><td class="">Binder:intercep</td><td class="">0</td><td class="numeric">1</td><td class="numeric">26.83 ms</td><td class="numeric">26.83 ms</td><td class="percentage">2.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">Alloc concurrent copying GC</td><td class="">pool-3-thread-1</td><td class="">0</td><td class="numeric">1</td><td class="numeric">11.35 ms</td><td class="numeric">11.35 ms</td><td class="percentage">80.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">Lock contention on GC barrier lock (owner tid: 0)</td><td class="">pool-3-thread-2</td><td class="">0</td><td class="numeric">15</td><td class="numeric">0.02 ms</td><td class="numeric">0.00 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">Lock contention on GC barrier lock (owner tid: 24762)</td><td class="">pool-3-thread-2</td><td class="">0</td><td class="numeric">2</td><td class="numeric">0.00 ms</td><td class="numeric">0.00 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">Lock contention on GC barrier lock (owner tid: 0)</td><td class="">unch.aosp.heavy</td><td class="">1</td><td class="numeric">4</td><td class="numeric">0.00 ms</td><td class="numeric">0.00 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">Lock contention on GC barrier lock (owner tid: 21307)</td><td class="">HeapTaskDaemon</td><td class="">0</td><td class="numeric">3</td><td class="numeric">0.00 ms</td><td class="numeric">0.00 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">Lock contention on GC barrier lock (owner tid: 24762)</td><td class="">unch.aosp.heavy</td><td class="">1</td><td class="numeric">1</td><td class="numeric">0.00 ms</td><td class="numeric">0.00 ms</td><td class="percentage">0.0%</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动期间调度延迟</div>
+          <div class="envelope-meta">startup_analysis / sched_latency_during_startup / startup_analysis:sched_latency_during_startup</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>状态</th><th>次数</th><th>总等待</th><th>平均等待</th><th>最大等待</th><th>严重延迟次数</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">R</td><td class="numeric">451</td><td class="numeric">4.59 ms</td><td class="numeric">0.01 ms</td><td class="numeric">0.49 ms</td><td class="numeric">0</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">证据矩阵</div>
+          <div class="envelope-meta">startup_analysis / startup_evidence_matrix / startup_analysis:startup_evidence_matrix</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>分析项</th><th>主指标</th><th>主指标值</th><th>异常阈值</th><th>佐证指标</th><th>佐证值</th><th>佐证阈值</th><th>判定</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">MainThread Hot Slice</td><td class="">main_thread_slices.percent_of_startup</td><td class="numeric">63.1</td><td class="">&gt;20% OR max_dur_ms&gt;100</td><td class="">main_thread_slices.max_dur_ms</td><td class="numeric">844.48</td><td class="">&gt;100ms</td><td class="">confirmed</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">MainThread File IO</td><td class="">main_thread_file_io.percent_of_startup</td><td class="numeric">3.7</td><td class="">&gt;5%</td><td class="">main_thread_file_io.total_dur_ms</td><td class="numeric">49.51</td><td class="">&gt;50ms</td><td class="">normal</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">Binder Total</td><td class="">startup_binder.percent_of_startup</td><td class="numeric">0.4</td><td class="">&gt;20%</td><td class="">main_sync_binder.percent_of_startup</td><td class="numeric">0.1</td><td class="">&gt;5%</td><td class="">normal</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">Main Sync Binder</td><td class="">main_sync_binder.percent_of_startup</td><td class="numeric">0.1</td><td class="">&gt;8%</td><td class="">main_binder_blocking.dur_ms</td><td class="numeric">0</td><td class="">&gt;16ms</td><td class="">normal</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">Sched Latency</td><td class="">sched_latency.severe_delays</td><td class="numeric">0</td><td class="">&gt;3</td><td class="">sched_latency.max_wait_ms</td><td class="numeric">0.49</td><td class="">&gt;8ms</td><td class="">normal</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动 #2 详情</div>
+          <div class="envelope-meta">startup_detail / startup_info / startup_detail:startup_info</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>启动 ID</th><th>包名</th><th>启动类型</th><th>类型展示</th><th>启动耗时(ms)</th><th>TTID(ms)</th><th>TTFD(ms)</th><th>开始时间</th><th>结束时间</th><th>Perfetto开始</th><th>Perfetto结束</th><th>评级</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="numeric">2</td><td class="">com.example.launch.aosp.heavy</td><td class="">cold</td><td class="">冷启动</td><td class="numeric">1338.65 ms</td><td class="numeric">-</td><td class="numeric">-</td><td class="timestamp"><span title="564166786132658">1.644s</span></td><td class="timestamp"><span title="564168124787136">2.983s</span></td><td class="timestamp"><span title="564166786132658">1.644s</span></td><td class="timestamp"><span title="564168124787136">2.983s</span></td><td class="">需优化</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">大小核占比</div>
+          <div class="envelope-meta">startup_detail / cpu_core_analysis / startup_detail:cpu_core_analysis</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>线程类型</th><th>大核运行(ms)</th><th>小核运行(ms)</th><th>总运行(ms)</th><th>大核占比(%)</th><th>小核占比(%)</th><th>使用CPU</th><th>核判定来源</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">MainThread</td><td class="numeric">841.22 ms</td><td class="numeric">0.00 ms</td><td class="numeric">841.22 ms</td><td class="percentage">100.0%</td><td class="percentage">0.0%</td><td class="">7</td><td class="">topology_view</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">CPU 频率</div>
+          <div class="envelope-meta">startup_detail / cpu_freq_analysis / startup_detail:cpu_freq_analysis</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>核心类型</th><th>平均频率(MHz)</th><th>最高频率(MHz)</th><th>最低频率(MHz)</th><th>核判定来源</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">big</td><td class="numeric">3,313</td><td class="numeric">4,608</td><td class="numeric">1,017</td><td class="">topology_view</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">CPU 频率爬升分析</div>
+          <div class="envelope-meta">startup_detail / freq_rampup / startup_detail:freq_rampup</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>核类型</th><th>初期均频(MHz)</th><th>稳态均频(MHz)</th><th>爬升幅度</th><th>评估</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">big</td><td class="numeric">4,002</td><td class="numeric">3,261</td><td class="percentage">-1850.0%</td><td class="">频率爬升正常</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">little</td><td class="numeric">2,793</td><td class="numeric">2,069</td><td class="percentage">-2590.0%</td><td class="">频率爬升正常</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">四大象限分析</div>
+          <div class="envelope-meta">startup_detail / quadrant_analysis / startup_detail:quadrant_analysis</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>线程类型</th><th>Q1大核运行(ms)</th><th>Q2小核运行(ms)</th><th>Q3可运行等待(ms)</th><th>Q4a IO阻塞(ms)</th><th>Q4b 睡眠等待(ms)</th><th>总时长(ms)</th><th>Q1占比(%)</th><th>Q2占比(%)</th><th>Q3占比(%)</th><th>Q4a占比(%)</th><th>Q4b占比(%)</th><th>核判定来源</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">MainThread</td><td class="numeric">841.22 ms</td><td class="numeric">0.00 ms</td><td class="numeric">4.59 ms</td><td class="numeric">22.98 ms</td><td class="numeric">469.86 ms</td><td class="numeric">1338.65 ms</td><td class="percentage">62.8%</td><td class="percentage">0.0%</td><td class="percentage">30.0%</td><td class="percentage">1.7%</td><td class="percentage">35.1%</td><td class="">topology_view</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">主线程摆核时序（50ms 桶）</div>
+          <div class="envelope-meta">startup_detail / cpu_placement_timeline / startup_detail:cpu_placement_timeline</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>偏移(ms)</th><th>大核(ms)</th><th>小核(ms)</th><th>大核占比</th><th>CPU</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="numeric">0.00 ms</td><td class="numeric">21.74 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="numeric">50.00 ms</td><td class="numeric">29.14 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="numeric">100.00 ms</td><td class="numeric">23.26 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="numeric">150.00 ms</td><td class="numeric">26.39 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="numeric">200.00 ms</td><td class="numeric">26.46 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="numeric">250.00 ms</td><td class="numeric">30.66 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="numeric">300.00 ms</td><td class="numeric">21.53 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="numeric">350.00 ms</td><td class="numeric">34.98 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="numeric">400.00 ms</td><td class="numeric">27.58 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="numeric">450.00 ms</td><td class="numeric">35.48 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="numeric">500.00 ms</td><td class="numeric">49.89 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="numeric">550.00 ms</td><td class="numeric">49.08 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="numeric">600.00 ms</td><td class="numeric">49.82 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="numeric">650.00 ms</td><td class="numeric">48.16 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="numeric">700.00 ms</td><td class="numeric">50.00 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">16</td>
+                <td class="numeric">750.00 ms</td><td class="numeric">32.82 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">17</td>
+                <td class="numeric">800.00 ms</td><td class="numeric">26.14 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">18</td>
+                <td class="numeric">850.00 ms</td><td class="numeric">26.37 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">19</td>
+                <td class="numeric">900.00 ms</td><td class="numeric">25.75 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">20</td>
+                <td class="numeric">950.00 ms</td><td class="numeric">29.60 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">21</td>
+                <td class="numeric">1000.00 ms</td><td class="numeric">30.43 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">22</td>
+                <td class="numeric">1050.00 ms</td><td class="numeric">30.93 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">23</td>
+                <td class="numeric">1100.00 ms</td><td class="numeric">18.75 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">24</td>
+                <td class="numeric">1150.00 ms</td><td class="numeric">17.26 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">25</td>
+                <td class="numeric">1200.00 ms</td><td class="numeric">20.16 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">26</td>
+                <td class="numeric">1250.00 ms</td><td class="numeric">31.96 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">27</td>
+                <td class="numeric">1300.00 ms</td><td class="numeric">26.88 ms</td><td class="numeric">0.00 ms</td><td class="percentage">100.0%</td><td class="">7</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 17)">
+            <span>▼ 显示更多 17 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">主线程可操作热点 Top5</div>
+          <div class="envelope-meta">startup_detail / actionable_main_thread_slices / startup_detail:actionable_main_thread_slices</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>切片名</th><th>次数</th><th>总耗时(wall)</th><th>自身耗时</th><th>平均耗时</th><th>最大耗时</th><th>区间占比(wall)</th><th>区间占比(self)</th><th>框架包裹切片</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">ChaosTask</td><td class="numeric">70</td><td class="numeric">479.86 ms</td><td class="numeric">456.32 ms</td><td class="numeric">6.86 ms</td><td class="numeric">15.97 ms</td><td class="percentage">35.8%</td><td class="percentage">34.1%</td><td class="">0</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">LoadSimulator_ActivityInit</td><td class="numeric">1</td><td class="numeric">710.06 ms</td><td class="numeric">249.80 ms</td><td class="numeric">710.06 ms</td><td class="numeric">710.06 ms</td><td class="percentage">53.0%</td><td class="percentage">18.7%</td><td class="">0</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">LoadSimulator_AppInit</td><td class="numeric">1</td><td class="numeric">477.76 ms</td><td class="numeric">207.42 ms</td><td class="numeric">477.76 ms</td><td class="numeric">477.76 ms</td><td class="percentage">35.7%</td><td class="percentage">15.5%</td><td class="">0</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">SimulateInflation</td><td class="numeric">1</td><td class="numeric">178.84 ms</td><td class="numeric">175.48 ms</td><td class="numeric">178.84 ms</td><td class="numeric">178.84 ms</td><td class="percentage">13.4%</td><td class="percentage">13.1%</td><td class="">0</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">SqliteLoad</td><td class="numeric">10</td><td class="numeric">13.93 ms</td><td class="numeric">13.93 ms</td><td class="numeric">1.39 ms</td><td class="numeric">2.33 ms</td><td class="percentage">100.0%</td><td class="percentage">100.0%</td><td class="">0</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">Binder 线程池分析</div>
+          <div class="envelope-meta">startup_detail / binder_pool / startup_detail:binder_pool</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>指标</th><th>值</th><th>评估</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">线程池大小</td><td class="">1 个 Binder 线程</td><td class="">线程池较小</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">线程池利用率</td><td class="">100.0% (Running 6.04ms / Idle 0.0ms)</td><td class="">⚠️ 利用率过高，可能存在排队</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">Binder 线程被阻塞</td><td class="">0.0 ms (非 binder_wait 的 S 状态)</td><td class="">正常</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动关键任务（全线程四象限）</div>
+          <div class="envelope-meta">startup_detail / critical_tasks / startup_detail:critical_tasks</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>线程</th><th>角色</th><th>CPU 时间</th><th>Q1 大核运行</th><th>Q2 小核运行</th><th>Q3 等待调度</th><th>Q4b 睡眠等待</th><th>运行占比</th><th>大核占比</th><th>核迁移</th><th>跨 cluster</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">unch.aosp.heavy</td><td class="">main</td><td class="numeric">841.22 ms</td><td class="numeric">841.22 ms</td><td class="numeric">0.00 ms</td><td class="numeric">4.59 ms</td><td class="numeric">469.86 ms</td><td class="percentage">62.8%</td><td class="percentage">100.0%</td><td class="numeric">0</td><td class="numeric">0</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">pool-3-thread-2</td><td class="">worker</td><td class="numeric">132.41 ms</td><td class="numeric">50.34 ms</td><td class="numeric">82.06 ms</td><td class="numeric">18.01 ms</td><td class="numeric">510.92 ms</td><td class="percentage">20.0%</td><td class="percentage">38.0%</td><td class="numeric">74</td><td class="numeric">37</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">pool-3-thread-1</td><td class="">worker</td><td class="numeric">120.67 ms</td><td class="numeric">36.95 ms</td><td class="numeric">83.72 ms</td><td class="numeric">29.53 ms</td><td class="numeric">511.33 ms</td><td class="percentage">18.2%</td><td class="percentage">30.6%</td><td class="numeric">50</td><td class="numeric">17</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">HeapTaskDaemon</td><td class="">gc</td><td class="numeric">101.77 ms</td><td class="numeric">49.37 ms</td><td class="numeric">52.41 ms</td><td class="numeric">34.80 ms</td><td class="numeric">1202.08 ms</td><td class="percentage">7.6%</td><td class="percentage">48.5%</td><td class="numeric">49</td><td class="numeric">29</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">pool-3-thread-7</td><td class="">worker</td><td class="numeric">97.33 ms</td><td class="numeric">34.44 ms</td><td class="numeric">62.88 ms</td><td class="numeric">19.57 ms</td><td class="numeric">1063.28 ms</td><td class="percentage">8.2%</td><td class="percentage">35.4%</td><td class="numeric">88</td><td class="numeric">27</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">pool-3-thread-5</td><td class="">worker</td><td class="numeric">94.88 ms</td><td class="numeric">26.81 ms</td><td class="numeric">68.07 ms</td><td class="numeric">24.22 ms</td><td class="numeric">1059.94 ms</td><td class="percentage">8.0%</td><td class="percentage">28.3%</td><td class="numeric">87</td><td class="numeric">19</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">pool-3-thread-1</td><td class="">worker</td><td class="numeric">77.71 ms</td><td class="numeric">18.67 ms</td><td class="numeric">59.04 ms</td><td class="numeric">17.78 ms</td><td class="numeric">652.15 ms</td><td class="percentage">10.4%</td><td class="percentage">24.0%</td><td class="numeric">59</td><td class="numeric">12</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">pool-3-thread-8</td><td class="">worker</td><td class="numeric">77.68 ms</td><td class="numeric">11.21 ms</td><td class="numeric">66.46 ms</td><td class="numeric">18.71 ms</td><td class="numeric">1135.20 ms</td><td class="percentage">6.3%</td><td class="percentage">14.4%</td><td class="numeric">60</td><td class="numeric">13</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">pool-3-thread-4</td><td class="">worker</td><td class="numeric">75.53 ms</td><td class="numeric">16.22 ms</td><td class="numeric">59.32 ms</td><td class="numeric">18.04 ms</td><td class="numeric">536.10 ms</td><td class="percentage">12.0%</td><td class="percentage">21.5%</td><td class="numeric">47</td><td class="numeric">9</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">pool-3-thread-6</td><td class="">worker</td><td class="numeric">71.39 ms</td><td class="numeric">20.03 ms</td><td class="numeric">51.36 ms</td><td class="numeric">17.97 ms</td><td class="numeric">1054.34 ms</td><td class="percentage">6.2%</td><td class="percentage">28.1%</td><td class="numeric">59</td><td class="numeric">9</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">pool-3-thread-1</td><td class="">worker</td><td class="numeric">69.98 ms</td><td class="numeric">9.56 ms</td><td class="numeric">60.42 ms</td><td class="numeric">17.94 ms</td><td class="numeric">677.99 ms</td><td class="percentage">9.1%</td><td class="percentage">13.7%</td><td class="numeric">52</td><td class="numeric">10</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">pool-3-thread-1</td><td class="">worker</td><td class="numeric">54.36 ms</td><td class="numeric">24.27 ms</td><td class="numeric">30.09 ms</td><td class="numeric">6.56 ms</td><td class="numeric">31.31 ms</td><td class="percentage">58.9%</td><td class="percentage">44.6%</td><td class="numeric">32</td><td class="numeric">17</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="">pool-3-thread-1</td><td class="">worker</td><td class="numeric">47.95 ms</td><td class="numeric">8.51 ms</td><td class="numeric">39.44 ms</td><td class="numeric">5.98 ms</td><td class="numeric">151.90 ms</td><td class="percentage">23.3%</td><td class="percentage">17.7%</td><td class="numeric">30</td><td class="numeric">14</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="">pool-3-thread-9</td><td class="">worker</td><td class="numeric">45.53 ms</td><td class="numeric">3.62 ms</td><td class="numeric">41.91 ms</td><td class="numeric">8.01 ms</td><td class="numeric">668.65 ms</td><td class="percentage">6.3%</td><td class="percentage">8.0%</td><td class="numeric">51</td><td class="numeric">4</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="">pool-3-thread-3</td><td class="">worker</td><td class="numeric">42.52 ms</td><td class="numeric">13.00 ms</td><td class="numeric">29.52 ms</td><td class="numeric">16.97 ms</td><td class="numeric">570.20 ms</td><td class="percentage">6.8%</td><td class="percentage">30.6%</td><td class="numeric">29</td><td class="numeric">5</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 5)">
+            <span>▼ 显示更多 5 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">热点 Slice 线程状态分布</div>
+          <div class="envelope-meta">startup_detail / hot_slice_states / startup_detail:hot_slice_states</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>切片名</th><th>切片耗时</th><th>开始时间</th><th>线程状态</th><th>状态耗时</th><th>状态占比</th><th>阻塞函数</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">clientTransactionExecuted</td><td class="numeric">844.50 ms</td><td class="timestamp"><span title="564167265248803">2.123s</span></td><td class="">Running</td><td class="numeric">574.95 ms</td><td class="percentage">68.1%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">clientTransactionExecuted</td><td class="numeric">844.50 ms</td><td class="timestamp"><span title="564167265248803">2.123s</span></td><td class="">S</td><td class="numeric">255.99 ms</td><td class="percentage">30.3%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">clientTransactionExecuted</td><td class="numeric">844.50 ms</td><td class="timestamp"><span title="564167265248803">2.123s</span></td><td class="">D</td><td class="numeric">11.19 ms</td><td class="percentage">1.3%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">clientTransactionExecuted</td><td class="numeric">844.50 ms</td><td class="timestamp"><span title="564167265248803">2.123s</span></td><td class="">R</td><td class="numeric">2.34 ms</td><td class="percentage">30.0%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">activityStart</td><td class="numeric">832.20 ms</td><td class="timestamp"><span title="564167265252293">2.123s</span></td><td class="">Running</td><td class="numeric">565.89 ms</td><td class="percentage">68.0%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">activityStart</td><td class="numeric">832.20 ms</td><td class="timestamp"><span title="564167265252293">2.123s</span></td><td class="">S</td><td class="numeric">253.03 ms</td><td class="percentage">30.4%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">activityStart</td><td class="numeric">832.20 ms</td><td class="timestamp"><span title="564167265252293">2.123s</span></td><td class="">D</td><td class="numeric">11.19 ms</td><td class="percentage">1.3%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">activityStart</td><td class="numeric">832.20 ms</td><td class="timestamp"><span title="564167265252293">2.123s</span></td><td class="">R</td><td class="numeric">2.08 ms</td><td class="percentage">20.0%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">performCreate:com.example.launch.aosp.MainActivity</td><td class="numeric">827.60 ms</td><td class="timestamp"><span title="564167269407918">2.128s</span></td><td class="">Running</td><td class="numeric">563.09 ms</td><td class="percentage">68.0%</td><td class="">-</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">performCreate:com.example.launch.aosp.MainActivity</td><td class="numeric">827.60 ms</td><td class="timestamp"><span title="564167269407918">2.128s</span></td><td class="">S</td><td class="numeric">251.33 ms</td><td class="percentage">30.4%</td><td class="">-</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">performCreate:com.example.launch.aosp.MainActivity</td><td class="numeric">827.60 ms</td><td class="timestamp"><span title="564167269407918">2.128s</span></td><td class="">D</td><td class="numeric">11.19 ms</td><td class="percentage">1.4%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">performCreate:com.example.launch.aosp.MainActivity</td><td class="numeric">827.60 ms</td><td class="timestamp"><span title="564167269407918">2.128s</span></td><td class="">R</td><td class="numeric">2.01 ms</td><td class="percentage">20.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="">LoadSimulator_ActivityInit</td><td class="numeric">710.10 ms</td><td class="timestamp"><span title="564167376435366">2.235s</span></td><td class="">Running</td><td class="numeric">447.28 ms</td><td class="percentage">63.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="">LoadSimulator_ActivityInit</td><td class="numeric">710.10 ms</td><td class="timestamp"><span title="564167376435366">2.235s</span></td><td class="">S</td><td class="numeric">249.77 ms</td><td class="percentage">35.2%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="">LoadSimulator_ActivityInit</td><td class="numeric">710.10 ms</td><td class="timestamp"><span title="564167376435366">2.235s</span></td><td class="">D</td><td class="numeric">11.18 ms</td><td class="percentage">1.6%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">16</td>
+                <td class="">LoadSimulator_ActivityInit</td><td class="numeric">710.10 ms</td><td class="timestamp"><span title="564167376435366">2.235s</span></td><td class="">R</td><td class="numeric">1.83 ms</td><td class="percentage">30.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">17</td>
+                <td class="">SimulateInflation</td><td class="numeric">178.80 ms</td><td class="timestamp"><span title="564167376544116">2.235s</span></td><td class="">Running</td><td class="numeric">175.90 ms</td><td class="percentage">98.4%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">18</td>
+                <td class="">SimulateInflation</td><td class="numeric">178.80 ms</td><td class="timestamp"><span title="564167376544116">2.235s</span></td><td class="">S</td><td class="numeric">2.88 ms</td><td class="percentage">1.6%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">19</td>
+                <td class="">SimulateInflation</td><td class="numeric">178.80 ms</td><td class="timestamp"><span title="564167376544116">2.235s</span></td><td class="">R</td><td class="numeric">0.07 ms</td><td class="percentage">0.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">20</td>
+                <td class="">RealInflation</td><td class="numeric">104.30 ms</td><td class="timestamp"><span title="564167272105939">2.130s</span></td><td class="">Running</td><td class="numeric">103.84 ms</td><td class="percentage">99.5%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">21</td>
+                <td class="">RealInflation</td><td class="numeric">104.30 ms</td><td class="timestamp"><span title="564167272105939">2.130s</span></td><td class="">S</td><td class="numeric">0.40 ms</td><td class="percentage">40.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">22</td>
+                <td class="">RealInflation</td><td class="numeric">104.30 ms</td><td class="timestamp"><span title="564167272105939">2.130s</span></td><td class="">R</td><td class="numeric">0.07 ms</td><td class="percentage">10.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">23</td>
+                <td class="">RealInflation</td><td class="numeric">104.30 ms</td><td class="timestamp"><span title="564167272105939">2.130s</span></td><td class="">D</td><td class="numeric">0.01 ms</td><td class="percentage">0.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">24</td>
+                <td class="">ChaosTask</td><td class="numeric">16.00 ms</td><td class="timestamp"><span title="564168034042657">2.892s</span></td><td class="">Running</td><td class="numeric">15.97 ms</td><td class="percentage">100.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">25</td>
+                <td class="">ChaosTask</td><td class="numeric">14.70 ms</td><td class="timestamp"><span title="564167608374011">2.467s</span></td><td class="">Running</td><td class="numeric">14.74 ms</td><td class="percentage">100.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">26</td>
+                <td class="">ChaosTask</td><td class="numeric">14.30 ms</td><td class="timestamp"><span title="564167908831251">2.767s</span></td><td class="">Running</td><td class="numeric">14.26 ms</td><td class="percentage">100.0%</td><td class="">-</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">27</td>
+                <td class="">ChaosTask</td><td class="numeric">14.00 ms</td><td class="timestamp"><span title="564167828188386">2.686s</span></td><td class="">Running</td><td class="numeric">14.04 ms</td><td class="percentage">100.0%</td><td class="">-</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 17)">
+            <span>▼ 显示更多 17 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">启动事件及 TTID/TTFD 耗时</div>
+          <div class="envelope-meta">startup_slow_reasons / startup_overview / startup_slow_reasons:startup_overview</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>启动 ID</th><th>包名</th><th>启动类型</th><th>启动耗时(ms)</th><th>TTID(ms)</th><th>TTFD(ms)</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="numeric">2</td><td class="">com.example.launch.aosp.heavy</td><td class="">warm</td><td class="numeric">1338.70 ms</td><td class="numeric">1912.20 ms</td><td class="numeric">-</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">SQL Query (18 rows)</div>
+          <div class="envelope-meta">execute_sql</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container scrollable">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>name</th><th>dur_ms</th><th>ts</th><th>thread_name</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">MQ_Chain_1_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168380064480">3.238s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">2</td>
+                <td class="">MQ_Chain_0_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168553444896">3.412s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">3</td>
+                <td class="">MQ_Chain_3_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168498424792">3.357s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">4</td>
+                <td class="">MQ_Chain_1_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168224234740">3.082s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">5</td>
+                <td class="">MQ_Chain_2_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168659025417">3.517s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">6</td>
+                <td class="">MQ_Chain_2_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168434866772">3.293s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">7</td>
+                <td class="">MQ_Chain_2_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168240663438">3.099s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">8</td>
+                <td class="">MQ_Chain_0_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168632767605">3.491s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">9</td>
+                <td class="">MQ_Chain_2_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168321257344">3.179s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">10</td>
+                <td class="">MQ_Chain_0_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168474168647">3.332s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">11</td>
+                <td class="">MQ_Chain_3_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168193221563">3.051s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">12</td>
+                <td class="">MQ_Chain_3_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168274636147">3.133s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">13</td>
+                <td class="">MQ_Chain_3_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168360408386">3.219s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">14</td>
+                <td class="">MQ_Chain_3_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168293829324">3.152s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">15</td>
+                <td class="">MQ_Chain_2_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168403535990">3.262s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">16</td>
+                <td class="">MQ_Chain_2_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168506491824">3.365s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">17</td>
+                <td class="">MQ_Chain_3_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168442920834">3.301s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+              <tr class="hidden-row" style="display: none;">
+                <td style="color: #666; font-weight: 500;">18</td>
+                <td class="">MQ_Chain_1_Step</td><td class="numeric">0.00 ms</td><td class="timestamp"><span title="564168526958907">3.385s</span></td><td class="">unch.aosp.heavy</td>
+              </tr>
+
+          </tbody>
+        </table>
+
+          <div class="table-rows-more" onclick="toggleTableRows(this, 8)">
+            <span>▼ 显示更多 8 条记录</span>
+          </div>
+
+      </div>
+
+        </div>
+      </div>
+
+      <div class="envelope-card">
+        <div class="envelope-header">
+          <div class="envelope-title">Memory Pressure Analysis</div>
+          <div class="envelope-meta">memory_pressure_in_range / memory_pressure_analysis / memory_pressure_in_range:memory_pressure_analysis</div>
+        </div>
+        <div class="envelope-body">
+
+      <div class="table-container ">
+
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>pressure_level</th><th>pressure_score</th><th>kswapd_events</th><th>kswapd_total_ms</th><th>direct_reclaim_events</th><th>direct_reclaim_max_ms</th><th>lmk_events</th><th>alloc_stall_events</th><th>page_cache_add_events</th><th>page_cache_delete_events</th>
+            </tr>
+          </thead>
+          <tbody>
+
+              <tr>
+                <td style="color: #666; font-weight: 500;">1</td>
+                <td class="">none</td><td class="numeric">0</td><td class="numeric">0</td><td class="numeric">0.00 ms</td><td class="numeric">0</td><td class="numeric">0.00 ms</td><td class="numeric">0</td><td class="numeric">0</td><td class="numeric">0</td><td class="numeric">0</td>
+              </tr>
+
+
+          </tbody>
+        </table>
+
+      </div>
+
+        </div>
+      </div>
+
+    </div>
+
+
+
+
+    <div class="section">
+      <h2 class="section-title">分析结论</h2>
+
+      <div class="answer-box">
+        <hr>
+<h1>📊 启动性能分析报告</h1>
+<h2>1. 概览</h2>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>应用包名</strong></td>
+<td><code>com.example.launch.aosp.heavy</code></td>
+</tr>
+<tr>
+<td><strong>启动类型</strong></td>
+<td>冷启动（cold）</td>
+</tr>
+<tr>
+<td><strong>启动耗时 (dur)</strong></td>
+<td>1338.65 ms</td>
+</tr>
+<tr>
+<td><strong>TTID</strong></td>
+<td>1912.20 ms</td>
+</tr>
+<tr>
+<td><strong>TTFD</strong></td>
+<td>不可用（应用未调用 <code>reportFullyDrawn</code>）</td>
+</tr>
+<tr>
+<td><strong>分析边界</strong></td>
+<td>启动开始 → 框架启动完成（dur = 1339ms），近似首帧显示</td>
+</tr>
+<tr>
+<td><strong>评级</strong></td>
+<td>⚠️ 需优化</td>
+</tr>
+<tr>
+<td><strong>架构检测</strong></td>
+<td>STANDARD (置信度 37%)</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p><strong>⚠️ 测试/基准应用检测</strong>：此应用为性能测试/基准应用，slice 名称含模拟负载标记（<code>LoadSimulator_ActivityInit</code>、<code>LoadSimulator_AppInit</code>、<code>SimulateInflation</code>、<code>ChaosTask</code>、<code>MQ_Chain_*_Step</code>）。以下分析描述模拟负载的性能特征，而非通用生产环境优化建议。</p>
+</blockquote>
+<blockquote>
+<p><strong>⚠️ 数据质量提示</strong>：</p>
+<ul>
+<li><strong>R008_TTID_GT_DUR</strong>：TTID (1912ms) &gt; dur (1339ms)，差值 573ms 被启动窗口后的 <code>MQ_Chain_*_Step</code> 模拟任务 slice 占据（18 个，各 ~7-8ms），无 RenderThread/SurfaceFlinger 活动。TTID 不可信，分析窗口基于 dur。</li>
+<li><strong>R009_TYPE_RECLASSIFIED</strong>：Perfetto 原始分类为冷启动，存在 <code>bindApplication</code> slice 确认为冷启动，无矛盾。</li>
+<li><strong>blocked_functions 不可用</strong>：主线程状态分布的 <code>blocked_functions</code> 全为 &quot;-&quot;（内核未开启 CONFIG_SCHEDSTATS），阻塞根因基于 hot_slice_states 的 per-slice 状态分布间接推断。</li>
+</ul>
+</blockquote>
+<hr>
+<h2>2. 关键发现</h2>
+<h3><strong>[HIGH] Activity 初始化阶段模拟负载耗时 710ms (self=250ms, 18.7%) ← 根因 A4/C2: 测试负载 CPU-bound + 阻塞混合</strong></h3>
+<ul>
+<li><strong>描述</strong>：<code>LoadSimulator_ActivityInit</code> slice wall time 710ms（占启动 53%），self_ms=249.8ms（18.7%）</li>
+<li><strong>根因推理链</strong>：<br>
+① 四象限显示 Q1=62.8%（主线程 841ms 大核 Running），Q4b=35.1%（470ms Sleeping）→ CPU-bound + 阻塞混合模式<br>
+② hot_slice_states 显示 <code>LoadSimulator_ActivityInit</code> 内部：Running=447ms(63%) + S=250ms(35.2%) + D=11ms(1.6%)<br>
+③ 其子 slice <code>SimulateInflation</code> (178ms) 98.4% Running → 纯 CPU-bound 模拟<br>
+④ <code>RealInflation</code> (104ms) 99.5% Running → 真实布局 inflate 也是 CPU-bound<br>
+⑤ S 状态 250ms 来自模拟任务内部的锁/等待，无 blocked_functions 可定位具体阻塞源</li>
+<li><strong>SR 交叉验证</strong>：SR01-SR20 无命中（测试负载不属于标准慢启动模式）</li>
+<li><strong>结论</strong>：此 slice 慢的根因是测试框架注入的模拟计算负载（CPU-bound）+ 模拟阻塞等待（线程等待锁/IO/Binder），不是真实应用问题</li>
+<li><strong>建议</strong>：如需评估真实应用启动性能，应使用生产环境应用替换测试负载</li>
+</ul>
+<h3><strong>[HIGH] ChaosTask 模拟负载耗时 479ms (self=456ms, 34.1%) ← 根因 C2: 测试负载 CPU-bound</strong></h3>
+<ul>
+<li><strong>描述</strong>：<code>ChaosTask</code> 共 70 次调用，累计 wall time 479ms，self_ms=456ms（34.1%）</li>
+<li><strong>根因推理链</strong>：<br>
+① hot_slice_states 显示 <code>ChaosTask</code> 每次调用 100% Running 状态<br>
+② 平均每次 ~6.5ms，最大 16ms，纯 CPU 计算<br>
+③ 无 S/D 状态，无阻塞</li>
+<li><strong>结论</strong>：纯 CPU-bound 模拟负载，70 次调用累积 456ms</li>
+<li><strong>建议</strong>：测试框架的 ChaosTask 是人为注入的 CPU 压力</li>
+</ul>
+<h3><strong>[HIGH] App 初始化阶段模拟负载耗时 478ms (self=207ms, 15.5%) ← 根因 C2: 测试负载</strong></h3>
+<ul>
+<li><strong>描述</strong>：<code>LoadSimulator_AppInit</code> wall time 478ms（占启动 35.7%），self_ms=207ms（15.5%）</li>
+<li><strong>根因推理链</strong>：<br>
+① 位于 <code>bindApplication</code> 阶段，是 <code>LoadSimulator_ActivityInit</code> 的对应 App 层模拟<br>
+② hot_slice_states 未单独列出（被包裹在 bindApplication 内），但从全局 S=470ms(35%) 推断存在阻塞成分</li>
+<li><strong>结论</strong>：测试框架在 Application 初始化阶段注入的模拟负载</li>
+</ul>
+<h3><strong>[MEDIUM] 主线程 Q4(Sleeping) = 35.1% (470ms) — 阻塞来源待确认</strong></h3>
+<ul>
+<li><strong>描述</strong>：主线程有 470ms 处于 Sleeping 状态，占启动时长 35.1%</li>
+<li><strong>根因推理链</strong>：<br>
+① 全局 blocked_functions 为 &quot;-&quot;，无法直接定位阻塞函数<br>
+② hot_slice_states 显示 <code>LoadSimulator_ActivityInit</code> 内 S=250ms(35.2%)，<code>clientTransactionExecuted</code> 内 S=256ms(30.3%)<br>
+③ 同步 Binder 总量 &lt;5ms，可排除 Binder 阻塞<br>
+④ GC 仅在后台线程（HeapTaskDaemon），主线程 GC 锁竞争 &lt;0.01ms，可排除 GC 阻塞<br>
+⑤ 推断：S 状态主要来自测试框架注入的模拟等待/锁（如 <code>ChaosTask</code> 调用间隔、模拟 IO 等待）</li>
+<li><strong>结论</strong>：基于间接证据推断，blocked_functions 不可用。S 状态主要由测试负载模拟产生，非真实阻塞</li>
+<li><strong>建议</strong>：后续抓 trace 时启用 <code>echo 1 &gt; /proc/sys/kernel/sched_schedstats</code> 以获取完整 blocked_functions</li>
+</ul>
+<h3><strong>[MEDIUM] R008: TTID 差值 573ms 去向分析</strong></h3>
+<ul>
+<li><strong>描述</strong>：TTID=1912ms &gt; dur=1339ms，差值 573ms</li>
+<li><strong>分析</strong>：查询 end_ts 到 TTID 时间段，发现 18 个 <code>MQ_Chain_*_Step</code> slice（各 ~7-8ms），全部在主线程执行，总计 ~132ms。剩余 ~441ms 无显著 slice 活动（可能是空闲/等待 VSync）</li>
+<li><strong>结论</strong>：TTID 不可信。差值由启动窗口后的模拟任务延续 + 框架 TTID 计算时机导致</li>
+</ul>
+<h3><strong>[LOW] Binder 线程池仅 1 个线程 — 当前非瓶颈但存在潜在风险</strong></h3>
+<ul>
+<li><strong>描述</strong>：Binder 线程池利用率 100%（Running 6ms / Idle 0ms），但主线程同步 Binder 总量 &lt;5ms</li>
+<li><strong>结论</strong>：当前 Binder 用量极低，1 个线程足够。但线程池过小在高并发场景下可能成为瓶颈</li>
+</ul>
+<hr>
+<h2>3. 根因分析树</h2>
+<pre><code>启动总耗时 1339ms
+├── [Phase 1] bindApplication ≈ 478ms wall
+│ └── LoadSimulator_AppInit = 478ms wall (self=207ms) ← C2: 测试负载模拟
+├── [Phase 2] activityStart = 832ms wall
+│ └── performCreate = 828ms wall
+│ ├── LoadSimulator_ActivityInit = 710ms wall (self=250ms) ← C2: 测试负载
+│ │ ├── ChaosTask ×70 = 480ms wall (self=456ms) ← 纯 CPU-bound 模拟
+│ │ ├── SimulateInflation = 179ms (self=175ms) ← 纯 CPU-bound 模拟
+│ │ └── RealInflation = 104ms (self=104ms) ← 真实 inflate (CPU-bound)
+│ └── 其他 performCreate 开销 ≈ 118ms
+├── [主线程状态分解]
+│ ├── Q1 大核 Running = 841ms (62.8%) ← CPU-bound 主导
+│ ├── Q4b Sleeping = 470ms (35.1%) ← 测试负载模拟阻塞
+│ ├── Q4a IO Blocked = 23ms (1.7%) ← SqliteLoad
+│ └── Q3 Runnable = 4.6ms (0.3%) ← 调度延迟（线程排队等CPU）可忽略
+├── [可排除因素]
+│ ├── Binder 阻塞(B6)：主线程同步 &lt;5ms ✓
+│ ├── GC(A6)：仅后台线程，主线程 GC 锁 &lt;0.01ms ✓
+│ ├── CPU 调度(B9)：Q2=0%（100% 大核），Q3=0.3%，迁移 0 次 ✓
+│ ├── CPU 频率：均频 3313MHz/峰值 4608MHz(72%)，初期 4002MHz，爬升正常 ✓
+│ ├── 热节流(B4)：初期频率高于稳态，无限频信号 ✓
+│ └── 系统内存压力：pressure_score=0，无 kswapd/reclaim/LMK ✓
+└── [数据质量]
+      ├── R008_TTID_GT_DUR：TTID 不可信，差值被 MQ_Chain 模拟任务占据
+      └── R009_TYPE_RECLASSIFIED：冷启动确认（bindApplication 存在）
+</code></pre>
+<hr>
+<h2>4. 优化建议</h2>
+<blockquote>
+<p>⚠️ <strong>此应用为测试/基准应用</strong>，以下建议针对测试框架设计者和系统工程师，而非通用 App 开发优化。</p>
+</blockquote>
+<h3><strong>[App 层 — 测试框架设计者]</strong></h3>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>建议</th>
+<th>预期收益</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P1</td>
+<td><strong>区分真实 inflate 与模拟 inflate</strong>：<code>SimulateInflation</code>(179ms) 和 <code>RealInflation</code>(104ms) 累计 283ms self。如需评估真实布局性能，应移除 <code>SimulateInflation</code> 并单独测量 <code>RealInflation</code></td>
+<td>可隔离真实布局性能基线</td>
+</tr>
+<tr>
+<td>P2</td>
+<td><strong>降低 ChaosTask 调用频次</strong>：70 次调用累积 456ms self，可配置调用次数/间隔以模拟不同负载级别</td>
+<td>可控的负载模拟</td>
+</tr>
+<tr>
+<td>P3</td>
+<td><strong>BindApplication 阶段模拟负载可配置</strong>：<code>LoadSimulator_AppInit</code> self=207ms 占 bindApplication 阶段主体。建议提供开关以对比有/无模拟负载的启动差异</td>
+<td>可评估 Application 初始化对启动的真实影响</td>
+</tr>
+</tbody>
+</table>
+<h3><strong>[系统/平台层]</strong></h3>
+<table>
+<thead>
+<tr>
+<th>维度</th>
+<th>发现</th>
+<th>建议</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>CPU 调度</strong></td>
+<td>主线程 100% 大核(CPU7)，0 次迁移，Q2=0% ✓</td>
+<td>无问题，调度策略正确</td>
+</tr>
+<tr>
+<td><strong>CPU 频率</strong></td>
+<td>大核均频 3313MHz/峰值 4608MHz(72%)，初期 4002MHz → 稳态 3261MHz</td>
+<td>72% 利用率在测试负载下偏低，可能是 thermal 或 uclamp.max 限制。如需满频测试，检查 thermal 状态</td>
+</tr>
+<tr>
+<td><strong>Binder 线程池</strong></td>
+<td>仅 1 个 Binder 线程，利用率 100%</td>
+<td>当前非瓶颈（主线程 Binder &lt;5ms），但建议生产环境配置至少 2-3 个 Binder 线程</td>
+</tr>
+<tr>
+<td><strong>调度延迟（线程排队等CPU）</strong></td>
+<td>max 0.49ms，0 次严重延迟 ✓</td>
+<td>无问题</td>
+</tr>
+<tr>
+<td><strong>内存压力</strong></td>
+<td>pressure_score=0 ✓</td>
+<td>可排除</td>
+</tr>
+</tbody>
+</table>
+<h3><strong>[数据采集建议]</strong></h3>
+<table>
+<thead>
+<tr>
+<th>项目</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>启用 <code>sched_schedstats</code></td>
+<td>当前 blocked_functions 全为 &quot;-&quot;，无法精确定位 S 状态阻塞源。执行 <code>echo 1 &gt; /proc/sys/kernel/sched_schedstats</code> 后重抓 trace</td>
+</tr>
+<tr>
+<td>替换为真实应用</td>
+<td>测试应用的模拟负载掩盖了真实启动性能特征。如需评估系统级启动优化效果，建议使用真实业务应用</td>
+</tr>
+</tbody>
+</table>
+<h3><strong>[可排除因素汇总]</strong></h3>
+<table>
+<thead>
+<tr>
+<th>因素</th>
+<th>状态</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Binder 阻塞 (B6)</td>
+<td>✅ 可排除</td>
+<td>主线程同步 Binder &lt;5ms</td>
+</tr>
+<tr>
+<td>GC 压力 (A6)</td>
+<td>✅ 可排除</td>
+<td>仅后台线程 GC，主线程 GC 锁 &lt;0.01ms</td>
+</tr>
+<tr>
+<td>CPU 小核调度 (B9)</td>
+<td>✅ 可排除</td>
+<td>Q2=0%，100% 大核运行</td>
+</tr>
+<tr>
+<td>CPU 争抢</td>
+<td>✅ 可排除</td>
+<td>并发度 = 总CPU ~1600ms / 墙钟 1339ms ≈ 1.2x，Q3=0.3%</td>
+</tr>
+<tr>
+<td>调度延迟（线程排队等CPU） (B9)</td>
+<td>✅ 可排除</td>
+<td>max 0.49ms，0 次严重延迟</td>
+</tr>
+<tr>
+<td>热节流 (B4)</td>
+<td>✅ 可排除</td>
+<td>初期频率高于稳态，无限频信号</td>
+</tr>
+<tr>
+<td>系统内存压力 (B3)</td>
+<td>✅ 可排除</td>
+<td>pressure_score=0，无 kswapd/reclaim/LMK</td>
+</tr>
+<tr>
+<td>JIT 编译</td>
+<td>✅ 可排除</td>
+<td>jit_analysis 无数据，JIT 影响不可见</td>
+</tr>
+<tr>
+<td>类加载</td>
+<td>✅ 数据不足</td>
+<td>class_loading artifact 为空</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>📚 <strong>背景知识：CPU 调度与 EAS</strong><br>
+Android 使用 EAS (Energy Aware Scheduling) 将任务放置在最节能的 CPU 核心上。主线程 100% 运行在大核 CPU7（Q1=100%），说明调度器正确识别了前台启动场景的性能需求。均频 3313MHz 为峰值 4608MHz 的 72%，初期频率 (4002MHz) 高于稳态 (3261MHz)，表明频率爬升正常且无限频——这与 thermal governor 的 <code>uclamp.max</code> 限制或 <code>schedutil</code> 的 util 降频有关，但在当前场景下不影响结论（启动主要瓶颈在 CPU-bound 模拟负载而非频率）。<br>
+<strong>当前 trace 体现</strong>：主线程 0 次核迁移、Q2=0%、Q3=0.3%，调度质量优秀。</p>
+</blockquote>
+      </div>
+    </div>
+
+    <div class="footer">
+      <p>由 SmartPerfetto Agent-Driven Orchestrator 生成</p>
+      <p style="margin-top: 5px; font-size: 12px;">Powered by Claude Agent SDK + MCP Tools</p>
+    </div>
+	  </div>
+	  <script>
+	    async function saveSmartPerfettoReport() {
+	      var statusEl = document.getElementById('report-save-status');
+	      function setStatus(text) {
+	        if (statusEl) statusEl.textContent = text || '';
+	      }
+	      var url = new URL(window.location.href);
+	      var reportId = decodeURIComponent(url.pathname.split('/').filter(Boolean).pop() || 'smartperfetto-report');
+	      var suggestedName = 'smartperfetto-' + reportId + '.html';
+	      var exportUrl = url.pathname.replace(/\/$/, '') + '/export';
+
+	      try {
+	        setStatus('正在准备保存...');
+	        var response = await fetch(exportUrl, {cache: 'no-store'});
+	        if (!response.ok) {
+	          throw new Error('导出失败: HTTP ' + response.status);
+	        }
+	        var blob = await response.blob();
+	        if (window.showSaveFilePicker) {
+	          var handle = await window.showSaveFilePicker({
+	            suggestedName: suggestedName,
+	            types: [{
+	              description: 'HTML 网页报告',
+	              accept: {'text/html': ['.html', '.htm']},
+	            }],
+	          });
+	          var writable = await handle.createWritable();
+	          await writable.write(blob);
+	          await writable.close();
+	        } else {
+	          var objectUrl = URL.createObjectURL(blob);
+	          var a = document.createElement('a');
+	          a.href = objectUrl;
+	          a.download = suggestedName;
+	          document.body.appendChild(a);
+	          a.click();
+	          document.body.removeChild(a);
+	          URL.revokeObjectURL(objectUrl);
+	        }
+	        setStatus('已保存 ' + suggestedName);
+	        setTimeout(function() { setStatus(''); }, 3500);
+	      } catch (err) {
+	        if (err && err.name === 'AbortError') {
+	          setStatus('已取消保存');
+	          setTimeout(function() { setStatus(''); }, 2000);
+	          return;
+	        }
+	        console.error('[SmartPerfetto] 保存报告失败:', err);
+	        setStatus((err && err.message) ? err.message : '保存失败');
+	      }
+	    }
+
+	    function toggleTableRows(btn, hiddenCount) {
+      var tableContainer = btn.parentElement;
+      var table = tableContainer.querySelector('table');
+      var hiddenRows = table.querySelectorAll('.hidden-row');
+      if (hiddenRows.length > 0) {
+        var isHidden = hiddenRows[0].style.display === 'none';
+        hiddenRows.forEach(function(row) {
+          row.style.display = isHidden ? '' : 'none';
+        });
+        var span = btn.querySelector('span');
+        if (isHidden) {
+          span.innerHTML = '▲ 收起更多';
+        } else {
+          span.innerHTML = '▼ 显示更多 ' + hiddenCount + ' 条记录';
+        }
+      }
+    }
+
+    // Toggle expandable row details (for iterator results with L4 deep data)
+    function toggleExpandableRow(arg) {
+      // Support both toggleExpandableRow(rowId: string) and toggleExpandableRow(buttonEl: HTMLElement)
+      var detailsRow = null;
+      var btn = null;
+
+      if (typeof arg === 'string') {
+        var rowId = arg;
+        detailsRow = document.getElementById(rowId + '_details');
+        var expandableRow = document.querySelector('.expandable-row[data-row-id="' + rowId + '"]');
+        btn = expandableRow ? expandableRow.querySelector('.expand-btn') : null;
+      } else if (arg && arg.closest) {
+        btn = arg;
+        var tr = btn.closest('tr');
+        detailsRow = tr ? tr.nextElementSibling : null;
+      }
+
+      if (detailsRow) {
+        var isHidden = detailsRow.style.display === 'none';
+        detailsRow.style.display = isHidden ? 'table-row' : 'none';
+
+        if (btn) {
+          btn.innerHTML = isHidden
+            ? '<span class="expand-icon">▲</span> 收起'
+            : '<span class="expand-icon">▼</span> 展开';
+        }
+      }
+    }
+
+    // Expand/collapse all rows in a section
+    function toggleAllExpandableRows(sectionId, expand) {
+      var section = document.getElementById(sectionId);
+      if (!section) return;
+
+      var detailRows = section.querySelectorAll('.detail-row');
+      var buttons = section.querySelectorAll('.expand-btn');
+
+      detailRows.forEach(function(row) {
+        row.style.display = expand ? 'table-row' : 'none';
+      });
+
+      buttons.forEach(function(btn) {
+        btn.innerHTML = expand
+          ? '<span class="expand-icon">▲</span> 收起'
+          : '<span class="expand-icon">▼</span> 展开';
+      });
+    }
+
+    function filterConversationTimeline(sectionId, phase, triggerBtn) {
+      var section = document.getElementById(sectionId);
+      if (!section) return;
+
+      var items = section.querySelectorAll('.timeline-item');
+      var filterButtons = section.querySelectorAll('.timeline-filter-btn');
+
+      filterButtons.forEach(function(btn) {
+        btn.classList.remove('active');
+      });
+      if (triggerBtn && triggerBtn.classList) {
+        triggerBtn.classList.add('active');
+      }
+
+      items.forEach(function(item) {
+        var itemPhase = item.getAttribute('data-phase') || 'progress';
+        var matchesPhase = phase === 'all' || itemPhase === phase;
+        var isCollapsed = item.classList.contains('timeline-collapsed') && !item.classList.contains('timeline-expanded');
+        if (matchesPhase && !isCollapsed) {
+          item.classList.remove('timeline-hidden');
+        } else {
+          item.classList.add('timeline-hidden');
+        }
+      });
+    }
+
+    function toggleConversationTimelineCollapse(sectionId, btn) {
+      var section = document.getElementById(sectionId);
+      if (!section) return;
+
+      var collapsedItems = section.querySelectorAll('.timeline-item.timeline-collapsed');
+      if (collapsedItems.length === 0) return;
+
+      var expanding = btn.getAttribute('data-expanded') !== 'true';
+      collapsedItems.forEach(function(item) {
+        if (expanding) {
+          item.classList.add('timeline-expanded');
+        } else {
+          item.classList.remove('timeline-expanded');
+        }
+      });
+
+      btn.setAttribute('data-expanded', expanding ? 'true' : 'false');
+      btn.textContent = expanding ? '收起' : '展开全部';
+
+      var activeFilterBtn = section.querySelector('.timeline-filter-btn.active');
+      var phase = activeFilterBtn ? (activeFilterBtn.getAttribute('data-phase') || 'all') : 'all';
+      filterConversationTimeline(sectionId, phase, activeFilterBtn);
+    }
+  </script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script>
+
+if (typeof mermaid !== 'undefined') {
+  function decodeMermaidSource(text) {
+    return String(text || '')
+      .replace(/&quot;/g, '"')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&')
+      .trim();
+  }
+
+  function decodeMermaidText(text) {
+    return decodeMermaidSource(text)
+      .replace(/<br\s*\/?>/gi, '\n')
+      .trim();
+  }
+
+  function normalizeGroupName(raw) {
+    return String(raw || '').replace(/^['"]|['"]$/g, '').trim();
+  }
+
+  function getGroupRole(groupName) {
+    var label = String(groupName || '').trim();
+    if (/影响|impact|结果|outcome|结论|conclusion/i.test(label)) return 'impact';
+    if (/输入|source|入口|上游/i.test(label)) return 'source';
+    return 'chain';
+  }
+
+  function parseNodeRef(raw, currentGroup, nodes, nodeOrder) {
+    var ref = String(raw || '').trim();
+    if (!ref) return null;
+    var match = ref.match(/^([A-Za-z0-9_]+)\s*(?:\[(.*)\]|\((.*)\)|\{(.*)\})?$/);
+    if (!match) return null;
+
+    var id = match[1];
+    var label = match[2] || match[3] || match[4] || '';
+    if (!nodes[id]) {
+      nodes[id] = {
+        id: id,
+        label: '',
+        group: '',
+        order: nodeOrder.count++,
+      };
+    }
+    if (label && !nodes[id].label) nodes[id].label = decodeMermaidText(label);
+    if (currentGroup && label && !nodes[id].group) nodes[id].group = currentGroup;
+    if (!nodes[id].label) nodes[id].label = id;
+    return id;
+  }
+
+  function parseMermaidFlowSource(source) {
+    var text = decodeMermaidSource(source);
+    if (!text) return null;
+
+    var lines = text.split(/\r?\n/);
+    var header = String(lines.shift() || '').trim();
+    var headerMatch = header.match(/^(graph|flowchart)\s+([A-Z]{2})/i);
+    if (!headerMatch) return null;
+
+    var nodes = {};
+    var styles = {};
+    var edges = [];
+    var groups = [];
+    var currentGroup = '';
+    var nodeOrder = { count: 0 };
+    var edgeOrder = 0;
+
+    lines.forEach(function(rawLine) {
+      var line = String(rawLine || '').trim();
+      if (!line) return;
+
+      if (/^subgraph\s+/i.test(line)) {
+        currentGroup = normalizeGroupName(line.replace(/^subgraph\s+/i, ''));
+        if (currentGroup && groups.indexOf(currentGroup) === -1) groups.push(currentGroup);
+        return;
+      }
+
+      if (/^end$/i.test(line)) {
+        currentGroup = '';
+        return;
+      }
+
+      if (/^style\s+/i.test(line)) {
+        var styleMatch = line.match(/^style\s+([A-Za-z0-9_]+)\s+(.+)$/i);
+        if (!styleMatch) return;
+
+        var styleId = styleMatch[1];
+        styles[styleId] = styles[styleId] || {};
+        styleMatch[2].split(',').forEach(function(part) {
+          var kv = part.split(':');
+          if (kv.length < 2) return;
+          styles[styleId][kv[0].trim()] = kv.slice(1).join(':').trim();
+        });
+        return;
+      }
+
+      var edgeMatch = line.match(/^(.*?)\s+(-\.->|-->|==>)\s*(?:\|([^|]+)\|)?\s*(.*?)$/);
+      if (edgeMatch) {
+        var fromId = parseNodeRef(edgeMatch[1], currentGroup, nodes, nodeOrder);
+        var toId = parseNodeRef(edgeMatch[4], currentGroup, nodes, nodeOrder);
+        if (!fromId || !toId) return;
+
+        edges.push({
+          id: 'edge_' + edgeOrder++,
+          from: fromId,
+          to: toId,
+          label: decodeMermaidText(edgeMatch[3] || ''),
+          dashed: edgeMatch[2].indexOf('.-.') !== -1,
+          group: currentGroup || '',
+        });
+        return;
+      }
+
+      parseNodeRef(line, currentGroup, nodes, nodeOrder);
+    });
+
+    var nodeList = Object.keys(nodes).map(function(key) { return nodes[key]; });
+    if (nodeList.length < 2 || edges.length === 0) return null;
+
+    nodeList.forEach(function(node) {
+      if (!node.group) node.group = '其他节点';
+      if (groups.indexOf(node.group) === -1) groups.push(node.group);
+    });
+
+    return {
+      direction: headerMatch[2].toUpperCase(),
+      groups: groups,
+      nodes: nodes,
+      edges: edges,
+      styles: styles,
+    };
+  }
+
+  function hexToRgba(hex, alpha) {
+    var value = String(hex || '').trim();
+    if (!/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(value)) return '';
+    if (value.length === 4) {
+      value = '#' + value.charAt(1) + value.charAt(1) + value.charAt(2) + value.charAt(2) + value.charAt(3) + value.charAt(3);
+    }
+    var r = parseInt(value.slice(1, 3), 16);
+    var g = parseInt(value.slice(3, 5), 16);
+    var b = parseInt(value.slice(5, 7), 16);
+    return 'rgba(' + r + ', ' + g + ', ' + b + ', ' + alpha + ')';
+  }
+
+  function buildNodeVisual(node, styles) {
+    var style = styles[node.id] || {};
+    var accent = style.fill || '#cbd5e1';
+    return {
+      accent: accent,
+      background: hexToRgba(accent, 0.14) || '#ffffff',
+      textColor: style.color || '#0f172a',
+    };
+  }
+
+  function buildGroupSequences(groupName, diagram) {
+    var nodes = diagram.nodes;
+    var groupNodes = Object.keys(nodes)
+      .map(function(id) { return nodes[id]; })
+      .filter(function(node) { return node.group === groupName; })
+      .sort(function(a, b) { return a.order - b.order; });
+
+    var solidEdges = diagram.edges.filter(function(edge) {
+      return !edge.dashed
+        && nodes[edge.from]
+        && nodes[edge.to]
+        && nodes[edge.from].group === groupName
+        && nodes[edge.to].group === groupName;
+    });
+
+    var outgoing = {};
+    var indegree = {};
+    groupNodes.forEach(function(node) {
+      outgoing[node.id] = [];
+      indegree[node.id] = 0;
+    });
+
+    solidEdges.forEach(function(edge) {
+      outgoing[edge.from].push(edge);
+      indegree[edge.to] += 1;
+    });
+
+    Object.keys(outgoing).forEach(function(id) {
+      outgoing[id].sort(function(a, b) {
+        return diagram.nodes[a.to].order - diagram.nodes[b.to].order;
+      });
+    });
+
+    var sequences = [];
+    var visitedNodes = {};
+    var visitedEdges = {};
+    var starts = groupNodes.filter(function(node) {
+      return outgoing[node.id].length > 0 && indegree[node.id] === 0;
+    });
+    if (starts.length === 0 && solidEdges.length > 0) {
+      starts = [diagram.nodes[solidEdges[0].from]];
+    }
+
+    starts.forEach(function(startNode) {
+      if (!startNode || visitedNodes[startNode.id]) return;
+      var sequence = [{ type: 'node', nodeId: startNode.id }];
+      visitedNodes[startNode.id] = true;
+      var currentId = startNode.id;
+      while (outgoing[currentId] && outgoing[currentId].length > 0) {
+        var nextEdge = outgoing[currentId].find(function(edge) {
+          return !visitedEdges[edge.id] && !visitedNodes[edge.to];
+        });
+        if (!nextEdge) break;
+
+        visitedEdges[nextEdge.id] = true;
+        sequence.push({ type: 'edge', edge: nextEdge });
+        sequence.push({ type: 'node', nodeId: nextEdge.to });
+        visitedNodes[nextEdge.to] = true;
+        currentId = nextEdge.to;
+      }
+      sequences.push(sequence);
+    });
+
+    groupNodes.forEach(function(node) {
+      if (!visitedNodes[node.id]) {
+        sequences.push([{ type: 'node', nodeId: node.id }]);
+        visitedNodes[node.id] = true;
+      }
+    });
+
+    return sequences;
+  }
+
+  function buildNodeCard(node, styles) {
+    var visual = buildNodeVisual(node, styles);
+    var card = document.createElement('div');
+    card.className = 'causal-node';
+    card.style.setProperty('--node-accent', visual.accent);
+    card.style.setProperty('--node-bg', visual.background);
+    card.style.setProperty('--node-text', visual.textColor);
+
+    var lines = String(node.label || node.id).split(/\n+/).filter(Boolean);
+    var title = document.createElement('div');
+    title.className = 'causal-node-title';
+    title.textContent = lines[0] || node.id;
+    card.appendChild(title);
+
+    if (lines.length > 1) {
+      var meta = document.createElement('div');
+      meta.className = 'causal-node-meta';
+      meta.textContent = lines.slice(1).join('\n');
+      card.appendChild(meta);
+    }
+
+    return card;
+  }
+
+  function buildArrow(edge) {
+    var arrow = document.createElement('div');
+    arrow.className = 'causal-arrow';
+
+    var line = document.createElement('span');
+    line.className = 'causal-arrow-line';
+    arrow.appendChild(line);
+
+    if (edge && edge.label) {
+      var label = document.createElement('span');
+      label.className = 'causal-arrow-label';
+      label.textContent = edge.label;
+      arrow.appendChild(label);
+    }
+
+    return arrow;
+  }
+
+  function buildSequence(sequence, diagram) {
+    var row = document.createElement('div');
+    row.className = 'causal-flow-row';
+    sequence.forEach(function(item) {
+      if (item.type === 'node') {
+        var step = document.createElement('div');
+        step.className = 'causal-step';
+        step.appendChild(buildNodeCard(diagram.nodes[item.nodeId], diagram.styles));
+        row.appendChild(step);
+      } else if (item.type === 'edge') {
+        row.appendChild(buildArrow(item.edge));
+      }
+    });
+    return row;
+  }
+
+  function getCrossSectionTitle(crossEdges) {
+    var titles = [];
+    crossEdges.forEach(function(edge) {
+      if (edge.group && titles.indexOf(edge.group) === -1) titles.push(edge.group);
+    });
+    return titles[0] || '跨链路影响关系';
+  }
+
+  function buildCausalMap(diagram, originalSource) {
+    var root = document.createElement('div');
+    root.className = 'causal-map';
+
+    var hero = document.createElement('div');
+    hero.className = 'causal-map-hero';
+    var badge = document.createElement('div');
+    badge.className = 'causal-map-badge';
+    badge.textContent = '因果链流程图';
+    hero.appendChild(badge);
+    var note = document.createElement('div');
+    note.className = 'causal-map-note';
+    note.textContent = '实线表示主链路推进，虚线关系会单独列出，便于看清跨模块影响。';
+    hero.appendChild(note);
+    root.appendChild(hero);
+
+    var grid = document.createElement('div');
+    grid.className = 'causal-map-grid';
+    root.appendChild(grid);
+
+    diagram.groups.forEach(function(groupName) {
+      var groupNodes = Object.keys(diagram.nodes).filter(function(id) {
+        return diagram.nodes[id].group === groupName;
+      });
+      if (groupNodes.length === 0) return;
+
+      var groupEl = document.createElement('section');
+      groupEl.className = 'causal-group';
+      groupEl.setAttribute('data-role', getGroupRole(groupName));
+
+      var header = document.createElement('div');
+      header.className = 'causal-group-header';
+
+      var kicker = document.createElement('div');
+      kicker.className = 'causal-group-kicker';
+      kicker.textContent = getGroupRole(groupName) === 'impact' ? 'Impact Lane' : 'Flow Lane';
+      header.appendChild(kicker);
+
+      var title = document.createElement('div');
+      title.className = 'causal-group-title';
+      title.textContent = groupName;
+      header.appendChild(title);
+
+      var sequences = buildGroupSequences(groupName, diagram);
+      var meta = document.createElement('div');
+      meta.className = 'causal-group-meta';
+      meta.textContent = groupNodes.length + ' 个节点 · ' + sequences.length + ' 条链路';
+      header.appendChild(meta);
+      groupEl.appendChild(header);
+
+      sequences.forEach(function(sequence) {
+        groupEl.appendChild(buildSequence(sequence, diagram));
+      });
+
+      grid.appendChild(groupEl);
+    });
+
+    var crossEdges = diagram.edges.filter(function(edge) {
+      var fromNode = diagram.nodes[edge.from];
+      var toNode = diagram.nodes[edge.to];
+      if (!fromNode || !toNode) return false;
+      return edge.dashed || fromNode.group !== toNode.group;
+    });
+
+    if (crossEdges.length > 0) {
+      var crossSection = document.createElement('section');
+      crossSection.className = 'causal-cross-links';
+
+      var crossHead = document.createElement('div');
+      crossHead.className = 'causal-cross-links-head';
+      var crossTitle = document.createElement('div');
+      crossTitle.className = 'causal-cross-links-title';
+      crossTitle.textContent = getCrossSectionTitle(crossEdges);
+      crossHead.appendChild(crossTitle);
+      var crossNote = document.createElement('div');
+      crossNote.className = 'causal-cross-links-note';
+      crossNote.textContent = '这里专门展示资源竞争、旁路阻塞、跨链路影响。';
+      crossHead.appendChild(crossNote);
+      crossSection.appendChild(crossHead);
+
+      var crossGrid = document.createElement('div');
+      crossGrid.className = 'causal-cross-links-grid';
+
+      crossEdges.forEach(function(edge) {
+        var row = document.createElement('div');
+        row.className = 'causal-link-row';
+
+        var path = document.createElement('div');
+        path.className = 'causal-link-path';
+
+        var fromChip = document.createElement('span');
+        fromChip.className = 'causal-chip';
+        fromChip.setAttribute('data-tone', 'from');
+        fromChip.textContent = diagram.nodes[edge.from].label.split(/\n+/)[0];
+        path.appendChild(fromChip);
+
+        var dash = document.createElement('span');
+        dash.className = 'causal-link-dash';
+        path.appendChild(dash);
+
+        if (edge.label) {
+          var edgeChip = document.createElement('span');
+          edgeChip.className = 'causal-chip';
+          edgeChip.setAttribute('data-tone', 'label');
+          edgeChip.textContent = edge.label;
+          path.appendChild(edgeChip);
+
+          var dash2 = document.createElement('span');
+          dash2.className = 'causal-link-dash';
+          path.appendChild(dash2);
+        }
+
+        var toChip = document.createElement('span');
+        toChip.className = 'causal-chip';
+        toChip.setAttribute('data-tone', 'to');
+        toChip.textContent = diagram.nodes[edge.to].label.split(/\n+/)[0];
+        path.appendChild(toChip);
+
+        row.appendChild(path);
+        crossGrid.appendChild(row);
+      });
+
+      crossSection.appendChild(crossGrid);
+      root.appendChild(crossSection);
+    }
+
+    var sourceDetails = document.createElement('details');
+    sourceDetails.className = 'causal-map-source';
+    var summary = document.createElement('summary');
+    summary.textContent = '查看原始 Mermaid 图';
+    sourceDetails.appendChild(summary);
+    var sourcePre = document.createElement('pre');
+    sourcePre.textContent = String(originalSource || '').trim();
+    sourceDetails.appendChild(sourcePre);
+    root.appendChild(sourceDetails);
+
+    return root;
+  }
+
+  var mermaidTargets = [];
+  document.querySelectorAll('pre.mermaid').forEach(function(el) {
+    var originalSource = decodeMermaidSource(el.textContent || '');
+    var parsed = parseMermaidFlowSource(originalSource);
+    if (parsed) {
+      var wrapper = el.closest('.mermaid-wrapper') || el.parentElement;
+      if (wrapper) {
+        wrapper.innerHTML = '';
+        wrapper.appendChild(buildCausalMap(parsed, originalSource));
+        return;
+      }
+    }
+
+    el.textContent = originalSource;
+    el.setAttribute('data-render-mode', 'mermaid');
+    mermaidTargets.push(el);
+  });
+
+  if (mermaidTargets.length > 0) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'neutral',
+      securityLevel: 'strict',
+      flowchart: {
+        useMaxWidth: true,
+        htmlLabels: false,
+        nodeSpacing: 48,
+        rankSpacing: 64,
+        padding: 18,
+        curve: 'linear'
+      },
+      themeVariables: {
+        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+        fontSize: '15px',
+        lineColor: '#334155',
+        primaryColor: '#ffffff',
+        primaryTextColor: '#0f172a',
+        primaryBorderColor: '#94a3b8',
+        secondaryColor: '#f8fafc',
+        tertiaryColor: '#eff6ff',
+        clusterBkg: '#f8fafc',
+        clusterBorder: '#cbd5e1'
+      }
+    });
+
+    mermaid.run({ querySelector: 'pre.mermaid[data-render-mode="mermaid"]' }).then(function() {
+      document.querySelectorAll('pre.mermaid svg').forEach(function(svg) {
+        svg.style.width = '100%';
+        svg.style.maxWidth = '100%';
+        svg.style.height = 'auto';
+        svg.style.display = 'block';
+        svg.style.margin = '0 auto';
+      });
+    }).catch(function(err) {
+      console.error('[SmartPerfetto] Mermaid 渲染失败:', err);
+    });
+  }
+}
+
+  </script>
+</body>
+</html>

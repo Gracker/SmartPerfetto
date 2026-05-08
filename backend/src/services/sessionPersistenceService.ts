@@ -750,7 +750,7 @@ export class SessionPersistenceService {
   // ==========================================================================
   // Runtime Arrays Persistence (R4)
   // @deprecated Use saveSessionStateSnapshot / loadSessionStateSnapshot instead.
-  // Kept for agentv2 fallback compatibility.
+  // Kept only for older persisted sessions and non-snapshot runtime recovery.
   // ==========================================================================
 
   /**

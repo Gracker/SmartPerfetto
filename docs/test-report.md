@@ -89,7 +89,7 @@
 
 ## E2E
 
-> 用 `verifyAgentSseScrolling.ts` 跑真 Agent + Claude Code SDK（走 Max 订阅 credits，env `AI_SERVICE=claude-code`），日志在 `/tmp/sp-overnight/07-*.log`、`/tmp/sp-overnight/08-*.log`、`/tmp/sp-overnight/15-*.log`、`/tmp/sp-overnight/16-*.log`。
+> 用 `verifyAgentSseScrolling.ts` 跑真 Agent + Claude Code SDK（走 Max 订阅 credits，env `SMARTPERFETTO_AGENT_RUNTIME=claude-agent-sdk`），日志在 `/tmp/sp-overnight/07-*.log`、`/tmp/sp-overnight/08-*.log`、`/tmp/sp-overnight/15-*.log`、`/tmp/sp-overnight/16-*.log`。
 
 | Case | Trace | Mode | 结果 | 备注 |
 |------|-------|------|------|------|

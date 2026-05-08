@@ -136,8 +136,9 @@ function createTestServer() {
 
   // Extract tool handlers from the mock SDK server
   const tools: Map<string, ToolDef> = new Map();
-  if (server?.instance?.tools) {
-    for (const t of server.instance.tools) {
+  const mockServerInstance = server?.instance as any;
+  if (mockServerInstance?.tools) {
+    for (const t of mockServerInstance.tools) {
       tools.set(t.name.replace(MCP_NAME_PREFIX, ''), t);
     }
   }
@@ -264,6 +265,60 @@ describe('createClaudeMcpServer', () => {
       expect(result.success).toBe(true);
       expect(analysisPlan.current?.phases).toHaveLength(2);
       expect(analysisPlan.current?.successCriteria).toBe('Identify jank root cause');
+    });
+  });
+
+  describe('update_plan_phase', () => {
+    it('does not report all phases complete while the final phase is still in progress', async () => {
+      const { tools } = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          { id: 'p1', name: 'Collect', goal: 'Get frame data', expectedTools: ['execute_sql'] },
+          { id: 'p2', name: 'Conclude', goal: 'Write final answer', expectedTools: ['fetch_artifact'] },
+        ],
+        successCriteria: 'Identify jank root cause',
+      });
+      await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        status: 'completed',
+        summary: 'Collected frame data with 3 janky frames',
+      });
+
+      const inProgress = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p2',
+        status: 'in_progress',
+        summary: 'Drafting final answer from collected artifacts',
+      });
+      expect(inProgress.success).toBe(true);
+      expect(inProgress.allPhasesComplete).toBeUndefined();
+
+      const completed = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p2',
+        status: 'completed',
+        summary: 'Final answer includes root cause and evidence',
+      });
+      expect(completed.allPhasesComplete).toBe(true);
+    });
+
+    it('rejects completed phases without enough evidence summary', async () => {
+      const { tools, analysisPlan, emittedUpdates } = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          { id: 'p1', name: 'Collect', goal: 'Get frame data', expectedTools: ['execute_sql'] },
+        ],
+        successCriteria: 'Identify jank root cause',
+      });
+
+      const result = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        status: 'completed',
+        summary: 'done',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.action_required).toBe('retry_update_plan_phase_with_evidence');
+      expect(analysisPlan.current?.phases[0].status).toBe('pending');
+      expect(emittedUpdates.some(u => u.type === 'plan_phase_updated')).toBe(false);
     });
   });
 
@@ -394,7 +449,7 @@ describe('createClaudeMcpServer', () => {
       await callTool(tools, 'update_plan_phase', {
         phaseId: 'p1',
         status: 'completed',
-        summary: 'Phase 1 done',
+        summary: 'Phase 1 completed with SQL evidence',
       });
 
       // Revise plan with new phase

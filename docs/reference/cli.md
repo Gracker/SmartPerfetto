@@ -315,10 +315,7 @@ npm run cli:dev -- --help
 2. `backend/.env`（默认，自动向上找 5 层）
 3. `~/.smartperfetto/env`
 
-需要 `ANTHROPIC_API_KEY`，或 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`（Claude Code 兼容 provider / API proxy 场景）。
-如果你用 proxy 并且 `.env` 里设了 `AI_SERVICE=deepseek`（agentv2 fallback），
-需要显式覆盖：`AI_SERVICE=claude-code smartperfetto ...`（agentv3 走
-Claude Agent SDK；agentv2 路径 CLI 不支持会抛错）。
+Claude runtime 需要 `ANTHROPIC_API_KEY`，或 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`（Claude Code 兼容 provider / API proxy 场景）。OpenAI runtime 使用 `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`、`OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `OPENAI_AGENTS_PROTOCOL`。
 
 ---
 

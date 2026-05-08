@@ -5,13 +5,11 @@
 import express from 'express';
 import {
   type AgentRuntimeAnalysisResult,
-  createAgentRuntime,
   type Hypothesis,
   type IOrchestrator,
-  type ModelRouter,
   type StreamingUpdate,
 } from '../agent';
-import { isClaudeCodeEnabled, createClaudeRuntime } from '../agentv3';
+import { createAgentOrchestrator } from '../agentRuntime';
 import { featureFlagsConfig } from '../config';
 import {
   AssistantApplicationService,
@@ -69,7 +67,6 @@ interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSe
   assistantAppService: AssistantApplicationService<TSession>;
   streamProjector: StreamProjector;
   ensureToolsRegistered: () => void;
-  getModelRouter: () => ModelRouter;
   /**
    * Legacy `/analyze`-style runner. Kept here for backward compatibility with
    * the keyword-triggered path; the primary `/scene-reconstruct` POST handler
@@ -228,16 +225,9 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       const query = deepAnalysis ? '场景还原' : '场景还原 仅检测';
       const analysisId = `scene-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 
-      const orchestrator: IOrchestrator = isClaudeCodeEnabled()
-        ? createClaudeRuntime(getTraceProcessorService())
-        : createAgentRuntime(deps.getModelRouter(), {
-            maxRounds: options.maxRounds ?? options.maxIterations ?? 5,
-            maxConcurrentTasks: options.maxConcurrentTasks || 3,
-            confidenceThreshold: options.confidenceThreshold ?? options.qualityThreshold ?? 0.7,
-            maxNoProgressRounds: options.maxNoProgressRounds ?? 2,
-            maxFailureRounds: options.maxFailureRounds ?? 2,
-            enableLogging: true,
-          });
+      const orchestrator: IOrchestrator = createAgentOrchestrator({
+        traceProcessorService: getTraceProcessorService(),
+      });
 
       const logger = createSessionLogger(analysisId);
       logger.setMetadata({ traceId, query, architecture: 'agent-driven', feature: 'scene-reconstruct' });

@@ -21,6 +21,7 @@ docs/
 ├── README.md                         # 文档入口
 ├── getting-started/                  # 安装、配置、使用
 ├── architecture/                     # 当前架构与权威设计
+├── features/                         # 独立 feature 开发文档
 ├── reference/                        # API、CLI、MCP、Skill DSL
 ├── development/                      # 开发、测试、文档维护
 ├── operations/                       # 运行与故障排查

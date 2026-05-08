@@ -288,7 +288,10 @@ export function createOpenAILLMClient(config?: Partial<LLMAdapterConfig>): LLMCl
  * Creates the appropriate LLMClient based on configuration or environment
  */
 export function createLLMClient(config?: LLMAdapterConfig): LLMClient {
-  const provider = config?.provider || (process.env.AI_SERVICE as LLMAdapterConfig['provider']) || 'deepseek';
+  const provider =
+    config?.provider ||
+    (process.env.SMARTPERFETTO_LLM_PROVIDER as LLMAdapterConfig['provider']) ||
+    'deepseek';
 
   switch (provider) {
     case 'deepseek':

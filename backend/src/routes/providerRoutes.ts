@@ -3,7 +3,7 @@
 
 import express from 'express';
 import { getProviderService, officialTemplates } from '../services/providerManager';
-import type { ProviderCreateInput, ProviderUpdateInput } from '../services/providerManager';
+import type { AgentRuntimeKind, ProviderCreateInput, ProviderUpdateInput } from '../services/providerManager';
 import { testProviderConnection } from '../services/providerManager/connectionTester';
 import { authenticate } from '../middleware/auth';
 
@@ -83,6 +83,21 @@ router.post('/:id/activate', (req, res) => {
     const svc = getProviderService();
     svc.activate(req.params.id);
     res.json({ success: true });
+  } catch (err: any) {
+    const status = err.message.includes('not found') ? 404 : 400;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/:id/runtime', (req, res) => {
+  try {
+    const svc = getProviderService();
+    const runtime = req.body?.agentRuntime as AgentRuntimeKind | undefined;
+    if (runtime !== 'claude-agent-sdk' && runtime !== 'openai-agents-sdk') {
+      return res.status(400).json({ success: false, error: 'Invalid agentRuntime' });
+    }
+    svc.switchAgentRuntime(req.params.id, runtime);
+    res.json({ success: true, provider: svc.get(req.params.id) });
   } catch (err: any) {
     const status = err.message.includes('not found') ? 404 : 400;
     res.status(status).json({ success: false, error: err.message });

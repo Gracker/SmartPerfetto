@@ -5,7 +5,7 @@
 /**
  * SmartPerfetto Agent State Machine
  *
- * @deprecated Not used in Agent-Driven architecture (v5.0). See agentv2/runtime/agentRuntime.ts.
+ * @deprecated Not used by the Claude/OpenAI SDK runtime architecture.
  *
  * 状态机核心组件，负责：
  * 1. 管理 Agent 生命周期状态转换

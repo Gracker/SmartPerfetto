@@ -10,11 +10,11 @@
  *   - `cli-user/services/cliAnalyzeService.ts:persistTurnToBackend` (CLI path)
  *
  * Each one:
- *   1. Takes a unified snapshot from the orchestrator (agentv3 path) and
+ *   1. Takes a unified snapshot from the orchestrator and
  *      stashes it on the session as `_lastSnapshot` so the report builder
  *      can read analysisNotes / analysisPlan / uncertaintyFlags.
  *   2. Writes the snapshot atomically via `saveSessionStateSnapshot`, or
- *      falls back to the agentv2 individual-field methods if the
+ *      falls back to individual-field persistence if the
  *      orchestrator doesn't expose `takeSnapshot`.
  *   3. Appends the turn's user+assistant messages to the messages table
  *      so the web UI's history view renders them.
@@ -62,6 +62,7 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
           agentResponses: session.agentResponses || [],
           dataEnvelopes: session.dataEnvelopes || [],
           hypotheses: session.hypotheses || [],
+          agentRuntimeProviderId: session.providerId,
           runSequence: session.runSequence || 0,
           conversationOrdinal: session.conversationOrdinal || 0,
         })
@@ -95,9 +96,9 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
         });
       }
     } else if (sessionContext) {
-      // agentv2 fallback — individual-field writes. CLI always runs agentv3
-      // today, but leave this branch so a future runtime swap doesn't
-      // silently lose persistence.
+      // Individual-field fallback for runtimes or older sessions that do not
+      // expose a unified snapshot. Current SDK runtimes should normally take
+      // the atomic snapshot path above.
       if (!persistenceService.getSession(sessionId)) {
         persistenceService.saveSession({
           id: sessionId,

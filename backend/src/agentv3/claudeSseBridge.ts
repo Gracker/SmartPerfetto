@@ -12,6 +12,29 @@ import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './output
 
 export type UpdateEmitter = (update: StreamingUpdate) => void;
 
+export interface SdkToolResultBlock {
+  toolUseId?: string;
+  result: unknown;
+  isError?: boolean;
+}
+
+export function extractSdkToolResultBlocks(msg: any): SdkToolResultBlock[] {
+  const content = msg?.message?.content;
+  if (!Array.isArray(content)) return [];
+
+  return content
+    .filter((block: any) => block && typeof block === 'object' && block.type === 'tool_result')
+    .map((block: any) => ({
+      toolUseId: typeof block.tool_use_id === 'string' ? block.tool_use_id : undefined,
+      result: block.content ?? msg.tool_use_result,
+      isError: typeof block.is_error === 'boolean' ? block.is_error : undefined,
+    }));
+}
+
+export function stringifySdkToolResult(result: unknown): string {
+  return typeof result === 'string' ? result : JSON.stringify(result);
+}
+
 /** Map MCP tool names to user-friendly descriptions. */
 function getFriendlyToolMessage(toolName: string, args: any, language: OutputLanguage): string {
   switch (toolName) {
@@ -271,16 +294,28 @@ export function createSseBridge(
       currentTurnHasToolUse = false;
       currentTurnStreamedText = false;
       streamingAsAnswer = false;
-      emit({
-        type: 'agent_response',
-        content: {
-          taskId: lastToolUseId || 'unknown',
-          result: typeof msg.tool_use_result === 'string'
-            ? msg.tool_use_result
-            : JSON.stringify(msg.tool_use_result),
-        },
-        timestamp: now,
-      });
+      const resultBlocks = extractSdkToolResultBlocks(msg);
+      if (resultBlocks.length > 0) {
+        for (const block of resultBlocks) {
+          emit({
+            type: 'agent_response',
+            content: {
+              taskId: block.toolUseId || lastToolUseId || 'unknown',
+              result: stringifySdkToolResult(block.result),
+            },
+            timestamp: now,
+          });
+        }
+      } else {
+        emit({
+          type: 'agent_response',
+          content: {
+            taskId: lastToolUseId || 'unknown',
+            result: stringifySdkToolResult(msg.tool_use_result),
+          },
+          timestamp: now,
+        });
+      }
       return;
     }
 

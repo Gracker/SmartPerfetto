@@ -126,6 +126,22 @@ export interface SessionStateSnapshot {
   architecture?: ArchitectureInfo;
   sdkSessionId?: string;
 
+  // --- Backend Runtime State ---
+  /** Runtime that produced the snapshot. Omitted for legacy Claude-only snapshots. */
+  agentRuntimeKind?: 'claude-agent-sdk' | 'openai-agents-sdk';
+  /**
+   * Provider profile that supplied runtime credentials.
+   * null means the session is pinned to env/default fallback and must not read
+   * the current active Provider Manager profile during restoration.
+   */
+  agentRuntimeProviderId?: string | null;
+  /** OpenAI Agents SDK history for cross-restart multi-turn continuation. */
+  openAIHistory?: unknown[];
+  /** Last provider response ID from the OpenAI Agents SDK run. */
+  openAILastResponseId?: string;
+  /** Reserved serialized OpenAI run state for future SDK-native restoration. */
+  openAIRunState?: string;
+
   // --- Artifact Store (optional, can be large) ---
   artifacts?: StoredArtifact[];
 
@@ -154,6 +170,8 @@ export interface SessionFieldsForSnapshot {
   dataEnvelopes: DataEnvelope[];
   /** Protocol-format hypotheses from AnalysisResult. */
   hypotheses: any[];
+  /** Provider profile that supplied runtime credentials for this turn; null means env/default fallback. */
+  agentRuntimeProviderId?: string | null;
   runSequence: number;
   conversationOrdinal: number;
 }

@@ -54,6 +54,21 @@ describe('ProviderService', () => {
       expect(list[0].connection.apiKey).toMatch(/^\*{4}/);
       expect(list[0].connection.apiKey).not.toBe('sk-ant-test123456');
     });
+
+    it('masks runtime-specific credentials in returned list', () => {
+      svc.create({
+        ...validInput,
+        connection: {
+          claudeApiKey: 'sk-ant-runtime123456',
+          claudeAuthToken: 'provider-token-123456',
+          openaiApiKey: 'sk-openai-runtime123456',
+        },
+      });
+      const list = svc.list();
+      expect(list[0].connection.claudeApiKey).toMatch(/^\*{4}/);
+      expect(list[0].connection.claudeAuthToken).toMatch(/^\*{4}/);
+      expect(list[0].connection.openaiApiKey).toMatch(/^\*{4}/);
+    });
   });
 
   describe('activate', () => {
@@ -118,15 +133,182 @@ describe('ProviderService', () => {
         ...validInput,
         type: 'deepseek',
         models: { primary: 'deepseek-v4-pro', light: 'deepseek-v4-flash' },
-        connection: { apiKey: 'sk-deepseek-test' },
+        connection: {
+          apiKey: 'sk-deepseek-test',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+        },
       });
       svc.activate(p.id);
       const env = svc.getEffectiveEnv()!;
 
       expect(env.ANTHROPIC_BASE_URL).toBe('https://api.deepseek.com/anthropic');
-      expect(env.ANTHROPIC_API_KEY).toBe('sk-deepseek-test');
+      expect(env.ANTHROPIC_AUTH_TOKEN).toBe('sk-deepseek-test');
       expect(env.CLAUDE_MODEL).toBe('deepseek-v4-pro');
       expect(env.CLAUDE_LIGHT_MODEL).toBe('deepseek-v4-flash');
+    });
+
+    it('uses DeepSeek OpenAI-compatible endpoint when runtime is OpenAI Agents SDK', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'deepseek',
+        models: { primary: 'deepseek-v4-pro', light: 'deepseek-v4-flash' },
+        connection: {
+          apiKey: 'sk-deepseek-test',
+          agentRuntime: 'openai-agents-sdk',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+          openaiProtocol: 'chat_completions',
+        },
+      });
+      svc.activate(p.id);
+      const env = svc.getEffectiveEnv()!;
+
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
+      expect(env.OPENAI_BASE_URL).toBe('https://api.deepseek.com/v1');
+      expect(env.OPENAI_API_KEY).toBe('sk-deepseek-test');
+      expect(env.OPENAI_AGENTS_PROTOCOL).toBe('chat_completions');
+      expect(env.OPENAI_MODEL).toBe('deepseek-v4-pro');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(env.CLAUDE_MODEL).toBeUndefined();
+    });
+
+    it('switches an existing dual-surface provider runtime explicitly', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'deepseek',
+        models: { primary: 'deepseek-v4-pro', light: 'deepseek-v4-flash' },
+        connection: {
+          apiKey: 'sk-deepseek-test',
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+          openaiProtocol: 'chat_completions',
+        },
+      });
+
+      svc.switchAgentRuntime(p.id, 'openai-agents-sdk');
+      const env = svc.getEnvForProvider(p.id)!;
+
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
+      expect(env.OPENAI_BASE_URL).toBe('https://api.deepseek.com/v1');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    });
+
+    it('supports OpenAI runtime for non-DeepSeek dual-surface provider types', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'xiaomi',
+        models: { primary: 'mimo-v2.5-pro', light: 'mimo-v2.5-pro' },
+        connection: {
+          apiKey: 'sk-xiaomi-test',
+          agentRuntime: 'openai-agents-sdk',
+          claudeBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic',
+          openaiBaseUrl: 'https://token-plan-sgp.xiaomimimo.com/v1',
+          openaiProtocol: 'chat_completions',
+        },
+      });
+      const env = svc.getEnvForProvider(p.id)!;
+
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
+      expect(env.OPENAI_BASE_URL).toBe('https://token-plan-sgp.xiaomimimo.com/v1');
+      expect(env.OPENAI_API_KEY).toBe('sk-xiaomi-test');
+      expect(env.OPENAI_MODEL).toBe('mimo-v2.5-pro');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+    });
+
+    it('rejects switching Claude-only providers to OpenAI runtime', () => {
+      const p = svc.create(validInput);
+
+      expect(() => svc.switchAgentRuntime(p.id, 'openai-agents-sdk')).toThrow(
+        /does not support openai-agents-sdk/,
+      );
+    });
+
+    it('rejects creating OpenAI-only providers with Claude runtime', () => {
+      expect(() => svc.create({
+        ...validInput,
+        type: 'openai',
+        models: { primary: 'gpt-5.5', light: 'gpt-5.4-mini' },
+        connection: { agentRuntime: 'claude-agent-sdk', openaiApiKey: 'sk-openai-test' },
+      })).toThrow(/does not support claude-agent-sdk/);
+    });
+
+    it('rejects stale non-SDK runtime overrides on providers', () => {
+      expect(() => svc.resolveAgentRuntime({
+        ...validInput,
+        id: 'stale-runtime',
+        type: 'deepseek',
+        connection: { agentRuntime: 'agentv2' as any },
+      } as any)).toThrow(/Invalid agent runtime: agentv2/);
+    });
+
+    it('returns OpenAI Agents SDK env vars for active OpenAI provider', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'openai',
+        models: { primary: 'gpt-5.5', light: 'gpt-5.4-mini' },
+        connection: { openaiApiKey: 'sk-openai-test', openaiBaseUrl: 'https://api.openai.com/v1' },
+      });
+      svc.activate(p.id);
+      const env = svc.getEffectiveEnv()!;
+
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
+      expect(env.OPENAI_BASE_URL).toBe('https://api.openai.com/v1');
+      expect(env.OPENAI_API_KEY).toBe('sk-openai-test');
+      expect(env.OPENAI_AGENTS_PROTOCOL).toBe('responses');
+      expect(env.OPENAI_MODEL).toBe('gpt-5.5');
+      expect(env.OPENAI_LIGHT_MODEL).toBe('gpt-5.4-mini');
+      expect(env.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(env.CLAUDE_MODEL).toBeUndefined();
+    });
+
+    it('maps OpenAI provider tuning to OpenAI runtime env vars', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'openai',
+        models: { primary: 'gpt-5.5', light: 'gpt-5.4-mini' },
+        connection: { openaiApiKey: 'sk-openai-test' },
+        tuning: {
+          maxTurns: 80,
+          fullPerTurnMs: 90000,
+          quickPerTurnMs: 45000,
+          classifierTimeoutMs: 15000,
+          enableVerification: false,
+        },
+      });
+      svc.activate(p.id);
+      const env = svc.getEffectiveEnv()!;
+
+      expect(env.OPENAI_MAX_TURNS).toBe('80');
+      expect(env.OPENAI_FULL_PER_TURN_MS).toBe('90000');
+      expect(env.OPENAI_QUICK_PER_TURN_MS).toBe('45000');
+      expect(env.OPENAI_CLASSIFIER_TIMEOUT_MS).toBe('15000');
+      expect(env.OPENAI_ENABLE_VERIFICATION).toBe('false');
+      expect(env.CLAUDE_MAX_TURNS).toBeUndefined();
+    });
+
+    it('does not allow custom env overrides to flip the selected SDK runtime', () => {
+      const p = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: { primary: 'custom-openai-main', light: 'custom-openai-light' },
+        connection: {
+          agentRuntime: 'openai-agents-sdk',
+          openaiBaseUrl: 'https://gateway.example/v1',
+          openaiProtocol: 'chat_completions',
+        },
+        custom: {
+          envOverrides: {
+            SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
+          },
+        },
+      });
+
+      const env = svc.getEnvForProvider(p.id)!;
+
+      expect(env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
+      expect(env.OPENAI_MODEL).toBe('custom-openai-main');
     });
   });
 

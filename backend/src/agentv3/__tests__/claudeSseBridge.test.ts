@@ -82,4 +82,47 @@ describe('createSseBridge', () => {
       }),
     }));
   });
+
+  it('maps parallel tool results back to their SDK tool_use_id', () => {
+    const updates: StreamingUpdate[] = [];
+    const bridge = createSseBridge((update) => updates.push(update));
+
+    bridge.handleMessage({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', id: 'call_a', name: 'mcp__smartperfetto__fetch_artifact', input: { artifactId: 'art-1' } },
+          { type: 'tool_use', id: 'call_b', name: 'mcp__smartperfetto__fetch_artifact', input: { artifactId: 'art-2' } },
+        ],
+      },
+    });
+
+    bridge.handleMessage({
+      type: 'user',
+      tool_use_result: 'result a',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_a', content: 'result a' },
+        ],
+      },
+    });
+    bridge.handleMessage({
+      type: 'user',
+      tool_use_result: 'result b',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'call_b', content: 'result b' },
+        ],
+      },
+    });
+
+    const responses = updates.filter((update) => update.type === 'agent_response');
+    expect(responses).toHaveLength(2);
+    expect(responses[0]).toEqual(expect.objectContaining({
+      content: expect.objectContaining({ taskId: 'call_a', result: 'result a' }),
+    }));
+    expect(responses[1]).toEqual(expect.objectContaining({
+      content: expect.objectContaining({ taskId: 'call_b', result: 'result b' }),
+    }));
+  });
 });

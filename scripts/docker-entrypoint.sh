@@ -16,13 +16,16 @@ echo "=============================================="
 # host's Claude Code login, but health/UI smoke checks still work without AI.
 ANTHROPIC_KEY="${ANTHROPIC_API_KEY:-}"
 ANTHROPIC_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
+OPENAI_KEY="${OPENAI_API_KEY:-}"
+OPENAI_BASE="${OPENAI_BASE_URL:-}"
+AGENT_RUNTIME="${SMARTPERFETTO_AGENT_RUNTIME:-claude-agent-sdk}"
 if { [ -z "$ANTHROPIC_KEY" ] || [[ "$ANTHROPIC_KEY" == your_* ]] || [ "$ANTHROPIC_KEY" = "sk-ant-xxx" ]; } && \
    { [ -z "$ANTHROPIC_TOKEN" ] || [[ "$ANTHROPIC_TOKEN" == your_* ]]; } && \
    [ -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ] && \
-   [ "${AI_SERVICE:-}" != "openai" ] && [ "${AI_SERVICE:-}" != "deepseek" ]; then
+   { [ "$AGENT_RUNTIME" != "openai-agents-sdk" ] || { [ -z "$OPENAI_KEY" ] && [ -z "$OPENAI_BASE" ]; }; }; then
   echo "WARNING: LLM credentials are missing or still use an example placeholder."
-  echo "AI analysis needs ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, or Bedrock credentials."
-  echo "Set one provider block in .env before running real AI analysis."
+  echo "AI analysis needs credentials for the selected agent runtime."
+  echo "Set a Provider Manager profile or matching Claude/OpenAI env block before running real AI analysis."
   echo ""
 fi
 

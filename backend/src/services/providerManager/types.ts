@@ -7,9 +7,37 @@ export interface ProviderModels {
   subAgent?: string;
 }
 
+export type AgentRuntimeKind = 'claude-agent-sdk' | 'openai-agents-sdk';
+export type OpenAIProtocol = 'responses' | 'chat_completions';
+
 export interface ProviderConnection {
+  /**
+   * Legacy/shared fields. Keep these for existing provider configs and for
+   * vendors that use one key across both Anthropic-compatible and
+   * OpenAI-compatible endpoints.
+   */
   baseUrl?: string;
   apiKey?: string;
+  claudeBaseUrl?: string;
+  claudeApiKey?: string;
+  claudeAuthToken?: string;
+  openaiBaseUrl?: string;
+  openaiApiKey?: string;
+  /**
+   * Backend agent runtime used by this provider.
+   *
+   * When omitted, SmartPerfetto infers the runtime from `ProviderConfig.type`:
+   * Anthropic/Bedrock/Vertex/DeepSeek use the Claude Agent SDK; OpenAI/Ollama
+   * use the OpenAI Agents SDK. Custom providers should set this explicitly.
+   */
+  agentRuntime?: AgentRuntimeKind;
+  /**
+   * OpenAI Agents SDK transport surface.
+   * - responses: OpenAI Responses API. Best for official OpenAI models.
+   * - chat_completions: OpenAI-compatible Chat Completions. Best for gateways
+   *   and local providers such as Ollama.
+   */
+  openaiProtocol?: OpenAIProtocol;
   // Bedrock
   useBedrock?: boolean;
   awsBearerToken?: string;
@@ -40,7 +68,31 @@ export interface ProviderCustom {
   envOverrides?: Record<string, string>;
 }
 
-export type ProviderType = 'anthropic' | 'bedrock' | 'vertex' | 'deepseek' | 'openai' | 'ollama' | 'custom';
+export type DualSurfaceProviderType =
+  | 'deepseek'
+  | 'glm'
+  | 'qwen'
+  | 'qwen_coding'
+  | 'kimi_code'
+  | 'kimi'
+  | 'doubao'
+  | 'minimax'
+  | 'xiaomi'
+  | 'tencent_token_plan'
+  | 'tencent_coding_plan'
+  | 'hunyuan'
+  | 'qianfan'
+  | 'stepfun'
+  | 'siliconflow'
+  | 'huawei';
+export type ProviderType =
+  | 'anthropic'
+  | 'bedrock'
+  | 'vertex'
+  | DualSurfaceProviderType
+  | 'openai'
+  | 'ollama'
+  | 'custom';
 
 export interface ProviderConfig {
   id: string;

@@ -1,9 +1,29 @@
 // backend/src/services/providerManager/connectionTester.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { ProviderConfig, ProviderType, TestResult } from './types';
+import type { AgentRuntimeKind, DualSurfaceProviderType, ProviderConfig, ProviderType, TestResult } from './types';
 
 const TEST_TIMEOUT_MS = 15000;
+const DUAL_SURFACE_PROVIDER_TYPES: DualSurfaceProviderType[] = [
+  'deepseek',
+  'glm',
+  'qwen',
+  'qwen_coding',
+  'kimi_code',
+  'kimi',
+  'doubao',
+  'minimax',
+  'xiaomi',
+  'tencent_token_plan',
+  'tencent_coding_plan',
+  'hunyuan',
+  'qianfan',
+  'stepfun',
+  'siliconflow',
+  'huawei',
+];
+const CLAUDE_RUNTIME_TYPES: ProviderType[] = ['anthropic', 'bedrock', 'vertex', ...DUAL_SURFACE_PROVIDER_TYPES, 'custom'];
+const OPENAI_RUNTIME_TYPES: ProviderType[] = ['openai', 'ollama', ...DUAL_SURFACE_PROVIDER_TYPES, 'custom'];
 
 interface RequestInit {
   method: string;
@@ -27,38 +47,109 @@ export async function testProviderConnection(provider: ProviderConfig): Promise<
 }
 
 async function runTest(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
-  const tester = TESTERS[provider.type];
-  if (!tester) {
-    return { success: false, error: `No test strategy for type: ${provider.type}` };
+  if (provider.type === 'bedrock') return testBedrock(provider);
+  if (provider.type === 'vertex') return testVertex(provider);
+  if (provider.type === 'ollama') return testOllama(provider);
+
+  if (resolveAgentRuntime(provider) === 'openai-agents-sdk') {
+    return testOpenAICompatible(provider);
   }
-  return tester(provider);
+  return testAnthropic(provider);
 }
 
-type Tester = (provider: ProviderConfig) => Promise<Omit<TestResult, 'latencyMs'>>;
+function resolveAgentRuntime(provider: ProviderConfig): AgentRuntimeKind {
+  if (
+    provider.connection.agentRuntime &&
+    provider.connection.agentRuntime !== 'claude-agent-sdk' &&
+    provider.connection.agentRuntime !== 'openai-agents-sdk'
+  ) {
+    throw new Error(`Invalid agent runtime: ${provider.connection.agentRuntime}`);
+  }
+  if (
+    provider.connection.agentRuntime === 'claude-agent-sdk' ||
+    provider.connection.agentRuntime === 'openai-agents-sdk'
+  ) {
+    if (!supportsRuntime(provider.type, provider.connection.agentRuntime)) {
+      throw new Error(`Provider type "${provider.type}" does not support ${provider.connection.agentRuntime}`);
+    }
+    return provider.connection.agentRuntime;
+  }
+  if (provider.type === 'openai' || provider.type === 'ollama') return 'openai-agents-sdk';
+  if (
+    provider.type === 'custom' &&
+    (provider.connection.openaiProtocol || provider.connection.openaiBaseUrl || provider.connection.openaiApiKey)
+  ) {
+    const hasClaudeSurface = Boolean(
+      provider.connection.claudeBaseUrl ||
+      provider.connection.claudeApiKey ||
+      provider.connection.claudeAuthToken,
+    );
+    return hasClaudeSurface ? 'claude-agent-sdk' : 'openai-agents-sdk';
+  }
+  return 'claude-agent-sdk';
+}
 
-const TESTERS: Record<ProviderType, Tester> = {
-  anthropic: testAnthropic,
-  bedrock: testBedrock,
-  vertex: testVertex,
-  deepseek: testAnthropic,
-  openai: testOpenAICompatible,
-  ollama: testOllama,
-  custom: testOpenAICompatible,
-};
+function supportsRuntime(type: ProviderType, runtime: AgentRuntimeKind): boolean {
+  return runtime === 'openai-agents-sdk'
+    ? OPENAI_RUNTIME_TYPES.includes(type)
+    : CLAUDE_RUNTIME_TYPES.includes(type);
+}
+
+function sharedKeyShouldUseClaudeAuthToken(type: ProviderType): boolean {
+  return [
+    'deepseek',
+    'qwen',
+    'qwen_coding',
+    'kimi',
+    'doubao',
+    'minimax',
+    'tencent_token_plan',
+    'tencent_coding_plan',
+    'hunyuan',
+    'qianfan',
+    'stepfun',
+    'huawei',
+  ].includes(type);
+}
+
+function getClaudeBaseUrl(provider: ProviderConfig, defaultBaseUrl: string): string {
+  return provider.connection.claudeBaseUrl || provider.connection.baseUrl || defaultBaseUrl;
+}
+
+function getOpenAIBaseUrl(provider: ProviderConfig, defaultBaseUrl: string): string {
+  return provider.connection.openaiBaseUrl || provider.connection.baseUrl || defaultBaseUrl;
+}
+
+function getOpenAIApiKey(provider: ProviderConfig): string | undefined {
+  return provider.connection.openaiApiKey || provider.connection.apiKey;
+}
 
 async function testAnthropic(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
-  const baseUrl = provider.connection.baseUrl || 'https://api.anthropic.com';
-  const apiKey = provider.connection.apiKey;
-  if (!apiKey) return { success: false, error: 'API key is required' };
+  const defaultBaseUrl = provider.type === 'deepseek'
+    ? 'https://api.deepseek.com/anthropic'
+    : 'https://api.anthropic.com';
+  const baseUrl = getClaudeBaseUrl(provider, defaultBaseUrl);
+  const apiKey = provider.connection.claudeApiKey ||
+    (!provider.connection.claudeAuthToken && !sharedKeyShouldUseClaudeAuthToken(provider.type)
+      ? provider.connection.apiKey
+      : undefined);
+  const authToken = provider.connection.claudeAuthToken ||
+    (!provider.connection.claudeApiKey && sharedKeyShouldUseClaudeAuthToken(provider.type)
+      ? provider.connection.apiKey
+      : undefined);
+  if (!apiKey && !authToken) return { success: false, error: 'API key or auth token is required' };
 
   const url = `${baseUrl.replace(/\/+$/, '')}/v1/messages`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'anthropic-version': '2023-06-01',
+  };
+  if (apiKey) headers['x-api-key'] = apiKey;
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+
   const res = await fetchWithTimeout(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-    },
+    headers,
     body: JSON.stringify({
       model: provider.models.primary || 'claude-sonnet-4-20250514',
       max_tokens: 1,
@@ -196,14 +287,14 @@ async function testVertex(provider: ProviderConfig): Promise<Omit<TestResult, 'l
 async function testOpenAICompatible(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
   const type = provider.type;
   const defaults: Record<string, string> = {
-    deepseek: 'https://api.deepseek.com',
+    deepseek: 'https://api.deepseek.com/v1',
     openai: 'https://api.openai.com/v1',
     custom: '',
   };
-  const baseUrl = provider.connection.baseUrl || defaults[type] || '';
+  const baseUrl = getOpenAIBaseUrl(provider, defaults[type] || '');
   if (!baseUrl) return { success: false, error: 'Base URL is required' };
 
-  const apiKey = provider.connection.apiKey || '';
+  const apiKey = getOpenAIApiKey(provider) || '';
 
   // Try /models endpoint first (lightest check)
   const modelsUrl = `${baseUrl.replace(/\/+$/, '')}/models`;
@@ -235,7 +326,8 @@ async function testOpenAICompatible(provider: ProviderConfig): Promise<Omit<Test
 }
 
 async function testOllama(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
-  const baseUrl = provider.connection.baseUrl || 'http://localhost:11434';
+  const baseUrl = getOpenAIBaseUrl(provider, 'http://localhost:11434/v1')
+    .replace(/\/v1\/?$/, '');
   const tagsUrl = `${baseUrl.replace(/\/+$/, '')}/api/tags`;
 
   try {

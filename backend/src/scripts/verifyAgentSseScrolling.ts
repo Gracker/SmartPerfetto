@@ -14,6 +14,8 @@ import agentRoutes from '../routes/agentRoutes';
 import skillRoutes from '../routes/skillRoutes';
 import traceProcessorRoutes from '../routes/traceProcessorRoutes';
 import { getTraceProcessorService } from '../services/traceProcessorService';
+import { resolveAgentRuntimeSelection } from '../agentRuntime';
+import { getOpenAIRuntimeDiagnostics, hasOpenAICredentials } from '../agentOpenAI';
 
 interface VerifyOptions {
   tracePath: string;
@@ -41,7 +43,7 @@ interface SseSummary {
   planSubmittedCount: number;
   architectureDetectedCount: number;
   errorEvents: string[];
-  /** Legacy agentv2 fields (kept for backwards compat) */
+  /** Older SSE fields that may still appear in archived sessions/logs. */
   stageNames: string[];
   stageTransitionCount: number;
   directSkillProgressCount: number;
@@ -325,7 +327,7 @@ async function collectSseSummary(baseUrl: string, sessionId: string, timeoutMs: 
               break;
           }
 
-          // --- Legacy agentv2 counting (backwards compat) ---
+          // --- Older SSE counting (backwards compat) ---
           if (event === 'stage_transition') {
             const stageName = typeof payload?.stageName === 'string' ? payload.stageName : undefined;
             if (stageName) {
@@ -409,15 +411,13 @@ async function main(): Promise<void> {
     throw new Error(`Trace file not found: ${options.tracePath}`);
   }
 
-  const hasAnyLlmKey = [
-    process.env.DEEPSEEK_API_KEY,
-    process.env.OPENAI_API_KEY,
-    process.env.ANTHROPIC_API_KEY,
-    process.env.ANTHROPIC_AUTH_TOKEN,
-  ].some((value) => typeof value === 'string' && value.trim() !== '');
-
-  if (!hasAnyLlmKey && process.env.AI_SERVICE !== 'claude-code') {
-    throw new Error('No LLM API key found (DEEPSEEK_API_KEY / OPENAI_API_KEY / ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN) or set AI_SERVICE=claude-code');
+  const runtimeSelection = resolveAgentRuntimeSelection();
+  if (runtimeSelection.kind === 'openai-agents-sdk' && !hasOpenAICredentials()) {
+    const diagnostics = getOpenAIRuntimeDiagnostics();
+    throw new Error(
+      'OpenAI Agents SDK runtime is selected but no usable OpenAI-compatible credentials were found. ' +
+      diagnostics.configHint
+    );
   }
 
   const app = createVerificationApp();

@@ -149,31 +149,32 @@ export const DEFAULT_EVIDENCE: Record<string, string[]> = {
 };
 
 // =============================================================================
-// IOrchestrator — Shared interface for AgentRuntime (agentv2) & ClaudeRuntime (agentv3)
+// IOrchestrator — Shared interface for ClaudeRuntime and OpenAIRuntime
 // =============================================================================
 
 /**
  * Minimal orchestrator contract that both runtime implementations satisfy.
- * Used in session management and route layers to avoid unsafe `as unknown as AgentRuntime` casts.
+ * Used in session management and route layers so SDK-specific implementations
+ * stay behind the same backend contract.
  *
- * Both AgentRuntime and ClaudeRuntime extend EventEmitter and implement this interface.
- * getFocusStore() is only available on AgentRuntime — callers must guard with typeof check.
+ * Runtime implementations extend EventEmitter and implement this interface.
  */
 export interface IOrchestrator {
   on(event: string, listener: (...args: any[]) => void): this;
   off(event: string, listener: (...args: any[]) => void): this;
   emit(event: string, ...args: any[]): boolean;
+  removeAllListeners(event?: string): this;
   analyze(query: string, sessionId: string, traceId: string, options?: AnalysisOptions): Promise<AnalysisResult>;
   reset(): void;
   /** Clean up all session-scoped state for a specific session (agentv3: artifacts, notes, session map). */
   cleanupSession?(sessionId: string): void;
-  /** Only available on AgentRuntime (agentv2). Guard with: typeof orchestrator.getFocusStore === 'function' */
+  /** Historical focus-store hook. Guard with: typeof orchestrator.getFocusStore === 'function'. */
   getFocusStore?(): any;
-  /** Only available on AgentRuntime (agentv2). */
+  /** Optional runtime-specific intervention hook. */
   recordUserInteraction?(interaction: any): void;
-  /** Only available on AgentRuntime (agentv2). */
+  /** Optional runtime-specific intervention hook. */
   getInterventionController?(): any;
-  /** Only available on ClaudeRuntime (agentv3). */
+  /** SDK session ID for runtimes that expose one. */
   getSdkSessionId?(sessionId: string): string | undefined;
   /**
    * @deprecated P1-7: Dead code — sessionMap is loaded from `claude_session_map.json` at construction.
@@ -205,7 +206,8 @@ export type AnalysisTerminationReason =
   | 'max_budget_usd'
   | 'max_structured_output_retries'
   | 'execution_error'
-  | 'timeout';
+  | 'timeout'
+  | 'plan_incomplete';
 
 export interface AnalysisResult {
   sessionId: string;
@@ -222,6 +224,8 @@ export interface AnalysisResult {
   terminationReason?: AnalysisTerminationReason;
   terminationMessage?: string;
 }
+
+export type AgentRuntimeAnalysisResult = AnalysisResult;
 
 // =============================================================================
 // Analysis Options (passed from route layer)
@@ -301,7 +305,7 @@ export interface AnalysisOptions {
 
   /** Provider override for this analysis session. When set, env vars are sourced
    *  from this provider instead of the global active provider. */
-  providerId?: string;
+  providerId?: string | null;
 
   /**
    * Pre-queried trace datasets from the frontend (populated by quick-action buttons).

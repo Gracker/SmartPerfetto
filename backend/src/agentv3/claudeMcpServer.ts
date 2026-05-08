@@ -171,6 +171,7 @@ const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const REASONING_NUDGE_ZH = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
 const REASONING_NUDGE_EN = '\n\n[REFLECT] Before the next action: what is the key finding from this data? Does it support or refute your hypothesis? If there is an important inference, record it with submit_hypothesis or write_analysis_note.';
+export const MIN_PHASE_SUMMARY_CHARS = 15;
 
 export function loadLearnedSqlFixPairs(maxPairs = 10): SqlErrorFixPair[] {
   try {
@@ -1815,36 +1816,45 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
+      const trimmedSummary = summary?.trim();
+      if ((status === 'completed' || status === 'skipped') &&
+        (!trimmedSummary || trimmedSummary.length < MIN_PHASE_SUMMARY_CHARS)) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(
+                outputLanguage,
+                `阶段 ${phaseId} 的 summary 太短。完成/跳过阶段时必须给出具体证据、数据或原因，至少 ${MIN_PHASE_SUMMARY_CHARS} 个字符。`,
+                `Phase ${phaseId} summary is too brief. Completed/skipped phases require concrete evidence, data, or reason with at least ${MIN_PHASE_SUMMARY_CHARS} characters.`,
+              ),
+              action_required: 'retry_update_plan_phase_with_evidence',
+            }),
+          }],
+          isError: true,
+        };
+      }
+
       phase.status = status;
       if (status === 'completed' || status === 'skipped') {
         phase.completedAt = Date.now();
-        phase.summary = summary;
+        phase.summary = trimmedSummary;
       }
 
       emitUpdate?.({
         type: 'plan_phase_updated',
-        content: { phaseId, status, summary: summary || '', phaseName: phase.name },
+        content: { phaseId, status, summary: trimmedSummary || '', phaseName: phase.name },
         timestamp: Date.now(),
       });
 
       // Report overall plan progress
-      const completed = plan.phases.filter(p => p.status === 'completed' || p.status === 'skipped').length;
+      const allPhasesClosed = plan.phases.every(p => p.status === 'completed' || p.status === 'skipped');
       const nextPhase = plan.phases.find(p => p.status === 'pending');
-
-      // P2-1: Feedback on summary quality for completed/skipped phases
-      let summaryFeedback: string | undefined;
-      if ((status === 'completed' || status === 'skipped') && (!summary || summary.length < 15)) {
-        summaryFeedback = localize(
-          outputLanguage,
-          'Warning: phase summary is too brief. Include specific evidence (数据、数值、发现) for plan adherence verification.',
-          'Warning: phase summary is too brief. Include specific evidence (data, numbers, findings) for plan adherence verification.',
-        );
-      }
 
       // Compact return: only include feedback when needed (normal path = minimal ACK)
       const response: Record<string, any> = { success: true };
-      if (!nextPhase) response.allPhasesComplete = true;
-      if (summaryFeedback) response.summaryFeedback = summaryFeedback;
+      if (allPhasesClosed) response.allPhasesComplete = true;
 
       // Restatement injection: leverage tool response's high-attention position
       // to re-state next-phase constraints from strategy frontmatter phase_hints.
@@ -2529,6 +2539,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   return {
     server: registry.buildSdkServer(),
     allowedTools: registry.buildAllowedTools(),
+    toolDefinitions: registry.list(),
   };
 }
 

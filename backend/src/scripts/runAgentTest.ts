@@ -6,10 +6,9 @@ import { getTraceProcessorService } from '../services/traceProcessorService';
 import {
   registerCoreTools,
   StreamingUpdate,
-  ModelRouter,
-  createAgentRuntime,
   getAgentTraceRecorder,
 } from '../agent';
+import { createAgentOrchestrator, resolveAgentRuntimeSelection } from '../agentRuntime';
 import fs from 'fs';
 import path from 'path';
 
@@ -34,10 +33,11 @@ async function runAgentTest() {
 
   if (process.argv.includes('--mock')) {
     console.error('❌ Mock mode has been removed. Please configure a real LLM API key.');
-    console.error('   Set DEEPSEEK_API_KEY or OPENAI_API_KEY environment variable.');
+    console.error('   Configure a Provider Manager profile or set ANTHROPIC_* / OPENAI_* env vars.');
     process.exit(1);
   }
-  console.log('LLM Mode: Real (DeepSeek/OpenAI API)');
+  const runtimeSelection = resolveAgentRuntimeSelection();
+  console.log(`LLM Mode: Real (${runtimeSelection.kind})`);
   console.log('');
 
   try {
@@ -50,18 +50,12 @@ async function runAgentTest() {
     console.log('⏳ Initializing Agent-Driven System...');
 
     registerCoreTools();
-    const modelRouter = new ModelRouter();
-    const orchestrator = createAgentRuntime(modelRouter, {
-      maxRounds: 3,
-      maxConcurrentTasks: 3,
-      confidenceThreshold: 0.7,
-      maxNoProgressRounds: 2,
-      maxFailureRounds: 2,
-      enableLogging: true,
+    const orchestrator = createAgentOrchestrator({
+      traceProcessorService: traceProcessor,
     });
 
     console.log('✓ Agent system initialized');
-    console.log('  - Runtime: AgentRuntime (AgentV2)');
+    console.log(`  - Runtime: ${runtimeSelection.kind}`);
     console.log('  - Domain Agents: Frame/CPU/Binder/Memory/Startup/Interaction/ANR/System');
     console.log('  - Tools: skills-as-tools + DataEnvelope streaming');
     console.log('');

@@ -70,8 +70,8 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 ```
 
 **Core Concepts:**
-- **Primary Runtime: agentv3** — Claude Agent SDK as orchestrator (20 MCP tools)
-- **Deprecated Fallback: agentv2** — activated only by `AI_SERVICE=deepseek`
+- **Claude Agent SDK runtime** — default orchestrator for Anthropic, Bedrock, Vertex, and Anthropic-compatible providers (20 MCP tools)
+- **OpenAI Agents SDK runtime** — OpenAI/OpenAI-compatible orchestrator reusing the same SmartPerfetto tool surface
 - Scene Classifier → scene-specific system prompts (12 scenes: scrolling/startup/anr/pipeline/interaction/touch-tracking/teaching/memory/game/overview/scroll-response/general)
 - Analysis logic in YAML Skills (`backend/skills/`) — L1→L2→L3→L4 layered results
 - SSE for real-time streaming
@@ -170,7 +170,7 @@ CLAUDE_MODEL=claude-sonnet-4-6             # Optional, or provider main model (e
 # CLAUDE_VERIFIER_TIMEOUT_MS=60000        # Optional, verifier LLM single-turn timeout (default 60s)
 # CLAUDE_CLASSIFIER_TIMEOUT_MS=30000      # Optional, query complexity classifier timeout (default 30s)
 # SMARTPERFETTO_API_KEY=xxx               # Optional, bearer token auth
-# AI_SERVICE=deepseek                     # Legacy agentv2 only
+# SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk  # Optional, explicit runtime override (claude-agent-sdk/openai-agents-sdk)
 
 # Agent safety limits (optional)
 # AGENT_SQL_MAX_ROWS=1000

@@ -3,13 +3,13 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
-import { createAgentRuntime } from '../agent';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import type { AnalyzeSessionRunContext } from '../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../services/traceProcessorService';
-import { isClaudeCodeEnabled, createClaudeRuntime } from '../agentv3';
+import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
+import { getProviderService } from '../services/providerManager';
 
 interface AssistantSessionStore {
   getSession(sessionId: string): any;
@@ -21,7 +21,6 @@ interface AgentResumeRoutesDeps {
   buildSessionObservability: (session: any) => unknown;
   buildRecoveredResultFromContext: (sessionId: string, context: any) => any;
   buildTurnSummary: (turn: any) => unknown;
-  getModelRouter: () => any;
 }
 
 export function registerAgentResumeRoutes(
@@ -100,11 +99,24 @@ export function registerAgentResumeRoutes(
 
       sessionContextManager.set(sessionId, effectiveTraceId, restoredContext);
 
-      const orchestrator = isClaudeCodeEnabled()
-        ? createClaudeRuntime(getTraceProcessorService()) as any
-        : createAgentRuntime(deps.getModelRouter(), {
-            enableLogging: true,
-          });
+      const snapshot = persistenceService.loadSessionStateSnapshot(sessionId);
+      const snapshotProviderId = snapshot?.agentRuntimeProviderId;
+      const restoredProviderId = snapshot
+        ? snapshotProviderId ?? null
+        : getProviderService().getRawEffectiveProvider()?.id ?? null;
+      if (typeof snapshotProviderId === 'string' && !getProviderService().getRawProvider(snapshotProviderId)) {
+        return res.status(404).json({
+          success: false,
+          error: `Provider not found: ${snapshotProviderId}`,
+          code: 'PROVIDER_NOT_FOUND',
+          hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
+        });
+      }
+      const orchestrator = createAgentOrchestrator({
+        traceProcessorService: getTraceProcessorService(),
+        providerId: restoredProviderId,
+        runtimeOverride: restoredProviderId ? undefined : snapshot?.agentRuntimeKind,
+      }) as any;
 
       const focusSnapshot = persistenceService.loadFocusStore(sessionId);
       if (focusSnapshot && typeof orchestrator.getFocusStore === 'function') {
@@ -146,8 +158,6 @@ export function registerAgentResumeRoutes(
         : undefined;
 
       // Unified snapshot restoration — all fields populated from single source
-      const snapshot = persistenceService.loadSessionStateSnapshot(sessionId);
-
       // Restore ClaudeRuntime Maps (notes, plans, hypotheses, flags, artifacts, architecture, sdkSessionId)
       if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
         orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
@@ -159,7 +169,7 @@ export function registerAgentResumeRoutes(
           artifacts: snapshot.artifacts?.length || 0,
         });
       } else if (typeof orchestrator.restoreArchitectureCache === 'function' && persistedSession.metadata?.architectureSnapshot) {
-        // Fallback for agentv2 or when no snapshot available
+        // Compatibility path for older persisted sessions that predate unified snapshots.
         orchestrator.restoreArchitectureCache(effectiveTraceId, persistedSession.metadata.architectureSnapshot);
       }
 
@@ -170,6 +180,7 @@ export function registerAgentResumeRoutes(
         result: recoveredResult || undefined,
         status: 'completed',
         traceId: effectiveTraceId,
+        providerId: restoredProviderId,
         query: latestTurn?.query || persistedSession.question,
         createdAt: persistedSession.createdAt,
         lastActivityAt: Date.now(),

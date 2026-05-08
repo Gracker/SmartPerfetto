@@ -37,7 +37,6 @@ import { persistAgentTurn } from '../../services/persistAgentSession';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
 import { installTraceProcessorPrebuilt } from './traceProcessorInstaller';
 import type { StreamingUpdate } from '../../agent/types';
-import type { ModelRouter } from '../../agent';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
 
 export interface RunTurnInput {
@@ -94,14 +93,6 @@ export class CliAnalyzeService {
     this.persistence = SessionPersistenceService.getInstance();
     this.analyzeService = new AgentAnalyzeSessionService<AnalyzeManagedSession>({
       assistantAppService: this.appService,
-      // agentv3 path never calls into this — agentv2 fallback would. We throw
-      // instead of returning a stub so a future wrong turn fails loudly.
-      getModelRouter: (): ModelRouter => {
-        throw new Error(
-          'CliAnalyzeService: getModelRouter() invoked — agentv2 is not supported from the CLI. ' +
-          'Ensure CLAUDE_AGENT_SDK / agentv3 is active (unset AI_SERVICE).',
-        );
-      },
       createSessionLogger,
       sessionPersistenceService: this.persistence,
       // sessionContextManager omitted — AgentAnalyzeSessionService defaults to
@@ -172,7 +163,9 @@ export class CliAnalyzeService {
 
     let result: AnalysisResult;
     try {
-      result = await orchestrator.analyze(input.query, sessionId, traceId, {});
+      result = await orchestrator.analyze(input.query, sessionId, traceId, {
+        providerId: session.providerId,
+      });
     } finally {
       orchestrator.off('update', handler);
     }

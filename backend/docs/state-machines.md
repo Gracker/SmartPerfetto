@@ -2267,15 +2267,15 @@ This state machine describes how skill execution errors are collected and displa
 
 ---
 
-## 13. Agent-Driven Architecture (已实现)
+## 13. Retired Agent-Driven Architecture
 
-> **状态**: ✅ Phase 1-4 已实现，本节描述实现后的状态机
+> **状态**: 已下线。`backend/src/agentv2/` 已删除；当前后端运行时见 `docs/architecture/agent-runtime.md`。
 
-本节描述 Section 12 中设计的 Agent-Driven 架构的实际实现状态机。
+本节仅作为历史设计记录保留，不描述当前运行时入口。
 
 ### 13.1 AgentRuntime 状态机
 
-**文件:** `backend/src/agentv2/runtime/agentRuntime.ts`
+**历史文件:** `backend/src/agentv2/runtime/agentRuntime.ts`（已删除）
 
 这是新架构的 AI 决策核心，替代原有的 MasterOrchestrator。
 

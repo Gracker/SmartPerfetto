@@ -14,24 +14,24 @@
 
 SmartPerfetto 在 Perfetto trace 之上增加了一层 AI 分析能力。你可以加载 trace，用自然语言提问，然后得到带 SQL 证据、Skill 结果、根因推理和优化建议的分析结论。
 
+运行 AI 分析前先配置 provider。README 只保留启动流程和一个 provider 配置示例；完整 provider / model 接入清单以 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)、[backend/.env.example](backend/.env.example) 和根目录 [.env.example](.env.example) 为准。
+
 项目已经开源，当前处于活跃开发阶段。UI、后端运行时和 Skill 系统已经可用，但公开 API 和内部合约仍可能继续调整。
 
 ## 先配置 AI Provider
 
-SmartPerfetto 使用 Claude Agent SDK。如果你是在 Claude Code 已经能正常工作的本机上运行，SDK 可以复用 Claude Code 的本地认证/配置，不需要在 `.env` 里写 API key。这既包括 Claude Code 官方订阅登录，也包括 Claude Code 已经配置好的第三方模型 base URL + API key。
+SmartPerfetto 的模型凭证只在后端侧生效。Perfetto UI 的 AI Assistant 设置面板里有一个 `Backend API Key` 字段，它只对应 `SMARTPERFETTO_API_KEY`，用于保护 SmartPerfetto 后端接口，不是填写模型厂商 key 的地方。完整 provider 配置见 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)。
 
-其他情况按运行方式选择配置位置：
+步骤 1：选择运行方式和凭证位置。
 
-| 运行方式 | 推荐凭证位置 | 说明 |
-|----------|--------------|------|
-| 本地源码运行，且 Claude Code 已经能用 | 不需要 `.env` | 如果这个终端里 `claude` 已经能正常写代码，直接运行 `./start.sh` |
-| 本地源码运行，使用 API key 或代理 | `backend/.env` | 用 `cp backend/.env.example backend/.env` 创建 |
-| Docker Hub 镜像 | 仓库根目录的 `.env` | 用 `cp backend/.env.example .env` 创建；Docker 容器看不到宿主机的 Claude Code 登录态 |
+| 运行方式 | 凭证位置 | 说明 |
+|----------|----------|------|
+| 本地源码运行，且同一终端里的 Claude Code 已经能正常请求 | 不需要 `.env` | 先运行 `claude` 验证；启动时运行 `./start.sh`，它会同时启动后端和预构建前端 |
+| 本地源码运行，使用显式 API key 或兼容代理 | `backend/.env` | 运行 `cp backend/.env.example backend/.env` 创建 |
+| Docker Hub 镜像 | 仓库根目录的 `.env` | 运行 `cp backend/.env.example .env` 创建；Docker 容器看不到宿主机的 Claude Code 登录态 |
 | 从源码构建 Docker 镜像 | `backend/.env` | `docker-compose.yml` 会读取这个文件 |
 
-Perfetto UI 的 AI Assistant 设置面板里有一个 `Backend API Key` 字段。它只对应 `SMARTPERFETTO_API_KEY`，用于保护 SmartPerfetto 后端接口，不是填写 Anthropic、OpenAI、DeepSeek、Kimi、MiMo、Qwen、GLM、Ollama 或其他模型厂商 key 的地方。
-
-如果直连 Anthropic API，最小配置是：
+步骤 2：选择 runtime 并填写 provider。Claude Agent SDK 用于 Claude Code / Anthropic-compatible provider，OpenAI Agents SDK 用于 OpenAI / OpenAI-compatible provider。如果两类凭证同时存在，由 `SMARTPERFETTO_AGENT_RUNTIME` 或前端 active provider 决定；都没有显式选择时默认走 Claude Agent SDK。直连 Anthropic API 的最小配置是：
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-your-key
@@ -46,15 +46,15 @@ CLAUDE_MODEL=deepseek-v4-pro
 CLAUDE_LIGHT_MODEL=deepseek-v4-flash
 ```
 
-OpenAI、Gemini、MiMo、Ollama 或其他只提供 OpenAI 兼容接口的 provider，仍建议先用 one-api/new-api/LiteLLM 或自己的网关暴露 Anthropic 兼容入口，再把 `ANTHROPIC_BASE_URL` 指过去。
+OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK runtime；Ollama 或其他 OpenAI-compatible endpoint 使用 `OPENAI_AGENTS_PROTOCOL=chat_completions`。具体字段和模型 ID 不在 README 展开，见 [docs/getting-started/configuration.md](docs/getting-started/configuration.md) 和 env 模板。前端 Provider Management 可以给 DeepSeek 这类双端点 provider 同时保存 Claude-compatible 和 OpenAI-compatible Base URL，然后在 AI 输入框旁的 provider switcher 里切换当前 SDK runtime。如果某个 provider 的 OpenAI-compatible 流式 tool call 不稳定，再用 one-api/new-api/LiteLLM 或自己的网关暴露稳定的 Anthropic-compatible 或 OpenAI-compatible API。
 
-SmartPerfetto 默认用简体中文输出 AI 回答、流式进度和生成的报告。如果主要使用者是英文用户，可以配置：
+步骤 3（可选）：设置输出语言。SmartPerfetto 默认用简体中文输出 AI 回答、流式进度和生成的报告。如果主要使用者是英文用户，可以配置：
 
 ```env
 SMARTPERFETTO_OUTPUT_LANGUAGE=en
 ```
 
-改完 env 文件后需要启动或重启后端。Docker 运行用 `docker compose -f docker-compose.hub.yml up -d` 或 `docker compose -f docker-compose.hub.yml restart`；本地源码运行用 `./start.sh`，如果后端已经在跑则用 `./scripts/restart-backend.sh`。显式 SmartPerfetto env/proxy 凭证可以打开 [http://localhost:3000/health](http://localhost:3000/health) 确认 provider 是否生效；本地 Claude Code 路径则以同一终端里 `claude` 能正常请求为准，第一次 AI 分析会走 SDK 的 Claude Code auth/config 路径。
+步骤 4：启动或重启服务。Docker 运行用 `docker compose -f docker-compose.hub.yml up -d` 或 `docker compose -f docker-compose.hub.yml restart`；本地源码运行用 `./start.sh`，如果只改了 `.env` 且后端已经在跑，用 `./scripts/restart-backend.sh`。显式 SmartPerfetto env/proxy 凭证可以打开 [http://localhost:3000/health](http://localhost:3000/health) 确认 provider 是否生效；本地 Claude Code 路径则以同一终端里 `claude` 能正常请求为准，第一次 AI 分析会走 SDK 的 Claude Code auth/config 路径。
 
 ## Perfetto 参考资源
 
@@ -68,7 +68,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 - 分析 Android Perfetto trace 中的滑动卡顿、启动、ANR、交互延迟、内存、游戏和渲染管线问题。
 - 保留 Perfetto 的时间线和 SQL 能力，并在 Perfetto UI 里增加 AI Assistant 面板。
 - 通过 TypeScript 后端编排 Agent 流程、查询 `trace_processor_shell`、调用 YAML Skill，并把结果实时流式传给浏览器。
-- 支持 Anthropic 直连，也支持通过 Anthropic 兼容 API 代理接入其他具备 tool/function calling 能力的大模型，包括像小米 MiMo 这类提供 OpenAI 兼容或 Anthropic 兼容接口的服务。
+- 支持 Anthropic 直连、Claude/Anthropic-compatible provider，也支持通过 OpenAI Agents SDK 接入 OpenAI/OpenAI-compatible provider。
 - 内置 160+ 个 YAML Skill/配置文件和多场景分析策略，用于 Android 性能排查。
 
 ## 技术栈
@@ -94,23 +94,20 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 
 Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linux container 镜像，由 Docker Desktop 承载运行；不需要单独编译 Windows 版镜像。
 
-```bash
-git clone https://github.com/Gracker/SmartPerfetto.git
-cd SmartPerfetto
-cp backend/.env.example .env
-# 编辑 .env，解注释一个 provider block，只替换 API key/token
-docker compose -f docker-compose.hub.yml pull
-docker compose -f docker-compose.hub.yml up -d
-```
+步骤 1：下载源码。运行 `git clone https://github.com/Gracker/SmartPerfetto.git`，然后运行 `cd SmartPerfetto`。
+
+步骤 2（可选）：创建 Docker env 文件。运行 `cp backend/.env.example .env`，编辑 `.env`，解注释一个 provider block，并只替换 API key/token。只做 health/UI smoke check 时可以跳过；真正执行 AI 分析必须配置 provider。
+
+步骤 3：拉取 Docker Hub 镜像。运行 `docker compose -f docker-compose.hub.yml pull`。
+
+步骤 4：启动容器。运行 `docker compose -f docker-compose.hub.yml up -d`。
+
+步骤 5：打开服务地址。
 
 - 前端：[http://localhost:10000](http://localhost:10000)
 - 后端健康检查：[http://localhost:3000/health](http://localhost:3000/health)
 
-停止容器：
-
-```bash
-docker compose -f docker-compose.hub.yml down
-```
+停止容器时运行 `docker compose -f docker-compose.hub.yml down`。
 
 上传文件和日志保存在 Docker volume 中，容器重启后仍会保留。
 
@@ -120,128 +117,60 @@ docker compose -f docker-compose.hub.yml down
 
 仓库已经带上 `.nvmrc` 和 `.node-version`，npm 也开启了 `engine-strict=true`。`./start.sh`、`./scripts/start-dev.sh` 和 `./scripts/restart-backend.sh` 会优先通过 nvm 或 fnm 自动切到 Node 24。如果后端依赖曾经用其他 Node ABI 安装过，脚本会在启动前自动重装 `backend/node_modules`，避免 `better-sqlite3` 这类 native module 在 Node 20/24/25 之间混用。
 
-macOS 用户如果看到 `trace_processor_shell failed the --version smoke test`、`cannot be opened because the developer cannot be verified` 或终端里只显示 `killed`，通常是系统安全策略拦截了下载的 `trace_processor_shell`。打开 **系统设置 → 隐私与安全性 → 安全性**，对 `trace_processor_shell` 点 **仍要打开 / Allow Anyway**，然后重新运行 `./start.sh` 并在弹窗里选择 **打开**。如果你确认 binary 来源可信，也可以用命令移除隔离属性：
+macOS 用户如果看到 `trace_processor_shell failed the --version smoke test`、`cannot be opened because the developer cannot be verified` 或终端里只显示 `killed`，通常是系统安全策略拦截了下载的 `trace_processor_shell`。打开 **系统设置 → 隐私与安全性 → 安全性**，对 `trace_processor_shell` 点 **仍要打开 / Allow Anyway**，然后重新运行 `./start.sh` 并在弹窗里选择 **打开**。如果你确认 binary 来源可信，也可以依次运行 `xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell` 和 `chmod +x /absolute/path/to/trace_processor_shell`。
 
-```bash
-xattr -dr com.apple.quarantine /absolute/path/to/trace_processor_shell
-chmod +x /absolute/path/to/trace_processor_shell
-```
+步骤 1：下载源码。运行 `git clone https://github.com/Gracker/SmartPerfetto.git`，然后运行 `cd SmartPerfetto`。
 
-```bash
-git clone https://github.com/Gracker/SmartPerfetto.git
-cd SmartPerfetto
+步骤 2：选择模型凭证来源。如果同一终端里的 Claude Code 已经能用，先运行 `claude` 验证，不需要创建 `.env`。如果要显式配置 API key 或兼容代理，运行 `cp backend/.env.example backend/.env`，然后编辑 `backend/.env`：Anthropic 直连解注释 `ANTHROPIC_API_KEY`，第三方 Claude Code / Anthropic 兼容 provider 解注释一个 provider block，OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK 相关字段。
 
-# 方式 A：如果这个终端里的 Claude Code 已经能用，不需要 .env。
-claude
-
-# 方式 B：显式配置 API key 或 Anthropic 兼容代理。
-cp backend/.env.example backend/.env
-# 编辑 backend/.env，设置 ANTHROPIC_API_KEY（直连）或
-# 解注释一个 Claude Code 兼容 provider block
-
-./start.sh
-```
-
-仓库内置了预构建 Perfetto UI（`frontend/` 目录），所以本地脚本方式也不需要初始化 submodule，不需要等待 Perfetto UI 长时间编译。
+步骤 3：启动服务。运行 `./start.sh`。这个脚本会同时启动后端 `http://localhost:3000` 和仓库内置的预构建 Perfetto UI `http://localhost:10000`；普通使用不需要初始化 `perfetto/` submodule，也不需要等待 Perfetto UI 从源码编译。
 
 ## 开发者
 
 ### 运行脚本
 
-第一次从源码启动、刚拉完新代码，或者 AI 面板需要通过后端 HTTP RPC 重新打开 trace 时，使用 `./scripts/start-dev.sh` 启动完整开发栈。不要只跑 `cd backend && npm run dev`：它只能启动 Express 后端，不会启动/校验 Perfetto UI watch 路径，也覆盖不到 AI 分析依赖的 trace-processor 和前端联动。
+普通使用、后端改动、策略/Skill 改动都优先使用 `./start.sh`。它会启动 backend，并使用仓库内置的预构建 Perfetto UI 启动 frontend。只有修改 AI Assistant 插件 UI、调试 Perfetto UI 源码，或明确需要 `perfetto/` submodule 的 watch 构建时，才使用 `./scripts/start-dev.sh`。不要只跑 `cd backend && npm run dev`：它只能启动 Express 后端，不会启动/校验前端和 trace-processor 路径。
 
-Linux 本地运行时，如果分析失败并报 `Claude Code native binary not found at .../node_modules/@anthropic-ai/claude-agent-sdk-.../claude`，说明 backend 依赖安装时没有装上当前平台对应的 Claude Agent SDK optional native 包。清掉 backend 依赖并启用 optional dependencies 重装，然后通过项目脚本重启：
-
-```bash
-rm -rf backend/node_modules
-cd backend && npm ci --include=optional
-cd ..
-./scripts/start-dev.sh
-```
+Linux 本地运行时，如果分析失败并报 `Claude Code native binary not found at .../node_modules/@anthropic-ai/claude-agent-sdk-.../claude`，说明 backend 依赖安装时没有装上当前平台对应的 Claude Agent SDK optional native 包。修复步骤：步骤 1，运行 `rm -rf backend/node_modules`；步骤 2，运行 `cd backend && npm ci --include=optional`；步骤 3，运行 `cd .. && ./scripts/start-dev.sh`。
 
 | 脚本 | 使用场景 |
 |------|---------|
-| `./start.sh` | ✅ **默认推荐** — 日常使用、修改后端/策略/Skill |
-| `./scripts/start-dev.sh` | 第一次源码开发启动、刚拉完新代码、完整前后端联调，或修改 AI 插件 UI（`ai_panel.ts`、`styles.scss` 等）时使用，需要 `perfetto/` submodule |
+| `./start.sh` | ✅ **默认推荐** — 日常使用、修改后端/策略/Skill，会同时启动 backend 和预构建 frontend |
+| `./scripts/start-dev.sh` | 修改 AI 插件 UI（`ai_panel.ts`、`styles.scss` 等）或调试 Perfetto UI 源码时使用，需要 `perfetto/` submodule |
 
 ### 源码构建 Docker 镜像
 
-只有测试 Docker 改动或构建未发布的本地代码时，才需要从源码构建镜像：
-
-```bash
-cp backend/.env.example backend/.env
-docker compose up --build
-```
+只有测试 Docker 改动或构建未发布的本地代码时，才需要从源码构建镜像。步骤 1：运行 `cp backend/.env.example backend/.env` 并按需编辑 provider。步骤 2：运行 `docker compose up --build`。
 
 源码构建会使用仓库内提交的 `frontend/` 预构建包，不会重新构建 `perfetto/` submodule。
 
 ### 前端插件开发（修改 AI 面板 UI）
 
-如果需要修改 AI Assistant 插件的前端代码：
+如果需要修改 AI Assistant 插件的前端代码，步骤 1（第一次）：运行 `git submodule update --init --recursive` 初始化 `perfetto/` submodule。步骤 2：运行 `./scripts/start-dev.sh`，保存文件后会自动重编译。
 
-```bash
-# 一次性：初始化 perfetto submodule
-git submodule update --init --recursive
-
-# 启动（保存文件自动重编译）
-./scripts/start-dev.sh
-```
-
-在浏览器中确认修改效果后，更新预编译产物并提交：
-
-```bash
-./scripts/update-frontend.sh
-git add frontend/
-git commit -m "chore(frontend): update prebuilt"
-```
+在浏览器中确认修改效果后，步骤 1：运行 `./scripts/update-frontend.sh` 更新预编译产物。步骤 2：运行 `git add frontend/`。步骤 3：运行 `git commit -m "chore(frontend): update prebuilt"`。
 
 ## 进阶 Provider 配置
 
-前面的快速配置已经说明凭证写在哪里。本地 Claude Code 已经能用的用户通常可以完全跳过 SmartPerfetto env 文件，即使 Claude Code 自己接的是第三方模型。直连 Anthropic API 只需要：
+前面的快速配置已经说明凭证写在哪里。本地 Claude Code 已经能用的用户通常可以完全跳过 SmartPerfetto env 文件，即使 Claude Code 自己接的是第三方模型。README 不维护完整 provider/model 清单；具体接入方式、模型 ID、OpenAI-compatible runtime 字段和 Anthropic-compatible preset 以 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)、[backend/.env.example](backend/.env.example) 和根目录 [.env.example](.env.example) 为准。
+
+直连 Anthropic API 只需要：
 
 ```bash
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
-很多第三方 provider 现在已经直接提供 Claude Code / Anthropic 兼容端点。优先使用 [backend/.env.example](backend/.env.example) 里的预置 block；大多数用户只需要解注释一个 block 并替换 key/token：
+很多第三方 provider 现在已经直接提供 Claude Code / Anthropic 兼容端点。优先使用 [backend/.env.example](backend/.env.example) 里的预置 block；大多数用户只需要解注释一个 block 并替换 key/token。上面的 provider 片段只是格式示例，其他 provider 不在 README 里展开。
 
-```bash
-ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
-ANTHROPIC_AUTH_TOKEN=sk-your-deepseek-key
-CLAUDE_MODEL=deepseek-v4-pro
-CLAUDE_LIGHT_MODEL=deepseek-v4-flash
-```
+Provider 官方文档可能写的是 `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`；SmartPerfetto 后端显式把模型传给 Claude Agent SDK，所以这里要用 `CLAUDE_MODEL` / `CLAUDE_LIGHT_MODEL`。如果某个 provider 需要额外 header，请使用 provider 默认应用或在前面加一层自定义网关；SmartPerfetto env 文件目前不会注入任意 provider header。
 
-当前已经直接写好的国内主流 Provider 预设是截至 2026-05-08 的官方文档来源示例。Provider 模型目录和套餐权限会变化；如果你的账号控制台列出的模型 ID 不同，保留 Base URL，只替换两个模型字段。
-
-| Provider | Base URL | 主模型 | 轻模型 |
-|---|---|---|---|
-| DeepSeek | `https://api.deepseek.com/anthropic` | `deepseek-v4-pro` | `deepseek-v4-flash` |
-| GLM / 智谱 | `https://open.bigmodel.cn/api/anthropic` | `glm-5.1` | `glm-4.5-air` |
-| Qwen / 百炼按量 | `https://dashscope.aliyuncs.com/apps/anthropic` | `qwen3.6-plus` | `qwen3.6-flash` |
-| Qwen Coding Plan | `https://coding.dashscope.aliyuncs.com/apps/anthropic` | `qwen3.6-plus` | `qwen3.6-flash` |
-| Kimi Code 会员 | `https://api.kimi.com/coding/` | `kimi-for-coding` | `kimi-for-coding` |
-| Kimi / Moonshot 平台 | `https://api.moonshot.cn/anthropic` | `kimi-k2.5` | `kimi-k2.5` |
-| Doubao / 火山方舟 | `https://ark.cn-beijing.volces.com/api/coding` | `doubao-seed-2.0-code` | `doubao-seed-2.0-code` |
-| MiniMax 国内 | `https://api.minimaxi.com/anthropic` | `MiniMax-M2.7` | `MiniMax-M2.7` |
-| 腾讯 TokenHub Token Plan | `https://api.lkeap.cloud.tencent.com/plan/anthropic` | `tc-code-latest` | `tc-code-latest` |
-| 腾讯 TokenHub Coding Plan | `https://api.lkeap.cloud.tencent.com/coding/anthropic` | `tc-code-latest` | `tc-code-latest` |
-| 腾讯混元 legacy | `https://api.hunyuan.cloud.tencent.com/anthropic` | `hunyuan-2.0-thinking-20251109` | `hunyuan-2.0-instruct-20251111` |
-| 百度千帆 | `https://qianfan.baidubce.com/anthropic` | `deepseek-v3.2` | `deepseek-v3.2` |
-| 阶跃星辰 Step Plan | `https://api.stepfun.com/step_plan` | `step-3.5-flash-2603` | `step-3.5-flash` |
-| 硅基流动 | `https://api.siliconflow.com/` | `Qwen/Qwen3-235B-A22B-Thinking-2507` | `Qwen/Qwen3-30B-A3B-Instruct-2507` |
-| 华为云 ModelArts MaaS | `https://api.modelarts-maas.com/anthropic` | `deepseek-v3.2` | `qwen3-32b` |
-
-Provider 官方文档可能写的是 `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`；SmartPerfetto 后端显式把模型传给 Claude Agent SDK，所以这里要用 `CLAUDE_MODEL` / `CLAUDE_LIGHT_MODEL`。
-如果百度千帆的自定义应用要求额外 `appid` header，请使用千帆默认 appid，或在前面加一层自定义网关；SmartPerfetto env 文件目前不会注入任意 provider header。
-
-常见代理包括 [one-api](https://github.com/songquanpeng/one-api)、[new-api](https://github.com/Calcium-Ion/new-api) 和 [LiteLLM](https://github.com/BerriAI/litellm)。选择的模型需要稳定支持流式输出和 tool/function calling。对于小米 MiMo 这类只提供 OpenAI 兼容接口的账号，推荐先在代理里接入 MiMo，再把 `ANTHROPIC_BASE_URL` 指向代理暴露出来的 Anthropic 兼容地址，并把 `CLAUDE_MODEL` 设成代理映射后的模型名。
+常见代理包括 [one-api](https://github.com/songquanpeng/one-api)、[new-api](https://github.com/Calcium-Ion/new-api) 和 [LiteLLM](https://github.com/BerriAI/litellm)。选择的模型需要稳定支持流式输出和 tool/function calling。如果代理暴露 Anthropic Messages，用 `ANTHROPIC_BASE_URL` 和 `CLAUDE_MODEL`；如果代理暴露 OpenAI Chat Completions，用 `OPENAI_BASE_URL` 和 `OPENAI_MODEL`。
 
 > 注意：Claude Code 自己的本地认证/配置是 Claude Agent SDK 的原生认证路径，不管它背后是 Anthropic 订阅，还是 Claude Code 里已经配置好的第三方 endpoint。Codex CLI、Gemini CLI、OpenCode 等其他工具管理的是各自独立的配置和登录态；SmartPerfetto 不会自动读取这些凭证。只有当目标 provider 不能通过本机 Claude Code 直接使用，或你希望 SmartPerfetto 显式接管代理配置时，才需要在 `.env` 里配置 `ANTHROPIC_BASE_URL`。
 
 前端设置弹窗只保存后端地址和可选的 `SMARTPERFETTO_API_KEY` 后端鉴权 token。大模型 provider 凭证要么来自 Claude Code 本地认证/配置，要么来自上面说明的后端或 Docker env 文件。
 
-如果本地 Claude Code 路径不可用、额度用尽，或你希望 SmartPerfetto 使用一个不同于 Claude Code 的 provider，可以显式使用代理方式：
+如果本地 Claude Code 路径不可用、额度用尽，或你希望 SmartPerfetto 使用一个不同于 Claude Code 的 Claude-compatible provider，可以显式使用 Anthropic-compatible 代理方式：
 
 ```bash
 ANTHROPIC_BASE_URL=http://localhost:3000
@@ -250,7 +179,7 @@ CLAUDE_MODEL=your-provider-main-model
 CLAUDE_LIGHT_MODEL=your-provider-light-model
 ```
 
-修改配置后需要重启后端。`GET /health` 会返回 `aiEngine.providerMode` 和 `aiEngine.diagnostics`，用于确认当前是 Anthropic 直连、AWS Bedrock 还是 Anthropic 兼容代理。
+修改配置后需要重启后端。`GET /health` 会返回 `aiEngine.runtime`、`aiEngine.providerMode` 和 `aiEngine.diagnostics`，用于确认当前是 Claude Agent SDK、OpenAI Agents SDK、Anthropic 直连、AWS Bedrock 还是兼容代理。
 
 ### 输出语言
 

@@ -5,7 +5,17 @@ import path from 'path';
 import { ProviderService } from './providerService';
 import { officialTemplates } from './templates';
 
-export type { ProviderConfig, ProviderCreateInput, ProviderUpdateInput, OfficialProviderTemplate, ModelOption, TestResult, ProviderType } from './types';
+export type {
+  AgentRuntimeKind,
+  OpenAIProtocol,
+  ProviderConfig,
+  ProviderCreateInput,
+  ProviderUpdateInput,
+  OfficialProviderTemplate,
+  ModelOption,
+  TestResult,
+  ProviderType,
+} from './types';
 export { ProviderService } from './providerService';
 export { ProviderStore } from './providerStore';
 export { officialTemplates } from './templates';

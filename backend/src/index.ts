@@ -43,8 +43,12 @@ import {
 import {
   getClaudeRuntimeDiagnostics,
   hasClaudeCredentials,
-  isClaudeCodeEnabled,
 } from './agentv3/claudeConfig';
+import {
+  getOpenAIRuntimeDiagnostics,
+  hasOpenAICredentials,
+} from './agentOpenAI';
+import { resolveAgentRuntimeSelection } from './agentRuntime';
 import { getProviderService } from './services/providerManager';
 import {
   getLegacyApiUsageSnapshot,
@@ -88,13 +92,17 @@ app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  const useAgentV3 = isClaudeCodeEnabled();
+  const runtimeSelection = resolveAgentRuntimeSelection();
   const claudeDiagnostics = getClaudeRuntimeDiagnostics();
+  const openAIDiagnostics = getOpenAIRuntimeDiagnostics();
   const providerSvc = getProviderService();
   const activeProvider = providerSvc.list().find(p => p.isActive);
-  const aiEngineConfigured = useAgentV3
-    ? (activeProvider != null || hasClaudeCredentials())
-    : !!process.env.DEEPSEEK_API_KEY;
+  const aiEngineConfigured = runtimeSelection.kind === 'openai-agents-sdk'
+    ? hasOpenAICredentials()
+    : (activeProvider != null || hasClaudeCredentials());
+  const selectedDiagnostics = runtimeSelection.kind === 'openai-agents-sdk'
+    ? openAIDiagnostics
+    : claudeDiagnostics;
 
   res.json({
     status: 'OK',
@@ -103,13 +111,11 @@ app.get('/health', (req, res) => {
     version: '1.0.0',
     traceAnalysis: getTraceAnalysisConfigurationStatus(),
     aiEngine: {
-      runtime: useAgentV3 ? 'agentv3' : 'agentv2',
-      model: useAgentV3
-        ? (activeProvider?.models.primary || process.env.CLAUDE_MODEL || 'claude-sonnet-4-6')
-        : (process.env.DEEPSEEK_MODEL || 'deepseek-chat'),
-      providerMode: useAgentV3 ? claudeDiagnostics.providerMode : 'deepseek_legacy',
+      runtime: runtimeSelection.kind,
+      model: selectedDiagnostics.model,
+      providerMode: selectedDiagnostics.providerMode,
       configured: aiEngineConfigured,
-      source: activeProvider ? 'provider-manager' : 'env-fallback',
+      source: runtimeSelection.source,
       ...(activeProvider ? {
         activeProvider: {
           id: activeProvider.id,
@@ -118,15 +124,7 @@ app.get('/health', (req, res) => {
         },
       } : {}),
       authRequired: !!process.env.SMARTPERFETTO_API_KEY,
-      diagnostics: useAgentV3
-        ? claudeDiagnostics
-        : {
-            runtime: 'agentv2',
-            providerMode: 'deepseek_legacy',
-            model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-            configured: !!process.env.DEEPSEEK_API_KEY,
-            configHint: 'AI_SERVICE=deepseek uses the deprecated agentv2 fallback. New provider integrations should use agentv3 with an Anthropic-compatible proxy.',
-          },
+      diagnostics: selectedDiagnostics,
     },
   });
 });
@@ -138,7 +136,6 @@ app.get('/debug', (req, res) => {
     hasDeepSeekKey: !!process.env.DEEPSEEK_API_KEY,
     deepSeekBaseUrl: process.env.DEEPSEEK_BASE_URL,
     deepSeekModel: process.env.DEEPSEEK_MODEL,
-    aiService: process.env.AI_SERVICE,
     cwd: process.cwd(),
     legacyAgentApiUsage: legacyUsage,
   });

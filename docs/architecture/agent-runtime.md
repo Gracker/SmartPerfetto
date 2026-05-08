@@ -1,6 +1,11 @@
-# agentv3 运行时
+# Agent Runtime 架构
 
-agentv3 是 SmartPerfetto 当前主运行时。它使用 Claude Agent SDK 作为编排层，通过 MCP 工具访问 trace 数据，并把场景策略、Skill 结果、SQL 证据和 verifier 组合成最终中文 Insight。
+SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分层。HTTP/CLI 会话层只依赖统一的 `IOrchestrator` 合约；具体运行时由 Provider 或 env 选择：
+
+| Runtime | SDK | Provider 类型 | 说明 |
+|---|---|---|---|
+| `claude-agent-sdk` | Claude Agent SDK | Anthropic、Bedrock、Vertex、DeepSeek、Anthropic-compatible gateway | 默认运行时，继续支持 Claude Code 本地认证、MCP server、verifier 和 sub-agent |
+| `openai-agents-sdk` | OpenAI Agents SDK | OpenAI、Ollama、OpenAI-compatible gateway | 原生 OpenAI runtime，通过 function tools 复用同一套 SmartPerfetto 工具 |
 
 ## 入口
 
@@ -9,107 +14,122 @@ HTTP 主路径：
 ```text
 POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
-  -> createClaudeRuntime()
-  -> ClaudeRuntime.analyze()
+  -> createAgentOrchestrator()
+  -> ClaudeRuntime.analyze() | OpenAIRuntime.analyze()
 ```
 
-CLI 路径复用同一套 agentv3 核心模块，不经过 Express：
+恢复和场景还原也走同一个 runtime factory：
 
 ```text
-backend/src/cli-user/
-  -> CliAnalyzeService
-  -> AgentAnalyzeSessionService
-  -> ClaudeRuntime.analyze()
+POST /api/agent/v1/resume
+POST /api/agent/v1/scene-reconstruct
+  -> createAgentOrchestrator()
 ```
+
+CLI 路径复用 `AgentAnalyzeSessionService`，因此 Provider/runtime 选择规则与 HTTP 一致。
+
+## 运行时选择
+
+优先级从高到低：
+
+1. 请求体或会话内的 `providerId`。
+2. Provider Manager 当前 active provider。
+3. `SMARTPERFETTO_AGENT_RUNTIME` env。
+4. 默认 `claude-agent-sdk`。
+
+`SMARTPERFETTO_AGENT_RUNTIME` 只接受 `claude-agent-sdk` 或 `openai-agents-sdk`。`deepseek`、`openai` 这类 provider 名称不能写在 runtime env 里；DeepSeek 应通过 Provider Manager 或 Claude/Anthropic-compatible env 配置。
+
+环境变量不会被用来猜运行时。没有 active provider 且未设置 `SMARTPERFETTO_AGENT_RUNTIME` 时，即使同时存在 `OPENAI_API_KEY` 和 `ANTHROPIC_API_KEY`，默认仍是 `claude-agent-sdk`。Provider Manager 内的 active provider 会优先于 env；双端点 provider 通过 `connection.agentRuntime` 显式决定当前 SDK。
+
+每个分析 session 会固定自己的 credential source：具体 Provider Manager profile，或显式的 env/default fallback。恢复历史 session 时不会重新读取后来切换的 active provider；如果快照绑定的 provider 已被删除，后端会 fail-fast，而不是静默回退到另一个 provider。
+
+Provider 默认映射：
+
+| Provider type | Runtime | Protocol |
+|---|---|---|
+| `anthropic` / `bedrock` / `vertex` / `deepseek` | `claude-agent-sdk` | Claude/Anthropic |
+| `openai` | `openai-agents-sdk` | OpenAI Responses |
+| `ollama` | `openai-agents-sdk` | OpenAI-compatible Chat Completions |
+| `custom` | 由 `connection.agentRuntime` 或 `connection.openaiProtocol` 决定 | 显式配置 |
+
+Provider connection 支持两套端点字段：
+
+| 字段 | Runtime | 映射到 env |
+|---|---|---|
+| `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` | `claude-agent-sdk` | `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` |
+| `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` | `openai-agents-sdk` | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_AGENTS_PROTOCOL` |
+| `baseUrl` / `apiKey` | legacy/shared | 作为旧配置兼容或双协议共享 key |
 
 ## 关键文件
 
 | 文件 | 责任 |
 |---|---|
-| `claudeRuntime.ts` | 主 orchestrator，实现 `IOrchestrator`，封装 SDK query |
-| `claudeMcpServer.ts` | MCP 工具注册和执行 |
-| `claudeSystemPrompt.ts` | 动态系统 Prompt 组装 |
-| `strategyLoader.ts` | 加载 strategy/template Markdown 和 frontmatter |
-| `queryComplexityClassifier.ts` | fast/full/auto 路由 |
-| `claudeSseBridge.ts` | SDK stream 到 SSE event 的桥接 |
-| `sceneClassifier.ts` | 基于 strategy frontmatter 的场景分类 |
-| `claudeVerifier.ts` | 多层 verifier |
-| `artifactStore.ts` | Skill 大结果的摘要、分页和 full 读取 |
-| `analysisPatternMemory.ts` | 正向/负向 pattern 记忆 |
-| `selfImprove/` | 自改进 outbox、review worker、strategy patch、安全扫描 |
+| `backend/src/agentRuntime/runtimeSelection.ts` | runtime 选择与统一 orchestrator factory |
+| `backend/src/agentv3/claudeRuntime.ts` | Claude Agent SDK orchestrator |
+| `backend/src/agentOpenAI/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
+| `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具注册，仍是工具单一事实源 |
+| `backend/src/agentOpenAI/openAiToolAdapter.ts` | Claude MCP tool descriptor 到 OpenAI function tool 的适配 |
+| `backend/src/services/providerManager/` | Provider 配置、runtime/protocol/env 映射 |
+| `backend/src/agentv3/sessionStateSnapshot.ts` | 统一会话快照，含 Claude/OpenAI SDK 状态 |
 
-## 场景策略
+## 工具层
 
-场景策略位于 `backend/strategies/*.strategy.md`。当前主场景包括：
+SmartPerfetto 的分析能力仍由 `createClaudeMcpServer()` 注册：`execute_sql`、`invoke_skill`、`lookup_sql_schema`、plan/hypothesis、artifact、pattern memory、comparison tools 等。
 
-- `scrolling`
-- `startup`
-- `anr`
-- `pipeline`
-- `interaction`
-- `touch-tracking`
-- `teaching`
-- `memory`
-- `game`
-- `overview`
-- `scroll-response`
-- `general`
+Claude runtime 直接把这些工具暴露为 in-process MCP server。
 
-Strategy frontmatter 提供关键词、计划模板和 `phase_hints`。Markdown body 提供场景方法论。Prompt 模板位于 `prompt-*.template.md`、`arch-*.template.md`、`knowledge-*.template.md`。
+OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
-## MCP 工具层
-
-完整模式最多暴露 20 个 MCP 工具，分为：
-
-- 核心数据访问：`execute_sql`、`invoke_skill`、`lookup_sql_schema` 等。
-- 规划与假设：`submit_plan`、`update_plan_phase`、hypothesis 相关工具。
-- 记忆与模式：pattern memory 相关工具。
-- 双 trace 对比：comparison tools。
-
-fast 模式只暴露 `execute_sql`、`invoke_skill`、`lookup_sql_schema`，跳过 plan gate、verifier 和 sub-agent。
-
-完整工具说明见 [MCP 工具参考](../reference/mcp-tools.md)。
+两套 SDK 在 SmartPerfetto 边界上保持同一个产品合约：输入是同一份分析请求，输出归一化为同一组 SSE event、`AnalysisResult` 和 HTML report。它们的 SDK 机制并不相同：Claude runtime 使用 Claude SDK 的 in-process MCP server、tool allowlist、SDK session resume、verifier/sub-agent；OpenAI runtime 使用从同一工具注册表适配出来的 function tools，Responses API 通过 `previousResponseId` 恢复，Chat Completions-compatible provider 通过历史消息恢复。模型的工具调用节奏、流式事件、恢复能力和成本/超时语义都可能不同。
 
 ## 分析模式
 
-| 模式 | turns | 工具 | verifier | 典型成本 |
-|---|---:|---|---|---:|
-| `fast` | 默认 5（`CLAUDE_QUICK_MAX_TURNS` 可调） | 3 个轻量工具 | 跳过 | 低 |
-| `full` | 默认 30（`CLAUDE_MAX_TURNS` 可调） | 完整工具集 | 启用 | 中高 |
-| `auto` | 根据规则路由 | 根据路由结果 | 根据路由结果 | 不定 |
-
-`auto` 的路由顺序：
-
-```text
-applyKeywordRules
-  -> applyHardRules
-  -> Haiku/light model fallback
-```
-
-显式 `fast` 或 `full` 会绕过自动分类。
+| 模式 | Claude runtime | OpenAI runtime |
+|---|---|---|
+| `fast` | 轻量系统 prompt，3 个核心工具，`CLAUDE_QUICK_MAX_TURNS` | 轻量系统 prompt，3 个核心工具，`OPENAI_QUICK_MAX_TURNS` |
+| `full` | 完整工具、plan gate、notes、artifact、verifier/sub-agent 配置 | 完整工具、plan gate、notes、artifact；OpenAI 原生 verifier/sub-agent 后续以同合约扩展 |
+| `auto` | 规则和轻量分类器路由 | 默认走完整分析，显式 `fast` 时走轻量路径 |
 
 ## SSE 事件
 
-agentv3 常见事件：
+两个 runtime 都向路由层发同一类 SmartPerfetto streaming update：
 
 | Event | 含义 |
 |---|---|
-| `connected` | SSE 连接建立 |
 | `progress` | 阶段变化 |
 | `thought` | 中间推理或阶段提示 |
-| `agent_response` | MCP/Skill/SQL 工具结果 |
+| `agent_task_dispatched` | 工具调用开始 |
+| `agent_response` | 工具结果 |
 | `answer_token` | 最终答案 token |
-| `conclusion` | 结论已到达，用户可以先看到答案 |
+| `conclusion` | SDK 结论已到达 |
 | `analysis_completed` | HTML report 已生成，终态事件 |
 | `error` | 错误 |
-| `end` | 流结束 |
 
-`conclusion` 会早于 `analysis_completed`。这样用户先看到结论，报告生成随后完成。
+`analysis_completed` 仍由 route 层生成 report 后发出，所以报告链路不关心底层 SDK。
 
 ## Session 与恢复
 
-- API session 存在内存 Map 中，并有清理逻辑。
-- SDK session ID 持久化到 `logs/claude_session_map.json`。
-- 多轮追问复用 sessionId，并通过 SDK `resume` 恢复上下文。
-- 同一 session 的并发分析由 `activeAnalyses` 防重入。
-- CLI session 存储在 `~/.smartperfetto/sessions/`，但复用同一套后端持久化能力。
+统一快照由 route 层调用 `orchestrator.takeSnapshot()` 生成，恢复时调用 `restoreFromSnapshot()`。
+
+Claude runtime 持久化 `sdkSessionId` 并通过 Claude SDK resume 恢复上下文。
+
+OpenAI runtime 持久化 `openAIHistory`、`openAILastResponseId` 和预留的 `openAIRunState`。恢复后优先用 SDK history 继续多轮对话；Responses API 可附带 `previousResponseId`，Chat Completions-compatible provider 使用完整 history。
+
+## 健康检查
+
+`GET /health` 的 `aiEngine.runtime` 会显示实际选择的 runtime：
+
+```json
+{
+  "aiEngine": {
+    "runtime": "openai-agents-sdk",
+    "providerMode": "openai_responses",
+    "diagnostics": {
+      "protocol": "responses",
+      "model": "gpt-5.5"
+    }
+  }
+}
+```
+
+这能区分“Provider 连接测试通过”和“真实分析 runtime 已切换”这两件事。
