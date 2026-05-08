@@ -1,5 +1,7 @@
 # 架构总览
 
+[English](overview.en.md) | [中文](overview.md)
+
 SmartPerfetto 在 Perfetto UI 之上增加 AI 分析层。Perfetto 仍负责 trace 加载、时间线和 SQL 基础能力；SmartPerfetto 后端负责 agent 编排、Skill 执行、报告生成和流式输出。
 
 ```text

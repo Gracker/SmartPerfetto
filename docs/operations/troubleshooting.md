@@ -1,5 +1,7 @@
 # 故障排查
 
+[English](troubleshooting.en.md) | [中文](troubleshooting.md)
+
 ## AI backend not connected
 
 检查后端是否运行：

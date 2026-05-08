@@ -1,8 +1,10 @@
 # 配置指南
 
+[English](configuration.en.md) | [中文](configuration.md)
+
 SmartPerfetto 本地源码运行时可以直接使用 Claude Code 的本地认证/配置；如果这个终端里的 `claude` 已经能正常写代码，可以不创建 `.env`。这既包括 Claude Code 官方订阅，也包括 Claude Code 已经配置好的第三方 base URL + API key。需要显式配置 API key、代理或 Docker 运行时，再使用 env 文件。
 
-Perfetto UI 的 AI Assistant 设置面板只配置 SmartPerfetto 后端连接。其中 `Backend API Key` 对应 `SMARTPERFETTO_API_KEY` 后端鉴权，不是第三方大模型 provider key。模型 provider 凭证来自 Claude Code 本地配置，或来自下面的后端/Docker env 文件。
+Perfetto UI 的 AI Assistant 设置面板分为两类配置：`Connection` 页配置 SmartPerfetto 后端连接，`Providers` 页配置模型 provider profile。`Connection` 页里的 API Key 只对应 `SMARTPERFETTO_API_KEY` 后端鉴权，不是第三方大模型 provider key。模型 provider 凭证可以来自 Claude Code 本地配置、下面的后端/Docker env 文件，也可以通过前端 `Providers` 页写入后端 Provider Manager。
 
 预置的 Base URL 来自 provider 公开信息和公开文档，不保证对所有账号、套餐、地区长期正确。很多 provider 的入口会按地区、申请国家、套餐或专属控制台域名变化，例如新加坡区、国内区、国际区可能不同。如果连接、流式输出或 tool/function calling 出错，先到 provider 控制台核对 Base URL、模型 ID 和协议类型；确认是公开 preset 错误后，建议提交 issue 或 PR 修正。
 

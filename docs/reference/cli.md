@@ -6,6 +6,8 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 # SmartPerfetto CLI
 
+[English](cli.en.md) | [中文](cli.md)
+
 终端化的 agentv3 分析入口。不启动 Perfetto 前端、不启动 HTTP 服务器，
 直接通过本地进程跑 Claude Agent SDK 驱动的 trace 分析、生成 HTML 报告，
 并支持多轮 resume。

@@ -1,5 +1,7 @@
 # API 参考
 
+[English](api.en.md) | [中文](api.md)
+
 默认后端地址是 `http://localhost:3000`。如果设置了 `SMARTPERFETTO_API_KEY`，受保护接口需要：
 
 ```http

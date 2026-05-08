@@ -1,5 +1,7 @@
 # 测试与验证
 
+[English](testing.en.md) | [中文](testing.md)
+
 SmartPerfetto 的默认团队协作标准是：提 PR 前跑同一个入口，CI 也跑同一个入口。
 
 ```bash

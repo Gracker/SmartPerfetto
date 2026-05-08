@@ -1,5 +1,7 @@
 # SmartPerfetto MCP Tools Reference
 
+[English](mcp-tools.en.md) | [中文](mcp-tools.md)
+
 > 20 个 MCP 工具的完整参考文档。Claude 通过这些工具与 trace 数据交互。
 
 ---

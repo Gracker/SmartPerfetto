@@ -22,7 +22,7 @@ Provider Base URL 注意事项：预置的 Claude/Anthropic-compatible 和 OpenA
 
 ## 先配置 AI Provider
 
-SmartPerfetto 的模型凭证只在后端侧生效。Perfetto UI 的 AI Assistant 设置面板里有一个 `Backend API Key` 字段，它只对应 `SMARTPERFETTO_API_KEY`，用于保护 SmartPerfetto 后端接口，不是填写模型厂商 key 的地方。完整 provider 配置见 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)。
+SmartPerfetto 的模型 provider 凭证最终由后端保存和使用，但不要求只能手写 `.env`。你可以直接编辑 `backend/.env` / Docker `.env`，也可以在 Perfetto UI 的 AI Assistant 设置面板打开 `Providers` 页新增、编辑、激活 provider。`Connection` 页里的 API Key 只对应 `SMARTPERFETTO_API_KEY` 后端鉴权，用于保护 SmartPerfetto 后端接口，不是填写模型厂商 key 的地方。完整 provider 配置见 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)。
 
 步骤 1：选择运行方式和凭证位置。
 
@@ -162,7 +162,7 @@ Linux 本地运行时，如果分析失败并报 `Claude Code native binary not 
 
 前面的快速配置已经说明凭证写在哪里。详细 provider 接入方式、模型 ID、地区 Base URL 变体、OpenAI-compatible runtime 字段、Anthropic-compatible preset、代理建议和排障说明都在 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)。修改 provider 配置后，可以用 `GET /health` 查看 `aiEngine.runtime`、`aiEngine.providerMode` 和 `aiEngine.diagnostics`。
 
-Claude Code 本地认证/配置只适用于本地源码运行，不适用于 Docker。Codex CLI、Gemini CLI、OpenCode 等其他工具管理的是各自独立的配置和登录态；SmartPerfetto 不会自动读取这些凭证。前端设置弹窗只保存后端地址和可选的 `SMARTPERFETTO_API_KEY` 后端鉴权 token。
+Claude Code 本地认证/配置只适用于本地源码运行，不适用于 Docker。Codex CLI、Gemini CLI、OpenCode 等其他工具管理的是各自独立的配置和登录态；SmartPerfetto 不会自动读取这些凭证。前端设置弹窗的 `Connection` 页只保存后端地址和可选的 `SMARTPERFETTO_API_KEY` 后端鉴权 token；`Providers` 页可以把模型 provider profile 写入后端 Provider Manager。
 
 ### 输出语言
 

@@ -1,5 +1,7 @@
 # Android Rendering Pipelines Overview
 
+[English](index.en.md) | [中文](index.md)
+
 本项目涵盖了 Android 系统中几乎所有的核心出图链路。理解这些链路对于性能调优至关重要。
 
 > [!IMPORTANT]

@@ -1,5 +1,7 @@
 # 本地开发
 
+[English](local-development.en.md) | [中文](local-development.md)
+
 ## 环境要求
 
 - Node.js 24 LTS

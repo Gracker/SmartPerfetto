@@ -14,7 +14,7 @@
 
 SmartPerfetto adds an AI analysis layer on top of Perfetto traces. Load a trace, ask a natural-language question, and get an evidence-backed answer with SQL results, skill outputs, root-cause reasoning, and optimization suggestions.
 
-Configure a provider before running AI analysis. This README keeps the startup flow and one provider configuration example only; the complete provider/model list lives in [docs/getting-started/configuration.md](docs/getting-started/configuration.md), [backend/.env.example](backend/.env.example), and the root [.env.example](.env.example).
+Configure a provider before running AI analysis. This README keeps the startup flow and one provider configuration example only; the complete provider/model list lives in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md), [backend/.env.example](backend/.env.example), and the root [.env.example](.env.example).
 
 Provider Base URL notice: the prefilled Claude/Anthropic-compatible and OpenAI-compatible Base URLs are based on public provider information. They are not guaranteed to be correct for every account, region, plan, or future provider change. If a preset fails, verify the Base URL, model ID, and protocol in your provider console first; then open an issue or PR if the public preset should be updated.
 
@@ -22,7 +22,7 @@ The project is open source and in active development. The UI, backend runtime, a
 
 ## Configure Your AI Provider First
 
-LLM credentials only take effect on the backend side. The Perfetto UI's AI Assistant settings panel has a `Backend API Key` field, but that field is only for `SMARTPERFETTO_API_KEY`, which protects the SmartPerfetto backend. It is not a place to enter model-provider keys. See [docs/getting-started/configuration.md](docs/getting-started/configuration.md) for the full provider guide.
+SmartPerfetto ultimately stores and uses model-provider credentials on the backend, but you do not have to edit `.env` by hand. You can edit `backend/.env` / Docker `.env`, or open the AI Assistant settings panel in Perfetto UI and use the `Providers` tab to add, edit, and activate providers. The API Key field on the `Connection` tab is only for backend auth (`SMARTPERFETTO_API_KEY`), which protects the SmartPerfetto backend. It is not a model-provider key field. See [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md) for the full provider guide.
 
 Step 1: Choose your run mode and credential file.
 
@@ -50,7 +50,7 @@ CLAUDE_MODEL=deepseek-v4-pro
 CLAUDE_LIGHT_MODEL=deepseek-v4-flash
 ```
 
-OpenAI / OpenAI-compatible providers use the OpenAI Agents SDK runtime; Ollama and other OpenAI-compatible endpoints use `OPENAI_AGENTS_PROTOCOL=chat_completions`. The UI Provider Management flow can store both Claude-compatible and OpenAI-compatible Base URLs for dual-surface providers, then switch the active SDK runtime from the AI input provider switcher. Full provider-specific fields, known regional URL variants, model IDs, and troubleshooting notes are in [docs/getting-started/configuration.md](docs/getting-started/configuration.md) and the env templates.
+OpenAI / OpenAI-compatible providers use the OpenAI Agents SDK runtime; Ollama and other OpenAI-compatible endpoints use `OPENAI_AGENTS_PROTOCOL=chat_completions`. The UI Provider Management flow can store both Claude-compatible and OpenAI-compatible Base URLs for dual-surface providers, then switch the active SDK runtime from the AI input provider switcher. Full provider-specific fields, known regional URL variants, model IDs, and troubleshooting notes are in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md) and the env templates.
 
 Step 3 (optional): Set the output language. SmartPerfetto defaults to Simplified Chinese for AI answers, streamed progress, and generated reports. Set this if the primary users prefer English:
 
@@ -160,9 +160,9 @@ After verifying your changes in the browser, Step 1: run `./scripts/update-front
 
 ## Runtime Settings
 
-The quick setup above covers where credentials live. Detailed provider setup, model IDs, regional Base URL variants, OpenAI-compatible runtime fields, Anthropic-compatible presets, proxy guidance, and troubleshooting live in [docs/getting-started/configuration.md](docs/getting-started/configuration.md). Use `GET /health` to confirm `aiEngine.runtime`, `aiEngine.providerMode`, and `aiEngine.diagnostics` after changing provider settings.
+The quick setup above covers where credentials live. Detailed provider setup, model IDs, regional Base URL variants, OpenAI-compatible runtime fields, Anthropic-compatible presets, proxy guidance, and troubleshooting live in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md). Use `GET /health` to confirm `aiEngine.runtime`, `aiEngine.providerMode`, and `aiEngine.diagnostics` after changing provider settings.
 
-Claude Code local auth/config is only available to local source runs, not Docker. Separate tools such as Codex CLI, Gemini CLI, and OpenCode manage their own configuration files and login state; SmartPerfetto does not automatically read those credentials. The frontend settings dialog only stores the backend URL and optional `SMARTPERFETTO_API_KEY` for SmartPerfetto backend auth.
+Claude Code local auth/config is only available to local source runs, not Docker. Separate tools such as Codex CLI, Gemini CLI, and OpenCode manage their own configuration files and login state; SmartPerfetto does not automatically read those credentials. The frontend settings dialog's `Connection` tab only stores the backend URL and optional `SMARTPERFETTO_API_KEY` for SmartPerfetto backend auth; the `Providers` tab can write model-provider profiles to the backend Provider Manager.
 
 ### Output Language
 
@@ -224,7 +224,7 @@ smp report <sessionId> --open
 smp
 ```
 
-The first analysis downloads the pinned `trace_processor_shell` binary automatically if it is not already available. If your network cannot reach Google's artifact bucket, set `TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell` to use a local binary, or set `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL` to a trusted mirror; downloaded binaries are still checked against the pinned SHA256. `smartperfetto` remains available as the long command name; source checkout scripts are only for maintainers debugging the CLI. See [CLI Reference](docs/reference/cli.md) for all commands, REPL slash commands, storage layout, and resume behavior.
+The first analysis downloads the pinned `trace_processor_shell` binary automatically if it is not already available. If your network cannot reach Google's artifact bucket, set `TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell` to use a local binary, or set `TRACE_PROCESSOR_DOWNLOAD_BASE` / `TRACE_PROCESSOR_DOWNLOAD_URL` to a trusted mirror; downloaded binaries are still checked against the pinned SHA256. `smartperfetto` remains available as the long command name; source checkout scripts are only for maintainers debugging the CLI. See [CLI Reference](docs/reference/cli.en.md) for all commands, REPL slash commands, storage layout, and resume behavior.
 
 ## API Integration
 
@@ -309,15 +309,15 @@ Do not hardcode prompt content in TypeScript. Put scene logic in `backend/strate
 
 ## Documentation
 
-- [Documentation Center](docs/README.md)
-- [Quick Start](docs/getting-started/quick-start.md)
-- [Architecture Overview](docs/architecture/overview.md)
-- [API Reference](docs/reference/api.md)
-- [CLI Reference](docs/reference/cli.md)
-- [MCP Tools Reference](docs/reference/mcp-tools.md)
-- [Skill System Guide](docs/reference/skill-system.md)
-- [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.md)
-- [Rendering Pipeline References](docs/rendering_pipelines/)
+- [Documentation Center](docs/README.en.md)
+- [Quick Start](docs/getting-started/quick-start.en.md)
+- [Architecture Overview](docs/architecture/overview.en.md)
+- [API Reference](docs/reference/api.en.md)
+- [CLI Reference](docs/reference/cli.en.md)
+- [MCP Tools Reference](docs/reference/mcp-tools.en.md)
+- [Skill System Guide](docs/reference/skill-system.en.md)
+- [Data Contract](backend/docs/DATA_CONTRACT_DESIGN.en.md)
+- [Rendering Pipeline References](docs/rendering_pipelines/index.en.md)
 - [Security Policy](SECURITY.md)
 
 ## Contributing

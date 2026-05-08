@@ -1,5 +1,7 @@
 # SmartPerfetto 数据契约设计文档
 
+[English](DATA_CONTRACT_DESIGN.en.md) | [中文](DATA_CONTRACT_DESIGN.md)
+
 ## 问题陈述
 
 当前系统的数据流存在以下问题：

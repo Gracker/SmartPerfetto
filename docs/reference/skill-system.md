@@ -1,5 +1,7 @@
 # SmartPerfetto Skill System Guide
 
+[English](skill-system.en.md) | [中文](skill-system.md)
+
 > YAML Skill DSL 完整开发指南。面向需要创建或修改 Skill 的开发者。
 
 ---

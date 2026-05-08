@@ -1,5 +1,7 @@
 # SmartPerfetto 文档中心
 
+[English](README.en.md) | [中文](README.md)
+
 SmartPerfetto 是基于 Perfetto 的 Android 性能分析平台。本文档中心面向开源使用者、贡献者和维护者，按“先跑起来、再理解、再扩展”的顺序组织。
 
 ## 推荐阅读路径

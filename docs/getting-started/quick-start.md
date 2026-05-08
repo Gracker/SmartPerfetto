@@ -1,5 +1,7 @@
 # 快速开始
 
+[English](quick-start.en.md) | [中文](quick-start.md)
+
 本页用于把 SmartPerfetto 跑起来。更多模型和代理参数见 [配置指南](configuration.md)。
 
 ## 1. 克隆仓库
