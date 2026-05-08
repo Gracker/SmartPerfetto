@@ -1,6 +1,6 @@
 # Enterprise Runtime Isolation Checklist
 
-本文件把 `README.md` §11.11 的 15 个“双窗口双 trace”漏洞项落成可验证清单。每行都对应 `backend/src/scripts/enterpriseRuntimeIsolationChecklist.ts` 的一个稳定 ID，并由 `enterpriseRuntimeIsolationChecklist.test.ts` 检查 README 原文、证据文件和本文档是否同步。
+本文件把 `README.md` §11.11 的 15 个“双窗口双 trace”漏洞项落成可验证清单。每行都对应 `backend/src/scripts/enterpriseRuntimeIsolationChecklist.ts` 的一个稳定 ID，并由 `enterpriseRuntimeIsolationChecklist.test.ts` 检查 README 原文、证据文件和本文档是否同步。指向 `perfetto/` 的证据属于子模块：本地初始化子模块时会检查文件内容；CI backend gate 未 checkout 子模块时至少验证根仓库保留了 `perfetto` gitlink。
 
 验证命令：
 
