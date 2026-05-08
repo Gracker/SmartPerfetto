@@ -18,4 +18,8 @@ Essential invariants:
   Perfetto UI plugin development.
 - After AI Assistant plugin UI changes, verify in the browser and run
   `./scripts/update-frontend.sh` before committing.
+- Windows EXE releases must follow the versioned, clean-release workflow in
+  `AGENTS.md` and `.claude/rules/git.md`: commit the version bump first, build
+  `smartperfetto-v<version>-windows-x64.zip`, verify its manifest, and do not
+  publish public releases with `--allow-dirty`.
 - Run the verification tier from `AGENTS.md`; before PR, run `npm run verify:pr`.

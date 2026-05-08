@@ -25,6 +25,30 @@ and the 6-trace scene regression gate.
 | Strategy/template Markdown | `cd backend && npm run validate:strategies` plus scene trace regression |
 | Frontend generated types | `cd backend && npm run generate:frontend-types` plus relevant tests |
 | AI plugin UI | Browser verification in `start-dev.sh`, relevant `perfetto/ui` tests/typecheck, then `./scripts/update-frontend.sh` |
+| Windows EXE packaging/release | Shell syntax/static checks, Node script syntax checks, full package build, and package manifest verification |
+
+## Windows EXE Packaging Verification
+
+When changing Windows EXE packaging, release scripts, version synchronization,
+Windows trace-processor handling, bundled runtime assets, or docs that define
+the release process, run:
+
+```bash
+bash -n scripts/package-windows-exe.sh scripts/release-windows-exe.sh
+shellcheck -x scripts/package-windows-exe.sh scripts/release-windows-exe.sh
+node --check scripts/sync-version.cjs scripts/verify-windows-package.cjs
+npm run version:sync -- --check
+npm run package:windows-exe
+node scripts/verify-windows-package.cjs \
+  --zip "dist/windows-exe/smartperfetto-v<version>-windows-x64.zip" \
+  --version "<version>" \
+  --commit "$(git rev-parse HEAD)"
+```
+
+For a clean public release, the package manifest must contain
+`gitDirty: false` and `gitCommit` equal to the release target commit. If testing
+the release script without uploading, use a fake `gh` shim or a draft release;
+do not rely on `--allow-dirty` for public release validation.
 
 ## Canonical Scene Regression
 

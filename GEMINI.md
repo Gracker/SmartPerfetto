@@ -14,5 +14,9 @@ High-priority reminders:
 - Do not hand-edit generated files.
 - After AI Assistant plugin UI changes, run `./scripts/update-frontend.sh` so
   committed `frontend/` stays usable for Docker and `./start.sh` users.
+- Windows EXE releases must follow the clean, versioned workflow in
+  `AGENTS.md` and `.claude/rules/git.md`: commit the version bump, build
+  `smartperfetto-v<version>-windows-x64.zip`, verify the package manifest, and
+  do not use `--allow-dirty` for public releases.
 - Use the verification matrix in `AGENTS.md`; before PR, run
   `npm run verify:pr`.

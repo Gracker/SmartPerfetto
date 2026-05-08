@@ -67,6 +67,38 @@ Default assumption: the user is running `./start.sh`, so backend `.ts`, Skill
 refresh. Do not tell users to restart the backend unless `.env`, dependencies,
 or the watcher state changed.
 
+## Windows EXE Packaging and Release Rules
+
+Windows EXE packaging is a first-class user distribution path for users who do
+not want Docker. The release package is produced by
+`npm run package:windows-exe` and published by `npm run release:windows-exe`.
+
+Rules for this path:
+
+- The root `package.json` version is the source of truth. Use
+  `npm run version:set -- <version>` and commit `package.json`,
+  `package-lock.json`, `backend/package.json`, and `backend/package-lock.json`
+  before a normal public release.
+- Public Windows releases must be built from a clean `main` commit. Do not use
+  `--allow-dirty` for public releases; it is only for draft/test uploads where
+  uncommitted local changes are intentional.
+- The zip asset and top-level directory must be versioned as
+  `smartperfetto-v<version>-windows-x64.zip` and
+  `smartperfetto-v<version>-windows-x64/`. Do not publish the old unversioned
+  `smartperfetto-windows-x64.zip` name.
+- A normal release flow is: version commit on `main`, push `main`,
+  `npm run package:windows-exe`, then
+  `npm run release:windows-exe -- <version> --skip-build --no-draft`.
+- `--skip-build` is only valid after a fresh package for the exact version and
+  current commit has been generated. The release script verifies the zip
+  filename, package manifest, version, commit, dirty state, release target, and
+  uploaded asset.
+- Windows packages include the committed `frontend/` prebuild, backend runtime
+  assets, Windows Node.js runtime, Windows native dependencies, and
+  `trace_processor_shell.exe`. Any change to this packaging surface requires
+  package verification.
+- `dist/windows-exe/` is generated output and must not be committed.
+
 ## Source Boundaries
 
 Important paths:
@@ -132,6 +164,7 @@ opening or landing a PR.
 | Strategy/template Markdown | `cd backend && npm run validate:strategies` plus scene trace regression |
 | Frontend generated types | `cd backend && npm run generate:frontend-types` plus relevant frontend/backend tests |
 | AI plugin UI | dev-server browser verification, relevant `perfetto/ui` tests/typecheck, then `./scripts/update-frontend.sh` |
+| Windows EXE packaging/release | `bash -n scripts/package-windows-exe.sh scripts/release-windows-exe.sh`, `shellcheck -x scripts/package-windows-exe.sh scripts/release-windows-exe.sh`, `node --check scripts/sync-version.cjs scripts/verify-windows-package.cjs`, `npm run package:windows-exe`, and `node scripts/verify-windows-package.cjs --zip dist/windows-exe/smartperfetto-v<version>-windows-x64.zip --version <version> --commit "$(git rev-parse HEAD)"` |
 | Before PR | `npm run verify:pr` from the repository root |
 
 `npm run verify:pr` runs root quality checks, Rust checks, backend Skill and

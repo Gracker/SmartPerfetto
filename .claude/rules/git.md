@@ -24,6 +24,36 @@ Never push SmartPerfetto submodule changes to upstream `origin`.
 5. Commit with a descriptive message.
 6. Push the active branch when the task asks for push/ship.
 
+## Windows EXE Release Workflow
+
+Windows EXE releases are published from the root repository, not from the
+`perfetto/` submodule.
+
+Normal public release flow:
+
+1. Start from an up-to-date clean `main`.
+2. Run `npm run version:set -- <version>`.
+3. Commit `package.json`, `package-lock.json`, `backend/package.json`, and
+   `backend/package-lock.json`.
+4. Push `main`.
+5. Run `npm run package:windows-exe`.
+6. Run `npm run release:windows-exe -- <version> --skip-build --no-draft`.
+
+Release invariants:
+
+- The release zip and top-level directory must be
+  `smartperfetto-v<version>-windows-x64.zip` and
+  `smartperfetto-v<version>-windows-x64/`.
+- Do not publish the old unversioned `smartperfetto-windows-x64.zip` asset
+  name.
+- Do not use `--allow-dirty` for public releases. It is only acceptable for
+  draft/test uploads where a dirty package is intentional.
+- `--skip-build` is safe only when the existing zip was freshly built for the
+  exact version and commit being released.
+- The release script must verify the package manifest, commit, dirty state,
+  remote release target, and uploaded asset before reporting success.
+- `dist/windows-exe/` is generated output; never stage or commit it.
+
 ## Submodule Landing Order
 
 When a task changes `perfetto/`:

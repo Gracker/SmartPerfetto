@@ -23,6 +23,10 @@ Core rules:
   Use `./scripts/start-dev.sh` only when modifying the Perfetto UI plugin.
 - After changes under `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/`,
   verify in dev mode and run `./scripts/update-frontend.sh`.
+- Windows EXE releases must use the clean, versioned workflow in `AGENTS.md`
+  and `.claude/rules/git.md`: commit the version bump first, build
+  `smartperfetto-v<version>-windows-x64.zip`, verify its package manifest, and
+  never use `--allow-dirty` for public releases.
 - For runtime, MCP, memory, report, provider, or session changes, run
   `cd backend && npm run test:scene-trace-regression`.
 - Before opening or landing a PR, run `npm run verify:pr` from the repository
