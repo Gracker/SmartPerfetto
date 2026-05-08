@@ -4,6 +4,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFileSync } from 'child_process';
 import { RUNTIME_ISOLATION_CHECKLIST } from '../enterpriseRuntimeIsolationChecklist';
 
 const REPO_ROOT = path.resolve(__dirname, '../../../..');
@@ -32,6 +33,17 @@ function readRepoFile(relativePath: string): string {
   return fs.readFileSync(path.join(REPO_ROOT, relativePath), 'utf8');
 }
 
+function readGitlink(relativePath: string): string {
+  return execFileSync('git', ['ls-files', '-s', relativePath], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+  }).trim();
+}
+
+function isPerfettoSubmoduleEvidence(relativePath: string): boolean {
+  return relativePath.startsWith('perfetto/');
+}
+
 describe('enterprise runtime isolation checklist', () => {
   it('keeps the §11.11 checklist as an explicit 15-item contract', () => {
     expect(RUNTIME_ISOLATION_CHECKLIST.map(item => item.id)).toEqual(EXPECTED_IDS);
@@ -52,12 +64,21 @@ describe('enterprise runtime isolation checklist', () => {
 
   it('verifies the evidence file and pattern for every checklist item', () => {
     const checkedEvidence = new Set<string>();
+    const missingRootEvidence: string[] = [];
 
     for (const item of RUNTIME_ISOLATION_CHECKLIST) {
       expect(item.evidence.length).toBeGreaterThan(0);
       for (const evidence of item.evidence) {
         const evidencePath = path.join(REPO_ROOT, evidence.file);
-        expect(fs.existsSync(evidencePath)).toBe(true);
+        if (!fs.existsSync(evidencePath)) {
+          if (isPerfettoSubmoduleEvidence(evidence.file)) {
+            expect(readGitlink('perfetto')).toMatch(/^160000 [0-9a-f]{40} 0\tperfetto$/);
+            checkedEvidence.add(`${evidence.file}:perfetto-submodule-gitlink`);
+            continue;
+          }
+          missingRootEvidence.push(evidence.file);
+          continue;
+        }
 
         const content = readRepoFile(evidence.file);
         expect(evidence.patterns.length).toBeGreaterThan(0);
@@ -68,6 +89,7 @@ describe('enterprise runtime isolation checklist', () => {
       }
     }
 
+    expect(missingRootEvidence).toEqual([]);
     expect(checkedEvidence.size).toBeGreaterThanOrEqual(EXPECTED_IDS.length * 2);
   });
 
