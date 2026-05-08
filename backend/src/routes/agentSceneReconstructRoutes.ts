@@ -23,6 +23,13 @@ import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skill
 import { getSceneDeepDiveRoute } from '../agent/config/domainManifest';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import type { SceneReport } from '../agent/scene/types';
+import { requireRequestContext } from '../middleware/auth';
+import {
+  isOwnedByContext,
+  ownerFieldsFromContext,
+  sendResourceNotFound,
+} from '../services/resourceOwnership';
+import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 
 export interface SceneReconstructConversationStep {
   eventId: string;
@@ -39,6 +46,9 @@ export interface SceneReconstructSession extends ManagedAssistantSession {
   orchestratorUpdateHandler?: (update: StreamingUpdate) => void;
   traceId: string;
   query: string;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
   logger: SessionLogger;
   result?: AgentRuntimeAnalysisResult;
   /** Set by SceneStoryService once the pipeline completes (fresh or cached). */
@@ -61,6 +71,32 @@ export interface SceneReconstructSession extends ManagedAssistantSession {
   }>;
   conversationOrdinal: number;
   conversationSteps: SceneReconstructConversationStep[];
+}
+
+async function ensureTraceAccessible(
+  req: express.Request,
+  res: express.Response,
+  traceId: string,
+): Promise<boolean> {
+  if (!await readTraceMetadataForContext(traceId, requireRequestContext(req))) {
+    sendResourceNotFound(res, 'Trace not found in backend');
+    return false;
+  }
+  return true;
+}
+
+function getAuthorizedSceneSession<TSession extends SceneReconstructSession>(
+  req: express.Request,
+  res: express.Response,
+  deps: RegisterSceneReconstructRoutesDeps<TSession>,
+  analysisId: string,
+): TSession | null {
+  const session = deps.assistantAppService.getSession(analysisId);
+  if (!session || !isOwnedByContext(session, requireRequestContext(req))) {
+    sendResourceNotFound(res, 'Scene reconstruction session not found');
+    return null;
+  }
+  return session;
 }
 
 interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSession> {
@@ -122,6 +158,10 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         });
       }
 
+      if (!await ensureTraceAccessible(req, res, traceId)) {
+        return;
+      }
+
       // 404 fast if the trace isn't known to the backend, mirroring the
       // primary POST /scene-reconstruct handler so callers see a consistent
       // error shape.
@@ -136,7 +176,10 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         });
       }
 
-      const preview = await deps.sceneStoryService.previewOnly({ traceId });
+      const preview = await deps.sceneStoryService.previewOnly({
+        traceId,
+        owner: ownerFieldsFromContext(requireRequestContext(req)),
+      });
 
       return res.json({
         success: true,
@@ -177,12 +220,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
     try {
       const { reportId } = req.params;
       const report = await deps.sceneStoryService.getReport(reportId);
-      if (!report) {
-        return res.status(404).json({
-          success: false,
-          error: 'Report not found or expired',
-          code: 'REPORT_NOT_FOUND',
-        });
+      if (!report || !await readTraceMetadataForContext(report.traceId, requireRequestContext(req))) {
+        return sendResourceNotFound(res, 'Report not found or expired');
       }
       return res.json({ success: true, report });
     } catch (error: any) {
@@ -205,6 +244,10 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         });
       }
 
+      if (!await ensureTraceAccessible(req, res, traceId)) {
+        return;
+      }
+
       const traceProcessorService = getTraceProcessorService();
       // Fall back to disk restore so traces evicted from the in-memory registry
       // (but still on disk) don't produce spurious 404s on this endpoint.
@@ -224,6 +267,7 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       const generateTracks = options.generateTracks ?? true;
       const query = deepAnalysis ? '场景还原' : '场景还原 仅检测';
       const analysisId = `scene-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+      const owner = ownerFieldsFromContext(requireRequestContext(req));
 
       const orchestrator: IOrchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
@@ -240,6 +284,7 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         status: 'pending',
         traceId,
         query,
+        ...owner,
         createdAt: Date.now(),
         lastActivityAt: Date.now(),
         logger,
@@ -270,6 +315,7 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
           sessionId: analysisId,
           traceId,
           skillExecutor,
+          owner,
           options: {
             forceRefresh: options.forceRefresh ?? false,
           },
@@ -310,13 +356,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
 
   router.get('/scene-reconstruct/:analysisId/stream', (req, res) => {
     const { analysisId } = req.params;
-    const session = deps.assistantAppService.getSession(analysisId);
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Scene reconstruction session not found',
-      });
-    }
+    const session = getAuthorizedSceneSession(req, res, deps, analysisId);
+    if (!session) return;
 
     deps.streamProjector.setSseHeaders(res);
     deps.streamProjector.sendConnected(res, {
@@ -380,13 +421,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
 
   router.get('/scene-reconstruct/:analysisId/tracks', (req, res) => {
     const { analysisId } = req.params;
-    const session = deps.assistantAppService.getSession(analysisId);
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Scene reconstruction session not found',
-      });
-    }
+    const session = getAuthorizedSceneSession(req, res, deps, analysisId);
+    if (!session) return;
 
     if (session.status !== 'completed') {
       return res.status(400).json({
@@ -405,13 +441,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
 
   router.get('/scene-reconstruct/:analysisId/status', (req, res) => {
     const { analysisId } = req.params;
-    const session = deps.assistantAppService.getSession(analysisId);
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Scene reconstruction session not found',
-      });
-    }
+    const session = getAuthorizedSceneSession(req, res, deps, analysisId);
+    if (!session) return;
 
     const response: any = {
       success: true,
@@ -465,10 +496,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       const { analysisId } = req.params;
       const { eventId, eventType, startTs, endTs, appPackage } = req.body;
 
-      const session = deps.assistantAppService.getSession(analysisId);
-      if (!session) {
-        return res.status(404).json({ success: false, error: 'Session not found' });
-      }
+      const session = getAuthorizedSceneSession(req, res, deps, analysisId);
+      if (!session) return;
 
       const route = getSceneDeepDiveRoute(eventType);
       if (!route) {
@@ -516,13 +545,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
   // already completed before the cancel landed.
   router.post('/scene-reconstruct/:analysisId/cancel', (req, res) => {
     const { analysisId } = req.params;
-    const session = deps.assistantAppService.getSession(analysisId);
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Scene reconstruction session not found',
-      });
-    }
+    const session = getAuthorizedSceneSession(req, res, deps, analysisId);
+    if (!session) return;
     const cancelled = deps.sceneStoryService.cancel(analysisId);
     res.json({
       success: true,
@@ -533,13 +557,8 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
 
   router.delete('/scene-reconstruct/:analysisId', (req, res) => {
     const { analysisId } = req.params;
-    const session = deps.assistantAppService.getSession(analysisId);
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Scene reconstruction session not found',
-      });
-    }
+    const session = getAuthorizedSceneSession(req, res, deps, analysisId);
+    if (!session) return;
 
     session.sseClients.forEach((client) => {
       try {

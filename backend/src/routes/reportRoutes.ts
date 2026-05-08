@@ -12,8 +12,14 @@
 import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import { attachRequestContext, requireRequestContext } from '../middleware/auth';
 import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from '../services/reportCausalMapAssets';
 import { localize, parseOutputLanguage } from '../agentv3/outputLanguage';
+import {
+  isOwnedByContext,
+  sendResourceNotFound,
+  type ResourceOwnerFields,
+} from '../services/resourceOwnership';
 
 const router = express.Router();
 
@@ -24,8 +30,10 @@ if (!fs.existsSync(REPORTS_DIR)) {
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
 }
 
+router.use(attachRequestContext);
+
 // In-memory cache backed by disk persistence
-type PersistedReport = {
+type PersistedReport = ResourceOwnerFields & {
   html: string;
   generatedAt: number;
   sessionId: string;
@@ -68,6 +76,9 @@ export function persistReport(reportId: string, entry: PersistedReport): void {
     fs.writeFileSync(metaPath, JSON.stringify({
       generatedAt: entry.generatedAt,
       sessionId: entry.sessionId,
+      tenantId: entry.tenantId,
+      workspaceId: entry.workspaceId,
+      userId: entry.userId,
     }));
   } catch (err) {
     console.warn('[ReportRoutes] Failed to persist report to disk:', (err as Error).message);
@@ -84,19 +95,35 @@ function loadReportFromDisk(reportId: string): PersistedReport | null {
     const metaPath = path.join(REPORTS_DIR, `${reportId}.meta.json`);
     let generatedAt = Date.now();
     let sessionId = '';
+    let owner: ResourceOwnerFields = {};
     if (fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
       generatedAt = meta.generatedAt || generatedAt;
       sessionId = meta.sessionId || '';
+      owner = {
+        tenantId: meta.tenantId,
+        workspaceId: meta.workspaceId,
+        userId: meta.userId,
+        ownerUserId: meta.ownerUserId,
+      };
     }
 
-    const entry = { html: upgradeLegacyReportHtml(html), generatedAt, sessionId };
+    const entry = { html: upgradeLegacyReportHtml(html), generatedAt, sessionId, ...owner };
     // Cache in memory for subsequent access
     reportStore.set(reportId, entry);
     return entry;
   } catch {
     return null;
   }
+}
+
+function getReportForContext(reportId: string, req: express.Request): PersistedReport | null {
+  const context = requireRequestContext(req);
+  const report = reportStore.get(reportId) || loadReportFromDisk(reportId);
+  if (!report || !isOwnedByContext(report, context)) {
+    return null;
+  }
+  return report;
 }
 
 // Clean up old reports every 30 minutes (both memory and disk)
@@ -142,7 +169,7 @@ router.get('/:reportId/export', (req, res) => {
   try {
     const { reportId } = req.params;
 
-    const report = reportStore.get(reportId) || loadReportFromDisk(reportId);
+    const report = getReportForContext(reportId, req);
     if (!report) {
       return res.status(404).json({
         success: false,
@@ -176,7 +203,7 @@ router.get('/:reportId', (req, res) => {
     const { reportId } = req.params;
 
     // Try memory cache first, then disk
-    let report = reportStore.get(reportId) || loadReportFromDisk(reportId);
+    let report = getReportForContext(reportId, req);
     if (!report) {
       const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
       return res.status(404).send(`
@@ -226,6 +253,11 @@ router.get('/:reportId', (req, res) => {
 router.delete('/:reportId', (req, res) => {
   try {
     const { reportId } = req.params;
+
+    const report = getReportForContext(reportId, req);
+    if (!report) {
+      return sendResourceNotFound(res, 'Report not found');
+    }
 
     const deleted = reportStore.delete(reportId);
 

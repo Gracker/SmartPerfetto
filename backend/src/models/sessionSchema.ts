@@ -34,6 +34,11 @@ export interface SqlQueryResult {
 }
 
 export interface SessionMetadata {
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
+  ownerUserId?: string;
+
   totalIterations?: number;
   sqlQueriesCount?: number;
   totalDuration?: number;

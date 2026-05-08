@@ -5,6 +5,8 @@
 import * as fs from 'fs';
 import express from 'express';
 import { featureFlagsConfig } from '../config';
+import { requireRequestContext } from '../middleware/auth';
+import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import { getSessionLoggerManager } from '../services/sessionLogger';
 import { getLogLevel, setLogLevel, type LogLevel } from '../utils/logger';
 import { METRICS_DIR, type SessionMetrics } from '../agentv3/agentMetrics';
@@ -17,6 +19,13 @@ export function registerAgentLogsRoutes(router: express.Router): void {
         error: 'Agent logs API is disabled by FEATURE_AGENT_LOGS_API',
         code: 'FEATURE_DISABLED',
       });
+    }
+    next();
+  });
+
+  router.use('/logs', (req, res, next) => {
+    if (!isPrivilegedRequestContext(requireRequestContext(req))) {
+      return sendResourceNotFound(res);
     }
     next();
   });

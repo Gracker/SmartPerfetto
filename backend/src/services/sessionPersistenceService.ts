@@ -623,6 +623,11 @@ export class SessionPersistenceService {
       sessionContext?: EnhancedSessionContext;
       focusStoreSnapshot?: FocusStoreSnapshot;
       traceAgentState?: TraceAgentState;
+      owner?: {
+        tenantId?: string;
+        workspaceId?: string;
+        userId?: string;
+      };
     },
   ): boolean {
     try {
@@ -650,6 +655,11 @@ export class SessionPersistenceService {
 
       // Preserve non-snapshot fields from existing metadata (new sessions start with {})
       const metadata: SessionMetadata = existing?.metadata || {};
+      if (extras?.owner) {
+        metadata.tenantId = extras.owner.tenantId;
+        metadata.workspaceId = extras.owner.workspaceId;
+        metadata.userId = extras.owner.userId;
+      }
 
       // Write new snapshot
       metadata.sessionStateSnapshot = snapshot;

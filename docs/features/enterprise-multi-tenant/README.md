@@ -1,5 +1,153 @@
 # SmartPerfetto 企业级多用户与多租户 Feature 开发文档
 
+## 0. 开发执行 TODO
+
+> 本节从下文设计中拆出的工程主导执行清单，作为后续每次 PR 的对照表。
+>
+> 强制约束：
+>
+> 1. 所有改动必须在专门的 feature 分支上进行（建议 `feature/enterprise-multi-tenant`），不直接对 `main` 提交。
+> 2. 每完成一项把 `[ ]` 改成 `[x]`；只在该项的代码、测试、文档都落地后才打勾。
+> 3. 测试必须随主线推进同步补全，不允许“先合代码再补测试”。每个主线段都关联一组 §0.6 / §0.7 中的测试或反证用例。
+> 4. 开发过程中**如果新增或引用了任何文档**（ADR、设计稿、运维 runbook、第三方资料、Codex review 结论等），都登记到 §0.9，对应工程项完成后再打勾。
+> 5. 顺序可调，但调整必须在本 TODO 内显式更新结构后再提交，避免 TODO 与实际节奏脱节。
+
+### 0.0 工程准备
+- [x] 创建开发分支 `feature/enterprise-multi-tenant`（基于最新 `main`，不直接动 `main`）
+- [x] 跑 baseline：`cd backend && npm run typecheck` + `npm run test:scene-trace-regression`，记录基线指标
+- [x] 复读 `README-review.md` 与 `appendix-ha.md`，确认 v1 主线不引入 Redis/NATS/Vault/Postgres HA
+- [x] 在后端引入 `enterprise` feature flag（默认关闭），用于灰度切换 RequestContext / lease proxy / DB-authoritative 路径
+
+### 0.1 第一里程碑（§22，最小可用边界）
+- [x] 1.1 `RequestContext` middleware（`backend/src/middleware/auth.ts` 重构）覆盖 trace / agent session / report 三条高风险链路
+- [x] 1.2 owner guard：`/api/traces`、`/api/agent/v1/*`、`/api/reports/*` 加 `tenantId/workspaceId/userId` 过滤，未授权统一 404
+- [ ] 1.3 主线 C 第一批最小改动（详见 4.1，独立 PR，不与 lease 大重写混合）
+- [ ] 1.4 前端 `windowId` 注入 + pending trace key 加 windowId（`ai_panel.ts` / `session_manager.ts` / `backend_uploader.ts`）
+- [ ] 1.5 SSE 路径明确收敛到 `fetch + ReadableStream` + `Authorization: Bearer` + `Last-Event-ID` cursor replay
+- [ ] 1.6 `ProviderSnapshot` hash + resume 校验（`agentAnalyzeSessionService.prepareSession`），不再只比 `providerId`
+- [ ] 1.7 DB schema 最小切片：`organizations / workspaces / users / memberships / trace_assets / analysis_sessions / analysis_runs / agent_events / provider_snapshots`
+- [ ] 1.8 三用户 + 双窗口回归脚本（落到 `backend/src/scripts/`），覆盖 D1/D2
+
+### 0.2 主线 A：身份与权限（§18）
+- [ ] 2.1 `RequestContext` 接口与解析 middleware（SSO / API key / dev 三模式）
+- [ ] 2.2 OIDC SSO 集成 + Onboarding flow（§15 全流程，含 audit）
+- [ ] 2.3 API key 管理（创建 / 撤销 / scope / 过期 / 审计）
+- [ ] 2.4 Membership / Role / RBAC 权限矩阵（§8.2）+ owner guard 全 route 覆盖
+- [ ] 2.5 旧 API 兼容 wrapper：返回 `Deprecation: true` + `Sunset` header；统一走 RequestContext
+- [ ] 2.6 Resource-oriented API 切到 `/api/workspaces/:workspaceId/*`（§8.3）
+- [ ] 2.7 前端 workspace selection UI + workspace/window 上下文持久化分层（§9.2 表格）
+- [ ] 2.8 单元测试覆盖：RequestContext 解析 / RBAC / owner guard / 旧路径包装
+
+### 0.3 主线 B：存储与持久化（§18）
+- [ ] 3.1 选 SQLite WAL 还是单 Postgres，落地 ADR；建立 repository 抽象（默认追加 tenantId/workspaceId filter）
+- [ ] 3.2 实现 §10.2 全部核心表 + 索引 + migration（含 audit / tombstone）
+- [ ] 3.3 trace metadata 入 DB；trace 文件迁到 `data/{tenantId}/{workspaceId}/traces/`
+- [ ] 3.4 report metadata 入 DB；report 内容迁到 `data/{tenantId}/{workspaceId}/reports/`（§14.2）
+- [ ] 3.5 `logs/claude_session_map.json` 迁到 `runtime_snapshots`
+- [ ] 3.6 provider 从 `data/providers.json` 迁到 DB metadata + encrypted SecretStore
+- [ ] 3.7 Memory / RAG / Case / Baseline 表加 scope（§14.1，先 filter 后语义召回）
+- [ ] 3.8 双写 → 切读 → 退役 三阶段（§17），每阶段都能回滚；准备 filesystem + DB snapshot
+- [ ] 3.9 SecretStore：libsodium 加密 + OS keyring 解 master key + secret rotation + 读取审计
+- [ ] 3.10 集成测试：backend restart 后 session/report/trace metadata 可恢复
+
+### 0.4 主线 C：运行时隔离（§18 + §11）
+- [ ] 4.1 §11.10 第一批最小改动（独立 PR）
+  - [ ] 4.1.1 timeout 不直接 `destroy()` frontend-owned processor（`workingTraceProcessor.ts`）
+  - [ ] 4.1.2 critical stdlib loader 进入 per-processor queue，禁止与用户 SQL 自并发
+  - [ ] 4.1.3 `createFromExternalRpc` 按 port 去重，复用同 port wrapper
+  - [ ] 4.1.4 LRU 跳过 ExternalRpcProcessor 或改为 lease/ref-count 判定
+  - [ ] 4.1.5 pending trace localStorage key 加 `windowId`，必要时迁 sessionStorage
+  - [ ] 4.1.6 AI session cache 加 mtime/CAS 或改为后端权威 session list
+- [ ] 4.2 上传链路 stream 化（§11.1）：URL 上传不再 `arrayBuffer()` 全量进内存；本地上传与 RAM/磁盘策略联动；temp file 用 traceId/uuid + 原子 rename
+- [ ] 4.3 RSS benchmark：scroll/startup/ANR/memory/heapprofd/vendor 大 trace × 100MB/500MB/1GB，记录启动 RSS、load peak、query headroom
+- [ ] 4.4 `TraceProcessorLease` 4 类 holder（frontend_http_rpc / agent_run / report_generation / manual_register）+ 状态机（§11.4）+ 分级 TTL
+- [ ] 4.5 Backend proxy `/api/tp/:leaseId/{status,websocket,query}`（§11.3）
+  - [ ] 4.5.1 同时支持 `/status` HTTP / `/websocket` 二进制双向 / `/query` HTTP
+  - [ ] 4.5.2 前端 `HttpRpcEngine` 抽象成 `HttpRpcTarget`（direct-port + backend-lease-proxy）
+  - [ ] 4.5.3 同一 frontend WebSocket holder 内严格 FIFO，不做乱序返回
+  - [ ] 4.5.4 企业模式禁用浏览器直连裸 `127.0.0.1:9100-9900`
+- [ ] 4.6 SQL Worker（worker_thread / child process）+ non-preemptive priority queue P0/P1/P2（§11.7）
+- [ ] 4.7 RAM budget + 启动后实测 RSS + admission control（§11.5），暴露 stats endpoint
+- [ ] 4.8 Shared / isolated 自动判定（§11.6），UI 明确展示队列/共享/独立状态
+- [ ] 4.9 24h query timeout 覆盖 WorkingTraceProcessor 与 ExternalRpcProcessor 双路径；独立 health channel `SELECT 1`（§11.8）
+- [ ] 4.10 crash recovery + backoff（1s/5s/15s + jitter）+ 稳定 leaseId；单 supervisor 重启，holder 不各自重试
+- [ ] 4.11 `/api/traces/cleanup` 企业模式禁用或 admin-only + draining + audit
+- [ ] 4.12 §11.11 漏洞清单：每行设计验收都打勾验证
+
+### 0.5 主线 D：控制面与合规（§18）
+- [ ] 5.1 tenant / workspace / member / provider / quota 管理 UI 与后端 API
+- [ ] 5.2 `audit_events` 表 + 关键操作埋点（trace / report / provider / memory / cleanup / delete / promote）
+- [ ] 5.3 配额 / 预算 / retention policy（§16.1，含 quota_exceeded 终态）
+- [ ] 5.4 Tenant export bundle（§16.2，含 SHA256 + tenant identity proof）
+- [ ] 5.5 Tenant tombstone + 7 天硬删窗口 + async purge + audit proof（§16.3）
+- [ ] 5.6 Custom skill v1 处置（§14.3）：禁用 write endpoint 或修 loader 闭环
+- [ ] 5.7 Legacy AI route 处置（§14.4 表）
+  - [ ] 5.7.1 `/api/agent/v1/llm` DeepSeek proxy
+  - [ ] 5.7.2 `/api/advanced-ai`
+  - [ ] 5.7.3 `/api/auto-analysis`
+  - [ ] 5.7.4 `/api/agent/v1/aiChat`
+  - [ ] 5.7.5 `agent/core/ModelRouter` DeepSeek 全局 provider 路径
+  - [ ] 5.7.6 `agentv2` fallback
+- [ ] 5.8 管理员运行时 dashboard：active leases / RSS / queue length / events / LLM cost
+- [ ] 5.9 安全审计：ID 枚举、跨 tenant、无权限 provider/report/memory 访问
+
+### 0.6 测试矩阵补全（§20，与主线绑定）
+- [ ] 6.1 Unit：RequestContext / RBAC / owner guard / provider resolution / ProviderSnapshot hash
+- [ ] 6.2 Integration：trace upload/list/delete/download；agent analyze/resume/respond/stream；report read/delete
+- [ ] 6.3 Concurrency：多用户同时 upload / analyze / query / cancel / cleanup
+- [ ] 6.4 Dual-window e2e：D1-D10 每个场景至少 1 个自动化用例（详见 §0.7）
+- [ ] 6.5 Security：ID 枚举、跨 tenant、无权限访问统一 404
+- [ ] 6.6 Runtime：lease acquire / release / heartbeat / stale / crash recovery
+- [ ] 6.7 Persistence：backend restart / queue shadow 恢复 / DB reconnect / SecretStore failure
+- [ ] 6.8 SSE：fetch-stream reconnect / cursor replay / terminal event 落库
+- [ ] 6.9 Migration：dry-run / 双写 / 切读 / 退役 / snapshot restore
+- [ ] 6.10 Regression：每次 PR 跑 `cd backend && npm run test:scene-trace-regression`
+- [ ] 6.11 PR Gate：合入前 `npm run verify:pr` 通过
+
+### 0.7 §23 反证循环（双窗口阻断验收，每条都对应一个自动化测试）
+- [ ] D1 两窗口分别上传同名 trace → temp file / TraceAsset / lease / session 不互相覆盖
+- [ ] D2 A 长 SQL 中，B 上传并分析另一个 trace → A 的 SSE 不断、A lease 不被 destroy、B 能排队或运行
+- [ ] D3 A 前端 timeline，B 跑 full agent → A WebSocket 走 lease；P0 不被 P2 长任务无限阻塞
+- [ ] D4 trace_processor_shell crash → leaseId 稳定；前端不持有旧 port；supervisor 单点重启
+- [ ] D5 浏览器断网 / 休眠 30 分钟后恢复 → frontend grace 生效；reacquire lease 或自动 reload
+- [ ] D6 SSE 在 conclusion 后、analysis_completed 前断开 → AgentEvent replay 能补回 reportUrl
+- [ ] D7 手动 cleanup / delete → running run / active lease / 正在生成的 report 被 draining 保护
+- [ ] D8 Provider 配置在 session 中途变更 → resume 校验 ProviderSnapshot hash，不复用错误 SDK session
+- [ ] D9 后端进程重启 → pending/running/terminal run 状态、events、trace metadata 可恢复或转 failed
+- [ ] D10 机器内存接近上限 → admission 拒绝新 lease，不通过 OOM 杀已有窗口
+
+### 0.8 §19 总验收
+- [ ] 50 在线用户 + 5-15 running run + pending 排队稳定
+- [ ] 任意用户不能猜测 traceId/sessionId/runId/reportId 越权访问
+- [ ] A 删除/cleanup 自己资源不影响 B 的 running run / active lease
+- [ ] Provider 隔离：A 改个人 provider 不影响 B；管理员改 workspace default 只影响新 session
+- [ ] Provider config 变更后 resume 不复用错误 SDK session
+- [ ] SSE fetch-stream 断线后 `Last-Event-ID` 续推
+- [ ] 双窗口同时打开两 trace，pending trace / AI session / SSE / lease 全不串
+- [ ] 单次慢 SQL 不直接 kill frontend-owned lease
+- [ ] Memory / SQL learning / case / baseline 默认 tenant/workspace 隔离
+- [ ] Tenant export / tombstone / async purge / audit proof 全可用
+- [ ] 压测记录 p50/p95、错误率、worker RSS、queue length、LLM cost
+
+### 0.9 新增 / 引用文档登记（开发过程中持续追加）
+> 规则：开发过程中只要新增设计文档、ADR、运维 runbook、外部参考资料、Codex/expert review 结论等，把相对路径或链接登记在这里；阅读完且对应工程项完成后再打勾。**只追加不重排**，避免 git diff 噪音。
+- [x] `docs/features/enterprise-multi-tenant/README.md`（本文）
+- [x] `docs/features/enterprise-multi-tenant/README-review.md`（review 结论已吸收到本文）
+- [x] `docs/features/enterprise-multi-tenant/appendix-ha.md`（未来扩展，v1 仅作参考）
+- [x] `docs/features/enterprise-multi-tenant/agent-goal.md`（AI 接手用 self-contained goal prompt）
+- [x] `docs/features/enterprise-multi-tenant/baseline.md`（0.0 baseline 命令与实测结果）
+- [ ] （新增 ADR / 设计 / runbook 在此追加，例如：`docs/adr/0001-enterprise-db-choice.md` …）
+
+### 0.10 PR / 提交收尾（每次 PR 都要走）
+- [ ] 每个主线 / 子主线一个独立 PR；不跨主线串改动
+- [ ] 提交前运行 `/simplify`（CLAUDE.md 强约束）
+- [ ] PR Gate `npm run verify:pr` 通过
+- [ ] 涉及 `perfetto/` 子模块：先推 `fork`，再推主仓 + 更新 `frontend/`
+- [ ] 涉及 `frontend/` 重建：执行 `./scripts/update-frontend.sh` 后再提交
+- [ ] 合并前确认本 TODO 中所有依赖项已打勾，未完成的明确标记到下一个 PR
+- [ ] 涉及 agent runtime / MCP / report / provider / session 触点的 PR 必须跑 §6.10 trace regression
+- [ ] 大改动配套 `codex` review（CLAUDE.md 中 Plan→Review→Revise→Execute 工作流）
+
 ## 1. 文档定位
 
 本文是 SmartPerfetto 从本地单机分析工具演进为企业级多用户系统的 feature 开发文档。它说明为什么要做、当前问题在哪里、目标架构是什么、需要改哪些模块，以及怎么把这件事拆成可执行的工程主线。

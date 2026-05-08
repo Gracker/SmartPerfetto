@@ -34,6 +34,7 @@ import { SkillExecutionResult } from '../../services/skillEngine/types';
 import { DataEnvelope } from '../../types/dataContract';
 import { StreamingUpdate } from '../types';
 import { sceneStoryConfig } from '../../config';
+import { ownersMatch, type ResourceOwnerFields } from '../../services/resourceOwnership';
 import { estimateSceneStoryCost, type CostEstimate } from './sceneCostEstimator';
 import {
   buildAnalysisIntervals,
@@ -70,6 +71,9 @@ export interface SceneStorySession {
   status: string;
   lastActivityAt: number;
   createdAt: number;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
   scenes?: any[];
   trackEvents?: any[];
   error?: string;
@@ -106,6 +110,7 @@ export interface SceneStoryServiceDeps {
 export interface SceneStoryStartArgs {
   sessionId: string;
   traceId: string;
+  owner?: ResourceOwnerFields;
   /** Per-request SkillExecutor — must already have its registry loaded. */
   skillExecutor: SkillExecutor;
   options?: SceneStoryStartOptions;
@@ -138,12 +143,11 @@ export class SceneStoryService {
   private readonly toEnvelopes: (result: SkillExecutionResult) => DataEnvelope[];
 
   /**
-   * Concurrent-request dedupe: while a pipeline for `traceHash` is running,
-   * peer requests for the same hash await the in-flight promise instead of
-   * starting a duplicate pipeline. The map only contains entries for
-   * file-backed traces — RPC traces have no hash key, so duplicate concurrent
-   * requests there fall through and run their own pipeline (rare and
-   * harmless).
+   * Concurrent-request dedupe: while a pipeline for an owner-scoped
+   * `traceHash` is running, peer requests for the same owner + hash await the
+   * in-flight promise instead of starting a duplicate pipeline. RPC traces
+   * have no hash key, so duplicate concurrent requests there fall through and
+   * run their own pipeline (rare and harmless).
    */
   private readonly pendingByHash: Map<string, Promise<SceneReport>> = new Map();
 
@@ -192,7 +196,7 @@ export class SceneStoryService {
 
       if (!forceRefresh) {
         // Disk (by hash) or memory (by traceId) cache lookup.
-        const cached = await this.lookupCachedReport(traceHash, traceId);
+        const cached = await this.lookupCachedReport(traceHash, traceId, args.owner);
         if (cached) {
           this.emitCachedReport(sessionId, session, cached);
           return;
@@ -201,8 +205,9 @@ export class SceneStoryService {
 
       // 3) In-flight pipeline dedupe — only file-backed traces have a hash
       // key, so concurrent RPC requests fall through and run independently.
-      if (traceHash && !forceRefresh) {
-        const inFlight = this.pendingByHash.get(traceHash);
+      const pendingKey = traceHash ? buildOwnerScopedCacheKey(traceHash, args.owner) : null;
+      if (pendingKey && !forceRefresh) {
+        const inFlight = this.pendingByHash.get(pendingKey);
         if (inFlight) {
           const shared = await inFlight;
           this.emitCachedReport(sessionId, session, shared);
@@ -213,7 +218,7 @@ export class SceneStoryService {
           resolvePending = res;
           rejectPending = rej;
         });
-        this.pendingByHash.set(traceHash, pending);
+        this.pendingByHash.set(pendingKey, pending);
         // Swallow unhandled-rejection — peer awaiters that come and go later
         // will see the rejection through their own await.
         pending.catch(() => undefined);
@@ -349,7 +354,7 @@ export class SceneStoryService {
       // the same failure on their own SSE channels (instead of hanging).
       rejectPending?.(pipelineError);
     } finally {
-      if (traceHash) this.pendingByHash.delete(traceHash);
+      if (traceHash) this.pendingByHash.delete(buildOwnerScopedCacheKey(traceHash, args.owner));
       this.runners.delete(sessionId);
       this.inProgress.delete(sessionId);
     }
@@ -445,6 +450,9 @@ export class SceneStoryService {
     const report = buildSceneReport({
       analysisId: args.sessionId,
       traceId: args.traceId,
+      tenantId: args.session.tenantId,
+      workspaceId: args.session.workspaceId,
+      userId: args.session.userId,
       createdAt: args.session.createdAt,
       scenes: args.scenes,
       jobs: args.jobs,
@@ -605,8 +613,8 @@ export class SceneStoryService {
    *   - cached + RPC: O(1) Map lookup
    *   - cold:        hash + trace_bounds SQL probe (~50ms)
    */
-  async previewOnly(args: { traceId: string }): Promise<SceneStoryPreviewResult> {
-    const { traceId } = args;
+  async previewOnly(args: { traceId: string; owner?: ResourceOwnerFields }): Promise<SceneStoryPreviewResult> {
+    const { traceId, owner } = args;
 
     // Hash and probe are independent — run in parallel. Hash dominates for
     // large files (5-10s for 1GB), probe is ~50ms. Parallelising cuts cold
@@ -616,7 +624,7 @@ export class SceneStoryService {
       this.deps.probeDuration(traceId),
     ]);
 
-    const cached = await this.lookupCachedReport(hash, traceId);
+    const cached = await this.lookupCachedReport(hash, traceId, owner);
     if (cached) {
       const dur = cached.traceMeta.durationSec;
       return {
@@ -651,15 +659,24 @@ export class SceneStoryService {
   private async lookupCachedReport(
     hash: string | null,
     traceId: string,
+    owner?: ResourceOwnerFields,
   ): Promise<SceneReport | null> {
-    if (hash) return this.deps.reportStore.loadByHash(hash);
-    return this.deps.memoryCache.get(traceId) ?? null;
+    const report = hash
+      ? await this.deps.reportStore.loadByHash(hash)
+      : this.deps.memoryCache.get(traceId) ?? null;
+    if (!report) return null;
+    return owner ? (ownersMatch(report, owner) ? report : null) : report;
   }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function buildOwnerScopedCacheKey(hash: string, owner?: ResourceOwnerFields): string {
+  if (!owner) return `${hash}:legacy`;
+  return `${hash}:${owner.tenantId || ''}:${owner.workspaceId || ''}:${owner.userId || owner.ownerUserId || ''}`;
+}
 
 function jobStateToAnalysisState(
   jobEventType: JobRunnerEvent['type'],
@@ -693,6 +710,9 @@ function mapJobEventToSseType(
 function buildSceneReport(args: {
   analysisId: string;
   traceId: string;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
   createdAt: number;
   scenes: DisplayedScene[];
   jobs: SceneAnalysisJob[];
@@ -732,6 +752,9 @@ function buildSceneReport(args: {
 
   return {
     reportId: uuidv4(),
+    tenantId: args.tenantId,
+    workspaceId: args.workspaceId,
+    userId: args.userId,
     traceHash: args.traceHash,
     traceId: args.traceId,
     traceOrigin,

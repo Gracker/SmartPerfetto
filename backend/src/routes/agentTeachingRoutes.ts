@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
+import { requireRequestContext } from '../middleware/auth';
+import { sendResourceNotFound } from '../services/resourceOwnership';
+import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import { getPipelineDocService } from '../services/pipelineDocService';
 import {
@@ -39,6 +42,10 @@ export function registerTeachingRoutes(router: express.Router): void {
           success: false,
           error: 'traceId is required',
         });
+      }
+
+      if (!await readTraceMetadataForContext(traceId, requireRequestContext(req))) {
+        return sendResourceNotFound(res, 'Trace not found in backend');
       }
 
       const traceProcessorService = getTraceProcessorService();

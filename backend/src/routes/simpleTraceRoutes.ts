@@ -8,9 +8,20 @@ import path from 'path';
 import fs from 'fs/promises';
 import net from 'net';
 import { v4 as uuidv4 } from 'uuid';
+import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import { getPortPool } from '../services/portPool';
 import { TraceProcessorFactory } from '../services/workingTraceProcessor';
+import {
+  buildTraceOwnerMetadata,
+  getTraceFilePath,
+  getTracesDir,
+  listTraceMetadata,
+  readTraceMetadataForContext,
+  type TraceMetadata,
+  writeTraceMetadata,
+} from '../services/traceMetadataStore';
+import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 
 const router = Router();
 const MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
@@ -21,6 +32,7 @@ async function finalizeTraceUpload(
   filename: string,
   size: number,
   finalPath: string,
+  context: RequestContext,
 ) {
   const tps = getTraceProcessorService();
 
@@ -29,7 +41,6 @@ async function finalizeTraceUpload(
     console.log(`[TraceProcessor] Initialized upload with traceId: ${traceId}`);
   }
 
-  const metadataPath = path.join(path.dirname(finalPath), `${traceId}.json`);
   const metadata = {
     id: traceId,
     filename,
@@ -37,9 +48,10 @@ async function finalizeTraceUpload(
     uploadedAt: new Date().toISOString(),
     status: 'ready',
     path: finalPath,
+    ...buildTraceOwnerMetadata(context),
   };
-  await fs.writeFile(metadataPath, JSON.stringify(metadata, null, 2));
-  console.log(`[TraceProcessor] Created metadata: ${metadataPath}`);
+  await writeTraceMetadata(metadata);
+  console.log(`[TraceProcessor] Created metadata for trace: ${traceId}`);
 
   if (tps) {
     try {
@@ -93,6 +105,8 @@ router.get('/health', (req, res) => {
   });
 });
 
+router.use(attachRequestContext);
+
 // Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -111,9 +125,10 @@ const upload = multer({
   },
 });
 
-// POST /api/traces/upload - Simple upload without auth
+// POST /api/traces/upload - Simple upload with RequestContext ownership
 router.post('/upload', upload.single('file'), async (req, res) => {
   try {
+    const context = requireRequestContext(req);
     if (!req.file) {
       return res.status(400).json({
         error: 'No file uploaded'
@@ -123,7 +138,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     const file = req.file;
 
     // Store trace info (in a real app, this would go to a database)
-    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
+    const tracesDir = getTracesDir();
     await fs.mkdir(tracesDir, { recursive: true });
 
     // Generate trace ID upfront for consistency
@@ -136,7 +151,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     console.log(`File uploaded successfully: ${file.originalname} -> ${traceId}`);
 
     // Get trace status and processor port from service
-    const traceInfo = await finalizeTraceUpload(traceId, file.originalname, file.size, finalPath);
+    const traceInfo = await finalizeTraceUpload(traceId, file.originalname, file.size, finalPath, context);
 
     res.json({
       success: true,
@@ -164,6 +179,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 // POST /api/traces/upload-url - Fetch a remote trace from the backend side.
 router.post('/upload-url', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
     const rawUrl = typeof req.body?.url === 'string' ? req.body.url : '';
     if (!rawUrl) {
       return res.status(400).json({
@@ -214,7 +230,7 @@ router.post('/upload-url', async (req, res) => {
       });
     }
 
-    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
+    const tracesDir = getTracesDir();
     await fs.mkdir(tracesDir, { recursive: true });
 
     const traceId = uuidv4();
@@ -223,7 +239,7 @@ router.post('/upload-url', async (req, res) => {
 
     console.log(`URL trace fetched successfully: ${rawUrl} -> ${traceId}`);
 
-    const traceInfo = await finalizeTraceUpload(traceId, filename, buffer.byteLength, finalPath);
+    const traceInfo = await finalizeTraceUpload(traceId, filename, buffer.byteLength, finalPath, context);
 
     res.json({
       success: true,
@@ -250,28 +266,17 @@ router.post('/upload-url', async (req, res) => {
 // GET /api/traces - List all traces
 router.get('/', async (req, res) => {
   try {
-    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
-
-    try {
-      const files = await fs.readdir(tracesDir);
-      const traces = [];
-
-      for (const file of files) {
-        if (file.endsWith('.json')) {
-          const traceData = await fs.readFile(path.join(tracesDir, file), 'utf8');
-          const trace = JSON.parse(traceData);
-          traces.push(trace);
-        }
-      }
-
-      // Sort by upload date (newest first)
-      traces.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
-
-      res.json({ traces });
-    } catch (error) {
-      // Directory doesn't exist yet
-      res.json({ traces: [] });
+    const context = requireRequestContext(req);
+    const ownedTraces: TraceMetadata[] = [];
+    for (const trace of await listTraceMetadata()) {
+      const owned = await readTraceMetadataForContext(trace.id, context);
+      if (owned) ownedTraces.push(owned);
     }
+
+    // Sort by upload date (newest first)
+    ownedTraces.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+
+    res.json({ traces: ownedTraces });
   } catch (error: any) {
     console.error('List traces error:', error);
     res.status(500).json({
@@ -283,12 +288,20 @@ router.get('/', async (req, res) => {
 
 // GET /api/traces/stats - Get resource usage statistics
 // IMPORTANT: Must be before /:id to avoid matching "stats" as an id
-router.get('/stats', (req, res) => {
+router.get('/stats', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
+    const ownedTraceIds = new Set<string>();
+    for (const metadata of await listTraceMetadata()) {
+      if (await readTraceMetadataForContext(metadata.id, context)) {
+        ownedTraceIds.add(metadata.id);
+      }
+    }
     const portPoolStats = getPortPool().getStats();
     const processorStats = TraceProcessorFactory.getStats();
     const traceService = getTraceProcessorService();
-    const traces = traceService.getAllTraces();
+    const traces = traceService.getAllTraces().filter(t => ownedTraceIds.has(t.id));
+    const allocations = portPoolStats.allocations.filter(a => ownedTraceIds.has(a.traceId));
 
     res.json({
       success: true,
@@ -296,16 +309,16 @@ router.get('/stats', (req, res) => {
         portPool: {
           total: portPoolStats.total,
           available: portPoolStats.available,
-          allocated: portPoolStats.allocated,
-          allocations: portPoolStats.allocations.map(a => ({
+          allocated: allocations.length,
+          allocations: allocations.map(a => ({
             port: a.port,
             traceId: a.traceId,
             allocatedAt: a.allocatedAt,
           })),
         },
         processors: {
-          count: processorStats.count,
-          traceIds: processorStats.traceIds,
+          count: processorStats.traceIds.filter(traceId => ownedTraceIds.has(traceId)).length,
+          traceIds: processorStats.traceIds.filter(traceId => ownedTraceIds.has(traceId)),
         },
         traces: {
           count: traces.length,
@@ -331,6 +344,11 @@ router.get('/stats', (req, res) => {
 // IMPORTANT: Must be before /:id to avoid matching "cleanup" as an id
 router.post('/cleanup', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
+    if (!isPrivilegedRequestContext(context)) {
+      return sendResourceNotFound(res);
+    }
+
     console.log('[Traces] Starting full cleanup...');
 
     // Cleanup all trace processors
@@ -361,6 +379,7 @@ router.post('/cleanup', async (req, res) => {
 // and wants to enable AI analysis without re-uploading the trace
 router.post('/register-rpc', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
     const { port, traceName } = req.body;
 
     if (!port) {
@@ -384,6 +403,17 @@ router.post('/register-rpc', async (req, res) => {
       console.log(`[Traces] Registered external RPC as traceId: ${traceId}`);
     }
 
+    await writeTraceMetadata({
+      id: traceId,
+      filename: traceName || 'External RPC Trace',
+      size: 0,
+      uploadedAt: new Date().toISOString(),
+      status: 'ready',
+      externalRpc: true,
+      port,
+      ...buildTraceOwnerMetadata(context),
+    });
+
     res.json({
       success: true,
       traceId,
@@ -403,33 +433,30 @@ router.post('/register-rpc', async (req, res) => {
 // GET /api/traces/:id - Get a single trace info (for verifying trace exists)
 router.get('/:id', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
     const { id } = req.params;
-    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
-    const metadataPath = path.join(tracesDir, `${id}.json`);
+    const metadata = await readTraceMetadataForContext(id, context);
 
-    try {
-      const metadataContent = await fs.readFile(metadataPath, 'utf8');
-      const metadata = JSON.parse(metadataContent);
-
-      // Also check TraceProcessorService for processor status
-      const tps = getTraceProcessorService();
-      const traceInfo = tps?.getTraceWithPort(id);
-
-      res.json({
-        success: true,
-        trace: {
-          ...metadata,
-          processorStatus: traceInfo?.status || 'unknown',
-          hasProcessor: !!traceInfo?.processor,
-          port: traceInfo?.port,
-        }
-      });
-    } catch (error) {
-      res.status(404).json({
+    if (!metadata) {
+      return res.status(404).json({
         error: 'Trace not found',
         id
       });
     }
+
+    // Also check TraceProcessorService for processor status
+    const tps = getTraceProcessorService();
+    const traceInfo = tps?.getTraceWithPort(id);
+
+    res.json({
+      success: true,
+      trace: {
+        ...metadata,
+        processorStatus: traceInfo?.status || 'unknown',
+        hasProcessor: !!traceInfo?.processor,
+        port: traceInfo?.port ?? metadata.port,
+      }
+    });
   } catch (error: any) {
     console.error('[Traces] Get trace error:', error);
     res.status(500).json({
@@ -442,8 +469,16 @@ router.get('/:id', async (req, res) => {
 // DELETE /api/traces/:id - Delete a trace and cleanup all resources
 router.delete('/:id', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
     const { id } = req.params;
-    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
+    const metadata = await readTraceMetadataForContext(id, context);
+    if (!metadata) {
+      return res.status(404).json({
+        error: 'Trace not found',
+        id
+      });
+    }
+    const tracesDir = getTracesDir();
 
     console.log(`[Traces] Deleting trace ${id} and cleaning up resources...`);
 
@@ -489,13 +524,26 @@ router.delete('/:id', async (req, res) => {
 // GET /api/traces/:id/file - Download trace file
 router.get('/:id/file', async (req, res) => {
   try {
+    const context = requireRequestContext(req);
     const { id } = req.params;
-    const tracesDir = path.join(process.env.UPLOAD_DIR || './uploads', 'traces');
-    const tracePath = path.join(tracesDir, `${id}.trace`);
+    const metadata = await readTraceMetadataForContext(id, context);
+    if (!metadata) {
+      return res.status(404).json({
+        error: 'Trace file not found',
+        id
+      });
+    }
+    const tracePath = metadata.path || getTraceFilePath(id);
+    if (!tracePath) {
+      return res.status(404).json({
+        error: 'Trace file not found',
+        id
+      });
+    }
 
     try {
       await fs.access(tracePath);
-      res.sendFile(tracePath, { root: '.' });
+      res.sendFile(path.resolve(tracePath));
     } catch (error) {
       res.status(404).json({
         error: 'Trace file not found',

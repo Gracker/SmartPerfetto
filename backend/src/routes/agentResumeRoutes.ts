@@ -10,6 +10,13 @@ import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { getProviderService } from '../services/providerManager';
+import { requireRequestContext } from '../middleware/auth';
+import {
+  isOwnedByContext,
+  normalizeResourceOwner,
+  sendResourceNotFound,
+} from '../services/resourceOwnership';
+import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 
 interface AssistantSessionStore {
   getSession(sessionId: string): any;
@@ -28,6 +35,7 @@ export function registerAgentResumeRoutes(
   deps: AgentResumeRoutesDeps
 ): void {
   router.post('/resume', async (req, res) => {
+    const requestContext = requireRequestContext(req);
     const { sessionId, traceId } = req.body || {};
 
     if (!sessionId || typeof sessionId !== 'string') {
@@ -39,6 +47,9 @@ export function registerAgentResumeRoutes(
 
     const existingSession = deps.sessionStore.getSession(sessionId);
     if (existingSession) {
+      if (!isOwnedByContext(existingSession, requestContext)) {
+        return sendResourceNotFound(res, 'Session not found');
+      }
       return res.json({
         success: true,
         sessionId,
@@ -67,6 +78,9 @@ export function registerAgentResumeRoutes(
           error: 'Session metadata not found',
         });
       }
+      if (!isOwnedByContext(persistedSession.metadata, requestContext)) {
+        return sendResourceNotFound(res, 'Session not found');
+      }
 
       if (traceId && traceId !== persistedSession.traceId) {
         return res.status(400).json({
@@ -78,6 +92,9 @@ export function registerAgentResumeRoutes(
       }
 
       const effectiveTraceId = persistedSession.traceId;
+      if (!await readTraceMetadataForContext(effectiveTraceId, requestContext)) {
+        return sendResourceNotFound(res, 'Trace not found in backend');
+      }
       const traceProcessorService = getTraceProcessorService();
       const trace = await traceProcessorService.getOrLoadTrace(effectiveTraceId);
       if (!trace) {
@@ -156,6 +173,7 @@ export function registerAgentResumeRoutes(
             status: 'completed',
           }
         : undefined;
+      const owner = normalizeResourceOwner(persistedSession.metadata);
 
       // Unified snapshot restoration — all fields populated from single source
       // Restore ClaudeRuntime Maps (notes, plans, hypotheses, flags, artifacts, architecture, sdkSessionId)
@@ -180,6 +198,9 @@ export function registerAgentResumeRoutes(
         result: recoveredResult || undefined,
         status: 'completed',
         traceId: effectiveTraceId,
+        tenantId: owner.tenantId,
+        workspaceId: owner.workspaceId,
+        userId: owner.userId,
         providerId: restoredProviderId,
         query: latestTurn?.query || persistedSession.question,
         createdAt: persistedSession.createdAt,

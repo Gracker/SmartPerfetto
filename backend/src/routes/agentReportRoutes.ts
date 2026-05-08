@@ -4,6 +4,8 @@
 
 import express from 'express';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
+import { requireRequestContext } from '../middleware/auth';
+import { isOwnedByContext, sendResourceNotFound } from '../services/resourceOwnership';
 
 interface AgentReportRoutesDeps {
   getSession: (sessionId: string) => any;
@@ -21,11 +23,8 @@ export function registerAgentReportRoutes(
     const { sessionId } = req.params;
 
     const session = deps.getSession(sessionId);
-    if (!session) {
-      return res.status(404).json({
-        success: false,
-        error: 'Session not found',
-      });
+    if (!session || !isOwnedByContext(session, requireRequestContext(req))) {
+      return sendResourceNotFound(res, 'Session not found');
     }
 
     if (session.status !== 'completed') {

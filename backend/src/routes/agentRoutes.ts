@@ -22,7 +22,14 @@ import { persistAgentTurn } from '../services/persistAgentSession';
 import { normalizeNarrativeForClient as sharedNormalizeNarrative } from '../services/agentResultNormalizer';
 import { reportStore, persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
-import { authenticate } from '../middleware/auth';
+import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
+import {
+  isOwnedByContext,
+  ownerFieldsFromContext,
+  sendResourceNotFound,
+  type ResourceOwnerFields,
+} from '../services/resourceOwnership';
+import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import {
   sessionContextManager,
   EnhancedSessionContext,
@@ -217,7 +224,7 @@ router.use((req, res, next) => {
   next();
 });
 
-// Apply API-key auth to all Agent endpoints (dev fallback still applies when key is not configured).
+// Apply API-key auth and RequestContext to all Agent endpoints (dev fallback still applies when key is not configured).
 router.use(authenticate);
 
 // ============================================================================
@@ -233,6 +240,9 @@ interface AnalysisSession {
   status: 'pending' | 'running' | 'awaiting_user' | 'completed' | 'failed';
   error?: string;
   traceId: string;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
   /** Provider Manager profile used for this SDK session. null means env/default fallback is pinned. */
   providerId?: string | null;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
@@ -297,7 +307,7 @@ function getModelRouter(): ModelRouter {
 
 type TurnHistorySource = 'memory' | 'persistence';
 
-interface ResolvedSessionContext {
+interface ResolvedSessionContext extends ResourceOwnerFields {
   context: EnhancedSessionContext;
   source: TurnHistorySource;
   traceId: string;
@@ -318,6 +328,9 @@ function resolveSessionContextForReview(sessionId: string): ResolvedSessionConte
         traceId: activeSession.traceId,
         query: activeSession.query,
         createdAt: activeSession.createdAt,
+        tenantId: activeSession.tenantId,
+        workspaceId: activeSession.workspaceId,
+        userId: activeSession.userId,
       };
     }
   }
@@ -330,6 +343,9 @@ function resolveSessionContextForReview(sessionId: string): ResolvedSessionConte
       traceId: memoryContext.getTraceId(),
       query: activeSession?.query,
       createdAt: activeSession?.createdAt,
+      tenantId: activeSession?.tenantId,
+      workspaceId: activeSession?.workspaceId,
+      userId: activeSession?.userId,
     };
   }
 
@@ -350,7 +366,49 @@ function resolveSessionContextForReview(sessionId: string): ResolvedSessionConte
     traceId: persistedSession.traceId,
     query: persistedSession.question,
     createdAt: persistedSession.createdAt,
+    tenantId: persistedSession.metadata?.tenantId,
+    workspaceId: persistedSession.metadata?.workspaceId,
+    userId: persistedSession.metadata?.userId,
+    ownerUserId: persistedSession.metadata?.ownerUserId,
   };
+}
+
+function assignSessionOwner(session: AnalysisSession, context: RequestContext): void {
+  Object.assign(session, ownerFieldsFromContext(context));
+}
+
+function getAuthorizedSession(req: express.Request, res: express.Response, sessionId: string): AnalysisSession | null {
+  const context = requireRequestContext(req);
+  const session = assistantAppService.getSession(sessionId);
+  if (!session || !isOwnedByContext(session, context)) {
+    sendResourceNotFound(res, 'Session not found');
+    return null;
+  }
+  return session;
+}
+
+function isResolvedSessionAccessible(req: express.Request, resolved: ResolvedSessionContext): boolean {
+  return isOwnedByContext(resolved, requireRequestContext(req));
+}
+
+async function ensureTraceAccessible(req: express.Request, res: express.Response, traceId: string): Promise<boolean> {
+  const context = requireRequestContext(req);
+  const metadata = await readTraceMetadataForContext(traceId, context);
+  if (!metadata) {
+    sendResourceNotFound(res, 'Trace not found in backend');
+    return false;
+  }
+  return true;
+}
+
+function requestedSessionIsVisible(sessionId: string, context: RequestContext): boolean {
+  const activeSession = assistantAppService.getSession(sessionId);
+  if (activeSession) {
+    return isOwnedByContext(activeSession, context);
+  }
+
+  const persistedSession = SessionPersistenceService.getInstance().getSession(sessionId);
+  return !persistedSession || isOwnedByContext(persistedSession.metadata, context);
 }
 
 function buildTurnSeverityCounts(turn: ConversationTurn): Record<string, number> {
@@ -666,6 +724,7 @@ function isDedicatedSceneReplayRequest(query: string): boolean {
 router.post('/analyze', async (req, res) => {
   try {
     const requestId = getRequestId(req);
+    const requestContext = requireRequestContext(req);
     const { traceId, query, sessionId: requestedSessionId, options = {}, selectionContext: rawSelectionContext, referenceTraceId, traceContext: rawTraceContext, providerId } = req.body;
 
     if (!traceId) {
@@ -691,6 +750,10 @@ router.post('/analyze', async (req, res) => {
       });
     }
 
+    if (requestedSessionId && !requestedSessionIsVisible(requestedSessionId, requestContext)) {
+      return sendResourceNotFound(res, 'Session not found');
+    }
+
     // Validate selectionContext — strip invalid payloads silently instead of rejecting
     let selectionContext: typeof rawSelectionContext | undefined;
     if (rawSelectionContext && typeof rawSelectionContext === 'object') {
@@ -705,6 +768,9 @@ router.post('/analyze', async (req, res) => {
 
     // Verify trace exists
     const traceProcessorService = getTraceProcessorService();
+    if (!await ensureTraceAccessible(req, res, traceId)) {
+      return;
+    }
     const trace = await traceProcessorService.getOrLoadTrace(traceId);
     if (!trace) {
       return res.status(404).json({
@@ -723,6 +789,9 @@ router.post('/analyze', async (req, res) => {
           error: 'referenceTraceId must be different from traceId',
           code: 'SAME_TRACE_COMPARISON',
         });
+      }
+      if (!await ensureTraceAccessible(req, res, referenceTraceId)) {
+        return;
       }
       const refTrace = await traceProcessorService.getOrLoadTrace(referenceTraceId);
       if (!refTrace) {
@@ -760,6 +829,11 @@ router.post('/analyze', async (req, res) => {
       sessionId = prepared.sessionId;
       preparedSession = prepared.session as AnalysisSession;
       isNewSession = prepared.isNewSession;
+      if (isNewSession) {
+        assignSessionOwner(preparedSession, requestContext);
+      } else if (!isOwnedByContext(preparedSession, requestContext)) {
+        return sendResourceNotFound(res, 'Session not found');
+      }
     } catch (error: any) {
       if (error instanceof AnalyzeSessionPreparationError) {
         return res.status(error.httpStatus).json({
@@ -864,13 +938,8 @@ router.post('/analyze', async (req, res) => {
 router.get('/:sessionId/stream', (req, res) => {
   const { sessionId } = req.params;
 
-  const session = assistantAppService.getSession(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   // F3: Check for Last-Event-ID (reconnect replay support)
   // Accepts both standard header (EventSource) and query param (fetch-based clients)
@@ -949,13 +1018,8 @@ router.get('/:sessionId/stream', (req, res) => {
 router.get('/:sessionId/status', (req, res) => {
   const { sessionId } = req.params;
 
-  const session = assistantAppService.getSession(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   const response: any = {
     success: true,
@@ -1037,6 +1101,9 @@ router.get('/:sessionId/turns', (req, res) => {
       hint: 'Session may not exist or was not persisted with context snapshots',
     });
   }
+  if (!isResolvedSessionAccessible(req, resolved)) {
+    return sendResourceNotFound(res, 'Session context not found');
+  }
 
   const allTurns = resolved.context.getAllTurns();
   const ordered = order === 'desc' ? [...allTurns].reverse() : [...allTurns];
@@ -1082,6 +1149,9 @@ router.get('/:sessionId/turns/:turnId', (req, res) => {
       error: 'Session context not found',
       hint: 'Session may not exist or was not persisted with context snapshots',
     });
+  }
+  if (!isResolvedSessionAccessible(req, resolved)) {
+    return sendResourceNotFound(res, 'Session context not found');
   }
 
   const turns = resolved.context.getAllTurns();
@@ -1137,13 +1207,8 @@ router.get('/:sessionId/turns/:turnId', (req, res) => {
 router.delete('/:sessionId', (req, res) => {
   const { sessionId } = req.params;
 
-  const session = assistantAppService.getSession(sessionId);
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   // Close all SSE connections
   session.sseClients.forEach((client) => {
@@ -1182,7 +1247,8 @@ router.post('/:sessionId/feedback', async (req, res) => {
     return res.status(400).json({ success: false, error: validated.error });
   }
 
-  const session = assistantAppService.getSession(sessionId);
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
   const lookup: FeedbackSessionLookup | null = session
     ? { traceId: session.traceId, referenceTraceId: session.referenceTraceId }
     : null;
@@ -1229,14 +1295,8 @@ router.post('/:sessionId/feedback', async (req, res) => {
  */
 router.post('/:sessionId/respond', async (req, res) => {
   const { sessionId } = req.params;
-  const session = assistantAppService.getSession(sessionId);
-
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   const action = req.body?.action;
   const allowedActions = new Set(['continue', 'abort']);
@@ -1295,14 +1355,8 @@ router.post('/:sessionId/respond', async (req, res) => {
  */
 router.post('/:sessionId/intervene', async (req, res) => {
   const { sessionId } = req.params;
-  const session = assistantAppService.getSession(sessionId);
-
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   const { interventionId, action, selectedOptionId, customInput, params } = req.body;
 
@@ -1400,11 +1454,8 @@ router.post('/:sessionId/intervene', async (req, res) => {
 // P1-4: Cancel endpoint — allows frontend to signal the backend to stop analysis
 router.post('/:sessionId/cancel', (req, res) => {
   const { sessionId } = req.params;
-  const session = assistantAppService.getSession(sessionId);
-
-  if (!session) {
-    return res.status(404).json({ success: false, error: 'Session not found' });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   // Mark session as failed/cancelled
   if (session.status === 'running' || session.status === 'pending') {
@@ -1427,14 +1478,8 @@ router.post('/:sessionId/cancel', (req, res) => {
 
 router.post('/:sessionId/interaction', async (req, res) => {
   const { sessionId } = req.params;
-  const session = assistantAppService.getSession(sessionId);
-
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   const { type, target, context } = req.body;
 
@@ -1513,14 +1558,8 @@ router.post('/:sessionId/interaction', async (req, res) => {
  */
 router.get('/:sessionId/focus', (req, res) => {
   const { sessionId } = req.params;
-  const session = assistantAppService.getSession(sessionId);
-
-  if (!session) {
-    return res.status(404).json({
-      success: false,
-      error: 'Session not found',
-    });
-  }
+  const session = getAuthorizedSession(req, res, sessionId);
+  if (!session) return;
 
   try {
     // ClaudeRuntime (agentv3) doesn't implement getFocusStore — return empty.
@@ -3883,6 +3922,9 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
       html,
       generatedAt: Date.now(),
       sessionId: session.sessionId,
+      tenantId: session.tenantId,
+      workspaceId: session.workspaceId,
+      userId: session.userId,
     });
 
     reportUrl = `/api/reports/${reportId}`;

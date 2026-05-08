@@ -162,6 +162,9 @@ export interface SceneJobResult {
 export interface SceneReport {
   /** uuid v4 */
   reportId: string;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
   /** sha256 of trace file content; null for external RPC (no content access) */
   traceHash: string | null;
   /** Backend ephemeral trace id */

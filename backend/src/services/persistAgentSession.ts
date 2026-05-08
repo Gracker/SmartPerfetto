@@ -84,7 +84,16 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
       const saved = persistenceService.saveSessionStateSnapshot(
         sessionId,
         snapshot,
-        { sessionContext, focusStoreSnapshot, traceAgentState },
+        {
+          sessionContext,
+          focusStoreSnapshot,
+          traceAgentState,
+          owner: {
+            tenantId: session.tenantId,
+            workspaceId: session.workspaceId,
+            userId: session.userId,
+          },
+        },
       );
       if (saved && logger) {
         logger.info(logComponent, 'Session state snapshot persisted atomically', {
@@ -108,6 +117,11 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
           messages: [],
           createdAt: session.createdAt,
           updatedAt: Date.now(),
+          metadata: {
+            tenantId: session.tenantId,
+            workspaceId: session.workspaceId,
+            userId: session.userId,
+          },
         });
       }
       persistenceService.saveSessionContext(sessionId, sessionContext);

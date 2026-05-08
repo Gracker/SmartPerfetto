@@ -39,6 +39,38 @@ function parseBoolEnv(key: string, defaultValue: boolean): boolean {
   return value.toLowerCase() === 'true' || value === '1';
 }
 
+function parseFeatureFlag(value: string | undefined, defaultValue: boolean = false): boolean {
+  if (!value) return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
+  return defaultValue;
+}
+
+// =============================================================================
+// Feature Flags
+// =============================================================================
+
+export const ENTERPRISE_FEATURE_FLAG_ENV = 'SMARTPERFETTO_ENTERPRISE';
+
+export interface FeatureConfig {
+  /**
+   * Enables enterprise multi-tenant code paths.
+   *
+   * Keep this default-off until RequestContext, lease proxy, and DB-authoritative
+   * paths are fully covered by the enterprise regression matrix.
+   */
+  enterprise: boolean;
+}
+
+export function resolveFeatureConfig(env: NodeJS.ProcessEnv = process.env): FeatureConfig {
+  return {
+    enterprise: parseFeatureFlag(env[ENTERPRISE_FEATURE_FLAG_ENV], false),
+  };
+}
+
+export const featureConfig = resolveFeatureConfig();
+
 // =============================================================================
 // Server Configuration
 // =============================================================================

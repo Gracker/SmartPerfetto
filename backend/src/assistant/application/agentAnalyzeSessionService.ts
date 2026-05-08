@@ -62,6 +62,9 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   orchestratorUpdateHandler?: (update: StreamingUpdate) => void;
   traceId: string;
   query: string;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
   /** Provider Manager profile used for this SDK session. null means env/default fallback is pinned. */
   providerId?: string | null;
   logger: SessionLogger;
@@ -338,6 +341,9 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               status: 'pending',
               traceId,
               query,
+              tenantId: persistedSession.metadata?.tenantId,
+              workspaceId: persistedSession.metadata?.workspaceId,
+              userId: persistedSession.metadata?.userId,
               providerId: restoredProviderId,
               createdAt: persistedSession.createdAt,
               lastActivityAt: Date.now(),

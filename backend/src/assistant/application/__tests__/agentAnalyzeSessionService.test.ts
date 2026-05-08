@@ -271,6 +271,11 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       question: 'q',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      metadata: {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'user-a',
+      },
       messages: [],
     });
     sessionPersistenceService.loadSessionContext.mockReturnValue({} as any);
@@ -331,6 +336,11 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       question: 'q',
       createdAt: Date.now(),
       updatedAt: Date.now(),
+      metadata: {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'user-a',
+      },
       messages: [],
     });
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
@@ -365,6 +375,9 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     expect(prepared.isNewSession).toBe(false);
     expect(prepared.session.providerId).toBeNull();
+    expect(prepared.session.tenantId).toBe('tenant-a');
+    expect(prepared.session.workspaceId).toBe('workspace-a');
+    expect(prepared.session.userId).toBe('user-a');
     expect(mockCreateAgentOrchestrator).toHaveBeenCalledWith(
       expect.objectContaining({
         providerId: null,

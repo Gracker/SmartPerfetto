@@ -5,6 +5,8 @@
 import express from 'express';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
+import { requireRequestContext } from '../middleware/auth';
+import { isOwnedByContext } from '../services/resourceOwnership';
 
 interface SessionStoreLike<TSession> {
   entries(): IterableIterator<[string, TSession]>;
@@ -15,6 +17,9 @@ interface SessionLike {
   traceId: string;
   query: string;
   createdAt: number;
+  tenantId?: string;
+  workspaceId?: string;
+  userId?: string;
 }
 
 interface AgentSessionCatalogRoutesDeps<TSession extends SessionLike> {
@@ -28,6 +33,7 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
 ): void {
   router.get('/sessions', async (req, res) => {
     try {
+      const requestContext = requireRequestContext(req);
       const { traceId, limit, includeRecoverable } = req.query;
       const parsedLimit = limit ? parseInt(limit as string, 10) : 20;
       const shouldIncludeRecoverable = includeRecoverable !== 'false';
@@ -37,6 +43,7 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
 
       for (const [sessionId, session] of deps.sessionStore.entries()) {
         if (traceId && session.traceId !== traceId) continue;
+        if (!isOwnedByContext(session, requestContext)) continue;
 
         const activeContext = sessionContextManager.get(sessionId, session.traceId);
         activeIds.add(sessionId);
@@ -65,6 +72,7 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
           for (const persistedSession of persistedResult.sessions) {
             if (activeIds.has(persistedSession.id)) continue;
             if (!persistenceService.hasSessionContext(persistedSession.id)) continue;
+            if (!isOwnedByContext(persistedSession.metadata, requestContext)) continue;
 
             const storeStats = persistenceService.getEntityStoreStats(persistedSession.id);
             const persistedContext = persistenceService.loadSessionContext(persistedSession.id);
