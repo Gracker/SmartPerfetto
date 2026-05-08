@@ -22,7 +22,12 @@ import os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { TraceProcessorService, TraceInfo, QueryResult } from '../traceProcessorService';
 import { PortPool, getPortPool, resetPortPool } from '../portPool';
-import { TraceProcessorFactory, WorkingTraceProcessor, killOrphanProcessors } from '../workingTraceProcessor';
+import {
+  TraceProcessorFactory,
+  WorkingTraceProcessor,
+  isFatalTraceProcessorListenFailure,
+  killOrphanProcessors,
+} from '../workingTraceProcessor';
 
 // =============================================================================
 // Test Environment Detection
@@ -82,6 +87,26 @@ function cleanupTempFile(filePath: string): void {
 // =============================================================================
 // Mock Setup for Unit Tests (no real trace_processor_shell)
 // =============================================================================
+
+describe('trace_processor startup stderr parsing', () => {
+  it('does not treat Docker IPv6 loopback listen failure as a port conflict', () => {
+    const stderr = '[567.342]       http_server.cc:83 Failed to listen on IPv6 socket: "[::1]:9187" (errno: 99, Cannot assign requested address)';
+
+    expect(isFatalTraceProcessorListenFailure(stderr)).toBe(false);
+  });
+
+  it('does not treat Windows errno 0 listen warning as a port conflict', () => {
+    const stderr = '[841.673]       http_server.cc:72 Failed to listen on IPv4 socket: "127.0.0.1:9800" (errno: 0, No error)';
+
+    expect(isFatalTraceProcessorListenFailure(stderr)).toBe(false);
+  });
+
+  it('treats non-IPv6 listen failures as a port conflict', () => {
+    const stderr = '[567.342]       http_server.cc:83 Failed to listen on 127.0.0.1:9187 (errno: 98, Address already in use)';
+
+    expect(isFatalTraceProcessorListenFailure(stderr)).toBe(true);
+  });
+});
 
 // Mock processor for unit tests
 class MockTraceProcessor {

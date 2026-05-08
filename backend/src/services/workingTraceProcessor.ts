@@ -55,6 +55,24 @@ const CRITICAL_STDLIB_MODULES = [
   'android.binder',             // 22 skills,  6 TS refs — IPC/blocking analysis foundation
 ];
 
+export function isFatalTraceProcessorListenFailure(text: string): boolean {
+  if (!(text.includes('Failed to listen') || text.includes('Address already in use'))) {
+    return false;
+  }
+
+  // Docker/Linux containers commonly have IPv6 loopback disabled. Perfetto can
+  // still serve backend queries on 127.0.0.1, so this warning is not fatal.
+  if (text.includes('Failed to listen on IPv6 socket')) {
+    return false;
+  }
+
+  if (text.includes('errno: 0, No error')) {
+    return false;
+  }
+
+  return true;
+}
+
 /**
  * Kill all orphan trace_processor_shell processes.
  * This should be called at startup to clean up processes from previous runs.
@@ -301,7 +319,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         }
 
         // Check for port in use error
-        if (text.includes('Failed to listen') || text.includes('Address already in use')) {
+        if (isFatalTraceProcessorListenFailure(text)) {
           if (!resolved) {
             resolved = true;
             clearTimeout(timeout);
