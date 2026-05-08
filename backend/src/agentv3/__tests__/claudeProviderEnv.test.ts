@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
-import { createSdkEnv, resolveRuntimeConfig, type ClaudeAgentConfig } from '../claudeConfig';
+import { createSdkEnv, getSdkBinaryOption, resolveRuntimeConfig, type ClaudeAgentConfig } from '../claudeConfig';
 import { getProviderService, resetProviderService } from '../../services/providerManager';
 
 const ORIGINAL_ENV = {
@@ -14,6 +14,7 @@ const ORIGINAL_ENV = {
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+  CLAUDE_BINARY_PATH: process.env.CLAUDE_BINARY_PATH,
   CLAUDE_MODEL: process.env.CLAUDE_MODEL,
 };
 
@@ -165,5 +166,17 @@ describe('createSdkEnv provider isolation', () => {
     expect(() => resolveRuntimeConfig(baseConfig, p.id)).toThrow(
       `Provider ${p.id} is configured for openai-agents-sdk, not claude-agent-sdk`,
     );
+  });
+
+  it('derives the SDK binary option from the same env object passed to the SDK', () => {
+    process.env.CLAUDE_BINARY_PATH = '/global/claude';
+
+    expect(getSdkBinaryOption({ CLAUDE_BINARY_PATH: '/provider/claude' })).toEqual({
+      pathToClaudeCodeExecutable: '/provider/claude',
+    });
+    expect(getSdkBinaryOption({ CLAUDE_BINARY_PATH: '   ' })).toEqual({});
+    expect(getSdkBinaryOption()).toEqual({
+      pathToClaudeCodeExecutable: '/global/claude',
+    });
   });
 });

@@ -18,7 +18,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv, loadClaudeConfig } from '../../agentv3/claudeConfig';
+import { createSdkEnv, getSdkBinaryOption, loadClaudeConfig } from '../../agentv3/claudeConfig';
 import {
   DisplayedScene,
   SceneAnalysisJob,
@@ -51,6 +51,7 @@ export async function runStage3Summary(
   }, HAIKU_TIMEOUT_MS);
 
   try {
+    const sdkEnv = createSdkEnv();
     stream = sdkQuery({
       prompt,
       options: {
@@ -58,10 +59,11 @@ export async function runStage3Summary(
         maxTurns: 1,
         permissionMode: 'bypassPermissions' as const,
         allowDangerouslySkipPermissions: true,
-        env: createSdkEnv(),
+        env: sdkEnv,
         stderr: (data: string) => {
           console.warn(`[SceneStage3Summarizer] SDK stderr: ${data.trimEnd()}`);
         },
+        ...getSdkBinaryOption(sdkEnv),
       },
     });
 

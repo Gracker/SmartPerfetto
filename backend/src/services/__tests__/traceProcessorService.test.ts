@@ -27,6 +27,7 @@ import {
   WorkingTraceProcessor,
   isFatalTraceProcessorListenFailure,
   killOrphanProcessors,
+  supportsTraceProcessorCorsOriginsFlag,
 } from '../workingTraceProcessor';
 
 // =============================================================================
@@ -95,6 +96,12 @@ describe('trace_processor startup stderr parsing', () => {
     expect(isFatalTraceProcessorListenFailure(stderr)).toBe(false);
   });
 
+  it('does not treat bracketed IPv6 listen failures as a port conflict', () => {
+    const stderr = '[567.342]       http_server.cc:83 Failed to listen on [::1]:9187 (errno: 99, Cannot assign requested address)';
+
+    expect(isFatalTraceProcessorListenFailure(stderr)).toBe(false);
+  });
+
   it('does not treat Windows errno 0 listen warning as a port conflict', () => {
     const stderr = '[841.673]       http_server.cc:72 Failed to listen on IPv4 socket: "127.0.0.1:9800" (errno: 0, No error)';
 
@@ -105,6 +112,30 @@ describe('trace_processor startup stderr parsing', () => {
     const stderr = '[567.342]       http_server.cc:83 Failed to listen on 127.0.0.1:9187 (errno: 98, Address already in use)';
 
     expect(isFatalTraceProcessorListenFailure(stderr)).toBe(true);
+  });
+
+  it('detects trace_processor_shell CORS origin flag support from help output', () => {
+    const script = path.join(os.tmpdir(), `trace-processor-help-${uuidv4()}.sh`);
+    fs.writeFileSync(script, '#!/bin/sh\nprintf "%s\\n" "--http-additional-cors-origins"\n');
+    fs.chmodSync(script, 0o755);
+
+    try {
+      expect(supportsTraceProcessorCorsOriginsFlag(script)).toBe(true);
+    } finally {
+      cleanupTempFile(script);
+    }
+  });
+
+  it('treats missing CORS origin flag help as unsupported', () => {
+    const script = path.join(os.tmpdir(), `trace-processor-help-${uuidv4()}.sh`);
+    fs.writeFileSync(script, '#!/bin/sh\nprintf "%s\\n" "--httpd"\n');
+    fs.chmodSync(script, 0o755);
+
+    try {
+      expect(supportsTraceProcessorCorsOriginsFlag(script)).toBe(false);
+    } finally {
+      cleanupTempFile(script);
+    }
   });
 });
 

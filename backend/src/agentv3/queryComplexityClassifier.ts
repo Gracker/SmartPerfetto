@@ -15,7 +15,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv, type ClaudeAgentConfig } from './claudeConfig';
+import { createSdkEnv, getSdkBinaryOption, type ClaudeAgentConfig } from './claudeConfig';
 import { loadPromptTemplate, renderTemplate } from './strategyLoader';
 import type { ComplexityClassifierInput, QueryComplexity } from './types';
 
@@ -145,6 +145,7 @@ async function classifyWithHaiku(
 
   // Default 30s; Haiku usually finishes in 1-2s, but non-Haiku light models can need longer.
   const CLASSIFY_TIMEOUT_MS = timeoutMs ?? 30_000;
+  const sdkEnv = createSdkEnv();
   const stream = sdkQuery({
     prompt,
     options: {
@@ -152,10 +153,11 @@ async function classifyWithHaiku(
       maxTurns: 1,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
-      env: createSdkEnv(),
+      env: sdkEnv,
       stderr: (data: string) => {
         console.warn(`[ComplexityClassifier] SDK stderr: ${data.trimEnd()}`);
       },
+      ...getSdkBinaryOption(sdkEnv),
     },
   });
 

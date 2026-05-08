@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { EventEmitter } from 'events';
-import { spawn, ChildProcess, execSync } from 'child_process';
+import { spawn, spawnSync, ChildProcess, execSync } from 'child_process';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
@@ -45,6 +45,28 @@ export function getTraceProcessorPath(): string {
   return getUserTraceProcessorPath();
 }
 
+const traceProcessorCorsFlagSupportCache = new Map<string, boolean>();
+
+export function supportsTraceProcessorCorsOriginsFlag(binaryPath = getTraceProcessorPath()): boolean {
+  const cached = traceProcessorCorsFlagSupportCache.get(binaryPath);
+  if (cached !== undefined) return cached;
+
+  const result = spawnSync(binaryPath, ['--help'], {
+    encoding: 'utf-8',
+    timeout: 5000,
+  });
+  const help = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  const supported = help.includes('--http-additional-cors-origins') || help.includes('additional-cors');
+  traceProcessorCorsFlagSupportCache.set(binaryPath, supported);
+  return supported;
+}
+
+function isTraceProcessorReadyMessage(text: string): boolean {
+  return text.includes('Starting HTTP server') ||
+    text.includes('Starting RPC server') ||
+    text.includes('Trace loaded');
+}
+
 // Tier 0: absolute minimum stdlib modules needed for any analysis to start.
 // Only the 3 most heavily referenced modules (19-32 skill/TS usages each).
 // All other modules load on-demand via skill YAML prerequisites or explicit
@@ -62,7 +84,7 @@ export function isFatalTraceProcessorListenFailure(text: string): boolean {
 
   // Docker/Linux containers commonly have IPv6 loopback disabled. Perfetto can
   // still serve backend queries on 127.0.0.1, so this warning is not fatal.
-  if (text.includes('Failed to listen on IPv6 socket')) {
+  if (text.includes('IPv6 socket') || text.includes('[::')) {
     return false;
   }
 
@@ -246,8 +268,9 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
       const args = [
         '--httpd',
         '--http-port', String(this.httpPort),
-        // Allow CORS from the Perfetto UI origin
-        '--http-additional-cors-origins', corsOrigins,
+        // Only pass --http-additional-cors-origins when supported (added after v47);
+        // older binaries (≤v47) don't enforce CORS and exit with code 1 on unknown flags.
+        ...(supportsTraceProcessorCorsOriginsFlag() ? ['--http-additional-cors-origins', corsOrigins] : []),
         this.tracePath
       ];
 
@@ -277,7 +300,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         console.log(`[TraceProcessor] stdout: ${text.trim()}`);
 
         // Check if server is ready
-        if (text.includes('Starting HTTP server') || text.includes('Trace loaded')) {
+        if (isTraceProcessorReadyMessage(text)) {
           // Wait a bit for server to be fully ready
           setTimeout(() => {
             if (!resolved) {
@@ -298,7 +321,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         }
 
         // Also check stderr for server ready message
-        if (text.includes('Starting HTTP server') || text.includes('Trace loaded')) {
+        if (isTraceProcessorReadyMessage(text)) {
           setTimeout(() => {
             if (!resolved) {
               resolved = true;

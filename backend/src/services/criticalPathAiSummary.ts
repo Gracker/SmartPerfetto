@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {type SDKMessage, type SDKResultSuccess, query as sdkQuery} from '@anthropic-ai/claude-agent-sdk';
-import {createSdkEnv, hasClaudeCredentials, loadClaudeConfig} from '../agentv3/claudeConfig';
+import {createSdkEnv, getSdkBinaryOption, hasClaudeCredentials, loadClaudeConfig} from '../agentv3/claudeConfig';
 import {redactObjectForLLM} from '../utils/llmPrivacy';
 import type {CriticalPathAnalysis} from './criticalPathAnalyzer';
 
@@ -278,6 +278,7 @@ export async function summarizeCriticalPathWithAi(
   ).replace('{{QUESTION_BLOCK}}', question ? `\n\n用户额外问题：${clampString(question, 500)}` : '');
 
   const timeoutMs = Number.parseInt(process.env.CRITICAL_PATH_AI_TIMEOUT_MS || '60000', 10);
+  const sdkEnv = createSdkEnv();
   const stream = sdkQuery({
     prompt,
     options: {
@@ -285,10 +286,11 @@ export async function summarizeCriticalPathWithAi(
       maxTurns: 1,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
-      env: createSdkEnv(),
+      env: sdkEnv,
       stderr: (data: string) => {
         console.warn(`[CriticalPathAI] SDK stderr: ${data.trimEnd()}`);
       },
+      ...getSdkBinaryOption(sdkEnv),
     },
   });
 

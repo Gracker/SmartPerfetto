@@ -258,6 +258,17 @@ export function createQuickConfig(baseConfig: ClaudeAgentConfig): ClaudeAgentCon
 }
 
 /**
+ * Returns pathToClaudeCodeExecutable when CLAUDE_BINARY_PATH is set.
+ * Needed on Linux glibc systems where the SDK auto-selects the musl binary
+ * (tried first) but musl libc is absent. Point to the glibc variant:
+ *   CLAUDE_BINARY_PATH=<repo>/backend/node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude
+ */
+export function getSdkBinaryOption(env: Record<string, string | undefined> = process.env): { pathToClaudeCodeExecutable?: string } {
+  const binaryPath = env.CLAUDE_BINARY_PATH?.trim();
+  return binaryPath ? { pathToClaudeCodeExecutable: binaryPath } : {};
+}
+
+/**
  * Create a sanitized copy of process.env for SDK subprocess spawning.
  * When a providerId is given, overlays that provider's env vars.
  * When no providerId is given, overlays the active provider only when it is

@@ -15,7 +15,7 @@
  */
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv } from '../claudeConfig';
+import { createSdkEnv, getSdkBinaryOption } from '../claudeConfig';
 import { FAILURE_CATEGORIES, FAILURE_CATEGORY_DESCRIPTIONS } from './failureTaxonomy';
 import type { ReviewJobPayload, ReviewExecutionResult } from './reviewWorker';
 
@@ -42,6 +42,7 @@ export async function executeReviewAgentViaSdk(
   const model = opts.model ?? DEFAULT_MODEL;
 
   const prompt = buildReviewAgentPrompt(payload);
+  const sdkEnv = createSdkEnv();
 
   const stream = sdkQuery({
     prompt,
@@ -50,10 +51,11 @@ export async function executeReviewAgentViaSdk(
       maxTurns: MAX_TURNS,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
-      env: createSdkEnv(),
+      env: sdkEnv,
       stderr: (data: string) => {
         console.warn(`[ReviewAgentSdk] SDK stderr: ${data.trimEnd()}`);
       },
+      ...getSdkBinaryOption(sdkEnv),
     },
   });
 

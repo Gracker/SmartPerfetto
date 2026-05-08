@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv } from './claudeConfig';
+import { createSdkEnv, getSdkBinaryOption } from './claudeConfig';
 import type { Finding, StreamingUpdate } from '../agent/types';
 import type { VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis } from './types';
 import { expectedToolNames } from './types';
@@ -803,6 +803,7 @@ ${conclusionPreview}${truncationNote}
 [{"type": "missing_evidence", "severity": "warning", "message": "..."}]
 \`\`\``;
 
+    const sdkEnv = createSdkEnv();
     const stream = sdkQuery({
       prompt,
       options: {
@@ -810,10 +811,11 @@ ${conclusionPreview}${truncationNote}
         maxTurns: 1,
         permissionMode: 'bypassPermissions' as const,
         allowDangerouslySkipPermissions: true,
-        env: createSdkEnv(),
+        env: sdkEnv,
         stderr: (data: string) => {
           console.warn(`[ClaudeVerifier] SDK stderr: ${data.trimEnd()}`);
         },
+        ...getSdkBinaryOption(sdkEnv),
       },
     });
 

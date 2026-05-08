@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { type SDKMessage, type SDKResultSuccess, query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-import { createSdkEnv, hasClaudeCredentials, loadClaudeConfig } from '../agentv3/claudeConfig';
+import { createSdkEnv, getSdkBinaryOption, hasClaudeCredentials, loadClaudeConfig } from '../agentv3/claudeConfig';
 import { redactObjectForLLM } from '../utils/llmPrivacy';
 import type { FlamegraphAiSummary, FlamegraphAnalysis } from './flamegraphTypes';
 
@@ -122,6 +122,7 @@ export async function summarizeFlamegraphWithAi(
     .join('\n\n');
 
   const timeoutMs = Number.parseInt(process.env.FLAMEGRAPH_AI_TIMEOUT_MS || '60000', 10);
+  const sdkEnv = createSdkEnv();
   const stream = sdkQuery({
     prompt,
     options: {
@@ -129,10 +130,11 @@ export async function summarizeFlamegraphWithAi(
       maxTurns: 1,
       permissionMode: 'bypassPermissions' as const,
       allowDangerouslySkipPermissions: true,
-      env: createSdkEnv(),
+      env: sdkEnv,
       stderr: (data: string) => {
         console.warn(`[FlamegraphAI] SDK stderr: ${data.trimEnd()}`);
       },
+      ...getSdkBinaryOption(sdkEnv),
     },
   });
 
