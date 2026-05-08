@@ -10,6 +10,7 @@ import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { getProviderService } from '../services/providerManager';
+import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
 import { requireRequestContext } from '../middleware/auth';
 import {
   isOwnedByContext,
@@ -116,12 +117,13 @@ export function registerAgentResumeRoutes(
 
       sessionContextManager.set(sessionId, effectiveTraceId, restoredContext);
 
+      const providerSvc = getProviderService();
       const snapshot = persistenceService.loadSessionStateSnapshot(sessionId);
       const snapshotProviderId = snapshot?.agentRuntimeProviderId;
       const restoredProviderId = snapshot
         ? snapshotProviderId ?? null
-        : getProviderService().getRawEffectiveProvider()?.id ?? null;
-      if (typeof snapshotProviderId === 'string' && !getProviderService().getRawProvider(snapshotProviderId)) {
+        : providerSvc.getRawEffectiveProvider()?.id ?? null;
+      if (typeof snapshotProviderId === 'string' && !providerSvc.getRawProvider(snapshotProviderId)) {
         return res.status(404).json({
           success: false,
           error: `Provider not found: ${snapshotProviderId}`,
@@ -129,6 +131,15 @@ export function registerAgentResumeRoutes(
           hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
         });
       }
+      const restoredProviderSnapshotHash = resolveProviderRuntimeSnapshot(
+        providerSvc,
+        restoredProviderId,
+        restoredProviderId ? undefined : snapshot?.agentRuntimeKind,
+      ).snapshotHash;
+      const providerSnapshotChanged = Boolean(
+        snapshot?.agentRuntimeProviderSnapshotHash &&
+        snapshot.agentRuntimeProviderSnapshotHash !== restoredProviderSnapshotHash,
+      );
       const orchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
         providerId: restoredProviderId,
@@ -157,6 +168,13 @@ export function registerAgentResumeRoutes(
         entityStoreStats: restoredContext.getEntityStore().getStats(),
         turnCount: restoredContext.getAllTurns().length,
       });
+      if (providerSnapshotChanged) {
+        logger.warn('AgentRoutes', 'Provider snapshot changed; SDK session state will not be restored', {
+          providerId: restoredProviderId,
+          previousProviderSnapshotHash: snapshot?.agentRuntimeProviderSnapshotHash,
+          nextProviderSnapshotHash: restoredProviderSnapshotHash,
+        });
+      }
 
       const restoredTurns = restoredContext.getAllTurns();
       const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
@@ -177,7 +195,7 @@ export function registerAgentResumeRoutes(
 
       // Unified snapshot restoration — all fields populated from single source
       // Restore ClaudeRuntime Maps (notes, plans, hypotheses, flags, artifacts, architecture, sdkSessionId)
-      if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
+      if (snapshot && !providerSnapshotChanged && typeof orchestrator.restoreFromSnapshot === 'function') {
         orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
         logger.info('AgentRoutes', 'ClaudeRuntime Maps restored from snapshot', {
           notes: snapshot.analysisNotes.length,
@@ -202,6 +220,11 @@ export function registerAgentResumeRoutes(
         workspaceId: owner.workspaceId,
         userId: owner.userId,
         providerId: restoredProviderId,
+        providerSnapshotHash: restoredProviderSnapshotHash,
+        providerSnapshotChanged: providerSnapshotChanged || undefined,
+        providerSnapshotChangeReason: providerSnapshotChanged
+          ? 'provider_snapshot_hash_mismatch'
+          : undefined,
         query: latestTurn?.query || persistedSession.question,
         createdAt: persistedSession.createdAt,
         lastActivityAt: Date.now(),
@@ -227,8 +250,11 @@ export function registerAgentResumeRoutes(
         sessionId,
         traceId: effectiveTraceId,
         status: 'completed',
-        message: 'Session restored from persistence',
+        message: providerSnapshotChanged
+          ? 'Session restored from persistence with a fresh SDK runtime because provider configuration changed'
+          : 'Session restored from persistence',
         restored: true,
+        providerSnapshotChanged: providerSnapshotChanged || undefined,
         observability: restoredRun
           ? {
               runId: restoredRun.runId,

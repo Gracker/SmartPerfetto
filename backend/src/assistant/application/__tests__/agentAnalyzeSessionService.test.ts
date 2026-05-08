@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import type { SessionLogger } from '../../../services/sessionLogger';
 import { resetProviderService } from '../../../services/providerManager';
+import { resolveProviderRuntimeSnapshot } from '../../../services/providerManager/providerSnapshot';
 import {
   AgentAnalyzeSessionService,
   AnalyzeSessionPreparationError,
@@ -19,6 +20,8 @@ const mockCreateAgentOrchestrator = jest.fn((_input: unknown) => ({
   analyze: jest.fn(),
   on: jest.fn(),
   off: jest.fn(),
+  cleanupSession: jest.fn(),
+  restoreFromSnapshot: jest.fn(),
 }));
 
 jest.mock('../../../agentRuntime', () => ({
@@ -56,6 +59,10 @@ function createSession(sessionId: string, traceId: string): AnalyzeManagedSessio
     conversationSteps: [],
     runSequence: 0,
   };
+}
+
+function providerSnapshotHash(providerId: string | null): string {
+  return resolveProviderRuntimeSnapshot(getProviderService(), providerId).snapshotHash;
 }
 
 function createRestoredContext() {
@@ -187,6 +194,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     expect(prepared.isNewSession).toBe(true);
     expect(prepared.session.providerId).toBe(provider.id);
+    expect(prepared.session.providerSnapshotHash).toBe(providerSnapshotHash(provider.id));
     expect(mockCreateAgentOrchestrator).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: provider.id }),
     );
@@ -201,9 +209,66 @@ describe('AgentAnalyzeSessionService session continuity', () => {
 
     expect(prepared.isNewSession).toBe(true);
     expect(prepared.session.providerId).toBeNull();
+    expect(prepared.session.providerSnapshotHash).toBe(providerSnapshotHash(null));
     expect(mockCreateAgentOrchestrator).toHaveBeenCalledWith(
       expect.objectContaining({ providerId: null }),
     );
+  });
+
+  test('refreshes an in-memory SDK session when the pinned provider snapshot changed', () => {
+    const provider = getProviderService().create({
+      name: 'OpenAI Provider',
+      category: 'official',
+      type: 'openai',
+      models: { primary: 'gpt-provider-model', light: 'gpt-provider-light' },
+      connection: {
+        agentRuntime: 'openai-agents-sdk',
+        openaiBaseUrl: 'https://api.example.test/v1',
+        openaiApiKey: 'sk-provider-openai',
+      },
+    });
+    const originalHash = providerSnapshotHash(provider.id);
+    const oldOrchestrator = {
+      analyze: jest.fn(),
+      on: jest.fn(),
+      off: jest.fn(),
+      cleanupSession: jest.fn(),
+    };
+    const existing = createSession('agent-session-1', 'trace-1');
+    existing.orchestrator = oldOrchestrator as any;
+    existing.providerId = provider.id;
+    existing.providerSnapshotHash = originalHash;
+    existing.conversationSteps.push({
+      eventId: 'evt-1',
+      ordinal: 1,
+      phase: 'progress',
+      role: 'agent',
+      text: 'previous context',
+      timestamp: Date.now(),
+    });
+    assistantAppService.setSession(existing.sessionId, existing);
+
+    getProviderService().update(provider.id, {
+      models: { primary: 'gpt-provider-model-v2' },
+    });
+    const nextHash = providerSnapshotHash(provider.id);
+
+    const prepared = service.prepareSession({
+      traceId: 'trace-1',
+      query: 'new follow-up question',
+      requestedSessionId: existing.sessionId,
+      options: {},
+    });
+
+    expect(nextHash).not.toBe(originalHash);
+    expect(prepared.isNewSession).toBe(false);
+    expect(prepared.sessionId).toBe(existing.sessionId);
+    expect(prepared.session.orchestrator).not.toBe(oldOrchestrator);
+    expect(prepared.session.providerId).toBe(provider.id);
+    expect(prepared.session.providerSnapshotHash).toBe(nextHash);
+    expect(prepared.session.providerSnapshotChanged).toBe(true);
+    expect(prepared.session.conversationSteps).toHaveLength(1);
+    expect(oldOrchestrator.cleanupSession).toHaveBeenCalledWith(existing.sessionId);
   });
 
   test('reuses an in-memory session with its pinned provider when active provider changed elsewhere', () => {
@@ -315,6 +380,81 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       expect(prepError.code).toBe('PROVIDER_NOT_FOUND');
       expect(prepError.httpStatus).toBe(404);
     }
+  });
+
+  test('keeps persisted conversation context but skips SDK snapshot restore when provider hash changed', () => {
+    const provider = getProviderService().create({
+      name: 'OpenAI Provider',
+      category: 'official',
+      type: 'openai',
+      models: { primary: 'gpt-provider-model', light: 'gpt-provider-light' },
+      connection: {
+        agentRuntime: 'openai-agents-sdk',
+        openaiBaseUrl: 'https://api.example.test/v1',
+        openaiApiKey: 'sk-provider-openai',
+      },
+    });
+    const originalHash = providerSnapshotHash(provider.id);
+    getProviderService().update(provider.id, {
+      connection: { openaiBaseUrl: 'https://api.changed.example.test/v1' },
+    });
+    const nextHash = providerSnapshotHash(provider.id);
+
+    sessionPersistenceService.getSession.mockReturnValue({
+      id: 'persisted-1',
+      traceId: 'trace-1',
+      question: 'q',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      metadata: {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'user-a',
+      },
+      messages: [],
+    });
+    sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
+    sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
+      version: 1,
+      snapshotTimestamp: Date.now(),
+      sessionId: 'persisted-1',
+      traceId: 'trace-1',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      agentRuntimeKind: 'openai-agents-sdk',
+      agentRuntimeProviderId: provider.id,
+      agentRuntimeProviderSnapshotHash: originalHash,
+      sdkSessionId: 'sdk-response-old',
+      openAILastResponseId: 'sdk-response-old',
+      runSequence: 0,
+      conversationOrdinal: 0,
+    });
+
+    const prepared = service.prepareSession({
+      traceId: 'trace-1',
+      query: 'follow-up',
+      requestedSessionId: 'persisted-1',
+      options: {},
+    });
+
+    const restoredOrchestrator = mockCreateAgentOrchestrator.mock.results[0]?.value as any;
+    expect(nextHash).not.toBe(originalHash);
+    expect(prepared.isNewSession).toBe(false);
+    expect(prepared.sessionId).toBe('persisted-1');
+    expect(prepared.session.providerId).toBe(provider.id);
+    expect(prepared.session.providerSnapshotHash).toBe(nextHash);
+    expect(prepared.session.providerSnapshotChanged).toBe(true);
+    expect(prepared.session.tenantId).toBe('tenant-a');
+    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
   });
 
   test('restores a persisted env-fallback session without reading the active provider', () => {

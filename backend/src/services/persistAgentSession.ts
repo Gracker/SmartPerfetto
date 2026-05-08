@@ -63,6 +63,7 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
           dataEnvelopes: session.dataEnvelopes || [],
           hypotheses: session.hypotheses || [],
           agentRuntimeProviderId: session.providerId,
+          agentRuntimeProviderSnapshotHash: session.providerSnapshotHash,
           runSequence: session.runSequence || 0,
           conversationOrdinal: session.conversationOrdinal || 0,
         })

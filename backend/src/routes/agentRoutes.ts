@@ -250,6 +250,10 @@ interface AnalysisSession {
   userId?: string;
   /** Provider Manager profile used for this SDK session. null means env/default fallback is pinned. */
   providerId?: string | null;
+  /** Non-secret ProviderSnapshot hash used to decide whether SDK session state can be reused. */
+  providerSnapshotHash?: string | null;
+  providerSnapshotChanged?: boolean;
+  providerSnapshotChangeReason?: string;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
   referenceTraceId?: string;
   query: string;
@@ -912,8 +916,13 @@ router.post('/analyze', async (req, res) => {
     res.json({
       success: true,
       sessionId,
-      message: isNewSession ? 'Analysis started' : 'Continuing analysis (multi-turn)',
+      message: preparedSession?.providerSnapshotChanged
+        ? 'Provider configuration changed; continuing with a fresh SDK session'
+        : isNewSession
+          ? 'Analysis started'
+          : 'Continuing analysis (multi-turn)',
       isNewSession,
+      providerSnapshotChanged: preparedSession?.providerSnapshotChanged || undefined,
       architecture: 'agent-driven',
       runId: runContext.runId,
       requestId: runContext.requestId,
