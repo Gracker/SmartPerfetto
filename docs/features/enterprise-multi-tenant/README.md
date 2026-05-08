@@ -21,7 +21,7 @@
 ### 0.1 第一里程碑（§22，最小可用边界）
 - [x] 1.1 `RequestContext` middleware（`backend/src/middleware/auth.ts` 重构）覆盖 trace / agent session / report 三条高风险链路
 - [x] 1.2 owner guard：`/api/traces`、`/api/agent/v1/*`、`/api/reports/*` 加 `tenantId/workspaceId/userId` 过滤，未授权统一 404
-- [ ] 1.3 主线 C 第一批最小改动（详见 4.1，独立 PR，不与 lease 大重写混合）
+- [x] 1.3 主线 C 第一批最小改动（详见 4.1，独立 PR，不与 lease 大重写混合）
 - [ ] 1.4 前端 `windowId` 注入 + pending trace key 加 windowId（`ai_panel.ts` / `session_manager.ts` / `backend_uploader.ts`）
 - [ ] 1.5 SSE 路径明确收敛到 `fetch + ReadableStream` + `Authorization: Bearer` + `Last-Event-ID` cursor replay
 - [ ] 1.6 `ProviderSnapshot` hash + resume 校验（`agentAnalyzeSessionService.prepareSession`），不再只比 `providerId`
@@ -51,13 +51,13 @@
 - [ ] 3.10 集成测试：backend restart 后 session/report/trace metadata 可恢复
 
 ### 0.4 主线 C：运行时隔离（§18 + §11）
-- [ ] 4.1 §11.10 第一批最小改动（独立 PR）
-  - [ ] 4.1.1 timeout 不直接 `destroy()` frontend-owned processor（`workingTraceProcessor.ts`）
-  - [ ] 4.1.2 critical stdlib loader 进入 per-processor queue，禁止与用户 SQL 自并发
-  - [ ] 4.1.3 `createFromExternalRpc` 按 port 去重，复用同 port wrapper
-  - [ ] 4.1.4 LRU 跳过 ExternalRpcProcessor 或改为 lease/ref-count 判定
-  - [ ] 4.1.5 pending trace localStorage key 加 `windowId`，必要时迁 sessionStorage
-  - [ ] 4.1.6 AI session cache 加 mtime/CAS 或改为后端权威 session list
+- [x] 4.1 §11.10 第一批最小改动（独立 PR）
+  - [x] 4.1.1 timeout 不直接 `destroy()` frontend-owned processor（`workingTraceProcessor.ts`）
+  - [x] 4.1.2 critical stdlib loader 进入 per-processor queue，禁止与用户 SQL 自并发
+  - [x] 4.1.3 `createFromExternalRpc` 按 port 去重，复用同 port wrapper
+  - [x] 4.1.4 LRU 跳过 ExternalRpcProcessor 或改为 lease/ref-count 判定
+  - [x] 4.1.5 pending trace localStorage key 加 `windowId`，必要时迁 sessionStorage
+  - [x] 4.1.6 AI session cache 加 mtime/CAS 或改为后端权威 session list
 - [ ] 4.2 上传链路 stream 化（§11.1）：URL 上传不再 `arrayBuffer()` 全量进内存；本地上传与 RAM/磁盘策略联动；temp file 用 traceId/uuid + 原子 rename
 - [ ] 4.3 RSS benchmark：scroll/startup/ANR/memory/heapprofd/vendor 大 trace × 100MB/500MB/1GB，记录启动 RSS、load peak、query headroom
 - [ ] 4.4 `TraceProcessorLease` 4 类 holder（frontend_http_rpc / agent_run / report_generation / manual_register）+ 状态机（§11.4）+ 分级 TTL

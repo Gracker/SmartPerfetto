@@ -157,6 +157,7 @@ export interface TraceProcessor {
   id: string;
   traceId: string;
   status: 'initializing' | 'ready' | 'busy' | 'error';
+  activeQueries: number;
   query(sql: string): Promise<QueryResult>;
   destroy(): void;
 }
@@ -186,6 +187,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
   private isDestroyed = false;
   private serverReady = false;
   private _activeQueries = 0;
+  private queryQueue: Promise<void> = Promise.resolve();
   private _criticalModulesLoaded = false;
   private _criticalModulesLoadPromise: Promise<void> | null = null;
   private _criticalModulesLoadFailures = 0;
@@ -383,24 +385,33 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
       throw new Error('HTTP server not ready');
     }
 
-    // Non-blocking sequential stdlib loading on first query.
+    // Sequential stdlib loading on first query.
     // Each module gets its own HTTP request (never exceeds the 60s query timeout),
     // unlike the previous bulk approach that concatenated all 22 INCLUDEs into one
     // request which timed out on large (200MB+) traces.
-    // Fire-and-forget: queries proceed immediately; skills have their own INCLUDE
-    // prerequisites, and stdlib views become available as loading progresses.
     if (!this._criticalModulesLoaded
         && this._criticalModulesLoadFailures < WorkingTraceProcessor.MAX_STDLIB_LOAD_RETRIES
         && !this._criticalModulesLoadPromise) {
       this._criticalModulesLoadPromise = this._loadCriticalModulesSequentially();
     }
+    if (this._criticalModulesLoadPromise) {
+      await this._criticalModulesLoadPromise;
+    }
 
-    const startTime = Date.now();
     logger.debug('TraceProcessor', `Executing HTTP query: ${sql.substring(0, 100)}...`);
+    return this.enqueueHttpQuery(sql);
+  }
 
+  private async enqueueHttpQuery(sql: string): Promise<QueryResult> {
     this._activeQueries++;
+    const run = this.queryQueue.then(() => this.executeHttpQuery(sql));
+    this.queryQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+
     try {
-      return await this.executeHttpQuery(sql);
+      return await run;
     } finally {
       this._activeQueries--;
     }
@@ -419,7 +430,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     try {
       for (const m of CRITICAL_STDLIB_MODULES) {
         if (this.isDestroyed) break;
-        const result = await this.executeHttpQuery(`INCLUDE PERFETTO MODULE ${m};`);
+        const result = await this.enqueueHttpQuery(`INCLUDE PERFETTO MODULE ${m};`);
         if (result.error) {
           failed++;
           if (!result.error.includes('not found') && !result.error.includes('no such')) {
@@ -468,10 +479,9 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
       wallClockTimer = setTimeout(() => {
         logger.warn(
           'TraceProcessor',
-          `Query exceeded ${traceProcessorConfig.queryTimeoutMs}ms; destroying processor ${this.id}`,
+          `Query exceeded ${traceProcessorConfig.queryTimeoutMs}ms; aborting request for processor ${this.id}`,
         );
         req?.destroy();
-        this.destroy();
         finish({
           columns: [],
           rows: [],
@@ -711,29 +721,31 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 /**
  * Factory for creating trace processors
  */
+type ManagedTraceProcessor = WorkingTraceProcessor | ExternalRpcProcessor;
+
 export class TraceProcessorFactory {
-  private static processors: Map<string, WorkingTraceProcessor> = new Map();
+  private static processors: Map<string, ManagedTraceProcessor> = new Map();
+  private static externalProcessorsByPort: Map<number, ExternalRpcProcessor> = new Map();
   private static maxProcessors = 5;
 
   static async create(traceId: string, tracePath: string): Promise<WorkingTraceProcessor> {
     // Check if processor already exists and is ready
     const existing = this.processors.get(traceId);
-    if (existing && existing.status === 'ready') {
+    if (existing instanceof WorkingTraceProcessor && existing.status === 'ready') {
       console.log(`[TraceProcessorFactory] Reusing existing processor for trace ${traceId}`);
       return existing;
     }
 
     // Clean up failed processor if exists
-    if (existing && existing.status !== 'ready') {
-      console.log(`[TraceProcessorFactory] Cleaning up failed processor for trace ${traceId}`);
-      existing.destroy();
-      this.processors.delete(traceId);
+    if (existing) {
+      console.log(`[TraceProcessorFactory] Cleaning up existing processor for trace ${traceId}`);
+      this.remove(traceId);
     }
 
-    // Clean up oldest idle processors if too many (skip busy ones)
+    // Clean up oldest owned idle processors if too many (skip busy/external ones).
     while (this.processors.size >= this.maxProcessors) {
       const idle = Array.from(this.processors.entries())
-        .find(([, p]) => p.activeQueries === 0);
+        .find(([, p]) => p instanceof WorkingTraceProcessor && p.activeQueries === 0);
       if (idle) {
         console.log(`[TraceProcessorFactory] Cleaning up idle processor: ${idle[0]}`);
         idle[1].destroy();
@@ -794,7 +806,7 @@ export class TraceProcessorFactory {
     throw lastError || new Error('Failed to create trace processor');
   }
 
-  static get(traceId: string): WorkingTraceProcessor | undefined {
+  static get(traceId: string): ManagedTraceProcessor | undefined {
     return this.processors.get(traceId);
   }
 
@@ -802,8 +814,16 @@ export class TraceProcessorFactory {
     const processor = this.processors.get(traceId);
     if (processor) {
       console.log(`[TraceProcessorFactory] Removing processor for trace ${traceId}`);
-      processor.destroy();
       this.processors.delete(traceId);
+      if (processor instanceof ExternalRpcProcessor) {
+        const stillReferenced = Array.from(this.processors.values()).some(p => p === processor);
+        if (!stillReferenced) {
+          processor.destroy();
+          this.externalProcessorsByPort.delete(processor.httpPort);
+        }
+      } else {
+        processor.destroy();
+      }
       return true;
     }
     return false;
@@ -811,10 +831,11 @@ export class TraceProcessorFactory {
 
   static cleanup(): void {
     console.log(`[TraceProcessorFactory] Cleaning up all processors`);
-    for (const processor of this.processors.values()) {
+    for (const processor of new Set(this.processors.values())) {
       processor.destroy();
     }
     this.processors.clear();
+    this.externalProcessorsByPort.clear();
   }
 
   static getStats(): { count: number; traceIds: string[] } {
@@ -830,6 +851,26 @@ export class TraceProcessorFactory {
    * We don't start a new process, we just create a wrapper that queries the existing one.
    */
   static async createFromExternalRpc(traceId: string, port: number): Promise<ExternalRpcProcessor> {
+    const current = this.processors.get(traceId);
+    if (current instanceof ExternalRpcProcessor && current.httpPort === port && current.status === 'ready') {
+      console.log(`[TraceProcessorFactory] Reusing external RPC processor for trace ${traceId} on port ${port}`);
+      return current;
+    }
+    if (current) {
+      console.log(`[TraceProcessorFactory] Remapping trace ${traceId} to external RPC port ${port}`);
+      this.remove(traceId);
+    }
+
+    const existing = this.externalProcessorsByPort.get(port);
+    if (existing && existing.status === 'ready') {
+      console.log(`[TraceProcessorFactory] Reusing external RPC processor for port ${port}`);
+      this.processors.set(traceId, existing);
+      return existing;
+    }
+    if (existing) {
+      this.externalProcessorsByPort.delete(port);
+    }
+
     console.log(`[TraceProcessorFactory] Creating external RPC processor for port ${port}`);
 
     const processor = new ExternalRpcProcessor(traceId, port);
@@ -843,7 +884,8 @@ export class TraceProcessorFactory {
       throw new Error(`Cannot connect to external trace_processor on port ${port}`);
     }
 
-    this.processors.set(traceId, processor as any);
+    this.processors.set(traceId, processor);
+    this.externalProcessorsByPort.set(port, processor);
     return processor;
   }
 }
@@ -856,9 +898,10 @@ export class ExternalRpcProcessor extends EventEmitter implements TraceProcessor
   public id: string;
   public traceId: string;
   public status: 'initializing' | 'ready' | 'busy' | 'error' = 'ready';
-  public activeQueries = 0;
 
   private _httpPort: number;
+  private _activeQueries = 0;
+  private queryQueue: Promise<void> = Promise.resolve();
   private _criticalModulesLoaded = false;
   private _criticalModulesLoadPromise: Promise<void> | null = null;
   private _criticalModulesLoadFailures = 0;
@@ -870,6 +913,11 @@ export class ExternalRpcProcessor extends EventEmitter implements TraceProcessor
     return this._httpPort;
   }
 
+  /** Number of in-flight or queued queries. Factory uses this to avoid unsafe eviction. */
+  public get activeQueries(): number {
+    return this._activeQueries;
+  }
+
   constructor(traceId: string, port: number) {
     super();
     this.id = `external-${port}`;
@@ -879,14 +927,17 @@ export class ExternalRpcProcessor extends EventEmitter implements TraceProcessor
   }
 
   async query(sql: string): Promise<QueryResult> {
-    // Non-blocking sequential stdlib loading on first query (same pattern as WorkingTraceProcessor).
+    // Sequential stdlib loading on first query (same pattern as WorkingTraceProcessor).
     if (!this._criticalModulesLoaded
         && this._criticalModulesLoadFailures < ExternalRpcProcessor.MAX_STDLIB_LOAD_RETRIES
         && !this._criticalModulesLoadPromise) {
       this._criticalModulesLoadPromise = this._loadCriticalModulesSequentially();
     }
+    if (this._criticalModulesLoadPromise) {
+      await this._criticalModulesLoadPromise;
+    }
 
-    return this._execRaw(sql);
+    return this.enqueueRawQuery(sql);
   }
 
   /**
@@ -894,12 +945,13 @@ export class ExternalRpcProcessor extends EventEmitter implements TraceProcessor
    * With only 3 Tier-0 modules this completes in a few seconds.
    */
   private async _loadCriticalModulesSequentially(): Promise<void> {
+    this._activeQueries++;
     const startTime = Date.now();
     let loaded = 0;
     let failed = 0;
     try {
       for (const m of CRITICAL_STDLIB_MODULES) {
-        const result = await this._execRaw(`INCLUDE PERFETTO MODULE ${m};`);
+        const result = await this.enqueueRawQuery(`INCLUDE PERFETTO MODULE ${m};`);
         if (result.error) {
           failed++;
           if (!result.error.includes('not found') && !result.error.includes('no such')) {
@@ -916,7 +968,23 @@ export class ExternalRpcProcessor extends EventEmitter implements TraceProcessor
       this._criticalModulesLoadFailures++;
       console.warn(`[ExternalRpcProcessor] Stdlib sequential load attempt ${this._criticalModulesLoadFailures}/${ExternalRpcProcessor.MAX_STDLIB_LOAD_RETRIES} failed:`, err);
     } finally {
+      this._activeQueries--;
       this._criticalModulesLoadPromise = null;
+    }
+  }
+
+  private async enqueueRawQuery(sql: string): Promise<QueryResult> {
+    this._activeQueries++;
+    const run = this.queryQueue.then(() => this._execRaw(sql));
+    this.queryQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    try {
+      return await run;
+    } finally {
+      this._activeQueries--;
     }
   }
 
