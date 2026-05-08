@@ -145,4 +145,31 @@ describe('StreamProjector SSE Contract', () => {
     expect(parsed[0].data.requestId).toBe('req-3');
     expect(parsed[0].data.runSequence).toBe(3);
   });
+
+  it('replays only buffered events after Last-Event-ID', () => {
+    const projector = new StreamProjector();
+    const res = new MockSseResponse();
+
+    const replayed = projector.replayBufferedEvents(
+      res as unknown as express.Response,
+      [
+        {seqId: 1, eventType: 'progress', eventData: JSON.stringify({step: 1})},
+        {
+          seqId: 2,
+          eventType: 'analysis_completed',
+          eventData: JSON.stringify({reportUrl: '/api/reports/report-a'}),
+        },
+        {seqId: 3, eventType: 'end', eventData: JSON.stringify({done: true})},
+      ],
+      1
+    );
+
+    expect(replayed).toBe(2);
+    const raw = res.writes.join('');
+    expect(raw).toContain('id: 2\n');
+    expect(raw).toContain('event: analysis_completed\n');
+    expect(raw).toContain('id: 3\n');
+    expect(raw).toContain('event: end\n');
+    expect(raw).not.toContain('id: 1\n');
+  });
 });

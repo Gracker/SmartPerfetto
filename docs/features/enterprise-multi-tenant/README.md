@@ -23,7 +23,7 @@
 - [x] 1.2 owner guard：`/api/traces`、`/api/agent/v1/*`、`/api/reports/*` 加 `tenantId/workspaceId/userId` 过滤，未授权统一 404
 - [x] 1.3 主线 C 第一批最小改动（详见 4.1，独立 PR，不与 lease 大重写混合）
 - [x] 1.4 前端 `windowId` 注入 + pending trace key 加 windowId（`ai_panel.ts` / `session_manager.ts` / `backend_uploader.ts`）
-- [ ] 1.5 SSE 路径明确收敛到 `fetch + ReadableStream` + `Authorization: Bearer` + `Last-Event-ID` cursor replay
+- [x] 1.5 SSE 路径明确收敛到 `fetch + ReadableStream` + `Authorization: Bearer` + `Last-Event-ID` cursor replay
 - [ ] 1.6 `ProviderSnapshot` hash + resume 校验（`agentAnalyzeSessionService.prepareSession`），不再只比 `providerId`
 - [ ] 1.7 DB schema 最小切片：`organizations / workspaces / users / memberships / trace_assets / analysis_sessions / analysis_runs / agent_events / provider_snapshots`
 - [ ] 1.8 三用户 + 双窗口回归脚本（落到 `backend/src/scripts/`），覆盖 D1/D2

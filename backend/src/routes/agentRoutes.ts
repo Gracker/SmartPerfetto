@@ -66,6 +66,11 @@ import { registerTeachingRoutes } from './agentTeachingRoutes';
 import { AssistantApplicationService } from '../assistant/application/assistantApplicationService';
 import { StreamProjector, SSE_RING_BUFFER_SIZE } from '../assistant/stream/streamProjector';
 import {
+  appendReplayableSseEvent,
+  hasTerminalReplayAfter,
+  parseLastEventId,
+} from '../assistant/stream/sessionSseReplay';
+import {
   AgentAnalyzeSessionService,
   AnalyzeSessionPreparationError,
   type AnalyzeSessionRunContext,
@@ -295,6 +300,17 @@ interface AnalysisSession {
 }
 const assistantAppService = new AssistantApplicationService<AnalysisSession>();
 const streamProjector = new StreamProjector();
+
+function sendReplayableSessionEvent(
+  session: AnalysisSession,
+  res: express.Response,
+  eventType: string,
+  payload: unknown
+): number {
+  const event = appendReplayableSseEvent(session, eventType, payload);
+  streamProjector.sendEvent(res, eventType, payload, event.seqId);
+  return event.seqId;
+}
 
 let modelRouterInstance: ModelRouter | null = null;
 
@@ -941,10 +957,12 @@ router.get('/:sessionId/stream', (req, res) => {
   const session = getAuthorizedSession(req, res, sessionId);
   if (!session) return;
 
-  // F3: Check for Last-Event-ID (reconnect replay support)
-  // Accepts both standard header (EventSource) and query param (fetch-based clients)
-  const lastEventIdRaw = req.headers['last-event-id'] || req.query.lastEventId;
-  const lastEventId = lastEventIdRaw ? parseInt(String(lastEventIdRaw), 10) : NaN;
+  // Check for Last-Event-ID (reconnect replay support). The header is the
+  // canonical fetch-stream path; the query param is kept for older clients.
+  const lastEventId = parseLastEventId(
+    req.headers['last-event-id'],
+    req.query.lastEventId
+  );
 
   streamProjector.setSseHeaders(res);
   streamProjector.sendConnected(res, {
@@ -957,11 +975,16 @@ router.get('/:sessionId/stream', (req, res) => {
     ...buildStreamObservability(session),
   });
 
-  // F3: Replay missed events from ring buffer if reconnecting
-  if (!isNaN(lastEventId) && session.sseEventBuffer.length > 0) {
+  // Replay missed events from the ring buffer if reconnecting.
+  if (lastEventId !== null && session.sseEventBuffer.length > 0) {
+    const replayIncludesTerminal = hasTerminalReplayAfter(session, lastEventId);
     const replayed = streamProjector.replayBufferedEvents(res, session.sseEventBuffer, lastEventId);
     if (replayed > 0) {
       console.log(`[AgentRoutes] Replayed ${replayed} missed SSE events for ${sessionId} (after seqId ${lastEventId})`);
+    }
+    if (replayIncludesTerminal) {
+      res.end();
+      return;
     }
   }
 
@@ -975,7 +998,15 @@ router.get('/:sessionId/stream', (req, res) => {
     recoverResultForSessionIfNeeded(sessionId, session);
     if (session.result) {
       sendAgentDrivenResult(res, session);
-      streamProjector.sendEnd(res, buildStreamObservability(session));
+      sendReplayableSessionEvent(
+        session,
+        res,
+        'end',
+        {
+          timestamp: Date.now(),
+          ...buildStreamObservability(session),
+        }
+      );
       res.end();
       return;
     }
@@ -983,8 +1014,26 @@ router.get('/:sessionId/stream', (req, res) => {
 
   // If analysis failed, send error
   if (session.status === 'failed') {
-    streamProjector.sendError(res, session.error, buildStreamObservability(session));
-    streamProjector.sendEnd(res, buildStreamObservability(session));
+    sendReplayableSessionEvent(
+      session,
+      res,
+      'error',
+      {
+        error: session.error,
+        message: session.error,
+        timestamp: Date.now(),
+        ...buildStreamObservability(session),
+      }
+    );
+    sendReplayableSessionEvent(
+      session,
+      res,
+      'end',
+      {
+        timestamp: Date.now(),
+        ...buildStreamObservability(session),
+      }
+    );
     res.end();
     return;
   }
@@ -1465,7 +1514,17 @@ router.post('/:sessionId/cancel', (req, res) => {
     // Close SSE connections to signal the frontend
     for (const client of session.sseClients) {
       try {
-        streamProjector.sendEvent(client, 'error', JSON.stringify({ message: 'Analysis cancelled by user' }));
+        sendReplayableSessionEvent(
+          session,
+          client,
+          'error',
+          {
+            error: 'Analysis cancelled by user',
+            message: 'Analysis cancelled by user',
+            timestamp: Date.now(),
+            ...buildStreamObservability(session),
+          }
+        );
         client.end();
       } catch { /* client may already be closed */ }
     }
@@ -2385,7 +2444,15 @@ async function runAgentDrivenAnalysis(
       try {
         logger.info('AgentRoutes', `Sending agent-driven result to client ${index + 1}/${clientCount}`);
         sendAgentDrivenResult(client, session);
-        streamProjector.sendEnd(client, buildStreamObservability(session));
+        sendReplayableSessionEvent(
+          session,
+          client,
+          'end',
+          {
+            timestamp: Date.now(),
+            ...buildStreamObservability(session),
+          }
+        );
       } catch (e: any) {
         logger.error('AgentRoutes', `Error sending agent-driven result to client ${index + 1}`, e);
       }
@@ -3940,9 +4007,9 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
     });
   }
 
-  // Send analysis_completed event with full result
-  res.write(`event: analysis_completed\n`);
-  res.write(`data: ${JSON.stringify({
+  // Send analysis_completed event with full result. Keep it replayable so a
+  // reconnect between conclusion and report generation can recover reportUrl.
+  sendReplayableSessionEvent(session, res, 'analysis_completed', {
     type: 'analysis_completed',
     architecture: 'agent-driven',
     ...observability,
@@ -3973,12 +4040,11 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
       observability,
     },
     timestamp: Date.now(),
-  })}\n\n`);
+  });
 
   // Backward-compatible scene reconstruction payload (used by the legacy /scene-reconstruct clients).
   if ((session.scenes?.length || 0) > 0 || (session.trackEvents?.length || 0) > 0) {
-    res.write(`event: scene_reconstruction_completed\n`);
-    res.write(`data: ${JSON.stringify({
+    sendReplayableSessionEvent(session, res, 'scene_reconstruction_completed', {
       type: 'scene_reconstruction_completed',
       ...observability,
       data: {
@@ -4006,7 +4072,7 @@ function sendAgentDrivenResult(res: express.Response, session: AnalysisSession) 
         observability,
       },
       timestamp: Date.now(),
-    })}\n\n`);
+    });
   }
 }
 
