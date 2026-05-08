@@ -71,6 +71,137 @@ const definition: ToolDefinition = {
   },
 };
 
+const CPU_TOPOLOGY_CTE = `
+  observed_sched_cpus AS (
+    SELECT cpu as cpu_id FROM sched_slice WHERE cpu IS NOT NULL
+    UNION
+    SELECT cpu as cpu_id
+    FROM thread_state
+    WHERE cpu IS NOT NULL AND state = 'Running'
+  ),
+  observed_counter_cpus AS (
+    SELECT t.cpu as cpu_id
+    FROM cpu_counter_track t
+    JOIN counter c ON c.track_id = t.id
+    WHERE t.name = 'cpufreq'
+      AND t.cpu IS NOT NULL
+      AND c.value > 0
+    GROUP BY t.cpu
+  ),
+  cpu_universe AS (
+    SELECT cpu_id, 'sched_observed' as universe_source
+    FROM observed_sched_cpus
+    UNION
+    SELECT cpu_id, 'cpufreq_observed_fallback' as universe_source
+    FROM observed_counter_cpus
+    WHERE NOT EXISTS (SELECT 1 FROM observed_sched_cpus)
+    UNION
+    SELECT id as cpu_id, 'cpu_table_fallback_no_observed' as universe_source
+    FROM cpu
+    WHERE NOT EXISTS (SELECT 1 FROM observed_sched_cpus)
+      AND NOT EXISTS (SELECT 1 FROM observed_counter_cpus)
+  ),
+  cpu_capacity AS (
+    SELECT
+      cu.cpu_id,
+      cu.universe_source,
+      COALESCE(c.capacity, 0) as capacity
+    FROM cpu_universe cu
+    LEFT JOIN cpu c ON c.id = cu.cpu_id
+  ),
+  cpu_max_freq AS (
+    SELECT t.cpu as cpu_id, MAX(c.value) as max_freq
+    FROM counter c
+    JOIN cpu_counter_track t ON c.track_id = t.id
+    WHERE t.name = 'cpufreq'
+      AND t.cpu IN (SELECT cpu_id FROM cpu_universe)
+    GROUP BY t.cpu
+  ),
+  selected_scale_source AS (
+    SELECT
+        CASE
+          WHEN (SELECT COUNT(*) FROM cpu_capacity) > 0
+            AND (SELECT COUNT(*) FROM cpu_capacity WHERE universe_source = 'cpu_table_fallback_no_observed') = 0
+            AND (SELECT COUNT(*) FROM cpu_capacity WHERE capacity > 0) = (SELECT COUNT(*) FROM cpu_capacity)
+            THEN 'capacity_scale'
+          WHEN (SELECT COUNT(*) FROM cpu_capacity) > 0
+            AND (SELECT COUNT(*) FROM cpu_capacity WHERE universe_source = 'cpu_table_fallback_no_observed') = 0
+            AND (SELECT COUNT(*) FROM cpu_max_freq WHERE max_freq > 0) = (SELECT COUNT(*) FROM cpu_capacity)
+            THEN 'freq_rank'
+          ELSE 'observed_no_scale'
+        END as source
+  ),
+  raw_cpu_scale AS (
+    SELECT
+      cc.cpu_id,
+      cc.universe_source,
+      CASE
+        WHEN s.source = 'capacity_scale' THEN cc.capacity
+        WHEN s.source = 'freq_rank' THEN cf.max_freq
+        ELSE NULL
+      END as scale_value
+    FROM cpu_capacity cc
+    LEFT JOIN cpu_max_freq cf ON cc.cpu_id = cf.cpu_id
+    CROSS JOIN selected_scale_source s
+  ),
+  scale_bounds AS (
+    SELECT MAX(scale_value) as max_scale
+    FROM raw_cpu_scale
+    WHERE scale_value > 0
+  ),
+  cpu_scale AS (
+    SELECT
+      rs.*,
+      CASE
+        WHEN rs.scale_value > 0 AND (SELECT max_scale FROM scale_bounds) > 0
+          THEN CAST(ROUND(rs.scale_value * 20.0 / (SELECT max_scale FROM scale_bounds)) AS INTEGER)
+        ELSE NULL
+      END as scale_bucket
+    FROM raw_cpu_scale rs
+  ),
+  distinct_scales AS (
+    SELECT
+      scale_bucket,
+      avg_scale_value,
+      ROW_NUMBER() OVER (ORDER BY scale_bucket ASC) as cluster_rank,
+      COUNT(*) OVER () as cluster_count
+    FROM (
+      SELECT scale_bucket, AVG(scale_value) as avg_scale_value
+      FROM cpu_scale
+      WHERE scale_bucket IS NOT NULL AND scale_bucket > 0
+      GROUP BY scale_bucket
+    )
+  ),
+  scale_clusters AS (
+    SELECT
+      ds.scale_bucket,
+      ds.avg_scale_value,
+      ds.cluster_rank,
+      ds.cluster_count,
+      COUNT(cs.cpu_id) as cores_in_cluster
+    FROM distinct_scales ds
+    JOIN cpu_scale cs ON cs.scale_bucket = ds.scale_bucket
+    GROUP BY ds.scale_bucket, ds.avg_scale_value, ds.cluster_rank, ds.cluster_count
+  ),
+  cpu_topology AS (
+    SELECT
+      cs.cpu_id,
+      CASE
+        WHEN cs.scale_bucket IS NULL OR cs.scale_bucket <= 0 THEN 'unknown'
+        WHEN sc.cluster_count <= 1 THEN 'unknown'
+        WHEN sc.cluster_count = 2 AND sc.cluster_rank = sc.cluster_count THEN 'big'
+        WHEN sc.cluster_rank = 1 THEN 'little'
+        WHEN sc.cluster_rank = sc.cluster_count AND sc.cores_in_cluster = 1 THEN 'prime'
+        WHEN sc.cluster_rank = sc.cluster_count THEN 'big'
+        WHEN sc.cluster_rank = sc.cluster_count - 1
+          AND (SELECT cores_in_cluster FROM scale_clusters WHERE cluster_rank = sc.cluster_count) = 1 THEN 'big'
+        ELSE 'medium'
+      END as core_type
+    FROM cpu_scale cs
+    LEFT JOIN scale_clusters sc ON cs.scale_bucket = sc.scale_bucket
+  )
+`;
+
 export const frameAnalyzerTool: Tool<FrameAnalyzerParams, FrameAnalyzerResult> = {
   definition,
 
@@ -85,7 +216,8 @@ export const frameAnalyzerTool: Tool<FrameAnalyzerParams, FrameAnalyzerResult> =
 
       if (includeAll || params.include_quadrants) {
         const quadrantSQL = `
-          WITH target_threads AS (
+          WITH ${CPU_TOPOLOGY_CTE},
+          target_threads AS (
             SELECT t.utid, t.tid, t.name as thread_name, p.pid,
               CASE
                 WHEN t.tid = p.pid THEN 'MainThread'
@@ -104,14 +236,15 @@ export const frameAnalyzerTool: Tool<FrameAnalyzerParams, FrameAnalyzerResult> =
               ts.cpu,
               ts.dur,
               CASE
-                WHEN ts.state = 'Running' AND ts.cpu >= 4 THEN 'Q1'
-                WHEN ts.state = 'Running' AND ts.cpu < 4 THEN 'Q2'
+                WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('prime', 'big') THEN 'Q1'
+                WHEN ts.state = 'Running' AND COALESCE(ct.core_type, 'unknown') IN ('medium', 'little') THEN 'Q2'
                 WHEN ts.state = 'R' THEN 'Q3'
                 WHEN ts.state IN ('S', 'D', 'I') THEN 'Q4'
                 ELSE 'Other'
               END as quadrant
             FROM thread_state ts
             JOIN target_threads tt ON ts.utid = tt.utid
+            LEFT JOIN cpu_topology ct ON ts.cpu = ct.cpu_id
             WHERE ts.ts >= ${params.start_ts} AND ts.ts < ${params.end_ts}
           )
           SELECT
@@ -219,10 +352,12 @@ export const frameAnalyzerTool: Tool<FrameAnalyzerParams, FrameAnalyzerResult> =
 
       if (includeAll || params.include_cpu_freq) {
         const freqSQL = `
-          WITH freq_data AS (
-            SELECT cpu, CASE WHEN cpu >= 4 THEN 'big' ELSE 'little' END as core_type, value as freq_khz
+          WITH ${CPU_TOPOLOGY_CTE},
+          freq_data AS (
+            SELECT t.cpu, COALESCE(ct.core_type, 'unknown') as core_type, c.value as freq_khz
             FROM counter c
             JOIN cpu_counter_track t ON c.track_id = t.id
+            LEFT JOIN cpu_topology ct ON t.cpu = ct.cpu_id
             WHERE t.name = 'cpufreq' AND c.ts >= ${params.start_ts} AND c.ts < ${params.end_ts}
           )
           SELECT core_type, ROUND(AVG(freq_khz) / 1000, 0) as avg_freq_mhz,

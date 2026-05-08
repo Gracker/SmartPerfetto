@@ -101,6 +101,14 @@ steps:
   # 第零阶段：提取 ANR 上下文（供后续步骤复用）
   # ============================================================================
 
+  - id: init_cpu_topology
+    type: skill
+    name: "初始化 CPU 拓扑"
+    skill: cpu_topology_view
+    display:
+      level: hidden
+    optional: true
+
   - id: get_anr_context
     type: skill
     name: "提取 ANR 上下文"
@@ -221,13 +229,8 @@ steps:
           template: "{{core_type}} 核心负载正常 ({{avg_util_pct}}%)"
     sql: |
       WITH cpu_info AS (
-        SELECT
-          id as cpu,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            ELSE 'little'
-          END as core_type
-        FROM cpu
+        SELECT cpu_id as cpu, core_type
+        FROM _cpu_topology
       ),
       cpu_time AS (
         SELECT

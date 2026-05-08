@@ -116,6 +116,14 @@ inputs:
     description: "Analysis end timestamp"
 
 steps:
+  - id: init_cpu_topology
+    type: skill
+    name: "初始化 CPU 拓扑"
+    skill: cpu_topology_view
+    display:
+      level: hidden
+    optional: true
+
   # Step 1: Get CPU frequency overview by cluster
   - id: frequency_overview
     type: atomic
@@ -123,14 +131,8 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            WHEN capacity >= 500 THEN 'mid'
-            ELSE 'little'
-          END as cluster
-        FROM cpu
+        SELECT cpu_id as cpu, core_type as cluster
+        FROM _cpu_topology
       )
       SELECT
         cct.cpu as cpu,
@@ -194,14 +196,8 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            WHEN capacity >= 500 THEN 'mid'
-            ELSE 'little'
-          END as cluster
-        FROM cpu
+        SELECT cpu_id as cpu, core_type as cluster
+        FROM _cpu_topology
       )
       SELECT
         COALESCE(ci.cluster, 'unknown') AS cluster,
@@ -225,14 +221,8 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            WHEN capacity >= 500 THEN 'mid'
-            ELSE 'little'
-          END as cluster
-        FROM cpu
+        SELECT cpu_id as cpu, core_type as cluster
+        FROM _cpu_topology
       ),
       freq_samples AS (
         SELECT

@@ -176,13 +176,14 @@ ORDER BY total_dur_ms DESC
 **SQL 查询**:
 ```sql
 SELECT
-  cpu,
-  CASE WHEN cpu IN (4,5,6,7) THEN 'big' ELSE 'little' END as core_type,
+  ss.cpu,
+  COALESCE(ct.core_type, 'unknown') as core_type,
   SUM(dur) / 1e6 as total_dur_ms
-FROM sched_slice
-WHERE utid = ${main_thread.utid}
-  AND ts >= ${startup.ts} AND ts <= ${startup.ts_end}
-GROUP BY cpu
+FROM sched_slice ss
+LEFT JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id
+WHERE ss.utid = ${main_thread.utid}
+  AND ss.ts >= ${startup.ts} AND ss.ts <= ${startup.ts_end}
+GROUP BY ss.cpu, core_type
 ORDER BY total_dur_ms DESC
 ```
 

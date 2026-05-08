@@ -60,6 +60,14 @@ inputs:
     description: "最小运行时长阈值（毫秒）"
 
 steps:
+  - id: init_cpu_topology
+    type: skill
+    name: "初始化 CPU 拓扑"
+    skill: cpu_topology_view
+    display:
+      level: hidden
+    optional: true
+
   # ========== CPU 使用概览 ==========
   - id: cpu_usage_overview
     type: atomic
@@ -105,15 +113,8 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu_id,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            WHEN capacity >= 500 THEN 'medium'
-            ELSE 'little'
-          END as core_type,
-          capacity
-        FROM cpu
+        SELECT cpu_id, core_type, capacity
+        FROM _cpu_topology
       ),
       sched_stats AS (
         SELECT
@@ -297,14 +298,8 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu_id,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            WHEN capacity >= 500 THEN 'medium'
-            ELSE 'little'
-          END as core_type
-        FROM cpu
+        SELECT cpu_id, core_type
+        FROM _cpu_topology
       ),
       thread_core_usage AS (
         SELECT
@@ -328,7 +323,7 @@ steps:
           tid,
           process_name,
           SUM(runtime_ms) as total_runtime_ms,
-          SUM(CASE WHEN core_type = 'big' THEN runtime_ms ELSE 0 END) as big_core_ms,
+          SUM(CASE WHEN core_type IN ('prime', 'big') THEN runtime_ms ELSE 0 END) as big_core_ms,
           SUM(CASE WHEN core_type = 'medium' THEN runtime_ms ELSE 0 END) as medium_core_ms,
           SUM(CASE WHEN core_type = 'little' THEN runtime_ms ELSE 0 END) as little_core_ms
         FROM thread_core_usage

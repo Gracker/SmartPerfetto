@@ -112,6 +112,14 @@ inputs:
     description: "Analysis end timestamp"
 
 steps:
+  - id: init_cpu_topology
+    type: skill
+    name: "初始化 CPU 拓扑"
+    skill: cpu_topology_view
+    display:
+      level: hidden
+    optional: true
+
   # Step 1: Get thread runnable time distribution
   - id: runnable_analysis
     type: atomic
@@ -146,13 +154,8 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            ELSE 'little'
-          END as core_type
-        FROM cpu
+        SELECT cpu_id as cpu, core_type
+        FROM _cpu_topology
       )
       SELECT
         cct.cpu,
@@ -180,18 +183,13 @@ steps:
     sql: |
       WITH
       cpu_info AS (
-        SELECT
-          id as cpu,
-          CASE
-            WHEN capacity >= 1000 THEN 'big'
-            ELSE 'little'
-          END as core_type
-        FROM cpu
+        SELECT cpu_id as cpu, core_type
+        FROM _cpu_topology
       )
       SELECT
         thread.name AS thread_name,
-        CAST(SUM(CASE WHEN ci.core_type = 'big' THEN dur ELSE 0 END) * 100.0 / SUM(dur) AS INTEGER) AS big_core_pct,
-        CAST(SUM(CASE WHEN ci.core_type != 'big' THEN dur ELSE 0 END) * 100.0 / SUM(dur) AS INTEGER) AS small_core_pct,
+        CAST(SUM(CASE WHEN ci.core_type IN ('prime', 'big') THEN dur ELSE 0 END) * 100.0 / SUM(dur) AS INTEGER) AS big_core_pct,
+        CAST(SUM(CASE WHEN ci.core_type = 'little' THEN dur ELSE 0 END) * 100.0 / SUM(dur) AS INTEGER) AS small_core_pct,
         CAST(SUM(dur) / 1e6 AS INTEGER) AS total_ms
       FROM sched_slice
       JOIN thread USING (utid)
