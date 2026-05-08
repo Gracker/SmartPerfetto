@@ -213,6 +213,11 @@ describe('enterprise repository scope abstraction', () => {
       {},
       { orderBy: 'id; DROP TABLE trace_assets' },
     )).toThrow('Invalid orderBy column');
+    expect(() => repo.list(
+      { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
+      {},
+      { orderBy: 'id', direction: 'DESC; DROP TABLE trace_assets' as never },
+    )).toThrow('Invalid orderBy direction');
   });
 
   test('does not allow scoped updates to mutate identity columns', () => {

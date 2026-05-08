@@ -120,6 +120,9 @@ function buildOrderClause(options: ListOptions): string {
   if (!options.orderBy) return '';
   assertIdentifier(options.orderBy, 'orderBy column');
   const direction = options.direction ?? 'ASC';
+  if (direction !== 'ASC' && direction !== 'DESC') {
+    throw new Error(`Invalid orderBy direction: ${String(direction)}`);
+  }
   return ` ORDER BY ${options.orderBy} ${direction}`;
 }
 
