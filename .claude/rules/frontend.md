@@ -49,3 +49,11 @@ Subdirectories:
 ## Perfetto submodule
 
 This is a forked Google project. See `rules/git.md` for push rules.
+
+## Prebuilt frontend contract
+
+- Pure users, `./start.sh`, Docker Hub, and source Docker builds all serve the committed pre-built UI from the root `frontend/` directory.
+- Docker users must not need the Perfetto submodule, frontend dev dependencies, or `build.js --watch`; `Dockerfile` must copy `frontend/` into `/app/perfetto/out/ui/ui`.
+- After any change under `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/`, run and commit `./scripts/update-frontend.sh` after browser verification.
+- `scripts/update-frontend.sh` must preserve SmartPerfetto static assistant assets in `frontend/index.html`: `assistant-flamegraph.css`, `assistant-flamegraph.js`, and `assistant-critical-path.js`.
+- The same script must remove stale sibling `frontend/v*` directories. Do not leave old prebuilt version directories for a later manual cleanup.

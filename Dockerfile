@@ -1,7 +1,7 @@
 # ============================
 # Stage 1: Build backend
 # ============================
-FROM node:26-bookworm AS backend-builder
+FROM node:24-bookworm AS backend-builder
 
 WORKDIR /app/backend
 COPY backend/package*.json ./
@@ -62,7 +62,7 @@ RUN . /tmp/pin.env && \
 # ============================
 # Stage 4: Runtime
 # ============================
-FROM node:26-bookworm-slim
+FROM node:24-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -97,13 +97,14 @@ COPY backend/sql ./backend/sql
 COPY frontend ./perfetto/out/ui/ui
 
 # Create required directories and fix ownership for non-root user
-RUN mkdir -p backend/uploads backend/logs/sessions backend/data && \
+RUN mkdir -p backend/uploads backend/logs/sessions backend/data backend/provider-data && \
     chown -R node:node /app
 
 # Environment defaults
 ENV PORT=3000
 ENV NODE_ENV=production
 ENV FRONTEND_URL=http://localhost:10000
+ENV PROVIDER_DATA_DIR_OVERRIDE=/app/backend/provider-data
 
 EXPOSE 3000 10000
 

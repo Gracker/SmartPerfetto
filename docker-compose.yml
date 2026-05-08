@@ -10,12 +10,14 @@ services:
       - PORT=3000
       - NODE_ENV=production
       - FRONTEND_URL=http://localhost:10000
+      - PROVIDER_DATA_DIR_OVERRIDE=/app/backend/provider-data
     env_file:
       - backend/.env
     volumes:
-      # Persist uploads and logs across restarts
+      # Persist uploads, logs, and UI-created provider profiles across restarts
       - uploads:/app/backend/uploads
       - logs:/app/backend/logs
+      - provider-data:/app/backend/provider-data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -27,3 +29,4 @@ services:
 volumes:
   uploads:
   logs:
+  provider-data:

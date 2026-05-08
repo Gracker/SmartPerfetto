@@ -8,12 +8,14 @@ services:
       - PORT=3000
       - NODE_ENV=production
       - FRONTEND_URL=http://localhost:10000
+      - PROVIDER_DATA_DIR_OVERRIDE=/app/backend/provider-data
     env_file:
       - path: .env
         required: false
     volumes:
       - uploads:/app/backend/uploads
       - logs:/app/backend/logs
+      - provider-data:/app/backend/provider-data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
@@ -25,3 +27,4 @@ services:
 volumes:
   uploads:
   logs:
+  provider-data:

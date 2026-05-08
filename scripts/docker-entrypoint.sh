@@ -19,7 +19,15 @@ ANTHROPIC_TOKEN="${ANTHROPIC_AUTH_TOKEN:-}"
 OPENAI_KEY="${OPENAI_API_KEY:-}"
 OPENAI_BASE="${OPENAI_BASE_URL:-}"
 AGENT_RUNTIME="${SMARTPERFETTO_AGENT_RUNTIME:-claude-agent-sdk}"
-if { [ -z "$ANTHROPIC_KEY" ] || [[ "$ANTHROPIC_KEY" == your_* ]] || [ "$ANTHROPIC_KEY" = "sk-ant-xxx" ]; } && \
+PROVIDER_DATA_DIR="${PROVIDER_DATA_DIR_OVERRIDE:-/app/backend/data}"
+PROVIDERS_FILE="$PROVIDER_DATA_DIR/providers.json"
+HAS_ACTIVE_PROVIDER_PROFILE=false
+if [ -s "$PROVIDERS_FILE" ] && grep -q '"isActive"[[:space:]]*:[[:space:]]*true' "$PROVIDERS_FILE"; then
+  HAS_ACTIVE_PROVIDER_PROFILE=true
+fi
+
+if [ "$HAS_ACTIVE_PROVIDER_PROFILE" != true ] && \
+   { [ -z "$ANTHROPIC_KEY" ] || [[ "$ANTHROPIC_KEY" == your_* ]] || [ "$ANTHROPIC_KEY" = "sk-ant-xxx" ]; } && \
    { [ -z "$ANTHROPIC_TOKEN" ] || [[ "$ANTHROPIC_TOKEN" == your_* ]]; } && \
    [ -z "${AWS_BEARER_TOKEN_BEDROCK:-}" ] && \
    { [ "$AGENT_RUNTIME" != "openai-agents-sdk" ] || { [ -z "$OPENAI_KEY" ] && [ -z "$OPENAI_BASE" ]; }; }; then

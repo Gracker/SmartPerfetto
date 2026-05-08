@@ -12,18 +12,32 @@ AI-driven Perfetto analysis platform for Android performance data.
 Tech: TypeScript strict, follow existing patterns
 Dev:  tsx watch (backend) + build.js --watch (frontend) — auto-rebuild on save
 Test: by change category (see Verification table below) — regression mandatory for mcp/memory/report touchpoints + PR landing
-PR Gate: npm run verify:pr  ← run before opening PR
-Start: ./scripts/start-dev.sh (first-time) | ./scripts/restart-backend.sh (.env/npm changes only)
-Build: cd backend && npm run build
+PR Gate: npm run verify:pr                              ← run before opening PR
+Start (users):      ./start.sh                          ← pre-built frontend, no submodule
+Start (UI dev):     ./scripts/start-dev.sh              ← requires perfetto submodule, hot reload
+Update prebuilt:    ./scripts/update-frontend.sh        ← run after modifying AI plugin UI
+Restart backend:    ./scripts/restart-backend.sh        ← .env/npm changes only
+Build backend:      cd backend && npm run build
 ```
 
 ## Post-change Dev Workflow
 
-Both backend (`tsx watch`) and frontend (`build.js --watch`) auto-rebuild on file save. After code changes:
-- **All .ts / .yaml changes**: Tell user to refresh the browser. No restart needed.
+Backend (`tsx watch`) auto-rebuilds on file save. Frontend hot-reload only works in `start-dev.sh` mode.
+
+**Default assumption**: user runs `./start.sh` (pre-built frontend).
+
+- **Backend `.ts` / `.yaml` / `.md` changes**: restart-backend.sh not needed — tsx watch reloads automatically. Tell user to refresh browser.
+- **Frontend plugin changes** (`ai_panel.ts`, `styles.scss` etc.): must be running `./scripts/start-dev.sh` for hot reload. After verifying, run `./scripts/update-frontend.sh` to update `frontend/`.
 - **Only use `./scripts/restart-backend.sh`** for: `.env` changes, `npm install`, or tsx watch stuck.
-- **Only use `./scripts/start-dev.sh`** for: first-time setup or both services crashed.
+- **Only use `./scripts/start-dev.sh`** for: modifying AI plugin UI (requires submodule).
 - **Default assumption**: User only refreshes browser after changes.
+
+## Prebuilt Frontend / Docker Rule
+
+- Pure users, `./start.sh`, Docker Hub, and source Docker builds all consume the committed pre-built UI in `frontend/`.
+- Docker users do not build the Perfetto submodule or run `build.js --watch`; `Dockerfile` must keep copying `frontend/` into `/app/perfetto/out/ui/ui`.
+- Any AI Assistant plugin UI change must be followed by `./scripts/update-frontend.sh` before committing so `frontend/index.html`, the active `frontend/v*` bundle, and SmartPerfetto static assistant assets stay in sync.
+- `scripts/update-frontend.sh` is the only supported way to refresh `frontend/`; it must preserve `assistant-flamegraph.css`, `assistant-flamegraph.js`, and `assistant-critical-path.js`, and remove stale `frontend/v*` directories.
 
 ## Verification (done-conditions)
 
@@ -69,7 +83,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 - Analysis logic in YAML Skills (`backend/skills/`) — L1→L2→L3→L4 layered results
 - SSE for real-time streaming
 
-**Detailed rules by area:** See `.Codex/rules/` for backend, frontend, skills, prompts, git, and testing rules.
+**Detailed rules by area:** See `.claude/rules/` for backend, frontend, skills, prompts, git, and testing rules.
 
 ## Key Rules (NEVER / ALWAYS)
 
@@ -77,6 +91,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 2. **ALWAYS push perfetto submodule to `fork` remote**, never `origin` (see `rules/git.md`)
 3. **ALWAYS run the right test tier** after code changes — trace regression for mcp/memory/report touchpoints, full `verify:pr` before PR landing (see `rules/testing.md`)
 4. **ALWAYS check if file is auto-generated** before fixing build errors (see `rules/backend.md`)
+5. **ALWAYS update committed `frontend/` prebuilds after Perfetto UI plugin changes** before Docker/user-facing commits
 
 ## API Endpoints
 
@@ -132,7 +147,7 @@ Note: agentv3 sends `conclusion` first (user sees result immediately), then `ana
 
 **Frontend** (`ai_panel.ts`): chip selector persisted in `localStorage['ai-analysis-mode']`. Switching mode mid-session clears `agentSessionId` so the backend opens a fresh SDK session (avoids 10-turn quick / 60-turn full context mix).
 
-**Known limitation**: fast mode + heavy query (e.g. `分析启动性能`) can exhaust the 10-turn budget when Codex calls `invoke_skill` and spends turns parsing large (~200 KB) skill JSON. Prefer `execute_sql` for simple factual queries in fast mode, or steer heavy queries to full mode.
+**Known limitation**: fast mode + heavy query (e.g. `分析启动性能`) can exhaust the 10-turn budget when Claude calls `invoke_skill` and spends turns parsing large (~200 KB) skill JSON. Prefer `execute_sql` for simple factual queries in fast mode, or steer heavy queries to full mode.
 
 ## Session Management
 
@@ -179,9 +194,16 @@ CLAUDE_MODEL=claude-sonnet-4-6             # Optional, or provider main model (e
 ## Quick Start
 
 ```bash
-./scripts/start-dev.sh  # Auto-builds trace_processor_shell
+./scripts/start-dev.sh                       # Default: download prebuilt trace_processor_shell (~5s)
+./scripts/start-dev.sh --build-from-source   # Force source build (use after modifying perfetto C++)
 # Backend @ :3000, Frontend @ :10000
 ```
+
+`trace_processor_shell` is acquired by `scripts/start-dev.sh` in this order: cached binary at
+`perfetto/out/ui/trace_processor_shell` → version-pinned LUCI prebuilt (SHA256-verified) → source
+build fallback. Pin source of truth: `scripts/trace-processor-pin.env` (shared with `Dockerfile`
+and the CI workflow). When upgrading the perfetto submodule (e.g. v54 → v55), update
+`PERFETTO_VERSION` and recompute the 4 per-platform SHA256s in that file (instructions inline).
 
 ## Common Issues
 

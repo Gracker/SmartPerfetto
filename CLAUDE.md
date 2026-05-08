@@ -32,6 +32,13 @@ Backend (`tsx watch`) auto-rebuilds on file save. Frontend hot-reload only works
 - **Only use `./scripts/start-dev.sh`** for: modifying AI plugin UI (requires submodule).
 - **Default assumption**: User only refreshes browser after changes.
 
+## Prebuilt Frontend / Docker Rule
+
+- Pure users, `./start.sh`, Docker Hub, and source Docker builds all consume the committed pre-built UI in `frontend/`.
+- Docker users do not build the Perfetto submodule or run `build.js --watch`; `Dockerfile` must keep copying `frontend/` into `/app/perfetto/out/ui/ui`.
+- Any AI Assistant plugin UI change must be followed by `./scripts/update-frontend.sh` before committing so `frontend/index.html`, the active `frontend/v*` bundle, and SmartPerfetto static assistant assets stay in sync.
+- `scripts/update-frontend.sh` is the only supported way to refresh `frontend/`; it must preserve `assistant-flamegraph.css`, `assistant-flamegraph.js`, and `assistant-critical-path.js`, and remove stale `frontend/v*` directories.
+
 ## Verification (done-conditions)
 
 Every task must satisfy these before completion:
@@ -84,6 +91,7 @@ Frontend (Perfetto UI @ :10000) ◄─SSE/HTTP─► Backend (Express @ :3000)
 2. **ALWAYS push perfetto submodule to `fork` remote**, never `origin` (see `rules/git.md`)
 3. **ALWAYS run the right test tier** after code changes — trace regression for mcp/memory/report touchpoints, full `verify:pr` before PR landing (see `rules/testing.md`)
 4. **ALWAYS check if file is auto-generated** before fixing build errors (see `rules/backend.md`)
+5. **ALWAYS update committed `frontend/` prebuilds after Perfetto UI plugin changes** before Docker/user-facing commits
 
 ## API Endpoints
 

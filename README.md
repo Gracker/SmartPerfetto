@@ -16,6 +16,8 @@ SmartPerfetto adds an AI analysis layer on top of Perfetto traces. Load a trace,
 
 Configure a provider before running AI analysis. This README keeps the startup flow and one provider configuration example only; the complete provider/model list lives in [docs/getting-started/configuration.md](docs/getting-started/configuration.md), [backend/.env.example](backend/.env.example), and the root [.env.example](.env.example).
 
+Provider Base URL notice: the prefilled Claude/Anthropic-compatible and OpenAI-compatible Base URLs are based on public provider information. They are not guaranteed to be correct for every account, region, plan, or future provider change. If a preset fails, verify the Base URL, model ID, and protocol in your provider console first; then open an issue or PR if the public preset should be updated.
+
 The project is open source and in active development. The UI, backend runtime, and skill system are usable today, but public APIs and internal contracts may still change.
 
 ## Configure Your AI Provider First
@@ -31,13 +33,15 @@ Step 1: Choose your run mode and credential file.
 | Docker Hub image | `.env` in the repository root | Create it with `cp backend/.env.example .env`; Docker cannot see the host Claude Code login |
 | Source Docker build | `backend/.env` | Read by `docker-compose.yml` |
 
-Step 2: Choose the runtime and provider settings. Claude Agent SDK is for Claude Code / Anthropic-compatible providers; OpenAI Agents SDK is for OpenAI / OpenAI-compatible providers. If both credential families are present, `SMARTPERFETTO_AGENT_RUNTIME` or the active UI provider decides; otherwise the default is Claude Agent SDK. For direct Anthropic API access, set:
+Step 2: Choose the runtime and provider settings. Claude Agent SDK is for Claude Code / Anthropic-compatible providers; OpenAI Agents SDK is for OpenAI / OpenAI-compatible providers. If both credential families are present, `SMARTPERFETTO_AGENT_RUNTIME` or the active UI provider decides; otherwise the default is Claude Agent SDK.
+
+For direct Anthropic API access, set:
 
 ```env
 ANTHROPIC_API_KEY=sk-ant-your-key
 ```
 
-For providers that expose Claude Code / Anthropic-compatible endpoints, uncomment the provider block in [backend/.env.example](backend/.env.example). The Base URL is already filled in; replace only the API key/token and keep `CLAUDE_MODEL` / `CLAUDE_LIGHT_MODEL` as the SmartPerfetto model fields. Example for DeepSeek:
+For providers that expose Claude Code / Anthropic-compatible endpoints, uncomment the provider block in [backend/.env.example](backend/.env.example), replace the API key/token, and keep `CLAUDE_MODEL` / `CLAUDE_LIGHT_MODEL` as the SmartPerfetto model fields. Example for DeepSeek:
 
 ```env
 ANTHROPIC_BASE_URL=https://api.deepseek.com/anthropic
@@ -46,7 +50,7 @@ CLAUDE_MODEL=deepseek-v4-pro
 CLAUDE_LIGHT_MODEL=deepseek-v4-flash
 ```
 
-OpenAI / OpenAI-compatible providers use the OpenAI Agents SDK runtime; Ollama and other OpenAI-compatible endpoints use `OPENAI_AGENTS_PROTOCOL=chat_completions`. The concrete fields and model IDs are documented in [docs/getting-started/configuration.md](docs/getting-started/configuration.md) and the env templates. The UI Provider Management flow can store both Claude-compatible and OpenAI-compatible Base URLs for dual-surface providers such as DeepSeek, then switch the active SDK runtime from the AI input provider switcher. If a provider's OpenAI-compatible streaming tool calls are unreliable, put one-api/new-api/LiteLLM or your own gateway in front and expose a stable Anthropic-compatible or OpenAI-compatible API.
+OpenAI / OpenAI-compatible providers use the OpenAI Agents SDK runtime; Ollama and other OpenAI-compatible endpoints use `OPENAI_AGENTS_PROTOCOL=chat_completions`. The UI Provider Management flow can store both Claude-compatible and OpenAI-compatible Base URLs for dual-surface providers, then switch the active SDK runtime from the AI input provider switcher. Full provider-specific fields, known regional URL variants, model IDs, and troubleshooting notes are in [docs/getting-started/configuration.md](docs/getting-started/configuration.md) and the env templates.
 
 Step 3 (optional): Set the output language. SmartPerfetto defaults to Simplified Chinese for AI answers, streamed progress, and generated reports. Set this if the primary users prefer English:
 
@@ -77,7 +81,7 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 |------|------------|
 | Frontend | Forked Perfetto UI with the `com.smartperfetto.AIAssistant` plugin |
 | Backend | Node.js 24 LTS, TypeScript strict mode, Express |
-| Agent runtime | Claude Agent SDK, MCP tools, scene strategies, verifier, SSE streaming |
+| Agent runtime | Runtime selector, Claude Agent SDK, OpenAI Agents SDK, MCP tools, scene strategies, verifier, SSE streaming |
 | Trace engine | Perfetto `trace_processor_shell` over HTTP RPC |
 | Analysis logic | YAML skills under `backend/skills/` plus Markdown strategies under `backend/strategies/` |
 | Storage | Local uploads, session logs, reports, and runtime learning files |
@@ -90,13 +94,17 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 
 Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine and LLM provider credentials in `.env`; you do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. The Docker Hub image is published nightly from `main` and includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`, so it also avoids first-run access to Google's artifact bucket on the host.
 
-The container starts without a local `.env` file for health/UI smoke checks, but AI analysis needs one explicit provider block, for example `ANTHROPIC_API_KEY` for Anthropic direct, or `ANTHROPIC_BASE_URL` plus `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` for a Claude Code-compatible provider.
+Both the Docker Hub image and source Docker builds serve the committed pre-built UI from `frontend/`; Docker users never build the Perfetto submodule frontend locally.
+
+The container starts without a local `.env` file for health/UI smoke checks, but AI analysis needs one explicit provider block, for example `ANTHROPIC_API_KEY` for Anthropic direct, `ANTHROPIC_BASE_URL` plus `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` for a Claude-compatible provider, or `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` plus `OPENAI_*` fields for an OpenAI-compatible provider.
+
+Provider profiles created in the UI are stored in the `provider-data` Docker volume. They survive container restarts and normal `docker compose down`; they are removed by `docker compose down -v`.
 
 Windows users should use Docker Desktop with the WSL2 backend. The published image is a Linux container image and runs through Docker Desktop; no separate Windows build is required.
 
 Step 1: Download the source. Run `git clone https://github.com/Gracker/SmartPerfetto.git`, then run `cd SmartPerfetto`.
 
-Step 2 (optional): Create the Docker env file. Run `cp backend/.env.example .env`, edit `.env`, uncomment one provider block, and replace only the API key/token. You can skip this for health/UI smoke checks; real AI analysis requires a provider.
+Step 2 (optional): Create the Docker env file. Run `cp backend/.env.example .env`, edit `.env`, uncomment one provider block, and start by replacing the API key/token. If your provider console shows a different Base URL or model ID, use the console value. You can skip this for health/UI smoke checks; real AI analysis requires a provider.
 
 Step 3: Pull the Docker Hub image. Run `docker compose -f docker-compose.hub.yml pull`.
 
@@ -109,7 +117,7 @@ Step 5: Open the service URLs.
 
 Stop the container with `docker compose -f docker-compose.hub.yml down`.
 
-Uploads and logs are stored in Docker volumes, so they survive container restarts.
+Uploads, logs, and Provider Manager profiles are stored in Docker volumes, so they survive container restarts.
 
 ### Local Script
 
@@ -150,37 +158,11 @@ When you need to edit the AI Assistant plugin UI, Step 1 (first time): run `git 
 
 After verifying your changes in the browser, Step 1: run `./scripts/update-frontend.sh` to update the pre-built frontend. Step 2: run `git add frontend/`. Step 3: run `git commit -m "chore(frontend): update prebuilt"`.
 
-## Advanced Provider Options
+## Runtime Settings
 
-The quick setup above covers where credentials live. Local users whose Claude Code already works can usually skip SmartPerfetto env files entirely, even when Claude Code itself is backed by a third-party provider. This README does not maintain the full provider/model catalog; provider-specific setup, model IDs, OpenAI-compatible runtime fields, and Anthropic-compatible presets live in [docs/getting-started/configuration.md](docs/getting-started/configuration.md), [backend/.env.example](backend/.env.example), and the root [.env.example](.env.example).
+The quick setup above covers where credentials live. Detailed provider setup, model IDs, regional Base URL variants, OpenAI-compatible runtime fields, Anthropic-compatible presets, proxy guidance, and troubleshooting live in [docs/getting-started/configuration.md](docs/getting-started/configuration.md). Use `GET /health` to confirm `aiEngine.runtime`, `aiEngine.providerMode`, and `aiEngine.diagnostics` after changing provider settings.
 
-Direct Anthropic API usage requires only:
-
-```bash
-ANTHROPIC_API_KEY=your_anthropic_api_key_here
-```
-
-Many third-party providers now expose Claude Code / Anthropic-compatible endpoints directly. Use the prefilled blocks in [backend/.env.example](backend/.env.example); most users should only uncomment one block and replace the key/token. The provider snippet above is only a format example; other providers are not expanded in this README.
-
-Provider docs may use `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_HAIKU_MODEL`; SmartPerfetto uses `CLAUDE_MODEL` / `CLAUDE_LIGHT_MODEL` because the backend passes the model explicitly into the Claude Agent SDK.
-If a provider requires custom headers, use the provider's default app or put a custom gateway in front; SmartPerfetto env files do not currently inject arbitrary provider headers.
-
-Known proxy options include [one-api](https://github.com/songquanpeng/one-api), [new-api](https://github.com/Calcium-Ion/new-api), and [LiteLLM](https://github.com/BerriAI/litellm). The selected model must support streaming and tool/function calling reliably. If the proxy exposes Anthropic Messages, use `ANTHROPIC_BASE_URL` plus `CLAUDE_MODEL`; if it exposes OpenAI Chat Completions, use `OPENAI_BASE_URL` plus `OPENAI_MODEL`.
-
-> Note: Claude Code's own local auth/config is the native auth path for the Claude Agent SDK, whether it uses an Anthropic subscription or a Claude Code-configured third-party endpoint. Separate tools such as Codex CLI, Gemini CLI, and OpenCode manage their own configuration files and login state; SmartPerfetto does not automatically read those credentials. Use `ANTHROPIC_BASE_URL` only when the provider is not already available through Claude Code and you want SmartPerfetto to own the proxy config explicitly.
-
-The frontend settings dialog only stores the backend URL and optional `SMARTPERFETTO_API_KEY` for SmartPerfetto backend auth. LLM provider credentials must come from Claude Code local auth/config or from the backend/Docker env file above.
-
-If the local Claude Code path is unavailable, its quota is exhausted, or you want SmartPerfetto to use a different Claude-compatible provider than Claude Code, use the explicit Anthropic-compatible proxy path:
-
-```bash
-ANTHROPIC_BASE_URL=http://localhost:3000
-ANTHROPIC_AUTH_TOKEN=sk-proxy-xxx
-CLAUDE_MODEL=your-provider-main-model
-CLAUDE_LIGHT_MODEL=your-provider-light-model
-```
-
-Restart the backend after changing provider settings. `GET /health` returns `aiEngine.runtime`, `aiEngine.providerMode`, and `aiEngine.diagnostics` so you can confirm whether the runtime is using Claude Agent SDK, OpenAI Agents SDK, Anthropic direct access, AWS Bedrock, or a compatible proxy.
+Claude Code local auth/config is only available to local source runs, not Docker. Separate tools such as Codex CLI, Gemini CLI, and OpenCode manage their own configuration files and login state; SmartPerfetto does not automatically read those credentials. The frontend settings dialog only stores the backend URL and optional `SMARTPERFETTO_API_KEY` for SmartPerfetto backend auth.
 
 ### Output Language
 
@@ -194,14 +176,16 @@ Accepted values include `zh-CN` and `en`. Restart the backend after changing `.e
 
 ### Turn Budgets
 
-SmartPerfetto has separate turn budgets for fast and full analysis:
+SmartPerfetto has separate turn budgets for fast and full analysis. Claude runtime uses `CLAUDE_*`; OpenAI runtime uses `OPENAI_*` with the same meanings:
 
 ```bash
 CLAUDE_QUICK_MAX_TURNS=10  # fast mode default
 CLAUDE_MAX_TURNS=60        # full mode default
+OPENAI_QUICK_MAX_TURNS=10  # optional OpenAI runtime override
+OPENAI_MAX_TURNS=60        # optional OpenAI runtime override
 ```
 
-Raise these values for slower models or traces that need more tool iterations. The total safety timeout scales with the turn budget: full mode uses `CLAUDE_FULL_PER_TURN_MS` per turn, and fast mode uses `CLAUDE_QUICK_PER_TURN_MS` per turn. Restart the backend after changing `.env`.
+Raise these values for slower models or traces that need more tool iterations. The total safety timeout scales with the turn budget: full mode uses `CLAUDE_FULL_PER_TURN_MS` / `OPENAI_FULL_PER_TURN_MS` per turn, and fast mode uses `CLAUDE_QUICK_PER_TURN_MS` / `OPENAI_QUICK_PER_TURN_MS` per turn. Restart the backend after changing `.env`.
 
 ## Basic Usage
 
@@ -224,7 +208,7 @@ SmartPerfetto works best with Android 12+ traces that include FrameTimeline data
 
 ## CLI Usage
 
-SmartPerfetto also ships a terminal CLI for trace analysis without opening the browser UI. It uses the same agentv3 runtime as the web experience and writes local sessions, transcripts, and reports under `~/.smartperfetto/`.
+SmartPerfetto also ships a terminal CLI for trace analysis without opening the browser UI. It uses the same runtime selection, tools, skills, and report pipeline as the web experience and writes local sessions, transcripts, and reports under `~/.smartperfetto/`.
 
 ```bash
 # Requires Node.js 24 LTS
@@ -265,7 +249,8 @@ Frontend (Perfetto UI @ :10000)
   └─ SmartPerfetto AI Assistant plugin
        └─ SSE / HTTP
 Backend (Express @ :3000)
-  ├─ agentv3 runtime: scene routing, prompts, MCP tools, verifier
+  ├─ Runtime selector: Claude Agent SDK or OpenAI Agents SDK
+  ├─ Agent orchestration: scene routing, prompts, MCP tools, verifier
   ├─ Skill engine: YAML analysis pipelines
   ├─ Session/report/log services
   └─ trace_processor_shell pool (HTTP RPC, 9100-9900)
@@ -276,7 +261,9 @@ Repository layout:
 ```text
 SmartPerfetto/
 ├── backend/
-│   ├── src/agentv3/        # Primary AI runtime
+│   ├── src/agentRuntime/   # SDK runtime selection
+│   ├── src/agentv3/        # Claude Agent SDK orchestration
+│   ├── src/agentOpenAI/    # OpenAI Agents SDK orchestration
 │   ├── src/services/       # Trace processor, skills, reports, sessions
 │   ├── skills/             # YAML analysis skills and configs
 │   ├── strategies/         # Scene strategies and prompt templates
