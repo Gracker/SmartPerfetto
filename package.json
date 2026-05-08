@@ -1,6 +1,6 @@
 {
   "name": "smart-perfetto",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI-powered Perfetto analysis platform",
   "private": true,
   "scripts": {
@@ -16,6 +16,10 @@
     "rust:check": "cargo check --manifest-path rust/flamegraph-analyzer/Cargo.toml",
     "rust:test": "cargo test --manifest-path rust/flamegraph-analyzer/Cargo.toml",
     "rust:verify": "npm run rust:fmt && npm run rust:check && npm run rust:test",
+    "package:windows-exe": "./scripts/package-windows-exe.sh",
+    "version:sync": "node scripts/sync-version.cjs",
+    "version:set": "node scripts/sync-version.cjs",
+    "release:windows-exe": "./scripts/release-windows-exe.sh",
     "quality": "npm run lint && npm run format:check && npm run deadcode && npm run shellcheck",
     "verify:pr": "npm run quality && npm run rust:verify && npm --prefix backend run verify:pr"
   },

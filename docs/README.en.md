@@ -8,7 +8,7 @@ SmartPerfetto is an Android performance analysis platform built on Perfetto. Thi
 
 | Reader | Start here | Continue with |
 |---|---|---|
-| First-time user | [Quick Start](getting-started/quick-start.en.md) | [Configuration Guide](getting-started/configuration.en.md), [Basic Usage](getting-started/usage.en.md) |
+| First-time user | [Quick Start](getting-started/quick-start.en.md) | [Configuration Guide](getting-started/configuration.en.md), [Basic Usage](getting-started/usage.en.md), [Windows EXE Packaging](reference/windows-exe.en.md) |
 | Backend API integrator | [API Reference](reference/api.en.md) | [MCP Tools Reference](reference/mcp-tools.en.md) |
 | CLI or automation user | [CLI Reference](reference/cli.en.md) | [API Reference](reference/api.en.md) |
 | Contributor | [Local Development](development/local-development.en.md) | [Testing and Verification](development/testing.en.md), [Contributing Guide](../CONTRIBUTING.md) |
@@ -36,7 +36,7 @@ docs/
 
 ## Authoritative Docs
 
-- Startup and runtime flow: [Quick Start](getting-started/quick-start.en.md) and [Local Development](development/local-development.en.md).
+- Startup and runtime flow: [Quick Start](getting-started/quick-start.en.md), [Windows EXE Packaging](reference/windows-exe.en.md), and [Local Development](development/local-development.en.md).
 - Provider and model configuration: [Configuration Guide](getting-started/configuration.en.md).
 - Backend API: [API Reference](reference/api.en.md).
 - CLI usage: [CLI Reference](reference/cli.en.md).

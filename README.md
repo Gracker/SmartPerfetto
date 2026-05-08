@@ -86,7 +86,7 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 | Analysis logic | YAML skills under `backend/skills/` plus Markdown strategies under `backend/strategies/` |
 | Storage | Local uploads, session logs, reports, and runtime learning files |
 | Testing | Jest, skill validation, strategy validation, 6-trace scene regression gate |
-| Deployment | Docker Compose or local dev scripts |
+| Deployment | Docker Compose, Windows EXE package, or local dev scripts |
 
 ## For Users
 
@@ -118,6 +118,26 @@ Step 5: Open the service URLs.
 Stop the container with `docker compose -f docker-compose.hub.yml down`.
 
 Uploads, logs, and Provider Manager profiles are stored in Docker volumes, so they survive container restarts.
+
+### Windows EXE Package
+
+Windows users who do not want Docker can use the maintainer-built `smartperfetto-v<version>-windows-x64.zip`. It is an extract-and-run directory: `SmartPerfetto.exe` starts the backend and the pre-built Perfetto UI, and the directory includes the Windows Node.js 24 runtime, Windows native dependencies, and the pinned `trace_processor_shell.exe`.
+
+User flow: extract the zip, double-click `SmartPerfetto.exe`, then open [http://localhost:10000](http://localhost:10000). AI analysis needs a Provider profile configured in the UI, or env credentials in `backend\.env` copied from `backend\.env.example`.
+
+Maintainer build command:
+
+```bash
+npm run package:windows-exe
+```
+
+The root `package.json` is the project version source and is synchronized to `backend/package.json` and lockfiles. For a normal release, run `npm run version:set -- 1.0.1`, commit the version files, then publish:
+
+```bash
+npm run release:windows-exe -- 1.0.1
+```
+
+The zip is written to `dist/windows-exe/smartperfetto-v<version>-windows-x64.zip`, and the release script uploads it to GitHub Releases. See [Windows EXE Packaging](docs/reference/windows-exe.en.md) for the full build, release, Windows smoke test, and limits.
 
 ### Local Script
 

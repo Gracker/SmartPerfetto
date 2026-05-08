@@ -86,7 +86,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 | 分析逻辑 | `backend/skills/` 下的 YAML Skill，`backend/strategies/` 下的 Markdown 策略 |
 | 存储 | 本地上传文件、Session 日志、报告、运行时学习文件 |
 | 测试 | Jest、Skill 校验、Strategy 校验、6 条 canonical trace 回归 |
-| 部署 | Docker Compose 或本地开发脚本 |
+| 部署 | Docker Compose、Windows EXE 包或本地开发脚本 |
 
 ## 使用者
 
@@ -118,6 +118,26 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
 停止容器时运行 `docker compose -f docker-compose.hub.yml down`。
 
 上传文件、日志和 Provider Manager profile 保存在 Docker volume 中，容器重启后仍会保留。
+
+### Windows EXE 包
+
+如果 Windows 用户不想安装 Docker，可以使用维护者打出的 `smartperfetto-v<version>-windows-x64.zip`。这个包是解压即用目录：`SmartPerfetto.exe` 负责启动后端和预构建 Perfetto UI，目录内已经包含 Windows Node.js 24 runtime、Windows 原生依赖和固定版本的 `trace_processor_shell.exe`。
+
+用户流程：解压 zip，双击 `SmartPerfetto.exe`，打开 [http://localhost:10000](http://localhost:10000)。AI 分析需要在 UI 里配置 Provider profile，或复制 `backend\.env.example` 为 `backend\.env` 并填写一个 provider block 后重启。
+
+维护者打包命令：
+
+```bash
+npm run package:windows-exe
+```
+
+版本号以根目录 `package.json` 为源头，并同步到 `backend/package.json` 和 lockfile。正常发布时先运行 `npm run version:set -- 1.0.1`，提交版本文件，然后发布：
+
+```bash
+npm run release:windows-exe -- 1.0.1
+```
+
+产物在 `dist/windows-exe/smartperfetto-v<version>-windows-x64.zip`，发布脚本会上传到 GitHub Release。完整打包、发布、Windows smoke 验证和限制见 [Windows EXE 打包](docs/reference/windows-exe.md)。
 
 ### 本地脚本运行
 

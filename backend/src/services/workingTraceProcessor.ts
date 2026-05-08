@@ -24,14 +24,16 @@ const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_I
 // process.env read would miss TRACE_PROCESSOR_PATH from backend/.env / --env-file.
 // Path: backend/src/services/ -> ../../../ -> perfetto/out/ui/
 export function getBundledTraceProcessorPath(): string {
-  return path.resolve(__dirname, '../../../perfetto/out/ui/trace_processor_shell');
+  const executableName = process.platform === 'win32' ? 'trace_processor_shell.exe' : 'trace_processor_shell';
+  return path.resolve(__dirname, '../../../perfetto/out/ui', executableName);
 }
 
 export function getUserTraceProcessorPath(): string {
   const home = process.env.SMARTPERFETTO_HOME && process.env.SMARTPERFETTO_HOME.trim()
     ? path.resolve(process.env.SMARTPERFETTO_HOME)
     : path.join(os.homedir(), '.smartperfetto');
-  return path.join(home, 'bin', 'trace_processor_shell');
+  const executableName = process.platform === 'win32' ? 'trace_processor_shell.exe' : 'trace_processor_shell';
+  return path.join(home, 'bin', executableName);
 }
 
 export function getTraceProcessorPath(): string {

@@ -14,7 +14,10 @@ const { execFile } = require('child_process');
 
 const repoRoot = path.resolve(__dirname, '../..');
 const pinFile = path.join(repoRoot, 'scripts/trace-processor-pin.env');
-const defaultOutput = path.join(repoRoot, 'perfetto/out/ui/trace_processor_shell');
+const traceProcessorExecutableName = process.platform === 'win32'
+  ? 'trace_processor_shell.exe'
+  : 'trace_processor_shell';
+const defaultOutput = path.join(repoRoot, 'perfetto/out/ui', traceProcessorExecutableName);
 const outputPath = process.env.TRACE_PROCESSOR_PATH
   ? path.resolve(process.env.TRACE_PROCESSOR_PATH)
   : defaultOutput;
@@ -54,6 +57,11 @@ function getPlatformAndSha(pins) {
     } else if (arch === 'x64') {
       platform = 'linux-amd64';
       shaKey = 'PERFETTO_SHELL_SHA256_LINUX_AMD64';
+    }
+  } else if (process.platform === 'win32') {
+    if (arch === 'x64') {
+      platform = 'windows-amd64';
+      shaKey = 'PERFETTO_SHELL_SHA256_WINDOWS_AMD64';
     }
   }
 
@@ -162,7 +170,8 @@ function resolveDownloadUrl(pins, platform) {
   }
 
   const urlBase = process.env.TRACE_PROCESSOR_DOWNLOAD_BASE || defaultUrlBase;
-  return { version, url: `${urlBase.replace(/\/+$/, '')}/${version}/${platform}/trace_processor_shell` };
+  const executableName = platform.startsWith('windows-') ? 'trace_processor_shell.exe' : 'trace_processor_shell';
+  return { version, url: `${urlBase.replace(/\/+$/, '')}/${version}/${platform}/${executableName}` };
 }
 
 function formatDownloadHelp(url) {
@@ -194,7 +203,8 @@ async function main() {
   }
 
   const { version, url } = resolveDownloadUrl(pins, platform);
-  const tmpPath = path.join(os.tmpdir(), `smartperfetto-trace_processor_shell-${process.pid}-${Date.now()}`);
+  const tmpSuffix = platform.startsWith('windows-') ? '.exe' : '';
+  const tmpPath = path.join(os.tmpdir(), `smartperfetto-trace_processor_shell-${process.pid}-${Date.now()}${tmpSuffix}`);
 
   console.log(`Downloading pinned trace_processor_shell ${version} (${platform}) from ${url}...`);
   try {

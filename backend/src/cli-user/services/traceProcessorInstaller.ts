@@ -24,7 +24,8 @@ export async function installTraceProcessorPrebuilt(destination: string): Promis
   }
 
   const url = resolveDownloadUrl(pin, platform);
-  const tmp = path.join(os.tmpdir(), `smartperfetto-trace_processor_shell-${process.pid}-${Date.now()}`);
+  const tmpSuffix = platform.startsWith('windows-') ? '.exe' : '';
+  const tmp = path.join(os.tmpdir(), `smartperfetto-trace_processor_shell-${process.pid}-${Date.now()}${tmpSuffix}`);
 
   try {
     await downloadFile(url, tmp);
@@ -75,6 +76,7 @@ function loadPinConfig(): PinConfig {
       'linux-arm64': requirePinValue(values, 'PERFETTO_SHELL_SHA256_LINUX_ARM64', pinPath),
       'mac-amd64': requirePinValue(values, 'PERFETTO_SHELL_SHA256_MAC_AMD64', pinPath),
       'mac-arm64': requirePinValue(values, 'PERFETTO_SHELL_SHA256_MAC_ARM64', pinPath),
+      'windows-amd64': requirePinValue(values, 'PERFETTO_SHELL_SHA256_WINDOWS_AMD64', pinPath),
     },
   };
 }
@@ -118,7 +120,8 @@ function resolveDownloadUrl(pin: PinConfig, platform: string): string {
   if (exactUrl) return exactUrl;
 
   const urlBase = process.env.TRACE_PROCESSOR_DOWNLOAD_BASE || pin.urlBase;
-  return `${urlBase.replace(/\/+$/, '')}/${pin.version}/${platform}/trace_processor_shell`;
+  const executableName = platform.startsWith('windows-') ? 'trace_processor_shell.exe' : 'trace_processor_shell';
+  return `${urlBase.replace(/\/+$/, '')}/${pin.version}/${platform}/${executableName}`;
 }
 
 function formatDownloadHelp(url: string): string {
@@ -159,6 +162,8 @@ function detectPlatform(): string {
         return 'mac';
       case 'linux':
         return 'linux';
+      case 'win32':
+        return 'windows';
       default:
         throw new Error(
           `Unsupported OS for automatic trace_processor_shell install: ${process.platform}. ` +

@@ -63,6 +63,7 @@ import {
 // Import cleanup utilities
 import { TraceProcessorFactory, killOrphanProcessors } from './services/workingTraceProcessor';
 import { getPortPool, resetPortPool } from './services/portPool';
+import { getSmartPerfettoVersion } from './version';
 
 const app = express();
 const PORT = serverConfig.port;
@@ -108,7 +109,7 @@ app.get('/health', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: NODE_ENV,
-    version: '1.0.0',
+    version: getSmartPerfettoVersion(),
     traceAnalysis: getTraceAnalysisConfigurationStatus(),
     aiEngine: {
       runtime: runtimeSelection.kind,

@@ -3,7 +3,9 @@
 
 import type { AgentRuntimeKind, DualSurfaceProviderType, ProviderConfig, ProviderType, TestResult } from './types';
 
-const TEST_TIMEOUT_MS = 15000;
+const TEST_REQUEST_TIMEOUT_MS = 10000;
+const TEST_TOTAL_TIMEOUT_MS = 15000;
+const TEST_RESPONSE_BODY_TIMEOUT_MS = 3000;
 const DUAL_SURFACE_PROVIDER_TYPES: DualSurfaceProviderType[] = [
   'deepseek',
   'glm',
@@ -35,7 +37,12 @@ interface RequestInit {
 export async function testProviderConnection(provider: ProviderConfig): Promise<TestResult> {
   const start = Date.now();
   try {
-    const result = await runTest(provider);
+    const totalTimeoutMs = getTimeoutMs('PROVIDER_TEST_TOTAL_TIMEOUT_MS', TEST_TOTAL_TIMEOUT_MS);
+    const result = await withTimeout(
+      runTest(provider),
+      totalTimeoutMs,
+      () => new Error(`Provider connection test timed out after ${totalTimeoutMs / 1000}s`),
+    );
     return { ...result, latencyMs: Date.now() - start };
   } catch (err: any) {
     return {
@@ -358,12 +365,13 @@ async function testOllama(provider: ProviderConfig): Promise<Omit<TestResult, 'l
 
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
+  const timeoutMs = getTimeoutMs('PROVIDER_TEST_REQUEST_TIMEOUT_MS', TEST_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      throw new Error(`Connection timed out after ${TEST_TIMEOUT_MS / 1000}s`);
+      throw new Error(`Connection timed out after ${timeoutMs / 1000}s`);
     }
     if (err.cause?.code === 'ECONNREFUSED') {
       throw new Error(`Connection refused — server not reachable at ${new URL(url).origin}`);
@@ -378,7 +386,52 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
 }
 
 async function safeJson(res: Response): Promise<any> {
-  try { return await res.json(); } catch { return null; }
+  try {
+    const body = await readResponseTextWithTimeout(res);
+    if (!body) return null;
+    return JSON.parse(body);
+  } catch {
+    return null;
+  }
+}
+
+async function readResponseTextWithTimeout(res: Response): Promise<string | null> {
+  const timeoutMs = getTimeoutMs('PROVIDER_TEST_RESPONSE_BODY_TIMEOUT_MS', TEST_RESPONSE_BODY_TIMEOUT_MS);
+  return withTimeout(
+    res.text(),
+    timeoutMs,
+    () => {
+      cancelResponseBody(res);
+      return new Error(`Response body timed out after ${timeoutMs / 1000}s`);
+    },
+  );
+}
+
+function cancelResponseBody(res: Response): void {
+  try {
+    void res.body?.cancel();
+  } catch {
+    // Best-effort cleanup only; the caller will return a normal test failure.
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, createError: () => Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(createError()), timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function getTimeoutMs(envName: string, fallbackMs: number): number {
+  const raw = process.env[envName];
+  if (!raw) return fallbackMs;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
 }
 
 // --- Minimal AWS SigV4 signer (for Bedrock test without full AWS SDK) ---
