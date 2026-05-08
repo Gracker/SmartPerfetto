@@ -1919,6 +1919,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       sdkSessionId,
       agentRuntimeKind: 'claude-agent-sdk',
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
+      agentRuntimeProviderSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
 
       // Artifacts
       artifacts: artifactStore?.serialize(),

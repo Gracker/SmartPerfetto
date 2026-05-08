@@ -600,6 +600,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       sdkSessionId: sessionEntry?.lastResponseId,
       agentRuntimeKind: 'openai-agents-sdk',
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
+      agentRuntimeProviderSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
       openAIHistory: sessionEntry?.history,
       openAILastResponseId: sessionEntry?.lastResponseId,
       openAIRunState: sessionEntry?.runState,

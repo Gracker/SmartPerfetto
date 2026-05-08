@@ -135,6 +135,12 @@ export interface SessionStateSnapshot {
    * the current active Provider Manager profile during restoration.
    */
   agentRuntimeProviderId?: string | null;
+  /**
+   * Non-secret hash of the provider/runtime configuration that created the SDK
+   * session. Resume may only reuse sdkSessionId when this still matches the
+   * current resolved provider snapshot.
+   */
+  agentRuntimeProviderSnapshotHash?: string | null;
   /** OpenAI Agents SDK history for cross-restart multi-turn continuation. */
   openAIHistory?: unknown[];
   /** Last provider response ID from the OpenAI Agents SDK run. */
@@ -172,6 +178,8 @@ export interface SessionFieldsForSnapshot {
   hypotheses: any[];
   /** Provider profile that supplied runtime credentials for this turn; null means env/default fallback. */
   agentRuntimeProviderId?: string | null;
+  /** Non-secret hash of the resolved provider/runtime configuration. */
+  agentRuntimeProviderSnapshotHash?: string | null;
   runSequence: number;
   conversationOrdinal: number;
 }

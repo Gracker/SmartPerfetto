@@ -10,6 +10,8 @@ import {
 } from '../../agent';
 import { createAgentOrchestrator } from '../../agentRuntime';
 import { getProviderService } from '../../services/providerManager';
+import { resolveProviderRuntimeSnapshot } from '../../services/providerManager/providerSnapshot';
+import type { AgentRuntimeKind } from '../../services/providerManager';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
 import {
   type EnhancedSessionContext,
@@ -67,6 +69,10 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   userId?: string;
   /** Provider Manager profile used for this SDK session. null means env/default fallback is pinned. */
   providerId?: string | null;
+  /** Non-secret ProviderSnapshot hash used to decide whether SDK session state can be reused. */
+  providerSnapshotHash?: string | null;
+  providerSnapshotChanged?: boolean;
+  providerSnapshotChangeReason?: string;
   logger: SessionLogger;
   result?: AgentRuntimeAnalysisResult;
   hypotheses: Hypothesis[];
@@ -167,14 +173,35 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
     const sessionProviderId = explicitProviderId !== undefined
       ? explicitProviderId
       : activeProviderId ?? null;
+    const resolveProviderSnapshotHash = (
+      providerId: string | null,
+      runtimeOverride?: AgentRuntimeKind,
+    ) => resolveProviderRuntimeSnapshot(providerSvc, providerId, runtimeOverride).snapshotHash;
+    const sessionProviderSnapshotHash = resolveProviderSnapshotHash(sessionProviderId);
 
     if (requestedSessionId) {
       const existingSession = this.assistantAppService.getSession(requestedSessionId);
+      const liveSessionProviderId = existingSession && existingSession.traceId === traceId
+        ? explicitProviderId !== undefined
+          ? explicitProviderId
+          : existingSession.providerId ?? null
+        : sessionProviderId;
       const liveSessionProviderMismatch = Boolean(
         existingSession &&
         existingSession.traceId === traceId &&
         explicitProviderId !== undefined &&
         (existingSession.providerId ?? null) !== explicitProviderId,
+      );
+      const liveSessionProviderSnapshotHash = existingSession?.providerSnapshotHash
+        ? resolveProviderSnapshotHash(liveSessionProviderId)
+        : null;
+      const liveSessionProviderSnapshotMismatch = Boolean(
+        existingSession &&
+        existingSession.traceId === traceId &&
+        !liveSessionProviderMismatch &&
+        existingSession.providerSnapshotHash &&
+        liveSessionProviderSnapshotHash &&
+        existingSession.providerSnapshotHash !== liveSessionProviderSnapshotHash,
       );
       if (existingSession && existingSession.traceId === traceId) {
         if (liveSessionProviderMismatch) {
@@ -183,8 +210,45 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             nextProviderId: sessionProviderId,
           });
           console.log(`[AgentRoutes] Provider changed for ${requestedSessionId}, creating a new agent session`);
+        } else if (liveSessionProviderSnapshotMismatch) {
+          const previousProviderSnapshotHash = existingSession.providerSnapshotHash;
+          if (existingSession.orchestratorUpdateHandler) {
+            existingSession.orchestrator.off('update', existingSession.orchestratorUpdateHandler);
+            existingSession.orchestratorUpdateHandler = undefined;
+          }
+          if (typeof existingSession.orchestrator.cleanupSession === 'function') {
+            existingSession.orchestrator.cleanupSession(existingSession.sessionId);
+          }
+          existingSession.orchestrator = createAgentOrchestrator({
+            traceProcessorService: getTraceProcessorService(),
+            providerId: liveSessionProviderId,
+          });
+          existingSession.providerId = liveSessionProviderId;
+          existingSession.providerSnapshotHash = liveSessionProviderSnapshotHash;
+          existingSession.providerSnapshotChanged = true;
+          existingSession.providerSnapshotChangeReason = 'provider_snapshot_hash_mismatch';
+          existingSession.runSequence = Number.isFinite(existingSession.runSequence)
+            ? Math.max(0, Math.floor(existingSession.runSequence as number))
+            : 0;
+          existingSession.logger.warn('AgentRoutes', 'Provider snapshot changed; starting a fresh SDK session', {
+            providerId: liveSessionProviderId,
+            previousProviderSnapshotHash,
+            nextProviderSnapshotHash: liveSessionProviderSnapshotHash,
+          });
+          existingSession.query = query;
+          existingSession.status = 'pending';
+          existingSession.lastActivityAt = Date.now();
+          console.log(`[AgentRoutes] Provider snapshot changed for ${requestedSessionId}, refreshed SDK session`);
+          return {
+            sessionId: requestedSessionId,
+            session: existingSession,
+            isNewSession: false,
+          };
         } else {
           existingSession.providerId ??= null;
+          existingSession.providerSnapshotHash ??= liveSessionProviderSnapshotHash;
+          existingSession.providerSnapshotChanged = false;
+          existingSession.providerSnapshotChangeReason = undefined;
           existingSession.runSequence = Number.isFinite(existingSession.runSequence)
             ? Math.max(0, Math.floor(existingSession.runSequence as number))
             : 0;
@@ -240,6 +304,18 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
             });
           }
+          const restoredProviderSnapshotHash = !snapshotProviderMismatch
+            ? resolveProviderSnapshotHash(
+                restoredProviderId,
+                restoredProviderId ? undefined : stateSnapshot?.agentRuntimeKind,
+              )
+            : null;
+          const snapshotProviderHashMismatch = Boolean(
+            !snapshotProviderMismatch &&
+            stateSnapshot?.agentRuntimeProviderSnapshotHash &&
+            restoredProviderSnapshotHash &&
+            stateSnapshot.agentRuntimeProviderSnapshotHash !== restoredProviderSnapshotHash,
+          );
 
           if (snapshotProviderMismatch) {
             console.log(
@@ -273,8 +349,16 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             // Restore SDK runtime internal maps/state from the unified snapshot.
             // Mirrors the explicit /resume endpoint so both paths recover the
             // full agent state, not just SessionContext.
-            if (stateSnapshot && typeof restoredOrchestrator.restoreFromSnapshot === 'function') {
+            if (
+              stateSnapshot &&
+              !snapshotProviderHashMismatch &&
+              typeof restoredOrchestrator.restoreFromSnapshot === 'function'
+            ) {
               restoredOrchestrator.restoreFromSnapshot(requestedSessionId, traceId, stateSnapshot);
+            } else if (snapshotProviderHashMismatch) {
+              console.log(
+                `[AgentRoutes] Provider snapshot changed for ${requestedSessionId}, skipping SDK session restoration`
+              );
             }
 
             const restoredTurns = restoredContext.getAllTurns();
@@ -307,6 +391,13 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               turnCount: restoredTurns.length,
               entityStoreStats: restoredContext.getEntityStore().getStats(),
             });
+            if (snapshotProviderHashMismatch) {
+              restoredLogger.warn('AgentRoutes', 'Provider snapshot changed; fresh SDK runtime will be used', {
+                providerId: restoredProviderId,
+                previousProviderSnapshotHash: stateSnapshot?.agentRuntimeProviderSnapshotHash,
+                nextProviderSnapshotHash: restoredProviderSnapshotHash,
+              });
+            }
 
             // Reconstruct query/conclusion history from persisted turns
             const restoredQueryHistory: Array<{ turn: number; query: string; timestamp: number }> = [];
@@ -345,6 +436,11 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               workspaceId: persistedSession.metadata?.workspaceId,
               userId: persistedSession.metadata?.userId,
               providerId: restoredProviderId,
+              providerSnapshotHash: restoredProviderSnapshotHash ?? sessionProviderSnapshotHash,
+              providerSnapshotChanged: snapshotProviderHashMismatch || undefined,
+              providerSnapshotChangeReason: snapshotProviderHashMismatch
+                ? 'provider_snapshot_hash_mismatch'
+                : undefined,
               createdAt: persistedSession.createdAt,
               lastActivityAt: Date.now(),
               logger: restoredLogger,
@@ -415,6 +511,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       traceId,
       query,
       providerId: sessionProviderId,
+      providerSnapshotHash: sessionProviderSnapshotHash,
+      providerSnapshotChanged: false,
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       logger,
