@@ -151,7 +151,7 @@ Cross-platform assets are written to `dist/portable/`; the Windows-compatible co
 
 ### Local Script
 
-Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 24 LTS**, `curl`, `lsof`, `pkill`, and either Claude Code login or LLM provider credentials. For Windows source development, use [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install), not native Windows shell.
+Use this path if you prefer running from a source checkout on macOS or Linux. Prerequisites: **Node.js 24 LTS**, `curl`, `lsof`, `pkill`, and either Claude Code login or LLM provider credentials. For Windows source development, [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) is the default recommendation. For **native Windows** (PowerShell, no WSL), see [docs/build-windows.md](docs/build-windows.md) and run `npm run dev:win` from the repository root.
 
 The repository includes `.nvmrc` and `.node-version`, and npm is configured with `engine-strict=true`. `./start.sh`, `./scripts/start-dev.sh`, and `./scripts/restart-backend.sh` will try to activate Node 24 through nvm or fnm. If backend dependencies were installed under another Node ABI, the scripts reinstall `backend/node_modules` automatically before starting the server. This prevents native modules such as `better-sqlite3` from being reused across Node 20/24/25.
 

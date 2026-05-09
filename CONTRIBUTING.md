@@ -12,7 +12,7 @@ Thanks for your interest in contributing! This guide covers development setup, t
   - macOS: `xcode-select --install`
   - Linux: `sudo apt-get install build-essential python3`
 - **Git** with submodule support
-- **macOS or Linux** (Windows users: use Docker — see README)
+- **macOS or Linux** — 或使用 **本机 Windows**：见 [docs/build-windows.md](docs/build-windows.md)（PowerShell 脚本 + MSVC 用于 `npm install`）；或仍可选用 Docker / WSL2（见 README）
 
 ## Development Setup
 

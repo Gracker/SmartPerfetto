@@ -30,6 +30,8 @@ relevant `.claude/rules/` files.
 cd backend && npm run build
 ```
 
+Native Windows (PowerShell, no WSL): `npm run dev:win` or `npm run restart-backend:win` — see [docs/build-windows.md](docs/build-windows.md).
+
 ## Must-Follow Rules
 
 - Preserve unrelated local changes; inspect git status before editing.
