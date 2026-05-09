@@ -24,6 +24,22 @@ build/
 
 # Perfetto build output (3.9GB, can rebuild with ./ui/run-dev-server)
 perfetto/out/
+# emsdk 官方仓库 clone，体积大、勿提交
+perfetto/buildtools/emsdk_git/
+# Windows 本机 emsdk 安装目录（bootstrap 脚本生成，体积大，勿提交）
+perfetto/buildtools/win64/
+perfetto/buildtools/protobuf/
+perfetto/buildtools/abseil-cpp/
+perfetto/buildtools/zlib/
+perfetto/buildtools/sqlite/
+perfetto/buildtools/sqlite_src/
+perfetto/buildtools/re2/
+perfetto/buildtools/pcre2/
+perfetto/buildtools/linenoise/
+perfetto/buildtools/llvm-project/
+perfetto/buildtools/expat/
+perfetto/buildtools/lzma/
+perfetto/buildtools/zstd/
 
 # Rust build output
 target/
@@ -76,6 +92,7 @@ pids/
 *.pid.lock
 .backend.pid
 .frontend.pid
+.use-wsl-perfetto-frontend
 
 # Coverage
 coverage/
