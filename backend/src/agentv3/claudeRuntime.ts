@@ -384,6 +384,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   private sessionUncertaintyFlags: Map<string, UncertaintyFlag[]> = new Map();
   /** Guard against concurrent analyze() calls for the same session. */
   private activeAnalyses: Set<string> = new Set();
+  /** Abort controllers for active analyses — allows preempting any phase. */
+  private analysisAbortControllers: Map<string, AbortController> = new Map();
+  /** SDK close functions for active analyses — terminates the SDK subprocess. */
+  private analysisSdkClosers: Map<string, () => void> = new Map();
 
   constructor(traceProcessorService: TraceProcessorService, config?: Partial<ClaudeAgentConfig>) {
     super();
@@ -475,11 +479,20 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions = {},
   ): Promise<AnalysisResult> {
-    // Prevent concurrent analyze() calls for the same session
+    // Preempt any existing analysis for this session (user moved on)
     if (this.activeAnalyses.has(sessionId)) {
-      throw new Error(`Analysis already in progress for session ${sessionId}`);
+      const prevAbort = this.analysisAbortControllers.get(sessionId);
+      if (prevAbort) prevAbort.abort();
+      const prevCloser = this.analysisSdkClosers.get(sessionId);
+      if (prevCloser) { try { prevCloser(); } catch { /* already closed */ } }
+      this.activeAnalyses.delete(sessionId);
+      this.analysisAbortControllers.delete(sessionId);
+      this.analysisSdkClosers.delete(sessionId);
+      console.log(`[ClaudeRuntime] Session ${sessionId}: preempted previous analysis for new request`);
     }
     this.activeAnalyses.add(sessionId);
+    const analysisAbort = new AbortController();
+    this.analysisAbortControllers.set(sessionId, analysisAbort);
 
     const startTime = Date.now();
     const allFindings: Finding[][] = [];
@@ -651,6 +664,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         outputLanguage: this.config.outputLanguage,
       });
 
+      // Register SDK closer so a preempting request can terminate this subprocess.
+      this.analysisSdkClosers.set(sessionId, closeSdk);
+
       let finalResult: string | undefined;
       let terminationReason: AnalysisResult['terminationReason'];
       let terminationMessage: string | undefined;
@@ -780,7 +796,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       const processStream = async () => {
         for await (const msg of stream) {
-          if (timedOut) break; // P0-1: Actually cancel stream on timeout
+          if (timedOut || analysisAbort.signal.aborted) break;
 
           // Detect SDK auto-compact boundary — conversation history was summarized
           if ((msg as any).type === 'system' && (msg as any).subtype === 'compact_boundary') {
@@ -1118,7 +1134,22 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       try {
         await Promise.race([processStream(), timeoutPromise]);
       } catch (err) {
-        if (timedOut) {
+        if (analysisAbort.signal.aborted) {
+          console.log(`[ClaudeRuntime] Session ${sessionId}: analysis preempted by new request`);
+          return {
+            sessionId,
+            success: true,
+            findings: mergeFindings(allFindings),
+            hypotheses: [],
+            conclusion: getAccumulatedAnswer() || '',
+            confidence: 0,
+            rounds,
+            totalDurationMs: Date.now() - startTime,
+            partial: true,
+            terminationReason: 'preempted' as any,
+            terminationMessage: 'Analysis preempted by new user request',
+          };
+        } else if (timedOut) {
           console.error('[ClaudeRuntime] Analysis safety timeout reached — SDK subprocess has been closed');
           this.emitUpdate({
             type: 'progress',
@@ -1138,6 +1169,23 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       } finally {
         if (safetyTimer) clearTimeout(safetyTimer);
         closeSdk();
+      }
+
+      // If preempted while stream was running, exit early
+      if (analysisAbort.signal.aborted) {
+        return {
+          sessionId,
+          success: true,
+          findings: mergeFindings(allFindings),
+          hypotheses: [],
+          conclusion: getAccumulatedAnswer() || '',
+          confidence: 0,
+          rounds,
+          totalDurationMs: Date.now() - startTime,
+          partial: true,
+          terminationReason: 'preempted' as any,
+          terminationMessage: 'Analysis preempted by new user request',
+        };
       }
 
       // Use SDK terminal result if available; fall back to accumulated streamed answer tokens.
@@ -1183,12 +1231,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Run unconditionally when enabled — plan adherence, hypothesis resolution,
       // and conclusion-length checks must fire even when zero findings are extracted.
       console.log(`[ClaudeRuntime] Pre-verification: conclusionText=${conclusionText.length} chars, sdkSessionId=${sdkSessionId ? 'set' : 'MISSING'}, enableVerification=${runtimeConfig.enableVerification}`);
-      if (runtimeConfig.enableVerification) {
+      if (runtimeConfig.enableVerification && !analysisAbort.signal.aborted) {
         const MAX_CORRECTION_ATTEMPTS = 2;
         let previousErrorSignatures = new Set<string>();
 
         try {
           for (let attempt = 0; attempt < MAX_CORRECTION_ATTEMPTS; attempt++) {
+            if (analysisAbort.signal.aborted) break;
             const verification = await verifyConclusion(mergedFindings, conclusionText, {
               emitUpdate: (update) => this.emitUpdate(update),
               enableLLM: true,
@@ -1239,6 +1288,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               },
               timestamp: Date.now(),
             });
+
+            if (analysisAbort.signal.aborted) break;
 
             try {
               const correctionPrompt = generateCorrectionPrompt(
@@ -1587,6 +1638,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       };
     } finally {
       this.activeAnalyses.delete(sessionId);
+      this.analysisAbortControllers.delete(sessionId);
+      this.analysisSdkClosers.delete(sessionId);
       runSnapshots.release(sessionId);
       // Notes persistence now handled by unified SessionStateSnapshot in the route layer.
       // No separate disk I/O needed here.
@@ -1969,6 +2022,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
     this.activeAnalyses.delete(sessionId);
+    const abortCtrl = this.analysisAbortControllers.get(sessionId);
+    if (abortCtrl) abortCtrl.abort();
+    this.analysisAbortControllers.delete(sessionId);
+    const closer = this.analysisSdkClosers.get(sessionId);
+    if (closer) { try { closer(); } catch { /* already closed */ } }
+    this.analysisSdkClosers.delete(sessionId);
     if (enterpriseSessionMapDbWritesEnabled()) {
       try {
         deleteClaudeSessionMapRuntimeSnapshots(sessionId);
@@ -2140,6 +2199,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.clear();
     this.sessionUncertaintyFlags.clear();
     this.activeAnalyses.clear();
+    for (const ctrl of this.analysisAbortControllers.values()) ctrl.abort();
+    this.analysisAbortControllers.clear();
+    for (const closer of this.analysisSdkClosers.values()) { try { closer(); } catch { /* */ } }
+    this.analysisSdkClosers.clear();
   }
 
   private emitUpdate(update: StreamingUpdate): void {
