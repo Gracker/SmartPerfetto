@@ -5,6 +5,10 @@
   "private": true,
   "scripts": {
     "dev": "./scripts/start-dev.sh",
+    "dev:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1",
+    "dev:win:wsl": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/start-dev.ps1 -WslUi",
+    "restart-backend:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/restart-backend.ps1",
+    "install:backend:win": "powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/install-backend-win.ps1",
     "dev:backend": "cd backend && npm run dev",
     "build": "cd backend && npm run build",
     "start": "cd backend && npm start",
