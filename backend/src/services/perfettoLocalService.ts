@@ -3,9 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { spawn, ChildProcess } from 'child_process';
-import path from 'path';
 import fs from 'fs/promises';
 import { EventEmitter } from 'events';
+import { getTraceProcessorPath } from './workingTraceProcessor';
 
 // Prevent unhandled error events from crashing the process
 EventEmitter.defaultMaxListeners = 20;
@@ -28,10 +28,8 @@ export class PerfettoLocalService extends EventEmitter {
   constructor() {
     super();
     // Use the trace_processor_shell - prefer locally built version with viz stdlib modules
-    // Can be overridden via TRACE_PROCESSOR_PATH environment variable
-    // Path: backend/src/services/ -> ../../../ -> perfetto/out/ui/
-    this.traceProcessorPath = process.env.TRACE_PROCESSOR_PATH ||
-      path.resolve(__dirname, '../../../perfetto/out/ui/trace_processor_shell');
+    // (getTraceProcessorPath resolves .exe on Windows and user/bundled fallbacks)
+    this.traceProcessorPath = getTraceProcessorPath();
 
     // Handle error events to prevent crashes
     this.on('error', (error) => {
