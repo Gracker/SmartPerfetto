@@ -102,7 +102,7 @@
     "multer": "^2.0.2",
     "openai": "^6.36.0",
     "sodium-native": "^5.1.0",
-    "uuid": "^9.0.1",
+    "uuid": "^14.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
