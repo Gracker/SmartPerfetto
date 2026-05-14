@@ -86,7 +86,7 @@
   "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.132",
-    "@openai/agents": "^0.10.1",
+    "@openai/agents": "^0.11.4",
     "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/uuid": "^9.0.8",
