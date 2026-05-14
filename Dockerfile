@@ -1,7 +1,7 @@
 # ============================
 # Stage 1: Build backend
 # ============================
-FROM node:24-bookworm AS backend-builder
+FROM node:26-bookworm AS backend-builder
 
 WORKDIR /app/backend
 COPY backend/package*.json ./
@@ -62,7 +62,7 @@ RUN . /tmp/pin.env && \
 # ============================
 # Stage 4: Runtime
 # ============================
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
