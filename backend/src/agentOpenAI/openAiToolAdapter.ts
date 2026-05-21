@@ -34,13 +34,37 @@ function stringifyToolResult(result: unknown): string {
   return typeof result === 'string' ? result : JSON.stringify(result);
 }
 
-function sanitizeJsonSchema(value: unknown): unknown {
+/** 判断 schema 是否来自 z.record(z.string(), z.any()) 这类开放参数对象。 */
+function isOpenRecordAnySchema(entries: Array<[string, unknown]>): boolean {
+  const record = Object.fromEntries(entries) as Record<string, unknown>;
+  const additionalProperties = record.additionalProperties;
+  return record.type === 'object'
+    && (!('properties' in record) || Object.keys(record.properties as Record<string, unknown> || {}).length === 0)
+    && !!additionalProperties
+    && typeof additionalProperties === 'object'
+    && !Array.isArray(additionalProperties)
+    && Object.keys(additionalProperties as Record<string, unknown>).length === 0;
+}
+
+/** 清理 Zod 生成但 OpenAI function schema 不接受的 JSON Schema 片段。 */
+function sanitizeJsonSchema(value: unknown, parentKey?: string): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => sanitizeJsonSchema(item));
   }
 
   if (!value || typeof value !== 'object') {
     return value;
+  }
+
+  const entries = Object.entries(value);
+  if (isOpenRecordAnySchema(entries)) {
+    const description = (value as Record<string, unknown>).description;
+    return {
+      type: 'string',
+      ...(typeof description === 'string'
+        ? { description: `${description} Pass as a JSON object string.` }
+        : { description: 'JSON object string.' }),
+    };
   }
 
   const sanitized: Record<string, unknown> = {};
@@ -51,7 +75,10 @@ function sanitizeJsonSchema(value: unknown): unknown {
     if (key === '$schema' || key === 'propertyNames') {
       continue;
     }
-    sanitized[key] = sanitizeJsonSchema(nested);
+    const sanitizedNested = sanitizeJsonSchema(nested, key);
+    if (sanitizedNested !== undefined) {
+      sanitized[key] = sanitizedNested;
+    }
   }
   return sanitized;
 }

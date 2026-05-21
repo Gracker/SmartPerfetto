@@ -35,7 +35,11 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     expect(functionTool.parameters.properties.params.anyOf).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'null' })]),
     );
+    expect(functionTool.parameters.properties.params.anyOf).toEqual(
+      expect.arrayContaining([expect.objectContaining({ type: 'string' })]),
+    );
     expect(JSON.stringify(functionTool.parameters)).not.toContain('propertyNames');
+    expect(JSON.stringify(functionTool.parameters)).not.toContain('"additionalProperties":{}');
 
     let output = await functionTool.invoke(
       {} as any,
