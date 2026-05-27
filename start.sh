@@ -88,9 +88,13 @@ kill_pid_and_children() {
 kill_processes_on_port() {
   local port="$1"
   local pids
-  pids=$(lsof -ti ":$port" 2>/dev/null || true)
+  # -sTCP:LISTEN restricts the match to the server bound to this port.
+  # Without it, lsof returns every process with a TCP socket on this port,
+  # including connected clients (e.g. a Claude Code CLI keeping an SSE
+  # connection open against the backend), and they would all be SIGKILL'd.
+  pids=$(lsof -ti "tcp:$port" -sTCP:LISTEN 2>/dev/null || true)
   if [ -n "$pids" ]; then
-    echo "Stopping processes on port $port: $pids"
+    echo "Stopping listener on port $port: $pids"
     echo "$pids" | xargs kill -9 2>/dev/null || true
   fi
 }

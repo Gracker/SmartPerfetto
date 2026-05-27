@@ -29,15 +29,17 @@ if [ -f "$PROJECT_ROOT/.frontend.pid" ]; then
   rm -f "$PROJECT_ROOT/.frontend.pid"
 fi
 
-# Kill processes on ports
+# Kill processes listening on ports (NOT connected clients — `-sTCP:LISTEN`
+# avoids SIGKILL'ing a Claude Code CLI that has an SSE/keep-alive socket
+# open against the backend).
 echo "Cleaning up port 3000..."
-PORT_3000_PIDS=$(lsof -ti:3000 2>/dev/null || true)
+PORT_3000_PIDS=$(lsof -ti tcp:3000 -sTCP:LISTEN 2>/dev/null || true)
 if [ -n "$PORT_3000_PIDS" ]; then
   echo "$PORT_3000_PIDS" | xargs kill -9 2>/dev/null || true
 fi
 
 echo "Cleaning up port 10000..."
-PORT_10000_PIDS=$(lsof -ti:10000 2>/dev/null || true)
+PORT_10000_PIDS=$(lsof -ti tcp:10000 -sTCP:LISTEN 2>/dev/null || true)
 if [ -n "$PORT_10000_PIDS" ]; then
   echo "$PORT_10000_PIDS" | xargs kill -9 2>/dev/null || true
 fi
