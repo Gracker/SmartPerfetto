@@ -14,9 +14,15 @@ const ORIGINAL_ENV = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_MAX_OUTPUT_TOKENS: process.env.OPENAI_MAX_OUTPUT_TOKENS,
+  OPENAI_MAX_TURNS: process.env.OPENAI_MAX_TURNS,
+  OPENAI_QUICK_MAX_TURNS: process.env.OPENAI_QUICK_MAX_TURNS,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
+  CLAUDE_MAX_TURNS: process.env.CLAUDE_MAX_TURNS,
+  CLAUDE_QUICK_MAX_TURNS: process.env.CLAUDE_QUICK_MAX_TURNS,
   CLAUDE_MODEL: process.env.CLAUDE_MODEL,
+  AGENT_MAX_TURNS: process.env.AGENT_MAX_TURNS,
+  AGENT_QUICK_MAX_TURNS: process.env.AGENT_QUICK_MAX_TURNS,
 };
 
 function restoreEnv(): void {
@@ -186,5 +192,19 @@ describe('createOpenAIEnv', () => {
 
     const diagnostics = getOpenAIRuntimeDiagnostics(null);
     expect(diagnostics.maxOutputTokens).toBe(2048);
+  });
+
+  it('uses shared turn budget config when runtime-specific values are unset', () => {
+    delete process.env.OPENAI_MAX_TURNS;
+    delete process.env.OPENAI_QUICK_MAX_TURNS;
+    delete process.env.CLAUDE_MAX_TURNS;
+    delete process.env.CLAUDE_QUICK_MAX_TURNS;
+    process.env.AGENT_MAX_TURNS = '90';
+    process.env.AGENT_QUICK_MAX_TURNS = '12';
+
+    const config = loadOpenAIConfig(null);
+
+    expect(config.maxTurns).toBe(90);
+    expect(config.quickMaxTurns).toBe(12);
   });
 });

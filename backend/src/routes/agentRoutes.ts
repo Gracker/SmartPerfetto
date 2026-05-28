@@ -69,7 +69,7 @@ import { SceneReportMemoryCache } from '../services/sceneReport/sceneReportMemor
 import { FileSystemSceneJobArtifactStore } from '../services/sceneReport/sceneJobArtifactStore';
 import { computeTraceContentHash } from '../agent/scene/traceHash';
 import { probeTraceDuration } from '../agent/scene/sceneTraceDurationProbe';
-import { resolveFeatureConfig, sceneStoryConfig } from '../config';
+import { agentSessionConfig, resolveFeatureConfig, sceneStoryConfig } from '../config';
 import {
   getTraceProcessorLeaseStore,
   type TraceProcessorHolderType,
@@ -1179,10 +1179,11 @@ const SCENE_STRATEGY_IDS = ['scene_reconstruction', 'scene_reconstruction_quick'
 const MAX_SESSION_DATA_ENVELOPES = 1200;
 const MAX_SESSION_AGENT_DIALOGUE = 800;
 const MAX_SESSION_AGENT_RESPONSES = 400;
-const TERMINAL_SESSION_MAX_IDLE_MS = 30 * 60 * 1000;
-const NON_TERMINAL_SESSION_MAX_IDLE_MS = 2 * 60 * 60 * 1000;
+const TERMINAL_SESSION_MAX_IDLE_MS = agentSessionConfig.terminalMaxIdleMs;
+const NON_TERMINAL_SESSION_MAX_IDLE_MS = agentSessionConfig.nonTerminalMaxIdleMs;
 const AGENT_RUN_HEARTBEAT_INTERVAL_MS = 30 * 1000;
 const AGENT_RUN_HEARTBEAT_MAX_STALE_MS = NON_TERMINAL_SESSION_MAX_IDLE_MS;
+const SESSION_CLEANUP_INTERVAL_MS = agentSessionConfig.cleanupIntervalMs;
 
 function trimSessionArray<T>(items: T[], maxEntries: number): void {
   if (items.length > maxEntries) {
@@ -5724,7 +5725,7 @@ registerAgentLogsRoutes(router);
 // Cleanup
 // ============================================================================
 
-// Cleanup old sessions every 30 minutes
+// Cleanup old sessions on a configurable cadence.
 const sessionCleanupInterval = setInterval(() => {
   assistantAppService.cleanupIdleSessions({
     terminalMaxIdleMs: TERMINAL_SESSION_MAX_IDLE_MS,
@@ -5758,7 +5759,7 @@ const sessionCleanupInterval = setInterval(() => {
     },
   });
 
-  // Piggyback the Scene Story disk cache cleanup on the same 30-min cadence.
+  // Piggyback the Scene Story disk cache cleanup on the same configurable cadence.
   // It's idempotent and self-contained, so a failed sweep here only delays
   // expired-report removal by another 30 minutes — never blocks session
   // cleanup or throws into the interval.
@@ -5772,7 +5773,7 @@ const sessionCleanupInterval = setInterval(() => {
     .catch((err) => {
       console.warn('[AgentRoutes] SceneReportStore cleanupExpired failed:', err?.message ?? err);
     });
-}, 30 * 60 * 1000);
+}, SESSION_CLEANUP_INTERVAL_MS);
 sessionCleanupInterval.unref?.();
 
 export default router;

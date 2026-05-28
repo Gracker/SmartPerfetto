@@ -35,6 +35,7 @@ import {
   migrateTraceAgentState,
   summarizeTraceAgentState,
 } from '../state/traceAgentState';
+import { agentSessionConfig } from '../../config';
 
 // =============================================================================
 // Semantic Working Memory (v2.0)
@@ -1705,7 +1706,7 @@ export class SessionContextManager {
 
   constructor(options: { maxSessions?: number; maxAgeMs?: number } = {}) {
     this.maxSessions = options.maxSessions || 100;
-    this.maxAgeMs = options.maxAgeMs || 30 * 60 * 1000; // 30 minutes default
+    this.maxAgeMs = options.maxAgeMs || agentSessionConfig.contextMaxAgeMs;
   }
 
   /**
@@ -1904,10 +1905,8 @@ export class SessionContextManager {
   }
 }
 
-// Singleton instance with reasonable defaults.
-// P1-6: TTL aligned with session idle timeout (2 hours) in agentRoutes.ts.
-// Previous 30-minute TTL caused silent context loss when users returned after 35 minutes.
+// Singleton instance with session-context TTL aligned to assistant session retention.
 export const sessionContextManager = new SessionContextManager({
   maxSessions: 100,
-  maxAgeMs: 2 * 60 * 60 * 1000, // 2 hours — matches non-terminal session idle timeout
+  maxAgeMs: agentSessionConfig.contextMaxAgeMs,
 });

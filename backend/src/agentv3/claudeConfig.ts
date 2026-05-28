@@ -10,6 +10,7 @@ import { DEFAULT_OUTPUT_LANGUAGE, localize, outputLanguageDisplayName, parseOutp
 import { mergeIsolatedProviderEnv } from '../services/providerManager/envIsolation';
 import type { ProviderScope } from '../services/providerManager';
 import { collectEnvCredentialSources, hasConcreteEnvValue, isEnabledEnvFlag, redactUrlForDiagnostics } from '../agentRuntime/envCredentialSources';
+import { resolveAgentRuntimeBudgetConfig } from '../config';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
@@ -53,8 +54,6 @@ const DEFAULT_LIGHT_MODEL = 'claude-haiku-4-5';
 // Scrolling pipeline: 1 time-range + 1 scrolling_analysis + 2-3 deep-drill (blocking_chain/binder_root_cause)
 // + 1-2 jank_frame_detail + hypothesis submit/resolve + conclusion = ~20-25 turns.
 // Default keeps extra headroom for slower third-party models and larger traces.
-const DEFAULT_MAX_TURNS = 60;
-const DEFAULT_QUICK_MAX_TURNS = 10;
 const DEFAULT_EFFORT: EffortLevel = 'high';
 
 function parsePositiveIntEnvFrom(
@@ -72,11 +71,12 @@ function loadClaudeConfigFromEnv(
   env: Record<string, string | undefined>,
   overrides?: Partial<ClaudeAgentConfig>,
 ): ClaudeAgentConfig {
+  const budgetConfig = resolveAgentRuntimeBudgetConfig(env);
   return {
     model: overrides?.model ?? env.CLAUDE_MODEL ?? DEFAULT_MODEL,
     lightModel: env.CLAUDE_LIGHT_MODEL ?? DEFAULT_LIGHT_MODEL,
     maxTurns: overrides?.maxTurns
-      ?? (env.CLAUDE_MAX_TURNS ? parseInt(env.CLAUDE_MAX_TURNS, 10) : DEFAULT_MAX_TURNS),
+      ?? parsePositiveIntEnvFrom(env, 'CLAUDE_MAX_TURNS', budgetConfig.maxTurns),
     maxBudgetUsd: overrides?.maxBudgetUsd
       ?? (env.CLAUDE_MAX_BUDGET_USD ? parseFloat(env.CLAUDE_MAX_BUDGET_USD) : undefined),
     cwd: overrides?.cwd ?? env.CLAUDE_CWD ?? process.cwd(),
@@ -420,6 +420,19 @@ export function explainClaudeRuntimeError(
     return nativeBinaryHint(message, outputLanguage);
   }
 
+  const malformedProxyResponse =
+    lower.includes('empty or malformed response') ||
+    lower.includes('malformed response') ||
+    (lower.includes('http 200') && lower.includes('proxy'));
+
+  if (malformedProxyResponse) {
+    return `${message}\n\n` + localize(
+      outputLanguage,
+      'SmartPerfetto 正在使用 Claude Agent SDK runtime，它要求网关完整兼容 Anthropic Messages API 和流式语义。HTTP 200 但响应格式不对，通常表示代理只兼容 OpenAI 协议或没有正确翻译 SSE。请改用完整 Anthropic-compatible gateway，或把该 provider 切到 openai-agents-sdk/runtime 的 OpenAI-compatible 路径；修改 env 后需要重启 backend。',
+      'SmartPerfetto is using the Claude Agent SDK runtime, which requires an Anthropic-compatible Messages API with correct streaming semantics. HTTP 200 with a malformed response usually means the proxy only speaks the OpenAI protocol or did not translate SSE correctly. Use a fully Anthropic-compatible gateway, or switch that provider to the openai-agents-sdk/OpenAI-compatible path; restart the backend after changing env.',
+    ) + credentialSourceHintText(credentialSourceHint, outputLanguage);
+  }
+
   const quotaOrAuth =
     lower.includes('out of') ||
     isClaudeQuotaError(message) ||
@@ -458,9 +471,10 @@ export function createQuickConfig(
   baseConfig: ClaudeAgentConfig,
   env: Record<string, string | undefined> = process.env,
 ): ClaudeAgentConfig {
+  const budgetConfig = resolveAgentRuntimeBudgetConfig(env);
   return {
     ...baseConfig,
-    maxTurns: parsePositiveIntEnvFrom(env, 'CLAUDE_QUICK_MAX_TURNS', DEFAULT_QUICK_MAX_TURNS),
+    maxTurns: parsePositiveIntEnvFrom(env, 'CLAUDE_QUICK_MAX_TURNS', budgetConfig.quickMaxTurns),
     effort: 'low',
     enableVerification: false,
     enableSubAgents: false,
@@ -632,6 +646,13 @@ export function createSdkEnv(
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;
   delete env.CLAUDE_CODE_SESSION_ACCESS_TOKEN;
+  // Keep embedded SDK subprocesses isolated from Claude Code account/bootstrap
+  // traffic. SmartPerfetto owns prompts/tools explicitly; provider proxies
+  // should only see the analysis request stream.
+  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC ??= '1';
+  env.DISABLE_TELEMETRY ??= '1';
+  env.CLAUDE_CODE_ENABLE_TELEMETRY ??= '0';
+  env.DISABLE_ERROR_REPORTING ??= '1';
   return env;
 }
 

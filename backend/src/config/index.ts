@@ -20,6 +20,11 @@ function parseIntEnv(key: string, defaultValue: number, env: NodeJS.ProcessEnv =
   return isNaN(parsed) ? defaultValue : parsed;
 }
 
+function parsePositiveIntEnv(key: string, defaultValue: number, env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = parseIntEnv(key, defaultValue, env);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultValue;
+}
+
 function parseFloatEnv(key: string, defaultValue: number, env: NodeJS.ProcessEnv = process.env): number {
   const value = env[key];
   if (!value) return defaultValue;
@@ -217,9 +222,79 @@ export const traceProcessorConfig = {
 // Agent Configuration
 // =============================================================================
 
+export const DEFAULT_AGENT_MAX_TURNS = 60;
+export const DEFAULT_AGENT_QUICK_MAX_TURNS = 10;
+export const DEFAULT_AGENT_SESSION_MAX_IDLE_MS = 12 * 60 * 60 * 1000;
+export const DEFAULT_AGENT_SESSION_CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
+
+export interface AgentRuntimeBudgetConfig {
+  /** Shared full-analysis turn budget fallback for all agent runtimes. */
+  maxTurns: number;
+  /** Shared quick-analysis turn budget fallback for all agent runtimes. */
+  quickMaxTurns: number;
+}
+
+export function resolveAgentRuntimeBudgetConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): AgentRuntimeBudgetConfig {
+  return {
+    maxTurns: parsePositiveIntEnv('AGENT_MAX_TURNS', DEFAULT_AGENT_MAX_TURNS, env),
+    quickMaxTurns: parsePositiveIntEnv('AGENT_QUICK_MAX_TURNS', DEFAULT_AGENT_QUICK_MAX_TURNS, env),
+  };
+}
+
+export interface AgentSessionConfig {
+  /** Idle retention for completed/failed assistant sessions. */
+  terminalMaxIdleMs: number;
+  /** Idle retention for abandoned pending/running sessions without SSE clients. */
+  nonTerminalMaxIdleMs: number;
+  /** In-memory multi-turn context TTL. Keep this >= nonTerminalMaxIdleMs unless intentionally pruning context. */
+  contextMaxAgeMs: number;
+  /** Background cleanup cadence for session and scene-report sweeps. */
+  cleanupIntervalMs: number;
+}
+
+export function resolveAgentSessionConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): AgentSessionConfig {
+  const nonTerminalMaxIdleMs = parsePositiveIntEnv(
+    'AGENT_NON_TERMINAL_SESSION_MAX_IDLE_MS',
+    DEFAULT_AGENT_SESSION_MAX_IDLE_MS,
+    env,
+  );
+
+  return {
+    terminalMaxIdleMs: parsePositiveIntEnv(
+      'AGENT_TERMINAL_SESSION_MAX_IDLE_MS',
+      DEFAULT_AGENT_SESSION_MAX_IDLE_MS,
+      env,
+    ),
+    nonTerminalMaxIdleMs,
+    contextMaxAgeMs: parsePositiveIntEnv(
+      'AGENT_SESSION_CONTEXT_MAX_AGE_MS',
+      nonTerminalMaxIdleMs,
+      env,
+    ),
+    cleanupIntervalMs: parsePositiveIntEnv(
+      'AGENT_SESSION_CLEANUP_INTERVAL_MS',
+      DEFAULT_AGENT_SESSION_CLEANUP_INTERVAL_MS,
+      env,
+    ),
+  };
+}
+
+export const agentRuntimeBudgetConfig = resolveAgentRuntimeBudgetConfig();
+export const agentSessionConfig = resolveAgentSessionConfig();
+
 export const agentConfig = {
   /** Maximum total iterations for analysis */
   maxTotalIterations: parseIntEnv('AGENT_MAX_ITERATIONS', 3),
+
+  /** Shared runtime turn budgets; runtime-specific env vars still take precedence. */
+  runtimeBudget: agentRuntimeBudgetConfig,
+
+  /** Assistant session retention and cleanup settings. */
+  sessions: agentSessionConfig,
 
   /** Enable trace recording */
   enableTraceRecording: parseBoolEnv('AGENT_ENABLE_TRACE_RECORDING', true),

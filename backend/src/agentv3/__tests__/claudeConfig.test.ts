@@ -8,6 +8,7 @@ import * as path from 'path';
 // produces a frozen module namespace in some TS-Jest configs.
 const fs: typeof import('fs') = require('fs');
 import {
+  createSdkEnv,
   createQuickConfig,
   explainClaudeRuntimeError,
   getClaudeRuntimeDiagnostics,
@@ -19,6 +20,9 @@ import {
 } from '../claudeConfig';
 
 const ORIGINAL_QUICK_MAX_TURNS = process.env.CLAUDE_QUICK_MAX_TURNS;
+const ORIGINAL_MAX_TURNS = process.env.CLAUDE_MAX_TURNS;
+const ORIGINAL_AGENT_MAX_TURNS = process.env.AGENT_MAX_TURNS;
+const ORIGINAL_AGENT_QUICK_MAX_TURNS = process.env.AGENT_QUICK_MAX_TURNS;
 const ORIGINAL_ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL;
 const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ORIGINAL_ANTHROPIC_AUTH_TOKEN = process.env.ANTHROPIC_AUTH_TOKEN;
@@ -32,12 +36,31 @@ const ORIGINAL_AWS_PROFILE = process.env.AWS_PROFILE;
 const ORIGINAL_CLAUDE_CODE_USE_VERTEX = process.env.CLAUDE_CODE_USE_VERTEX;
 const ORIGINAL_ANTHROPIC_VERTEX_PROJECT_ID = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
 const ORIGINAL_CLOUD_ML_REGION = process.env.CLOUD_ML_REGION;
+const ORIGINAL_CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+const ORIGINAL_DISABLE_TELEMETRY = process.env.DISABLE_TELEMETRY;
+const ORIGINAL_CLAUDE_CODE_ENABLE_TELEMETRY = process.env.CLAUDE_CODE_ENABLE_TELEMETRY;
+const ORIGINAL_DISABLE_ERROR_REPORTING = process.env.DISABLE_ERROR_REPORTING;
 
 afterEach(() => {
   if (ORIGINAL_QUICK_MAX_TURNS === undefined) {
     delete process.env.CLAUDE_QUICK_MAX_TURNS;
   } else {
     process.env.CLAUDE_QUICK_MAX_TURNS = ORIGINAL_QUICK_MAX_TURNS;
+  }
+  if (ORIGINAL_MAX_TURNS === undefined) {
+    delete process.env.CLAUDE_MAX_TURNS;
+  } else {
+    process.env.CLAUDE_MAX_TURNS = ORIGINAL_MAX_TURNS;
+  }
+  if (ORIGINAL_AGENT_MAX_TURNS === undefined) {
+    delete process.env.AGENT_MAX_TURNS;
+  } else {
+    process.env.AGENT_MAX_TURNS = ORIGINAL_AGENT_MAX_TURNS;
+  }
+  if (ORIGINAL_AGENT_QUICK_MAX_TURNS === undefined) {
+    delete process.env.AGENT_QUICK_MAX_TURNS;
+  } else {
+    process.env.AGENT_QUICK_MAX_TURNS = ORIGINAL_AGENT_QUICK_MAX_TURNS;
   }
   if (ORIGINAL_ANTHROPIC_BASE_URL === undefined) {
     delete process.env.ANTHROPIC_BASE_URL;
@@ -104,11 +127,32 @@ afterEach(() => {
   } else {
     process.env.CLOUD_ML_REGION = ORIGINAL_CLOUD_ML_REGION;
   }
+  if (ORIGINAL_CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC === undefined) {
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  } else {
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = ORIGINAL_CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  }
+  if (ORIGINAL_DISABLE_TELEMETRY === undefined) {
+    delete process.env.DISABLE_TELEMETRY;
+  } else {
+    process.env.DISABLE_TELEMETRY = ORIGINAL_DISABLE_TELEMETRY;
+  }
+  if (ORIGINAL_CLAUDE_CODE_ENABLE_TELEMETRY === undefined) {
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY;
+  } else {
+    process.env.CLAUDE_CODE_ENABLE_TELEMETRY = ORIGINAL_CLAUDE_CODE_ENABLE_TELEMETRY;
+  }
+  if (ORIGINAL_DISABLE_ERROR_REPORTING === undefined) {
+    delete process.env.DISABLE_ERROR_REPORTING;
+  } else {
+    process.env.DISABLE_ERROR_REPORTING = ORIGINAL_DISABLE_ERROR_REPORTING;
+  }
 });
 
 describe('createQuickConfig', () => {
   it('keeps the existing quick max-turn default', () => {
     delete process.env.CLAUDE_QUICK_MAX_TURNS;
+    delete process.env.AGENT_QUICK_MAX_TURNS;
     const config = createQuickConfig(loadClaudeConfig({ maxTurns: 60 }));
 
     expect(config.maxTurns).toBe(10);
@@ -117,17 +161,35 @@ describe('createQuickConfig', () => {
   });
 
   it('allows quick max-turn override via env', () => {
+    delete process.env.AGENT_QUICK_MAX_TURNS;
     process.env.CLAUDE_QUICK_MAX_TURNS = '8';
     const config = createQuickConfig(loadClaudeConfig({ maxTurns: 60 }));
 
     expect(config.maxTurns).toBe(8);
   });
 
+  it('uses shared quick max-turn config as fallback', () => {
+    delete process.env.CLAUDE_QUICK_MAX_TURNS;
+    process.env.AGENT_QUICK_MAX_TURNS = '12';
+    const config = createQuickConfig(loadClaudeConfig({ maxTurns: 60 }));
+
+    expect(config.maxTurns).toBe(12);
+  });
+
   it('ignores invalid quick max-turn env values', () => {
+    delete process.env.AGENT_QUICK_MAX_TURNS;
     process.env.CLAUDE_QUICK_MAX_TURNS = '0';
     const config = createQuickConfig(loadClaudeConfig({ maxTurns: 60 }));
 
     expect(config.maxTurns).toBe(10);
+  });
+
+  it('uses shared full max-turn config as fallback', () => {
+    delete process.env.CLAUDE_MAX_TURNS;
+    process.env.AGENT_MAX_TURNS = '90';
+    const config = loadClaudeConfig();
+
+    expect(config.maxTurns).toBe(90);
   });
 
   it('can resolve quick max turns from an isolated SDK env', () => {
@@ -308,6 +370,30 @@ describe('explainClaudeRuntimeError', () => {
     expect(explained).toContain('CLAUDE_BINARY_PATH');
     expect(explained).toContain('platform detection failed');
     expect(explained).not.toContain('CC Switch');
+  });
+
+  it('explains malformed Anthropic-compatible proxy responses without quota wording', () => {
+    const explained = explainClaudeRuntimeError('HTTP 200 proxy returned empty or malformed response', 'en');
+
+    expect(explained).toContain('Anthropic-compatible Messages API');
+    expect(explained).toContain('OpenAI-compatible path');
+    expect(explained).not.toContain('CC Switch');
+  });
+});
+
+describe('createSdkEnv', () => {
+  it('disables nonessential Claude Code subprocess traffic by default', () => {
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    delete process.env.DISABLE_TELEMETRY;
+    delete process.env.CLAUDE_CODE_ENABLE_TELEMETRY;
+    delete process.env.DISABLE_ERROR_REPORTING;
+
+    const env = createSdkEnv(null);
+
+    expect(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+    expect(env.DISABLE_TELEMETRY).toBe('1');
+    expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('0');
+    expect(env.DISABLE_ERROR_REPORTING).toBe('1');
   });
 });
 

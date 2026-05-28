@@ -6,6 +6,7 @@ import { DEFAULT_OUTPUT_LANGUAGE, outputLanguageDisplayName, parseOutputLanguage
 import { getProviderService, type OpenAIProtocol, type ProviderScope } from '../services/providerManager';
 import { mergeIsolatedProviderEnv } from '../services/providerManager/envIsolation';
 import { hasConcreteEnvValue, redactUrlForDiagnostics } from '../agentRuntime/envCredentialSources';
+import { resolveAgentRuntimeBudgetConfig } from '../config';
 
 export interface OpenAIAgentConfig {
   model: string;
@@ -27,8 +28,6 @@ const DEFAULT_MODEL = 'gpt-5.5';
 const DEFAULT_LIGHT_MODEL = 'gpt-5.4-mini';
 const DEFAULT_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
-const DEFAULT_MAX_TURNS = 60;
-const DEFAULT_QUICK_MAX_TURNS = 10;
 
 function parsePositiveIntEnv(env: Record<string, string | undefined>, name: string, fallback: number): number {
   const value = env[name];
@@ -69,14 +68,15 @@ export function createOpenAIEnv(
 
 export function loadOpenAIConfig(providerId?: string | null, providerScope?: ProviderScope): OpenAIAgentConfig {
   const env = createOpenAIEnv(providerId, providerScope);
+  const budgetConfig = resolveAgentRuntimeBudgetConfig(env);
   return {
     model: env.OPENAI_MODEL || DEFAULT_MODEL,
     lightModel: env.OPENAI_LIGHT_MODEL || DEFAULT_LIGHT_MODEL,
     maxOutputTokens: parsePositiveIntEnv(env, 'OPENAI_MAX_OUTPUT_TOKENS', DEFAULT_MAX_OUTPUT_TOKENS),
     maxTurns: parsePositiveIntEnv(env, 'OPENAI_MAX_TURNS',
-      parsePositiveIntEnv(env, 'CLAUDE_MAX_TURNS', DEFAULT_MAX_TURNS)),
+      parsePositiveIntEnv(env, 'CLAUDE_MAX_TURNS', budgetConfig.maxTurns)),
     quickMaxTurns: parsePositiveIntEnv(env, 'OPENAI_QUICK_MAX_TURNS',
-      parsePositiveIntEnv(env, 'CLAUDE_QUICK_MAX_TURNS', DEFAULT_QUICK_MAX_TURNS)),
+      parsePositiveIntEnv(env, 'CLAUDE_QUICK_MAX_TURNS', budgetConfig.quickMaxTurns)),
     baseURL: env.OPENAI_BASE_URL || DEFAULT_BASE_URL,
     apiKey: env.OPENAI_API_KEY,
     protocol: parseProtocol(env.OPENAI_AGENTS_PROTOCOL),
