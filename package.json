@@ -37,7 +37,7 @@
     "node": "24.15.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.4.15",
+    "@biomejs/biome": "^2.4.16",
     "knip": "^6.14.2"
   }
 }
