@@ -6688,6 +6688,22 @@ body.pf-fonts-loading .pf-tree .pf-tree-node.pf-expanded > .pf-tree-left > .pf-t
   color: var(--chat-text);
 }
 
+.ai-version-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid var(--chat-border);
+  border-radius: 4px;
+  background: var(--chat-bg-secondary);
+  color: var(--chat-text-secondary);
+  font-family: monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .ai-status-dot {
   width: 5px;
   height: 5px;

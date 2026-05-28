@@ -67,6 +67,7 @@ describe('buildRuntimeHealthPayload', () => {
 
     const payload = buildRuntimeHealthPayload(new Date('2026-05-20T00:00:00.000Z'));
 
+    expect(payload.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(payload.aiEngine).toMatchObject({
       runtime: 'openai-agents-sdk',
       model: 'glm-5.1',

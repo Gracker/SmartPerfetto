@@ -1,7 +1,7 @@
 // backend/src/services/providerManager/connectionTester.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { ProviderConfig, ProviderType, TestResult } from './types';
+import type { OpenAIProtocol, ProviderConfig, ProviderType, TestResult } from './types';
 import {
   resolveProviderAgentRuntime,
   sharedKeyShouldUseClaudeAuthToken,
@@ -224,27 +224,53 @@ async function testOpenAICompatible(provider: ProviderConfig): Promise<Omit<Test
   const defaults: Record<string, string> = {
     deepseek: 'https://api.deepseek.com/v1',
     openai: 'https://api.openai.com/v1',
+    ollama: 'http://localhost:11434/v1',
     custom: '',
   };
   const baseUrl = getOpenAIBaseUrl(provider, defaults[type] || '');
   if (!baseUrl) return { success: false, error: 'Base URL is required' };
+  if (!provider.models.primary) {
+    return { success: false, error: 'Primary model is required' };
+  }
 
   const apiKey = getOpenAIApiKey(provider) || '';
-
-  // Try /models endpoint first (lightest check)
-  const modelsUrl = `${baseUrl.replace(/\/+$/, '')}/models`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+  const protocol = resolveOpenAIProtocolForProvider(provider);
 
-  const res = await fetchWithTimeout(modelsUrl, { method: 'GET', headers });
+  if (protocol === 'responses') {
+    return testOpenAIResponsesProtocol(provider, baseUrl, headers);
+  }
+  return testOpenAIChatCompletionsProtocol(provider, baseUrl, headers);
+}
 
-  if (res.ok) return { success: true, modelVerified: false };
-  if (res.status === 401) return { success: false, error: 'Invalid API key (401 Unauthorized)' };
-  if (res.status === 403) return { success: false, error: 'Access denied (403 Forbidden)' };
+async function testOpenAIResponsesProtocol(
+  provider: ProviderConfig,
+  baseUrl: string,
+  headers: Record<string, string>,
+): Promise<Omit<TestResult, 'latencyMs'>> {
+  const responsesUrl = `${baseUrl.replace(/\/+$/, '')}/responses`;
+  const res = await fetchWithTimeout(responsesUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      model: provider.models.primary,
+      input: 'hi',
+      max_output_tokens: 1,
+    }),
+  });
 
-  // Some proxies don't support /models — try chat completion
+  if (res.ok) return { success: true, modelVerified: true };
+  return providerFailureFromResponse(res, 'Responses API');
+}
+
+async function testOpenAIChatCompletionsProtocol(
+  provider: ProviderConfig,
+  baseUrl: string,
+  headers: Record<string, string>,
+): Promise<Omit<TestResult, 'latencyMs'>> {
   const chatUrl = `${baseUrl.replace(/\/+$/, '')}/chat/completions`;
-  const chatRes = await fetchWithTimeout(chatUrl, {
+  const res = await fetchWithTimeout(chatUrl, {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -254,10 +280,13 @@ async function testOpenAICompatible(provider: ProviderConfig): Promise<Omit<Test
     }),
   });
 
-  if (chatRes.ok) return { success: true, modelVerified: true };
-  if (chatRes.status === 401) return { success: false, error: 'Invalid API key (401 Unauthorized)' };
-  const body = await safeJson(chatRes);
-  return { success: false, error: body?.error?.message || `API error: ${chatRes.status}` };
+  if (res.ok) return { success: true, modelVerified: true };
+  return providerFailureFromResponse(res, 'Chat Completions API');
+}
+
+function resolveOpenAIProtocolForProvider(provider: ProviderConfig): OpenAIProtocol {
+  if (provider.connection.openaiProtocol) return provider.connection.openaiProtocol;
+  return provider.type === 'openai' ? 'responses' : 'chat_completions';
 }
 
 async function testOllama(provider: ProviderConfig): Promise<Omit<TestResult, 'latencyMs'>> {
@@ -271,22 +300,97 @@ async function testOllama(provider: ProviderConfig): Promise<Omit<TestResult, 'l
       return { success: false, error: `Ollama returned ${res.status}` };
     }
     const data = await safeJson(res);
-    const models: string[] = (data?.models || []).map((m: any) => m.name || m.model);
+    const models: string[] = (data?.models || [])
+      .map((m: any) => m.name || m.model)
+      .filter(
+        (model: unknown): model is string =>
+          typeof model === 'string' && model.length > 0,
+      );
     const target = provider.models.primary;
     if (target && models.length > 0) {
-      const found = models.some(m => m === target || m.startsWith(`${target}:`));
-      if (!found) {
-        return { success: true, modelVerified: false, error: `Connected but model "${target}" not found. Available: ${models.slice(0, 5).join(', ')}` };
+      const modelResolution = resolveOllamaInstalledModel(target, models);
+      if (!modelResolution.success) {
+        return {
+          success: false,
+          modelVerified: false,
+          error: modelResolution.error,
+        };
       }
-      return { success: true, modelVerified: true };
+      return testOpenAICompatible({
+        ...provider,
+        models: {
+          ...provider.models,
+          primary: modelResolution.model,
+        },
+      });
     }
-    return { success: true, modelVerified: false };
+    return {
+      success: false,
+      modelVerified: false,
+      error: 'Connected but no Ollama models were returned',
+    };
   } catch (err: any) {
     if (err.cause?.code === 'ECONNREFUSED') {
       return { success: false, error: `Cannot connect to Ollama at ${baseUrl} — is it running?` };
     }
     throw err;
   }
+}
+
+function resolveOllamaInstalledModel(
+  target: string,
+  models: string[],
+): { success: true; model: string } | { success: false; error: string } {
+  const exactMatch = models.find(m => m === target);
+  if (exactMatch) return { success: true, model: exactMatch };
+
+  const prefixMatches = models.filter(m => m.startsWith(`${target}:`));
+  if (prefixMatches.length === 1) {
+    return { success: true, model: prefixMatches[0] };
+  }
+  if (prefixMatches.length > 1) {
+    return {
+      success: false,
+      error: `Connected but model "${target}" matches multiple installed tags: ${prefixMatches.slice(0, 5).join(', ')}`,
+    };
+  }
+  return {
+    success: false,
+    error: `Connected but model "${target}" not found. Available: ${models.slice(0, 5).join(', ')}`,
+  };
+}
+
+async function providerFailureFromResponse(
+  res: Response,
+  protocolLabel: string,
+): Promise<Omit<TestResult, 'latencyMs'>> {
+  if (res.status === 401) {
+    return { success: false, error: 'Invalid API key (401 Unauthorized)' };
+  }
+  if (res.status === 403) {
+    return { success: false, error: 'Access denied (403 Forbidden)' };
+  }
+  if (res.status === 404) {
+    return {
+      success: false,
+      error: `Model or endpoint not found (${protocolLabel}, 404)`,
+    };
+  }
+  const body = await safeJson(res);
+  return {
+    success: false,
+    error:
+      responseErrorMessage(body) ||
+      `${protocolLabel} model probe failed: ${res.status}`,
+  };
+}
+
+function responseErrorMessage(body: any): string | undefined {
+  if (!body || typeof body !== 'object') return undefined;
+  if (typeof body.error === 'string') return body.error;
+  if (typeof body.error?.message === 'string') return body.error.message;
+  if (typeof body.message === 'string') return body.message;
+  return undefined;
 }
 
 // --- Utilities ---

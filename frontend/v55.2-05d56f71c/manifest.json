@@ -70,8 +70,8 @@
     "exposed_commands.ts": "sha256-osqXFJFgML3Nhfj2lXr64bHKFdv/3W7+h/9jfD6gIvQ=",
     "extra_sql_packages.ts": "sha256-0qo0nda4K3AWy124k58onygl2GY0IpFmKcOhhWiY5Qk=",
     "feature_flag.ts": "sha256-IS/hxMMzbZRzu2Fz/qrtRTi5TjMtquEZIjwz2Yav9jY=",
-    "frontend.css": "sha256-HlrAh0YPy7dggXAa854HFFnXoT2UpfzCZaYdnf1BnuI=",
-    "frontend_bundle.js": "sha256-rt2+SB3MQZk24/fmhyq5l8/O+Xh6HbzkHIYxMaUs97g=",
+    "frontend.css": "sha256-O+nyDA5BdBOnEBLDi5/cMG6e9eMXNOMlR1MkdhMnYzk=",
+    "frontend_bundle.js": "sha256-/YqltsnftPWdP8zo5q/YCTpvb0Qra//pzTx1CinhRV4=",
     "initial_page.ts": "sha256-RlDpcwX640KT3iwqOtKdZ+SOFyUwZMwZ6L23JekhqNU=",
     "minimap.ts": "sha256-wJCdoMFDfvG32ttuRyevJlYJkyHfgGXX2MH8jqxH1iY=",
     "note.ts": "sha256-+vkzFPOywtjiLXqDwy7OzCWinthHyFed3m/c8cUUl/M=",
@@ -97,14 +97,14 @@
     "timeline.ts": "sha256-zL8QaQrOk+NxSYCOpHL2szBXDzChLQWbwL2adpgIn/Y=",
     "trace.ts": "sha256-DXwNH4p3Ktl0yKwQZ4Izf6osN9fC5LPAF3V7B/KrL2Q=",
     "trace_info.ts": "sha256-ZOtfpf0jBLmPXJYriz4+yWCK46/ceN67gKXMO6Bq1qY=",
+    "trace_processor.wasm": "sha256-9/GpC6LwFf9Bjp8S97NYet7BmgqVvJDAhdC/uvU4pIE=",
     "trace_processor_memory64.wasm": "sha256-WRiiN17reYIg9/n+A8hmX04p/ubsnuBQ3EE6rGrSTKE=",
     "traceconv.wasm": "sha256-srFl2ubDyDnJl4rePwiL9rbGtyk05EhdohOuTaR7/6o=",
-    "traceconv_bundle.js": "sha256-lpqrLkoogHugQTY1vzl9x3ibGR+9QpmRHoG2ZWU7wbY=",
+    "traceconv_bundle.js": "sha256-xZH3HE/N5k7t6DPJkPnkLcgt+qWDqmN9nyPYgQt5A1U=",
     "track.ts": "sha256-uptJpid3tsUqwfDqmjfAtmr0YZFbvHhOthZJbLrqLtI=",
     "track_kinds.ts": "sha256-jsCl04PaAoggtQJ3bxvnWWk7Zl+EdBwptHt1VWgCnow=",
     "utils.ts": "sha256-arWGV0JIbDpMjiFzKeIg3HKbvtHLf5W14MhvFfEdGqQ=",
     "workspace.ts": "sha256-KxW1hz0ZnTLbE/GIlg0Z8xU95w9+nAgng5ZR+AwkYmo=",
-    "workspace_unittest.ts": "sha256-HRO6AWnxyFUMvyQ9naAHQjH7fOXiRETnQwYHnZwjRHo=",
-    "trace_processor.wasm": "sha256-9/GpC6LwFf9Bjp8S97NYet7BmgqVvJDAhdC/uvU4pIE="
+    "workspace_unittest.ts": "sha256-HRO6AWnxyFUMvyQ9naAHQjH7fOXiRETnQwYHnZwjRHo="
   }
 }
