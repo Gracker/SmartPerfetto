@@ -45,7 +45,7 @@
     "node": "24.15.0"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.5.2",
+    "@biomejs/biome": "^2.5.3",
     "js-yaml": "^4.3.0",
     "knip": "^6.23.0"
   }
