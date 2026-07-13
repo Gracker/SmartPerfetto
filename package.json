@@ -47,6 +47,6 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.2",
     "js-yaml": "^4.3.0",
-    "knip": "^6.23.0"
+    "knip": "^6.26.0"
   }
 }
