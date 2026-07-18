@@ -2,7 +2,7 @@
 
 日期：2026-07-18
 
-状态：已选定方案，进入实现前审查
+状态：已实现；2026-07-18 按“所有正文”口径修订
 
 涉及仓库：
 
@@ -12,13 +12,13 @@
 
 ## 1. 目标
 
-Android Internals Wiki（AIW）每天持续更新，但 SmartPerfetto 用户不应依赖维护者本机的私有 checkout。系统需要把已定稿、已审查、允许公开分发的 AIW 文章构建成独立的版本化 Knowledge Pack，供 SmartPerfetto 离线携带和在线更新。
+Android Internals Wiki（AIW）每天持续更新，但 SmartPerfetto 用户不应依赖维护者本机的私有 checkout。系统需要把 AIW 的完整正文语料构建成独立的版本化 Knowledge Pack，供 SmartPerfetto 离线携带和在线更新。正文是否进入 Pack 不再由 draft/finalized、Task 6/Task 9 或 queue 状态决定。
 
 完成后的产品行为是：
 
 1. AIW 每次 `master` 更新都构建和验证候选 Pack。
-2. 每天最多晋升一个稳定 Pack；公开内容没有变化时不发布空版本。
-3. Pack 只包含公开检索所需的正文片段和安全元数据，不包含私有仓库日志、队列、审稿记录、本机路径或草稿。
+2. 定时任务从确定 SHA 晋升稳定 Pack；公开投影没有变化时不发布空版本，同日内容变化可递增版本。
+3. Pack 包含全部可安全提取的正文片段和最小安全元数据，包括 draft、待审、定稿、废弃及元数据不完整文章；不包含私有仓库日志、队列、审稿记录或原始本机路径。
 4. SmartPerfetto 的 npm、Docker、portable 发行物携带锁定的已验证快照。
 5. 已安装的 SmartPerfetto 可以独立检查和原子切换到更新的 Pack；更新失败时继续使用上一个已知可用版本。
 6. AIW 命中只解释系统背景，不能替代当前 Trace 的 SQL/Skill 证据。
@@ -67,52 +67,44 @@ flowchart LR
 
 三个仓库的职责严格分离：
 
-- AIW：内容真相、公开资格、确定性构建、泄漏扫描和发布触发。
+- AIW：内容真相、全正文公开投影、确定性构建、泄漏扫描和发布触发。
 - 公开 Pack 仓库：不可变目标文件、TUF 元数据和公开下载，不接收 Markdown 源仓库。
 - SmartPerfetto：可信根、锁定版本、更新器、只读检索、会话固定和引用投影。
 
-## 4. 公开资格与失败关闭
+## 4. 全正文投影与失败关闭
 
 ### 4.1 仓库级公开授权
 
 AIW 增加版本化发布策略 `knowledge-pack/policy.yaml`。策略明确声明：
 
-- `smartperfetto.default: include-if-eligible`
+- `smartperfetto.default: include-body`
 - 权利持有人和版权归属
 - 社区与商业双许可标识
 - 显式排除路径、标签和文章 ID
 - 允许导出的元数据字段
 
-这是对“所有满足资格的文章允许进入 SmartPerfetto Pack”的仓库级明确授权。单篇文章可用 frontmatter 的 `distribution.smartperfetto: exclude` 覆盖默认值。新文章不会仅因存在于私库而发布；它必须先通过下面全部流水线状态。
+这是对“AIW 全部正文允许进入 SmartPerfetto Pack”的仓库级明确授权。正文投影不读取单篇工作流字段来决定资格；路径排除只保留给目录、生成产物和无法作为正文安全发布的内容。
 
-### 4.2 文章资格
+### 4.2 正文接纳规则
 
-只有同时满足以下条件的文章进入 Pack：
+所有位于 `src/**/*.md` 的正文默认进入 Pack，包括 draft、待审、定稿、废弃、
+quarantined、queue-blocked 以及 frontmatter 缺失或错误的文章。以下内容不属于正文：
 
-- 文件位于 `src/**/*.md`，但不是 `README.md`、`SUMMARY.md` 或生成目录；
-- frontmatter 使用拒绝重复 key 的严格 YAML 解析；
-- `status: finalized`；
-- `pipeline_stage: ready-to-publish`；
-- `task6_state: reviewed`；
-- `task6_result: pass-light-edit`；
-- `task9_state: reviewed`；
-- `task9_result: pass-tech-review`；
-- 不带 `deprecated`、`superseded`、`quarantined` 或发布排除标记；
-- 文章路径不在 `metadata/queue.json` 的 `pending`、`rework`、`blocked`
-  或 `in-progress` 项中，也不在发布策略的人工 blocklist 中；
-- 未命中本机绝对路径、私钥、令牌、API key、私有仓库 URL 等泄漏规则；
-- 正文非空且能产生至少一个有效片段。
+- 任意层级的 `README.md`、`SUMMARY.md`；
+- `src/graphify-out/**` 等明确的生成报告；
+- 正文为空，或损坏到无法安全确定正文起点的文件。
 
-`task9_state` 只是流程状态，不能代替技术通过结果。v1 不把
-`task9_result: auto-fixed` 当作通过；未来若要纳入，必须先引入独立的机器可验证
-复核字段并完成 schema 迁移。`metadata/queue.json` 同时兼容历史 `path` 和
-`file` 字段；同一路径的 queue/frontmatter 结论冲突时按不公开处理。
-`metadata/progress.json` 目前只有汇总值，logs 是非结构化审计材料，二者不直接
-授予发布资格；已知冲突通过版本化 blocklist 失败关闭。
+frontmatter 仍使用拒绝重复 key 的严格 YAML 解析，但解析质量只进入审计。闭合但
+无效的 frontmatter 会被丢弃，正文从关闭 fence 后继续；未闭合 frontmatter 只有在
+能找到明确 H1 时才从 H1 恢复正文，否则单篇失败关闭。缺失或无效元数据使用 H1
+和相对路径生成稳定的标题与 ID。`status`、`pipeline_stage`、Task 6/Task 9、queue、
+progress 和 review 结果只汇总到 `audit-summary.json`，不参与 content fingerprint，
+因此纯流程状态变化是发布 no-op。
 
-不合格文章只进入 `audit-summary.json`。单篇格式或状态问题按文章失败关闭，
-不阻塞其他合格文章；任何高置信秘密命中、策略解析失败、零文章输出或输出
-完整性失败会阻止整个 Pack 发布。
+投影先对私有上下文行做确定性的整行脱敏，再计算 public hash、切片和 SQLite。
+Pack 不保存原始 source hash，以免它泄露未公开正文变化。任何高置信秘密命中、
+策略解析失败、零文章输出或输出完整性失败会阻止整个 Pack 发布。投影算法或 schema
+语义变化通过显式 `projectionRevision` 触发新版本。
 
 ## 5. Pack 格式
 
@@ -145,7 +137,7 @@ SQLite 是不可变只读数据库：
 - `sources`：只保留安全的公开 URL 和来源类型；
 - `chunks_fts`：FTS5 检索索引。
 
-Pack 不包含原始 frontmatter、OpenClaw 日志、review notes、queue、绝对路径、Git remote、私有 URL 或非入选文章的正文。
+Pack 不包含原始 frontmatter、OpenClaw 日志、review notes、queue、原始绝对路径、Git remote 或私有 URL。
 
 ### 5.1 Markdown 切片
 
@@ -317,14 +309,14 @@ SmartPerfetto 提交：
 - TUF 初始 root；
 - `knowledge-packs.lock.json`，固定 bundled 版本、目标路径和 manifest hash；
 - 下载/验证/状态脚本；
-- 不提交 AIW 正文或生成的 SQLite。
+- 提交按 lock 验证过的压缩 SQLite 快照，保证 source、npm、Docker 和 portable 的离线首启；不提交 AIW Markdown 源文件。
 
 发行构建在干净环境中执行 lock fetch：
 
 - npm `prepack` 获取并验证锁定 Pack，然后把它放入 npm tarball；
 - portable 打包复用相同 fetch 脚本并把 Pack 放入 backend resources；
 - Docker builder 复用相同 lock 和 fetch 脚本；
-- source checkout 在本地没有 bundled Pack 时可按 lock 首次获取。
+- source checkout 通过 committed bundled Pack 离线可用；维护者升级 lock 时复用同一脚本获取并验证新快照。
 
 `cli:pack-check`、portable manifest verifier、Docker 静态测试和 `smp doctor` 都报告 Pack 是否存在、版本、fingerprint、许可证、来源和验证状态。
 
@@ -333,12 +325,12 @@ SmartPerfetto 提交：
 ### AIW
 
 - 严格 YAML：重复 key、错误类型、非法状态；
-- 资格矩阵：finalized/draft/review/pipeline/exclude；
+- 全正文矩阵：finalized/draft/review/deprecated/quarantined/queue-blocked 均接纳；仅目录、生成报告和不可恢复正文排除；
 - 泄漏测试：token、私钥、本机路径、私有 URL；
 - Markdown：中英文标题、表格、超长代码、空 section、稳定 ID；
 - 确定性：同一输入两次构建的 manifest fingerprint、文章/chunk ID 和 SQLite 逻辑内容一致；
 - SQLite schema、`quick_check`、manifest/hash；
-- 黄金查询集：中英混合、Android 子系统、负查询，检查 Recall@5、MRR 和无草稿泄漏；
+- 黄金查询集：中英混合、Android 子系统、负查询，检查 Recall@5 和 MRR；
 - 发布 dry-run、同 fingerprint no-op、CalVer 递增、并发保护。
 
 ### SmartPerfetto

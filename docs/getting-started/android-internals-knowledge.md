@@ -17,10 +17,11 @@ trace 的根因。诊断仍要引用 `execute_sql`、`invoke_skill` 或其他当
 ## 内置公开 Knowledge Pack
 
 - AIW `master` 每次变化都构建候选包；每天北京时间 00:30 重新从确定 SHA 构建并晋升。
-- 只有严格解析、状态定稿、Task 6/Task 9 审核通过且未在 queue/blocklist 中的文章进入。
+- `src/` 下的正文不再按状态或审核队列过滤：draft、待审、定稿、废弃和元数据不完整的正文都进入；仅排除 `README.md`、`SUMMARY.md` 等目录文件和明确的生成报告。
+- frontmatter 严格解析结果、Task 6/Task 9、queue 和状态仍写入审计，但不再授予或阻止正文入包。无法解析的元数据使用稳定的标题/路径回退；无法安全确定正文边界的文件失败关闭。
 - 同一公开内容 fingerprint 不发布空版本；变化使用不可覆盖的 `YYYY.MM.DD.N`。
 - 公开分发仓库只包含 TUF metadata、压缩 SQLite、审计摘要和许可证，不包含 Markdown
-  源仓库、草稿、审稿日志、队列或本机路径。
+  源仓库、审稿日志、队列或原始本机路径。私有上下文行在构建时整行脱敏，高置信秘密会阻止整次发布。
 - 会话固定 `contentVersion + contentFingerprint`。后台更新不会让运行中的会话静默换库；
   紧急撤回会要求重启分析上下文。
 - 模型收到的是预算受控并经过 secret redaction 的片段；日志和 SSE 只保留引用元数据与

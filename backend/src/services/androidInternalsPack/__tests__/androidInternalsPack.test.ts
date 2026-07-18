@@ -35,6 +35,15 @@ import {filterRagLookup} from '../../rag/lookupResponseFilter';
 import {projectRagResultForSseAndLog} from '../../rag/toolResultProjectionFilter';
 import {RagStore} from '../../ragStore';
 
+const bundledPackVersion = '2026.07.18.2';
+const bundledPackFingerprint =
+  'd5a9a3509863cbd9809735eb33459668ec93cd07e365063b85bb46470781116b';
+const bundledPackDirectory = path.resolve(
+  __dirname,
+  `../../../../knowledge/aiw-pack/bundled/${bundledPackVersion}`,
+);
+const newerPackVersion = '2026.07.18.3';
+
 describe('AndroidInternalsPack', () => {
   let dataRoot: string;
   const originalDataRoot = process.env.SMARTPERFETTO_BACKEND_DATA_DIR;
@@ -55,8 +64,8 @@ describe('AndroidInternalsPack', () => {
   it('materializes the bundled immutable snapshot and retrieves Chinese and identifiers', () => {
     const store = getDefaultAndroidInternalsPackStore();
     expect(store?.handle).toEqual(expect.objectContaining({
-      contentVersion: '2026.07.18.1',
-      contentFingerprint: 'e042ba33dc8f11373082ab3150ea021c119d8985cbab87c86f571dc8a507938e',
+      contentVersion: bundledPackVersion,
+      contentFingerprint: bundledPackFingerprint,
       origin: 'bundled',
     }));
 
@@ -66,7 +75,7 @@ describe('AndroidInternalsPack', () => {
     expect(chinese?.results[0].chunk).toEqual(expect.objectContaining({
       kind: 'android_internals_pack',
       registryOrigin: 'built_in_knowledge_pack',
-      knowledgePackVersion: '2026.07.18.1',
+      knowledgePackVersion: bundledPackVersion,
       articleId: expect.any(String),
       sectionId: expect.any(String),
       chunkHash: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -74,6 +83,40 @@ describe('AndroidInternalsPack', () => {
 
     const identifier = store?.search('attachApplication binder_tracker', {topK: 5});
     expect(identifier?.results.length).toBeGreaterThan(0);
+  });
+
+  it('ships the all-body projection instead of gating on workflow metadata', () => {
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(bundledPackDirectory, 'manifest.json'), 'utf8'),
+    );
+    const audit = JSON.parse(
+      fs.readFileSync(path.join(bundledPackDirectory, 'audit-summary.json'), 'utf8'),
+    );
+    expect(audit.acceptedArticleCount).toBe(manifest.articleCount);
+    expect(audit.acceptedArticleCount + audit.excludedArticleCount).toBe(
+      audit.totalMarkdownFiles,
+    );
+    expect(audit.excludedReasonCounts).toEqual({
+      policy_path_excluded: 1,
+      reserved_markdown_file: 29,
+    });
+    expect(audit.acceptedMetadataQualityCounts).toEqual(expect.objectContaining({
+      invalid: expect.any(Number),
+      missing: expect.any(Number),
+      strict: expect.any(Number),
+    }));
+    expect(audit.acceptedMetadataQualityCounts.invalid).toBeGreaterThan(0);
+    expect(audit.acceptedMetadataQualityCounts.missing).toBeGreaterThan(0);
+    for (const status of [
+      'deprecated',
+      'draft',
+      'finalized',
+      'quarantined',
+      'ready-for-review',
+      'superseded',
+    ]) {
+      expect(audit.acceptedWorkflowMetadataCounts.status[status]).toBeGreaterThan(0);
+    }
   });
 
   it('projects only citation metadata and snippet hashes to logs and SSE', async () => {
@@ -87,7 +130,7 @@ describe('AndroidInternalsPack', () => {
     expect(filtered.backgroundKnowledgeReferences).toEqual([
       expect.objectContaining({
         sourceKind: 'android_internals_pack',
-        packVersion: '2026.07.18.1',
+        packVersion: bundledPackVersion,
         chunkHash: expect.stringMatching(/^[0-9a-f]{64}$/),
       }),
     ]);
@@ -96,7 +139,7 @@ describe('AndroidInternalsPack', () => {
     const projected = projectRagResultForSseAndLog('lookup_blog_knowledge', filtered);
     expect(projected.chunkRefs[0]).toEqual(expect.objectContaining({
       kind: 'android_internals_pack',
-      knowledgePackVersion: '2026.07.18.1',
+      knowledgePackVersion: bundledPackVersion,
       snippetHash: expect.stringMatching(/^[0-9a-f]{12}$/),
       snippetLength: expect.any(Number),
     }));
@@ -113,8 +156,8 @@ describe('AndroidInternalsPack', () => {
       androidInternalsPackChannelStatePath(),
       JSON.stringify({
         checkedAt: new Date().toISOString(),
-        minimumSafeVersion: '2026.07.18.1',
-        revokedVersions: ['2026.07.18.1'],
+        minimumSafeVersion: bundledPackVersion,
+        revokedVersions: [bundledPackVersion],
       }),
     );
     expect(isAndroidInternalsPackRevoked(store!.handle)).toBe(true);
@@ -138,13 +181,7 @@ describe('AndroidInternalsPack', () => {
 
   it('fails closed on an unsupported manifest format', () => {
     const manifest = JSON.parse(
-      fs.readFileSync(
-        path.resolve(
-          __dirname,
-          '../../../../knowledge/aiw-pack/bundled/2026.07.18.1/manifest.json',
-        ),
-        'utf8',
-      ),
+      fs.readFileSync(path.join(bundledPackDirectory, 'manifest.json'), 'utf8'),
     );
     expect(() => parseAndroidInternalsPackManifest({
       ...manifest,
@@ -179,7 +216,7 @@ describe('AndroidInternalsPack', () => {
       sessionId,
       Array.from({length: 257}, (_, index) => ({
         sourceKind: 'android_internals_pack' as const,
-        packVersion: '2026.07.18.1',
+        packVersion: bundledPackVersion,
         packFingerprint: 'f'.repeat(64),
         sourceRevision: 'source-revision',
         articleId: `article-${index}`,
@@ -210,13 +247,13 @@ describe('AndroidInternalsPack', () => {
     });
     expect(result).toEqual(expect.objectContaining({
       status: 'installed',
-      contentVersion: '2026.07.18.1',
+      contentVersion: bundledPackVersion,
     }));
     const active = JSON.parse(
       fs.readFileSync(path.join(dataRoot, 'knowledge-packs/android-internals/active.json'), 'utf8'),
     );
     expect(active).toEqual(expect.objectContaining({
-      contentVersion: '2026.07.18.1',
+      contentVersion: bundledPackVersion,
       origin: 'runtime',
     }));
     __resetAndroidInternalsPackStoresForTests();
@@ -227,19 +264,19 @@ describe('AndroidInternalsPack', () => {
 
   it('installs the signed minimum-safe immutable target when stable is revoked', async () => {
     const fixture = bundledFixture();
-    fixture.channel.contentVersion = '2026.07.18.2';
+    fixture.channel.contentVersion = newerPackVersion;
     fixture.channel.contentFingerprint = 'f'.repeat(64);
     fixture.channel.sourceRevision = 'e'.repeat(40);
-    fixture.channel.minimumSafeVersion = '2026.07.18.1';
-    fixture.channel.revokedVersions = ['2026.07.18.2'];
+    fixture.channel.minimumSafeVersion = bundledPackVersion;
+    fixture.channel.revokedVersions = [newerPackVersion];
     fixture.channel.targets = {
-      manifest: 'packs/android-internals/2026.07.18.2/manifest.json',
-      database: 'packs/android-internals/2026.07.18.2/content.sqlite.gz',
-      audit: 'packs/android-internals/2026.07.18.2/audit-summary.json',
+      manifest: `packs/android-internals/${newerPackVersion}/manifest.json`,
+      database: `packs/android-internals/${newerPackVersion}/content.sqlite.gz`,
+      audit: `packs/android-internals/${newerPackVersion}/audit-summary.json`,
       licenses: Object.fromEntries(
         Object.keys(fixture.channel.targets.licenses).map(name => [
           name,
-          `packs/android-internals/2026.07.18.2/licenses/${name}`,
+          `packs/android-internals/${newerPackVersion}/licenses/${name}`,
         ]),
       ),
     };
@@ -249,18 +286,18 @@ describe('AndroidInternalsPack', () => {
       updaterFactory: () => fixture.client,
     })).resolves.toEqual(expect.objectContaining({
       status: 'installed',
-      contentVersion: '2026.07.18.1',
+      contentVersion: bundledPackVersion,
     }));
     const active = JSON.parse(
       fs.readFileSync(androidInternalsPackActivePointerPath(), 'utf8'),
     );
-    expect(active.contentVersion).toBe('2026.07.18.1');
+    expect(active.contentVersion).toBe(bundledPackVersion);
     expect(
       JSON.parse(fs.readFileSync(androidInternalsPackChannelStatePath(), 'utf8')),
     ).toEqual(expect.objectContaining({
-      contentVersion: '2026.07.18.2',
-      minimumSafeVersion: '2026.07.18.1',
-      revokedVersions: ['2026.07.18.2'],
+      contentVersion: newerPackVersion,
+      minimumSafeVersion: bundledPackVersion,
+      revokedVersions: [newerPackVersion],
     }));
   });
 
@@ -303,10 +340,7 @@ describe('AndroidInternalsPack', () => {
     targets: Map<string, string>;
     client: KnowledgePackTufClient;
   } {
-    const bundle = path.resolve(
-      __dirname,
-      '../../../../knowledge/aiw-pack/bundled/2026.07.18.1',
-    );
+    const bundle = bundledPackDirectory;
     const manifest = JSON.parse(fs.readFileSync(path.join(bundle, 'manifest.json'), 'utf8'));
     const channel: AndroidInternalsPackChannel = {
       schemaVersion: 1,
@@ -319,13 +353,13 @@ describe('AndroidInternalsPack', () => {
       revokedVersions: [],
       reasonCode: null,
       targets: {
-        manifest: 'packs/android-internals/2026.07.18.1/manifest.json',
-        database: 'packs/android-internals/2026.07.18.1/content.sqlite.gz',
-        audit: 'packs/android-internals/2026.07.18.1/audit-summary.json',
+        manifest: `packs/android-internals/${bundledPackVersion}/manifest.json`,
+        database: `packs/android-internals/${bundledPackVersion}/content.sqlite.gz`,
+        audit: `packs/android-internals/${bundledPackVersion}/audit-summary.json`,
         licenses: Object.fromEntries(
           Object.keys(manifest.licenses.files).map(name => [
             name,
-            `packs/android-internals/2026.07.18.1/licenses/${name}`,
+            `packs/android-internals/${bundledPackVersion}/licenses/${name}`,
           ]),
         ),
       },

@@ -9,6 +9,12 @@
 - `/Users/chris/Code/SmartPerfetto/SmartPerfetto`
 - 新建 `Gracker/android-internals-knowledge-pack`
 
+> 执行修订（2026-07-18）：原计划中的 eligibility gate 已被“所有正文”政策取代。
+> `src/**/*.md` 正文不再按 status、Task 6/Task 9 或 queue 过滤；这些字段只进入
+> 审计。导航文件、明确的生成报告和无法安全恢复正文边界的文件仍排除，私有上下文
+> 行先脱敏，高置信秘密继续阻止整次发布。下文若保留旧 eligibility 名称，均按此修订
+> 解释。
+
 ## Phase 0：文档与允许 API
 
 ### 已核实 API
@@ -55,16 +61,15 @@ consistent snapshot 规则：
 - 不使用 ad-hoc crypto wrapper；
 - 不把公共 Pack 写进可变 `RagStore`；
 - 不放宽私有 AIW connector 的 consent/scope/path gate；
-- 不把 `task9_state` 当作 `task9_result`；
-- 不把 `auto-fixed` 当作 v1 技术通过。
+- 不让 `task9_state`、`task9_result` 或 `auto-fixed` 参与正文入包判断；它们只用于审计。
 
 ## Phase 1：AIW 严格 Pack 构建器
 
 ### 新增文件
 
 - `knowledge-pack/policy.yaml`
-  - 仓库级 `include-if-eligible`
-  - blocklist/exclude
+  - 仓库级 `include-body`
+  - 目录与生成路径 exclude
   - 允许导出的 metadata 字段
   - 双许可证和 attribution
 - `knowledge-pack/golden-queries.yaml`
@@ -80,9 +85,9 @@ consistent snapshot 规则：
   - 重复 key 拒绝
   - 字段类型与规范化
 - `scripts/knowledge_pack/eligibility.py`
-  - finalized/pipeline/Task6/Task9
-  - queue `path|file` blocking
-  - policy blocklist
+  - 全正文接纳与路径排除
+  - status/pipeline/Task6/Task9/queue 审计汇总
+  - 缺失或无效 metadata 的稳定回退
 - `scripts/knowledge_pack/markdown_chunks.py`
   - heading/block parser
   - table/fence 原子块
@@ -124,12 +129,12 @@ consistent snapshot 规则：
 
 ### 实现顺序
 
-1. 先写 fixture 和资格/strict YAML 单测。
-2. 实现文章扫描与 eligibility audit。
+1. 先写 fixture 和正文接纳/strict YAML/fallback 单测。
+2. 实现文章扫描与全正文 audit。
 3. 实现 Markdown block/section/chunk。
 4. 实现 SQLite schema/FTS。
 5. 实现 manifest、gzip `mtime=0` 和 verifier。
-6. 用当前 AIW 构建真实 Pack，检查只有严格通过文章进入。
+6. 用当前 AIW 构建真实 Pack，检查所有正文进入且目录/生成报告按策略排除。
 
 ### 验证
 
@@ -399,8 +404,8 @@ consistent snapshot 规则：
   - `knowledge-pack:fetch`
   - `knowledge-pack:verify`
   - `prepack` 在 build 前 fetch
-- `.gitignore`
-  - 忽略生成的 bundled Pack 内容
+- `backend/knowledge/aiw-pack/bundled/<version>/`
+  - 提交 lock 固定且已验证的压缩快照，保证 source 离线首启
 - `Dockerfile`
   - builder fetch，runtime 从 builder copy verified Pack
 - `scripts/package-portable.sh`
@@ -419,7 +424,7 @@ consistent snapshot 规则：
   - `smp knowledge-pack status`
 - Docker build + health + Pack status；
 - portable build/manifest verify；
-- source checkout 无 bundled Pack 时异步 fetch；
+- source checkout 使用 committed bundled Pack，升级 lock 时 fetch 并验证新快照；
 - offline发行物使用 bundled snapshot。
 
 ## Phase 9：总体验证、审查和交付

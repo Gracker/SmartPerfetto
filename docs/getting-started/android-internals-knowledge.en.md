@@ -20,14 +20,21 @@ evidence from `execute_sql`, `invoke_skill`, or an equivalent evidence tool.
 ## Built-in Public Knowledge Pack
 
 - Every AIW `master` change builds a candidate. A scheduled job rebuilds from an
-  exact SHA at 00:30 Asia/Shanghai and promotes eligible changes.
-- Only strictly parsed, finalized, Task 6/Task 9-approved articles outside the
-  queue and blocklist are included.
+  exact SHA at 00:30 Asia/Shanghai and promotes changed public content.
+- Body content under `src/` is not filtered by workflow state or review queue:
+  draft, review, finalized, deprecated, and metadata-incomplete bodies are all
+  included. Navigation files such as `README.md`/`SUMMARY.md` and explicitly
+  generated reports are excluded.
+- Strict frontmatter results, Task 6/Task 9, queue, and status remain in the
+  audit but no longer grant or block body inclusion. Invalid metadata uses
+  stable title/path fallbacks; files whose body boundary cannot be recovered
+  safely fail closed.
 - An unchanged public-content fingerprint is a successful no-op. Changed content
   receives an immutable `YYYY.MM.DD.N` version.
 - The public distribution repository contains TUF metadata, compressed SQLite,
-  an audit summary, and licenses—not Markdown sources, drafts, review logs,
-  queues, or local paths.
+  an audit summary, and licenses—not Markdown sources, review logs, queues, or
+  raw local paths. Private-context lines are redacted as whole lines, and a
+  high-confidence secret blocks the entire publication.
 - A session pins `contentVersion + contentFingerprint`. A background update
   never silently switches an active session; emergency revocation requires a
   new analysis context.

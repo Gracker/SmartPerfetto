@@ -5,18 +5,18 @@
     "targetBaseUrl": "https://raw.githubusercontent.com/Gracker/android-internals-knowledge-pack/main/targets/"
   },
   "bundled": {
-    "contentVersion": "2026.07.18.1",
-    "contentFingerprint": "e042ba33dc8f11373082ab3150ea021c119d8985cbab87c86f571dc8a507938e",
-    "manifestSha256": "1295d0147fa0df43a76770a853bccf194733eadf54b34e35fa9b9399ea2becf5",
-    "publicRevision": "b4858a40d0bcb46a28a5f624ea2fc20e78b4b3ab",
+    "contentVersion": "2026.07.18.2",
+    "contentFingerprint": "d5a9a3509863cbd9809735eb33459668ec93cd07e365063b85bb46470781116b",
+    "manifestSha256": "03bbe6505bfade03ee6d9e94f2393b54fb6464e2e480f8ab1ed9f4adb6408b07",
+    "publicRevision": "8959093388d864fc07bcc07fe282b158bc31791b",
     "targets": {
-      "manifest": "packs/android-internals/2026.07.18.1/manifest.json",
-      "database": "packs/android-internals/2026.07.18.1/content.sqlite.gz",
-      "audit": "packs/android-internals/2026.07.18.1/audit-summary.json",
+      "manifest": "packs/android-internals/2026.07.18.2/manifest.json",
+      "database": "packs/android-internals/2026.07.18.2/content.sqlite.gz",
+      "audit": "packs/android-internals/2026.07.18.2/audit-summary.json",
       "licenses": {
-        "COMMERCIAL-LICENSE.md": "packs/android-internals/2026.07.18.1/licenses/COMMERCIAL-LICENSE.md",
-        "KNOWLEDGE-PACK-LICENSE.md": "packs/android-internals/2026.07.18.1/licenses/KNOWLEDGE-PACK-LICENSE.md",
-        "LICENSE": "packs/android-internals/2026.07.18.1/licenses/LICENSE"
+        "COMMERCIAL-LICENSE.md": "packs/android-internals/2026.07.18.2/licenses/COMMERCIAL-LICENSE.md",
+        "KNOWLEDGE-PACK-LICENSE.md": "packs/android-internals/2026.07.18.2/licenses/KNOWLEDGE-PACK-LICENSE.md",
+        "LICENSE": "packs/android-internals/2026.07.18.2/licenses/LICENSE"
       }
     }
   }
