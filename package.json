@@ -51,7 +51,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
     "ajv": "^8.17.1",
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^5.2.1",
     "knip": "^6.26.0",
     "protobufjs": "^7.6.5"
   },
