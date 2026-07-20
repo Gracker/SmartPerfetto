@@ -317,7 +317,7 @@ verify_pinned_trace_processor() {
 
 # Extract frontend version directory from Perfetto index.html
 # e.g. data-perfetto_version='{"stable":"v53.0-xxxx"}'
-# shellcheck disable=SC2329 # Invoked through is_dev_frontend_ready.
+# shellcheck disable=SC2317,SC2329 # Invoked through is_dev_frontend_ready.
 extract_frontend_version() {
   local index_html="$1"
   local version
@@ -334,7 +334,7 @@ extract_frontend_version() {
 #   the generated dist directory
 # - Vite can transform the frontend TypeScript entry, proving its in-memory
 #   development server completed the first build
-# shellcheck disable=SC2329 # Invoked through is_dev_frontend_ready.
+# shellcheck disable=SC2317,SC2329 # Invoked through is_dev_frontend_ready.
 is_frontend_runtime_ready() {
   local version="$1"
   local manifest_url="http://localhost:$FRONTEND_PORT/$version/manifest.json"
@@ -345,7 +345,7 @@ is_frontend_runtime_ready() {
     "http://localhost:$FRONTEND_PORT/frontend/index.ts" 2>/dev/null
 }
 
-# shellcheck disable=SC2329 # Passed as a readiness predicate.
+# shellcheck disable=SC2317,SC2329 # Passed as a readiness predicate.
 is_dev_frontend_ready() {
   local index_html
   local version

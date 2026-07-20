@@ -16,7 +16,7 @@ import {
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_CATALOG = join(REPO_ROOT, 'backend/skills/pipelines/index.yaml');

@@ -14,12 +14,14 @@ const repoRoot = path.resolve(import.meta.dirname, '../..');
 const backendRoot = path.join(repoRoot, 'backend');
 const require = createRequire(import.meta.url);
 const {main} = require('../../backend/scripts/ensure-trace-processor.cjs');
+const isWindows = process.platform === 'win32';
 
 function sha256(filePath) {
   return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
 function createCustomTraceProcessor(tempDir, mode = 0o755) {
+  if (isWindows) return process.execPath;
   const filePath = path.join(tempDir, 'custom-trace-processor');
   fs.writeFileSync(filePath, '#!/bin/sh\necho "custom trace processor 1.0"\n', {mode});
   return filePath;
@@ -41,7 +43,9 @@ test('explicit TRACE_PROCESSOR_PATH is smoke-tested without content or mode muta
   assert.equal(sha256(customPath), beforeHash);
   assert.equal(fs.statSync(customPath).mode & 0o777, beforeMode);
 });
-test('non-executable explicit TRACE_PROCESSOR_PATH is rejected without chmod', async (t) => {
+test('non-executable explicit TRACE_PROCESSOR_PATH is rejected without chmod', {
+  skip: isWindows ? 'Windows does not expose POSIX executable mode semantics' : false,
+}, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-custom-tp-mode-'));
   t.after(() => fs.rmSync(tempDir, {recursive: true, force: true}));
   const customPath = createCustomTraceProcessor(tempDir, 0o644);
@@ -59,7 +63,7 @@ test('backend predev preserves an explicit custom trace processor', (t) => {
   const customPath = createCustomTraceProcessor(tempDir);
   const beforeHash = sha256(customPath);
 
-  const result = spawnSync('npm', ['run', 'predev'], {
+  const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'predev'], {
     cwd: backendRoot,
     encoding: 'utf8',
     env: {
@@ -71,6 +75,10 @@ test('backend predev preserves an explicit custom trace processor', (t) => {
   });
 
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /custom trace processor 1\.0/);
+  if (isWindows) {
+    assert.match(result.stdout, new RegExp(`trace_processor_shell ready: ${process.version.replaceAll('.', '\\.')}`));
+  } else {
+    assert.match(result.stdout, /custom trace processor 1\.0/);
+  }
   assert.equal(sha256(customPath), beforeHash);
 });

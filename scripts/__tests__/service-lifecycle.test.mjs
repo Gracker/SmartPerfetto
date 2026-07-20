@@ -12,6 +12,9 @@ import test from 'node:test';
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const lifecycleScript = path.join(repoRoot, 'scripts/service-lifecycle.sh');
 const detachedLauncher = path.join(repoRoot, 'scripts/launch-detached.mjs');
+const posixTest = (name, fn) => test(name, {
+  skip: process.platform === 'win32' ? 'requires POSIX process and shell semantics' : false,
+}, fn);
 
 function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\"'\"'")}'`;
@@ -47,7 +50,7 @@ async function waitUntil(predicate, timeoutMs = 5_000) {
   throw new Error('condition did not become true before timeout');
 }
 
-test('owned npm-shaped parent, child, and grandchild tree is stopped completely', async (t) => {
+posixTest('owned npm-shaped parent, child, and grandchild tree is stopped completely', async (t) => {
   const tempDir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-lifecycle-tree-')),
   );
@@ -100,7 +103,7 @@ test('owned npm-shaped parent, child, and grandchild tree is stopped completely'
   assert.equal(fs.existsSync(pidFile), false);
 });
 
-test('mismatched process identity is refused without killing the live PID', (t) => {
+posixTest('mismatched process identity is refused without killing the live PID', (t) => {
   const tempDir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-lifecycle-reuse-')),
   );
@@ -133,7 +136,7 @@ test('mismatched process identity is refused without killing the live PID', (t) 
   assert.equal(spawnSync('kill', ['-0', String(child.pid)]).status, 0);
 });
 
-test('mutable process title does not invalidate executable-backed ownership', async (t) => {
+posixTest('mutable process title does not invalidate executable-backed ownership', async (t) => {
   const tempDir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-lifecycle-title-')),
   );
@@ -175,7 +178,7 @@ test('mutable process title does not invalidate executable-backed ownership', as
   await waitUntil(() => spawnSync('kill', ['-0', String(child.pid)]).status !== 0);
 });
 
-test('an unowned listener blocks startup and remains alive', async (t) => {
+posixTest('an unowned listener blocks startup and remains alive', async (t) => {
   const net = await import('node:net');
   const server = net.createServer();
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -191,7 +194,7 @@ test('an unowned listener blocks startup and remains alive', async (t) => {
   assert.equal(server.listening, true);
 });
 
-test('explicit force stop removes a listener and verifies the port is clean', async (t) => {
+posixTest('explicit force stop removes a listener and verifies the port is clean', async (t) => {
   const net = await import('node:net');
   const reservation = net.createServer();
   await new Promise((resolve) => reservation.listen(0, '127.0.0.1', resolve));
@@ -218,7 +221,7 @@ test('explicit force stop removes a listener and verifies the port is clean', as
   assert.notEqual(spawnSync('lsof', ['-ti', `tcp:${port}`, '-sTCP:LISTEN']).status, 0);
 });
 
-test('readiness fails immediately when the child exits before becoming ready', () => {
+posixTest('readiness fails immediately when the child exits before becoming ready', () => {
   const result = runBash(
     `. ${shellQuote(lifecycleScript)}\n` +
       `(exit 7) & child=$!\n` +
@@ -229,7 +232,7 @@ test('readiness fails immediately when the child exits before becoming ready', (
   assert.match(result.stderr, /exited before becoming ready/);
 });
 
-test('readiness timeout returns non-zero and can clean up the owned child', () => {
+posixTest('readiness timeout returns non-zero and can clean up the owned child', () => {
   const result = runBash(
     `. ${shellQuote(lifecycleScript)}\n` +
       '(sleep 10) & child=$!\n' +
@@ -242,7 +245,7 @@ test('readiness timeout returns non-zero and can clean up the owned child', () =
   assert.match(result.stderr, /did not become ready within 1s/);
 });
 
-test('detached launcher survives its caller and can be stopped as a process tree', async (t) => {
+posixTest('detached launcher survives its caller and can be stopped as a process tree', async (t) => {
   const tempDir = fs.realpathSync(
     fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-detached-launch-')),
   );

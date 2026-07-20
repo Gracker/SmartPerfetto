@@ -486,6 +486,6 @@ SmartPerfetto accepts personal donations, AI credits / token sponsorship, commer
 
 [AGPL-3.0-or-later](LICENSE) for SmartPerfetto core code.
 
-The `perfetto/` submodule is a fork of [Google Perfetto](https://github.com/google/perfetto) and remains under [Apache-2.0](perfetto/LICENSE).
+The `perfetto/` submodule is a fork of [Google Perfetto](https://github.com/google/perfetto) and remains under [Apache-2.0](https://github.com/google/perfetto/blob/main/LICENSE).
 
 For commercial licensing without AGPL obligations, contact the maintainer on WeChat: `553000664`.
