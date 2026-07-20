@@ -9,6 +9,7 @@ import {
   OPENAI_AGENT_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
+  QODER_AGENT_RUNTIME_KIND,
   isProductionAgentRuntimeKind,
   listProductionRuntimeKinds,
 } from './runtimeKinds';
@@ -130,6 +131,24 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { getOpenCodeRuntimeDiagnostics } = require('./engines/opencode/openCodeRuntime') as typeof import('./engines/opencode/openCodeRuntime');
       return getOpenCodeRuntimeDiagnostics(env, kind);
+    },
+  },
+  {
+    kind: QODER_AGENT_RUNTIME_KIND,
+    displayName: 'Qoder Agent SDK',
+    production: true,
+    publicRuntime: true,
+    providerTypes: CUSTOM_ONLY_PROVIDER_TYPES,
+    capabilities: createCapabilities(QODER_AGENT_RUNTIME_KIND, 'Qoder Agent SDK', false),
+    createOrchestrator: input => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { QoderRuntime } = require('./engines/qoder/qoderRuntime') as typeof import('./engines/qoder/qoderRuntime');
+      return new QoderRuntime(input);
+    },
+    getDiagnostics: ({ env, kind }: RuntimeDiagnosticsInput<typeof QODER_AGENT_RUNTIME_KIND>) => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { getQoderRuntimeDiagnostics } = require('./engines/qoder/qoderConfig') as typeof import('./engines/qoder/qoderConfig');
+      return getQoderRuntimeDiagnostics(env, kind);
     },
   },
 ] as const satisfies readonly RuntimeEngineDescriptor[];

@@ -168,6 +168,16 @@ export interface OpenCodeSnapshotEngineState {
   opaque?: OpenCodeOpaqueState;
 }
 
+export interface QoderOpaqueState {
+  version: 1;
+  sdkSessionId?: string;
+  degradedReason?: ThirdPartyOpaqueDegradedReason;
+}
+
+export interface QoderSnapshotEngineState {
+  opaque?: QoderOpaqueState;
+}
+
 export type SnapshotEngineState =
   | {
       kind: 'claude-agent-sdk';
@@ -198,6 +208,15 @@ export type SnapshotEngineState =
       claude?: never;
       openai?: never;
       pi?: never;
+    }
+  | {
+      kind: 'qoder-agent-sdk';
+      provider: SnapshotEngineProviderState;
+      qoder: QoderSnapshotEngineState;
+      claude?: never;
+      openai?: never;
+      pi?: never;
+      opencode?: never;
     };
 
 interface EngineProviderStateInput {
@@ -260,6 +279,18 @@ export function createOpenCodeSnapshotEngineState(
     kind: 'opencode',
     provider: createSnapshotEngineProviderState(input),
     opencode: {
+      opaque: input.opaque,
+    },
+  };
+}
+
+export function createQoderSnapshotEngineState(
+  input: EngineProviderStateInput & QoderSnapshotEngineState = {},
+): SnapshotEngineState {
+  return {
+    kind: 'qoder-agent-sdk',
+    provider: createSnapshotEngineProviderState(input),
+    qoder: {
       opaque: input.opaque,
     },
   };
@@ -366,6 +397,23 @@ export function getOpenCodeSnapshotEngineState(
       projectDir: typeof opaque.projectDir === 'string' ? opaque.projectDir : undefined,
       homeDir: typeof opaque.homeDir === 'string' ? opaque.homeDir : undefined,
       configDir: typeof opaque.configDir === 'string' ? opaque.configDir : undefined,
+      degradedReason: typeof opaque.degradedReason === 'string'
+        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
+        : undefined,
+    },
+  };
+}
+
+export function getQoderSnapshotEngineState(
+  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
+): QoderSnapshotEngineState | undefined {
+  if (snapshot.engineState?.kind !== 'qoder-agent-sdk') return undefined;
+  const opaque = snapshot.engineState.qoder.opaque;
+  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
+  return {
+    opaque: {
+      version: 1,
+      sdkSessionId: typeof opaque.sdkSessionId === 'string' ? opaque.sdkSessionId : undefined,
       degradedReason: typeof opaque.degradedReason === 'string'
         ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
         : undefined,

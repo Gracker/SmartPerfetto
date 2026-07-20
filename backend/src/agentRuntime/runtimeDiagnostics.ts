@@ -13,6 +13,7 @@ import {
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
+  QODER_AGENT_RUNTIME_KIND,
   isProductionAgentRuntimeKind,
   type ExperimentalAgentRuntimeKind,
 } from './runtimeKinds';
@@ -44,6 +45,7 @@ const MODEL_FALLBACK_BY_RUNTIME: Record<string, { model: string; requiresModelCo
   [EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND]: { model: 'pi-agent-core', requiresModelConfigured: true },
   [OPENCODE_RUNTIME_KIND]: { model: 'opencode' },
   [EXPERIMENTAL_OPENCODE_RUNTIME_KIND]: { model: 'opencode' },
+  [QODER_AGENT_RUNTIME_KIND]: { model: 'qoder' },
 };
 
 export interface GetRuntimeDiagnosticsInput {

@@ -82,7 +82,7 @@ export function resolveAgentRuntimeSelection(
   if (process.env.SMARTPERFETTO_AGENT_RUNTIME) {
     throw new Error(
       `Unsupported SMARTPERFETTO_AGENT_RUNTIME="${process.env.SMARTPERFETTO_AGENT_RUNTIME}". ` +
-      'Use "claude-agent-sdk", "openai-agents-sdk", "pi-agent-core", or "opencode".'
+      'Use "claude-agent-sdk", "openai-agents-sdk", "pi-agent-core", "opencode", or "qoder-agent-sdk".'
     );
   }
 

@@ -31,6 +31,7 @@ const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'openaiApiKey',
   'piAgentCoreModelJson',
   'openCodeModelJson',
+  'qoderAccessToken',
   'awsBearerToken',
   'awsAccessKeyId',
   'awsSecretAccessKey',
@@ -418,6 +419,18 @@ export class ProviderService {
     }
   }
 
+  private applyQoderConnection(env: Record<string, string>, provider: ProviderConfig): void {
+    if (provider.connection.qoderAccessToken) {
+      env.QODER_PERSONAL_ACCESS_TOKEN = provider.connection.qoderAccessToken;
+    }
+    if (provider.connection.qoderCliPath) {
+      env.QODERCLI_PATH = provider.connection.qoderCliPath;
+    }
+    if (provider.connection.qoderSystemPrompt) {
+      env.SMARTPERFETTO_QODER_SYSTEM_PROMPT = provider.connection.qoderSystemPrompt;
+    }
+  }
+
   private toEnvVars(provider: ProviderConfig): Record<string, string> {
     const env: Record<string, string> = {};
     const runtime = this.resolveAgentRuntime(provider);
@@ -499,6 +512,8 @@ export class ProviderService {
           this.applyPiAgentCoreConnection(env, provider);
         } else if (runtime === 'opencode') {
           this.applyOpenCodeConnection(env, provider);
+        } else if (runtime === 'qoder-agent-sdk') {
+          this.applyQoderConnection(env, provider);
         } else {
           this.applyClaudeAuth(env, provider);
           const baseUrl = this.getClaudeBaseUrl(provider);
@@ -517,6 +532,8 @@ export class ProviderService {
         env.OPENAI_MODEL = provider.models.primary;
         env.OPENAI_LIGHT_MODEL = provider.models.light;
       }
+    } else if (runtime === 'qoder-agent-sdk') {
+      env.QODER_MODEL = provider.connection.qoderModel || provider.models.primary;
     } else if (runtime === 'openai-agents-sdk') {
       env.OPENAI_MODEL = provider.models.primary;
       env.OPENAI_LIGHT_MODEL = provider.models.light;
@@ -543,6 +560,10 @@ export class ProviderService {
     } else if (runtime === 'opencode') {
       // OpenCode tuning is runtime-specific and intentionally not mapped to
       // Claude/OpenAI loop knobs.
+    } else if (runtime === 'qoder-agent-sdk') {
+      if (provider.tuning?.maxTurns) env.QODER_MAX_TURNS = String(provider.tuning.maxTurns);
+      if (provider.tuning?.fullPerTurnMs) env.QODER_FULL_PER_TURN_MS = String(provider.tuning.fullPerTurnMs);
+      if (provider.tuning?.quickPerTurnMs) env.QODER_QUICK_PER_TURN_MS = String(provider.tuning.quickPerTurnMs);
     } else if (runtime === 'openai-agents-sdk') {
       if (provider.tuning?.maxTurns) env.OPENAI_MAX_TURNS = String(provider.tuning.maxTurns);
       if (provider.tuning?.fullPerTurnMs) env.OPENAI_FULL_PER_TURN_MS = String(provider.tuning.fullPerTurnMs);

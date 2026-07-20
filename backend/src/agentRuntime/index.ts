@@ -70,6 +70,20 @@ export {
   type OpenCodeSdkModuleLoader,
 } from './engines/opencode';
 export {
+  QODER_AGENT_RUNTIME_KIND,
+  QODER_PERSONAL_ACCESS_TOKEN_ENV,
+  QODER_CLI_PATH_ENV,
+  QODER_MODEL_ENV,
+  QODER_SYSTEM_PROMPT_ENV,
+  QoderRuntime,
+  createQoderRuntimeDefinition,
+  getQoderEngineCapabilities,
+  getQoderRuntimeDiagnostics,
+  resolveQoderRuntimeConfig,
+  type QoderRuntimeConfig,
+  type QoderRuntimeKind,
+} from './engines/qoder';
+export {
   SDK_SESSION_FRESHNESS_MS,
   buildEntityContext,
   buildQuickConversationContext,

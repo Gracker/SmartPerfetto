@@ -84,6 +84,15 @@ export function collectEnvCredentialSources(
   if (hasConcreteEnvValue(env.SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH)) {
     sources.push(label(style, 'SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH', 'opencode_sdk_module_path'));
   }
+  if (hasConcreteEnvValue(env.QODER_PERSONAL_ACCESS_TOKEN)) {
+    sources.push(label(style, 'QODER_PERSONAL_ACCESS_TOKEN', 'qoder_personal_access_token'));
+  }
+  if (hasConcreteEnvValue(env.QODERCLI_PATH)) {
+    sources.push(label(style, 'QODERCLI_PATH', 'qodercli_path'));
+  }
+  if (hasConcreteEnvValue(env.QODER_MODEL)) {
+    sources.push(label(style, 'QODER_MODEL', 'qoder_model'));
+  }
 
   if (isEnabledEnvFlag(env.CLAUDE_CODE_USE_BEDROCK)) {
     if (hasConcreteEnvValue(env.AWS_BEARER_TOKEN_BEDROCK)) {

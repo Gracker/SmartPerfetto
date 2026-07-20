@@ -56,6 +56,12 @@ export function resolveProviderAgentRuntime(
         return 'opencode';
       }
       if (
+        provider?.connection.qoderAccessToken ||
+        provider?.connection.qoderCliPath
+      ) {
+        return 'qoder-agent-sdk';
+      }
+      if (
         provider?.connection.openaiProtocol ||
         provider?.connection.openaiBaseUrl ||
         provider?.connection.openaiApiKey

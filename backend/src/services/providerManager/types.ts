@@ -32,6 +32,14 @@ export interface ProviderConnection {
   openCodeSdkModulePath?: string;
   openCodeModelJson?: string;
   openCodeSystemPrompt?: string;
+  /** Qoder Agent SDK access token (Personal Access Token). */
+  qoderAccessToken?: string;
+  /** Qoder CLI executable path override. */
+  qoderCliPath?: string;
+  /** Qoder model identifier. */
+  qoderModel?: string;
+  /** Optional runtime-level system prompt for Qoder. */
+  qoderSystemPrompt?: string;
   /**
    * Backend agent runtime used by this provider.
    *

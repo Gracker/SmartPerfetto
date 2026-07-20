@@ -8,7 +8,7 @@ import type { Hypothesis } from '../agentv3/types';
 // Protocol provenance labels are shorter than runtime kind ids by design:
 // Claude/OpenAI use "claude"/"openai", while Pi/OpenCode match their public
 // runtime kind strings.
-export type RuntimeHypothesisSource = 'claude' | 'openai' | 'pi-agent-core' | 'opencode';
+export type RuntimeHypothesisSource = 'claude' | 'openai' | 'pi-agent-core' | 'opencode' | 'qoder-agent-sdk';
 
 export function toProtocolHypothesis(
   h: Hypothesis,
