@@ -63,7 +63,9 @@ test('backend predev preserves an explicit custom trace processor', (t) => {
   const customPath = createCustomTraceProcessor(tempDir);
   const beforeHash = sha256(customPath);
 
-  const result = spawnSync(isWindows ? 'npm.cmd' : 'npm', ['run', 'predev'], {
+  const command = isWindows ? (process.env.ComSpec ?? 'cmd.exe') : 'npm';
+  const args = isWindows ? ['/d', '/s', '/c', 'npm.cmd run predev'] : ['run', 'predev'];
+  const result = spawnSync(command, args, {
     cwd: backendRoot,
     encoding: 'utf8',
     env: {
