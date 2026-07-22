@@ -3,7 +3,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {spawn} from 'node:child_process';
-import {closeSync, openSync} from 'node:fs';
+import {closeSync, openSync, writeSync} from 'node:fs';
 
 function usage(message) {
   if (message) console.error(`ERROR: ${message}`);
@@ -52,4 +52,6 @@ try {
 
 child.unref();
 closeSync(logFd);
-console.log(child.pid);
+// Write the PID synchronously so it is flushed before this launcher exits;
+// console.log to a pipe is asynchronous and can be dropped under load.
+writeSync(1, `${child.pid}\n`);

@@ -262,7 +262,10 @@ posixTest('detached launcher survives its caller and can be stopped as a process
   );
   assert.equal(launch.status, 0, launch.stderr);
   const pid = Number(launch.stdout.trim());
-  assert.ok(Number.isInteger(pid) && pid > 1);
+  assert.ok(
+    Number.isInteger(pid) && pid > 1,
+    `expected integer pid, got stdout=${JSON.stringify(launch.stdout)} stderr=${JSON.stringify(launch.stderr)}`,
+  );
   t.after(() => {
     runBash(
       `. ${shellQuote(lifecycleScript)}\n` +
