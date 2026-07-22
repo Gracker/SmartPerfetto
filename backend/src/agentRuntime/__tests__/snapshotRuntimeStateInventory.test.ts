@@ -8,6 +8,7 @@ import {
   getOpenAISnapshotEngineState,
   getOpenCodeSnapshotEngineState,
   getPiAgentCoreSnapshotEngineState,
+  getQoderSnapshotEngineState,
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
   getSnapshotRuntimeProviderSnapshotHash,
@@ -25,7 +26,7 @@ type IsExact<A, B> =
     : false;
 
 const runtimeKindMatchesM10PublicRuntimeContract:
-  IsExact<AgentRuntimeKind, 'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core' | 'opencode'> = true;
+  IsExact<AgentRuntimeKind, 'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core' | 'opencode' | 'qoder-agent-sdk'> = true;
 const snapshotRuntimeKindMatchesProviderManager:
   IsExact<NonNullable<SessionStateSnapshot['agentRuntimeKind']>, AgentRuntimeKind> = true;
 
@@ -102,8 +103,9 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       'openai-agents-sdk',
       'pi-agent-core',
       'opencode',
+      'qoder-agent-sdk',
     ];
-    expect(publicRuntimeKinds).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core', 'opencode']);
+    expect(publicRuntimeKinds).toEqual(['claude-agent-sdk', 'openai-agents-sdk', 'pi-agent-core', 'opencode', 'qoder-agent-sdk']);
   });
 
   it('documents product state separately from current engine-local fields', () => {
@@ -379,6 +381,72 @@ describe('SessionStateSnapshot runtime state inventory', () => {
         projectDir: '/data/opencode/session/project',
         homeDir: '/data/opencode/session/home',
         configDir: '/data/opencode/session/config',
+      },
+    });
+  });
+
+  it('reads canonical Qoder opaque engine states', () => {
+    const qoderSnapshot: SessionStateSnapshot = {
+      version: 1,
+      snapshotTimestamp: 1,
+      sessionId: 'session-qoder',
+      traceId: 'trace-qoder',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      engineState: {
+        kind: 'qoder-agent-sdk',
+        provider: {
+          providerId: 'provider-qoder',
+          providerSnapshotHash: 'hash-qoder',
+        },
+        qoder: {
+          opaque: {
+            version: 1,
+            sdkSessionId: 'ses-qoder-123',
+          },
+        },
+      },
+      runSequence: 0,
+      conversationOrdinal: 0,
+    };
+
+    expect(getQoderSnapshotEngineState(qoderSnapshot)).toEqual({
+      opaque: {
+        version: 1,
+        sdkSessionId: 'ses-qoder-123',
+      },
+    });
+
+    const degradedSnapshot: SessionStateSnapshot = {
+      ...qoderSnapshot,
+      engineState: {
+        kind: 'qoder-agent-sdk',
+        provider: {
+          providerId: 'provider-qoder',
+          providerSnapshotHash: 'hash-qoder',
+        },
+        qoder: {
+          opaque: {
+            version: 1,
+            degradedReason: 'state_unavailable',
+          },
+        },
+      },
+    };
+
+    expect(getQoderSnapshotEngineState(degradedSnapshot)).toEqual({
+      opaque: {
+        version: 1,
+        degradedReason: 'state_unavailable',
       },
     });
   });
