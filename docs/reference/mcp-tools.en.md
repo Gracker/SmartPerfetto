@@ -74,7 +74,7 @@ Knowledge and memory support the investigation; they must not override current
 trace evidence. The built-in `android_internals_pack` pins a signed version and
 fingerprint. Private `android_internals_wiki` calls recheck scope, rights,
 provider consent, and the active generation. The model can read budgeted,
-redacted hits, while Claude, OpenAI, Pi, and OpenCode SSE/log events retain only
+redacted hits, while Claude, OpenAI, Pi, OpenCode, and Qoder SSE/log events retain only
 versioned citations, hashes, lengths, licenses, attribution, and trust
 sidecars. See [Android Internals Knowledge Pack And Private Knowledge](../getting-started/android-internals-knowledge.en.md).
 

@@ -1,6 +1,12 @@
 // backend/src/services/providerManager/__tests__/connectionTester.test.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+const mockRequestProviderEndpoint = jest.fn();
+
+jest.mock('../providerEndpointRequest', () => ({
+  requestProviderEndpoint: (...args: unknown[]) => mockRequestProviderEndpoint(...args),
+}));
+
 import { testProviderConnection } from '../connectionTester';
 import type { ProviderConfig } from '../types';
 
@@ -12,8 +18,21 @@ describe('Provider connection tester', () => {
     'PROVIDER_TEST_RESPONSE_BODY_TIMEOUT_MS',
   ];
 
+  beforeEach(() => {
+    mockRequestProviderEndpoint.mockImplementation(async (url: string, init: RequestInit) => {
+      const response = await globalThis.fetch(url, init);
+      return {
+        ok: response.ok,
+        status: response.status,
+        text: () => response.text(),
+        cancelBody: () => response.body?.cancel(),
+      };
+    });
+  });
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    mockRequestProviderEndpoint.mockReset();
     for (const key of envKeys) delete process.env[key];
   });
 
@@ -295,6 +314,28 @@ describe('Provider connection tester', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('OpenCode model JSON is invalid');
   });
+
+  it('validates custom Qoder providers locally without an Anthropic network probe', async () => {
+    globalThis.fetch = jest.fn() as any;
+
+    const result = await testProviderConnection(customQoderProvider());
+
+    expect(result).toMatchObject({
+      success: true,
+      modelVerified: false,
+      error: 'Qoder provider configuration is syntactically valid; SDK and authentication smoke checks run during analysis.',
+    });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects a custom Qoder provider without a PAT or CLI path', async () => {
+    const result = await testProviderConnection(customQoderProvider({
+      connection: { agentRuntime: 'qoder-agent-sdk' },
+    }));
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe('Qoder Agent SDK requires a Personal Access Token or Qoder CLI path');
+  });
 });
 
 function openAIProvider(): ProviderConfig {
@@ -399,6 +440,27 @@ function customOpenCodeProvider(overrides: Partial<ProviderConfig> = {}): Provid
     connection: {
       agentRuntime: 'opencode',
       openCodeModelJson: '{"providerID":"smartperfetto","modelID":"opencode-test"}',
+    },
+    ...overrides,
+  };
+}
+
+function customQoderProvider(overrides: Partial<ProviderConfig> = {}): ProviderConfig {
+  return {
+    id: 'custom-qoder-provider-test',
+    name: 'Custom Qoder Provider Test',
+    category: 'custom',
+    type: 'custom',
+    isActive: false,
+    createdAt: '2026-07-22T00:00:00.000Z',
+    updatedAt: '2026-07-22T00:00:00.000Z',
+    models: {
+      primary: 'ultimate',
+      light: 'ultimate',
+    },
+    connection: {
+      agentRuntime: 'qoder-agent-sdk',
+      qoderAccessToken: 'qoder-test-token',
     },
     ...overrides,
   };

@@ -55,7 +55,7 @@ for the upstream Skill installation and release model.
 
 SmartPerfetto uses exactly one active model-provider source at runtime. Pick one path and avoid mixing them during first setup:
 
-- You do not need to configure Claude Code, OpenAI Agents SDK, Pi Agent Core, and OpenCode all at once. Claude Code is the local-auth / Claude-compatible runtime path; OpenAI Agents SDK is the OpenAI / OpenAI-compatible runtime path; Pi Agent Core and OpenCode are custom-provider runtime paths. Pick one for first setup.
+- You do not need to configure Claude Code, OpenAI Agents SDK, Pi Agent Core, OpenCode, and Qoder Agent SDK all at once. Claude Code is the local-auth / Claude-compatible runtime path; OpenAI Agents SDK is the OpenAI / OpenAI-compatible runtime path; Pi Agent Core, OpenCode, and Qoder are custom-provider runtime paths. Pick one for first setup.
 - UI Provider Manager: easiest for portable packages, Docker, and new users. Start SmartPerfetto, open **AI Assistant Settings → Providers**, add a provider, paste the **Provider API Key**, verify the Base URL/runtime, save it, test it, then activate it. Saving a provider is not enough; the active provider is what takes effect.
 - Env file: best for scripted or server deployments. Local source runs read `backend/.env`; Docker reads the repository-root `.env`.
 - Local Claude Code config: best for source runs when `claude` already works in the same terminal. No SmartPerfetto `.env` is required.
@@ -72,7 +72,7 @@ Step 1: Choose your run mode and credential file.
 | Source Docker build | Provider Manager UI or repository-root `.env` | `docker-compose.yml` reads root `.env`; same credential file as the Docker Hub path |
 | Portable package | Provider Manager UI first | Use the package UI at `http://localhost:10000`; only use the package env file if you need scripted setup |
 
-Step 2: Choose the runtime and provider settings. Claude Agent SDK is for Claude Code / Anthropic-compatible providers; OpenAI Agents SDK is for OpenAI / OpenAI-compatible providers. Pi Agent Core and OpenCode are optional custom-provider runtimes that reuse the same SmartPerfetto analysis contract. For first setup, keep only one credential family enabled. In advanced deployments where multiple credential families are present, `SMARTPERFETTO_AGENT_RUNTIME` or the active UI provider decides; otherwise the default is Claude Agent SDK.
+Step 2: Choose the runtime and provider settings. Claude Agent SDK is for Claude Code / Anthropic-compatible providers; OpenAI Agents SDK is for OpenAI / OpenAI-compatible providers. Pi Agent Core, OpenCode, and Qoder Agent SDK are optional custom-provider runtimes that reuse the same SmartPerfetto analysis contract. Qoder is opt-in for source/npm installs because its SDK and CLI have separate terms and are not installed by default. For first setup, keep only one credential family enabled. In advanced deployments where multiple credential families are present, `SMARTPERFETTO_AGENT_RUNTIME` or the active UI provider decides; otherwise the default is Claude Agent SDK.
 
 For direct Anthropic API access, set:
 
@@ -89,7 +89,7 @@ CLAUDE_MODEL=deepseek-v4-pro
 CLAUDE_LIGHT_MODEL=deepseek-v4-flash
 ```
 
-OpenAI / OpenAI-compatible providers use the OpenAI Agents SDK runtime; Ollama and other OpenAI-compatible endpoints use `OPENAI_AGENTS_PROTOCOL=chat_completions`. In Provider Manager, dual-surface providers such as DeepSeek, Qwen, Kimi, MiMo, and TokenHub show both Claude-compatible and OpenAI-compatible Base URLs. The selected SDK runtime decides which side is used. Pi Agent Core and OpenCode are exposed only through custom providers or explicit env configuration; neither path reads local `.pi` / OpenCode project config or CLI login state. Full provider-specific fields, known regional URL variants, model IDs, and troubleshooting notes are in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md) and the env templates.
+OpenAI / OpenAI-compatible providers use the OpenAI Agents SDK runtime; Ollama and other OpenAI-compatible endpoints use `OPENAI_AGENTS_PROTOCOL=chat_completions`. In Provider Manager, dual-surface providers such as DeepSeek, Qwen, Kimi, MiMo, and TokenHub show both Claude-compatible and OpenAI-compatible Base URLs. The selected SDK runtime decides which side is used. Pi Agent Core, OpenCode, and Qoder are exposed only through custom providers or explicit env configuration. Pi/OpenCode do not read personal project/CLI state; Qoder can use local `qodercli` auth only after its optional SDK is explicitly installed. Full provider-specific fields, known regional URL variants, model IDs, and troubleshooting notes are in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md) and the env templates.
 
 Step 3 (optional): Set the output language. Web UI users can choose **AI Assistant Settings → Connection → Interface and analysis language** and select **Auto (browser language)**, **简体中文**, or **English**. The saved preference applies to the interface, built-in Skill presentation, streamed analysis, and new reports. Changing it retires the current backend agent session so one session does not mix languages.
 
@@ -117,7 +117,7 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 - Ships a signed Android Internals Knowledge Pack for bounded background retrieval, while keeping private source/knowledge access explicitly authorized and separate from trace evidence.
 - Supports deterministic multi-trace Skill batches and side-effect-free Android capture proposals before explicit device recording.
 - Uses a TypeScript backend to run agent workflows, query `trace_processor_shell`, invoke YAML analysis skills, and stream results to the browser.
-- Supports Anthropic directly, Claude/Anthropic-compatible providers, OpenAI/OpenAI-compatible providers, Pi Agent Core custom models, and OpenCode custom models through the matching backend runtime.
+- Supports Anthropic directly, Claude/Anthropic-compatible providers, OpenAI/OpenAI-compatible providers, Pi Agent Core custom models, OpenCode custom models, and opt-in Qoder Agent SDK profiles through the matching backend runtime.
 - Ships with registry-discovered YAML skill/config files and scene strategies for Android performance investigation.
 
 ## Feature Overview
@@ -130,7 +130,7 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 |------|------------|
 | Frontend | Forked Perfetto UI with the `com.smartperfetto.AIAssistant` plugin |
 | Backend | Node.js 24 LTS, TypeScript strict mode, Express |
-| Agent runtime | Runtime selector, Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, OpenCode, MCP tools, scene strategies, verifier, SSE streaming |
+| Agent runtime | Runtime selector, Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, OpenCode, Qoder Agent SDK, MCP tools, scene strategies, verifier, SSE streaming |
 | Trace engine | Perfetto `trace_processor_shell` over HTTP RPC |
 | Analysis logic | YAML skills under `backend/skills/` plus Markdown strategies under `backend/strategies/` |
 | Storage | Local uploads, session logs, reports, and runtime learning files |
@@ -238,7 +238,7 @@ On macOS, if `trace_processor_shell` fails the `--version` smoke test, macOS say
 
 Step 1: Download the source. Run `git clone https://github.com/Gracker/SmartPerfetto.git`, then run `cd SmartPerfetto`.
 
-Step 2: Choose the model credential source. If Claude Code already works in the same terminal, run `claude` to verify it and do not create `.env`. If you want an explicit API key or compatible proxy, run `cp backend/.env.example backend/.env`, then edit `backend/.env`: uncomment `ANTHROPIC_API_KEY` for direct Anthropic, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the custom Pi Agent Core / OpenCode sections.
+Step 2: Choose the model credential source. If Claude Code already works in the same terminal, run `claude` to verify it and do not create `.env`. If you want an explicit API key or compatible proxy, run `cp backend/.env.example backend/.env`, then edit `backend/.env`: uncomment `ANTHROPIC_API_KEY` for direct Anthropic, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the custom Pi Agent Core / OpenCode sections. For Qoder, first review its terms, explicitly install `@qoder-ai/qoder-agent-sdk`, then use the Qoder block with a local `qodercli` login or PAT.
 
 Step 3: Start services. Run `./start.sh`. This script starts both the backend at `http://localhost:3000` and the repository's pre-built Perfetto UI at `http://localhost:10000`; regular use does not require initializing the `perfetto/` submodule or compiling Perfetto UI from source. Use `SMARTPERFETTO_BACKEND_PORT` and `SMARTPERFETTO_FRONTEND_PORT` when those defaults conflict with other local services.
 
@@ -269,9 +269,9 @@ After verifying your changes in the browser, Step 1: run `./scripts/update-front
 
 ## Runtime Settings
 
-The quick setup above covers where credentials live. Detailed provider setup, model IDs, regional Base URL variants, OpenAI-compatible runtime fields, Anthropic-compatible presets, Pi Agent Core/OpenCode custom runtime fields, proxy guidance, and troubleshooting live in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md). Use authenticated `GET /api/runtime-health` to confirm `aiEngine.runtime`, `aiEngine.credentialSource`, `aiEngine.providerMode`, and `aiEngine.diagnostics` after changing provider settings.
+The quick setup above covers where credentials live. Detailed provider setup, model IDs, regional Base URL variants, OpenAI-compatible runtime fields, Anthropic-compatible presets, Pi Agent Core/OpenCode/Qoder custom runtime fields, proxy guidance, and troubleshooting live in [docs/getting-started/configuration.en.md](docs/getting-started/configuration.en.md). Use authenticated `GET /api/runtime-health` to confirm `aiEngine.runtime`, `aiEngine.credentialSource`, `aiEngine.providerMode`, and `aiEngine.diagnostics` after changing provider settings.
 
-Claude Code local auth/config is only available to local source runs, not Docker. Separate tools such as Codex CLI, Gemini CLI, and OpenCode manage their own configuration files and login state; SmartPerfetto does not automatically read those credentials. Even the `opencode` runtime uses explicit Provider Manager/env model configuration and an isolated server/project boundary. The frontend settings dialog's `Connection` tab stores the backend URL and an optional advanced `SMARTPERFETTO_API_KEY` access token only when the backend is protected; the `Providers` tab can write model-provider profiles to the backend Provider Manager.
+Claude Code local auth/config is only available to local source runs, not Docker. Separate tools such as Codex CLI, Gemini CLI, and OpenCode manage their own configuration files and login state; SmartPerfetto does not automatically read those credentials. Even the `opencode` runtime uses explicit Provider Manager/env model configuration and an isolated server/project boundary. Qoder is the explicit exception: after its optional SDK is installed, the `qoder-agent-sdk` runtime can use a local `qodercli` login or an explicit PAT. The frontend settings dialog's `Connection` tab stores the backend URL and an optional advanced `SMARTPERFETTO_API_KEY` access token only when the backend is protected; the `Providers` tab can write model-provider profiles to the backend Provider Manager.
 
 ### Output Language
 
@@ -385,7 +385,7 @@ Frontend (Perfetto UI @ :10000)
   └─ SmartPerfetto AI Assistant plugin
        └─ SSE / HTTP
 Backend (Express @ :3000)
-  ├─ Runtime selector: Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, or OpenCode
+  ├─ Runtime selector: Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, OpenCode, or Qoder
   ├─ Agent orchestration: scene routing, prompts, MCP tools, verifier
   ├─ Shared comparison evidence/report contracts for Web UI and CLI
   ├─ Skill engine: YAML analysis pipelines
@@ -398,7 +398,7 @@ Repository layout:
 ```text
 SmartPerfetto/
 ├── backend/
-│   ├── src/agentRuntime/   # SDK/server runtime selection, registry, Pi/OpenCode adapters
+│   ├── src/agentRuntime/   # SDK/server runtime selection and runtime adapters
 │   ├── src/agentv3/        # Claude Agent SDK orchestration
 │   ├── src/agentOpenAI/    # OpenAI Agents SDK orchestration
 │   ├── src/services/       # Trace processor, skills, reports, sessions

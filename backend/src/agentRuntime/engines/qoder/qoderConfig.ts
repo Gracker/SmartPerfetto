@@ -19,6 +19,15 @@ export const QODER_WORKER_RUNTIME_PATH_ENV = 'QODER_WORKER_RUNTIME_PATH';
 
 type EnvLike = Record<string, string | undefined>;
 
+function qoderSdkInstalled(): boolean {
+  try {
+    require.resolve('@qoder-ai/qoder-agent-sdk');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function truthyEnv(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
@@ -55,6 +64,7 @@ export function getQoderRuntimeDiagnostics(
   return {
     runtime: kind,
     configured: Boolean(token) || Boolean(cliPath),
+    sdkInstalled: qoderSdkInstalled(),
     model: model || undefined,
     providerMode: 'qoder',
     modelConfigured: Boolean(model),

@@ -33,7 +33,7 @@
         "tests/**/*.ts"
       ],
       "project": ["package.json", "src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"],
-      "ignoreDependencies": ["@earendil-works/pi-agent-core", "jest", "tsx"],
+      "ignoreDependencies": ["@earendil-works/pi-agent-core", "@qoder-ai/qoder-agent-sdk", "jest", "tsx"],
       "ignoreBinaries": ["jest", "pgrep", "ps", "secret-tool", "sqlite3", "tsx"],
       "ignoreUnresolved": ["/usr/bin/security"]
     }

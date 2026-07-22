@@ -13,6 +13,7 @@ or environment.
 | `openai-agents-sdk` | OpenAI Agents SDK | OpenAI, Ollama, OpenAI-compatible gateways | Native OpenAI runtime; adapts the same SmartPerfetto tools as function tools |
 | `pi-agent-core` | Pi Agent Core | custom only | Optional public runtime; real model configurations reuse the shared SmartPerfetto prompt/tool/report pipeline, while fake-stream remains smoke-only; does not enable `.pi` discovery, package extensions, shell tools, or file tools |
 | `opencode` | OpenCode server / SDK | custom only | Optional public runtime; uses explicit OpenAI-compatible or OpenCode model configuration, request-scoped SmartPerfetto MCP tools, and a hardened isolated OpenCode server; does not read local OpenCode login/project state or enable built-in file/shell/web/edit tools |
+| `qoder-agent-sdk` | Qoder Agent SDK / `qodercli` | custom only or env | Optional public runtime; SDK is an opt-in optional peer, uses a local Qoder CLI login or PAT, exposes request-scoped SmartPerfetto MCP tools, and isolates private-knowledge streams/sessions/snapshots |
 
 ## Entry Points
 
@@ -22,7 +23,7 @@ HTTP analysis:
 POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> createAgentOrchestrator()
-  -> ClaudeRuntime.analyze() | OpenAIRuntime.analyze() | PiAgentCoreRuntime.analyze() | OpenCodeRuntime.analyze()
+  -> ClaudeRuntime.analyze() | OpenAIRuntime.analyze() | PiAgentCoreRuntime.analyze() | OpenCodeRuntime.analyze() | QoderRuntime.analyze()
 ```
 
 Resume and scene reconstruction use the same runtime factory:
@@ -47,7 +48,7 @@ Priority, highest first:
 4. Default `claude-agent-sdk`.
 
 `SMARTPERFETTO_AGENT_RUNTIME` only accepts `claude-agent-sdk`,
-`openai-agents-sdk`, `pi-agent-core`, or `opencode`. Provider names such as
+`openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`. Provider names such as
 `deepseek` or `openai` are not valid runtime values. Provider Manager active profiles
 override env fallback, and a resumed session keeps the provider/runtime it was
 created with.
@@ -59,7 +60,7 @@ Provider mapping:
 | `anthropic` / `bedrock` / `vertex` / `deepseek` | `claude-agent-sdk` | Claude/Anthropic |
 | `openai` | `openai-agents-sdk` | OpenAI Responses |
 | `ollama` | `openai-agents-sdk` | OpenAI-compatible Chat Completions |
-| `custom` | selected by `connection.agentRuntime` or `connection.openaiProtocol` | explicit configuration; Pi Agent Core and OpenCode are custom-only |
+| `custom` | selected by `connection.agentRuntime` or `connection.openaiProtocol` | explicit configuration; Pi Agent Core, OpenCode, and Qoder are custom-only |
 
 Provider connection fields map to runtime-specific env:
 
@@ -69,6 +70,7 @@ Provider connection fields map to runtime-specific env:
 | `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` | `openai-agents-sdk` | `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_AGENTS_PROTOCOL` |
 | `piAgentCoreModulePath` / `piAgentCoreModelJson` / `piAgentCoreSystemPrompt` | `pi-agent-core` | `SMARTPERFETTO_PI_AGENT_CORE_MODULE_PATH` / `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` / `SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT` |
 | `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
+| `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 
 ## Tool Layer
 
@@ -86,7 +88,9 @@ finalization/claim-verification/report pipeline without turning SmartPerfetto
 into a Pi coding-agent harness. OpenCode runs a hardened isolated server and
 bridges request-scoped SmartPerfetto tools through a per-analysis MCP bridge;
 its built-in project discovery, file, shell, web, and edit tools are disabled
-or denied. Runtime outputs normalize into the same SSE events,
+or denied. Qoder uses the SDK's in-process MCP bridge with built-in SDK tools
+disabled and projects every answer token through the shared private-output
+guard before SSE emission. Runtime outputs normalize into the same SSE events,
 `AnalysisResult`, and HTML report contract, although their SDK/server resume
 and streaming mechanics differ.
 
@@ -108,6 +112,12 @@ OpenAI-compatible `OPENAI_*` env/provider fields. SmartPerfetto does not reuse
 the user's OpenCode CLI login, config, or project extensions; rollback is
 switching the custom provider or `SMARTPERFETTO_AGENT_RUNTIME` back to
 `claude-agent-sdk` / `openai-agents-sdk`.
+
+The Qoder path is custom-only in Provider Manager and also supports an explicit
+env selection. The SDK is not installed by default; users must review its terms
+and opt in. Public sessions may resume by Qoder SDK session id. A run authorized
+for private codebase or external knowledge never resumes or stores that opaque
+provider session, and its intermediate state is excluded from durable snapshots.
 
 ## Final Result And Quality Artifacts
 
@@ -142,7 +152,7 @@ OpenAI history, the last response id, and reserved run state. Responses API can
 resume with `previousResponseId`; Chat Completions-compatible providers resume
 from full history.
 
-Pi Agent Core and OpenCode store runtime-specific opaque state only where the
+Pi Agent Core, OpenCode, and Qoder store runtime-specific opaque state only where the
 adapter supports it. They still preserve provider/runtime identity so resume,
 reports, and snapshots do not silently switch to another engine.
 
@@ -154,7 +164,7 @@ Raw trace comparison sessions must also persist `referenceTraceId`,
 `comparisonSource`, and `comparisonReportSection`. A comparison session cannot
 silently downgrade to single-trace mode or switch to a different reference
 trace. Claude/OpenAI SDK session keys must be read and written with the
-comparison identity, and Pi/OpenCode runtime state must preserve the same
+comparison identity, and Pi/OpenCode/Qoder runtime state must preserve the same
 provider/runtime identity.
 
 ## Platform Boundaries
@@ -164,6 +174,8 @@ provider/runtime identity.
   `frontend/`, and the pinned trace processor.
 - Docker does not read host Claude Code local auth; use Provider Manager or env
   provider configuration.
+- Qoder is absent from default Docker/portable/npm installs until the optional
+  SDK peer is explicitly installed after its terms are accepted.
 - Runtime/provider/session changes must be checked against Web UI, CLI, API,
   reports, Docker, and portable packages. See
   [`../../.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md).

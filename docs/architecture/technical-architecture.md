@@ -58,7 +58,7 @@ POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> 解析 workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
-  -> 选择 Claude / OpenAI / Pi / OpenCode runtime
+  -> 选择 Claude / OpenAI / Pi / OpenCode / Qoder runtime
   -> 通过共享 MCP registry 调用 SQL、Skill、知识和计划工具
   -> DataEnvelope + evidence/claim/identity sidecar
   -> final result normalization / report contract gate

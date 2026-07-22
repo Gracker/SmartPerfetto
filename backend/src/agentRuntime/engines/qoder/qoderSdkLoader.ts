@@ -22,7 +22,15 @@ export async function loadQoderSdkModule(
   env: EnvLike = process.env,
 ): Promise<QoderSdkModule> {
   const specifier = '@qoder-ai/qoder-agent-sdk';
-  const module = await importEsmModule(specifier) as Partial<QoderSdkModule>;
+  let module: Partial<QoderSdkModule>;
+  try {
+    module = await importEsmModule(specifier) as Partial<QoderSdkModule>;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Qoder Agent SDK is not installed. Review its terms, then explicitly install ${specifier}. ${detail}`,
+    );
+  }
   if (typeof module.query !== 'function') {
     throw new Error('Qoder Agent SDK module does not export query()');
   }

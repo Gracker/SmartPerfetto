@@ -681,7 +681,7 @@ export interface SessionFieldsForSnapshot {
 /** Third-party opaque transcripts are not durable for private source sessions. */
 export function sessionFieldsUsePrivateKnowledge(fields: SessionFieldsForSnapshot): boolean {
   return Boolean(
-    (fields.codeAwareMode && fields.codeAwareMode !== 'off' && fields.codebaseIds?.length) ||
+    fields.codebaseIds?.length ||
     fields.knowledgeSourceIds?.length,
   );
 }

@@ -53,6 +53,9 @@ async function runTest(provider: ProviderConfig): Promise<Omit<TestResult, 'late
   if (runtime === 'opencode') {
     return testOpenCode(provider);
   }
+  if (runtime === 'qoder-agent-sdk') {
+    return testQoder(provider);
+  }
   if (runtime === 'openai-agents-sdk') {
     return testOpenAICompatible(provider);
   }
@@ -124,6 +127,20 @@ function testOpenCode(provider: ProviderConfig): Omit<TestResult, 'latencyMs'> {
     success: true,
     modelVerified: false,
     error: 'OpenCode will use the OpenAI-compatible provider fields through its server runtime.',
+  };
+}
+
+function testQoder(provider: ProviderConfig): Omit<TestResult, 'latencyMs'> {
+  if (provider.type !== 'custom') {
+    return { success: false, error: 'Qoder Agent SDK runtime is only supported for custom providers' };
+  }
+  if (!provider.connection.qoderAccessToken?.trim() && !provider.connection.qoderCliPath?.trim()) {
+    return { success: false, error: 'Qoder Agent SDK requires a Personal Access Token or Qoder CLI path' };
+  }
+  return {
+    success: true,
+    modelVerified: false,
+    error: 'Qoder provider configuration is syntactically valid; SDK and authentication smoke checks run during analysis.',
   };
 }
 

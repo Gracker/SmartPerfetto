@@ -55,7 +55,7 @@ Provider Base URL 注意事项：预置的 Claude/Anthropic-compatible 和 OpenA
 
 SmartPerfetto 运行时只会使用一个 active 的模型 provider 来源。第一次配置时先选一种路径，不要混着配：
 
-- Claude Code、OpenAI Agents SDK、Pi Agent Core 和 OpenCode 不需要都配置。Claude Code 是本机认证 / Claude-compatible runtime 路径；OpenAI Agents SDK 是 OpenAI / OpenAI-compatible runtime 路径；Pi Agent Core 和 OpenCode 是 custom-provider runtime 路径。初次使用只选其中一个。
+- Claude Code、OpenAI Agents SDK、Pi Agent Core、OpenCode 和 Qoder Agent SDK 不需要都配置。Claude Code 是本机认证 / Claude-compatible runtime 路径；OpenAI Agents SDK 是 OpenAI / OpenAI-compatible runtime 路径；Pi Agent Core、OpenCode 和 Qoder 是 custom-provider runtime 路径。初次使用只选其中一个。
 - UI Provider Manager：最适合免安装包、Docker 和新用户。启动 SmartPerfetto 后打开 **AI Assistant Settings → Providers**，新增 provider，填写 **Provider API Key**，核对 Base URL/runtime，保存、测试，再激活。只保存 provider 不会让它生效，active provider 才会参与分析。
 - env 文件：适合脚本化或服务器部署。本地源码运行读 `backend/.env`；Docker 统一读仓库根目录 `.env`。
 - 本机 Claude Code 配置：适合同一终端里 `claude` 已经可用的源码运行场景，不需要 SmartPerfetto `.env`。
@@ -72,7 +72,7 @@ SmartPerfetto 运行时只会使用一个 active 的模型 provider 来源。第
 | 从源码构建 Docker 镜像 | Provider Manager UI 或仓库根目录 `.env` | `docker-compose.yml` 会读取根目录 `.env`；和 Docker Hub 路径保持一致 |
 | 免安装包 | 优先用 Provider Manager UI | 打开包启动后的 `http://localhost:10000` 配置；只有需要脚本化部署时才改包的 env 文件 |
 
-步骤 2：选择 runtime 并填写 provider。Claude Agent SDK 用于 Claude Code / Anthropic-compatible provider，OpenAI Agents SDK 用于 OpenAI / OpenAI-compatible provider。Pi Agent Core 和 OpenCode 是可选 custom-provider runtime，复用同一套 SmartPerfetto 分析契约。首次配置只保留一类凭证；如果后续高级部署里多类凭证同时存在，由 `SMARTPERFETTO_AGENT_RUNTIME` 或前端 active provider 决定；都没有显式选择时默认走 Claude Agent SDK。
+步骤 2：选择 runtime 并填写 provider。Claude Agent SDK 用于 Claude Code / Anthropic-compatible provider，OpenAI Agents SDK 用于 OpenAI / OpenAI-compatible provider。Pi Agent Core、OpenCode 和 Qoder Agent SDK 是可选 custom-provider runtime，复用同一套 SmartPerfetto 分析契约。Qoder SDK/CLI 有独立条款，因此源码/npm 安装下也必须显式选择安装，默认不会带入。首次配置只保留一类凭证；如果后续高级部署里多类凭证同时存在，由 `SMARTPERFETTO_AGENT_RUNTIME` 或前端 active provider 决定；都没有显式选择时默认走 Claude Agent SDK。
 
 直连 Anthropic API 的最小配置是：
 
@@ -89,7 +89,7 @@ CLAUDE_MODEL=deepseek-v4-pro
 CLAUDE_LIGHT_MODEL=deepseek-v4-flash
 ```
 
-OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK runtime；Ollama 或其他 OpenAI-compatible endpoint 使用 `OPENAI_AGENTS_PROTOCOL=chat_completions`。前端 Provider Manager 对 DeepSeek、Qwen、Kimi、MiMo、TokenHub 这类双端点 provider 会同时展示 Claude-compatible 和 OpenAI-compatible Base URL，当前 SDK runtime 决定实际使用哪一侧。Pi Agent Core 和 OpenCode 只通过 custom provider 或显式 env 配置暴露；它们不会读取本地 `.pi` / OpenCode project config 或 CLI 登录态。完整 provider 字段、已知地区 URL 变体、模型 ID 和排障说明见 [docs/getting-started/configuration.md](docs/getting-started/configuration.md) 和 env 模板。
+OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK runtime；Ollama 或其他 OpenAI-compatible endpoint 使用 `OPENAI_AGENTS_PROTOCOL=chat_completions`。前端 Provider Manager 对 DeepSeek、Qwen、Kimi、MiMo、TokenHub 这类双端点 provider 会同时展示 Claude-compatible 和 OpenAI-compatible Base URL，当前 SDK runtime 决定实际使用哪一侧。Pi Agent Core、OpenCode 和 Qoder 只通过 custom provider 或显式 env 配置暴露。Pi/OpenCode 不读取个人 project/CLI state；Qoder 只有在显式安装可选 SDK 后才会使用本机 `qodercli` 登录态。完整 provider 字段、已知地区 URL 变体、模型 ID 和排障说明见 [docs/getting-started/configuration.md](docs/getting-started/configuration.md) 和 env 模板。
 
 步骤 3（可选）：设置输出语言。Web UI 用户可以进入 **AI Assistant 设置 → 连接 → 界面与分析语言**，选择**自动（跟随浏览器）**、**简体中文**或 **English**。保存后的偏好同时作用于界面、内置 Skill 呈现、流式分析和新报告；切换语言会退役当前后端 agent 会话，避免同一会话混用语言。
 
@@ -117,7 +117,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 - 随产品分发签名 Android Internals Knowledge Pack，用于预算受控的背景检索；私有源码/知识仍需显式授权，并与 trace 证据分离。
 - 支持确定性多 Trace Skill batch，以及在显式连接设备抓取前生成无副作用 Android 采集建议。
 - 通过 TypeScript 后端编排 Agent 流程、查询 `trace_processor_shell`、调用 YAML Skill，并把结果实时流式传给浏览器。
-- 支持 Anthropic 直连、Claude/Anthropic-compatible provider、通过 OpenAI Agents SDK 接入 OpenAI/OpenAI-compatible provider，以及 Pi Agent Core / OpenCode custom model。
+- 支持 Anthropic 直连、Claude/Anthropic-compatible provider、通过 OpenAI Agents SDK 接入 OpenAI/OpenAI-compatible provider，以及 Pi Agent Core / OpenCode custom model 和显式启用的 Qoder Agent SDK profile。
 - 内置通过 registry/file-tree 发现的 YAML Skill/配置文件和多场景分析策略，用于 Android 性能排查。
 
 ## 功能总览
@@ -130,7 +130,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 |------|------|
 | 前端 | Fork 后的 Perfetto UI，内置 `com.smartperfetto.AIAssistant` 插件 |
 | 后端 | Node.js 24 LTS、TypeScript strict mode、Express |
-| Agent 运行时 | Runtime selector、Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core、OpenCode、MCP 工具、场景策略、Verifier、SSE 流式输出 |
+| Agent 运行时 | Runtime selector、Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core、OpenCode、Qoder Agent SDK、MCP 工具、场景策略、Verifier、SSE 流式输出 |
 | Trace 引擎 | Perfetto `trace_processor_shell`，通过 HTTP RPC 调用 |
 | 分析逻辑 | `backend/skills/` 下的 YAML Skill，`backend/strategies/` 下的 Markdown 策略 |
 | 存储 | 本地上传文件、Session 日志、报告、运行时学习文件 |
@@ -233,7 +233,7 @@ macOS 用户如果看到 `trace_processor_shell failed the --version smoke test`
 
 步骤 1：下载源码。运行 `git clone https://github.com/Gracker/SmartPerfetto.git`，然后运行 `cd SmartPerfetto`。
 
-步骤 2：选择模型凭证来源。如果同一终端里的 Claude Code 已经能用，先运行 `claude` 验证，不需要创建 `.env`。如果要显式配置 API key 或兼容代理，运行 `cp backend/.env.example backend/.env`，然后编辑 `backend/.env`：Anthropic 直连解注释 `ANTHROPIC_API_KEY`，第三方 Claude Code / Anthropic 兼容 provider 解注释一个 provider block，OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK 相关字段，或使用 Pi Agent Core / OpenCode custom 配置段。
+步骤 2：选择模型凭证来源。如果同一终端里的 Claude Code 已经能用，先运行 `claude` 验证，不需要创建 `.env`。如果要显式配置 API key 或兼容代理，运行 `cp backend/.env.example backend/.env`，然后编辑 `backend/.env`：Anthropic 直连解注释 `ANTHROPIC_API_KEY`，第三方 Claude Code / Anthropic 兼容 provider 解注释一个 provider block，OpenAI / OpenAI-compatible provider 使用 OpenAI Agents SDK 相关字段，或使用 Pi Agent Core / OpenCode custom 配置段。Qoder 需要先审阅其条款并显式安装 `@qoder-ai/qoder-agent-sdk`，再通过 Qoder 配置段使用本机 `qodercli` 登录态或 PAT。
 
 步骤 3：启动服务。运行 `./start.sh`。这个脚本会同时启动后端 `http://localhost:3000` 和仓库内置的预构建 Perfetto UI `http://localhost:10000`；普通使用不需要初始化 `perfetto/` submodule，也不需要等待 Perfetto UI 从源码编译。如果默认端口和本机其他服务冲突，用 `SMARTPERFETTO_BACKEND_PORT` 和 `SMARTPERFETTO_FRONTEND_PORT` 覆盖。
 
@@ -264,9 +264,9 @@ Linux 本地运行时，如果分析失败并报 `Claude Code native binary not 
 
 ## Runtime 设置
 
-前面的快速配置已经说明凭证写在哪里。详细 provider 接入方式、模型 ID、地区 Base URL 变体、OpenAI-compatible runtime 字段、Anthropic-compatible preset、Pi Agent Core/OpenCode custom runtime 字段、代理建议和排障说明都在 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)。修改 provider 配置后，可以用带鉴权的 `GET /api/runtime-health` 查看 `aiEngine.runtime`、`aiEngine.credentialSource`、`aiEngine.providerMode` 和 `aiEngine.diagnostics`。
+前面的快速配置已经说明凭证写在哪里。详细 provider 接入方式、模型 ID、地区 Base URL 变体、OpenAI-compatible runtime 字段、Anthropic-compatible preset、Pi Agent Core/OpenCode/Qoder custom runtime 字段、代理建议和排障说明都在 [docs/getting-started/configuration.md](docs/getting-started/configuration.md)。修改 provider 配置后，可以用带鉴权的 `GET /api/runtime-health` 查看 `aiEngine.runtime`、`aiEngine.credentialSource`、`aiEngine.providerMode` 和 `aiEngine.diagnostics`。
 
-Claude Code 本地认证/配置只适用于本地源码运行，不适用于 Docker。Codex CLI、Gemini CLI、OpenCode 等其他工具管理的是各自独立的配置和登录态；SmartPerfetto 不会自动读取这些凭证。即使选择 `opencode` runtime，也使用显式 Provider Manager/env model 配置，并运行在隔离 server/project 边界内。前端设置弹窗的 `Connection` 页保存后端地址；只有后端开启保护时，才需要在高级项里填写可选的 `SMARTPERFETTO_API_KEY` access token。`Providers` 页可以把模型 provider profile 写入后端 Provider Manager。
+Claude Code 本地认证/配置只适用于本地源码运行，不适用于 Docker。Codex CLI、Gemini CLI、OpenCode 等其他工具管理的是各自独立的配置和登录态；SmartPerfetto 不会自动读取这些凭证。即使选择 `opencode` runtime，也使用显式 Provider Manager/env model 配置，并运行在隔离 server/project 边界内。Qoder 是显式例外：安装可选 SDK 后，`qoder-agent-sdk` 可使用本机 `qodercli` 登录态或显式 PAT。前端设置弹窗的 `Connection` 页保存后端地址；只有后端开启保护时，才需要在高级项里填写可选的 `SMARTPERFETTO_API_KEY` access token。`Providers` 页可以把模型 provider profile 写入后端 Provider Manager。
 
 ### 输出语言
 
@@ -378,7 +378,7 @@ Frontend (Perfetto UI @ :10000)
   └─ SmartPerfetto AI Assistant plugin
        └─ SSE / HTTP
 Backend (Express @ :3000)
-  ├─ Runtime selector: Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core 或 OpenCode
+  ├─ Runtime selector: Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core、OpenCode 或 Qoder
   ├─ Agent 编排: 场景路由、Prompt、MCP 工具、Verifier
   ├─ Web UI 和 CLI 共用的对比证据/报告合约
   ├─ Skill engine: YAML 分析管线
@@ -391,7 +391,7 @@ Backend (Express @ :3000)
 ```text
 SmartPerfetto/
 ├── backend/
-│   ├── src/agentRuntime/   # SDK/server runtime 选择、registry、Pi/OpenCode adapter
+│   ├── src/agentRuntime/   # SDK/server runtime 选择与各 runtime adapter
 │   ├── src/agentv3/        # Claude Agent SDK 编排
 │   ├── src/agentOpenAI/    # OpenAI Agents SDK 编排
 │   ├── src/services/       # Trace processor、Skill、Report、Session 服务

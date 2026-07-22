@@ -11,6 +11,7 @@ import type {
 import type { Finding, StreamingUpdate } from '../../../agent/types';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
+import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
@@ -42,6 +43,8 @@ import type {
 import {
   createQoderSnapshotEngineState,
   getQoderSnapshotEngineState,
+  projectSessionFieldsForDurableSnapshot,
+  sessionFieldsUsePrivateKnowledge,
   type QoderOpaqueState,
   type SessionFieldsForSnapshot,
   type SessionStateSnapshot,
@@ -51,17 +54,26 @@ import {
   hasDeliverableFinalReportHeading,
 } from '../../../services/finalResultQualityGate';
 import { verifyConclusion } from '../claude/claudeVerifier';
-import { sanitizeCodeAwareText } from '../../../services/security/codeAwareOutputRegistry';
+import {
+  createCodeAwareStreamingTextProjection,
+  sanitizeCodeAwareText,
+} from '../../../services/security/codeAwareOutputRegistry';
+import { analysisContextUsesPrivateKnowledge } from '../../../services/resolvedAnalysisContext';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
+import { createAnalysisRunSpec } from '../../analysisRunSpec';
 import {
   createRuntimeSkillNotesBudget,
   isTruncationVerificationIssue,
   repairTruncatedFinalReport,
+  toProtocolHypothesis,
 } from '../../runtimeCommon';
 import { knowledgeScopeFromAnalysisOptions } from '../../runtimeScopes';
-import { buildRuntimeTracePairComparisonContext } from '../../runtimePromptContext';
-import { buildCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
+import {
+  buildQuickConversationContext,
+  buildRuntimeTracePairComparisonContext,
+} from '../../runtimePromptContext';
+import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
 import { isTraceProcessorQueryCancelledError } from '../../../services/traceProcessorCancellation';
 import { QODER_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
@@ -240,8 +252,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     // Scene classification
     const sceneType = classifyScene(query);
-    const outputLanguage = parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+    const outputLanguage = options?.outputLanguage
+      ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const packageName = options?.packageName;
+    const normalizedOptions = options ?? {};
+    const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
+    const previousTurns = sessionContext.getAllTurns?.() ?? [];
+    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(normalizedOptions);
+    const knowledgeScope = knowledgeScopeFromAnalysisOptions(normalizedOptions);
 
     // Architecture detection
     let architecture: ArchitectureInfo | undefined;
@@ -288,8 +306,38 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       selectionContext: options?.selectionContext,
       packageName,
       hasReferenceTrace: Boolean(options?.referenceTraceId),
-      previousTurns: [],
+      previousTurns,
     });
+
+    const analysisRunSpec = createAnalysisRunSpec({
+      query,
+      sessionId,
+      traceId,
+      options,
+      runtimeSelection: this.selection,
+      engineCapabilities: getQoderEngineCapabilities(),
+      sceneType,
+      outputLanguage,
+      previousTurns,
+      resolvedMode: quickModeResolution.quickMode ? 'quick' : 'full',
+    });
+
+    // Build comparison context before assembling the shared system prompt so
+    // both the model and the MCP tools receive the same dual-trace contract.
+    const referenceTraceId = options?.referenceTraceId;
+    let comparisonContext: import('../../../agentv3/types').ComparisonContext | undefined;
+    if (referenceTraceId) {
+      try {
+        comparisonContext = await buildRuntimeTracePairComparisonContext({
+          traceProcessorService,
+          currentTraceId: traceId,
+          referenceTraceId,
+          tracePairContext: options?.tracePairContext,
+        });
+      } catch {
+        // Non-fatal — comparison context is best-effort
+      }
+    }
 
     // Build system prompt
     const traceFeatures = extractTraceFeatures({
@@ -299,10 +347,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     });
 
     // Shared mutable notes reference (used by both system prompt and MCP tools)
-    let notes = this.sessionNotes.get(sessionId);
+    let notes = privateAnalysisContext ? undefined : this.sessionNotes.get(sessionId);
     if (!notes) {
       notes = [];
-      this.sessionNotes.set(sessionId, notes);
+      if (!privateAnalysisContext) this.sessionNotes.set(sessionId, notes);
     }
 
     const analysisContext: ClaudeAnalysisContext = {
@@ -316,9 +364,26 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage,
       traceCompleteness,
       analysisNotes: notes,
-      patternContext: buildPatternContextSection(traceFeatures),
-      negativePatternContext: buildNegativePatternSection(traceFeatures),
-      caseBackgroundContext: buildCaseBackgroundContext(sceneType, architecture?.type),
+      previousFindings: previousTurns.slice(-3).flatMap(turn => turn.findings),
+      conversationSummary: previousTurns.length > 0
+        ? sessionContext.generatePromptContext(2000)
+        : undefined,
+      patternContext: privateAnalysisContext
+        ? undefined
+        : buildPatternContextSection(traceFeatures, knowledgeScope),
+      negativePatternContext: privateAnalysisContext
+        ? undefined
+        : buildNegativePatternSection(traceFeatures, knowledgeScope),
+      caseBackgroundContext: buildRuntimeCaseBackgroundContext({
+        sceneType,
+        architectureType: architecture?.type,
+        knowledgeScope,
+        outputLanguage,
+        privateAnalysisContext,
+      }),
+      comparison: comparisonContext,
+      codeAwareMode: options?.codeAwareMode,
+      codebaseIds: options?.codebaseIds,
     };
 
     const systemPrompt = quickModeResolution.quickMode
@@ -342,50 +407,35 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     skillExecutor.registerSkills(skillRegistry.getAllSkills());
     skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
 
-    const artifactStore = this.artifactStores.get(sessionId) ?? new ArtifactStore();
-    this.artifactStores.set(sessionId, artifactStore);
+    const artifactStore = privateAnalysisContext
+      ? new ArtifactStore()
+      : this.artifactStores.get(sessionId) ?? new ArtifactStore();
+    if (!privateAnalysisContext) this.artifactStores.set(sessionId, artifactStore);
 
     const isQuickMode = quickModeResolution.quickMode;
     const skillNotesBudget = createRuntimeSkillNotesBudget(isQuickMode);
-    const knowledgeScope = knowledgeScopeFromAnalysisOptions(options ?? {});
-    const recentSqlErrors = loadLearnedSqlFixPairs();
+    const recentSqlErrors = loadLearnedSqlFixPairs(5, knowledgeScope, normalizedOptions);
 
     // Shared mutable session state (same reference pattern as Claude runtime)
-    let planState = this.sessionPlans.get(sessionId);
+    let planState = privateAnalysisContext ? undefined : this.sessionPlans.get(sessionId);
     if (!planState) {
       planState = { current: null, history: [] };
-      this.sessionPlans.set(sessionId, planState);
+      if (!privateAnalysisContext) this.sessionPlans.set(sessionId, planState);
     }
 
-    let hypotheses = this.sessionHypotheses.get(sessionId);
+    let hypotheses = privateAnalysisContext ? undefined : this.sessionHypotheses.get(sessionId);
     if (!hypotheses) {
       hypotheses = [];
-      this.sessionHypotheses.set(sessionId, hypotheses);
+      if (!privateAnalysisContext) this.sessionHypotheses.set(sessionId, hypotheses);
     }
 
-    let uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId);
+    let uncertaintyFlags = privateAnalysisContext ? undefined : this.sessionUncertaintyFlags.get(sessionId);
     if (!uncertaintyFlags) {
       uncertaintyFlags = [];
-      this.sessionUncertaintyFlags.set(sessionId, uncertaintyFlags);
+      if (!privateAnalysisContext) this.sessionUncertaintyFlags.set(sessionId, uncertaintyFlags);
     }
 
     const watchdogWarning: { current: string | null } = { current: null };
-
-    // Build comparison context for dual-trace mode
-    const referenceTraceId = options?.referenceTraceId;
-    let comparisonContext: import('../../../agentv3/types').ComparisonContext | undefined;
-    if (referenceTraceId) {
-      try {
-        comparisonContext = await buildRuntimeTracePairComparisonContext({
-          traceProcessorService,
-          currentTraceId: traceId,
-          referenceTraceId,
-          tracePairContext: options?.tracePairContext,
-        });
-      } catch {
-        // Non-fatal — comparison context is best-effort
-      }
-    }
 
     const { server: mcpServer, allowedTools: allowedToolNames } = isQuickMode
       ? createClaudeMcpServer({
@@ -438,8 +488,18 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           androidInternalsPackPin: options?.androidInternalsPackPin,
         });
 
-    // Build the prompt for the Qoder SDK
-    const fullPrompt = this.buildAnalysisPrompt(query, analysisContext, options);
+    // The user prompt uses the shared, localized trace-context formatter. All
+    // runtime methodology remains in strategies through the shared system prompt.
+    let fullPrompt = query;
+    if (analysisRunSpec.traceContext.promptSection) {
+      fullPrompt = `${analysisRunSpec.traceContext.promptSection}\n\n${fullPrompt}`;
+    }
+    if (isQuickMode) {
+      const quickConversationContext = buildQuickConversationContext(previousTurns, outputLanguage);
+      if (quickConversationContext) {
+        fullPrompt = `${quickConversationContext}\n\n${fullPrompt}`;
+      }
+    }
 
     // Create abort controller
     const abortController = new AbortController();
@@ -462,9 +522,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       // Resolve auth
       const auth = this.resolveAuth(sdk);
 
-      // Resolve session resume (skip for code-aware mode to avoid cross-request leakage)
+      // Never resume a provider conversation across a private-knowledge run.
       const existingOpaque = this.sessionOpaqueStates.get(sessionId);
-      const resumeSessionId = existingOpaque?.sdkSessionId && !options?.codeAwareMode
+      const resumeSessionId = existingOpaque?.sdkSessionId && !privateAnalysisContext
         ? existingOpaque.sdkSessionId
         : undefined;
 
@@ -500,8 +560,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       sessionState.sdkQuery = q;
 
       let assistantText = '';
-      let sdkResultMeta: { success: boolean; subtype?: string; errors?: string; numTurns?: number } = { success: true };
+      let sdkFinalResultText = '';
+      let sdkResultMeta: { success: boolean; subtype?: string; errors?: string; numTurns?: number } = {
+        success: false,
+        subtype: 'missing_result',
+        errors: 'Qoder SDK stream ended without a result message',
+      };
       let timedOut = false;
+      const answerProjection = createCodeAwareStreamingTextProjection(sessionId, 'qoder-answer');
 
       const perTurnMs = isQuickMode ? this.config.quickPerTurnMs : this.config.fullPerTurnMs;
       const timeoutMs = maxTurns * perTurnMs;
@@ -516,31 +582,37 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             const text = extractAssistantText(message);
             if (text) {
               assistantText += text;
-              sessionState.assistantText = assistantText;
-              this.emitUpdate({
-                type: 'answer_token',
-                content: text,
-                timestamp: Date.now(),
-              });
+              sessionState.assistantText = answerProjection.projectComplete(assistantText);
+              const projectedText = answerProjection.write(text);
+              if (projectedText) {
+                this.emitUpdate({
+                  type: 'answer_token',
+                  content: projectedText,
+                  timestamp: Date.now(),
+                });
+              }
             }
           } else if (msgType === 'result') {
             const msg = message as Record<string, unknown>;
             const subtype = typeof msg.subtype === 'string' ? msg.subtype : 'success';
-            if (subtype === 'success') {
+            if (subtype === 'success' && msg.is_error !== true) {
               const resultText = typeof msg.result === 'string' ? msg.result : extractAssistantText(message);
               if (resultText) {
-                assistantText += resultText;
-                sessionState.assistantText = assistantText;
+                sdkFinalResultText = resultText;
               }
               sdkResultMeta = { success: true, numTurns: typeof msg.num_turns === 'number' ? msg.num_turns : undefined };
             } else {
-              const errors = Array.isArray(msg.errors) ? (msg.errors as string[]).join('; ') : subtype;
+              const errors = Array.isArray(msg.errors)
+                ? (msg.errors as string[]).join('; ')
+                : typeof msg.result === 'string' && msg.result.trim()
+                  ? msg.result
+                  : subtype;
               sdkResultMeta = { success: false, subtype, errors };
             }
           } else if (msgType === 'system') {
             if (isRecord(message)) {
               const subtype = message.subtype;
-              if (subtype === 'init') {
+              if (subtype === 'init' && !privateAnalysisContext) {
                 const initSessionId = message.session_id ?? message.sessionId;
                 if (typeof initSessionId === 'string') {
                   this.sessionOpaqueStates.set(sessionId, { version: 1, sdkSessionId: initSessionId });
@@ -579,8 +651,22 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
       await q.close().catch(() => undefined);
 
+      const finalProjectedToken = answerProjection.flush();
+      if (finalProjectedToken) {
+        this.emitUpdate({
+          type: 'answer_token',
+          content: finalProjectedToken,
+          timestamp: Date.now(),
+        });
+      }
+
       // Apply code-aware sanitization
-      assistantText = sanitizeCodeAwareText(sessionId, assistantText);
+      assistantText = sanitizeCodeAwareText(sessionId, sdkFinalResultText || assistantText);
+      sessionState.assistantText = assistantText;
+      const sdkErrorText = sanitizeCodeAwareText(
+        sessionId,
+        sdkResultMeta.errors || `Qoder SDK returned ${sdkResultMeta.subtype}`,
+      );
 
       // Extract findings
       const findings: Finding[] = extractFindingsFromText(assistantText);
@@ -602,16 +688,16 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         sessionId,
         success: sdkResultMeta.success && !timedOut,
         findings,
-        hypotheses: [],
+        hypotheses: hypotheses.map(hypothesis => toProtocolHypothesis(hypothesis, QODER_AGENT_RUNTIME_KIND)),
         conclusion: sdkResultMeta.success
           ? assistantText
-          : (sdkResultMeta.errors || `Qoder SDK returned ${sdkResultMeta.subtype}`),
+          : sdkErrorText,
         confidence: sdkResultMeta.success ? 0.75 : 0,
         rounds: sdkResultMeta.numTurns ?? (sessionState.toolCallCount > 0 ? Math.ceil(sessionState.toolCallCount / 3) : 1),
         totalDurationMs,
         partial: !hasFinalReport || !sdkResultMeta.success || timedOut,
         terminationReason: terminationReason as AnalysisResult['terminationReason'],
-        terminationMessage: sdkResultMeta.success ? undefined : sdkResultMeta.errors,
+        terminationMessage: sdkResultMeta.success ? undefined : sdkErrorText,
       };
 
       // Verify conclusion (non-fatal)
@@ -620,7 +706,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           const verification = await verifyConclusion(findings, assistantText, {
             emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
             enableLLM: false,
-            plan: this.sessionPlans.get(sessionId)?.current ?? null,
+            plan: planState.current,
             sceneType,
             outputLanguage,
             query,
@@ -634,8 +720,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           if (verificationIssue && isTruncationVerificationIssue(verificationIssue)) {
             const repaired = repairTruncatedFinalReport({
               conclusion: assistantText,
-              plan: this.sessionPlans.get(sessionId)?.current ?? null,
-              hypotheses: this.sessionHypotheses.get(sessionId),
+              plan: planState.current,
+              hypotheses,
               outputLanguage,
             });
             if (repaired) {
@@ -652,6 +738,30 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       // Apply final result quality gate
       applyFinalResultQualityGate({ result, query, sceneType });
 
+      if (!privateAnalysisContext) {
+        sessionContext.addTurn(
+          query,
+          {
+            primaryGoal: query,
+            aspects: [],
+            expectedOutputType: 'diagnosis',
+            complexity: isQuickMode ? 'simple' : 'complex',
+            followUpType: previousTurns.length > 0 ? 'extend' : 'initial',
+          },
+          {
+            agentId: QODER_AGENT_RUNTIME_KIND,
+            success: result.success,
+            findings: result.findings,
+            confidence: result.confidence,
+            message: result.conclusion,
+            partial: result.partial,
+            terminationReason: result.terminationReason,
+            terminationMessage: result.terminationMessage,
+          },
+          result.findings,
+        );
+      }
+
       // Update session state
       notes.push(
         { section: 'observation', content: `Analysis completed: ${findings.length} findings`, priority: 'low', timestamp: Date.now() },
@@ -661,6 +771,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     } catch (error) {
       const totalDurationMs = Date.now() - startTime;
       const errorMessage = error instanceof Error ? error.message : String(error);
+      const safeErrorMessage = sanitizeCodeAwareText(sessionId, errorMessage);
 
       // Clear stale session on missing-conversation errors so next call starts fresh
       if (/No conversation found with session ID/i.test(errorMessage)) {
@@ -670,7 +781,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       // Emit error event
       this.emitUpdate({
         type: 'error',
-        content: { message: errorMessage },
+        content: { message: safeErrorMessage },
         timestamp: Date.now(),
       });
 
@@ -686,13 +797,23 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         findings: [],
         hypotheses: [],
         conclusion: isAborted
-          ? localize(outputLanguage, 'Analysis was aborted.', 'Analysis was aborted.')
-          : `Qoder Agent SDK analysis failed: ${errorMessage}`,
+          ? localize(outputLanguage, '分析已中止。', 'Analysis was aborted.')
+          : localize(
+              outputLanguage,
+              `Qoder Agent SDK 分析失败：${safeErrorMessage}`,
+              `Qoder Agent SDK analysis failed: ${safeErrorMessage}`,
+            ),
         confidence: 0,
         rounds: 0,
         totalDurationMs,
         terminationReason: 'execution_error',
-        terminationMessage: isAuthError ? `Authentication failed: ${errorMessage}` : errorMessage,
+        terminationMessage: isAuthError
+          ? localize(
+              outputLanguage,
+              `认证失败：${safeErrorMessage}`,
+              `Authentication failed: ${safeErrorMessage}`,
+            )
+          : safeErrorMessage,
       };
     } finally {
       this.activeSessions.delete(sessionId);
@@ -710,52 +831,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     }
     // Fall back to local qodercli login state
     return sdk.qodercliAuth();
-  }
-
-  // -------------------------------------------------------------------------
-  // Prompt building
-  // -------------------------------------------------------------------------
-
-  private buildAnalysisPrompt(
-    query: string,
-    context: ClaudeAnalysisContext,
-    options?: AnalysisOptions,
-  ): string {
-    const parts: string[] = [query];
-
-    if (context.packageName) {
-      parts.push(`\nTarget package: ${context.packageName}`);
-    }
-
-    if (context.architecture) {
-      parts.push(`\nDetected architecture: ${context.architecture.type}`);
-    }
-
-    if (context.focusApps && context.focusApps.length > 0) {
-      const appNames = context.focusApps.map(a => a.packageName).join(', ');
-      parts.push(`\nFocus apps: ${appNames}`);
-    }
-
-    if (options?.timeRange) {
-      parts.push(`\nTime range: ${options.timeRange.start} - ${options.timeRange.end}`);
-    }
-
-    if (options?.traceContext?.length) {
-      parts.push('\nPre-queried trace data:');
-      for (const dataset of options.traceContext) {
-        parts.push(`\n## ${dataset.label}`);
-        parts.push(`Columns: ${dataset.columns.join(', ')}`);
-        parts.push(`Rows: ${dataset.rows.length}`);
-        if (dataset.rows.length > 0) {
-          parts.push('First rows:');
-          for (const row of dataset.rows.slice(0, 5)) {
-            parts.push(`| ${dataset.columns.map((_, i) => String(row[i] ?? '')).join(' | ')} |`);
-          }
-        }
-      }
-    }
-
-    return parts.join('\n');
   }
 
   // -------------------------------------------------------------------------
@@ -822,22 +897,26 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
+    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const opaque = this.sessionOpaqueStates.get(sessionId)
-      ?? { version: 1, degradedReason: 'state_unavailable' as const };
+    const opaque = privateKnowledge
+      ? undefined
+      : this.sessionOpaqueStates.get(sessionId)
+        ?? { version: 1, degradedReason: 'state_unavailable' as const };
 
     return {
       version: 1,
       snapshotTimestamp: Date.now(),
       sessionId,
       traceId,
-      ...sessionFields,
-      analysisNotes: this.sessionNotes.get(sessionId) ?? [],
-      analysisPlan: planState?.current ?? null,
-      planHistory: planState?.history ?? [],
-      uncertaintyFlags: this.sessionUncertaintyFlags.get(sessionId) ?? [],
-      claudeHypotheses: this.sessionHypotheses.get(sessionId) ?? undefined,
+      ...durableFields,
+      analysisNotes: privateKnowledge ? [] : this.sessionNotes.get(sessionId) ?? [],
+      analysisPlan: privateKnowledge ? null : planState?.current ?? null,
+      planHistory: privateKnowledge ? [] : planState?.history ?? [],
+      uncertaintyFlags: privateKnowledge ? [] : this.sessionUncertaintyFlags.get(sessionId) ?? [],
+      claudeHypotheses: privateKnowledge ? undefined : this.sessionHypotheses.get(sessionId) ?? undefined,
       architecture: this.architectureCache.get(traceId),
       engineState: createQoderSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
@@ -847,7 +926,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       agentRuntimeKind: QODER_AGENT_RUNTIME_KIND,
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
       agentRuntimeProviderSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-      artifacts: artifactStore?.serialize(),
+      artifacts: privateKnowledge ? undefined : artifactStore?.serialize(),
     };
   }
 

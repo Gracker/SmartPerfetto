@@ -2,7 +2,7 @@
 
 ## Runtime Selection
 
-SmartPerfetto has four production agent runtimes behind the shared
+SmartPerfetto has five production agent runtimes behind the shared
 `IOrchestrator` contract:
 
 - `claude-agent-sdk`: default runtime for Claude Code, Anthropic direct,
@@ -13,6 +13,9 @@ SmartPerfetto has four production agent runtimes behind the shared
   Manager profiles or explicit env/runtime pins.
 - `opencode`: OpenCode SDK runtime, selected through custom Provider Manager
   profiles or explicit env/runtime pins.
+- `qoder-agent-sdk`: opt-in Qoder Agent SDK runtime, selected through custom
+  Provider Manager profiles or explicit env/runtime pins; local CLI auth is
+  allowed only after the optional SDK is installed.
 
 Runtime selection lives in `backend/src/agentRuntime/runtimeSelection.ts`.
 Selection order is:
@@ -24,7 +27,7 @@ Selection order is:
 
 Do not treat provider names such as DeepSeek or Qwen as runtime values. Valid
 runtime values are `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`,
-and `opencode`.
+`opencode`, and `qoder-agent-sdk`.
 
 ## Primary Flow
 
@@ -53,6 +56,7 @@ Key files:
 | `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core orchestrator |
 | `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode SDK orchestrator and bridge |
+| `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder Agent SDK orchestrator, private streaming projection, and session isolation |
 | `backend/src/agentv3/claudeMcpServer.ts` | shared MCP tool implementations |
 | `backend/src/agentv3/mcpToolRegistry.ts` | single registry for MCP tool exposure and allowed tool names |
 | `backend/src/agentv3/planToolCallRecorder.ts` | provider-neutral tool-call evidence log for plan adherence |

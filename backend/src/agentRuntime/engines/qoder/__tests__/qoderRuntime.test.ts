@@ -41,6 +41,12 @@ const mockCreateClaudeMcpServer = jest.fn().mockReturnValue({
   allowedTools: ['mcp__smartperfetto__query_trace'],
   toolDefinitions: [],
 });
+const mockProjectionWrite = jest.fn<(text: string) => string>().mockImplementation(text => text);
+const mockProjectionFlush = jest.fn<() => string>().mockReturnValue('');
+const mockProjectionProjectComplete = jest.fn<(text: string) => string>().mockImplementation(text => text);
+const mockBuildComparisonContext = jest.fn<any>().mockResolvedValue(undefined);
+const mockBuildQuickConversationContext = jest.fn<any>().mockReturnValue(undefined);
+const mockFormatTraceContext = jest.fn<any>().mockReturnValue('');
 
 jest.mock('../qoderSdkLoader', () => ({
   loadQoderSdkModule: jest.fn<any>().mockResolvedValue(mockSdkModule),
@@ -97,6 +103,11 @@ jest.mock('../../claude/claudeVerifier', () => ({
 
 jest.mock('../../../../services/security/codeAwareOutputRegistry', () => ({
   sanitizeCodeAwareText: jest.fn<any>().mockImplementation((_sid: string, text: string) => text),
+  createCodeAwareStreamingTextProjection: jest.fn<any>().mockImplementation(() => ({
+    write: mockProjectionWrite,
+    flush: mockProjectionFlush,
+    projectComplete: mockProjectionProjectComplete,
+  })),
 }));
 
 jest.mock('../../../../agentv3/claudeFindingExtractor', () => ({
@@ -104,11 +115,14 @@ jest.mock('../../../../agentv3/claudeFindingExtractor', () => ({
 }));
 
 jest.mock('../../../runtimePromptContext', () => ({
-  buildRuntimeTracePairComparisonContext: jest.fn<any>().mockResolvedValue(undefined),
+  buildRuntimeTracePairComparisonContext: (...args: unknown[]) => mockBuildComparisonContext(...args),
+  buildQuickConversationContext: (...args: unknown[]) => mockBuildQuickConversationContext(...args),
+  formatTraceContext: (...args: unknown[]) => mockFormatTraceContext(...args),
 }));
 
 import { QoderRuntime } from '../qoderRuntime';
 import { createSkillExecutor } from '../../../../services/skillEngine/skillExecutor';
+import { sessionContextManager } from '../../../../agent/context/enhancedSessionContext';
 
 function createRuntime(env: Record<string, string | undefined> = {}) {
   return new QoderRuntime({
@@ -124,6 +138,13 @@ function createRuntime(env: Record<string, string | undefined> = {}) {
 describe('QoderRuntime', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    sessionContextManager.remove('session-1');
+    mockProjectionWrite.mockImplementation(text => text);
+    mockProjectionFlush.mockReturnValue('');
+    mockProjectionProjectComplete.mockImplementation(text => text);
+    mockBuildComparisonContext.mockResolvedValue(undefined);
+    mockBuildQuickConversationContext.mockReturnValue(undefined);
+    mockFormatTraceContext.mockReturnValue('');
     mockCreateClaudeMcpServer.mockReturnValue({
       server: { name: 'smartperfetto' },
       allowedTools: ['mcp__smartperfetto__query_trace'],
@@ -208,6 +229,10 @@ describe('QoderRuntime', () => {
 
   describe('MCP context passing', () => {
     it('passes full context in full mode', async () => {
+      mockBuildComparisonContext.mockResolvedValueOnce({
+        referenceTraceId: 'ref-trace',
+        commonCapabilities: [],
+      });
       const messages = [
         { type: 'result', subtype: 'success', result: 'done' },
       ];
@@ -236,8 +261,11 @@ describe('QoderRuntime', () => {
           codebaseIds: ['cb-1'],
           knowledgeSourceIds: ['ks-1'],
           analysisContextFingerprint: 'fp-1',
+          comparisonContext: expect.objectContaining({ referenceTraceId: 'ref-trace' }),
         }),
       );
+      const callArgs = mockQuery.mock.calls[0][0] as any;
+      expect(callArgs.options.systemPrompt).toContain('## 对比模式');
     });
 
     it('passes lightweight: true in quick mode without plan/hypotheses', async () => {
@@ -264,6 +292,21 @@ describe('QoderRuntime', () => {
   });
 
   describe('result handling', () => {
+    it('uses the shared localized trace-context formatter for the user prompt', async () => {
+      mockFormatTraceContext.mockReturnValueOnce('localized trace context');
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\ndone' },
+      ]));
+
+      await createRuntime().analyze('test query', 'session-1', 'trace-1', {
+        traceContext: [{ label: 'dataset', columns: ['value'], rows: [[1]] }],
+      } as any);
+
+      expect(mockQuery.mock.calls[0][0]).toMatchObject({
+        prompt: 'localized trace context\n\ntest query',
+      });
+    });
+
     it('returns success: true for success result', async () => {
       const messages = [
         { type: 'assistant', message: { content: [{ type: 'text', text: '## Final Report\nAnalysis complete' }] } },
@@ -276,6 +319,77 @@ describe('QoderRuntime', () => {
 
       expect(result.success).toBe(true);
       expect(result.rounds).toBe(5);
+      expect(result.conclusion).toBe('## Final Report\nAnalysis complete');
+    });
+
+    it('treats a success subtype carrying is_error as a failure', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', is_error: true, result: 'Authentication failed' },
+      ]));
+
+      const result = await createRuntime().analyze('test', 'session-1', 'trace-1');
+
+      expect(result.success).toBe(false);
+      expect(result.terminationReason).toBe('execution_error');
+      expect(result.conclusion).toBe('Authentication failed');
+    });
+
+    it('projects answer tokens before emitting them', async () => {
+      mockProjectionWrite.mockImplementation(text => text.replace('private', '[REDACTED]'));
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'private source' }] } },
+        { type: 'result', subtype: 'success', result: '## Final Report\ndone' },
+      ]));
+      const updates: any[] = [];
+      const runtime = createRuntime();
+      runtime.on('update', update => updates.push(update));
+
+      await runtime.analyze('test', 'session-1', 'trace-1', {
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['private-codebase'],
+      });
+
+      const tokens = updates.filter(update => update.type === 'answer_token');
+      expect(tokens).toEqual([
+        expect.objectContaining({ content: '[REDACTED] source' }),
+      ]);
+      expect(tokens).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'private source' }),
+      ]));
+    });
+
+    it('returns hypotheses written through the shared MCP state', async () => {
+      mockCreateClaudeMcpServer.mockImplementationOnce((input: any) => {
+        input.hypotheses.push({
+          id: 'hyp-1',
+          statement: 'Main thread is blocked',
+          status: 'confirmed',
+          evidence: 'slice-1',
+          formedAt: 100,
+          resolvedAt: 200,
+        });
+        return {
+          server: { name: 'smartperfetto' },
+          allowedTools: ['mcp__smartperfetto__query_trace'],
+          toolDefinitions: [],
+        };
+      });
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\ndone' },
+      ]));
+
+      const result = await createRuntime().analyze('test', 'session-1', 'trace-1', {
+        analysisMode: 'full',
+      });
+
+      expect(result.hypotheses).toEqual([
+        expect.objectContaining({
+          id: 'hyp-1',
+          description: 'Main thread is blocked',
+          status: 'confirmed',
+          proposedBy: 'qoder-agent-sdk',
+        }),
+      ]);
     });
 
     it('returns success: false for error_max_turns', async () => {
@@ -315,7 +429,7 @@ describe('QoderRuntime', () => {
 
       expect(result.success).toBe(false);
       expect(result.terminationReason).toBe('execution_error');
-      expect(result.terminationMessage).toContain('Authentication failed');
+      expect(result.terminationMessage).toContain('Unauthorized: invalid access token');
     });
 
     it('handles user cancellation via abortSession without throwing', async () => {
@@ -364,14 +478,18 @@ describe('QoderRuntime', () => {
 
       const runtime = createRuntime();
       await runtime.analyze('first', 'session-1', 'trace-1');
-      await runtime.analyze('second', 'session-1', 'trace-1');
+      await runtime.analyze('second', 'session-1', 'trace-1', { analysisMode: 'fast' });
 
       const secondCallArgs = mockQuery.mock.calls[1][0] as any;
       expect(secondCallArgs.options.resume).toBe('sdk-session-abc');
       expect(secondCallArgs.options.systemPrompt).toBeUndefined();
+      expect(mockBuildQuickConversationContext).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ query: 'first' })]),
+        expect.any(String),
+      );
     });
 
-    it('does not resume in code-aware mode', async () => {
+    it('resumes when code-aware mode is explicitly off', async () => {
       const messages1 = [
         { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },
         { type: 'result', subtype: 'success', result: 'done' },
@@ -385,10 +503,32 @@ describe('QoderRuntime', () => {
 
       const runtime = createRuntime();
       await runtime.analyze('first', 'session-1', 'trace-1');
-      await runtime.analyze('second', 'session-1', 'trace-1', { codeAwareMode: 'metadata_only' } as any);
+      await runtime.analyze('second', 'session-1', 'trace-1', { codeAwareMode: 'off' });
 
       const secondCallArgs = mockQuery.mock.calls[1][0] as any;
-      expect(secondCallArgs.options.resume).toBeUndefined();
+      expect(secondCallArgs.options.resume).toBe('sdk-session-abc');
+    });
+
+    it.each([
+      { codeAwareMode: 'metadata_only' as const, codebaseIds: ['private-codebase'] },
+      { knowledgeSourceIds: ['private-wiki'] },
+    ])('does not retain or resume SDK sessions for private knowledge: %p', async (privateOptions) => {
+      mockQuery
+        .mockReturnValueOnce(createMockSdkStream([
+          { type: 'system', subtype: 'init', session_id: 'private-sdk-session' },
+          { type: 'result', subtype: 'success', result: 'done' },
+        ]))
+        .mockReturnValueOnce(createMockSdkStream([
+          { type: 'result', subtype: 'success', result: 'done again' },
+        ]));
+
+      const runtime = createRuntime();
+      await runtime.analyze('private', 'session-1', 'trace-1', privateOptions);
+      expect(runtime.getSdkSessionId('session-1')).toBeUndefined();
+
+      await runtime.analyze('public', 'session-1', 'trace-1');
+      const publicCallArgs = mockQuery.mock.calls[1][0] as any;
+      expect(publicCallArgs.options.resume).toBeUndefined();
     });
 
     it('clears stale session on missing-conversation error', async () => {
@@ -442,6 +582,37 @@ describe('QoderRuntime', () => {
       runtime2.restoreFromSnapshot('session-2', 'trace-1', snapshot);
 
       expect(runtime2.getSdkSessionId('session-2')).toBe('sdk-session-xyz');
+    });
+
+    it('does not persist opaque SDK or intermediate state for private knowledge', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'system', subtype: 'init', session_id: 'private-sdk-session' },
+        { type: 'result', subtype: 'success', result: '## Final Report\ndone' },
+      ]));
+      const runtime = createRuntime();
+      await runtime.analyze('test', 'session-1', 'trace-1', {
+        knowledgeSourceIds: ['private-wiki'],
+      });
+
+      const snapshot = runtime.takeSnapshot('session-1', 'trace-1', {
+        agentRuntimeProviderId: 'prov-1',
+        agentRuntimeProviderSnapshotHash: 'hash-1',
+        conversationSteps: [{ id: 'private-step' }],
+        queryHistory: [],
+        conclusionHistory: [],
+        agentDialogue: [{ id: 'private-dialogue' }],
+        agentResponses: [{ id: 'private-response' }],
+        dataEnvelopes: [],
+        knowledgeSourceIds: ['private-wiki'],
+        runSequence: 0,
+        conversationOrdinal: 0,
+      } as any);
+
+      expect(snapshot.engineState?.kind).toBe('qoder-agent-sdk');
+      expect(snapshot.engineState?.kind === 'qoder-agent-sdk' && snapshot.engineState.qoder.opaque).toBeUndefined();
+      expect(snapshot.conversationSteps).toEqual([]);
+      expect(snapshot.agentDialogue).toEqual([]);
+      expect(snapshot.agentResponses).toEqual([]);
     });
   });
 });

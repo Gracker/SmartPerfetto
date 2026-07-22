@@ -56,10 +56,10 @@ backend 与 frontend。
 |---|---|---|
 | Perfetto UI plugin | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` | 面板、SSE、结果渲染、场景导航、选区交互 |
 | Express backend | `backend/src/index.ts` | 路由注册、健康检查、中间件、进程清理 |
-| Runtime selector | `backend/src/agentRuntime/` | 每个 session 选择 Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core 或 OpenCode |
+| Runtime selector | `backend/src/agentRuntime/` | 每个 session 选择 Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core、OpenCode 或 Qoder |
 | Claude runtime | `backend/src/agentv3/` | Claude Agent SDK 编排、MCP server、策略注入、verifier、记忆 |
 | OpenAI runtime | `backend/src/agentOpenAI/` | OpenAI Agents SDK 编排，通过同一 assistant contract 输出 |
-| Pi/OpenCode runtime adapters | `backend/src/agentRuntime/piAgentCoreRuntime.ts`, `backend/src/agentRuntime/openCodeRuntime.ts` | custom third-party runtime，复用共享分析契约、request-scoped tools 和 runtime-specific 安全边界 |
+| 第三方 runtime adapters | `backend/src/agentRuntime/engines/pi/`、`backend/src/agentRuntime/engines/opencode/`、`backend/src/agentRuntime/engines/qoder/` | custom third-party runtime，复用共享分析契约、request-scoped tools 和 runtime-specific 安全边界 |
 | assistant application | `backend/src/assistant/` | session 管理、stream projection、结果 contract |
 | Skill engine | `backend/src/services/skillEngine/` | YAML Skill 加载、参数替换、SQL 执行、DataEnvelope 输出 |
 | Skills | `backend/skills/` | 原子、组合、深度、渲染管线分析 |

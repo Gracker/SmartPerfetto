@@ -6,7 +6,7 @@ For local source runs, SmartPerfetto can use Claude Code's local authentication 
 
 ## First Answer: Which Runtime Do I Configure?
 
-Claude Code, OpenAI Agents SDK, Pi Agent Core, and OpenCode are alternative runtime paths, not a checklist of required setup steps. Pick one source for your first setup:
+Claude Code, OpenAI Agents SDK, Pi Agent Core, OpenCode, and Qoder Agent SDK are alternative runtime paths, not a checklist of required setup steps. Pick one source for your first setup:
 
 | What you have | Recommended path | What to configure |
 |---|---|---|
@@ -16,6 +16,7 @@ Claude Code, OpenAI Agents SDK, Pi Agent Core, and OpenCode are alternative runt
 | OpenAI API key, Ollama, or an OpenAI-compatible provider | OpenAI Agents SDK | `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` + `OPENAI_*` |
 | Pi Agent Core model configuration | Pi Agent Core | Custom Provider Manager profile or `SMARTPERFETTO_AGENT_RUNTIME=pi-agent-core` + `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` |
 | OpenCode model configuration | OpenCode | Custom Provider Manager profile or `SMARTPERFETTO_AGENT_RUNTIME=opencode` + OpenAI-compatible fields or `SMARTPERFETTO_OPENCODE_MODEL_JSON` |
+| Qoder CLI login or PAT | Qoder Agent SDK | Explicitly installed Qoder SDK plus a custom Provider Manager profile or `SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk` |
 
 If a third-party provider exposes both Claude-compatible and OpenAI-compatible endpoints, the UI can store both endpoints and one shared key, but only one side is active at runtime. With `.env` only, uncomment either the Claude-compatible block or the OpenAI-compatible block; do not enable both just to be "complete."
 
@@ -62,12 +63,13 @@ SmartPerfetto has these runtime paths:
 - `openai-agents-sdk`: the OpenAI runtime. Use it for OpenAI Responses API, Ollama, and OpenAI-compatible gateways that support streaming function/tool calling.
 - `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and report/claim-verification pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
 - `opencode`: optional public runtime. It runs a hardened isolated OpenCode server, feeds it explicit OpenAI-compatible or OpenCode model configuration, and exposes only request-scoped SmartPerfetto MCP tools. It does not read the user's OpenCode CLI login, project config, extensions, or built-in file/shell/web/edit tools.
+- `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and keeps private-knowledge runs out of provider session resume and durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
 
-These runtimes are mutually selected backend orchestration paths. OpenAI runtime setup does not require installing or logging in to Claude Code; local Claude Code setup does not require an OpenAI key. Pi Agent Core and OpenCode setup are separate from both. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
+These runtimes are mutually selected backend orchestration paths. OpenAI runtime setup does not require installing or logging in to Claude Code; local Claude Code setup does not require an OpenAI key. Pi Agent Core, OpenCode, and Qoder setup are separate from both. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
 
 Runtime selection priority is: request/session `providerId`, active Provider Manager profile, `SMARTPERFETTO_AGENT_RUNTIME`, then the default `claude-agent-sdk`. Do not enable both `ANTHROPIC_*` and `OPENAI_*` for first setup; if an advanced deployment does contain both without `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk`, analysis still uses Claude Agent SDK. An active Provider Manager profile overrides `.env` fallback; confirm the current source with `aiEngine.credentialSource` and `aiEngine.providerOverridesEnv` from authenticated `/api/runtime-health`.
 
-Perfetto UI Provider Management can store both endpoint families for the same provider: `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` for Claude Code SDK, and `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` for OpenAI SDK. Custom providers can also select `pi-agent-core` with `piAgentCoreModelJson` and an optional module path/system prompt, or `opencode` with `openCodeModelJson` / `openCodeSdkModulePath` / `openCodeSystemPrompt`. The provider switcher beside the AI input shows the active runtime.
+Perfetto UI Provider Management can store both endpoint families for the same provider: `claudeBaseUrl` / `claudeApiKey` / `claudeAuthToken` for Claude Code SDK, and `openaiBaseUrl` / `openaiApiKey` / `openaiProtocol` for OpenAI SDK. Custom providers can also select `pi-agent-core` with `piAgentCoreModelJson` and an optional module path/system prompt, `opencode` with `openCodeModelJson` / `openCodeSdkModulePath` / `openCodeSystemPrompt`, or `qoder-agent-sdk` with `qoderAccessToken` / `qoderCliPath` and optional model/system prompt fields. The provider switcher beside the AI input shows the active runtime.
 
 In enterprise mode, remote Provider Manager endpoints must use public HTTPS by
 default, including DNS-result validation, and redirects must remain same-origin.
@@ -231,7 +233,29 @@ or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /
 
 ## Runtime and Provider Diagnostics
 
-SmartPerfetto does not read Codex CLI, Gemini CLI, or personal OpenCode login state; those tools manage their own config files. The `opencode` runtime is configured explicitly through Provider Manager or env.
+SmartPerfetto does not read Codex CLI, Gemini CLI, or personal OpenCode login state; those tools manage their own config files. The `opencode` runtime is configured explicitly through Provider Manager or env. Qoder is an explicit runtime integration: after installing its optional SDK, `qoder-agent-sdk` can use the local `qodercli` login or an explicit PAT.
+
+Qoder Agent SDK:
+
+```bash
+# Review and accept the Qoder SDK/CLI terms before this opt-in install.
+# Set QODER_SKIP_DOWNLOAD=1 first when using a pre-installed compatible CLI.
+npm --prefix backend install --no-save @qoder-ai/qoder-agent-sdk
+SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk
+# Optional PAT; omit it to use the local qodercli login.
+# QODER_PERSONAL_ACCESS_TOKEN=your_qoder_pat
+# Optional pre-installed executable override.
+# QODERCLI_PATH=/absolute/path/to/qodercli
+```
+
+For the global npm CLI, install the peer beside SmartPerfetto with
+`npm install -g @gracker/smartperfetto @qoder-ai/qoder-agent-sdk`.
+
+The default Docker and portable artifacts do not install the Qoder SDK. To use
+this runtime there, build a deployment that explicitly installs the optional
+peer after accepting its terms. Provider Manager restricts Qoder to custom
+profiles and requires either `qoderAccessToken` or `qoderCliPath`; env mode can
+fall back to the local `qodercli` login.
 
 Restart the backend after changing `.env`. Saving or activating a Provider Manager profile in the UI usually does not require a backend restart, but existing analysis sessions keep the provider source they were created with. Verify explicit env/proxy credentials with:
 
@@ -245,7 +269,7 @@ Read these `/api/runtime-health` fields before debugging provider complaints:
 |---|---|
 | `aiEngine.credentialSource` | `provider-manager` means UI profile is active; `env-or-default` means `.env` or Claude Code fallback |
 | `aiEngine.providerOverridesEnv` | `true` means `.env` changes will not affect analysis until the active provider is disabled |
-| `aiEngine.runtime` | Must be `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, or `opencode`, not a provider name |
+| `aiEngine.runtime` | Must be `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`, not a provider name |
 | `aiEngine.providerMode` | Shows the effective connection family, such as `anthropic_compatible_proxy` or `openai_chat_completions_compatible` |
 | `aiPolicy.aiEnabled` / `aiEngine.aiEnabled` | `false` means model-backed analysis is disabled; `aiPolicy.disabledReason` explains the source |
 
@@ -261,6 +285,7 @@ Read these `/api/runtime-health` fields before debugging provider complaints:
 | `openai_chat_completions_compatible` | Uses OpenAI Agents SDK + Chat Completions-compatible endpoint |
 | `pi-agent-core` | Uses Pi Agent Core custom model JSON through the shared SmartPerfetto analysis pipeline |
 | `opencode` | Uses OpenCode custom model JSON or OpenAI-compatible fields through the shared SmartPerfetto analysis pipeline |
+| `qoder` | Uses the opt-in Qoder Agent SDK through a local `qodercli` login, PAT, or explicit CLI path |
 | `unconfigured` | No explicit env credentials; if local `claude` works, the SDK can still use Claude Code local auth/config during analysis |
 
 ### Temporarily Disable Model-Backed Analysis
@@ -405,4 +430,4 @@ Rate-limit state is lost after restart. For strict production quotas, add persis
 
 ## Runtime and Provider Boundary
 
-`SMARTPERFETTO_AGENT_RUNTIME` only selects the backend orchestration runtime and only accepts `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, or `opencode`. Do not put provider names here.
+`SMARTPERFETTO_AGENT_RUNTIME` only selects the backend orchestration runtime and only accepts `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`. Do not put provider names here.

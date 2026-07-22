@@ -18,6 +18,7 @@ import {
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
+  QODER_AGENT_RUNTIME_KIND,
 } from '../../agentRuntime/runtimeKinds';
 import { hasOpenAICredentials } from '../../agentOpenAI/openAiConfig';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
@@ -86,6 +87,18 @@ export function assertAnalysisRuntimeReady(options: RuntimeGuardOptions = {}): R
   }
 
   if (selection.kind === EXPERIMENTAL_OPENCODE_RUNTIME_KIND || selection.kind === OPENCODE_RUNTIME_KIND) {
+    return { selection, diagnostics };
+  }
+
+  if (selection.kind === QODER_AGENT_RUNTIME_KIND) {
+    if (diagnostics.sdkInstalled !== true) {
+      throw new Error(
+        'Qoder Agent SDK runtime is selected but @qoder-ai/qoder-agent-sdk is not installed. Review its terms, then install the optional SDK explicitly.',
+      );
+    }
+    // Qoder supports an explicit PAT/CLI path or the local qodercli login.
+    // Let the SDK surface a precise authentication error when that login is
+    // unavailable instead of applying the Claude native-binary guard.
     return { selection, diagnostics };
   }
 
@@ -170,7 +183,13 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
   const nodeMajor = Number.parseInt(process.version.replace(/^v/, '').split('.')[0] || '0', 10);
   const knowledgePack = getAndroidInternalsPackStatus();
 
-  const runtimeConfigured = runtimeDiagnostics.configured || selection.kind === 'claude-agent-sdk';
+  const qoderSdkInstalled = selection.kind !== QODER_AGENT_RUNTIME_KIND ||
+    runtimeDiagnostics.sdkInstalled === true;
+  const runtimeConfigured = qoderSdkInstalled && (
+    runtimeDiagnostics.configured ||
+    selection.kind === 'claude-agent-sdk' ||
+    selection.kind === QODER_AGENT_RUNTIME_KIND
+  );
   const runtimeStatus: DoctorCheck['status'] = aiPolicy.aiEnabled
     ? runtimeConfigured
       ? runtimeDiagnostics.configured
@@ -182,8 +201,12 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
   const runtimeMessage = aiPolicy.aiEnabled
     ? runtimeDiagnostics.configured
       ? `${selection.kind} credentials/configuration detected`
-      : selection.kind === 'claude-agent-sdk'
+      : selection.kind === QODER_AGENT_RUNTIME_KIND && !qoderSdkInstalled
+        ? 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly'
+        : selection.kind === 'claude-agent-sdk'
         ? 'Claude SDK has no explicit credentials; local Claude login fallback will be used if available'
+        : selection.kind === QODER_AGENT_RUNTIME_KIND
+          ? 'Qoder SDK has no explicit PAT or CLI path; local qodercli login fallback will be used if available'
         : selection.kind === PI_AGENT_CORE_RUNTIME_KIND ||
             selection.kind === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND
           ? 'Pi agent-core runtime needs SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON or a configured custom provider'

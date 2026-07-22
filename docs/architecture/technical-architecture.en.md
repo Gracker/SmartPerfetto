@@ -61,7 +61,7 @@ POST /api/agent/v1/analyze
   -> AgentAnalyzeSessionService.prepareSession()
   -> resolve workspace / user / trace / provider / source / knowledge context
   -> createAgentOrchestrator()
-  -> select Claude / OpenAI / Pi / OpenCode runtime
+  -> select Claude / OpenAI / Pi / OpenCode / Qoder runtime
   -> use the shared MCP registry for SQL, Skills, knowledge, and planning
   -> DataEnvelope + evidence/claim/identity sidecars
   -> final-result normalization / report-contract gate

@@ -16,7 +16,7 @@ Initialize the submodule only when you need to modify the AI Assistant frontend 
 
 ## 2. Prepare Model Configuration
 
-You do not need to configure every runtime. For first setup, pick one entry point: local `claude`, UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, or a custom Pi Agent Core / OpenCode block.
+You do not need to configure every runtime. For first setup, pick one entry point: local `claude`, UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, a custom Pi Agent Core / OpenCode block, or an explicitly installed Qoder SDK with local CLI auth/PAT.
 
 For local source runs, if Claude Code already works in the same terminal, you can skip API key configuration. Run `claude` first to verify that path.
 
@@ -24,7 +24,7 @@ Create an env file only when you need an explicit API key, a compatible proxy, o
 
 Step 1: run `cp backend/.env.example backend/.env`.
 
-Step 2: edit `backend/.env`. Uncomment `ANTHROPIC_API_KEY` for direct Anthropic access, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the Pi Agent Core / OpenCode custom sections.
+Step 2: edit `backend/.env`. Uncomment `ANTHROPIC_API_KEY` for direct Anthropic access, uncomment one Claude Code / Anthropic-compatible provider block for compatible providers, use the OpenAI Agents SDK fields for OpenAI / OpenAI-compatible providers, or use the Pi Agent Core / OpenCode custom sections. Qoder is opt-in: review its terms, install `@qoder-ai/qoder-agent-sdk`, then use the Qoder section.
 
 `backend/.env.example` includes presets for common Claude-compatible and OpenAI-compatible providers such as DeepSeek, GLM, Qwen, Kimi, Doubao, MiniMax, MiMo, and TokenHub. Docker reads the repository-root `.env` file, including both Docker Hub images and local source Docker builds:
 

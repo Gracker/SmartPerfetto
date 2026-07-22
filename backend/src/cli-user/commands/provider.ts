@@ -7,6 +7,8 @@ import type { OutputFormat } from '../repl/renderer';
 import { getProviderService } from '../../services/providerManager';
 import { testProviderConnection } from '../../services/providerManager/connectionTester';
 import { resolveAgentRuntimeSelection } from '../../agentRuntime/runtimeSelection';
+import { getRuntimeDiagnostics } from '../../agentRuntime/runtimeDiagnostics';
+import { QODER_AGENT_RUNTIME_KIND } from '../../agentRuntime/runtimeKinds';
 import { getClaudeRuntimeDiagnostics } from '../../agentv3/claudeConfig';
 import { getOpenAIRuntimeDiagnostics, hasOpenAICredentials } from '../../agentOpenAI/openAiConfig';
 import { withConsoleLogToStderr } from '../io/stdio';
@@ -127,6 +129,25 @@ export async function runProviderTestCommand(args: ProviderTestCommandArgs): Pro
       note: hasOpenAICredentials(providerId)
         ? 'OpenAI-compatible runtime is configured.'
         : 'OpenAI-compatible runtime needs OPENAI_API_KEY or a localhost provider endpoint.',
+    });
+  }
+
+  if (selection.kind === QODER_AGENT_RUNTIME_KIND) {
+    const diagnostics = await withConsoleLogToStderr(
+      format !== 'text',
+      async () => getRuntimeDiagnostics(selection),
+    );
+    const sdkInstalled = diagnostics.sdkInstalled === true;
+    return writeResult(format, {
+      ok: sdkInstalled,
+      target: 'system',
+      runtime: selection,
+      diagnostics,
+      note: !sdkInstalled
+        ? 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly.'
+        : diagnostics.configured
+        ? 'Qoder runtime has an explicit PAT or CLI path.'
+        : 'Qoder runtime will use the local qodercli login; SDK availability and authentication are verified during analysis.',
     });
   }
 

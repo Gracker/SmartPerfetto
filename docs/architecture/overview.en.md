@@ -60,10 +60,10 @@ and frontend readiness.
 |---|---|---|
 | Perfetto UI plugin | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` | Panel, SSE, result rendering, scene navigation, selection interaction |
 | Express backend | `backend/src/index.ts` | Route registration, health checks, middleware, process cleanup |
-| Runtime selector | `backend/src/agentRuntime/` | Chooses Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, or OpenCode for each session |
+| Runtime selector | `backend/src/agentRuntime/` | Chooses Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, OpenCode, or Qoder for each session |
 | Claude runtime | `backend/src/agentv3/` | Claude Agent SDK orchestration, MCP server, strategy injection, verifier, memory |
 | OpenAI runtime | `backend/src/agentOpenAI/` | OpenAI Agents SDK orchestration behind the same assistant contract |
-| Pi/OpenCode runtime adapters | `backend/src/agentRuntime/piAgentCoreRuntime.ts`, `backend/src/agentRuntime/openCodeRuntime.ts` | Custom third-party runtimes using the shared analysis contract, request-scoped tools, and runtime-specific safety boundaries |
+| Third-party runtime adapters | `backend/src/agentRuntime/engines/pi/`, `backend/src/agentRuntime/engines/opencode/`, `backend/src/agentRuntime/engines/qoder/` | Custom third-party runtimes using the shared analysis contract, request-scoped tools, and runtime-specific safety boundaries |
 | Assistant application | `backend/src/assistant/` | Session management, stream projection, result contracts |
 | Skill engine | `backend/src/services/skillEngine/` | YAML Skill loading, parameter substitution, SQL execution, DataEnvelope output |
 | Skills | `backend/skills/` | Atomic, composite, deep, and rendering-pipeline analysis |

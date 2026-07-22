@@ -81,4 +81,27 @@ describe('provider CLI command', () => {
     });
     expect(payload.error).toContain('AI is disabled by SMARTPERFETTO_AI_ENABLED=false');
   });
+
+  test('system test reports the missing opt-in Qoder SDK without applying the Claude binary guard', async () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
+    delete process.env.QODER_PERSONAL_ACCESS_TOKEN;
+    delete process.env.QODERCLI_PATH;
+
+    const exitCode = await runProviderTestCommand({
+      envFile,
+      sessionDir: path.join(tmpDir, 'home'),
+      format: 'json',
+    });
+
+    expect(exitCode).toBe(1);
+    const lastCall = consoleLogSpy.mock.calls[consoleLogSpy.mock.calls.length - 1];
+    const payload = JSON.parse(String(lastCall?.[0] ?? '{}'));
+    expect(payload).toMatchObject({
+      ok: false,
+      target: 'system',
+      runtime: { kind: 'qoder-agent-sdk' },
+      diagnostics: { runtime: 'qoder-agent-sdk', configured: false, sdkInstalled: false },
+    });
+    expect(payload.note).toContain('not installed');
+  });
 });

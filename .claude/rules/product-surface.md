@@ -26,6 +26,7 @@ be checked against the public product surfaces below.
 | `openai-agents-sdk` | OpenAI Responses API, OpenAI-compatible gateways, Ollama/chat-completions endpoints | OpenAI history and last response id in `SessionStateSnapshot` | Requires OpenAI runtime rules; do not validate only Claude env vars |
 | `pi-agent-core` | Custom Provider Manager profiles, Pi model JSON, OpenAI-compatible providers where supported by Pi AI | Pi opaque transcript state in `SessionStateSnapshot` | Keep SmartPerfetto MCP tool allowlists, plan evidence logging, and final verifier parity with the Claude target path |
 | `opencode` | Custom Provider Manager profiles, OpenCode model JSON, OpenAI-compatible providers | OpenCode session id and isolated project/home/config dirs in `SessionStateSnapshot` | Keep the bridge sandboxed and route all SmartPerfetto tools through the shared MCP registry/plan evidence log |
+| `qoder-agent-sdk` | Custom Provider Manager profiles or env, local `qodercli` login, PAT, explicit CLI path | Qoder SDK session id for public runs only | SDK is opt-in; disable built-in tools, project tokens before SSE, and never resume or persist opaque state for private-knowledge runs |
 
 Provider Manager active profiles override `.env` and system fallback. A
 session keeps its selected provider/runtime. Resume must not silently switch to
@@ -66,7 +67,7 @@ affected:
 - Web UI, CLI, API, reports, Docker, portable packages, and source scripts.
 - CLI trace capture, including capture presets/config output and optional
   post-capture analysis.
-- Claude, OpenAI, Pi Agent Core, and OpenCode runtimes; Provider Manager, env
+- Claude, OpenAI, Pi Agent Core, OpenCode, and Qoder runtimes; Provider Manager, env
   fallback, local Claude auth, and resume/session snapshots.
 - Single-trace, raw trace comparison, multi-analysis-result comparison, and
   report export.

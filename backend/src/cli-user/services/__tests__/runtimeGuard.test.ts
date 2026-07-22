@@ -31,6 +31,8 @@ describe('runtime guard', () => {
     delete process.env.ANTHROPIC_AUTH_TOKEN;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.CLAUDE_BINARY_PATH;
+    delete process.env.QODER_PERSONAL_ACCESS_TOKEN;
+    delete process.env.QODERCLI_PATH;
     resetProviderService();
   });
 
@@ -144,6 +146,26 @@ describe('runtime guard', () => {
       experimental: false,
       modelConfigured: true,
       package: '@earendil-works/pi-agent-core',
+    });
+  });
+
+  test('reports the missing opt-in Qoder SDK instead of applying the Claude binary guard', () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
+
+    expect(() => assertAnalysisRuntimeReady({ providerId: null })).toThrow(
+      'Qoder Agent SDK runtime is selected but @qoder-ai/qoder-agent-sdk is not installed',
+    );
+  });
+
+  test('doctor reports the opt-in Qoder SDK as missing', () => {
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
+
+    const report = collectDoctorReport(tmpDir);
+
+    expect(report.checks.find(check => check.name === 'runtime')).toMatchObject({
+      ok: false,
+      status: 'error',
+      message: 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly',
     });
   });
 
