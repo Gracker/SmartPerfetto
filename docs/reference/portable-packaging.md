@@ -120,7 +120,7 @@ launcher 会自动选择下一个可用端口，并打印实际访问 URL。只�
 `SMARTPERFETTO_BACKEND_PORT` 或 `SMARTPERFETTO_FRONTEND_PORT`；显式配置的端口不可用时会快速失败。
 
 1. 启动包内 launcher。
-2. 打开 launcher 打印的前端 URL，通常是 [http://localhost:10000](http://localhost:10000)。
-3. 检查 launcher 打印的后端 health URL，通常是 [http://localhost:3000/health](http://localhost:3000/health)。
+2. 打开 launcher 打印的前端 URL，通常是 [http://127.0.0.1:10000](http://127.0.0.1:10000)。
+3. 检查 launcher 打印的后端 health URL，通常是 [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health)。
 4. 上传一条小 trace，确认后端日志中启动了对应平台的 `trace_processor_shell`。
 5. 在包内 CLI 或后端运行 `smp knowledge-pack status --format json`，确认 bundled/active Pack 可解析且未撤回。

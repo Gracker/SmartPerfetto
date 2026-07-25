@@ -128,8 +128,8 @@ lock/manifest/database/license versions and hashes. Before a public release,
 still run a target-platform smoke test:
 
 1. Start the bundled launcher.
-2. Open the printed frontend URL, usually [http://localhost:10000](http://localhost:10000).
-3. Check the printed backend health URL, usually [http://localhost:3000/health](http://localhost:3000/health).
+2. Open the printed frontend URL, usually [http://127.0.0.1:10000](http://127.0.0.1:10000).
+3. Check the printed backend health URL, usually [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health).
 4. Upload a small trace and confirm the platform `trace_processor_shell` starts
    in backend logs.
 5. Run `smp knowledge-pack status --format json` through the bundled CLI/backend

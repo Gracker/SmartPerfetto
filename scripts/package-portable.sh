@@ -520,7 +520,7 @@ Version: $version
 Run:
   1. Extract the zip to a normal local path, for example C:\\SmartPerfetto.
   2. Double-click SmartPerfetto.exe.
-  3. Open http://localhost:10000 if the browser does not open automatically.
+  3. Open http://127.0.0.1:10000 if the browser does not open automatically.
 
 AI analysis needs either a Provider profile configured in the UI or env credentials.
 To use env credentials, create data\\env with provider settings, then restart SmartPerfetto.exe.
@@ -538,7 +538,7 @@ Version: $version
 Run:
   1. Extract the zip.
   2. Double-click SmartPerfetto.app.
-  3. Open http://localhost:10000 if the browser does not open automatically.
+  3. Open http://127.0.0.1:10000 if the browser does not open automatically.
 
 If macOS blocks this non-notarized build, Control-click SmartPerfetto.app and
 choose Open. For a package you trust, you can also remove quarantine with:
@@ -563,7 +563,7 @@ Version: $version
 Run:
   1. Extract the tar.gz.
   2. Run ./SmartPerfetto.
-  3. Open http://localhost:10000 if the browser does not open automatically.
+  3. Open http://127.0.0.1:10000 if the browser does not open automatically.
 
 User data:
   \${XDG_DATA_HOME:-~/.local/share}/smartperfetto

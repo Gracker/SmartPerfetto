@@ -6,9 +6,11 @@ package main
 
 import (
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestResolveServicePortsFallsBackWhenDefaultFrontendPortIsBusy(t *testing.T) {
@@ -49,6 +51,42 @@ func TestResolveServicePortsRejectsBusyExplicitFrontendPort(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "frontend port "+port) {
 		t.Fatalf("expected actionable frontend port error, got %q", err.Error())
+	}
+}
+
+func TestLoopbackHTTPURLUsesExplicitIPv4Address(t *testing.T) {
+	got := loopbackHTTPURL(defaultBackendPort, "/health")
+	want := "http://127.0.0.1:3000/health"
+	if got != want {
+		t.Fatalf("loopback HTTP URL mismatch: got %q, want %q", got, want)
+	}
+}
+
+func TestWaitForHTTPConnectsToIPv4OnlyListener(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen on IPv4 loopback: %v", err)
+	}
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusOK)
+		}),
+	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		_ = server.Close()
+	})
+
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("expected TCP address, got %T", listener.Addr())
+	}
+	url := loopbackHTTPURL(strconv.Itoa(tcpAddr.Port), "/health")
+	if err := waitForHTTP(url, time.Second); err != nil {
+		t.Fatalf("wait for IPv4-only HTTP service: %v", err)
 	}
 }
 

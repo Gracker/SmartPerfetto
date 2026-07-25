@@ -24,6 +24,7 @@ import (
 const (
 	defaultBackendPort  = "3000"
 	defaultFrontendPort = "10000"
+	ipv4LoopbackHost    = "127.0.0.1"
 	appName             = "SmartPerfetto"
 )
 
@@ -195,8 +196,10 @@ func main() {
 	fmt.Printf("Package directory: %s\n", layout.packageRoot)
 	fmt.Printf("Data directory: %s\n", dirs.dataDir)
 	fmt.Printf("Logs directory: %s\n", dirs.logsDir)
-	fmt.Printf("Frontend: http://localhost:%s\n", frontendPort)
-	fmt.Printf("Backend:  http://localhost:%s\n", backendPort)
+	frontendURL := loopbackHTTPURL(frontendPort, "")
+	backendURL := loopbackHTTPURL(backendPort, "")
+	fmt.Printf("Frontend: %s\n", frontendURL)
+	fmt.Printf("Backend:  %s\n", backendURL)
 	fmt.Println()
 
 	envPath := envFilePath(dirs.dataDir)
@@ -251,7 +254,7 @@ func main() {
 	}
 	defer backend.closeLog()
 
-	if err := waitForHTTP("http://localhost:"+backendPort+"/health", 90*time.Second); err != nil {
+	if err := waitForHTTP(loopbackHTTPURL(backendPort, "/health"), 90*time.Second); err != nil {
 		stopService(backend)
 		fatal(fmt.Errorf("backend did not become ready: %w", err))
 	}
@@ -263,19 +266,18 @@ func main() {
 	}
 	defer frontend.closeLog()
 
-	if err := waitForHTTP("http://localhost:"+frontendPort+"/", 45*time.Second); err != nil {
+	if err := waitForHTTP(loopbackHTTPURL(frontendPort, "/health"), 45*time.Second); err != nil {
 		stopService(frontend)
 		stopService(backend)
 		fatal(fmt.Errorf("frontend did not become ready: %w", err))
 	}
 
-	url := "http://localhost:" + frontendPort
 	fmt.Println()
 	fmt.Println("SmartPerfetto is running.")
-	fmt.Printf("Open: %s\n", url)
+	fmt.Printf("Open: %s\n", frontendURL)
 	fmt.Println("Keep this launcher running while using SmartPerfetto.")
 	fmt.Println()
-	_ = openBrowser(url)
+	_ = openBrowser(frontendURL)
 
 	exitCh := make(chan string, 2)
 	go waitForService(backend, exitCh)
@@ -388,6 +390,10 @@ func envFilePath(dataDir string) string {
 
 func nodeBinDir(nodeExe string) string {
 	return filepath.Dir(nodeExe)
+}
+
+func loopbackHTTPURL(port string, requestPath string) string {
+	return "http://" + net.JoinHostPort(ipv4LoopbackHost, port) + requestPath
 }
 
 func launcherName() string {
