@@ -511,6 +511,7 @@ write_readme() {
   local package_dir="$1"
   local target="$2"
   local version="$3"
+  local notarized="${4:-false}"
   case "$target" in
     windows-x64)
       cat > "$package_dir/README-WINDOWS.txt" <<README
@@ -531,6 +532,14 @@ Logs:
 README
       ;;
     macos-arm64)
+      local gatekeeper_guidance
+      if [ "$notarized" = true ]; then
+        gatekeeper_guidance="This package is Developer ID signed and notarized by Apple."
+      else
+        gatekeeper_guidance="If macOS blocks this non-notarized build, Control-click SmartPerfetto.app and
+choose Open. For a package you trust, you can also remove quarantine with:
+  xattr -dr com.apple.quarantine SmartPerfetto.app"
+      fi
       cat > "$package_dir/README-MACOS.txt" <<README
 SmartPerfetto macOS arm64 package
 Version: $version
@@ -540,9 +549,7 @@ Run:
   2. Double-click SmartPerfetto.app.
   3. Open http://127.0.0.1:10000 if the browser does not open automatically.
 
-If macOS blocks this non-notarized build, Control-click SmartPerfetto.app and
-choose Open. For a package you trust, you can also remove quarantine with:
-  xattr -dr com.apple.quarantine SmartPerfetto.app
+$gatekeeper_guidance
 
 User data:
   ~/Library/Application Support/SmartPerfetto
@@ -624,7 +631,7 @@ sign_macos_app() {
     echo "Signing macOS app with identity: $identity"
     while IFS= read -r -d '' file; do
       codesign --force --timestamp --options runtime --sign "$identity" "$file"
-    done < <(find "$app_dir/Contents" -type f \( -perm -111 -o -name '*.node' -o -name '*.dylib' \) -print0)
+    done < <(node "$PROJECT_ROOT/scripts/find-macho-files.cjs" --null "$app_dir/Contents")
     codesign --force --timestamp --options runtime --sign "$identity" "$app_dir"
   else
     echo "Ad-hoc signing macOS app bundle..."
@@ -777,7 +784,7 @@ package_target() {
     )
   fi
 
-  write_readme "$package_dir" "$target" "$PACKAGE_VERSION"
+  write_readme "$package_dir" "$target" "$PACKAGE_VERSION" "$notarized"
   write_manifest "$package_dir/PACKAGE-MANIFEST.json" \
     "$PACKAGE_VERSION" "$package_name" "$target" "$GIT_COMMIT" "$GIT_DIRTY" \
     "$node_runtime_version" "$node_file" "$node_sha" "$perfetto_version" "$tp_sha" \

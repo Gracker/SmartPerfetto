@@ -11,6 +11,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
+const { findMachOFiles } = require('./find-macho-files.cjs');
 
 const TARGETS = {
   'windows-x64': {
@@ -340,6 +341,12 @@ function verifyMacosCodeSignature(assetPath, packageName) {
   try {
     execFileSync('unzip', ['-q', assetPath, '-d', tmpRoot], { stdio: 'pipe' });
     const appPath = path.join(tmpRoot, packageName, 'SmartPerfetto.app');
+    for (const binaryPath of findMachOFiles(path.join(appPath, 'Contents'))) {
+      execFileSync('codesign', ['--verify', '--strict', '--verbose=2', binaryPath], {
+        stdio: 'pipe',
+        maxBuffer: 16 * 1024 * 1024,
+      });
+    }
     execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath], {
       stdio: 'pipe',
       maxBuffer: 16 * 1024 * 1024,

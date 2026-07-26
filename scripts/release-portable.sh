@@ -113,7 +113,7 @@ target_ext() {
 target_usage() {
   case "$1" in
     windows-x64) echo "Extract the zip and double-click SmartPerfetto.exe." ;;
-    macos-arm64) echo "Extract the zip and double-click SmartPerfetto.app. If macOS blocks the non-notarized build, Control-click SmartPerfetto.app and choose Open." ;;
+    macos-arm64) echo "Extract the zip and double-click SmartPerfetto.app." ;;
     linux-x64) echo "Extract the tar.gz and run ./SmartPerfetto." ;;
     *) echo "" ;;
   esac
