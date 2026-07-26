@@ -70,6 +70,7 @@ import traceConfigProposalRoutes from './routes/traceConfigProposalRoutes';
 import skillPackRoutes from './routes/skillPackRoutes';
 import batchTraceRoutes from './routes/batchTraceRoutes';
 import traceProcessorProxyRoutes, { handleTraceProcessorProxyUpgrade } from './routes/traceProcessorProxyRoutes';
+import applicationUpdateRoutes from './routes/applicationUpdateRoutes';
 import {authenticate, requireRequestContext} from './middleware/auth';
 import { collectEnvCredentialSources } from './agentRuntime/envCredentialSources';
 import { buildRuntimeHealthPayload } from './agentRuntime/runtimeHealth';
@@ -105,6 +106,7 @@ import { startPatternMemoryAutoConfirmSweep } from './agentv3/analysisPatternMem
 import {
   startAndroidInternalsPackUpdateWorker,
 } from './services/androidInternalsPack/knowledgePackUpdateWorker';
+import {startApplicationUpdateWorker} from './services/applicationUpdate/applicationUpdateWorker';
 
 const app = express();
 const PORT = serverConfig.port;
@@ -183,6 +185,7 @@ app.get('/api/debug', requireRuntimeDiagnosticsPermission, (_req, res) => {
     legacyAgentApiUsage: legacyUsage,
   });
 });
+app.use('/api/application-update', applicationUpdateRoutes);
 
 // API routes
 app.use('/api/sql', sqlRoutes);
@@ -346,6 +349,7 @@ recoverInterruptedEnterpriseRuns();
 const caseEvolutionWorkerHandle = startCaseEvolutionWorker();
 const patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
 const androidInternalsPackUpdateWorkerHandle = startAndroidInternalsPackUpdateWorker();
+const applicationUpdateWorkerHandle = startApplicationUpdateWorker();
 
 if (shouldCleanOrphanProcessorsOnStartup()) {
   killOrphanProcessors();
@@ -373,6 +377,9 @@ function gracefulShutdown(signal: string) {
 
   console.log('📚 Stopping Android Internals Knowledge Pack updater...');
   androidInternalsPackUpdateWorkerHandle.stop();
+
+  console.log('⬆️ Stopping application update checker...');
+  applicationUpdateWorkerHandle.stop();
 
   console.log('✅ Cleanup complete, exiting...');
   process.exit(0);

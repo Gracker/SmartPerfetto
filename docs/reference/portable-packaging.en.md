@@ -67,12 +67,19 @@ npm run package:portable
 npm run release:portable -- <version> --skip-build --no-draft
 ```
 
-`package:portable` builds all three target packages and verifies manifests.
-`release:portable --skip-build` reuses packages just built from the same version
-and commit, uploads every target asset, and verifies the GitHub Release target
-commit plus asset names. It creates a draft release by default; pass
-`--no-draft` to publish immediately. Do not use `--skip-build` unless those
-same-version, same-commit packages were just built.
+`package:portable` builds all three target packages and verifies schema v2
+manifests, including distribution, channel, target, commit, and signing mode.
+`release:portable --skip-build` only reuses packages just built from the same
+version and commit.
+
+The release script always creates or reuses a draft first. After upload it
+verifies the target commit, title, asset names, sizes, and GitHub `sha256:`
+digests before changing the draft to a public release. `--no-draft` requires
+all three default targets; a partial target set cannot be published. An already
+published release is read-only: the script verifies the exact three-platform
+set and exits idempotently when it matches, without clobbering, editing, or
+replacing assets. Do not use `--skip-build` unless those same-version,
+same-commit packages were just built.
 
 Single-target release:
 
@@ -105,7 +112,7 @@ strict verification. When a notary profile is set, it submits with
 
 ## User Data Directories
 
-- Windows: package-local `data/` and `logs/`.
+- Windows: `data/` and `logs/` under `%LOCALAPPDATA%\SmartPerfetto`.
 - macOS: `~/Library/Application Support/SmartPerfetto` and `~/Library/Logs/SmartPerfetto`.
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/smartperfetto` and
   `${XDG_STATE_HOME:-~/.local/state}/smartperfetto/logs`.
@@ -113,6 +120,22 @@ strict verification. When a notary profile is set, it submits with
 AI analysis should normally use Provider profiles configured in the UI. For env
 credentials, create an `env` file in the platform user data directory and
 restart the launcher.
+
+On the first launch of a new Windows package, the launcher can discover an
+older versioned package and safely copy its package-local `data/` into
+`%LOCALAPPDATA%\SmartPerfetto`. It writes a migration receipt and atomically
+switches the staged copy into place; the old directory remains untouched.
+Symlinks, reparse points, and non-regular files are rejected. If automatic
+discovery cannot identify the source, use:
+
+```powershell
+SmartPerfetto.exe --migrate-from C:\path\to\old-package
+```
+
+Set `SMARTPERFETTO_PORTABLE_MODE=1` only when data must intentionally travel
+beside the package. That mode keeps package-local `data/` and `logs/` and
+disables automatic migration. An explicit `SMARTPERFETTO_BACKEND_DATA_DIR`
+also takes precedence over the default and disables automatic migration.
 
 The bundled launcher prefers backend `3000` and frontend `10000`. If a preferred
 default port is already occupied, the launcher automatically selects the next

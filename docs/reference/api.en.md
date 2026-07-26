@@ -42,6 +42,24 @@ Provider tests, and LLM Skill steps return `403`:
 }
 ```
 
+## Application Updates
+
+Base path: `/api/application-update`. Both endpoints require authentication and
+`runtime:manage`; application update state is independent from AI
+runtime/provider health.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/status` | Return cached status; an expired cache starts a non-blocking background check |
+| `POST` | `/check` | Explicit check; requests within 30 seconds reuse cache and concurrent checks are coalesced |
+
+The v1 response includes the current distribution, channel, version, commit,
+target, and signing mode, plus the candidate release, source, check time,
+stale/LKG state, and a backend-authored distribution-specific upgrade action.
+The service calls only fixed HTTPS endpoints for SmartPerfetto on GitHub, the
+npm registry, or Docker Hub; clients cannot supply a URL. With
+`SMARTPERFETTO_UPDATE_CHECK=off`, it returns `disabled` without network access.
+
 ## Trace Management
 
 | Method | Path | Purpose |

@@ -49,6 +49,11 @@ test('macOS packaging preserves and verifies JIT runtime entitlements', () => {
   const portableVerifier = readFileSync(join(root, 'scripts/verify-portable-package.cjs'), 'utf8');
 
   assert.match(portableScript, /--preserve-metadata=identifier,entitlements/);
+  assert.match(
+    portableScript,
+    /sign_args\+=\(--sign -\)[\s\S]*find-macho-files\.cjs" --null "\$app_dir\/Contents"/,
+  );
+  assert.doesNotMatch(portableScript, /codesign --force --deep/);
   for (const entitlement of [
     'com.apple.security.cs.allow-jit',
     'com.apple.security.cs.allow-unsigned-executable-memory',
@@ -66,6 +71,39 @@ test('Docker CI smokes both static routes and the packaged OpenCode executable',
   assert.match(workflow, /curl -fsS http:\/\/127\.0\.0\.1:3000\/assistant-shell/);
   assert.match(workflow, /curl -fsS http:\/\/127\.0\.0\.1:3000\/admin-control-plane/);
   assert.match(workflow, /opencode-ai\/bin\/opencode\.exe --version/);
+});
+
+test('Docker publishing keeps stable and nightly tags separate', () => {
+  const workflow = readFileSync(
+    join(root, '.github/workflows/docker-publish.yml'),
+    'utf8',
+  );
+  const compose = readFileSync(join(root, 'docker-compose.hub.yml'), 'utf8');
+  const dockerfile = readFileSync(join(root, 'Dockerfile'), 'utf8');
+
+  assert.match(
+    workflow,
+    /type=raw,value=latest,enable=\$\{\{ startsWith\(github\.ref, 'refs\/tags\/v'\) \}\}/,
+  );
+  assert.match(
+    workflow,
+    /type=raw,value=nightly,enable=\$\{\{ github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \}\}/,
+  );
+  assert.match(
+    workflow,
+    /type=sha,prefix=sha-,enable=\$\{\{ startsWith\(github\.ref, 'refs\/tags\/v'\) \}\}/,
+  );
+  assert.match(workflow, /SMARTPERFETTO_BUILD_COMMIT=\$\{\{ github\.sha \}\}/);
+  assert.match(
+    compose,
+    /smartperfetto:\$\{SMARTPERFETTO_DOCKER_TAG:-latest\}/,
+  );
+  assert.match(compose, /runtime-data:\/app\/backend\/runtime-data/);
+  assert.match(dockerfile, /SMARTPERFETTO_DISTRIBUTION=docker/);
+  assert.match(
+    dockerfile,
+    /SMARTPERFETTO_BUILD_COMMIT=\$\{SMARTPERFETTO_BUILD_COMMIT\}/,
+  );
 });
 
 test('backend gate installs every dependency tree consumed by verify:pr', () => {

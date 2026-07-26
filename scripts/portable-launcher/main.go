@@ -28,7 +28,12 @@ const (
 	appName             = "SmartPerfetto"
 )
 
-var version = "dev"
+var (
+	version       = "dev"
+	gitCommit     = ""
+	packageTarget = ""
+	signingMode   = "unsigned"
+)
 
 type packageLayout struct {
 	packageRoot   string
@@ -158,6 +163,10 @@ func isPortAvailable(port string) bool {
 }
 
 func main() {
+	options, err := parseLaunchOptions(os.Args[1:])
+	if err != nil {
+		fatal(err)
+	}
 	backendPort, frontendPort, err := resolveServicePorts()
 	if err != nil {
 		fatal(err)
@@ -176,6 +185,9 @@ func main() {
 
 	dirs, err := resolveRuntimeDirs(layout.packageRoot)
 	if err != nil {
+		fatal(err)
+	}
+	if err := migrateLegacyWindowsData(layout.packageRoot, dirs.dataDir, options); err != nil {
 		fatal(err)
 	}
 	for _, dir := range []string{
@@ -224,6 +236,11 @@ func main() {
 		"PATH":                              pathEnv,
 		"TRACE_PROCESSOR_PATH":              layout.traceProc,
 		"SMARTPERFETTO_PACKAGE":             "1",
+		"SMARTPERFETTO_DISTRIBUTION":        "portable",
+		"SMARTPERFETTO_UPDATE_CHANNEL":      "stable",
+		"SMARTPERFETTO_BUILD_COMMIT":        gitCommit,
+		"SMARTPERFETTO_PACKAGE_TARGET":      packageTarget,
+		"SMARTPERFETTO_SIGNING_MODE":        signingMode,
 		"SMARTPERFETTO_PACKAGE_TARGET_OS":   runtime.GOOS,
 		"SMARTPERFETTO_PACKAGE_TARGET_ARCH": runtime.GOARCH,
 		"SMARTPERFETTO_OUTPUT_LANGUAGE":     envOrDefault("SMARTPERFETTO_OUTPUT_LANGUAGE", "zh-CN"),
@@ -335,47 +352,6 @@ func resolveLayout() (packageLayout, error) {
 		backendEntry:  filepath.Join(backendRoot, "dist", "index.js"),
 		frontendEntry: filepath.Join(frontendRoot, "server.js"),
 	}, nil
-}
-
-func resolveRuntimeDirs(packageRoot string) (runtimeDirs, error) {
-	if data := os.Getenv("SMARTPERFETTO_PORTABLE_DATA_DIR"); data != "" {
-		logs := os.Getenv("SMARTPERFETTO_PORTABLE_LOG_DIR")
-		if logs == "" {
-			logs = filepath.Join(data, "logs")
-		}
-		return runtimeDirs{dataDir: data, logsDir: logs}, nil
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil && runtime.GOOS != "windows" {
-		return runtimeDirs{}, err
-	}
-
-	switch runtime.GOOS {
-	case "windows":
-		return runtimeDirs{
-			dataDir: filepath.Join(packageRoot, "data"),
-			logsDir: filepath.Join(packageRoot, "logs"),
-		}, nil
-	case "darwin":
-		return runtimeDirs{
-			dataDir: filepath.Join(home, "Library", "Application Support", "SmartPerfetto"),
-			logsDir: filepath.Join(home, "Library", "Logs", "SmartPerfetto"),
-		}, nil
-	default:
-		dataHome := os.Getenv("XDG_DATA_HOME")
-		if dataHome == "" {
-			dataHome = filepath.Join(home, ".local", "share")
-		}
-		stateHome := os.Getenv("XDG_STATE_HOME")
-		if stateHome == "" {
-			stateHome = filepath.Join(home, ".local", "state")
-		}
-		return runtimeDirs{
-			dataDir: filepath.Join(dataHome, "smartperfetto"),
-			logsDir: filepath.Join(stateHome, "smartperfetto", "logs"),
-		}, nil
-	}
 }
 
 func envFilePath(dataDir string) string {

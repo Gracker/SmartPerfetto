@@ -107,19 +107,32 @@ should use WSL2; native Windows users should use the portable package.
 - Do not use `--allow-dirty` for public releases.
 - `--skip-build` is allowed only when the existing packages were freshly built
   for the exact version and commit being released.
+- Portable publishing is draft-first. Upload and verify the release target,
+  title, exact asset names, sizes, and GitHub `sha256:` digests before making a
+  release public.
+- `--no-draft` requires the complete default three-target set. A partial target
+  selection must remain a draft.
+- A published release is read-only. Re-running the script may verify and exit
+  idempotently, but must never clobber, replace, upload, or edit public assets.
 - The package manifest must report `gitDirty: false` and `gitCommit` equal to
   the release target commit.
+- Portable manifest schema v2 records distribution, update channel, target,
+  source commit, and signing mode so runtime update instructions match the
+  actual artifact.
 - macOS releases are ad-hoc signed by default. Public notarized releases need
   `SMARTPERFETTO_MACOS_SIGN_IDENTITY` and
   `SMARTPERFETTO_MACOS_NOTARY_PROFILE`.
 
 ## Docker Release Notes
 
-Docker Hub images are produced by repository workflow from `main`. When a task
-changes Dockerfile, compose files, `frontend/` consumption, trace-processor
-setup, provider env behavior, or startup scripts, verify the Docker path and
-update Docker docs. Do not describe a manual Docker publish as complete unless
-the workflow or image tag is verified.
+Docker Hub images are produced by repository workflow. Version tags publish an
+immutable SemVer tag plus `latest`; schedule/manual runs on `main` publish only
+the opt-in `nightly` tag. `docker-compose.hub.yml` defaults to `latest` and
+accepts `SMARTPERFETTO_DOCKER_TAG` for explicit SemVer or nightly selection.
+When a task changes Dockerfile, compose files, `frontend/` consumption,
+trace-processor setup, provider env behavior, or startup scripts, verify the
+Docker path and update Docker docs. Do not describe a manual Docker publish as
+complete unless the workflow or image tag is verified.
 
 ## Secret Handling
 

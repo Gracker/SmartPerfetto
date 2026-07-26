@@ -453,6 +453,7 @@ write_manifest() {
   local trace_processor_sha="${11}"
   local signed="${12}"
   local notarized="${13}"
+  local signing_mode="${14}"
   local os_name arch_name
   os_name="$(target_field "$target" os_name)"
   arch_name="$(target_field "$target" arch_name)"
@@ -460,7 +461,7 @@ write_manifest() {
   node - "$manifest_path" \
     "$version" "$package_name" "$os_name" "$arch_name" "$target" "$git_commit" "$git_dirty" \
     "$node_runtime_version" "$node_file" "$node_sha" "$perfetto_version" "$trace_processor_sha" \
-    "$signed" "$notarized" <<'NODE'
+    "$signed" "$notarized" "$signing_mode" <<'NODE'
 const fs = require('fs');
 const [
   manifestPath,
@@ -478,12 +479,17 @@ const [
   traceProcessorSha256,
   signed,
   notarized,
+  signingMode,
 ] = process.argv.slice(2);
 
 const manifest = {
+  schemaVersion: 2,
   name: 'smartperfetto',
   version,
   packageName,
+  distribution: 'portable',
+  channel: 'stable',
+  signingMode,
   target: { os, arch, id: targetId },
   gitCommit,
   gitDirty: gitDirty === 'true',
@@ -523,12 +529,25 @@ Run:
   2. Double-click SmartPerfetto.exe.
   3. Open http://127.0.0.1:10000 if the browser does not open automatically.
 
+User data and logs:
+  %LOCALAPPDATA%\\SmartPerfetto
+  %LOCALAPPDATA%\\SmartPerfetto\\logs
+
+On first launch, SmartPerfetto migrates data from an older package's data
+directory when it is in the current or a sibling extracted package. To choose
+the old package explicitly:
+  SmartPerfetto.exe --migrate-from "C:\\path\\to\\old-package"
+
+The old data is preserved. To keep data beside the executable instead, set
+SMARTPERFETTO_PORTABLE_MODE=1 before launching; automatic migration is disabled.
+
 AI analysis needs either a Provider profile configured in the UI or env credentials.
-To use env credentials, create data\\env with provider settings, then restart SmartPerfetto.exe.
+To use env credentials, create %LOCALAPPDATA%\\SmartPerfetto\\env with provider
+settings, then restart SmartPerfetto.exe.
 
 Logs:
-  logs\\backend.log
-  logs\\frontend.log
+  %LOCALAPPDATA%\\SmartPerfetto\\logs\\backend.log
+  %LOCALAPPDATA%\\SmartPerfetto\\logs\\frontend.log
 README
       ;;
     macos-arm64)
@@ -626,23 +645,25 @@ PLIST
 sign_macos_app() {
   local app_dir="$1"
   local identity="${SMARTPERFETTO_MACOS_SIGN_IDENTITY:-}"
+  local sign_args=(--force --options runtime)
   require_command codesign
   if [ -n "$identity" ]; then
     echo "Signing macOS app with identity: $identity"
-    while IFS= read -r -d '' file; do
-      if codesign --display "$file" >/dev/null 2>&1; then
-        codesign --force --timestamp --options runtime \
-          --preserve-metadata=identifier,entitlements \
-          --sign "$identity" "$file"
-      else
-        codesign --force --timestamp --options runtime --sign "$identity" "$file"
-      fi
-    done < <(node "$PROJECT_ROOT/scripts/find-macho-files.cjs" --null "$app_dir/Contents")
-    codesign --force --timestamp --options runtime --sign "$identity" "$app_dir"
+    sign_args+=(--timestamp --sign "$identity")
   else
     echo "Ad-hoc signing macOS app bundle..."
-    codesign --force --deep --options runtime --sign - "$app_dir"
+    sign_args+=(--sign -)
   fi
+  while IFS= read -r -d '' file; do
+    if codesign --display "$file" >/dev/null 2>&1; then
+      codesign "${sign_args[@]}" \
+        --preserve-metadata=identifier,entitlements \
+        "$file"
+    else
+      codesign "${sign_args[@]}" "$file"
+    fi
+  done < <(node "$PROJECT_ROOT/scripts/find-macho-files.cjs" --null "$app_dir/Contents")
+  codesign "${sign_args[@]}" "$app_dir"
   codesign --verify --deep --strict "$app_dir"
 }
 
@@ -693,7 +714,7 @@ package_target() {
   local os_name arch_name package_name package_dir resources_dir asset_ext asset_path
   local node_sha node_file node_dir node_runtime_version node_archive node_dir_suffix
   local perfetto_version tp_sha_key tp_sha trace_name trace_prebuilt_key tp_prebuilt tp_actual_sha
-  local signed=false notarized=false
+  local signed=false notarized=false signing_mode=unsigned
   local macos_resources_dir
 
   os_name="$(target_field "$target" os_name)"
@@ -712,8 +733,13 @@ package_target() {
   if [ "$target" = "macos-arm64" ]; then
     resources_dir="$package_dir/.staging-resources"
     signed=true
+    signing_mode=macos-adhoc
+    if [ -n "${SMARTPERFETTO_MACOS_SIGN_IDENTITY:-}" ]; then
+      signing_mode=macos-developer-id
+    fi
     if [ -n "${SMARTPERFETTO_MACOS_NOTARY_PROFILE:-}" ]; then
       notarized=true
+      signing_mode=macos-developer-id-notarized
     fi
   fi
 
@@ -778,14 +804,14 @@ package_target() {
     (
       cd "$PROJECT_ROOT/scripts/portable-launcher"
       GO111MODULE=off GOOS="$(target_field "$target" goos)" GOARCH="$(target_field "$target" goarch)" \
-        go build -trimpath -ldflags="-s -w -X main.version=$PACKAGE_VERSION" \
+        go build -trimpath -ldflags="-s -w -X main.version=$PACKAGE_VERSION -X main.gitCommit=$GIT_COMMIT -X main.packageTarget=$target -X main.signingMode=$signing_mode" \
         -o "$package_dir/SmartPerfetto.app/Contents/MacOS/SmartPerfetto" .
     )
   else
     (
       cd "$PROJECT_ROOT/scripts/portable-launcher"
       GO111MODULE=off GOOS="$(target_field "$target" goos)" GOARCH="$(target_field "$target" goarch)" \
-        go build -trimpath -ldflags="-s -w -X main.version=$PACKAGE_VERSION" \
+        go build -trimpath -ldflags="-s -w -X main.version=$PACKAGE_VERSION -X main.gitCommit=$GIT_COMMIT -X main.packageTarget=$target -X main.signingMode=$signing_mode" \
         -o "$package_dir/$(target_field "$target" launcher_name)" .
     )
   fi
@@ -794,7 +820,7 @@ package_target() {
   write_manifest "$package_dir/PACKAGE-MANIFEST.json" \
     "$PACKAGE_VERSION" "$package_name" "$target" "$GIT_COMMIT" "$GIT_DIRTY" \
     "$node_runtime_version" "$node_file" "$node_sha" "$perfetto_version" "$tp_sha" \
-    "$signed" "$notarized"
+    "$signed" "$notarized" "$signing_mode"
   if [ "$target" = "macos-arm64" ]; then
     cp "$package_dir/PACKAGE-MANIFEST.json" "$resources_dir/PACKAGE-MANIFEST.json"
     sign_macos_app "$package_dir/SmartPerfetto.app"

@@ -74,6 +74,21 @@ smp resume <sessionId> --query "Follow up" --format ndjson
 
 Supported `--format` values: `text`, `json`, `ndjson`.
 
+## Application Updates
+
+```bash
+smp update check
+smp update check --format json
+```
+
+This checks the stable npm release and returns the current build identity,
+check time, status, and explicit upgrade command. It is notification-only and
+never installs a package, replaces files, or mutates the current process.
+Interactive text commands may print a once-per-day, per-target-version reminder
+to stderr after completion. CI, redirected output, `--format json` / `--json`,
+help, version, and the `update` command itself never receive an extra reminder.
+Set `SMARTPERFETTO_UPDATE_CHECK=off` to disable application update checks.
+
 ## Config And Providers
 
 ```bash

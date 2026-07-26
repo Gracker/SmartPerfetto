@@ -593,12 +593,22 @@ function main() {
   }
 
   const manifest = readExtractedJson(extractedRoot, `${packageName}/PACKAGE-MANIFEST.json`);
+  assert(manifest.schemaVersion === 2, `Manifest schemaVersion mismatch: ${manifest.schemaVersion}`);
   assert(manifest.name === 'smartperfetto', `Manifest name mismatch: ${manifest.name}`);
   assert(manifest.version === version, `Manifest version mismatch: expected ${version}, got ${manifest.version}`);
   assert(manifest.packageName === packageName, `Manifest packageName mismatch: expected ${packageName}, got ${manifest.packageName}`);
   assert(manifest.target?.os === target.os, `Manifest target.os mismatch: ${manifest.target?.os}`);
   assert(manifest.target?.arch === target.arch, `Manifest target.arch mismatch: ${manifest.target?.arch}`);
   assert(manifest.target?.id === opts.target, `Manifest target.id mismatch: ${manifest.target?.id}`);
+  assert(manifest.distribution === 'portable', `Manifest distribution mismatch: ${manifest.distribution}`);
+  assert(manifest.channel === 'stable', `Manifest channel mismatch: ${manifest.channel}`);
+  const allowedSigningModes = target.os === 'macos'
+    ? ['macos-adhoc', 'macos-developer-id', 'macos-developer-id-notarized']
+    : ['unsigned'];
+  assert(
+    allowedSigningModes.includes(manifest.signingMode),
+    `Manifest signingMode mismatch for ${opts.target}: ${manifest.signingMode}`,
+  );
 
   const backendPackageEntry = target.os === 'macos'
     ? `${packageName}/SmartPerfetto.app/Contents/Resources/backend/package.json`
@@ -609,6 +619,14 @@ function main() {
 
   const readme = readExtractedText(extractedRoot, `${packageName}/${target.readme}`);
   assert(readme.includes(`Version: ${version}`), `${target.readme} does not contain the package version`);
+  if (target.os === 'windows') {
+    assert(
+      readme.includes('%LOCALAPPDATA%\\SmartPerfetto') &&
+        readme.includes('--migrate-from') &&
+        readme.includes('SMARTPERFETTO_PORTABLE_MODE=1'),
+      'README-WINDOWS.txt is missing durable data or migration instructions',
+    );
+  }
 
   if (opts.commit) {
     assert(manifest.gitCommit === opts.commit, `Manifest gitCommit mismatch: expected ${opts.commit}, got ${manifest.gitCommit || '<missing>'}`);

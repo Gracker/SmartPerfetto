@@ -72,6 +72,10 @@ npm run release:portable -- <version> --skip-build --no-draft
 gh release view v<version> --json tagName,isDraft,assets
 ```
 
+`release:portable` 始终 draft-first：先上传并验证 target commit、标题和三平台
+asset 的名称、大小、GitHub digest，全部成立后 `--no-draft` 才公开。公开 release
+和 asset 不可变；重复执行只做严格只读验证，一致则幂等成功，不一致则失败。
+
 最后确认没有把生成产物提交进仓库：
 
 ```bash
@@ -85,6 +89,8 @@ git status --short --branch
 - npm 已发布版本不可变；如果发现包内容或运行时 bug，修复后发布下一个 patch 版本。
 - 公开 portable release 不允许 `--allow-dirty`。
 - `--skip-build` 只能用于刚刚在同一版本、同一 commit 上构建出的包。
+- `--no-draft` 只能发布默认三个平台的完整集合；不能公开单平台或部分平台集合。
+- 已公开 GitHub release 只读且 asset 集合不可变；不得 clobber、替换或改写。
 - `dist/portable/`、`dist/windows-exe/`、`.cache/smartperfetto-portable/` 都是生成产物，不进 git。
 - `frontend/` 是 Docker、`./start.sh` 和免安装包的用户路径依赖；AI Assistant 插件 UI 变更必须运行 `./scripts/update-frontend.sh`。
 - 如果 root commit 指向 `perfetto/` submodule 新提交，该 submodule commit 必须已经 push 到 Gracker fork。
@@ -94,5 +100,7 @@ git status --short --branch
 
 - npm：`npm view @gracker/smartperfetto version --json` 等于新版本；空目录安装后 `smp doctor --format json` 和 `smp knowledge-pack status --format json` 可运行。
 - GitHub：`gh release view v<version>` 返回非 draft release，并且三个平台 asset 名称都带版本号。
+- Docker：稳定版 tag 同时存在 immutable SemVer 和 `latest`；`nightly` 只由
+  `main` 的 schedule/manual workflow 更新，稳定用户不会默认跟随 nightly。
 - 文档：README、CLI、portable、release 文档里的安装命令、版本边界和用户入口与真实产物一致。
 - 如果发布后发现大 bug：停止推广旧版本，修复、补测试、发布新的 patch 版本，并在 release notes 中说明 supersede 关系。

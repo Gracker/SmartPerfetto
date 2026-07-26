@@ -24,7 +24,7 @@ Usage:
 Options:
   --targets LIST       Comma-separated targets. Default: windows-x64,macos-arm64,linux-x64.
   --target TARGET      Add one target. May be repeated.
-  --no-draft           Publish immediately instead of creating a draft release.
+  --no-draft           Publish only after a draft contains all three verified platform assets.
   --prerelease         Mark the release as a prerelease.
   --skip-build         Reuse existing dist/portable assets for the version.
   --allow-dirty        Allow uploading a draft/test package built from uncommitted changes.
@@ -140,24 +140,85 @@ assert_clean_worktree() {
 }
 
 verify_remote_release() {
-  local remote_target
-  remote_target="$(gh_release view "$TAG" --json targetCommitish --jq '.targetCommitish')"
-  if [ "$remote_target" != "$TARGET_SHA" ]; then
-    echo "ERROR: release $TAG target mismatch after upload." >&2
-    echo "  expected: $TARGET_SHA" >&2
-    echo "  actual:   ${remote_target:-<empty>}" >&2
-    exit 1
-  fi
+  local require_complete="$1"
+  local remote_json="$2"
+  gh api "repos/$REPO_SLUG/releases/tags/$TAG" > "$remote_json"
+  node - "$remote_json" "$EXPECTED_ASSETS_FILE" "$TARGET_SHA" "SmartPerfetto $TAG" "$PRERELEASE" "$require_complete" <<'NODE'
+const fs = require('fs');
+const [remoteFile, expectedFile, targetSha, expectedName, prerelease, requireComplete] = process.argv.slice(2);
+const release = JSON.parse(fs.readFileSync(remoteFile, 'utf8'));
+const expected = fs.readFileSync(expectedFile, 'utf8')
+  .trim()
+  .split('\n')
+  .filter(Boolean)
+  .map(line => {
+    const [name, size, digest] = line.split('\t');
+    return {name, size: Number(size), digest};
+  });
+function fail(message) {
+  console.error(`ERROR: ${message}`);
+  process.exit(1);
+}
+if (release.target_commitish !== targetSha) {
+  fail(`release target mismatch: expected ${targetSha}, got ${release.target_commitish || '<empty>'}`);
+}
+if (release.name !== expectedName) {
+  fail(`release name mismatch: expected ${expectedName}, got ${release.name || '<empty>'}`);
+}
+if (Boolean(release.prerelease) !== (prerelease === 'true')) {
+  fail(`release prerelease flag mismatch`);
+}
+const remoteAssets = Array.isArray(release.assets) ? release.assets : [];
+for (const asset of expected) {
+  const remote = remoteAssets.find(item => item.name === asset.name);
+  if (!remote) fail(`release is missing ${asset.name}`);
+  if (remote.size !== asset.size) {
+    fail(`${asset.name} size mismatch: expected ${asset.size}, got ${remote.size}`);
+  }
+  if (remote.digest !== asset.digest) {
+    fail(`${asset.name} digest mismatch: expected ${asset.digest}, got ${remote.digest || '<empty>'}`);
+  }
+}
+if (requireComplete === 'true') {
+  if (expected.length !== 3) fail('publishing requires all three default platform assets');
+  const expectedNames = new Set(expected.map(asset => asset.name));
+  const unexpected = remoteAssets.filter(asset => !expectedNames.has(asset.name));
+  if (remoteAssets.length !== expected.length || unexpected.length > 0) {
+    fail(`published release asset set is not exact: ${remoteAssets.map(asset => asset.name).join(', ')}`);
+  }
+}
+NODE
+}
 
-  local target asset_name remote_asset
-  for target in "${TARGETS[@]}"; do
-    asset_name="$(asset_name_for_target "$target")"
-    remote_asset="$(gh_release view "$TAG" --json assets --jq ".assets[] | select(.name == \"$asset_name\") | .name")"
-    if [ "$remote_asset" != "$asset_name" ]; then
-      echo "ERROR: release $TAG does not contain expected asset $asset_name after upload." >&2
-      exit 1
+targets_are_complete() {
+  if [ "${#TARGETS[@]}" -ne "${#DEFAULT_TARGETS[@]}" ]; then
+    return 1
+  fi
+  local expected found target candidate
+  for expected in "${DEFAULT_TARGETS[@]}"; do
+    found=false
+    for target in "${TARGETS[@]}"; do
+      if [ "$target" = "$expected" ]; then
+        found=true
+        break
+      fi
+    done
+    if [ "$found" != true ]; then
+      return 1
     fi
   done
+  for target in "${TARGETS[@]}"; do
+    candidate=false
+    for expected in "${DEFAULT_TARGETS[@]}"; do
+      if [ "$target" = "$expected" ]; then
+        candidate=true
+      fi
+    done
+    if [ "$candidate" != true ]; then
+      return 1
+    fi
+  done
+  return 0
 }
 
 while [ "$#" -gt 0 ]; do
@@ -231,6 +292,10 @@ fi
 if [ "${#TARGETS[@]}" -eq 0 ]; then
   TARGETS=("${DEFAULT_TARGETS[@]}")
 fi
+if [ "$DRAFT" = false ] && ! targets_are_complete; then
+  echo "ERROR: --no-draft requires exactly windows-x64,macos-arm64,linux-x64." >&2
+  exit 2
+fi
 
 require_command gh
 require_command git
@@ -260,6 +325,8 @@ fi
 
 assets=()
 asset_lines=()
+EXPECTED_ASSETS_FILE="$(mktemp -t smartperfetto-portable-assets.XXXXXX.tsv)"
+trap 'rm -f "$EXPECTED_ASSETS_FILE"' EXIT
 for target in "${TARGETS[@]}"; do
   asset_path=""
   asset_name=""
@@ -280,12 +347,19 @@ for target in "${TARGETS[@]}"; do
   asset_size="$(file_size_bytes "$asset_path")"
   assets+=("$asset_path#$asset_name")
   asset_lines+=("- ${asset_name} — SHA256: \`${asset_sha}\`, Size: ${asset_size} bytes, Usage: $(target_usage "$target")")
+  printf '%s\t%s\tsha256:%s\n' "$asset_name" "$asset_size" "$asset_sha" >> "$EXPECTED_ASSETS_FILE"
 done
 
 gh auth status >/dev/null
+if [ -n "$GH_REPO" ]; then
+  REPO_SLUG="$GH_REPO"
+else
+  REPO_SLUG="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')"
+fi
 
 NOTES_FILE="$(mktemp -t smartperfetto-portable-release.XXXXXX.md)"
-trap 'rm -f "$NOTES_FILE"' EXIT
+REMOTE_RELEASE_FILE="$(mktemp -t smartperfetto-portable-remote.XXXXXX.json)"
+trap 'rm -f "$NOTES_FILE" "$EXPECTED_ASSETS_FILE" "$REMOTE_RELEASE_FILE"' EXIT
 
 {
   echo "SmartPerfetto portable release."
@@ -296,13 +370,8 @@ trap 'rm -f "$NOTES_FILE"' EXIT
   echo "Target commit: \`$TARGET_SHA\`"
 } > "$NOTES_FILE"
 
-create_args=(create "$TAG" "${assets[@]}" --title "SmartPerfetto $TAG" --notes-file "$NOTES_FILE" --target "$TARGET_SHA")
-edit_args=(edit "$TAG" --title "SmartPerfetto $TAG" --notes-file "$NOTES_FILE" --target "$TARGET_SHA")
-if [ "$DRAFT" = true ]; then
-  create_args+=(--draft)
-else
-  edit_args+=(--draft=false)
-fi
+create_args=(create "$TAG" --draft --title "SmartPerfetto $TAG" --notes-file "$NOTES_FILE" --target "$TARGET_SHA")
+edit_args=(edit "$TAG" --draft=true --title "SmartPerfetto $TAG" --notes-file "$NOTES_FILE" --target "$TARGET_SHA")
 if [ "$PRERELEASE" = true ]; then
   create_args+=(--prerelease)
   edit_args+=(--prerelease)
@@ -310,16 +379,46 @@ else
   edit_args+=(--prerelease=false)
 fi
 
-if gh_release view "$TAG" >/dev/null 2>&1; then
+if gh_release view "$TAG" --json isDraft --jq '.isDraft' >/dev/null 2>&1; then
+  existing_draft="$(gh_release view "$TAG" --json isDraft --jq '.isDraft')"
+  if [ "$existing_draft" != "true" ]; then
+    if ! targets_are_complete; then
+      echo "ERROR: published release verification requires all three default targets." >&2
+      exit 1
+    fi
+    verify_remote_release true "$REMOTE_RELEASE_FILE"
+    echo "Published release already matches the local assets exactly; no changes made: $TAG"
+    exit 0
+  fi
+  remote_target="$(gh_release view "$TAG" --json targetCommitish --jq '.targetCommitish')"
+  if [ "$remote_target" != "$TARGET_SHA" ]; then
+    echo "ERROR: refusing to modify draft $TAG for a different target commit." >&2
+    echo "  expected: $TARGET_SHA" >&2
+    echo "  actual:   ${remote_target:-<empty>}" >&2
+    exit 1
+  fi
+  gh_release "${edit_args[@]}"
   for asset in "${assets[@]}"; do
     gh_release upload "$TAG" "$asset" --clobber
   done
-  gh_release "${edit_args[@]}"
 else
   gh_release "${create_args[@]}"
+  for asset in "${assets[@]}"; do
+    gh_release upload "$TAG" "$asset"
+  done
 fi
 
-verify_remote_release
+verify_remote_release "$([ "$DRAFT" = false ] && echo true || echo false)" "$REMOTE_RELEASE_FILE"
+
+if [ "$DRAFT" = false ]; then
+  gh_release edit "$TAG" --draft=false
+  published="$(gh_release view "$TAG" --json isDraft --jq '.isDraft')"
+  if [ "$published" != "false" ]; then
+    echo "ERROR: release $TAG was not published after verification." >&2
+    exit 1
+  fi
+  verify_remote_release true "$REMOTE_RELEASE_FILE"
+fi
 
 echo "Portable release assets uploaded:"
 echo "  tag: $TAG"

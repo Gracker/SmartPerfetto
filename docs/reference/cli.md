@@ -70,6 +70,19 @@ smp resume <sessionId> --query "继续追问" --format ndjson
 
 `--format` 可选值：`text`、`json`、`ndjson`。
 
+## 应用更新
+
+```bash
+smp update check
+smp update check --format json
+```
+
+该命令检查 npm stable 版本并返回当前 build identity、检查时间、状态和明确升级
+命令。它只通知，不会自动安装、替换文件或修改当前进程。交互式 text 命令结束时
+可能在 stderr 显示每日一次、按目标版本去重的提醒；CI、重定向输出、
+`--format json` / `--json`、help、version 和 `update` 命令本身不会附加提醒。
+设置 `SMARTPERFETTO_UPDATE_CHECK=off` 可完全禁用应用更新检查。
+
 ## 配置与 Provider
 
 ```bash

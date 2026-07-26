@@ -5586,6 +5586,15 @@ kbd.pf-keycap.pf-spacing-large {
   line-height: 1;
   white-space: nowrap;
 }
+.ai-version-chip .pf-icon {
+  margin-left: 2px;
+  font-size: 11px !important;
+}
+.ai-version-chip.update-available {
+  border-color: color-mix(in srgb, var(--chat-warning) 32%, transparent);
+  background: color-mix(in srgb, var(--chat-warning) 10%, transparent);
+  color: var(--chat-warning);
+}
 
 .ai-status-dot {
   width: 5px;
@@ -5688,6 +5697,85 @@ kbd.pf-keycap.pf-spacing-large {
   flex-shrink: 0;
 }
 
+.ai-application-update-banner {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 8px 0;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--chat-warning) 24%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--chat-warning) 8%, transparent);
+  color: var(--chat-text);
+  font-size: 12px;
+}
+.ai-application-update-banner > .pf-icon {
+  color: var(--chat-warning);
+  font-size: 16px !important;
+}
+
+.ai-application-update-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.ai-application-update-copy strong,
+.ai-application-update-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-application-update-copy span {
+  color: var(--chat-text-secondary);
+  font-size: 10px;
+}
+
+.ai-application-update-action,
+.ai-application-update-dismiss {
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--chat-primary);
+  cursor: pointer;
+}
+.ai-application-update-action:focus-visible,
+.ai-application-update-dismiss:focus-visible {
+  outline: 2px solid var(--chat-primary);
+  outline-offset: 2px;
+}
+
+.ai-application-update-action {
+  padding: 5px 7px;
+  background: var(--chat-bg);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ai-application-update-dismiss {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--chat-text-secondary);
+}
+
+@media (max-width: 560px) {
+  .ai-application-update-banner {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+  .ai-application-update-action {
+    grid-column: 2/-1;
+    justify-self: start;
+  }
+  .ai-application-update-dismiss {
+    grid-column: 3;
+    grid-row: 1;
+  }
+}
 .ai-capture-config-panel {
   margin: 8px;
   padding: 10px;

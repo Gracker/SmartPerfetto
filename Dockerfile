@@ -93,6 +93,10 @@ RUN node scripts/check-frontend-prebuild.cjs
 # ============================
 FROM node:24-bookworm-slim
 
+ARG SMARTPERFETTO_BUILD_COMMIT=unknown
+ARG SMARTPERFETTO_UPDATE_CHANNEL=stable
+ARG TARGETARCH
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     tini \
@@ -139,6 +143,11 @@ ENV NODE_ENV=production
 ENV FRONTEND_URL=http://localhost:10000
 ENV PROVIDER_DATA_DIR_OVERRIDE=/app/backend/provider-data
 ENV SMARTPERFETTO_BACKEND_DATA_DIR=/app/backend/runtime-data
+ENV SMARTPERFETTO_DISTRIBUTION=docker
+ENV SMARTPERFETTO_UPDATE_CHANNEL=${SMARTPERFETTO_UPDATE_CHANNEL}
+ENV SMARTPERFETTO_BUILD_COMMIT=${SMARTPERFETTO_BUILD_COMMIT}
+ENV SMARTPERFETTO_PACKAGE_TARGET=linux-${TARGETARCH}
+ENV SMARTPERFETTO_SIGNING_MODE=container
 
 EXPOSE 3000 10000
 

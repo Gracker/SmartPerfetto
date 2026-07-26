@@ -74,6 +74,12 @@ npm run release:portable -- <version> --skip-build --no-draft
 gh release view v<version> --json tagName,isDraft,assets
 ```
 
+`release:portable` is always draft-first: it uploads and verifies the target
+commit, title, and all three asset names, sizes, and GitHub digests before
+`--no-draft` makes the release public. Public releases and assets are immutable;
+a repeated run performs strict read-only verification and exits idempotently
+only when everything matches.
+
 Finally, verify that generated outputs were not staged:
 
 ```bash
@@ -87,6 +93,10 @@ git status --short --branch
 - Published npm versions are immutable. If package contents or runtime behavior are wrong, fix and publish the next patch version.
 - Public portable releases must not use `--allow-dirty`.
 - `--skip-build` is only valid for packages just built from the same version and commit.
+- `--no-draft` may publish only the complete default three-platform set; it
+  cannot publish a single target or partial set.
+- A published GitHub release and its asset set are read-only; never clobber,
+  replace, or edit them.
 - `dist/portable/`, `dist/windows-exe/`, and `.cache/smartperfetto-portable/` are generated outputs and must not be committed.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages; AI Assistant plugin UI changes must run `./scripts/update-frontend.sh`.
 - If a root commit points at a new `perfetto/` submodule commit, that submodule commit must already be pushed to the Gracker fork.
@@ -96,5 +106,7 @@ git status --short --branch
 
 - npm: `npm view @gracker/smartperfetto version --json` equals the new version, and an empty-directory install can run `smp doctor --format json` plus `smp knowledge-pack status --format json`.
 - GitHub: `gh release view v<version>` returns a non-draft release and all three platform assets have versioned names.
+- Docker: stable releases have an immutable SemVer tag plus `latest`; only the
+  scheduled/manual `main` workflow updates the opt-in `nightly` tag.
 - Docs: README, CLI, portable, and release docs match the real install commands, version boundary, and user entry points.
 - If a major bug is found after release, stop promoting the old version, fix it with tests, publish a new patch version, and mention the superseding relationship in release notes.

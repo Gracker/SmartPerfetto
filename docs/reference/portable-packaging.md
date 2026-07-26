@@ -67,11 +67,15 @@ npm run package:portable
 npm run release:portable -- <version> --skip-build --no-draft
 ```
 
-`package:portable` 会构建三平台包并校验 manifest。`release:portable --skip-build`
-会复用刚刚为同一版本和同一 commit 构建出的包，上传所有目标平台 asset，并确认
-GitHub Release 的 target commit 和 asset 名称。默认创建 draft release；加
-`--no-draft` 才直接发布。没有刚构建过同版本同 commit 包时，不要使用
-`--skip-build`。
+`package:portable` 会构建三平台包并校验 schema v2 manifest，其中包含
+distribution、channel、target、commit 和 signing mode。`release:portable
+--skip-build` 只复用刚刚为同一版本、同一 commit 构建出的包。
+
+发布脚本始终先创建或复用 draft，上传后逐项校验 target commit、标题、asset
+名称、大小和 GitHub `sha256:` digest，再把 draft 转为公开 release。
+`--no-draft` 必须同时提供默认三个平台，不允许发布部分平台集合。已公开 release
+是只读的：脚本只验证完整三平台集合，完全一致时幂等退出，不会 clobber、编辑或
+替换任何 asset。没有刚构建过同版本同 commit 包时，不要使用 `--skip-build`。
 
 仅发布某个平台：
 
@@ -101,13 +105,26 @@ profile 后会通过 `xcrun notarytool submit --wait` 提交，并对 `.app` sta
 
 ## 用户数据目录
 
-- Windows：包目录下 `data/` 和 `logs/`。
+- Windows：`%LOCALAPPDATA%\SmartPerfetto` 下的 `data/` 和 `logs/`。
 - macOS：`~/Library/Application Support/SmartPerfetto` 和 `~/Library/Logs/SmartPerfetto`。
 - Linux：`${XDG_DATA_HOME:-~/.local/share}/smartperfetto` 和
   `${XDG_STATE_HOME:-~/.local/state}/smartperfetto/logs`。
 
 AI 分析推荐在 UI 里配置 Provider profile。需要 env 凭证时，在对应用户数据目录
 创建 `env` 文件后重启启动器。
+
+Windows 新包首次启动时，会自动发现符合版本目录命名的旧包，安全复制旧包的
+package-local `data/` 到 `%LOCALAPPDATA%\SmartPerfetto`，写入迁移回执后原子切换；
+旧目录保持不变。复制过程拒绝 symlink、reparse point 和非普通文件。无法自动
+发现时使用：
+
+```powershell
+SmartPerfetto.exe --migrate-from C:\path\to\old-package
+```
+
+需要真正随包移动的数据时，显式设置 `SMARTPERFETTO_PORTABLE_MODE=1`；该模式继续
+使用包内 `data/` / `logs/` 并禁用自动迁移。显式
+`SMARTPERFETTO_BACKEND_DATA_DIR` 同样优先于默认目录并禁用自动迁移。
 
 ## 验证
 

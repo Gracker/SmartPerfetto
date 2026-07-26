@@ -39,6 +39,22 @@ resume、场景还原启动、Provider test 和 LLM Skill step 会返回 `403`�
 }
 ```
 
+## 应用更新
+
+Base path：`/api/application-update`。两个接口都需要鉴权和
+`runtime:manage` 权限，更新状态与 AI runtime/provider 健康状态相互独立。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/status` | 返回缓存状态；缓存过期时在后台触发检查，不阻塞 UI |
+| `POST` | `/check` | 显式检查；30 秒内重复请求会复用缓存，并合并并发请求 |
+
+响应 schema v1 包含当前 distribution、channel、version、commit、target、
+signing mode，以及候选版本、来源、检查时间、stale/LKG 状态和由后端生成的
+distribution-specific upgrade action。服务只访问 SmartPerfetto GitHub、npm
+registry 或 Docker Hub 的固定 HTTPS endpoint，不接受客户端 URL。设置
+`SMARTPERFETTO_UPDATE_CHECK=off` 时返回 `disabled`，不访问网络。
+
 ## Trace 管理
 
 | 方法 | 路径 | 说明 |

@@ -154,15 +154,42 @@ pre-built content, and Node boundaries stay aligned.
 
 ## For Users
 
+### Application Updates
+
+SmartPerfetto checks public release metadata in the background and only
+notifies you when a newer build is available. It never replaces the running
+application, edits a source checkout, or restarts a container without an
+explicit user action. The AI Assistant banner and **Settings → Application
+Update** show the detected distribution, release channel, last check, and the
+matching upgrade command or portable download. Use **Check now** for an
+explicit refresh.
+
+The npm CLI provides the same status with
+`smp update check [--format text|json]`. Interactive text commands may print a
+rate-limited reminder to stderr after they finish; CI, redirected output,
+machine-readable commands, help, and version output stay unchanged. Set
+`SMARTPERFETTO_UPDATE_CHECK=off` to disable all application update checks.
+
+Upgrade instructions remain distribution-specific:
+
+- npm CLI: run the displayed `npm install -g` command.
+- Docker stable: pin the displayed immutable SemVer tag, then pull and recreate
+  the service.
+- Docker nightly: explicitly use the mutable `nightly` tag.
+- Portable: download the matching target asset and verify the displayed SHA256
+  when GitHub exposes one.
+- Source checkout: inspect the linked commit or release, then update with your
+  normal Git workflow.
+
 ### Docker (Recommended)
 
-Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine; configure the AI provider in the UI Provider Manager after startup, or use the repository-root `.env` when you need scripted deployment. You do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. The Docker Hub image is published nightly from `main` and includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`, so it also avoids first-run access to Google's artifact bucket on the host.
+Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine; configure the AI provider in the UI Provider Manager after startup, or use the repository-root `.env` when you need scripted deployment. You do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. Stable releases publish immutable SemVer tags plus `latest`; development builds publish the opt-in `nightly` tag from `main`. The image includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`, so it also avoids first-run access to Google's artifact bucket on the host.
 
 Both the Docker Hub image and source Docker builds serve the committed pre-built UI from `frontend/`; Docker users never build the Perfetto submodule frontend locally.
 
 The container starts without a local `.env` file for health/UI smoke checks. Real AI analysis needs one explicit provider source: either a UI Provider Manager profile, or one env provider block such as `ANTHROPIC_API_KEY` for Anthropic direct, `ANTHROPIC_BASE_URL` plus `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY` for a Claude-compatible provider, `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` plus `OPENAI_*` fields for an OpenAI-compatible provider, or a custom Pi Agent Core / OpenCode block.
 
-Provider profiles created in the UI are stored in the `provider-data` Docker volume. They survive container restarts and normal `docker compose down`; they are removed by `docker compose down -v`.
+Provider profiles created in the UI are stored in the `provider-data` Docker volume. Application update metadata and other backend runtime state use the separate `runtime-data` volume. They survive container restarts and normal `docker compose down`; they are removed by `docker compose down -v`.
 
 An active Provider Manager profile has priority over Docker `.env` credentials. The container startup log and authenticated `GET /api/runtime-health` show whether the current credential source is `provider-manager` or `env-or-default`. To force Docker `.env` fallback, deactivate the active provider in AI Assistant settings.
 
@@ -175,6 +202,10 @@ Step 2 (optional): Create the Docker env file. Run `cp .env.example .env`, edit 
 Step 3: Pull the Docker Hub image. Run `docker compose -f docker-compose.hub.yml pull`.
 
 Step 4: Start the container. Run `docker compose -f docker-compose.hub.yml up -d`.
+
+The default is the stable `latest` tag. Pin a stable release with
+`SMARTPERFETTO_DOCKER_TAG=<version>` or explicitly opt into development builds
+with `SMARTPERFETTO_DOCKER_TAG=nightly` on both `pull` and `up` commands.
 
 Step 5: Open the service URLs.
 
@@ -203,6 +234,14 @@ Assets:
 - `smartperfetto-v<version>-linux-x64.tar.gz`: extract and run `./SmartPerfetto`.
 
 All launchers start the backend and pre-built Perfetto UI, then open [http://localhost:10000](http://localhost:10000). Override ports with `SMARTPERFETTO_BACKEND_PORT` and `SMARTPERFETTO_FRONTEND_PORT`. AI analysis needs a Provider profile configured in the UI, or env credentials in the package's user data env file.
+
+Windows stores durable data under `%LOCALAPPDATA%\SmartPerfetto`. On first
+launch, a new package safely copies an eligible older package-local `data/`
+directory and leaves the old package untouched. Use
+`SmartPerfetto.exe --migrate-from <old-package-or-data-directory>` when
+automatic discovery cannot identify the source. Set
+`SMARTPERFETTO_PORTABLE_MODE=1` only when you intentionally want data beside
+the executable.
 
 Maintainer build command:
 

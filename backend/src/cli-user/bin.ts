@@ -49,6 +49,8 @@ import {
   runKnowledgePackStatusCommand,
   runKnowledgePackUpdateCommand,
 } from './commands/knowledgePack';
+import {runUpdateCheckCommand} from './commands/update';
+import {beginCliUpdateNotice} from './updateNotice';
 import { DEFAULT_ANALYSIS_QUERY } from './constants';
 import type {CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import type {CapturePresetId, CliAnalysisMode} from './types';
@@ -123,7 +125,13 @@ function main(): void {
   const format = (commandFormat?: string): OutputFormat => parseOutputFormat(commandFormat);
   const textJsonFormat = (commandFormat?: string) => parseTextJsonFormat(commandFormat);
   const runAndExit = async (fn: () => Promise<number>) => {
-    process.exit(await fn());
+    const g = globals();
+    const notice = beginCliUpdateNotice({
+      bootstrapOptions: {envFile: g.envFile, sessionDir: g.sessionDir},
+    });
+    const exitCode = await fn();
+    notice.flush();
+    process.exit(exitCode);
   };
   const collectCodebaseId = (value: string, previous: string[] = []): string[] => [...previous, value];
   const codeAwareMode = (value?: string): CodeAwareMode | undefined => {
@@ -394,6 +402,22 @@ function main(): void {
         envFile: g.envFile,
         sessionDir: g.sessionDir,
         format: textJsonFormat(opts.format) === 'json' ? 'json' : 'text',
+      }));
+    });
+
+  const updateCmd = program
+    .command('update')
+    .description('check for a newer SmartPerfetto CLI release');
+  updateCmd
+    .command('check')
+    .description('check npm for the latest stable SmartPerfetto version')
+    .option('--format <format>', 'output format: text or json')
+    .action(async (opts: {format?: string}) => {
+      const g = globals();
+      await runAndExit(() => runUpdateCheckCommand({
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+        format: textJsonFormat(opts.format),
       }));
     });
   knowledgePackCmd

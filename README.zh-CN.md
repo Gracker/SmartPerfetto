@@ -152,15 +152,29 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 
 ## 使用者
 
+### 应用更新
+
+SmartPerfetto 会在后台检查公开发布元数据，只在发现新版本时通知你。它不会在未获明确操作时替换正在运行的程序、修改源码 checkout 或重启容器。AI Assistant 横幅和 **设置 → 应用更新** 会显示当前分发方式、发布渠道、最近检查时间，以及匹配的升级命令或免安装包下载地址；需要立即刷新时可使用 **立即检查更新**。
+
+npm CLI 提供相同状态：`smp update check [--format text|json]`。交互式文本命令结束后可能在 stderr 输出限频提醒；CI、重定向输出、机器可读命令、help 和 version 输出保持不变。设置 `SMARTPERFETTO_UPDATE_CHECK=off` 可关闭全部应用更新检查。
+
+升级步骤始终与分发方式匹配：
+
+- npm CLI：运行界面显示的 `npm install -g` 命令。
+- Docker stable：固定界面显示的不可变 SemVer tag，然后拉取并重建服务。
+- Docker nightly：明确选择可变的 `nightly` tag。
+- 免安装包：下载匹配当前平台的产物；GitHub 提供 SHA256 时按界面值校验。
+- 源码 checkout：先检查链接的 commit 或 release，再按自己的 Git 工作流更新。
+
 ### Docker 运行（推荐）
 
-只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine；AI provider 可以启动后在 UI Provider Manager 里配置，只有脚本化部署时才需要使用仓库根目录 `.env`。不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。Docker Hub 镜像每天从 `main` 自动发布，镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`，也能避开本地首次启动时访问 Google artifact bucket 失败的问题。
+只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine；AI provider 可以启动后在 UI Provider Manager 里配置，只有脚本化部署时才需要使用仓库根目录 `.env`。不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。稳定版会发布不可变 SemVer tag 和 `latest`；`main` 的开发构建仅发布需要主动选择的 `nightly` tag。镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`，也能避开本地首次启动时访问 Google artifact bucket 失败的问题。
 
 Docker Hub 镜像和源码 Docker build 都直接使用根目录 `frontend/` 里已经提交的预构建 UI；Docker 用户不会在本地构建 Perfetto submodule 前端。
 
 容器在没有本地 `.env` 文件时也能启动，用于 health/UI smoke check；真正执行 AI 分析需要一个明确的 provider 来源：可以是 UI Provider Manager profile，也可以是一个 env provider block，例如 Anthropic 直连用 `ANTHROPIC_API_KEY`，Claude-compatible provider 用 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`，OpenAI-compatible provider 用 `SMARTPERFETTO_AGENT_RUNTIME=openai-agents-sdk` 加 `OPENAI_*` 字段，或 Pi Agent Core / OpenCode custom block。
 
-在 UI 里创建的 Provider profile 会保存在 `provider-data` Docker volume 里。普通容器重启和 `docker compose down` 后仍会保留；`docker compose down -v` 会删除它。
+在 UI 里创建的 Provider profile 会保存在 `provider-data` Docker volume 里；应用更新元数据和其他后端运行时状态使用独立的 `runtime-data` volume。普通容器重启和 `docker compose down` 后仍会保留；`docker compose down -v` 会删除这些数据。
 
 active Provider Manager profile 的优先级高于 Docker `.env`。容器启动日志和带鉴权的 `GET /api/runtime-health` 会显示当前凭证来源是 `provider-manager` 还是 `env-or-default`。如果想强制使用 Docker `.env`，请在 AI Assistant 设置里停用 active provider。
 
@@ -173,6 +187,8 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
 步骤 3：拉取 Docker Hub 镜像。运行 `docker compose -f docker-compose.hub.yml pull`。
 
 步骤 4：启动容器。运行 `docker compose -f docker-compose.hub.yml up -d`。
+
+默认使用稳定版 `latest` tag。需要固定稳定版本时，在 `pull` 和 `up` 命令中都设置 `SMARTPERFETTO_DOCKER_TAG=<version>`；需要主动使用开发构建时设置 `SMARTPERFETTO_DOCKER_TAG=nightly`。
 
 步骤 5：打开服务地址。
 
@@ -198,6 +214,8 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
 - `smartperfetto-v<version>-linux-x64.tar.gz`：解压后运行 `./SmartPerfetto`。
 
 启动器会拉起后端和预构建 Perfetto UI，并打开 [http://localhost:10000](http://localhost:10000)。端口可用 `SMARTPERFETTO_BACKEND_PORT` 和 `SMARTPERFETTO_FRONTEND_PORT` 覆盖。AI 分析需要在 UI 里配置 Provider profile，或在对应平台的用户数据 env 文件中配置凭证。
+
+Windows 的持久数据默认保存在 `%LOCALAPPDATA%\SmartPerfetto`。新免安装包首次启动时会安全复制符合条件的旧包内 `data/` 目录，并保留旧包不动；自动发现无法确定来源时，可运行 `SmartPerfetto.exe --migrate-from <旧包或数据目录>`。只有明确希望把数据放在可执行文件旁边时，才设置 `SMARTPERFETTO_PORTABLE_MODE=1`。
 
 维护者打包命令：
 

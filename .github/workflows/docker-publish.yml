@@ -10,6 +10,7 @@ on:
 
 jobs:
   quality-gate:
+    if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -52,6 +53,7 @@ jobs:
         run: docker compose -f docker-compose.hub.yml config >/tmp/smartperfetto-compose.yml
 
   build:
+    if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     needs: quality-gate
     uses: docker/github-builder/.github/workflows/build.yml@v1
     permissions:
@@ -63,12 +65,15 @@ jobs:
       platforms: linux/amd64,linux/arm64
       cache: true
       cache-scope: smartperfetto-runtime
+      build-args: |
+        SMARTPERFETTO_BUILD_COMMIT=${{ github.sha }}
+        SMARTPERFETTO_UPDATE_CHANNEL=${{ startsWith(github.ref, 'refs/tags/v') && 'stable' || 'nightly' }}
       meta-images: docker.io/w553000664/smartperfetto
       meta-tags: |
-        type=raw,value=latest,enable=${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v') }}
+        type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
         type=raw,value=nightly,enable=${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         type=semver,pattern={{version}}
-        type=sha,prefix=sha-
+        type=sha,prefix=sha-,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       set-meta-labels: true
     secrets:
       registry-auths: |

@@ -1,6 +1,6 @@
 services:
   smartperfetto:
-    image: w553000664/smartperfetto:latest
+    image: w553000664/smartperfetto:${SMARTPERFETTO_DOCKER_TAG:-latest}
     ports:
       - "${SMARTPERFETTO_BACKEND_PORT:-3000}:${SMARTPERFETTO_BACKEND_PORT:-3000}"      # Backend API
       - "${SMARTPERFETTO_FRONTEND_PORT:-10000}:${SMARTPERFETTO_FRONTEND_PORT:-10000}"  # Perfetto UI
@@ -20,6 +20,7 @@ services:
       - uploads:/app/backend/uploads
       - logs:/app/backend/logs
       - provider-data:/app/backend/provider-data
+      - runtime-data:/app/backend/runtime-data
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS \"http://localhost:$${SMARTPERFETTO_BACKEND_PORT:-$${PORT:-3000}}/health\" >/dev/null && curl -fsS \"http://localhost:$${SMARTPERFETTO_FRONTEND_PORT:-10000}/health\" >/dev/null"]
@@ -32,3 +33,4 @@ volumes:
   uploads:
   logs:
   provider-data:
+  runtime-data:
