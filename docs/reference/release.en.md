@@ -70,9 +70,19 @@ Publish the GitHub portable assets:
 
 ```bash
 npm run package:portable
+# Extract and smoke these final archives on each target OS; macOS uses the post-notarization, post-staple final zip
 npm run release:portable -- <version> --skip-build --no-draft
 gh release view v<version> --json tagName,isDraft,assets
 ```
+
+Portable packages use a build-once rule: test and upload the same final archive
+bytes, and never rebuild after smoke. Cross-compilation, manifest/structure
+checks, and static signature verification do not prove target-OS startup.
+Windows, macOS, and Linux must each verify backend/frontend health through
+`127.0.0.1`, bundled runtimes, a minimal trace-processor operation, graceful
+shutdown, and port release. Keep the release as a draft when a target runner is
+unavailable. An explicitly user-accepted gap must be named in release/hand-off
+notes and must not be described as a complete all-platform smoke.
 
 `release:portable` is always draft-first: it uploads and verifies the target
 commit, title, and all three asset names, sizes, and GitHub digests before
@@ -95,6 +105,9 @@ git status --short --branch
 - `--skip-build` is only valid for packages just built from the same version and commit.
 - `--no-draft` may publish only the complete default three-platform set; it
   cannot publish a single target or partial set.
+- Public macOS packages require Developer ID, Hardened Runtime, Apple
+  notarization, and a stapled ticket. Ad-hoc signing is only for local or draft
+  testing.
 - A published GitHub release and its asset set are read-only; never clobber,
   replace, or edit them.
 - `dist/portable/`, `dist/windows-exe/`, and `.cache/smartperfetto-portable/` are generated outputs and must not be committed.
@@ -105,7 +118,9 @@ git status --short --branch
 ## Post-Release Verification
 
 - npm: `npm view @gracker/smartperfetto version --json` equals the new version, and an empty-directory install can run `smp doctor --format json` plus `smp knowledge-pack status --format json`.
-- GitHub: `gh release view v<version>` returns a non-draft release and all three platform assets have versioned names.
+- GitHub: `gh release view v<version>` returns a non-draft release, and all
+  three asset names, sizes, target commit, and remote `sha256:` digests match
+  the locally smoked archives.
 - Docker: stable releases have an immutable SemVer tag plus `latest`; only the
   scheduled/manual `main` workflow updates the opt-in `nightly` tag.
 - Docs: README, CLI, portable, and release docs match the real install commands, version boundary, and user entry points.

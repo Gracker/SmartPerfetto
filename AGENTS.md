@@ -62,6 +62,10 @@ cd backend && npm run build
   reason/handoff and change fingerprint.
 - Before feature or bug work, check the affected product surfaces in
   `.claude/rules/product-surface.md`.
+- Treat startup/readiness, loopback URLs, portable paths or package layout,
+  bundled runtimes/native modules, signing, and notarization changes as
+  portable-impacting work; follow the PR and release gates in
+  `.claude/rules/testing.md` and `.claude/rules/release.md`.
 - Before syncing, rebasing, merging, or upgrading official Perfetto code,
   trace processor prebuilts, SQL docs, stdlib indexes, or committed Perfetto UI
   prebuilds, read `.claude/rules/perfetto-sync.md`.

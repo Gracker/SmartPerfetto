@@ -68,9 +68,16 @@ npm install @gracker/smartperfetto@<version>
 
 ```bash
 npm run package:portable
+# 在目标系统解压并 smoke 这三份最终归档；macOS 使用公证并 staple 后的 final zip
 npm run release:portable -- <version> --skip-build --no-draft
 gh release view v<version> --json tagName,isDraft,assets
 ```
+
+免安装包必须 build once：测试并上传同一份最终归档字节，通过 smoke 后不得重新构建。
+交叉编译、manifest/结构检查和静态签名校验不等于目标系统真实启动。Windows、macOS
+和 Linux 都要验证 `127.0.0.1` 前后端 health、包内 runtime、最小 trace processor
+操作、优雅退出和端口释放。缺少目标 runner 时保持 draft；如果用户明确接受缺口，
+必须在 release/交付说明里写明未测试平台，不能称为全平台验证完成。
 
 `release:portable` 始终 draft-first：先上传并验证 target commit、标题和三平台
 asset 的名称、大小、GitHub digest，全部成立后 `--no-draft` 才公开。公开 release
@@ -90,6 +97,8 @@ git status --short --branch
 - 公开 portable release 不允许 `--allow-dirty`。
 - `--skip-build` 只能用于刚刚在同一版本、同一 commit 上构建出的包。
 - `--no-draft` 只能发布默认三个平台的完整集合；不能公开单平台或部分平台集合。
+- 公开 macOS 包必须使用 Developer ID、Hardened Runtime、Apple 公证和 stapled
+  ticket；ad-hoc 仅用于本地或 draft 测试。
 - 已公开 GitHub release 只读且 asset 集合不可变；不得 clobber、替换或改写。
 - `dist/portable/`、`dist/windows-exe/`、`.cache/smartperfetto-portable/` 都是生成产物，不进 git。
 - `frontend/` 是 Docker、`./start.sh` 和免安装包的用户路径依赖；AI Assistant 插件 UI 变更必须运行 `./scripts/update-frontend.sh`。
@@ -99,7 +108,8 @@ git status --short --branch
 ## 发布后验证
 
 - npm：`npm view @gracker/smartperfetto version --json` 等于新版本；空目录安装后 `smp doctor --format json` 和 `smp knowledge-pack status --format json` 可运行。
-- GitHub：`gh release view v<version>` 返回非 draft release，并且三个平台 asset 名称都带版本号。
+- GitHub：`gh release view v<version>` 返回非 draft release；三个平台 asset 的
+  名称、大小、target commit 和远端 `sha256:` digest 与本地已 smoke 归档一致。
 - Docker：稳定版 tag 同时存在 immutable SemVer 和 `latest`；`nightly` 只由
   `main` 的 schedule/manual workflow 更新，稳定用户不会默认跟随 nightly。
 - 文档：README、CLI、portable、release 文档里的安装命令、版本边界和用户入口与真实产物一致。

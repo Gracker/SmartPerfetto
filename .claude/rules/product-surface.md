@@ -81,6 +81,26 @@ affected:
   package manifests, and release asset manifests.
 - Tests and smoke paths listed in `.claude/rules/testing.md`.
 
+## Portable Impact Triggers
+
+A code change is portable-impacting when it changes any of these contracts,
+even if the original report reproduces on only one operating system:
+
+- launcher process lifecycle, startup/readiness polling, loopback URLs, health
+  endpoints, browser-open URLs, shutdown, or port release;
+- package-relative paths, user data/log directories, archive layout, package
+  manifest fields, or update/migration behavior;
+- bundled Node.js, Claude, OpenCode, `trace_processor_shell`, native
+  dependencies/modules, or their executable/signature metadata;
+- macOS Mach-O discovery, code signing, Hardened Runtime entitlements,
+  notarization, stapling, or Gatekeeper behavior.
+
+During code/PR work, record the portable impact, update the shared contracts
+and focused tests, and run the portable verification tier in
+`.claude/rules/testing.md`. Building and runtime-smoking all final release
+archives is a public release gate, not a requirement for every intermediate
+code edit.
+
 ## Comparison Mode Contract
 
 There are two comparison products:

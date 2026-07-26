@@ -32,7 +32,7 @@ trace-processor availability, the constructed Trace SQL regression, and the
 | Perfetto upstream sync, trace processor pin, SQL/stdlib index, or committed UI prebuild | Follow `.claude/rules/perfetto-sync.md`; normally `git diff --check`, `npm run check:frontend-prebuild`, `npm --prefix backend run cli:e2e`, scene trace regression, submodule remote reachability, and Skill/Strategy validation when those files changed |
 | Code-aware analysis, codebase registry, source ingestion, symbol resolution, or CodeRef report/export | `npm --prefix backend run verify:codebase-aware` plus `npm run verify:pr` before landing |
 | npm CLI package/release | `npm --prefix backend run cli:pack-check` plus isolated install smoke |
-| Portable packaging/release | Shell syntax/static checks, Node script syntax checks, launcher cross-compile, full package build, and package manifest verification |
+| Portable-impacting code or packaging | Focused launcher/packaging tests, shell and Node syntax/static checks, launcher cross-compile, full package build, package manifest verification, and `npm run verify:pr` before landing; exact-archive target-OS runtime smoke is additionally required for a public release |
 
 ## npm CLI Release Verification
 
@@ -73,13 +73,73 @@ node scripts/verify-portable-package.cjs \
   --asset "dist/portable/smartperfetto-v<version>-windows-x64.zip" \
   --target windows-x64 \
   --version "<version>" \
-  --commit "$(git rev-parse HEAD)"
+  --commit "$(git rev-parse HEAD)" \
+  --require-clean
+node scripts/verify-portable-package.cjs \
+  --asset "dist/portable/smartperfetto-v<version>-macos-arm64.zip" \
+  --target macos-arm64 \
+  --version "<version>" \
+  --commit "$(git rev-parse HEAD)" \
+  --require-clean
+node scripts/verify-portable-package.cjs \
+  --asset "dist/portable/smartperfetto-v<version>-linux-x64.tar.gz" \
+  --target linux-x64 \
+  --version "<version>" \
+  --commit "$(git rev-parse HEAD)" \
+  --require-clean
 ```
 
 For a clean public release, the package manifest must contain
 `gitDirty: false` and `gitCommit` equal to the release target commit. If testing
 the release script without uploading, use a fake `gh` shim or a draft release;
 do not rely on `--allow-dirty` for public release validation.
+
+Cross-compilation, archive verification, and static signature checks do not
+prove target-platform startup. During code/PR work, report those results as
+contract/package verification. For a public portable release, additionally
+apply the exact-asset runtime gate below.
+
+## Exact Portable Archive Runtime Gate
+
+Build once from the exact clean release commit. On Windows, macOS, and Linux,
+extract the final archive that will be uploaded into a fresh temporary
+directory and test those exact bytes. macOS must use the zip recreated after
+notarization and stapling. Do not rebuild an archive after it passes this gate.
+
+Each target smoke must:
+
+1. Re-verify manifest version, `gitCommit`, `gitDirty: false`, target, and
+   bundled Node.js 24 from the extracted archive.
+2. Start the bundled launcher with isolated data/log directories and
+   non-conflicting ports.
+3. Poll backend and frontend health through explicit
+   `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
+4. Execute the bundled Node.js, Claude, and OpenCode version commands when
+   present, then run a minimal packaged `trace_processor_shell` operation.
+5. Send the supported interrupt/termination signal, require a zero/successful
+   shutdown, and verify child processes and listening ports are gone.
+6. Preserve launcher/backend/frontend logs on failure.
+
+For the final macOS archive, also require:
+
+```bash
+codesign --verify --deep --strict --verbose=2 SmartPerfetto.app
+xcrun stapler validate SmartPerfetto.app
+spctl --assess --type execute -vv SmartPerfetto.app
+xcrun notarytool info <submission-id> \
+  --keychain-profile "$SMARTPERFETTO_MACOS_NOTARY_PROFILE"
+```
+
+The notarization result must be `Accepted`, the ticket must be stapled,
+Gatekeeper must report `Notarized Developer ID`, and the extracted app must
+actually reach both health endpoints. The package verifier must independently
+check every Mach-O signature and required Node/Claude JIT entitlements; signing
+must not depend on file extension or executable mode.
+
+Use native or hosted target runners when local machines are unavailable. If a
+required runner cannot execute the exact archive, keep the GitHub release as a
+draft. Publishing with a known gap requires explicit user acceptance and must
+name the untested target; static verification is not a substitute.
 
 ## Canonical Scene Regression
 

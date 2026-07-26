@@ -91,7 +91,7 @@ npm run release:windows-exe -- <version>
 
 未设置签名变量时，脚本会生成 ad-hoc signed app，避免 macOS 把 bundle 判定为
 damaged；但 ad-hoc 签名不会通过 Gatekeeper 公证检查，只适合本地测试或需要用户
-手动 Control-click → Open 的包。正式 macOS 包建议设置：
+手动 Control-click → Open 的 draft 包。正式公开 macOS 包必须设置：
 
 ```bash
 export SMARTPERFETTO_MACOS_SIGN_IDENTITY="Developer ID Application: ..."
@@ -101,7 +101,14 @@ npm run release:portable -- <version> --targets macos-arm64
 
 设置签名身份后脚本会 `codesign --options runtime` 并做 strict verify；设置 notary
 profile 后会通过 `xcrun notarytool submit --wait` 提交，并对 `.app` staple 后重新
-生成 zip。
+生成 final zip。notary profile 是保存在本机钥匙串里的 `notarytool` 凭据别名，
+不是 provisioning profile；API 私钥不得进入仓库或发布日志。
+
+打包器按 Mach-O 文件头而不是扩展名/可执行位发现嵌套原生二进制并逐个签名。
+重签已有上游签名的 Node/Claude runtime 时只保留原有 identifier 和 entitlements；
+不能给任意未签 Mach-O 注入 JIT entitlement，也不能用 `codesign --force --deep`
+代替 inside-out 签名。final zip 校验器会逐个验证 Mach-O 签名和 Node/Claude
+必需的 runtime entitlement。
 
 ## 用户数据目录
 
@@ -130,7 +137,9 @@ SmartPerfetto.exe --migrate-from C:\path\to\old-package
 
 脚本会校验包结构、版本、manifest、Node runtime、目标平台 native 依赖、
 `trace_processor_shell` pin，以及 Knowledge Pack lock/manifest/database/license
-的版本和哈希。真实发布前仍需要在目标平台做最小 smoke：
+的版本和哈希。交叉编译、结构和静态签名校验不证明目标系统能启动。公开发布采用
+build-once：在各目标平台解压即将上传的同一份最终归档做 smoke，通过后不再重新
+构建；macOS 必须测试公证、staple 后重新生成的 final zip。
 
 包内 launcher 优先使用后端端口 `3000`、前端端口 `10000`。如果默认端口已被占用，
 launcher 会自动选择下一个可用端口，并打印实际访问 URL。只有需要固定端口时才设置
@@ -141,3 +150,9 @@ launcher 会自动选择下一个可用端口，并打印实际访问 URL。只�
 3. 检查 launcher 打印的后端 health URL，通常是 [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health)。
 4. 上传一条小 trace，确认后端日志中启动了对应平台的 `trace_processor_shell`。
 5. 在包内 CLI 或后端运行 `smp knowledge-pack status --format json`，确认 bundled/active Pack 可解析且未撤回。
+6. 执行包内 Node、Claude 和 OpenCode 的版本命令（存在时）。
+7. 正常停止 launcher，确认子进程退出且前后端端口已经释放。
+
+Windows、macOS 或 Linux 任一最终归档缺少目标平台 smoke 时，GitHub release 应保持
+draft。只有用户明确接受并在 release/交付说明中公开未测试平台时才允许降级发布，
+且不能称为全平台验证完成。

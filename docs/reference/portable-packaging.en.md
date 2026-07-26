@@ -97,8 +97,8 @@ already-published npm version.
 Without signing variables, the script creates an ad-hoc signed app so macOS
 does not classify the bundle as damaged. Ad-hoc signing does not pass
 Gatekeeper notarization checks; it is only suitable for local testing or
-packages where users can Control-click -> Open. For public macOS releases,
-configure:
+draft packages where users can Control-click -> Open. Public macOS releases
+must configure:
 
 ```bash
 export SMARTPERFETTO_MACOS_SIGN_IDENTITY="Developer ID Application: ..."
@@ -109,6 +109,17 @@ npm run release:portable -- <version> --targets macos-arm64
 When a signing identity is set, the script runs `codesign --options runtime` and
 strict verification. When a notary profile is set, it submits with
 `xcrun notarytool submit --wait`, staples the `.app`, and recreates the zip.
+The notary profile is a local `notarytool` Keychain credential alias, not a
+provisioning profile. Keep the API private key out of the repository and
+release logs.
+
+Packaging discovers nested native code by Mach-O file magic rather than file
+extension or executable mode, then signs each Mach-O inside-out. Re-signing an
+upstream-signed Node/Claude runtime preserves only its existing identifier and
+entitlements. Do not inject JIT entitlements into arbitrary unsigned Mach-O
+files or replace this flow with `codesign --force --deep`. The final zip
+verifier checks every Mach-O signature and the required Node/Claude runtime
+entitlements.
 
 ## User Data Directories
 
@@ -147,8 +158,11 @@ configured ports fail fast when unavailable.
 
 The scripts verify package structure, version, manifest, Node runtime, target
 native dependencies, the `trace_processor_shell` pin, and Knowledge Pack
-lock/manifest/database/license versions and hashes. Before a public release,
-still run a target-platform smoke test:
+lock/manifest/database/license versions and hashes. Cross-compilation,
+structure checks, and static signature verification do not prove target-OS
+startup. Public release uses a build-once rule: extract and smoke the same final
+archive bytes that will be uploaded, and do not rebuild after smoke. macOS must
+test the final zip recreated after notarization and stapling.
 
 1. Start the bundled launcher.
 2. Open the printed frontend URL, usually [http://127.0.0.1:10000](http://127.0.0.1:10000).
@@ -157,3 +171,11 @@ still run a target-platform smoke test:
    in backend logs.
 5. Run `smp knowledge-pack status --format json` through the bundled CLI/backend
    and confirm the bundled/active Pack is readable and not revoked.
+6. Run the bundled Node.js, Claude, and OpenCode version commands when present.
+7. Stop the launcher normally and confirm child processes exit and both ports
+   are released.
+
+Keep the GitHub release as a draft if the final Windows, macOS, or Linux archive
+cannot be smoked on its target OS. A downgraded publish requires explicit user
+acceptance and a visible untested-target note, and must not be described as a
+complete all-platform smoke.

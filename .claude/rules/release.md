@@ -75,13 +75,20 @@ should use WSL2; native Windows users should use the portable package.
    ./node_modules/.bin/smartperfetto --help
    ./node_modules/.bin/smp doctor --format json
    ```
-8. Build and publish portable GitHub assets:
+8. Build portable GitHub assets from the exact clean release commit:
    ```bash
    npm run package:portable
+   ```
+   Runtime-smoke the post-build final archives on their matching operating
+   systems using the exact-asset contract in `.claude/rules/testing.md`.
+   macOS smoke must use the post-notarization, post-staple final zip. Do not
+   rebuild any archive after it passes runtime smoke.
+9. Publish those already-smoked portable assets:
+   ```bash
    npm run release:portable -- <version> --skip-build --no-draft
    gh release view v<version> --json tagName,isDraft,assets
    ```
-9. Re-check `git status --short --branch`. Generated `dist/portable/`,
+10. Re-check `git status --short --branch`. Generated `dist/portable/`,
    `dist/windows-exe/`, and cache outputs must not be staged.
 
 ## npm CLI Invariants
@@ -107,6 +114,19 @@ should use WSL2; native Windows users should use the portable package.
 - Do not use `--allow-dirty` for public releases.
 - `--skip-build` is allowed only when the existing packages were freshly built
   for the exact version and commit being released.
+- Build once, then runtime-smoke and upload the same final archive bytes.
+  Cross-compilation, manifest verification, archive extraction, and static
+  signature checks prove structure but do not prove the packaged launcher can
+  start on the target operating system.
+- Before `--no-draft`, runtime-smoke the final Windows, macOS, and Linux
+  archives on matching operating systems. Check backend and frontend
+  `127.0.0.1` health, bundled runtimes, a minimal trace-processor operation,
+  graceful shutdown, and port release as defined in
+  `.claude/rules/testing.md`.
+- If a required target runner is unavailable, keep the release as a draft.
+  Publishing with an explicitly accepted gap requires user approval and a
+  visible downgrade in the release/hand-off notes; never call that result a
+  complete all-platform smoke.
 - Portable publishing is draft-first. Upload and verify the release target,
   title, exact asset names, sizes, and GitHub `sha256:` digests before making a
   release public.
@@ -119,9 +139,35 @@ should use WSL2; native Windows users should use the portable package.
 - Portable manifest schema v2 records distribution, update channel, target,
   source commit, and signing mode so runtime update instructions match the
   actual artifact.
-- macOS releases are ad-hoc signed by default. Public notarized releases need
-  `SMARTPERFETTO_MACOS_SIGN_IDENTITY` and
-  `SMARTPERFETTO_MACOS_NOTARY_PROFILE`.
+- Ad-hoc signing is limited to local or draft macOS packages. A public macOS
+  release requires `SMARTPERFETTO_MACOS_SIGN_IDENTITY` and
+  `SMARTPERFETTO_MACOS_NOTARY_PROFILE`, Developer ID signing, Hardened Runtime,
+  Apple notarization acceptance, a stapled ticket, Gatekeeper acceptance, and
+  an actual launch smoke.
+- Discover nested macOS code by Mach-O file magic, not filename extension or
+  executable mode. Sign every Mach-O inside-out; do not use
+  `codesign --force --deep` as a signing shortcut.
+- When re-signing an already-signed bundled runtime, preserve only its upstream
+  `identifier,entitlements`. Do not add JIT entitlements to arbitrary unsigned
+  Mach-O files. The final zip verifier must check every Mach-O signature and
+  the required Node/Claude runtime entitlements.
+- A notary profile is a local Keychain credential alias, not a provisioning
+  profile. Keep the API key material outside the repository and pass only the
+  profile name to release automation.
+
+## Release-Surface Acceptance
+
+Verify only the public surfaces included in the release, but close each one
+completely:
+
+- Portable: remote tag/target, non-draft status, exact asset names/sizes, and
+  GitHub `sha256:` digests must match the locally smoked archives.
+- npm: wait for registry propagation, verify `npm view`, then install the
+  public version in an empty directory under supported Node.js 24 and run the
+  CLI smoke.
+- Docker: when Docker is published or affected, wait for the workflow terminal
+  state and verify the SemVer, `latest`, and `sha-*` tags plus the amd64/arm64
+  manifest digest. Git tag `v1.2.3` normally maps to Docker tag `1.2.3`.
 
 ## Docker Release Notes
 

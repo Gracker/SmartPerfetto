@@ -63,6 +63,37 @@ test('macOS packaging preserves and verifies JIT runtime entitlements', () => {
   }
 });
 
+test('portable governance separates code impact from exact-archive release acceptance', () => {
+  const agentGuide = readFileSync(join(root, 'AGENTS.md'), 'utf8');
+  const claudeGuide = readFileSync(join(root, 'CLAUDE.md'), 'utf8');
+  const productSurface = readFileSync(
+    join(root, '.claude/rules/product-surface.md'),
+    'utf8',
+  );
+  const releaseRules = readFileSync(join(root, '.claude/rules/release.md'), 'utf8');
+  const testingRules = readFileSync(join(root, '.claude/rules/testing.md'), 'utf8');
+
+  assert.equal(agentGuide, claudeGuide);
+  assert.match(agentGuide, /startup\/readiness[\s\S]*portable-impacting work/);
+  assert.match(productSurface, /## Portable Impact Triggers/);
+  assert.match(
+    productSurface,
+    /public release gate, not a requirement for every intermediate\s+code edit/,
+  );
+  assert.match(releaseRules, /runtime-smoke and upload the same final archive bytes/);
+  assert.match(releaseRules, /post-notarization, post-staple final zip/);
+  assert.match(releaseRules, /Do not add JIT entitlements to arbitrary unsigned/);
+  assert.match(testingRules, /## Exact Portable Archive Runtime Gate/);
+  for (const contract of [
+    'http://127.0.0.1:<port>/health',
+    'minimal packaged `trace_processor_shell` operation',
+    'verify child processes and listening ports are gone',
+    'Gatekeeper must report `Notarized Developer ID`',
+  ]) {
+    assert.match(testingRules, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+});
+
 test('Docker CI smokes both static routes and the packaged OpenCode executable', () => {
   const workflow = readFileSync(
     join(root, '.github/workflows/backend-agent-regression-gate.yml'),
