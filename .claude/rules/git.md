@@ -24,6 +24,44 @@ Never push SmartPerfetto submodule changes to upstream `origin`.
 5. Commit with a descriptive message.
 6. Push the active branch when the task asks for push/ship.
 
+## GitNexus Impact Analysis
+
+Treat GitNexus as an architecture and change-impact radar, not as the source of
+truth. Use the `gitnexus-impact-analysis` Skill for non-trivial feature, bug,
+shared-service, cross-runtime, schema, provider, session, report, Skill,
+Strategy, and AI Assistant UI work.
+
+During planning:
+
+1. Check `gitnexus status`. If the index is missing or stale, run
+   `gitnexus analyze --index-only --default-branch main`. Do not run
+   `gitnexus setup` or allow analysis to rewrite agent files or install Skills.
+2. Run upstream impact analysis for the key symbol with depth 3, tests included,
+   and confidence 0.8 or higher. Review direct dependants first, then affected
+   processes and modules.
+3. Cross-check the graph with `rg`, the relevant source, existing tests, and the
+   product surfaces in `.claude/rules/product-surface.md`.
+
+Before commit, stage only the task-owned files and run GitNexus change detection
+with `scope: staged`. Use `scope: all` only when the whole dirty worktree is
+intentionally in scope. Review affected processes and high-risk symbols, then
+run the verification tier from `.claude/rules/testing.md`.
+
+Prefer the GitNexus MCP `impact` and `detect_changes` tools. If MCP is not
+available, use:
+
+```bash
+gitnexus impact <symbol> --direction upstream --depth 3 --include-tests
+gitnexus detect-changes --scope staged
+```
+
+The local generated index lives under `.gitnexus/` and must remain untracked.
+`.gitnexusignore` is the tracked coverage contract: it excludes generated
+frontend output, Trace corpus data, and the upstream Perfetto tree while
+retaining `perfetto/ui/src/` and conventional test directories. If a change is
+outside that graph boundary, verify it directly and update the coverage contract
+only when the omitted surface should be maintained by SmartPerfetto.
+
 ## Portable Release Workflow
 
 Read `.claude/rules/release.md` before any public release. This section keeps

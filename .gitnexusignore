@@ -1,0 +1,17 @@
+# Keep the graph focused on maintained SmartPerfetto source.
+frontend/
+Trace/
+backend/.qoder-sdk/
+
+# The Perfetto checkout is mostly upstream/vendor and local build output.
+# Retain the UI source because SmartPerfetto's AI Assistant and its direct
+# Perfetto UI dependencies live there.
+perfetto/*
+!perfetto/ui/
+perfetto/ui/*
+!perfetto/ui/src/
+
+# GitNexus excludes conventional test directories by default. Impact analysis
+# in this repository must include callers and contracts under __tests__.
+!__tests__/
+!__mocks__/

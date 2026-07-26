@@ -66,6 +66,9 @@ cd backend && npm run build
   bundled runtimes/native modules, signing, and notarization changes as
   portable-impacting work; follow the PR and release gates in
   `.claude/rules/testing.md` and `.claude/rules/release.md`.
+- For non-trivial feature or bug work, use `gitnexus-impact-analysis` during
+  planning and run GitNexus change detection before commit. Follow
+  `.claude/rules/git.md` and cross-check graph results against source and tests.
 - Before syncing, rebasing, merging, or upgrading official Perfetto code,
   trace processor prebuilts, SQL docs, stdlib indexes, or committed Perfetto UI
   prebuilds, read `.claude/rules/perfetto-sync.md`.
