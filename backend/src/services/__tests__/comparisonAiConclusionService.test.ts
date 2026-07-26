@@ -143,4 +143,65 @@ describe('generateAiComparisonConclusion', () => {
       'AI comparison conclusion was not generated: AI response did not contain valid conclusion JSON',
     );
   });
+
+  test('uses max_completion_tokens for a GPT-5.6 Chat Completions provider', async () => {
+    const envKeys = [
+      'SMARTPERFETTO_AGENT_RUNTIME',
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_URL',
+      'OPENAI_MODEL',
+      'OPENAI_LIGHT_MODEL',
+      'OPENAI_AGENTS_PROTOCOL',
+    ] as const;
+    const originalEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+    const originalFetch = globalThis.fetch;
+    let requestBody: Record<string, unknown> = {};
+
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.OPENAI_API_KEY = 'sk-test';
+    process.env.OPENAI_BASE_URL = 'https://example.test/v1';
+    process.env.OPENAI_MODEL = 'gpt-5.6-sol';
+    process.env.OPENAI_LIGHT_MODEL = 'openai/gpt-5.6-sol';
+    process.env.OPENAI_AGENTS_PROTOCOL = 'chat_completions';
+    globalThis.fetch = jest.fn(async (_url: string, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              verifiedFacts: ['Candidate startup is faster.'],
+              inferences: [],
+              recommendations: [],
+              uncertainty: [],
+            }),
+          },
+        }],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }) as typeof fetch;
+
+    try {
+      const conclusion = await generateAiComparisonConclusion({
+        result: comparisonResult(),
+        query: 'compare startup',
+        providerId: null,
+      });
+
+      expect(conclusion.source).toBe('ai');
+      expect(requestBody.max_completion_tokens).toBe(1200);
+      expect(requestBody).not.toHaveProperty('max_tokens');
+    } finally {
+      globalThis.fetch = originalFetch;
+      for (const key of envKeys) {
+        const originalValue = originalEnv.get(key);
+        if (originalValue === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = originalValue;
+        }
+      }
+    }
+  });
 });

@@ -18,6 +18,7 @@ import {
 import { parseOutputLanguage, outputLanguageDisplayName } from '../agentv3/outputLanguage';
 import { loadPromptTemplate, renderTemplate } from '../agentv3/strategyLoader';
 import { resolveAgentRuntimeSelection } from '../agentRuntime/runtimeSelection';
+import { buildOpenAIChatCompletionsTokenLimit } from './providerManager/openAiChatCompletionsCompat';
 import type {
   ComparisonConclusion,
   ComparisonResult,
@@ -161,7 +162,7 @@ async function completeWithOpenAI(input: ComparisonConclusionClientInput): Promi
         model: config.lightModel,
         messages: [{ role: 'user', content: input.prompt }],
         temperature: 0.1,
-        max_tokens: 1200,
+        ...buildOpenAIChatCompletionsTokenLimit(config.lightModel, 1200),
       }),
     });
     if (!response.ok) {

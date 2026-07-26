@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { OpenAIChatCompletionsModel, withTrace } from '@openai/agents';
 import { OpenAIRuntime, __testing } from '../openAiRuntime';
 import type { AnalysisPlanV3, PlanPhase } from '../../agentv3/types';
 import type { OpenAIAgentConfig } from '../../agentRuntime/engines/openai/openAiConfig';
@@ -2563,12 +2564,94 @@ describe('OpenAIRuntime plan completion guard', () => {
 describe('OpenAIRuntime previous response recovery', () => {
   it('disables provider response storage for private model calls', () => {
     const config = createOpenAiConfigForTest();
-    expect(__testing.buildOpenAIModelSettings(config, false)).toEqual(expect.objectContaining({
+    expect(__testing.buildOpenAIModelSettings(config, config.model, false)).toEqual(expect.objectContaining({
       store: false,
       maxTokens: config.maxOutputTokens,
       parallelToolCalls: false,
     }));
-    expect(__testing.buildOpenAIModelSettings(config, true).store).toBe(true);
+    expect(__testing.buildOpenAIModelSettings(config, config.model, true).store).toBe(true);
+  });
+
+  it('uses max_completion_tokens for GPT-5.6 Chat Completions without emitting maxTokens', () => {
+    const config = {
+      ...createOpenAiConfigForTest(),
+      protocol: 'chat_completions' as const,
+      model: 'gpt-5.6-sol',
+    };
+    const settings = __testing.buildOpenAIModelSettings(config, config.model, false);
+
+    expect(settings).toEqual({
+      providerData: { max_completion_tokens: config.maxOutputTokens },
+      parallelToolCalls: false,
+      store: false,
+    });
+    expect(settings).not.toHaveProperty('maxTokens');
+  });
+
+  it('keeps maxTokens for GPT-5.6 on the Responses protocol', () => {
+    const config = {
+      ...createOpenAiConfigForTest(),
+      model: 'gpt-5.6-sol',
+    };
+
+    expect(__testing.buildOpenAIModelSettings(config, config.model, true)).toEqual({
+      maxTokens: config.maxOutputTokens,
+      parallelToolCalls: false,
+      store: true,
+    });
+  });
+
+  it('serializes the GPT-5.6 token limit through the Agents SDK request boundary', async () => {
+    const createCompletion = jest.fn(async (_body: unknown, _options?: unknown) => ({
+      id: 'chatcmpl-test',
+      choices: [{
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: 'ok' },
+      }],
+      created: 0,
+      model: 'gpt-5.6-sol',
+      object: 'chat.completion',
+    }));
+    const model = new OpenAIChatCompletionsModel({
+      chat: { completions: { create: createCompletion } },
+    } as any, 'gpt-5.6-sol');
+    const config = {
+      ...createOpenAiConfigForTest(),
+      protocol: 'chat_completions' as const,
+      model: 'gpt-5.6-sol',
+    };
+
+    await withTrace('OpenAIRuntime token serialization test', async () => {
+      await model.getResponse({
+        input: [{ role: 'user', content: 'hi' }],
+        systemInstructions: 'answer briefly',
+        modelSettings: __testing.buildOpenAIModelSettings(config, config.model, false),
+        tools: [],
+        handoffs: [],
+        outputType: 'text',
+        tracing: false,
+      } as any);
+    });
+
+    const requestBody = createCompletion.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(requestBody.max_completion_tokens).toBe(config.maxOutputTokens);
+    expect(requestBody.max_tokens).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(requestBody))).not.toHaveProperty('max_tokens');
+  });
+
+  it('keeps maxTokens for legacy Chat Completions models', () => {
+    const config = {
+      ...createOpenAiConfigForTest(),
+      protocol: 'chat_completions' as const,
+      model: 'deepseek-v4-pro',
+    };
+
+    expect(__testing.buildOpenAIModelSettings(config, config.model, true)).toEqual({
+      maxTokens: config.maxOutputTokens,
+      parallelToolCalls: false,
+      store: true,
+    });
   });
 
   it('keeps quick mode off the remote OpenAI response chain', () => {

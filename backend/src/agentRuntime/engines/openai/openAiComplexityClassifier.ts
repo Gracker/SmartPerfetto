@@ -16,6 +16,7 @@
 
 import { buildComplexityClassifierPrompt } from '../../../agentv3/queryComplexityPrompt';
 import type { ComplexityClassifierInput, QueryComplexity } from '../../../agentv3/types';
+import { buildOpenAIChatCompletionsTokenLimit } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import type { OpenAIAgentConfig } from './openAiConfig';
 
 interface ChatCompletionsResponse {
@@ -95,7 +96,7 @@ export async function classifyQueryWithOpenAILightModel(
         model: config.lightModel,
         messages: [{ role: 'user', content: prompt }],
         temperature: 0,
-        max_tokens: 200,
+        ...buildOpenAIChatCompletionsTokenLimit(config.lightModel, 200),
       }),
     });
 

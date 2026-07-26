@@ -105,6 +105,7 @@ import {
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import { formatToolCallNarration } from '../../../agentv3/toolNarration';
 import { loadOpenAIConfig, type OpenAIAgentConfig } from './openAiConfig';
+import { buildOpenAIChatCompletionsTokenLimit } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {
   createMimoReasoningContentFetch,
   shouldUseMimoReasoningContentCompat,
@@ -693,11 +694,20 @@ function resolveOpenAIRunInput(params: {
 }
 
 function buildOpenAIModelSettings(
-  config: Pick<OpenAIAgentConfig, 'maxOutputTokens'>,
+  config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol'>,
+  model: string,
   allowRemotePersistence: boolean,
 ) {
+  const chatCompletionsTokenLimit = config.protocol === 'chat_completions'
+    ? buildOpenAIChatCompletionsTokenLimit(model, config.maxOutputTokens)
+    : undefined;
+  const usesMaxCompletionTokens = chatCompletionsTokenLimit
+    && 'max_completion_tokens' in chatCompletionsTokenLimit;
+
   return {
-    maxTokens: config.maxOutputTokens,
+    ...(usesMaxCompletionTokens
+      ? { providerData: chatCompletionsTokenLimit }
+      : { maxTokens: config.maxOutputTokens }),
     parallelToolCalls: false,
     store: allowRemotePersistence,
   };
@@ -1070,6 +1080,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         allowRemotePersistence: !analysisContextUsesPrivateKnowledge(options),
       });
       const input = runInput.input;
+      const selectedModel = quickMode ? config.lightModel : config.model;
 
       analysisAbortScope.throwIfAborted();
       setTracingDisabled(true);
@@ -1097,11 +1108,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const agent = new Agent({
         name: 'SmartPerfetto',
         instructions: context.systemPrompt,
-        model: quickMode ? config.lightModel : config.model,
+        model: selectedModel,
         tools: context.tools,
         toolUseBehavior: 'run_llm_again',
         modelSettings: buildOpenAIModelSettings(
           config,
+          selectedModel,
           !analysisContextUsesPrivateKnowledge(options),
         ),
       });

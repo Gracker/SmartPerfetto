@@ -110,6 +110,25 @@ describe('Provider connection tester', () => {
     });
   });
 
+  it('probes GPT-5.6 Chat Completions with max_completion_tokens', async () => {
+    let requestBody: Record<string, unknown> = {};
+    globalThis.fetch = jest.fn(async (_url: string, init: RequestInit) => {
+      requestBody = JSON.parse(String(init.body));
+      return jsonResponse({ id: 'chatcmpl-test' });
+    }) as any;
+
+    const result = await testProviderConnection(customOpenAIProvider({
+      models: {
+        primary: 'gpt-5.6-sol',
+        light: 'gpt-5.6-sol',
+      },
+    }));
+
+    expect(result).toMatchObject({ success: true, modelVerified: true });
+    expect(requestBody.max_completion_tokens).toBe(1);
+    expect(requestBody).not.toHaveProperty('max_tokens');
+  });
+
   it('passes responses providers only after a primary model probe succeeds', async () => {
     let requestUrl = '';
     let requestBody: any;

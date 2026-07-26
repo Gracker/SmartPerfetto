@@ -11,6 +11,7 @@ import {
   requestProviderEndpoint,
   type ProviderEndpointResponse,
 } from './providerEndpointRequest';
+import { buildOpenAIChatCompletionsTokenLimit } from './openAiChatCompletionsCompat';
 
 const TEST_REQUEST_TIMEOUT_MS = 10000;
 const TEST_TOTAL_TIMEOUT_MS = 15000;
@@ -363,8 +364,8 @@ async function testOpenAIChatCompletionsProtocol(
     headers,
     body: JSON.stringify({
       model: provider.models.primary,
-      max_tokens: 1,
       messages: [{ role: 'user', content: 'hi' }],
+      ...buildOpenAIChatCompletionsTokenLimit(provider.models.primary, 1),
     }),
   });
 
