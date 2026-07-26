@@ -44,6 +44,20 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
   );
 });
 
+test('macOS packaging preserves and verifies JIT runtime entitlements', () => {
+  const portableScript = readFileSync(join(root, 'scripts/package-portable.sh'), 'utf8');
+  const portableVerifier = readFileSync(join(root, 'scripts/verify-portable-package.cjs'), 'utf8');
+
+  assert.match(portableScript, /--preserve-metadata=identifier,entitlements/);
+  for (const entitlement of [
+    'com.apple.security.cs.allow-jit',
+    'com.apple.security.cs.allow-unsigned-executable-memory',
+    'com.apple.security.cs.disable-library-validation',
+  ]) {
+    assert.match(portableVerifier, new RegExp(entitlement.replaceAll('.', '\\.')));
+  }
+});
+
 test('Docker CI smokes both static routes and the packaged OpenCode executable', () => {
   const workflow = readFileSync(
     join(root, '.github/workflows/backend-agent-regression-gate.yml'),

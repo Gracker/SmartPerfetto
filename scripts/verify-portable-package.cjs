@@ -347,6 +347,38 @@ function verifyMacosCodeSignature(assetPath, packageName) {
         maxBuffer: 16 * 1024 * 1024,
       });
     }
+    const jitRuntimes = [
+      'Contents/Resources/runtime/node/bin/node',
+      'Contents/Resources/backend/node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude',
+    ];
+    const requiredEntitlements = [
+      'com.apple.security.cs.allow-jit',
+      'com.apple.security.cs.allow-unsigned-executable-memory',
+      'com.apple.security.cs.disable-library-validation',
+    ];
+    for (const relativePath of jitRuntimes) {
+      const binaryPath = path.join(appPath, relativePath);
+      const entitlementXml = execFileSync(
+        'codesign',
+        ['--display', '--entitlements', '-', '--xml', binaryPath],
+        { stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 16 * 1024 * 1024 },
+      );
+      assert(
+        entitlementXml.length > 0,
+        `Missing required macOS runtime entitlements: ${relativePath}`,
+      );
+      const entitlementJson = execFileSync('plutil', ['-convert', 'json', '-o', '-', '-'], {
+        input: entitlementXml,
+        maxBuffer: 16 * 1024 * 1024,
+      });
+      const entitlements = JSON.parse(entitlementJson);
+      for (const entitlement of requiredEntitlements) {
+        assert(
+          entitlements[entitlement] === true,
+          `Missing required macOS runtime entitlement ${entitlement}: ${relativePath}`,
+        );
+      }
+    }
     execFileSync('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath], {
       stdio: 'pipe',
       maxBuffer: 16 * 1024 * 1024,

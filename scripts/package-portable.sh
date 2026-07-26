@@ -630,7 +630,13 @@ sign_macos_app() {
   if [ -n "$identity" ]; then
     echo "Signing macOS app with identity: $identity"
     while IFS= read -r -d '' file; do
-      codesign --force --timestamp --options runtime --sign "$identity" "$file"
+      if codesign --display "$file" >/dev/null 2>&1; then
+        codesign --force --timestamp --options runtime \
+          --preserve-metadata=identifier,entitlements \
+          --sign "$identity" "$file"
+      else
+        codesign --force --timestamp --options runtime --sign "$identity" "$file"
+      fi
     done < <(node "$PROJECT_ROOT/scripts/find-macho-files.cjs" --null "$app_dir/Contents")
     codesign --force --timestamp --options runtime --sign "$identity" "$app_dir"
   else
