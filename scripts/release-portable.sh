@@ -14,6 +14,9 @@ SKIP_BUILD=false
 ALLOW_DIRTY=false
 GH_REPO=""
 SMOKE_EVIDENCE_DIR=""
+SMOKE_ATTESTATION_FILE=""
+SMOKE_RUN_ID=""
+RELEASE_COMMIT=""
 TARGETS=()
 DEFAULT_TARGETS=("windows-x64" "macos-arm64" "linux-x64")
 
@@ -25,11 +28,18 @@ Usage:
 Options:
   --targets LIST       Comma-separated targets. Default: windows-x64,macos-arm64,linux-x64.
   --target TARGET      Add one target. May be repeated.
-  --no-draft           Publish only after a draft contains all three verified platform assets.
+  --no-draft           Promote an existing exact three-asset draft without uploading or replacing assets.
   --prerelease         Mark the release as a prerelease.
   --skip-build         Reuse existing dist/portable assets for the version.
   --smoke-evidence-dir DIR
-                       Directory containing <target>/smoke-summary.json evidence.
+                       Directory containing <target>/smoke-summary.json evidence
+                       and optional hosted workflow-context.json files.
+  --smoke-attestation FILE
+                       Combined all-target hosted workflow attestation.
+  --smoke-run-id ID    Successful hosted workflow run that produced the
+                       digest-verified combined evidence artifact.
+  --release-commit SHA Exact existing draft target commit. Promotion-only; use
+                       when the fixed gate code is newer than the release bytes.
   --allow-dirty        Allow uploading a draft/test package built from uncommitted changes.
   -R, --repo REPO      Pass a GitHub repo override to gh, for example Gracker/SmartPerfetto.
 
@@ -176,11 +186,24 @@ release_id_for_tag() {
 verify_remote_release() {
   local release_id="$1"
   local require_complete="$2"
-  local remote_json="$3"
+  local expected_draft="$3"
+  local remote_json="$4"
+  local baseline_json="${5:-}"
   gh api "repos/$REPO_SLUG/releases/$release_id" > "$remote_json"
-  node - "$remote_json" "$EXPECTED_ASSETS_FILE" "$TARGET_SHA" "SmartPerfetto $TAG" "$PRERELEASE" "$require_complete" <<'NODE'
+  node - "$remote_json" "$EXPECTED_ASSETS_FILE" "$TARGET_SHA" "SmartPerfetto $TAG" "$TAG" "$PRERELEASE" "$require_complete" "$expected_draft" "$release_id" "$baseline_json" <<'NODE'
 const fs = require('fs');
-const [remoteFile, expectedFile, targetSha, expectedName, prerelease, requireComplete] = process.argv.slice(2);
+const [
+  remoteFile,
+  expectedFile,
+  targetSha,
+  expectedName,
+  expectedTag,
+  prerelease,
+  requireComplete,
+  expectedDraft,
+  expectedReleaseId,
+  baselineFile,
+] = process.argv.slice(2);
 const release = JSON.parse(fs.readFileSync(remoteFile, 'utf8'));
 const expected = fs.readFileSync(expectedFile, 'utf8')
   .trim()
@@ -194,6 +217,12 @@ function fail(message) {
   console.error(`ERROR: ${message}`);
   process.exit(1);
 }
+if (release.id !== Number(expectedReleaseId)) {
+  fail(`release id mismatch: expected ${expectedReleaseId}, got ${release.id || '<empty>'}`);
+}
+if (release.tag_name !== expectedTag) {
+  fail(`release tag mismatch: expected ${expectedTag}, got ${release.tag_name || '<empty>'}`);
+}
 if (release.target_commitish !== targetSha) {
   fail(`release target mismatch: expected ${targetSha}, got ${release.target_commitish || '<empty>'}`);
 }
@@ -203,10 +232,19 @@ if (release.name !== expectedName) {
 if (Boolean(release.prerelease) !== (prerelease === 'true')) {
   fail(`release prerelease flag mismatch`);
 }
+if (Boolean(release.draft) !== (expectedDraft === 'true')) {
+  fail(`release draft flag mismatch: expected ${expectedDraft}, got ${Boolean(release.draft)}`);
+}
 const remoteAssets = Array.isArray(release.assets) ? release.assets : [];
 for (const asset of expected) {
   const remote = remoteAssets.find(item => item.name === asset.name);
   if (!remote) fail(`release is missing ${asset.name}`);
+  if (!Number.isInteger(remote.id) || remote.id <= 0) {
+    fail(`${asset.name} has an invalid asset id`);
+  }
+  if (remote.state !== 'uploaded') {
+    fail(`${asset.name} is not in the uploaded state`);
+  }
   if (remote.size !== asset.size) {
     fail(`${asset.name} size mismatch: expected ${asset.size}, got ${remote.size}`);
   }
@@ -222,6 +260,45 @@ if (requireComplete === 'true') {
     fail(`published release asset set is not exact: ${remoteAssets.map(asset => asset.name).join(', ')}`);
   }
 }
+if (baselineFile) {
+  const baseline = JSON.parse(fs.readFileSync(baselineFile, 'utf8'));
+  const releaseIdentity = value => ({
+    id: value.id,
+    tag_name: value.tag_name,
+    target_commitish: value.target_commitish,
+    name: value.name,
+    prerelease: Boolean(value.prerelease),
+    assets: (Array.isArray(value.assets) ? value.assets : [])
+      .map(asset => ({
+        id: asset.id,
+        name: asset.name,
+        state: asset.state,
+        size: asset.size,
+        digest: asset.digest,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  });
+  if (JSON.stringify(releaseIdentity(release)) !== JSON.stringify(releaseIdentity(baseline))) {
+    fail('release or asset identity changed while publishing the verified draft');
+  }
+}
+NODE
+}
+
+asset_id_from_release_json() {
+  local remote_json="$1"
+  local asset_name="$2"
+  node - "$remote_json" "$asset_name" <<'NODE'
+const fs = require('fs');
+const [remoteFile, assetName] = process.argv.slice(2);
+const release = JSON.parse(fs.readFileSync(remoteFile, 'utf8'));
+const matches = (Array.isArray(release.assets) ? release.assets : [])
+  .filter(asset => asset.name === assetName);
+if (matches.length !== 1 || !Number.isInteger(matches[0].id) || matches[0].id <= 0) {
+  console.error(`ERROR: could not resolve one immutable asset id for ${assetName}`);
+  process.exit(1);
+}
+process.stdout.write(String(matches[0].id));
 NODE
 }
 
@@ -294,6 +371,30 @@ while [ "$#" -gt 0 ]; do
       SMOKE_EVIDENCE_DIR="$2"
       shift 2
       ;;
+    --release-commit)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --release-commit requires a full commit SHA." >&2
+        exit 2
+      fi
+      RELEASE_COMMIT="$2"
+      shift 2
+      ;;
+    --smoke-attestation)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --smoke-attestation requires a file." >&2
+        exit 2
+      fi
+      SMOKE_ATTESTATION_FILE="$2"
+      shift 2
+      ;;
+    --smoke-run-id)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --smoke-run-id requires a numeric Actions run id." >&2
+        exit 2
+      fi
+      SMOKE_RUN_ID="$2"
+      shift 2
+      ;;
     --allow-dirty)
       ALLOW_DIRTY=true
       shift
@@ -351,6 +452,23 @@ if [ "$DRAFT" = false ] && [ -z "$SMOKE_EVIDENCE_DIR" ]; then
   echo "ERROR: --no-draft requires --smoke-evidence-dir with all three target-native summaries." >&2
   exit 2
 fi
+if [ -n "$RELEASE_COMMIT" ] && [ "$DRAFT" != false ]; then
+  echo "ERROR: --release-commit is limited to --no-draft promotion." >&2
+  exit 2
+fi
+if { [ -n "$SMOKE_RUN_ID" ] || [ -n "$SMOKE_ATTESTATION_FILE" ]; } && [ "$DRAFT" != false ]; then
+  echo "ERROR: hosted smoke provenance options are limited to --no-draft promotion." >&2
+  exit 2
+fi
+if [ -n "$SMOKE_RUN_ID" ] && [[ ! "$SMOKE_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --smoke-run-id must be a positive integer." >&2
+  exit 2
+fi
+if { [ -n "$SMOKE_RUN_ID" ] && [ -z "$SMOKE_ATTESTATION_FILE" ]; } ||
+   { [ -z "$SMOKE_RUN_ID" ] && [ -n "$SMOKE_ATTESTATION_FILE" ]; }; then
+  echo "ERROR: --smoke-run-id and --smoke-attestation must be provided together." >&2
+  exit 2
+fi
 
 require_command gh
 require_command git
@@ -363,7 +481,23 @@ cd "$PROJECT_ROOT"
 node scripts/sync-version.cjs --check "$VERSION"
 VERSION="$(node -p "require('./package.json').version")"
 TAG="v$VERSION"
-TARGET_SHA="$(git rev-parse HEAD)"
+GATE_SHA="$(git rev-parse HEAD)"
+TARGET_SHA="$GATE_SHA"
+if [ -n "$RELEASE_COMMIT" ]; then
+  if [[ ! "$RELEASE_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "ERROR: --release-commit must be a full 40-character commit SHA." >&2
+    exit 2
+  fi
+  TARGET_SHA="$(printf '%s' "$RELEASE_COMMIT" | tr '[:upper:]' '[:lower:]')"
+  if ! git cat-file -e "$TARGET_SHA^{commit}" 2>/dev/null; then
+    echo "ERROR: release commit is not available locally: $TARGET_SHA" >&2
+    exit 1
+  fi
+  if ! git merge-base --is-ancestor "$TARGET_SHA" "$GATE_SHA"; then
+    echo "ERROR: release commit $TARGET_SHA is not an ancestor of gate commit $GATE_SHA." >&2
+    exit 1
+  fi
+fi
 
 assert_clean_worktree
 
@@ -431,7 +565,9 @@ fi
 
 NOTES_FILE="$(mktemp -t smartperfetto-portable-release.XXXXXX.md)"
 REMOTE_RELEASE_FILE="$(mktemp -t smartperfetto-portable-remote.XXXXXX.json)"
-trap 'rm -f "$NOTES_FILE" "$EXPECTED_ASSETS_FILE" "$REMOTE_RELEASE_FILE"' EXIT
+PREPUBLISH_RELEASE_FILE="$(mktemp -t smartperfetto-portable-prepublish.XXXXXX.json)"
+FINAL_PREPUBLISH_RELEASE_FILE="$(mktemp -t smartperfetto-portable-final-prepublish.XXXXXX.json)"
+trap 'rm -f "$NOTES_FILE" "$EXPECTED_ASSETS_FILE" "$REMOTE_RELEASE_FILE" "$PREPUBLISH_RELEASE_FILE" "$FINAL_PREPUBLISH_RELEASE_FILE"' EXIT
 
 {
   echo "SmartPerfetto portable release."
@@ -451,47 +587,127 @@ else
   edit_args+=(--prerelease=false)
 fi
 
+release_exists=false
 if gh_release view "$TAG" --json isDraft --jq '.isDraft' >/dev/null 2>&1; then
+  release_exists=true
+fi
+
+if [ "$DRAFT" = false ]; then
+  if [ "$release_exists" != true ]; then
+    echo "ERROR: --no-draft only promotes an existing verified draft; it never creates or uploads release assets." >&2
+    exit 1
+  fi
   release_id="$(release_id_for_tag)"
   existing_draft="$(gh_release view "$TAG" --json isDraft --jq '.isDraft')"
   if [ "$existing_draft" != "true" ]; then
-    if ! targets_are_complete; then
-      echo "ERROR: published release verification requires all three default targets." >&2
-      exit 1
-    fi
-    verify_remote_release "$release_id" true "$REMOTE_RELEASE_FILE"
+    verify_remote_release "$release_id" true false "$REMOTE_RELEASE_FILE"
     echo "Published release already matches the local assets exactly; no changes made: $TAG"
     exit 0
   fi
-  remote_target="$(gh_release view "$TAG" --json targetCommitish --jq '.targetCommitish')"
-  if [ "$remote_target" != "$TARGET_SHA" ]; then
-    echo "ERROR: refusing to modify draft $TAG for a different target commit." >&2
-    echo "  expected: $TARGET_SHA" >&2
-    echo "  actual:   ${remote_target:-<empty>}" >&2
+  verify_remote_release "$release_id" true true "$PREPUBLISH_RELEASE_FILE"
+  hosted_context_count=0
+  for target in "${TARGETS[@]}"; do
+    workflow_context="$SMOKE_EVIDENCE_DIR/$target/workflow-context.json"
+    if [ -e "$workflow_context" ]; then
+      hosted_context_count=$((hosted_context_count + 1))
+      if [ ! -f "$workflow_context" ] || [ -L "$workflow_context" ]; then
+        echo "ERROR: hosted workflow context must be a regular file: $workflow_context" >&2
+        exit 1
+      fi
+      asset_path="$(asset_path_for_target "$target")"
+      asset_name="$(asset_name_for_target "$target")"
+      asset_id="$(asset_id_from_release_json "$PREPUBLISH_RELEASE_FILE" "$asset_name")"
+      node scripts/verify-portable-smoke-evidence.cjs \
+        --summary "$SMOKE_EVIDENCE_DIR/$target/smoke-summary.json" \
+        --asset "$asset_path" \
+        --target "$target" \
+        --version "$VERSION" \
+        --commit "$TARGET_SHA" \
+        --require-public-release \
+        --release-json "$PREPUBLISH_RELEASE_FILE" \
+        --release-id "$release_id" \
+        --asset-id "$asset_id" \
+        --workflow-context "$workflow_context"
+    fi
+  done
+  if [ "$hosted_context_count" -gt 0 ]; then
+    if [ "$hosted_context_count" -ne "${#DEFAULT_TARGETS[@]}" ]; then
+      echo "ERROR: hosted promotion evidence requires workflow context for all three targets." >&2
+      exit 1
+    fi
+    if [ -z "$SMOKE_RUN_ID" ] || [ -z "$SMOKE_ATTESTATION_FILE" ]; then
+      echo "ERROR: hosted workflow evidence requires --smoke-run-id and --smoke-attestation." >&2
+      exit 1
+    fi
+    if [ ! -f "$SMOKE_ATTESTATION_FILE" ] || [ -L "$SMOKE_ATTESTATION_FILE" ]; then
+      echo "ERROR: hosted smoke attestation must be a regular file: $SMOKE_ATTESTATION_FILE" >&2
+      exit 1
+    fi
+    node scripts/verify-portable-smoke-attestation.cjs \
+      --attestation "$SMOKE_ATTESTATION_FILE" \
+      --evidence-dir "$SMOKE_EVIDENCE_DIR" \
+      --release-json "$PREPUBLISH_RELEASE_FILE" \
+      --repository "$REPO_SLUG" \
+      --release-id "$release_id" \
+      --version "$VERSION" \
+      --commit "$TARGET_SHA" \
+      --run-id "$SMOKE_RUN_ID"
+  elif [ -n "$SMOKE_RUN_ID" ] || [ -n "$SMOKE_ATTESTATION_FILE" ]; then
+    echo "ERROR: hosted smoke provenance was provided without hosted workflow contexts." >&2
     exit 1
   fi
-  gh_release "${edit_args[@]}"
-  for asset in "${assets[@]}"; do
-    gh_release upload "$TAG" "$asset" --clobber
-  done
-else
-  gh_release "${create_args[@]}"
-  for asset in "${assets[@]}"; do
-    gh_release upload "$TAG" "$asset"
-  done
-  release_id="$(release_id_for_tag)"
-fi
-
-verify_remote_release "$release_id" "$([ "$DRAFT" = false ] && echo true || echo false)" "$REMOTE_RELEASE_FILE"
-
-if [ "$DRAFT" = false ]; then
-  gh_release edit "$TAG" --draft=false
+  verify_remote_release \
+    "$release_id" \
+    true \
+    true \
+    "$FINAL_PREPUBLISH_RELEASE_FILE" \
+    "$PREPUBLISH_RELEASE_FILE"
+  gh api \
+    --method PATCH \
+    "repos/$REPO_SLUG/releases/$release_id" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    -F draft=false \
+    > "$REMOTE_RELEASE_FILE"
   published="$(gh_release view "$TAG" --json isDraft --jq '.isDraft')"
   if [ "$published" != "false" ]; then
     echo "ERROR: release $TAG was not published after verification." >&2
     exit 1
   fi
-  verify_remote_release "$release_id" true "$REMOTE_RELEASE_FILE"
+  verify_remote_release \
+    "$release_id" \
+    true \
+    false \
+    "$REMOTE_RELEASE_FILE" \
+    "$FINAL_PREPUBLISH_RELEASE_FILE"
+else
+  if [ "$release_exists" = true ]; then
+    release_id="$(release_id_for_tag)"
+    existing_draft="$(gh_release view "$TAG" --json isDraft --jq '.isDraft')"
+    if [ "$existing_draft" != "true" ]; then
+      verify_remote_release "$release_id" true false "$REMOTE_RELEASE_FILE"
+      echo "Published release already matches the local assets exactly; no changes made: $TAG"
+      exit 0
+    fi
+    remote_target="$(gh_release view "$TAG" --json targetCommitish --jq '.targetCommitish')"
+    if [ "$remote_target" != "$TARGET_SHA" ]; then
+      echo "ERROR: refusing to modify draft $TAG for a different target commit." >&2
+      echo "  expected: $TARGET_SHA" >&2
+      echo "  actual:   ${remote_target:-<empty>}" >&2
+      exit 1
+    fi
+    gh_release "${edit_args[@]}"
+    for asset in "${assets[@]}"; do
+      gh_release upload "$TAG" "$asset" --clobber
+    done
+  else
+    gh_release "${create_args[@]}"
+    for asset in "${assets[@]}"; do
+      gh_release upload "$TAG" "$asset"
+    done
+    release_id="$(release_id_for_tag)"
+  fi
+  verify_remote_release "$release_id" false true "$REMOTE_RELEASE_FILE"
 fi
 
 echo "Portable release assets uploaded:"

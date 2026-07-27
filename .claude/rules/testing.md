@@ -179,6 +179,45 @@ required runner cannot execute the exact archive, keep the GitHub release as a
 draft. Publishing with a known gap requires explicit user acceptance and must
 name the untested target; static verification is not a substitute.
 
+The hosted entry point is
+`.github/workflows/portable-exact-archive-smoke.yml`. Dispatch it only from the
+default branch and pass the numeric draft release ID. Its gate checkout is
+fixed to the dispatch SHA; the release checkout is fixed to the draft's full
+target SHA (or the peeled tag commit once the tag exists), and that release
+commit must be an ancestor of the gate. Each target downloads by immutable
+asset ID with native binary I/O, verifies size and digest before extraction,
+then re-fetches and re-binds the release after download and after smoke.
+`GH_TOKEN` is scoped only to those REST/download steps.
+
+`selection=windows-linux` and single-target selections produce partial
+diagnostic evidence and are never promotion evidence. Only a successful
+`selection=all` run can set `publicReleaseEligible: true`; it must include the
+signed, notarized, stapled macOS final zip. Per-target artifacts keep separate
+target roots, and the collect job preserves both failures and a combined
+attestation. The combined artifact exposes normalized
+`promotion-evidence/<target>/smoke-summary.json` and
+`workflow-context.json` only for targets whose release ID, asset ID, summary
+digest, runner host, gate SHA, and run identity all match. Hosted promotion
+must pass that downloaded `promotion-evidence/`, the sibling
+`portable-smoke-attestation.json`, and the producing run ID to
+`release:portable`. The promotion verifier re-fetches the completed Actions
+run and the uniquely named combined artifact, verifies GitHub's artifact
+SHA-256 against the downloaded zip, and byte-compares the local evidence with
+the digest-verified artifact.
+
+For changes to this gate, run at minimum:
+
+```bash
+node --check scripts/portable-release-smoke-workflow.cjs
+node --check scripts/download-portable-release-asset.cjs
+node --check scripts/verify-portable-smoke-attestation.cjs
+node --test scripts/__tests__/portable-release-smoke-workflow.test.mjs \
+  scripts/__tests__/verify-portable-smoke-evidence.test.mjs \
+  scripts/__tests__/release-portable.test.mjs
+bash -n scripts/release-portable.sh
+shellcheck scripts/release-portable.sh
+```
+
 ## Canonical Scene Regression
 
 Run:

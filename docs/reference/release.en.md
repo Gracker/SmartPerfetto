@@ -80,8 +80,17 @@ node scripts/smoke-portable-archive.cjs \
   --commit "<release-commit>" \
   --public-release \
   --output-dir "dist/portable/smoke-evidence/<target>"
+# When a target machine is unavailable, run the existing draft from the default branch; only all can promote.
+gh workflow run portable-exact-archive-smoke.yml \
+  -f release_id=<numeric-release-id> -f selection=all
+gh run download <run-id> \
+  --name portable-smoke-evidence-release-<numeric-release-id> \
+  --dir <download-dir>
 npm run release:portable -- <version> --skip-build --no-draft \
-  --smoke-evidence-dir dist/portable/smoke-evidence
+  --release-commit <draft-target-full-sha> \
+  --smoke-evidence-dir <download-dir>/promotion-evidence \
+  --smoke-attestation <download-dir>/portable-smoke-attestation.json \
+  --smoke-run-id <run-id>
 gh release view v<version> --json tagName,isDraft,assets
 ```
 
@@ -100,11 +109,27 @@ replaced artifact cannot pass.
 Successful evidence is written atomically, failures use a separate
 `smoke-failure.json`, and reruns must not overwrite existing release evidence.
 
+The hosted workflow downloads exact bytes by release ID and asset ID,
+re-checks the release after download and after smoke, and runs both the release
+commit verifier and a fixed default-branch verifier. `windows-linux` and
+single-target runs are explicitly partial. Only an `all` run containing the
+signed, notarized, stapled final macOS zip can become promotion evidence.
+Download the whole combined artifact by successful run ID and pass its
+`promotion-evidence/`, sibling attestation, and run ID together to promotion.
+The script verifies the real Actions run and GitHub artifact digest; do not
+assemble individual job evidence by hand.
+
 `release:portable` is always draft-first: it uploads and verifies the target
-commit, title, and all three asset names, sizes, and GitHub digests before
-`--no-draft` makes the release public. Public releases and assets are immutable;
+commit, title, and all three asset names, sizes, and GitHub digests.
+`--no-draft` only promotes an existing draft. It never creates the release,
+edits title/target, uploads, or clobbers assets; before and after changing the
+draft flag it compares the release ID and every asset ID, state, name, size,
+and digest. Public releases and assets are immutable;
 a repeated run performs strict read-only verification and exits idempotently
 only when everything matches.
+If the gate code is newer than the draft bytes, add
+`--release-commit <draft-target-full-sha>`; only an ancestor of the current
+gate commit is accepted.
 
 Finally, verify that generated outputs were not staged:
 
@@ -121,6 +146,8 @@ git status --short --branch
 - `--skip-build` is only valid for packages just built from the same version and commit.
 - `--no-draft` may publish only the complete default three-platform set; it
   cannot publish a single target or partial set.
+- `--no-draft` must reuse the existing exact-asset-smoked draft and cannot
+  upload or replace assets.
 - Public macOS packages require Developer ID, Hardened Runtime, Apple
   notarization, and a stapled ticket. Ad-hoc signing is only for local or draft
   testing.

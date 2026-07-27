@@ -3,13 +3,21 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import assert from 'node:assert/strict';
+import {
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import {createRequire} from 'node:module';
+import {tmpdir} from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const {
+  updateWorkflowContext,
+  validateReleaseBinding,
   validateSmokeSummary,
 } = require(path.join(repoRoot, 'scripts/verify-portable-smoke-evidence.cjs'));
 
@@ -183,5 +191,91 @@ test('public macOS evidence requires native release trust checks', () => {
       },
     }, expected(summary)),
     /Accepted notarytool info receipt/,
+  );
+});
+
+test('hosted evidence binds release id, asset id, and immutable workflow context', () => {
+  const summary = validSummary();
+  const releaseId = 4242;
+  const assetId = 5002;
+  const release = {
+    id: releaseId,
+    draft: true,
+    prerelease: false,
+    tag_name: 'v1.2.3',
+    target_commitish: summary.commit.padEnd(40, '0'),
+    name: 'SmartPerfetto v1.2.3',
+    assets: [
+      {
+        id: 5000,
+        name: 'smartperfetto-v1.2.3-windows-x64.zip',
+        state: 'uploaded',
+        size: 121,
+        digest: `sha256:${'b'.repeat(64)}`,
+      },
+      {
+        id: 5001,
+        name: 'smartperfetto-v1.2.3-macos-arm64.zip',
+        state: 'uploaded',
+        size: 122,
+        digest: `sha256:${'c'.repeat(64)}`,
+      },
+      {
+        id: assetId,
+        name: summary.asset.name,
+        state: 'uploaded',
+        size: summary.asset.size,
+        digest: `sha256:${summary.asset.sha256}`,
+      },
+    ],
+  };
+  summary.commit = release.target_commitish;
+  summary.lifecycleReceipt.gitCommit = release.target_commitish;
+  const expectedBinding = {
+    asset: summary.asset,
+    assetId,
+    commit: release.target_commitish,
+    releaseId,
+    target: summary.target,
+    version: summary.version,
+  };
+  assert.equal(validateReleaseBinding(release, expectedBinding).id, releaseId);
+  assert.throws(
+    () => validateReleaseBinding({
+      ...release,
+      assets: release.assets.map(asset => (
+        asset.id === assetId ? {...asset, id: 9999} : asset
+      )),
+    }, expectedBinding),
+    /asset identity does not match/,
+  );
+
+  const work = mkdtempSync(path.join(tmpdir(), 'smartperfetto-workflow-context-'));
+  const contextFile = path.join(work, 'workflow-context.json');
+  const summaryFile = path.join(work, 'smoke-summary.json');
+  writeFileSync(summaryFile, `${JSON.stringify(summary)}\n`);
+  writeFileSync(contextFile, `${JSON.stringify({
+    schemaVersion: 1,
+    status: 'prepared',
+    release: {
+      id: releaseId,
+      tag: 'v1.2.3',
+      commit: release.target_commitish,
+    },
+    asset: {
+      target: summary.target,
+      assetId,
+      assetName: summary.asset.name,
+      assetSize: summary.asset.size,
+      assetDigest: `sha256:${summary.asset.sha256}`,
+    },
+    host: summary.host,
+  })}\n`);
+  const verified = updateWorkflowContext(contextFile, expectedBinding, summaryFile);
+  assert.equal(verified.status, 'verified');
+  assert.match(verified.smokeSummarySha256, /^[0-9a-f]{64}$/);
+  assert.equal(
+    JSON.parse(readFileSync(contextFile, 'utf8')).smokeSummarySha256,
+    verified.smokeSummarySha256,
   );
 });

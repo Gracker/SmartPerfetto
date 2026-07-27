@@ -73,8 +73,17 @@ npm run package:portable
 node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
   --version <version> --commit <commit> --public-release \
   --output-dir dist/portable/smoke-evidence/<target>
+# When a target machine is unavailable, run against the existing draft from the default branch:
+gh workflow run portable-exact-archive-smoke.yml \
+  -f release_id=<numeric-release-id> -f selection=all
+gh run download <run-id> \
+  --name portable-smoke-evidence-release-<numeric-release-id> \
+  --dir <download-dir>
 npm run release:portable -- <version> --skip-build --no-draft \
-  --smoke-evidence-dir dist/portable/smoke-evidence
+  --release-commit <draft-target-full-sha> \
+  --smoke-evidence-dir <download-dir>/promotion-evidence \
+  --smoke-attestation <download-dir>/portable-smoke-attestation.json \
+  --smoke-run-id <run-id>
 ```
 
 `package:portable` reads the exact Node.js version, target archive SHA-256
@@ -97,9 +106,33 @@ Success atomically creates `smoke-summary.json`; failure writes
 `smoke-failure.json` instead, so a rerun uses a new directory and cannot
 overwrite earlier evidence.
 
+The hosted workflow accepts only release commits that contain the current
+schema-v2 lifecycle smoke contract and downloads by immutable release ID and
+asset ID. It re-fetches GitHub metadata after download and after smoke, then
+runs both the release-commit verifier and the fixed default-branch verifier.
+`windows-linux` and single-target selections are partial diagnostics and
+cannot promote a release. Only a successful `selection=all` run with the
+Developer ID-signed, notarized, stapled final macOS zip can produce candidate
+`promotion-evidence/` in the combined artifact. Download the whole combined
+artifact by its successful run ID and pass its `promotion-evidence/`, sibling
+`portable-smoke-attestation.json`, and that run ID together to the release
+command. Promotion re-fetches the Actions run and uniquely named combined
+artifact, verifies the downloaded zip against GitHub's artifact SHA-256, and
+byte-binds the local evidence; do not assemble individual job artifacts by
+hand.
+
 The release script always creates or reuses a draft first. After upload it
 verifies the target commit, title, asset names, sizes, and GitHub `sha256:`
-digests before changing the draft to a public release. `--no-draft` requires
+digests. `--no-draft` is a strict promotion-only path: the draft and all three
+assets must already exist. It does not create a release, edit title/target,
+upload, or `--clobber` assets; it compares the release ID plus every asset ID,
+state, name, size, and digest before and after changing only the draft flag.
+If the smoke/promotion gate was hardened after the draft bytes were built, run
+from the newer clean gate checkout with
+`--release-commit <draft-target-full-sha>`. The script accepts only an ancestor
+of the gate commit, and package, evidence, and remote target checks remain
+bound to that release SHA.
+`--no-draft` requires
 all three default targets; a partial target set cannot be published. An already
 published release is read-only: the script verifies the exact three-platform
 set and exits idempotently when it matches, without clobbering, editing, or

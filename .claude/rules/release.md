@@ -87,11 +87,35 @@ should use WSL2; native Windows users should use the portable package.
    `dist/portable/smoke-evidence/<target>/smoke-summary.json` by using
    `--public-release`. Each target output directory must be fresh and must not
    overwrite prior smoke evidence.
+   When a target machine is unavailable, dispatch
+   `.github/workflows/portable-exact-archive-smoke.yml` from the default branch
+   with the numeric draft `release_id`. Use `selection=all` for promotion
+   evidence; `windows-linux` and single-target runs are explicitly partial.
+   The workflow downloads by immutable asset ID, re-checks release metadata
+   after download and after smoke, runs both the release-commit and fixed-gate
+   verifiers, and preserves a normalized `promotion-evidence/` directory plus
+   `portable-smoke-attestation.json` in the combined artifact. Download that
+   exact artifact by successful workflow run ID; do not copy individual job
+   artifacts into a promotion directory by hand.
+   Releases that predate the schema-v2 lifecycle smoke contract are rejected
+   instead of being silently downgraded.
 9. Publish those already-smoked portable assets:
    ```bash
    npm run release:portable -- <version> --skip-build --no-draft \
      --smoke-evidence-dir dist/portable/smoke-evidence
    gh release view v<version> --json tagName,isDraft,assets
+   ```
+   For hosted evidence, additionally pass the combined artifact and its
+   producing run:
+   ```bash
+   gh run download <run-id> \
+     --name portable-smoke-evidence-release-<release-id> \
+     --dir <download-dir>
+   npm run release:portable -- <version> --skip-build --no-draft \
+     --release-commit <draft-target-full-sha> \
+     --smoke-evidence-dir <download-dir>/promotion-evidence \
+     --smoke-attestation <download-dir>/portable-smoke-attestation.json \
+     --smoke-run-id <run-id>
    ```
 10. Re-check `git status --short --branch`. Generated `dist/portable/`,
    `dist/windows-exe/`, and cache outputs must not be staged.
@@ -140,6 +164,15 @@ should use WSL2; native Windows users should use the portable package.
 - Portable publishing is draft-first. Upload and verify the release target,
   title, exact asset names, sizes, and GitHub `sha256:` digests before making a
   release public.
+- `--no-draft` is promotion-only: the draft and all three assets must already
+  exist. It must not create a release, edit release metadata, upload, or
+  `--clobber` an asset. Before and after changing only the draft flag, compare
+  the release ID plus every asset ID, state, name, size, and digest.
+- If the gate code advanced after the draft bytes were built, run promotion
+  from the newer clean gate checkout with `--release-commit <full-draft-sha>`.
+  The script accepts only a locally available full SHA that is an ancestor of
+  the gate commit; package, evidence, and remote target checks still bind to
+  that release SHA.
 - `--no-draft` requires the complete default three-target set. A partial target
   selection must remain a draft.
 - A published release is read-only. Re-running the script may verify and exit

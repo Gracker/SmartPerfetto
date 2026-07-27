@@ -62,6 +62,10 @@ function setupProject() {
     join(scripts, 'verify-portable-smoke-evidence.cjs'),
     `'use strict';\nconst fs=require('fs');fs.appendFileSync('.git/fake-smoke-verifier.log',JSON.stringify(process.argv.slice(2))+'\\n');const i=process.argv.indexOf('--summary');if(i<0||!fs.statSync(process.argv[i+1]).isFile())process.exit(1);\n`,
   );
+  writeFileSync(
+    join(scripts, 'verify-portable-smoke-attestation.cjs'),
+    `'use strict';\nconst fs=require('fs');fs.appendFileSync('.git/fake-attestation-verifier.log',JSON.stringify(process.argv.slice(2))+'\\n');for(const option of ['--attestation','--evidence-dir','--release-json','--repository','--release-id','--version','--commit','--run-id']){const i=process.argv.indexOf(option);if(i<0||!process.argv[i+1])process.exit(1);}\n`,
+  );
   for (const [, suffix] of targets) {
     writeFileSync(
       join(out, `smartperfetto-v${version}-${suffix}`),
@@ -97,10 +101,19 @@ if (args[0] === 'api') {
   const state = load();
   if (!state.exists) process.exit(1);
   const releaseId = state.releaseId ?? 4242;
-  if (args[1] !== \`repos/Gracker/SmartPerfetto/releases/\${releaseId}\`) {
+  const patch = args[1] === '--method' && args[2] === 'PATCH';
+  const endpoint = patch ? args[3] : args[1];
+  if (endpoint !== \`repos/Gracker/SmartPerfetto/releases/\${releaseId}\`) {
     process.exit(1);
   }
+  if (patch) {
+    if (!args.includes('draft=false')) process.exit(1);
+    state.draft = false;
+    save(state);
+  }
   output(JSON.stringify({
+    id: releaseId,
+    tag_name: 'v${version}',
     target_commitish: state.target,
     name: state.name,
     prerelease: state.prerelease,
@@ -129,6 +142,7 @@ if (action === 'create') {
   state.target = option('--target');
   state.name = option('--title');
   state.releaseId = 4242;
+  state.nextAssetId = 5000;
   state.assets = [];
   save(state);
   process.exit(0);
@@ -150,17 +164,20 @@ if (action === 'upload') {
   const file = spec.split('#')[0];
   const name = path.basename(file);
   const bytes = fs.readFileSync(file);
+  const index = state.assets.findIndex(item => item.name === name);
   const asset = {
+    id: index >= 0 ? state.assets[index].id : (state.nextAssetId ?? 5000),
     name,
+    state: 'uploaded',
     size: bytes.length,
     digest: 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex'),
   };
-  const index = state.assets.findIndex(item => item.name === name);
   if (index >= 0) {
     if (!args.includes('--clobber')) process.exit(1);
     state.assets[index] = asset;
   } else {
     state.assets.push(asset);
+    state.nextAssetId = asset.id + 1;
   }
   save(state);
   process.exit(0);
@@ -201,11 +218,13 @@ fs.writeFileSync('.git/fake-npm-env.json', JSON.stringify(process.env, null, 2))
 }
 
 function expectedAssets(out) {
-  return targets.map(([, suffix]) => {
+  return targets.map(([, suffix], index) => {
     const name = `smartperfetto-v${version}-${suffix}`;
     const bytes = readFileSync(join(out, name));
     return {
+      id: 5000 + index,
       name,
+      state: 'uploaded',
       size: bytes.length,
       digest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
     };
@@ -219,6 +238,7 @@ function executeRelease(fixture, initialState, extraArgs = [], options = {}) {
   writeFileSync(logFile, '');
   writeFileSync(join(fixture.project, '.git', 'fake-package-verifier.log'), '');
   writeFileSync(join(fixture.project, '.git', 'fake-smoke-verifier.log'), '');
+  writeFileSync(join(fixture.project, '.git', 'fake-attestation-verifier.log'), '');
   const releaseArgs = [...extraArgs];
   if (
     releaseArgs.includes('--no-draft') &&
@@ -258,12 +278,16 @@ function executeRelease(fixture, initialState, extraArgs = [], options = {}) {
       join(fixture.project, '.git', 'fake-smoke-verifier.log'),
       'utf8',
     ).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
+    attestationVerifierCalls: readFileSync(
+      join(fixture.project, '.git', 'fake-attestation-verifier.log'),
+      'utf8',
+    ).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
   };
 }
 
 function mutationLog(log) {
   return log.filter(line =>
-    /^release (?:create|edit|upload)\b/.test(line),
+    /^(?:release (?:create|edit|upload)\b|api --method PATCH\b)/.test(line),
   );
 }
 
@@ -287,8 +311,9 @@ test('a draft-only release is verified by immutable release id', () => {
   assert.ok(log.every(line => !line.includes('/releases/tags/')));
 });
 
-test('portable release uploads to a draft and publishes only after verification', () => {
+test('portable promotion verifies an existing draft without replacing asset identities', () => {
   const fixture = setupProject();
+  const assets = expectedAssets(fixture.out);
   const {
     result,
     state,
@@ -297,21 +322,29 @@ test('portable release uploads to a draft and publishes only after verification'
     smokeVerifierCalls,
   } = executeRelease(
     fixture,
-    {exists: false, assets: []},
+    {
+      exists: true,
+      draft: true,
+      prerelease: false,
+      target: fixture.target,
+      name: `SmartPerfetto v${version}`,
+      releaseId: 4242,
+      assets,
+    },
     ['--no-draft'],
   );
   assert.equal(result.status, 0, result.stderr);
   assert.equal(state.draft, false);
-  assert.deepEqual(state.assets, expectedAssets(fixture.out));
+  assert.deepEqual(state.assets, assets);
   assert.equal(packageVerifierCalls.length, 3);
   assert.ok(packageVerifierCalls.every(args => args.includes('--public-release')));
   assert.equal(smokeVerifierCalls.length, 3);
   assert.ok(smokeVerifierCalls.every(args => args.includes('--require-public-release')));
   const mutations = mutationLog(log);
-  assert.match(mutations[0], /^release create\b.*--draft\b/);
-  assert.equal(mutations.filter(line => /^release upload\b/.test(line)).length, 3);
-  assert.equal(mutations.at(-1), `release edit v${version} --draft=false`);
-  const publishIndex = log.indexOf(`release edit v${version} --draft=false`);
+  assert.equal(mutations.length, 1);
+  assert.match(mutations[0], /^api --method PATCH\b/);
+  assert.doesNotMatch(mutations[0], /release upload|--clobber/);
+  const publishIndex = log.indexOf(mutations[0]);
   const prePublishVerification = log.findIndex(
     (line, index) => index < publishIndex && line.startsWith('api '),
   );
@@ -319,8 +352,114 @@ test('portable release uploads to a draft and publishes only after verification'
   assert.deepEqual(releaseApiLog(log), [
     'api repos/Gracker/SmartPerfetto/releases/4242',
     'api repos/Gracker/SmartPerfetto/releases/4242',
+    'api --method PATCH repos/Gracker/SmartPerfetto/releases/4242 -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28 -F draft=false',
+    'api repos/Gracker/SmartPerfetto/releases/4242',
   ]);
   assert.ok(log.every(line => !line.includes('/releases/tags/')));
+});
+
+test('--no-draft never creates a release or uploads assets when the draft is missing', () => {
+  const fixture = setupProject();
+  const {result, log} = executeRelease(
+    fixture,
+    {exists: false, assets: []},
+    ['--no-draft'],
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /only promotes an existing verified draft/);
+  assert.deepEqual(mutationLog(log), []);
+});
+
+test('promotion may use a release commit that is an ancestor of newer gate code', () => {
+  const fixture = setupProject();
+  writeFileSync(join(fixture.project, 'gate.txt'), 'newer gate code\n');
+  for (const args of [
+    ['add', 'gate.txt'],
+    ['commit', '--quiet', '-m', 'gate hardening'],
+  ]) {
+    const result = run('git', args, {cwd: fixture.project});
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const assets = expectedAssets(fixture.out);
+  const {result, state, log} = executeRelease(
+    fixture,
+    {
+      exists: true,
+      draft: true,
+      prerelease: false,
+      target: fixture.target,
+      name: `SmartPerfetto v${version}`,
+      releaseId: 4242,
+      assets,
+    },
+    ['--no-draft', '--release-commit', fixture.target],
+  );
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(state.draft, false);
+  assert.deepEqual(state.assets, assets);
+  assert.equal(mutationLog(log).length, 1);
+  assert.match(mutationLog(log)[0], /^api --method PATCH\b/);
+});
+
+test('hosted promotion requires and invokes the combined run attestation verifier', () => {
+  const fixture = setupProject();
+  const assets = expectedAssets(fixture.out);
+  for (const [targetId] of targets) {
+    writeFileSync(
+      join(fixture.evidence, targetId, 'workflow-context.json'),
+      `${JSON.stringify({target: targetId, status: 'verified'})}\n`,
+    );
+  }
+  const attestation = join(fixture.project, '.git', 'portable-smoke-attestation.json');
+  writeFileSync(attestation, '{"schemaVersion":1,"success":true}\n');
+
+  const missing = executeRelease(
+    fixture,
+    {
+      exists: true,
+      draft: true,
+      prerelease: false,
+      target: fixture.target,
+      name: `SmartPerfetto v${version}`,
+      releaseId: 4242,
+      assets,
+    },
+    ['--no-draft'],
+  );
+  assert.notEqual(missing.result.status, 0);
+  assert.match(missing.result.stderr, /requires --smoke-run-id and --smoke-attestation/);
+  assert.deepEqual(mutationLog(missing.log), []);
+
+  const hosted = executeRelease(
+    fixture,
+    {
+      exists: true,
+      draft: true,
+      prerelease: false,
+      target: fixture.target,
+      name: `SmartPerfetto v${version}`,
+      releaseId: 4242,
+      assets,
+    },
+    [
+      '--no-draft',
+      '--smoke-attestation', attestation,
+      '--smoke-run-id', '1234',
+    ],
+  );
+  assert.equal(hosted.result.status, 0, hosted.result.stderr);
+  assert.equal(hosted.state.draft, false);
+  assert.equal(hosted.attestationVerifierCalls.length, 1);
+  const verifierArgs = hosted.attestationVerifierCalls[0];
+  assert.deepEqual(
+    [
+      verifierArgs[verifierArgs.indexOf('--release-id') + 1],
+      verifierArgs[verifierArgs.indexOf('--run-id') + 1],
+      verifierArgs[verifierArgs.indexOf('--repository') + 1],
+    ],
+    ['4242', '1234', 'Gracker/SmartPerfetto'],
+  );
+  assert.equal(mutationLog(hosted.log).length, 1);
 });
 
 test('an exact published release is a read-only idempotent no-op', () => {

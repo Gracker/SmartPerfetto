@@ -17,6 +17,9 @@ const {
   validateLifecycleReceipt,
   versionAtLeast,
 } = require('./smoke-portable-archive.cjs');
+const {
+  validateRelease,
+} = require('./portable-release-smoke-workflow.cjs');
 
 const HOSTS = {
   'windows-x64': {platform: 'win32', arch: 'x64'},
@@ -32,7 +35,17 @@ function parseArgs(argv) {
       options.requirePublicRelease = true;
       continue;
     }
-    if (['--summary', '--asset', '--target', '--version', '--commit'].includes(arg)) {
+    if ([
+      '--summary',
+      '--asset',
+      '--target',
+      '--version',
+      '--commit',
+      '--release-json',
+      '--release-id',
+      '--asset-id',
+      '--workflow-context',
+    ].includes(arg)) {
       if (index + 1 >= argv.length || !argv[index + 1].trim()) {
         throw new Error(`${arg} requires a value`);
       }
@@ -189,6 +202,72 @@ function validateSmokeSummary(summary, expected) {
   return summary;
 }
 
+function validateReleaseBinding(release, expected) {
+  const metadata = validateRelease(release, {releaseId: expected.releaseId});
+  if (
+    metadata.tag !== `v${expected.version}` ||
+    metadata.commit !== expected.commit
+  ) {
+    throw new Error('invalid portable smoke evidence: release tag or commit does not match');
+  }
+  const asset = metadata.assets[expected.target];
+  if (
+    asset.id !== Number(expected.assetId) ||
+    asset.name !== expected.asset.name ||
+    asset.size !== expected.asset.size ||
+    asset.digest !== `sha256:${expected.asset.sha256}`
+  ) {
+    throw new Error('invalid portable smoke evidence: release asset identity does not match');
+  }
+  return metadata;
+}
+
+function sha256File(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
+
+function updateWorkflowContext(contextPath, expected, summaryPath) {
+  const resolved = path.resolve(contextPath);
+  const stat = fs.lstatSync(resolved);
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    throw new Error('Workflow context must be a regular file, not a symlink');
+  }
+  const context = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+  if (
+    context.schemaVersion !== 1 ||
+    !['prepared', 'verified'].includes(context.status) ||
+    context.release?.id !== Number(expected.releaseId) ||
+    context.release?.tag !== `v${expected.version}` ||
+    context.release?.commit !== expected.commit ||
+    context.asset?.target !== expected.target ||
+    context.asset?.assetId !== Number(expected.assetId) ||
+    context.asset?.assetName !== expected.asset.name ||
+    context.asset?.assetSize !== expected.asset.size ||
+    context.asset?.assetDigest !== `sha256:${expected.asset.sha256}` ||
+    context.host?.platform !== HOSTS[expected.target].platform ||
+    context.host?.arch !== HOSTS[expected.target].arch
+  ) {
+    throw new Error('invalid portable smoke evidence: workflow context does not match');
+  }
+  const summaryDigest = sha256File(summaryPath);
+  if (context.status === 'verified') {
+    if (context.smokeSummarySha256 !== summaryDigest) {
+      throw new Error('invalid portable smoke evidence: workflow summary digest does not match');
+    }
+    return context;
+  }
+  const verified = {
+    ...context,
+    status: 'verified',
+    smokeSummarySha256: summaryDigest,
+    verifiedAt: new Date().toISOString(),
+  };
+  const temporary = `${resolved}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(temporary, `${JSON.stringify(verified, null, 2)}\n`, {flag: 'wx'});
+  fs.renameSync(temporary, resolved);
+  return verified;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!options.summary || !options.asset || !options.target || !options.version || !options.commit) {
@@ -210,6 +289,40 @@ async function main() {
     target: options.target,
     version,
   });
+  const releaseBindingOptions = [
+    options.releaseJson,
+    options.releaseId,
+    options.assetId,
+    options.workflowContext,
+  ];
+  if (releaseBindingOptions.some(Boolean) && !releaseBindingOptions.every(Boolean)) {
+    throw new Error(
+      '--release-json, --release-id, --asset-id, and --workflow-context must be provided together',
+    );
+  }
+  if (options.releaseJson) {
+    const releasePath = path.resolve(options.releaseJson);
+    const releaseStat = fs.lstatSync(releasePath);
+    if (!releaseStat.isFile() || releaseStat.isSymbolicLink()) {
+      throw new Error('Release metadata must be a regular file, not a symlink');
+    }
+    validateReleaseBinding(JSON.parse(fs.readFileSync(releasePath, 'utf8')), {
+      asset,
+      assetId: options.assetId,
+      commit: options.commit,
+      releaseId: options.releaseId,
+      target: options.target,
+      version,
+    });
+    updateWorkflowContext(options.workflowContext, {
+      asset,
+      assetId: options.assetId,
+      commit: options.commit,
+      releaseId: options.releaseId,
+      target: options.target,
+      version,
+    }, summaryPath);
+  }
   console.log(`Portable smoke evidence verified: ${asset.name}`);
 }
 
@@ -223,5 +336,7 @@ if (require.main === module) {
 module.exports = {
   identifyAsset,
   parseArgs,
+  updateWorkflowContext,
+  validateReleaseBinding,
   validateSmokeSummary,
 };

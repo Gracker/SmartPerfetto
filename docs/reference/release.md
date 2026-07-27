@@ -78,8 +78,17 @@ node scripts/smoke-portable-archive.cjs \
   --commit "<release-commit>" \
   --public-release \
   --output-dir "dist/portable/smoke-evidence/<target>"
+# 没有目标机器时，从默认分支对现有 draft 运行；只有 all 可作为 promotion 候选：
+gh workflow run portable-exact-archive-smoke.yml \
+  -f release_id=<numeric-release-id> -f selection=all
+gh run download <run-id> \
+  --name portable-smoke-evidence-release-<numeric-release-id> \
+  --dir <download-dir>
 npm run release:portable -- <version> --skip-build --no-draft \
-  --smoke-evidence-dir dist/portable/smoke-evidence
+  --release-commit <draft-target-full-sha> \
+  --smoke-evidence-dir <download-dir>/promotion-evidence \
+  --smoke-attestation <download-dir>/portable-smoke-attestation.json \
+  --smoke-run-id <run-id>
 gh release view v<version> --json tagName,isDraft,assets
 ```
 
@@ -93,9 +102,21 @@ gh release view v<version> --json tagName,isDraft,assets
 `--output-dir` 必须指向尚不存在的新目录；成功摘要原子写入，失败使用独立
 `smoke-failure.json`，重跑不得覆盖既有发布证据。
 
+hosted workflow 会按 release ID 和 asset ID 下载 exact bytes，在下载后和 smoke
+后重新核对 release，并由 release commit 与默认分支固定 SHA 的 verifier 双重验证。
+`windows-linux`/单平台运行明确是 partial；只有包含已签名、公证、staple 的 macOS
+final zip 的 `all` 运行才可能成为 promotion 证据。必须按成功 run ID 下载整个
+combined artifact，并将其中的 `promotion-evidence/`、同级 attestation 和 run ID
+一起交给 promotion；脚本会校验真实 Actions run 和 GitHub artifact digest，不能
+手工拼接单 job 证据。
+
 `release:portable` 始终 draft-first：先上传并验证 target commit、标题和三平台
-asset 的名称、大小、GitHub digest，全部成立后 `--no-draft` 才公开。公开 release
+asset 的名称、大小、GitHub digest。`--no-draft` 只允许提升现有 draft，不会创建
+release、修改标题/target、上传或 clobber asset；它在改变 draft 标志前后逐项比较
+release ID 和 asset ID/状态/名称/大小/digest。公开 release
 和 asset 不可变；重复执行只做严格只读验证，一致则幂等成功，不一致则失败。
+如果 gate 代码比 draft bytes 更新，增加
+`--release-commit <draft-target-full-sha>`；只接受当前 gate commit 的祖先。
 
 最后确认没有把生成产物提交进仓库：
 
@@ -111,6 +132,7 @@ git status --short --branch
 - 公开 portable release 不允许 `--allow-dirty`。
 - `--skip-build` 只能用于刚刚在同一版本、同一 commit 上构建出的包。
 - `--no-draft` 只能发布默认三个平台的完整集合；不能公开单平台或部分平台集合。
+- `--no-draft` 必须复用已经完成 exact-asset smoke 的现有 draft，不能上传或替换资产。
 - 公开 macOS 包必须使用 Developer ID、Hardened Runtime、Apple 公证和 stapled
   ticket；ad-hoc 仅用于本地或 draft 测试。
 - 已公开 GitHub release 只读且 asset 集合不可变；不得 clobber、替换或改写。

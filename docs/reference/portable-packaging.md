@@ -73,8 +73,17 @@ npm run package:portable
 node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
   --version <version> --commit <commit> --public-release \
   --output-dir dist/portable/smoke-evidence/<target>
+# 没有目标机器时，从默认分支对现有 draft 运行：
+gh workflow run portable-exact-archive-smoke.yml \
+  -f release_id=<numeric-release-id> -f selection=all
+gh run download <run-id> \
+  --name portable-smoke-evidence-release-<numeric-release-id> \
+  --dir <download-dir>
 npm run release:portable -- <version> --skip-build --no-draft \
-  --smoke-evidence-dir dist/portable/smoke-evidence
+  --release-commit <draft-target-full-sha> \
+  --smoke-evidence-dir <download-dir>/promotion-evidence \
+  --smoke-attestation <download-dir>/portable-smoke-attestation.json \
+  --smoke-run-id <run-id>
 ```
 
 `package:portable` 会从 `scripts/node-runtime-pin.env` 读取明确的 Node.js
@@ -92,8 +101,25 @@ runtime probe 和生命周期收据；任一证据缺失或与待上传字节不
 `smoke-summary.json`，失败另写 `smoke-failure.json`，因此重跑要换新目录，不能覆盖
 先前证据。
 
+hosted workflow 只接受包含当前 schema-v2 lifecycle smoke contract 的 release
+commit，并按不可变 release ID/asset ID 下载。下载后和 smoke 后都会重新读取 GitHub
+release；release commit 自带 verifier 和默认分支固定 SHA 的 verifier 会各验证一次。
+`windows-linux` 或单平台 selection 只生成 partial 诊断证据，不能用于公开发布；
+只有 `selection=all` 成功且 macOS 是 Developer ID 签名、公证、staple 后的 final zip，
+combined artifact 中的 `promotion-evidence/` 才可能用于 promotion。必须按成功的
+run ID 下载整个 combined artifact，并把其中的 `promotion-evidence/`、同级
+`portable-smoke-attestation.json` 和该 run ID 一起传给发布命令；发布脚本会重新读取
+Actions run/唯一 combined artifact，并用 GitHub artifact SHA-256 校验下载的 zip，
+再逐字节绑定本地证据，不能手工拼接单个 job artifact。
+
 发布脚本始终先创建或复用 draft，上传后逐项校验 target commit、标题、asset
-名称、大小和 GitHub `sha256:` digest，再把 draft 转为公开 release。
+名称、大小和 GitHub `sha256:` digest。`--no-draft` 是严格的 promotion-only 路径：
+draft 和三份 asset 必须已经存在；它不会创建 release、编辑标题/target、上传或
+`--clobber` asset，只会在发布前后比较 release ID 以及每个 asset 的 ID、状态、
+名称、大小和 digest，然后改变 draft 标志。
+如果 smoke/promotion gate 在 draft 构建后又有加固提交，可从更新后的 clean gate
+checkout 运行，并增加 `--release-commit <draft-target-full-sha>`；脚本只接受 gate
+commit 的祖先，包、证据和远端 target 仍全部绑定该 release SHA。
 `--no-draft` 必须同时提供默认三个平台，不允许发布部分平台集合。已公开 release
 是只读的：脚本只验证完整三平台集合，完全一致时幂等退出，不会 clobber、编辑或
 替换任何 asset。没有刚构建过同版本同 commit 包时，不要使用 `--skip-build`。
