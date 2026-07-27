@@ -13,6 +13,43 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-07-27
+
+### Added
+- Portable release promotion now consumes target-native smoke summaries that
+  bind the final archive name, byte size, SHA-256, source commit, health probes,
+  lifecycle receipt, and port-release result.
+- The application can surface GitHub update availability, and the maintained
+  platform-compatibility reference now separates declared, packaged, executed,
+  signed, and published support.
+
+### Changed
+- Portable launchers now own their complete backend/frontend process tree,
+  coordinate graceful shutdown through a runtime control file, drain active
+  HTTP and SSE responses, and record a shutdown receipt before releasing ports.
+- Portable Node.js 24 runtimes are pinned by archive and executable-content
+  digests. macOS deployment compatibility is derived from every bundled Mach-O
+  file instead of a manually declared target.
+- Public promotion now requires a clean release commit, exact-archive smoke on
+  Windows, macOS, and Linux, and Developer ID signing, notarization, stapling,
+  and Gatekeeper acceptance for the final macOS zip.
+
+### Fixed
+- Supersedes the broken v1.2.3 macOS portable asset: startup now preflights the
+  bundled Node runtime, reports actionable backend/frontend log paths, and no
+  longer masks an immediate runtime crash as a generic readiness timeout.
+- macOS packaging signs every nested Mach-O inside-out while preserving only
+  the required runtime identifiers and entitlements; release verification
+  rejects incomplete signatures, missing notarization receipts, and mismatched
+  final archive bytes.
+- Portable archive inspection rejects traversal, absolute paths, links,
+  duplicate normalized entries, and extraction-budget violations before
+  launch.
+- Loopback listeners and health checks consistently use `127.0.0.1`, and
+  shutdown now accounts for upgraded sockets, trace processors, child
+  descendants, interrupted startup, and forced-exit fallbacks.
+- GPT-5.6 Chat Completions requests use the supported output-token limit field.
+
 ## [1.2.1] - 2026-07-18
 
 ### Fixed
@@ -162,7 +199,8 @@ Detailed commit-level history is available via `git log`.
 - HTML report generation and CSV / JSON export.
 - AGPL v3.0 licensing throughout.
 
-[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.3...v1.2.4
 [1.2.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.1.0...v1.1.1
