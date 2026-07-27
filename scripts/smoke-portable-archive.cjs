@@ -8,7 +8,6 @@
 const {spawn, spawnSync} = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
-const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -258,6 +257,107 @@ function abortableDelay(timeoutMs, signal) {
   });
 }
 
+function invalidHealthResponse(message) {
+  const error = new Error(`invalid health HTTP response: ${message}`);
+  error.code = 'ERR_HEALTH_RESPONSE_INVALID';
+  return error;
+}
+
+function parseHealthHttpResponse(responseBytes) {
+  if (!Buffer.isBuffer(responseBytes)) {
+    throw invalidHealthResponse('response must be a Buffer');
+  }
+  if (responseBytes.length > HEALTH_RESPONSE_LIMIT_BYTES) {
+    const error = new Error(
+      `health response exceeded ${HEALTH_RESPONSE_LIMIT_BYTES} bytes`,
+    );
+    error.code = 'ERR_HEALTH_RESPONSE_TOO_LARGE';
+    throw error;
+  }
+
+  const separator = Buffer.from('\r\n\r\n');
+  const headerEnd = responseBytes.indexOf(separator);
+  if (headerEnd < 0) {
+    throw invalidHealthResponse('missing CRLF header terminator');
+  }
+  const headerBytes = responseBytes.subarray(0, headerEnd);
+  if (headerBytes.includes(0) || headerBytes.toString('latin1').includes('\n\n')) {
+    throw invalidHealthResponse('header block contains an invalid delimiter');
+  }
+
+  const headerLines = headerBytes.toString('latin1').split('\r\n');
+  const statusLine = headerLines.shift() || '';
+  const statusMatch = /^HTTP\/1\.[01] ([2-5]\d{2})(?: [\x20-\x7e]*)?$/.exec(statusLine);
+  if (!statusMatch) {
+    throw invalidHealthResponse(`invalid status line: ${JSON.stringify(statusLine)}`);
+  }
+
+  let contentLength;
+  let connectionClose = false;
+  for (const line of headerLines) {
+    if (!line || /^[ \t]/.test(line)) {
+      throw invalidHealthResponse('empty or folded header line');
+    }
+    const colon = line.indexOf(':');
+    if (colon <= 0) {
+      throw invalidHealthResponse(`malformed header line: ${JSON.stringify(line)}`);
+    }
+    const name = line.slice(0, colon);
+    const value = line.slice(colon + 1).trim();
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
+      throw invalidHealthResponse(`invalid header name: ${JSON.stringify(name)}`);
+    }
+    if (/[\0-\x08\x0a-\x1f\x7f]/.test(value)) {
+      throw invalidHealthResponse(`invalid control character in ${name}`);
+    }
+    const lowerName = name.toLowerCase();
+    if (lowerName === 'transfer-encoding') {
+      throw invalidHealthResponse('Transfer-Encoding is not allowed');
+    }
+    if (lowerName === 'content-length') {
+      if (contentLength !== undefined) {
+        throw invalidHealthResponse('duplicate Content-Length');
+      }
+      if (!/^(?:0|[1-9]\d*)$/.test(value)) {
+        throw invalidHealthResponse('invalid Content-Length');
+      }
+      contentLength = Number(value);
+      if (!Number.isSafeInteger(contentLength)) {
+        throw invalidHealthResponse('Content-Length is not a safe integer');
+      }
+      if (contentLength > HEALTH_RESPONSE_LIMIT_BYTES) {
+        throw invalidHealthResponse('Content-Length exceeds the response limit');
+      }
+    }
+    if (lowerName === 'connection') {
+      connectionClose = value
+        .split(',')
+        .some(token => token.trim().toLowerCase() === 'close');
+    }
+  }
+
+  const body = responseBytes.subarray(headerEnd + separator.length);
+  if (/^HTTP\/1\.[01] [1-5]\d{2}/.test(body.toString('latin1'))) {
+    throw invalidHealthResponse('multiple HTTP response blocks are not allowed');
+  }
+  if (contentLength === undefined) {
+    if (!connectionClose) {
+      throw invalidHealthResponse(
+        'close-delimited response must declare Connection: close',
+      );
+    }
+  } else if (body.length !== contentLength) {
+    throw invalidHealthResponse(
+      `Content-Length declared ${contentLength} bytes but received ${body.length}`,
+    );
+  }
+
+  return {
+    body: body.toString('utf8'),
+    statusCode: Number(statusMatch[1]),
+  };
+}
+
 function directHttpHealthProbe(url, timeoutMs, signal) {
   const parsed = new URL(url);
   if (
@@ -270,66 +370,79 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
   ) {
     throw new Error(`health probe requires a plain IPv4 loopback URL: ${url}`);
   }
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason || new Error('health probe cancelled'));
+  }
+  const requestTarget = `${parsed.pathname}${parsed.search}`;
+  if (/[\r\n]/.test(requestTarget)) {
+    throw new Error(`health probe URL contains an invalid request target: ${url}`);
+  }
 
   return new Promise((resolve, reject) => {
     let settled = false;
+    let receivedBytes = 0;
+    const chunks = [];
+    const socket = net.createConnection({
+      family: 4,
+      host: '127.0.0.1',
+      port: Number(parsed.port),
+    });
+    const onAbort = () => {
+      finish(reject, signal.reason || new Error('health probe cancelled'));
+    };
     const finish = (callback, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      signal?.removeEventListener('abort', onAbort);
+      socket.destroy();
       callback(value);
     };
-    const request = http.request({
-      agent: false,
-      headers: {
-        Accept: 'application/json',
-        Connection: 'close',
-      },
-      host: '127.0.0.1',
-      method: 'GET',
-      path: `${parsed.pathname}${parsed.search}`,
-      port: parsed.port,
-      protocol: 'http:',
-      signal,
-    }, (response) => {
-      const chunks = [];
-      let bytes = 0;
-      let responseFailure;
-      response.on('data', (chunk) => {
-        bytes += chunk.length;
-        if (bytes > HEALTH_RESPONSE_LIMIT_BYTES) {
-          const error = new Error(
-            `health response exceeded ${HEALTH_RESPONSE_LIMIT_BYTES} bytes`,
-          );
-          error.code = 'ERR_HEALTH_RESPONSE_TOO_LARGE';
-          responseFailure = error;
-          response.destroy(error);
-          return;
-        }
-        chunks.push(chunk);
-      });
-      response.once('aborted', () => {
-        if (responseFailure) {
-          finish(reject, responseFailure);
-          return;
-        }
-        const error = new Error('health response was aborted');
-        error.code = 'ECONNRESET';
+    socket.setNoDelay(true);
+    socket.on('data', (chunk) => {
+      receivedBytes += chunk.length;
+      if (receivedBytes > HEALTH_RESPONSE_LIMIT_BYTES) {
+        const error = new Error(
+          `health response exceeded ${HEALTH_RESPONSE_LIMIT_BYTES} bytes`,
+        );
+        error.code = 'ERR_HEALTH_RESPONSE_TOO_LARGE';
         finish(reject, error);
-      });
-      response.once('error', (error) => finish(reject, error));
-      response.once('end', () => finish(resolve, {
-        body: Buffer.concat(chunks).toString('utf8'),
-        statusCode: response.statusCode,
-      }));
+        return;
+      }
+      chunks.push(chunk);
     });
-    request.once('error', (error) => finish(reject, error));
+    socket.once('connect', () => {
+      socket.write([
+        `GET ${requestTarget} HTTP/1.0`,
+        `Host: 127.0.0.1:${parsed.port}`,
+        'Accept: application/json',
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n'));
+    });
+    socket.once('end', () => {
+      try {
+        finish(resolve, parseHealthHttpResponse(Buffer.concat(chunks)));
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+    socket.once('error', (error) => finish(reject, error));
+    socket.once('close', (hadError) => {
+      if (!hadError && !settled) {
+        finish(
+          reject,
+          invalidHealthResponse('socket closed before a normal response EOF'),
+        );
+      }
+    });
     const deadline = setTimeout(() => {
       const error = new Error(`health request exceeded ${timeoutMs}ms`);
       error.code = 'ETIMEDOUT';
-      request.destroy(error);
+      finish(reject, error);
     }, timeoutMs);
-    request.end();
+    signal?.addEventListener('abort', onAbort, {once: true});
   });
 }
 
@@ -1074,6 +1187,7 @@ module.exports = {
   directHttpHealthProbe,
   forceKillProcessTree,
   packagePaths,
+  parseHealthHttpResponse,
   parseArgs,
   isolatedSmokeEnv,
   runArchiveBinary,

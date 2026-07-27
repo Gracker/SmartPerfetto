@@ -80,15 +80,16 @@ function writeReleaseFile(work, commit, overrides = {}) {
 
 function setupGitFixture() {
   const cwd = mkdtempSync(join(tmpdir(), 'smartperfetto-smoke-plan-'));
-  mkdirSync(join(cwd, 'scripts'), {recursive: true});
-  writeFileSync(join(cwd, 'scripts/smoke-portable-archive.cjs'), "'use strict';\n");
-  writeFileSync(join(cwd, 'scripts/verify-portable-smoke-evidence.cjs'), "'use strict';\n");
+  writeFileSync(join(cwd, 'release-product.txt'), 'immutable release product\n');
   git(cwd, ['init', '--quiet']);
   git(cwd, ['config', 'user.name', 'Smoke Plan Test']);
   git(cwd, ['config', 'user.email', 'smoke-plan@example.invalid']);
   git(cwd, ['add', '.']);
   git(cwd, ['commit', '--quiet', '-m', 'release contract']);
   const releaseCommit = git(cwd, ['rev-parse', 'HEAD']);
+  mkdirSync(join(cwd, 'scripts'), {recursive: true});
+  writeFileSync(join(cwd, 'scripts/smoke-portable-archive.cjs'), "'use strict';\n");
+  writeFileSync(join(cwd, 'scripts/verify-portable-smoke-evidence.cjs'), "'use strict';\n");
   writeFileSync(join(cwd, 'gate.txt'), 'gate\n');
   git(cwd, ['add', '.']);
   git(cwd, ['commit', '--quiet', '-m', 'gate']);
@@ -96,8 +97,12 @@ function setupGitFixture() {
   return {cwd, gateCommit, releaseCommit};
 }
 
-test('plan binds a draft full SHA and marks windows-linux as partial', () => {
+test('plan binds a script-free release SHA and marks windows-linux as partial', () => {
   const fixture = setupGitFixture();
+  assert.equal(
+    git(fixture.cwd, ['ls-tree', '-r', '--name-only', fixture.releaseCommit]),
+    'release-product.txt',
+  );
   const plan = buildPlan(releaseMetadata(fixture.releaseCommit), {
     cwd: fixture.cwd,
     gateSha: fixture.gateCommit,
@@ -212,20 +217,32 @@ test('native download streams exact binary bytes and removes a digest mismatch',
   }
 });
 
-test('release-commit smoke code cannot inherit tokens or workflow command files', () => {
+test('fixed gate smoke code runs without tokens and release code cannot execute', () => {
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-smoke-env-'));
   const releaseRoot = join(work, 'release');
+  const gateRoot = join(work, 'gate');
   const evidenceRoot = join(work, 'evidence');
   const planFile = join(work, 'plan.json');
   const asset = join(work, 'asset.tar.gz');
+  const releaseSentinel = join(work, 'release-code-executed');
   mkdirSync(join(releaseRoot, 'scripts'), {recursive: true});
+  mkdirSync(join(gateRoot, 'scripts'), {recursive: true});
   writeFileSync(asset, 'archive bytes\n');
   writeFileSync(planFile, `${JSON.stringify({
+    gateSha: 'b'.repeat(40),
     release: {version: '1.2.4', commit: 'a'.repeat(40)},
     matrix: {include: [{target: 'linux-x64'}]},
   })}\n`);
   writeFileSync(
     join(releaseRoot, 'scripts', 'smoke-portable-archive.cjs'),
+    `'use strict';\nrequire('fs').writeFileSync(${JSON.stringify(releaseSentinel)}, 'executed');\n`,
+  );
+  writeFileSync(
+    join(releaseRoot, 'scripts', 'verify-portable-smoke-evidence.cjs'),
+    `'use strict';\nrequire('fs').writeFileSync(${JSON.stringify(releaseSentinel)}, 'executed');\n`,
+  );
+  writeFileSync(
+    join(gateRoot, 'scripts', 'smoke-portable-archive.cjs'),
     `'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -256,7 +273,7 @@ fs.writeFileSync(path.join(output, 'received-env.json'), JSON.stringify({
   try {
     runSmoke({
       plan: planFile,
-      releaseRoot,
+      gateRoot,
       target: 'linux-x64',
       asset,
       evidenceRoot,
@@ -274,6 +291,7 @@ fs.writeFileSync(path.join(output, 'received-env.json'), JSON.stringify({
     )),
     {},
   );
+  assert.equal(existsSync(releaseSentinel), false);
 });
 
 test('collection preserves an explicit failed attestation when target evidence is missing', () => {
@@ -858,7 +876,7 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   assert.match(workflow, /dispatch must use/);
   assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(workflow, /ref: \$\{\{ needs\.prepare\.outputs\.gate_sha \}\}/);
-  assert.match(workflow, /ref: \$\{\{ needs\.prepare\.outputs\.release_sha \}\}/);
+  assert.doesNotMatch(workflow, /outputs\.release_sha|path: release|--release-root/);
   assert.match(workflow, /persist-credentials: false/g);
   assert.match(helper, /runner: 'windows-2025'/);
   assert.match(helper, /runner: 'ubuntu-24\.04'/);
@@ -868,6 +886,7 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   assert.match(workflow, /Re-fetch release metadata after download/);
   assert.match(workflow, /Preserve exact asset bytes for the credential-free native smoke/);
   assert.match(workflow, /Restore exact asset bytes without a write-capable token/);
+  assert.match(workflow, /--gate-root gate/);
   assert.match(workflow, /Fetch the unchanged draft after target smoke/);
   assert.match(workflow, /Preserve untrusted target evidence and logs/);
   assert.match(workflow, /merge-multiple: false/);
@@ -896,6 +915,11 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   );
   assert.match(workflow, /collect[\s\S]*?--release-json/);
   assert.match(helper, /verify-portable-smoke-evidence\.cjs/);
+  assert.match(
+    helper,
+    /path\.join\(gateRoot, 'scripts', 'smoke-portable-archive\.cjs'\)/,
+  );
+  assert.doesNotMatch(helper, /releaseRoot|function finalize|command === 'finalize'/);
   for (const action of [
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
     'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',

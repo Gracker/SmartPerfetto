@@ -146,15 +146,6 @@ function resolveReleaseCommit(release, gateSha, options = {}) {
     fail(`published release tag ${tagRef} is unavailable for commit resolution`);
   }
 
-  for (const requiredPath of [
-    'scripts/smoke-portable-archive.cjs',
-    'scripts/verify-portable-smoke-evidence.cjs',
-  ]) {
-    const result = runGit(['cat-file', '-e', `${targetSha}:${requiredPath}`], {cwd});
-    if (result.status !== 0) {
-      fail(`release commit predates the required portable smoke contract: ${requiredPath}`);
-    }
-  }
   return {commit: targetSha, method};
 }
 
@@ -361,7 +352,6 @@ function prepare(options) {
   githubOutput(options.githubOutput, {
     matrix: plan.matrix,
     gate_sha: plan.gateSha,
-    release_sha: plan.release.commit,
     release_id: plan.release.id,
     tag: plan.release.tag,
     version: plan.release.version,
@@ -475,11 +465,15 @@ function runSmoke(options) {
   const target = String(options.target ?? '');
   const entry = plan.matrix.include.find(item => item.target === target);
   if (!entry) fail(`${target} is not part of this smoke plan`);
-  const releaseRoot = path.resolve(options.releaseRoot);
+  const gateRoot = path.resolve(options.gateRoot);
+  const gateStat = fs.lstatSync(gateRoot);
+  if (!gateStat.isDirectory() || gateStat.isSymbolicLink()) {
+    fail('gate root must be a real directory');
+  }
   const outputDir = path.resolve(options.evidenceRoot, target, 'smoke');
   if (fs.existsSync(outputDir)) fail(`smoke output directory already exists: ${outputDir}`);
   runNodeScript(
-    path.join(releaseRoot, 'scripts', 'smoke-portable-archive.cjs'),
+    path.join(gateRoot, 'scripts', 'smoke-portable-archive.cjs'),
     [
       '--asset', path.resolve(options.asset),
       '--target', target,
@@ -487,42 +481,6 @@ function runSmoke(options) {
       '--commit', plan.release.commit,
       '--public-release',
       '--output-dir', outputDir,
-    ],
-    releaseRoot,
-  );
-}
-
-function finalize(options) {
-  const plan = readJsonFile(options.plan, 'smoke plan');
-  const target = String(options.target ?? '');
-  const entry = plan.matrix.include.find(item => item.target === target);
-  if (!entry) fail(`${target} is not part of this smoke plan`);
-  const releaseRoot = path.resolve(options.releaseRoot);
-  const gateRoot = path.resolve(options.gateRoot);
-  const asset = path.resolve(options.asset);
-  const summary = path.resolve(options.evidenceRoot, target, 'smoke', 'smoke-summary.json');
-  const common = [
-    '--summary', summary,
-    '--asset', asset,
-    '--target', target,
-    '--version', plan.release.version,
-    '--commit', plan.release.commit,
-    '--require-public-release',
-  ];
-  runNodeScript(
-    path.join(releaseRoot, 'scripts', 'verify-portable-smoke-evidence.cjs'),
-    common,
-    releaseRoot,
-  );
-  runNodeScript(
-    path.join(gateRoot, 'scripts', 'verify-portable-smoke-evidence.cjs'),
-    [
-      ...common,
-      '--release-json', path.resolve(options.releaseJson),
-      '--release-id', String(plan.release.id),
-      '--asset-id', String(entry.assetId),
-      '--workflow-context',
-      path.resolve(options.evidenceRoot, target, 'workflow-context.json'),
     ],
     gateRoot,
   );
@@ -657,7 +615,6 @@ function main() {
   if (command === 'verify') return verify(options);
   if (command === 'runner') return runner(options);
   if (command === 'run') return runSmoke(options);
-  if (command === 'finalize') return finalize(options);
   if (command === 'collect') return collect(options);
   fail(`unknown command: ${command || '<empty>'}`);
 }

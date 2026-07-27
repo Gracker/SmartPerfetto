@@ -149,10 +149,13 @@ Each target smoke must:
    non-conflicting ports.
 3. Poll backend and frontend health through explicit
    `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
-   The smoke probe must bypass environment proxies, use non-pooled
-   `Connection: close` requests, bound response bytes and wall-clock time, and
-   cancel and settle the peer probe before launcher shutdown after any
-   readiness failure.
+   The smoke probe must bypass environment proxies through a one-shot raw IPv4
+   loopback socket and an HTTP/1.0 `Connection: close` request. It may accept
+   only one strict response using either a unique exact `Content-Length` or an
+   explicitly close-delimited body; reject transfer encodings, malformed or
+   ambiguous framing, multiple response blocks, and responses above the byte
+   or wall-clock budget. Cancel and settle the peer probe before launcher
+   shutdown after any readiness failure.
 4. Execute the bundled Node.js, Claude, and OpenCode version commands when
    present, then run a minimal packaged `trace_processor_shell` operation.
 5. Use the launcher-supported shutdown control, require a zero/successful and
@@ -163,6 +166,13 @@ Each target smoke must:
 7. Atomically write a schema-v2 `smoke-summary.json` that binds the target-native host,
    lifecycle receipt, and exact archive name, size, and SHA-256. Public release
    promotion must re-hash the same archive and reject stale or edited evidence.
+
+For hosted smoke, the fixed gate checkout owns and executes the smoke client
+and evidence verifier. The immutable draft metadata and downloaded archive
+provide the release identity and product bytes; the native job must not create
+or execute a release checkout. Preserve the gate SHA and release commit as
+separate trust roots throughout planning, native execution, collection,
+attestation, and promotion.
 
 For the final macOS archive, also require:
 
@@ -189,13 +199,14 @@ name the untested target; static verification is not a substitute.
 The hosted entry point is
 `.github/workflows/portable-exact-archive-smoke.yml`. Dispatch it only from the
 default branch and pass the numeric draft release ID. Its gate checkout is
-fixed to the dispatch SHA; the release checkout is fixed to the draft's full
-target SHA (or the peeled tag commit once the tag exists), and that release
-commit must be an ancestor of the gate. A fixed-gate download job fetches each
-target by immutable asset ID with native binary I/O, verifies size and digest,
-then re-fetches and re-binds the release. It preserves those opaque bytes as a
-short-lived Actions artifact; only then does the native smoke job restore and
-execute them. The smoke matrix must override default skipped-needs propagation:
+fixed to the dispatch SHA. The plan separately binds the draft's full target
+SHA (or the peeled tag commit once the tag exists), which must be an ancestor
+of the gate; the native job does not check out that commit. A fixed-gate
+download job fetches each target by immutable asset ID with native binary I/O,
+verifies size and digest, then re-fetches and re-binds the release. It
+preserves those opaque bytes as a short-lived Actions artifact; only then does
+the native smoke job restore and execute them. The smoke matrix must override
+default skipped-needs propagation:
 one target's failed download may fail that target, but must not suppress native
 smoke and diagnostic evidence for targets whose exact asset artifacts exist.
 GitHub currently requires `contents: write` for its Actions token to read a

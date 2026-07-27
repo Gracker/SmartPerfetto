@@ -100,10 +100,14 @@ should use WSL2; native Windows users should use the portable package.
    A fixed-gate credential job downloads each immutable asset ID, re-checks
    release metadata after download, and passes the opaque bytes through a
    short-lived Actions artifact to a native smoke job with only repository
-   read access. The smoke job runs the release-commit contract, then sends only
-   raw evidence to a fresh collect job. That job re-checks the unchanged draft
-   before downloading the raw evidence and uses the fixed gate verifier,
-   without a token, to issue verified contexts and preserve a normalized
+   read access. The native job must execute the smoke client from the fixed
+   gate checkout against the release archive; immutable draft metadata and the
+   downloaded archive supply identity and product bytes. The native job must
+   not create or execute a release checkout. It then sends only raw evidence
+   to a fresh collect job. That job re-checks the unchanged draft before
+   downloading the raw evidence and uses the fixed gate verifier, without a
+   token, to issue verified contexts while preserving the distinct gate SHA
+   and release commit in a normalized
    `promotion-evidence/` directory plus
    `portable-smoke-attestation.json` in the combined artifact. Download that
    exact artifact by successful workflow run ID; do not copy individual job

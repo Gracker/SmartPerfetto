@@ -7,6 +7,7 @@ import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import fs from 'node:fs';
 import http from 'node:http';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -17,9 +18,11 @@ const {
   assertMatchingHost,
   collectDescendantPids,
   createEvidenceDirectory,
+  directHttpHealthProbe,
   forceKillProcessTree,
   isolatedSmokeEnv,
   packagePaths,
+  parseHealthHttpResponse,
   parseArgs,
   runArchiveBinary,
   sanitizedSmokeEnv,
@@ -30,6 +33,10 @@ const {
   waitForReadiness,
   windowsSystemBinary,
 } = require(path.join(repoRoot, 'scripts/smoke-portable-archive.cjs'));
+const {
+  REQUIRED_RUNTIME_ASSETS,
+  createFrontendServer,
+} = require(path.join(repoRoot, 'frontend/server.js'));
 
 async function listenOnLoopback(server) {
   await new Promise((resolve, reject) => {
@@ -77,6 +84,86 @@ function waitForSocketClose(socket, timeoutMs = 2_000) {
       clearTimeout(timer);
       resolve();
     });
+  });
+}
+
+async function startRawResponseServer(onRequest) {
+  const sockets = new Set();
+  const requests = [];
+  const requestWaiters = [];
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    const chunks = [];
+    let handled = false;
+    socket.on('data', (chunk) => {
+      if (handled) return;
+      chunks.push(chunk);
+      const bytes = Buffer.concat(chunks);
+      if (bytes.indexOf('\r\n\r\n') < 0) return;
+      handled = true;
+      const request = bytes.toString('latin1');
+      requests.push(request);
+      requestWaiters.shift()?.(request);
+      Promise.resolve(onRequest(socket, request)).catch((error) => {
+        socket.destroy(error);
+      });
+    });
+  });
+  const port = await listenOnLoopback(server);
+  return {
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      if (!server.listening) return;
+      await new Promise((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
+    nextRequest: () => {
+      if (requests.length > 0) return Promise.resolve(requests.at(-1));
+      return new Promise((resolve) => requestWaiters.push(resolve));
+    },
+    port,
+    requests,
+    server,
+    sockets,
+  };
+}
+
+function healthHttpResponse(payload, headers = {}) {
+  const body = Buffer.from(JSON.stringify(payload));
+  const lines = [
+    'HTTP/1.0 200 OK',
+    `Content-Length: ${body.length}`,
+    'Content-Type: application/json',
+    'Connection: close',
+    ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`),
+    '',
+    '',
+  ];
+  return Buffer.concat([Buffer.from(lines.join('\r\n')), body]);
+}
+
+function rawLoopbackRequest(port, requestTarget = '/health') {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    const socket = net.createConnection({
+      family: 4,
+      host: '127.0.0.1',
+      port,
+    });
+    socket.once('connect', () => {
+      socket.write([
+        `GET ${requestTarget} HTTP/1.0`,
+        `Host: 127.0.0.1:${port}`,
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n'));
+    });
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.once('end', () => resolve(Buffer.concat(chunks)));
+    socket.once('error', reject);
   });
 }
 
@@ -206,6 +293,275 @@ test('portable health probe bypasses startup proxy settings and closes its socke
   assert.equal(connectionHeader, 'close');
   assert.ok(healthSocket, 'health server did not observe a connection');
   await waitForSocketClose(healthSocket);
+});
+
+test('portable health probe parses fragmented bytes and sends a fixed HTTP/1.0 request', async (t) => {
+  let healthSocket;
+  const response = healthHttpResponse({status: 'OK', version: 'fixture-version'});
+  const fixture = await startRawResponseServer(async (socket) => {
+    healthSocket = socket;
+    let offset = 0;
+    for (const end of [1, 9, 27, 53, response.length]) {
+      socket.write(response.subarray(offset, end));
+      offset = end;
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    socket.end();
+  });
+  t.after(() => fixture.close());
+
+  const result = await directHttpHealthProbe(
+    `http://127.0.0.1:${fixture.port}/health?probe=portable`,
+    2_000,
+  );
+  assert.deepEqual(
+    {...result, body: JSON.parse(result.body)},
+    {
+      body: {status: 'OK', version: 'fixture-version'},
+      statusCode: 200,
+    },
+  );
+  const request = await fixture.nextRequest();
+  assert.match(request, /^GET \/health\?probe=portable HTTP\/1\.0\r\n/);
+  assert.match(request, new RegExp(`\r\nHost: 127\\.0\\.0\\.1:${fixture.port}\r\n`));
+  assert.match(request, /\r\nAccept: application\/json\r\n/);
+  assert.match(request, /\r\nConnection: close\r\n\r\n$/);
+  assert.ok(healthSocket, 'raw server did not observe a health connection');
+  await waitForSocketClose(healthSocket);
+});
+
+test('portable health probe accepts the production frontend response framing', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-frontend-health-'));
+  const version = 'vfixture';
+  const versionRoot = path.join(root, version);
+  fs.mkdirSync(versionRoot, {recursive: true});
+  fs.writeFileSync(
+    path.join(root, 'index.html'),
+    `<html data-perfetto_version='${JSON.stringify({stable: version})}'></html>`,
+  );
+  fs.writeFileSync(
+    path.join(versionRoot, 'manifest.json'),
+    `${JSON.stringify({
+      resources: Object.fromEntries(
+        REQUIRED_RUNTIME_ASSETS.map((asset) => [asset, {file: asset}]),
+      ),
+    })}\n`,
+  );
+  for (const asset of REQUIRED_RUNTIME_ASSETS) {
+    fs.writeFileSync(path.join(versionRoot, asset), 'fixture\n');
+  }
+  const frontend = createFrontendServer(root);
+  const port = await listenOnLoopback(frontend);
+  t.after(async () => {
+    await closeHttpServer(frontend);
+    fs.rmSync(root, {recursive: true, force: true});
+  });
+
+  const rawResponse = await rawLoopbackRequest(port);
+  const rawHeaders = rawResponse
+    .subarray(0, rawResponse.indexOf(Buffer.from('\r\n\r\n')))
+    .toString('latin1');
+  assert.match(rawHeaders, /\r\nConnection: close(?:\r\n|$)/i);
+  assert.doesNotMatch(rawHeaders, /\r\nContent-Length:/i);
+  assert.doesNotMatch(rawHeaders, /\r\nTransfer-Encoding:/i);
+  const parsedResponse = parseHealthHttpResponse(rawResponse);
+  assert.deepEqual(
+    {
+      ...parsedResponse,
+      body: JSON.parse(parsedResponse.body),
+    },
+    {body: {status: 'OK', version}, statusCode: 200},
+  );
+  assert.deepEqual(
+    await waitForHealth(
+      `http://127.0.0.1:${port}/health`,
+      {status: 'OK', version},
+      2_000,
+    ),
+    {status: 'OK', version},
+  );
+});
+
+test('portable health response parser accepts only strict bounded framing', () => {
+  const validBody = Buffer.from('{"status":"OK"}');
+  assert.deepEqual(
+    parseHealthHttpResponse(Buffer.concat([
+      Buffer.from([
+        'HTTP/1.1 200 OK',
+        `Content-Length: ${validBody.length}`,
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n')),
+      validBody,
+    ])),
+    {body: validBody.toString('utf8'), statusCode: 200},
+  );
+  assert.deepEqual(
+    parseHealthHttpResponse(Buffer.from([
+      'HTTP/1.0 200 OK',
+      'Connection: close',
+      '',
+      '{"status":"OK"}',
+    ].join('\r\n'))),
+    {body: '{"status":"OK"}', statusCode: 200},
+  );
+
+  const invalidResponses = [
+    'HTTP/2 200 OK\r\nContent-Length: 0\r\n\r\n',
+    'HTTP/1.1 100 Continue\r\nConnection: close\r\n\r\nHTTP/1.1 200 OK\r\n\r\n',
+    'HTTP/1.1 200 OK\r\nBad Header: value\r\nContent-Length: 0\r\n\r\n',
+    'HTTP/1.1 200 OK\r\n Folded: value\r\nContent-Length: 0\r\n\r\n',
+    'HTTP/1.1 200 OK\nContent-Length: 0\n\n',
+    'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 0\r\n\r\n',
+    'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nContent-Length: 1\r\n\r\n',
+    'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n',
+    'HTTP/1.1 200 OK\r\nContent-Length: 0\r\nTransfer-Encoding: chunked\r\n\r\n',
+    'HTTP/1.1 200 OK\r\n\r\n',
+    'HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx',
+    'HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\nxx',
+    'HTTP/1.1 200 OK\r\nContent-Length: 19\r\n\r\nHTTP/1.1 200 OK\r\n\r\n',
+  ];
+  for (const response of invalidResponses) {
+    assert.throws(
+      () => parseHealthHttpResponse(Buffer.from(response)),
+      /invalid health HTTP response/,
+      response,
+    );
+  }
+
+  let bodyLength = 64 * 1024;
+  let boundaryHeader;
+  do {
+    boundaryHeader = Buffer.from(
+      `HTTP/1.0 200 OK\r\nContent-Length: ${bodyLength}\r\n\r\n`,
+    );
+    bodyLength = (64 * 1024) - boundaryHeader.length;
+  } while (
+    boundaryHeader.length + bodyLength !== 64 * 1024 ||
+    !boundaryHeader.includes(Buffer.from(`Content-Length: ${bodyLength}`))
+  );
+  const boundaryResponse = Buffer.concat([
+    boundaryHeader,
+    Buffer.alloc(bodyLength, 'x'),
+  ]);
+  assert.equal(boundaryResponse.length, 64 * 1024);
+  assert.equal(parseHealthHttpResponse(boundaryResponse).body.length, bodyLength);
+  assert.throws(
+    () => parseHealthHttpResponse(Buffer.concat([boundaryResponse, Buffer.from('x')])),
+    /health response exceeded 65536 bytes/,
+  );
+});
+
+test('portable raw health probe times out partial responses and closes each socket', async (t) => {
+  const fixtures = [];
+  t.after(async () => {
+    await Promise.all(fixtures.map((fixture) => fixture.close()));
+  });
+  for (const partialResponse of [
+    'HTTP/1.0 200 OK\r\nContent-Len',
+    'HTTP/1.0 200 OK\r\nContent-Length: 20\r\n\r\n{"status":',
+  ]) {
+    let observedSocket;
+    const fixture = await startRawResponseServer((socket) => {
+      observedSocket = socket;
+      socket.write(partialResponse);
+    });
+    fixtures.push(fixture);
+    await assert.rejects(
+      directHttpHealthProbe(
+        `http://127.0.0.1:${fixture.port}/health`,
+        150,
+      ),
+      (error) => error?.code === 'ETIMEDOUT',
+    );
+    assert.ok(observedSocket, 'partial-response server did not observe a connection');
+    await waitForSocketClose(observedSocket);
+  }
+});
+
+test('portable raw health probe honors pre-connect and connected cancellation', async (t) => {
+  let connections = 0;
+  let connectedSocket;
+  let resolveConnected;
+  const connected = new Promise((resolve) => {
+    resolveConnected = resolve;
+  });
+  const fixture = await startRawResponseServer((socket) => {
+    connections++;
+    connectedSocket = socket;
+    resolveConnected();
+  });
+  t.after(() => fixture.close());
+
+  const preAborted = new AbortController();
+  preAborted.abort(new Error('pre-aborted fixture'));
+  await assert.rejects(
+    directHttpHealthProbe(
+      `http://127.0.0.1:${fixture.port}/health`,
+      2_000,
+      preAborted.signal,
+    ),
+    /pre-aborted fixture/,
+  );
+  assert.equal(connections, 0);
+
+  const controller = new AbortController();
+  const probe = directHttpHealthProbe(
+    `http://127.0.0.1:${fixture.port}/health`,
+    2_000,
+    controller.signal,
+  );
+  await connected;
+  controller.abort(new Error('connected fixture cancelled'));
+  await assert.rejects(probe, /connected fixture cancelled/);
+  await waitForSocketClose(connectedSocket);
+});
+
+test('portable raw health probe rejects malformed EOF and closes its socket', async (t) => {
+  let observedSocket;
+  const fixture = await startRawResponseServer((socket) => {
+    observedSocket = socket;
+    socket.end('HTTP/1.0 200 OK\n\n{"status":"OK"}');
+  });
+  t.after(() => fixture.close());
+  await assert.rejects(
+    directHttpHealthProbe(
+      `http://127.0.0.1:${fixture.port}/health`,
+      2_000,
+    ),
+    /missing CRLF header terminator/,
+  );
+  assert.ok(observedSocket, 'malformed-response server did not observe a connection');
+  await waitForSocketClose(observedSocket);
+});
+
+test('portable readiness independently proves backend and frontend payloads', async (t) => {
+  const backend = http.createServer((_request, response) => {
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({status: 'OK', version: 'fixture-version'}));
+  });
+  const frontend = http.createServer((_request, response) => {
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({status: 'OK', surface: 'frontend'}));
+  });
+  const backendPort = await listenOnLoopback(backend);
+  const frontendPort = await listenOnLoopback(frontend);
+  t.after(async () => {
+    await Promise.all([closeHttpServer(backend), closeHttpServer(frontend)]);
+  });
+  assert.deepEqual(
+    await waitForReadiness({
+      backendUrl: `http://127.0.0.1:${backendPort}/health`,
+      frontendUrl: `http://127.0.0.1:${frontendPort}/health`,
+      launcherExitPromise: new Promise(() => {}),
+      version: 'fixture-version',
+    }),
+    [
+      {status: 'OK', version: 'fixture-version'},
+      {status: 'OK', surface: 'frontend'},
+    ],
+  );
 });
 
 test('portable health probe timeout reports ETIMEDOUT and closes its socket', async (t) => {

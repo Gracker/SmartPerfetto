@@ -39,7 +39,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       gate_sha: ${{ steps.plan.outputs.gate_sha }}
-      release_sha: ${{ steps.plan.outputs.release_sha }}
       release_id: ${{ steps.plan.outputs.release_id }}
       tag: ${{ steps.plan.outputs.tag }}
       version: ${{ steps.plan.outputs.version }}
@@ -190,8 +189,8 @@ jobs:
     needs:
       - prepare
       - download
-    # The tested release checkout receives only read access to this public
-    # repository. It never shares a job with a write-capable repository token.
+    # The native job executes only fixed gate code against opaque release
+    # bytes. It never shares a job with a write-capable repository token.
     permissions:
       contents: read
     strategy:
@@ -206,13 +205,6 @@ jobs:
           ref: ${{ needs.prepare.outputs.gate_sha }}
           persist-credentials: false
           path: gate
-
-      - name: Check out the immutable release commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.prepare.outputs.release_sha }}
-          persist-credentials: false
-          path: release
 
       - name: Set up Node.js 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -250,7 +242,7 @@ jobs:
         run: >-
           node gate/scripts/portable-release-smoke-workflow.cjs run
           --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"
-          --release-root release
+          --gate-root gate
           --target "${{ matrix.target }}"
           --asset "${{ runner.temp }}/smartperfetto-asset/${{ matrix.assetName }}"
           --evidence-root "${{ runner.temp }}/smartperfetto-evidence"
