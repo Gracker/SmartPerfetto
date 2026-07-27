@@ -108,6 +108,10 @@ test('portable packaging has one launcher implementation and one target-native s
     'utf8',
   );
   const portableScript = readFileSync(join(root, 'scripts/package-portable.sh'), 'utf8');
+  const portableTarScript = readFileSync(
+    join(root, 'scripts/create-portable-tar.sh'),
+    'utf8',
+  );
   const launcher = readFileSync(join(root, 'scripts/portable-launcher/main.go'), 'utf8');
   const windowsContainment = readFileSync(
     join(root, 'scripts/portable-launcher/process_containment_windows.go'),
@@ -145,6 +149,10 @@ test('portable packaging has one launcher implementation and one target-native s
   assert.match(portableScript, /prebuild\.name !== expected/);
   assert.match(portableScript, /sign_macos_payloads[\s\S]*packaged_tp_sha[\s\S]*sign_macos_container/);
   assert.match(portableScript, /archive_package_atomically/);
+  assert.match(portableScript, /scripts\/create-portable-tar\.sh/);
+  assert.match(portableTarScript, /COPYFILE_DISABLE=1 tar/);
+  assert.match(portableTarScript, /--no-xattrs/);
+  assert.match(portableTarScript, /-- "\$package_name"/);
   assert.match(portableScript, /notary_submission_path/);
   assert.match(
     portableScript,

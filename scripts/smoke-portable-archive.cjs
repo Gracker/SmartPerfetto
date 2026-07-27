@@ -8,6 +8,7 @@
 const {spawn, spawnSync} = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
+const http = require('http');
 const net = require('net');
 const os = require('os');
 const path = require('path');
@@ -45,6 +46,7 @@ const SMOKE_ENV_ALLOWLIST = new Set([
   'USERPROFILE',
   'WINDIR',
 ]);
+const HEALTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
 
 function usage() {
   console.error([
@@ -224,29 +226,189 @@ async function reservePort() {
   });
 }
 
-async function waitForHealth(url, expectation, timeoutMs) {
+function describeError(error) {
+  const details = [];
+  let current = error;
+  for (let depth = 0; current && depth < 3; depth++) {
+    const message = current.message || String(current);
+    const code = current.code ? ` (${current.code})` : '';
+    details.push(`${message}${code}`);
+    current = current.cause;
+  }
+  const description = details.join(' caused by: ');
+  return description.length > 2_048
+    ? `${description.slice(0, 2_048)}…`
+    : description;
+}
+
+function abortableDelay(timeoutMs, signal) {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason || new Error('health probe cancelled'));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, timeoutMs);
+    const onAbort = () => finish(signal.reason || new Error('health probe cancelled'));
+    function finish(error) {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      if (error) reject(error);
+      else resolve();
+    }
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+function directHttpHealthProbe(url, timeoutMs, signal) {
+  const parsed = new URL(url);
+  if (
+    parsed.protocol !== 'http:' ||
+    parsed.hostname !== '127.0.0.1' ||
+    !parsed.port ||
+    parsed.username ||
+    parsed.password ||
+    parsed.hash
+  ) {
+    throw new Error(`health probe requires a plain IPv4 loopback URL: ${url}`);
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      callback(value);
+    };
+    const request = http.request({
+      agent: false,
+      headers: {
+        Accept: 'application/json',
+        Connection: 'close',
+      },
+      host: '127.0.0.1',
+      method: 'GET',
+      path: `${parsed.pathname}${parsed.search}`,
+      port: parsed.port,
+      protocol: 'http:',
+      signal,
+    }, (response) => {
+      const chunks = [];
+      let bytes = 0;
+      let responseFailure;
+      response.on('data', (chunk) => {
+        bytes += chunk.length;
+        if (bytes > HEALTH_RESPONSE_LIMIT_BYTES) {
+          const error = new Error(
+            `health response exceeded ${HEALTH_RESPONSE_LIMIT_BYTES} bytes`,
+          );
+          error.code = 'ERR_HEALTH_RESPONSE_TOO_LARGE';
+          responseFailure = error;
+          response.destroy(error);
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.once('aborted', () => {
+        if (responseFailure) {
+          finish(reject, responseFailure);
+          return;
+        }
+        const error = new Error('health response was aborted');
+        error.code = 'ECONNRESET';
+        finish(reject, error);
+      });
+      response.once('error', (error) => finish(reject, error));
+      response.once('end', () => finish(resolve, {
+        body: Buffer.concat(chunks).toString('utf8'),
+        statusCode: response.statusCode,
+      }));
+    });
+    request.once('error', (error) => finish(reject, error));
+    const deadline = setTimeout(() => {
+      const error = new Error(`health request exceeded ${timeoutMs}ms`);
+      error.code = 'ETIMEDOUT';
+      request.destroy(error);
+    }, timeoutMs);
+    request.end();
+  });
+}
+
+async function waitForHealth(url, expectation, timeoutMs, signal) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      throw signal.reason || new Error(`health probe cancelled: ${url}`);
+    }
     try {
-      const response = await fetch(url, {redirect: 'error', signal: AbortSignal.timeout(2_000)});
-      const payload = await response.json();
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const response = await directHttpHealthProbe(
+        url,
+        Math.min(2_000, remainingMs),
+        signal,
+      );
+      const payload = JSON.parse(response.body);
       if (
-        response.ok &&
+        response.statusCode >= 200 &&
+        response.statusCode < 300 &&
         payload.status === expectation.status &&
         (!expectation.version || payload.version === expectation.version)
       ) {
         return payload;
       }
       lastError = new Error(
-        `HTTP ${response.status}, status=${payload.status}, version=${payload.version}`,
+        `HTTP ${response.statusCode}, status=${payload.status}, version=${payload.version}`,
       );
     } catch (error) {
+      if (signal?.aborted) {
+        throw signal.reason || error;
+      }
       lastError = error;
     }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));
+    if (delayMs > 0) await abortableDelay(delayMs, signal);
   }
-  throw new Error(`${url} did not become healthy: ${lastError?.message || 'timeout'}`);
+  throw new Error(
+    `${url} did not become healthy: ${lastError ? describeError(lastError) : 'timeout'}`,
+  );
+}
+
+async function waitForReadiness({
+  backendTimeoutMs = 120_000,
+  backendUrl,
+  frontendTimeoutMs = 60_000,
+  frontendUrl,
+  launcherExitPromise,
+  version,
+}) {
+  const controller = new AbortController();
+  const probes = [
+    waitForHealth(
+      backendUrl,
+      {status: 'OK', version},
+      backendTimeoutMs,
+      controller.signal,
+    ),
+    waitForHealth(
+      frontendUrl,
+      {status: 'OK'},
+      frontendTimeoutMs,
+      controller.signal,
+    ),
+  ];
+  try {
+    return await Promise.race([
+      Promise.all(probes),
+      launcherExitPromise.then((exit) => {
+        throw new Error(
+          `launcher exited before readiness: code=${exit.code}, signal=${exit.signal}`,
+        );
+      }),
+    ]);
+  } finally {
+    controller.abort(new Error('portable readiness probe group completed'));
+    await Promise.allSettled(probes);
+  }
 }
 
 function waitForExit(child, timeoutMs) {
@@ -775,25 +937,12 @@ async function smoke(options) {
     processTreeMonitor = startProcessTreeMonitor(child.pid);
 
     launcherExitPromise = waitForExit(child, 180_000);
-    const [backendHealth, frontendHealth] = await Promise.race([
-      Promise.all([
-        waitForHealth(
-          `http://127.0.0.1:${backendPort}/health`,
-          {status: 'OK', version},
-          120_000,
-        ),
-        waitForHealth(
-          `http://127.0.0.1:${frontendPort}/health`,
-          {status: 'OK'},
-          60_000,
-        ),
-      ]),
-      launcherExitPromise.then((exit) => {
-        throw new Error(
-          `launcher exited before readiness: code=${exit.code}, signal=${exit.signal}`,
-        );
-      }),
-    ]);
+    const [backendHealth, frontendHealth] = await waitForReadiness({
+      backendUrl: `http://127.0.0.1:${backendPort}/health`,
+      frontendUrl: `http://127.0.0.1:${frontendPort}/health`,
+      launcherExitPromise,
+      version,
+    });
     fs.writeFileSync(shutdownFile, 'shutdown\n', {flag: 'wx', mode: 0o600});
     const launcherExit = await launcherExitPromise;
     if (launcherExit.code !== 0 || launcherExit.signal) {
@@ -922,6 +1071,7 @@ module.exports = {
   assertMatchingHost,
   collectDescendantPids,
   createEvidenceDirectory,
+  directHttpHealthProbe,
   forceKillProcessTree,
   packagePaths,
   parseArgs,
@@ -931,5 +1081,7 @@ module.exports = {
   startProcessTreeMonitor,
   validateLifecycleReceipt,
   versionAtLeast,
+  waitForHealth,
+  waitForReadiness,
   windowsSystemBinary,
 };

@@ -128,10 +128,13 @@ node scripts/smoke-portable-archive.cjs \
 
 The command must reject host/target mismatches. Its static phase must reject
 absolute paths, traversal, cross-platform name collisions, symlinks, hard
-links, and non-regular extracted entries before trusting package contents. It
-must enforce pre-extraction archive byte/entry/expanded-size/ratio budgets and
-listing/extraction deadlines. `--output-dir` must be a fresh path; never
-overwrite earlier smoke evidence.
+links, non-regular extracted entries, AppleDouble/macOS metadata entries, and
+any archive-tool diagnostics before trusting package contents. A Linux
+`tar.gz` built on macOS must therefore be free of PAX xattr records as observed
+by target-native GNU tar listing and extraction, not merely clean in its
+pre-archive staging tree. The verifier must enforce pre-extraction archive
+byte/entry/expanded-size/ratio budgets and listing/extraction deadlines.
+`--output-dir` must be a fresh path; never overwrite earlier smoke evidence.
 For local pre-commit runtime validation only, `--allow-dirty` may omit the
 clean-tree requirement. It must be incompatible with `--public-release`, and
 its evidence must never be accepted for promotion.
@@ -146,6 +149,10 @@ Each target smoke must:
    non-conflicting ports.
 3. Poll backend and frontend health through explicit
    `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
+   The smoke probe must bypass environment proxies, use non-pooled
+   `Connection: close` requests, bound response bytes and wall-clock time, and
+   cancel and settle the peer probe before launcher shutdown after any
+   readiness failure.
 4. Execute the bundled Node.js, Claude, and OpenCode version commands when
    present, then run a minimal packaged `trace_processor_shell` operation.
 5. Use the launcher-supported shutdown control, require a zero/successful and

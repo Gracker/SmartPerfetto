@@ -79,6 +79,12 @@ should use WSL2; native Windows users should use the portable package.
    ```bash
    npm run package:portable
    ```
+   Linux `tar.gz` assets built on macOS must be created through
+   `scripts/create-portable-tar.sh`, which suppresses both extended attributes
+   and AppleDouble synthesis. The final archive must contain no `._*`,
+   `__MACOSX`, `.DS_Store`, or `.AppleDouble` entry and must list and extract
+   without diagnostics on the target's GNU tar. A staging-tree check alone
+   does not prove this archive-time contract.
    Runtime-smoke the post-build final archives on their matching operating
    systems with `scripts/smoke-portable-archive.cjs` and the exact-asset
    contract in `.claude/rules/testing.md`.

@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {createRequire} from 'node:module';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -25,8 +26,59 @@ const {
   startProcessTreeMonitor,
   validateLifecycleReceipt,
   versionAtLeast,
+  waitForHealth,
+  waitForReadiness,
   windowsSystemBinary,
 } = require(path.join(repoRoot, 'scripts/smoke-portable-archive.cjs'));
+
+async function listenOnLoopback(server) {
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen({host: '127.0.0.1', port: 0}, resolve);
+  });
+  return server.address().port;
+}
+
+async function closeHttpServer(server) {
+  server.closeAllConnections?.();
+  if (!server.listening) return;
+  await new Promise((resolve, reject) => {
+    server.close((error) => error ? reject(error) : resolve());
+  });
+}
+
+async function waitForChild(child) {
+  const stdout = [];
+  const stderr = [];
+  child.stdout.on('data', (chunk) => stdout.push(chunk));
+  child.stderr.on('data', (chunk) => stderr.push(chunk));
+  const {code, signal} = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (exitCode, exitSignal) => {
+      resolve({code: exitCode, signal: exitSignal});
+    });
+  });
+  return {
+    code,
+    signal,
+    stderr: Buffer.concat(stderr).toString('utf8'),
+    stdout: Buffer.concat(stdout).toString('utf8'),
+  };
+}
+
+function waitForSocketClose(socket, timeoutMs = 2_000) {
+  if (socket.destroyed) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error('health probe socket did not close')),
+      timeoutMs,
+    );
+    socket.once('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
 
 test('portable smoke requires a matching native host', () => {
   assert.doesNotThrow(() => assertMatchingHost('linux-x64', 'linux', 'x64'));
@@ -96,6 +148,178 @@ test('portable smoke does not expose release or provider credentials to the arch
       NODE_OPTIONS: '--require=/untrusted/hook.js',
     }),
     {PATH: '/bin'},
+  );
+});
+
+test('portable health probe bypasses startup proxy settings and closes its socket', async (t) => {
+  let proxyRequests = 0;
+  const proxy = http.createServer((_request, response) => {
+    proxyRequests++;
+    response.writeHead(502);
+    response.end('proxy must not receive loopback health traffic');
+  });
+  const proxyPort = await listenOnLoopback(proxy);
+  t.after(() => closeHttpServer(proxy));
+
+  let connectionHeader;
+  let healthSocket;
+  const health = http.createServer((request, response) => {
+    connectionHeader = request.headers.connection;
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({status: 'OK', version: 'fixture-version'}));
+  });
+  health.once('connection', (socket) => {
+    healthSocket = socket;
+  });
+  const healthPort = await listenOnLoopback(health);
+  t.after(() => closeHttpServer(health));
+
+  const smokeModule = path.join(repoRoot, 'scripts/smoke-portable-archive.cjs');
+  const child = spawn(process.execPath, ['-e', [
+    `const {waitForHealth}=require(${JSON.stringify(smokeModule)});`,
+    'waitForHealth(process.argv[1], {status: "OK", version: "fixture-version"}, 2000)',
+    '  .then((result) => process.stdout.write(JSON.stringify(result)))',
+    '  .catch((error) => { console.error(error.stack || error); process.exitCode = 1; });',
+  ].join('\n'), `http://127.0.0.1:${healthPort}/health`], {
+    env: {
+      ...process.env,
+      ALL_PROXY: `http://127.0.0.1:${proxyPort}`,
+      HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
+      HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+      NODE_USE_ENV_PROXY: '1',
+      NO_PROXY: '',
+      no_proxy: '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const result = await waitForChild(child);
+
+  assert.deepEqual(
+    {code: result.code, signal: result.signal, stderr: result.stderr},
+    {code: 0, signal: null, stderr: ''},
+  );
+  assert.deepEqual(
+    JSON.parse(result.stdout),
+    {status: 'OK', version: 'fixture-version'},
+  );
+  assert.equal(proxyRequests, 0);
+  assert.equal(connectionHeader, 'close');
+  assert.ok(healthSocket, 'health server did not observe a connection');
+  await waitForSocketClose(healthSocket);
+});
+
+test('portable health probe timeout reports ETIMEDOUT and closes its socket', async (t) => {
+  let healthSocket;
+  const health = http.createServer(() => {});
+  health.once('connection', (socket) => {
+    healthSocket = socket;
+  });
+  const healthPort = await listenOnLoopback(health);
+  t.after(() => closeHttpServer(health));
+
+  await assert.rejects(
+    waitForHealth(
+      `http://127.0.0.1:${healthPort}/health`,
+      {status: 'OK'},
+      300,
+    ),
+    /health request exceeded \d+ms \(ETIMEDOUT\)/,
+  );
+  assert.ok(healthSocket, 'health server did not observe a connection');
+  await waitForSocketClose(healthSocket);
+});
+
+test('portable readiness cancels and settles the peer probe after one health failure', async (t) => {
+  const failing = http.createServer((_request, response) => {
+    response.writeHead(503, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({status: 'ERROR'}));
+  });
+  const failingPort = await listenOnLoopback(failing);
+  t.after(() => closeHttpServer(failing));
+
+  let hangingSocket;
+  let hangingRequestResolve;
+  const hangingRequest = new Promise((resolve) => {
+    hangingRequestResolve = resolve;
+  });
+  const hanging = http.createServer((_request, _response) => {
+    hangingRequestResolve();
+  });
+  hanging.once('connection', (socket) => {
+    hangingSocket = socket;
+  });
+  const hangingPort = await listenOnLoopback(hanging);
+  t.after(() => closeHttpServer(hanging));
+
+  const readiness = waitForReadiness({
+    backendTimeoutMs: 300,
+    backendUrl: `http://127.0.0.1:${failingPort}/health`,
+    frontendTimeoutMs: 5_000,
+    frontendUrl: `http://127.0.0.1:${hangingPort}/health`,
+    launcherExitPromise: new Promise(() => {}),
+    version: 'fixture-version',
+  });
+  await hangingRequest;
+  await assert.rejects(readiness, /did not become healthy/);
+  assert.ok(hangingSocket, 'hanging frontend did not observe a connection');
+  await waitForSocketClose(hangingSocket);
+});
+
+test('portable readiness cancels both probes when the launcher exits', async (t) => {
+  const sockets = [];
+  let backendRequestResolve;
+  const backendRequest = new Promise((resolve) => {
+    backendRequestResolve = resolve;
+  });
+  const hanging = http.createServer((_request, _response) => {
+    backendRequestResolve();
+  });
+  hanging.on('connection', (socket) => sockets.push(socket));
+  const backendPort = await listenOnLoopback(hanging);
+  t.after(() => closeHttpServer(hanging));
+
+  let frontendRequestResolve;
+  const frontendRequest = new Promise((resolve) => {
+    frontendRequestResolve = resolve;
+  });
+  const second = http.createServer((_request, _response) => {
+    frontendRequestResolve();
+  });
+  second.on('connection', (socket) => sockets.push(socket));
+  const frontendPort = await listenOnLoopback(second);
+  t.after(() => closeHttpServer(second));
+
+  await assert.rejects(
+    waitForReadiness({
+      backendUrl: `http://127.0.0.1:${backendPort}/health`,
+      frontendUrl: `http://127.0.0.1:${frontendPort}/health`,
+      launcherExitPromise: Promise.all([
+        backendRequest,
+        frontendRequest,
+      ]).then(() => ({code: 23, signal: null})),
+      version: 'fixture-version',
+    }),
+    /launcher exited before readiness: code=23/,
+  );
+  assert.equal(sockets.length, 2);
+  await Promise.all(sockets.map((socket) => waitForSocketClose(socket)));
+});
+
+test('portable health errors preserve bounded response-limit diagnostics', async (t) => {
+  const oversized = http.createServer((_request, response) => {
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end('x'.repeat(70 * 1024));
+  });
+  const port = await listenOnLoopback(oversized);
+  t.after(() => closeHttpServer(oversized));
+
+  await assert.rejects(
+    waitForHealth(
+      `http://127.0.0.1:${port}/health`,
+      {status: 'OK'},
+      500,
+    ),
+    /ERR_HEALTH_RESPONSE_TOO_LARGE/,
   );
 });
 

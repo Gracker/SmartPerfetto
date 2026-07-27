@@ -29,6 +29,7 @@ const {
   listEntries,
   nodeRuntimeExecutableDigest,
   readPackageManifest,
+  runArchiveCommandQuiet,
   validateArchiveEntries,
 } = require(path.join(repoRoot, 'scripts/verify-portable-package.cjs'));
 const {
@@ -54,6 +55,39 @@ function createFifoTarGzip(entryName) {
   const checksum = header.reduce((sum, byte) => sum + byte, 0);
   writeTarField(header, 148, 8, `${checksum.toString(8).padStart(6, '0')}\0 `);
   return gzipSync(Buffer.concat([header, Buffer.alloc(1024)]));
+}
+
+function createRegularTarGzip(entries) {
+  const blocks = [];
+  for (const [entryName, contents, type = '0'] of entries) {
+    const body = Buffer.from(contents);
+    const header = Buffer.alloc(512);
+    writeTarField(header, 0, 100, entryName);
+    writeTarField(header, 100, 8, type === '5' ? '0000755\0' : '0000644\0');
+    writeTarField(header, 108, 8, '0000000\0');
+    writeTarField(header, 116, 8, '0000000\0');
+    writeTarField(
+      header,
+      124,
+      12,
+      `${(type === '5' ? 0 : body.length).toString(8).padStart(11, '0')}\0`,
+    );
+    writeTarField(header, 136, 12, '00000000000\0');
+    header.fill(0x20, 148, 156);
+    header.write(type, 156, 1, 'ascii');
+    writeTarField(header, 257, 6, 'ustar\0');
+    writeTarField(header, 263, 2, '00');
+    const checksum = header.reduce((sum, byte) => sum + byte, 0);
+    writeTarField(header, 148, 8, `${checksum.toString(8).padStart(6, '0')}\0 `);
+    blocks.push(header);
+    if (type !== '5') {
+      blocks.push(body);
+      const padding = (512 - (body.length % 512)) % 512;
+      if (padding > 0) blocks.push(Buffer.alloc(padding));
+    }
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
 }
 
 function createZipArchive(root, archive, entry, preserveLinks = false) {
@@ -108,6 +142,10 @@ test('portable verifier rejects traversal, absolute, and cross-platform collisio
     ['package/COM¹.cfg'],
     ['package/question?.txt'],
     ['package/line\nbreak.txt'],
+    ['package/._payload'],
+    ['package/__MACOSX/file'],
+    ['package/.DS_Store'],
+    ['package/.AppleDouble/file'],
   ]) {
     assert.throws(() => validateArchiveEntries(entries), /Archive/);
   }
@@ -116,6 +154,103 @@ test('portable verifier rejects traversal, absolute, and cross-platform collisio
     'package/backend/',
     'package/backend/index.js',
   ]));
+});
+
+test('portable TAR listing rejects successful commands that emit PAX diagnostics', () => {
+  const runner = () => ({
+    error: undefined,
+    status: 0,
+    stderr: Buffer.from(
+      "tar: Ignoring unknown extended header keyword 'LIBARCHIVE.xattr.com.apple.provenance'\n",
+    ),
+    stdout: Buffer.from('package/\npackage/file\n'),
+  });
+  assert.throws(
+    () => listEntries('/fixture/package.tar.gz', 'tar.gz', process.env, runner),
+    /TAR listing produced diagnostics[\s\S]*LIBARCHIVE\.xattr/,
+  );
+  assert.throws(
+    () => runArchiveCommandQuiet(
+      'tar',
+      ['-tzf', '/fixture/package.tar.gz'],
+      {encoding: 'utf8'},
+      'TAR listing',
+      runner,
+    ),
+    /TAR listing produced diagnostics/,
+  );
+});
+
+test('portable ZIP listing rejects successful archive-tool diagnostics', () => {
+  const runner = () => ({
+    error: undefined,
+    status: 0,
+    stderr: Buffer.from('archive tool warning: unexpected metadata\n'),
+    stdout: Buffer.from('package/\npackage/file\n'),
+  });
+  assert.throws(
+    () => listEntries('/fixture/package.zip', 'zip', process.env, runner),
+    /ZIP listing produced diagnostics[\s\S]*unexpected metadata/,
+  );
+});
+
+test('portable TAR artifact rejects archive-time AppleDouble entries', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-appledouble-tar-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const archive = path.join(root, 'package.tar.gz');
+  fs.writeFileSync(archive, createRegularTarGzip([
+    ['package/', '', '5'],
+    ['package/file', 'ok'],
+    ['package/._file', 'metadata'],
+  ]));
+
+  assert.throws(
+    () => validateArchiveEntries(listEntries(archive, 'tar.gz')),
+    /Archive entry contains macOS metadata|TAR listing (?:failed|produced diagnostics)/,
+  );
+});
+
+test('production TAR helper suppresses macOS xattrs and AppleDouble synthesis', {
+  skip: process.platform === 'darwin'
+    ? false
+    : 'macOS bsdtar archive metadata contract',
+}, (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-xattr-tar-'));
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  const packageRoot = path.join(root, 'package');
+  fs.mkdirSync(packageRoot);
+  const source = path.join(packageRoot, 'file');
+  fs.writeFileSync(source, 'ok');
+  execFileSync('/usr/bin/env', [
+    'xattr',
+    '-w',
+    'com.smartperfetto.test',
+    'value',
+    source,
+  ]);
+
+  const archive = path.join(root, 'package.tar.gz');
+  execFileSync('bash', [
+    path.join(repoRoot, 'scripts/create-portable-tar.sh'),
+    root,
+    'package',
+    archive,
+  ]);
+  const entries = listEntries(archive, 'tar.gz');
+  assert.deepEqual(entries, ['package/', 'package/file']);
+  assert.doesNotThrow(() => validateArchiveEntries(entries));
+
+  const extracted = path.join(root, 'extracted');
+  fs.mkdirSync(extracted);
+  execFileSync('tar', ['-xzf', archive, '-C', extracted]);
+  assert.throws(
+    () => execFileSync('/usr/bin/env', [
+      'xattr',
+      '-p',
+      'com.smartperfetto.test',
+      path.join(extracted, 'package', 'file'),
+    ], {stdio: 'pipe'}),
+  );
 });
 
 test('portable verifier rejects links before zip or tar extraction', (t) => {

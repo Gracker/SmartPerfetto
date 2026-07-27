@@ -895,10 +895,10 @@ archive_package() {
       )
       ;;
     tar.gz)
-      (
-        cd "$OUT_ROOT"
-        tar -czf "$asset_path" "$package_name"
-      )
+      "$PROJECT_ROOT/scripts/create-portable-tar.sh" \
+        "$OUT_ROOT" \
+        "$package_name" \
+        "$asset_path"
       ;;
     *)
       echo "ERROR: unsupported archive extension for $target" >&2

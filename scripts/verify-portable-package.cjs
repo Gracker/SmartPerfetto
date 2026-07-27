@@ -5,7 +5,7 @@
 
 'use strict';
 
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
@@ -28,6 +28,7 @@ const ARCHIVE_LIMITS = Object.freeze({
   listingTimeoutMs: 180_000,
   extractionTimeoutMs: 300_000,
 });
+const COMMAND_DIAGNOSTIC_LIMIT_BYTES = 4 * 1024;
 
 const TARGETS = {
   'windows-x64': {
@@ -153,6 +154,48 @@ const TARGETS = {
     ],
   },
 };
+
+function boundedCommandDiagnostic(value) {
+  const text = Buffer.isBuffer(value)
+    ? value.toString('utf8')
+    : String(value || '');
+  const trimmed = text.trim();
+  if (Buffer.byteLength(trimmed) <= COMMAND_DIAGNOSTIC_LIMIT_BYTES) {
+    return trimmed;
+  }
+  return `${Buffer.from(trimmed).subarray(0, COMMAND_DIAGNOSTIC_LIMIT_BYTES).toString('utf8')}\n` +
+    '[diagnostic output truncated]';
+}
+
+function runArchiveCommandQuiet(
+  command,
+  args,
+  options = {},
+  label,
+  runner = spawnSync,
+) {
+  const result = runner(command, args, {
+    maxBuffer: 64 * 1024 * 1024,
+    stdio: 'pipe',
+    ...options,
+  });
+  const stdout = result.stdout ?? '';
+  const stderr = boundedCommandDiagnostic(result.stderr);
+  if (result.error || result.status !== 0) {
+    const detail = [
+      result.error?.message,
+      boundedCommandDiagnostic(stdout),
+      stderr,
+    ].filter(Boolean).join('\n');
+    throw new Error(
+      `${label} failed${detail ? `:\n${detail}` : ` with status ${result.status}`}`,
+    );
+  }
+  if (stderr) {
+    throw new Error(`${label} produced diagnostics:\n${stderr}`);
+  }
+  return stdout;
+}
 
 const FRONTEND_TOP_LEVEL_SYNTAQLITE_ASSETS = [
   'assets/syntaqlite-perfetto.wasm',
@@ -386,21 +429,26 @@ function assertNodeRuntimeManifestPin(
   );
 }
 
-function listEntries(assetPath, ext, commandEnv = process.env) {
+function listEntries(
+  assetPath,
+  ext,
+  commandEnv = process.env,
+  archiveCommandRunner = spawnSync,
+) {
   if (ext === 'zip') {
     const listing = commandExists('unzip')
-      ? execFileSync('unzip', ['-Z1', assetPath], {
+      ? runArchiveCommandQuiet('unzip', ['-Z1', assetPath], {
           encoding: 'utf8',
           env: commandEnv,
           maxBuffer: 64 * 1024 * 1024,
           timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-        })
-      : execFileSync('tar', ['-tf', assetPath], {
+        }, 'ZIP listing', archiveCommandRunner)
+      : runArchiveCommandQuiet('tar', ['-tf', assetPath], {
           encoding: 'utf8',
           env: commandEnv,
           maxBuffer: 64 * 1024 * 1024,
           timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-        });
+        }, 'ZIP listing', archiveCommandRunner);
     return listing
       .split(/\r?\n/)
       .filter(Boolean);
@@ -436,12 +484,12 @@ function listEntries(assetPath, ext, commandEnv = process.env) {
     } catch {
       // The listing command below remains the authoritative capability check.
     }
-    return execFileSync('tar', tarArgs, {
+    return runArchiveCommandQuiet('tar', tarArgs, {
       encoding: 'utf8',
       env: listingEnv,
       maxBuffer: 64 * 1024 * 1024,
       timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-    })
+    }, 'TAR listing', archiveCommandRunner)
       .split(/\r?\n/)
       .filter(Boolean)
       .map(entry => entry.replace(/^\.\//, ''));
@@ -581,11 +629,11 @@ function inspectTarGzipBudget(assetPath, assetBytes) {
     timeout: 10_000,
   });
   const bsdTar = /\bbsdtar\b/i.test(version);
-  const listing = execFileSync('tar', ['-tvzf', assetPath], {
+  const listing = runArchiveCommandQuiet('tar', ['-tvzf', assetPath], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024 * 1024,
     timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-  });
+  }, 'TAR budget listing');
   const lines = listing.split(/\r?\n/).filter(Boolean);
   let expandedBytes = 0;
   let largestEntryBytes = 0;
@@ -637,6 +685,15 @@ function normalizeArchiveEntry(entry) {
   );
   for (const segment of segments) {
     assert(
+      !(
+        segment === '__MACOSX' ||
+        segment === '.DS_Store' ||
+        segment === '.AppleDouble' ||
+        segment.startsWith('._')
+      ),
+      `Archive entry contains macOS metadata: ${entry}`,
+    );
+    assert(
       !/[<>:"|?*\x00-\x1F]/u.test(segment),
       `Archive entry contains a Windows-unsafe path segment: ${entry}`,
     );
@@ -681,22 +738,22 @@ function assertArchiveHasNoLinks(assetPath, ext) {
   let listing;
   if (ext === 'zip') {
     listing = commandExists('unzip')
-      ? execFileSync('unzip', ['-Z', '-l', assetPath], {
+      ? runArchiveCommandQuiet('unzip', ['-Z', '-l', assetPath], {
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,
         timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-      })
-      : execFileSync('tar', ['-tvf', assetPath], {
+      }, 'ZIP type listing')
+      : runArchiveCommandQuiet('tar', ['-tvf', assetPath], {
         encoding: 'utf8',
         maxBuffer: 64 * 1024 * 1024,
         timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-      });
+      }, 'ZIP type listing');
   } else if (ext === 'tar.gz') {
-    listing = execFileSync('tar', ['-tvzf', assetPath], {
+    listing = runArchiveCommandQuiet('tar', ['-tvzf', assetPath], {
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
       timeout: ARCHIVE_LIMITS.listingTimeoutMs,
-    });
+    }, 'TAR type listing');
   } else {
     throw new Error(`Unsupported archive extension: ${ext}`);
   }
@@ -714,11 +771,26 @@ function assertArchiveHasNoLinks(assetPath, ext) {
 function readEntry(assetPath, ext, entry) {
   if (ext === 'zip') {
     return commandExists('unzip')
-      ? execFileSync('unzip', ['-p', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
-      : execFileSync('tar', ['-xOf', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+      ? runArchiveCommandQuiet(
+        'unzip',
+        ['-p', assetPath, entry],
+        {encoding: 'utf8', maxBuffer: 16 * 1024 * 1024},
+        'ZIP entry read',
+      )
+      : runArchiveCommandQuiet(
+        'tar',
+        ['-xOf', assetPath, entry],
+        {encoding: 'utf8', maxBuffer: 16 * 1024 * 1024},
+        'ZIP entry read',
+      );
   }
   if (ext === 'tar.gz') {
-    return execFileSync('tar', ['-xOzf', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    return runArchiveCommandQuiet(
+      'tar',
+      ['-xOzf', assetPath, entry],
+      {encoding: 'utf8', maxBuffer: 16 * 1024 * 1024},
+      'TAR entry read',
+    );
   }
   throw new Error(`Unsupported archive extension: ${ext}`);
 }
@@ -727,11 +799,26 @@ function readEntryBuffer(assetPath, ext, entry) {
   const maxBuffer = 256 * 1024 * 1024;
   if (ext === 'zip') {
     return commandExists('unzip')
-      ? execFileSync('unzip', ['-p', assetPath, entry], { maxBuffer })
-      : execFileSync('tar', ['-xOf', assetPath, entry], { maxBuffer });
+      ? runArchiveCommandQuiet(
+        'unzip',
+        ['-p', assetPath, entry],
+        {maxBuffer},
+        'ZIP binary entry read',
+      )
+      : runArchiveCommandQuiet(
+        'tar',
+        ['-xOf', assetPath, entry],
+        {maxBuffer},
+        'ZIP binary entry read',
+      );
   }
   if (ext === 'tar.gz') {
-    return execFileSync('tar', ['-xOzf', assetPath, entry], { maxBuffer });
+    return runArchiveCommandQuiet(
+      'tar',
+      ['-xOzf', assetPath, entry],
+      {maxBuffer},
+      'TAR binary entry read',
+    );
   }
   throw new Error(`Unsupported archive extension: ${ext}`);
 }
@@ -771,21 +858,18 @@ function extractArchiveToTemp(assetPath, ext, entries) {
   try {
     if (ext === 'zip') {
       if (commandExists('unzip')) {
-        execFileSync('unzip', ['-q', assetPath, '-d', tmpRoot], {
-          stdio: 'pipe',
+        runArchiveCommandQuiet('unzip', ['-q', assetPath, '-d', tmpRoot], {
           timeout: ARCHIVE_LIMITS.extractionTimeoutMs,
-        });
+        }, 'ZIP extraction');
       } else {
-        execFileSync('tar', ['-xf', assetPath, '-C', tmpRoot], {
-          stdio: 'pipe',
+        runArchiveCommandQuiet('tar', ['-xf', assetPath, '-C', tmpRoot], {
           timeout: ARCHIVE_LIMITS.extractionTimeoutMs,
-        });
+        }, 'ZIP extraction');
       }
     } else if (ext === 'tar.gz') {
-      execFileSync('tar', ['-xzf', assetPath, '-C', tmpRoot], {
-        stdio: 'pipe',
+      runArchiveCommandQuiet('tar', ['-xzf', assetPath, '-C', tmpRoot], {
         timeout: ARCHIVE_LIMITS.extractionTimeoutMs,
-      });
+      }, 'TAR extraction');
     } else {
       throw new Error(`Unsupported archive extension: ${ext}`);
     }
@@ -1363,5 +1447,6 @@ module.exports = {
   nodeRuntimeExecutableDigest,
   readNodeRuntimePin,
   readPackageManifest,
+  runArchiveCommandQuiet,
   validateArchiveEntries,
 };
