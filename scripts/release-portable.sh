@@ -163,10 +163,21 @@ assert_clean_worktree() {
   fi
 }
 
+release_id_for_tag() {
+  local release_id
+  release_id="$(gh_release view "$TAG" --json databaseId --jq '.databaseId')"
+  if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: GitHub returned an invalid release id for $TAG: ${release_id:-<empty>}" >&2
+    exit 1
+  fi
+  echo "$release_id"
+}
+
 verify_remote_release() {
-  local require_complete="$1"
-  local remote_json="$2"
-  gh api "repos/$REPO_SLUG/releases/tags/$TAG" > "$remote_json"
+  local release_id="$1"
+  local require_complete="$2"
+  local remote_json="$3"
+  gh api "repos/$REPO_SLUG/releases/$release_id" > "$remote_json"
   node - "$remote_json" "$EXPECTED_ASSETS_FILE" "$TARGET_SHA" "SmartPerfetto $TAG" "$PRERELEASE" "$require_complete" <<'NODE'
 const fs = require('fs');
 const [remoteFile, expectedFile, targetSha, expectedName, prerelease, requireComplete] = process.argv.slice(2);
@@ -441,13 +452,14 @@ else
 fi
 
 if gh_release view "$TAG" --json isDraft --jq '.isDraft' >/dev/null 2>&1; then
+  release_id="$(release_id_for_tag)"
   existing_draft="$(gh_release view "$TAG" --json isDraft --jq '.isDraft')"
   if [ "$existing_draft" != "true" ]; then
     if ! targets_are_complete; then
       echo "ERROR: published release verification requires all three default targets." >&2
       exit 1
     fi
-    verify_remote_release true "$REMOTE_RELEASE_FILE"
+    verify_remote_release "$release_id" true "$REMOTE_RELEASE_FILE"
     echo "Published release already matches the local assets exactly; no changes made: $TAG"
     exit 0
   fi
@@ -467,9 +479,10 @@ else
   for asset in "${assets[@]}"; do
     gh_release upload "$TAG" "$asset"
   done
+  release_id="$(release_id_for_tag)"
 fi
 
-verify_remote_release "$([ "$DRAFT" = false ] && echo true || echo false)" "$REMOTE_RELEASE_FILE"
+verify_remote_release "$release_id" "$([ "$DRAFT" = false ] && echo true || echo false)" "$REMOTE_RELEASE_FILE"
 
 if [ "$DRAFT" = false ]; then
   gh_release edit "$TAG" --draft=false
@@ -478,7 +491,7 @@ if [ "$DRAFT" = false ]; then
     echo "ERROR: release $TAG was not published after verification." >&2
     exit 1
   fi
-  verify_remote_release true "$REMOTE_RELEASE_FILE"
+  verify_remote_release "$release_id" true "$REMOTE_RELEASE_FILE"
 fi
 
 echo "Portable release assets uploaded:"

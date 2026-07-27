@@ -96,6 +96,10 @@ if (args[0] === 'repo' && args[1] === 'view') {
 if (args[0] === 'api') {
   const state = load();
   if (!state.exists) process.exit(1);
+  const releaseId = state.releaseId ?? 4242;
+  if (args[1] !== \`repos/Gracker/SmartPerfetto/releases/\${releaseId}\`) {
+    process.exit(1);
+  }
   output(JSON.stringify({
     target_commitish: state.target,
     name: state.name,
@@ -113,6 +117,7 @@ if (action === 'view') {
   const field = option('--jq');
   if (field === '.isDraft') output(state.draft);
   else if (field === '.targetCommitish') output(state.target);
+  else if (field === '.databaseId') output(state.releaseId ?? 4242);
   else output(JSON.stringify(state));
   process.exit(0);
 }
@@ -123,6 +128,7 @@ if (action === 'create') {
   state.prerelease = args.includes('--prerelease');
   state.target = option('--target');
   state.name = option('--title');
+  state.releaseId = 4242;
   state.assets = [];
   save(state);
   process.exit(0);
@@ -261,6 +267,26 @@ function mutationLog(log) {
   );
 }
 
+function releaseApiLog(log) {
+  return log.filter(line => line.startsWith('api '));
+}
+
+test('a draft-only release is verified by immutable release id', () => {
+  const fixture = setupProject();
+  const {result, state, log} = executeRelease(fixture, {
+    exists: false,
+    assets: [],
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(state.draft, true);
+  assert.deepEqual(state.assets, expectedAssets(fixture.out));
+  assert.deepEqual(releaseApiLog(log), [
+    'api repos/Gracker/SmartPerfetto/releases/4242',
+  ]);
+  assert.ok(log.includes(`release view v${version} --json databaseId --jq .databaseId`));
+  assert.ok(log.every(line => !line.includes('/releases/tags/')));
+});
+
 test('portable release uploads to a draft and publishes only after verification', () => {
   const fixture = setupProject();
   const {
@@ -290,6 +316,11 @@ test('portable release uploads to a draft and publishes only after verification'
     (line, index) => index < publishIndex && line.startsWith('api '),
   );
   assert.ok(prePublishVerification >= 0);
+  assert.deepEqual(releaseApiLog(log), [
+    'api repos/Gracker/SmartPerfetto/releases/4242',
+    'api repos/Gracker/SmartPerfetto/releases/4242',
+  ]);
+  assert.ok(log.every(line => !line.includes('/releases/tags/')));
 });
 
 test('an exact published release is a read-only idempotent no-op', () => {
