@@ -87,11 +87,27 @@ function waitForSocketClose(socket, timeoutMs = 2_000) {
   });
 }
 
+async function captureProbeSockets(run) {
+  const originalCreateConnection = net.createConnection;
+  const sockets = [];
+  net.createConnection = (...args) => {
+    const socket = originalCreateConnection(...args);
+    sockets.push(socket);
+    return socket;
+  };
+  try {
+    await run();
+  } finally {
+    net.createConnection = originalCreateConnection;
+  }
+  return sockets;
+}
+
 async function startRawResponseServer(onRequest) {
   const sockets = new Set();
   const requests = [];
   const requestWaiters = [];
-  const server = net.createServer((socket) => {
+  const server = net.createServer({allowHalfOpen: true}, (socket) => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
     const chunks = [];
@@ -349,7 +365,7 @@ test('portable health probe half-closes its request before awaiting the response
   assert.deepEqual(
     await directHttpHealthProbe(
       `http://127.0.0.1:${port}/health`,
-      2_000,
+      300,
     ),
     {
       body: JSON.stringify({status: 'OK', version: 'fixture-version'}),
@@ -484,7 +500,7 @@ test('portable health response parser accepts only strict bounded framing', () =
   );
 });
 
-test('portable raw health probe times out partial responses and closes each socket', async (t) => {
+test('portable raw health probe times out partial responses and destroys each client socket', async (t) => {
   const fixtures = [];
   t.after(async () => {
     await Promise.all(fixtures.map((fixture) => fixture.close()));
@@ -499,21 +515,26 @@ test('portable raw health probe times out partial responses and closes each sock
       socket.write(partialResponse);
     });
     fixtures.push(fixture);
-    await assert.rejects(
-      directHttpHealthProbe(
-        `http://127.0.0.1:${fixture.port}/health`,
-        150,
+    const probeSockets = await captureProbeSockets(() =>
+      assert.rejects(
+        directHttpHealthProbe(
+          `http://127.0.0.1:${fixture.port}/health`,
+          150,
+        ),
+        (error) => {
+          assert.equal(error?.code, 'ETIMEDOUT');
+          assert.match(
+            error.message,
+            /during receiving response; received [1-9]\d* bytes$/,
+          );
+          return true;
+        },
       ),
-      (error) => {
-        assert.equal(error?.code, 'ETIMEDOUT');
-        assert.match(
-          error.message,
-          /during receiving response; received [1-9]\d* bytes$/,
-        );
-        return true;
-      },
     );
+    assert.equal(probeSockets.length, 1);
+    assert.ok(probeSockets.every((socket) => socket.destroyed));
     assert.ok(observedSocket, 'partial-response server did not observe a connection');
+    observedSocket.destroy();
     await waitForSocketClose(observedSocket);
   }
 });
@@ -545,14 +566,19 @@ test('portable raw health probe honors pre-connect and connected cancellation', 
   assert.equal(connections, 0);
 
   const controller = new AbortController();
-  const probe = directHttpHealthProbe(
-    `http://127.0.0.1:${fixture.port}/health`,
-    2_000,
-    controller.signal,
-  );
-  await connected;
-  controller.abort(new Error('connected fixture cancelled'));
-  await assert.rejects(probe, /connected fixture cancelled/);
+  const probeSockets = await captureProbeSockets(async () => {
+    const probe = directHttpHealthProbe(
+      `http://127.0.0.1:${fixture.port}/health`,
+      2_000,
+      controller.signal,
+    );
+    await connected;
+    controller.abort(new Error('connected fixture cancelled'));
+    await assert.rejects(probe, /connected fixture cancelled/);
+  });
+  assert.equal(probeSockets.length, 1);
+  assert.ok(probeSockets.every((socket) => socket.destroyed));
+  connectedSocket.destroy();
   await waitForSocketClose(connectedSocket);
 });
 
@@ -602,22 +628,27 @@ test('portable readiness independently proves backend and frontend payloads', as
   );
 });
 
-test('portable health probe timeout reports ETIMEDOUT and closes its socket', async (t) => {
+test('portable health probe timeout reports ETIMEDOUT and destroys its client sockets', async (t) => {
   let healthSocket;
   const fixture = await startRawResponseServer((socket) => {
     healthSocket = socket;
   });
   t.after(() => fixture.close());
 
-  await assert.rejects(
-    waitForHealth(
-      `http://127.0.0.1:${fixture.port}/health`,
-      {status: 'OK'},
-      300,
+  const probeSockets = await captureProbeSockets(() =>
+    assert.rejects(
+      waitForHealth(
+        `http://127.0.0.1:${fixture.port}/health`,
+        {status: 'OK'},
+        300,
+      ),
+      /health request exceeded \d+ms during awaiting response after request half-close; received 0 bytes \(ETIMEDOUT\)/,
     ),
-    /health request exceeded \d+ms during awaiting response; received 0 bytes \(ETIMEDOUT\)/,
   );
+  assert.ok(probeSockets.length > 0);
+  assert.ok(probeSockets.every((socket) => socket.destroyed));
   assert.ok(healthSocket, 'health server did not observe a connection');
+  healthSocket.destroy();
   await waitForSocketClose(healthSocket);
 });
 
