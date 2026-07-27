@@ -185,13 +185,14 @@ cd /app/backend
 PORT="$BACKEND_PORT" \
 SMARTPERFETTO_BACKEND_PORT="$BACKEND_PORT" \
 SMARTPERFETTO_FRONTEND_PORT="$FRONTEND_PORT" \
+SMARTPERFETTO_BIND_HOST="${SMARTPERFETTO_BIND_HOST:-0.0.0.0}" \
 node dist/index.js &
 BACKEND_PID=$!
 
 # Wait for backend health
 echo "Waiting for backend..."
 if ! wait_for_service \
-  "$BACKEND_PID" "Backend" "http://localhost:${BACKEND_PORT}/health" 30; then
+  "$BACKEND_PID" "Backend" "http://127.0.0.1:${BACKEND_PORT}/health" 30; then
   exit 1
 fi
 
@@ -203,12 +204,13 @@ SMARTPERFETTO_BACKEND_PORT="$BACKEND_PORT" \
 SMARTPERFETTO_BACKEND_PUBLIC_PORT="${SMARTPERFETTO_BACKEND_PUBLIC_PORT:-$BACKEND_PORT}" \
 SMARTPERFETTO_BACKEND_PUBLIC_URL="${SMARTPERFETTO_BACKEND_PUBLIC_URL:-${SMARTPERFETTO_BACKEND_URL:-}}" \
 SMARTPERFETTO_FRONTEND_PORT="$FRONTEND_PORT" \
+SMARTPERFETTO_FRONTEND_BIND_HOST="${SMARTPERFETTO_FRONTEND_BIND_HOST:-0.0.0.0}" \
 node server.js &
 FRONTEND_PID=$!
 
 echo "Waiting for frontend..."
 if ! wait_for_service \
-  "$FRONTEND_PID" "Frontend" "http://localhost:${FRONTEND_PORT}/health" 30; then
+  "$FRONTEND_PID" "Frontend" "http://127.0.0.1:${FRONTEND_PORT}/health" 30; then
   exit 1
 fi
 

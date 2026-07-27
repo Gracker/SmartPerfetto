@@ -8,6 +8,8 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](windows-exe.en.md) | [中文](windows-exe.md)
 
+<!-- i18n-headings: paired -->
+
 > The Windows commands are compatibility entry points for the cross-platform
 > portable packaging flow. See [Portable Packaging](portable-packaging.en.md)
 > for the full three-platform release process.
@@ -125,8 +127,8 @@ npm run version:sync -- --check
 
 1. Extract `smartperfetto-v<version>-windows-x64.zip` to a normal local path such as `C:\SmartPerfetto`.
 2. Double-click `SmartPerfetto.exe`.
-3. The browser usually opens automatically. If it does not, open [http://localhost:10000](http://localhost:10000).
-4. AI analysis needs a Provider profile in the UI. For env credentials, create `data\env` under the extracted package directory, edit one provider block, and restart `SmartPerfetto.exe`.
+3. The browser usually opens automatically. If it does not, open the launcher's printed [http://127.0.0.1:10000](http://127.0.0.1:10000) URL (the launcher selects another port when the default is occupied).
+4. AI analysis needs a Provider profile in the UI. For env credentials, write the provider configuration to `%LOCALAPPDATA%\SmartPerfetto\env` and restart `SmartPerfetto.exe`. Do not store durable credentials in the extracted package directory.
 5. Keep the launcher window open while using SmartPerfetto. Press `Ctrl+C` to stop the backend, frontend, and trace processor child processes.
 
 ## Verification
@@ -142,8 +144,8 @@ C:\SmartPerfettoSmoke\smartperfetto-v<version>-windows-x64\SmartPerfetto.exe
 
 Then check:
 
-- [http://localhost:10000](http://localhost:10000) opens the Perfetto UI.
-- [http://localhost:3000/health](http://localhost:3000/health) returns `status: "OK"`.
+- The launcher's printed `http://127.0.0.1:<port>` URL opens the Perfetto UI.
+- The launcher's printed backend `http://127.0.0.1:<port>/health` URL returns `status: "OK"`.
 - Uploading a small trace starts `trace_processor_shell.exe` in the backend log.
 - Bundled CLI `smp knowledge-pack status --format json` resolves the
   bundled/active Pack.

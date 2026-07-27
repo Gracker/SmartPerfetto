@@ -8,6 +8,8 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](release.en.md) | [中文](release.md)
 
+<!-- i18n-headings: paired -->
+
 本文是维护者发布 SmartPerfetto 的用户可读手册。LLM/Agent 执行发布前还必须先读
 根目录的 [AGENTS.md](../../AGENTS.md)、[`.claude/rules/release.md`](../../.claude/rules/release.md)、
 [`.claude/rules/product-surface.md`](../../.claude/rules/product-surface.md)、
@@ -68,8 +70,16 @@ npm install @gracker/smartperfetto@<version>
 
 ```bash
 npm run package:portable
-# 在目标系统解压并 smoke 这三份最终归档；macOS 使用公证并 staple 后的 final zip
-npm run release:portable -- <version> --skip-build --no-draft
+# 在每个匹配目标系统运行；macOS 的 asset 必须是公证并 staple 后的 final zip
+node scripts/smoke-portable-archive.cjs \
+  --asset "<final-archive>" \
+  --target "<windows-x64|macos-arm64|linux-x64>" \
+  --version "<version>" \
+  --commit "<release-commit>" \
+  --public-release \
+  --output-dir "dist/portable/smoke-evidence/<target>"
+npm run release:portable -- <version> --skip-build --no-draft \
+  --smoke-evidence-dir dist/portable/smoke-evidence
 gh release view v<version> --json tagName,isDraft,assets
 ```
 
@@ -78,6 +88,10 @@ gh release view v<version> --json tagName,isDraft,assets
 和 Linux 都要验证 `127.0.0.1` 前后端 health、包内 runtime、最小 trace processor
 操作、优雅退出和端口释放。缺少目标 runner 时保持 draft；如果用户明确接受缺口，
 必须在 release/交付说明里写明未测试平台，不能称为全平台验证完成。
+每个目标的 schema-v2 smoke summary 还会绑定最终归档的名称、字节数和 SHA-256；
+公开前会重新计算归档哈希，旧证据或被替换的产物不能通过。
+`--output-dir` 必须指向尚不存在的新目录；成功摘要原子写入，失败使用独立
+`smoke-failure.json`，重跑不得覆盖既有发布证据。
 
 `release:portable` 始终 draft-first：先上传并验证 target commit、标题和三平台
 asset 的名称、大小、GitHub digest，全部成立后 `--no-draft` 才公开。公开 release

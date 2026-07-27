@@ -10,7 +10,7 @@ be checked against the public product surfaces below.
 
 | Entry point | User command/path | Primary users | Notes |
 | --- | --- | --- | --- |
-| Web UI from source | `./start.sh` -> `http://localhost:10000` | local users and maintainers | Uses committed `frontend/`; no `perfetto/` build needed for normal use |
+| Web UI from source | `./start.sh` -> `http://127.0.0.1:10000` | local users and maintainers | Uses committed `frontend/`; backend and frontend bind to IPv4 loopback by default; no `perfetto/` build needed for normal use |
 | Web UI dev mode | `./scripts/start-dev.sh` | AI Assistant plugin developers | Requires `perfetto/` submodule and rebuilt `frontend/` before shipping |
 | Docker | `docker compose -f docker-compose.hub.yml up -d` | users who do not want host Node.js | Cannot read host Claude Code local auth |
 | Portable app | GitHub release assets | non-developer Windows/macOS/Linux users | Bundles Node.js 24, native deps, backend, `frontend/`, trace processor |

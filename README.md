@@ -229,11 +229,15 @@ Users who do not want Docker can use maintainer-built portable packages for Wind
 
 Assets:
 
-- `smartperfetto-v<version>-windows-x64.zip`: extract and double-click `SmartPerfetto.exe`.
-- `smartperfetto-v<version>-macos-arm64.zip`: extract and double-click `SmartPerfetto.app`.
-- `smartperfetto-v<version>-linux-x64.tar.gz`: extract and run `./SmartPerfetto`.
+- `smartperfetto-v<version>-windows-x64.zip`: requires Windows 10 / Windows
+  Server 2016 or newer on x64; extract and double-click `SmartPerfetto.exe`.
+- `smartperfetto-v<version>-macos-arm64.zip`: requires macOS 13.5 or newer on
+  Apple silicon; extract and double-click `SmartPerfetto.app`.
+- `smartperfetto-v<version>-linux-x64.tar.gz`: requires an x64 distribution
+  with glibc 2.34 or newer; musl-based distributions such as Alpine Linux are
+  not supported by this archive. Extract and run `./SmartPerfetto`.
 
-All launchers start the backend and pre-built Perfetto UI, then open [http://localhost:10000](http://localhost:10000). Override ports with `SMARTPERFETTO_BACKEND_PORT` and `SMARTPERFETTO_FRONTEND_PORT`. AI analysis needs a Provider profile configured in the UI, or env credentials in the package's user data env file.
+All launchers start the backend and pre-built Perfetto UI, then open [http://127.0.0.1:10000](http://127.0.0.1:10000). Override ports with `SMARTPERFETTO_BACKEND_PORT` and `SMARTPERFETTO_FRONTEND_PORT`. AI analysis needs a Provider profile configured in the UI, or env credentials in the package's user data env file.
 
 Windows stores durable data under `%LOCALAPPDATA%\SmartPerfetto`. On first
 launch, a new package safely copies an eligible older package-local `data/`
@@ -242,6 +246,36 @@ directory and leaves the old package untouched. Use
 automatic discovery cannot identify the source. Set
 `SMARTPERFETTO_PORTABLE_MODE=1` only when you intentionally want data beside
 the executable.
+
+#### Troubleshooting macOS startup
+
+`backend did not become ready` means the backend did not pass readiness; it
+does not by itself prove a port conflict. The launcher first probes the bundled
+Node.js runtime and surfaces the original operating-system error when that
+runtime cannot execute. If the backend or frontend exits before readiness, or
+the readiness check times out, the error includes the absolute service log
+path. The default macOS backend log is
+`~/Library/Logs/SmartPerfetto/backend.log`.
+
+Run these commands from the directory containing `SmartPerfetto.app`:
+
+```bash
+uname -m
+sw_vers -productVersion
+"$PWD/SmartPerfetto.app/Contents/Resources/runtime/node/bin/node" --version
+tail -n 200 "$HOME/Library/Logs/SmartPerfetto/backend.log"
+codesign --verify --deep --strict --verbose=2 SmartPerfetto.app
+spctl --assess --type execute -vv SmartPerfetto.app
+```
+
+A public macOS asset must pass both signature and Gatekeeper verification with
+its extracted contents unchanged. Do not hide a defective public asset by
+removing quarantine or ad-hoc re-signing it. Re-download the asset matching
+Apple silicon and the supported OS version, verify the SHA256 published by
+GitHub, and include the OS version, architecture, bundled Node.js probe output,
+and `backend.log` when reporting a failure. Temporary bypasses are only
+appropriate for trusted local development binaries and are not public-release
+evidence.
 
 Maintainer build command:
 
@@ -262,7 +296,8 @@ cd backend
 npm publish --access public
 cd ..
 npm run package:portable
-npm run release:portable -- <version> --skip-build --no-draft
+npm run release:portable -- <version> --skip-build --no-draft \
+  --smoke-evidence-dir dist/portable/smoke-evidence
 ```
 
 Cross-platform assets are written to `dist/portable/`; the Windows-compatible command still writes to `dist/windows-exe/`. See [Release Runbook](docs/reference/release.en.md) and [Portable Packaging](docs/reference/portable-packaging.en.md) for npm smoke tests, GitHub release verification, and signing notes.

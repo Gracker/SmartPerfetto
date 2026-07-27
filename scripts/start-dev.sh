@@ -337,19 +337,19 @@ extract_frontend_version() {
 # shellcheck disable=SC2317,SC2329 # Invoked through is_dev_frontend_ready.
 is_frontend_runtime_ready() {
   local version="$1"
-  local manifest_url="http://localhost:$FRONTEND_PORT/$version/manifest.json"
+  local manifest_url="$FRONTEND_LOOPBACK_URL/$version/manifest.json"
   if ! curl -fsS -o /dev/null "$manifest_url" 2>/dev/null; then
     return 1
   fi
   curl -fsS -o /dev/null \
-    "http://localhost:$FRONTEND_PORT/frontend/index.ts" 2>/dev/null
+    "$FRONTEND_LOOPBACK_URL/frontend/index.ts" 2>/dev/null
 }
 
 # shellcheck disable=SC2317,SC2329 # Passed as a readiness predicate.
 is_dev_frontend_ready() {
   local index_html
   local version
-  index_html=$(curl -fsS "http://localhost:$FRONTEND_PORT/" 2>/dev/null || true)
+  index_html=$(curl -fsS "$FRONTEND_LOOPBACK_URL/" 2>/dev/null || true)
   [ -n "$index_html" ] || return 1
   version=$(extract_frontend_version "$index_html" || true)
   [ -n "$version" ] || return 1
@@ -680,7 +680,7 @@ fi
 # Wait for backend to start and verify health
 echo "Waiting for backend to start..."
 if ! smartperfetto_wait_for_http \
-  "$BACKEND_PID" "Backend" "http://localhost:$BACKEND_PORT/health" 30 "$BACKEND_LOG"; then
+  "$BACKEND_PID" "Backend" "$BACKEND_HEALTH_URL" 30 "$BACKEND_LOG"; then
   exit 1
 fi
 
@@ -715,8 +715,8 @@ echo "Frontend PID: $FRONTEND_PID ✅"
 echo "Frontend version: $FRONTEND_VERSION"
 echo ""
 echo "URLs:"
-echo "  Perfetto UI: http://localhost:$FRONTEND_PORT"
-echo "  Backend API: http://localhost:$BACKEND_PORT"
+echo "  Perfetto UI: $FRONTEND_URL"
+echo "  Backend API: $BACKEND_URL"
 echo ""
 echo "Logs:"
 echo "  tail -f $BACKEND_LOG"

@@ -209,13 +209,34 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
 
 产物：
 
-- `smartperfetto-v<version>-windows-x64.zip`：解压后双击 `SmartPerfetto.exe`。
-- `smartperfetto-v<version>-macos-arm64.zip`：解压后双击 `SmartPerfetto.app`。
-- `smartperfetto-v<version>-linux-x64.tar.gz`：解压后运行 `./SmartPerfetto`。
+- `smartperfetto-v<version>-windows-x64.zip`：需要 Windows 10 / Windows Server 2016
+  或以上 x64 系统；解压后双击 `SmartPerfetto.exe`。
+- `smartperfetto-v<version>-macos-arm64.zip`：需要 macOS 13.5 或以上 Apple
+  silicon 设备；解压后双击 `SmartPerfetto.app`。
+- `smartperfetto-v<version>-linux-x64.tar.gz`：需要 glibc 2.34 或以上的 x64
+  Linux 发行版；该归档不支持 Alpine Linux 等基于 musl 的发行版。解压后运行
+  `./SmartPerfetto`。
 
-启动器会拉起后端和预构建 Perfetto UI，并打开 [http://localhost:10000](http://localhost:10000)。端口可用 `SMARTPERFETTO_BACKEND_PORT` 和 `SMARTPERFETTO_FRONTEND_PORT` 覆盖。AI 分析需要在 UI 里配置 Provider profile，或在对应平台的用户数据 env 文件中配置凭证。
+启动器会拉起后端和预构建 Perfetto UI，并打开 [http://127.0.0.1:10000](http://127.0.0.1:10000)。端口可用 `SMARTPERFETTO_BACKEND_PORT` 和 `SMARTPERFETTO_FRONTEND_PORT` 覆盖。AI 分析需要在 UI 里配置 Provider profile，或在对应平台的用户数据 env 文件中配置凭证。
 
 Windows 的持久数据默认保存在 `%LOCALAPPDATA%\SmartPerfetto`。新免安装包首次启动时会安全复制符合条件的旧包内 `data/` 目录，并保留旧包不动；自动发现无法确定来源时，可运行 `SmartPerfetto.exe --migrate-from <旧包或数据目录>`。只有明确希望把数据放在可执行文件旁边时，才设置 `SMARTPERFETTO_PORTABLE_MODE=1`。
+
+#### macOS 启动失败排查
+
+`backend did not become ready` 表示后端没有通过就绪检查，不等同于端口冲突。启动器会先运行包内 Node.js 自检；如果 runtime 无法执行，会直接显示原始系统错误。如果后端或前端启动后提前退出，或就绪检查超时，错误中会给出对应日志的绝对路径。macOS 默认后端日志位于 `~/Library/Logs/SmartPerfetto/backend.log`。
+
+在包含 `SmartPerfetto.app` 的目录执行：
+
+```bash
+uname -m
+sw_vers -productVersion
+"$PWD/SmartPerfetto.app/Contents/Resources/runtime/node/bin/node" --version
+tail -n 200 "$HOME/Library/Logs/SmartPerfetto/backend.log"
+codesign --verify --deep --strict --verbose=2 SmartPerfetto.app
+spctl --assess --type execute -vv SmartPerfetto.app
+```
+
+公开 macOS 产物必须在未修改的解压内容上同时通过签名和 Gatekeeper 校验。不要通过清除 quarantine 或自行重签名来掩盖公开包缺陷；应重新下载对应系统和 Apple silicon 的产物，核对 GitHub 提供的 SHA256，并在报告问题时附上系统版本、架构、包内 Node.js 自检输出和 `backend.log`。临时绕过只适合可信本地开发二进制，不能作为公开发布验证证据。
 
 维护者打包命令：
 
@@ -236,7 +257,8 @@ cd backend
 npm publish --access public
 cd ..
 npm run package:portable
-npm run release:portable -- <version> --skip-build --no-draft
+npm run release:portable -- <version> --skip-build --no-draft \
+  --smoke-evidence-dir dist/portable/smoke-evidence
 ```
 
 跨平台产物在 `dist/portable/`；兼容的 Windows 命令仍会输出到 `dist/windows-exe/`。npm smoke、GitHub release 校验和签名说明见 [发布手册](docs/reference/release.md) 和 [免安装包打包](docs/reference/portable-packaging.md)。

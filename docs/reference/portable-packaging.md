@@ -8,15 +8,20 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](portable-packaging.en.md) | [中文](portable-packaging.md)
 
+<!-- i18n-headings: paired -->
+
 SmartPerfetto 的免安装包不是单文件二进制。启动器负责拉起包内 Node.js 24
 runtime、后端、预构建 Perfetto UI、固定版本 `trace_processor_shell` 和签名的
 Android Internals Knowledge Pack。
 
 当前维护的 release asset：
 
-- `smartperfetto-v<version>-windows-x64.zip`
-- `smartperfetto-v<version>-macos-arm64.zip`
-- `smartperfetto-v<version>-linux-x64.tar.gz`
+- `smartperfetto-v<version>-windows-x64.zip`（Windows 10 / Windows Server 2016
+  或以上 x64）
+- `smartperfetto-v<version>-macos-arm64.zip`（macOS 13.5 或以上 Apple
+  silicon 设备）
+- `smartperfetto-v<version>-linux-x64.tar.gz`（glibc 2.34 或以上 x64
+  Linux；不支持 Alpine Linux 等基于 musl 的发行版）
 
 ## 打包
 
@@ -64,12 +69,28 @@ cd backend
 npm publish --access public
 cd ..
 npm run package:portable
-npm run release:portable -- <version> --skip-build --no-draft
+# 以下命令分别在归档匹配的 Windows x64、macOS arm64、Linux x64 上运行
+node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
+  --version <version> --commit <commit> --public-release \
+  --output-dir dist/portable/smoke-evidence/<target>
+npm run release:portable -- <version> --skip-build --no-draft \
+  --smoke-evidence-dir dist/portable/smoke-evidence
 ```
 
-`package:portable` 会构建三平台包并校验 schema v2 manifest，其中包含
-distribution、channel、target、commit 和 signing mode。`release:portable
---skip-build` 只复用刚刚为同一版本、同一 commit 构建出的包。
+`package:portable` 会从 `scripts/node-runtime-pin.env` 读取明确的 Node.js
+版本、三平台归档 SHA-256 和可执行内容摘要，而不是在构建时动态选择最新版本。
+macOS 内容摘要只归一化受代码签名影响的 Mach-O 字段，因此 Developer ID
+重新签名不能掩盖可执行内容变化；更新 Node runtime 必须评审并同步这些 pin。
+脚本会构建三平台包并校验 schema v3 manifest，其中包含
+distribution、channel、target、commit 和 signing mode。`traceProcessor`
+同时记录上游固定文件的 `sourceSha256` 与签名后归档字节的 `sha256`，避免把
+供应链来源校验和最终产物校验混为一谈。`release:portable --skip-build`
+只复用刚刚为同一版本、同一 commit 构建出的包。公开 promotion 会逐 target
+验证 smoke summary 的原生 host、归档文件名、size、SHA256、commit、health、
+runtime probe 和生命周期收据；任一证据缺失或与待上传字节不一致都会停止发布。
+每次 smoke 的 `--output-dir` 必须是尚不存在的新路径；成功只会原子写入
+`smoke-summary.json`，失败另写 `smoke-failure.json`，因此重跑要换新目录，不能覆盖
+先前证据。
 
 发布脚本始终先创建或复用 draft，上传后逐项校验 target commit、标题、asset
 名称、大小和 GitHub `sha256:` digest，再把 draft 转为公开 release。
@@ -101,8 +122,10 @@ npm run release:portable -- <version> --targets macos-arm64
 
 设置签名身份后脚本会 `codesign --options runtime` 并做 strict verify；设置 notary
 profile 后会通过 `xcrun notarytool submit --wait` 提交，并对 `.app` staple 后重新
-生成 final zip。notary profile 是保存在本机钥匙串里的 `notarytool` 凭据别名，
-不是 provisioning profile；API 私钥不得进入仓库或发布日志。
+生成 final zip。打包器还会用 `notarytool info` 复核同一 submission 为 `Accepted`，
+并只把精简的 `NOTARIZATION-RECEIPT.json` 放入 final zip。notary profile 是保存在
+本机钥匙串里的 `notarytool` 凭据别名，不是 provisioning profile；API 私钥不得
+进入仓库或发布日志。
 
 打包器按 Mach-O 文件头而不是扩展名/可执行位发现嵌套原生二进制并逐个签名。
 重签已有上游签名的 Node/Claude runtime 时只保留原有 identifier 和 entitlements；
@@ -139,7 +162,36 @@ SmartPerfetto.exe --migrate-from C:\path\to\old-package
 `trace_processor_shell` pin，以及 Knowledge Pack lock/manifest/database/license
 的版本和哈希。交叉编译、结构和静态签名校验不证明目标系统能启动。公开发布采用
 build-once：在各目标平台解压即将上传的同一份最终归档做 smoke，通过后不再重新
-构建；macOS 必须测试公证、staple 后重新生成的 final zip。
+构建；macOS 必须测试公证、staple 后重新生成的 final zip。当前兼容下限是 Windows
+10 / Windows Server 2016 及以上 x64、macOS arm64 13.5+ 和 Linux x64 glibc
+2.34+；static verifier 会扫描包内全部 Mach-O/ELF，拒绝任何高于 manifest/
+Info.plist 声明的原生依赖。
+
+在归档声明的匹配 OS/arch 上运行统一 smoke 命令：
+
+```bash
+node scripts/smoke-portable-archive.cjs \
+  --asset "<final-archive>" \
+  --target "<windows-x64|macos-arm64|linux-x64>" \
+  --version "<version>" \
+  --commit "<release-commit>" \
+  --public-release \
+  --output-dir "<evidence-dir>"
+```
+
+仅在提交前本机验证未提交代码时，可显式添加 `--allow-dirty`；它不能与
+`--public-release` 组合，生成的结果也不能用于 promotion。公开发布仍必须从 exact
+clean commit 重新 build once 并 smoke。
+
+该命令先执行安全的归档路径/link 校验和 static verifier，再从同一归档启动 launcher。
+它使用隔离数据和日志目录、显式 `127.0.0.1` health、包内 Node/Claude/OpenCode 与
+最小 trace processor 查询，并通过 launcher 的 `--shutdown-file` 进行可审计的优雅
+退出。`--lifecycle-receipt` 记录进程隔离方式、子进程 PID、退出码、是否强制升级和
+端口释放；Windows 必须建立 kill-on-close Job Object，macOS/Linux 服务使用独立
+进程组。失败时保留 launcher/backend/frontend 日志。它会拒绝在与 `--target`
+不匹配的宿主上运行。
+`--public-release` 生成公开发布证据，并在 macOS 上额外验证 Developer ID、Gatekeeper、
+notarization staple 与 `Accepted` notary receipt；仅验证草稿包时可以省略该参数。
 
 包内 launcher 优先使用后端端口 `3000`、前端端口 `10000`。如果默认端口已被占用，
 launcher 会自动选择下一个可用端口，并打印实际访问 URL。只有需要固定端口时才设置

@@ -59,7 +59,55 @@ test('Docker image and both compose paths require backend and frontend health', 
   assert.match(entrypoint, /wait_for_service[\s\S]*Backend/);
   assert.match(entrypoint, /wait_for_service[\s\S]*Frontend/);
   assert.match(entrypoint, /FRONTEND_PORT}\/health/);
+  assert.match(entrypoint, /SMARTPERFETTO_BIND_HOST="\$\{SMARTPERFETTO_BIND_HOST:-0\.0\.0\.0\}"/);
+  assert.match(entrypoint, /SMARTPERFETTO_FRONTEND_BIND_HOST="\$\{SMARTPERFETTO_FRONTEND_BIND_HOST:-0\.0\.0\.0\}"/);
   assert.doesNotMatch(entrypoint, /health\.aiEngine|const ai = health\.aiEngine/);
+
+  for (const composePath of ['docker-compose.yml', 'docker-compose.hub.yml']) {
+    const compose = read(composePath);
+    assert.match(compose, /SMARTPERFETTO_BIND_HOST=0\.0\.0\.0/);
+    assert.match(compose, /SMARTPERFETTO_FRONTEND_BIND_HOST=0\.0\.0\.0/);
+    assert.equal(
+      compose.match(/\$\{SMARTPERFETTO_PUBLISH_HOST:-127\.0\.0\.1\}/g)?.length,
+      2,
+      `${composePath} must publish both host ports on IPv4 loopback by default`,
+    );
+  }
+
+  for (const file of [
+    'Dockerfile',
+    'docker-compose.yml',
+    'docker-compose.hub.yml',
+    'scripts/docker-entrypoint.sh',
+  ]) {
+    const contents = read(file);
+    assert.match(contents, /http:\/\/127\.0\.0\.1:[^ \n"]+\/health/);
+    assert.doesNotMatch(contents, /http:\/\/localhost:[^ \n"]+\/health/);
+  }
+});
+
+test('source readiness and default browser URLs use explicit IPv4 loopback', () => {
+  const ports = read('scripts/service-ports.sh');
+  assert.match(ports, /smartperfetto_loopback_url/);
+  assert.match(ports, /http:\/\/127\.0\.0\.1/);
+  assert.match(ports, /BACKEND_HEALTH_URL/);
+  assert.match(ports, /FRONTEND_HEALTH_URL/);
+  assert.match(ports, /BACKEND_URL=.*smartperfetto_loopback_url/);
+  assert.match(ports, /FRONTEND_URL=.*FRONTEND_LOOPBACK_URL/);
+  assert.doesNotMatch(ports, /http:\/\/localhost/);
+
+  for (const scriptPath of [
+    'start.sh',
+    'scripts/start-dev.sh',
+    'scripts/restart-backend.sh',
+  ]) {
+    const script = read(scriptPath);
+    assert.doesNotMatch(script, /http:\/\/localhost:\$BACKEND_PORT\/health/);
+  }
+
+  const start = read('start.sh');
+  assert.match(start, /open "\$FRONTEND_URL"/);
+  assert.match(start, /xdg-open "\$FRONTEND_URL"/);
 });
 
 test('backend predev delegates trace processor handling to the guarded installer', () => {

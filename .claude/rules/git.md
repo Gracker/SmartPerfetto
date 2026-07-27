@@ -81,7 +81,8 @@ Normal public release flow:
 5. Push `main`.
 6. Publish and smoke the npm CLI when the version is public.
 7. Run `npm run package:portable`.
-8. Run `npm run release:portable -- <version> --skip-build --no-draft`.
+8. Run `npm run release:portable -- <version> --skip-build --no-draft
+   --smoke-evidence-dir <evidence-dir>` with exact-archive target-native evidence.
 
 Release invariants:
 

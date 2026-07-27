@@ -2,6 +2,8 @@
 
 [English](overview.en.md) | [中文](overview.md)
 
+<!-- i18n-headings: paired -->
+
 SmartPerfetto adds an AI analysis layer on top of Perfetto UI. Perfetto remains responsible for trace loading, timeline exploration, and SQL fundamentals; the SmartPerfetto backend handles agent orchestration, Skill execution, report generation, and streaming output.
 
 ```text
@@ -60,10 +62,10 @@ and frontend readiness.
 |---|---|---|
 | Perfetto UI plugin | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` | Panel, SSE, result rendering, scene navigation, selection interaction |
 | Express backend | `backend/src/index.ts` | Route registration, health checks, middleware, process cleanup |
-| Runtime selector | `backend/src/agentRuntime/` | Chooses Claude Agent SDK, OpenAI Agents SDK, Pi Agent Core, OpenCode, or Qoder for each session |
-| Claude runtime | `backend/src/agentv3/` | Claude Agent SDK orchestration, MCP server, strategy injection, verifier, memory |
-| OpenAI runtime | `backend/src/agentOpenAI/` | OpenAI Agents SDK orchestration behind the same assistant contract |
-| Third-party runtime adapters | `backend/src/agentRuntime/engines/pi/`, `backend/src/agentRuntime/engines/opencode/`, `backend/src/agentRuntime/engines/qoder/` | Custom third-party runtimes using the shared analysis contract, request-scoped tools, and runtime-specific safety boundaries |
+| Runtime contract and registry | `backend/src/agentRuntime/runtimeKinds.ts`, `runtimeDescriptors.ts`, `runtimeSelection.ts` | Defines the current production runtime set, capabilities, canonical loaders, and per-session selection |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations of the five currently registered runtimes behind shared orchestrator, result, and safety contracts |
+| Shared agent capabilities | `backend/src/agentv3/` | MCP server/registry, strategy injection, planning, verification, and memory; individual runtime files may remain as compatibility re-exports |
+| OpenAI compatibility facades | `backend/src/agentOpenAI/` | Re-exports old import paths; the canonical OpenAI implementation lives under `agentRuntime/engines/openai/` |
 | Assistant application | `backend/src/assistant/` | Session management, stream projection, result contracts |
 | Skill engine | `backend/src/services/skillEngine/` | YAML Skill loading, parameter substitution, SQL execution, DataEnvelope output |
 | Skills | `backend/skills/` | Atomic, composite, deep, and rendering-pipeline analysis |
@@ -132,7 +134,8 @@ background as a measurement from the current trace.
 See [Private Analysis Context Architecture](private-analysis-context.en.md) for
 source/external-knowledge selection, authorization fingerprints, non-resume
 semantics, and deletion lifecycle. The boundary applies to regular analysis,
-Smart Profile deep dives, Web UI, CLI, and all four runtime adapters.
+Smart Profile deep dives, Web UI, CLI, and every runtime currently registered
+in `PRODUCTION_RUNTIME_KINDS`.
 
 ## Runtime And Provider Boundaries
 
@@ -142,6 +145,7 @@ Smart Profile deep dives, Web UI, CLI, and all four runtime adapters.
 | `openai-agents-sdk` | OpenAI, Ollama, OpenAI-compatible providers | Credentials and Responses/chat-completions protocol are validated by OpenAI runtime rules |
 | `pi-agent-core` | Custom providers | Requires explicit Pi model JSON or equivalent env; does not read `.pi` project config, package extensions, shell tools, or file tools |
 | `opencode` | Custom providers | Requires explicit OpenCode/OpenAI-compatible model config; uses an isolated OpenCode server and request-scoped MCP tools, not personal OpenCode login/project state |
+| `qoder-agent-sdk` | Custom providers or explicit env | The Qoder SDK is an opt-in optional peer; it uses local Qoder CLI login or a PAT and isolates private-knowledge streams, sessions, and snapshots |
 
 Provider Manager active profiles override `.env` fallback. Resume must preserve
 the original provider/runtime/comparison identity and must not silently switch

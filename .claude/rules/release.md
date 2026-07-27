@@ -80,12 +80,17 @@ should use WSL2; native Windows users should use the portable package.
    npm run package:portable
    ```
    Runtime-smoke the post-build final archives on their matching operating
-   systems using the exact-asset contract in `.claude/rules/testing.md`.
+   systems with `scripts/smoke-portable-archive.cjs` and the exact-asset
+   contract in `.claude/rules/testing.md`.
    macOS smoke must use the post-notarization, post-staple final zip. Do not
-   rebuild any archive after it passes runtime smoke.
+   rebuild any archive after it passes runtime smoke. Store each result at
+   `dist/portable/smoke-evidence/<target>/smoke-summary.json` by using
+   `--public-release`. Each target output directory must be fresh and must not
+   overwrite prior smoke evidence.
 9. Publish those already-smoked portable assets:
    ```bash
-   npm run release:portable -- <version> --skip-build --no-draft
+   npm run release:portable -- <version> --skip-build --no-draft \
+     --smoke-evidence-dir dist/portable/smoke-evidence
    gh release view v<version> --json tagName,isDraft,assets
    ```
 10. Re-check `git status --short --branch`. Generated `dist/portable/`,
@@ -118,11 +123,16 @@ should use WSL2; native Windows users should use the portable package.
   Cross-compilation, manifest verification, archive extraction, and static
   signature checks prove structure but do not prove the packaged launcher can
   start on the target operating system.
+- Resolve portable Node runtimes only from the exact version, target archive
+  hashes, and executable-content digests in `scripts/node-runtime-pin.env`.
+  Update that file through review; never select a moving `latest-v24.x`
+  runtime during a release build.
 - Before `--no-draft`, runtime-smoke the final Windows, macOS, and Linux
   archives on matching operating systems. Check backend and frontend
   `127.0.0.1` health, bundled runtimes, a minimal trace-processor operation,
-  graceful shutdown, and port release as defined in
-  `.claude/rules/testing.md`.
+  graceful shutdown, and port release as defined in `.claude/rules/testing.md`.
+  Each schema-v2 smoke summary must bind the exact asset name, byte size, and
+  SHA-256; promotion re-hashes the local asset and rejects any mismatch.
 - If a required target runner is unavailable, keep the release as a draft.
   Publishing with an explicitly accepted gap requires user approval and a
   visible downgrade in the release/hand-off notes; never call that result a
@@ -136,9 +146,10 @@ should use WSL2; native Windows users should use the portable package.
   idempotently, but must never clobber, replace, upload, or edit public assets.
 - The package manifest must report `gitDirty: false` and `gitCommit` equal to
   the release target commit.
-- Portable manifest schema v2 records distribution, update channel, target,
-  source commit, and signing mode so runtime update instructions match the
-  actual artifact.
+- Portable manifest schema v3 records distribution, update channel, target,
+  source commit, signing mode, the pinned trace-processor source hash, and the
+  post-signing packaged trace-processor hash so provenance and final artifact
+  verification remain distinct.
 - Ad-hoc signing is limited to local or draft macOS packages. A public macOS
   release requires `SMARTPERFETTO_MACOS_SIGN_IDENTITY` and
   `SMARTPERFETTO_MACOS_NOTARY_PROFILE`, Developer ID signing, Hardened Runtime,

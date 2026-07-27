@@ -2,6 +2,8 @@
 
 [English](technical-architecture.en.md) | [中文](technical-architecture.md)
 
+<!-- i18n-headings: paired -->
+
 本文从实现边界解释当前 SmartPerfetto。快速入口见
 [架构总览](overview.md)，runtime 细节见 [Agent Runtime](agent-runtime.md)，
 表格和证据传输见 [Data Contract](../../backend/docs/DATA_CONTRACT_DESIGN.md)。
@@ -76,7 +78,8 @@ reference trace、codebase 或私有 knowledge source 需要完整上下文时�
 
 ## 4. Runtime 与 Provider
 
-四个 production runtime 都实现共享 `IOrchestrator` 合约：
+`PRODUCTION_RUNTIME_KINDS` 当前注册的 production runtime 都实现共享
+`IOrchestrator` 合约：
 
 | Runtime | 主要 Provider | 恢复状态 |
 |---|---|---|
@@ -84,6 +87,13 @@ reference trace、codebase 或私有 knowledge source 需要完整上下文时�
 | `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | history + response id |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | opaque transcript |
 | `opencode` | OpenCode SDK 与 custom provider | OpenCode session id + 隔离目录 |
+| `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | Qoder session id；私有知识运行不持久化 opaque session |
+
+canonical loader 和 capabilities 来自
+`backend/src/agentRuntime/runtimeDescriptors.ts`，具体实现在
+`backend/src/agentRuntime/engines/`。`backend/src/agentOpenAI/` 是旧 import path
+的 compatibility facade；`backend/src/agentv3/` 仍包含 canonical MCP、strategy、
+planning 和 verifier shared layers，不能整体视为 legacy。
 
 选择顺序是：请求显式 Provider Manager profile、持久化 session snapshot、
 `SMARTPERFETTO_AGENT_RUNTIME`、默认 runtime。session 创建后固定 provider/runtime；

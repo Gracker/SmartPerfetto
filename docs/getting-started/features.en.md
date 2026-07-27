@@ -2,6 +2,8 @@
 
 [English](features.en.md) | [中文](features.md)
 
+<!-- i18n-headings: paired -->
+
 This guide is for SmartPerfetto users. It explains what the product can do, where to trigger each feature, and what output to expect. For installation and configuration, see [Quick Start](quick-start.en.md) and [Configuration Guide](configuration.en.md).
 
 ## 1. AI Assistant Inside Perfetto UI
@@ -219,19 +221,23 @@ Output:
 
 - Supports Anthropic, Claude/Anthropic-compatible providers, and OpenAI/OpenAI-compatible providers.
 - The active Provider Manager profile takes priority over `.env`.
-- Backend health shows the current credential source for troubleshooting.
+- The protected `/api/runtime-health` endpoint shows the current credential
+  source for troubleshooting; public `/health` exposes only readiness and version.
 
 See [Configuration Guide](configuration.en.md) for setup details.
 
 ## 11. Automation, API, And CLI
 
-SmartPerfetto also provides backend API, CLI, and MCP tool documentation for automation.
+SmartPerfetto also provides workspace APIs, a CLI, and MCP tools for automation.
 
 Entry points:
 
-- Backend API: [API Reference](../reference/api.en.md).
-- CLI: [CLI Reference](../reference/cli.en.md).
-- MCP tools: [MCP Tools Reference](../reference/mcp-tools.en.md).
+- Workspace API: [API Reference](../reference/api.en.md) for batch traces,
+  explicit snapshot promotion, the comparison bridge, and trace-config proposals.
+- CLI: [CLI Reference](../reference/cli.en.md) for local sessions, batch,
+  capture, and report automation.
+- MCP/agent hosts: [MCP Tools Reference](../reference/mcp-tools.en.md) for
+  request-scoped tools in compatible hosts.
 
 Output:
 
@@ -256,6 +262,11 @@ SmartPerfetto supports multiple runtime paths:
 | Dev mode | Perfetto UI plugin development | `./scripts/start-dev.sh` watches the `perfetto/` submodule frontend |
 
 Runtime setup is in [Quick Start](quick-start.en.md). Packaging and release details are in [Portable Packaging](../reference/portable-packaging.en.md).
+See [Platform Compatibility And Verification Boundaries](../reference/platform-compatibility.en.md)
+for the distinction between host OS, actual target, static validation,
+target-native smoke, and published acceptance. UI and CLI application-update
+checks only report the version and matching action; they do not replace the
+running directory. See [Application Updates](../../README.md#application-updates).
 
 ## Which Feature Should I Use?
 

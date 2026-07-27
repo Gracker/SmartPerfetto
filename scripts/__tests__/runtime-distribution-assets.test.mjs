@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
+import {existsSync, readFileSync} from 'node:fs';
 import {join, resolve} from 'node:path';
 import test from 'node:test';
 
@@ -38,10 +38,14 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
     assert.match(cliPackCheck, new RegExp(asset.replaceAll('/', '\\/')));
     assert.match(portableVerifier, new RegExp(asset.replaceAll('/', '\\/')));
   }
-  assert.equal(
-    portableVerifier.match(/node_modules\/opencode-ai\/bin\/opencode\.exe/g)?.length,
-    6,
-  );
+  for (const target of ['windows-x64', 'macos-arm64', 'linux-x64']) {
+    assert.match(
+      portableVerifier,
+      new RegExp(
+        `'${target}'[\\s\\S]*?required:[\\s\\S]*?node_modules\\/opencode-ai\\/bin\\/opencode\\.exe`,
+      ),
+    );
+  }
 });
 
 test('macOS packaging preserves and verifies JIT runtime entitlements', () => {
@@ -87,11 +91,89 @@ test('portable governance separates code impact from exact-archive release accep
   for (const contract of [
     'http://127.0.0.1:<port>/health',
     'minimal packaged `trace_processor_shell` operation',
-    'verify child processes and listening ports are gone',
     'Gatekeeper must report `Notarized Developer ID`',
   ]) {
     assert.match(testingRules, new RegExp(contract.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   }
+  assert.match(
+    testingRules,
+    /platform containment[\s\S]*verify child[\s\S]*processes and listening ports\s+are gone/,
+  );
+});
+
+test('portable packaging has one launcher implementation and one target-native smoke contract', () => {
+  const gitignore = readFileSync(join(root, '.gitignore'), 'utf8');
+  const nodeRuntimePin = readFileSync(
+    join(root, 'scripts/node-runtime-pin.env'),
+    'utf8',
+  );
+  const portableScript = readFileSync(join(root, 'scripts/package-portable.sh'), 'utf8');
+  const launcher = readFileSync(join(root, 'scripts/portable-launcher/main.go'), 'utf8');
+  const windowsContainment = readFileSync(
+    join(root, 'scripts/portable-launcher/process_containment_windows.go'),
+    'utf8',
+  );
+  const smokeScript = readFileSync(join(root, 'scripts/smoke-portable-archive.cjs'), 'utf8');
+  const portableVerifier = readFileSync(
+    join(root, 'scripts/verify-portable-package.cjs'),
+    'utf8',
+  );
+  const testingRules = readFileSync(join(root, '.claude/rules/testing.md'), 'utf8');
+
+  assert.match(portableScript, /scripts\/portable-launcher/);
+  assert.match(portableScript, /find "\$backend_dir\/node_modules" -type d -name \.bin/);
+  assert.match(portableScript, /portable dependency tree contains an unexpected symlink/);
+  assert.match(portableScript, /materialize_portable_links "\$resources_dir\/runtime\/node"/);
+  assert.match(portableScript, /portable symlink escapes its payload root/);
+  assert.match(portableScript, /sourceSha256: traceProcessorSourceSha256/);
+  assert.match(portableScript, /WINDOWS_MINIMUM_SYSTEM_VERSION="10\.0"/);
+  assert.match(portableScript, /node-runtime-pin\.env/);
+  assert.match(
+    portableScript,
+    /write_readme[\s\\]*"\$package_dir"[\s\\]*"\$target"[\s\\]*"\$PACKAGE_VERSION"[\s\\]*"\$notarized"[\s\\]*"\$macos_minimum_system_version"/,
+  );
+  assert.match(gitignore, /!scripts\/node-runtime-pin\.env/);
+  for (const key of [
+    'NODE_RUNTIME_EXECUTABLE_SHA256_WINDOWS_X64',
+    'NODE_RUNTIME_EXECUTABLE_SHA256_MACOS_ARM64',
+    'NODE_RUNTIME_EXECUTABLE_SHA256_LINUX_X64',
+  ]) {
+    assert.match(nodeRuntimePin, new RegExp(`^${key}=[0-9a-f]{64}$`, 'm'));
+  }
+  assert.doesNotMatch(portableScript, /latest-v\$\{NODE_MAJOR\}/);
+  assert.doesNotMatch(portableScript, /skip-backend-build/);
+  assert.match(portableScript, /prebuild\.name !== expected/);
+  assert.match(portableScript, /sign_macos_payloads[\s\S]*packaged_tp_sha[\s\S]*sign_macos_container/);
+  assert.match(portableScript, /archive_package_atomically/);
+  assert.match(portableScript, /notary_submission_path/);
+  assert.match(
+    portableScript,
+    /notarize_macos_zip[\s\\]*"\$notary_submission_path"[\s\S]*rm -f "\$notary_submission_path" "\$asset_path"/,
+  );
+  assert.doesNotMatch(portableScript, /notarize_macos_zip "\$asset_path"/);
+  assert.match(
+    portableScript,
+    /macOS notarization failed; no final release archive was created/,
+  );
+  assert.equal(existsSync(join(root, 'scripts/windows-launcher/main.go')), false);
+  assert.match(launcher, /"SMARTPERFETTO_BIND_HOST":\s+ipv4LoopbackHost/);
+  assert.match(launcher, /"SMARTPERFETTO_FRONTEND_BIND_HOST":\s+ipv4LoopbackHost/);
+  assert.match(windowsContainment, /jobObjectLimitKillOnJobClose/);
+  assert.match(windowsContainment, /assignProcessToJobObject/);
+  assert.match(portableVerifier, /Windows portable manifest must require Windows 10/);
+  assert.match(
+    portableVerifier,
+    /README-MACOS\.txt minimum system version does not match the package manifest/,
+  );
+  assert.match(portableVerifier, /inspectArchiveBudget\(assetPath, ext\)/);
+  assert.match(smokeScript, /--non-interactive/);
+  assert.match(smokeScript, /--shutdown-file/);
+  assert.match(smokeScript, /--lifecycle-receipt/);
+  assert.match(smokeScript, /http:\/\/127\.0\.0\.1:/);
+  assert.match(smokeScript, /empty-trace\.pftrace/);
+  assert.match(smokeScript, /'-Q'/);
+  assert.match(smokeScript, /smartperfetto_smoke=1/);
+  assert.match(testingRules, /scripts\/smoke-portable-archive\.cjs/);
 });
 
 test('Docker CI smokes both static routes and the packaged OpenCode executable', () => {

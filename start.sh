@@ -439,7 +439,7 @@ fi
 
 echo "Waiting for backend..."
 if ! smartperfetto_wait_for_http \
-  "$BACKEND_PID" "Backend" "http://localhost:$BACKEND_PORT/health" 30 "$BACKEND_LOG"; then
+  "$BACKEND_PID" "Backend" "$BACKEND_HEALTH_URL" 30 "$BACKEND_LOG"; then
   exit 1
 fi
 
@@ -462,7 +462,7 @@ fi
 
 echo "Waiting for frontend..."
 if ! smartperfetto_wait_for_http \
-  "$FRONTEND_PID" "Frontend" "http://localhost:$FRONTEND_PORT/health" 15 "$FRONTEND_LOG"; then
+  "$FRONTEND_PID" "Frontend" "$FRONTEND_HEALTH_URL" 15 "$FRONTEND_LOG"; then
   exit 1
 fi
 
@@ -472,8 +472,8 @@ echo ""
 echo "=============================================="
 echo "SmartPerfetto is running!"
 echo "=============================================="
-echo "  Frontend:  http://localhost:$FRONTEND_PORT"
-echo "  Backend:   http://localhost:$BACKEND_PORT"
+echo "  Frontend:  $FRONTEND_URL"
+echo "  Backend:   $BACKEND_URL"
 echo "  Backend PID:  $BACKEND_PID"
 echo "  Frontend PID: $FRONTEND_PID"
 echo ""
@@ -484,9 +484,9 @@ echo "=============================================="
 # Open browser automatically unless a headless caller opts out.
 if [ "${SMARTPERFETTO_NO_OPEN:-0}" != "1" ]; then
   if command -v open >/dev/null 2>&1; then
-    open "http://localhost:$FRONTEND_PORT"
+    open "$FRONTEND_URL"
   elif command -v xdg-open >/dev/null 2>&1; then
-    xdg-open "http://localhost:$FRONTEND_PORT"
+    xdg-open "$FRONTEND_URL"
   fi
 fi
 

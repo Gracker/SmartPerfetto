@@ -8,6 +8,8 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](windows-exe.en.md) | [中文](windows-exe.md)
 
+<!-- i18n-headings: paired -->
+
 > 当前 Windows 命令是跨平台免安装打包流程的兼容入口。完整三平台流程见
 > [免安装包打包](portable-packaging.md)。
 
@@ -115,8 +117,8 @@ npm run version:sync -- --check
 
 1. 解压 `smartperfetto-v<version>-windows-x64.zip` 到普通本地目录，例如 `C:\SmartPerfetto`。
 2. 双击 `SmartPerfetto.exe`。
-3. 浏览器通常会自动打开；如果没有，手动打开 [http://localhost:10000](http://localhost:10000)。
-4. AI 分析需要在 UI 里配置 Provider profile；如需 env 凭证，在解压目录下创建 `data\env` 并填写 provider 配置，然后重启 `SmartPerfetto.exe`。
+3. 浏览器通常会自动打开；如果没有，按启动器输出打开 [http://127.0.0.1:10000](http://127.0.0.1:10000)（默认端口被占用时，启动器会选择其他端口）。
+4. AI 分析需要在 UI 里配置 Provider profile；如需 env 凭证，在 `%LOCALAPPDATA%\SmartPerfetto\env` 写入 provider 配置，然后重启 `SmartPerfetto.exe`。不要把持久凭证写入解压目录。
 5. 使用时保持启动器窗口打开；按 `Ctrl+C` 会停止后端、前端和 trace processor 子进程。
 
 ## 验证
@@ -131,8 +133,8 @@ C:\SmartPerfettoSmoke\smartperfetto-v<version>-windows-x64\SmartPerfetto.exe
 
 然后检查：
 
-- [http://localhost:10000](http://localhost:10000) 能打开 Perfetto UI。
-- [http://localhost:3000/health](http://localhost:3000/health) 返回 `status: "OK"`。
+- 启动器输出的 `http://127.0.0.1:<port>` 能打开 Perfetto UI。
+- 启动器输出的后端 `http://127.0.0.1:<port>/health` 返回 `status: "OK"`。
 - 上传一条小 trace 后，后端日志里能看到 `trace_processor_shell.exe` 启动。
 - 包内 CLI 的 `smp knowledge-pack status --format json` 能解析 bundled/active Pack。
 

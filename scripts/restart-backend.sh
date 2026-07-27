@@ -33,7 +33,8 @@ done
 BACKEND_PORT="$(smartperfetto_resolve_backend_port)"
 FRONTEND_PORT="$(smartperfetto_resolve_frontend_port)"
 FRONTEND_URL="$(smartperfetto_env_value FRONTEND_URL)"
-FRONTEND_URL="${FRONTEND_URL:-http://localhost:$FRONTEND_PORT}"
+FRONTEND_URL="${FRONTEND_URL:-$(smartperfetto_loopback_url "$FRONTEND_PORT")}"
+BACKEND_HEALTH_URL="$(smartperfetto_loopback_url "$BACKEND_PORT" "/health")"
 BACKEND_PID_FILE="$PROJECT_ROOT/.backend.pid"
 BACKEND_CWD="$PROJECT_ROOT/backend"
 
@@ -76,7 +77,7 @@ ln -sf "$BACKEND_LOG" "$LOGS_DIR/backend_latest.log"
 # Wait for health check
 echo "Waiting for backend..."
 if ! smartperfetto_wait_for_http \
-  "$NEW_PID" "Backend" "http://localhost:$BACKEND_PORT/health" 15 "$BACKEND_LOG"; then
+  "$NEW_PID" "Backend" "$BACKEND_HEALTH_URL" 15 "$BACKEND_LOG"; then
   smartperfetto_terminate_process_tree "$NEW_PID" "backend"
   smartperfetto_remove_pid_file_if_generation "$BACKEND_PID_FILE" "$BACKEND_GENERATION"
   exit 1

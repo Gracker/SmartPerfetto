@@ -71,6 +71,12 @@ smartperfetto_resolve_frontend_port() {
   printf '%s\n' "$value"
 }
 
+smartperfetto_loopback_url() {
+  local port="$1"
+  local path="${2:-}"
+  printf 'http://127.0.0.1:%s%s\n' "$port" "$path"
+}
+
 smartperfetto_init_service_ports() {
   BACKEND_PORT="$(smartperfetto_resolve_backend_port)"
   FRONTEND_PORT="$(smartperfetto_resolve_frontend_port)"
@@ -86,8 +92,22 @@ smartperfetto_init_service_ports() {
   BACKEND_PUBLIC_PORT="$(smartperfetto_env_value SMARTPERFETTO_BACKEND_PUBLIC_PORT)"
   BACKEND_PUBLIC_PORT="${BACKEND_PUBLIC_PORT:-$BACKEND_PORT}"
   smartperfetto_validate_port "SMARTPERFETTO_BACKEND_PUBLIC_PORT" "$BACKEND_PUBLIC_PORT"
-  BACKEND_URL="${BACKEND_PUBLIC_URL:-http://localhost:$BACKEND_PUBLIC_PORT}"
+  BACKEND_LOOPBACK_URL="$(smartperfetto_loopback_url "$BACKEND_PORT")"
+  FRONTEND_LOOPBACK_URL="$(smartperfetto_loopback_url "$FRONTEND_PORT")"
+  BACKEND_URL="${BACKEND_PUBLIC_URL:-$(smartperfetto_loopback_url "$BACKEND_PUBLIC_PORT")}"
   FRONTEND_URL="$(smartperfetto_env_value FRONTEND_URL)"
-  FRONTEND_URL="${FRONTEND_URL:-http://localhost:$FRONTEND_PORT}"
-  export BACKEND_PORT FRONTEND_PORT BACKEND_PUBLIC_PORT BACKEND_PUBLIC_URL BACKEND_URL FRONTEND_URL
+  FRONTEND_URL="${FRONTEND_URL:-$FRONTEND_LOOPBACK_URL}"
+  BACKEND_HEALTH_URL="$(smartperfetto_loopback_url "$BACKEND_PORT" "/health")"
+  FRONTEND_HEALTH_URL="$(smartperfetto_loopback_url "$FRONTEND_PORT" "/health")"
+  export \
+    BACKEND_PORT \
+    FRONTEND_PORT \
+    BACKEND_PUBLIC_PORT \
+    BACKEND_PUBLIC_URL \
+    BACKEND_URL \
+    FRONTEND_URL \
+    BACKEND_LOOPBACK_URL \
+    FRONTEND_LOOPBACK_URL \
+    BACKEND_HEALTH_URL \
+    FRONTEND_HEALTH_URL
 }

@@ -13,6 +13,7 @@ PRERELEASE=false
 SKIP_BUILD=false
 ALLOW_DIRTY=false
 GH_REPO=""
+SMOKE_EVIDENCE_DIR=""
 TARGETS=()
 DEFAULT_TARGETS=("windows-x64" "macos-arm64" "linux-x64")
 
@@ -27,12 +28,14 @@ Options:
   --no-draft           Publish only after a draft contains all three verified platform assets.
   --prerelease         Mark the release as a prerelease.
   --skip-build         Reuse existing dist/portable assets for the version.
+  --smoke-evidence-dir DIR
+                       Directory containing <target>/smoke-summary.json evidence.
   --allow-dirty        Allow uploading a draft/test package built from uncommitted changes.
   -R, --repo REPO      Pass a GitHub repo override to gh, for example Gracker/SmartPerfetto.
 
 Examples:
   npm run release:portable -- 1.0.3
-  npm run release:portable -- 1.0.3 --no-draft
+  npm run release:portable -- 1.0.3 --skip-build --no-draft --smoke-evidence-dir <dir>
   npm run release:portable -- 1.0.3 --targets windows-x64
 USAGE
 }
@@ -54,6 +57,27 @@ sha256_file() {
   else
     node -e "const fs=require('fs');const crypto=require('crypto');console.log(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "$file"
   fi
+}
+
+run_portable_build() {
+  local target_csv="$1"
+  local name
+  local build_env=("PATH=$PATH")
+  for name in \
+    HOME TMPDIR TMP TEMP LANG LANGUAGE LC_ALL TERM SHELL USER LOGNAME \
+    HTTP_PROXY HTTPS_PROXY NO_PROXY http_proxy https_proxy no_proxy \
+    SSL_CERT_DIR SSL_CERT_FILE NODE_EXTRA_CA_CERTS \
+    NVM_DIR VOLTA_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME \
+    DEVELOPER_DIR \
+    SMARTPERFETTO_NODE_MAJOR \
+    SMARTPERFETTO_PORTABLE_OUT_DIR SMARTPERFETTO_PORTABLE_CACHE_DIR \
+    SMARTPERFETTO_MACOS_SIGN_IDENTITY SMARTPERFETTO_MACOS_NOTARY_PROFILE
+  do
+    if [ -n "${!name:-}" ]; then
+      build_env+=("$name=${!name}")
+    fi
+  done
+  env -i "${build_env[@]}" npm run package:portable -- --targets "$target_csv"
 }
 
 file_size_bytes() {
@@ -251,6 +275,14 @@ while [ "$#" -gt 0 ]; do
       SKIP_BUILD=true
       shift
       ;;
+    --smoke-evidence-dir)
+      if [ "$#" -lt 2 ]; then
+        echo "ERROR: --smoke-evidence-dir requires a directory." >&2
+        exit 2
+      fi
+      SMOKE_EVIDENCE_DIR="$2"
+      shift 2
+      ;;
     --allow-dirty)
       ALLOW_DIRTY=true
       shift
@@ -296,6 +328,18 @@ if [ "$DRAFT" = false ] && ! targets_are_complete; then
   echo "ERROR: --no-draft requires exactly windows-x64,macos-arm64,linux-x64." >&2
   exit 2
 fi
+if [ "$DRAFT" = false ] && [ "$ALLOW_DIRTY" = true ]; then
+  echo "ERROR: --allow-dirty is limited to draft verification and cannot be combined with --no-draft." >&2
+  exit 2
+fi
+if [ "$DRAFT" = false ] && [ "$SKIP_BUILD" != true ]; then
+  echo "ERROR: --no-draft requires --skip-build so the published bytes exactly match target-native smoke evidence." >&2
+  exit 2
+fi
+if [ "$DRAFT" = false ] && [ -z "$SMOKE_EVIDENCE_DIR" ]; then
+  echo "ERROR: --no-draft requires --smoke-evidence-dir with all three target-native summaries." >&2
+  exit 2
+fi
 
 require_command gh
 require_command git
@@ -314,13 +358,16 @@ assert_clean_worktree
 
 if [ "$SKIP_BUILD" = false ]; then
   target_csv="$(IFS=,; echo "${TARGETS[*]}")"
-  npm run package:portable -- --targets "$target_csv"
+  run_portable_build "$target_csv"
   assert_clean_worktree
 fi
 
 verify_args_common=(--version "$VERSION" --commit "$TARGET_SHA")
 if [ "$ALLOW_DIRTY" = false ]; then
   verify_args_common+=(--require-clean)
+fi
+if [ "$DRAFT" = false ]; then
+  verify_args_common+=(--public-release)
 fi
 
 assets=()
@@ -343,6 +390,20 @@ for target in "${TARGETS[@]}"; do
     --asset "$asset_path" \
     --target "$target" \
     "${verify_args_common[@]}"
+  if [ "$DRAFT" = false ]; then
+    smoke_summary="$SMOKE_EVIDENCE_DIR/$target/smoke-summary.json"
+    if [ ! -f "$smoke_summary" ] || [ -L "$smoke_summary" ]; then
+      echo "ERROR: target-native smoke evidence not found: $smoke_summary" >&2
+      exit 1
+    fi
+    node scripts/verify-portable-smoke-evidence.cjs \
+      --summary "$smoke_summary" \
+      --asset "$asset_path" \
+      --target "$target" \
+      --version "$VERSION" \
+      --commit "$TARGET_SHA" \
+      --require-public-release
+  fi
   asset_sha="$(sha256_file "$asset_path")"
   asset_size="$(file_size_bytes "$asset_path")"
   assets+=("$asset_path#$asset_name")

@@ -62,7 +62,7 @@ the release process, run:
 ```bash
 bash -n scripts/package-portable.sh scripts/release-portable.sh scripts/package-windows-exe.sh scripts/release-windows-exe.sh
 shellcheck -x scripts/package-portable.sh scripts/release-portable.sh scripts/package-windows-exe.sh scripts/release-windows-exe.sh
-node --check scripts/sync-version.cjs scripts/verify-portable-package.cjs scripts/verify-windows-package.cjs
+node --check scripts/sync-version.cjs scripts/verify-portable-package.cjs scripts/verify-windows-package.cjs scripts/smoke-portable-archive.cjs
 npm run version:sync -- --check
 GO111MODULE=off go test ./scripts/portable-launcher
 GO111MODULE=off GOOS=windows GOARCH=amd64 go build -o /tmp/smartperfetto-launcher.exe ./scripts/portable-launcher
@@ -93,6 +93,14 @@ For a clean public release, the package manifest must contain
 `gitDirty: false` and `gitCommit` equal to the release target commit. If testing
 the release script without uploading, use a fake `gh` shim or a draft release;
 do not rely on `--allow-dirty` for public release validation.
+Manifest schema v3 records the pinned `traceProcessor.sourceSha256` separately
+from the post-signing packaged `traceProcessor.sha256`; the verifier must bind
+the latter to the binary extracted from the exact archive.
+The bundled Node runtime version, archive filename, archive SHA-256, and final
+executable-content digest must exactly match `scripts/node-runtime-pin.env`.
+For macOS, the digest normalizes only code-signature-dependent Mach-O fields
+so Developer ID re-signing cannot hide changed executable content. Packaging
+must not resolve a moving `latest-v24.x` input.
 
 Cross-compilation, archive verification, and static signature checks do not
 prove target-platform startup. During code/PR work, report those results as
@@ -106,19 +114,48 @@ extract the final archive that will be uploaded into a fresh temporary
 directory and test those exact bytes. macOS must use the zip recreated after
 notarization and stapling. Do not rebuild an archive after it passes this gate.
 
+Run this command once per target on the matching OS/architecture:
+
+```bash
+node scripts/smoke-portable-archive.cjs \
+  --asset "<final-archive>" \
+  --target "<windows-x64|macos-arm64|linux-x64>" \
+  --version "<version>" \
+  --commit "<release-commit>" \
+  --public-release \
+  --output-dir "dist/portable/smoke-evidence/<target>"
+```
+
+The command must reject host/target mismatches. Its static phase must reject
+absolute paths, traversal, cross-platform name collisions, symlinks, hard
+links, and non-regular extracted entries before trusting package contents. It
+must enforce pre-extraction archive byte/entry/expanded-size/ratio budgets and
+listing/extraction deadlines. `--output-dir` must be a fresh path; never
+overwrite earlier smoke evidence.
+For local pre-commit runtime validation only, `--allow-dirty` may omit the
+clean-tree requirement. It must be incompatible with `--public-release`, and
+its evidence must never be accepted for promotion.
+
 Each target smoke must:
 
 1. Re-verify manifest version, `gitCommit`, `gitDirty: false`, target, and
-   bundled Node.js 24 from the extracted archive.
+   bundled Node.js 24 from the extracted archive. Scan every packaged ELF or
+   Mach-O and require its GLIBC/minimum-system version to fit the manifest and
+   Info.plist declaration.
 2. Start the bundled launcher with isolated data/log directories and
    non-conflicting ports.
 3. Poll backend and frontend health through explicit
    `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
 4. Execute the bundled Node.js, Claude, and OpenCode version commands when
    present, then run a minimal packaged `trace_processor_shell` operation.
-5. Send the supported interrupt/termination signal, require a zero/successful
-   shutdown, and verify child processes and listening ports are gone.
+5. Use the launcher-supported shutdown control, require a zero/successful and
+   non-escalated shutdown receipt with platform containment
+   (`windows-job-object` or `service-process-groups`), and verify child
+   processes and listening ports are gone.
 6. Preserve launcher/backend/frontend logs on failure.
+7. Atomically write a schema-v2 `smoke-summary.json` that binds the target-native host,
+   lifecycle receipt, and exact archive name, size, and SHA-256. Public release
+   promotion must re-hash the same archive and reject stale or edited evidence.
 
 For the final macOS archive, also require:
 
@@ -130,11 +167,12 @@ xcrun notarytool info <submission-id> \
   --keychain-profile "$SMARTPERFETTO_MACOS_NOTARY_PROFILE"
 ```
 
-The notarization result must be `Accepted`, the ticket must be stapled,
-Gatekeeper must report `Notarized Developer ID`, and the extracted app must
-actually reach both health endpoints. The package verifier must independently
-check every Mach-O signature and required Node/Claude JIT entitlements; signing
-must not depend on file extension or executable mode.
+The notarization result must be `Accepted` and preserved as the minimal
+`NOTARIZATION-RECEIPT.json` in the exact final archive, the ticket must be
+stapled, Gatekeeper must report `Notarized Developer ID`, and the extracted app
+must actually reach both health endpoints. The package verifier must
+independently check every Mach-O signature and required Node/Claude JIT
+entitlements; signing must not depend on file extension or executable mode.
 
 Use native or hosted target runners when local machines are unavailable. If a
 required runner cannot execute the exact archive, keep the GitHub release as a

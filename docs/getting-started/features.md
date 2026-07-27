@@ -2,6 +2,8 @@
 
 [English](features.en.md) | [中文](features.md)
 
+<!-- i18n-headings: paired -->
+
 这份文档面向 SmartPerfetto 使用者，说明它大概能做什么、从哪里触发、输出结果是什么。安装和配置步骤见 [快速开始](quick-start.md) 和 [配置指南](configuration.md)。
 
 ## 1. Perfetto UI 内的 AI Assistant
@@ -214,19 +216,23 @@ SmartPerfetto 支持在 UI 中管理模型 provider，也支持通过 `.env` 配
 
 - 可以接入 Anthropic、Claude/Anthropic-compatible provider、OpenAI/OpenAI-compatible provider。
 - UI 中激活的 Provider Manager profile 优先于 `.env`。
-- 后端 health 信息会显示当前 credential source，便于排障。
+- 受保护的 `/api/runtime-health` 会显示当前 credential source，便于排障；
+  公开 `/health` 只提供 readiness 与版本。
 
 完整配置见 [配置指南](configuration.md)。
 
 ## 11. 自动化、API 和 CLI
 
-除了 UI，SmartPerfetto 也提供后端 API、CLI 和 MCP 工具文档，适合自动化场景。
+除了 UI，SmartPerfetto 也提供 workspace API、CLI 和 MCP 工具，适合自动化场景。
 
 入口：
 
-- 后端 API：[API 参考](../reference/api.md)。
-- CLI：[CLI 参考](../reference/cli.md)。
-- MCP 工具：[MCP 工具参考](../reference/mcp-tools.md)。
+- Workspace API：[API 参考](../reference/api.md)，用于 batch trace、显式 snapshot
+  promotion、comparison bridge 和 trace-config proposal。
+- CLI：[CLI 参考](../reference/cli.md)，用于本机 session、batch、capture 和 report
+  自动化。
+- MCP/Agent host：[MCP 工具参考](../reference/mcp-tools.md)，使用 request-scoped
+  工具面接入兼容 host。
 
 效果：
 
@@ -249,6 +255,10 @@ SmartPerfetto 支持多种运行方式：
 | Dev 模式 | 修改 Perfetto UI 插件的人 | 使用 `./scripts/start-dev.sh` 调试 `perfetto/` submodule 前端 |
 
 运行方式见 [快速开始](quick-start.md)，打包发布见 [免安装包打包](../reference/portable-packaging.md)。
+宿主系统、实际 target 和“静态验证 / target-native smoke / 已发布验收”的区别见
+[平台兼容与验证边界](../reference/platform-compatibility.md)。UI 与 CLI 的应用更新
+检查只提示版本和对应动作，不会自动替换当前运行目录；见
+[应用更新](../../README.zh-CN.md#应用更新)。
 
 ## 功能选择建议
 

@@ -7,19 +7,16 @@
 package main
 
 import (
+	"os"
 	"syscall"
-	"unsafe"
 )
 
 const fileAttributeReparsePoint = 0x400
 
-func isReparsePoint(path string) bool {
-	pathPointer, err := syscall.UTF16PtrFromString(path)
-	if err != nil {
+func isReparsePoint(info os.FileInfo) bool {
+	attributes, ok := info.Sys().(*syscall.Win32FileAttributeData)
+	if !ok || attributes == nil {
 		return true
 	}
-	attributes, _, _ := syscall.NewLazyDLL("kernel32.dll").
-		NewProc("GetFileAttributesW").
-		Call(uintptr(unsafe.Pointer(pathPointer)))
-	return attributes != ^uintptr(0) && attributes&fileAttributeReparsePoint != 0
+	return attributes.FileAttributes&fileAttributeReparsePoint != 0
 }

@@ -7,21 +7,23 @@
 package main
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
-	"time"
 )
 
 func configureServiceCommand(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
-func stopService(proc *serviceProcess) {
+func forceStopService(proc *serviceProcess) error {
 	if proc == nil || proc.cmd == nil || proc.cmd.Process == nil {
-		return
+		return nil
 	}
 	pid := proc.cmd.Process.Pid
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	time.Sleep(2 * time.Second)
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	return err
 }

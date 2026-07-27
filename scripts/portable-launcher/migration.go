@@ -21,31 +21,10 @@ var windowsPackageName = regexp.MustCompile(
 	`(?i)^smartperfetto-v(\d+)\.(\d+)\.(\d+)-windows-x64$`,
 )
 
-type launchOptions struct {
-	migrateFrom string
-}
-
 type migrationReceipt struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Source        string `json:"source"`
 	MigratedAt    string `json:"migratedAt"`
-}
-
-func parseLaunchOptions(args []string) (launchOptions, error) {
-	options := launchOptions{migrateFrom: os.Getenv("SMARTPERFETTO_MIGRATE_FROM")}
-	for index := 0; index < len(args); index++ {
-		switch args[index] {
-		case "--migrate-from":
-			if index+1 >= len(args) || strings.TrimSpace(args[index+1]) == "" {
-				return launchOptions{}, fmt.Errorf("--migrate-from requires an old package directory")
-			}
-			index++
-			options.migrateFrom = args[index]
-		default:
-			return launchOptions{}, fmt.Errorf("unknown launcher option %q", args[index])
-		}
-	}
-	return options, nil
 }
 
 func migrateLegacyWindowsData(
@@ -69,7 +48,7 @@ func migrateLegacyData(
 		return nil
 	}
 	if info, err := os.Lstat(destination); err == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(destination) {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info) {
 			return fmt.Errorf("data destination is not a safe directory: %s", destination)
 		}
 		return nil
@@ -222,7 +201,7 @@ func assertSafeMigrationDirectory(root string) error {
 	if err != nil {
 		return err
 	}
-	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(root) {
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info) {
 		return fmt.Errorf("source root is a symlink, reparse point, or non-directory")
 	}
 	return nil
@@ -237,7 +216,7 @@ func copyMigrationTree(source string, destination string) error {
 		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 			return fmt.Errorf("unsafe source path: %s", current)
 		}
-		if info.Mode()&os.ModeSymlink != 0 || isReparsePoint(current) {
+		if info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info) {
 			return fmt.Errorf("refusing to copy symlink or reparse point: %s", current)
 		}
 		target := filepath.Join(destination, relative)

@@ -2,6 +2,8 @@
 
 [English](README.en.md) | [中文](README.md)
 
+<!-- i18n-headings: paired -->
+
 This repository keeps only documentation that still defines the current user,
 architecture, runtime, or maintainer contract. Start with the
 [Quick Start](getting-started/quick-start.en.md). Git history, issues, and PRs
@@ -25,9 +27,12 @@ and agent evidence are not maintained as permanent documentation.
 - [HTTP/SSE API](reference/api.en.md)
 - [MCP Tools](reference/mcp-tools.en.md)
 - [Skill System](reference/skill-system.en.md)
+- [Platform Compatibility And Verification Boundaries](reference/platform-compatibility.en.md)
 - [Release](reference/release.en.md)
 - [Portable Packaging](reference/portable-packaging.en.md)
 - [Windows Launcher](reference/windows-exe.en.md)
+- Application updates: [product notice and update actions](../README.md#application-updates),
+  [CLI](reference/cli.en.md#application-updates), [API](reference/api.en.md#application-updates)
 
 ## Core Architecture
 

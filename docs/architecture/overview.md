@@ -2,6 +2,8 @@
 
 [English](overview.en.md) | [中文](overview.md)
 
+<!-- i18n-headings: paired -->
+
 SmartPerfetto 在 Perfetto UI 之上增加 AI 分析层。Perfetto 仍负责 trace 加载、时间线和 SQL 基础能力；SmartPerfetto 后端负责 agent 编排、Skill 执行、报告生成和流式输出。
 
 ```text
@@ -56,10 +58,10 @@ backend 与 frontend。
 |---|---|---|
 | Perfetto UI plugin | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` | 面板、SSE、结果渲染、场景导航、选区交互 |
 | Express backend | `backend/src/index.ts` | 路由注册、健康检查、中间件、进程清理 |
-| Runtime selector | `backend/src/agentRuntime/` | 每个 session 选择 Claude Agent SDK、OpenAI Agents SDK、Pi Agent Core、OpenCode 或 Qoder |
-| Claude runtime | `backend/src/agentv3/` | Claude Agent SDK 编排、MCP server、策略注入、verifier、记忆 |
-| OpenAI runtime | `backend/src/agentOpenAI/` | OpenAI Agents SDK 编排，通过同一 assistant contract 输出 |
-| 第三方 runtime adapters | `backend/src/agentRuntime/engines/pi/`、`backend/src/agentRuntime/engines/opencode/`、`backend/src/agentRuntime/engines/qoder/` | custom third-party runtime，复用共享分析契约、request-scoped tools 和 runtime-specific 安全边界 |
+| Runtime contract 与 registry | `backend/src/agentRuntime/runtimeKinds.ts`、`runtimeDescriptors.ts`、`runtimeSelection.ts` | 定义当前 production runtime 集合、capabilities、canonical loader 和每个 session 的 runtime 选择 |
+| Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | 五个当前 runtime 的 canonical 实现，复用统一 orchestrator、结果和安全边界 |
+| 共享 Agent 能力 | `backend/src/agentv3/` | MCP server/registry、策略注入、planning、verifier 和记忆；其中个别 runtime 文件仅保留 compatibility re-export |
+| OpenAI compatibility facades | `backend/src/agentOpenAI/` | 向旧 import path 提供 re-export；canonical OpenAI 实现在 `agentRuntime/engines/openai/` |
 | assistant application | `backend/src/assistant/` | session 管理、stream projection、结果 contract |
 | Skill engine | `backend/src/services/skillEngine/` | YAML Skill 加载、参数替换、SQL 执行、DataEnvelope 输出 |
 | Skills | `backend/skills/` | 原子、组合、深度、渲染管线分析 |
@@ -126,7 +128,7 @@ chunk 引用/哈希/许可/出处。Wiki 背景不能被 claim verifier 当作�
 
 源码与外部知识的选择、授权指纹、非恢复策略和删除生命周期见
 [私有分析上下文架构](private-analysis-context.md)。该边界同时覆盖普通分析、Smart
-Profile 深度分析、Web UI、CLI 和四个 runtime adapter。
+Profile 深度分析、Web UI、CLI 和 `PRODUCTION_RUNTIME_KINDS` 当前注册的 runtime。
 
 ## Runtime 与 Provider 边界
 
@@ -136,6 +138,7 @@ Profile 深度分析、Web UI、CLI 和四个 runtime adapter。
 | `openai-agents-sdk` | OpenAI、Ollama、OpenAI-compatible provider | 按 OpenAI runtime 规则验证凭证和 chat-completions/Responses 协议 |
 | `pi-agent-core` | Custom provider | 需要显式 Pi model JSON 或等价 env；不读取 `.pi` project config、package extension、shell tool 或 file tool |
 | `opencode` | Custom provider | 需要显式 OpenCode/OpenAI-compatible model 配置；使用隔离 OpenCode server 和 request-scoped MCP tools，不读取个人 OpenCode 登录态/project state |
+| `qoder-agent-sdk` | Custom provider 或显式 env | Qoder SDK 是 opt-in optional peer；使用本机 Qoder CLI 登录态或 PAT，并隔离私有知识的 stream/session/snapshot |
 
 Provider Manager active profile 优先于 `.env` fallback。历史 session 恢复时必须保留
 原 provider/runtime/comparison identity，不能因为当前 active provider 变化而静默切换。

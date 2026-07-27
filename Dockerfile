@@ -153,8 +153,8 @@ EXPOSE 3000 10000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD curl -fsS "http://localhost:${SMARTPERFETTO_BACKEND_PORT:-${PORT:-3000}}/health" >/dev/null && \
-        curl -fsS "http://localhost:${SMARTPERFETTO_FRONTEND_PORT:-10000}/health" >/dev/null || exit 1
+    CMD curl -fsS "http://127.0.0.1:${SMARTPERFETTO_BACKEND_PORT:-${PORT:-3000}}/health" >/dev/null && \
+        curl -fsS "http://127.0.0.1:${SMARTPERFETTO_FRONTEND_PORT:-10000}/health" >/dev/null || exit 1
 
 # Start both services
 COPY scripts/docker-entrypoint.sh /app/docker-entrypoint.sh

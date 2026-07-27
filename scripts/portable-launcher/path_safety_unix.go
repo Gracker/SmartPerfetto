@@ -6,6 +6,8 @@
 
 package main
 
-func isReparsePoint(_ string) bool {
+import "os"
+
+func isReparsePoint(_ os.FileInfo) bool {
 	return false
 }

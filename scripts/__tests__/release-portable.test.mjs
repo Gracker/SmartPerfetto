@@ -56,7 +56,11 @@ function setupProject() {
   );
   writeFileSync(
     join(scripts, 'verify-portable-package.cjs'),
-    `'use strict';\nprocess.exit(0);\n`,
+    `'use strict';\nconst fs=require('fs');fs.appendFileSync('.git/fake-package-verifier.log',JSON.stringify(process.argv.slice(2))+'\\n');\n`,
+  );
+  writeFileSync(
+    join(scripts, 'verify-portable-smoke-evidence.cjs'),
+    `'use strict';\nconst fs=require('fs');fs.appendFileSync('.git/fake-smoke-verifier.log',JSON.stringify(process.argv.slice(2))+'\\n');const i=process.argv.indexOf('--summary');if(i<0||!fs.statSync(process.argv[i+1]).isFile())process.exit(1);\n`,
   );
   for (const [, suffix] of targets) {
     writeFileSync(
@@ -158,6 +162,13 @@ if (action === 'upload') {
 process.exit(2);
 `);
   chmodSync(gh, 0o755);
+  const npm = join(fakeBin, 'npm');
+  writeFileSync(npm, `#!/usr/bin/env node
+'use strict';
+const fs = require('fs');
+fs.writeFileSync('.git/fake-npm-env.json', JSON.stringify(process.env, null, 2));
+`);
+  chmodSync(npm, 0o755);
 
   for (const args of [
     ['init', '--quiet'],
@@ -172,7 +183,15 @@ process.exit(2);
   const target = run('git', ['rev-parse', 'HEAD'], {
     cwd: project,
   }).stdout.trim();
-  return {project, fakeBin, out, target};
+  const evidence = join(project, '.git', 'smoke-evidence');
+  for (const [targetId] of targets) {
+    mkdirSync(join(evidence, targetId), {recursive: true});
+    writeFileSync(
+      join(evidence, targetId, 'smoke-summary.json'),
+      `${JSON.stringify({target: targetId, targetCommit: target})}\n`,
+    );
+  }
+  return {project, fakeBin, out, target, evidence};
 }
 
 function expectedAssets(out) {
@@ -187,19 +206,29 @@ function expectedAssets(out) {
   });
 }
 
-function executeRelease(fixture, initialState, extraArgs = []) {
+function executeRelease(fixture, initialState, extraArgs = [], options = {}) {
   const stateFile = join(fixture.project, '.git', 'fake-gh-state.json');
   const logFile = join(fixture.project, '.git', 'fake-gh.log');
   writeFileSync(stateFile, `${JSON.stringify(initialState, null, 2)}\n`);
   writeFileSync(logFile, '');
+  writeFileSync(join(fixture.project, '.git', 'fake-package-verifier.log'), '');
+  writeFileSync(join(fixture.project, '.git', 'fake-smoke-verifier.log'), '');
+  const releaseArgs = [...extraArgs];
+  if (
+    releaseArgs.includes('--no-draft') &&
+    !releaseArgs.includes('--smoke-evidence-dir')
+  ) {
+    releaseArgs.push('--smoke-evidence-dir', fixture.evidence);
+  }
+  const commandArgs = [
+    join(fixture.project, 'scripts', 'release-portable.sh'),
+    version,
+  ];
+  if (options.skipBuild !== false) commandArgs.push('--skip-build');
+  commandArgs.push(...releaseArgs);
   const result = run(
     'bash',
-    [
-      join(fixture.project, 'scripts', 'release-portable.sh'),
-      version,
-      '--skip-build',
-      ...extraArgs,
-    ],
+    commandArgs,
     {
       cwd: fixture.project,
       env: {
@@ -207,6 +236,7 @@ function executeRelease(fixture, initialState, extraArgs = []) {
         PATH: `${fixture.fakeBin}:${process.env.PATH}`,
         FAKE_GH_STATE: stateFile,
         FAKE_GH_LOG: logFile,
+        ...options.env,
       },
     },
   );
@@ -214,6 +244,14 @@ function executeRelease(fixture, initialState, extraArgs = []) {
     result,
     state: JSON.parse(readFileSync(stateFile, 'utf8')),
     log: readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean),
+    packageVerifierCalls: readFileSync(
+      join(fixture.project, '.git', 'fake-package-verifier.log'),
+      'utf8',
+    ).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
+    smokeVerifierCalls: readFileSync(
+      join(fixture.project, '.git', 'fake-smoke-verifier.log'),
+      'utf8',
+    ).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)),
   };
 }
 
@@ -225,7 +263,13 @@ function mutationLog(log) {
 
 test('portable release uploads to a draft and publishes only after verification', () => {
   const fixture = setupProject();
-  const {result, state, log} = executeRelease(
+  const {
+    result,
+    state,
+    log,
+    packageVerifierCalls,
+    smokeVerifierCalls,
+  } = executeRelease(
     fixture,
     {exists: false, assets: []},
     ['--no-draft'],
@@ -233,6 +277,10 @@ test('portable release uploads to a draft and publishes only after verification'
   assert.equal(result.status, 0, result.stderr);
   assert.equal(state.draft, false);
   assert.deepEqual(state.assets, expectedAssets(fixture.out));
+  assert.equal(packageVerifierCalls.length, 3);
+  assert.ok(packageVerifierCalls.every(args => args.includes('--public-release')));
+  assert.equal(smokeVerifierCalls.length, 3);
+  assert.ok(smokeVerifierCalls.every(args => args.includes('--require-public-release')));
   const mutations = mutationLog(log);
   assert.match(mutations[0], /^release create\b.*--draft\b/);
   assert.equal(mutations.filter(line => /^release upload\b/.test(line)).length, 3);
@@ -286,4 +334,77 @@ test('--no-draft rejects a partial platform set before contacting GitHub', () =>
   assert.equal(result.status, 2);
   assert.match(result.stderr, /requires exactly/);
   assert.deepEqual(log, []);
+});
+
+test('--no-draft rejects dirty release assets before contacting GitHub', () => {
+  const fixture = setupProject();
+  const {result, log} = executeRelease(
+    fixture,
+    {exists: false, assets: []},
+    ['--allow-dirty', '--no-draft'],
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /--allow-dirty.*cannot be combined with --no-draft/);
+  assert.deepEqual(log, []);
+});
+
+test('--no-draft rejects rebuilding after target-native smoke', () => {
+  const fixture = setupProject();
+  const {result, log} = executeRelease(
+    fixture,
+    {exists: false, assets: []},
+    ['--no-draft'],
+    {skipBuild: false},
+  );
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /requires --skip-build.*exactly match target-native smoke evidence/);
+  assert.deepEqual(log, []);
+});
+
+test('--no-draft rejects missing target-native smoke evidence before contacting GitHub', () => {
+  const fixture = setupProject();
+  const missing = join(fixture.project, '.git', 'missing-smoke-evidence');
+  const {result, log} = executeRelease(
+    fixture,
+    {exists: false, assets: []},
+    ['--no-draft', '--smoke-evidence-dir', missing],
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /target-native smoke evidence not found/);
+  assert.deepEqual(log, []);
+});
+
+test('portable build does not inherit release or provider credentials', () => {
+  const fixture = setupProject();
+  const {result} = executeRelease(
+    fixture,
+    {exists: false, assets: []},
+    [],
+    {
+      skipBuild: false,
+      env: {
+        GH_TOKEN: 'github-release-secret',
+        GITHUB_TOKEN: 'actions-release-secret',
+        OPENAI_API_KEY: 'provider-secret',
+        ANTHROPIC_AUTH_TOKEN: 'provider-token',
+        AWS_SECRET_ACCESS_KEY: 'cloud-secret',
+        SMARTPERFETTO_MACOS_SIGN_IDENTITY: 'Developer ID Application: Test',
+        SMARTPERFETTO_MACOS_NOTARY_PROFILE: 'notary-profile',
+      },
+    },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const buildEnv = JSON.parse(
+    readFileSync(join(fixture.project, '.git', 'fake-npm-env.json'), 'utf8'),
+  );
+  assert.equal(buildEnv.GH_TOKEN, undefined);
+  assert.equal(buildEnv.GITHUB_TOKEN, undefined);
+  assert.equal(buildEnv.OPENAI_API_KEY, undefined);
+  assert.equal(buildEnv.ANTHROPIC_AUTH_TOKEN, undefined);
+  assert.equal(buildEnv.AWS_SECRET_ACCESS_KEY, undefined);
+  assert.equal(
+    buildEnv.SMARTPERFETTO_MACOS_SIGN_IDENTITY,
+    'Developer ID Application: Test',
+  );
+  assert.equal(buildEnv.SMARTPERFETTO_MACOS_NOTARY_PROFILE, 'notary-profile');
 });

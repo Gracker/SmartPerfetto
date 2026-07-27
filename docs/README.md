@@ -2,6 +2,8 @@
 
 [English](README.en.md) | [中文](README.md)
 
+<!-- i18n-headings: paired -->
+
 这里仅保留当前版本仍需维护的用户、架构、运行时和维护者文档。第一次使用请从
 [快速开始](getting-started/quick-start.md)进入；仓库历史由 Git、Issue 和 PR 保留，
 不再把完成后的计划、审查报告、研究材料或 Agent 证据作为长期文档提交。
@@ -23,9 +25,12 @@
 - [HTTP/SSE API](reference/api.md)
 - [MCP 工具](reference/mcp-tools.md)
 - [Skill 系统](reference/skill-system.md)
+- [平台兼容与验证边界](reference/platform-compatibility.md)
 - [发布流程](reference/release.md)
 - [免安装包](reference/portable-packaging.md)
 - [Windows 启动器](reference/windows-exe.md)
+- 应用更新：[产品提示与更新动作](../README.zh-CN.md#应用更新)、
+  [CLI](reference/cli.md#应用更新)、[API](reference/api.md#应用更新)
 
 ## 核心架构
 

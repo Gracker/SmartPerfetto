@@ -10,6 +10,7 @@
  *
  * Environment variables:
  *   SMARTPERFETTO_FRONTEND_PORT  Listening port (default: 10000)
+ *   SMARTPERFETTO_FRONTEND_BIND_HOST  Listening host (default: 127.0.0.1)
  *   PORT                         Legacy listening port fallback
  */
 
@@ -20,6 +21,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = Number(safePort(process.env.SMARTPERFETTO_FRONTEND_PORT || process.env.PORT, '10000'));
+const BIND_HOST = resolveBindHost(process.env.SMARTPERFETTO_FRONTEND_BIND_HOST);
 const DIST_DIR = __dirname;
 const REQUIRED_RUNTIME_ASSETS = [
   'frontend_bundle.js',
@@ -28,6 +30,10 @@ const REQUIRED_RUNTIME_ASSETS = [
   'trace_processor.wasm',
   'trace_processor_memory64.wasm',
 ];
+const DEFAULT_SHUTDOWN_POLL_INTERVAL_MS = 100;
+const DEFAULT_SHUTDOWN_DEADLINE_MS = 5_000;
+const liveReloadResponsesByServer = new WeakMap();
+const socketsByServer = new WeakMap();
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -60,6 +66,54 @@ function safePort(value, fallback) {
     : fallback;
 }
 
+function resolveBindHost(value) {
+  const host = String(value || '').trim() || '127.0.0.1';
+  if (!/^[A-Za-z0-9.:[\]_-]+$/.test(host)) {
+    throw new Error(`Invalid SMARTPERFETTO_FRONTEND_BIND_HOST: ${value}`);
+  }
+  return host;
+}
+
+function listenFrontend(serverInstance, {host = BIND_HOST, port = PORT} = {}, callback) {
+  return serverInstance.listen({host, port}, callback);
+}
+
+function isPathInside(root, candidate) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+function resolveStaticRequest(rawUrl, distDir = DIST_DIR) {
+  const rawPathname = String(rawUrl || '').split(/[?#]/, 1)[0];
+  if (!rawPathname.startsWith('/')) {
+    throw new Error('Request path must be absolute');
+  }
+
+  let urlPath;
+  try {
+    urlPath = decodeURIComponent(rawPathname);
+  } catch {
+    throw new Error('Request path contains invalid percent encoding');
+  }
+  if (urlPath.includes('\0') || urlPath.includes('\\')) {
+    throw new Error('Request path contains an unsafe character');
+  }
+  if (urlPath.split('/').some((segment) => segment === '.' || segment === '..')) {
+    throw new Error('Request path contains traversal');
+  }
+
+  const root = path.resolve(distDir);
+  const filePath = path.resolve(root, `.${urlPath}`);
+  if (!isPathInside(root, filePath)) {
+    throw new Error('Request path escapes the frontend root');
+  }
+  return {filePath, urlPath};
+}
+
 function runtimeConfigScript() {
   const backendUrl = (
     process.env.SMARTPERFETTO_BACKEND_PUBLIC_URL ||
@@ -79,7 +133,11 @@ function runtimeConfigScript() {
     ),
     ...(backendUrl ? {backendUrl} : {}),
   };
-  return `<script>window.__SMARTPERFETTO_CONFIG__=${JSON.stringify(config)};</script>`;
+  const serialized = JSON.stringify(config)
+    .replace(/</g, '\\u003c')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return `<script>window.__SMARTPERFETTO_CONFIG__=${serialized};</script>`;
 }
 
 function injectRuntimeConfig(filePath, data) {
@@ -128,61 +186,176 @@ function frontendHealth(distDir = DIST_DIR) {
   }
 }
 
-const server = http.createServer((req, res) => {
-  // CORS headers for cross-origin requests from Perfetto UI
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
-  res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+function watchShutdownFile(
+  shutdownFile,
+  onShutdown,
+  pollIntervalMs = DEFAULT_SHUTDOWN_POLL_INTERVAL_MS,
+) {
+  const target = String(shutdownFile || '').trim();
+  if (!target) return () => {};
 
-  let urlPath = req.url.split('?')[0];
-
-  if (urlPath === '/health') {
-    const health = frontendHealth();
-    const body = JSON.stringify(health);
-    res.writeHead(health.status === 'OK' ? 200 : 503, {'Content-Type': 'application/json'});
-    res.end(body);
-    return;
-  }
-
-  // Live reload endpoint (no-op stub so browser doesn't error)
-  if (urlPath === '/live_reload') {
-    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
-    res.write('data: connected\n\n');
-    return;
-  }
-
-  // Resolve file path
-  let filePath = path.join(DIST_DIR, urlPath);
-
-  // Serve index.html for root
-  if (urlPath === '/' || urlPath === '') {
-    filePath = path.join(DIST_DIR, 'index.html');
-  }
-
-  fs.stat(filePath, (err, stat) => {
-    if (err || !stat.isFile()) {
-      if (path.extname(urlPath)) {
-        res.writeHead(404, { 'Content-Type': 'text/plain' });
-        res.end('Not found');
-        return;
+  let stopped = false;
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(timer);
+  };
+  const timer = setInterval(() => {
+    try {
+      const stat = fs.lstatSync(target);
+      if (!stat.isFile() || stat.isSymbolicLink()) return;
+      stop();
+      onShutdown('launcher-control-file');
+    } catch (error) {
+      if (error && error.code !== 'ENOENT') {
+        console.warn(`[Frontend] Cannot inspect shutdown file ${target}: ${error.message || error}`);
       }
+    }
+  }, pollIntervalMs);
+  timer.unref();
+  return stop;
+}
 
-      // Fallback to index.html for SPA routing
-      filePath = path.join(DIST_DIR, 'index.html');
+function openedFileMatchesPath(openedStat, pathStat) {
+  return (
+    openedStat.isFile() &&
+    pathStat.isFile() &&
+    openedStat.dev === pathStat.dev &&
+    openedStat.ino === pathStat.ino
+  );
+}
+
+function readStaticFile(root, filePath, callback) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  fs.open(filePath, flags, (openError, descriptor) => {
+    if (openError) {
+      callback(openError);
+      return;
     }
 
-    fs.readFile(filePath, (err2, data) => {
-      if (err2) {
-        res.writeHead(404);
-        res.end('Not found');
+    const finish = (error, result) => {
+      fs.close(descriptor, (closeError) => callback(error || closeError, result));
+    };
+    fs.fstat(descriptor, (fstatError, openedStat) => {
+      if (fstatError || !openedStat.isFile()) {
+        finish(fstatError || new Error('Static path is not a regular file'));
         return;
       }
-      const body = injectRuntimeConfig(filePath, data);
-      res.writeHead(200, { 'Content-Type': getMime(filePath) });
-      res.end(body);
+      fs.realpath(filePath, (realpathError, realPath) => {
+        if (realpathError || !isPathInside(root, realPath)) {
+          finish(realpathError || new Error('Static path escapes the frontend root'));
+          return;
+        }
+        fs.stat(realPath, (statError, pathStat) => {
+          if (statError || !openedFileMatchesPath(openedStat, pathStat)) {
+            finish(statError || new Error('Static path changed while it was opened'));
+            return;
+          }
+          fs.readFile(descriptor, (readError, data) => {
+            finish(readError, readError ? undefined : {data, realPath});
+          });
+        });
+      });
     });
   });
-});
+}
+
+function createFrontendServer(distDir = DIST_DIR) {
+  const root = fs.realpathSync(distDir);
+  const liveReloadResponses = new Set();
+  const sockets = new Set();
+  const serverInstance = http.createServer((req, res) => {
+    // CORS headers for cross-origin requests from Perfetto UI
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+    res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+
+    let requestPath;
+    try {
+      requestPath = resolveStaticRequest(req.url, root);
+    } catch {
+      res.writeHead(400, {'Content-Type': 'text/plain'});
+      res.end('Invalid request path');
+      return;
+    }
+    const {urlPath} = requestPath;
+
+    if (urlPath === '/health') {
+      const health = frontendHealth(root);
+      const body = JSON.stringify(health);
+      res.writeHead(health.status === 'OK' ? 200 : 503, {'Content-Type': 'application/json'});
+      res.end(body);
+      return;
+    }
+
+    // Live reload endpoint (no-op stub so browser doesn't error)
+    if (urlPath === '/live_reload') {
+      res.writeHead(200, {'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache'});
+      res.write('data: connected\n\n');
+      liveReloadResponses.add(res);
+      res.once('close', () => liveReloadResponses.delete(res));
+      return;
+    }
+
+    let filePath = requestPath.filePath;
+    if (urlPath === '/') {
+      filePath = path.join(root, 'index.html');
+    }
+
+    const serve = (candidate, allowSpaFallback) => {
+      readStaticFile(root, candidate, (readError, result) => {
+        if (readError && allowSpaFallback) {
+          serve(path.join(root, 'index.html'), false);
+          return;
+        }
+        if (readError) {
+          res.writeHead(404, {'Content-Type': 'text/plain'});
+          res.end('Not found');
+          return;
+        }
+        const body = injectRuntimeConfig(result.realPath, result.data);
+        res.writeHead(200, {'Content-Type': getMime(result.realPath)});
+        res.end(body);
+      });
+    };
+    serve(filePath, urlPath !== '/' && !path.extname(urlPath));
+  });
+  serverInstance.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  liveReloadResponsesByServer.set(serverInstance, liveReloadResponses);
+  socketsByServer.set(serverInstance, sockets);
+  return serverInstance;
+}
+
+function closeFrontendServer(
+  serverInstance,
+  callback,
+  shutdownDeadlineMs = DEFAULT_SHUTDOWN_DEADLINE_MS,
+) {
+  for (const response of liveReloadResponsesByServer.get(serverInstance) || []) {
+    response.end();
+  }
+  let completed = false;
+  const deadline = setTimeout(() => {
+    for (const socket of socketsByServer.get(serverInstance) || []) {
+      socket.destroy();
+    }
+  }, shutdownDeadlineMs);
+  deadline.unref();
+  const finish = (error) => {
+    if (completed) return;
+    completed = true;
+    clearTimeout(deadline);
+    callback?.(error);
+  };
+  const result = serverInstance.close(finish);
+  serverInstance.closeIdleConnections?.();
+  return result;
+}
+
+const server = createFrontendServer();
 
 server.on('error', (err) => {
   if (err && err.code === 'EADDRINUSE') {
@@ -203,13 +376,36 @@ server.on('error', (err) => {
 });
 
 if (require.main === module) {
-  server.listen(PORT, () => {
-    console.log(`[Frontend] Serving Perfetto UI on http://localhost:${PORT}`);
+  let shutdownStarted = false;
+  const shutdown = (reason) => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
+    console.log(`[Frontend] Received ${reason}, shutting down gracefully...`);
+    closeFrontendServer(server, (error) => {
+      if (error) {
+        console.error(`[Frontend] Graceful shutdown failed: ${error.message || error}`);
+        process.exitCode = 1;
+      }
+    });
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  watchShutdownFile(process.env.SMARTPERFETTO_SHUTDOWN_FILE, shutdown);
+  listenFrontend(server, undefined, () => {
+    console.log(`[Frontend] Serving Perfetto UI on http://${BIND_HOST}:${PORT}`);
   });
 }
 
 module.exports = {
   REQUIRED_RUNTIME_ASSETS,
+  closeFrontendServer,
+  createFrontendServer,
   frontendHealth,
+  isPathInside,
+  listenFrontend,
+  readStaticFile,
+  resolveBindHost,
+  resolveStaticRequest,
   server,
+  watchShutdownFile,
 };

@@ -8,15 +8,20 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](portable-packaging.en.md) | [中文](portable-packaging.md)
 
+<!-- i18n-headings: paired -->
+
 SmartPerfetto portable packages are not single-file binaries. The launcher starts
 the bundled Node.js 24 runtime, backend, pre-built Perfetto UI, and pinned
 `trace_processor_shell`, plus the signed Android Internals Knowledge Pack.
 
 Current release assets:
 
-- `smartperfetto-v<version>-windows-x64.zip`
-- `smartperfetto-v<version>-macos-arm64.zip`
-- `smartperfetto-v<version>-linux-x64.tar.gz`
+- `smartperfetto-v<version>-windows-x64.zip` (Windows 10 / Windows Server 2016
+  or newer on x64)
+- `smartperfetto-v<version>-macos-arm64.zip` (macOS 13.5 or newer on Apple
+  silicon)
+- `smartperfetto-v<version>-linux-x64.tar.gz` (glibc 2.34 or newer on x64;
+  musl-based distributions such as Alpine Linux are unsupported)
 
 ## Build
 
@@ -64,13 +69,33 @@ cd backend
 npm publish --access public
 cd ..
 npm run package:portable
-npm run release:portable -- <version> --skip-build --no-draft
+# Run this command once on each matching Windows x64, macOS arm64, and Linux x64 target.
+node scripts/smoke-portable-archive.cjs --asset <final-archive> --target <target> \
+  --version <version> --commit <commit> --public-release \
+  --output-dir dist/portable/smoke-evidence/<target>
+npm run release:portable -- <version> --skip-build --no-draft \
+  --smoke-evidence-dir dist/portable/smoke-evidence
 ```
 
-`package:portable` builds all three target packages and verifies schema v2
+`package:portable` reads the exact Node.js version, target archive SHA-256
+values, and executable-content digests from `scripts/node-runtime-pin.env`
+instead of selecting the latest runtime during a build. For macOS, that digest
+normalizes only code-signature-dependent Mach-O fields so Developer ID
+re-signing cannot mask changed executable content. A Node runtime update must
+review and update those pins. The command builds all three target packages and
+verifies schema v3
 manifests, including distribution, channel, target, commit, and signing mode.
-`release:portable --skip-build` only reuses packages just built from the same
-version and commit.
+`traceProcessor` records both the pinned upstream `sourceSha256` and the
+post-signing archive-byte `sha256`, keeping supply-chain provenance separate
+from final-artifact verification. `release:portable --skip-build` only reuses
+packages just built from the same version and commit. Public promotion
+validates each target's native host, archive name, size, SHA256, commit,
+health, runtime probes, and lifecycle receipt from the smoke summary. Missing
+evidence or bytes that do not match the pending upload stop the release.
+Every smoke `--output-dir` must be a fresh path that does not already exist.
+Success atomically creates `smoke-summary.json`; failure writes
+`smoke-failure.json` instead, so a rerun uses a new directory and cannot
+overwrite earlier evidence.
 
 The release script always creates or reuses a draft first. After upload it
 verifies the target commit, title, asset names, sizes, and GitHub `sha256:`
@@ -109,8 +134,10 @@ npm run release:portable -- <version> --targets macos-arm64
 When a signing identity is set, the script runs `codesign --options runtime` and
 strict verification. When a notary profile is set, it submits with
 `xcrun notarytool submit --wait`, staples the `.app`, and recreates the zip.
-The notary profile is a local `notarytool` Keychain credential alias, not a
-provisioning profile. Keep the API private key out of the repository and
+The packager also runs `notarytool info` for the same submission, requires
+`Accepted`, and writes only a minimal `NOTARIZATION-RECEIPT.json` into the final
+zip. The notary profile is a local `notarytool` Keychain credential alias, not
+a provisioning profile. Keep the API private key out of the repository and
 release logs.
 
 Packaging discovers nested native code by Mach-O file magic rather than file
@@ -162,7 +189,41 @@ lock/manifest/database/license versions and hashes. Cross-compilation,
 structure checks, and static signature verification do not prove target-OS
 startup. Public release uses a build-once rule: extract and smoke the same final
 archive bytes that will be uploaded, and do not rebuild after smoke. macOS must
-test the final zip recreated after notarization and stapling.
+test the final zip recreated after notarization and stapling. The current
+compatibility floors are Windows 10 / Windows Server 2016 or newer on x64,
+macOS arm64 13.5+, and Linux x64 glibc 2.34+. The static verifier scans every
+packaged Mach-O/ELF and rejects native requirements above the manifest/
+Info.plist declaration.
+
+Run the shared smoke command on the OS/architecture declared by the archive:
+
+```bash
+node scripts/smoke-portable-archive.cjs \
+  --asset "<final-archive>" \
+  --target "<windows-x64|macos-arm64|linux-x64>" \
+  --version "<version>" \
+  --commit "<release-commit>" \
+  --public-release \
+  --output-dir "<evidence-dir>"
+```
+
+For local pre-commit validation of uncommitted code only, explicitly add
+`--allow-dirty`. It cannot be combined with `--public-release`, and its result
+cannot be promoted. A public release must still build once and smoke from the
+exact clean commit.
+
+The command first applies safe archive path/link checks and the static verifier,
+then starts the launcher from those same archive bytes. It uses isolated data
+and log directories, explicit `127.0.0.1` health, bundled Node/Claude/OpenCode
+commands, and a minimal trace-processor query. It requests auditable graceful
+shutdown through launcher `--shutdown-file`; `--lifecycle-receipt` records
+process containment, child PIDs, exit codes, escalation, and port release.
+Windows must establish a kill-on-close Job Object, while macOS/Linux services
+use independent process groups. Launcher/backend/frontend logs are preserved
+on failure. The command rejects a host that does not match `--target`.
+`--public-release` produces public-promotion evidence and also
+checks Developer ID, Gatekeeper, the notarization staple, and the `Accepted`
+notary receipt on macOS. Omit it only for draft-package smoke.
 
 1. Start the bundled launcher.
 2. Open the printed frontend URL, usually [http://127.0.0.1:10000](http://127.0.0.1:10000).

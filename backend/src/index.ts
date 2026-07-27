@@ -34,6 +34,8 @@ import { installEpipeGuard } from './utils/epipeGuard';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import type { Server } from 'http';
+import type { Duplex } from 'stream';
 
 // Import configuration
 import { resolveFeatureConfig, serverConfig } from './config';
@@ -107,8 +109,12 @@ import {
   startAndroidInternalsPackUpdateWorker,
 } from './services/androidInternalsPack/knowledgePackUpdateWorker';
 import {startApplicationUpdateWorker} from './services/applicationUpdate/applicationUpdateWorker';
+import {installRuntimeShutdownControl} from './services/runtimeShutdownControl';
+import {createActiveHttpResponseTracker} from './services/activeHttpResponseTracker';
 
 const app = express();
+const activeHttpResponses = createActiveHttpResponseTracker();
+app.use(activeHttpResponses.middleware);
 const PORT = serverConfig.port;
 const NODE_ENV = serverConfig.nodeEnv;
 const corsAllowedOrigins = normalizeCorsOrigins(serverConfig.corsOrigins);
@@ -358,7 +364,12 @@ if (shouldCleanOrphanProcessorsOnStartup()) {
 }
 
 // Graceful shutdown handler
+let shutdownStarted = false;
+let server: Server | undefined;
+const upgradedSockets = new Set<Duplex>();
 function gracefulShutdown(signal: string) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   console.log(`\n📴 Received ${signal}, shutting down gracefully...`);
 
   // Cleanup all trace processors (this will also release ports)
@@ -380,14 +391,43 @@ function gracefulShutdown(signal: string) {
 
   console.log('⬆️ Stopping application update checker...');
   applicationUpdateWorkerHandle.stop();
+  const closedEventStreams = activeHttpResponses.closeEventStreams();
+  if (closedEventStreams > 0) {
+    console.log(`📡 Closed ${closedEventStreams} active SSE connection(s).`);
+  }
 
-  console.log('✅ Cleanup complete, exiting...');
-  process.exit(0);
+  if (!server) {
+    console.log('✅ Cleanup complete before listener startup, exiting...');
+    process.exit(0);
+  }
+
+  for (const socket of upgradedSockets) {
+    socket.end();
+  }
+  const forcedExit = setTimeout(() => {
+    for (const socket of upgradedSockets) {
+      socket.destroy();
+    }
+    server?.closeAllConnections();
+    console.error('❌ Backend connections did not close within the shutdown deadline.');
+    process.exit(1);
+  }, 5_000);
+  forcedExit.unref();
+  server.close((error) => {
+    clearTimeout(forcedExit);
+    if (error) {
+      console.error('❌ Backend listener shutdown failed:', error);
+      process.exit(1);
+    }
+    console.log('✅ Cleanup complete, exiting...');
+    process.exit(0);
+  });
 }
 
 // Register signal handlers
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+installRuntimeShutdownControl(gracefulShutdown);
 
 // EPIPE guard: prevent stdout/stderr/uncaughtException EPIPE from crashing the server.
 // Non-EPIPE uncaught exceptions still trigger graceful shutdown.
@@ -401,15 +441,24 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 // Start server
-const server = app.listen(PORT, serverConfig.bindHost, () => {
+server = app.listen(PORT, serverConfig.bindHost, () => {
+  const advertisedHost = serverConfig.bindHost === '0.0.0.0'
+    ? '127.0.0.1'
+    : serverConfig.bindHost === '::'
+      ? '[::1]'
+      : serverConfig.bindHost.includes(':')
+        ? `[${serverConfig.bindHost}]`
+        : serverConfig.bindHost;
   console.log(`🚀 Server running on ${serverConfig.bindHost}:${PORT}`);
   console.log(`📊 Environment: ${NODE_ENV}`);
-  console.log(`🔗 API URL: http://localhost:${PORT}/api`);
-  console.log(`❤️  Health check: http://localhost:${PORT}/health`);
-  console.log(`📈 Stats: http://localhost:${PORT}/api/traces/stats`);
+  console.log(`🔗 API URL: http://${advertisedHost}:${PORT}/api`);
+  console.log(`❤️  Health check: http://${advertisedHost}:${PORT}/health`);
+  console.log(`📈 Stats: http://${advertisedHost}:${PORT}/api/traces/stats`);
 });
 
 server.on('upgrade', (req, socket, head) => {
+  upgradedSockets.add(socket);
+  socket.once('close', () => upgradedSockets.delete(socket));
   if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
   socket.destroy();
 });

@@ -2,6 +2,8 @@
 
 [English](agent-runtime.en.md) | [中文](agent-runtime.md)
 
+<!-- i18n-headings: paired -->
+
 SmartPerfetto 后端现在把“模型 SDK”与“Perfetto 分析能力”分层。HTTP/CLI 会话层只依赖统一的 `IOrchestrator` 合约；具体运行时由 Provider 或 env 选择：
 
 | Runtime | SDK | Provider 类型 | 说明 |
@@ -75,19 +77,24 @@ Provider connection 支持两套端点字段：
 | 文件 | 责任 |
 |---|---|
 | `backend/src/agentRuntime/runtimeSelection.ts` | runtime 选择与统一 orchestrator factory |
-| `backend/src/agentRuntime/runtimeRegistry.ts` | runtime registry 和 `EngineCapabilities` |
-| `backend/src/agentRuntime/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
+| `backend/src/agentRuntime/runtimeKinds.ts` | production runtime kind 与当前注册集合 |
+| `backend/src/agentRuntime/runtimeDescriptors.ts` | runtime descriptor、`EngineCapabilities` 和 canonical loader |
+| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator |
+| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
+| `backend/src/agentRuntime/engines/openai/openAiToolAdapter.ts` | shared MCP descriptor 到 OpenAI function tool 的适配 |
+| `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
 | `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode server/runtime adapter 与 request-scoped MCP bridge |
 | `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder Agent SDK adapter、流式投影和 session 隔离 |
-| `backend/src/agentv3/claudeRuntime.ts` | Claude Agent SDK orchestrator |
-| `backend/src/agentOpenAI/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具注册，仍是工具单一事实源 |
 | `backend/src/agentv3/mcpToolRegistry.ts` | 工具 descriptor、exposure level 和 allowlist 单一事实源 |
-| `backend/src/agentOpenAI/openAiToolAdapter.ts` | Claude MCP tool descriptor 到 OpenAI function tool 的适配 |
 | `backend/src/services/agentResultNormalizer.ts` | 统一 final result、client projection 和 report data 边界 |
 | `backend/src/services/finalReportContractGate.ts` | 执行 strategy `final_report_contract` 完整性检查 |
 | `backend/src/services/providerManager/` | Provider 配置、runtime/protocol/env 映射 |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | 统一会话快照，含 Claude/OpenAI SDK 状态和 Pi/OpenCode/Qoder runtime state |
+
+`backend/src/agentOpenAI/` 以及 `agentv3/claudeRuntime.ts` 等具体文件继续提供
+旧 import path 的 compatibility re-export；`agentv3/` 目录内的 MCP、strategy、
+planning 和 verifier 仍是 canonical shared layers。
 
 ## 工具层
 
@@ -97,7 +104,7 @@ Claude runtime 直接把这些工具暴露为 in-process MCP server。
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
-五套 runtime 在 SmartPerfetto 边界上保持同一个产品合约：输入是同一份分析请求，输出归一化为同一组 SSE event、`AnalysisResult` 和 HTML report。它们的 SDK/server 机制并不相同：Claude runtime 使用 Claude SDK 的 in-process MCP server、tool allowlist、SDK session resume、verifier/sub-agent；OpenAI runtime 使用从同一工具注册表适配出来的 function tools，Responses API 通过 `previousResponseId` 恢复，Chat Completions-compatible provider 通过历史消息恢复；Pi Agent Core 使用 request-scoped native tools、共享系统 prompt、plan/hypothesis 工具和同一条 route-owned finalization/claim-verification/report 管线；OpenCode 使用加固隔离的 OpenCode server，并通过每次分析的 MCP bridge 暴露 request-scoped SmartPerfetto 工具，同时禁用或拒绝内建 project discovery、file、shell、web 和 edit tools；Qoder 通过 SDK in-process MCP bridge 复用共享工具，禁用 SDK built-in tools，并在 SSE 前使用共享 private-output guard 投影每个答案 token。模型的工具调用节奏、流式事件、恢复能力和成本/超时语义都可能不同。
+当前注册的 production runtime 在 SmartPerfetto 边界上保持同一个产品合约：输入是同一份分析请求，输出归一化为同一组 SSE event、`AnalysisResult` 和 HTML report。它们的 SDK/server 机制并不相同：Claude runtime 使用 Claude SDK 的 in-process MCP server、tool allowlist、SDK session resume、verifier/sub-agent；OpenAI runtime 使用从同一工具注册表适配出来的 function tools，Responses API 通过 `previousResponseId` 恢复，Chat Completions-compatible provider 通过历史消息恢复；Pi Agent Core 使用 request-scoped native tools、共享系统 prompt、plan/hypothesis 工具和同一条 route-owned finalization/claim-verification/report 管线；OpenCode 使用加固隔离的 OpenCode server，并通过每次分析的 MCP bridge 暴露 request-scoped SmartPerfetto 工具，同时禁用或拒绝内建 project discovery、file、shell、web 和 edit tools；Qoder 通过 SDK in-process MCP bridge 复用共享工具，禁用 SDK built-in tools，并在 SSE 前使用共享 private-output guard 投影每个答案 token。模型的工具调用节奏、流式事件、恢复能力和成本/超时语义都可能不同。
 
 ## 分析模式
 

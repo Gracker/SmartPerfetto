@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {pairedHeadingErrors} from './i18n-heading-contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const errors = [];
@@ -122,7 +123,7 @@ if (catalogSource) {
 }
 
 expectPairedHeadings('README.md', 'README.zh-CN.md');
-expectPairedHeadings('docs/README.md', 'docs/README.en.md');
+for (const error of pairedHeadingErrors(root)) fail(error);
 
 const uiLanguagePath =
   'perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/ui_language.ts';

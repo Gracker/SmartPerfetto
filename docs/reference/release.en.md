@@ -8,6 +8,8 @@ This file is part of SmartPerfetto. See LICENSE for details.
 
 [English](release.en.md) | [中文](release.md)
 
+<!-- i18n-headings: paired -->
+
 This is the maintainer-facing public release runbook. Before an LLM/agent runs
 any release work, it must also read [AGENTS.md](../../AGENTS.md),
 [`.claude/rules/release.md`](../../.claude/rules/release.md),
@@ -70,8 +72,16 @@ Publish the GitHub portable assets:
 
 ```bash
 npm run package:portable
-# Extract and smoke these final archives on each target OS; macOS uses the post-notarization, post-staple final zip
-npm run release:portable -- <version> --skip-build --no-draft
+# Run on each matching target; the macOS asset must be the post-notarization, post-staple final zip
+node scripts/smoke-portable-archive.cjs \
+  --asset "<final-archive>" \
+  --target "<windows-x64|macos-arm64|linux-x64>" \
+  --version "<version>" \
+  --commit "<release-commit>" \
+  --public-release \
+  --output-dir "dist/portable/smoke-evidence/<target>"
+npm run release:portable -- <version> --skip-build --no-draft \
+  --smoke-evidence-dir dist/portable/smoke-evidence
 gh release view v<version> --json tagName,isDraft,assets
 ```
 
@@ -83,6 +93,12 @@ Windows, macOS, and Linux must each verify backend/frontend health through
 shutdown, and port release. Keep the release as a draft when a target runner is
 unavailable. An explicitly user-accepted gap must be named in release/hand-off
 notes and must not be described as a complete all-platform smoke.
+Each target's schema-v2 smoke summary also binds the final archive name, byte
+size, and SHA-256. Promotion re-hashes the archive, so stale evidence or a
+replaced artifact cannot pass.
+`--output-dir` must name a fresh directory that does not already exist.
+Successful evidence is written atomically, failures use a separate
+`smoke-failure.json`, and reruns must not overwrite existing release evidence.
 
 `release:portable` is always draft-first: it uploads and verifies the target
 commit, title, and all three asset names, sizes, and GitHub digests before

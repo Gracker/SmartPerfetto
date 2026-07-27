@@ -2,6 +2,8 @@
 
 [English](technical-architecture.en.md) | [中文](technical-architecture.md)
 
+<!-- i18n-headings: paired -->
+
 This document explains the current implementation boundaries. See
 [Architecture Overview](overview.en.md) for a shorter entry point,
 [Agent Runtime](agent-runtime.en.md) for runtime details, and the
@@ -79,7 +81,8 @@ context, a requested `fast` mode must not silently drop the capability.
 
 ## 4. Runtimes And Providers
 
-Four production runtimes implement the shared `IOrchestrator` contract:
+Every runtime currently registered by `PRODUCTION_RUNTIME_KINDS` implements the
+shared `IOrchestrator` contract:
 
 | Runtime | Primary providers | Resume state |
 |---|---|---|
@@ -87,6 +90,14 @@ Four production runtimes implement the shared `IOrchestrator` contract:
 | `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | history + response id |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | opaque transcript |
 | `opencode` | OpenCode SDK and custom providers | OpenCode session id + isolated directories |
+| `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | Qoder session id; private-knowledge runs do not persist opaque sessions |
+
+Canonical loaders and capabilities come from
+`backend/src/agentRuntime/runtimeDescriptors.ts`, with implementations under
+`backend/src/agentRuntime/engines/`. `backend/src/agentOpenAI/` is a
+compatibility facade for old import paths. `backend/src/agentv3/` still owns
+canonical shared MCP, strategy, planning, and verifier layers, so the namespace
+as a whole is not legacy.
 
 Selection order is request-level Provider Manager profile, persisted session
 snapshot, `SMARTPERFETTO_AGENT_RUNTIME`, then the default runtime. A session

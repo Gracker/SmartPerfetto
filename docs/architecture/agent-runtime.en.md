@@ -2,6 +2,8 @@
 
 [English](agent-runtime.en.md) | [中文](agent-runtime.md)
 
+<!-- i18n-headings: paired -->
+
 SmartPerfetto separates model SDK mechanics from Perfetto analysis capability.
 The HTTP and CLI session layers depend on the shared `IOrchestrator` contract;
 the concrete runtime is selected from the request provider, Provider Manager,
@@ -72,6 +74,31 @@ Provider connection fields map to runtime-specific env:
 | `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 
+## Key Files
+
+| File | Responsibility |
+|---|---|
+| `backend/src/agentRuntime/runtimeSelection.ts` | Runtime selection and the shared orchestrator factory |
+| `backend/src/agentRuntime/runtimeKinds.ts` | Production runtime kinds and the current registered set |
+| `backend/src/agentRuntime/runtimeDescriptors.ts` | Runtime descriptors, `EngineCapabilities`, and canonical loaders |
+| `backend/src/agentRuntime/engines/claude/claudeRuntime.ts` | Claude Agent SDK orchestrator |
+| `backend/src/agentRuntime/engines/openai/openAiRuntime.ts` | OpenAI Agents SDK orchestrator |
+| `backend/src/agentRuntime/engines/openai/openAiToolAdapter.ts` | Shared MCP descriptors adapted to OpenAI function tools |
+| `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
+| `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode server/runtime adapter and request-scoped MCP bridge |
+| `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder SDK adapter, stream projection, and session isolation |
+| `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto tool implementation and composition |
+| `backend/src/agentv3/mcpToolRegistry.ts` | Tool descriptors, exposure levels, and allowlists |
+| `backend/src/services/agentResultNormalizer.ts` | Shared final result, client projection, and report-data boundary |
+| `backend/src/services/finalReportContractGate.ts` | Strategy-owned `final_report_contract` validation |
+| `backend/src/services/providerManager/` | Provider configuration and runtime/protocol/env mapping |
+| `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot for SDK and Pi/OpenCode/Qoder runtime state |
+
+`backend/src/agentOpenAI/` and individual files such as
+`agentv3/claudeRuntime.ts` retain compatibility re-exports for old import paths.
+The MCP, strategy, planning, and verifier code under `agentv3/` remains the
+canonical shared layer.
+
 ## Tool Layer
 
 SmartPerfetto analysis capability is registered through
@@ -118,6 +145,37 @@ env selection. The SDK is not installed by default; users must review its terms
 and opt in. Public sessions may resume by Qoder SDK session id. A run authorized
 for private codebase or external knowledge never resumes or stores that opaque
 provider session, and its intermediate state is excluded from durable snapshots.
+
+## Analysis Modes
+
+| Mode | Behavior |
+|---|---|
+| `fast` | Lightweight system prompt, core evidence tools, and a runtime-specific quick budget |
+| `full` | Full tools, plan gate, notes, artifacts, and quality gates |
+| `auto` | Non-negotiable context rules followed by the lightweight classifier; ambiguous requests use full analysis |
+
+Reference traces, codebases, and private knowledge sources may require full
+context. An explicit quick request must not silently discard those required
+capabilities.
+
+## SSE Events
+
+All runtimes emit the same SmartPerfetto streaming update categories to the
+route layer:
+
+| Event | Meaning |
+|---|---|
+| `progress` | Phase change |
+| `thought` | Intermediate reasoning or phase guidance |
+| `agent_task_dispatched` | Tool invocation started |
+| `agent_response` | Tool result |
+| `answer_token` | Final-answer token |
+| `conclusion` | SDK conclusion arrived |
+| `analysis_completed` | HTML report generated; terminal event |
+| `error` | Failure |
+
+The route layer emits `analysis_completed` only after report generation, so the
+report path does not depend on a specific SDK.
 
 ## Final Result And Quality Artifacts
 

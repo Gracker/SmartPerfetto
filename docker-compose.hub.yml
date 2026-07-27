@@ -2,14 +2,16 @@ services:
   smartperfetto:
     image: w553000664/smartperfetto:${SMARTPERFETTO_DOCKER_TAG:-latest}
     ports:
-      - "${SMARTPERFETTO_BACKEND_PORT:-3000}:${SMARTPERFETTO_BACKEND_PORT:-3000}"      # Backend API
-      - "${SMARTPERFETTO_FRONTEND_PORT:-10000}:${SMARTPERFETTO_FRONTEND_PORT:-10000}"  # Perfetto UI
+      - "${SMARTPERFETTO_PUBLISH_HOST:-127.0.0.1}:${SMARTPERFETTO_BACKEND_PORT:-3000}:${SMARTPERFETTO_BACKEND_PORT:-3000}"      # Backend API
+      - "${SMARTPERFETTO_PUBLISH_HOST:-127.0.0.1}:${SMARTPERFETTO_FRONTEND_PORT:-10000}:${SMARTPERFETTO_FRONTEND_PORT:-10000}"  # Perfetto UI
     environment:
       - PORT=${SMARTPERFETTO_BACKEND_PORT:-3000}
       - SMARTPERFETTO_BACKEND_PORT=${SMARTPERFETTO_BACKEND_PORT:-3000}
       - SMARTPERFETTO_BACKEND_PUBLIC_PORT=${SMARTPERFETTO_BACKEND_PUBLIC_PORT:-${SMARTPERFETTO_BACKEND_PORT:-3000}}
       - SMARTPERFETTO_BACKEND_PUBLIC_URL=${SMARTPERFETTO_BACKEND_PUBLIC_URL:-}
       - SMARTPERFETTO_FRONTEND_PORT=${SMARTPERFETTO_FRONTEND_PORT:-10000}
+      - SMARTPERFETTO_BIND_HOST=0.0.0.0
+      - SMARTPERFETTO_FRONTEND_BIND_HOST=0.0.0.0
       - NODE_ENV=production
       - FRONTEND_URL=http://localhost:${SMARTPERFETTO_FRONTEND_PORT:-10000}
       - PROVIDER_DATA_DIR_OVERRIDE=/app/backend/provider-data
@@ -23,7 +25,7 @@ services:
       - runtime-data:/app/backend/runtime-data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS \"http://localhost:$${SMARTPERFETTO_BACKEND_PORT:-$${PORT:-3000}}/health\" >/dev/null && curl -fsS \"http://localhost:$${SMARTPERFETTO_FRONTEND_PORT:-10000}/health\" >/dev/null"]
+      test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:$${SMARTPERFETTO_BACKEND_PORT:-$${PORT:-3000}}/health\" >/dev/null && curl -fsS \"http://127.0.0.1:$${SMARTPERFETTO_FRONTEND_PORT:-10000}/health\" >/dev/null"]
       interval: 30s
       timeout: 5s
       start_period: 15s

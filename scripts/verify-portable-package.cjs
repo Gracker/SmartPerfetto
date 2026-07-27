@@ -12,12 +12,33 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const { findMachOFiles } = require('./find-macho-files.cjs');
+const {
+  compareVersions,
+  verifyNativeRuntimeCompatibility,
+} = require('./native-runtime-compat.cjs');
+
+const GIB = 1024 * 1024 * 1024;
+const ARCHIVE_LIMITS = Object.freeze({
+  maxArchiveBytes: 2 * GIB,
+  maxCentralDirectoryBytes: 64 * 1024 * 1024,
+  maxEntries: 60_000,
+  maxExpandedBytes: 4 * GIB,
+  maxSingleEntryBytes: GIB,
+  maxExpansionRatio: 100,
+  listingTimeoutMs: 180_000,
+  extractionTimeoutMs: 300_000,
+});
 
 const TARGETS = {
   'windows-x64': {
     os: 'windows',
     arch: 'x64',
     ext: 'zip',
+    nodeRuntimeFileSuffix: 'win-x64.zip',
+    nodeRuntimeShaKey: 'NODE_RUNTIME_SHA256_WINDOWS_X64',
+    nodeRuntimeExecutable: 'runtime/node/node.exe',
+    nodeRuntimeExecutableShaKey: 'NODE_RUNTIME_EXECUTABLE_SHA256_WINDOWS_X64',
+    traceProcessorShaKey: 'PERFETTO_SHELL_SHA256_WINDOWS_AMD64',
     readme: 'README-WINDOWS.txt',
     binaryKind: 'pe',
     required: [
@@ -53,6 +74,11 @@ const TARGETS = {
     os: 'macos',
     arch: 'arm64',
     ext: 'zip',
+    nodeRuntimeFileSuffix: 'darwin-arm64.tar.gz',
+    nodeRuntimeShaKey: 'NODE_RUNTIME_SHA256_MACOS_ARM64',
+    nodeRuntimeExecutable: 'SmartPerfetto.app/Contents/Resources/runtime/node/bin/node',
+    nodeRuntimeExecutableShaKey: 'NODE_RUNTIME_EXECUTABLE_SHA256_MACOS_ARM64',
+    traceProcessorShaKey: 'PERFETTO_SHELL_SHA256_MAC_ARM64',
     readme: 'README-MACOS.txt',
     binaryKind: 'macho',
     required: [
@@ -90,6 +116,11 @@ const TARGETS = {
     os: 'linux',
     arch: 'x64',
     ext: 'tar.gz',
+    nodeRuntimeFileSuffix: 'linux-x64.tar.xz',
+    nodeRuntimeShaKey: 'NODE_RUNTIME_SHA256_LINUX_X64',
+    nodeRuntimeExecutable: 'runtime/node/bin/node',
+    nodeRuntimeExecutableShaKey: 'NODE_RUNTIME_EXECUTABLE_SHA256_LINUX_X64',
+    traceProcessorShaKey: 'PERFETTO_SHELL_SHA256_LINUX_AMD64',
     readme: 'README-LINUX.txt',
     binaryKind: 'elf',
     required: [
@@ -152,6 +183,7 @@ function usage() {
     'Options:',
     '  --commit <sha>       Require PACKAGE-MANIFEST.json gitCommit to match.',
     '  --require-clean      Require PACKAGE-MANIFEST.json gitDirty to be false.',
+    '  --public-release     Enforce public-release signing and provenance rules.',
     '  --package-name NAME  Override expected top-level package directory.',
   ].join('\n'));
 }
@@ -167,6 +199,8 @@ function parseArgs(argv) {
       opts[arg.slice(2)] = argv[++i];
     } else if (arg === '--require-clean') {
       opts.requireClean = true;
+    } else if (arg === '--public-release') {
+      opts.publicRelease = true;
     } else {
       throw new Error(`Unknown option: ${arg}`);
     }
@@ -181,14 +215,233 @@ function normalizeVersion(raw) {
   return value;
 }
 
-function listEntries(assetPath, ext) {
+function readKeyValueFile(filePath) {
+  const values = new Map();
+  for (const [index, rawLine] of fs.readFileSync(filePath, 'utf8').split(/\r?\n/).entries()) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const match = /^([A-Z0-9_]+)=([^\s#]+)$/.exec(line);
+    assert(match, `Invalid pin entry at ${filePath}:${index + 1}`);
+    assert(!values.has(match[1]), `Duplicate pin entry ${match[1]} in ${filePath}`);
+    values.set(match[1], match[2]);
+  }
+  return values;
+}
+
+function readNodeRuntimePin(
+  targetId,
+  pinFile = path.join(__dirname, 'node-runtime-pin.env'),
+) {
+  const target = TARGETS[targetId];
+  assert(target, `Unsupported target for Node runtime pin verification: ${targetId}`);
+  const pins = readKeyValueFile(pinFile);
+  const version = pins.get('NODE_RUNTIME_VERSION');
+  const archiveSha256 = pins.get(target.nodeRuntimeShaKey);
+  const executableSha256 = pins.get(target.nodeRuntimeExecutableShaKey);
+  assert(
+    version && /^24\.\d+\.\d+$/.test(version),
+    `Missing or invalid NODE_RUNTIME_VERSION in ${pinFile}`,
+  );
+  assert(
+    /^[0-9a-f]{64}$/i.test(archiveSha256 || ''),
+    `Missing or invalid ${target.nodeRuntimeShaKey} in ${pinFile}`,
+  );
+  assert(
+    /^[0-9a-f]{64}$/i.test(executableSha256 || ''),
+    `Missing or invalid ${target.nodeRuntimeExecutableShaKey} in ${pinFile}`,
+  );
+  return {
+    version,
+    archiveSha256: archiveSha256.toLowerCase(),
+    executableSha256: executableSha256.toLowerCase(),
+  };
+}
+
+function canonicalMacosExecutableDigest(buffer) {
+  assert(Buffer.isBuffer(buffer), 'macOS Node runtime must be a Buffer');
+  assert(
+    buffer.length >= 32 && buffer.readUInt32LE(0) === 0xfeedfacf,
+    'macOS Node runtime must be a thin 64-bit little-endian Mach-O',
+  );
+  const commandCount = buffer.readUInt32LE(16);
+  const commandsSize = buffer.readUInt32LE(20);
+  assert(
+    commandCount > 0 && commandCount <= 4096 && 32 + commandsSize <= buffer.length,
+    'macOS Node runtime has an invalid Mach-O load-command table',
+  );
+
+  const normalized = Buffer.from(buffer);
+  let cursor = 32;
+  let codeSignatureOffset;
+  let linkedit;
+  for (let index = 0; index < commandCount; index++) {
+    assert(cursor + 8 <= 32 + commandsSize, 'Mach-O load command exceeds its table');
+    const command = buffer.readUInt32LE(cursor);
+    const commandSize = buffer.readUInt32LE(cursor + 4);
+    assert(
+      commandSize >= 8 && cursor + commandSize <= 32 + commandsSize,
+      'Mach-O load command has an invalid size',
+    );
+    if (command === 0x19 && commandSize >= 72) {
+      const segmentName = buffer.toString('ascii', cursor + 8, cursor + 24)
+        .replace(/\0.*$/, '');
+      if (segmentName === '__LINKEDIT') {
+        linkedit = {
+          commandOffset: cursor,
+          fileOffset: Number(buffer.readBigUInt64LE(cursor + 40)),
+          fileSize: Number(buffer.readBigUInt64LE(cursor + 48)),
+          virtualSize: Number(buffer.readBigUInt64LE(cursor + 32)),
+        };
+      }
+    }
+    if (command === 0x1d && commandSize === 16) {
+      assert(codeSignatureOffset === undefined, 'Mach-O has duplicate code signatures');
+      codeSignatureOffset = buffer.readUInt32LE(cursor + 8);
+      const codeSignatureSize = buffer.readUInt32LE(cursor + 12);
+      assert(
+        codeSignatureOffset > 0 &&
+          codeSignatureSize > 0 &&
+          codeSignatureOffset + codeSignatureSize === buffer.length,
+        'Mach-O code signature does not cover the final file region',
+      );
+      normalized.fill(0, cursor + 8, cursor + 16);
+    }
+    cursor += commandSize;
+  }
+  assert(cursor === 32 + commandsSize, 'Mach-O load-command size does not match its table');
+  assert(codeSignatureOffset !== undefined, 'macOS Node runtime lacks LC_CODE_SIGNATURE');
+  assert(linkedit, 'macOS Node runtime lacks __LINKEDIT');
+  assert(
+    linkedit.fileOffset + linkedit.fileSize === buffer.length &&
+      linkedit.fileOffset < codeSignatureOffset &&
+      linkedit.virtualSize >= linkedit.fileSize,
+    'Mach-O __LINKEDIT does not match the signed file layout',
+  );
+  normalized.fill(0, linkedit.commandOffset + 32, linkedit.commandOffset + 40);
+  normalized.fill(0, linkedit.commandOffset + 48, linkedit.commandOffset + 56);
+  return sha256Hex(normalized.subarray(0, codeSignatureOffset));
+}
+
+function nodeRuntimeExecutableDigest(buffer, targetId) {
+  return targetId === 'macos-arm64'
+    ? canonicalMacosExecutableDigest(buffer)
+    : sha256Hex(buffer);
+}
+
+function assertNodeRuntimeExecutablePin(
+  buffer,
+  targetId,
+  pinFile = path.join(__dirname, 'node-runtime-pin.env'),
+) {
+  const pin = readNodeRuntimePin(targetId, pinFile);
+  const actual = nodeRuntimeExecutableDigest(buffer, targetId);
+  assert(
+    actual === pin.executableSha256,
+    `Packaged Node runtime executable does not match ${TARGETS[targetId].nodeRuntimeExecutableShaKey}`,
+  );
+  return actual;
+}
+
+function assertTraceProcessorManifestPin(
+  manifest,
+  targetId,
+  pinFile = path.join(__dirname, 'trace-processor-pin.env'),
+) {
+  const target = TARGETS[targetId];
+  assert(target, `Unsupported target for trace processor pin verification: ${targetId}`);
+  const pins = readKeyValueFile(pinFile);
+  const expectedVersion = pins.get('PERFETTO_VERSION');
+  const expectedSourceSha = pins.get(target.traceProcessorShaKey);
+  assert(expectedVersion, `Missing PERFETTO_VERSION in ${pinFile}`);
+  assert(expectedSourceSha, `Missing ${target.traceProcessorShaKey} in ${pinFile}`);
+  assert(
+    manifest.traceProcessor?.version === expectedVersion,
+    `Manifest trace processor version does not match ${path.basename(pinFile)}: expected ${expectedVersion}, got ${manifest.traceProcessor?.version}`,
+  );
+  assert(
+    manifest.traceProcessor?.sourceSha256?.toLowerCase() === expectedSourceSha.toLowerCase(),
+    `Manifest trace processor source SHA256 does not match ${target.traceProcessorShaKey}`,
+  );
+}
+
+function assertNodeRuntimeManifestPin(
+  manifest,
+  targetId,
+  pinFile = path.join(__dirname, 'node-runtime-pin.env'),
+) {
+  const target = TARGETS[targetId];
+  assert(target, `Unsupported target for Node runtime pin verification: ${targetId}`);
+  const pin = readNodeRuntimePin(targetId, pinFile);
+  assert(
+    manifest.nodeRuntime?.version === pin.version,
+    `Manifest Node runtime version does not match ${path.basename(pinFile)}: expected ${pin.version}, got ${manifest.nodeRuntime?.version}`,
+  );
+  assert(
+    manifest.nodeRuntime?.file === `node-v${pin.version}-${target.nodeRuntimeFileSuffix}`,
+    `Manifest Node runtime file does not match the repository pin: ${manifest.nodeRuntime?.file}`,
+  );
+  assert(
+    manifest.nodeRuntime?.sha256?.toLowerCase() === pin.archiveSha256,
+    `Manifest Node runtime SHA256 does not match ${target.nodeRuntimeShaKey}`,
+  );
+}
+
+function listEntries(assetPath, ext, commandEnv = process.env) {
   if (ext === 'zip') {
-    return execFileSync('unzip', ['-Z1', assetPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    const listing = commandExists('unzip')
+      ? execFileSync('unzip', ['-Z1', assetPath], {
+          encoding: 'utf8',
+          env: commandEnv,
+          maxBuffer: 64 * 1024 * 1024,
+          timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+        })
+      : execFileSync('tar', ['-tf', assetPath], {
+          encoding: 'utf8',
+          env: commandEnv,
+          maxBuffer: 64 * 1024 * 1024,
+          timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+        });
+    return listing
       .split(/\r?\n/)
       .filter(Boolean);
   }
   if (ext === 'tar.gz') {
-    return execFileSync('tar', ['-tzf', assetPath], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+    const listingEnv = {...commandEnv};
+    try {
+      const localeCommand = fs.existsSync('/usr/bin/locale') ? '/usr/bin/locale' : 'locale';
+      const locales = execFileSync(localeCommand, ['-a'], {
+        encoding: 'utf8',
+        env: commandEnv,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).split(/\r?\n/);
+      const preferred = ['C.UTF-8', 'C.utf8', 'en_US.UTF-8', 'en_US.utf8']
+        .find(candidate => locales.includes(candidate));
+      if (preferred) {
+        listingEnv.LANG = preferred;
+        listingEnv.LC_ALL = preferred;
+      }
+    } catch {
+      // GNU tar's literal quoting mode below remains locale independent.
+    }
+    let tarArgs = ['-tzf', assetPath];
+    try {
+      const versionOutput = execFileSync('tar', ['--version'], {
+        encoding: 'utf8',
+        env: listingEnv,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (/\bGNU tar\b/.test(versionOutput)) {
+        tarArgs = ['--quoting-style=literal', '-tzf', assetPath];
+      }
+    } catch {
+      // The listing command below remains the authoritative capability check.
+    }
+    return execFileSync('tar', tarArgs, {
+      encoding: 'utf8',
+      env: listingEnv,
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+    })
       .split(/\r?\n/)
       .filter(Boolean)
       .map(entry => entry.replace(/^\.\//, ''));
@@ -196,9 +449,273 @@ function listEntries(assetPath, ext) {
   throw new Error(`Unsupported archive extension: ${ext}`);
 }
 
+function assertArchiveBudget(metrics, limits = ARCHIVE_LIMITS) {
+  for (const [name, value] of Object.entries(metrics)) {
+    assert(
+      Number.isSafeInteger(value) && value >= 0,
+      `Archive ${name} is not a safe non-negative integer: ${value}`,
+    );
+  }
+  assert(metrics.assetBytes > 0, 'Archive asset is empty');
+  assert(
+    metrics.assetBytes <= limits.maxArchiveBytes,
+    `Archive asset exceeds ${limits.maxArchiveBytes} bytes: ${metrics.assetBytes}`,
+  );
+  assert(metrics.entryCount > 0, 'Archive contains no entries');
+  assert(
+    metrics.entryCount <= limits.maxEntries,
+    `Archive entry count exceeds ${limits.maxEntries}: ${metrics.entryCount}`,
+  );
+  assert(
+    metrics.expandedBytes <= limits.maxExpandedBytes,
+    `Archive expanded size exceeds ${limits.maxExpandedBytes} bytes: ${metrics.expandedBytes}`,
+  );
+  assert(
+    metrics.largestEntryBytes <= limits.maxSingleEntryBytes,
+    `Archive entry exceeds ${limits.maxSingleEntryBytes} bytes: ${metrics.largestEntryBytes}`,
+  );
+  const expansionRatio = metrics.expandedBytes / metrics.assetBytes;
+  assert(
+    expansionRatio <= limits.maxExpansionRatio,
+    `Archive expansion ratio exceeds ${limits.maxExpansionRatio}: ${expansionRatio.toFixed(2)}`,
+  );
+  return {...metrics, expansionRatio};
+}
+
+function inspectZipBudget(assetPath, assetBytes) {
+  const file = fs.openSync(assetPath, 'r');
+  try {
+    const tailLength = Math.min(assetBytes, 65_557);
+    const tail = Buffer.allocUnsafe(tailLength);
+    fs.readSync(file, tail, 0, tailLength, assetBytes - tailLength);
+    let eocdOffset = -1;
+    for (let offset = tail.length - 22; offset >= 0; offset--) {
+      if (
+        tail.readUInt32LE(offset) === 0x06054b50 &&
+        offset + 22 + tail.readUInt16LE(offset + 20) === tail.length
+      ) {
+        eocdOffset = offset;
+        break;
+      }
+    }
+    assert(eocdOffset >= 0, 'ZIP end-of-central-directory record is missing');
+    const diskNumber = tail.readUInt16LE(eocdOffset + 4);
+    const centralDirectoryDisk = tail.readUInt16LE(eocdOffset + 6);
+    const diskEntries = tail.readUInt16LE(eocdOffset + 8);
+    const entryCount = tail.readUInt16LE(eocdOffset + 10);
+    const centralDirectoryBytes = tail.readUInt32LE(eocdOffset + 12);
+    const centralDirectoryOffset = tail.readUInt32LE(eocdOffset + 16);
+    assert(
+      diskNumber === 0 &&
+        centralDirectoryDisk === 0 &&
+        diskEntries === entryCount,
+      'Multi-disk ZIP archives are unsupported',
+    );
+    assert(
+      entryCount !== 0xffff &&
+        centralDirectoryBytes !== 0xffffffff &&
+        centralDirectoryOffset !== 0xffffffff,
+      'ZIP64 archives are unsupported by the portable package budget',
+    );
+    assert(
+      centralDirectoryBytes <= ARCHIVE_LIMITS.maxCentralDirectoryBytes,
+      `ZIP central directory exceeds ${ARCHIVE_LIMITS.maxCentralDirectoryBytes} bytes`,
+    );
+    assert(
+      centralDirectoryOffset + centralDirectoryBytes <= assetBytes,
+      'ZIP central directory lies outside the asset',
+    );
+    const centralDirectory = Buffer.allocUnsafe(centralDirectoryBytes);
+    fs.readSync(
+      file,
+      centralDirectory,
+      0,
+      centralDirectoryBytes,
+      centralDirectoryOffset,
+    );
+    let cursor = 0;
+    let expandedBytes = 0;
+    let largestEntryBytes = 0;
+    for (let index = 0; index < entryCount; index++) {
+      assert(
+        cursor + 46 <= centralDirectory.length &&
+          centralDirectory.readUInt32LE(cursor) === 0x02014b50,
+        `ZIP central directory entry ${index + 1} is malformed`,
+      );
+      const compressedBytes = centralDirectory.readUInt32LE(cursor + 20);
+      const expandedEntryBytes = centralDirectory.readUInt32LE(cursor + 24);
+      const fileNameLength = centralDirectory.readUInt16LE(cursor + 28);
+      const extraLength = centralDirectory.readUInt16LE(cursor + 30);
+      const commentLength = centralDirectory.readUInt16LE(cursor + 32);
+      assert(
+        compressedBytes !== 0xffffffff && expandedEntryBytes !== 0xffffffff,
+        'ZIP64 entries are unsupported by the portable package budget',
+      );
+      expandedBytes += expandedEntryBytes;
+      largestEntryBytes = Math.max(largestEntryBytes, expandedEntryBytes);
+      cursor += 46 + fileNameLength + extraLength + commentLength;
+      assert(
+        cursor <= centralDirectory.length,
+        `ZIP central directory entry ${index + 1} exceeds its declared size`,
+      );
+    }
+    assert(
+      cursor === centralDirectory.length,
+      'ZIP central directory contains unparsed trailing records',
+    );
+    return assertArchiveBudget({
+      assetBytes,
+      entryCount,
+      expandedBytes,
+      largestEntryBytes,
+    });
+  } finally {
+    fs.closeSync(file);
+  }
+}
+
+function inspectTarGzipBudget(assetPath, assetBytes) {
+  const version = execFileSync('tar', ['--version'], {
+    encoding: 'utf8',
+    maxBuffer: 1024 * 1024,
+    timeout: 10_000,
+  });
+  const bsdTar = /\bbsdtar\b/i.test(version);
+  const listing = execFileSync('tar', ['-tvzf', assetPath], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+  });
+  const lines = listing.split(/\r?\n/).filter(Boolean);
+  let expandedBytes = 0;
+  let largestEntryBytes = 0;
+  for (const [index, line] of lines.entries()) {
+    const match = bsdTar
+      ? /^[^\s]+\s+\d+\s+\S+\s+\S+\s+(\d+)\s/.exec(line)
+      : /^[^\s]+\s+\S+\/\S+\s+(\d+)\s/.exec(line);
+    assert(match, `Could not parse TAR size at listing line ${index + 1}`);
+    const entryBytes = Number(match[1]);
+    assert(Number.isSafeInteger(entryBytes), `Invalid TAR entry size at line ${index + 1}`);
+    expandedBytes += entryBytes;
+    largestEntryBytes = Math.max(largestEntryBytes, entryBytes);
+  }
+  return assertArchiveBudget({
+    assetBytes,
+    entryCount: lines.length,
+    expandedBytes,
+    largestEntryBytes,
+  });
+}
+
+function inspectArchiveBudget(assetPath, ext) {
+  const stat = fs.statSync(assetPath);
+  assert(stat.isFile(), `Archive asset is not a regular file: ${assetPath}`);
+  assert(
+    stat.size <= ARCHIVE_LIMITS.maxArchiveBytes,
+    `Archive asset exceeds ${ARCHIVE_LIMITS.maxArchiveBytes} bytes: ${stat.size}`,
+  );
+  if (ext === 'zip') return inspectZipBudget(assetPath, stat.size);
+  if (ext === 'tar.gz') return inspectTarGzipBudget(assetPath, stat.size);
+  throw new Error(`Unsupported archive extension: ${ext}`);
+}
+
+function normalizeArchiveEntry(entry) {
+  assert(typeof entry === 'string' && entry.length > 0, 'Archive contains an empty entry name');
+  assert(!entry.includes('\0'), `Archive entry contains a NUL byte: ${entry}`);
+  assert(!entry.includes('\\'), `Archive entry uses an unsafe backslash path: ${entry}`);
+  assert(!entry.startsWith('/'), `Archive entry is absolute: ${entry}`);
+  assert(!/^[A-Za-z]:/.test(entry), `Archive entry uses an absolute drive path: ${entry}`);
+
+  const withoutPrefix = entry.replace(/^\.\//, '');
+  const directory = withoutPrefix.endsWith('/');
+  const comparable = directory ? withoutPrefix.slice(0, -1) : withoutPrefix;
+  const segments = comparable.split('/');
+  assert(
+    comparable.length > 0 &&
+      segments.every(segment => segment !== '' && segment !== '.' && segment !== '..'),
+    `Archive entry contains an unsafe path segment: ${entry}`,
+  );
+  for (const segment of segments) {
+    assert(
+      !/[<>:"|?*\x00-\x1F]/u.test(segment),
+      `Archive entry contains a Windows-unsafe path segment: ${entry}`,
+    );
+    assert(
+      !/[. ]$/u.test(segment),
+      `Archive entry contains a Windows-ambiguous trailing character: ${entry}`,
+    );
+    assert(
+      !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\..*)?$/iu.test(segment),
+      `Archive entry contains a reserved Windows device name: ${entry}`,
+    );
+  }
+  const normalized = path.posix.normalize(comparable);
+  assert(normalized === comparable, `Archive entry is not normalized: ${entry}`);
+  return directory ? `${normalized}/` : normalized;
+}
+
+function validateArchiveEntries(entries) {
+  const exact = new Set();
+  const portable = new Set();
+  for (const entry of entries) {
+    const normalized = normalizeArchiveEntry(entry);
+    assert(!exact.has(normalized), `Archive contains a duplicate entry: ${normalized}`);
+    exact.add(normalized);
+
+    const collisionKey = normalized
+      .replace(/\/$/, '')
+      .split('/')
+      .map(segment => segment.replace(/[. ]+$/u, ''))
+      .join('/')
+      .normalize('NFC')
+      .toLowerCase();
+    assert(
+      !portable.has(collisionKey),
+      `Archive contains a cross-platform path collision: ${normalized}`,
+    );
+    portable.add(collisionKey);
+  }
+}
+
+function assertArchiveHasNoLinks(assetPath, ext) {
+  let listing;
+  if (ext === 'zip') {
+    listing = commandExists('unzip')
+      ? execFileSync('unzip', ['-Z', '-l', assetPath], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+      })
+      : execFileSync('tar', ['-tvf', assetPath], {
+        encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+      });
+  } else if (ext === 'tar.gz') {
+    listing = execFileSync('tar', ['-tvzf', assetPath], {
+      encoding: 'utf8',
+      maxBuffer: 64 * 1024 * 1024,
+      timeout: ARCHIVE_LIMITS.listingTimeoutMs,
+    });
+  } else {
+    throw new Error(`Unsupported archive extension: ${ext}`);
+  }
+  const linkLine = listing.split(/\r?\n/).find(line => /^[lh]/.test(line));
+  assert(!linkLine, `Archive contains a symbolic or hard link: ${linkLine || ''}`);
+  const specialLine = listing
+    .split(/\r?\n/)
+    .find(line => /^[bcpSs?]/.test(line));
+  assert(
+    !specialLine,
+    `Archive contains a non-regular special entry: ${specialLine || ''}`,
+  );
+}
+
 function readEntry(assetPath, ext, entry) {
   if (ext === 'zip') {
-    return execFileSync('unzip', ['-p', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
+    return commandExists('unzip')
+      ? execFileSync('unzip', ['-p', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 })
+      : execFileSync('tar', ['-xOf', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
   }
   if (ext === 'tar.gz') {
     return execFileSync('tar', ['-xOzf', assetPath, entry], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
@@ -209,7 +726,9 @@ function readEntry(assetPath, ext, entry) {
 function readEntryBuffer(assetPath, ext, entry) {
   const maxBuffer = 256 * 1024 * 1024;
   if (ext === 'zip') {
-    return execFileSync('unzip', ['-p', assetPath, entry], { maxBuffer });
+    return commandExists('unzip')
+      ? execFileSync('unzip', ['-p', assetPath, entry], { maxBuffer })
+      : execFileSync('tar', ['-xOf', assetPath, entry], { maxBuffer });
   }
   if (ext === 'tar.gz') {
     return execFileSync('tar', ['-xOzf', assetPath, entry], { maxBuffer });
@@ -217,16 +736,60 @@ function readEntryBuffer(assetPath, ext, entry) {
   throw new Error(`Unsupported archive extension: ${ext}`);
 }
 
-function extractArchiveToTemp(assetPath, ext) {
+function assertExtractedTreeSafe(tmpRoot) {
+  const root = fs.realpathSync(tmpRoot);
+  const pending = [root];
+  const extractedEntries = [];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const candidate = path.join(current, entry.name);
+      const stat = fs.lstatSync(candidate);
+      assert(!stat.isSymbolicLink(), `Extracted archive contains a symbolic link: ${candidate}`);
+      assert(
+        stat.isDirectory() || stat.isFile(),
+        `Extracted archive contains a non-regular entry: ${candidate}`,
+      );
+      const resolved = path.resolve(candidate);
+      assert(
+        resolved.startsWith(`${root}${path.sep}`),
+        `Extracted archive path escapes verification root: ${candidate}`,
+      );
+      const relative = path.relative(root, candidate).split(path.sep).join('/');
+      extractedEntries.push(stat.isDirectory() ? `${relative}/` : relative);
+      if (stat.isDirectory()) pending.push(candidate);
+    }
+  }
+  validateArchiveEntries(extractedEntries);
+}
+
+function extractArchiveToTemp(assetPath, ext, entries) {
+  inspectArchiveBudget(assetPath, ext);
+  validateArchiveEntries(entries);
+  assertArchiveHasNoLinks(assetPath, ext);
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-package-verify-'));
   try {
     if (ext === 'zip') {
-      execFileSync('unzip', ['-q', assetPath, '-d', tmpRoot], { stdio: 'pipe' });
+      if (commandExists('unzip')) {
+        execFileSync('unzip', ['-q', assetPath, '-d', tmpRoot], {
+          stdio: 'pipe',
+          timeout: ARCHIVE_LIMITS.extractionTimeoutMs,
+        });
+      } else {
+        execFileSync('tar', ['-xf', assetPath, '-C', tmpRoot], {
+          stdio: 'pipe',
+          timeout: ARCHIVE_LIMITS.extractionTimeoutMs,
+        });
+      }
     } else if (ext === 'tar.gz') {
-      execFileSync('tar', ['-xzf', assetPath, '-C', tmpRoot], { stdio: 'pipe' });
+      execFileSync('tar', ['-xzf', assetPath, '-C', tmpRoot], {
+        stdio: 'pipe',
+        timeout: ARCHIVE_LIMITS.extractionTimeoutMs,
+      });
     } else {
       throw new Error(`Unsupported archive extension: ${ext}`);
     }
+    assertExtractedTreeSafe(tmpRoot);
   } catch (error) {
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     throw error;
@@ -306,6 +869,47 @@ function backendRootForTarget(target) {
     : 'backend';
 }
 
+function readPackageManifest(extractedRoot, packageName, target) {
+  const outerManifestEntry = `${packageName}/PACKAGE-MANIFEST.json`;
+  const outerManifestBytes = readExtractedBuffer(extractedRoot, outerManifestEntry);
+  let manifestBytes = outerManifestBytes;
+  if (target.os === 'macos') {
+    const innerManifestEntry =
+      `${packageName}/SmartPerfetto.app/Contents/Resources/PACKAGE-MANIFEST.json`;
+    const innerManifestBytes = readExtractedBuffer(extractedRoot, innerManifestEntry);
+    assert(
+      outerManifestBytes.equals(innerManifestBytes),
+      'macOS outer manifest does not exactly match the signed app manifest',
+    );
+    manifestBytes = innerManifestBytes;
+  }
+  try {
+    return JSON.parse(manifestBytes.toString('utf8'));
+  } catch (error) {
+    throw new Error(`Invalid JSON in signed package manifest: ${error.message || error}`);
+  }
+}
+
+function assertPublicReleaseManifest(manifest, target) {
+  if (target.os !== 'macos') return;
+  assert(
+    manifest.macos?.signed === true &&
+      manifest.macos?.notarized === true &&
+      manifest.signingMode === 'macos-developer-id-notarized',
+    'Public macOS release requires Developer ID signing and notarization',
+  );
+}
+
+function assertNotarizationReceipt(receipt) {
+  assert(
+    receipt?.schemaVersion === 1 &&
+      receipt.status === 'Accepted' &&
+      typeof receipt.submissionId === 'string' &&
+      /^[0-9a-f-]{36}$/i.test(receipt.submissionId),
+    'Public macOS release requires an Accepted notarytool info receipt',
+  );
+}
+
 function assertEntryExists(entries, packageName, rel) {
   const entry = `${packageName}/${rel}`;
   assert(entries.includes(entry), `Missing package entry: ${entry}`);
@@ -327,20 +931,25 @@ function readJsonEntry(assetPath, ext, entry) {
 
 function commandExists(command) {
   try {
-    execFileSync('sh', ['-c', 'command -v "$1"', 'sh', command], { stdio: 'ignore' });
+    if (process.platform === 'win32') {
+      execFileSync('where.exe', [command], { stdio: 'ignore' });
+    } else {
+      execFileSync('sh', ['-c', 'command -v "$1"', 'sh', command], { stdio: 'ignore' });
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-function verifyMacosCodeSignature(assetPath, packageName) {
+function verifyMacosCodeSignature(extractedRoot, packageName) {
   if (!commandExists('codesign')) return;
 
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-macos-verify-'));
   try {
-    execFileSync('unzip', ['-q', assetPath, '-d', tmpRoot], { stdio: 'pipe' });
-    const appPath = path.join(tmpRoot, packageName, 'SmartPerfetto.app');
+    const appPath = extractedEntryPath(
+      extractedRoot,
+      `${packageName}/SmartPerfetto.app`,
+    );
     for (const binaryPath of findMachOFiles(path.join(appPath, 'Contents'))) {
       execFileSync('codesign', ['--verify', '--strict', '--verbose=2', binaryPath], {
         stdio: 'pipe',
@@ -390,8 +999,6 @@ function verifyMacosCodeSignature(assetPath, packageName) {
       .join('\n')
       .trim();
     throw new Error(`macOS app code signature verification failed${output ? `:\n${output}` : ''}`);
-  } finally {
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 }
 
@@ -418,12 +1025,13 @@ function main() {
 
   const entries = listEntries(assetPath, target.ext);
   assert(entries.length > 0, 'Archive is empty');
+  validateArchiveEntries(entries);
   assert(
     entries.every(entry => entry === `${packageName}/` || entry.startsWith(`${packageName}/`)),
     `Archive must contain exactly one top-level directory: ${packageName}/`,
   );
 
-  const extractedRoot = extractArchiveToTemp(assetPath, target.ext);
+  const extractedRoot = extractArchiveToTemp(assetPath, target.ext, entries);
   process.on('exit', () => {
     fs.rmSync(extractedRoot, { recursive: true, force: true });
   });
@@ -592,16 +1200,80 @@ function main() {
     assertBinaryKind(readExtractedBuffer(extractedRoot, entry), entry, target.binaryKind);
   }
 
-  const manifest = readExtractedJson(extractedRoot, `${packageName}/PACKAGE-MANIFEST.json`);
-  assert(manifest.schemaVersion === 2, `Manifest schemaVersion mismatch: ${manifest.schemaVersion}`);
+  const manifest = readPackageManifest(extractedRoot, packageName, target);
+  assert(manifest.schemaVersion === 3, `Manifest schemaVersion mismatch: ${manifest.schemaVersion}`);
   assert(manifest.name === 'smartperfetto', `Manifest name mismatch: ${manifest.name}`);
   assert(manifest.version === version, `Manifest version mismatch: expected ${version}, got ${manifest.version}`);
   assert(manifest.packageName === packageName, `Manifest packageName mismatch: expected ${packageName}, got ${manifest.packageName}`);
   assert(manifest.target?.os === target.os, `Manifest target.os mismatch: ${manifest.target?.os}`);
   assert(manifest.target?.arch === target.arch, `Manifest target.arch mismatch: ${manifest.target?.arch}`);
   assert(manifest.target?.id === opts.target, `Manifest target.id mismatch: ${manifest.target?.id}`);
+  if (opts.target === 'windows-x64') {
+    assert(
+      manifest.target?.minimumSystemVersion === '10.0',
+      'Windows portable manifest must require Windows 10 / Windows Server 2016 or newer',
+    );
+  }
+  if (opts.target === 'linux-x64') {
+    assert(
+      manifest.target?.libc?.family === 'glibc' &&
+        manifest.target?.libc?.minimumVersion === '2.34',
+      'Linux portable manifest must require glibc 2.34 or newer',
+    );
+  }
+  if (opts.target === 'macos-arm64') {
+    assert(
+      typeof manifest.target?.minimumSystemVersion === 'string' &&
+        compareVersions(manifest.target.minimumSystemVersion, '13.5') >= 0,
+      'macOS portable manifest must require macOS 13.5 or newer',
+    );
+  }
   assert(manifest.distribution === 'portable', `Manifest distribution mismatch: ${manifest.distribution}`);
   assert(manifest.channel === 'stable', `Manifest channel mismatch: ${manifest.channel}`);
+  assert(typeof manifest.gitDirty === 'boolean', 'Manifest gitDirty must be a boolean');
+  assert(
+    typeof manifest.gitCommit === 'string' && /^[0-9a-f]{7,40}$/i.test(manifest.gitCommit),
+    `Manifest gitCommit is invalid: ${manifest.gitCommit}`,
+  );
+  assert(
+    typeof manifest.nodeRuntime?.version === 'string' &&
+      /^v?24\./.test(manifest.nodeRuntime.version),
+    `Manifest Node runtime must be version 24: ${manifest.nodeRuntime?.version}`,
+  );
+  assert(
+    typeof manifest.nodeRuntime?.file === 'string' &&
+      manifest.nodeRuntime.file.length > 0 &&
+      /^[0-9a-f]{64}$/i.test(manifest.nodeRuntime?.sha256 || ''),
+    'Manifest Node runtime file or SHA256 is invalid',
+  );
+  assertNodeRuntimeManifestPin(manifest, opts.target);
+  assertNodeRuntimeExecutablePin(
+    readExtractedBuffer(
+      extractedRoot,
+      `${packageName}/${target.nodeRuntimeExecutable}`,
+    ),
+    opts.target,
+  );
+  assert(
+    typeof manifest.traceProcessor?.version === 'string' &&
+      manifest.traceProcessor.version.length > 0 &&
+      /^[0-9a-f]{64}$/i.test(manifest.traceProcessor?.sourceSha256 || '') &&
+      /^[0-9a-f]{64}$/i.test(manifest.traceProcessor?.sha256 || ''),
+    'Manifest trace processor version, source SHA256, or packaged SHA256 is invalid',
+  );
+  assertTraceProcessorManifestPin(manifest, opts.target);
+  const traceProcessorEntry = `${packageName}/${
+    target.os === 'macos'
+      ? 'SmartPerfetto.app/Contents/Resources/bin/trace_processor_shell'
+      : target.os === 'windows'
+        ? 'bin/trace_processor_shell.exe'
+        : 'bin/trace_processor_shell'
+  }`;
+  assert(
+    sha256Hex(readExtractedBuffer(extractedRoot, traceProcessorEntry)) ===
+      manifest.traceProcessor.sha256,
+    'Manifest trace processor SHA256 does not match the extracted binary',
+  );
   const allowedSigningModes = target.os === 'macos'
     ? ['macos-adhoc', 'macos-developer-id', 'macos-developer-id-notarized']
     : ['unsigned'];
@@ -609,6 +1281,20 @@ function main() {
     allowedSigningModes.includes(manifest.signingMode),
     `Manifest signingMode mismatch for ${opts.target}: ${manifest.signingMode}`,
   );
+  verifyNativeRuntimeCompatibility(
+    extractedEntryPath(extractedRoot, packageName),
+    opts.target,
+    manifest,
+  );
+  if (opts.publicRelease) {
+    assertPublicReleaseManifest(manifest, target);
+    if (target.os === 'macos') {
+      assertNotarizationReceipt(readExtractedJson(
+        extractedRoot,
+        `${packageName}/NOTARIZATION-RECEIPT.json`,
+      ));
+    }
+  }
 
   const backendPackageEntry = target.os === 'macos'
     ? `${packageName}/SmartPerfetto.app/Contents/Resources/backend/package.json`
@@ -627,6 +1313,14 @@ function main() {
       'README-WINDOWS.txt is missing durable data or migration instructions',
     );
   }
+  if (target.os === 'macos') {
+    assert(
+      readme.includes(
+        `System requirement: macOS ${manifest.target.minimumSystemVersion} or newer on Apple silicon.`,
+      ),
+      'README-MACOS.txt minimum system version does not match the package manifest',
+    );
+  }
 
   if (opts.commit) {
     assert(manifest.gitCommit === opts.commit, `Manifest gitCommit mismatch: expected ${opts.commit}, got ${manifest.gitCommit || '<missing>'}`);
@@ -635,15 +1329,39 @@ function main() {
     assert(manifest.gitDirty === false, 'Package was built from a dirty worktree');
   }
   if (target.os === 'macos') {
-    verifyMacosCodeSignature(assetPath, packageName);
+    verifyMacosCodeSignature(extractedRoot, packageName);
   }
 
   console.log(`Portable package verified: ${expectedAsset}`);
 }
 
-try {
-  main();
-} catch (error) {
-  console.error(error.message || error);
-  process.exit(1);
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    console.error(error.message || error);
+    process.exit(1);
+  }
 }
+
+module.exports = {
+  ARCHIVE_LIMITS,
+  TARGETS,
+  assertArchiveBudget,
+  assertArchiveHasNoLinks,
+  assertExtractedTreeSafe,
+  assertNotarizationReceipt,
+  assertNodeRuntimeExecutablePin,
+  assertNodeRuntimeManifestPin,
+  assertPublicReleaseManifest,
+  assertTraceProcessorManifestPin,
+  extractArchiveToTemp,
+  inspectArchiveBudget,
+  listEntries,
+  normalizeArchiveEntry,
+  normalizeVersion,
+  nodeRuntimeExecutableDigest,
+  readNodeRuntimePin,
+  readPackageManifest,
+  validateArchiveEntries,
+};

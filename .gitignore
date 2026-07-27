@@ -8,6 +8,7 @@
 # Public pin file (no secrets) — version + SHA256 only, intentionally tracked.
 !scripts/trace-processor-pin.env
 !scripts/perfetto-recording-tools-pin.env
+!scripts/node-runtime-pin.env
 
 # ===================
 # Dependencies
