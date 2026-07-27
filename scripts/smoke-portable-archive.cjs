@@ -45,6 +45,7 @@ const SMOKE_ENV_ALLOWLIST = new Set([
   'USERPROFILE',
   'WINDIR',
 ]);
+const HEALTH_HALF_CLOSE_RESPONSE_GRACE_MS = 500;
 const HEALTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
 
 function usage() {
@@ -379,6 +380,8 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
   }
 
   return new Promise((resolve, reject) => {
+    let halfCloseTimer;
+    let phase = 'connecting';
     let settled = false;
     let receivedBytes = 0;
     const chunks = [];
@@ -394,12 +397,14 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
       if (settled) return;
       settled = true;
       clearTimeout(deadline);
+      clearTimeout(halfCloseTimer);
       signal?.removeEventListener('abort', onAbort);
       socket.destroy();
       callback(value);
     };
     socket.setNoDelay(true);
     socket.on('data', (chunk) => {
+      phase = 'receiving response';
       receivedBytes += chunk.length;
       if (receivedBytes > HEALTH_RESPONSE_LIMIT_BYTES) {
         const error = new Error(
@@ -412,6 +417,7 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
       chunks.push(chunk);
     });
     socket.once('connect', () => {
+      phase = 'awaiting response';
       socket.write([
         `GET ${requestTarget} HTTP/1.0`,
         `Host: 127.0.0.1:${parsed.port}`,
@@ -420,6 +426,15 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
         '',
         '',
       ].join('\r\n'));
+      if (timeoutMs > HEALTH_HALF_CLOSE_RESPONSE_GRACE_MS * 2) {
+        halfCloseTimer = setTimeout(() => {
+          if (settled || socket.destroyed) return;
+          phase = receivedBytes > 0
+            ? 'receiving response after request half-close'
+            : 'awaiting response after request half-close';
+          socket.end();
+        }, timeoutMs - HEALTH_HALF_CLOSE_RESPONSE_GRACE_MS);
+      }
     });
     socket.once('end', () => {
       try {
@@ -438,7 +453,10 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
       }
     });
     const deadline = setTimeout(() => {
-      const error = new Error(`health request exceeded ${timeoutMs}ms`);
+      const error = new Error(
+        `health request exceeded ${timeoutMs}ms during ${phase}; ` +
+        `received ${receivedBytes} bytes`,
+      );
       error.code = 'ETIMEDOUT';
       finish(reject, error);
     }, timeoutMs);

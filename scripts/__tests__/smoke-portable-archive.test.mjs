@@ -330,6 +330,37 @@ test('portable health probe parses fragmented bytes and sends a fixed HTTP/1.0 r
   await waitForSocketClose(healthSocket);
 });
 
+test('portable health probe half-closes its request before awaiting the response', async (t) => {
+  let observedRequest = '';
+  let observedSocket;
+  const response = healthHttpResponse({status: 'OK', version: 'fixture-version'});
+  const server = net.createServer({allowHalfOpen: true}, (socket) => {
+    observedSocket = socket;
+    const chunks = [];
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.once('end', () => {
+      observedRequest = Buffer.concat(chunks).toString('latin1');
+      socket.end(response);
+    });
+  });
+  const port = await listenOnLoopback(server);
+  t.after(() => closeHttpServer(server));
+
+  assert.deepEqual(
+    await directHttpHealthProbe(
+      `http://127.0.0.1:${port}/health`,
+      2_000,
+    ),
+    {
+      body: JSON.stringify({status: 'OK', version: 'fixture-version'}),
+      statusCode: 200,
+    },
+  );
+  assert.match(observedRequest, /^GET \/health HTTP\/1\.0\r\n/);
+  assert.ok(observedSocket, 'half-close server did not observe a connection');
+  await waitForSocketClose(observedSocket);
+});
+
 test('portable health probe accepts the production frontend response framing', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-frontend-health-'));
   const version = 'vfixture';
@@ -473,7 +504,14 @@ test('portable raw health probe times out partial responses and closes each sock
         `http://127.0.0.1:${fixture.port}/health`,
         150,
       ),
-      (error) => error?.code === 'ETIMEDOUT',
+      (error) => {
+        assert.equal(error?.code, 'ETIMEDOUT');
+        assert.match(
+          error.message,
+          /during receiving response; received [1-9]\d* bytes$/,
+        );
+        return true;
+      },
     );
     assert.ok(observedSocket, 'partial-response server did not observe a connection');
     await waitForSocketClose(observedSocket);
@@ -566,20 +604,18 @@ test('portable readiness independently proves backend and frontend payloads', as
 
 test('portable health probe timeout reports ETIMEDOUT and closes its socket', async (t) => {
   let healthSocket;
-  const health = http.createServer(() => {});
-  health.once('connection', (socket) => {
+  const fixture = await startRawResponseServer((socket) => {
     healthSocket = socket;
   });
-  const healthPort = await listenOnLoopback(health);
-  t.after(() => closeHttpServer(health));
+  t.after(() => fixture.close());
 
   await assert.rejects(
     waitForHealth(
-      `http://127.0.0.1:${healthPort}/health`,
+      `http://127.0.0.1:${fixture.port}/health`,
       {status: 'OK'},
       300,
     ),
-    /health request exceeded \d+ms \(ETIMEDOUT\)/,
+    /health request exceeded \d+ms during awaiting response; received 0 bytes \(ETIMEDOUT\)/,
   );
   assert.ok(healthSocket, 'health server did not observe a connection');
   await waitForSocketClose(healthSocket);
