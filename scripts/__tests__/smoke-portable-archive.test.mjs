@@ -46,7 +46,10 @@ test('portable smoke resolves target-specific launcher and runtime paths', () =>
     macos.launcher,
     path.join('/tmp/root', 'package', 'SmartPerfetto.app', 'Contents', 'MacOS', 'SmartPerfetto'),
   );
-  assert.match(macos.node, /SmartPerfetto\.app\/Contents\/Resources\/runtime\/node\/bin\/node$/);
+  assert.match(
+    macos.node.split(path.sep).join('/'),
+    /SmartPerfetto\.app\/Contents\/Resources\/runtime\/node\/bin\/node$/,
+  );
 });
 
 test('portable smoke parser rejects incomplete option values', () => {

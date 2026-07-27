@@ -56,6 +56,16 @@ function createFifoTarGzip(entryName) {
   return gzipSync(Buffer.concat([header, Buffer.alloc(1024)]));
 }
 
+function createZipArchive(root, archive, entry, preserveLinks = false) {
+  if (process.platform === 'win32') {
+    execFileSync('tar', ['-a', '-cf', archive, entry], {cwd: root});
+    return;
+  }
+  const args = ['-qr'];
+  if (preserveLinks) args.push('-y');
+  execFileSync('zip', [...args, archive, entry], {cwd: root});
+}
+
 test('portable verifier enforces archive resource budgets before extraction', () => {
   const valid = {
     assetBytes: 100,
@@ -97,6 +107,7 @@ test('portable verifier rejects traversal, absolute, and cross-platform collisio
     ['package/LPT1.log'],
     ['package/COM¹.cfg'],
     ['package/question?.txt'],
+    ['package/line\nbreak.txt'],
   ]) {
     assert.throws(() => validateArchiveEntries(entries), /Archive/);
   }
@@ -116,7 +127,7 @@ test('portable verifier rejects links before zip or tar extraction', (t) => {
   fs.symlinkSync('regular', path.join(payload, 'link'));
 
   const zipPath = path.join(root, 'payload.zip');
-  execFileSync('zip', ['-qry', '-y', zipPath, 'payload'], {cwd: root});
+  createZipArchive(root, zipPath, 'payload', true);
   assert.throws(
     () => assertArchiveHasNoLinks(zipPath, 'zip'),
     /symbolic or hard link/,
@@ -138,7 +149,7 @@ test('portable verifier inspects real ZIP and TAR budgets without extracting', (
   fs.writeFileSync(path.join(payload, 'file.txt'), 'portable\n');
   const zip = path.join(root, 'payload.zip');
   const tar = path.join(root, 'payload.tar.gz');
-  execFileSync('zip', ['-qr', zip, 'payload'], {cwd: root});
+  createZipArchive(root, zip, 'payload');
   execFileSync('tar', ['-czf', tar, 'payload'], {cwd: root});
   assert.equal(inspectArchiveBudget(zip, 'zip').entryCount, 2);
   assert.equal(inspectArchiveBudget(tar, 'tar.gz').entryCount, 2);
@@ -302,7 +313,11 @@ test('portable packager rejects staging symlinks before archive creation', (t) =
   assert.throws(() => verifyStagingTree(root), /symbolic link/);
 });
 
-test('staging and extracted trees reject names made ambiguous by line-based archive listings', (t) => {
+test('staging and extracted trees reject names made ambiguous by line-based archive listings', {
+  skip: process.platform === 'win32'
+    ? 'Windows filesystems reject control characters before staging'
+    : false,
+}, (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-newline-entry-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const packageRoot = path.join(root, 'package');
@@ -320,7 +335,11 @@ test('staging and extracted trees reject names made ambiguous by line-based arch
   );
 });
 
-test('tar listing preserves Unicode entry names under a C locale', (t) => {
+test('tar listing preserves Unicode entry names under a C locale', {
+  skip: process.platform === 'win32'
+    ? 'POSIX tar locale contract does not apply to the Windows ZIP release path'
+    : false,
+}, (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-tar-unicode-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   const packageRoot = path.join(root, 'package');
