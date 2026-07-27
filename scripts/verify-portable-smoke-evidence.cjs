@@ -38,6 +38,9 @@ function parseArgs(argv) {
     if ([
       '--summary',
       '--asset',
+      '--asset-name',
+      '--asset-size',
+      '--asset-digest',
       '--target',
       '--version',
       '--commit',
@@ -49,7 +52,8 @@ function parseArgs(argv) {
       if (index + 1 >= argv.length || !argv[index + 1].trim()) {
         throw new Error(`${arg} requires a value`);
       }
-      options[arg.slice(2)] = argv[++index];
+      const name = arg.slice(2).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
+      options[name] = argv[++index];
       continue;
     }
     throw new Error(`Unknown option: ${arg}`);
@@ -70,6 +74,39 @@ async function identifyAsset(asset) {
     sha256: hash.digest('hex'),
     size: fs.statSync(asset).size,
   };
+}
+
+async function identifyExpectedAsset(options) {
+  const metadataOptions = [
+    options.assetName,
+    options.assetSize,
+    options.assetDigest,
+  ];
+  if (options.asset && metadataOptions.some(Boolean)) {
+    throw new Error('--asset cannot be combined with --asset-name, --asset-size, or --asset-digest');
+  }
+  if (options.asset) return identifyAsset(path.resolve(options.asset));
+  if (!metadataOptions.every(Boolean)) {
+    throw new Error(
+      '--asset or all of --asset-name, --asset-size, and --asset-digest are required',
+    );
+  }
+  if (!options.releaseJson || !options.releaseId || !options.assetId || !options.workflowContext) {
+    throw new Error('asset metadata is accepted only with complete release and workflow binding');
+  }
+  const name = String(options.assetName);
+  if (path.basename(name) !== name || /[\0\r\n]/.test(name)) {
+    throw new Error('--asset-name must be a plain filename');
+  }
+  const size = Number(options.assetSize);
+  if (!/^[1-9]\d*$/.test(String(options.assetSize)) || !Number.isSafeInteger(size)) {
+    throw new Error('--asset-size must be a positive safe integer');
+  }
+  const sha256 = String(options.assetDigest).toLowerCase().replace(/^sha256:/, '');
+  if (!/^[0-9a-f]{64}$/.test(sha256)) {
+    throw new Error('--asset-digest must be a SHA256 digest');
+  }
+  return {name, size, sha256};
 }
 
 function validateSmokeSummary(summary, expected) {
@@ -270,8 +307,8 @@ function updateWorkflowContext(contextPath, expected, summaryPath) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  if (!options.summary || !options.asset || !options.target || !options.version || !options.commit) {
-    throw new Error('--summary, --asset, --target, --version, and --commit are required');
+  if (!options.summary || !options.target || !options.version || !options.commit) {
+    throw new Error('--summary, --target, --version, and --commit are required');
   }
   if (!TARGETS[options.target]) throw new Error(`Unsupported target: ${options.target}`);
   const version = normalizeVersion(options.version);
@@ -280,7 +317,7 @@ async function main() {
   if (!summaryStat.isFile() || summaryStat.isSymbolicLink()) {
     throw new Error('Smoke summary must be a regular file, not a symlink');
   }
-  const asset = await identifyAsset(path.resolve(options.asset));
+  const asset = await identifyExpectedAsset(options);
   const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
   validateSmokeSummary(summary, {
     asset,
@@ -335,6 +372,7 @@ if (require.main === module) {
 
 module.exports = {
   identifyAsset,
+  identifyExpectedAsset,
   parseArgs,
   updateWorkflowContext,
   validateReleaseBinding,

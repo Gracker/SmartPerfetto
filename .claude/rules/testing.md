@@ -184,10 +184,24 @@ The hosted entry point is
 default branch and pass the numeric draft release ID. Its gate checkout is
 fixed to the dispatch SHA; the release checkout is fixed to the draft's full
 target SHA (or the peeled tag commit once the tag exists), and that release
-commit must be an ancestor of the gate. Each target downloads by immutable
-asset ID with native binary I/O, verifies size and digest before extraction,
-then re-fetches and re-binds the release after download and after smoke.
-`GH_TOKEN` is scoped only to those REST/download steps.
+commit must be an ancestor of the gate. A fixed-gate download job fetches each
+target by immutable asset ID with native binary I/O, verifies size and digest,
+then re-fetches and re-binds the release. It preserves those opaque bytes as a
+short-lived Actions artifact; only then does the native smoke job restore and
+execute them. The smoke matrix must override default skipped-needs propagation:
+one target's failed download may fail that target, but must not suppress native
+smoke and diagnostic evidence for targets whose exact asset artifacts exist.
+GitHub currently requires `contents: write` for its Actions token to read a
+draft release and download draft assets. That grant must remain job-local to
+the prepare, download, and collect jobs; checkout must use
+`persist-credentials: false`, and `GH_TOKEN` is scoped only to trusted
+fixed-gate REST GET/download steps. The native smoke job must have at most
+`contents: read` and must never share a job with a write-capable repository
+token. A fresh collect job must fetch the unchanged draft before downloading
+target evidence, then use the fixed gate commit—without passing it a token—to
+validate each public smoke summary, release/asset identity, runner/run
+provenance, and prepared workflow context before changing the context to
+`verified`. The tested release code must never receive the write credential.
 
 `selection=windows-linux` and single-target selections produce partial
 diagnostic evidence and are never promotion evidence. Only a successful
@@ -200,10 +214,12 @@ attestation. The combined artifact exposes normalized
 digest, runner host, gate SHA, and run identity all match. Hosted promotion
 must pass that downloaded `promotion-evidence/`, the sibling
 `portable-smoke-attestation.json`, and the producing run ID to
-`release:portable`. The promotion verifier re-fetches the completed Actions
-run and the uniquely named combined artifact, verifies GitHub's artifact
-SHA-256 against the downloaded zip, and byte-compares the local evidence with
-the digest-verified artifact.
+`release:portable`. The promotion verifier re-fetches repository metadata, the
+completed Actions run, and the uniquely named combined artifact. It must bind
+the repository ID and default branch to GitHub's response, require the run gate
+SHA to equal the clean promotion checkout, verify GitHub's artifact SHA-256
+against the downloaded zip, and byte-compare the local evidence with the
+digest-verified artifact.
 
 For changes to this gate, run at minimum:
 

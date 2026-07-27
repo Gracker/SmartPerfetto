@@ -73,9 +73,15 @@ function readRegularJson(file, label) {
 
 function validateAttestation(attestation, expected) {
   const repository = repositoryName(expected.repository);
+  const repositoryId = positiveInteger(expected.repositoryId, 'repository id');
   const releaseId = positiveInteger(expected.releaseId, 'release id');
   const runId = positiveInteger(expected.runId, 'run id');
   const commit = fullSha(expected.commit, 'release commit');
+  const trustedGateSha = fullSha(expected.gateSha, 'trusted gate SHA');
+  const defaultBranch = String(expected.defaultBranch ?? '');
+  if (!defaultBranch || /[\0\r\n]/.test(defaultBranch)) {
+    fail('default branch is invalid');
+  }
   if (
     attestation?.schemaVersion !== 1 ||
     attestation.success !== true ||
@@ -87,6 +93,7 @@ function validateAttestation(attestation, expected) {
   }
   if (
     attestation.repository !== repository ||
+    attestation.repositoryId !== repositoryId ||
     attestation.release?.id !== releaseId ||
     attestation.release?.tag !== `v${expected.version}` ||
     attestation.release?.version !== expected.version ||
@@ -95,23 +102,19 @@ function validateAttestation(attestation, expected) {
   ) {
     fail('repository, release, or run identity does not match promotion');
   }
-  const repositoryId = positiveInteger(attestation.repositoryId, 'repository id');
   const runAttempt = positiveInteger(attestation.runAttempt, 'run attempt');
   const gateSha = fullSha(attestation.gateSha, 'gate SHA');
   const workflowSha = fullSha(attestation.workflowSha, 'workflow SHA');
   if (
     attestation.workflow !== WORKFLOW_NAME ||
-    workflowSha !== gateSha
+    workflowSha !== gateSha ||
+    gateSha !== trustedGateSha
   ) {
-    fail('workflow name or SHA is not the fixed gate identity');
+    fail('workflow name or SHA is not the trusted gate identity');
   }
-  const workflowPrefix = `${repository}/${WORKFLOW_PATH}@refs/heads/`;
-  if (
-    typeof attestation.workflowRef !== 'string' ||
-    !attestation.workflowRef.startsWith(workflowPrefix) ||
-    attestation.workflowRef.length === workflowPrefix.length
-  ) {
-    fail('workflow ref does not identify the portable smoke workflow on a branch');
+  const workflowRef = `${repository}/${WORKFLOW_PATH}@refs/heads/${defaultBranch}`;
+  if (attestation.workflowRef !== workflowRef) {
+    fail('workflow ref is not the portable smoke workflow on the default branch');
   }
   const expectedTargets = Object.keys(TARGETS);
   const targets = Array.isArray(attestation.targets) ? attestation.targets : [];
@@ -136,6 +139,7 @@ function validateAttestation(attestation, expected) {
   return {
     ...expected,
     commit,
+    defaultBranch,
     gateSha,
     releaseId,
     repository,
@@ -148,9 +152,6 @@ function validateAttestation(attestation, expected) {
 }
 
 function validateRun(run, expected) {
-  const branch = expected.workflowRef.slice(
-    `${expected.repository}/${WORKFLOW_PATH}@refs/heads/`.length,
-  );
   if (
     run?.id !== expected.runId ||
     run.run_attempt !== expected.runAttempt ||
@@ -159,13 +160,27 @@ function validateRun(run, expected) {
     run.event !== 'workflow_dispatch' ||
     run.path !== WORKFLOW_PATH ||
     run.head_sha !== expected.gateSha ||
-    run.head_branch !== branch ||
+    run.head_branch !== expected.defaultBranch ||
     run.repository?.id !== expected.repositoryId ||
     run.repository?.full_name !== expected.repository
   ) {
     fail('GitHub Actions run identity or successful conclusion does not match');
   }
   return run;
+}
+
+function validateRepository(repository, expected) {
+  const id = positiveInteger(repository?.id, 'repository id');
+  const fullName = repositoryName(repository?.full_name);
+  const defaultBranch = String(repository?.default_branch ?? '');
+  if (
+    fullName !== repositoryName(expected.repository) ||
+    !defaultBranch ||
+    /[\0\r\n]/.test(defaultBranch)
+  ) {
+    fail('GitHub repository identity or default branch does not match');
+  }
+  return {defaultBranch, repositoryId: id};
 }
 
 function validateArtifactMetadata(response, expected) {
@@ -272,12 +287,26 @@ function fetchWithGh(endpoint, output, accept) {
 function verifyHostedEvidence(options) {
   const attestation = readRegularJson(options.attestation, 'combined attestation');
   const release = readRegularJson(options.releaseJson, 'release metadata');
-  const expected = validateAttestation(attestation, options);
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-smoke-attestation-'));
   let extractedRoot;
   try {
+    const repository = repositoryName(options.repository);
+    const repositoryFile = path.join(temporary, 'repository.json');
     const runFile = path.join(temporary, 'run.json');
     const artifactsFile = path.join(temporary, 'artifacts.json');
+    fetchWithGh(
+      `repos/${repository}`,
+      repositoryFile,
+      'application/vnd.github+json',
+    );
+    const repositoryMetadata = validateRepository(
+      readRegularJson(repositoryFile, 'repository metadata'),
+      {repository},
+    );
+    const expected = validateAttestation(attestation, {
+      ...options,
+      ...repositoryMetadata,
+    });
     fetchWithGh(
       `repos/${expected.repository}/actions/runs/${expected.runId}`,
       runFile,
@@ -334,6 +363,7 @@ function parseArgs(argv) {
     '--version',
     '--commit',
     '--run-id',
+    '--gate-sha',
   ]);
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
@@ -363,6 +393,7 @@ module.exports = {
   parseArgs,
   validateArtifactMetadata,
   validateAttestation,
+  validateRepository,
   validateRun,
   validateWorkflowContexts,
   verifyHostedEvidence,

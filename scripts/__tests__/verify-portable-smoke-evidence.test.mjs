@@ -16,6 +16,8 @@ import test from 'node:test';
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const {
+  identifyExpectedAsset,
+  parseArgs,
   updateWorkflowContext,
   validateReleaseBinding,
   validateSmokeSummary,
@@ -95,6 +97,44 @@ function expected(summary) {
     version: summary.version,
   };
 }
+
+test('metadata-only asset identity requires complete hosted release binding', async () => {
+  const options = {
+    assetName: 'smartperfetto-v1.2.3-linux-x64.tar.gz',
+    assetSize: '123',
+    assetDigest: `sha256:${'a'.repeat(64)}`,
+    releaseJson: 'release.json',
+    releaseId: '4242',
+    assetId: '5002',
+    workflowContext: 'workflow-context.json',
+  };
+  assert.deepEqual(await identifyExpectedAsset(options), {
+    name: options.assetName,
+    size: 123,
+    sha256: 'a'.repeat(64),
+  });
+  await assert.rejects(
+    () => identifyExpectedAsset({...options, workflowContext: undefined}),
+    /complete release and workflow binding/,
+  );
+  await assert.rejects(
+    () => identifyExpectedAsset({...options, assetName: '../asset.zip'}),
+    /plain filename/,
+  );
+  assert.deepEqual(
+    parseArgs([
+      '--asset-name', options.assetName,
+      '--asset-size', options.assetSize,
+      '--asset-digest', options.assetDigest,
+      '--release-json', options.releaseJson,
+      '--release-id', options.releaseId,
+      '--asset-id', options.assetId,
+      '--workflow-context', options.workflowContext,
+      '--require-public-release',
+    ]),
+    {...options, requirePublicRelease: true},
+  );
+});
 
 test('public release evidence binds target-native smoke to exact archive bytes', () => {
   const summary = validSummary();

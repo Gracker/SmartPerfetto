@@ -651,7 +651,8 @@ if [ "$DRAFT" = false ]; then
       --release-id "$release_id" \
       --version "$VERSION" \
       --commit "$TARGET_SHA" \
-      --run-id "$SMOKE_RUN_ID"
+      --run-id "$SMOKE_RUN_ID" \
+      --gate-sha "$GATE_SHA"
   elif [ -n "$SMOKE_RUN_ID" ] || [ -n "$SMOKE_ATTESTATION_FILE" ]; then
     echo "ERROR: hosted smoke provenance was provided without hosted workflow contexts." >&2
     exit 1

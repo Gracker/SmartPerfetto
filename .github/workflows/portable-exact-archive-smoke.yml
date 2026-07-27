@@ -31,6 +31,11 @@ jobs:
     name: Resolve immutable release plan
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # GitHub's Actions token cannot read a draft release through the Releases
+    # API with contents:read. Keep the required write grant job-local and
+    # expose it only to the metadata GET step below.
+    permissions:
+      contents: write
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       gate_sha: ${{ steps.plan.outputs.gate_sha }}
@@ -99,14 +104,18 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  smoke:
-    name: Smoke ${{ matrix.target }}
+  download:
+    name: Download immutable ${{ matrix.target }} asset
     needs: prepare
+    # This job executes only fixed gate code. Untrusted archive bytes are never
+    # opened or executed while a write-capable repository token is available.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Check out the immutable gate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -114,13 +123,6 @@ jobs:
           ref: ${{ needs.prepare.outputs.gate_sha }}
           persist-credentials: false
           path: gate
-
-      - name: Check out the immutable release commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.prepare.outputs.release_sha }}
-          persist-credentials: false
-          path: release
 
       - name: Set up Node.js 24
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
@@ -132,21 +134,6 @@ jobs:
         with:
           name: portable-smoke-plan-${{ needs.prepare.outputs.release_id }}
           path: ${{ runner.temp }}/smartperfetto-plan
-
-      - name: Assert native host, disk budget, and evidence context
-        run: >-
-          node gate/scripts/portable-release-smoke-workflow.cjs runner
-          --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"
-          --target "${{ matrix.target }}"
-          --runner-temp "${{ runner.temp }}"
-          --minimum-free-bytes "6442450944"
-          --evidence-root "${{ runner.temp }}/smartperfetto-evidence"
-          --repository-id "${{ github.repository_id }}"
-          --workflow "${{ github.workflow }}"
-          --workflow-ref "${{ github.workflow_ref }}"
-          --workflow-sha "${{ github.workflow_sha }}"
-          --run-id "${{ github.run_id }}"
-          --run-attempt "${{ github.run_attempt }}"
 
       - name: Create the native asset directory
         env:
@@ -185,6 +172,80 @@ jobs:
           --target "${{ matrix.target }}"
           --asset "${{ runner.temp }}/smartperfetto-asset/${{ matrix.assetName }}"
 
+      - name: Preserve exact asset bytes for the credential-free native smoke
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: portable-smoke-asset-${{ needs.prepare.outputs.release_id }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/smartperfetto-asset/${{ matrix.assetName }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  smoke:
+    name: Smoke ${{ matrix.target }}
+    # A failed download must fail only its matching target. Override GitHub's
+    # default skipped-needs propagation so the remaining target artifacts can
+    # still run and produce independent diagnostic evidence.
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    needs:
+      - prepare
+      - download
+    # The tested release checkout receives only read access to this public
+    # repository. It never shares a job with a write-capable repository token.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out the immutable gate commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.gate_sha }}
+          persist-credentials: false
+          path: gate
+
+      - name: Check out the immutable release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.prepare.outputs.release_sha }}
+          persist-credentials: false
+          path: release
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+
+      - name: Restore the immutable plan
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: portable-smoke-plan-${{ needs.prepare.outputs.release_id }}
+          path: ${{ runner.temp }}/smartperfetto-plan
+
+      - name: Restore exact asset bytes without a write-capable token
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: portable-smoke-asset-${{ needs.prepare.outputs.release_id }}-${{ matrix.target }}
+          path: ${{ runner.temp }}/smartperfetto-asset
+
+      - name: Assert native host, disk budget, and evidence context
+        run: >-
+          node gate/scripts/portable-release-smoke-workflow.cjs runner
+          --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"
+          --target "${{ matrix.target }}"
+          --runner-temp "${{ runner.temp }}"
+          --minimum-free-bytes "6442450944"
+          --evidence-root "${{ runner.temp }}/smartperfetto-evidence"
+          --repository-id "${{ github.repository_id }}"
+          --workflow "${{ github.workflow }}"
+          --workflow-ref "${{ github.workflow_ref }}"
+          --workflow-sha "${{ github.workflow_sha }}"
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+
       - name: Run the release contract against the exact archive
         run: >-
           node gate/scripts/portable-release-smoke-workflow.cjs run
@@ -194,35 +255,7 @@ jobs:
           --asset "${{ runner.temp }}/smartperfetto-asset/${{ matrix.assetName }}"
           --evidence-root "${{ runner.temp }}/smartperfetto-evidence"
 
-      - name: Re-fetch release metadata after smoke
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          node gate/scripts/portable-release-smoke-workflow.cjs fetch
-          --repository "${{ github.repository }}"
-          --release-id "${{ needs.prepare.outputs.release_id }}"
-          --output "${{ runner.temp }}/portable-release-after-smoke.json"
-
-      - name: Re-bind release and asset identity after smoke
-        run: >-
-          node gate/scripts/portable-release-smoke-workflow.cjs verify
-          --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"
-          --release-json "${{ runner.temp }}/portable-release-after-smoke.json"
-          --target "${{ matrix.target }}"
-          --asset "${{ runner.temp }}/smartperfetto-asset/${{ matrix.assetName }}"
-
-      - name: Verify evidence with both release and gate contracts
-        run: >-
-          node gate/scripts/portable-release-smoke-workflow.cjs finalize
-          --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"
-          --release-root release
-          --gate-root gate
-          --release-json "${{ runner.temp }}/portable-release-after-smoke.json"
-          --target "${{ matrix.target }}"
-          --asset "${{ runner.temp }}/smartperfetto-asset/${{ matrix.assetName }}"
-          --evidence-root "${{ runner.temp }}/smartperfetto-evidence"
-
-      - name: Preserve target evidence and logs
+      - name: Preserve untrusted target evidence and logs
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -240,6 +273,11 @@ jobs:
       - smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    # A fresh job is the post-smoke trust boundary. Fetch the unchanged draft
+    # before downloading untrusted evidence, then run only the fixed gate
+    # verifier without exposing the token to it.
+    permissions:
+      contents: write
     steps:
       - name: Check out the immutable gate commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -258,6 +296,15 @@ jobs:
         with:
           name: portable-smoke-plan-${{ needs.prepare.outputs.release_id }}
           path: ${{ runner.temp }}/smartperfetto-plan
+
+      - name: Fetch the unchanged draft after target smoke
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          node gate/scripts/portable-release-smoke-workflow.cjs fetch
+          --repository "${{ github.repository }}"
+          --release-id "${{ needs.prepare.outputs.release_id }}"
+          --output "${{ runner.temp }}/portable-release-after-smoke.json"
 
       - name: Create the evidence collection root
         env:
@@ -278,6 +325,7 @@ jobs:
         run: >-
           node gate/scripts/portable-release-smoke-workflow.cjs collect
           --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"
+          --release-json "${{ runner.temp }}/portable-release-after-smoke.json"
           --artifacts-root "${{ runner.temp }}/smartperfetto-collected"
           --repository-id "${{ github.repository_id }}"
           --workflow "${{ github.workflow }}"

@@ -91,14 +91,22 @@ should use WSL2; native Windows users should use the portable package.
    `.github/workflows/portable-exact-archive-smoke.yml` from the default branch
    with the numeric draft `release_id`. Use `selection=all` for promotion
    evidence; `windows-linux` and single-target runs are explicitly partial.
-   The workflow downloads by immutable asset ID, re-checks release metadata
-   after download and after smoke, runs both the release-commit and fixed-gate
-   verifiers, and preserves a normalized `promotion-evidence/` directory plus
+   A fixed-gate credential job downloads each immutable asset ID, re-checks
+   release metadata after download, and passes the opaque bytes through a
+   short-lived Actions artifact to a native smoke job with only repository
+   read access. The smoke job runs the release-commit contract, then sends only
+   raw evidence to a fresh collect job. That job re-checks the unchanged draft
+   before downloading the raw evidence and uses the fixed gate verifier,
+   without a token, to issue verified contexts and preserve a normalized
+   `promotion-evidence/` directory plus
    `portable-smoke-attestation.json` in the combined artifact. Download that
    exact artifact by successful workflow run ID; do not copy individual job
    artifacts into a promotion directory by hand.
    Releases that predate the schema-v2 lifecycle smoke contract are rejected
    instead of being silently downgraded.
+   Hosted promotion also re-fetches repository metadata and rejects runs from
+   any branch other than GitHub's current default branch. The run gate SHA must
+   exactly equal the clean promotion checkout's `HEAD`.
 9. Publish those already-smoked portable assets:
    ```bash
    npm run release:portable -- <version> --skip-build --no-draft \

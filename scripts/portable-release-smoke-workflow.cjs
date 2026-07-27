@@ -431,6 +431,14 @@ function releaseToolEnvironment() {
     'GITHUB_TOKEN',
     'ACTIONS_RUNTIME_TOKEN',
     'ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    'BASH_ENV',
+    'ENV',
+    'GITHUB_ENV',
+    'GITHUB_OUTPUT',
+    'GITHUB_PATH',
+    'GITHUB_STEP_SUMMARY',
+    'NODE_OPTIONS',
+    'NODE_PATH',
     'NODE_AUTH_TOKEN',
     'NPM_TOKEN',
     'OPENAI_API_KEY',
@@ -441,6 +449,9 @@ function releaseToolEnvironment() {
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
     'AWS_SESSION_TOKEN',
+    'LD_PRELOAD',
+    'DYLD_INSERT_LIBRARIES',
+    'DYLD_LIBRARY_PATH',
   ]) {
     delete environment[key];
   }
@@ -519,10 +530,14 @@ function finalize(options) {
 
 function collect(options) {
   const plan = readJsonFile(options.plan, 'smoke plan');
+  const release = readJsonFile(options.releaseJson, 'release metadata');
   const workflowSha = assertSha(options.workflowSha, 'workflow SHA');
   if (workflowSha !== plan.gateSha) fail('workflow SHA does not match the immutable gate SHA');
   const workflowRef = assertWorkflowRef(options.workflowRef, plan.repository);
   const artifactsRoot = path.resolve(options.artifactsRoot);
+  for (const entry of plan.matrix.include) {
+    validatePlanReleaseBinding(plan, release, entry.target);
+  }
   const targets = [];
   const promotionSources = [];
   let successful = true;
@@ -538,6 +553,24 @@ function collect(options) {
     let context = null;
     let contextError = null;
     try {
+      runNodeScript(
+        path.join(__dirname, 'verify-portable-smoke-evidence.cjs'),
+        [
+          '--summary', summaryFile,
+          '--asset-name', entry.assetName,
+          '--asset-size', String(entry.assetSize),
+          '--asset-digest', entry.assetDigest,
+          '--target', entry.target,
+          '--version', plan.release.version,
+          '--commit', plan.release.commit,
+          '--require-public-release',
+          '--release-json', path.resolve(options.releaseJson),
+          '--release-id', String(plan.release.id),
+          '--asset-id', String(entry.assetId),
+          '--workflow-context', contextFile,
+        ],
+        __dirname,
+      );
       context = readJsonFile(contextFile, `${entry.target} workflow context`);
     } catch (error) {
       contextError = error?.message || String(error);
@@ -643,7 +676,9 @@ module.exports = {
   TARGETS,
   buildPlan,
   collect,
+  releaseToolEnvironment,
   resolveReleaseCommit,
+  runSmoke,
   validatePlanReleaseBinding,
   validateRelease,
 };

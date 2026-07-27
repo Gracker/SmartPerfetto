@@ -64,7 +64,7 @@ function setupProject() {
   );
   writeFileSync(
     join(scripts, 'verify-portable-smoke-attestation.cjs'),
-    `'use strict';\nconst fs=require('fs');fs.appendFileSync('.git/fake-attestation-verifier.log',JSON.stringify(process.argv.slice(2))+'\\n');for(const option of ['--attestation','--evidence-dir','--release-json','--repository','--release-id','--version','--commit','--run-id']){const i=process.argv.indexOf(option);if(i<0||!process.argv[i+1])process.exit(1);}\n`,
+    `'use strict';\nconst fs=require('fs');fs.appendFileSync('.git/fake-attestation-verifier.log',JSON.stringify(process.argv.slice(2))+'\\n');for(const option of ['--attestation','--evidence-dir','--release-json','--repository','--release-id','--version','--commit','--run-id','--gate-sha']){const i=process.argv.indexOf(option);if(i<0||!process.argv[i+1])process.exit(1);}\n`,
   );
   for (const [, suffix] of targets) {
     writeFileSync(
@@ -456,8 +456,9 @@ test('hosted promotion requires and invokes the combined run attestation verifie
       verifierArgs[verifierArgs.indexOf('--release-id') + 1],
       verifierArgs[verifierArgs.indexOf('--run-id') + 1],
       verifierArgs[verifierArgs.indexOf('--repository') + 1],
+      verifierArgs[verifierArgs.indexOf('--gate-sha') + 1],
     ],
-    ['4242', '1234', 'Gracker/SmartPerfetto'],
+    ['4242', '1234', 'Gracker/SmartPerfetto', fixture.target],
   );
   assert.equal(mutationLog(hosted.log).length, 1);
 });

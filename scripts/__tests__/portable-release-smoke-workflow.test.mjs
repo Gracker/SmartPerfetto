@@ -24,14 +24,19 @@ const root = resolve(import.meta.dirname, '../..');
 const {
   buildPlan,
   collect,
+  runSmoke,
   validatePlanReleaseBinding,
 } = require(join(root, 'scripts/portable-release-smoke-workflow.cjs'));
 const {
   download,
 } = require(join(root, 'scripts/download-portable-release-asset.cjs'));
 const {
+  readNodeRuntimePin,
+} = require(join(root, 'scripts/verify-portable-package.cjs'));
+const {
   validateArtifactMetadata,
   validateAttestation,
+  validateRepository,
   validateRun,
   validateWorkflowContexts,
 } = require(join(root, 'scripts/verify-portable-smoke-attestation.cjs'));
@@ -65,6 +70,12 @@ function releaseMetadata(commit, overrides = {}) {
     })),
     ...overrides,
   };
+}
+
+function writeReleaseFile(work, commit, overrides = {}) {
+  const releaseFile = join(work, 'release.json');
+  writeFileSync(releaseFile, `${JSON.stringify(releaseMetadata(commit, overrides))}\n`);
+  return releaseFile;
 }
 
 function setupGitFixture() {
@@ -201,6 +212,70 @@ test('native download streams exact binary bytes and removes a digest mismatch',
   }
 });
 
+test('release-commit smoke code cannot inherit tokens or workflow command files', () => {
+  const work = mkdtempSync(join(tmpdir(), 'smartperfetto-smoke-env-'));
+  const releaseRoot = join(work, 'release');
+  const evidenceRoot = join(work, 'evidence');
+  const planFile = join(work, 'plan.json');
+  const asset = join(work, 'asset.tar.gz');
+  mkdirSync(join(releaseRoot, 'scripts'), {recursive: true});
+  writeFileSync(asset, 'archive bytes\n');
+  writeFileSync(planFile, `${JSON.stringify({
+    release: {version: '1.2.4', commit: 'a'.repeat(40)},
+    matrix: {include: [{target: 'linux-x64'}]},
+  })}\n`);
+  writeFileSync(
+    join(releaseRoot, 'scripts', 'smoke-portable-archive.cjs'),
+    `'use strict';
+const fs = require('fs');
+const path = require('path');
+const output = process.argv[process.argv.indexOf('--output-dir') + 1];
+fs.mkdirSync(output, {recursive: true});
+fs.writeFileSync(path.join(output, 'received-env.json'), JSON.stringify({
+  GH_TOKEN: process.env.GH_TOKEN,
+  GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+  ACTIONS_RUNTIME_TOKEN: process.env.ACTIONS_RUNTIME_TOKEN,
+  GITHUB_ENV: process.env.GITHUB_ENV,
+  GITHUB_PATH: process.env.GITHUB_PATH,
+  NODE_OPTIONS: process.env.NODE_OPTIONS,
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+}));
+`,
+  );
+  const keys = [
+    'GH_TOKEN',
+    'GITHUB_TOKEN',
+    'ACTIONS_RUNTIME_TOKEN',
+    'GITHUB_ENV',
+    'GITHUB_PATH',
+    'NODE_OPTIONS',
+    'OPENAI_API_KEY',
+  ];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  for (const key of keys) process.env[key] = `${key}-secret`;
+  try {
+    runSmoke({
+      plan: planFile,
+      releaseRoot,
+      target: 'linux-x64',
+      asset,
+      evidenceRoot,
+    });
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+  assert.deepEqual(
+    JSON.parse(readFileSync(
+      join(evidenceRoot, 'linux-x64', 'smoke', 'received-env.json'),
+      'utf8',
+    )),
+    {},
+  );
+});
+
 test('collection preserves an explicit failed attestation when target evidence is missing', () => {
   const fixture = setupGitFixture();
   const plan = buildPlan(releaseMetadata(fixture.releaseCommit), {
@@ -212,11 +287,13 @@ test('collection preserves an explicit failed attestation when target evidence i
   });
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-collect-'));
   const planFile = join(work, 'plan.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit);
   const attestationFile = join(work, 'attestation.json');
   writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
   assert.throws(
     () => collect({
       plan: planFile,
+      releaseJson: releaseFile,
       artifactsRoot: work,
       workflow: 'Portable Exact Archive Smoke',
       repositoryId: '99',
@@ -244,11 +321,95 @@ function writeCollectedTarget(rootPath, plan, entry, run = {}, layout = 'multi')
     );
   const smokeRoot = join(artifactRoot, 'smoke');
   mkdirSync(smokeRoot, {recursive: true});
-  const summary = Buffer.from(`${JSON.stringify({target: entry.target, success: true})}\n`);
+  const ports = {backend: 3100, frontend: 10100};
+  const summaryValue = {
+    schemaVersion: 2,
+    success: true,
+    asset: {
+      name: entry.assetName,
+      size: entry.assetSize,
+      sha256: entry.assetDigest.slice('sha256:'.length),
+    },
+    target: entry.target,
+    version: plan.release.version,
+    commit: plan.release.commit,
+    gitDirty: false,
+    publicRelease: true,
+    processTree: {
+      enumerationSucceeded: true,
+      failures: [],
+      observedPids: [101, 102],
+      samples: 4,
+      survivingPids: [],
+    },
+    host: {platform: entry.platform, arch: entry.arch},
+    ports,
+    health: {
+      backend: {status: 'OK', version: plan.release.version},
+      frontend: {status: 'OK', version: 'v57'},
+    },
+    runtimes: {
+      node: {stdout: `v${readNodeRuntimePin(entry.target).version}`, stderr: ''},
+      claude: {stdout: '1.0.0', stderr: ''},
+      opencode: {stdout: '1.0.0', stderr: ''},
+      traceProcessor: {stdout: 'smartperfetto_smoke\n1', stderr: ''},
+      ...(entry.target === 'linux-x64'
+        ? {libc: {stdout: '2.34', stderr: ''}}
+        : {}),
+      ...(entry.target === 'macos-arm64'
+        ? {
+            macosRelease: {
+              codesign: {stdout: '', stderr: 'valid on disk'},
+              gatekeeper: {
+                stdout: '',
+                stderr: 'accepted\nsource=Notarized Developer ID',
+              },
+              staple: {stdout: 'validate action worked', stderr: ''},
+              notarytool: {
+                schemaVersion: 1,
+                status: 'Accepted',
+                submissionId: '01234567-89ab-cdef-0123-456789abcdef',
+              },
+            },
+          }
+        : {}),
+    },
+    lifecycleReceipt: {
+      schemaVersion: 2,
+      version: plan.release.version,
+      gitCommit: plan.release.commit,
+      packageTarget: entry.target,
+      containment: entry.target === 'windows-x64'
+        ? 'windows-job-object'
+        : 'service-process-groups',
+      exitReason: 'shutdown-file',
+      success: true,
+      ports: {...ports, released: true},
+      services: [
+        {
+          name: 'backend',
+          pid: 101,
+          gracefulRequested: true,
+          escalated: false,
+          result: {exitCode: 0, success: true},
+        },
+        {
+          name: 'frontend',
+          pid: 102,
+          gracefulRequested: true,
+          escalated: false,
+          result: {exitCode: 0, success: true},
+        },
+      ],
+      finishedAt: new Date().toISOString(),
+    },
+    finishedAt: new Date().toISOString(),
+  };
+  const summary = Buffer.from(`${JSON.stringify(summaryValue)}\n`);
   writeFileSync(join(smokeRoot, 'smoke-summary.json'), summary);
   writeFileSync(join(artifactRoot, 'workflow-context.json'), `${JSON.stringify({
     schemaVersion: 1,
-    status: 'verified',
+    status: 'prepared',
     repository: plan.repository,
     repositoryId: run.repositoryId ?? 99,
     workflow: 'Portable Exact Archive Smoke',
@@ -265,7 +426,6 @@ function writeCollectedTarget(rootPath, plan, entry, run = {}, layout = 'multi')
       platform: entry.platform,
       arch: entry.arch,
     },
-    smokeSummarySha256: createHash('sha256').update(summary).digest('hex'),
   })}\n`);
 }
 
@@ -280,11 +440,13 @@ test('successful partial collection uses the real artifact layout but emits no p
   });
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-collect-partial-'));
   const planFile = join(work, 'plan.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit);
   const attestationFile = join(work, 'attestation.json');
   writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
   for (const entry of plan.matrix.include) writeCollectedTarget(work, plan, entry);
   collect({
     plan: planFile,
+    releaseJson: releaseFile,
     artifactsRoot: work,
     repositoryId: '99',
     workflow: 'Portable Exact Archive Smoke',
@@ -312,11 +474,13 @@ test('single-target download-artifact layout remains a successful partial diagno
   });
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-collect-single-'));
   const planFile = join(work, 'plan.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit);
   const attestationFile = join(work, 'attestation.json');
   writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
   writeCollectedTarget(work, plan, plan.matrix.include[0], {}, 'single');
   collect({
     plan: planFile,
+    releaseJson: releaseFile,
     artifactsRoot: work,
     repositoryId: '99',
     workflow: 'Portable Exact Archive Smoke',
@@ -332,6 +496,42 @@ test('single-target download-artifact layout remains a successful partial diagno
   assert.equal(existsSync(join(work, 'promotion-evidence')), false);
 });
 
+test('fresh collection rejects a release asset replaced after the smoke plan', () => {
+  const fixture = setupGitFixture();
+  const release = releaseMetadata(fixture.releaseCommit);
+  const plan = buildPlan(release, {
+    cwd: fixture.cwd,
+    gateSha: fixture.gateCommit,
+    releaseId: 4242,
+    repository: 'Gracker/SmartPerfetto',
+    selection: 'linux-x64',
+  });
+  const work = mkdtempSync(join(tmpdir(), 'smartperfetto-collect-replaced-'));
+  const planFile = join(work, 'plan.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit, {
+    assets: release.assets.map((asset) => (
+      asset.id === 5002 ? {...asset, id: 9999} : asset
+    )),
+  });
+  writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
+  writeCollectedTarget(work, plan, plan.matrix.include[0], {}, 'single');
+  assert.throws(
+    () => collect({
+      plan: planFile,
+      releaseJson: releaseFile,
+      artifactsRoot: work,
+      repositoryId: '99',
+      workflow: 'Portable Exact Archive Smoke',
+      workflowRef: 'Gracker/SmartPerfetto/.github/workflows/portable-exact-archive-smoke.yml@refs/heads/main',
+      workflowSha: plan.gateSha,
+      runId: '1234',
+      runAttempt: '1',
+      attestationOut: join(work, 'attestation.json'),
+    }),
+    /asset identity changed/,
+  );
+});
+
 test('only a complete successful collection creates normalized promotion evidence', () => {
   const fixture = setupGitFixture();
   const plan = buildPlan(releaseMetadata(fixture.releaseCommit), {
@@ -343,11 +543,13 @@ test('only a complete successful collection creates normalized promotion evidenc
   });
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-collect-all-'));
   const planFile = join(work, 'plan.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit);
   const attestationFile = join(work, 'portable-smoke-attestation.json');
   writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
   for (const entry of plan.matrix.include) writeCollectedTarget(work, plan, entry);
   collect({
     plan: planFile,
+    releaseJson: releaseFile,
     artifactsRoot: work,
     repositoryId: '99',
     workflow: 'Portable Exact Archive Smoke',
@@ -370,9 +572,12 @@ test('only a complete successful collection creates normalized promotion evidenc
 function hostedExpectation(plan) {
   return {
     repository: plan.repository,
+    repositoryId: 99,
+    defaultBranch: 'main',
     releaseId: plan.release.id,
     runId: 1234,
     commit: plan.release.commit,
+    gateSha: plan.gateSha,
     version: plan.release.version,
   };
 }
@@ -406,11 +611,13 @@ test('hosted attestation validators bind complete scope, run identity, and artif
   });
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-attestation-'));
   const planFile = join(work, 'plan.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit);
   const attestationFile = join(work, 'portable-smoke-attestation.json');
   writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
   for (const entry of plan.matrix.include) writeCollectedTarget(work, plan, entry);
   collect({
     plan: planFile,
+    releaseJson: releaseFile,
     artifactsRoot: work,
     repositoryId: '99',
     workflow: 'Portable Exact Archive Smoke',
@@ -421,6 +628,14 @@ test('hosted attestation validators bind complete scope, run identity, and artif
     attestationOut: attestationFile,
   });
   const attestation = JSON.parse(readFileSync(attestationFile, 'utf8'));
+  assert.deepEqual(
+    validateRepository({
+      id: 99,
+      full_name: plan.repository,
+      default_branch: 'main',
+    }, {repository: plan.repository}),
+    {repositoryId: 99, defaultBranch: 'main'},
+  );
   const expected = validateAttestation(attestation, hostedExpectation(plan));
   assert.equal(validateRun(hostedRun(plan), expected).id, 1234);
   assert.equal(
@@ -439,6 +654,20 @@ test('hosted attestation validators bind complete scope, run identity, and artif
   assert.throws(
     () => validateAttestation({...attestation, scope: 'partial'}, hostedExpectation(plan)),
     /complete all-target/,
+  );
+  assert.throws(
+    () => validateAttestation({
+      ...attestation,
+      workflowRef: `${plan.repository}/.github/workflows/portable-exact-archive-smoke.yml@refs/heads/untrusted-feature`,
+    }, hostedExpectation(plan)),
+    /default branch/,
+  );
+  assert.throws(
+    () => validateAttestation(
+      {...attestation, gateSha: fixture.releaseCommit, workflowSha: fixture.releaseCommit},
+      hostedExpectation(plan),
+    ),
+    /trusted gate identity/,
   );
   assert.throws(
     () => validateRun(hostedRun(plan, {run_attempt: 2}), expected),
@@ -497,13 +726,13 @@ test('hosted verifier re-downloads and hashes the combined GitHub artifact', () 
   });
   const work = mkdtempSync(join(tmpdir(), 'smartperfetto-hosted-verifier-'));
   const planFile = join(work, 'plan.json');
-  const releaseFile = join(work, 'release.json');
+  const releaseFile = writeReleaseFile(work, fixture.releaseCommit);
   const attestationFile = join(work, 'portable-smoke-attestation.json');
   writeFileSync(planFile, `${JSON.stringify(plan)}\n`);
-  writeFileSync(releaseFile, `${JSON.stringify(releaseMetadata(fixture.releaseCommit))}\n`);
   for (const entry of plan.matrix.include) writeCollectedTarget(work, plan, entry);
   collect({
     plan: planFile,
+    releaseJson: releaseFile,
     artifactsRoot: work,
     repositoryId: '99',
     workflow: 'Portable Exact Archive Smoke',
@@ -547,6 +776,12 @@ const run = {
 };
 if (endpoint === 'repos/Gracker/SmartPerfetto/actions/runs/1234') {
   process.stdout.write(JSON.stringify(run));
+} else if (endpoint === 'repos/Gracker/SmartPerfetto') {
+  process.stdout.write(JSON.stringify({
+    id: 99,
+    full_name: 'Gracker/SmartPerfetto',
+    default_branch: 'main',
+  }));
 } else if (endpoint === 'repos/Gracker/SmartPerfetto/actions/runs/1234/artifacts?per_page=100') {
   process.stdout.write(JSON.stringify({artifacts: [{
     id: 9876,
@@ -578,6 +813,7 @@ if (endpoint === 'repos/Gracker/SmartPerfetto/actions/runs/1234') {
     '--version', plan.release.version,
     '--commit', plan.release.commit,
     '--run-id', '1234',
+    '--gate-sha', plan.gateSha,
   ];
   const verifierEnv = {
     ...process.env,
@@ -615,6 +851,10 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /group: portable-exact-archive-smoke-\$\{\{ inputs\.release_id \}\}/);
   assert.match(workflow, /permissions:\s+contents: read/);
+  assert.equal(workflow.match(/permissions:\s+contents: write/g)?.length, 3);
+  assert.match(workflow, /download:[\s\S]*?permissions:\s+contents: write/);
+  assert.match(workflow, /smoke:[\s\S]*?permissions:\s+contents: read/);
+  assert.match(workflow, /collect:[\s\S]*?permissions:\s+contents: write/);
   assert.match(workflow, /dispatch must use/);
   assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(workflow, /ref: \$\{\{ needs\.prepare\.outputs\.gate_sha \}\}/);
@@ -626,22 +866,36 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   assert.match(workflow, /download-portable-release-asset\.cjs/);
   assert.match(helper, /'--public-release'/);
   assert.match(workflow, /Re-fetch release metadata after download/);
-  assert.match(workflow, /Re-fetch release metadata after smoke/);
-  assert.match(workflow, /Verify evidence with both release and gate contracts/);
+  assert.match(workflow, /Preserve exact asset bytes for the credential-free native smoke/);
+  assert.match(workflow, /Restore exact asset bytes without a write-capable token/);
+  assert.match(workflow, /Fetch the unchanged draft after target smoke/);
+  assert.match(workflow, /Preserve untrusted target evidence and logs/);
   assert.match(workflow, /merge-multiple: false/);
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}/);
-  const finalizeStep = workflow.slice(
-    workflow.indexOf('Verify evidence with both release and gate contracts'),
-    workflow.indexOf('Preserve target evidence and logs'),
+  const postContractTargetJob = workflow.slice(
+    workflow.indexOf('Run the release contract'),
+    workflow.indexOf('\n  collect:'),
   );
-  assert.equal(finalizeStep.match(/--release-json/g)?.length, 1);
-  assert.doesNotMatch(
-    workflow.slice(
-      workflow.indexOf('Run the release contract'),
-      workflow.indexOf('Re-fetch release metadata after smoke'),
-    ),
-    /GH_TOKEN|GITHUB_TOKEN/,
+  assert.equal(
+    postContractTargetJob.includes('GH_TOKEN'),
+    false,
   );
+  const smokeJob = workflow.slice(
+    workflow.indexOf('\n  smoke:'),
+    workflow.indexOf('\n  collect:'),
+  );
+  assert.match(
+    smokeJob,
+    /if: \$\{\{ always\(\) && needs\.prepare\.result == 'success' \}\}/,
+  );
+  assert.equal(smokeJob.includes('contents: write'), false);
+  assert.equal(smokeJob.includes('GH_TOKEN'), false);
+  assert.ok(
+    workflow.indexOf('Fetch the unchanged draft after target smoke') <
+      workflow.indexOf('Restore target evidence without merging paths'),
+  );
+  assert.match(workflow, /collect[\s\S]*?--release-json/);
+  assert.match(helper, /verify-portable-smoke-evidence\.cjs/);
   for (const action of [
     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
     'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
