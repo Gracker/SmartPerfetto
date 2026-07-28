@@ -21,7 +21,7 @@ import {
 } from '../types/analysis';
 import { OrchestratorResult, MasterOrchestratorResult, Finding, Diagnostic, ExpertResult, StageResult } from '../agent/types';
 import {
-  type AnalysisReceiptV1,
+  type AnalysisReceipt,
   DataEnvelope,
   ColumnDefinition,
   buildColumnDefinitions,
@@ -117,7 +117,7 @@ export interface AgentDrivenReportData {
     partial?: boolean;
     terminationReason?: string;
     terminationMessage?: string;
-    analysisReceipt?: AnalysisReceiptV1;
+    analysisReceipt?: AnalysisReceipt;
     uiActionProposals?: UiActionProposalV1[];
   };
   hypotheses: Array<{
@@ -4838,17 +4838,17 @@ export class HTMLReportGenerator {
   }
 
   private renderAnalysisReceiptSection(
-    receipt: AnalysisReceiptV1 | undefined,
+    receipt: AnalysisReceipt | undefined,
     outputLanguage: OutputLanguage,
   ): string {
     if (!receipt) return '';
-    const gateLabel = (status: AnalysisReceiptV1['qualityGates']['claimVerification']) =>
+    const gateLabel = (status: AnalysisReceipt['qualityGates']['claimVerification']) =>
       status === 'passed'
         ? localize(outputLanguage, '通过', 'Passed')
         : status === 'partial'
           ? localize(outputLanguage, '部分通过', 'Partial')
           : localize(outputLanguage, '不适用', 'Not applicable');
-    const gate = (label: string, status: AnalysisReceiptV1['qualityGates']['claimVerification']) => `
+    const gate = (label: string, status: AnalysisReceipt['qualityGates']['claimVerification']) => `
           <div class="receipt-row">
             <span>${label}</span>
             <span class="receipt-pill ${status}">${gateLabel(status)}</span>

@@ -53,7 +53,7 @@ export interface CompletedAnalysisSnapshotInput {
   terminationReason?: string;
   terminationMessage?: string;
   dataEnvelopes?: DataEnvelope[];
-  analysisReceipt?: import('../types/dataContract').AnalysisReceiptV1;
+  analysisReceipt?: import('../types/dataContract').AnalysisReceipt;
   uiActionProposals?: import('../types/dataContract').UiActionProposalV1[];
   createdAt?: number;
   /** Apply the non-resumable private-source persistence projection. */

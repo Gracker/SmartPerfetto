@@ -130,7 +130,7 @@ export interface AnalysisSummary {
   recommendations?: string[];
   confidence?: number;
   partialReasons?: string[];
-  analysisReceipt?: import('./dataContract').AnalysisReceiptV1;
+  analysisReceipt?: import('./dataContract').AnalysisReceipt;
   uiActionProposals?: import('./dataContract').UiActionProposalV1[];
 }
 

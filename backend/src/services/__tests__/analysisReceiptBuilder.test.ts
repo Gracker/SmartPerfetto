@@ -3,7 +3,10 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { describe, expect, it } from '@jest/globals';
-import { buildAnalysisReceipt } from '../analysisReceiptBuilder';
+import {
+  buildAnalysisReceipt,
+  buildLegacyAnalysisReceipt,
+} from '../analysisReceiptBuilder';
 import type { QuickRunReceipt } from '../../agent/core/orchestratorTypes';
 import type { ClaimVerificationResult } from '../../types/claimVerification';
 import type { ClaimSupportV1 } from '../../types/evidenceContract';
@@ -35,6 +38,37 @@ const quickRun: QuickRunReceipt = {
   },
   verifierStatus: 'passed',
 };
+
+describe('buildLegacyAnalysisReceipt', () => {
+  it('builds schema v1 only for explicit legacy recovery', () => {
+    const receipt = buildLegacyAnalysisReceipt({
+      session: {
+        sessionId: 'session-legacy',
+        traceId: 'trace-legacy',
+      },
+      result: {
+        success: true,
+        sessionId: 'run-legacy',
+        conclusion: 'legacy result',
+        findings: [],
+        hypotheses: [],
+        confidence: 1,
+        rounds: 1,
+        totalDurationMs: 1,
+      },
+      generatedAt: 123,
+    });
+
+    expect(receipt).toEqual(expect.objectContaining({
+      schemaVersion: 1,
+      runId: 'run-legacy',
+      sessionId: 'session-legacy',
+      traceId: 'trace-legacy',
+      generatedAt: 123,
+    }));
+    expect(receipt).not.toHaveProperty('runManifestId');
+  });
+});
 
 function sqlEnvelope(id: string): DataEnvelope {
   return {
@@ -115,6 +149,7 @@ const verification: ClaimVerificationResult = {
 describe('buildAnalysisReceipt', () => {
   it('separates trace evidence counts from injected non-evidence context', () => {
     const receipt = buildAnalysisReceipt({
+      runManifestId: 'manifest-receipt-1',
       session: {
         sessionId: 'session-1',
         traceId: 'trace-1',
@@ -161,16 +196,19 @@ describe('buildAnalysisReceipt', () => {
         generatedAt: 1000,
       },
       runId: 'run-1',
+      runtime: 'qoder-agent-sdk',
       generatedAt: 1000,
     });
 
     expect(receipt).toEqual(expect.objectContaining({
-      schemaVersion: 1,
+      schemaVersion: 2,
+      runManifestId: 'manifest-receipt-1',
       runId: 'run-1',
       sessionId: 'session-1',
       traceId: 'trace-1',
       mode: 'fast',
       resolvedMode: 'quick',
+      runtime: 'qoder-agent-sdk',
       providerId: null,
       generatedAt: 1000,
     }));
@@ -207,6 +245,7 @@ describe('buildAnalysisReceipt', () => {
 
   it('keeps old full-mode payloads valid when optional outputs and verifier are absent', () => {
     const receipt = buildAnalysisReceipt({
+      runManifestId: 'manifest-receipt-2',
       session: {
         sessionId: 'session-legacy',
         traceId: 'trace-legacy',
@@ -245,6 +284,7 @@ describe('buildAnalysisReceipt', () => {
 
   it('marks generated reports partial when the final report contract is incomplete', () => {
     const receipt = buildAnalysisReceipt({
+      runManifestId: 'manifest-receipt-3',
       session: {
         sessionId: 'session-startup',
         traceId: 'trace-startup',
@@ -287,6 +327,7 @@ describe('buildAnalysisReceipt', () => {
 
   it('uses aggregate claim verifier counts when per-claim results are absent', () => {
     const receipt = buildAnalysisReceipt({
+      runManifestId: 'manifest-receipt-4',
       session: {
         sessionId: 'session-aggregate-claims',
         traceId: 'trace-aggregate-claims',

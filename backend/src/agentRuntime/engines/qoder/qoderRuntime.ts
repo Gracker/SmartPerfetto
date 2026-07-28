@@ -320,6 +320,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage,
       previousTurns,
       resolvedMode: quickModeResolution.quickMode ? 'quick' : 'full',
+      budget: {
+        model: this.config.model,
+        maxTurns: this.config.maxTurns,
+        quickMaxTurns: this.config.quickMaxTurns,
+        fullPathPerTurnMs: this.config.fullPerTurnMs,
+        quickPathPerTurnMs: this.config.quickPerTurnMs,
+      },
     });
 
     // Build comparison context before assembling the shared system prompt so
@@ -439,6 +446,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     const { server: mcpServer, allowedTools: allowedToolNames } = isQuickMode
       ? createClaudeMcpServer({
+        runManifestAttributionSink: options?.runManifestAttributionSink,
           sessionId,
           traceId,
           traceProcessorService,
@@ -460,6 +468,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           androidInternalsPackPin: options?.androidInternalsPackPin,
         })
       : createClaudeMcpServer({
+        runManifestAttributionSink: options?.runManifestAttributionSink,
           sessionId,
           traceId,
           userQuery: query,

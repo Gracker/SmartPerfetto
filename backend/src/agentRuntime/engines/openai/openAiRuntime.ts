@@ -2235,6 +2235,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
       const skillNotesBudget = createRuntimeSkillNotesBudget(lightweight);
       const mcp = createClaudeMcpServer({
+        runManifestAttributionSink: options.runManifestAttributionSink,
         sessionId,
         traceId,
         userQuery: query,

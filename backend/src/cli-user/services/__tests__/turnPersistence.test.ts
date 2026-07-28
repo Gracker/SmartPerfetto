@@ -76,7 +76,9 @@ describe('commitTurnOutputs', () => {
             claimVerification: 'not_applicable',
             identityResolution: 'not_applicable',
           },
-          outputs: {},
+          outputs: {
+            cliTurnPath: path.join(sp.turnsDir, '001.md'),
+          },
         },
         uiActionProposals: [{
           schemaVersion: 1,

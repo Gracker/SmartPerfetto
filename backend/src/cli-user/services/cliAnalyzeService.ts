@@ -22,6 +22,7 @@
  */
 
 import * as fs from 'fs';
+import {randomUUID} from 'crypto';
 import { AssistantApplicationService } from '../../assistant/application/assistantApplicationService';
 import {
   AgentAnalyzeSessionService,
@@ -74,6 +75,7 @@ import {
   getDefaultExternalKnowledgeSourceRegistry,
 } from '../../services/externalKnowledgeSourceRegistry';
 import type {KnowledgeScope} from '../../services/scopedKnowledgeStore';
+import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
@@ -94,6 +96,12 @@ import {
   projectPrivateAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
 import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
+import {getWorkspaceSkillRegistry} from '../../services/skillPacks/workspaceSkillRegistryProvider';
+import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
+import {
+  createRunManifestLifecycle,
+  withRunManifestLifecycle,
+} from '../../services/selfEvolution/runManifestLifecycle';
 
 export interface RunTurnInput {
   tracePath?: string;
@@ -107,6 +115,13 @@ export interface RunTurnInput {
   knowledgeSourceIds?: string[];
   /** Backend-session ancestry for CLI Level-3 degraded resume bridges. */
   lineage?: CliSessionLineage;
+  /** 1-indexed CLI-visible turn number, bound before analysis starts. */
+  turn: number;
+  /**
+   * Resolves the final durable CLI markdown path once the backend session id
+   * is known. The path is attribution only and is omitted for private runs.
+   */
+  resolveCliTurnPath: (sessionId: string, turn: number) => string;
   /** Receives every StreamingUpdate from the orchestrator in real time. */
   onEvent: (update: StreamingUpdate) => void;
   /**
@@ -327,8 +342,7 @@ export class CliAnalyzeService {
       codeAwareMode: effectiveCodeAwareMode,
     };
     const privateKnowledge = Boolean(
-      (effectiveCodeAwareMode !== 'off' && input.codebaseIds?.length)
-      || input.knowledgeSourceIds?.length,
+      (effectiveCodeAwareMode !== 'off' && input.codebaseIds?.length) || input.knowledgeSourceIds?.length
     );
     validateCliAnalysisContext(effectiveInput, knowledgeScope);
 
@@ -338,10 +352,7 @@ export class CliAnalyzeService {
       return output;
     }
 
-    const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
-      effectiveInput,
-      knowledgeScope,
-    );
+    const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(effectiveInput, knowledgeScope);
     const { sessionId, session } = this.analyzeService.prepareSession({
       traceId,
       query: input.query,
@@ -375,203 +386,246 @@ export class CliAnalyzeService {
     // turn index used by appendMessages (msg-<session>-turn<N>-role) is unique
     // across turns rather than colliding with prior turns of the same session.
     session.runSequence = (session.runSequence || 0) + 1;
+    const requestedAnalysisMode = resolveEffectiveAnalysisMode(input.analysisMode, {
+      referenceTraceId: effectiveReferenceTraceId,
+      codeAwareMode: effectiveCodeAwareMode,
+      codebaseIds: input.codebaseIds,
+      knowledgeSourceIds: input.knowledgeSourceIds,
+    });
+    if (!session.runtimeKind) {
+      throw new Error(`run_manifest_runtime_missing:${sessionId}`);
+    }
+    const resolvedScope = resolveKnowledgeScope(knowledgeScope);
+    const workspaceSkillRegistry = await getWorkspaceSkillRegistry(resolvedScope);
+    const runManifestLifecycle = createRunManifestLifecycle({
+      runId: randomUUID(),
+      sessionId,
+      scope: {
+        tenantId: resolvedScope.tenantId,
+        workspaceId: resolvedScope.workspaceId,
+      },
+      userId: resolvedScope.userId,
+      runtime: session.runtimeKind,
+      providerId: session.providerId ?? null,
+      outputLanguage,
+      analysisMode: requestedAnalysisMode,
+      referenceTraceId: effectiveReferenceTraceId,
+      skillRegistry: buildSkillRegistryAttribution(workspaceSkillRegistry.registry),
+    });
+    const cliTurnPath = privateKnowledge ? undefined : input.resolveCliTurnPath(sessionId, input.turn);
 
-    // Surface sessionId to the caller now, before analyze() starts emitting
-    // events. Without this, callers must buffer events until runTurn resolves,
-    // which accumulates the entire analyze run's output in memory.
-    input.onSessionReady?.(sessionId);
-
-    const orchestrator = session.orchestrator;
-
-    // Subscribe to live updates. Wrap in off()-on-finally to avoid handler leaks
-    // if runTurn is called multiple times within one CLI process (REPL path).
-    const handler = (update: StreamingUpdate) => {
-      const envelopes = envelopesFromStreamingUpdate(update);
-      if (envelopes.length > 0) {
-        session.dataEnvelopes.push(...envelopes);
-      }
-      const projectedUpdate = projectCodeAwareStreamingUpdate(
-        sessionId,
-        update,
-        privateKnowledge,
-        outputLanguage,
-      );
-      if (!shouldExposeLiveStreamingUpdate(projectedUpdate)) return;
-      try {
-        input.onEvent(projectedUpdate);
-      } catch (err) {
-        // Don't let a renderer bug kill the analysis — log and continue.
-        console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
-      }
-    };
-    orchestrator.on('update', handler);
-
-    let result: AnalysisResult;
-    const agentQuery = session.agentQuery && session.query === input.query
-      ? session.agentQuery
-      : buildAgentQueryWithContinuityNotice(input.query, session.continuityBreaks);
     try {
-      result = await orchestrator.analyze(agentQuery, sessionId, traceId, {
-        providerId: session.providerId,
-        referenceTraceId: effectiveReferenceTraceId,
-        analysisMode: resolveEffectiveAnalysisMode(input.analysisMode, {
-          referenceTraceId: effectiveReferenceTraceId,
+      return await withRunManifestLifecycle(runManifestLifecycle, async () => {
+        // Surface sessionId to the caller now, before analyze() starts emitting
+        // events. Without this, callers must buffer events until runTurn resolves,
+        // which accumulates the entire analyze run's output in memory.
+        input.onSessionReady?.(sessionId);
+
+        const orchestrator = session.orchestrator;
+
+        // Subscribe to live updates. Wrap in off()-on-finally to avoid handler leaks
+        // if runTurn is called multiple times within one CLI process (REPL path).
+        const handler = (update: StreamingUpdate) => {
+          const envelopes = envelopesFromStreamingUpdate(update);
+          if (envelopes.length > 0) {
+            session.dataEnvelopes.push(...envelopes);
+          }
+          const projectedUpdate = projectCodeAwareStreamingUpdate(sessionId, update, privateKnowledge, outputLanguage);
+          if (!shouldExposeLiveStreamingUpdate(projectedUpdate)) return;
+          try {
+            input.onEvent(projectedUpdate);
+          } catch (err) {
+            // Don't let a renderer bug kill the analysis — log and continue.
+            console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
+          }
+        };
+        orchestrator.on('update', handler);
+
+        let result: AnalysisResult;
+        const agentQuery =
+          session.agentQuery && session.query === input.query
+            ? session.agentQuery
+            : buildAgentQueryWithContinuityNotice(input.query, session.continuityBreaks);
+        try {
+          result = await orchestrator.analyze(agentQuery, sessionId, traceId, {
+            providerId: session.providerId,
+            referenceTraceId: effectiveReferenceTraceId,
+            analysisMode: requestedAnalysisMode,
+            codeAwareMode: effectiveCodeAwareMode,
+            codebaseIds: input.codebaseIds,
+            knowledgeSourceIds: input.knowledgeSourceIds,
+            analysisContextFingerprint,
+            runManifestAttributionSink: runManifestLifecycle.builder,
+            ...knowledgeScope,
+          });
+          if (privateKnowledge) {
+            assertCurrentAnalysisContextAuthorization(effectiveInput, knowledgeScope, analysisContextFingerprint);
+          }
+        } catch (error) {
+          if (error instanceof AnalysisContextAuthorizationChangedError) {
+            orchestrator.off('update', handler);
+            revokeCodeAwareOutputGuards(sessionId);
+            sessionContextManager.remove(sessionId);
+            if (typeof orchestrator.cleanupSession === 'function') {
+              await Promise.resolve(orchestrator.cleanupSession(sessionId)).catch(() => undefined);
+            }
+          }
+          throw error;
+        } finally {
+          orchestrator.off('update', handler);
+        }
+        session.codeAwareMode = effectiveCodeAwareMode;
+        session.codebaseIds = input.codebaseIds;
+        session.knowledgeSourceIds = input.knowledgeSourceIds;
+        session.analysisContextFingerprint = analysisContextFingerprint;
+        const normalized = normalizeResultForReport(result, {
+          dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
+        });
+        result.conclusion = normalized.conclusion;
+        if (normalized.conclusionContract) {
+          result.conclusionContract = normalized.conclusionContract;
+        }
+        const qualityArtifacts = runClaimVerification({
+          conclusionContract: normalized.conclusionContract,
+          dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
+          comparisonReportSection: session.comparisonReportSection,
+          policy: 'record_only',
+        });
+        result.claimSupport = qualityArtifacts.claimSupport;
+        result.claimVerificationResult = qualityArtifacts.claimVerificationResult;
+        result.identityResolutions = qualityArtifacts.identityResolutions;
+        session.claimSupport = qualityArtifacts.claimSupport;
+        session.claimVerificationResult = qualityArtifacts.claimVerificationResult;
+        session.identityResolutions = qualityArtifacts.identityResolutions;
+        const finalQualityIssue = applyFinalResultQualityGate({ result, query: input.query });
+        if (finalQualityIssue) {
+          try {
+            input.onEvent({
+              type: 'degraded',
+              content: {
+                module: 'cliAnalyzeService',
+                fallback: 'final_result_quality_gate',
+                code: finalQualityIssue.code,
+                partial: true,
+                message: result.terminationMessage || finalQualityIssue.message,
+              },
+              timestamp: Date.now(),
+            });
+          } catch (err) {
+            console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
+          }
+        }
+        result.uiActionProposals = deriveUiActionProposals({
+          dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
+          currentTraceId: traceId,
+          existingProposals: result.uiActionProposals,
+        });
+        const runManifest = runManifestLifecycle.sealOnceAndPersist({
+          turnCount:
+            Number.isSafeInteger(result.rounds) && result.rounds >= 0
+              ? result.rounds
+              : 0,
+        });
+        result.analysisReceipt = buildAnalysisReceipt({
+          runManifestId: runManifest.runManifestId,
+          runId: runManifest.runId,
+          session,
+          result,
+          qualityArtifacts,
+          quickRun: result.quickRun,
+          providerId: session.providerId ?? null,
+          cliTurnPath,
+        });
+        session.result = result;
+        sessionContextManager.get(sessionId, traceId)?.annotateLatestCompletedTurn({
+          success: result.success,
+          findings: result.findings,
+          message: result.conclusion,
+          confidence: result.confidence,
+          partial: result.partial,
+          terminationReason: result.terminationReason,
+          terminationMessage: result.terminationMessage,
+          conclusionContract: normalized.conclusionContract,
+          claimSupport: qualityArtifacts.claimSupport,
+          claimVerificationResult: qualityArtifacts.claimVerificationResult,
+          identityResolutions: qualityArtifacts.identityResolutions,
+        });
+
+        // Persist to SQLite BEFORE building the report — the snapshot is stashed on
+        // the session as `_lastSnapshot` and read by the HTML generator. Routes
+        // through the same shared helper the HTTP layer uses, so any future schema
+        // change applies to both paths automatically.
+        persistAgentTurn({
+          session,
+          sessionId,
+          traceId,
+          query: input.query,
+          result: { conclusion: result.conclusion, totalDurationMs: result.totalDurationMs },
+        });
+
+        const persistedSnapshot = (
+          session as unknown as {
+            _lastSnapshot?: SessionStateSnapshot;
+          }
+        )._lastSnapshot;
+        const persistedRuntimeKind = getSnapshotRuntimeKind(persistedSnapshot);
+        const persistedProviderId = getSnapshotRuntimeProviderId(persistedSnapshot);
+        const persistedProviderSnapshotHash = getSnapshotRuntimeProviderSnapshotHash(persistedSnapshot);
+        const runtimeSelection = persistedRuntimeKind ? null : resolveAgentRuntimeSelection(session.providerId ?? null);
+        const resolvedRuntimeKind = persistedRuntimeKind ?? runtimeSelection?.kind;
+        const publicRuntimeKind = isProductionAgentRuntimeKind(resolvedRuntimeKind) ? resolvedRuntimeKind : undefined;
+
+        // SDK/session id is runtime-specific and exposed only through the orchestrator hook.
+        const sdkSessionId =
+          typeof orchestrator.getSdkSessionId === 'function'
+            ? orchestrator.getSdkSessionId(sessionId, effectiveReferenceTraceId)
+            : undefined;
+
+        const reportOutput = this.buildReportHtml(session, result);
+        const durableResult = privateKnowledge
+          ? projectPrivateAnalysisResult(sessionId, result, outputLanguage)
+          : result;
+
+        return {
+          sessionId,
+          traceId,
+          sdkSessionId,
+          result: durableResult,
+          reportHtml: reportOutput.html,
+          reportError:
+            privateKnowledge && reportOutput.error ? privateAnalysisFailureMessage(outputLanguage) : reportOutput.error,
+          // The Claude model name is stored on ClaudeRuntime's config; not trivially
+          // exposed via IOrchestrator. Left undefined for PR1; fills in PR2 via
+          // CLAUDE_MODEL env read if needed for config.json provenance.
+          model: process.env.CLAUDE_MODEL,
+          providerId: persistedProviderId !== undefined ? persistedProviderId : (session.providerId ?? null),
+          agentRuntimeKind: publicRuntimeKind,
+          providerSnapshotHash:
+            persistedProviderSnapshotHash !== undefined
+              ? persistedProviderSnapshotHash
+              : (session.providerSnapshotHash ?? null),
           codeAwareMode: effectiveCodeAwareMode,
-          codebaseIds: input.codebaseIds,
-          knowledgeSourceIds: input.knowledgeSourceIds,
-        }),
-        codeAwareMode: effectiveCodeAwareMode,
-        codebaseIds: input.codebaseIds,
-        knowledgeSourceIds: input.knowledgeSourceIds,
-        analysisContextFingerprint,
-        ...knowledgeScope,
+          privateKnowledge,
+        };
       });
-      if (privateKnowledge) {
-        assertCurrentAnalysisContextAuthorization(
-          effectiveInput,
-          knowledgeScope,
-          analysisContextFingerprint,
-        );
-      }
     } catch (error) {
-      if (error instanceof AnalysisContextAuthorizationChangedError) {
-        orchestrator.off('update', handler);
-        revokeCodeAwareOutputGuards(sessionId);
-        sessionContextManager.remove(sessionId);
-        if (typeof orchestrator.cleanupSession === 'function') {
-          await Promise.resolve(orchestrator.cleanupSession(sessionId)).catch(() => undefined);
+      if (runManifestLifecycle.state === 'collecting') {
+        try {
+          runManifestLifecycle.sealOnceAndPersist({
+            turnCount: 0,
+            closePendingSkillInvocationsAsErrors: true,
+          });
+        } catch (manifestError) {
+          console.error(
+            '[CliAnalyzeService] Failed to persist terminal run manifest:',
+            (manifestError as Error).message,
+          );
         }
       }
       throw error;
     } finally {
-      orchestrator.off('update', handler);
+      runManifestLifecycle.dispose();
     }
-    session.codeAwareMode = effectiveCodeAwareMode;
-    session.codebaseIds = input.codebaseIds;
-    session.knowledgeSourceIds = input.knowledgeSourceIds;
-    session.analysisContextFingerprint = analysisContextFingerprint;
-    const normalized = normalizeResultForReport(result, {
-      dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
-    });
-    result.conclusion = normalized.conclusion;
-    if (normalized.conclusionContract) {
-      result.conclusionContract = normalized.conclusionContract;
-    }
-    const qualityArtifacts = runClaimVerification({
-      conclusionContract: normalized.conclusionContract,
-      dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
-      comparisonReportSection: session.comparisonReportSection,
-      policy: 'record_only',
-    });
-    result.claimSupport = qualityArtifacts.claimSupport;
-    result.claimVerificationResult = qualityArtifacts.claimVerificationResult;
-    result.identityResolutions = qualityArtifacts.identityResolutions;
-    session.claimSupport = qualityArtifacts.claimSupport;
-    session.claimVerificationResult = qualityArtifacts.claimVerificationResult;
-    session.identityResolutions = qualityArtifacts.identityResolutions;
-    const finalQualityIssue = applyFinalResultQualityGate({ result, query: input.query });
-    if (finalQualityIssue) {
-      try {
-        input.onEvent({
-          type: 'degraded',
-          content: {
-            module: 'cliAnalyzeService',
-            fallback: 'final_result_quality_gate',
-            code: finalQualityIssue.code,
-            partial: true,
-            message: result.terminationMessage || finalQualityIssue.message,
-          },
-          timestamp: Date.now(),
-        });
-      } catch (err) {
-        console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
-      }
-    }
-    result.uiActionProposals = deriveUiActionProposals({
-      dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
-      currentTraceId: traceId,
-      existingProposals: result.uiActionProposals,
-    });
-    result.analysisReceipt = buildAnalysisReceipt({
-      session,
-      result,
-      qualityArtifacts,
-      quickRun: result.quickRun,
-      providerId: session.providerId ?? null,
-    });
-    session.result = result;
-    sessionContextManager.get(sessionId, traceId)?.annotateLatestCompletedTurn({
-      success: result.success,
-      findings: result.findings,
-      message: result.conclusion,
-      confidence: result.confidence,
-      partial: result.partial,
-      terminationReason: result.terminationReason,
-      terminationMessage: result.terminationMessage,
-      conclusionContract: normalized.conclusionContract,
-      claimSupport: qualityArtifacts.claimSupport,
-      claimVerificationResult: qualityArtifacts.claimVerificationResult,
-      identityResolutions: qualityArtifacts.identityResolutions,
-    });
-
-    // Persist to SQLite BEFORE building the report — the snapshot is stashed on
-    // the session as `_lastSnapshot` and read by the HTML generator. Routes
-    // through the same shared helper the HTTP layer uses, so any future schema
-    // change applies to both paths automatically.
-    persistAgentTurn({
-      session,
-      sessionId,
-      traceId,
-      query: input.query,
-      result: { conclusion: result.conclusion, totalDurationMs: result.totalDurationMs },
-    });
-
-    const persistedSnapshot = (session as unknown as {
-      _lastSnapshot?: SessionStateSnapshot;
-    })._lastSnapshot;
-    const persistedRuntimeKind = getSnapshotRuntimeKind(persistedSnapshot);
-    const persistedProviderId = getSnapshotRuntimeProviderId(persistedSnapshot);
-    const persistedProviderSnapshotHash = getSnapshotRuntimeProviderSnapshotHash(persistedSnapshot);
-    const runtimeSelection = persistedRuntimeKind
-      ? null
-      : resolveAgentRuntimeSelection(session.providerId ?? null);
-    const resolvedRuntimeKind = persistedRuntimeKind ?? runtimeSelection?.kind;
-    const publicRuntimeKind = isProductionAgentRuntimeKind(resolvedRuntimeKind)
-      ? resolvedRuntimeKind
-      : undefined;
-
-    // SDK/session id is runtime-specific and exposed only through the orchestrator hook.
-    const sdkSessionId =
-      typeof orchestrator.getSdkSessionId === 'function'
-        ? orchestrator.getSdkSessionId(sessionId, effectiveReferenceTraceId)
-        : undefined;
-
-    const reportOutput = this.buildReportHtml(session, result);
-    const durableResult = privateKnowledge
-      ? projectPrivateAnalysisResult(sessionId, result, outputLanguage)
-      : result;
-
-    return {
-      sessionId,
-      traceId,
-      sdkSessionId,
-      result: durableResult,
-      reportHtml: reportOutput.html,
-      reportError: privateKnowledge && reportOutput.error
-        ? privateAnalysisFailureMessage(outputLanguage)
-        : reportOutput.error,
-      // The Claude model name is stored on ClaudeRuntime's config; not trivially
-      // exposed via IOrchestrator. Left undefined for PR1; fills in PR2 via
-      // CLAUDE_MODEL env read if needed for config.json provenance.
-      model: process.env.CLAUDE_MODEL,
-      providerId: persistedProviderId !== undefined ? persistedProviderId : session.providerId ?? null,
-      agentRuntimeKind: publicRuntimeKind,
-      providerSnapshotHash: persistedProviderSnapshotHash !== undefined
-        ? persistedProviderSnapshotHash
-        : session.providerSnapshotHash ?? null,
-      codeAwareMode: effectiveCodeAwareMode,
-      privateKnowledge,
-    };
   }
 
   /**

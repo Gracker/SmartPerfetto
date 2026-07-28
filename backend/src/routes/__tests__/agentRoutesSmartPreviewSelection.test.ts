@@ -151,6 +151,7 @@ describe('Smart preview selection binding', () => {
       },
       outputLanguage: 'en',
       analysisMode: 'fast',
+      runManifestAttributionSink: {} as any,
       ...privateContext,
     });
 

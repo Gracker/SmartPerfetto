@@ -48,6 +48,8 @@ import {
   resolveKnowledgeScope,
 } from '../services/scopedKnowledgeStore';
 import {withFilesystemRegistryLockAsync} from '../services/filesystemRegistryLock';
+import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
+import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import { bucketPackageDomain } from '../services/caseEvolution/domainBucket';
 
 const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
@@ -1213,6 +1215,10 @@ export function buildPatternContextSection(
     const decayPct = (confidenceDecay(m.createdAt) * 100).toFixed(0);
     return `${i + 1}. **${m.sceneType}${m.architectureType ? ` (${m.architectureType})` : ''}** (相似度 ${(m.score * 100).toFixed(0)}%, 信心 ${decayPct}%, 匹配 ${m.matchCount + 1} 次)\n${insightText}`;
   });
+  const sink = currentRunManifestAttributionSink();
+  for (const [index, match] of matches.entries()) {
+    sink?.recordInjection('patterns', match.id, canonicalContentHash(lines[index]));
+  }
 
   return `## 历史分析经验（跨会话记忆）
 
@@ -1233,18 +1239,27 @@ export function buildNegativePatternSection(
 ): string | undefined {
   const matches = matchNegativePatterns(features, scope);
   if (matches.length === 0) return undefined;
-
-  const lines: string[] = [];
+  const uniqueLines: string[] = [];
+  const seenLines = new Set<string>();
+  const attributedLines = new Map<string, string[]>();
   for (const m of matches) {
     for (const a of m.failedApproaches.slice(0, 3)) {
       const workaround = a.workaround ? ` → 替代方案: ${a.workaround}` : '';
-      lines.push(`- **避免**: ${a.approach} — ${a.reason}${workaround}`);
+      const line = `- **避免**: ${a.approach} — ${a.reason}${workaround}`;
+      if (seenLines.has(line) || uniqueLines.length >= 6) continue;
+      seenLines.add(line);
+      uniqueLines.push(line);
+      const matchLines = attributedLines.get(m.id) ?? [];
+      matchLines.push(line);
+      attributedLines.set(m.id, matchLines);
     }
   }
 
-  // Deduplicate lines
-  const uniqueLines = [...new Set(lines)].slice(0, 6);
   if (uniqueLines.length === 0) return undefined;
+  const sink = currentRunManifestAttributionSink();
+  for (const [id, lines] of attributedLines) {
+    sink?.recordInjection('patterns', id, canonicalContentHash(lines.join('\n')));
+  }
 
   return `## 历史踩坑记录（避免重复失败）
 

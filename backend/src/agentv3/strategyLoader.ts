@@ -22,6 +22,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
 import type { ExpectedCall } from './types';
+import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
+import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 
 /** Phase-level restatement hint — loaded from strategy frontmatter `phase_hints`. */
 export interface PhaseHint {
@@ -455,7 +457,15 @@ export function loadStrategies(): Map<string, StrategyDefinition> {
 
 export function getStrategyContent(scene: string): string | undefined {
   const def = loadStrategies().get(scene);
-  return def?.strategyKind === 'contract_only' ? undefined : def?.content;
+  const content = def?.strategyKind === 'contract_only' ? undefined : def?.content;
+  if (content) {
+    currentRunManifestAttributionSink()?.recordScene({
+      sceneType: scene,
+      strategyId: scene,
+      strategyContentHash: canonicalContentHash(content),
+    });
+  }
+  return content;
 }
 
 export function getStrategyDetails(scene: string): StrategyDetailSection[] {
@@ -599,13 +609,26 @@ const templateCache = new Map<string, string>();
  * Results are cached in `templateCache` and cleared by `invalidateStrategyCache()`.
  */
 export function loadPromptTemplate(name: string): string | undefined {
-  if (templateCache.has(name) && !DEV_MODE) return templateCache.get(name);
+  if (templateCache.has(name) && !DEV_MODE) {
+    const cached = templateCache.get(name);
+    if (cached) {
+      currentRunManifestAttributionSink()?.recordPromptTemplate(
+        name,
+        canonicalContentHash(cached),
+      );
+    }
+    return cached;
+  }
 
   const filePath = path.join(STRATEGIES_DIR, `${name}.template.md`);
   if (!fs.existsSync(filePath)) return undefined;
 
   const content = fs.readFileSync(filePath, 'utf-8').trim();
   templateCache.set(name, content);
+  currentRunManifestAttributionSink()?.recordPromptTemplate(
+    name,
+    canonicalContentHash(content),
+  );
   return content;
 }
 

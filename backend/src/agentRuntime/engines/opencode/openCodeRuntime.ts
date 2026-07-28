@@ -2054,6 +2054,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         engineCapabilities: getOpenCodeEngineCapabilities(this.selection.kind),
         sceneType,
         outputLanguage,
+        resolvedMode: 'quick',
+        budget: {model: 'runtime-acknowledgement'},
       });
       return this.buildDirectQuickAcknowledgementResult({
         query,
@@ -2098,6 +2100,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         engineCapabilities: getOpenCodeEngineCapabilities(this.selection.kind),
         sceneType,
         outputLanguage,
+        resolvedMode: 'quick',
+        budget: {model: 'runtime-pre-evidence'},
       });
       return this.buildDirectQuickEvidenceResult({
         query,
@@ -2116,7 +2120,13 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
 
     const sdk = await this.moduleLoader(this.env);
     const modelConfig = resolveOpenCodeModelConfig(this.env, this.selection, this.input.providerScope);
-    const prep = await this.prepareAnalysis(query, sessionId, traceId, options);
+    const prep = await this.prepareAnalysis(
+      query,
+      sessionId,
+      traceId,
+      options,
+      `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
+    );
     const abortController = new AbortController();
     const bridge = await startOpenCodeMcpBridge(
       prep.toolDefinitions,
@@ -2591,6 +2601,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    model: string,
   ): Promise<OpenCodeAnalysisPreparation> {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -2622,6 +2633,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       engineCapabilities: getOpenCodeEngineCapabilities(this.selection.kind),
       sceneType,
       outputLanguage,
+      resolvedMode: quickMode ? 'quick' : 'full',
+      budget: {model},
     });
 
     await ensureSkillRegistryInitialized();
@@ -2710,6 +2723,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     });
     const { toolDefinitions } = createClaudeMcpServer({
+      runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,
       userQuery: query,

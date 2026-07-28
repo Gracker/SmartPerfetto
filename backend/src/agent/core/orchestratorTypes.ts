@@ -38,7 +38,8 @@ import type { ClaimSupportV1 } from '../../types/evidenceContract';
 import type { ClaimVerificationResult } from '../../types/claimVerification';
 import type { IdentityResolutionV1 } from '../../types/identityContract';
 import type { CodeAwareMode } from '../../services/codebase/codeAwareFeature';
-import type { AnalysisReceiptV1, UiActionProposalV1 } from '../../types/dataContract';
+import type { AnalysisReceipt, UiActionProposalV1 } from '../../types/dataContract';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 
 // =============================================================================
 // Agent ID Constants
@@ -236,7 +237,7 @@ export interface AnalysisResult {
   smartScenePreview?: SmartScenePreviewPayload;
   /** User-visible quick-mode run receipt. Metadata only; never claim support evidence. */
   quickRun?: QuickRunReceipt;
-  analysisReceipt?: AnalysisReceiptV1;
+  analysisReceipt?: AnalysisReceipt;
   uiActionProposals?: UiActionProposalV1[];
 }
 
@@ -247,6 +248,8 @@ export type AgentRuntimeAnalysisResult = AnalysisResult;
 // =============================================================================
 
 export interface AnalysisOptions {
+  /** Internal, run-scoped attribution sink. Never sourced from request JSON. */
+  runManifestAttributionSink?: RunManifestAttributionSink;
   /** Request/session-pinned presentation language. */
   outputLanguage?: import('../../agentv3/outputLanguage').OutputLanguage;
   traceProcessorService?: any;

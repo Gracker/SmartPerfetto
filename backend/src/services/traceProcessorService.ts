@@ -21,6 +21,8 @@ import {
   rethrowIfTraceProcessorQueryCancelled,
   throwIfTraceProcessorQueryCancelled,
 } from './traceProcessorCancellation';
+import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
+import {splitSqlStatements} from './sqlStdlibDependencyAnalyzer';
 
 export interface TraceInfo {
   id: string;
@@ -89,6 +91,15 @@ export interface TraceProcessorLeaseRestartPolicy {
 const DEFAULT_LEASE_RESTART_BACKOFF_MS = [1000, 5000, 15000];
 const DEFAULT_LEASE_RESTART_JITTER_MS = 250;
 const LEASE_RESTART_CONFLICT_STATES = new Set<TraceProcessorLeaseState>(['draining', 'released', 'failed']);
+
+function recordRunManifestSqlStatements(sql: string, success: boolean): void {
+  const sink = currentRunManifestAttributionSink();
+  if (!sink) return;
+  const statementCount = splitSqlStatements(sql).length;
+  for (let index = 0; index < statementCount; index++) {
+    sink.recordSqlStatement(success);
+  }
+}
 
 /**
  * Manages trace files and processors using the actual Perfetto Trace Processor WASM
@@ -500,9 +511,16 @@ export class TraceProcessorService extends EventEmitter {
     sql: string,
     options: TraceProcessorServiceQueryOptions = {},
   ): Promise<QueryResult> {
-    const processor = await this.processorForQuery(traceId, options);
-    const { leaseId: _leaseId, leaseMode: _leaseMode, leaseScope: _leaseScope, ...queryOptions } = options;
-    return await processor.query(sql, queryOptions);
+    try {
+      const processor = await this.processorForQuery(traceId, options);
+      const { leaseId: _leaseId, leaseMode: _leaseMode, leaseScope: _leaseScope, ...queryOptions } = options;
+      const result = await processor.query(sql, queryOptions);
+      recordRunManifestSqlStatements(sql, !result.error);
+      return result;
+    } catch (error) {
+      recordRunManifestSqlStatements(sql, false);
+      throw error;
+    }
   }
 
   public async queryRaw(

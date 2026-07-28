@@ -320,6 +320,15 @@ interface PiAgentCoreModelConfig {
   thinkingBudgets?: Record<string, number>;
 }
 
+function piModelIdentity(model: Record<string, unknown>): string | undefined {
+  const modelId = normalizeOptionalString(model.id)
+    ?? normalizeOptionalString(model.name)
+    ?? normalizeOptionalString(model.model);
+  if (!modelId) return undefined;
+  const provider = normalizeOptionalString(model.provider);
+  return provider ? `${provider}/${modelId}` : modelId;
+}
+
 interface PiAnalysisPreparation {
   systemPrompt: string;
   prompt: string;
@@ -1183,6 +1192,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         engineCapabilities: getPiAgentCoreEngineCapabilities(this.selection.kind),
         sceneType,
         outputLanguage,
+        resolvedMode: 'quick',
+        budget: {model: 'runtime-acknowledgement'},
       });
       return this.buildDirectQuickAcknowledgementResult({
         query,
@@ -1227,6 +1238,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         engineCapabilities: getPiAgentCoreEngineCapabilities(this.selection.kind),
         sceneType,
         outputLanguage,
+        resolvedMode: 'quick',
+        budget: {model: 'runtime-pre-evidence'},
       });
       return this.buildDirectQuickEvidenceResult({
         query,
@@ -1245,7 +1258,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
     const modelConfig = resolvePiAgentCoreModel(this.env, false);
     const { Agent } = await this.moduleLoader(this.env);
-    const prep = await this.prepareAnalysis(query, sessionId, traceId, options);
+    const prep = await this.prepareAnalysis(
+      query,
+      sessionId,
+      traceId,
+      options,
+      piModelIdentity(modelConfig.model),
+    );
     const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
     if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
 
@@ -1864,6 +1883,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    model: string | undefined,
   ): Promise<PiAnalysisPreparation> {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -1895,6 +1915,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       engineCapabilities: getPiAgentCoreEngineCapabilities(this.selection.kind),
       sceneType,
       outputLanguage,
+      resolvedMode: quickMode ? 'quick' : 'full',
+      budget: {model},
     });
 
     await ensureSkillRegistryInitialized();
@@ -1991,6 +2013,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     });
     const { toolDefinitions } = createClaudeMcpServer({
+      runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,
       userQuery: query,

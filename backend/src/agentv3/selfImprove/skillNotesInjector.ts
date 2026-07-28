@@ -26,6 +26,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { readSkillNotesFile, type SkillNotesFile, type PersistedSkillNote } from './skillNotesWriter';
 import { backendLogPath } from '../../runtimePaths';
+import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
+import {currentRunManifestAttributionSink} from '../../services/selfEvolution/runManifestLifecycle';
 
 export type AnalysisPathMode = 'full' | 'quick' | 'retry';
 
@@ -118,12 +120,14 @@ export class SkillNotesBudget {
     }
 
     const lines: string[] = [];
+    const selected: PersistedSkillNote[] = [];
     let used = 0;
     for (const note of eligible) {
       const formatted = renderNote(note);
       const cost = estimateTokens(formatted);
       if (used + cost > skillCeiling) break;
       lines.push(formatted);
+      selected.push(note);
       used += cost;
     }
     if (lines.length === 0) {
@@ -139,6 +143,21 @@ export class SkillNotesBudget {
     const text = `## Skill Notes (历史踩坑) — ${skillId}\n${lines.join('\n')}`;
     this.totalUsed += used;
     this.injected.add(skillId);
+    const sink = currentRunManifestAttributionSink();
+    for (const note of selected) {
+      sink?.recordInjection(
+        'skillNotes',
+        note.id,
+        canonicalContentHash({
+          failureCategory: note.failureCategory,
+          failureModeHash: note.failureModeHash ?? null,
+          evidenceSummary: note.evidenceSummary,
+          candidateKeywords: note.candidateKeywords,
+          candidateConstraints: note.candidateConstraints,
+          candidateCriticalTools: note.candidateCriticalTools,
+        }),
+      );
+    }
     return { text, tokensUsed: used };
   }
 

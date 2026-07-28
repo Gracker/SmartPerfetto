@@ -2,8 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 import type { AnalysisOptions } from '../../agent/core/orchestratorTypes';
+import type { RunManifestAttributionSink } from '../../types/selfEvolution';
 import { buildComplexityClassifierInput } from '../../agentv3/queryComplexityContext';
 import type { RuntimeSelection } from '../runtimeSelection';
 import {
@@ -13,6 +14,7 @@ import {
   providerScopeFromAnalysisOptions,
 } from '../runtimeCommon';
 import { createAnalysisRunSpec } from '../analysisRunSpec';
+import {listProductionRuntimeKinds} from '../runtimeKinds';
 
 const claudeSelection: RuntimeSelection = {
   kind: 'claude-agent-sdk',
@@ -187,4 +189,47 @@ describe('AnalysisRunSpec shadow mode', () => {
       promptCache: { systemPromptDynamicBoundary: false },
     });
   });
+
+  it.each(listProductionRuntimeKinds())(
+    'records the final model and canonical runtime for %s',
+    runtimeKind => {
+      const recordRuntime = jest.fn();
+      const sink = {
+        identity: {
+          runId: `run-${runtimeKind}`,
+          sessionId: `session-${runtimeKind}`,
+          scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+        },
+        recordScene: jest.fn(),
+        recordRuntime,
+        recordMode: jest.fn(),
+      } as unknown as RunManifestAttributionSink;
+      const runtimeSelection = {
+        kind: runtimeKind,
+        source: 'snapshot',
+      } as RuntimeSelection;
+
+      const spec = createAnalysisRunSpec({
+        query: 'analyze',
+        sessionId: `session-${runtimeKind}`,
+        traceId: 'trace-runtime',
+        options: {
+          providerId: `provider-${runtimeKind}`,
+          runManifestAttributionSink: sink,
+        },
+        runtimeSelection,
+        sceneType: 'general',
+        outputLanguage: 'en',
+        budget: {model: `model-${runtimeKind}`},
+      });
+
+      expect(spec.runtime.kind).toBe(runtimeKind);
+      expect(recordRuntime).toHaveBeenCalledWith({
+        runtime: runtimeKind,
+        providerId: `provider-${runtimeKind}`,
+        model: `model-${runtimeKind}`,
+        outputLanguage: 'en',
+      });
+    },
+  );
 });

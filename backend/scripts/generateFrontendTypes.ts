@@ -805,12 +805,12 @@ export type AnalysisReceiptRuntime =
   | 'claude-agent-sdk'
   | 'openai-agents-sdk'
   | 'pi-agent-core'
-  | 'opencode';
+  | 'opencode'
+  | 'qoder-agent-sdk';
 
 export type AnalysisReceiptGateStatus = 'passed' | 'partial' | 'not_applicable';
 
-export interface AnalysisReceiptV1 {
-  schemaVersion: 1;
+export interface AnalysisReceiptBase {
   runId: string;
   sessionId: string;
   traceId: string;
@@ -851,6 +851,17 @@ export interface AnalysisReceiptV1 {
     reportError?: string;
   };
 }
+
+export interface AnalysisReceiptV1 extends AnalysisReceiptBase {
+  schemaVersion: 1;
+}
+
+export interface AnalysisReceiptV2 extends AnalysisReceiptBase {
+  schemaVersion: 2;
+  runManifestId: string;
+}
+
+export type AnalysisReceipt = AnalysisReceiptV1 | AnalysisReceiptV2;
 
 export type UiActionKind =
   | 'navigate_timeline'

@@ -2880,6 +2880,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         // self-improving design. Operators can opt-in via the env override.
         const quickNotesBudget = createRuntimeSkillNotesBudget(true);
         const mcp = createClaudeMcpServer({
+          runManifestAttributionSink: options.runManifestAttributionSink,
           sessionId,
           traceId,
           userQuery: query,
@@ -3787,6 +3788,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // P2-G1: Destructure to get both server and auto-derived allowedTools
     const fullNotesBudget = createRuntimeSkillNotesBudget(false);
     const { server: mcpServer, allowedTools } = createClaudeMcpServer({
+      runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,
       userQuery: query,

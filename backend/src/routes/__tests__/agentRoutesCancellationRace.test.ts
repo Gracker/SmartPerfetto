@@ -15,6 +15,11 @@ import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { resetAgentEventStoreForTests } from '../../services/agentEventStore';
 import { resetAnalysisRunStoreForTests } from '../../services/analysisRunStore';
 import { ENTERPRISE_DB_PATH_ENV } from '../../services/enterpriseDb';
+import { clearRunManifestLifecyclesForTests } from '../../services/selfEvolution/runManifestLifecycle';
+import {
+  getRunManifestStore,
+  resetRunManifestStoreForTests,
+} from '../../services/selfEvolution/runManifestStore';
 import { SessionPersistenceService } from '../../services/sessionPersistenceService';
 import {
   getTraceProcessorLeaseStore,
@@ -87,10 +92,109 @@ afterEach(() => {
   SessionPersistenceService.resetForTests();
   resetAgentEventStoreForTests();
   resetAnalysisRunStoreForTests();
+  clearRunManifestLifecyclesForTests();
+  resetRunManifestStoreForTests();
   restoreEnvironment();
 });
 
 describe('agent analyze cancellation races', () => {
+  it('persists terminal attribution when the runtime fails', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-runtime-failure-'));
+    const app = makeApp();
+    let sessionId: string | undefined;
+    let leaseStore: ReturnType<typeof getTraceProcessorLeaseStore> | undefined;
+    try {
+      const traceId = 'trace-runtime-failure';
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+      process.env.SMARTPERFETTO_AI_ENABLED = 'true';
+
+      await writeTraceMetadata({
+        id: traceId,
+        filename: `${traceId}.trace`,
+        size: 11,
+        uploadedAt: new Date().toISOString(),
+        status: 'ready',
+        path: tracePath,
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      });
+
+      const traceProcessorService = new TraceProcessorService(process.env.UPLOAD_DIR);
+      jest.spyOn(traceProcessorService, 'getOrLoadTrace').mockResolvedValue({
+        id: traceId,
+        filename: `${traceId}.trace`,
+        size: 11,
+        filePath: tracePath,
+        uploadTime: new Date(),
+        status: 'ready',
+      });
+      jest.spyOn(traceProcessorService, 'ensureProcessorForLease')
+        .mockResolvedValue(readyProcessor(traceId));
+      jest.spyOn(traceProcessorService, 'runWithLease')
+        .mockImplementation(async (_context, callback) => callback());
+      setTraceProcessorServiceForTests(traceProcessorService);
+
+      jest.spyOn(ClaudeRuntime.prototype, 'analyze')
+        .mockRejectedValue(new Error('runtime failure canary'));
+      jest.spyOn(ClaudeRuntime.prototype, 'cleanupSession')
+        .mockImplementation(() => undefined);
+
+      const analyzeResponse = await analystHeaders(
+        request(app).post('/api/agent/v1/analyze'),
+      ).send({
+        traceId,
+        query: 'fail this analysis',
+      });
+      expect(analyzeResponse.status).toBe(200);
+      sessionId = analyzeResponse.body.sessionId;
+      const runId = analyzeResponse.body.runId;
+
+      let statusResponse: request.Response | undefined;
+      let manifest = getRunManifestStore().getByRunId(
+        { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
+        runId,
+      );
+      for (let attempt = 0; attempt < 50; attempt++) {
+        statusResponse = await analystHeaders(
+          request(app).get(`/api/agent/v1/${sessionId}/status`),
+        );
+        manifest = getRunManifestStore().getByRunId(
+          { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
+          runId,
+        );
+        if (statusResponse.body.status === 'failed' && manifest) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+
+      expect(statusResponse?.body).toEqual(expect.objectContaining({
+        status: 'failed',
+        error: 'runtime failure canary',
+      }));
+      expect(manifest).toEqual(expect.objectContaining({
+        runId,
+        turns: 0,
+      }));
+    } finally {
+      if (sessionId) {
+        await analystHeaders(request(app).delete(`/api/agent/v1/${sessionId}`));
+        sessionContextManager.remove(sessionId);
+      }
+      leaseStore = getTraceProcessorLeaseStore();
+      leaseStore.close();
+      setTraceProcessorLeaseStoreForTests(null);
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
   it('does not start the runtime when its run is cancelled while lease startup is pending', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-lease-cancel-'));
     const app = makeApp();
@@ -188,8 +292,12 @@ describe('agent analyze cancellation races', () => {
       const lease = leaseStore.listLeases(scope, { traceId })[0];
       const holder = lease?.holders[0];
       const metadataSessionId = holder?.metadata?.sessionId;
+      const runId = holder?.holderRef;
       if (typeof metadataSessionId !== 'string') {
         throw new Error('agent lease did not expose its owning session');
+      }
+      if (typeof runId !== 'string') {
+        throw new Error('agent lease did not expose its owning run');
       }
       sessionId = metadataSessionId;
 
@@ -217,7 +325,7 @@ describe('agent analyze cancellation races', () => {
       expect(abortSpy).not.toHaveBeenCalled();
 
       const cancelPromise = analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/cancel`))
-        .send({ runId: holder?.holderRef })
+        .send({ runId })
         .then((response) => response);
       await abortEntered;
 
@@ -228,7 +336,7 @@ describe('agent analyze cancellation races', () => {
       expect(nextRunDuringCancellation.body).toEqual(
         expect.objectContaining({
           code: 'CANCELLATION_IN_PROGRESS',
-          runId: holder?.holderRef,
+          runId,
         }),
       );
       expect(analyzeSpy).not.toHaveBeenCalled();
@@ -239,11 +347,18 @@ describe('agent analyze cancellation races', () => {
       expect(cancelResponse.body).toEqual(
         expect.objectContaining({
           status: 'cancelled',
-          runId: holder?.holderRef,
+          runId,
           outcome: 'cancelled',
         }),
       );
       expect(abortSpy).toHaveBeenCalledTimes(1);
+      expect(getRunManifestStore().getByRunId(
+        { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
+        runId,
+      )).toEqual(expect.objectContaining({
+        runId,
+        turns: 0,
+      }));
 
       const nextRunAfterAbortBeforeLease = await analystHeaders(
         request(app).post(`/api/agent/v1/sessions/${sessionId}/runs`),
@@ -252,18 +367,18 @@ describe('agent analyze cancellation races', () => {
       expect(nextRunAfterAbortBeforeLease.body).toEqual(
         expect.objectContaining({
           code: 'CANCELLATION_IN_PROGRESS',
-          runId: holder?.holderRef,
+          runId,
         }),
       );
 
       const repeatedCancelResponse = await analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/cancel`)).send({
-        runId: holder?.holderRef,
+        runId,
       });
       expect(repeatedCancelResponse.status).toBe(200);
       expect(repeatedCancelResponse.body).toEqual(
         expect.objectContaining({
           status: 'cancelled',
-          runId: holder?.holderRef,
+          runId,
           outcome: 'already_cancelled',
         }),
       );
@@ -274,7 +389,7 @@ describe('agent analyze cancellation races', () => {
 
       const analyzeResponse = await analyzePromise;
       expect(analyzeResponse.status).toBe(200);
-      expect(analyzeResponse.body.runId).toBe(holder?.holderRef);
+      expect(analyzeResponse.body.runId).toBe(runId);
       expect(analyzeSpy).not.toHaveBeenCalled();
       expect(runWithLeaseSpy).not.toHaveBeenCalled();
 
@@ -283,7 +398,7 @@ describe('agent analyze cancellation races', () => {
       expect(statusResponse.body.status).toBe('cancelled');
       expect(statusResponse.body.observability).toEqual(
         expect.objectContaining({
-          runId: holder?.holderRef,
+          runId,
           status: 'cancelled',
         }),
       );
@@ -439,6 +554,13 @@ describe('agent analyze cancellation races', () => {
       expect(statusResponse.status).toBe(200);
       expect(statusResponse.body.status).toBe('cancelled');
       expect(statusResponse.body.result).toBeUndefined();
+      expect(getRunManifestStore().getByRunId(
+        {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+        runId,
+      )).toEqual(expect.objectContaining({
+        runId,
+        turns: 0,
+      }));
 
       const reportResponse = await analystHeaders(request(app).get(`/api/agent/v1/${sessionId}/report`));
       expect(reportResponse.status).not.toBe(200);

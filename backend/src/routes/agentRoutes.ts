@@ -20,7 +20,11 @@ import { createSessionLogger, SessionLogger } from '../services/sessionLogger';
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../services/agentReportData';
 import { persistAgentTurn } from '../services/persistAgentSession';
-import { buildAnalysisReceipt } from '../services/analysisReceiptBuilder';
+import {
+  buildAnalysisReceipt,
+  buildLegacyAnalysisReceipt,
+  type BuildAnalysisReceiptInput,
+} from '../services/analysisReceiptBuilder';
 import { deriveUiActionProposals } from '../services/uiActionProposalDeriver';
 import { buildRawTraceComparisonReportSection } from '../services/comparisonAppendixService';
 import { applyFinalResultQualityGate } from '../services/finalResultQualityGate';
@@ -30,7 +34,13 @@ import {
 } from '../services/agentResultNormalizer';
 import { reportStore, persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
-import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
+import {
+  authenticate,
+  DEFAULT_TENANT_ID,
+  DEFAULT_WORKSPACE_ID,
+  requireRequestContext,
+  type RequestContext,
+} from '../middleware/auth';
 import {
   isOwnedByContext,
   ownersMatch,
@@ -208,6 +218,21 @@ import {buildSmartDeepDiveAnalysisContext} from '../services/effectiveAnalysisMo
 import type { CaseCandidateCaptureInput, CaseEvolutionConfig } from '../types/caseEvolution';
 import type { CaseEvolutionEngine } from '../types/caseEvolution';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
+import {getWorkspaceSkillRegistry} from '../services/skillPacks/workspaceSkillRegistryProvider';
+import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
+import {
+  createRunManifestLifecycle,
+  disposeRunManifestLifecyclesForSession,
+  getActiveRunManifestLifecycle,
+  withRunManifestLifecycle,
+  type RunManifestLifecycle,
+} from '../services/selfEvolution/runManifestLifecycle';
+import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
+import type {
+  RunManifestAttributionSink,
+  RunManifestScope,
+} from '../types/selfEvolution';
+import type {AnalysisReceipt} from '../types/dataContract';
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -636,6 +661,10 @@ async function abortAndCleanupSession(sessionId: string, session: AnalysisSessio
   await abortSessionBestEffort(session, component);
   cleanupSessionBestEffort(sessionId, session, component);
   revokeCodeAwareOutputGuards(sessionId);
+  disposeRunManifestLifecyclesForSession(
+    runManifestScopeFromSession(session),
+    sessionId,
+  );
 }
 
 async function retireAuthorizationChangedSession(
@@ -829,6 +858,14 @@ async function cancelSessionRun(
       session.cancellationAbortCompletedRunId = runId;
       clearCancellationInFlightIfSettled(session, runId);
     }
+  }
+  const runManifestLifecycle = getActiveRunManifestLifecycle(
+    runManifestScopeFromSession(session),
+    sessionId,
+    runId,
+  );
+  if (runManifestLifecycle) {
+    finalizeHttpRunManifestLifecycle(session, runManifestLifecycle);
   }
 
   const terminalEvents = appendCancellationTerminalEvents(session, reason, runId);
@@ -1039,6 +1076,112 @@ const smartCancelBridge = new SmartCancelBridge();
 
 function normalizeReceiptAnalysisMode(value: unknown): AnalyzeMode | undefined {
   return value === 'fast' || value === 'full' || value === 'auto' ? value : undefined;
+}
+
+function runManifestScopeFromSession(session: AnalysisSession): RunManifestScope {
+  return {
+    tenantId: session.tenantId ?? DEFAULT_TENANT_ID,
+    workspaceId: session.workspaceId ?? DEFAULT_WORKSPACE_ID,
+  };
+}
+
+async function createHttpRunManifestLifecycle(
+  session: AnalysisSession,
+  run: AnalyzeSessionRunContext,
+  options: {
+    analysisMode?: AnalyzeMode;
+    referenceTraceId?: string;
+  },
+): Promise<RunManifestLifecycle> {
+  if (!session.runtimeKind) {
+    throw new Error(`run_manifest_runtime_missing:${run.runId}`);
+  }
+  await ensureSkillRegistryInitialized();
+  const scope = runManifestScopeFromSession(session);
+  const handle = await getWorkspaceSkillRegistry({
+    ...scope,
+    userId: session.userId,
+  });
+  return createRunManifestLifecycle({
+    runId: run.runId,
+    sessionId: session.sessionId,
+    scope,
+    userId: session.userId,
+    startedAt: run.startedAt,
+    runtime: session.runtimeKind,
+    providerId: session.providerId ?? null,
+    outputLanguage: sessionOutputLanguage(session),
+    analysisMode: options.analysisMode ?? session.analysisMode ?? 'auto',
+    referenceTraceId: options.referenceTraceId ?? session.referenceTraceId,
+    skillRegistry: buildSkillRegistryAttribution(handle.registry),
+  });
+}
+
+function sealHttpRunManifest(
+  session: AnalysisSession,
+  lifecycle: RunManifestLifecycle,
+  options: {
+    closePendingSkillInvocationsAsErrors?: boolean;
+  } = {},
+): void {
+  if (lifecycle.state !== 'collecting') return;
+  const run = resolveSessionRun(session, lifecycle.identity.runId);
+  const resultTurns =
+    session.result &&
+    (run?.status === 'completed' || run?.status === 'quota_exceeded')
+      ? session.result.rounds
+      : 0;
+  lifecycle.sealOnceAndPersist({
+    scene: {
+      sceneType: resolveAnalysisResultSceneType(
+        session.query,
+        session.dataEnvelopes,
+      ),
+      architecture: resolveCaseEvolutionArchitectureType(
+        session,
+        session.traceId,
+      ),
+    },
+    turnCount: Number.isSafeInteger(resultTurns) && resultTurns >= 0
+      ? resultTurns
+      : 0,
+    closePendingSkillInvocationsAsErrors:
+      options.closePendingSkillInvocationsAsErrors,
+  });
+}
+
+function sealCompletedHttpRunManifest(
+  session: AnalysisSession,
+  lifecycle: RunManifestLifecycle,
+  runId: string,
+): void {
+  const run = resolveSessionRun(session, runId);
+  if (
+    !session.result ||
+    (run?.status !== 'completed' && run?.status !== 'quota_exceeded')
+  ) {
+    return;
+  }
+  sealHttpRunManifest(session, lifecycle);
+}
+
+function finalizeHttpRunManifestLifecycle(
+  session: AnalysisSession,
+  lifecycle: RunManifestLifecycle,
+): void {
+  try {
+    sealHttpRunManifest(session, lifecycle, {
+      closePendingSkillInvocationsAsErrors: true,
+    });
+  } catch (error) {
+    session.logger.error(
+      'RunManifest',
+      'Failed to persist terminal run manifest',
+      error,
+    );
+  } finally {
+    lifecycle.dispose();
+  }
 }
 
 function agentEventScopeFromSession(session: AnalysisSession, runId?: string): AgentEventPersistenceScope | null {
@@ -2093,6 +2236,7 @@ async function handleAnalyzeRequest(
 ): Promise<void> {
   let executionSession: AnalysisSession | undefined;
   let executionRunId: string | undefined;
+  let executionRunManifestLifecycle: RunManifestLifecycle | undefined;
   let executionHandedOff = false;
   try {
     const requestId = getRequestId(req);
@@ -2545,57 +2689,82 @@ async function handleAnalyzeRequest(
       runId: runContext.runId,
       runSequence: runContext.sequence,
     });
+    const runManifestLifecycle = await createHttpRunManifestLifecycle(
+      sessionForRun,
+      runContext,
+      {
+        analysisMode: options.analysisMode,
+        referenceTraceId: effectiveReferenceTraceId,
+      },
+    );
+    executionRunManifestLifecycle = runManifestLifecycle;
 
     if (options.preset === 'smart') {
-      const smartAnalysisPromise = runSmartAnalysis(sessionId, query, traceId, {
-        runContext,
-        traceProcessorService,
-        smartAction: options.smartAction ?? 'preview',
-        smartSelection: options.smartSelection,
-        forceRefresh: options.forceRefresh === true,
-        analysisMode: options.analysisMode,
-        blockedStrategyIds,
-        owner: ownerFieldsFromContext(requestContext),
-        knowledgeScope: knowledgeScopeFromRequestContext(requestContext),
-        codeAwareMode: options.codeAwareMode,
-        codebaseIds: options.codebaseIds,
-        knowledgeSourceIds: options.knowledgeSourceIds,
-      }).catch((error) => {
-        const session = assistantAppService.getSession(sessionId);
-        if (session) {
-          const privateKnowledge = sessionUsesPrivateKnowledge(session);
-          const publicErrorMessage = privateKnowledge
-            ? privateAnalysisFailureMessage(sessionOutputLanguage(session))
-            : error.message;
-          if (isSessionRunCancelled(session, runContext.runId) || isStaleRun(session, runContext.runId)) {
-            session.logger.info('AgentRoutes', 'Ignoring smart analysis failure after cancellation', {
-              sessionId,
-              runId: runContext.runId,
-              error: privateKnowledge ? publicErrorMessage : error?.message || String(error),
-            });
-            return;
-          }
-          session.logger.error(
-            'AgentRoutes',
-            'Smart analysis failed',
-            privateKnowledge ? new Error(publicErrorMessage) : error,
-          );
-          session.status = 'failed';
-          session.error = publicErrorMessage;
-          markSessionRunStatus(session, 'failed', publicErrorMessage, runContext.runId);
-          broadcastToAgentDrivenClients(
-            sessionId,
-            {
-              type: 'error',
-              content: { message: publicErrorMessage, error: publicErrorMessage },
-              timestamp: Date.now(),
-            },
+      const smartAnalysisPromise = withRunManifestLifecycle(
+        runManifestLifecycle,
+        () => runSmartAnalysis(sessionId, query, traceId, {
+          runContext,
+          traceProcessorService,
+          smartAction: options.smartAction ?? 'preview',
+          smartSelection: options.smartSelection,
+          forceRefresh: options.forceRefresh === true,
+          analysisMode: options.analysisMode,
+          blockedStrategyIds,
+          owner: ownerFieldsFromContext(requestContext),
+          knowledgeScope: knowledgeScopeFromRequestContext(requestContext),
+          codeAwareMode: options.codeAwareMode,
+          codebaseIds: options.codebaseIds,
+          knowledgeSourceIds: options.knowledgeSourceIds,
+          runManifestAttributionSink: runManifestLifecycle.builder,
+        }),
+      )
+        .then(() => {
+          sealCompletedHttpRunManifest(
+            sessionForRun,
+            runManifestLifecycle,
             runContext.runId,
           );
-        }
-      });
+        })
+        .catch((error) => {
+          const session = assistantAppService.getSession(sessionId);
+          if (session) {
+            const privateKnowledge = sessionUsesPrivateKnowledge(session);
+            const publicErrorMessage = privateKnowledge
+              ? privateAnalysisFailureMessage(sessionOutputLanguage(session))
+              : error.message;
+            if (isSessionRunCancelled(session, runContext.runId) || isStaleRun(session, runContext.runId)) {
+              session.logger.info('AgentRoutes', 'Ignoring smart analysis failure after cancellation', {
+                sessionId,
+                runId: runContext.runId,
+                error: privateKnowledge ? publicErrorMessage : error?.message || String(error),
+              });
+              return;
+            }
+            session.logger.error(
+              'AgentRoutes',
+              'Smart analysis failed',
+              privateKnowledge ? new Error(publicErrorMessage) : error,
+            );
+            session.status = 'failed';
+            session.error = publicErrorMessage;
+            markSessionRunStatus(session, 'failed', publicErrorMessage, runContext.runId);
+            broadcastToAgentDrivenClients(
+              sessionId,
+              {
+                type: 'error',
+                content: { message: publicErrorMessage, error: publicErrorMessage },
+                timestamp: Date.now(),
+              },
+              runContext.runId,
+            );
+          }
+        });
       executionHandedOff = true;
       void smartAnalysisPromise.finally(() => {
+        finalizeHttpRunManifestLifecycle(
+          sessionForRun,
+          runManifestLifecycle,
+        );
         settleSessionRunExecution(sessionForRun, runContext.runId);
       });
 
@@ -2770,68 +2939,86 @@ async function handleAnalyzeRequest(
     }
     let analysisPromise: Promise<void> = Promise.resolve();
     if (!sessionRunIsInactive) {
-      analysisPromise = runAgentDrivenAnalysis(sessionId, query, traceId, {
-        ...options,
-        selectionContext,
-        blockedStrategyIds,
-        traceProcessorService,
-        runContext,
-        referenceTraceId: effectiveReferenceTraceId,
-        traceContext: traceContext && traceContext.length > 0 ? traceContext : undefined,
-        providerId: sessionForRun.providerId !== undefined ? sessionForRun.providerId : providerId,
-        knowledgeScope: knowledgeScopeFromRequestContext(requestContext),
-        traceProcessorLease: agentRunLease
-          ? {
-              traceId,
-              leaseId: agentRunLease.id,
-              mode: agentRunLease.mode,
-              leaseScope: leaseScopeFromRequestContext(requestContext),
-            }
-          : undefined,
-        referenceTraceProcessorLease:
-          referenceAgentRunLease && effectiveReferenceTraceId
+      analysisPromise = withRunManifestLifecycle(
+        runManifestLifecycle,
+        () => runAgentDrivenAnalysis(sessionId, query, traceId, {
+          ...options,
+          selectionContext,
+          blockedStrategyIds,
+          traceProcessorService,
+          runContext,
+          referenceTraceId: effectiveReferenceTraceId,
+          traceContext: traceContext && traceContext.length > 0 ? traceContext : undefined,
+          providerId: sessionForRun.providerId !== undefined ? sessionForRun.providerId : providerId,
+          knowledgeScope: knowledgeScopeFromRequestContext(requestContext),
+          runManifestAttributionSink: runManifestLifecycle.builder,
+          traceProcessorLease: agentRunLease
             ? {
-                traceId: effectiveReferenceTraceId,
-                leaseId: referenceAgentRunLease.id,
-                mode: referenceAgentRunLease.mode,
+                traceId,
+                leaseId: agentRunLease.id,
+                mode: agentRunLease.mode,
                 leaseScope: leaseScopeFromRequestContext(requestContext),
               }
             : undefined,
-      }).catch((error) => {
-        const session = assistantAppService.getSession(sessionId);
-        if (session) {
-          const privateKnowledge = sessionUsesPrivateKnowledge(session);
-          const publicErrorMessage = privateKnowledge
-            ? privateAnalysisFailureMessage(sessionOutputLanguage(session))
-            : error?.message || String(error);
-          if (isSessionRunCancelled(session, runContext.runId) || isStaleRun(session, runContext.runId)) {
-            session.logger.info('AgentRoutes', 'Ignoring agent-driven analysis failure after cancellation', {
-              sessionId,
-              runId: runContext.runId,
-              error: publicErrorMessage,
-            });
-            return;
-          }
-          session.logger.error(
-            'AgentRoutes',
-            'Agent-driven analysis failed',
-            privateKnowledge ? new Error(publicErrorMessage) : error,
-          );
-          session.status = 'failed';
-          session.error = publicErrorMessage;
-          markSessionRunStatus(session, 'failed', publicErrorMessage, runContext.runId);
-          broadcastToAgentDrivenClients(
-            sessionId,
-            {
-              type: 'error',
-              content: {message: publicErrorMessage, error: publicErrorMessage},
-              timestamp: Date.now(),
-            },
+          referenceTraceProcessorLease:
+            referenceAgentRunLease && effectiveReferenceTraceId
+              ? {
+                  traceId: effectiveReferenceTraceId,
+                  leaseId: referenceAgentRunLease.id,
+                  mode: referenceAgentRunLease.mode,
+                  leaseScope: leaseScopeFromRequestContext(requestContext),
+                }
+              : undefined,
+        }),
+      )
+        .then(() => {
+          sealCompletedHttpRunManifest(
+            sessionForRun,
+            runManifestLifecycle,
             runContext.runId,
           );
-        }
-      });
+        })
+        .catch((error) => {
+          const session = assistantAppService.getSession(sessionId);
+          if (session) {
+            const privateKnowledge = sessionUsesPrivateKnowledge(session);
+            const publicErrorMessage = privateKnowledge
+              ? privateAnalysisFailureMessage(sessionOutputLanguage(session))
+              : error?.message || String(error);
+            if (isSessionRunCancelled(session, runContext.runId) || isStaleRun(session, runContext.runId)) {
+              session.logger.info('AgentRoutes', 'Ignoring agent-driven analysis failure after cancellation', {
+                sessionId,
+                runId: runContext.runId,
+                error: publicErrorMessage,
+              });
+              return;
+            }
+            session.logger.error(
+              'AgentRoutes',
+              'Agent-driven analysis failed',
+              privateKnowledge ? new Error(publicErrorMessage) : error,
+            );
+            session.status = 'failed';
+            session.error = publicErrorMessage;
+            markSessionRunStatus(session, 'failed', publicErrorMessage, runContext.runId);
+            broadcastToAgentDrivenClients(
+              sessionId,
+              {
+                type: 'error',
+                content: {message: publicErrorMessage, error: publicErrorMessage},
+                timestamp: Date.now(),
+              },
+              runContext.runId,
+            );
+          }
+        });
     }
+    analysisPromise = analysisPromise.finally(() => {
+      finalizeHttpRunManifestLifecycle(
+        sessionForRun,
+        runManifestLifecycle,
+      );
+    });
     executionHandedOff = true;
     void analysisPromise.finally(() => {
       if (agentRunLease) {
@@ -2903,6 +3090,12 @@ async function handleAnalyzeRequest(
     });
   } finally {
     if (!executionHandedOff && executionSession && executionRunId) {
+      if (executionRunManifestLifecycle) {
+        finalizeHttpRunManifestLifecycle(
+          executionSession,
+          executionRunManifestLifecycle,
+        );
+      }
       settleSessionRunExecution(executionSession, executionRunId);
     }
   }
@@ -3897,6 +4090,7 @@ async function runSmartAnalysis(
     codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
+    runManifestAttributionSink: RunManifestAttributionSink;
   },
 ): Promise<void> {
   const session = assistantAppService.getSession(sessionId);
@@ -3935,8 +4129,24 @@ async function runSmartAnalysis(
 
   try {
     await ensureSkillRegistryInitialized();
-    const skillExecutor = new SkillExecutor(options.traceProcessorService);
-    skillExecutor.registerSkills(skillRegistry.getAllSkills());
+    const smartRegistry = options.knowledgeScope?.tenantId && options.knowledgeScope.workspaceId
+      ? (await getWorkspaceSkillRegistry({
+          tenantId: options.knowledgeScope.tenantId,
+          workspaceId: options.knowledgeScope.workspaceId,
+          userId: options.knowledgeScope.userId,
+        })).registry
+      : skillRegistry;
+    options.runManifestAttributionSink.recordSkillRegistry(
+      buildSkillRegistryAttribution(smartRegistry),
+    );
+    const skillExecutor = new SkillExecutor(
+      options.traceProcessorService,
+      undefined,
+      undefined,
+      options.runManifestAttributionSink,
+    );
+    skillExecutor.registerSkills(smartRegistry.getAllSkills());
+    skillExecutor.setFragmentRegistry(smartRegistry.getFragmentCache());
 
     let report: SceneReport | null = null;
     if (options.smartAction === 'analyze') {
@@ -4051,6 +4261,7 @@ async function runSmartAnalysis(
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      runManifestAttributionSink: options.runManifestAttributionSink,
     }));
   } catch (error: any) {
     if (isSessionRunCancelled(session, runId) || isStaleRun(session, runId)) {
@@ -4106,6 +4317,7 @@ export function buildSmartDeepDiveRunOptions(input: {
   codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
   codebaseIds?: readonly string[];
   knowledgeSourceIds?: readonly string[];
+  runManifestAttributionSink: RunManifestAttributionSink;
 }): Record<string, unknown> {
   return {
     traceProcessorService: input.traceProcessorService,
@@ -4117,6 +4329,7 @@ export function buildSmartDeepDiveRunOptions(input: {
     generateTracks: false,
     knowledgeScope: input.knowledgeScope,
     outputLanguage: input.outputLanguage,
+    runManifestAttributionSink: input.runManifestAttributionSink,
     ...buildSmartDeepDiveAnalysisContext(input.analysisMode, input),
   };
 }
@@ -5375,6 +5588,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
             workspaceId: session.workspaceId,
             userId: session.userId,
             runId: session.activeRun?.runId,
+            runManifestAttributionSink: options.runManifestAttributionSink,
           });
         return runWithTraceProcessorLease(analyze);
       });
@@ -7591,6 +7805,87 @@ function finalizeQuickRunReceipt(
   };
 }
 
+interface RunManifestReceiptReference {
+  runManifestId?: string;
+  existingReceipt?: AnalysisReceipt;
+  legacyRecovery?: true;
+}
+
+function resolveRunManifestReceiptReference(
+  session: AnalysisSession,
+  result: AgentRuntimeAnalysisResult,
+  runId?: string,
+): RunManifestReceiptReference {
+  if (!runId) {
+    const receipt = result.analysisReceipt;
+    if (receipt) return {existingReceipt: receipt};
+    throw new Error('run_manifest_run_id_missing');
+  }
+  const scope = runManifestScopeFromSession(session);
+  const lifecycle = getActiveRunManifestLifecycle(
+    scope,
+    session.sessionId,
+    runId,
+  );
+  if (lifecycle) {
+    sealHttpRunManifest(session, lifecycle);
+    const manifest = lifecycle.sealOnceAndPersist();
+    const invokedSkills = new Set(manifest.skills.map(skill => skill.skillId));
+    const envelopeSkills = new Set(
+      session.dataEnvelopes
+        .map(envelope => envelope.meta?.skillId)
+        .filter((skillId): skillId is string => Boolean(skillId)),
+    );
+    for (const skillId of envelopeSkills) {
+      if (!invokedSkills.has(skillId)) {
+        lifecycle.diagnostics.push({
+          code: 'data_envelope_skill_without_executor_invocation',
+          recordedAt: Date.now(),
+          details: {skillId},
+        });
+      }
+    }
+    return {runManifestId: manifest.runManifestId};
+  }
+
+  const persistedManifest = getRunManifestStore().getByRunId(scope, runId);
+  if (persistedManifest) {
+    return {runManifestId: persistedManifest.runManifestId};
+  }
+
+  const receipt = result.analysisReceipt;
+  if (!receipt) {
+    return {legacyRecovery: true};
+  }
+  if (receipt.schemaVersion === 1) {
+    return {existingReceipt: receipt};
+  }
+  const receiptManifest = getRunManifestStore().get(
+    scope,
+    receipt.runManifestId,
+  );
+  return receiptManifest
+    ? {runManifestId: receipt.runManifestId}
+    : {existingReceipt: receipt};
+}
+
+function buildAnalysisReceiptForReference(
+  reference: RunManifestReceiptReference,
+  input: Omit<BuildAnalysisReceiptInput, 'runManifestId'>,
+): AnalysisReceipt {
+  if (reference.runManifestId) {
+    return buildAnalysisReceipt({
+      ...input,
+      runManifestId: reference.runManifestId,
+    });
+  }
+  if (reference.existingReceipt) return reference.existingReceipt;
+  if (reference.legacyRecovery) {
+    return buildLegacyAnalysisReceipt(input);
+  }
+  throw new Error('run_manifest_receipt_reference_missing');
+}
+
 interface CompletedAnalysisFinalArtifacts {
   reportId?: string;
   reportUrl?: string;
@@ -7598,6 +7893,7 @@ interface CompletedAnalysisFinalArtifacts {
   resultSnapshotId?: string;
   resultSnapshotEventData?: Record<string, unknown>;
   generatedAt: number;
+  receiptReference: RunManifestReceiptReference;
 }
 
 interface CompletedAnalysisResultPayload {
@@ -7641,6 +7937,11 @@ function ensureCompletedAnalysisFinalArtifacts(
   if (cached) return cached;
 
   const result = input.result;
+  const receiptReference = resolveRunManifestReceiptReference(
+    session,
+    result,
+    runId,
+  );
   const privateKnowledge = sessionUsesPrivateKnowledge(session);
   const outputLanguage = sessionOutputLanguage(session);
   const durableResultForClient = privateKnowledge
@@ -7648,6 +7949,7 @@ function ensureCompletedAnalysisFinalArtifacts(
     : input.resultForClient;
   const finalArtifacts: CompletedAnalysisFinalArtifacts = {
     generatedAt: Date.now(),
+    receiptReference,
   };
   let reportId: string | undefined;
 
@@ -7688,7 +7990,7 @@ function ensureCompletedAnalysisFinalArtifacts(
       const reportUrl = `/api/reports/${reportId}`;
       // Report generation needs a receipt before the final snapshot ID exists,
       // so this projection is intentionally report-scoped.
-      const reportReceipt = buildAnalysisReceipt({
+      const reportReceipt = buildAnalysisReceiptForReference(receiptReference, {
         session,
         result: durableResultForClient,
         runId,
@@ -7784,7 +8086,7 @@ function ensureCompletedAnalysisFinalArtifacts(
     try {
       // Snapshot persistence needs the latest report artifacts, but the
       // snapshot ID is only known after persistCompletedAnalysisResultSnapshot.
-      const snapshotReceipt = buildAnalysisReceipt({
+      const snapshotReceipt = buildAnalysisReceiptForReference(receiptReference, {
         session,
         result: durableResultForClient,
         runId,
@@ -7981,20 +8283,30 @@ function ensureCompletedAnalysisResultPayload(
     resultForClient: resultForClient as AgentRuntimeAnalysisResult,
     runId: completedRunId,
   });
-  const analysisReceipt = buildAnalysisReceipt({
-    session,
-    result: resultForClient,
-    runId: completedRunId,
-    qualityArtifacts,
-    quickRun,
-    finalArtifacts,
-    providerId: session.providerId ?? null,
-  });
+  const analysisReceipt = buildAnalysisReceiptForReference(
+    finalArtifacts.receiptReference,
+    {
+      session,
+      result: resultForClient,
+      runId: completedRunId,
+      qualityArtifacts,
+      quickRun,
+      finalArtifacts,
+      providerId: session.providerId ?? null,
+    },
+  );
   result.analysisReceipt = analysisReceipt;
   resultForClient = {
     ...resultForClient,
     analysisReceipt,
   };
+  if (completedRunId) {
+    getActiveRunManifestLifecycle(
+      runManifestScopeFromSession(session),
+      session.sessionId,
+      completedRunId,
+    )?.dispose();
+  }
   return {
     result,
     replayOnlyScene,

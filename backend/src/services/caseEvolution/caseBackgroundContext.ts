@@ -19,6 +19,8 @@ import {
   recordCaseEvolutionPromptDroppedForBudget,
   recordCaseEvolutionPromptSegmentBuilt,
 } from './caseEvolutionRuntimeMetrics';
+import {canonicalContentHash} from '../selfEvolution/canonicalJson';
+import {currentRunManifestAttributionSink} from '../selfEvolution/runManifestLifecycle';
 
 const TEMPLATE_NAMES: Record<OutputLanguage, {context: string; line: string}> = {
   'zh-CN': {
@@ -99,6 +101,18 @@ export function buildCaseBackgroundContext(
   if (estimatePromptTokens(context) > maxTokens) {
     recordCaseEvolutionPromptDroppedForBudget();
     return undefined;
+  }
+  const sink = currentRunManifestAttributionSink();
+  for (const caseNode of cases) {
+    sink?.recordInjection(
+      'cases',
+      caseNode.caseId,
+      canonicalContentHash({
+        title: caseNode.title,
+        status: caseNode.status,
+        knowledge: caseNode.knowledge,
+      }),
+    );
   }
   recordCaseEvolutionPromptSegmentBuilt();
   return context;

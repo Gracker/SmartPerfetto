@@ -114,7 +114,7 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
   const reportPathForUser = privateSafeReportHtml
     ? (turnReportPath = writeTurnReportHtml(sp, turn, reportHtml || ''), writeReportHtml(sp, reportHtml || ''), sp.report)
     : `(report generation failed${result.reportError ? `: ${result.reportError}` : ''})`;
-  attachCliReceiptPath(result, cliTurnPath);
+  assertCliReceiptPath(result, cliTurnPath);
   writeAnalysisQualitySidecars(sp, turn, result);
 
   writeConfig(sp, config);
@@ -169,17 +169,15 @@ function writeAnalysisQualitySidecars(sp: SessionPaths, turn: number, result: Ru
   writeJsonFile(sp, `${turnPrefix}.ui-action-proposals.json`, result.result.uiActionProposals || []);
 }
 
-function attachCliReceiptPath(result: RunTurnOutput, cliTurnPath: string): void {
+function assertCliReceiptPath(result: RunTurnOutput, cliTurnPath: string): void {
   if (result.privateKnowledge) return;
   const receipt = result.result.analysisReceipt;
   if (!receipt) return;
-  result.result.analysisReceipt = {
-    ...receipt,
-    outputs: {
-      ...receipt.outputs,
-      cliTurnPath,
-    },
-  };
+  if (receipt.outputs.cliTurnPath !== cliTurnPath) {
+    throw new Error(
+      `analysis_receipt_cli_turn_path_mismatch:${receipt.outputs.cliTurnPath ?? 'missing'}:${cliTurnPath}`,
+    );
+  }
 }
 
 function appendHtmlToBody(html: string, appendixHtml: string): string {

@@ -19,6 +19,7 @@
  */
 
 import { sanitizeQueryReview, type QueryReviewV1 } from './queryReviewContract';
+import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 
 // =============================================================================
 // Column Definition System (Phase 0 - DataEnvelope Refactoring)
@@ -1013,16 +1014,11 @@ export interface ConversationStepEvent {
   timestamp: number;
 }
 
-export type AnalysisReceiptRuntime =
-  | 'claude-agent-sdk'
-  | 'openai-agents-sdk'
-  | 'pi-agent-core'
-  | 'opencode';
+export type AnalysisReceiptRuntime = AgentRuntimeKind;
 
 export type AnalysisReceiptGateStatus = 'passed' | 'partial' | 'not_applicable';
 
-export interface AnalysisReceiptV1 {
-  schemaVersion: 1;
+export interface AnalysisReceiptBase {
   runId: string;
   sessionId: string;
   traceId: string;
@@ -1063,6 +1059,17 @@ export interface AnalysisReceiptV1 {
     reportError?: string;
   };
 }
+
+export interface AnalysisReceiptV1 extends AnalysisReceiptBase {
+  schemaVersion: 1;
+}
+
+export interface AnalysisReceiptV2 extends AnalysisReceiptBase {
+  schemaVersion: 2;
+  runManifestId: string;
+}
+
+export type AnalysisReceipt = AnalysisReceiptV1 | AnalysisReceiptV2;
 
 /**
  * Analysis Completed Event - SSE payload for final result
@@ -1130,7 +1137,7 @@ export interface AnalysisCompletedEvent {
     terminationReason?: string;
     terminationMessage?: string;
     quickRun?: import('../agent/core/orchestratorTypes').QuickRunReceipt;
-    analysisReceipt?: AnalysisReceiptV1;
+    analysisReceipt?: AnalysisReceipt;
     uiActionProposals?: UiActionProposalV1[];
     smartScenePreview?: import('../agent/scene/types').SmartScenePreviewPayload;
     terminalRunStatus?: 'completed' | 'quota_exceeded';

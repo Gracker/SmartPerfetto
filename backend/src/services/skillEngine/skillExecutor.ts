@@ -89,6 +89,12 @@ import {
   getAiCapabilityPolicy,
   isAiFeatureEnabled,
 } from '../aiCapabilityPolicy';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+import {
+  currentRunManifestAttributionSink,
+  resolveRunManifestAttributionSink,
+} from '../selfEvolution/runManifestLifecycle';
+import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 
 // =============================================================================
 // Layered Result Types
@@ -1082,16 +1088,25 @@ export class SkillExecutor {
   private fragmentRegistry: Map<string, string> = new Map();
   private identityGate = new IdentityGate();
   private processIdentityCache: Map<string, ProcessIdentityResolution> = new Map();
+  private runManifestAttributionSink?: RunManifestAttributionSink;
 
   constructor(
     traceProcessor: any,
     aiService?: any,
-    eventEmitter?: (event: SkillEvent) => void
+    eventEmitter?: (event: SkillEvent) => void,
+    runManifestAttributionSink?: RunManifestAttributionSink,
   ) {
     this.traceProcessor = traceProcessor;
     this.aiService = aiService;
     this.eventEmitter = eventEmitter;
     this.skillRegistry = new Map();
+    this.runManifestAttributionSink = runManifestAttributionSink;
+  }
+
+  setRunManifestAttributionSink(
+    sink: RunManifestAttributionSink | undefined,
+  ): void {
+    this.runManifestAttributionSink = sink;
   }
 
   private queryTraceProcessor(
@@ -1104,9 +1119,10 @@ export class SkillExecutor {
       ...options,
       ...(signal ? { signal } : {}),
     };
-    return Object.keys(queryOptions).length > 0
+    const query = Object.keys(queryOptions).length > 0
       ? this.traceProcessor.query(traceId, sql, queryOptions)
       : this.traceProcessor.query(traceId, sql);
+    return query;
   }
 
   /**
@@ -1593,6 +1609,73 @@ export class SkillExecutor {
     traceId: string,
     params: Record<string, any> = {},
     inherited: Record<string, any> = {}
+  ): Promise<SkillExecutionResult> {
+    const inheritedSink = inherited.__runManifestAttributionSink as
+      | RunManifestAttributionSink
+      | undefined;
+    const sink = resolveRunManifestAttributionSink(
+      this.runManifestAttributionSink,
+      inheritedSink,
+      currentRunManifestAttributionSink(),
+    );
+    const skill = this.skillRegistry.get(skillId);
+    if (!skill) {
+      sink?.recordUnknownSkillInvocation(skillId);
+      return this.executeInternal(skillId, traceId, params, inherited);
+    }
+    const invocationId = sink?.startSkillInvocation({
+      skillId,
+      version: skill.version,
+      contentFingerprint: fingerprintSkillDefinition(
+        skill,
+        this.fragmentRegistry,
+      ),
+    });
+    try {
+      const result = await this.executeInternal(
+        skillId,
+        traceId,
+        params,
+        inherited,
+      );
+      if (sink && invocationId) {
+        sink.finishSkillInvocation(invocationId, {
+          success: result.success,
+          empty: result.success && this.isEmptySkillExecutionResult(result),
+        });
+      }
+      return result;
+    } catch (error) {
+      if (sink && invocationId) {
+        sink.finishSkillInvocation(invocationId, {
+          success: false,
+          empty: false,
+        });
+      }
+      throw error;
+    }
+  }
+
+  private isEmptySkillExecutionResult(result: SkillExecutionResult): boolean {
+    if ((result.displayResults?.length ?? 0) > 0) return false;
+    if ((result.diagnostics?.length ?? 0) > 0) return false;
+    if ((result.synthesizeData?.length ?? 0) > 0) return false;
+    if (typeof result.aiSummary === 'string' && result.aiSummary.trim()) {
+      return false;
+    }
+    const rawResults = Object.values(result.rawResults ?? {});
+    return rawResults.every(entry => {
+      if (!entry || typeof entry !== 'object') return true;
+      const data = (entry as {data?: unknown}).data;
+      return !this.hasMeaningfulData(data);
+    });
+  }
+
+  private async executeInternal(
+    skillId: string,
+    traceId: string,
+    params: Record<string, any>,
+    inherited: Record<string, any>,
   ): Promise<SkillExecutionResult> {
     const startTime = Date.now();
     const signal = getSkillExecutionSignal(inherited);

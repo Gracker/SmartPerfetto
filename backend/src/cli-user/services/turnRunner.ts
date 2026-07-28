@@ -127,6 +127,11 @@ export async function startSession(
     codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds,
     knowledgeSourceIds: input.knowledgeSourceIds,
+    turn: 1,
+    resolveCliTurnPath: (sid, turn) => path.join(
+      sessionPaths(ctx.paths, sid).turnsDir,
+      `${String(turn).padStart(3, '0')}.md`,
+    ),
     onSessionReady: (sid) => {
       sp = sessionPaths(ctx.paths, sid);
       ensureSessionLayout(sp);
@@ -293,6 +298,11 @@ export async function continueSession(
     knowledgeSourceIds: existingConfig.knowledgeSourceIds,
     analysisMode: existingConfig.analysisMode,
     lineage: pendingLineage,
+    turn: nextTurn,
+    resolveCliTurnPath: (_sid, turn) => path.join(
+      sp.turnsDir,
+      `${String(turn).padStart(3, '0')}.md`,
+    ),
     onSessionReady: () => {
       ensureSessionLayout(sp);
     },

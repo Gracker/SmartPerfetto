@@ -108,7 +108,7 @@ export interface PersistAgentTurnInput {
     totalDurationMs: number;
     partial?: boolean;
     terminationMessage?: string;
-    analysisReceipt?: import('../types/dataContract').AnalysisReceiptV1;
+    analysisReceipt?: import('../types/dataContract').AnalysisReceipt;
   };
   /** Optional structured logger (HTTP route provides SessionLogger; CLI
    *  currently doesn't wire one through — `console` fallback is fine). */

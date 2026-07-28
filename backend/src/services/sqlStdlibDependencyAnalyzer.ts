@@ -118,7 +118,7 @@ function maskCommentsAndStrings(sql: string): string {
   return out;
 }
 
-function splitSqlStatements(sql: string): string[] {
+export function splitSqlStatements(sql: string): string[] {
   const statements: string[] = [];
   let start = 0;
   let i = 0;

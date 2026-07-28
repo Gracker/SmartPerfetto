@@ -6,15 +6,21 @@ import type { AgentRuntimeAnalysisResult, QuickRunReceipt } from '../agent/core/
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { ClaimSupportV1, EvidenceSupportLevel } from '../types/evidenceContract';
 import type { IdentityResolutionV1 } from '../types/identityContract';
-import type { AnalysisReceiptRuntime, AnalysisReceiptV1, DataEnvelope } from '../types/dataContract';
+import type {
+  AnalysisReceipt,
+  AnalysisReceiptRuntime,
+  AnalysisReceiptV1,
+  AnalysisReceiptV2,
+  DataEnvelope,
+} from '../types/dataContract';
 import {
   assessFinalReportContractApplicability,
   assessFinalReportContractCompleteness,
   type FinalReportContractCompletenessInput,
 } from './finalReportContractGate';
 
-type AnalysisReceiptMode = AnalysisReceiptV1['mode'];
-type AnalysisReceiptResolvedMode = AnalysisReceiptV1['resolvedMode'];
+type AnalysisReceiptMode = AnalysisReceipt['mode'];
+type AnalysisReceiptResolvedMode = AnalysisReceipt['resolvedMode'];
 
 export interface AnalysisSessionReceiptSource {
   sessionId: string;
@@ -36,6 +42,7 @@ export interface AnalysisReceiptFinalArtifacts {
 }
 
 export interface BuildAnalysisReceiptInput {
+  runManifestId: string;
   session: AnalysisSessionReceiptSource;
   result: AgentRuntimeAnalysisResult;
   runId?: string;
@@ -55,7 +62,30 @@ export interface BuildAnalysisReceiptInput {
   cliTurnPath?: string;
 }
 
-export function buildAnalysisReceipt(input: BuildAnalysisReceiptInput): AnalysisReceiptV1 {
+export function buildAnalysisReceipt(input: BuildAnalysisReceiptInput): AnalysisReceiptV2 {
+  const {
+    runManifestId,
+    ...bodyInput
+  } = input;
+  return {
+    schemaVersion: 2,
+    runManifestId,
+    ...buildAnalysisReceiptBody(bodyInput),
+  };
+}
+
+export function buildLegacyAnalysisReceipt(
+  input: Omit<BuildAnalysisReceiptInput, 'runManifestId'>,
+): AnalysisReceiptV1 {
+  return {
+    schemaVersion: 1,
+    ...buildAnalysisReceiptBody(input),
+  };
+}
+
+function buildAnalysisReceiptBody(
+  input: Omit<BuildAnalysisReceiptInput, 'runManifestId'>,
+): Omit<AnalysisReceiptV1, 'schemaVersion'> {
   const session = input.session;
   const result = input.result;
   const quickRun = input.quickRun ?? result.quickRun;
@@ -83,7 +113,6 @@ export function buildAnalysisReceipt(input: BuildAnalysisReceiptInput): Analysis
   const resolvedMode = input.resolvedMode ?? quickRun?.resolvedMode ?? 'full';
 
   return {
-    schemaVersion: 1,
     runId: input.runId || result.sessionId || session.sessionId,
     sessionId: session.sessionId,
     traceId: session.traceId,
@@ -212,7 +241,7 @@ function collectArtifactIdsFromUnknown(value: unknown, ids: Set<string>): void {
 function buildClaimAudit(
   claimSupport: ClaimSupportV1[],
   claimVerificationResult?: ClaimVerificationResult,
-): AnalysisReceiptV1['claimAudit'] {
+): AnalysisReceipt['claimAudit'] {
   if (claimVerificationResult) {
     const claimResults = claimVerificationResult.claimResults || [];
     if (claimResults.length === 0) {
@@ -277,7 +306,7 @@ function finalReportGate(input: {
   session: AnalysisSessionReceiptSource;
   quickRun?: QuickRunReceipt;
   sceneType?: FinalReportContractCompletenessInput['sceneType'];
-}): AnalysisReceiptV1['qualityGates']['finalReportContract'] {
+}): AnalysisReceipt['qualityGates']['finalReportContract'] {
   if (input.quickRun?.resolvedMode === 'quick') return 'not_applicable';
   const contractInput: FinalReportContractCompletenessInput = {
     conclusion: input.result.conclusion || '',
@@ -292,14 +321,14 @@ function finalReportGate(input: {
 
 function claimVerificationGate(
   result?: ClaimVerificationResult,
-): AnalysisReceiptV1['qualityGates']['claimVerification'] {
+): AnalysisReceipt['qualityGates']['claimVerification'] {
   if (!result || result.status === 'not_checked') return 'not_applicable';
   return result.status === 'passed' ? 'passed' : 'partial';
 }
 
 function identityResolutionGate(
   identities: IdentityResolutionV1[],
-): AnalysisReceiptV1['qualityGates']['identityResolution'] {
+): AnalysisReceipt['qualityGates']['identityResolution'] {
   if (!identities.length) return 'not_applicable';
   return identities.every(identity => identity.status === 'verified' || identity.status === 'not_required')
     ? 'passed'

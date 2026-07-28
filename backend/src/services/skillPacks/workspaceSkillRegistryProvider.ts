@@ -19,6 +19,7 @@ import type {
   InstalledSkillPackRecord,
   SkillOriginMetadata,
 } from './skillPackTypes';
+import {buildSkillRegistryAttribution} from '../selfEvolution/skillFingerprint';
 
 export interface WorkspaceSkillRegistryHandle {
   registry: SkillRegistry;
@@ -119,6 +120,8 @@ function buildRegistryFingerprint(
   builtInSkillsDir: string,
   records: InstalledSkillPackRecord[],
 ): string {
+  // Filesystem-only cache invalidation identity. This intentionally includes
+  // path/mtime inputs and must never be exposed as run attribution.
   const payload = {
     builtInRoot: path.resolve(builtInSkillsDir),
     builtInFiles: walkRuntimeRelevantFiles(builtInSkillsDir),
@@ -153,7 +156,6 @@ function rootsForRecords(
 
 async function buildHandle(
   records: InstalledSkillPackRecord[],
-  fingerprint: string,
   builtInSkillsDir: string,
 ): Promise<WorkspaceSkillRegistryHandle> {
   const registry = new SkillRegistry();
@@ -165,10 +167,11 @@ async function buildHandle(
     throw new Error(`skill_id_collision:${generatedSkill.name}`);
   }
   registry.upsertSkill(generatedSkill);
+  const attribution = buildSkillRegistryAttribution(registry);
 
   return {
     registry,
-    registryFingerprint: fingerprint,
+    registryFingerprint: attribution.registryFingerprint,
     enabledPacks: records,
     getSkillOrigin(skillId: string): SkillOriginMetadata | undefined {
       return registry.getSkillOrigin(skillId);
@@ -190,7 +193,7 @@ export async function getWorkspaceSkillRegistry(
     return cached.handle;
   }
 
-  const handle = await buildHandle(records, fingerprint, builtInSkillsDir);
+  const handle = await buildHandle(records, builtInSkillsDir);
   cache.set(key, { fingerprint, handle });
   return handle;
 }

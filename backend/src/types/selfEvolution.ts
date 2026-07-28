@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
+import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 
 export interface SelfEvolutionConfig {
   enabled: boolean;
@@ -108,4 +109,168 @@ export interface SelfEvolutionMetrics {
   lastReconciledBuildIdentity: ApplicationBuildIdentity | null;
   warnings: SelfEvolutionConfigIssue[];
   errors: SelfEvolutionConfigIssue[];
+}
+
+export interface RunManifestScope {
+  tenantId: string;
+  workspaceId: string;
+}
+
+export interface RunManifestIdentity {
+  runId: string;
+  sessionId: string;
+  scope: RunManifestScope;
+}
+
+export type RunSkillOrigin =
+  | 'built_in'
+  | 'external_pack'
+  | 'evolution_overlay';
+
+export interface RunSkillAttribution {
+  skillId: string;
+  version: string;
+  contentFingerprint: string;
+  origin: RunSkillOrigin;
+  packId?: string;
+  packVersion?: string;
+  trustState?: 'local_unverified' | 'approved';
+  appliedOverlayIds: string[];
+  invocations: number;
+  okCount: number;
+  emptyResultCount: number;
+  errorCount: number;
+}
+
+export interface RunInjectionReference {
+  id: string;
+  contentHash: string;
+}
+
+export interface RunInjectionAttribution {
+  patterns: RunInjectionReference[];
+  skillNotes: RunInjectionReference[];
+  cases: RunInjectionReference[];
+  phaseHints: RunInjectionReference[];
+  knowledgeDocs: RunInjectionReference[];
+}
+
+export type RunInjectionCategory = keyof RunInjectionAttribution;
+
+export interface RunManifestV1 {
+  schemaVersion: 1;
+  runManifestId: string;
+  runId: string;
+  sessionId: string;
+  sealedAt: number;
+  scope: RunManifestScope;
+  actor?: {userId?: string};
+
+  sceneType: string;
+  sceneConfidence?: number;
+  architecture?: string;
+  strategyId?: string;
+  strategyContentHash?: string;
+  promptTemplateHashes: RunInjectionReference[];
+
+  skills: RunSkillAttribution[];
+  skillRegistryFingerprint: string;
+  evolutionOverlayGeneration: string;
+  sqlStatementCount: number;
+  sqlErrorCount: number;
+
+  runtime: AgentRuntimeKind;
+  providerId: string | null;
+  model?: string;
+  outputLanguage: string;
+  toolAllowlistHash: string;
+  featureFlagSnapshot: Record<string, string | number | boolean>;
+
+  analysisMode: 'fast' | 'full' | 'auto';
+  resolvedMode: 'quick' | 'full';
+  capabilityFlags: string[];
+
+  referenceTraceId?: string;
+  comparisonIdentity?: string;
+  resumeAncestry?: {
+    parentRunId?: string;
+    resumedFromSnapshotId?: string;
+  };
+
+  injections: RunInjectionAttribution;
+  turns: number;
+  wallclockMs: number;
+}
+
+export interface RunSkillDefinitionAttribution {
+  skillId: string;
+  version: string;
+  contentFingerprint: string;
+  origin: RunSkillOrigin;
+  packId?: string;
+  packVersion?: string;
+  trustState?: 'local_unverified' | 'approved';
+  appliedOverlayIds?: string[];
+}
+
+export interface RunSkillRegistryAttribution {
+  registryFingerprint: string;
+  skills: RunSkillDefinitionAttribution[];
+}
+
+export interface RunSkillInvocationStart {
+  skillId: string;
+  version: string;
+  contentFingerprint: string;
+}
+
+export interface RunSkillInvocationOutcome {
+  success: boolean;
+  empty: boolean;
+}
+
+export interface RunManifestRuntimeAttribution {
+  runtime: AgentRuntimeKind;
+  providerId: string | null;
+  model?: string;
+  outputLanguage?: string;
+}
+
+export interface RunManifestSceneAttribution {
+  sceneType: string;
+  sceneConfidence?: number;
+  architecture?: string;
+  strategyId?: string;
+  strategyContentHash?: string;
+}
+
+/**
+ * Narrow per-run attribution boundary. Runtime and executor layers depend on
+ * this interface rather than on the concrete mutable builder service.
+ */
+export interface RunManifestAttributionSink {
+  readonly identity: RunManifestIdentity;
+  recordScene(input: RunManifestSceneAttribution): void;
+  recordRuntime(input: RunManifestRuntimeAttribution): void;
+  recordMode(input: {
+    requested: RunManifestV1['analysisMode'];
+    resolved?: RunManifestV1['resolvedMode'];
+    capabilityFlags?: readonly string[];
+  }): void;
+  recordSkillRegistry(input: RunSkillRegistryAttribution): void;
+  startSkillInvocation(input: RunSkillInvocationStart): string;
+  finishSkillInvocation(
+    invocationId: string,
+    outcome: RunSkillInvocationOutcome,
+  ): void;
+  recordUnknownSkillInvocation(skillId: string): void;
+  recordSqlStatement(success: boolean): void;
+  recordPromptTemplate(id: string, contentHash: string): void;
+  recordInjection(
+    category: RunInjectionCategory,
+    id: string,
+    contentHash: string,
+  ): void;
+  recordToolAllowlist(toolNames: readonly string[]): void;
+  recordTurn(): void;
 }

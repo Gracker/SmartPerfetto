@@ -27,6 +27,7 @@ let mockPatternFileRaw: string | undefined;
 let mockNegativePatternFileRaw: string | undefined;
 let mockQuickPatternFileRaw: string | undefined;
 let mockCorruptBackups: Array<{ src: string; dest: string }> = [];
+const mockRecordRunManifestInjection = jest.fn();
 const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
 const originalMigrationPhase = process.env.SMARTPERFETTO_ENTERPRISE_MIGRATION_PHASE;
 
@@ -111,6 +112,12 @@ jest.mock('../../services/filesystemRegistryLock', () => ({
   ),
 }));
 
+jest.mock('../../services/selfEvolution/runManifestLifecycle', () => ({
+  currentRunManifestAttributionSink: () => ({
+    recordInjection: mockRecordRunManifestInjection,
+  }),
+}));
+
 import {
   extractTraceFeatures,
   extractKeyInsights,
@@ -128,6 +135,7 @@ import {
   setSupersedeStoreForTesting,
 } from '../analysisPatternMemory';
 import { bucketPackageDomain } from '../../services/caseEvolution/domainBucket';
+import { canonicalContentHash } from '../../services/selfEvolution/canonicalJson';
 
 // ── Setup ────────────────────────────────────────────────────────────────
 
@@ -139,6 +147,7 @@ beforeEach(() => {
   mockNegativePatternFileRaw = undefined;
   mockQuickPatternFileRaw = undefined;
   mockCorruptBackups = [];
+  mockRecordRunManifestInjection.mockClear();
   tmpWriteBuffer = new Map();
   // Disable the real SQLite supersede store for fs-mocked tests; PR9b's
   // own integration tests cover the live store behaviour.
@@ -585,6 +594,13 @@ describe('buildPatternContextSection', () => {
     expect(section).toContain('历史分析经验');
     expect(section).toContain('scrolling');
     expect(section).toContain('RenderThread blocking');
+    const renderedContribution = section?.split('\n\n')[2];
+    expect(renderedContribution).toBeDefined();
+    expect(mockRecordRunManifestInjection).toHaveBeenCalledWith(
+      'patterns',
+      'pat-1',
+      canonicalContentHash(renderedContribution),
+    );
   });
 });
 
@@ -613,6 +629,13 @@ describe('buildNegativePatternSection', () => {
     expect(section).toContain('历史踩坑记录');
     expect(section).toContain('避免');
     expect(section).toContain('替代方案');
+    const renderedContribution = section?.split('\n\n')[2];
+    expect(renderedContribution).toBeDefined();
+    expect(mockRecordRunManifestInjection).toHaveBeenCalledWith(
+      'patterns',
+      'neg-1',
+      canonicalContentHash(renderedContribution),
+    );
   });
 });
 

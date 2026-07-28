@@ -13,6 +13,13 @@ import type { SkillExecutor } from '../services/skillEngine/skillExecutor';
 import { createSkillAnalysisAdapter } from '../services/skillEngine/skillAnalysisAdapter';
 import { skillRegistry, type SkillRegistry } from '../services/skillEngine/skillLoader';
 import { getWorkspaceSkillRegistry } from '../services/skillPacks/workspaceSkillRegistryProvider';
+import type {RunManifestAttributionSink} from '../types/selfEvolution';
+import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
+import {
+  currentRunManifestAttributionSink,
+  resolveRunManifestAttributionSink,
+} from '../services/selfEvolution/runManifestLifecycle';
+import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
 import type {
@@ -1110,6 +1117,8 @@ export interface ClaudeMcpServerOptions {
   /** Immutable public Knowledge Pack identity pinned by the session snapshot. */
   androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   analysisResultSnapshotRepository?: TraceSimilaritySnapshotRepository;
+  /** Explicit per-run attribution boundary for detached/shared tool callbacks. */
+  runManifestAttributionSink?: RunManifestAttributionSink;
 }
 
 /**
@@ -1125,6 +1134,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const skillNotesBudget = options.skillNotesBudget;
   const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
   const knowledgeScope = options.knowledgeScope;
+  const runManifestAttributionSink = resolveRunManifestAttributionSink(
+    options.runManifestAttributionSink,
+    currentRunManifestAttributionSink(),
+  );
+  skillExecutor.setRunManifestAttributionSink(runManifestAttributionSink);
+  if (!knowledgeScope?.tenantId || !knowledgeScope.workspaceId) {
+    runManifestAttributionSink?.recordSkillRegistry(
+      buildSkillRegistryAttribution(skillRegistry),
+    );
+  }
   const codeAwareMode = normalizeCodeAwareMode(options.codeAwareMode);
   const codebaseIds = codeAwareMode === 'off'
     ? []
@@ -1138,6 +1157,34 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
   } => ({...payload, dataTrust: 'untrusted_retrieved_data'});
+  const recordKnowledgeDocuments = (value: unknown): void => {
+    const visited = new Set<object>();
+    const visit = (entry: unknown, depth: number): void => {
+      if (!entry || typeof entry !== 'object' || depth > 5) return;
+      if (visited.has(entry)) return;
+      visited.add(entry);
+      if (Array.isArray(entry)) {
+        entry.forEach(item => visit(item, depth + 1));
+        return;
+      }
+      const record = entry as Record<string, unknown>;
+      const id = [
+        record.id,
+        record.chunkId,
+        record.docId,
+        record.sourceId,
+      ].find(candidate => typeof candidate === 'string' && candidate.trim());
+      if (typeof id === 'string') {
+        runManifestAttributionSink?.recordInjection(
+          'knowledgeDocs',
+          id,
+          canonicalContentHash(record),
+        );
+      }
+      Object.values(record).forEach(child => visit(child, depth + 1));
+    };
+    visit(value, 0);
+  };
   const knowledgeSourceCapabilityHint = knowledgeSourceIds.length > 0
     ? ` Request-authorized knowledge source ids: ${knowledgeSourceIds.join(', ')}.`
     : ' No private knowledge source is authorized for this request.';
@@ -1253,6 +1300,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   async function bindSkillRuntimeRegistry(): Promise<SkillRegistry> {
     if (!knowledgeScope?.tenantId || !knowledgeScope.workspaceId) {
+      runManifestAttributionSink?.recordSkillRegistry(
+        buildSkillRegistryAttribution(skillRegistry),
+      );
       return skillRegistry;
     }
     const handle = await getWorkspaceSkillRegistry({
@@ -1266,6 +1316,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       skillExecutor.setFragmentRegistry(handle.registry.getFragmentCache());
       boundSkillRegistryFingerprint = handle.registryFingerprint;
     }
+    runManifestAttributionSink?.recordSkillRegistry(
+      buildSkillRegistryAttribution(handle.registry),
+    );
     return handle.registry;
   }
 
@@ -3739,6 +3792,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      runManifestAttributionSink?.recordInjection(
+        'knowledgeDocs',
+        `knowledge-topic-${canonicalContentHash(topic).slice(0, 16)}`,
+        canonicalContentHash(content),
+      );
       return {
         content: [{ type: 'text' as const, text: content }],
       };
@@ -3797,6 +3855,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (isAndroidInternalsPackRevoked(androidInternalsPackStore.handle)) {
           throw new Error('analysis_context_changed_restart_required');
         }
+        recordKnowledgeDocuments(filtered);
         return {
           content: [{
             type: 'text' as const,
@@ -3860,6 +3919,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
         await codeLookupLedger?.flush();
         assertPrivateAnalysisContextCurrent();
+        recordKnowledgeDocuments(filtered);
         return {
           content: [{
             type: 'text' as const,
@@ -3873,6 +3933,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(codebaseIds),
       });
+      recordKnowledgeDocuments(result);
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(retrievedData({...result})) }],
       };
@@ -5224,6 +5285,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
 
         if (matchedHint) {
+          runManifestAttributionSink?.recordInjection(
+            'phaseHints',
+            matchedHint.id,
+            canonicalContentHash({
+              constraints: matchedHint.constraints,
+              criticalTools: matchedHint.criticalTools,
+            }),
+          );
           response.next_phase_reminder = {
             phaseId: nextPhase.id,
             name: nextPhase.name,
@@ -6585,10 +6654,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal');
   }
 
+  const allowedTools = registry.buildAllowedTools(toolRequestScope);
+  const toolDefinitions = registry.listForRequest(toolRequestScope);
+  runManifestAttributionSink?.recordToolAllowlist(
+    toolDefinitions.map(definition => definition.name),
+  );
   return {
     server: registry.buildSdkServer({scope: toolRequestScope}),
-    allowedTools: registry.buildAllowedTools(toolRequestScope),
-    toolDefinitions: registry.listForRequest(toolRequestScope),
+    allowedTools,
+    toolDefinitions,
   };
 }
 

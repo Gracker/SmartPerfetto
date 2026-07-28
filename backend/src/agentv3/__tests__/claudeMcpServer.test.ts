@@ -318,6 +318,7 @@ function createTestServer(options: {
     registerSkills: jest.fn(),
     registerSkill: jest.fn(),
     setFragmentRegistry: jest.fn(),
+    setRunManifestAttributionSink: jest.fn(),
   };
 
   const { server, allowedTools, toolDefinitions } = createClaudeMcpServer({

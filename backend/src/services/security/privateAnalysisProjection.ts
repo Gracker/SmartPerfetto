@@ -5,7 +5,7 @@
 import {localize, type OutputLanguage} from '../../agentv3/outputLanguage';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
-import type {AnalysisReceiptV1} from '../../types/dataContract';
+import type {AnalysisReceipt} from '../../types/dataContract';
 import type {DataEnvelope, UiActionProposalV1} from '../../types/dataContract';
 import type {ConclusionContract} from '../../agent/core/conclusionContract';
 import type {ClaimSupportV1} from '../../types/evidenceContract';
@@ -122,8 +122,8 @@ export function projectPrivateTerminationMessage(
 }
 
 export function projectPrivateAnalysisReceipt(
-  receipt: AnalysisReceiptV1 | undefined,
-): AnalysisReceiptV1 | undefined {
+  receipt: AnalysisReceipt | undefined,
+): AnalysisReceipt | undefined {
   if (!receipt) return undefined;
   return {
     ...receipt,

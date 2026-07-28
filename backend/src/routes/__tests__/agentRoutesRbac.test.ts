@@ -25,6 +25,8 @@ import {
   setTraceProcessorLeaseStoreForTests,
 } from '../../services/traceProcessorLeaseStore';
 import { SessionPersistenceService } from '../../services/sessionPersistenceService';
+import { clearRunManifestLifecyclesForTests } from '../../services/selfEvolution/runManifestLifecycle';
+import { resetRunManifestStoreForTests } from '../../services/selfEvolution/runManifestStore';
 import {
   TraceProcessorService,
   setTraceProcessorServiceForTests,
@@ -184,6 +186,8 @@ afterEach(async () => {
   SessionPersistenceService.resetForTests();
   resetAgentEventStoreForTests();
   resetAnalysisRunStoreForTests();
+  clearRunManifestLifecyclesForTests();
+  resetRunManifestStoreForTests();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
   } else {
@@ -1198,6 +1202,19 @@ describe('agent route RBAC', () => {
       expect(streamRes.text).toContain('data:runtime_trace_fact:device_info:current:');
       expect(streamRes.text).toContain('event: analysis_completed');
       expect(streamRes.text).toContain('"actualTurns":0');
+      const streamedReceipt = streamRes.text.match(
+        /"analysisReceipt":\{"schemaVersion":2,"runManifestId":"([^"]+)"/,
+      );
+      expect(streamedReceipt?.[1]).toEqual(expect.any(String));
+
+      const statusRes = await analystHeaders(
+        request(app).get(`/api/agent/v1/${analyzeRes.body.sessionId}/status`),
+      );
+      expect(statusRes.status).toBe(200);
+      expect(statusRes.body.result.analysisReceipt).toEqual(expect.objectContaining({
+        schemaVersion: 2,
+        runManifestId: streamedReceipt?.[1],
+      }));
       leaseStore = getTraceProcessorLeaseStore();
       expect(leaseStore.listLeases({
         tenantId: 'tenant-a',

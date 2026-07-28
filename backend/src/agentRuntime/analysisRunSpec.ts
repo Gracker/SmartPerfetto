@@ -25,6 +25,18 @@ import {
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
 } from './runtimeCommon';
+import {
+  EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
+  EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
+  OPENCODE_RUNTIME_KIND,
+  PI_AGENT_CORE_RUNTIME_KIND,
+  isProductionAgentRuntimeKind,
+  type AgentRuntimeKind,
+} from './runtimeKinds';
+import {
+  currentRunManifestAttributionSink,
+  resolveRunManifestAttributionSink,
+} from '../services/selfEvolution/runManifestLifecycle';
 
 export interface RuntimeBudgetInputs {
   model?: string;
@@ -51,7 +63,7 @@ export interface AnalysisRunSpec {
     text: string;
   };
   runtime: {
-    kind: string;
+    kind: AgentRuntimeKind;
     selection: RuntimeSelection<string>;
     capabilities: EngineCapabilities;
   };
@@ -123,6 +135,17 @@ function resolveEngineCapabilities(input: CreateAnalysisRunSpecInput): EngineCap
   return capabilities;
 }
 
+function canonicalRuntimeKind(value: string): AgentRuntimeKind {
+  if (isProductionAgentRuntimeKind(value)) return value;
+  if (value === EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND) {
+    return PI_AGENT_CORE_RUNTIME_KIND;
+  }
+  if (value === EXPERIMENTAL_OPENCODE_RUNTIME_KIND) {
+    return OPENCODE_RUNTIME_KIND;
+  }
+  throw new Error(`Unsupported production analysis runtime: ${value}`);
+}
+
 export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): AnalysisRunSpec {
   const options = input.options ?? {};
   const engineCapabilities = resolveEngineCapabilities(input);
@@ -147,6 +170,29 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
     previousTurns: input.previousTurns ?? [],
   });
   const traceContextPrompt = formatTraceContext(options.traceContext, input.outputLanguage);
+  const runtimeKind = canonicalRuntimeKind(input.runtimeSelection.kind);
+  const sink = resolveRunManifestAttributionSink(
+    options.runManifestAttributionSink,
+    currentRunManifestAttributionSink(),
+  );
+  sink?.recordScene({sceneType: input.sceneType});
+  sink?.recordRuntime({
+    runtime: runtimeKind,
+    providerId: options.providerId ?? null,
+    ...(input.budget?.model ? {model: input.budget.model} : {}),
+    outputLanguage: input.outputLanguage,
+  });
+  sink?.recordMode({
+    requested: options.analysisMode ?? 'auto',
+    resolved: input.resolvedMode === 'quick' ? 'quick' : input.resolvedMode === 'full' ? 'full' : undefined,
+    capabilityFlags: [
+      ...(engineCapabilities.production ? ['production'] : []),
+      ...(engineCapabilities.publicRuntime ? ['public_runtime'] : []),
+      ...(engineCapabilities.promptCache.systemPromptDynamicBoundary
+        ? ['system_prompt_dynamic_boundary']
+        : []),
+    ],
+  });
 
   return {
     identity: {
@@ -159,7 +205,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
       text: input.query,
     },
     runtime: {
-      kind: input.runtimeSelection.kind,
+      kind: runtimeKind,
       selection: input.runtimeSelection,
       capabilities: engineCapabilities,
     },
