@@ -211,6 +211,13 @@ jobs:
         with:
           node-version: 24
 
+      - name: Set up fixed Go 1.25 for the Windows health probe
+        if: ${{ matrix.target == 'windows-x64' }}
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: '1.25.0'
+          cache: false
+
       - name: Restore the immutable plan
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
@@ -238,14 +245,35 @@ jobs:
           --run-id "${{ github.run_id }}"
           --run-attempt "${{ github.run_attempt }}"
 
-      - name: Verify the real Windows PowerShell 5.1 health probe
+      - name: Test the fixed Windows health probe source
         if: ${{ matrix.target == 'windows-x64' }}
         run: >-
+          go test
+          gate/scripts/portable-health-probe/main.go
+          gate/scripts/portable-health-probe/main_test.go
+
+      - name: Build the fixed Windows health probe
+        if: ${{ matrix.target == 'windows-x64' }}
+        shell: pwsh
+        env:
+          SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: ${{ runner.temp }}/smartperfetto-health-probe.exe
+        run: >-
+          go build -trimpath '-ldflags=-s -w'
+          -o "$env:SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH"
+          gate/scripts/portable-health-probe/main.go
+
+      - name: Verify the real fixed Go Windows health probe
+        if: ${{ matrix.target == 'windows-x64' }}
+        env:
+          SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: ${{ runner.temp }}/smartperfetto-health-probe.exe
+        run: >-
           node --test
-          --test-name-pattern "Windows health probe runs its real PowerShell 5.1 contract on Windows"
+          --test-name-pattern "Windows health probe runs its real fixed Go contract on Windows"
           gate/scripts/__tests__/smoke-portable-archive.test.mjs
 
       - name: Run the release contract against the exact archive
+        env:
+          SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: ${{ runner.temp }}/smartperfetto-health-probe.exe
         run: >-
           node gate/scripts/portable-release-smoke-workflow.cjs run
           --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"

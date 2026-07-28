@@ -236,11 +236,11 @@ test('public macOS evidence requires native release trust checks', () => {
   );
 });
 
-test('public Windows evidence requires the Windows PowerShell health client', () => {
+test('public Windows evidence requires the fixed Go health client', () => {
   const summary = validSummary();
   summary.target = 'windows-x64';
   summary.host = {platform: 'win32', arch: 'x64'};
-  summary.healthProbe = 'windows-powershell-5.1-httpwebrequest';
+  summary.healthProbe = 'windows-go-net-http';
   summary.asset.name = 'smartperfetto-v1.2.3-windows-x64.zip';
   summary.lifecycleReceipt.packageTarget = 'windows-x64';
   summary.lifecycleReceipt.containment = 'windows-job-object';

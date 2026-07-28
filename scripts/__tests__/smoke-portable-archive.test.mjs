@@ -34,7 +34,7 @@ const {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
-  windowsPowerShellHealthProbe,
+  windowsGoHealthProbe,
   windowsSystemBinary,
 } = require(path.join(repoRoot, 'scripts/smoke-portable-archive.cjs'));
 const {
@@ -56,6 +56,23 @@ async function closeHttpServer(server) {
   await new Promise((resolve, reject) => {
     server.close((error) => error ? reject(error) : resolve());
   });
+}
+
+function mockWindowsProbeEnvironment(overrides = {}) {
+  return {
+    PATH: process.env.PATH,
+    SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH:
+      'C:\\gate\\smartperfetto-health-probe.exe',
+    SystemRoot: 'C:\\Windows',
+    ...overrides,
+  };
+}
+
+function mockRegularProbeFile() {
+  return {
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  };
 }
 
 async function waitForChild(child) {
@@ -293,7 +310,7 @@ test('portable health probe bypasses startup proxy settings', async (t) => {
 });
 
 test('portable smoke selects and records the required health client by target', () => {
-  assert.equal(healthProbeIdForTarget('windows-x64'), 'windows-powershell-5.1-httpwebrequest');
+  assert.equal(healthProbeIdForTarget('windows-x64'), 'windows-go-net-http');
   assert.equal(healthProbeIdForTarget('macos-arm64'), 'node-http');
   assert.equal(healthProbeIdForTarget('linux-x64'), 'node-http');
   assert.equal(healthProbeForTarget('windows-x64').attemptTimeoutMs, 5_000);
@@ -301,19 +318,19 @@ test('portable smoke selects and records the required health client by target', 
   assert.throws(() => healthProbeIdForTarget('unknown-target'), /Unsupported target/);
 });
 
-test('Windows health probe uses trusted PowerShell with bounded proxy-free input', async () => {
+test('Windows health probe executes a trusted fixed Go binary with bounded input', async () => {
   const payload = {status: 'OK', version: 'fixture-version'};
   let invocation;
-  const result = await windowsPowerShellHealthProbe(
+  const result = await windowsGoHealthProbe(
     'http://127.0.0.1:3100/health',
     2_000,
     undefined,
     {
-      sourceEnv: {
+      sourceEnv: mockWindowsProbeEnvironment({
         GH_TOKEN: 'must-not-leak',
-        PATH: process.env.PATH,
-        SystemRoot: 'C:\\Windows',
-      },
+        HTTP_PROXY: 'http://127.0.0.1:1',
+      }),
+      statProbePath: mockRegularProbeFile,
       spawnProcess(command, args, options) {
         invocation = {args, command, options};
         return spawn(process.execPath, ['-e', [
@@ -330,42 +347,55 @@ test('Windows health probe uses trusted PowerShell with bounded proxy-free input
   );
   assert.equal(
     invocation.command,
-    'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    'C:\\gate\\smartperfetto-health-probe.exe',
   );
-  assert.deepEqual(invocation.args.slice(0, 4), [
-    '-NoLogo',
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-  ]);
-  assert.match(
-    invocation.args[4],
-    /\$request\.Proxy = \[System\.Net\.GlobalProxySelection\]::GetEmptyWebProxy\(\)/,
-  );
-  assert.match(invocation.args[4], /\$request\.AllowAutoRedirect = \$false/);
-  assert.doesNotMatch(invocation.args.join(' '), /must-not-leak|127\.0\.0\.1:3100/);
-  assert.equal(
-    invocation.options.env.SMARTPERFETTO_HEALTH_PROBE_URL,
+  assert.deepEqual(invocation.args, [
     'http://127.0.0.1:3100/health',
-  );
-  assert.equal(invocation.options.env.SMARTPERFETTO_HEALTH_PROBE_TIMEOUT_MS, '1600');
+    '1600',
+  ]);
+  assert.doesNotMatch(JSON.stringify(invocation.options.env), /must-not-leak|HTTP_PROXY/);
   assert.equal(invocation.options.env.GH_TOKEN, undefined);
   assert.deepEqual(invocation.options.stdio, ['ignore', 'pipe', 'pipe']);
   assert.equal(invocation.options.windowsHide, true);
 });
 
+test('Windows health probe rejects an untrusted executable path before spawning', () => {
+  assert.throws(
+    () => windowsGoHealthProbe(
+      'http://127.0.0.1:3100/health',
+      2_000,
+      undefined,
+      {sourceEnv: {SystemRoot: 'C:\\Windows'}},
+    ),
+    /must name an absolute \.exe path/,
+  );
+  assert.throws(
+    () => windowsGoHealthProbe(
+      'http://127.0.0.1:3100/health',
+      2_000,
+      undefined,
+      {
+        sourceEnv: mockWindowsProbeEnvironment(),
+        statProbePath: () => ({
+          isFile: () => true,
+          isSymbolicLink: () => true,
+        }),
+      },
+    ),
+    /regular non-symlink file/,
+  );
+});
+
 test('Windows health probe has a hard process deadline and leaves no child', async () => {
   let child;
   await assert.rejects(
-    windowsPowerShellHealthProbe(
+    windowsGoHealthProbe(
       'http://127.0.0.1:3100/health',
       100,
       undefined,
       {
-        sourceEnv: {
-          PATH: process.env.PATH,
-          SystemRoot: 'C:\\Windows',
-        },
+        sourceEnv: mockWindowsProbeEnvironment(),
+        statProbePath: mockRegularProbeFile,
         spawnProcess(_command, _args, options) {
           child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
           return child;
@@ -386,15 +416,13 @@ test('Windows health probe has a hard process deadline and leaves no child', asy
 test('Windows health probe cancellation terminates and settles its child', async () => {
   const controller = new AbortController();
   let child;
-  const probe = windowsPowerShellHealthProbe(
+  const probe = windowsGoHealthProbe(
     'http://127.0.0.1:3100/health',
     5_000,
     controller.signal,
     {
-      sourceEnv: {
-        PATH: process.env.PATH,
-        SystemRoot: 'C:\\Windows',
-      },
+      sourceEnv: mockWindowsProbeEnvironment(),
+      statProbePath: mockRegularProbeFile,
       spawnProcess(_command, _args, options) {
         child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
         return child;
@@ -418,15 +446,13 @@ test('Windows health probe force-kills and settles when direct termination is re
   let taskkillInvocation;
 
   await assert.rejects(
-    windowsPowerShellHealthProbe(
+    windowsGoHealthProbe(
       'http://127.0.0.1:3100/health',
       5,
       undefined,
       {
-        sourceEnv: {
-          PATH: process.env.PATH,
-          SystemRoot: 'C:\\Windows',
-        },
+        sourceEnv: mockWindowsProbeEnvironment(),
+        statProbePath: mockRegularProbeFile,
         spawnProcess() {
           return child;
         },
@@ -459,15 +485,13 @@ for (const [streamName, limitBytes] of [
   test(`Windows health probe bounds ${streamName} and terminates its child`, async () => {
     let child;
     await assert.rejects(
-      windowsPowerShellHealthProbe(
+      windowsGoHealthProbe(
         'http://127.0.0.1:3100/health',
         2_000,
         undefined,
         {
-          sourceEnv: {
-            PATH: process.env.PATH,
-            SystemRoot: 'C:\\Windows',
-          },
+          sourceEnv: mockWindowsProbeEnvironment(),
+          statProbePath: mockRegularProbeFile,
           spawnProcess(_command, _args, options) {
             child = spawn(process.execPath, ['-e', [
               `process.${streamName}.write(Buffer.alloc(${limitBytes + 1}));`,
@@ -485,7 +509,7 @@ for (const [streamName, limitBytes] of [
   });
 }
 
-test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
+test('Windows health probe runs its real fixed Go contract on Windows', {
   skip: process.platform !== 'win32',
 }, async (t) => {
   let redirected = false;
@@ -504,7 +528,7 @@ test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
 
   let result;
   try {
-    result = await windowsPowerShellHealthProbe(
+    result = await windowsGoHealthProbe(
       `http://127.0.0.1:${healthPort}/health`,
       5_000,
       undefined,
@@ -519,7 +543,7 @@ test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
       },
     );
   } catch (error) {
-    throw new Error(`Windows PowerShell 200 response phase failed: ${error.message}`, {
+    throw new Error(`Windows Go 200 response phase failed: ${error.message}`, {
       cause: error,
     });
   }
@@ -531,13 +555,13 @@ test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
   );
   let redirectResult;
   try {
-    redirectResult = await windowsPowerShellHealthProbe(
+    redirectResult = await windowsGoHealthProbe(
       `http://127.0.0.1:${healthPort}/redirect`,
       5_000,
       undefined,
     );
   } catch (error) {
-    throw new Error(`Windows PowerShell redirect phase failed: ${error.message}`, {
+    throw new Error(`Windows Go redirect phase failed: ${error.message}`, {
       cause: error,
     });
   }
@@ -547,15 +571,13 @@ test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
 
 test('Windows health probe rejects malformed helper output', async () => {
   await assert.rejects(
-    windowsPowerShellHealthProbe(
+    windowsGoHealthProbe(
       'http://127.0.0.1:3100/health',
       2_000,
       undefined,
       {
-        sourceEnv: {
-          PATH: process.env.PATH,
-          SystemRoot: 'C:\\Windows',
-        },
+        sourceEnv: mockWindowsProbeEnvironment(),
+        statProbePath: mockRegularProbeFile,
         spawnProcess(_command, _args, options) {
           return spawn(
             process.execPath,

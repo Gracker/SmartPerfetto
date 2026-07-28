@@ -53,50 +53,8 @@ const HEALTH_PROBE_TERMINATION_GRACE_MS = 250;
 const HEALTH_PROBE_TERMINATION_SETTLEMENT_MS = 2_000;
 const HEALTH_PROBE_IDS = Object.freeze({
   node: 'node-http',
-  windows: 'windows-powershell-5.1-httpwebrequest',
+  windows: 'windows-go-net-http',
 });
-const WINDOWS_HEALTH_PROBE_SCRIPT = [
-  '$ErrorActionPreference = "Stop"',
-  '$request = $null',
-  '$response = $null',
-  '$stream = $null',
-  '$memory = $null',
-  'try {',
-  '  $timeoutMs = [Convert]::ToInt32($env:SMARTPERFETTO_HEALTH_PROBE_TIMEOUT_MS)',
-  '  $limitBytes = [Convert]::ToInt32($env:SMARTPERFETTO_HEALTH_PROBE_LIMIT_BYTES)',
-  '  $request = [System.Net.HttpWebRequest]::Create($env:SMARTPERFETTO_HEALTH_PROBE_URL)',
-  '  $request.Method = "GET"',
-  '  $request.Accept = "application/json"',
-  '  $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()',
-  '  $request.AllowAutoRedirect = $false',
-  '  $request.KeepAlive = $true',
-  '  $request.Timeout = $timeoutMs',
-  '  $request.ReadWriteTimeout = $timeoutMs',
-  '  try {',
-  '    $response = [System.Net.HttpWebResponse]$request.GetResponse()',
-  '  } catch [System.Net.WebException] {',
-  '    if ($null -eq $_.Exception.Response) { throw }',
-  '    $response = [System.Net.HttpWebResponse]$_.Exception.Response',
-  '  }',
-  '  $stream = $response.GetResponseStream()',
-  '  $memory = New-Object System.IO.MemoryStream',
-  '  $buffer = New-Object byte[] 8192',
-  '  while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {',
-  '    if (($memory.Length + $read) -gt $limitBytes) {',
-  '      throw "ERR_HEALTH_RESPONSE_TOO_LARGE: health response exceeded $limitBytes bytes"',
-  '    }',
-  '    $memory.Write($buffer, 0, $read)',
-  '  }',
-  '  $statusCode = [int]$response.StatusCode',
-  '  $encodedBody = [Convert]::ToBase64String($memory.ToArray())',
-  '  [Console]::Out.Write(([string]$statusCode + "`n" + $encodedBody))',
-  '} finally {',
-  '  if ($null -ne $stream) { $stream.Dispose() }',
-  '  if ($null -ne $memory) { $memory.Dispose() }',
-  '  if ($null -ne $response) { $response.Dispose() }',
-  '  if ($null -ne $request) { $request.Abort() }',
-  '}',
-].join('; ');
 
 function usage() {
   console.error([
@@ -436,7 +394,7 @@ function parseWindowsHealthProbeOutput(output) {
   };
 }
 
-function windowsPowerShellHealthProbe(
+function windowsGoHealthProbe(
   url,
   timeoutMs,
   signal,
@@ -444,6 +402,7 @@ function windowsPowerShellHealthProbe(
     sourceEnv = process.env,
     spawnProcess = spawn,
     spawnSyncProcess = spawnSync,
+    statProbePath = process.platform === 'win32' ? fs.lstatSync : undefined,
     terminationGraceMs = HEALTH_PROBE_TERMINATION_GRACE_MS,
     terminationSettlementMs = HEALTH_PROBE_TERMINATION_SETTLEMENT_MS,
   } = {},
@@ -452,25 +411,42 @@ function windowsPowerShellHealthProbe(
   if (signal?.aborted) {
     return Promise.reject(signal.reason || new Error('health probe cancelled'));
   }
-  const powershell = windowsSystemBinary(
-    path.join('WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  const probePath = envValue(
     sourceEnv,
+    'SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH',
   );
+  if (
+    !probePath ||
+    !path.win32.isAbsolute(probePath) ||
+    path.win32.extname(probePath).toLowerCase() !== '.exe'
+  ) {
+    throw new Error(
+      'SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH must name an absolute .exe path',
+    );
+  }
+  if (statProbePath) {
+    let probeStat;
+    try {
+      probeStat = statProbePath(probePath);
+    } catch (error) {
+      throw new Error(`Windows health probe executable is unavailable: ${error.message}`, {
+        cause: error,
+      });
+    }
+    if (!probeStat.isFile() || probeStat.isSymbolicLink()) {
+      throw new Error('Windows health probe executable must be a regular non-symlink file');
+    }
+  }
   const taskkill = windowsSystemBinary('taskkill.exe', sourceEnv);
   const requestTimeoutMs = Math.max(1, Math.floor(timeoutMs * 0.8));
-  const env = {
-    ...sanitizedSmokeEnv(sourceEnv),
-    SMARTPERFETTO_HEALTH_PROBE_LIMIT_BYTES: String(HEALTH_RESPONSE_LIMIT_BYTES),
-    SMARTPERFETTO_HEALTH_PROBE_TIMEOUT_MS: String(requestTimeoutMs),
-    SMARTPERFETTO_HEALTH_PROBE_URL: url,
-  };
+  const env = sanitizedSmokeEnv(sourceEnv);
 
   return new Promise((resolve, reject) => {
     let child;
     try {
       child = spawnProcess(
-        powershell,
-        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_HEALTH_PROBE_SCRIPT],
+        probePath,
+        [url, String(requestTimeoutMs)],
         {
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -644,7 +620,7 @@ function healthProbeForTarget(target, dependencies) {
     return Object.freeze({
       attemptTimeoutMs: 5_000,
       id,
-      run: (url, timeoutMs, signal) => windowsPowerShellHealthProbe(
+      run: (url, timeoutMs, signal) => windowsGoHealthProbe(
         url,
         timeoutMs,
         signal,
@@ -1426,6 +1402,6 @@ module.exports = {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
-  windowsPowerShellHealthProbe,
+  windowsGoHealthProbe,
   windowsSystemBinary,
 };

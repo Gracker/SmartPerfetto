@@ -362,7 +362,7 @@ function writeCollectedTarget(rootPath, plan, entry, run = {}, layout = 'multi')
     },
     host: {platform: entry.platform, arch: entry.arch},
     healthProbe: entry.target === 'windows-x64'
-      ? 'windows-powershell-5.1-httpwebrequest'
+      ? 'windows-go-net-http'
       : 'node-http',
     ports,
     health: {
@@ -892,7 +892,31 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   assert.match(workflow, /--gate-root gate/);
   assert.match(
     workflow,
-    /if: \$\{\{ matrix\.target == 'windows-x64' \}\}[\s\S]*?Windows health probe runs its real PowerShell 5\.1 contract on Windows/,
+    /actions\/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7/,
+  );
+  assert.match(workflow, /go-version: '1\.25\.0'/);
+  assert.match(workflow, /go test[\s\S]*?portable-health-probe\/main_test\.go/);
+  assert.match(workflow, /go build -trimpath[\s\S]*?portable-health-probe\/main\.go/);
+  assert.match(
+    workflow,
+    /SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-health-probe\.exe/,
+  );
+  assert.equal(
+    workflow.match(
+      /SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-health-probe\.exe/g,
+    )?.length,
+    3,
+  );
+  assert.doesNotMatch(
+    workflow.slice(
+      workflow.indexOf('runs-on: ${{ matrix.runner }}'),
+      workflow.indexOf('steps:', workflow.indexOf('runs-on: ${{ matrix.runner }}')),
+    ),
+    /SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH/,
+  );
+  assert.match(
+    workflow,
+    /if: \$\{\{ matrix\.target == 'windows-x64' \}\}[\s\S]*?Windows health probe runs its real fixed Go contract on Windows/,
   );
   assert.match(workflow, /Fetch the unchanged draft after target smoke/);
   assert.match(workflow, /Preserve untrusted target evidence and logs/);
