@@ -245,6 +245,41 @@ test('backend gate installs every dependency tree consumed by verify:pr', () => 
   assert.match(gate, /run: npm --prefix backend run verify:pr/);
 });
 
+test('Windows cross-platform contracts build and inject the fixed Go gate helper', () => {
+  const workflow = readFileSync(
+    join(root, '.github/workflows/backend-agent-regression-gate.yml'),
+    'utf8',
+  );
+  const crossPlatform = workflow.slice(
+    workflow.indexOf('  cross-platform-contracts:'),
+    workflow.indexOf('  trace-corpus:'),
+  );
+
+  assert.match(
+    crossPlatform,
+    /actions\/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7/,
+  );
+  assert.match(crossPlatform, /go-version: "1\.25\.0"/);
+  assert.match(crossPlatform, /GO111MODULE: "off"[\s\S]*?go test \.\/scripts\/portable-health-probe/);
+  assert.match(
+    crossPlatform,
+    /go build -trimpath '-ldflags=-s -w'[\s\S]*?\.\/scripts\/portable-health-probe/,
+  );
+  assert.equal(
+    (
+      crossPlatform.match(
+        /SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-windows-gate-helper\.exe/g,
+      ) || []
+    ).length,
+    2,
+  );
+  assert.match(
+    crossPlatform,
+    /Verify Windows cross-platform runtime contracts[\s\S]*?npm run test:governance/,
+  );
+  assert.doesNotMatch(crossPlatform, /upload-artifact/);
+});
+
 test('manual Deepseek E2E can isolate the source and RAG context matrix', () => {
   const workflow = readFileSync(
     join(root, '.github/workflows/agent-deepseek-e2e.yml'),

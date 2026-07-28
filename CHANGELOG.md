@@ -13,6 +13,15 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-07-28
+
+### Fixed
+- Windows cross-platform governance now builds and injects the same pinned Go
+  health and process helper used by the exact-archive release gate.
+- GitHub release download tests now inject a descriptor-level process runner,
+  preserving the production no-shell `gh api` contract without relying on
+  Windows command-shim resolution.
+
 ## [1.2.7] - 2026-07-28
 
 ### Fixed

@@ -258,11 +258,11 @@ function validateWorkflowContexts(extractedRoot, evidenceDir, release, attestati
   }
 }
 
-function fetchWithGh(endpoint, output, accept) {
+function fetchWithGh(endpoint, output, accept, spawnProcess = spawnSync) {
   const descriptor = fs.openSync(output, 'wx', 0o600);
   let result;
   try {
-    result = spawnSync(
+    result = spawnProcess(
       'gh',
       [
         'api',
@@ -284,7 +284,7 @@ function fetchWithGh(endpoint, output, accept) {
   }
 }
 
-function verifyHostedEvidence(options) {
+function verifyHostedEvidence(options, spawnProcess = spawnSync) {
   const attestation = readRegularJson(options.attestation, 'combined attestation');
   const release = readRegularJson(options.releaseJson, 'release metadata');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-smoke-attestation-'));
@@ -298,6 +298,7 @@ function verifyHostedEvidence(options) {
       `repos/${repository}`,
       repositoryFile,
       'application/vnd.github+json',
+      spawnProcess,
     );
     const repositoryMetadata = validateRepository(
       readRegularJson(repositoryFile, 'repository metadata'),
@@ -311,11 +312,13 @@ function verifyHostedEvidence(options) {
       `repos/${expected.repository}/actions/runs/${expected.runId}`,
       runFile,
       'application/vnd.github+json',
+      spawnProcess,
     );
     fetchWithGh(
       `repos/${expected.repository}/actions/runs/${expected.runId}/artifacts?per_page=100`,
       artifactsFile,
       'application/vnd.github+json',
+      spawnProcess,
     );
     validateRun(readRegularJson(runFile, 'Actions run metadata'), expected);
     const artifact = validateArtifactMetadata(
@@ -327,6 +330,7 @@ function verifyHostedEvidence(options) {
       `repos/${expected.repository}/actions/artifacts/${artifact.id}/zip`,
       artifactZip,
       'application/octet-stream',
+      spawnProcess,
     );
     if (`sha256:${sha256File(artifactZip)}` !== artifact.digest) {
       fail('downloaded combined artifact does not match the GitHub artifact digest');

@@ -82,12 +82,12 @@ function identify(file) {
   };
 }
 
-function download(options) {
+function download(options, spawnProcess = spawnSync) {
   const request = validateRequest(options);
   const fd = fs.openSync(request.output, 'wx', 0o600);
   let result;
   try {
-    result = spawnSync(
+    result = spawnProcess(
       'gh',
       [
         'api',

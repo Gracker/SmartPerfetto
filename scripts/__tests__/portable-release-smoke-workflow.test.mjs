@@ -6,12 +6,12 @@ import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {
-  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs';
 import {tmpdir} from 'node:os';
@@ -39,6 +39,7 @@ const {
   validateRepository,
   validateRun,
   validateWorkflowContexts,
+  verifyHostedEvidence,
 } = require(join(root, 'scripts/verify-portable-smoke-attestation.cjs'));
 
 function git(cwd, args) {
@@ -95,6 +96,30 @@ function setupGitFixture() {
   git(cwd, ['commit', '--quiet', '-m', 'gate']);
   const gateCommit = git(cwd, ['rev-parse', 'HEAD']);
   return {cwd, gateCommit, releaseCommit};
+}
+
+function fakeGhApiRunner(responses) {
+  return (command, args, options) => {
+    assert.equal(command, 'gh');
+    assert.equal(args[0], 'api');
+    const response = responses.get(args[1]);
+    assert.ok(response, `unexpected gh api endpoint: ${args[1]}`);
+    assert.deepEqual(args, [
+      'api',
+      args[1],
+      '-H',
+      `Accept: ${response.accept}`,
+      '-H',
+      'X-GitHub-Api-Version: 2022-11-28',
+    ]);
+    assert.equal(options.stdio[0], 'ignore');
+    assert.equal(Number.isInteger(options.stdio[1]), true);
+    assert.equal(options.stdio[2], 'inherit');
+    if (response.error) return {error: response.error, status: null, signal: null};
+    if (response.status) return {status: response.status, signal: null};
+    writeSync(options.stdio[1], response.body);
+    return {status: 0, signal: null};
+  };
 }
 
 test('plan binds a script-free release SHA and marks windows-linux as partial', () => {
@@ -178,42 +203,58 @@ test('release binding rejects asset replacement after planning', () => {
 
 test('native download streams exact binary bytes and removes a digest mismatch', () => {
   const fixture = mkdtempSync(join(tmpdir(), 'smartperfetto-download-'));
-  const fakeBin = join(fixture, 'bin');
-  mkdirSync(fakeBin);
   const bytes = Buffer.from([0, 255, 1, 2, 3, 10, 13]);
-  const gh = join(fakeBin, process.platform === 'win32' ? 'gh.cmd' : 'gh');
-  if (process.platform === 'win32') {
-    writeFileSync(gh, `@node -e "process.stdout.write(Buffer.from([0,255,1,2,3,10,13]))"\r\n`);
-  } else {
-    writeFileSync(gh, '#!/bin/sh\nnode -e \'process.stdout.write(Buffer.from([0,255,1,2,3,10,13]))\'\n');
-    chmodSync(gh, 0o755);
-  }
-  const originalPath = process.env.PATH;
-  process.env.PATH = `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${originalPath}`;
-  try {
-    const output = join(fixture, 'asset.zip');
-    download({
+  const endpoint = 'repos/Gracker/SmartPerfetto/releases/assets/123';
+  const successfulRunner = fakeGhApiRunner(new Map([[
+    endpoint,
+    {accept: 'application/octet-stream', body: bytes},
+  ]]));
+  const output = join(fixture, 'asset.zip');
+  download({
+    repository: 'Gracker/SmartPerfetto',
+    assetId: '123',
+    assetName: 'asset.zip',
+    assetSize: String(bytes.length),
+    assetDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    output,
+  }, successfulRunner);
+  assert.deepEqual(readFileSync(output), bytes);
+
+  const mismatch = join(fixture, 'bad.zip');
+  assert.throws(
+    () => download({
       repository: 'Gracker/SmartPerfetto',
       assetId: '123',
-      assetName: 'asset.zip',
+      assetName: 'bad.zip',
       assetSize: String(bytes.length),
-      assetDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
-      output,
-    });
-    assert.deepEqual(readFileSync(output), bytes);
+      assetDigest: `sha256:${'0'.repeat(64)}`,
+      output: mismatch,
+    }, successfulRunner),
+    /downloaded bytes mismatch/,
+  );
+  assert.equal(existsSync(mismatch), false);
+
+  for (const [name, response, expected] of [
+    ['status.zip', {accept: 'application/octet-stream', status: 4}, /status 4/],
+    [
+      'error.zip',
+      {accept: 'application/octet-stream', error: new Error('spawn denied')},
+      /spawn denied/,
+    ],
+  ]) {
+    const failedOutput = join(fixture, name);
     assert.throws(
       () => download({
         repository: 'Gracker/SmartPerfetto',
         assetId: '123',
-        assetName: 'bad.zip',
+        assetName: name,
         assetSize: String(bytes.length),
-        assetDigest: `sha256:${'0'.repeat(64)}`,
-        output: join(fixture, 'bad.zip'),
-      }),
-      /downloaded bytes mismatch/,
+        assetDigest: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        output: failedOutput,
+      }, fakeGhApiRunner(new Map([[endpoint, response]]))),
+      expected,
     );
-  } finally {
-    process.env.PATH = originalPath;
+    assert.equal(existsSync(failedOutput), false);
   }
 });
 
@@ -778,86 +819,77 @@ test('hosted verifier re-downloads and hashes the combined GitHub artifact', () 
     );
   assert.equal(zip.status, 0, zip.stderr);
   const artifactDigest = `sha256:${createHash('sha256').update(readFileSync(artifactZip)).digest('hex')}`;
-  const fakeBin = join(work, 'bin');
-  mkdirSync(fakeBin);
-  const fakeGhScript = join(fakeBin, 'fake-gh.cjs');
-  writeFileSync(fakeGhScript, `'use strict';
-const fs = require('fs');
-const endpoint = process.argv[3];
-const run = {
-  id: 1234,
-  run_attempt: 1,
-  status: 'completed',
-  conclusion: 'success',
-  event: 'workflow_dispatch',
-  path: '.github/workflows/portable-exact-archive-smoke.yml',
-  head_sha: process.env.FAKE_GATE_SHA,
-  head_branch: 'main',
-  repository: {id: 99, full_name: 'Gracker/SmartPerfetto'},
-};
-if (endpoint === 'repos/Gracker/SmartPerfetto/actions/runs/1234') {
-  process.stdout.write(JSON.stringify(run));
-} else if (endpoint === 'repos/Gracker/SmartPerfetto') {
-  process.stdout.write(JSON.stringify({
+  const run = {
+    id: 1234,
+    run_attempt: 1,
+    status: 'completed',
+    conclusion: 'success',
+    event: 'workflow_dispatch',
+    path: '.github/workflows/portable-exact-archive-smoke.yml',
+    head_sha: plan.gateSha,
+    head_branch: 'main',
+    repository: {id: 99, full_name: 'Gracker/SmartPerfetto'},
+  };
+  const repository = {
     id: 99,
     full_name: 'Gracker/SmartPerfetto',
     default_branch: 'main',
-  }));
-} else if (endpoint === 'repos/Gracker/SmartPerfetto/actions/runs/1234/artifacts?per_page=100') {
-  process.stdout.write(JSON.stringify({artifacts: [{
-    id: 9876,
-    name: 'portable-smoke-evidence-release-4242',
-    expired: false,
-    digest: process.env.FAKE_ARTIFACT_DIGEST,
-    workflow_run: {id: 1234, head_sha: process.env.FAKE_GATE_SHA},
-  }]}));
-} else if (endpoint === 'repos/Gracker/SmartPerfetto/actions/artifacts/9876/zip') {
-  process.stdout.write(fs.readFileSync(process.env.FAKE_ARTIFACT_ZIP));
-} else {
-  process.exit(2);
-}
-`);
-  if (process.platform === 'win32') {
-    writeFileSync(join(fakeBin, 'gh.cmd'), '@node "%~dp0fake-gh.cjs" %*\r\n');
-  } else {
-    const gh = join(fakeBin, 'gh');
-    writeFileSync(gh, `#!/usr/bin/env node\nrequire('./fake-gh.cjs');\n`);
-    chmodSync(gh, 0o755);
-  }
-  const verifierArgs = [
-    join(root, 'scripts/verify-portable-smoke-attestation.cjs'),
-    '--attestation', attestationFile,
-    '--evidence-dir', join(work, 'promotion-evidence'),
-    '--release-json', releaseFile,
-    '--repository', plan.repository,
-    '--release-id', String(plan.release.id),
-    '--version', plan.release.version,
-    '--commit', plan.release.commit,
-    '--run-id', '1234',
-    '--gate-sha', plan.gateSha,
-  ];
-  const verifierEnv = {
-    ...process.env,
-    PATH: `${fakeBin}${process.platform === 'win32' ? ';' : ':'}${process.env.PATH}`,
-    FAKE_ARTIFACT_ZIP: artifactZip,
-    FAKE_ARTIFACT_DIGEST: artifactDigest,
-    FAKE_GATE_SHA: plan.gateSha,
   };
-  const success = spawnSync(process.execPath, verifierArgs, {
-    cwd: root,
-    encoding: 'utf8',
-    env: verifierEnv,
-  });
-  assert.equal(success.status, 0, success.stderr);
-  assert.match(success.stdout, /Hosted portable smoke attestation verified/);
-
-  const mismatch = spawnSync(process.execPath, verifierArgs, {
-    cwd: root,
-    encoding: 'utf8',
-    env: {...verifierEnv, FAKE_ARTIFACT_DIGEST: `sha256:${'0'.repeat(64)}`},
-  });
-  assert.notEqual(mismatch.status, 0);
-  assert.match(mismatch.stderr, /downloaded combined artifact does not match/);
+  const verifierOptions = {
+    attestation: attestationFile,
+    evidenceDir: join(work, 'promotion-evidence'),
+    releaseJson: releaseFile,
+    repository: plan.repository,
+    releaseId: String(plan.release.id),
+    version: plan.release.version,
+    commit: plan.release.commit,
+    runId: '1234',
+    gateSha: plan.gateSha,
+  };
+  const hostedRunner = (digest) => fakeGhApiRunner(new Map([
+    [
+      'repos/Gracker/SmartPerfetto',
+      {
+        accept: 'application/vnd.github+json',
+        body: Buffer.from(JSON.stringify(repository)),
+      },
+    ],
+    [
+      'repos/Gracker/SmartPerfetto/actions/runs/1234',
+      {
+        accept: 'application/vnd.github+json',
+        body: Buffer.from(JSON.stringify(run)),
+      },
+    ],
+    [
+      'repos/Gracker/SmartPerfetto/actions/runs/1234/artifacts?per_page=100',
+      {
+        accept: 'application/vnd.github+json',
+        body: Buffer.from(JSON.stringify({artifacts: [{
+          id: 9876,
+          name: 'portable-smoke-evidence-release-4242',
+          expired: false,
+          digest,
+          workflow_run: {id: 1234, head_sha: plan.gateSha},
+        }]})),
+      },
+    ],
+    [
+      'repos/Gracker/SmartPerfetto/actions/artifacts/9876/zip',
+      {accept: 'application/octet-stream', body: readFileSync(artifactZip)},
+    ],
+  ]));
+  assert.doesNotThrow(() => verifyHostedEvidence(
+    verifierOptions,
+    hostedRunner(artifactDigest),
+  ));
+  assert.throws(
+    () => verifyHostedEvidence(
+      verifierOptions,
+      hostedRunner(`sha256:${'0'.repeat(64)}`),
+    ),
+    /downloaded combined artifact does not match/,
+  );
 });
 
 test('workflow fixes trust roots, target hosts, token scope, and evidence layout', () => {
