@@ -149,13 +149,13 @@ Each target smoke must:
    non-conflicting ports.
 3. Poll backend and frontend health through explicit
    `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
-   The smoke probe must bypass environment proxies through a one-shot raw IPv4
-   loopback socket and an HTTP/1.0 `Connection: close` request. It may accept
-   only one strict response using either a unique exact `Content-Length` or an
-   explicitly close-delimited body; reject transfer encodings, malformed or
-   ambiguous framing, multiple response blocks, and responses above the byte
-   or wall-clock budget. Cancel and settle the peer probe before launcher
-   shutdown after any readiness failure.
+   The smoke probe must bypass environment proxies through a one-shot standard
+   library HTTP client fixed to IPv4 loopback, with no connection pooling and
+   `Connection: close`. Enforce strict URL, header, response-byte, and
+   wall-clock budgets, destroy request/response sockets on every terminal path,
+   and cancel and settle the peer probe before launcher shutdown after any
+   readiness failure. Do not maintain a release-only HTTP parser that diverges
+   from the launcher and normal clients.
 4. Execute the bundled Node.js, Claude, and OpenCode version commands when
    present, then run a minimal packaged `trace_processor_shell` operation.
 5. Use the launcher-supported shutdown control, require a zero/successful and
