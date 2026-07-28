@@ -502,31 +502,45 @@ test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
   const healthPort = await listenOnLoopback(health);
   t.after(() => closeHttpServer(health));
 
-  const result = await windowsPowerShellHealthProbe(
-    `http://127.0.0.1:${healthPort}/health`,
-    5_000,
-    undefined,
-    {
-      sourceEnv: {
-        ...process.env,
-        ALL_PROXY: 'http://127.0.0.1:1',
-        HTTP_PROXY: 'http://127.0.0.1:1',
-        HTTPS_PROXY: 'http://127.0.0.1:1',
-        NO_PROXY: '',
+  let result;
+  try {
+    result = await windowsPowerShellHealthProbe(
+      `http://127.0.0.1:${healthPort}/health`,
+      5_000,
+      undefined,
+      {
+        sourceEnv: {
+          ...process.env,
+          ALL_PROXY: 'http://127.0.0.1:1',
+          HTTP_PROXY: 'http://127.0.0.1:1',
+          HTTPS_PROXY: 'http://127.0.0.1:1',
+          NO_PROXY: '',
+        },
       },
-    },
-  );
+    );
+  } catch (error) {
+    throw new Error(`Windows PowerShell 200 response phase failed: ${error.message}`, {
+      cause: error,
+    });
+  }
 
   assert.equal(result.statusCode, 200);
   assert.deepEqual(
     JSON.parse(result.body),
     {status: 'OK', version: 'fixture-version'},
   );
-  const redirectResult = await windowsPowerShellHealthProbe(
-    `http://127.0.0.1:${healthPort}/redirect`,
-    5_000,
-    undefined,
-  );
+  let redirectResult;
+  try {
+    redirectResult = await windowsPowerShellHealthProbe(
+      `http://127.0.0.1:${healthPort}/redirect`,
+      5_000,
+      undefined,
+    );
+  } catch (error) {
+    throw new Error(`Windows PowerShell redirect phase failed: ${error.message}`, {
+      cause: error,
+    });
+  }
   assert.equal(redirectResult.statusCode, 302);
   assert.equal(redirected, false);
 });
