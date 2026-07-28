@@ -14,6 +14,8 @@ export interface SkillFingerprintRegistry {
   getAllSkills(): SkillDefinition[];
   getSkillOrigin(skillId: string): SkillOriginMetadata | undefined;
   getFragmentCache(): Map<string, string>;
+  getAppliedOverlayIds?(skillId: string): readonly string[];
+  readonly overlayGeneration?: string;
 }
 
 function collectFragmentKeys(value: unknown, out: Set<string>): void {
@@ -82,19 +84,32 @@ export function buildSkillRegistryAttribution(
 ): RunSkillRegistryAttribution {
   const fragments = registry.getFragmentCache();
   const skills = registry.getAllSkills()
-    .map(skill => ({
-      skillId: skill.name,
-      version: skill.version,
-      contentFingerprint: fingerprintSkillDefinition(skill, fragments),
-      ...originAttribution(skill.name, registry.getSkillOrigin(skill.name)),
-      appliedOverlayIds: [],
-    }))
+    .map(skill => {
+      const appliedOverlayIds = [
+        ...(registry.getAppliedOverlayIds?.(skill.name) ?? []),
+      ].sort();
+      return {
+        skillId: skill.name,
+        version: skill.version,
+        contentFingerprint: fingerprintSkillDefinition(skill, fragments),
+        ...(appliedOverlayIds.length > 0
+          ? {origin: 'evolution_overlay' as const}
+          : originAttribution(skill.name, registry.getSkillOrigin(skill.name))),
+        appliedOverlayIds,
+      };
+    })
     .sort((a, b) => a.skillId.localeCompare(b.skillId));
   const allFragments = [...fragments.entries()]
     .map(([id, content]) => ({id, contentHash: canonicalContentHash(content)}))
     .sort((a, b) => a.id.localeCompare(b.id));
+  const registryFingerprint = canonicalContentHash({
+    skills,
+    fragments: allFragments,
+  });
   return {
-    registryFingerprint: canonicalContentHash({skills, fragments: allFragments}),
+    registryFingerprint,
+    evolutionOverlayGeneration:
+      registry.overlayGeneration ?? `builtin:${registryFingerprint}`,
     skills,
   };
 }

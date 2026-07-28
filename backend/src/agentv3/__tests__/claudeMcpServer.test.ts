@@ -25,6 +25,7 @@ import * as os from 'os';
 import * as path from 'path';
 import type { AnalysisPlanV3, AnalysisNote, Hypothesis, TracePairContext, UncertaintyFlag } from '../types';
 import type { OutputLanguage } from '../outputLanguage';
+import {withEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 
 // ── Mock dependencies ────────────────────────────────────────────────────
 
@@ -767,6 +768,41 @@ describe('createClaudeMcpServer', () => {
         {},
         expect.objectContaining({ signal: undefined }),
       );
+    });
+
+    it('never replaces the executor registry for a pinned run snapshot', async () => {
+      const pinnedRegistry = {
+        registryFingerprint: 'pinned-skill-registry',
+        overlayGeneration: 'overlay:pinned',
+        getAllSkills: jest.fn(() => []),
+        getFragmentCache: jest.fn(() => new Map()),
+      };
+      const runtimeSnapshot = {
+        scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+        baseSkillRegistryFingerprint: 'base-skills',
+        baseStrategyRegistryFingerprint: 'base-strategies',
+        overlayGeneration: 'overlay:pinned',
+        skillRegistry: pinnedRegistry,
+        strategyRegistry: {} as never,
+      };
+      const workspaceLookupCount = (
+        getWorkspaceSkillRegistry as jest.MockedFunction<
+          typeof getWorkspaceSkillRegistry
+        >
+      ).mock.calls.length;
+      const server = withEffectiveRuntimeRegistrySnapshot(
+        runtimeSnapshot as never,
+        () => createTestServer(),
+      );
+
+      await callTool(server.tools, 'list_skills', {});
+
+      expect(server.mockSkillExecutor.replaceRegisteredSkills)
+        .not.toHaveBeenCalled();
+      expect(server.mockSkillExecutor.setFragmentRegistry)
+        .not.toHaveBeenCalled();
+      expect(getWorkspaceSkillRegistry)
+        .toHaveBeenCalledTimes(workspaceLookupCount);
     });
 
     it('keeps fetch_artifact available in lightweight mode for skill artifacts', () => {

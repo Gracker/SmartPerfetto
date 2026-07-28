@@ -14,6 +14,7 @@ import { createArchitectureDetector } from '../../../agent/detectors/architectur
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
+import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {
   buildNegativePatternSection,
@@ -411,8 +412,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     // Build MCP tools
     const skillExecutor = createSkillExecutor(traceProcessorService);
-    skillExecutor.registerSkills(skillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+    const effectiveSkillRegistry =
+      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+    skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+    skillExecutor.setFragmentRegistry(
+      effectiveSkillRegistry.getFragmentCache(),
+    );
 
     const artifactStore = privateAnalysisContext
       ? new ArtifactStore()

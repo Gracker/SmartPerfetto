@@ -23,7 +23,12 @@ import * as path from 'path';
 import * as yaml from 'js-yaml';
 import type { ExpectedCall } from './types';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
+import {
+  currentEffectiveRuntimeRegistrySnapshot,
+  type ReadonlyStrategyRegistrySnapshot,
+} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
+import type {RunManifestScope} from '../types/selfEvolution';
 
 /** Phase-level restatement hint — loaded from strategy frontmatter `phase_hints`. */
 export interface PhaseHint {
@@ -180,7 +185,37 @@ const DEFAULT_STRATEGY_DETAIL_EXCERPT_CHARS = 1600;
 /** In dev mode, skip caching so .strategy.md / .template.md edits take effect without restart. */
 const DEV_MODE = process.env.NODE_ENV !== 'production';
 
-let cache: Map<string, StrategyDefinition> | null = null;
+let baseCache: Map<string, StrategyDefinition> | null = null;
+
+export type StrategyRegistryContributionOperation =
+  | {
+      op: 'append_core';
+      operationId: string;
+      content: string;
+    }
+  | {
+      op: 'append_phase_hints';
+      operationId: string;
+      hints: PhaseHint[];
+    }
+  | {
+      op: 'append_detail_sections';
+      operationId: string;
+      sections: StrategyDetailSection[];
+    };
+
+/**
+ * Non-persistent M3 runtime composition input. This is deliberately not the
+ * durable strategy-overlay schema owned by later self-evolution milestones.
+ */
+export interface StrategyRegistryContribution {
+  contributionId: string;
+  scope: RunManifestScope;
+  scene: string;
+  baseStrategyFingerprint: string;
+  createdAt: string;
+  operations: StrategyRegistryContributionOperation[];
+}
 
 function parseExpectedCalls(value: unknown): ExpectedCall[] {
   if (!Array.isArray(value)) return [];
@@ -438,21 +473,455 @@ function parseStrategyFile(filePath: string): StrategyDefinition | null {
   };
 }
 
-export function loadStrategies(): Map<string, StrategyDefinition> {
-  if (cache && !DEV_MODE) return cache;
+function deepFreezeStrategy<T>(value: T, seen = new Set<object>()): T {
+  if (!value || typeof value !== 'object' || Object.isFrozen(value)) return value;
+  if (seen.has(value)) return value;
+  seen.add(value);
+  for (const child of Object.values(value as Record<string, unknown>)) {
+    deepFreezeStrategy(child, seen);
+  }
+  return Object.freeze(value);
+}
 
-  cache = new Map();
+function cloneStrategyDefinition(definition: StrategyDefinition): StrategyDefinition {
+  return deepFreezeStrategy({
+    ...definition,
+    keywords: [...definition.keywords],
+    compoundPatterns: definition.compoundPatterns.map(
+      pattern => new RegExp(pattern.source, pattern.flags),
+    ),
+    requiredCapabilities: [...definition.requiredCapabilities],
+    optionalCapabilities: [...definition.optionalCapabilities],
+    phaseHints: definition.phaseHints.map(hint => ({
+      ...hint,
+      keywords: [...hint.keywords],
+      criticalTools: [...hint.criticalTools],
+    })),
+    planTemplate: definition.planTemplate
+      ? {
+          mandatoryAspects: definition.planTemplate.mandatoryAspects.map(aspect => ({
+            ...aspect,
+            matchKeywords: [...aspect.matchKeywords],
+            ...(aspect.triggerKeywords
+              ? {triggerKeywords: [...aspect.triggerKeywords]}
+              : {}),
+            ...(aspect.requiredExpectedCalls
+              ? {requiredExpectedCalls: aspect.requiredExpectedCalls.map(call => ({...call}))}
+              : {}),
+            ...(aspect.alternativeExpectedCalls
+              ? {alternativeExpectedCalls: aspect.alternativeExpectedCalls.map(call => ({...call}))}
+              : {}),
+            ...(aspect.conditionalRequiredExpectedCalls
+              ? {
+                  conditionalRequiredExpectedCalls:
+                    aspect.conditionalRequiredExpectedCalls.map(group => ({
+                      triggerKeywords: [...group.triggerKeywords],
+                      requiredExpectedCalls:
+                        group.requiredExpectedCalls.map(call => ({...call})),
+                    })),
+                }
+              : {}),
+          })),
+        }
+      : null,
+    finalReportContract: definition.finalReportContract
+      ? {
+          requiredSections:
+            definition.finalReportContract.requiredSections.map(section => ({
+              ...section,
+              triggerPatterns: [...section.triggerPatterns],
+              patterns: [...section.patterns],
+              patternGroups: section.patternGroups.map(group => [...group]),
+              recoveryText: {
+                zh: [...section.recoveryText.zh],
+                en: [...section.recoveryText.en],
+              },
+            })),
+        }
+      : null,
+    verifierMisdiagnosisPatterns:
+      definition.verifierMisdiagnosisPatterns.map(pattern => ({
+        ...pattern,
+        patterns: [...pattern.patterns],
+        scenes: [...pattern.scenes],
+      })),
+    detailSections: definition.detailSections.map(detail => ({
+      ...detail,
+      keywords: [...detail.keywords],
+    })),
+  });
+}
+
+function strategyFingerprintPayload(definition: StrategyDefinition): unknown {
+  const {sourcePath: _sourcePath, ...semanticDefinition} = definition;
+  return {
+    ...semanticDefinition,
+    compoundPatterns: definition.compoundPatterns.map(pattern => ({
+      source: pattern.source,
+      flags: pattern.flags,
+    })),
+  };
+}
+
+export function fingerprintStrategyDefinition(
+  definition: StrategyDefinition,
+): string {
+  return canonicalContentHash(strategyFingerprintPayload(definition));
+}
+
+function baseStrategies(): Map<string, StrategyDefinition> {
+  if (baseCache && !DEV_MODE) return baseCache;
+
+  const loaded = new Map<string, StrategyDefinition>();
   const files = fs.readdirSync(STRATEGIES_DIR)
-    .filter(f => f.endsWith('.strategy.md'));
+    .filter(file => file.endsWith('.strategy.md'))
+    .sort();
 
   for (const file of files) {
-    const def = parseStrategyFile(path.join(STRATEGIES_DIR, file));
-    if (def) {
-      cache.set(def.scene, def);
+    const definition = parseStrategyFile(path.join(STRATEGIES_DIR, file));
+    if (definition) {
+      loaded.set(definition.scene, cloneStrategyDefinition(definition));
     }
   }
+  baseCache = loaded;
+  return loaded;
+}
 
-  return cache;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOnlyKeys(
+  value: Record<string, unknown>,
+  keys: readonly string[],
+): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every(key => allowed.has(key));
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function validScope(value: unknown): value is RunManifestScope {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['tenantId', 'workspaceId'])
+    && nonEmptyString(value.tenantId)
+    && nonEmptyString(value.workspaceId);
+}
+
+function assertStringArray(value: unknown, code: string): asserts value is string[] {
+  if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) {
+    throw new Error(code);
+  }
+}
+
+function parsePhaseHintContribution(
+  value: unknown,
+  contributionId: string,
+): PhaseHint {
+  if (
+    !isRecord(value)
+    || !hasOnlyKeys(value, [
+      'id',
+      'keywords',
+      'constraints',
+      'criticalTools',
+      'critical',
+    ])
+    || !nonEmptyString(value.id)
+    || typeof value.constraints !== 'string'
+    || typeof value.critical !== 'boolean'
+  ) {
+    throw new Error(`strategy_contribution_invalid_phase_hint:${contributionId}`);
+  }
+  assertStringArray(
+    value.keywords,
+    `strategy_contribution_invalid_phase_hint_keywords:${contributionId}`,
+  );
+  assertStringArray(
+    value.criticalTools,
+    `strategy_contribution_invalid_phase_hint_tools:${contributionId}`,
+  );
+  return {
+    id: value.id,
+    keywords: [...value.keywords],
+    constraints: value.constraints,
+    criticalTools: [...value.criticalTools],
+    critical: value.critical,
+  };
+}
+
+function parseDetailContribution(
+  value: unknown,
+  contributionId: string,
+  scene: string,
+): StrategyDetailSection {
+  if (
+    !isRecord(value)
+    || !hasOnlyKeys(value, [
+      'id',
+      'ref',
+      'title',
+      'keywords',
+      'content',
+      'default',
+    ])
+    || !nonEmptyString(value.id)
+    || value.ref !== `${scene}:${value.id}`
+    || !nonEmptyString(value.title)
+    || !nonEmptyString(value.content)
+    || typeof value.default !== 'boolean'
+  ) {
+    throw new Error(`strategy_contribution_invalid_detail:${contributionId}`);
+  }
+  assertStringArray(
+    value.keywords,
+    `strategy_contribution_invalid_detail_keywords:${contributionId}`,
+  );
+  return {
+    id: value.id,
+    ref: value.ref,
+    title: value.title,
+    keywords: [...value.keywords],
+    content: value.content,
+    default: value.default,
+  };
+}
+
+function parseStrategyContribution(
+  value: unknown,
+): StrategyRegistryContribution {
+  if (
+    !isRecord(value)
+    || !hasOnlyKeys(value, [
+      'contributionId',
+      'scope',
+      'scene',
+      'baseStrategyFingerprint',
+      'createdAt',
+      'operations',
+    ])
+    || !nonEmptyString(value.contributionId)
+    || !validScope(value.scope)
+    || !nonEmptyString(value.scene)
+    || !nonEmptyString(value.baseStrategyFingerprint)
+    || typeof value.createdAt !== 'string'
+    || !Number.isFinite(Date.parse(value.createdAt))
+    || !Array.isArray(value.operations)
+    || value.operations.length === 0
+  ) {
+    throw new Error('strategy_contribution_invalid');
+  }
+  const contributionId = value.contributionId;
+  const scene = value.scene;
+  const operationIds = new Set<string>();
+  const operations: StrategyRegistryContributionOperation[] =
+    value.operations.map((operation): StrategyRegistryContributionOperation => {
+      if (
+        !isRecord(operation)
+        || !nonEmptyString(operation.operationId)
+        || typeof operation.op !== 'string'
+        || operationIds.has(operation.operationId)
+      ) {
+        throw new Error(
+          `strategy_contribution_invalid_operation:${value.contributionId}`,
+        );
+      }
+      operationIds.add(operation.operationId);
+      if (operation.op === 'append_core') {
+        if (
+          !hasOnlyKeys(operation, ['op', 'operationId', 'content'])
+          || !nonEmptyString(operation.content)
+        ) {
+          throw new Error(
+            `strategy_contribution_invalid_append_core:${contributionId}`,
+          );
+        }
+        return {
+          op: 'append_core',
+          operationId: operation.operationId,
+          content: operation.content,
+        };
+      }
+      if (operation.op === 'append_phase_hints') {
+        if (
+          !hasOnlyKeys(operation, ['op', 'operationId', 'hints'])
+          || !Array.isArray(operation.hints)
+          || operation.hints.length === 0
+        ) {
+          throw new Error(
+            `strategy_contribution_invalid_append_phase_hints:${contributionId}`,
+          );
+        }
+        return {
+          op: 'append_phase_hints',
+          operationId: operation.operationId,
+          hints: operation.hints.map(hint =>
+            parsePhaseHintContribution(hint, contributionId)),
+        };
+      }
+      if (operation.op === 'append_detail_sections') {
+        if (
+          !hasOnlyKeys(operation, ['op', 'operationId', 'sections'])
+          || !Array.isArray(operation.sections)
+          || operation.sections.length === 0
+        ) {
+          throw new Error(
+            `strategy_contribution_invalid_append_details:${contributionId}`,
+          );
+        }
+        return {
+          op: 'append_detail_sections',
+          operationId: operation.operationId,
+          sections: operation.sections.map(section =>
+            parseDetailContribution(section, contributionId, scene)),
+        };
+      }
+      throw new Error(
+        `strategy_contribution_unknown_operation:${contributionId}:${operation.op}`,
+      );
+    });
+  return {
+    contributionId,
+    scope: value.scope,
+    scene,
+    baseStrategyFingerprint: value.baseStrategyFingerprint,
+    createdAt: value.createdAt,
+    operations,
+  };
+}
+
+function sameScope(left: RunManifestScope, right: RunManifestScope): boolean {
+  return left.tenantId === right.tenantId
+    && left.workspaceId === right.workspaceId;
+}
+
+export function buildStrategyRegistrySnapshot(input: {
+  scope: RunManifestScope;
+  overlayGeneration: string;
+  contributions?: readonly unknown[];
+}): ReadonlyStrategyRegistrySnapshot {
+  const definitions = new Map(
+    [...baseStrategies()].map(([scene, definition]) => [
+      scene,
+      cloneStrategyDefinition(definition),
+    ]),
+  );
+  const parsedContributions = (input.contributions ?? [])
+    .map(parseStrategyContribution);
+  const byScene = new Map<string, StrategyRegistryContributionOperation[]>();
+
+  for (const contribution of parsedContributions.sort((left, right) => {
+    const byTime = Date.parse(left.createdAt) - Date.parse(right.createdAt);
+    return byTime !== 0
+      ? byTime
+      : left.contributionId.localeCompare(right.contributionId);
+  })) {
+    if (!sameScope(contribution.scope, input.scope)) {
+      throw new Error(
+        `strategy_contribution_scope_mismatch:${contribution.contributionId}`,
+      );
+    }
+    const base = baseStrategies().get(contribution.scene);
+    if (!base) {
+      throw new Error(
+        `strategy_contribution_base_missing:${contribution.contributionId}:${contribution.scene}`,
+      );
+    }
+    if (
+      fingerprintStrategyDefinition(base)
+      !== contribution.baseStrategyFingerprint
+    ) {
+      throw new Error(
+        `strategy_contribution_base_fingerprint_mismatch:${contribution.contributionId}`,
+      );
+    }
+    const sortedOperations = [...contribution.operations]
+      .sort((left, right) => left.operationId.localeCompare(right.operationId));
+    const existing = byScene.get(contribution.scene) ?? [];
+    existing.push(...sortedOperations);
+    byScene.set(contribution.scene, existing);
+  }
+
+  for (const [scene, operations] of byScene) {
+    const current = definitions.get(scene)!;
+    let content = current.content;
+    const phaseHints = current.phaseHints.map(hint => ({
+      ...hint,
+      keywords: [...hint.keywords],
+      criticalTools: [...hint.criticalTools],
+    }));
+    const detailSections = current.detailSections.map(detail => ({
+      ...detail,
+      keywords: [...detail.keywords],
+    }));
+    const operationIds = new Set<string>();
+    const phaseHintIds = new Set(phaseHints.map(hint => hint.id));
+    const detailIds = new Set(detailSections.map(detail => detail.id));
+
+    for (const operation of operations) {
+      if (operationIds.has(operation.operationId)) {
+        throw new Error(`strategy_overlay_conflict:operation:${operation.operationId}`);
+      }
+      operationIds.add(operation.operationId);
+      if (operation.op === 'append_core') {
+        content = `${content}\n\n${operation.content}`.trim();
+      } else if (operation.op === 'append_phase_hints') {
+        for (const hint of operation.hints) {
+          if (phaseHintIds.has(hint.id)) {
+            throw new Error(`strategy_overlay_conflict:phase_hint:${scene}:${hint.id}`);
+          }
+          phaseHintIds.add(hint.id);
+          phaseHints.push(hint);
+        }
+      } else {
+        for (const detail of operation.sections) {
+          if (detailIds.has(detail.id)) {
+            throw new Error(`strategy_overlay_conflict:detail:${scene}:${detail.id}`);
+          }
+          detailIds.add(detail.id);
+          detailSections.push(detail);
+        }
+      }
+    }
+
+    definitions.set(scene, cloneStrategyDefinition({
+      ...current,
+      content,
+      phaseHints,
+      detailSections,
+    }));
+  }
+
+  const orderedDefinitions = [...definitions.values()]
+    .sort((left, right) => left.scene.localeCompare(right.scene));
+  const registryFingerprint = canonicalContentHash(
+    orderedDefinitions.map(definition =>
+      strategyFingerprintPayload(definition)),
+  );
+  return Object.freeze({
+    registryFingerprint,
+    overlayGeneration: input.overlayGeneration,
+    getStrategy(scene: string): StrategyDefinition | undefined {
+      return definitions.get(scene);
+    },
+    getAllStrategies(): StrategyDefinition[] {
+      return [...orderedDefinitions];
+    },
+  });
+}
+
+export function loadStrategies(): Map<string, StrategyDefinition> {
+  const currentSnapshot = currentEffectiveRuntimeRegistrySnapshot();
+  if (currentSnapshot) {
+    return new Map(
+      currentSnapshot.strategyRegistry
+        .getAllStrategies()
+        .map(definition => [definition.scene, definition]),
+    );
+  }
+  return new Map(baseStrategies());
 }
 
 export function getStrategyContent(scene: string): string | undefined {
@@ -590,7 +1059,7 @@ const registryCache = new Map<string, unknown>();
 
 /** Clear cached strategies, templates, and registries — useful for dev/test reloads. */
 export function invalidateStrategyCache(): void {
-  cache = null;
+  baseCache = null;
   templateCache.clear();
   registryCache.clear();
 }

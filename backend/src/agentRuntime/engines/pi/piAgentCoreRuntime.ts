@@ -12,6 +12,7 @@ import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
+import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {resolveEffectiveAnalysisMode} from '../../../services/effectiveAnalysisMode';
@@ -1921,8 +1922,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
     await ensureSkillRegistryInitialized();
     const skillExecutor = createSkillExecutor(this.traceProcessorService);
-    skillExecutor.registerSkills(skillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+    const effectiveSkillRegistry =
+      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+    skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+    skillExecutor.setFragmentRegistry(
+      effectiveSkillRegistry.getFragmentCache(),
+    );
 
     let architecture = getLruCacheEntry(this.architectureCache, traceId);
     if (!architecture && !quickResolution.skipTracePreflightDetection) {

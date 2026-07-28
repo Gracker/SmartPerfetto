@@ -96,8 +96,8 @@ import {
   projectPrivateAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
 import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
-import {getWorkspaceSkillRegistry} from '../../services/skillPacks/workspaceSkillRegistryProvider';
 import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
+import {getEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import {
   createRunManifestLifecycle,
   withRunManifestLifecycle,
@@ -396,7 +396,9 @@ export class CliAnalyzeService {
       throw new Error(`run_manifest_runtime_missing:${sessionId}`);
     }
     const resolvedScope = resolveKnowledgeScope(knowledgeScope);
-    const workspaceSkillRegistry = await getWorkspaceSkillRegistry(resolvedScope);
+    const runtimeRegistrySnapshot = await getEffectiveRuntimeRegistrySnapshot({
+      scope: resolvedScope,
+    });
     const runManifestLifecycle = createRunManifestLifecycle({
       runId: randomUUID(),
       sessionId,
@@ -410,7 +412,10 @@ export class CliAnalyzeService {
       outputLanguage,
       analysisMode: requestedAnalysisMode,
       referenceTraceId: effectiveReferenceTraceId,
-      skillRegistry: buildSkillRegistryAttribution(workspaceSkillRegistry.registry),
+      skillRegistry: buildSkillRegistryAttribution(
+        runtimeRegistrySnapshot.skillRegistry,
+      ),
+      runtimeRegistrySnapshot,
     });
     const cliTurnPath = privateKnowledge ? undefined : input.resolveCliTurnPath(sessionId, input.turn);
 

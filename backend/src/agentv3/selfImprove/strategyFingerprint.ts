@@ -38,6 +38,8 @@ import {
   type PhaseHint,
 } from '../strategyLoader';
 import { computeHintFingerprint } from './hintFingerprint';
+import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
+import {currentEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 
 const STRATEGIES_DIR = path.resolve(__dirname, '..', '..', '..', 'strategies');
 
@@ -62,11 +64,12 @@ export interface StrategyVersionFingerprint {
  * start and released on completion.
  */
 export interface RunSnapshot {
-  sessionId: string;
-  sceneType: string;
-  strategyContent: string | undefined;
-  phaseHints: PhaseHint[];
-  fingerprint: StrategyVersionFingerprint;
+  readonly sessionId: string;
+  readonly sceneType: string;
+  readonly overlayGeneration: string;
+  readonly strategyContent: string | undefined;
+  readonly phaseHints: readonly PhaseHint[];
+  readonly fingerprint: Readonly<StrategyVersionFingerprint>;
 }
 
 export type DriftStatus =
@@ -162,22 +165,35 @@ export class RunSnapshotRegistry {
     // refreshes the snapshot — the new values reflect any hot-reloads that
     // happened between turns, which is the desired behaviour: the freeze
     // boundary is the per-turn analyze() call.
+    const registrySnapshot = currentEffectiveRuntimeRegistrySnapshot();
+    const overlayGeneration = registrySnapshot?.overlayGeneration ?? 'builtin';
+    const existing = this.snapshots.get(sessionId);
+    if (
+      existing
+      && existing.sceneType === sceneType
+      && existing.overlayGeneration === overlayGeneration
+    ) {
+      return existing;
+    }
     const strategyContent = getStrategyContent(sceneType);
-    const phaseHints = getPhaseHints(sceneType);
-    const strategyContentHash = computeStrategyContentHash(sceneType);
+    const phaseHints = Object.freeze([...getPhaseHints(sceneType)]);
+    const strategyContentHash = registrySnapshot
+      ? canonicalContentHash(strategyContent ?? '')
+      : computeStrategyContentHash(sceneType);
     const fingerprint: StrategyVersionFingerprint = {
       strategyFile: `${sceneType}.strategy.md`,
       strategyContentHash,
       patchFingerprint: '', // scene-level snapshot pins nothing in particular
       appliedAt: Date.now(),
     };
-    const snapshot: RunSnapshot = {
+    const snapshot: RunSnapshot = Object.freeze({
       sessionId,
       sceneType,
+      overlayGeneration,
       strategyContent,
       phaseHints,
-      fingerprint,
-    };
+      fingerprint: Object.freeze(fingerprint),
+    });
     this.snapshots.set(sessionId, snapshot);
     return snapshot;
   }

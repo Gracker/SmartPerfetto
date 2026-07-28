@@ -31,6 +31,9 @@ import {
   ensureSkillRegistryInitialized,
   skillRegistry,
 } from '../services/skillEngine/skillLoader';
+import {
+  resolveEffectiveSkillRegistryForRuntime,
+} from '../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import type { TraceProcessorService } from '../services/traceProcessorService';
 import type { DataEnvelope, DataEnvelopeTraceSide } from '../types/dataContract';
 import type { QuickStructuredDirectAnswer } from './quickDirectAnswerContract';
@@ -159,8 +162,12 @@ export async function buildQuickScrollingTriageEvidence(input: {
 
   await ensureSkillRegistryInitialized();
   const skillExecutor = createSkillExecutor(input.traceProcessorService);
-  skillExecutor.registerSkills(skillRegistry.getAllSkills());
-  skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+  const effectiveSkillRegistry =
+    resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+  skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+  skillExecutor.setFragmentRegistry(
+    effectiveSkillRegistry.getFragmentCache(),
+  );
 
   const result = await skillExecutor.execute(
     SCROLLING_SKILL_ID,

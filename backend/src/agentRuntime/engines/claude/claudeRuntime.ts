@@ -12,6 +12,7 @@ import {
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
+import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import { getSkillAnalysisAdapter } from '../../../services/skillEngine/skillAnalysisAdapter';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
@@ -2868,8 +2869,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       if (!useEvidenceOnlyQuick) {
         await (skillRegistryReady ?? ensureSkillRegistryInitialized());
         const skillExecutor = createSkillExecutor(this.traceProcessorService);
-        skillExecutor.registerSkills(skillRegistry.getAllSkills());
-        skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+        const effectiveSkillRegistry =
+          resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+        skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+        skillExecutor.setFragmentRegistry(
+          effectiveSkillRegistry.getFragmentCache(),
+        );
         if (!this.artifactStores.has(sessionId)) {
           this.artifactStores.set(sessionId, new ArtifactStore());
         }
@@ -3573,8 +3578,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 1: Skill executor setup
     const skillExecutor = createSkillExecutor(this.traceProcessorService);
     await ensureSkillRegistryInitialized();
-    skillExecutor.registerSkills(skillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+    const effectiveSkillRegistry =
+      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+    skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+    skillExecutor.setFragmentRegistry(
+      effectiveSkillRegistry.getFragmentCache(),
+    );
 
     // Phase 2: Architecture detection (LRU cached per traceId)
     let architecture = getLruCacheEntry(this.architectureCache, traceId);

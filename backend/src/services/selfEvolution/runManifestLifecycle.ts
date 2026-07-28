@@ -21,6 +21,10 @@ import {
   getRunManifestStore,
   type RunManifestStore,
 } from './runManifestStore';
+import {
+  withEffectiveRuntimeRegistrySnapshot,
+  type EffectiveRuntimeRegistrySnapshot,
+} from './effectiveRuntimeRegistryContext';
 
 export type RunManifestLifecycleState =
   | 'collecting'
@@ -57,6 +61,7 @@ export interface CreateRunManifestLifecycleInput {
   resumeAncestry?: RunManifestV1['resumeAncestry'];
   featureFlagSnapshot?: Record<string, string | number | boolean>;
   skillRegistry: RunSkillRegistryAttribution;
+  runtimeRegistrySnapshot?: EffectiveRuntimeRegistrySnapshot;
   store?: RunManifestStore;
   now?: () => number;
 }
@@ -100,6 +105,7 @@ export function buildRunManifestFeatureFlagSnapshot(
 export class RunManifestLifecycle {
   readonly builder: RunManifestBuilder;
   readonly diagnostics: RunManifestLifecycleDiagnostic[] = [];
+  readonly runtimeRegistrySnapshot?: EffectiveRuntimeRegistrySnapshot;
 
   private lifecycleState: RunManifestLifecycleState = 'collecting';
   private sealedManifest: RunManifestV1 | undefined;
@@ -109,6 +115,20 @@ export class RunManifestLifecycle {
   constructor(input: CreateRunManifestLifecycleInput) {
     this.store = input.store ?? getRunManifestStore();
     this.now = input.now ?? Date.now;
+    this.runtimeRegistrySnapshot = input.runtimeRegistrySnapshot;
+    if (this.runtimeRegistrySnapshot) {
+      const snapshot = this.runtimeRegistrySnapshot;
+      if (
+        snapshot.scope.tenantId !== input.scope.tenantId
+        || snapshot.scope.workspaceId !== input.scope.workspaceId
+        || snapshot.overlayGeneration
+          !== input.skillRegistry.evolutionOverlayGeneration
+        || snapshot.skillRegistry.registryFingerprint
+          !== input.skillRegistry.registryFingerprint
+      ) {
+        throw new Error('run_manifest_runtime_registry_snapshot_mismatch');
+      }
+    }
     const builderInput: CreateRunManifestBuilderInput = {
       ...input,
       featureFlagSnapshot: input.featureFlagSnapshot
@@ -250,7 +270,13 @@ export function withRunManifestLifecycle<T>(
 ): T {
   const inherited = currentRunManifestAttributionSink();
   resolveRunManifestAttributionSink(lifecycle.builder, inherited);
-  return context.run(lifecycle.builder, callback);
+  const runWithManifest = () => context.run(lifecycle.builder, callback);
+  return lifecycle.runtimeRegistrySnapshot
+    ? withEffectiveRuntimeRegistrySnapshot(
+        lifecycle.runtimeRegistrySnapshot,
+        runWithManifest,
+      )
+    : runWithManifest();
 }
 
 export function clearRunManifestLifecyclesForTests(): void {

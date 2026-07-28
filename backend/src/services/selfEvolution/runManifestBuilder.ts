@@ -89,6 +89,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
   private capabilityFlags = new Set<string>();
   private toolAllowlistHash = canonicalContentHash([]);
   private registryFingerprint: string | undefined;
+  private evolutionOverlayGeneration: string | undefined;
   private skillDefinitions = new Map<string, RunSkillDefinitionAttribution>();
   private skillAggregates = new Map<string, RunSkillAttribution>();
   private promptTemplates = new Map<string, string>();
@@ -184,6 +185,17 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       );
     }
     this.registryFingerprint = input.registryFingerprint;
+    const overlayGeneration = input.evolutionOverlayGeneration
+      ?? `builtin:${input.registryFingerprint}`;
+    if (
+      this.evolutionOverlayGeneration
+      && this.evolutionOverlayGeneration !== overlayGeneration
+    ) {
+      throw new Error(
+        `run_manifest_overlay_generation_mismatch:${this.evolutionOverlayGeneration}:${overlayGeneration}`,
+      );
+    }
+    this.evolutionOverlayGeneration = overlayGeneration;
     for (const skill of input.skills) {
       const existing = this.skillDefinitions.get(skill.skillId);
       if (
@@ -357,7 +369,8 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         .map(skill => ({...skill, appliedOverlayIds: [...skill.appliedOverlayIds]}))
         .sort((a, b) => a.skillId.localeCompare(b.skillId)),
       skillRegistryFingerprint: this.registryFingerprint,
-      evolutionOverlayGeneration: `builtin:${this.registryFingerprint}`,
+      evolutionOverlayGeneration: this.evolutionOverlayGeneration
+        ?? `builtin:${this.registryFingerprint}`,
       sqlStatementCount: this.sqlStatementCount,
       sqlErrorCount: this.sqlErrorCount,
       runtime: this.runtime.runtime,

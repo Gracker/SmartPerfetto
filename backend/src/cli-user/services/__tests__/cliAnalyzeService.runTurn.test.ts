@@ -110,9 +110,22 @@ jest.mock('../../../services/skillPacks/workspaceSkillRegistryProvider', () => (
   getWorkspaceSkillRegistry: jest.fn(async () => ({registry: {}})),
 }));
 
+jest.mock('../../../services/selfEvolution/effectiveRuntimeRegistryProvider', () => ({
+  getEffectiveRuntimeRegistrySnapshot: jest.fn(async ({scope}: any) => ({
+    scope: {
+      tenantId: scope.tenantId,
+      workspaceId: scope.workspaceId,
+    },
+    overlayGeneration: 'builtin:registry-test',
+    skillRegistry: {},
+    strategyRegistry: {},
+  })),
+}));
+
 jest.mock('../../../services/selfEvolution/skillFingerprint', () => ({
   buildSkillRegistryAttribution: jest.fn(() => ({
     registryFingerprint: 'registry-test',
+    evolutionOverlayGeneration: 'builtin:registry-test',
     skills: [],
   })),
 }));

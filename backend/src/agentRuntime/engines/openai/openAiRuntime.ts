@@ -17,6 +17,7 @@ import OpenAI from 'openai';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
+import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import { getSkillAnalysisAdapter } from '../../../services/skillEngine/skillAnalysisAdapter';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
@@ -2230,8 +2231,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     if (!useEvidenceOnlyQuick) {
       await (skillRegistryReady ?? ensureSkillRegistryInitialized());
       const skillExecutor = createSkillExecutor(this.traceProcessorService);
-      skillExecutor.registerSkills(skillRegistry.getAllSkills());
-      skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+      const effectiveSkillRegistry =
+        resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+      skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+      skillExecutor.setFragmentRegistry(
+        effectiveSkillRegistry.getFragmentCache(),
+      );
 
       const skillNotesBudget = createRuntimeSkillNotesBudget(lightweight);
       const mcp = createClaudeMcpServer({

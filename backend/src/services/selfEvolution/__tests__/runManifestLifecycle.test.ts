@@ -19,6 +19,13 @@ import {
   withRunManifestLifecycle,
   currentRunManifestAttributionSink,
 } from '../runManifestLifecycle';
+import {
+  currentEffectiveRuntimeRegistrySnapshot,
+  type EffectiveRuntimeRegistrySnapshot,
+} from '../effectiveRuntimeRegistryContext';
+import {
+  resolveEffectiveSkillRegistryForRuntime,
+} from '../effectiveRuntimeRegistryProvider';
 
 function lifecycleWithStore(store: RunManifestStoreType): RunManifestLifecycle {
   return new RunManifestLifecycle({
@@ -159,6 +166,65 @@ describe('RunManifestLifecycle', () => {
       lifecycle.builder,
       conflicting,
     )).toThrow('run_manifest_sink_identity_conflict');
+  });
+
+  it('binds the exact runtime registry snapshot and fails closed when it is absent', async () => {
+    const store = {
+      append: jest.fn(),
+      pin: jest.fn(),
+      unpin: jest.fn(),
+    } as unknown as RunManifestStoreType;
+    const registry = {
+      registryFingerprint: 'registry-a',
+      overlayGeneration: 'builtin:registry-a',
+      isInitialized: () => true as const,
+      getSkill: () => undefined,
+      getAllSkills: () => [],
+      getFragmentCache: () => new Map<string, string>(),
+      getSkillOrigin: () => undefined,
+      getAppliedOverlayIds: () => [],
+      getVendorOverride: () => undefined,
+      getVendorOverridesForSkill: () => [],
+      findMatchingSkill: () => undefined,
+    };
+    const snapshot: EffectiveRuntimeRegistrySnapshot = {
+      scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+      baseSkillRegistryFingerprint: 'registry-a',
+      baseStrategyRegistryFingerprint: 'strategy-a',
+      overlayGeneration: 'builtin:registry-a',
+      skillRegistry: registry,
+      strategyRegistry: {
+        registryFingerprint: 'strategy-a',
+        overlayGeneration: 'builtin:registry-a',
+        getStrategy: () => undefined,
+        getAllStrategies: () => [],
+      },
+    };
+    const pinned = new RunManifestLifecycle({
+      runId: 'run-pinned',
+      sessionId: 'session-pinned',
+      scope: snapshot.scope,
+      runtime: 'pi-agent-core',
+      outputLanguage: 'en',
+      analysisMode: 'auto',
+      skillRegistry: {
+        registryFingerprint: 'registry-a',
+        evolutionOverlayGeneration: 'builtin:registry-a',
+        skills: [],
+      },
+      runtimeRegistrySnapshot: snapshot,
+      store,
+    });
+    await withRunManifestLifecycle(pinned, async () => {
+      await Promise.resolve();
+      expect(currentEffectiveRuntimeRegistrySnapshot()).toBe(snapshot);
+      expect(resolveEffectiveSkillRegistryForRuntime(registry)).toBe(registry);
+    });
+
+    const missing = lifecycleWithStore(store);
+    expect(() => withRunManifestLifecycle(missing, () =>
+      resolveEffectiveSkillRegistryForRuntime(registry)))
+      .toThrow('effective_runtime_registry_snapshot_missing_for_run');
   });
 
   it('seals before four receipt projections that all reference the same manifest', async () => {

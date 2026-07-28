@@ -20,12 +20,14 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { SkillDefinition } from '../../services/skillEngine/types';
-import { validateSkillConditions } from '../../services/skillEngine/skillValidator';
-import { validateSkillBatchAnalysis } from '../../services/skillEngine/skillBatchAnalysis';
 import {
   formatDisplayContractIssue,
   validateSkillDisplayContract,
 } from '../../services/skillEngine/displayContractValidator';
+import {
+  extractReferencedSkillIdsFromStrategyText,
+  validateSkillDefinitionInProcess,
+} from '../../services/selfEvolution/inProcessValidator';
 import {
   analyzeSqlGuardrails,
   DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
@@ -711,9 +713,6 @@ export function validateContracts(skill: SkillDefinition, filePath?: string): { 
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  errors.push(...validateSkillBatchAnalysis(skill).map(validationIssue =>
-    `${validationIssue.path}: ${validationIssue.message}`));
-
   // 1. Input declarations completeness
   if (Array.isArray(skill.inputs)) {
     const validTypes = new Set(['string', 'number', 'integer', 'boolean', 'timestamp', 'duration', 'array', 'object']);
@@ -731,16 +730,18 @@ export function validateContracts(skill: SkillDefinition, filePath?: string): { 
     }
   }
 
-  // 2. Condition variable reference checks
-  const condWarnings = validateSkillConditions(skill);
-  for (const w of condWarnings) {
-    warnings.push(`${w.stepId}: ${w.message}`);
+  // 2. Shared in-process checks. Runtime reconciliation and the source CLI
+  // intentionally use the same pure validator; no npm/child-process boundary.
+  for (const validationIssue of validateSkillDefinitionInProcess(skill, {
+    includeStructuralChecks: false,
+  })) {
+    const formatted = `${validationIssue.path}: ${validationIssue.message}`;
+    if (validationIssue.severity === 'error') {
+      errors.push(formatted);
+    } else {
+      warnings.push(formatted);
+    }
   }
-
-  // 3. Display contract checks. These are errors in the CLI gate because
-  // invalid display.layer/level values produce broken DataEnvelopes in agentv3.
-  const displayIssues = validateSkillDisplayContract(skill, { filePath });
-  errors.push(...displayIssues.map(formatDisplayContractIssue));
 
   return { errors, warnings };
 }
@@ -1114,13 +1115,9 @@ function validateStrategySkillReferences(): number {
     const content = strategyContents.get(file) || '';
     const frontmatterErrors = validateStrategyFrontmatter(content, file, frontmatterValidationContext);
 
-    // Extract all unique skill names referenced
-    const referencedSkills = new Set<string>();
-    const invokeSkillPattern = /invoke_skill\("([^"]+)"/g;
-    let match: RegExpExecArray | null;
-    while ((match = invokeSkillPattern.exec(content)) !== null) {
-      referencedSkills.add(match[1]);
-    }
+    // Extract all unique skill names through the shared in-process validator.
+    const referencedSkills =
+      extractReferencedSkillIdsFromStrategyText(content);
 
     const missing = [...referencedSkills].filter(name => !skillNames.has(name));
     if (missing.length > 0 || frontmatterErrors.length > 0) {

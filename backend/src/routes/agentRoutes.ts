@@ -220,6 +220,11 @@ import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
 import {getWorkspaceSkillRegistry} from '../services/skillPacks/workspaceSkillRegistryProvider';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
 import {
+  currentEffectiveSkillRegistry,
+  getEffectiveRuntimeRegistrySnapshot,
+  resolveEffectiveSkillRegistryForRuntime,
+} from '../services/selfEvolution/effectiveRuntimeRegistryProvider';
+import {
   createRunManifestLifecycle,
   disposeRunManifestLifecyclesForSession,
   getActiveRunManifestLifecycle,
@@ -1106,12 +1111,16 @@ async function createHttpRunManifestLifecycle(
   if (!session.runtimeKind) {
     throw new Error(`run_manifest_runtime_missing:${run.runId}`);
   }
-  await ensureSkillRegistryInitialized();
   const scope = runManifestScopeFromSession(session);
-  const handle = await getWorkspaceSkillRegistry({
-    ...scope,
-    userId: session.userId,
+  const runtimeRegistrySnapshot = await getEffectiveRuntimeRegistrySnapshot({
+    scope: {
+      ...scope,
+      userId: session.userId,
+    },
   });
+  const skillRegistryAttribution = buildSkillRegistryAttribution(
+    runtimeRegistrySnapshot.skillRegistry,
+  );
   return createRunManifestLifecycle({
     runId: run.runId,
     sessionId: session.sessionId,
@@ -1123,7 +1132,8 @@ async function createHttpRunManifestLifecycle(
     outputLanguage: sessionOutputLanguage(session),
     analysisMode: options.analysisMode ?? session.analysisMode ?? 'auto',
     referenceTraceId: options.referenceTraceId ?? session.referenceTraceId,
-    skillRegistry: buildSkillRegistryAttribution(handle.registry),
+    skillRegistry: skillRegistryAttribution,
+    runtimeRegistrySnapshot,
   });
 }
 
@@ -4273,14 +4283,10 @@ async function runSmartAnalysis(
   });
 
   try {
-    await ensureSkillRegistryInitialized();
-    const smartRegistry = options.knowledgeScope?.tenantId && options.knowledgeScope.workspaceId
-      ? (await getWorkspaceSkillRegistry({
-          tenantId: options.knowledgeScope.tenantId,
-          workspaceId: options.knowledgeScope.workspaceId,
-          userId: options.knowledgeScope.userId,
-        })).registry
-      : skillRegistry;
+    const smartRegistry = currentEffectiveSkillRegistry();
+    if (!smartRegistry) {
+      throw new Error('effective_runtime_registry_snapshot_missing_for_run');
+    }
     options.runManifestAttributionSink.recordSkillRegistry(
       buildSkillRegistryAttribution(smartRegistry),
     );
@@ -4797,8 +4803,10 @@ async function executeStateTimelineSkill(
 ): Promise<DataEnvelope[]> {
   await ensureSkillRegistryInitialized();
 
+  const runtimeSkillRegistry =
+    resolveEffectiveSkillRegistryForRuntime(skillRegistry);
   const skillExecutor = new SkillExecutor(traceProcessorService);
-  skillExecutor.registerSkills(skillRegistry.getAllSkills());
+  skillExecutor.registerSkills(runtimeSkillRegistry.getAllSkills());
 
   const skillResult = await skillExecutor.execute('state_timeline', traceId, {
     trace_id: traceId,
@@ -4844,8 +4852,10 @@ async function detectScenesQuickViaSkill(
 ): Promise<DetectedScene[]> {
   await ensureSkillRegistryInitialized();
 
+  const runtimeSkillRegistry =
+    resolveEffectiveSkillRegistryForRuntime(skillRegistry);
   const skillExecutor = new SkillExecutor(traceProcessorService);
-  skillExecutor.registerSkills(skillRegistry.getAllSkills());
+  skillExecutor.registerSkills(runtimeSkillRegistry.getAllSkills());
 
   const skillResult = await skillExecutor.execute('scene_reconstruction', traceId, {
     trace_id: traceId,

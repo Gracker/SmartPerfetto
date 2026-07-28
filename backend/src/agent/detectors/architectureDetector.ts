@@ -21,6 +21,9 @@ import {
 } from './types';
 import { createSkillExecutor } from '../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../services/skillEngine/skillLoader';
+import {
+  resolveEffectiveSkillRegistryForRuntime,
+} from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import { parseCandidates } from '../../types/teaching.types';
 import {
   ensurePipelineSkillsInitialized,
@@ -58,8 +61,12 @@ export async function detectArchitectureViaSkill(
     await ensurePipelineSkillsInitialized();
     const executor = createSkillExecutor(traceProcessorService);
     await ensureSkillRegistryInitialized();
-    executor.registerSkills(skillRegistry.getAllSkills());
-    executor.setFragmentRegistry(skillRegistry.getFragmentCache());
+    const effectiveSkillRegistry =
+      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+    executor.registerSkills(effectiveSkillRegistry.getAllSkills());
+    executor.setFragmentRegistry(
+      effectiveSkillRegistry.getFragmentCache(),
+    );
 
     const result = await executor.execute('rendering_pipeline_detection', traceId, {
       package: packageName || '',

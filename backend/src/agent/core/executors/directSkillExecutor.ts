@@ -30,6 +30,9 @@ import {
   skillRegistry,
   ensureSkillRegistryInitialized,
 } from '../../../services/skillEngine/skillLoader';
+import {
+  resolveEffectiveSkillRegistryForRuntime,
+} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import type { SkillExecutionResult } from '../../../services/skillEngine/types';
 import type { FrameMechanismRecord } from '../../types/jankCause';
 
@@ -89,8 +92,12 @@ export class DirectSkillExecutor {
       this.traceProcessorService,
       this.aiService  // ModelRouter duck-types as aiService via callWithFallback()
     );
-    skillExecutor.registerSkills(skillRegistry.getAllSkills());
-    skillExecutor.setFragmentRegistry(skillRegistry.getFragmentCache());
+    const effectiveSkillRegistry =
+      resolveEffectiveSkillRegistryForRuntime(skillRegistry);
+    skillExecutor.registerSkills(effectiveSkillRegistry.getAllSkills());
+    skillExecutor.setFragmentRegistry(
+      effectiveSkillRegistry.getFragmentCache(),
+    );
 
     emitter.log(`DirectSkillExecutor: executing ${tasks.length} tasks (concurrency: ${this.concurrency})`);
     emitter.emitUpdate('progress', {

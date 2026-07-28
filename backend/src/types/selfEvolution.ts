@@ -4,6 +4,10 @@
 
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {
+  DisplayConfig,
+  SkillStep,
+} from '../services/skillEngine/types';
 
 export interface SelfEvolutionConfig {
   enabled: boolean;
@@ -114,6 +118,50 @@ export interface SelfEvolutionMetrics {
 export interface RunManifestScope {
   tenantId: string;
   workspaceId: string;
+}
+
+export interface SkillOverlayDeltaV1 {
+  schemaVersion: 1;
+  overlayId: string;
+  baseSkillId: string;
+  baseFingerprint: string;
+  proposalId: string;
+  createdAt: string;
+  scope: RunManifestScope;
+  operations: SkillOverlayOperation[];
+}
+
+export type SkillOverlayOperation =
+  | AppendStepsOperation
+  | SetDisplayOperation
+  | SetMetadataOperation;
+
+export interface AppendStepsOperation {
+  op: 'append_steps';
+  operationId: string;
+  steps: SkillStep[];
+}
+
+export interface SetDisplayOperation {
+  op: 'set_display';
+  operationId: string;
+  display: DisplayConfig;
+}
+
+export interface SetMetadataOperation {
+  op: 'set_metadata';
+  operationId: string;
+  meta?: {
+    description?: string;
+    tags?: string[];
+  };
+  triggers?: {
+    keywords?: {
+      zh?: string[];
+      en?: string[];
+    };
+    patterns?: string[];
+  };
 }
 
 export interface RunManifestIdentity {
@@ -348,6 +396,7 @@ export interface RunSkillDefinitionAttribution {
 
 export interface RunSkillRegistryAttribution {
   registryFingerprint: string;
+  evolutionOverlayGeneration?: string;
   skills: RunSkillDefinitionAttribution[];
 }
 

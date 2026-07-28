@@ -106,8 +106,18 @@ export interface AdaptedResult {
 }
 
 export interface SkillAnalysisAdapterOptions {
-  registry?: SkillRegistry;
+  registry?: SkillRegistryView;
   registryFingerprint?: string;
+}
+
+export interface SkillRegistryView {
+  isInitialized(): boolean;
+  getSkill(name: string): SkillDefinition | undefined;
+  getAllSkills(): SkillDefinition[];
+  getFragmentCache(): Map<string, string>;
+  findMatchingSkill(question: string): SkillDefinition | undefined;
+  getSkillOrigin(name: string): SkillOriginMetadata | undefined;
+  getVendorOverride(skillId: string, vendor: string): import('./skillLoader').VendorOverride | undefined;
 }
 
 // =============================================================================
@@ -120,7 +130,7 @@ export class SkillAnalysisAdapter {
   private initialized = false;
   private eventHandler?: (event: SkillEvent) => void;
   private currentEventCollector?: SkillEventCollector;
-  private registry: SkillRegistry;
+  private registry: SkillRegistryView;
   private registryFingerprint?: string;
   private registeredFingerprint?: string;
 
@@ -147,7 +157,10 @@ export class SkillAnalysisAdapter {
     }
   }
 
-  setSkillRegistry(registry: SkillRegistry, registryFingerprint?: string): void {
+  setSkillRegistry(
+    registry: SkillRegistryView,
+    registryFingerprint?: string,
+  ): void {
     if (this.registry === registry && this.registryFingerprint === registryFingerprint) return;
     this.registry = registry;
     this.registryFingerprint = registryFingerprint;

@@ -10,8 +10,11 @@ import * as path from 'path';
 
 import type { TraceProcessorService } from '../services/traceProcessorService';
 import type { SkillExecutor } from '../services/skillEngine/skillExecutor';
-import { createSkillAnalysisAdapter } from '../services/skillEngine/skillAnalysisAdapter';
-import { skillRegistry, type SkillRegistry } from '../services/skillEngine/skillLoader';
+import {
+  createSkillAnalysisAdapter,
+  type SkillRegistryView,
+} from '../services/skillEngine/skillAnalysisAdapter';
+import { skillRegistry } from '../services/skillEngine/skillLoader';
 import { getWorkspaceSkillRegistry } from '../services/skillPacks/workspaceSkillRegistryProvider';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
@@ -20,6 +23,9 @@ import {
   resolveRunManifestAttributionSink,
 } from '../services/selfEvolution/runManifestLifecycle';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
+import {
+  currentEffectiveRuntimeRegistrySnapshot,
+} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
 import type {
@@ -1129,7 +1135,6 @@ export interface ClaudeMcpServerOptions {
 export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const { traceId, traceProcessorService, skillExecutor, packageName, emitUpdate, onSkillResult, analysisNotes, artifactStore } = options;
   const recentSqlErrors: SqlErrorFixPair[] = options.recentSqlErrors || [];
-  const skillAdapter = createSkillAnalysisAdapter(traceProcessorService);
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
   const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
@@ -1138,12 +1143,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     options.runManifestAttributionSink,
     currentRunManifestAttributionSink(),
   );
-  skillExecutor.setRunManifestAttributionSink(runManifestAttributionSink);
-  if (!knowledgeScope?.tenantId || !knowledgeScope.workspaceId) {
-    runManifestAttributionSink?.recordSkillRegistry(
-      buildSkillRegistryAttribution(skillRegistry),
-    );
+  const runtimeRegistrySnapshot = currentEffectiveRuntimeRegistrySnapshot();
+  if (runManifestAttributionSink && !runtimeRegistrySnapshot) {
+    throw new Error('effective_runtime_registry_snapshot_missing_for_run');
   }
+  let pinnedSkillRegistry: SkillRegistryView =
+    runtimeRegistrySnapshot?.skillRegistry ?? skillRegistry;
+  let pinnedSkillRegistryFingerprint =
+    runtimeRegistrySnapshot?.skillRegistry.registryFingerprint ?? 'built_in';
+  const skillAdapter = createSkillAnalysisAdapter(
+    traceProcessorService,
+    undefined,
+    {
+      registry: pinnedSkillRegistry,
+      registryFingerprint: pinnedSkillRegistryFingerprint,
+    },
+  );
+  skillExecutor.setRunManifestAttributionSink(runManifestAttributionSink);
+  runManifestAttributionSink?.recordSkillRegistry(
+    buildSkillRegistryAttribution(pinnedSkillRegistry),
+  );
   const codeAwareMode = normalizeCodeAwareMode(options.codeAwareMode);
   const codebaseIds = codeAwareMode === 'off'
     ? []
@@ -1242,7 +1261,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     sessionId: options.sessionId ?? traceId,
     hasCodebaseAccess: codeAwareMode !== 'off' && codebaseIds.length > 0,
   };
-  let boundSkillRegistryFingerprint: string | undefined;
+  let skillRuntimeRegistryBound = false;
+  let directWorkspaceRegistryPromise:
+    | ReturnType<typeof getWorkspaceSkillRegistry>
+    | undefined;
 
   function paneSideForTraceSide(traceSide: TraceProcessorTraceSide): TraceProcessorPaneSide | undefined {
     return options.comparisonContext?.tracePairContext?.panes.find(pane => pane.traceSide === traceSide)?.side;
@@ -1298,28 +1320,46 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
   }
 
-  async function bindSkillRuntimeRegistry(): Promise<SkillRegistry> {
-    if (!knowledgeScope?.tenantId || !knowledgeScope.workspaceId) {
-      runManifestAttributionSink?.recordSkillRegistry(
-        buildSkillRegistryAttribution(skillRegistry),
-      );
-      return skillRegistry;
-    }
-    const handle = await getWorkspaceSkillRegistry({
-      tenantId: knowledgeScope.tenantId,
-      workspaceId: knowledgeScope.workspaceId,
-      userId: knowledgeScope.userId,
-    });
-    if (boundSkillRegistryFingerprint !== handle.registryFingerprint) {
-      skillAdapter.setSkillRegistry(handle.registry, handle.registryFingerprint);
-      skillExecutor.replaceRegisteredSkills(handle.registry.getAllSkills());
-      skillExecutor.setFragmentRegistry(handle.registry.getFragmentCache());
-      boundSkillRegistryFingerprint = handle.registryFingerprint;
+  async function bindSkillRuntimeRegistry(): Promise<SkillRegistryView> {
+    if (!skillRuntimeRegistryBound) {
+      if (
+        !runtimeRegistrySnapshot
+        && knowledgeScope?.tenantId
+        && knowledgeScope.workspaceId
+      ) {
+        directWorkspaceRegistryPromise ??= getWorkspaceSkillRegistry({
+          tenantId: knowledgeScope.tenantId,
+          workspaceId: knowledgeScope.workspaceId,
+          userId: knowledgeScope.userId,
+        });
+        const handle = await directWorkspaceRegistryPromise;
+        pinnedSkillRegistry = handle.registry;
+        pinnedSkillRegistryFingerprint = handle.registryFingerprint;
+      }
+      // Production runs receive an executor that was initialized from the
+      // same frozen snapshot before MCP construction. Never replace that
+      // registry while a run is active. The fallback mutation is limited to
+      // legacy/direct MCP use that has no run snapshot.
+      if (!runtimeRegistrySnapshot) {
+        skillAdapter.setSkillRegistry(
+          pinnedSkillRegistry,
+          pinnedSkillRegistryFingerprint,
+        );
+        skillExecutor.replaceRegisteredSkills(
+          pinnedSkillRegistry.getAllSkills(),
+        );
+        skillExecutor.setFragmentRegistry(
+          typeof pinnedSkillRegistry.getFragmentCache === 'function'
+            ? pinnedSkillRegistry.getFragmentCache()
+            : new Map(),
+        );
+      }
+      skillRuntimeRegistryBound = true;
     }
     runManifestAttributionSink?.recordSkillRegistry(
-      buildSkillRegistryAttribution(handle.registry),
+      buildSkillRegistryAttribution(pinnedSkillRegistry),
     );
-    return handle.registry;
+    return pinnedSkillRegistry;
   }
 
   function buildArchitectureTriggerContext(info: Partial<ArchitectureInfo> | undefined | null): string[] {
