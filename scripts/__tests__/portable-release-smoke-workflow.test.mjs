@@ -876,7 +876,7 @@ test('hosted verifier re-downloads and hashes the combined GitHub artifact', () 
     ],
     [
       'repos/Gracker/SmartPerfetto/actions/artifacts/9876/zip',
-      {accept: 'application/octet-stream', body: readFileSync(artifactZip)},
+      {accept: 'application/vnd.github+json', body: readFileSync(artifactZip)},
     ],
   ]));
   assert.doesNotThrow(() => verifyHostedEvidence(

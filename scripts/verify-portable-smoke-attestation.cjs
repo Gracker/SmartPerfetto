@@ -329,7 +329,7 @@ function verifyHostedEvidence(options, spawnProcess = spawnSync) {
     fetchWithGh(
       `repos/${expected.repository}/actions/artifacts/${artifact.id}/zip`,
       artifactZip,
-      'application/octet-stream',
+      'application/vnd.github+json',
       spawnProcess,
     );
     if (`sha256:${sha256File(artifactZip)}` !== artifact.digest) {
