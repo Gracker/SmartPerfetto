@@ -278,6 +278,10 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
     throw new Error(`health probe URL contains an invalid request target: ${url}`);
   }
 
+  const agent = new http.Agent({
+    keepAlive: true,
+    maxSockets: 1,
+  });
   return new Promise((resolve, reject) => {
     let phase = 'connecting';
     let settled = false;
@@ -298,15 +302,15 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
       response?.destroy();
       request?.destroy();
       socket?.destroy();
+      agent.destroy();
       callback(value);
     };
     request = http.request({
-      agent: false,
+      agent,
       host: '127.0.0.1',
       family: 4,
       headers: {
         Accept: 'application/json',
-        Connection: 'close',
       },
       insecureHTTPParser: false,
       maxHeaderSize: 16 * 1024,

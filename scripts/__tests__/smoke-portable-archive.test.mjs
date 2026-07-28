@@ -159,29 +159,6 @@ function healthHttpResponse(payload, headers = {}) {
   return Buffer.concat([Buffer.from(lines.join('\r\n')), body]);
 }
 
-function rawLoopbackRequest(port, requestTarget = '/health') {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    const socket = net.createConnection({
-      family: 4,
-      host: '127.0.0.1',
-      port,
-    });
-    socket.once('connect', () => {
-      socket.write([
-        `GET ${requestTarget} HTTP/1.0`,
-        `Host: 127.0.0.1:${port}`,
-        'Connection: close',
-        '',
-        '',
-      ].join('\r\n'));
-    });
-    socket.on('data', (chunk) => chunks.push(chunk));
-    socket.once('end', () => resolve(Buffer.concat(chunks)));
-    socket.once('error', reject);
-  });
-}
-
 test('portable smoke requires a matching native host', () => {
   assert.doesNotThrow(() => assertMatchingHost('linux-x64', 'linux', 'x64'));
   assert.throws(
@@ -253,7 +230,7 @@ test('portable smoke does not expose release or provider credentials to the arch
   );
 });
 
-test('portable health probe bypasses startup proxy settings and closes its socket', async (t) => {
+test('portable health probe bypasses startup proxy settings', async (t) => {
   let proxyRequests = 0;
   const proxy = http.createServer((_request, response) => {
     proxyRequests++;
@@ -305,7 +282,7 @@ test('portable health probe bypasses startup proxy settings and closes its socke
     {status: 'OK', version: 'fixture-version'},
   );
   assert.equal(proxyRequests, 0);
-  assert.equal(connectionHeader, 'close');
+  assert.equal(connectionHeader, 'keep-alive');
   assert.ok(healthSocket, 'health server did not observe a connection');
   await waitForSocketClose(healthSocket);
 });
@@ -340,13 +317,13 @@ test('portable health probe parses fragmented bytes and sends a fixed direct req
   assert.match(request, /^GET \/health\?probe=portable HTTP\/1\.1\r\n/);
   assert.match(request, new RegExp(`\r\nHost: 127\\.0\\.0\\.1:${fixture.port}\r\n`));
   assert.match(request, /\r\nAccept: application\/json\r\n/);
-  assert.match(request, /\r\nConnection: close\r\n/);
+  assert.match(request, /\r\nConnection: keep-alive\r\n/);
   assert.match(request, /\r\n\r\n$/);
   assert.ok(healthSocket, 'raw server did not observe a health connection');
   await waitForSocketClose(healthSocket);
 });
 
-test('portable health probe accepts the production frontend response framing', async (t) => {
+test('portable health probe accepts the production frontend keep-alive response', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-frontend-health-'));
   const version = 'vfixture';
   const versionRoot = path.join(root, version);
@@ -367,27 +344,35 @@ test('portable health probe accepts the production frontend response framing', a
     fs.writeFileSync(path.join(versionRoot, asset), 'fixture\n');
   }
   const frontend = createFrontendServer(root);
+  let connectionHeader;
+  let frontendSocket;
+  frontend.once('request', (request) => {
+    connectionHeader = request.headers.connection;
+  });
+  frontend.once('connection', (socket) => {
+    frontendSocket = socket;
+  });
   const port = await listenOnLoopback(frontend);
   t.after(async () => {
     await closeHttpServer(frontend);
     fs.rmSync(root, {recursive: true, force: true});
   });
 
-  const rawResponse = await rawLoopbackRequest(port);
-  const rawHeaders = rawResponse
-    .subarray(0, rawResponse.indexOf(Buffer.from('\r\n\r\n')))
-    .toString('latin1');
-  assert.match(rawHeaders, /\r\nConnection: close(?:\r\n|$)/i);
-  assert.doesNotMatch(rawHeaders, /\r\nContent-Length:/i);
-  assert.doesNotMatch(rawHeaders, /\r\nTransfer-Encoding:/i);
-  assert.deepEqual(
-    await waitForHealth(
-      `http://127.0.0.1:${port}/health`,
+  const probeSockets = await captureProbeSockets(async () => {
+    assert.deepEqual(
+      await waitForHealth(
+        `http://127.0.0.1:${port}/health`,
+        {status: 'OK', version},
+        2_000,
+      ),
       {status: 'OK', version},
-      2_000,
-    ),
-    {status: 'OK', version},
-  );
+    );
+  });
+  assert.equal(probeSockets.length, 1);
+  assert.ok(probeSockets.every((socket) => socket.destroyed));
+  assert.ok(frontendSocket, 'production frontend did not observe a connection');
+  await waitForSocketClose(frontendSocket);
+  assert.equal(connectionHeader, 'keep-alive');
 });
 
 test('portable health probe accepts only explicit IPv4 loopback URLs', () => {
