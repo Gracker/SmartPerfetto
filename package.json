@@ -1,6 +1,6 @@
 {
   "name": "smart-perfetto",
-  "version": "1.2.8",
+  "version": "1.3.0",
   "description": "AI-powered Perfetto analysis platform",
   "private": true,
   "scripts": {

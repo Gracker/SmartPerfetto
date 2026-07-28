@@ -13,6 +13,31 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-07-28
+
+### Added
+- Code-aware analysis can select authorized local source directories through a
+  native folder picker, with bounded path validation, registry persistence, and
+  matching API and bilingual documentation.
+- Dual-trace workspaces can open large stored traces through isolated backend
+  trace-processor RPC sessions instead of copying the complete trace into each
+  browser pane.
+
+### Changed
+- Large-trace startup timeouts now scale with trace size, while processor leases
+  protect active viewers and a runtime supervisor reclaims abandoned isolated
+  processors.
+- The maintained Perfetto fork now carries all SmartPerfetto UI work on its
+  `main` branch, and the committed frontend prebuild matches that merged source.
+- Maintainer guidance now includes the repository-scoped GitNexus exploration,
+  impact-analysis, debugging, refactoring, and CLI workflows.
+
+### Fixed
+- Dual-trace reloads preserve stored trace identity, and the backend WebSocket
+  proxy now handles browser capability subprotocols and loopback origin
+  normalization correctly.
+- GitHub release asset downloads use the supported API media type.
+
 ## [1.2.8] - 2026-07-28
 
 ### Fixed
