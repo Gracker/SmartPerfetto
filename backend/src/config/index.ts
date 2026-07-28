@@ -194,6 +194,15 @@ export const traceProcessorConfig = {
   /** Server startup timeout (ms) */
   startupTimeoutMs: parseIntEnv('TP_STARTUP_TIMEOUT_MS', 30000),
 
+  /**
+   * Additional startup allowance for large traces. trace_processor_shell parses
+   * the command-line trace before announcing HTTP readiness.
+   */
+  startupTimeoutPerGiBMs: parseIntEnv('TP_STARTUP_TIMEOUT_PER_GIB_MS', 2 * 60 * 1000),
+
+  /** Upper bound for size-adjusted startup timeout (ms). */
+  startupTimeoutMaxMs: parseIntEnv('TP_STARTUP_TIMEOUT_MAX_MS', 15 * 60 * 1000),
+
   /** Query execution timeout (ms). Enterprise v1 requires 24h by default. */
   queryTimeoutMs: parseIntEnv('TP_QUERY_TIMEOUT_MS', 24 * 60 * 60 * 1000),
 

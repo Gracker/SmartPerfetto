@@ -338,6 +338,33 @@ export async function writeTraceMetadata(metadata: TraceMetadata): Promise<void>
   );
 }
 
+/**
+ * Mirror legacy/community trace metadata into the scoped SQLite graph required
+ * by processor lease foreign keys. This does not change the active metadata
+ * read/write mode.
+ */
+export function ensureTraceProcessorLeaseBackingMetadata(
+  metadata: TraceMetadata,
+  scope: EnterpriseRepositoryScope,
+): void {
+  writeEnterpriseTraceMetadata({
+    ...metadata,
+    tenantId: scope.tenantId,
+    workspaceId: scope.workspaceId,
+    ...(scope.userId ? {userId: scope.userId} : {}),
+  });
+}
+
+export function deleteTraceProcessorLeaseBackingMetadata(
+  traceId: string,
+  scope: EnterpriseRepositoryScope,
+): void {
+  withEnterpriseTraceDb((db) => {
+    createEnterpriseWorkspaceRepository<TraceAssetRow>(db, 'trace_assets')
+      .deleteById(scope, traceId);
+  });
+}
+
 function readEnterpriseTraceMetadata(traceId: string): TraceMetadata | null {
   return withEnterpriseTraceDb((db) => {
     const row = db.prepare<unknown[], TraceAssetRow>(`

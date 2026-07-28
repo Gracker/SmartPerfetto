@@ -102,6 +102,50 @@ describe('TraceProcessorService lease processor routing', () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('registers stored metadata lazily and cleans only the requested lease processor', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-lease-cleanup-'));
+    try {
+      const traceId = 'trace-cleanup';
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      const service = new TraceProcessorService(tmpDir);
+      const createSpy = jest.spyOn(TraceProcessorFactory, 'create');
+
+      expect(service.registerStoredTrace({
+        id: traceId,
+        filename: 'trace-cleanup.trace',
+        size: 11,
+        filePath: tracePath,
+      })).toMatchObject({
+        id: traceId,
+        status: 'ready',
+        filePath: tracePath,
+      });
+      expect(createSpy).not.toHaveBeenCalled();
+
+      const first = fakeProcessor('first', traceId);
+      const sibling = fakeProcessor('sibling', traceId);
+      const firstKey = `${traceId}:lease:lease-first`;
+      const siblingKey = `${traceId}:lease:lease-sibling`;
+      (service as any).processors.set(firstKey, first);
+      (service as any).processors.set(siblingKey, sibling);
+      const removeSpy = jest
+        .spyOn(TraceProcessorFactory, 'remove')
+        .mockReturnValue(true);
+
+      expect(service.cleanupLeaseProcessor(
+        traceId,
+        'lease-first',
+        'isolated',
+      )).toBe(true);
+      expect(removeSpy).toHaveBeenCalledWith(firstKey);
+      expect((service as any).processors.has(firstKey)).toBe(false);
+      expect((service as any).processors.get(siblingKey)).toBe(sibling);
+    } finally {
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
 });
 
 const scope: EnterpriseRepositoryScope = {

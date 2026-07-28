@@ -251,7 +251,12 @@ describe('TraceProcessorLeaseStore', () => {
     const result = store.sweepExpired(1000 + 60 * 60 * 1000 + 1);
     const swept = store.getLeaseById(scope, lease.id)!;
 
-    expect(result).toEqual({ holdersRemoved: 1, leasesReleased: 1 });
+    expect(result).toMatchObject({ holdersRemoved: 1, leasesReleased: 1 });
+    expect(result.releasedLeases).toEqual([expect.objectContaining({
+      id: lease.id,
+      traceId: 'trace-a',
+      mode: 'shared',
+    })]);
     expect(swept.state).toBe('released');
     expect(swept.holderCount).toBe(0);
   });
@@ -269,8 +274,32 @@ describe('TraceProcessorLeaseStore', () => {
     const result = store.sweepExpired(1000 + 90_001);
     const swept = store.getLeaseById(scope, lease.id)!;
 
-    expect(result).toEqual({ holdersRemoved: 1, leasesReleased: 0 });
+    expect(result).toEqual({
+      holdersRemoved: 1,
+      leasesReleased: 0,
+      releasedLeases: [],
+    });
     expect(swept.state).toBe('idle');
     expect(swept.holderCount).toBe(0);
+  });
+
+  it('releases an isolated viewer as soon as its final holder expires', () => {
+    const lease = store.acquireHolder(scope, 'trace-a', {
+      holderType: 'frontend_http_rpc',
+      holderRef: 'window-isolated',
+      frontendVisibility: 'visible',
+    }, {mode: 'isolated', now: 1000});
+    store.markStarting(scope, lease.id);
+    store.markReady(scope, lease.id);
+
+    const result = store.sweepExpired(1000 + 90_001);
+
+    expect(result).toMatchObject({holdersRemoved: 1, leasesReleased: 1});
+    expect(result.releasedLeases).toEqual([expect.objectContaining({
+      id: lease.id,
+      traceId: 'trace-a',
+      mode: 'isolated',
+    })]);
+    expect(store.getLeaseById(scope, lease.id)?.state).toBe('released');
   });
 });

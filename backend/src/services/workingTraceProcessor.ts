@@ -32,8 +32,24 @@ import {
   getTraceProcessorRamBudgetStats,
   type TraceProcessorRamBudgetStats,
 } from './traceProcessorRamBudget';
+import { getTraceProcessorLeaseStore } from './traceProcessorLeaseStore';
 
 const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
+const GIB = 1024 * 1024 * 1024;
+
+export function resolveTraceProcessorStartupTimeoutMs(
+  traceSizeBytes: number,
+  config: {
+    startupTimeoutMs: number;
+    startupTimeoutPerGiBMs: number;
+    startupTimeoutMaxMs: number;
+  } = traceProcessorConfig,
+): number {
+  const sizeGiB = Math.max(1, Math.ceil(Math.max(0, traceSizeBytes) / GIB));
+  const sizeAdjusted = sizeGiB * config.startupTimeoutPerGiBMs;
+  const upperBound = Math.max(config.startupTimeoutMs, config.startupTimeoutMaxMs);
+  return Math.min(Math.max(config.startupTimeoutMs, sizeAdjusted), upperBound);
+}
 
 // Path to the trace_processor_shell binary.
 // Use the locally built version from perfetto/out/ui which has the viz stdlib modules.
@@ -715,13 +731,16 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
       let stderr = '';
       let resolved = false;
 
-      // Timeout for server startup
+      const startupTimeoutMs = resolveTraceProcessorStartupTimeoutMs(
+        fs.statSync(this.tracePath).size,
+      );
+      // Timeout includes trace parsing before the HTTP ready line is emitted.
       const timeout = setTimeout(() => {
         if (!resolved) {
           resolved = true;
           reject(new Error(`Server startup timeout. stdout: ${stdout}, stderr: ${stderr}`));
         }
-      }, traceProcessorConfig.startupTimeoutMs);
+      }, startupTimeoutMs);
 
       this.process.stdout?.on('data', (data) => {
         const text = data.toString();
@@ -1115,6 +1134,18 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
  */
 type ManagedTraceProcessor = WorkingTraceProcessor | ExternalRpcProcessor;
 
+export function isTraceProcessorEvictionCandidate(
+  processor: ManagedTraceProcessor,
+  hasActiveLeaseHolders = false,
+): boolean {
+  return (
+    processor instanceof WorkingTraceProcessor &&
+    processor.activeQueries === 0 &&
+    !processor.getRuntimeStats().leaseId &&
+    !hasActiveLeaseHolders
+  );
+}
+
 export class TraceProcessorFactory {
   private static processors: Map<string, ManagedTraceProcessor> = new Map();
   private static externalProcessorsByPort: Map<number, ExternalRpcProcessor> = new Map();
@@ -1139,17 +1170,24 @@ export class TraceProcessorFactory {
       this.remove(processorKey);
     }
 
-    // Clean up oldest owned idle processors if too many (skip busy/external ones).
+    // Clean up oldest unleased idle processors if too many. A UI WebSocket does
+    // not increment activeQueries, so lease-backed processors must be preserved.
     while (this.processors.size >= this.maxProcessors) {
       const idle = Array.from(this.processors.entries())
-        .find(([, p]) => p instanceof WorkingTraceProcessor && p.activeQueries === 0);
+        .find(([, processor]) => {
+          const traceIdHasActiveLeaseHolders =
+            processor instanceof WorkingTraceProcessor &&
+            getTraceProcessorLeaseStore().hasActiveHoldersForTrace(processor.traceId);
+          return isTraceProcessorEvictionCandidate(processor, traceIdHasActiveLeaseHolders);
+        });
       if (idle) {
         console.log(`[TraceProcessorFactory] Cleaning up idle processor: ${idle[0]}`);
         idle[1].destroy();
         this.processors.delete(idle[0]);
       } else {
-        // All processors are busy — allow temporary over-limit rather than killing active work
-        console.warn(`[TraceProcessorFactory] All ${this.processors.size} processors are busy, allowing temporary over-limit`);
+        // All candidates are busy or lease-backed. RAM admission remains the
+        // authoritative guard for a temporary process-count overage.
+        console.warn(`[TraceProcessorFactory] All ${this.processors.size} processors are busy or leased, allowing temporary over-limit`);
         break;
       }
     }

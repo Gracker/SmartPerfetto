@@ -198,6 +198,16 @@ export function decideTraceProcessorLeaseMode(
     ...(estimatedNewLeaseRssBytes !== undefined ? { estimatedNewLeaseRssBytes } : {}),
   };
 
+  // Perfetto HTTP RPC sequence numbers are process-global. An explicitly
+  // isolated frontend viewer must never be folded back onto the shared
+  // interactive processor, otherwise two UI clients can corrupt each other's
+  // RPC sequence.
+  if (
+    input.holderType === 'frontend_http_rpc' &&
+    input.requestedMode === 'isolated'
+  ) {
+    return { mode: 'isolated', reason: 'requested_isolated', signals };
+  }
   if (input.holderType === 'frontend_http_rpc') {
     return { mode: 'shared', reason: 'frontend_interactive', signals };
   }

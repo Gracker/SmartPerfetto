@@ -211,6 +211,46 @@ export class TraceProcessorService extends EventEmitter {
   }
 
   /**
+   * Register an already-authorized on-disk trace without starting a processor.
+   * Viewer leases use this after a backend restart to avoid creating an
+   * unrelated shared processor before their isolated processor is admitted.
+   */
+  public registerStoredTrace(input: {
+    id: string;
+    filename: string;
+    size: number;
+    filePath: string;
+    uploadedAt?: string | Date;
+  }): TraceInfo {
+    const filePath = path.resolve(input.filePath);
+    const stats = fs.statSync(filePath);
+    if (!stats.isFile()) {
+      throw new Error(`Trace path is not a regular file: ${filePath}`);
+    }
+
+    const existing = this.traces.get(input.id);
+    if (existing) {
+      const existingPath = path.resolve(this.getTraceFilePath(input.id));
+      if (existingPath !== filePath) {
+        throw new Error(`Trace ${input.id} is already registered from a different path`);
+      }
+      return existing;
+    }
+
+    const traceInfo: TraceInfo = {
+      id: input.id,
+      filename: input.filename,
+      size: stats.size,
+      filePath,
+      uploadTime: new Date(input.uploadedAt ?? stats.mtime),
+      status: 'ready',
+    };
+    this.traces.set(input.id, traceInfo);
+    this.emit('trace-initialized', traceInfo);
+    return traceInfo;
+  }
+
+  /**
    * Handle chunk upload for large files
    */
   public async uploadChunk(traceId: string, chunk: Buffer, offset: number): Promise<void> {
@@ -891,6 +931,22 @@ export class TraceProcessorService extends EventEmitter {
       cleaned++;
     }
     return cleaned;
+  }
+
+  public cleanupLeaseProcessor(
+    traceId: string,
+    leaseId: string,
+    mode: TraceProcessorLeaseMode | string,
+  ): boolean {
+    const processorKey = this.processorKeyForLease(traceId, leaseId, mode);
+    const processor = this.processors.get(processorKey);
+    if (!processor) return false;
+    if (!TraceProcessorFactory.remove(processorKey)) {
+      processor.destroy();
+    }
+    this.processors.delete(processorKey);
+    this.leaseRestartInProgress.delete(processorKey);
+    return true;
   }
 
   /**

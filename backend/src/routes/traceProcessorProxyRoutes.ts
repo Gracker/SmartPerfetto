@@ -39,6 +39,7 @@ const router = Router();
 const READY_STATES = new Set<TraceProcessorLeaseState>(['ready', 'idle', 'active']);
 const CONFLICT_STATES = new Set<TraceProcessorLeaseState>(['draining', 'released', 'failed']);
 const FRONTEND_VISIBILITIES = new Set<FrontendHolderVisibility>(['visible', 'hidden', 'offline']);
+const TRACE_PROCESSOR_INTERNAL_ORIGIN = 'http://127.0.0.1:10000';
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
   'host',
@@ -565,6 +566,7 @@ function websocketRequestHeaders(req: IncomingMessage, targetPort: number): stri
     `Host: 127.0.0.1:${targetPort}`,
     'Connection: Upgrade',
     'Upgrade: websocket',
+    `Origin: ${TRACE_PROCESSOR_INTERNAL_ORIGIN}`,
   ];
 
   for (let i = 0; i < req.rawHeaders.length; i += 2) {
@@ -572,6 +574,10 @@ function websocketRequestHeaders(req: IncomingMessage, targetPort: number): stri
     const value = req.rawHeaders[i + 1];
     if (!name || value === undefined) continue;
     if (HOP_BY_HOP_HEADERS.has(name.toLowerCase())) continue;
+    // The browser Origin belongs to the authenticated public proxy boundary.
+    // Normalize it to the standard loopback Perfetto UI origin accepted by
+    // trace_processor_shell rather than forwarding an arbitrary public port.
+    if (name.toLowerCase() === 'origin') continue;
     if (name.toLowerCase() === 'sec-websocket-protocol') {
       const upstreamProtocols = stripTraceProcessorCapabilityProtocols(value);
       if (upstreamProtocols.length > 0) {
@@ -583,6 +589,55 @@ function websocketRequestHeaders(req: IncomingMessage, targetPort: number): stri
   }
 
   return headers;
+}
+
+function requestedTraceProcessorCapabilityProtocol(
+  req: IncomingMessage,
+  leaseId: string,
+): string | undefined {
+  const raw = req.headers['sec-websocket-protocol'];
+  const protocols = (Array.isArray(raw) ? raw : [raw ?? ''])
+    .flatMap(value => value.split(','))
+    .map(value => value.trim())
+    .filter(Boolean);
+  return protocols.find(protocol =>
+    resolveTraceProcessorProxyCapability(protocol, leaseId) !== null,
+  );
+}
+
+function forwardWebSocketHandshake(
+  upstream: Socket,
+  socket: Duplex,
+  capabilityProtocol: string,
+): void {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  const maxHandshakeBytes = 64 * 1024;
+
+  const onData = (chunk: Buffer): void => {
+    chunks.push(chunk);
+    totalBytes += chunk.length;
+    const response = Buffer.concat(chunks, totalBytes);
+    const headerEnd = response.indexOf('\r\n\r\n');
+    if (headerEnd < 0) {
+      if (totalBytes > maxHandshakeBytes) {
+        upstream.destroy(new Error('Trace processor WebSocket handshake is too large'));
+      }
+      return;
+    }
+
+    upstream.pause();
+    upstream.off('data', onData);
+    socket.write(Buffer.concat([
+      response.subarray(0, headerEnd),
+      Buffer.from(`\r\nSec-WebSocket-Protocol: ${capabilityProtocol}`),
+      response.subarray(headerEnd),
+    ]));
+    upstream.pipe(socket);
+    upstream.resume();
+  };
+
+  upstream.on('data', onData);
 }
 
 async function proxyWebSocket(
@@ -605,6 +660,7 @@ async function proxyWebSocket(
   });
 
   upstream.once('connect', () => {
+    const capabilityProtocol = requestedTraceProcessorCapabilityProtocol(req, leaseId);
     const request = [
       'GET /websocket HTTP/1.1',
       ...websocketRequestHeaders(req, target.port),
@@ -614,7 +670,11 @@ async function proxyWebSocket(
     upstream.write(request);
     if (head.length > 0) upstream.write(head);
     socket.pipe(upstream);
-    upstream.pipe(socket);
+    if (capabilityProtocol) {
+      forwardWebSocketHandshake(upstream, socket, capabilityProtocol);
+    } else {
+      upstream.pipe(socket);
+    }
   });
 
   upstream.once('error', (error) => {

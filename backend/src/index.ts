@@ -111,6 +111,7 @@ import {
 import {startApplicationUpdateWorker} from './services/applicationUpdate/applicationUpdateWorker';
 import {installRuntimeShutdownControl} from './services/runtimeShutdownControl';
 import {createActiveHttpResponseTracker} from './services/activeHttpResponseTracker';
+import {startTraceProcessorLeaseSupervisor} from './services/traceProcessorLeaseSupervisor';
 
 const app = express();
 const activeHttpResponses = createActiveHttpResponseTracker();
@@ -356,6 +357,7 @@ const caseEvolutionWorkerHandle = startCaseEvolutionWorker();
 const patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
 const androidInternalsPackUpdateWorkerHandle = startAndroidInternalsPackUpdateWorker();
 const applicationUpdateWorkerHandle = startApplicationUpdateWorker();
+const traceProcessorLeaseSupervisorHandle = startTraceProcessorLeaseSupervisor();
 
 if (shouldCleanOrphanProcessorsOnStartup()) {
   killOrphanProcessors();
@@ -391,6 +393,9 @@ function gracefulShutdown(signal: string) {
 
   console.log('⬆️ Stopping application update checker...');
   applicationUpdateWorkerHandle.stop();
+
+  console.log('🧹 Stopping trace processor lease supervisor...');
+  traceProcessorLeaseSupervisorHandle.stop();
   const closedEventStreams = activeHttpResponses.closeEventStreams();
   if (closedEventStreams > 0) {
     console.log(`📡 Closed ${closedEventStreams} active SSE connection(s).`);

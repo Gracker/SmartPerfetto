@@ -22,6 +22,7 @@ import {
 } from '../services/enterpriseAuditService';
 import {
   getTraceProcessorLeaseStore,
+  type TraceProcessorLeaseMode,
   type TraceProcessorLeaseRecord,
   type TraceProcessorLeaseState,
   type TraceProcessorHolderType,
@@ -43,6 +44,8 @@ import {
   buildTraceOwnerMetadata,
   countTraceMetadataForContext,
   deleteTraceMetadataForContext,
+  deleteTraceProcessorLeaseBackingMetadata,
+  ensureTraceProcessorLeaseBackingMetadata,
   getTraceFilePath,
   getWritableTraceDirForContext,
   InvalidTraceMetadataCursorError,
@@ -63,6 +66,7 @@ import {
 } from '../services/rbac';
 import { resolveTraceUploadLimitBytes } from '../services/traceUploadLimit';
 import {issueTraceProcessorProxyCapability} from '../services/traceProcessorProxyCapability';
+import {TraceProcessorAdmissionError} from '../services/traceProcessorRamBudget';
 import {
   downloadPublicHttpUrl,
   PublicHttpUrlRejectedError,
@@ -162,6 +166,7 @@ interface FinalizedTraceUploadInfo {
 interface TraceProcessorLeaseAcquisition {
   lease: TraceProcessorLeaseRecord;
   decision: TraceProcessorLeaseModeDecision;
+  holderRef: string;
 }
 
 function requireTracePermission(permission: 'trace:read' | 'trace:write', details: string) {
@@ -497,6 +502,7 @@ function decideLeaseModeForTrace(
   context: RequestContext,
   traceId: string,
   holderType: TraceProcessorHolderType,
+  requestedMode?: TraceProcessorLeaseMode,
 ): TraceProcessorLeaseModeDecision {
   const scope = leaseScopeFromContext(context);
   const store = getTraceProcessorLeaseStore();
@@ -504,6 +510,7 @@ function decideLeaseModeForTrace(
   return buildTraceProcessorLeaseModeDecision({
     traceId,
     holderType,
+    requestedMode,
     leases: store.listLeases(scope, { traceId }),
     processors: processorStats.processors,
     ramBudget: processorStats.ramBudget,
@@ -539,11 +546,26 @@ function websocketCapabilityResponseFields(
 function acquireFrontendTraceLease(
   context: RequestContext,
   traceId: string,
-  sessionId?: string,
+  options: {
+    sessionId?: string;
+    requestedMode?: TraceProcessorLeaseMode;
+    deferReady?: boolean;
+  } = {},
 ): TraceProcessorLeaseAcquisition | null {
-  if (!enterpriseLeasesEnabled()) return null;
-  const holderRef = context.windowId || sessionId || context.requestId || context.userId;
-  const decision = decideLeaseModeForTrace(context, traceId, 'frontend_http_rpc');
+  if (!enterpriseLeasesEnabled() && options.requestedMode !== 'isolated') {
+    return null;
+  }
+  const holderRef =
+    context.windowId ||
+    options.sessionId ||
+    context.requestId ||
+    context.userId;
+  const decision = decideLeaseModeForTrace(
+    context,
+    traceId,
+    'frontend_http_rpc',
+    options.requestedMode,
+  );
   const lease = getTraceProcessorLeaseStore().acquireHolder(
     leaseScopeFromContext(context),
     traceId,
@@ -551,7 +573,7 @@ function acquireFrontendTraceLease(
       holderType: 'frontend_http_rpc',
       holderRef,
       windowId: context.windowId,
-      sessionId,
+      sessionId: options.sessionId,
       metadata: {
         requestId: context.requestId,
         leaseModeReason: decision.reason,
@@ -560,9 +582,13 @@ function acquireFrontendTraceLease(
     },
     { mode: decision.mode },
   );
+  const readyLease = options.deferReady
+    ? lease
+    : recordLeaseRssFromProcessor(markLeaseReadyIfNew(lease, context), context);
   return {
-    lease: recordLeaseRssFromProcessor(markLeaseReadyIfNew(lease, context), context),
+    lease: readyLease,
     decision,
+    holderRef,
   };
 }
 
@@ -591,6 +617,7 @@ function acquireManualRegisterLease(
   return {
     lease: recordLeaseRssFromProcessor(markLeaseReadyIfNew(lease, context), context),
     decision,
+    holderRef: `port:${port}`,
   };
 }
 
@@ -1241,6 +1268,137 @@ router.post('/register-rpc', async (req, res) => {
   }
 });
 
+// POST /api/traces/:id/viewer - Create an isolated processor for one UI.
+router.post(
+  '/:id/viewer',
+  requireTracePermission('trace:read', 'Opening a trace viewer requires trace:read permission'),
+  async (req, res) => {
+    const context = requireRequestContext(req);
+    const id = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+    const sessionId = typeof req.body?.sessionId === 'string'
+      ? req.body.sessionId.trim() || undefined
+      : undefined;
+    let acquisition: TraceProcessorLeaseAcquisition | null = null;
+    try {
+      const metadata = await readTraceMetadataForContext(id, context);
+      if (!metadata) {
+        return res.status(404).json({error: 'Trace not found', id});
+      }
+      if (metadata.externalRpc) {
+        return res.status(409).json({
+          error: 'External RPC traces cannot create isolated viewer processors',
+          id,
+        });
+      }
+
+      const tracePath = metadata.path || getTraceFilePath(id);
+      if (!tracePath) {
+        return res.status(404).json({error: 'Trace file not found', id});
+      }
+      await fs.access(tracePath);
+
+      const tps = getTraceProcessorService();
+      tps.registerStoredTrace({
+        id,
+        filename: metadata.filename,
+        size: metadata.size,
+        filePath: tracePath,
+        uploadedAt: metadata.uploadedAt,
+      });
+      if (!enterpriseLeasesEnabled()) {
+        ensureTraceProcessorLeaseBackingMetadata(
+          metadata,
+          leaseScopeFromContext(context),
+        );
+      }
+      acquisition = acquireFrontendTraceLease(context, id, {
+        sessionId,
+        requestedMode: 'isolated',
+        deferReady: true,
+      });
+      if (!acquisition) {
+        throw new Error('Failed to acquire isolated viewer lease');
+      }
+
+      const store = getTraceProcessorLeaseStore();
+      const scope = leaseScopeFromContext(context);
+      let lease = acquisition.lease;
+      if (lease.state === 'pending') {
+        lease = store.markStarting(scope, lease.id);
+      }
+      await tps.ensureProcessorForLease(id, lease.id, lease.mode, scope);
+      if (lease.state === 'starting') {
+        lease = store.markReady(scope, lease.id);
+      }
+      lease = recordLeaseRssFromProcessor(lease, context);
+      acquisition = {...acquisition, lease};
+
+      const traceInfo = tps.getTraceWithLeasePort(id, lease.id, lease.mode);
+      if (!traceInfo?.port) {
+        throw new Error('Isolated trace processor did not become ready');
+      }
+      recordTraceAudit(context, 'trace.read', id, {
+        filename: metadata.filename,
+        size: metadata.size,
+        viewerMode: 'isolated',
+      });
+      return res.json({
+        success: true,
+        trace: {
+          ...metadata,
+          processorStatus: traceInfo.status,
+          hasProcessor: true,
+          port: traceInfo.port,
+          ...leaseResponseFields(acquisition),
+          ...websocketCapabilityResponseFields(context, lease.id),
+        },
+      });
+    } catch (error: any) {
+      if (acquisition) {
+        const store = getTraceProcessorLeaseStore();
+        const scope = leaseScopeFromContext(context);
+        try {
+          store.releaseHolder(
+            scope,
+            acquisition.lease.id,
+            'frontend_http_rpc',
+            acquisition.holderRef,
+          );
+        } catch {
+          // Best-effort holder cleanup.
+        }
+        try {
+          store.markFailed(scope, acquisition.lease.id);
+        } catch {
+          // The lease may already be terminal.
+        }
+        getTraceProcessorService().cleanupLeaseProcessor(
+          id,
+          acquisition.lease.id,
+          acquisition.lease.mode,
+        );
+      }
+      console.error('[Traces] Open isolated viewer error:', error);
+      if (error instanceof TraceProcessorAdmissionError) {
+        return res.status(503).json({
+          success: false,
+          code: 'TRACE_PROCESSOR_RAM_BUDGET_EXCEEDED',
+          error: 'Not enough available memory to open another trace viewer',
+          details: error.message,
+        });
+      }
+      if (error?.code === 'ENOENT') {
+        return res.status(404).json({error: 'Trace file not found', id});
+      }
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to open isolated trace viewer',
+        details: error.message,
+      });
+    }
+  },
+);
+
 // GET /api/traces/:id - Get a single trace info (for verifying trace exists)
 router.get('/:id', async (req, res) => {
   try {
@@ -1260,7 +1418,9 @@ router.get('/:id', async (req, res) => {
     const traceInfo = tps?.getTraceWithPort(id);
 
     const sessionId = typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
-    const lease = traceInfo?.port ? acquireFrontendTraceLease(context, id, sessionId) : null;
+    const lease = traceInfo?.port
+      ? acquireFrontendTraceLease(context, id, {sessionId})
+      : null;
     recordTraceAudit(context, 'trace.read', id, {
       filename: metadata.filename,
       size: metadata.size,
@@ -1275,6 +1435,7 @@ router.get('/:id', async (req, res) => {
         hasProcessor: !!traceInfo?.processor,
         port: traceInfo?.port ?? metadata.port,
         ...leaseResponseFields(lease),
+        ...websocketCapabilityResponseFields(context, lease?.lease.id),
       }
     });
   } catch (error: any) {
@@ -1341,6 +1502,12 @@ router.delete('/:id', async (req, res) => {
     }
 
     await deleteTraceMetadataForContext(id, context);
+    if (!enterpriseLeasesEnabled()) {
+      deleteTraceProcessorLeaseBackingMetadata(
+        id,
+        leaseScopeFromContext(context),
+      );
+    }
     console.log(`[Traces] Metadata deleted for ${id}`);
     recordTraceAudit(context, 'trace.deleted', id, {
       filename: metadata.filename,

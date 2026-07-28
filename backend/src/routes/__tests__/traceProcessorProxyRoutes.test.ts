@@ -184,6 +184,7 @@ beforeEach(async () => {
   });
   upstreamServer.on('upgrade', (req, socket) => {
     expect(req.url).toBe('/websocket');
+    expect(req.headers.origin).toBe('http://127.0.0.1:10000');
     socket.write(
       'HTTP/1.1 101 Switching Protocols\r\n'
       + 'Upgrade: websocket\r\n'
@@ -614,6 +615,7 @@ describe('trace processor lease proxy routes', () => {
             'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
             'Sec-WebSocket-Version': '13',
             'Sec-WebSocket-Protocol': capability.protocol,
+            Origin: 'http://127.0.0.1:54321',
           },
         });
         req.setTimeout(5000, () => {
@@ -624,6 +626,7 @@ describe('trace processor lease proxy routes', () => {
         });
         req.on('upgrade', (res, socket, head) => {
           let buffer = `HTTP/1.1 ${res.statusCode} ${res.statusMessage}\r\n`;
+          expect(res.headers['sec-websocket-protocol']).toBe(capability.protocol);
           if (head.length > 0) buffer += head.toString('utf8');
           socket.setTimeout(5000, () => {
             socket.destroy(new Error('websocket echo timed out'));

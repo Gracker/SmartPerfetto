@@ -74,6 +74,18 @@ describe('trace processor lease mode decision', () => {
     });
   });
 
+  it('honors explicit isolation for independent frontend RPC viewers', () => {
+    expect(decideTraceProcessorLeaseMode({
+      holderType: 'frontend_http_rpc',
+      requestedMode: 'isolated',
+      quotaAvailableForNewLeaseBytes: 1,
+      estimatedNewLeaseRssBytes: 2,
+    })).toMatchObject({
+      mode: 'isolated',
+      reason: 'requested_isolated',
+    });
+  });
+
   it('isolates full analysis, reports, slow SQL, heavy skills, and backlog', () => {
     expect(decideTraceProcessorLeaseMode({
       holderType: 'agent_run',
