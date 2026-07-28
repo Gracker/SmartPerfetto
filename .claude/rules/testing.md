@@ -149,14 +149,25 @@ Each target smoke must:
    non-conflicting ports.
 3. Poll backend and frontend health through explicit
    `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
-   The smoke probe must bypass environment proxies through a standard library
-   HTTP client fixed to IPv4 loopback. Give every attempt a private keep-alive
-   agent, never pool connections across attempts, and destroy the agent,
-   request, response, and socket on every terminal path. Enforce strict URL,
-   header, response-byte, and wall-clock budgets, and cancel and settle the peer
-   probe before launcher shutdown after any readiness failure. Do not maintain
-   a release-only HTTP parser that diverges from the launcher, browsers, and
-   normal clients.
+   The smoke probe must bypass environment proxies through a target-supported
+   standard library HTTP client fixed to IPv4 loopback. Windows uses the
+   system Windows PowerShell 5.1 `HttpWebRequest` client from `System32`; this
+   client is present on the Windows 10 / Windows Server 2016 support floor.
+   It must disable proxies and redirects, run without profiles, receive only
+   the validated loopback URL through a sanitized environment, and be
+   terminated on cancellation or a hard process deadline. If direct child
+   termination does not settle, invoke trusted `System32\taskkill.exe /T /F`
+   and fail within a second bounded deadline unless process closure is
+   confirmed. The Windows native job must execute the real PowerShell 5.1
+   probe contract before testing the archive. macOS and Linux use Node's HTTP
+   client with a private keep-alive agent per attempt and destroy the agent,
+   request, response, and socket on every terminal path. All clients must
+   enforce strict URL, response-byte, process-output, and wall-clock budgets,
+   and cancel and settle the peer probe before launcher shutdown after any
+   readiness failure. Record the target-required client identifier in
+   schema-v2 evidence and reject evidence produced by another client. Do not
+   maintain a release-only HTTP parser that diverges from the launcher,
+   browsers, and normal clients.
 4. Execute the bundled Node.js, Claude, and OpenCode version commands when
    present, then run a minimal packaged `trace_processor_shell` operation.
 5. Use the launcher-supported shutdown control, require a zero/successful and

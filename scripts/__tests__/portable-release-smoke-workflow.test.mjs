@@ -361,6 +361,9 @@ function writeCollectedTarget(rootPath, plan, entry, run = {}, layout = 'multi')
       survivingPids: [],
     },
     host: {platform: entry.platform, arch: entry.arch},
+    healthProbe: entry.target === 'windows-x64'
+      ? 'windows-powershell-5.1-httpwebrequest'
+      : 'node-http',
     ports,
     health: {
       backend: {status: 'OK', version: plan.release.version},
@@ -887,6 +890,10 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
   assert.match(workflow, /Preserve exact asset bytes for the credential-free native smoke/);
   assert.match(workflow, /Restore exact asset bytes without a write-capable token/);
   assert.match(workflow, /--gate-root gate/);
+  assert.match(
+    workflow,
+    /if: \$\{\{ matrix\.target == 'windows-x64' \}\}[\s\S]*?Windows health probe runs its real PowerShell 5\.1 contract on Windows/,
+  );
   assert.match(workflow, /Fetch the unchanged draft after target smoke/);
   assert.match(workflow, /Preserve untrusted target evidence and logs/);
   assert.match(workflow, /merge-multiple: false/);

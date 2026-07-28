@@ -4,12 +4,14 @@
 
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
+import {EventEmitter} from 'node:events';
 import {createRequire} from 'node:module';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import {PassThrough} from 'node:stream';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
@@ -20,6 +22,8 @@ const {
   createEvidenceDirectory,
   directHttpHealthProbe,
   forceKillProcessTree,
+  healthProbeForTarget,
+  healthProbeIdForTarget,
   isolatedSmokeEnv,
   packagePaths,
   parseArgs,
@@ -30,6 +34,7 @@ const {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
+  windowsPowerShellHealthProbe,
   windowsSystemBinary,
 } = require(path.join(repoRoot, 'scripts/smoke-portable-archive.cjs'));
 const {
@@ -285,6 +290,269 @@ test('portable health probe bypasses startup proxy settings', async (t) => {
   assert.equal(connectionHeader, 'keep-alive');
   assert.ok(healthSocket, 'health server did not observe a connection');
   await waitForSocketClose(healthSocket);
+});
+
+test('portable smoke selects and records the required health client by target', () => {
+  assert.equal(healthProbeIdForTarget('windows-x64'), 'windows-powershell-5.1-httpwebrequest');
+  assert.equal(healthProbeIdForTarget('macos-arm64'), 'node-http');
+  assert.equal(healthProbeIdForTarget('linux-x64'), 'node-http');
+  assert.equal(healthProbeForTarget('windows-x64').attemptTimeoutMs, 5_000);
+  assert.equal(healthProbeForTarget('linux-x64').attemptTimeoutMs, 2_000);
+  assert.throws(() => healthProbeIdForTarget('unknown-target'), /Unsupported target/);
+});
+
+test('Windows health probe uses trusted PowerShell with bounded proxy-free input', async () => {
+  const payload = {status: 'OK', version: 'fixture-version'};
+  let invocation;
+  const result = await windowsPowerShellHealthProbe(
+    'http://127.0.0.1:3100/health',
+    2_000,
+    undefined,
+    {
+      sourceEnv: {
+        GH_TOKEN: 'must-not-leak',
+        PATH: process.env.PATH,
+        SystemRoot: 'C:\\Windows',
+      },
+      spawnProcess(command, args, options) {
+        invocation = {args, command, options};
+        return spawn(process.execPath, ['-e', [
+          'const body = Buffer.from(JSON.stringify({status: "OK", version: "fixture-version"}));',
+          'process.stdout.write(`200\\n${body.toString("base64")}`);',
+        ].join('\n')], options);
+      },
+    },
+  );
+
+  assert.deepEqual(
+    {...result, body: JSON.parse(result.body)},
+    {body: payload, statusCode: 200},
+  );
+  assert.equal(
+    invocation.command,
+    'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+  );
+  assert.deepEqual(invocation.args.slice(0, 4), [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+  ]);
+  assert.match(
+    invocation.args[4],
+    /\$request\.Proxy = \[System\.Net\.GlobalProxySelection\]::GetEmptyWebProxy\(\)/,
+  );
+  assert.match(invocation.args[4], /\$request\.AllowAutoRedirect = \$false/);
+  assert.doesNotMatch(invocation.args.join(' '), /must-not-leak|127\.0\.0\.1:3100/);
+  assert.equal(
+    invocation.options.env.SMARTPERFETTO_HEALTH_PROBE_URL,
+    'http://127.0.0.1:3100/health',
+  );
+  assert.equal(invocation.options.env.SMARTPERFETTO_HEALTH_PROBE_TIMEOUT_MS, '1600');
+  assert.equal(invocation.options.env.GH_TOKEN, undefined);
+  assert.deepEqual(invocation.options.stdio, ['ignore', 'pipe', 'pipe']);
+  assert.equal(invocation.options.windowsHide, true);
+});
+
+test('Windows health probe has a hard process deadline and leaves no child', async () => {
+  let child;
+  await assert.rejects(
+    windowsPowerShellHealthProbe(
+      'http://127.0.0.1:3100/health',
+      100,
+      undefined,
+      {
+        sourceEnv: {
+          PATH: process.env.PATH,
+          SystemRoot: 'C:\\Windows',
+        },
+        spawnProcess(_command, _args, options) {
+          child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+          return child;
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error?.code, 'ETIMEDOUT');
+      assert.match(error.message, /exceeded 100ms/);
+      return true;
+    },
+  );
+  assert.ok(child);
+  assert.notEqual(child.exitCode === null && child.signalCode === null, true);
+  assert.throws(() => process.kill(child.pid, 0), /ESRCH/);
+});
+
+test('Windows health probe cancellation terminates and settles its child', async () => {
+  const controller = new AbortController();
+  let child;
+  const probe = windowsPowerShellHealthProbe(
+    'http://127.0.0.1:3100/health',
+    5_000,
+    controller.signal,
+    {
+      sourceEnv: {
+        PATH: process.env.PATH,
+        SystemRoot: 'C:\\Windows',
+      },
+      spawnProcess(_command, _args, options) {
+        child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], options);
+        return child;
+      },
+    },
+  );
+  controller.abort(new Error('Windows health fixture cancelled'));
+
+  await assert.rejects(probe, /Windows health fixture cancelled/);
+  assert.ok(child);
+  assert.notEqual(child.exitCode === null && child.signalCode === null, true);
+  assert.throws(() => process.kill(child.pid, 0), /ESRCH/);
+});
+
+test('Windows health probe force-kills and settles when direct termination is refused', async () => {
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.kill = () => false;
+  let taskkillInvocation;
+
+  await assert.rejects(
+    windowsPowerShellHealthProbe(
+      'http://127.0.0.1:3100/health',
+      5,
+      undefined,
+      {
+        sourceEnv: {
+          PATH: process.env.PATH,
+          SystemRoot: 'C:\\Windows',
+        },
+        spawnProcess() {
+          return child;
+        },
+        spawnSyncProcess(command, args, options) {
+          taskkillInvocation = {args, command, options};
+          return {status: 0};
+        },
+        terminationGraceMs: 5,
+        terminationSettlementMs: 10,
+      },
+    ),
+    (error) => {
+      assert.equal(error?.code, 'ECHILDSTUCK');
+      assert.match(error.message, /termination could not be confirmed/);
+      return true;
+    },
+  );
+
+  assert.equal(taskkillInvocation.command, 'C:\\Windows\\System32\\taskkill.exe');
+  assert.deepEqual(taskkillInvocation.args, ['/T', '/F', '/PID', '4242']);
+  assert.deepEqual(taskkillInvocation.options.stdio, 'ignore');
+  assert.equal(taskkillInvocation.options.timeout, 10);
+  assert.equal(taskkillInvocation.options.windowsHide, true);
+});
+
+for (const [streamName, limitBytes] of [
+  ['stdout', 128 * 1024],
+  ['stderr', 32 * 1024],
+]) {
+  test(`Windows health probe bounds ${streamName} and terminates its child`, async () => {
+    let child;
+    await assert.rejects(
+      windowsPowerShellHealthProbe(
+        'http://127.0.0.1:3100/health',
+        2_000,
+        undefined,
+        {
+          sourceEnv: {
+            PATH: process.env.PATH,
+            SystemRoot: 'C:\\Windows',
+          },
+          spawnProcess(_command, _args, options) {
+            child = spawn(process.execPath, ['-e', [
+              `process.${streamName}.write(Buffer.alloc(${limitBytes + 1}));`,
+              'setInterval(() => {}, 1000);',
+            ].join('\n')], options);
+            return child;
+          },
+        },
+      ),
+      new RegExp(`${streamName} exceeded ${limitBytes} bytes`),
+    );
+    assert.ok(child);
+    assert.notEqual(child.exitCode === null && child.signalCode === null, true);
+    assert.throws(() => process.kill(child.pid, 0), /ESRCH/);
+  });
+}
+
+test('Windows health probe runs its real PowerShell 5.1 contract on Windows', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  let redirected = false;
+  const health = http.createServer((request, response) => {
+    if (request.url === '/redirect') {
+      response.writeHead(302, {Location: '/followed'});
+      response.end();
+      return;
+    }
+    if (request.url === '/followed') redirected = true;
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({status: 'OK', version: 'fixture-version'}));
+  });
+  const healthPort = await listenOnLoopback(health);
+  t.after(() => closeHttpServer(health));
+
+  const result = await windowsPowerShellHealthProbe(
+    `http://127.0.0.1:${healthPort}/health`,
+    5_000,
+    undefined,
+    {
+      sourceEnv: {
+        ...process.env,
+        ALL_PROXY: 'http://127.0.0.1:1',
+        HTTP_PROXY: 'http://127.0.0.1:1',
+        HTTPS_PROXY: 'http://127.0.0.1:1',
+        NO_PROXY: '',
+      },
+    },
+  );
+
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(
+    JSON.parse(result.body),
+    {status: 'OK', version: 'fixture-version'},
+  );
+  const redirectResult = await windowsPowerShellHealthProbe(
+    `http://127.0.0.1:${healthPort}/redirect`,
+    5_000,
+    undefined,
+  );
+  assert.equal(redirectResult.statusCode, 302);
+  assert.equal(redirected, false);
+});
+
+test('Windows health probe rejects malformed helper output', async () => {
+  await assert.rejects(
+    windowsPowerShellHealthProbe(
+      'http://127.0.0.1:3100/health',
+      2_000,
+      undefined,
+      {
+        sourceEnv: {
+          PATH: process.env.PATH,
+          SystemRoot: 'C:\\Windows',
+        },
+        spawnProcess(_command, _args, options) {
+          return spawn(
+            process.execPath,
+            ['-e', 'process.stdout.write("200\\nnot canonical base64!")'],
+            options,
+          );
+        },
+      },
+    ),
+    /invalid response envelope/,
+  );
 });
 
 test('portable health probe parses fragmented bytes and sends a fixed direct request', async (t) => {

@@ -14,6 +14,7 @@ const {
   readNodeRuntimePin,
 } = require('./verify-portable-package.cjs');
 const {
+  healthProbeIdForTarget,
   validateLifecycleReceipt,
   versionAtLeast,
 } = require('./smoke-portable-archive.cjs');
@@ -153,6 +154,9 @@ function validateSmokeSummary(summary, expected) {
     summary.host?.arch !== expectedHost.arch
   ) {
     fail('smoke did not run on the target operating system and architecture');
+  }
+  if (summary.healthProbe !== healthProbeIdForTarget(expected.target)) {
+    fail('smoke did not use the required target-native health probe');
   }
   if (
     summary.asset?.name !== expected.asset.name ||

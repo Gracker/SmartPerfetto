@@ -45,6 +45,7 @@ function validSummary() {
       survivingPids: [],
     },
     host: {platform: 'linux', arch: 'x64'},
+    healthProbe: 'node-http',
     ports: {backend: 3100, frontend: 10100},
     health: {
       backend: {status: 'OK', version: '1.2.3'},
@@ -151,6 +152,7 @@ test('public release evidence binds target-native smoke to exact archive bytes',
       },
     },
     {...summary, host: {platform: 'darwin', arch: 'arm64'}},
+    {...summary, healthProbe: 'windows-powershell-5.1-httpwebrequest'},
     {...summary, asset: {...summary.asset, sha256: 'b'.repeat(64)}},
     {...summary, health: {...summary.health, backend: {status: 'OK', version: 'old'}}},
     {...summary, runtimes: {...summary.runtimes, libc: {stdout: '2.33', stderr: ''}}},
@@ -231,6 +233,26 @@ test('public macOS evidence requires native release trust checks', () => {
       },
     }, expected(summary)),
     /Accepted notarytool info receipt/,
+  );
+});
+
+test('public Windows evidence requires the Windows PowerShell health client', () => {
+  const summary = validSummary();
+  summary.target = 'windows-x64';
+  summary.host = {platform: 'win32', arch: 'x64'};
+  summary.healthProbe = 'windows-powershell-5.1-httpwebrequest';
+  summary.asset.name = 'smartperfetto-v1.2.3-windows-x64.zip';
+  summary.lifecycleReceipt.packageTarget = 'windows-x64';
+  summary.lifecycleReceipt.containment = 'windows-job-object';
+  delete summary.runtimes.libc;
+
+  assert.equal(validateSmokeSummary(summary, expected(summary)), summary);
+  assert.throws(
+    () => validateSmokeSummary(
+      {...summary, healthProbe: 'node-http'},
+      expected(summary),
+    ),
+    /required target-native health probe/,
   );
 });
 

@@ -47,6 +47,56 @@ const SMOKE_ENV_ALLOWLIST = new Set([
   'WINDIR',
 ]);
 const HEALTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
+const HEALTH_PROBE_OUTPUT_LIMIT_BYTES = 128 * 1024;
+const HEALTH_PROBE_ERROR_LIMIT_BYTES = 32 * 1024;
+const HEALTH_PROBE_TERMINATION_GRACE_MS = 250;
+const HEALTH_PROBE_TERMINATION_SETTLEMENT_MS = 2_000;
+const HEALTH_PROBE_IDS = Object.freeze({
+  node: 'node-http',
+  windows: 'windows-powershell-5.1-httpwebrequest',
+});
+const WINDOWS_HEALTH_PROBE_SCRIPT = [
+  '$ErrorActionPreference = "Stop"',
+  '$request = $null',
+  '$response = $null',
+  '$stream = $null',
+  '$memory = $null',
+  'try {',
+  '  $timeoutMs = [Convert]::ToInt32($env:SMARTPERFETTO_HEALTH_PROBE_TIMEOUT_MS)',
+  '  $limitBytes = [Convert]::ToInt32($env:SMARTPERFETTO_HEALTH_PROBE_LIMIT_BYTES)',
+  '  $request = [System.Net.HttpWebRequest]::Create($env:SMARTPERFETTO_HEALTH_PROBE_URL)',
+  '  $request.Method = "GET"',
+  '  $request.Accept = "application/json"',
+  '  $request.Proxy = [System.Net.GlobalProxySelection]::GetEmptyWebProxy()',
+  '  $request.AllowAutoRedirect = $false',
+  '  $request.KeepAlive = $true',
+  '  $request.Timeout = $timeoutMs',
+  '  $request.ReadWriteTimeout = $timeoutMs',
+  '  try {',
+  '    $response = [System.Net.HttpWebResponse]$request.GetResponse()',
+  '  } catch [System.Net.WebException] {',
+  '    if ($null -eq $_.Exception.Response) { throw }',
+  '    $response = [System.Net.HttpWebResponse]$_.Exception.Response',
+  '  }',
+  '  $stream = $response.GetResponseStream()',
+  '  $memory = New-Object System.IO.MemoryStream',
+  '  $buffer = New-Object byte[] 8192',
+  '  while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {',
+  '    if (($memory.Length + $read) -gt $limitBytes) {',
+  '      throw "ERR_HEALTH_RESPONSE_TOO_LARGE: health response exceeded $limitBytes bytes"',
+  '    }',
+  '    $memory.Write($buffer, 0, $read)',
+  '  }',
+  '  $statusCode = [int]$response.StatusCode',
+  '  $encodedBody = [Convert]::ToBase64String($memory.ToArray())',
+  '  [Console]::Out.Write(([string]$statusCode + "`n" + $encodedBody))',
+  '} finally {',
+  '  if ($null -ne $stream) { $stream.Dispose() }',
+  '  if ($null -ne $memory) { $memory.Dispose() }',
+  '  if ($null -ne $response) { $response.Dispose() }',
+  '  if ($null -ne $request) { $request.Abort() }',
+  '}',
+].join('; ');
 
 function usage() {
   console.error([
@@ -258,7 +308,7 @@ function abortableDelay(timeoutMs, signal) {
   });
 }
 
-function directHttpHealthProbe(url, timeoutMs, signal) {
+function parseLoopbackHealthUrl(url) {
   const parsed = new URL(url);
   if (
     parsed.protocol !== 'http:' ||
@@ -270,12 +320,17 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
   ) {
     throw new Error(`health probe requires a plain IPv4 loopback URL: ${url}`);
   }
-  if (signal?.aborted) {
-    return Promise.reject(signal.reason || new Error('health probe cancelled'));
-  }
   const requestTarget = `${parsed.pathname}${parsed.search}`;
   if (/[\r\n]/.test(requestTarget)) {
     throw new Error(`health probe URL contains an invalid request target: ${url}`);
+  }
+  return {parsed, requestTarget};
+}
+
+function directHttpHealthProbe(url, timeoutMs, signal) {
+  const {parsed, requestTarget} = parseLoopbackHealthUrl(url);
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason || new Error('health probe cancelled'));
   }
 
   const agent = new http.Agent({
@@ -363,7 +418,256 @@ function directHttpHealthProbe(url, timeoutMs, signal) {
   });
 }
 
-async function waitForHealth(url, expectation, timeoutMs, signal) {
+function parseWindowsHealthProbeOutput(output) {
+  const match = /^([1-5]\d{2})\r?\n([A-Za-z0-9+/]*={0,2})$/.exec(output);
+  if (!match || match[2].length % 4 !== 0) {
+    throw new Error('Windows health probe returned an invalid response envelope');
+  }
+  const body = Buffer.from(match[2], 'base64');
+  if (
+    body.length > HEALTH_RESPONSE_LIMIT_BYTES ||
+    body.toString('base64') !== match[2]
+  ) {
+    throw new Error('Windows health probe returned an invalid response body');
+  }
+  return {
+    body: body.toString('utf8'),
+    statusCode: Number(match[1]),
+  };
+}
+
+function windowsPowerShellHealthProbe(
+  url,
+  timeoutMs,
+  signal,
+  {
+    sourceEnv = process.env,
+    spawnProcess = spawn,
+    spawnSyncProcess = spawnSync,
+    terminationGraceMs = HEALTH_PROBE_TERMINATION_GRACE_MS,
+    terminationSettlementMs = HEALTH_PROBE_TERMINATION_SETTLEMENT_MS,
+  } = {},
+) {
+  parseLoopbackHealthUrl(url);
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason || new Error('health probe cancelled'));
+  }
+  const powershell = windowsSystemBinary(
+    path.join('WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    sourceEnv,
+  );
+  const taskkill = windowsSystemBinary('taskkill.exe', sourceEnv);
+  const requestTimeoutMs = Math.max(1, Math.floor(timeoutMs * 0.8));
+  const env = {
+    ...sanitizedSmokeEnv(sourceEnv),
+    SMARTPERFETTO_HEALTH_PROBE_LIMIT_BYTES: String(HEALTH_RESPONSE_LIMIT_BYTES),
+    SMARTPERFETTO_HEALTH_PROBE_TIMEOUT_MS: String(requestTimeoutMs),
+    SMARTPERFETTO_HEALTH_PROBE_URL: url,
+  };
+
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawnProcess(
+        powershell,
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', WINDOWS_HEALTH_PROBE_SCRIPT],
+        {
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+          windowsHide: true,
+        },
+      );
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    let settled = false;
+    let terminationError;
+    let gracefulTerminationDeadline;
+    let forcedTerminationDeadline;
+    let deadline;
+    let taskkillAttempted = false;
+    const terminationFailures = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    const stdout = [];
+    const stderr = [];
+    const onAbort = () => terminate(
+      signal.reason || new Error('health probe cancelled'),
+    );
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      clearTimeout(gracefulTerminationDeadline);
+      clearTimeout(forcedTerminationDeadline);
+      signal?.removeEventListener('abort', onAbort);
+      callback(value);
+    };
+    const forceTerminate = () => {
+      if (settled || taskkillAttempted) return;
+      taskkillAttempted = true;
+      let result;
+      try {
+        result = spawnSyncProcess(
+          taskkill,
+          ['/T', '/F', '/PID', String(child.pid)],
+          {
+            env: sanitizedSmokeEnv(sourceEnv),
+            stdio: 'ignore',
+            timeout: terminationSettlementMs,
+            windowsHide: true,
+          },
+        );
+      } catch (error) {
+        terminationFailures.push(error);
+      }
+      if (result?.error) terminationFailures.push(result.error);
+      if (result && result.status !== 0) {
+        terminationFailures.push(new Error(
+          `taskkill exited with status ${result.status}`,
+        ));
+      }
+      forcedTerminationDeadline = setTimeout(() => {
+        const confirmationError = new Error(
+          `Windows health probe child ${child.pid} did not close within ` +
+          `${terminationSettlementMs}ms after taskkill`,
+        );
+        confirmationError.code = 'ECHILDSTUCK';
+        const error = new AggregateError(
+          [terminationError, ...terminationFailures, confirmationError],
+          'Windows health probe failed and child termination could not be confirmed',
+        );
+        error.code = 'ECHILDSTUCK';
+        finish(reject, error);
+      }, terminationSettlementMs);
+    };
+    const terminate = (error) => {
+      if (settled || terminationError) return;
+      terminationError = error;
+      let accepted = false;
+      try {
+        accepted = child.kill();
+      } catch (killError) {
+        terminationFailures.push(killError);
+      }
+      if (!accepted) {
+        forceTerminate();
+        return;
+      }
+      gracefulTerminationDeadline = setTimeout(
+        forceTerminate,
+        terminationGraceMs,
+      );
+    };
+    const capture = (chunks, chunk, currentBytes, limitBytes, label) => {
+      const nextBytes = currentBytes + chunk.length;
+      if (nextBytes > limitBytes) {
+        terminate(new Error(`${label} exceeded ${limitBytes} bytes`));
+        return currentBytes;
+      }
+      chunks.push(chunk);
+      return nextBytes;
+    };
+
+    child.stdout.on('data', (chunk) => {
+      stdoutBytes = capture(
+        stdout,
+        chunk,
+        stdoutBytes,
+        HEALTH_PROBE_OUTPUT_LIMIT_BYTES,
+        'Windows health probe stdout',
+      );
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBytes = capture(
+        stderr,
+        chunk,
+        stderrBytes,
+        HEALTH_PROBE_ERROR_LIMIT_BYTES,
+        'Windows health probe stderr',
+      );
+    });
+    child.once('error', (error) => {
+      if (!terminationError) {
+        finish(reject, error);
+        return;
+      }
+      terminationFailures.push(error);
+      forceTerminate();
+    });
+    child.once('close', (code, exitSignal) => {
+      if (terminationError) {
+        finish(reject, terminationError);
+        return;
+      }
+      const errorOutput = Buffer.concat(stderr).toString('utf8').trim();
+      if (code !== 0 || exitSignal) {
+        const detail = errorOutput ? `: ${errorOutput}` : '';
+        finish(
+          reject,
+          new Error(
+            `Windows health probe exited code=${code}, signal=${exitSignal}${detail}`,
+          ),
+        );
+        return;
+      }
+      try {
+        finish(
+          resolve,
+          parseWindowsHealthProbeOutput(Buffer.concat(stdout).toString('utf8')),
+        );
+      } catch (error) {
+        finish(reject, error);
+      }
+    });
+    deadline = setTimeout(() => {
+      const error = new Error(`Windows health probe exceeded ${timeoutMs}ms`);
+      error.code = 'ETIMEDOUT';
+      terminate(error);
+    }, timeoutMs);
+    signal?.addEventListener('abort', onAbort, {once: true});
+  });
+}
+
+function healthProbeIdForTarget(target) {
+  if (!HOSTS[target]) throw new Error(`Unsupported target: ${target}`);
+  return target === 'windows-x64'
+    ? HEALTH_PROBE_IDS.windows
+    : HEALTH_PROBE_IDS.node;
+}
+
+function healthProbeForTarget(target, dependencies) {
+  const id = healthProbeIdForTarget(target);
+  if (id === HEALTH_PROBE_IDS.windows) {
+    return Object.freeze({
+      attemptTimeoutMs: 5_000,
+      id,
+      run: (url, timeoutMs, signal) => windowsPowerShellHealthProbe(
+        url,
+        timeoutMs,
+        signal,
+        dependencies,
+      ),
+    });
+  }
+  return Object.freeze({
+    attemptTimeoutMs: 2_000,
+    id,
+    run: directHttpHealthProbe,
+  });
+}
+
+const DEFAULT_HEALTH_PROBE = healthProbeForTarget('linux-x64');
+
+async function waitForHealth(
+  url,
+  expectation,
+  timeoutMs,
+  signal,
+  healthProbe = DEFAULT_HEALTH_PROBE,
+) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
   while (Date.now() < deadline) {
@@ -372,9 +676,9 @@ async function waitForHealth(url, expectation, timeoutMs, signal) {
     }
     try {
       const remainingMs = Math.max(1, deadline - Date.now());
-      const response = await directHttpHealthProbe(
+      const response = await healthProbe.run(
         url,
-        Math.min(2_000, remainingMs),
+        Math.min(healthProbe.attemptTimeoutMs, remainingMs),
         signal,
       );
       const payload = JSON.parse(response.body);
@@ -408,6 +712,7 @@ async function waitForReadiness({
   backendUrl,
   frontendTimeoutMs = 60_000,
   frontendUrl,
+  healthProbe = DEFAULT_HEALTH_PROBE,
   launcherExitPromise,
   version,
 }) {
@@ -418,12 +723,14 @@ async function waitForReadiness({
       {status: 'OK', version},
       backendTimeoutMs,
       controller.signal,
+      healthProbe,
     ),
     waitForHealth(
       frontendUrl,
       {status: 'OK'},
       frontendTimeoutMs,
       controller.signal,
+      healthProbe,
     ),
   ];
   try {
@@ -501,7 +808,7 @@ function envValue(source, key) {
 function windowsSystemBinary(name, source = process.env) {
   const systemRoot = envValue(source, 'SYSTEMROOT') || envValue(source, 'WINDIR');
   if (!systemRoot || !path.win32.isAbsolute(systemRoot)) {
-    throw new Error('SystemRoot is required to locate trusted Windows cleanup tools');
+    throw new Error('SystemRoot is required to locate trusted Windows system tools');
   }
   return path.win32.join(systemRoot, 'System32', name);
 }
@@ -800,6 +1107,7 @@ async function smoke(options) {
   const summaryPath = path.join(evidenceDir, 'smoke-summary.json');
   const failureSummaryPath = path.join(evidenceDir, 'smoke-failure.json');
   const runtimeEnv = isolatedSmokeEnv(process.env, homeDir);
+  const healthProbe = healthProbeForTarget(target);
   fs.mkdirSync(homeDir, {recursive: true});
   let extractedRoot;
   let sourceGitDirty = null;
@@ -970,6 +1278,7 @@ async function smoke(options) {
     const [backendHealth, frontendHealth] = await waitForReadiness({
       backendUrl: `http://127.0.0.1:${backendPort}/health`,
       frontendUrl: `http://127.0.0.1:${frontendPort}/health`,
+      healthProbe,
       launcherExitPromise,
       version,
     });
@@ -1021,6 +1330,7 @@ async function smoke(options) {
       gitDirty: manifest.gitDirty,
       publicRelease: options.publicRelease === true,
       host: {platform: process.platform, arch: process.arch},
+      healthProbe: healthProbe.id,
       ports: {backend: backendPort, frontend: frontendPort},
       health: {backend: backendHealth, frontend: frontendHealth},
       runtimes: runtimeEvidence,
@@ -1064,6 +1374,7 @@ async function smoke(options) {
         gitDirty: sourceGitDirty,
         publicRelease: options.publicRelease === true,
         host: {platform: process.platform, arch: process.arch},
+        healthProbe: healthProbe.id,
         error: failureMessage,
         lifecycleReceipt: fs.existsSync(lifecycleReceipt) ? lifecycleReceipt : null,
         finishedAt: new Date().toISOString(),
@@ -1103,6 +1414,8 @@ module.exports = {
   createEvidenceDirectory,
   directHttpHealthProbe,
   forceKillProcessTree,
+  healthProbeForTarget,
+  healthProbeIdForTarget,
   packagePaths,
   parseArgs,
   isolatedSmokeEnv,
@@ -1113,5 +1426,6 @@ module.exports = {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
+  windowsPowerShellHealthProbe,
   windowsSystemBinary,
 };

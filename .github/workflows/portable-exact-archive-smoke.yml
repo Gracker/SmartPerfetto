@@ -238,6 +238,13 @@ jobs:
           --run-id "${{ github.run_id }}"
           --run-attempt "${{ github.run_attempt }}"
 
+      - name: Verify the real Windows PowerShell 5.1 health probe
+        if: ${{ matrix.target == 'windows-x64' }}
+        run: >-
+          node --test
+          --test-name-pattern "Windows health probe runs its real PowerShell 5.1 contract on Windows"
+          gate/scripts/__tests__/smoke-portable-archive.test.mjs
+
       - name: Run the release contract against the exact archive
         run: >-
           node gate/scripts/portable-release-smoke-workflow.cjs run
