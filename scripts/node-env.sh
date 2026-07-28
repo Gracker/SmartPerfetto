@@ -183,6 +183,20 @@ smartperfetto_file_sha256() {
   fi
 }
 
+smartperfetto_source_build_commit() {
+  local project_root="$1"
+  local commit=""
+
+  if command -v git >/dev/null 2>&1; then
+    commit="$(git -C "$project_root" rev-parse --verify HEAD 2>/dev/null || true)"
+  fi
+  if [ -n "$commit" ]; then
+    printf '%s\n' "$commit"
+    return 0
+  fi
+  printf '%s\n' "${SMARTPERFETTO_BUILD_COMMIT:-}"
+}
+
 smartperfetto_backend_lock_hash() {
   local project_root="$1"
   smartperfetto_file_sha256 "$project_root/backend/package-lock.json"

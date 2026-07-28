@@ -422,6 +422,8 @@ smartperfetto_ensure_backend_deps "$PROJECT_ROOT"
 
 # ── Start backend ─────────────────────────────────────────────────────────────
 
+SOURCE_BUILD_COMMIT="$(smartperfetto_source_build_commit "$PROJECT_ROOT")"
+
 echo "Starting backend..."
 cd "$PROJECT_ROOT/backend"
 BACKEND_GENERATION="$(smartperfetto_new_launch_generation backend)"
@@ -431,6 +433,10 @@ start_with_logs BACKEND_PID "BACKEND" "$BACKEND_LOG" env \
   SMARTPERFETTO_FRONTEND_PORT="$FRONTEND_PORT" \
   FRONTEND_URL="$FRONTEND_URL" \
   SMARTPERFETTO_LOCK_SERVICE_PORTS=1 \
+  SMARTPERFETTO_LOCK_RUNTIME_IDENTITY=1 \
+  SMARTPERFETTO_PACKAGE_ROOT="$PROJECT_ROOT" \
+  SMARTPERFETTO_DISTRIBUTION=source \
+  SMARTPERFETTO_BUILD_COMMIT="$SOURCE_BUILD_COMMIT" \
   npm run dev
 if ! smartperfetto_write_pid_file \
   "$BACKEND_PID_FILE" "$BACKEND_PID" "backend" "$PROJECT_ROOT" "$BACKEND_CWD" "$BACKEND_GENERATION"; then

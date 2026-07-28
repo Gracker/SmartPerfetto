@@ -19,12 +19,22 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { openReviewOutbox } from './reviewOutbox';
-import { openSupersedeStore, type SupersedeState } from './supersedeStore';
+import { openReviewOutboxReadOnly } from './reviewOutbox';
+import {
+  openSupersedeStoreReadOnly,
+  type SupersedeState,
+} from './supersedeStore';
 import { runSnapshots } from './strategyFingerprint';
 import type { JobState } from './reviewOutbox';
 import type { AnalysisPatternEntry, NegativePatternEntry, PatternStatus } from '../types';
 import { backendLogPath } from '../../runtimePaths';
+import {
+  getSelfEvolutionLifecycleSnapshot,
+} from '../../services/selfEvolution/selfEvolutionLifecycle';
+import type {
+  SelfEvolutionLifecycleSnapshot,
+  SelfEvolutionMetrics,
+} from '../../types/selfEvolution';
 
 const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
 const NEGATIVE_PATTERNS_FILE = backendLogPath('analysis_negative_patterns.json');
@@ -67,6 +77,7 @@ export interface SelfImproveMetrics {
   feedback: FeedbackMetrics;
   /** Active analyze() snapshots — surfaced so memory leaks are visible. */
   activeRunSnapshots: number;
+  selfEvolution: SelfEvolutionMetrics;
   /** Errors that happened during aggregation. Empty array on a clean run. */
   warnings: string[];
 }
@@ -78,6 +89,9 @@ export function collectSelfImproveMetrics(opts: {
   feedbackFile?: string;
   skillNotesDir?: string;
   curatedSkillNotesDir?: string;
+  reviewOutboxDbPath?: string;
+  supersedeDbPath?: string;
+  selfEvolutionSnapshot?: SelfEvolutionLifecycleSnapshot;
 } = {}): SelfImproveMetrics {
   const warnings: string[] = [];
 
@@ -85,17 +99,30 @@ export function collectSelfImproveMetrics(opts: {
   const negatives = readJson<NegativePatternEntry>(opts.negativePatternsFile ?? NEGATIVE_PATTERNS_FILE, warnings);
   const quicks = readJson<AnalysisPatternEntry>(opts.quickPatternsFile ?? QUICK_PATTERNS_FILE, warnings);
 
-  const outbox = safeOpen(() => openReviewOutbox(), warnings, 'outbox');
-  const outboxByState = outbox?.countByState() ?? { pending: 0, leased: 0, done: 0, failed: 0 };
-  const outboxDaily = outbox?.dailyJobCount() ?? 0;
-  outbox?.close();
+  const outboxMetrics = readStore(
+    () => openReviewOutboxReadOnly({dbPath: opts.reviewOutboxDbPath}),
+    (outbox) => ({
+      byState: outbox.countByState(),
+      dailyJobs: outbox.dailyJobCount(),
+    }),
+    {
+      byState: {pending: 0, leased: 0, done: 0, failed: 0},
+      dailyJobs: 0,
+    },
+    warnings,
+    'outbox',
+  );
 
-  const supersede = safeOpen(() => openSupersedeStore(), warnings, 'supersede');
-  const supersedeCounts = supersede?.countByState() ?? {
-    pending_review: 0, active_canary: 0, active: 0,
-    failed: 0, rejected: 0, drifted: 0, reverted: 0,
-  };
-  supersede?.close();
+  const supersedeCounts = readStore(
+    () => openSupersedeStoreReadOnly({dbPath: opts.supersedeDbPath}),
+    (supersede) => supersede.countByState(),
+    {
+      pending_review: 0, active_canary: 0, active: 0,
+      failed: 0, rejected: 0, drifted: 0, reverted: 0,
+    },
+    warnings,
+    'supersede',
+  );
 
   const skillNotes = countSkillNotes(
     opts.skillNotesDir ?? SKILL_NOTES_DIR,
@@ -111,12 +138,38 @@ export function collectSelfImproveMetrics(opts: {
       negative: bucketByStatus(negatives),
       quick: bucketByStatus(quicks),
     },
-    outbox: { byState: outboxByState, dailyJobs: outboxDaily },
+    outbox: outboxMetrics,
     supersede: supersedeCounts,
     skillNotes,
     feedback,
     activeRunSnapshots: runSnapshots.size(),
+    selfEvolution: selfEvolutionMetrics(
+      opts.selfEvolutionSnapshot ?? getSelfEvolutionLifecycleSnapshot(),
+    ),
     warnings,
+  };
+}
+
+function selfEvolutionMetrics(
+  snapshot: SelfEvolutionLifecycleSnapshot,
+): SelfEvolutionMetrics {
+  return {
+    requested: {...snapshot.requestedConfig},
+    effective: {...snapshot.effectiveConfig},
+    persistence: snapshot.persistence.persistence,
+    ...(snapshot.persistence.reason
+      ? {persistenceReason: snapshot.persistence.reason}
+      : {}),
+    migration: snapshot.migration.status,
+    ...(snapshot.migration.errorCode
+      ? {migrationErrorCode: snapshot.migration.errorCode}
+      : {}),
+    buildIdentityState: snapshot.buildIdentityState.status,
+    currentBuildIdentity: snapshot.currentBuildIdentity,
+    lastReconciledBuildIdentity:
+      snapshot.buildIdentityState.record?.lastReconciledBuildIdentity ?? null,
+    warnings: [...snapshot.warnings],
+    errors: [...snapshot.errors],
   };
 }
 
@@ -131,12 +184,26 @@ function readJson<T>(file: string, warnings: string[]): T[] {
   }
 }
 
-function safeOpen<T>(fn: () => T, warnings: string[], label: string): T | null {
+function readStore<TStore extends {close(): void}, TResult>(
+  open: () => TStore | null,
+  read: (store: TStore) => TResult,
+  fallback: TResult,
+  warnings: string[],
+  label: string,
+): TResult {
+  let store: TStore | null = null;
   try {
-    return fn();
+    store = open();
+    return store ? read(store) : fallback;
   } catch (err) {
-    warnings.push(`failed to open ${label}: ${(err as Error).message}`);
-    return null;
+    warnings.push(`failed to read ${label}: ${(err as Error).message}`);
+    return fallback;
+  } finally {
+    try {
+      store?.close();
+    } catch (err) {
+      warnings.push(`failed to close ${label}: ${(err as Error).message}`);
+    }
   }
 }
 

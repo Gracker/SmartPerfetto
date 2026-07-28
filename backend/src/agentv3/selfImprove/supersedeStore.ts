@@ -23,6 +23,10 @@ import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
 import {backendDataPath} from '../../runtimePaths';
+import {
+  openSqliteReadSnapshot,
+  type SqliteReadSnapshot,
+} from '../../utils/sqliteReadSnapshot';
 
 export type SupersedeState =
   | 'pending_review'
@@ -67,6 +71,12 @@ export interface UpsertMarkerInput {
 
 export interface SupersedeStoreOptions {
   dbPath?: string;
+}
+
+export interface SupersedeStoreReadHandle {
+  findActiveByHash(failureModeHash: string): SupersedeMarker | null;
+  countByState(): Record<SupersedeState, number>;
+  close(): void;
 }
 
 const DEFAULT_OBSERVATION_DAYS = 7;
@@ -413,6 +423,27 @@ export class SupersedeStoreHandle {
   }
 }
 
+class SnapshotSupersedeStoreHandle extends SupersedeStoreHandle {
+  private closed = false;
+
+  constructor(
+    db: Database.Database,
+    private readonly snapshot: SqliteReadSnapshot,
+  ) {
+    super(db);
+  }
+
+  override close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      super.close();
+    } finally {
+      this.snapshot.cleanup();
+    }
+  }
+}
+
 /**
  * Read-only handle factory for callers (recall_patterns and the
  * future stdio MCP host) that must NOT create / migrate / mutate
@@ -426,13 +457,13 @@ export class SupersedeStoreHandle {
  * which is incompatible with read-only classification, while this
  * adapter performs no writes.
  *
- * Underlying sqlite open uses `{readonly: true, fileMustExist:
- * true}` so any accidental mutation attempt throws at the SDK
- * layer rather than silently dirty-ing the database.
+ * The adapter reads a query-only temporary snapshot, including committed WAL
+ * frames. SQLite never opens the source family, so monitoring and recall do
+ * not create or update source sidecars.
  */
 export function openSupersedeStoreReadOnly(
   opts: SupersedeStoreOptions = {},
-): SupersedeStoreHandle | null {
+): SupersedeStoreReadHandle | null {
   const dbPath = opts.dbPath || defaultDbPath();
   if (dbPath === ':memory:') {
     // :memory: stores are caller-private; a read-only adapter has no
@@ -440,12 +471,10 @@ export function openSupersedeStoreReadOnly(
     // returning a handle that is guaranteed empty.
     return null;
   }
-  if (!fs.existsSync(dbPath)) return null;
-  const db = new Database(dbPath, {readonly: true, fileMustExist: true});
-  // Busy timeout is read-side tuning only; pragma is allowed under
-  // readonly because it does not mutate the DB file.
-  db.pragma('busy_timeout = 5000');
-  return new SupersedeStoreHandle(db);
+  const snapshot = openSqliteReadSnapshot(dbPath);
+  return snapshot
+    ? new SnapshotSupersedeStoreHandle(snapshot.database, snapshot)
+    : null;
 }
 
 /**

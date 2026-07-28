@@ -20,10 +20,20 @@ import {describe, it, expect, beforeEach, afterEach} from '@jest/globals';
 import {
   openSupersedeStore,
   openSupersedeStoreReadOnly,
+  SupersedeStoreHandle,
 } from '../supersedeStore';
 
 let tmpDir: string;
 let dbPath: string;
+
+function sqliteFamily(): Map<string, Buffer> {
+  return new Map(
+    fs.readdirSync(tmpDir)
+      .filter((name) => name.startsWith(path.basename(dbPath)))
+      .sort()
+      .map((name) => [name, fs.readFileSync(path.join(tmpDir, name))]),
+  );
+}
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'supersede-ro-test-'));
@@ -66,7 +76,7 @@ describe('openSupersedeStoreReadOnly — Plan 41 M1a adapter', () => {
     readonly!.close();
   });
 
-  it('the file mtime does not change across 1000 read-only operations', () => {
+  it('the SQLite family does not change across 1000 read-only operations', () => {
     const writable = openSupersedeStore({dbPath});
     writable.createPendingReview({
       failureModeHash: 'h_observed',
@@ -76,7 +86,7 @@ describe('openSupersedeStoreReadOnly — Plan 41 M1a adapter', () => {
     });
     writable.close();
 
-    const before = fs.statSync(dbPath).mtimeMs;
+    const before = sqliteFamily();
     const readonly = openSupersedeStoreReadOnly({dbPath});
     expect(readonly).not.toBeNull();
     for (let i = 0; i < 1000; i++) {
@@ -84,18 +94,36 @@ describe('openSupersedeStoreReadOnly — Plan 41 M1a adapter', () => {
       readonly!.findActiveByHash('h_missing');
     }
     readonly!.close();
-    const after = fs.statSync(dbPath).mtimeMs;
-    expect(after).toBe(before);
+    expect(sqliteFamily()).toEqual(before);
   });
 
-  it('mutating methods throw because the underlying db was opened readonly', () => {
+  it('reads committed active-WAL rows without touching source sidecars', () => {
+    const writable = openSupersedeStore({dbPath});
+    writable.createPendingReview({
+      failureModeHash: 'h_wal',
+      strategyFile: 'scrolling.strategy.md',
+      strategyContentHash: 'cont_v1',
+      patchFingerprint: 'patch_v1',
+    });
+    const before = sqliteFamily();
+    expect([...before.keys()]).toContain(`${path.basename(dbPath)}-wal`);
+
+    const readonly = openSupersedeStoreReadOnly({dbPath});
+    expect(readonly?.findActiveByHash('h_wal')?.state).toBe('pending_review');
+    readonly?.close();
+
+    expect(sqliteFamily()).toEqual(before);
+    writable.close();
+  });
+
+  it('retains query-only runtime defense behind the closed read interface', () => {
     const writable = openSupersedeStore({dbPath});
     writable.close();
 
     const readonly = openSupersedeStoreReadOnly({dbPath});
     expect(readonly).not.toBeNull();
     expect(() =>
-      readonly!.createPendingReview({
+      (readonly as unknown as SupersedeStoreHandle).createPendingReview({
         failureModeHash: 'h_other',
         strategyFile: 'scrolling.strategy.md',
         strategyContentHash: 'c',

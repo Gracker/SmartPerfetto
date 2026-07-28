@@ -75,7 +75,7 @@ import {
 const FAKE_HANDLE = {
   findActiveByHash: jest.fn(() => null),
   close: jest.fn(),
-} as unknown as supersedeStore.SupersedeStoreHandle;
+} as unknown as supersedeStore.SupersedeStoreReadHandle;
 
 describe('analysisPatternMemory recall path — read-only invariant', () => {
   let writeSpy: jest.SpiedFunction<typeof supersedeStore.openSupersedeStore>;
@@ -83,6 +83,7 @@ describe('analysisPatternMemory recall path — read-only invariant', () => {
 
   beforeEach(() => {
     resetSupersedeHandlesForTesting();
+    jest.clearAllMocks();
     writeSpy = jest.spyOn(supersedeStore, 'openSupersedeStore');
     readSpy = jest.spyOn(supersedeStore, 'openSupersedeStoreReadOnly');
   });
@@ -108,26 +109,45 @@ describe('analysisPatternMemory recall path — read-only invariant', () => {
   });
 
   it('retries the read-only adapter when the DB file is missing on first call', () => {
-    // Cold start: file not yet on disk → adapter returns null. Later
-    // call (e.g. after the write path created the DB) must see the
-    // newly-available handle, not a stuck-null cache.
     readSpy.mockReturnValueOnce(null).mockReturnValue(FAKE_HANDLE);
 
     matchNegativePatterns(['arch:Standard', 'scene:scrolling']);
     matchNegativePatterns(['arch:Standard', 'scene:scrolling']);
 
     expect(readSpy).toHaveBeenCalledTimes(2);
+    expect(FAKE_HANDLE.close).toHaveBeenCalledTimes(1);
     expect(writeSpy).not.toHaveBeenCalled();
   });
 
-  it('caches the read-only handle once acquired so 1000 recalls open it once', () => {
-    readSpy.mockReturnValue(FAKE_HANDLE);
+  it('opens a fresh snapshot so marker changes are visible in the same process', () => {
+    const firstHandle = {
+      findActiveByHash: jest.fn(() => null),
+      close: jest.fn(),
+    } as unknown as supersedeStore.SupersedeStoreReadHandle;
+    const activeHandle = {
+      findActiveByHash: jest.fn(() => ({state: 'active'})),
+      close: jest.fn(),
+    } as unknown as supersedeStore.SupersedeStoreReadHandle;
+    readSpy
+      .mockReturnValueOnce(firstHandle)
+      .mockReturnValueOnce(activeHandle);
 
-    for (let i = 0; i < 1000; i++) {
-      matchNegativePatterns(['arch:Standard', 'scene:scrolling']);
-    }
+    const beforePromotion = matchNegativePatterns([
+      'arch:Standard',
+      'scene:scrolling',
+      'cat:GPU',
+    ]);
+    const afterPromotion = matchNegativePatterns([
+      'arch:Standard',
+      'scene:scrolling',
+      'cat:GPU',
+    ]);
 
-    expect(readSpy).toHaveBeenCalledTimes(1);
+    expect(beforePromotion).toHaveLength(1);
+    expect(afterPromotion).toHaveLength(0);
+    expect(readSpy).toHaveBeenCalledTimes(2);
+    expect(firstHandle.close).toHaveBeenCalledTimes(1);
+    expect(activeHandle.close).toHaveBeenCalledTimes(1);
     expect(writeSpy).not.toHaveBeenCalled();
   });
 });

@@ -1,33 +1,7 @@
-import dotenv from 'dotenv';
-
-const SERVICE_PORT_ENV_KEYS = [
-  'PORT',
-  'SMARTPERFETTO_BACKEND_PORT',
-  'SMARTPERFETTO_FRONTEND_PORT',
-  'SMARTPERFETTO_BACKEND_PUBLIC_PORT',
-  'SMARTPERFETTO_BACKEND_PUBLIC_URL',
-  'SMARTPERFETTO_BACKEND_URL',
-  'FRONTEND_URL',
-];
-const lockedServiceEnv = process.env.SMARTPERFETTO_LOCK_SERVICE_PORTS === '1'
-  ? Object.fromEntries(
-    SERVICE_PORT_ENV_KEYS
-      .filter((key) => process.env[key] !== undefined)
-      .map((key) => [key, process.env[key] as string]),
-  )
-  : null;
+import {configureRuntimeEnvironment} from './runtimeEnvironment';
 
 // Load environment variables FIRST before importing routes
-dotenv.config(
-  process.env.SMARTPERFETTO_ENV_FILE
-    ? { path: process.env.SMARTPERFETTO_ENV_FILE, override: true }
-    : { override: true },
-);
-if (lockedServiceEnv) {
-  for (const [key, value] of Object.entries(lockedServiceEnv)) {
-    process.env[key] = value;
-  }
-}
+configureRuntimeEnvironment();
 
 import { installEpipeGuard } from './utils/epipeGuard';
 
@@ -112,6 +86,9 @@ import {startApplicationUpdateWorker} from './services/applicationUpdate/applica
 import {installRuntimeShutdownControl} from './services/runtimeShutdownControl';
 import {createActiveHttpResponseTracker} from './services/activeHttpResponseTracker';
 import {startTraceProcessorLeaseSupervisor} from './services/traceProcessorLeaseSupervisor';
+import {
+  initializeSelfEvolutionLifecycle,
+} from './services/selfEvolution/selfEvolutionLifecycle';
 
 const app = express();
 const activeHttpResponses = createActiveHttpResponseTracker();
@@ -352,6 +329,25 @@ function recoverInterruptedEnterpriseRuns(): void {
 }
 
 recoverInterruptedEnterpriseRuns();
+
+const selfEvolutionLifecycle = initializeSelfEvolutionLifecycle();
+if (selfEvolutionLifecycle.persistence.persistence === 'unavailable') {
+  console.warn(
+    `[SelfEvolution] Persistent apply unavailable: ${selfEvolutionLifecycle.persistence.reason}`,
+  );
+}
+if (selfEvolutionLifecycle.migration.status === 'failed') {
+  console.error(
+    '[SelfEvolution] Legacy data migration failed: ' +
+    `${selfEvolutionLifecycle.migration.errorCode ?? 'unknown_error'}`,
+  );
+}
+for (const warning of selfEvolutionLifecycle.warnings) {
+  console.warn(`[SelfEvolution] ${warning.message}`);
+}
+for (const error of selfEvolutionLifecycle.errors) {
+  console.error(`[SelfEvolution] ${error.message}`);
+}
 
 const caseEvolutionWorkerHandle = startCaseEvolutionWorker();
 const patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();

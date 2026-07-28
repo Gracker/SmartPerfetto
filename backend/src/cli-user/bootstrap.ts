@@ -53,6 +53,12 @@ export function bootstrap(options: BootstrapOptions = {}): BootstrapResult {
     }
     loadEnv(envFile, sessionDir);
     const paths = computePaths(sessionDir);
+    if (backendRoot && !process.env.SMARTPERFETTO_PACKAGE_ROOT?.trim()) {
+      process.env.SMARTPERFETTO_PACKAGE_ROOT = backendRoot;
+    }
+    if (!process.env.SMARTPERFETTO_DISTRIBUTION?.trim()) {
+      process.env.SMARTPERFETTO_DISTRIBUTION = 'npm';
+    }
     // Keep helper services that read SMARTPERFETTO_HOME directly (for example
     // the CLI-managed trace_processor_shell cache) aligned with --session-dir.
     process.env.SMARTPERFETTO_HOME = paths.home;

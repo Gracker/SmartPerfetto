@@ -54,6 +54,7 @@ LOGS_DIR="$PROJECT_ROOT/logs"
 mkdir -p "$LOGS_DIR"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 BACKEND_LOG="$LOGS_DIR/backend_${TIMESTAMP}.log"
+SOURCE_BUILD_COMMIT="$(smartperfetto_source_build_commit "$PROJECT_ROOT")"
 
 # Launch into a separate process group with closed stdin. This keeps the watcher
 # alive after both interactive terminals and headless command runners return.
@@ -63,6 +64,10 @@ NEW_PID=$(
   SMARTPERFETTO_FRONTEND_PORT="$FRONTEND_PORT" \
   FRONTEND_URL="$FRONTEND_URL" \
   SMARTPERFETTO_LOCK_SERVICE_PORTS=1 \
+  SMARTPERFETTO_LOCK_RUNTIME_IDENTITY=1 \
+  SMARTPERFETTO_PACKAGE_ROOT="$PROJECT_ROOT" \
+  SMARTPERFETTO_DISTRIBUTION=source \
+  SMARTPERFETTO_BUILD_COMMIT="$SOURCE_BUILD_COMMIT" \
   node "$DETACHED_PROCESS_LAUNCHER" \
     --cwd "$BACKEND_CWD" --log "$BACKEND_LOG" -- npm run dev
 )

@@ -24,6 +24,10 @@ import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
 import {backendDataPath} from '../../runtimePaths';
+import {
+  openSqliteReadSnapshot,
+  type SqliteReadSnapshot,
+} from '../../utils/sqliteReadSnapshot';
 
 export type JobState = 'pending' | 'leased' | 'done' | 'failed';
 
@@ -70,6 +74,12 @@ export interface EnqueueResult {
    * leased job with the same dedupe key already exists.
    */
   reason?: 'duplicate_active' | 'error';
+}
+
+export interface ReviewOutboxReadHandle {
+  countByState(): Record<JobState, number>;
+  dailyJobCount(now?: number): number;
+  close(): void;
 }
 
 /** Default lease + retry parameters; callers can override per-call. */
@@ -376,6 +386,44 @@ export class ReviewOutboxHandle {
   close(): void {
     this.db.close();
   }
+}
+
+class SnapshotReviewOutboxHandle extends ReviewOutboxHandle {
+  private closed = false;
+
+  constructor(
+    db: Database.Database,
+    private readonly snapshot: SqliteReadSnapshot,
+  ) {
+    super(db);
+  }
+
+  override close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      super.close();
+    } finally {
+      this.snapshot.cleanup();
+    }
+  }
+}
+
+/**
+ * Open an existing review outbox without creating directories, migrating the
+ * schema, or touching the source SQLite family. Monitoring callers use a
+ * query-only temporary snapshot so active WAL rows remain visible without
+ * creating or updating source `-wal/-shm` sidecars.
+ */
+export function openReviewOutboxReadOnly(
+  opts: OutboxOptions = {},
+): ReviewOutboxReadHandle | null {
+  const dbPath = opts.dbPath || defaultDbPath();
+  if (dbPath === ':memory:') return null;
+  const snapshot = openSqliteReadSnapshot(dbPath);
+  return snapshot
+    ? new SnapshotReviewOutboxHandle(snapshot.database, snapshot)
+    : null;
 }
 
 /** Surfaced for assertions without exporting the constants individually. */

@@ -2,11 +2,14 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, it, expect, beforeEach } from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { collectSelfImproveMetrics } from '../metricsAggregator';
+import type {SelfEvolutionLifecycleSnapshot} from '../../../types/selfEvolution';
+import {__testing as snapshotTesting} from '../../../utils/sqliteReadSnapshot';
 
 describe('collectSelfImproveMetrics', () => {
   let tmp: string;
@@ -14,6 +17,55 @@ describe('collectSelfImproveMetrics', () => {
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-metrics-'));
   });
+
+  afterEach(() => {
+    fs.rmSync(tmp, {recursive: true, force: true});
+  });
+
+  function snapshotDirectories(): string[] {
+    return fs.readdirSync(os.tmpdir())
+      .filter((name) => name.startsWith(snapshotTesting.SNAPSHOT_PREFIX))
+      .sort();
+  }
+
+  function selfEvolutionSnapshot(): SelfEvolutionLifecycleSnapshot {
+    return {
+      initializedAt: 1,
+      requestedConfig: {enabled: true, applyEnabled: true},
+      effectiveConfig: {enabled: true, applyEnabled: false},
+      persistence: {
+        persistence: 'unavailable',
+        reason: 'data_root_inside_package',
+        configured: true,
+        writable: true,
+        outsidePackage: false,
+        externalMount: false,
+        dataRoot: path.join(tmp, 'data'),
+        packageRoot: tmp,
+        checkedAt: 1,
+      },
+      migration: {
+        status: 'not_attempted_persistence_unavailable',
+        errorCode: 'test_migration_error',
+      },
+      currentBuildIdentity: {
+        distribution: 'source',
+        channel: 'stable',
+        version: '1.0.0',
+        target: {os: 'darwin', arch: 'arm64'},
+        signingMode: 'source-checkout',
+      },
+      buildIdentityState: {
+        status: 'not_loaded_persistence_unavailable',
+        record: null,
+      },
+      warnings: [],
+      errors: [{
+        code: 'apply_requires_persistent_user_data',
+        message: 'disabled for test',
+      }],
+    };
+  }
 
   function paths() {
     return {
@@ -23,6 +75,9 @@ describe('collectSelfImproveMetrics', () => {
       feedbackFile: path.join(tmp, 'feedback.jsonl'),
       skillNotesDir: path.join(tmp, 'skill_notes'),
       curatedSkillNotesDir: path.join(tmp, 'curated_skill_notes'),
+      reviewOutboxDbPath: path.join(tmp, 'stores', 'review.db'),
+      supersedeDbPath: path.join(tmp, 'stores', 'supersede.db'),
+      selfEvolutionSnapshot: selfEvolutionSnapshot(),
     };
   }
 
@@ -34,6 +89,16 @@ describe('collectSelfImproveMetrics', () => {
     expect(metrics.skillNotes.runtimeFiles).toBe(0);
     expect(metrics.feedback.total).toBe(0);
     expect(metrics.activeRunSnapshots).toBeGreaterThanOrEqual(0);
+    expect(metrics.selfEvolution).toMatchObject({
+      requested: {enabled: true, applyEnabled: true},
+      effective: {enabled: true, applyEnabled: false},
+      persistence: 'unavailable',
+      persistenceReason: 'data_root_inside_package',
+      migration: 'not_attempted_persistence_unavailable',
+      migrationErrorCode: 'test_migration_error',
+      lastReconciledBuildIdentity: null,
+    });
+    expect(fs.existsSync(path.join(tmp, 'stores'))).toBe(false);
   });
 
   it('counts pattern entries by status (legacy entries fold into `legacy` bucket)', () => {
@@ -92,8 +157,7 @@ describe('collectSelfImproveMetrics', () => {
 
   it('exposes the canonical SupersedeState keys with zero defaults', () => {
     const metrics = collectSelfImproveMetrics(paths());
-    // No supersede DB exists in the tmp dir, so we get the default zeros
-    // either via opening it (creates an empty DB) or via the catch path.
+    // No supersede DB exists, and metrics must not create one.
     for (const k of [
       'pending_review', 'active_canary', 'active',
       'failed', 'rejected', 'drifted', 'reverted',
@@ -108,5 +172,36 @@ describe('collectSelfImproveMetrics', () => {
       expect(metrics.outbox.byState[k as keyof typeof metrics.outbox.byState]).toBeGreaterThanOrEqual(0);
     }
     expect(metrics.outbox.dailyJobs).toBeGreaterThanOrEqual(0);
+    expect(fs.existsSync(path.join(tmp, 'stores'))).toBe(false);
+  });
+
+  it('degrades corrupt store schemas to warnings and cleans read snapshots', () => {
+    const p = paths();
+    fs.mkdirSync(path.dirname(p.reviewOutboxDbPath), {recursive: true});
+    for (const databasePath of [p.reviewOutboxDbPath, p.supersedeDbPath]) {
+      const database = new Database(databasePath);
+      database.exec('CREATE TABLE unrelated(value TEXT)');
+      database.close();
+    }
+    const snapshotsBefore = snapshotDirectories();
+
+    const metrics = collectSelfImproveMetrics(p);
+
+    expect(metrics.outbox).toEqual({
+      byState: {pending: 0, leased: 0, done: 0, failed: 0},
+      dailyJobs: 0,
+    });
+    expect(metrics.supersede).toEqual({
+      pending_review: 0,
+      active_canary: 0,
+      active: 0,
+      failed: 0,
+      rejected: 0,
+      drifted: 0,
+      reverted: 0,
+    });
+    expect(metrics.warnings.some((warning) => warning.includes('outbox'))).toBe(true);
+    expect(metrics.warnings.some((warning) => warning.includes('supersede'))).toBe(true);
+    expect(snapshotDirectories()).toEqual(snapshotsBefore);
   });
 });

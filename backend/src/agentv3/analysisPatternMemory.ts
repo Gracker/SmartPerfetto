@@ -34,6 +34,7 @@ import {
   openSupersedeStore,
   openSupersedeStoreReadOnly,
   injectionWeightForSupersede,
+  type SupersedeStoreReadHandle,
   type SupersedeStoreHandle,
 } from './selfImprove/supersedeStore';
 import {
@@ -322,33 +323,30 @@ function autoConfirmIfRipe(
  * This is what lets the recall path stay zero-write so the MCP tool
  * can be classified `public-readonly`.
  *
- * The read handle is cached only on success or hard failure. When the
- * read-only adapter returns null because the DB file does not yet
- * exist (cold start before any write path runs), the handle stays
- * `undefined` so the next recall retries — otherwise the read path
- * would be permanently blind to markers the write path creates later
- * in the same process.
- *
- * `undefined` = retry on next call; `null` = open errored or test
- * mock disabled. Both fall back to weight 1.0.
+ * Read handles are intentionally short-lived snapshots. Reusing one
+ * would make later marker promotions, reverts, and recurrence failures
+ * invisible until process restart. The writable handle remains cached
+ * because it is the live store connection used by the mutation path.
  */
-let supersedeReadHandle: SupersedeStoreHandle | null | undefined;
+let supersedeReadDisabledForTesting = false;
 let supersedeWriteHandle: SupersedeStoreHandle | null | undefined;
 
-function ensureSupersedeReadHandle(): SupersedeStoreHandle | null {
-  if (supersedeReadHandle !== undefined) return supersedeReadHandle;
+function openSupersedeReadHandle(): SupersedeStoreReadHandle | null {
+  if (supersedeReadDisabledForTesting) return null;
   try {
-    const handle = openSupersedeStoreReadOnly();
-    if (handle) {
-      supersedeReadHandle = handle;
-      return handle;
-    }
-    return null;
+    return openSupersedeStoreReadOnly();
   } catch (err) {
     console.warn('[PatternMemory] supersede read store unavailable:', (err as Error).message);
-    supersedeReadHandle = null;
     return null;
   }
+}
+
+function getSupersedeWeight(
+  failureModeHash: string | undefined,
+  handle: SupersedeStoreReadHandle | null,
+): number {
+  if (!failureModeHash || !handle) return 1.0;
+  return injectionWeightForSupersede(handle.findActiveByHash(failureModeHash));
 }
 
 function ensureSupersedeWriteHandle(): SupersedeStoreHandle | null {
@@ -363,16 +361,9 @@ function ensureSupersedeWriteHandle(): SupersedeStoreHandle | null {
   return supersedeWriteHandle;
 }
 
-function getSupersedeWeight(failureModeHash: string | undefined): number {
-  if (!failureModeHash) return 1.0;
-  const handle = ensureSupersedeReadHandle();
-  if (!handle) return 1.0;
-  return injectionWeightForSupersede(handle.findActiveByHash(failureModeHash));
-}
-
 /**
  * Test-only: disable the live supersede store. Both handles snap to
- * `null` so neither path will attempt an adapter open. This is the
+ * their disabled state so neither path will attempt an adapter open. This is the
  * primitive existing fs-mocked tests use to keep production sqlite
  * out of the test process.
  *
@@ -380,18 +371,16 @@ function getSupersedeWeight(failureModeHash: string | undefined): number {
  * to observe which adapter factory the production code calls.
  */
 export function setSupersedeStoreForTesting(handle: null): void {
-  supersedeReadHandle = handle;
+  supersedeReadDisabledForTesting = true;
   supersedeWriteHandle = handle;
 }
 
 /**
- * Test-only: clear both handles back to `undefined` so the next read
- * or write attempt triggers a fresh adapter factory call. Used by
- * tests that spy on `openSupersedeStore*` to verify which factory the
- * recall path goes through.
+ * Test-only: re-enable snapshot reads and clear the writable handle so
+ * the next access triggers the appropriate adapter factory.
  */
 export function resetSupersedeHandlesForTesting(): void {
-  supersedeReadHandle = undefined;
+  supersedeReadDisabledForTesting = false;
   supersedeWriteHandle = undefined;
 }
 
@@ -842,28 +831,51 @@ export function matchNegativePatterns(
 
   const patterns = loadNegativePatterns(scope);
   const cutoff = Date.now() - NEGATIVE_PATTERN_TTL_MS;
-
-  return patterns
-    .filter(p => p.createdAt >= cutoff)
-    .filter(p => patternMatchesKnowledgeScope(p, scope))
-    .filter(p => getEffectiveStatus(p) !== 'rejected')
-    .map(p => {
-      const frequencyGain = 1 + Math.log2(1 + p.matchCount) * 0.1;
-      const statusWeight = getStatusWeight(p);
-      const supersedeWeight = getSupersedeWeight(p.failureModeHash);
-      return {
-        ...p,
-        score:
-          weightedJaccardSimilarity(p.traceFeatures, features) *
-          confidenceDecay(p.createdAt) *
-          frequencyGain *
-          statusWeight *
-          supersedeWeight,
-      };
-    })
-    .filter(p => p.score >= MIN_MATCH_SCORE)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_MATCHED_NEGATIVE);
+  const supersedeHandle = openSupersedeReadHandle();
+  let supersedeReadFailed = false;
+  try {
+    return patterns
+      .filter(p => p.createdAt >= cutoff)
+      .filter(p => patternMatchesKnowledgeScope(p, scope))
+      .filter(p => getEffectiveStatus(p) !== 'rejected')
+      .map(p => {
+        const frequencyGain = 1 + Math.log2(1 + p.matchCount) * 0.1;
+        const statusWeight = getStatusWeight(p);
+        let supersedeWeight = 1.0;
+        if (!supersedeReadFailed) {
+          try {
+            supersedeWeight = getSupersedeWeight(
+              p.failureModeHash,
+              supersedeHandle,
+            );
+          } catch (err) {
+            supersedeReadFailed = true;
+            console.warn(
+              '[PatternMemory] supersede read store unavailable:',
+              (err as Error).message,
+            );
+          }
+        }
+        return {
+          ...p,
+          score:
+            weightedJaccardSimilarity(p.traceFeatures, features) *
+            confidenceDecay(p.createdAt) *
+            frequencyGain *
+            statusWeight *
+            supersedeWeight,
+        };
+      })
+      .filter(p => p.score >= MIN_MATCH_SCORE)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_MATCHED_NEGATIVE);
+  } finally {
+    try {
+      supersedeHandle?.close();
+    } catch (err) {
+      console.warn('[PatternMemory] supersede read store close failed:', (err as Error).message);
+    }
+  }
 }
 
 /**
