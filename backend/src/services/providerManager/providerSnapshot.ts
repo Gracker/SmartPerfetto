@@ -62,6 +62,11 @@ const OPENCODE_SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConfig['connecti
   'openCodeModelJson',
 ];
 
+const QODER_SENSITIVE_CONNECTION_FIELDS: Array<keyof ProviderConfig['connection']> = [
+  'qoderAccessToken',
+  'qoderSystemPrompt',
+];
+
 const CLAUDE_SECRET_ENV_KEYS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
@@ -85,6 +90,11 @@ const OPENCODE_SECRET_ENV_KEYS = [
   'SMARTPERFETTO_OPENCODE_MODEL_JSON',
   'SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT',
   'SMARTPERFETTO_OPENCODE_MCP_COMMAND_JSON',
+];
+
+const QODER_SECRET_ENV_KEYS = [
+  'QODER_PERSONAL_ACCESS_TOKEN',
+  'SMARTPERFETTO_QODER_SYSTEM_PROMPT',
 ];
 
 const CLAUDE_RUNTIME_ENV_KEYS = [
@@ -143,6 +153,18 @@ const OPENCODE_RUNTIME_ENV_KEYS = [
   'SMARTPERFETTO_OPENCODE_ENABLE_STANDALONE_MCP',
   'SMARTPERFETTO_OPENCODE_MCP_TIMEOUT_MS',
   'SMARTPERFETTO_OPENCODE_REAL_ANALYSIS',
+];
+
+const QODER_RUNTIME_ENV_KEYS = [
+  'SMARTPERFETTO_AGENT_RUNTIME',
+  'QODERCLI_PATH',
+  'QODER_MODEL',
+  'QODER_LIGHT_MODEL',
+  'QODER_MAX_TURNS',
+  'QODER_QUICK_MAX_TURNS',
+  'QODER_FULL_PER_TURN_MS',
+  'QODER_QUICK_PER_TURN_MS',
+  'QODER_WORKER_RUNTIME_PATH',
 ];
 
 type ResolvedTimeoutKey = keyof ProviderRuntimeSnapshot['resolvedTimeouts'];
@@ -205,6 +227,7 @@ function parseRuntimeEnv(value: string | undefined): AgentRuntimeKind | undefine
     case 'openai-agents-sdk':
     case 'pi-agent-core':
     case 'opencode':
+    case 'qoder-agent-sdk':
       return value;
     default:
       return undefined;
@@ -219,6 +242,8 @@ function runtimeEnvironmentKeys(runtimeKind: AgentRuntimeKind): string[] {
       return PI_AGENT_CORE_RUNTIME_ENV_KEYS;
     case 'opencode':
       return OPENCODE_RUNTIME_ENV_KEYS;
+    case 'qoder-agent-sdk':
+      return QODER_RUNTIME_ENV_KEYS;
     case 'claude-agent-sdk':
     default:
       return CLAUDE_RUNTIME_ENV_KEYS;
@@ -233,6 +258,8 @@ function runtimeSecretEnvKeys(runtimeKind: AgentRuntimeKind): string[] {
       return PI_AGENT_CORE_SECRET_ENV_KEYS;
     case 'opencode':
       return OPENCODE_SECRET_ENV_KEYS;
+    case 'qoder-agent-sdk':
+      return QODER_SECRET_ENV_KEYS;
     case 'claude-agent-sdk':
     default:
       return CLAUDE_SECRET_ENV_KEYS;
@@ -249,6 +276,8 @@ function runtimeSensitiveConnectionFields(
       return PI_AGENT_CORE_SENSITIVE_CONNECTION_FIELDS;
     case 'opencode':
       return OPENCODE_SENSITIVE_CONNECTION_FIELDS;
+    case 'qoder-agent-sdk':
+      return QODER_SENSITIVE_CONNECTION_FIELDS;
     case 'claude-agent-sdk':
     default:
       return CLAUDE_SENSITIVE_CONNECTION_FIELDS;
@@ -260,9 +289,11 @@ function pickResolvedTimeouts(
   runtimeKind: AgentRuntimeKind,
 ): ProviderRuntimeSnapshot['resolvedTimeouts'] {
   const resolved: ProviderRuntimeSnapshot['resolvedTimeouts'] = {};
-  const keys = runtimeKind === 'openai-agents-sdk'
-    ? TIMEOUT_KEYS.filter((key) => key !== 'verifierTimeoutMs')
-    : TIMEOUT_KEYS;
+  const keys = runtimeKind === 'qoder-agent-sdk'
+    ? TIMEOUT_KEYS.filter((key) => key === 'fullPerTurnMs' || key === 'quickPerTurnMs')
+    : runtimeKind === 'openai-agents-sdk'
+      ? TIMEOUT_KEYS.filter((key) => key !== 'verifierTimeoutMs')
+      : TIMEOUT_KEYS;
   for (const key of keys) {
     const value = tuning?.[key];
     if (typeof value === 'number') resolved[key] = value;
@@ -283,15 +314,22 @@ function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntime
     ?? parseRuntimeEnv(process.env.SMARTPERFETTO_AGENT_RUNTIME)
     ?? 'claude-agent-sdk';
   const env = process.env;
-  const timeoutPrefix = runtimeKind === 'openai-agents-sdk' || runtimeKind === 'opencode'
-    ? 'OPENAI'
-    : 'CLAUDE';
+  const timeoutPrefix = runtimeKind === 'qoder-agent-sdk'
+    ? 'QODER'
+    : runtimeKind === 'openai-agents-sdk' || runtimeKind === 'opencode'
+      ? 'OPENAI'
+      : 'CLAUDE';
   const resolvedTimeouts: ProviderRuntimeSnapshot['resolvedTimeouts'] = {};
   const timeoutMap: Array<[keyof ProviderRuntimeSnapshot['resolvedTimeouts'], string]> = [
     ['fullPerTurnMs', `${timeoutPrefix}_FULL_PER_TURN_MS`],
     ['quickPerTurnMs', `${timeoutPrefix}_QUICK_PER_TURN_MS`],
-    ['classifierTimeoutMs', `${timeoutPrefix}_CLASSIFIER_TIMEOUT_MS`],
   ];
+  if (runtimeKind !== 'qoder-agent-sdk') {
+    timeoutMap.push([
+      'classifierTimeoutMs',
+      `${timeoutPrefix}_CLASSIFIER_TIMEOUT_MS`,
+    ]);
+  }
   if (runtimeKind === 'claude-agent-sdk') {
     timeoutMap.push(['verifierTimeoutMs', 'CLAUDE_VERIFIER_TIMEOUT_MS']);
   }
@@ -301,11 +339,13 @@ function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntime
     if (Number.isFinite(parsed)) resolvedTimeouts[key] = parsed;
   }
 
-  const modelPrefix = runtimeKind === 'openai-agents-sdk' || runtimeKind === 'opencode'
-    ? 'OPENAI'
-    : runtimeKind === 'claude-agent-sdk'
-      ? 'CLAUDE'
-      : undefined;
+  const modelPrefix = runtimeKind === 'qoder-agent-sdk'
+    ? 'QODER'
+    : runtimeKind === 'openai-agents-sdk' || runtimeKind === 'opencode'
+      ? 'OPENAI'
+      : runtimeKind === 'claude-agent-sdk'
+        ? 'CLAUDE'
+        : undefined;
   const nonSecretEnv = pickEnv(env, runtimeEnvironmentKeys(runtimeKind));
   return {
     version: 1,
@@ -351,14 +391,20 @@ function providerRuntimeSnapshot(
   const providerEnv = providerService.getEnvForProvider(provider.id, providerScope) ?? null;
   const env = mergeIsolatedProviderEnv(process.env, providerEnv);
   const nonSecretEnv = pickEnv(env, runtimeEnvironmentKeys(runtimeKind));
+  const primaryModel = runtimeKind === 'qoder-agent-sdk'
+    ? nonSecretEnv.QODER_MODEL
+    : provider.models.primary;
+  const lightModel = runtimeKind === 'qoder-agent-sdk'
+    ? nonSecretEnv.QODER_LIGHT_MODEL
+    : provider.models.light;
   return {
     version: 1,
     providerId: provider.id,
     providerType: provider.type,
     runtimeKind,
     resolvedModels: {
-      primary: provider.models.primary,
-      light: provider.models.light,
+      primary: primaryModel,
+      light: lightModel,
       subAgent: runtimeKind === 'claude-agent-sdk' ? provider.models.subAgent : undefined,
     },
     resolvedTimeouts: pickResolvedTimeouts(provider.tuning, runtimeKind),

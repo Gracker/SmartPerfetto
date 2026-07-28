@@ -79,6 +79,8 @@ export const ENTERPRISE_CORE_SCHEMA_TABLES = [
   'multi_trace_comparison_inputs',
   'runtime_snapshots',
   'provider_credentials',
+  'provider_mutation_revisions',
+  'provider_mutation_leases',
   'provider_snapshots',
   'report_artifacts',
   'memory_entries',
@@ -1066,6 +1068,38 @@ const MIGRATIONS: MigrationStep[] = [
           ON memory_entries(tenant_id, workspace_id, scope, rag_symbol);
         CREATE INDEX IF NOT EXISTS idx_memory_entries_rag_path
           ON memory_entries(tenant_id, workspace_id, scope, rag_lookup_path);
+      `);
+    },
+  },
+  {
+    version: 15,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS provider_mutation_revisions (
+          scope_key TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL,
+          workspace_id TEXT,
+          owner_user_id TEXT,
+          revision INTEGER NOT NULL CHECK (revision >= 0),
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (tenant_id) REFERENCES organizations(id) ON DELETE CASCADE,
+          FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_mutation_revisions_scope
+          ON provider_mutation_revisions(tenant_id, workspace_id, owner_user_id);
+
+        CREATE TABLE IF NOT EXISTS provider_mutation_leases (
+          mutation_id TEXT PRIMARY KEY,
+          scope_key TEXT NOT NULL,
+          owner_instance_id TEXT NOT NULL,
+          owner_pid INTEGER NOT NULL,
+          owner_host TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          FOREIGN KEY (scope_key) REFERENCES provider_mutation_revisions(scope_key) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_provider_mutation_leases_scope
+          ON provider_mutation_leases(scope_key, started_at);
       `);
     },
   },

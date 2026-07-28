@@ -281,6 +281,78 @@ export type FeedbackDimension =
   | FeedbackNegativeDimension
   | FeedbackPositiveDimension;
 
+export interface EvalCaseV1 {
+  schemaVersion: 1;
+  caseId: string;
+  evalSetId: string;
+  origin: 'labeled_run' | 'synthetic_seed' | 'manual_golden';
+  sourceRunId?: string;
+  scope: RunManifestScope;
+  traces: Array<{
+    role: 'current' | 'reference';
+    corpusId?: string;
+    catalogAlias?: string;
+    contentHash: string;
+  }>;
+  query: string;
+  analysisMode: 'fast' | 'full';
+  expectedScene?: string;
+  label?: {
+    rating: 'positive' | 'negative';
+    dimensions: FeedbackDimension[];
+  };
+  goldenPoints?: string[];
+  expectedRubricVersion?: string;
+  split: 'train' | 'validation' | 'holdout';
+  createdAt: string;
+}
+
+export interface EvalPinnedEnvironmentV1 {
+  runtime: AgentRuntimeKind;
+  providerId: string | null;
+  model?: string;
+  outputLanguage: string;
+  toolAllowlistHash: string;
+  injections: 'on' | 'off' | 'selective';
+  overlayGeneration: string;
+}
+
+export interface EvalScoreV1 {
+  schemaVersion: 1;
+  caseId: string;
+  evalSetId: string;
+  runId: string;
+  runManifestId: string;
+  attempt: number;
+  role: 'baseline' | 'candidate';
+  candidateId?: string;
+  scope: RunManifestScope;
+  pinned: EvalPinnedEnvironmentV1;
+  availability: 'available' | 'unavailable';
+  l0: {
+    runOk: boolean;
+    sqlErrorFree: boolean;
+    reportContractPass: boolean;
+    skillCrashFree: boolean;
+  };
+  l1: {
+    claimVerifiedRatio: number;
+    unsupportedClaims: number;
+    evidenceAnchors: number;
+  };
+  l2?: {
+    goldenPointHitRatio: number;
+    appliedRubricVersion: string;
+    judgeNotes?: string;
+  };
+  l3: {
+    turns: number;
+    wallclockMs: number;
+    estimatedTokens?: number;
+    toolCalls: number;
+  };
+}
+
 export const FEEDBACK_TARGET_KINDS = [
   'session',
   'conclusion',

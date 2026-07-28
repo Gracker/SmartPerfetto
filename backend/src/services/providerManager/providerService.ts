@@ -1,6 +1,9 @@
 // backend/src/services/providerManager/providerService.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import {randomUUID} from 'crypto';
+import os from 'os';
+
 import { uuidv4 } from '../../utils/uuid';
 import logger from '../../utils/logger';
 import { ProviderStore } from './providerStore';
@@ -23,6 +26,12 @@ import {
   sharedKeyShouldUseClaudeAuthToken,
   supportsAgentRuntimeType,
 } from './providerRuntimeMatrix';
+import type {
+  ProviderMutationGenerationVectorV1,
+  ProviderMutationLease,
+  ProviderMutationOwner,
+  ProviderMutationScope,
+} from './providerMutationGeneration';
 
 const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'apiKey',
@@ -165,9 +174,15 @@ function assertCredentialsReconfirmedForEndpointChange(
 
 export class ProviderService {
   private store: ProviderStore;
+  private readonly mutationOwner: ProviderMutationOwner;
 
   constructor(filePath: string) {
     this.store = new ProviderStore(filePath);
+    this.mutationOwner = {
+      instanceId: randomUUID(),
+      pid: process.pid,
+      host: os.hostname(),
+    };
     this.store.load();
   }
 
@@ -221,77 +236,127 @@ export class ProviderService {
       ...(input.custom ? { custom: input.custom } : {}),
     };
 
-    this.store.set(provider, scope);
-    return provider;
+    return this.runProviderMutation(
+      () => this.store.beginMutationForNewProvider(scope, this.mutationOwner),
+      () => {
+        this.store.set(provider, scope);
+        return provider;
+      },
+    );
   }
 
   update(id: string, input: ProviderUpdateInput, scope?: ProviderScope): ProviderConfig {
-    const existing = this.store.get(id, scope);
-    if (!existing) throw new Error(`Provider not found: ${id}`);
+    return this.runProviderMutation(
+      () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
+      () => {
+        const existing = this.store.get(id, scope);
+        if (!existing) throw new Error(`Provider not found: ${id}`);
 
-    const updated: ProviderConfig = {
-      ...existing,
-      updatedAt: new Date().toISOString(),
-    };
+        const updated: ProviderConfig = {
+          ...existing,
+          updatedAt: new Date().toISOString(),
+        };
 
-    if (input.name !== undefined) updated.name = input.name.trim();
-    if (input.models) updated.models = { ...existing.models, ...input.models };
-    if (input.connection) {
-      assertCredentialsReconfirmedForEndpointChange(existing.connection, input.connection);
-      const merged = { ...existing.connection };
-      for (const [key, val] of Object.entries(input.connection)) {
-        if (val !== undefined && !String(val).startsWith('****')) {
-          (merged as any)[key] = val;
+        if (input.name !== undefined) updated.name = input.name.trim();
+        if (input.models) updated.models = { ...existing.models, ...input.models };
+        if (input.connection) {
+          assertCredentialsReconfirmedForEndpointChange(existing.connection, input.connection);
+          const merged = { ...existing.connection };
+          for (const [key, val] of Object.entries(input.connection)) {
+            if (val !== undefined && !String(val).startsWith('****')) {
+              (merged as any)[key] = val;
+            }
+          }
+          if (input.connection.agentRuntime !== undefined) {
+            this.assertRuntimeSupported(existing.type, merged.agentRuntime);
+          }
+          updated.connection = merged;
         }
-      }
-      if (input.connection.agentRuntime !== undefined) {
-        this.assertRuntimeSupported(existing.type, merged.agentRuntime);
-      }
-      updated.connection = merged;
-    }
-    if (input.tuning !== undefined) updated.tuning = input.tuning ?? undefined;
-    if (input.custom !== undefined) {
-      assertSafeCustomEnvOverrides(input.custom ?? undefined);
-      updated.custom = input.custom ?? undefined;
-    }
+        if (input.tuning !== undefined) updated.tuning = input.tuning ?? undefined;
+        if (input.custom !== undefined) {
+          assertSafeCustomEnvOverrides(input.custom ?? undefined);
+          updated.custom = input.custom ?? undefined;
+        }
 
-    this.store.set(updated, scope);
-    return updated;
+        this.store.set(updated, scope);
+        return updated;
+      },
+    );
   }
 
   delete(id: string, scope?: ProviderScope): void {
-    const existing = this.store.get(id, scope);
-    if (!existing) throw new Error(`Provider not found: ${id}`);
-    if (existing.isActive) throw new Error('Cannot delete the active provider. Deactivate or switch first.');
-    this.store.delete(id, scope);
+    this.runProviderMutation(
+      () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
+      () => {
+        const existing = this.store.get(id, scope);
+        if (!existing) throw new Error(`Provider not found: ${id}`);
+        if (existing.isActive) {
+          throw new Error('Cannot delete the active provider. Deactivate or switch first.');
+        }
+        this.store.delete(id, scope);
+      },
+    );
   }
 
   rotateSecret(id: string, scope?: ProviderScope): number {
-    const existing = this.store.get(id, scope);
-    if (!existing) throw new Error(`Provider not found: ${id}`);
-    const version = this.store.rotateSecret(id, scope);
-    if (version === undefined) {
-      throw new Error('Secret rotation is only available for the enterprise provider store');
-    }
-    return version;
+    return this.runProviderMutation(
+      () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
+      () => {
+        const existing = this.store.get(id, scope);
+        if (!existing) throw new Error(`Provider not found: ${id}`);
+        const version = this.store.rotateSecret(id, scope);
+        if (version === undefined) {
+          throw new Error('Secret rotation is only available for the enterprise provider store');
+        }
+        return version;
+      },
+    );
   }
 
   activate(id: string, scope?: ProviderScope): void {
-    const target = this.store.get(id, scope);
-    if (!target) throw new Error(`Provider not found: ${id}`);
+    this.runProviderMutation(
+      () => this.store.beginMutationForProvider(id, scope, this.mutationOwner),
+      () => {
+        const target = this.store.get(id, scope);
+        if (!target) throw new Error(`Provider not found: ${id}`);
 
-    const current = this.store.getActivePeer(id, scope);
-    if (current && current.id !== id) {
-      this.store.set({ ...current, isActive: false, updatedAt: new Date().toISOString() }, scope);
-    }
+        const current = this.store.getActivePeer(id, scope);
+        if (current && current.id !== id) {
+          this.store.set({
+            ...current,
+            isActive: false,
+            updatedAt: new Date().toISOString(),
+          }, scope);
+        }
 
-    this.store.set({ ...target, isActive: true, updatedAt: new Date().toISOString() }, scope);
+        this.store.set({
+          ...target,
+          isActive: true,
+          updatedAt: new Date().toISOString(),
+        }, scope);
+      },
+    );
   }
 
   deactivateAll(scope?: ProviderScope): void {
     const current = this.store.getActiveWriteScope(scope);
     if (current) {
-      this.store.set({ ...current, isActive: false, updatedAt: new Date().toISOString() }, scope);
+      this.runProviderMutation(
+        () => this.store.beginMutationForProvider(
+          current.id,
+          scope,
+          this.mutationOwner,
+        ),
+        () => {
+          const liveCurrent = this.store.getActiveWriteScope(scope);
+          if (!liveCurrent) return;
+          this.store.set({
+            ...liveCurrent,
+            isActive: false,
+            updatedAt: new Date().toISOString(),
+          }, scope);
+        },
+      );
     }
   }
 
@@ -322,6 +387,23 @@ export class ProviderService {
     return this.store.get(id, scope);
   }
 
+  getMutationGeneration(
+    scope?: ProviderScope,
+  ): ProviderMutationGenerationVectorV1 {
+    return this.store.readMutationGeneration(scope);
+  }
+
+  listInFlightMutations(scope?: ProviderScope): ProviderMutationLease[] {
+    return this.store.listInFlightMutations(scope);
+  }
+
+  recoverAbandonedMutation(
+    mutationId: string,
+    mutationScope: ProviderMutationScope,
+  ): boolean {
+    return this.store.recoverAbandonedMutation(mutationId, mutationScope);
+  }
+
   resolveAgentRuntime(provider?: ProviderConfig | null): AgentRuntimeKind {
     return resolveProviderAgentRuntime(provider);
   }
@@ -332,6 +414,27 @@ export class ProviderService {
 
   private assertRuntimeSupported(type: ProviderType, runtime?: unknown): void {
     assertAgentRuntimeSupported(type, runtime);
+  }
+
+  private runProviderMutation<T>(
+    begin: () => ProviderMutationLease,
+    operation: () => T,
+  ): T {
+    const lease = begin();
+    try {
+      const result = operation();
+      this.store.completeMutation(lease);
+      return result;
+    } catch (error) {
+      try {
+        this.store.completeMutation(lease);
+      } catch (completionError) {
+        const combined = new Error('provider_mutation_and_completion_failed');
+        Object.assign(combined, {operationError: error, completionError});
+        throw combined;
+      }
+      throw error;
+    }
   }
 
   resolveOpenAIProtocol(provider?: ProviderConfig | null): OpenAIProtocol {
@@ -534,6 +637,7 @@ export class ProviderService {
       }
     } else if (runtime === 'qoder-agent-sdk') {
       env.QODER_MODEL = provider.connection.qoderModel || provider.models.primary;
+      env.QODER_LIGHT_MODEL = provider.models.light;
     } else if (runtime === 'openai-agents-sdk') {
       env.OPENAI_MODEL = provider.models.primary;
       env.OPENAI_LIGHT_MODEL = provider.models.light;

@@ -307,4 +307,111 @@ describe('provider runtime snapshot hash', () => {
     });
     expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash).not.toBe(beforeSystemPrompt);
   });
+
+  it('captures Qoder runtime inputs without retaining secret or ambient Qoder values', () => {
+    const originalWorkerPath = process.env.QODER_WORKER_RUNTIME_PATH;
+    process.env.QODER_WORKER_RUNTIME_PATH = '/ambient/qoder-worker.mjs';
+    try {
+      const provider = svc.create({
+        name: 'Qoder Provider',
+        category: 'custom',
+        type: 'custom',
+        models: {primary: 'qoder-primary', light: 'qoder-light'},
+        connection: {
+          agentRuntime: 'qoder-agent-sdk',
+          qoderAccessToken: 'qoder-secret-token',
+          qoderCliPath: '/opt/qodercli',
+          qoderModel: 'qoder-connection-model',
+          qoderSystemPrompt: 'secret qoder system prompt',
+        },
+        tuning: {
+          fullPerTurnMs: 90000,
+          quickPerTurnMs: 45000,
+          verifierTimeoutMs: 70000,
+          classifierTimeoutMs: 30000,
+        },
+      });
+
+      const before = resolveProviderRuntimeSnapshot(svc, provider.id);
+      expect(before.snapshot.runtimeKind).toBe('qoder-agent-sdk');
+      expect(before.snapshot.resolvedModels).toEqual({
+        primary: 'qoder-connection-model',
+        light: 'qoder-light',
+      });
+      expect(before.snapshot.resolvedTimeouts).toEqual({
+        fullPerTurnMs: 90000,
+        quickPerTurnMs: 45000,
+      });
+      expect(before.snapshot.environment).toMatchObject({
+        SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
+        QODERCLI_PATH: '/opt/qodercli',
+        QODER_MODEL: 'qoder-connection-model',
+        QODER_LIGHT_MODEL: 'qoder-light',
+        QODER_FULL_PER_TURN_MS: '90000',
+        QODER_QUICK_PER_TURN_MS: '45000',
+      });
+      expect(before.snapshot.environment.QODER_WORKER_RUNTIME_PATH).toBeUndefined();
+      expect(before.snapshot.environment.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+      expect(before.snapshot.environment.SMARTPERFETTO_QODER_SYSTEM_PROMPT).toBeUndefined();
+      expect(JSON.stringify(before.snapshot)).not.toContain('qoder-secret-token');
+      expect(JSON.stringify(before.snapshot)).not.toContain('secret qoder system prompt');
+
+      svc.update(provider.id, {
+        connection: {qoderSystemPrompt: 'changed secret qoder system prompt'},
+      });
+      expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash)
+        .not.toBe(before.snapshotHash);
+    } finally {
+      if (originalWorkerPath === undefined) delete process.env.QODER_WORKER_RUNTIME_PATH;
+      else process.env.QODER_WORKER_RUNTIME_PATH = originalWorkerPath;
+    }
+  });
+
+  it('captures Qoder environment fallback models, timeouts, and secret version', () => {
+    const keys = [
+      'SMARTPERFETTO_AGENT_RUNTIME',
+      'QODER_PERSONAL_ACCESS_TOKEN',
+      'QODERCLI_PATH',
+      'QODER_MODEL',
+      'QODER_LIGHT_MODEL',
+      'QODER_FULL_PER_TURN_MS',
+      'QODER_QUICK_PER_TURN_MS',
+      'QODER_CLASSIFIER_TIMEOUT_MS',
+    ] as const;
+    const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    Object.assign(process.env, {
+      SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
+      QODER_PERSONAL_ACCESS_TOKEN: 'ambient-qoder-secret',
+      QODERCLI_PATH: '/usr/local/bin/qodercli',
+      QODER_MODEL: 'qoder-env-primary',
+      QODER_LIGHT_MODEL: 'qoder-env-light',
+      QODER_FULL_PER_TURN_MS: '80000',
+      QODER_QUICK_PER_TURN_MS: '40000',
+      QODER_CLASSIFIER_TIMEOUT_MS: '30000',
+    });
+    try {
+      const result = resolveProviderRuntimeSnapshot(svc, null);
+      expect(result.snapshot).toMatchObject({
+        runtimeKind: 'qoder-agent-sdk',
+        resolvedModels: {
+          primary: 'qoder-env-primary',
+          light: 'qoder-env-light',
+        },
+        resolvedTimeouts: {
+          fullPerTurnMs: 80000,
+          quickPerTurnMs: 40000,
+        },
+      });
+      expect(result.snapshot.resolvedTimeouts.classifierTimeoutMs).toBeUndefined();
+      expect(result.snapshot.environment.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+      expect(result.snapshot.secretVersion).toMatch(/^sha256:/);
+      expect(JSON.stringify(result.snapshot)).not.toContain('ambient-qoder-secret');
+    } finally {
+      for (const key of keys) {
+        const value = original[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
 });

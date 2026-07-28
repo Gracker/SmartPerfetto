@@ -4,6 +4,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
+import Database from 'better-sqlite3';
 import { openEnterpriseDb } from '../enterpriseDb';
 import {
   enterpriseDbReadAuthorityEnabled,
@@ -13,6 +14,15 @@ import {
 import { recordEnterpriseAuditEvent } from '../enterpriseAuditService';
 import type { ProviderConfig, ProviderConnection, ProviderScope } from './types';
 import { LocalEncryptedSecretStore } from './localSecretStore';
+import {
+  localProviderMutationScope,
+  ProviderMutationGenerationStore,
+  providerMutationRequestScopes,
+  type ProviderMutationGenerationVectorV1,
+  type ProviderMutationLease,
+  type ProviderMutationOwner,
+  type ProviderMutationScope,
+} from './providerMutationGeneration';
 
 type ProviderCredentialScope = 'personal' | 'workspace' | 'org';
 
@@ -254,9 +264,20 @@ export class ProviderStore {
   private providers = new Map<string, ProviderConfig>();
   private filePath: string;
   private secretStore?: LocalEncryptedSecretStore;
+  private readonly mutationGenerations: ProviderMutationGenerationStore;
 
   constructor(filePath: string) {
     this.filePath = filePath;
+    const enterprise = enterpriseProviderStoreEnabled();
+    this.mutationGenerations = new ProviderMutationGenerationStore({
+      openDatabase: () => {
+        if (enterprise) return openEnterpriseDb();
+        const databasePath = `${this.filePath}.generations.db`;
+        fs.mkdirSync(path.dirname(databasePath), {recursive: true});
+        return new Database(databasePath);
+      },
+      ensureSchema: !enterprise,
+    });
   }
 
   load(): void {
@@ -334,11 +355,105 @@ export class ProviderStore {
     return this.rotateEnterpriseSecret(id, scope);
   }
 
+  beginMutationForNewProvider(
+    scope: ProviderScope | undefined,
+    owner: ProviderMutationOwner,
+  ): ProviderMutationLease {
+    if (enterpriseProviderStoreEnabled()) {
+      ensureEnterpriseProviderGraph(resolveProviderScope(scope));
+    }
+    return this.mutationGenerations.beginMutation(
+      this.newProviderMutationScope(scope),
+      owner,
+    );
+  }
+
+  beginMutationForProvider(
+    id: string,
+    scope: ProviderScope | undefined,
+    owner: ProviderMutationOwner,
+  ): ProviderMutationLease {
+    return this.mutationGenerations.beginMutation(
+      this.existingProviderMutationScope(id, scope),
+      owner,
+    );
+  }
+
+  completeMutation(lease: ProviderMutationLease): void {
+    this.mutationGenerations.completeMutation(lease);
+  }
+
+  readMutationGeneration(
+    scope?: ProviderScope,
+  ): ProviderMutationGenerationVectorV1 {
+    return this.mutationGenerations.readVector(
+      this.requestMutationScopes(scope),
+    );
+  }
+
+  listInFlightMutations(scope?: ProviderScope): ProviderMutationLease[] {
+    return this.mutationGenerations.listInFlight(
+      this.requestMutationScopes(scope),
+    );
+  }
+
+  recoverAbandonedMutation(
+    mutationId: string,
+    mutationScope: ProviderMutationScope,
+  ): boolean {
+    return this.mutationGenerations.recoverAbandonedMutation(
+      mutationId,
+      mutationScope,
+    );
+  }
+
   private getSecretStore(): LocalEncryptedSecretStore {
     if (!this.secretStore) {
       this.secretStore = new LocalEncryptedSecretStore();
     }
     return this.secretStore;
+  }
+
+  private newProviderMutationScope(
+    scope?: ProviderScope,
+  ): ProviderMutationScope {
+    if (!enterpriseProviderStoreEnabled()) {
+      return localProviderMutationScope();
+    }
+    const resolved = resolveProviderScope(scope);
+    return {
+      level: resolved.userId ? 'personal' : 'workspace',
+      tenantId: resolved.tenantId,
+      workspaceId: resolved.workspaceId,
+      userId: resolved.userId,
+    };
+  }
+
+  private existingProviderMutationScope(
+    id: string,
+    scope?: ProviderScope,
+  ): ProviderMutationScope {
+    if (!enterpriseProviderStoreEnabled()) {
+      return localProviderMutationScope();
+    }
+    const resolved = resolveProviderScope(scope);
+    const row = this.getEnterpriseRowById(id, resolved);
+    if (!row) throw new Error(`Provider not found: ${id}`);
+    return {
+      level: row.scope,
+      tenantId: row.tenant_id,
+      workspaceId: row.workspace_id,
+      userId: row.owner_user_id,
+    };
+  }
+
+  private requestMutationScopes(
+    scope?: ProviderScope,
+  ): ProviderMutationScope[] {
+    if (!enterpriseProviderStoreEnabled()) {
+      return [localProviderMutationScope()];
+    }
+    return providerMutationRequestScopes(resolveProviderScope(scope));
   }
 
   private getAllEnterprise(scope?: ProviderScope): ProviderConfig[] {

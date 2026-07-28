@@ -328,6 +328,22 @@ describe('enterprise core schema', () => {
       'created_at',
       'updated_at',
     ]);
+    expectColumns(db!, 'provider_mutation_revisions', [
+      'scope_key',
+      'tenant_id',
+      'workspace_id',
+      'owner_user_id',
+      'revision',
+      'updated_at',
+    ]);
+    expectColumns(db!, 'provider_mutation_leases', [
+      'mutation_id',
+      'scope_key',
+      'owner_instance_id',
+      'owner_pid',
+      'owner_host',
+      'started_at',
+    ]);
     expectColumns(db!, 'provider_snapshots', [
       'id',
       'tenant_id',
@@ -789,6 +805,7 @@ describe('enterprise core schema', () => {
       { version: 12 },
       { version: 13 },
       { version: 14 },
+      { version: 15 },
     ]);
   });
 

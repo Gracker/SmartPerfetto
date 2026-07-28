@@ -112,6 +112,30 @@ afterEach(async () => {
 });
 
 describe('enterprise provider store', () => {
+  it('tracks scoped provider mutation generations without leaking personal revisions', () => {
+    expect(svc.getMutationGeneration(scope('user-a')).entries.map(entry => ({
+      level: entry.scope.level,
+      revision: entry.revision,
+      inFlight: entry.inFlight,
+    }))).toEqual([
+      {level: 'org', revision: 0, inFlight: 0},
+      {level: 'workspace', revision: 0, inFlight: 0},
+      {level: 'personal', revision: 0, inFlight: 0},
+    ]);
+
+    svc.create(input, scope('user-a'));
+    expect(svc.getMutationGeneration(scope('user-a')).entries[2])
+      .toMatchObject({revision: 2, inFlight: 0});
+    expect(svc.getMutationGeneration(scope('user-b')).entries[2])
+      .toMatchObject({revision: 0, inFlight: 0});
+
+    svc.create({...input, name: 'Workspace Provider'}, workspaceScope());
+    expect(svc.getMutationGeneration(scope('user-a')).entries[1])
+      .toMatchObject({revision: 2, inFlight: 0});
+    expect(svc.getMutationGeneration(scope('user-b')).entries[1])
+      .toMatchObject({revision: 2, inFlight: 0});
+  });
+
   it('stores provider metadata in DB and encrypted secrets outside provider_credentials', async () => {
     const provider = svc.create(input, scope('user-a'));
     svc.activate(provider.id, scope('user-a'));
