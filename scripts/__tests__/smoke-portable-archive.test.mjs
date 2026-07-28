@@ -518,7 +518,7 @@ test('Windows fixed Go helper runs its real health and process contracts on Wind
     process.execPath,
     ['-e', [
       'const {spawn}=require("node:child_process");',
-      'const child=spawn(process.execPath,["-e","setInterval(() => {}, 1000)"],{stdio:"ignore"});',
+      'const child=spawn(process.execPath,["-e","setInterval(() => {}, 1000)"],{stdio:"ignore",windowsHide:true});',
       'process.stdout.write(`${child.pid}\\n`);',
       'setInterval(() => {}, 1000);',
     ].join('\n')],
@@ -606,9 +606,32 @@ test('Windows fixed Go helper runs its real health and process contracts on Wind
     });
   });
 
-  const fixtureDescendants = windowsDescendantPids(fixtureLauncher.pid);
-  assert.deepEqual(fixtureDescendants, [fixtureChildPid]);
+  let helperPid;
+  let snapshotRows;
+  const fixtureDescendants = windowsDescendantPids(
+    fixtureLauncher.pid,
+    process.env,
+    (command, args, options) => {
+      const result = spawnSync(command, args, options);
+      helperPid = result.pid;
+      snapshotRows = parseWindowsProcessSnapshot(result.stdout);
+      return result;
+    },
+  );
+  assert.ok(Number.isSafeInteger(helperPid) && helperPid > 0);
+  const parentByPid = new Map(
+    snapshotRows.map((row) => {
+      const [pid, parentPid] = row.split(' ').map(Number);
+      return [pid, parentPid];
+    }),
+  );
+  assert.equal(parentByPid.get(fixtureChildPid), fixtureLauncher.pid);
+  assert.equal(parentByPid.get(helperPid), process.pid);
+  assert.equal(fixtureDescendants.includes(fixtureChildPid), true);
+  assert.equal(fixtureDescendants.includes(helperPid), false);
   assert.equal(fixtureDescendants.includes(process.pid), false);
+  assert.equal(fixtureDescendants.includes(fixtureLauncher.pid), false);
+  assert.equal(new Set(fixtureDescendants).size, fixtureDescendants.length);
 
   let redirected = false;
   const health = http.createServer((request, response) => {
