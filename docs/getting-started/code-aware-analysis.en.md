@@ -8,7 +8,7 @@ Code-Aware Analysis lets SmartPerfetto reference local source trees while analyz
 
 1. Start the backend with `./start.sh`.
 2. Open AI Assistant settings in Perfetto UI and select `Codebases`.
-3. Add a codebase and run preview first.
+3. Prefer **Choose folder** when adding a codebase, then run preview. Display name is optional and defaults to the folder name.
 4. Register it and run reindex.
 5. Use code-aware mode in analysis, or pass `--code-aware metadata_only|provider_send` and `--codebase-id <id>` in the CLI.
 
@@ -55,15 +55,32 @@ Registered codebases and knowledge sources are never exposed to a session automa
 
 | kind | Use | Required metadata |
 |---|---|---|
-| `app_source` | App Java/Kotlin/R8 lookup | root path, optional build-id / commit / path-filter |
-| `aosp` | AOSP framework/native hot paths | `licenseTag`, recommended build-id and commit |
-| `kernel_source` | kernel binder/scheduler/mm/io causes | `vendor`, `path-filter` or `pathPrefix`, SPDX or license tag |
-| `oem_sdk` | OEM / chipset SDK material | vendor and license, behind the same security gates |
+| `app_source` | App Java/Kotlin/R8 lookup | source folder; optional build ID and path scope |
+| `aosp` | AOSP framework/native hot paths | source folder and `licenseTag`; optional build ID and path scope |
+| `kernel_source` | kernel binder/scheduler/mm/io causes | source folder, `vendor`, and `path-filter` (CLI reindex can use `pathPrefix`); optional license tag |
+| `oem_sdk` | OEM / chipset SDK material | source folder, `vendor`, and `licenseTag`; optional build ID and path scope |
+
+Do not enter a commit manually. Each index generation reads Git `HEAD` from the
+actual checkout and records dirty/untracked state separately. Non-Git folders
+use a content fingerprint.
+
+Local source checkouts and portable apps running on loopback can ask the
+backend to open the macOS, Windows, or Linux system folder picker. A selection
+creates a single-use authorization bound to the current tenant, workspace, and
+user for five minutes. It authorizes only that registration and its later
+reindexes; it never expands the process-wide allowlist. List and audit metadata
+show whether path authorization came from the system picker or the configured
+allowlist; deleting the registration also revokes that persistent authorization.
+Docker, remote/shared
+backends, headless sessions, and platforms without a supported picker retain
+manual entry. In those cases, enter a path the backend can access and that is
+authorized through `SMARTPERFETTO_CODEBASE_ROOTS`.
 
 ## Security Boundary
 
 - `metadata_only`: the model sees only `CodeRef` metadata, not source snippets.
 - `provider_send`: snippets can be sent only for codebases registered with `sendToProvider` consent.
+- System-picker mutation requests require a loopback Host, socket, and Origin; the read-only capability probe may omit Origin. The picker is disabled for Docker, enterprise, or non-loopback listeners. Absolute roots are never returned by codebase list/detail responses.
 - Raw queries, intermediate reasoning, tool arguments, and retrieved text from private source/knowledge runs are not persisted to sessions, logs, reports, or exports. Claude local transcripts and OpenAI Responses storage are disabled, and cross-session pattern, verifier, and SQL-fix learning is neither read nor written. Final conclusions and deterministic trace evidence pass through one shared privacy projection; bounded in-process session context provides multi-turn continuity.
 - Legacy RAG chunks keep their existing behavior; `app_source`, `kernel_source`, or `registryOrigin=codebase_registry` chunks without codebase metadata fail closed.
 - Legacy `/api/rag/chunks/:id` and `/api/rag/search` return sanitized hash/length data for code-aware chunks, not source text.

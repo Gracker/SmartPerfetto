@@ -435,6 +435,8 @@ Base path: `/api/rag`
 | `PATCH` | `/android-internals/sources/:id/consent` | Explicitly grant or revoke provider-send consent |
 | `DELETE` | `/android-internals/sources/:id/index` | Deactivate and clear every chunk for the source |
 | `GET` | `/codebases` | List registered codebases |
+| `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
+| `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization |
 | `POST` | `/codebases/preview` | Preview files accepted by the path security gate |
 | `POST` | `/codebases/register` | Register a local codebase |
 | `GET` | `/codebases/:id` | Codebase detail |
@@ -453,6 +455,21 @@ physical cleanup returns `500 CODEBASE_DELETE_INCOMPLETE`; the codebase is
 already non-retrievable and cannot be reauthorized or reindexed, and repeating
 the same `DELETE` resumes cleanup. An already deleted or out-of-scope ID returns
 idempotent success without revealing another tenant/workspace/user registration.
+
+Directory selection is enabled only for source/portable, non-enterprise,
+loopback listeners receiving a loopback request. Picker, preview, and register
+mutations also require a loopback Origin. A successful selection returns
+a `directorySelectionId` valid for five minutes. Send it with the same
+`rootPath` to `/codebases/preview` and `/codebases/register`. Preview does not
+consume it. Register holds it exclusively while synchronously persisting the
+registration, consumes it after success, and keeps the original expiry for a
+retry if persistence fails. The
+credential is bound to tenant/workspace/user and cannot authorize another
+path. Docker, remote, or headless environments must use manual paths and
+`SMARTPERFETTO_CODEBASE_ROOTS`. `GET /codebases` and
+`GET /codebases/:id/audit` expose `rootAuthorization` as `native_picker` or
+`configured_allowlist` without returning absolute paths; deleting the codebase
+revokes the persistent authorization.
 
 See [Android Internals External Knowledge](../getting-started/android-internals-knowledge.en.md)
 for path allowlisting, the CC rights acknowledgement, revocable consent,

@@ -433,6 +433,8 @@ Base path: `/api/rag`
 | `PATCH` | `/android-internals/sources/:id/consent` | 显式授予或撤销 provider-send 同意 |
 | `DELETE` | `/android-internals/sources/:id/index` | 停用 generation 并清除该 source 的全部 chunk |
 | `GET` | `/codebases` | 列出已注册 codebase |
+| `GET` | `/codebases/directory-picker` | 返回当前后端是否支持本机系统文件夹选择 |
+| `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权 |
 | `POST` | `/codebases/preview` | 预览 path security gate 接受的文件 |
 | `POST` | `/codebases/register` | 注册本机代码库 |
 | `GET` | `/codebases/:id` | codebase 详情 |
@@ -449,6 +451,17 @@ Base path: `/api/rag`
 `500 CODEBASE_DELETE_INCOMPLETE`，此时该 codebase 已不可检索、不可重新授权或重建，
 重复同一个 `DELETE` 可继续完成清理。已删除或当前 scope 不可见的 ID 返回幂等成功，
 且不会泄露其他 tenant/workspace/user 的注册状态。
+
+目录选择接口只在 source/portable、非 enterprise、loopback 监听和 loopback
+请求中启用；选择、预览和注册等变更请求还必须携带 loopback Origin。成功选择返回的 `directorySelectionId` 有效期为 5 分钟；调用
+`/codebases/preview` 和 `/codebases/register` 时应与相同 `rootPath` 一起传入。
+preview 不消费授权；register 会在同步持久化期间独占该授权，成功后永久消费，
+持久化失败时保留原有效期供重试。凭证与
+tenant/workspace/user 绑定，不能授权其他路径；Docker、远程或无图形环境应使用
+手动路径和 `SMARTPERFETTO_CODEBASE_ROOTS`。`GET /codebases` 与
+`GET /codebases/:id/audit` 通过 `rootAuthorization` 返回
+`native_picker` 或 `configured_allowlist`，但不返回绝对路径；删除 codebase 会撤销
+该持久授权。
 
 Android Internals 接口的路径 allowlist、CC 权利确认、可撤销同意、请求级
 `options.knowledgeSourceIds` 和 Docker mount 流程见
