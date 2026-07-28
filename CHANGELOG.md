@@ -13,6 +13,20 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-07-28
+
+### Fixed
+- Portable readiness checks now use explicit IPv4 loopback semantics from the
+  launcher through target-native release gates, preventing `localhost`
+  resolution or proxy behavior from masking a healthy backend as a connection
+  refusal.
+- The Windows exact-archive gate now uses the repository-owned fixed Go HTTP
+  probe and native Toolhelp32 process snapshots with bounded, fail-closed
+  parsing instead of PowerShell, CIM, or WMI.
+- Hosted lifecycle verification accepts legitimate native descendants while
+  still proving product parentage, helper isolation, graceful shutdown, port
+  release, and the absence of surviving launcher processes.
+
 ## [1.2.4] - 2026-07-27
 
 ### Added
