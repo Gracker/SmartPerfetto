@@ -15,6 +15,7 @@ import {RagStore} from '../../services/ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
+import {NativeDirectoryPicker} from '../../services/codebase/nativeDirectoryPicker';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {AndroidInternalsWikiIngester} from '../../services/androidInternalsWiki/androidInternalsWikiIngester';
 
@@ -23,6 +24,10 @@ let store: RagStore;
 let registry: CodebaseRegistry;
 let externalKnowledgeRegistry: ExternalKnowledgeSourceRegistry;
 let app: express.Express;
+let directoryPicker: NativeDirectoryPicker;
+let pickerSelectedRoot: string;
+let pickerSelectionSequence: number;
+let externalPickerDir: string | undefined;
 const DEFAULT_SCOPE = {
   tenantId: 'default-dev-tenant',
   workspaceId: 'default-workspace',
@@ -37,6 +42,18 @@ beforeEach(() => {
     path.join(tmpDir, 'external-knowledge-sources.json'),
   );
   const gate = new PathSecurityGate({allowlistRoots: [tmpDir]});
+  pickerSelectedRoot = tmpDir;
+  pickerSelectionSequence = 0;
+  directoryPicker = new NativeDirectoryPicker({
+    platform: 'linux',
+    env: {DISPLAY: ':0', PATH: '/usr/bin'},
+    distribution: 'source',
+    enterprise: false,
+    bindHost: '127.0.0.1',
+    findExecutable: name => name === 'zenity' ? '/usr/bin/zenity' : undefined,
+    runCommand: async () => ({stdout: `${pickerSelectedRoot}\n`, stderr: ''}),
+    idGenerator: () => `picker-selection-${++pickerSelectionSequence}`,
+  });
   const wikiGate = new PathSecurityGate({
     allowlistRoots: [tmpDir],
     allowedExtensions: ['.md'],
@@ -75,6 +92,7 @@ beforeEach(() => {
   app.use('/api/rag', createRagAdminRoutes(store, {
     registry,
     gate,
+    directoryPicker,
     externalKnowledgeRegistry,
     androidInternalsWikiIngester: new AndroidInternalsWikiIngester(
       store,
@@ -93,6 +111,10 @@ afterEach(() => {
   if (fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   }
+  if (externalPickerDir && fs.existsSync(externalPickerDir)) {
+    fs.rmSync(externalPickerDir, {recursive: true, force: true});
+  }
+  externalPickerDir = undefined;
 });
 
 function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
@@ -483,6 +505,177 @@ describe('Android Internals Wiki routes', () => {
 });
 
 describe('codebase routes', () => {
+  it('selects, previews, and registers a local folder outside the configured allowlist', async () => {
+    externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-selected-root-'));
+    fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class SelectedMain\n');
+    pickerSelectedRoot = externalPickerDir;
+
+    const capability = await request(app)
+      .get('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000');
+    expect(capability.status).toBe(200);
+    expect(capability.body.capability).toMatchObject({
+      available: true,
+      provider: 'zenity',
+    });
+
+    const selection = await request(app)
+      .post('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000')
+      .send({});
+    expect(selection.status).toBe(200);
+    expect(selection.body).toMatchObject({
+      selected: true,
+      rootPath: fs.realpathSync(externalPickerDir),
+      directorySelectionId: 'picker-selection-1',
+    });
+
+    const blockedWithoutSelection = await request(app)
+      .post('/api/rag/codebases/preview')
+      .send({rootPath: externalPickerDir});
+    expect(blockedWithoutSelection.body.preview).toMatchObject({
+      blocked: true,
+      blockedReason: 'root_outside_allowlist',
+    });
+
+    const preview = await request(app)
+      .post('/api/rag/codebases/preview')
+      .set('Origin', 'http://127.0.0.1:10000')
+      .send({
+        rootPath: externalPickerDir,
+        directorySelectionId: selection.body.directorySelectionId,
+      });
+    expect(preview.status).toBe(200);
+    expect(preview.body.preview).toMatchObject({
+      blocked: false,
+      acceptedFileCount: 1,
+    });
+
+    const registered = await request(app)
+      .post('/api/rag/codebases/register')
+      .set('Origin', 'http://127.0.0.1:10000')
+      .send({
+        kind: 'app_source',
+        rootPath: externalPickerDir,
+        directorySelectionId: selection.body.directorySelectionId,
+        sendToProvider: false,
+      });
+    expect(registered.status).toBe(200);
+    expect(registered.body.codebase).toMatchObject({
+      displayName: path.basename(externalPickerDir),
+    });
+    expect(registered.body.codebase.rootPath).toBeUndefined();
+    expect(registered.body.codebase.rootAuthorization).toBeUndefined();
+    expect(registry.get(registered.body.codebase.codebaseId, DEFAULT_SCOPE))
+      .toMatchObject({rootAuthorization: 'native_picker'});
+    const listed = await request(app).get('/api/rag/codebases');
+    expect(listed.body.codebases).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        codebaseId: registered.body.codebase.codebaseId,
+        rootAuthorization: 'native_picker',
+      }),
+    ]));
+    const audit = await request(app)
+      .get(`/api/rag/codebases/${registered.body.codebase.codebaseId}/audit`);
+    expect(audit.body.audit).toMatchObject({
+      rootAuthorization: 'native_picker',
+    });
+
+    const reused = await request(app)
+      .post('/api/rag/codebases/register')
+      .set('Origin', 'http://127.0.0.1:10000')
+      .send({
+        kind: 'app_source',
+        rootPath: externalPickerDir,
+        directorySelectionId: selection.body.directorySelectionId,
+      });
+    expect(reused.status).toBe(400);
+    expect(reused.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+  });
+
+  it('rejects remote directory-picker requests and cross-workspace selection reuse', async () => {
+    const missingOriginPick = await request(app)
+      .post('/api/rag/codebases/directory-picker')
+      .send({});
+    expect(missingOriginPick.status).toBe(403);
+
+    const remoteCapability = await request(app)
+      .get('/api/rag/codebases/directory-picker')
+      .set('Host', 'smartperfetto.example.com')
+      .set('Origin', 'https://smartperfetto.example.com');
+    expect(remoteCapability.status).toBe(200);
+    expect(remoteCapability.body.capability).toMatchObject({
+      available: false,
+      reason: 'remote_request',
+    });
+
+    const remotePick = await request(app)
+      .post('/api/rag/codebases/directory-picker')
+      .set('Host', 'smartperfetto.example.com')
+      .set('Origin', 'https://smartperfetto.example.com')
+      .send({});
+    expect(remotePick.status).toBe(403);
+
+    const selection = await request(app)
+      .post('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000')
+      .send({});
+    const mismatch = await request(app)
+      .post('/api/rag/codebases/preview')
+      .set('Origin', 'http://127.0.0.1:10000')
+      .set('X-Workspace-Id', 'workspace-b')
+      .send({
+        rootPath: pickerSelectedRoot,
+        directorySelectionId: selection.body.directorySelectionId,
+      });
+    expect(mismatch.status).toBe(403);
+    expect(mismatch.body.code).toBe('DIRECTORY_SELECTION_SCOPE_MISMATCH');
+  });
+
+  it('validates metadata only when the selected source type requires it', async () => {
+    const root = path.join(tmpDir, 'metadata-validation-repo');
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, 'Main.c'), 'int main(void) { return 0; }\n');
+
+    const missingKernelVendor = await request(app)
+      .post('/api/rag/codebases/register')
+      .send({
+        kind: 'kernel_source',
+        rootPath: root,
+        pathFilters: ['drivers/'],
+      });
+    expect(missingKernelVendor.status).toBe(400);
+    expect(missingKernelVendor.body.error).toContain('`vendor` is required');
+
+    const missingKernelScope = await request(app)
+      .post('/api/rag/codebases/register')
+      .send({
+        kind: 'kernel_source',
+        rootPath: root,
+        vendor: 'qualcomm',
+      });
+    expect(missingKernelScope.status).toBe(400);
+    expect(missingKernelScope.body.error).toContain('`pathFilters` is required');
+
+    const missingAospLicense = await request(app)
+      .post('/api/rag/codebases/register')
+      .send({
+        kind: 'aosp',
+        rootPath: root,
+      });
+    expect(missingAospLicense.status).toBe(400);
+    expect(missingAospLicense.body.error).toContain('`licenseTag` is required');
+
+    const appSource = await request(app)
+      .post('/api/rag/codebases/register')
+      .send({
+        kind: 'app_source',
+        rootPath: root,
+      });
+    expect(appSource.status).toBe(200);
+    expect(appSource.body.codebase.displayName).toBe('metadata-validation-repo');
+  });
+
   it('rejects ambiguous provider consent and unsafe path filters', async () => {
     const root = path.join(tmpDir, 'validation-repo');
     fs.mkdirSync(root, {recursive: true});

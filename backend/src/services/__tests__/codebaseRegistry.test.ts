@@ -8,7 +8,11 @@ import * as path from 'path';
 
 import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
 
-import {CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {
+  codebaseRegistrationRequirements,
+  CodebaseRegistry,
+  isCodebaseKind,
+} from '../codebase/codebaseRegistry';
 
 let tmpDir: string;
 
@@ -21,6 +25,31 @@ afterEach(() => {
 });
 
 describe('CodebaseRegistry', () => {
+  it('defines conditional registration requirements for every supported kind', () => {
+    expect(isCodebaseKind('app_source')).toBe(true);
+    expect(isCodebaseKind('unknown')).toBe(false);
+    expect(codebaseRegistrationRequirements('app_source')).toEqual({
+      vendor: false,
+      licenseTag: false,
+      pathFilters: false,
+    });
+    expect(codebaseRegistrationRequirements('aosp')).toEqual({
+      vendor: false,
+      licenseTag: true,
+      pathFilters: false,
+    });
+    expect(codebaseRegistrationRequirements('kernel_source')).toEqual({
+      vendor: true,
+      licenseTag: false,
+      pathFilters: true,
+    });
+    expect(codebaseRegistrationRequirements('oem_sdk')).toEqual({
+      vendor: true,
+      licenseTag: true,
+      pathFilters: false,
+    });
+  });
+
   it('registers codebases and exposes summaries without rootPath', () => {
     const registry = new CodebaseRegistry(path.join(tmpDir, 'registry.json'));
     const ref = registry.register({
@@ -65,6 +94,24 @@ describe('CodebaseRegistry', () => {
     });
     const reloaded = new CodebaseRegistry(registryPath);
     expect(reloaded.get(ref.codebaseId)?.displayName).toBe('App');
+  });
+
+  it('persists and summarizes native-picker root authorization without exposing paths', () => {
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const ref = new CodebaseRegistry(registryPath).register({
+      kind: 'app_source',
+      displayName: 'Selected App',
+      rootPath: tmpDir,
+      rootAuthorization: 'native_picker',
+    });
+
+    const reloaded = new CodebaseRegistry(registryPath);
+    expect(reloaded.get(ref.codebaseId)?.rootAuthorization).toBe('native_picker');
+    expect(reloaded.list()[0]).toMatchObject({
+      rootAuthorization: 'native_picker',
+    });
+    expect(reloaded.list()[0]).not.toHaveProperty('rootPath');
+    expect(reloaded.list()[0]).not.toHaveProperty('rootRealpath');
   });
 
   it('deletes a registration only while holding its ingest lease', async () => {

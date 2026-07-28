@@ -10,6 +10,7 @@ import {promisify} from 'util';
 import type {CodebaseRef} from '../codebase/codebaseRegistry';
 import {
   DEFAULT_SOURCE_MAX_TOTAL_BYTES,
+  type PathSecurityGate,
   type PathPreviewFile,
   type PathPreviewResult,
 } from '../codebase/pathSecurityGate';
@@ -46,6 +47,18 @@ export function assertCodebaseRootIdentity(
   if (normalize(registeredRootRealpath) !== normalize(previewRootRealpath)) {
     throw new Error('codebase_root_realpath_drift');
   }
+}
+
+export function previewRegisteredCodebaseRoot(
+  gate: PathSecurityGate,
+  ref: Pick<CodebaseRef, 'rootRealpath' | 'rootAuthorization'>,
+): Promise<PathPreviewResult> {
+  return gate.preview(
+    ref.rootRealpath,
+    ref.rootAuthorization === 'native_picker'
+      ? {additionalAllowlistRoots: [ref.rootRealpath]}
+      : undefined,
+  );
 }
 
 export function resolveMaxChunkChars(value: unknown, fallback: number): number {

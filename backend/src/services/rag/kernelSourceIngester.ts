@@ -25,6 +25,7 @@ import {
   inspectSourceGeneration,
   isCodebaseIngestLeaseLost,
   isSourceChunkLimitExceeded,
+  previewRegisteredCodebaseRoot,
   resolveMaxChunkChars,
   resolveMaxSourceChunks,
   resolveSourcePathPrefix,
@@ -109,7 +110,7 @@ export class KernelSourceIngester {
       this.store.addChunks(batch, effectiveScope);
     };
 
-    const preview = await this.gate.preview(ref.rootRealpath);
+    const preview = await previewRegisteredCodebaseRoot(this.gate, ref);
     lease.assertHeld();
     if (preview.blocked) {
       lease.updateIngestStatus({

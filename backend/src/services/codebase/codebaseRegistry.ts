@@ -24,6 +24,7 @@ import {
 } from '../scopedKnowledgeStore';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
+export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker';
 const CODEBASE_KINDS: readonly CodebaseKind[] = ['app_source', 'aosp', 'kernel_source', 'oem_sdk'];
 const DEFAULT_TENANT_ID = 'default-dev-tenant';
 const DEFAULT_WORKSPACE_ID = 'default-workspace';
@@ -33,6 +34,27 @@ const REGISTRY_ROW_SCOPE = 'codebase-registry-ref';
 const INGEST_LEASE_KNOWLEDGE_KIND = 'codebase_ingest_lease';
 const INGEST_LEASE_ROW_SCOPE = 'codebase-ingest-lease';
 const INGEST_LEASE_TTL_MS = 10 * 60 * 1000;
+
+export interface CodebaseRegistrationRequirements {
+  vendor: boolean;
+  licenseTag: boolean;
+  pathFilters: boolean;
+}
+
+export function isCodebaseKind(value: unknown): value is CodebaseKind {
+  return typeof value === 'string' &&
+    CODEBASE_KINDS.includes(value as CodebaseKind);
+}
+
+export function codebaseRegistrationRequirements(
+  kind: CodebaseKind,
+): CodebaseRegistrationRequirements {
+  return {
+    vendor: kind === 'kernel_source' || kind === 'oem_sdk',
+    licenseTag: kind === 'aosp' || kind === 'oem_sdk',
+    pathFilters: kind === 'kernel_source',
+  };
+}
 
 export interface CodebaseScope {
   tenantId?: string;
@@ -47,6 +69,11 @@ export interface CodebaseRef {
   displayName: string;
   rootPath: string;
   rootRealpath: string;
+  /**
+   * How the canonical root was authorized. Older registrations omit this
+   * field and retain the configured allowlist behavior.
+   */
+  rootAuthorization?: CodebaseRootAuthorization;
   commitHash?: string;
   vendor?: string;
   buildId?: string;
@@ -89,6 +116,7 @@ export interface CodebaseRefSummary {
   lifecycleState: 'active' | 'deleting';
   kind: CodebaseRef['kind'];
   displayName: string;
+  rootAuthorization: CodebaseRootAuthorization;
   commitHash?: string;
   vendor?: string;
   buildId?: string;
@@ -112,6 +140,7 @@ export interface RegisterCodebaseInput {
   displayName: string;
   rootPath: string;
   rootRealpath?: string;
+  rootAuthorization?: CodebaseRootAuthorization;
   commitHash?: string;
   vendor?: string;
   buildId?: string;
@@ -194,6 +223,7 @@ function toSummary(ref: CodebaseRef): CodebaseRefSummary {
     lifecycleState: ref.lifecycleState ?? 'active',
     kind: ref.kind,
     displayName: ref.displayName,
+    rootAuthorization: ref.rootAuthorization ?? 'configured_allowlist',
     ...(ref.commitHash ? {commitHash: ref.commitHash} : {}),
     ...(ref.vendor ? {vendor: ref.vendor} : {}),
     ...(ref.buildId ? {buildId: ref.buildId} : {}),
@@ -292,6 +322,9 @@ export class CodebaseRegistry {
       displayName: input.displayName,
       rootPath: input.rootPath,
       rootRealpath,
+      ...(input.rootAuthorization && input.rootAuthorization !== 'configured_allowlist'
+        ? {rootAuthorization: input.rootAuthorization}
+        : {}),
       ...(input.commitHash ? {commitHash: input.commitHash} : {}),
       ...(input.vendor ? {vendor: input.vendor} : {}),
       ...(input.buildId ? {buildId: input.buildId} : {}),

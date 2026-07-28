@@ -78,6 +78,25 @@ describe('PathSecurityGate', () => {
     expect(preview.blockedReason).toBe('root_outside_allowlist');
   });
 
+  it('applies additional roots to one preview without mutating the gate allowlist', async () => {
+    const root = path.join(tmpDir, 'selected-repo');
+    fs.mkdirSync(root);
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    const gate = new PathSecurityGate({
+      allowlistRoots: [path.join(tmpDir, 'configured-only')],
+    });
+
+    const selectedPreview = await gate.preview(root, {
+      additionalAllowlistRoots: [root],
+    });
+    const laterPreview = await gate.preview(root);
+
+    expect(selectedPreview.blocked).toBe(false);
+    expect(selectedPreview.acceptedFiles).toHaveLength(1);
+    expect(laterPreview.blocked).toBe(true);
+    expect(laterPreview.blockedReason).toBe('root_outside_allowlist');
+  });
+
   it('bounds traversal and skipped diagnostics even when every path is disallowed', async () => {
     const root = path.join(tmpDir, 'path-flood');
     fs.mkdirSync(root);

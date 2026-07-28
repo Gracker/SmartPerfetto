@@ -77,6 +77,16 @@ export interface PathPreviewResult {
   blockedReason?: string;
 }
 
+export interface PathPreviewOptions {
+  /**
+   * Request-scoped roots that have already been authorized by a trusted
+   * caller, such as a one-time native directory selection. These roots are
+   * never retained on the gate or added to the process-wide environment
+   * allowlist.
+   */
+  additionalAllowlistRoots?: readonly string[];
+}
+
 function parsePathList(value: string | undefined): string[] {
   if (!value) return [];
   return value
@@ -292,11 +302,18 @@ export class PathSecurityGate {
     };
   }
 
-  async preview(rootPath: string): Promise<PathPreviewResult> {
+  async preview(
+    rootPath: string,
+    options: PathPreviewOptions = {},
+  ): Promise<PathPreviewResult> {
     // Read env lazily so SMARTPERFETTO_CODEBASE_ROOTS set via dotenv (loaded after
     // module init in ESM) is visible on the first real request.
-    const allowlistRoots = this.allowlistRootsOverride ??
+    const configuredRoots = this.allowlistRootsOverride ??
       configuredAllowlistRoots(this.allowlistEnvironmentVariable);
+    const allowlistRoots = [
+      ...configuredRoots,
+      ...(options.additionalAllowlistRoots ?? []),
+    ];
     const rootRealpath = await safeRealpathAsync(rootPath);
     if (!rootRealpath) {
       return {

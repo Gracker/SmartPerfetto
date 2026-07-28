@@ -48,6 +48,33 @@ function makeIngester(root: string, sendToProvider = true) {
 }
 
 describe('AppSourceIngester', () => {
+  it('reuses only the registered native-picker root authorization during reindex', async () => {
+    const selectedRoot = path.join(tmpDir, 'native-selected-source');
+    fs.mkdirSync(selectedRoot);
+    fs.writeFileSync(path.join(selectedRoot, 'Main.kt'), 'class NativeSelected\n');
+    const store = new RagStore(path.join(tmpDir, 'native-picker-rag.json'));
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'native-picker-codebases.json'));
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Native selected source',
+      rootPath: selectedRoot,
+      rootAuthorization: 'native_picker',
+    });
+    const gate = new PathSecurityGate({
+      allowlistRoots: [path.join(tmpDir, 'configured-only')],
+    });
+    const ingester = new AppSourceIngester(store, registry, gate);
+
+    await expect(ingester.ingest(ref.codebaseId)).resolves.toMatchObject({
+      filesProcessed: 1,
+      chunksAdded: 1,
+    });
+    await expect(gate.preview(selectedRoot)).resolves.toMatchObject({
+      blocked: true,
+      blockedReason: 'root_outside_allowlist',
+    });
+  });
+
   it('fails closed across dual-write registries when consent persistence fails', () => {
     const previous = {
       enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],

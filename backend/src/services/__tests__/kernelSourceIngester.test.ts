@@ -164,3 +164,57 @@ describe('AospSourceIngester', () => {
     expect(hit!.contentFingerprint).toMatch(/^[a-f0-9]{64}$/);
   });
 });
+
+describe('native-picker root authorization', () => {
+  it('reuses the selected root for kernel and licensed-source reindex only', async () => {
+    fs.mkdirSync(path.join(sourceRoot, 'drivers/android'), {recursive: true});
+    fs.writeFileSync(
+      path.join(sourceRoot, 'drivers/android/binder.c'),
+      '// SPDX-License-Identifier: GPL-2.0-only\nint binder_native(void) { return 0; }\n',
+    );
+    fs.mkdirSync(path.join(sourceRoot, 'frameworks/base'), {recursive: true});
+    fs.writeFileSync(
+      path.join(sourceRoot, 'frameworks/base/Native.cpp'),
+      'void native_aosp(void) {}\n',
+    );
+    const selectedGate = new PathSecurityGate({
+      allowlistRoots: [path.join(tmpDir, 'configured-only')],
+    });
+    const kernel = registry.register({
+      kind: 'kernel_source',
+      displayName: 'Selected kernel',
+      rootPath: sourceRoot,
+      rootAuthorization: 'native_picker',
+      vendor: 'qualcomm',
+      pathFilters: ['drivers/android'],
+    });
+    const aosp = registry.register({
+      kind: 'aosp',
+      displayName: 'Selected AOSP',
+      rootPath: sourceRoot,
+      rootAuthorization: 'native_picker',
+      licenseTag: 'Apache-2.0',
+      pathFilters: ['frameworks/base'],
+    });
+
+    const kernelResult = await new KernelSourceIngester(
+      store,
+      registry,
+      selectedGate,
+    ).ingest(kernel.codebaseId);
+    expect(kernelResult.filesProcessed).toBe(1);
+    expect(kernelResult.chunksAdded).toBeGreaterThan(0);
+
+    const aospResult = await new AospSourceIngester(
+      store,
+      registry,
+      selectedGate,
+    ).ingest(aosp.codebaseId);
+    expect(aospResult.filesProcessed).toBe(1);
+    expect(aospResult.chunksAdded).toBeGreaterThan(0);
+    await expect(selectedGate.preview(sourceRoot)).resolves.toMatchObject({
+      blocked: true,
+      blockedReason: 'root_outside_allowlist',
+    });
+  });
+});

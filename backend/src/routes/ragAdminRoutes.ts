@@ -28,7 +28,11 @@
 import {createHash} from 'crypto';
 import * as path from 'path';
 
-import {Router, type Router as ExpressRouter} from 'express';
+import {
+  Router,
+  type Response,
+  type Router as ExpressRouter,
+} from 'express';
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
 import {
@@ -43,11 +47,18 @@ import type {RagChunk, RagRetrievalResult, RagSourceKind} from '../types/sparkCo
 import {requireCodebaseScope} from '../services/auth/codebaseScopes';
 import {
   activeCodebaseGeneration,
+  codebaseRegistrationRequirements,
   CodebaseRegistry,
   type CodebaseRef,
+  isCodebaseKind,
 } from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {PathSecurityGate, type PathPreviewResult} from '../services/codebase/pathSecurityGate';
+import {
+  isLocalDirectoryPickerRequest,
+  NativeDirectoryPicker,
+  NativeDirectoryPickerError,
+} from '../services/codebase/nativeDirectoryPicker';
 import {AppSourceIngester} from '../services/rag/appSourceIngester';
 import {AospSourceIngester} from '../services/rag/aospSourceIngester';
 import {KernelSourceIngester} from '../services/rag/kernelSourceIngester';
@@ -77,6 +88,7 @@ export interface RagAdminRouteServices {
   appSourceIngester?: AppSourceIngester;
   aospSourceIngester?: AospSourceIngester;
   kernelSourceIngester?: KernelSourceIngester;
+  directoryPicker?: NativeDirectoryPicker;
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
   androidInternalsWikiIngester?: AndroidInternalsWikiIngester;
   androidInternalsWikiAuditPaths?: {
@@ -130,7 +142,13 @@ function sanitizeRetrieval(result: RagRetrievalResult): RagRetrievalResult {
 }
 
 function sanitizeCodebase(ref: CodebaseRef) {
-  const {rootPath: _rootPath, rootRealpath: _rootRealpath, consent, ...rest} = ref;
+  const {
+    rootPath: _rootPath,
+    rootRealpath: _rootRealpath,
+    rootAuthorization: _rootAuthorization,
+    consent,
+    ...rest
+  } = ref;
   return {
     ...rest,
     eligibleForSendToProvider: consent.sendToProvider,
@@ -141,6 +159,40 @@ function sanitizeCodebase(ref: CodebaseRef) {
       consentHash: consent.consentHash,
     },
   };
+}
+
+function optionalRequestString(
+  value: unknown,
+  fieldName: string,
+): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`\`${fieldName}\` must be a string when provided`);
+  }
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > 1024 || trimmed.includes('\0')) {
+    throw new Error(`\`${fieldName}\` must be at most 1024 characters`);
+  }
+  return trimmed;
+}
+
+function sendDirectoryPickerError(
+  res: Response,
+  error: unknown,
+) {
+  if (error instanceof NativeDirectoryPickerError) {
+    return res.status(error.httpStatus).json({
+      success: false,
+      code: error.code,
+      error: error.message,
+    });
+  }
+  return res.status(500).json({
+    success: false,
+    code: 'DIRECTORY_PICKER_FAILED',
+    error: 'Directory picker failed',
+  });
 }
 
 function sanitizePreview(preview: PathPreviewResult) {
@@ -171,6 +223,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   const appSourceIngester = services.appSourceIngester ?? new AppSourceIngester(s, registry, gate);
   const aospSourceIngester = services.aospSourceIngester ?? new AospSourceIngester(s, registry, gate);
   const kernelSourceIngester = services.kernelSourceIngester ?? new KernelSourceIngester(s, registry, gate);
+  const directoryPicker = services.directoryPicker ?? new NativeDirectoryPicker();
   const externalKnowledgeRegistry = services.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
   const androidInternalsWikiIngester = services.androidInternalsWikiIngester ??
@@ -559,12 +612,98 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     });
   });
 
+  router.get(
+    '/codebases/directory-picker',
+    requireCodebaseScope('codebase:manage'),
+    (req, res) => {
+      const capability = directoryPicker.capability();
+      const localRequest = isLocalDirectoryPickerRequest({
+        hostname: req.hostname,
+        remoteAddress: req.socket.remoteAddress,
+        origin: req.get('origin'),
+      }, {allowMissingOrigin: true});
+      res.json({
+        success: true,
+        capability: localRequest
+          ? capability
+          : {
+              available: false,
+              platform: capability.platform,
+              reason: 'remote_request',
+            },
+      });
+    },
+  );
+
+  router.post(
+    '/codebases/directory-picker',
+    requireCodebaseScope('codebase:manage'),
+    async (req, res) => {
+      if (!isLocalDirectoryPickerRequest({
+        hostname: req.hostname,
+        remoteAddress: req.socket.remoteAddress,
+        origin: req.get('origin'),
+      })) {
+        return res.status(403).json({
+          success: false,
+          code: 'DIRECTORY_PICKER_UNAVAILABLE',
+          error: 'System directory selection is available only from the local SmartPerfetto UI',
+        });
+      }
+      const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+      try {
+        const result = await directoryPicker.chooseDirectory(scope);
+        return res.json({success: true, ...result});
+      } catch (error) {
+        return sendDirectoryPickerError(res, error);
+      }
+    },
+  );
+
   router.post('/codebases/preview', requireCodebaseScope('codebase:manage'), async (req, res) => {
-    const {rootPath} = (req.body ?? {}) as {rootPath?: string};
+    const {rootPath, directorySelectionId} = (req.body ?? {}) as {
+      rootPath?: string;
+      directorySelectionId?: string;
+    };
     if (!rootPath || typeof rootPath !== 'string') {
       return res.status(400).json({success: false, error: '`rootPath` is required'});
     }
-    res.json({success: true, preview: sanitizePreview(await gate.preview(rootPath))});
+    if (
+      directorySelectionId !== undefined &&
+      typeof directorySelectionId !== 'string'
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: '`directorySelectionId` must be a string when provided',
+      });
+    }
+    if (directorySelectionId && !isLocalDirectoryPickerRequest({
+      hostname: req.hostname,
+      remoteAddress: req.socket.remoteAddress,
+      origin: req.get('origin'),
+    })) {
+      return res.status(403).json({
+        success: false,
+        code: 'DIRECTORY_PICKER_UNAVAILABLE',
+        error: 'Directory selections can be used only from the local SmartPerfetto UI',
+      });
+    }
+    try {
+      const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+      const selectedRoot = directorySelectionId
+        ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
+        : undefined;
+      const preview = await gate.preview(
+        rootPath,
+        selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
+      );
+      return res.json({success: true, preview: sanitizePreview(preview)});
+    } catch (error) {
+      if (error instanceof NativeDirectoryPickerError) {
+        return sendDirectoryPickerError(res, error);
+      }
+      throw error;
+    }
   });
 
   router.post('/codebases/register', requireCodebaseScope('codebase:manage'), async (req, res) => {
@@ -580,10 +719,8 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       symbolMapPaths,
       licenseTag,
       sendToProvider,
+      directorySelectionId,
     } = (req.body ?? {}) as Record<string, any>;
-    if (!displayName || typeof displayName !== 'string') {
-      return res.status(400).json({success: false, error: '`displayName` is required'});
-    }
     if (!rootPath || typeof rootPath !== 'string') {
       return res.status(400).json({success: false, error: '`rootPath` is required'});
     }
@@ -593,11 +730,44 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         error: '`sendToProvider` must be an explicit boolean when provided',
       });
     }
+    if (!isCodebaseKind(kind)) {
+      return res.status(400).json({success: false, error: '`kind` is invalid'});
+    }
+    if (
+      directorySelectionId !== undefined &&
+      typeof directorySelectionId !== 'string'
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: '`directorySelectionId` must be a string when provided',
+      });
+    }
+    if (directorySelectionId && !isLocalDirectoryPickerRequest({
+      hostname: req.hostname,
+      remoteAddress: req.socket.remoteAddress,
+      origin: req.get('origin'),
+    })) {
+      return res.status(403).json({
+        success: false,
+        code: 'DIRECTORY_PICKER_UNAVAILABLE',
+        error: 'Directory selections can be used only from the local SmartPerfetto UI',
+      });
+    }
     let normalizedPathFilters: string[] | undefined;
     let normalizedExcludeGlobs: string[] | undefined;
+    let normalizedDisplayName: string | undefined;
+    let normalizedCommitHash: string | undefined;
+    let normalizedVendor: string | undefined;
+    let normalizedBuildId: string | undefined;
+    let normalizedLicenseTag: string | undefined;
     try {
       normalizedPathFilters = resolveSourcePathPatterns(pathFilters, 'pathFilters');
       normalizedExcludeGlobs = resolveSourcePathPatterns(excludeGlobs, 'excludeGlobs');
+      normalizedDisplayName = optionalRequestString(displayName, 'displayName');
+      normalizedCommitHash = optionalRequestString(commitHash, 'commitHash');
+      normalizedVendor = optionalRequestString(vendor, 'vendor');
+      normalizedBuildId = optionalRequestString(buildId, 'buildId');
+      normalizedLicenseTag = optionalRequestString(licenseTag, 'licenseTag');
     } catch (error) {
       return res.status(400).json({
         success: false,
@@ -611,7 +781,39 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         error: 'Native symbol-map artifact ingestion is not configured; source-derived symbol indexing remains available',
       });
     }
-    const preview = await gate.preview(rootPath);
+    const requirements = codebaseRegistrationRequirements(kind);
+    if (requirements.vendor && !normalizedVendor) {
+      return res.status(400).json({
+        success: false,
+        error: '`vendor` is required for kernel_source and oem_sdk codebases',
+      });
+    }
+    if (requirements.licenseTag && !normalizedLicenseTag) {
+      return res.status(400).json({
+        success: false,
+        error: '`licenseTag` is required for aosp and oem_sdk codebases',
+      });
+    }
+    if (requirements.pathFilters && !normalizedPathFilters?.length) {
+      return res.status(400).json({
+        success: false,
+        error: '`pathFilters` is required for kernel_source codebases',
+      });
+    }
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
+    let selectedRoot: string | undefined;
+    try {
+      selectedRoot = directorySelectionId
+        ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
+        : undefined;
+    } catch (error) {
+      return sendDirectoryPickerError(res, error);
+    }
+    const preview = await gate.preview(
+      rootPath,
+      selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
+    );
     if (preview.blocked) {
       return res.status(400).json({
         success: false,
@@ -619,27 +821,40 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         preview: sanitizePreview(preview),
       });
     }
-    const context = requireRequestContext(req);
     try {
-      const ref = registry.register({
+      const register = () => registry.register({
         kind,
-        displayName,
+        displayName: normalizedDisplayName ||
+          path.basename(preview.rootRealpath) ||
+          'Source code',
         rootPath,
         rootRealpath: preview.rootRealpath,
-        ...(commitHash ? {commitHash} : {}),
-        ...(vendor ? {vendor} : {}),
-        ...(buildId ? {buildId} : {}),
+        ...(directorySelectionId ? {rootAuthorization: 'native_picker'} : {}),
+        ...(normalizedCommitHash ? {commitHash: normalizedCommitHash} : {}),
+        ...(normalizedVendor ? {vendor: normalizedVendor} : {}),
+        ...(normalizedBuildId ? {buildId: normalizedBuildId} : {}),
         ...(normalizedPathFilters ? {pathFilters: normalizedPathFilters} : {}),
         ...(normalizedExcludeGlobs ? {excludeGlobs: normalizedExcludeGlobs} : {}),
-        ...(licenseTag ? {licenseTag} : {}),
+        ...(normalizedLicenseTag ? {licenseTag: normalizedLicenseTag} : {}),
         sendToProvider: sendToProvider ?? false,
         consentedBy: context.userId,
         tenantId: context.tenantId,
         workspaceId: context.workspaceId,
         userId: context.userId,
       });
+      const ref = directorySelectionId
+        ? directoryPicker.runWithSelection(
+            directorySelectionId,
+            rootPath,
+            scope,
+            register,
+          )
+        : register();
       res.json({success: true, codebase: sanitizeCodebase(ref), preview: sanitizePreview(preview)});
     } catch (error) {
+      if (error instanceof NativeDirectoryPickerError) {
+        return sendDirectoryPickerError(res, error);
+      }
       res.status(400).json({success: false, error: error instanceof Error ? error.message : String(error)});
     }
   });
@@ -776,6 +991,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       audit: {
         codebaseId: ref.codebaseId,
         kind: ref.kind,
+        rootAuthorization: ref.rootAuthorization ?? 'configured_allowlist',
         indexGeneration: ref.indexGeneration,
         activeGeneration: activeCodebaseGeneration(ref),
         contentFingerprint: ref.contentFingerprint,
