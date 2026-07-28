@@ -151,9 +151,9 @@ Each target smoke must:
    `http://127.0.0.1:<port>/health`; do not use `localhost` as release evidence.
    The smoke probe must bypass environment proxies through a target-supported
    standard library HTTP client fixed to IPv4 loopback. Windows uses the
-   repository-owned Go `net/http` probe built from the immutable gate commit
+   repository-owned Go gate helper built from the immutable gate commit
    by the native job with the workflow-pinned Go toolchain. It is a separate
-   gate process, not a release asset. The probe must disable proxies,
+   gate process, not a release asset. Its `net/http` probe must disable proxies,
    redirects, compression, DNS fallback, and non-loopback dial targets; accept
    only the validated URL and bounded timeout as arguments; and enforce strict
    response-byte and wall-clock limits. The Node gate must validate that the
@@ -161,8 +161,14 @@ Each target smoke must:
    sanitized environment, and terminate the process on cancellation or a hard
    deadline. If direct child termination does not settle, invoke trusted
    `System32\taskkill.exe /T /F` and fail within a second bounded deadline
-   unless process closure is confirmed. The Windows native job must test,
-   build, and execute the real fixed Go probe before testing the archive.
+   unless process closure is confirmed. The same helper must use the native
+   Toolhelp32 process snapshot API for descendant evidence; it must not invoke
+   PowerShell, CIM, WMI, or release-archive code. Snapshot output must be
+   bounded and canonical, include the helper's own PID as a completeness
+   sentinel, and fail closed on empty, malformed, duplicate, partial, timed
+   out, or non-zero helper results. The Windows native job must test, build,
+   and execute the real fixed helper health and process contracts before
+   testing the archive.
    macOS and Linux use Node's HTTP client with a private keep-alive agent per
    attempt and destroy the agent, request, response, and socket on every
    terminal path. All clients must enforce strict URL, response-byte,
@@ -176,7 +182,9 @@ Each target smoke must:
 5. Use the launcher-supported shutdown control, require a zero/successful and
    non-escalated shutdown receipt with platform containment
    (`windows-job-object` or `service-process-groups`), and verify child
-   processes and listening ports are gone.
+   processes and listening ports are gone. Keep process-tree traversal in the
+   Node gate; the Windows helper emits only a strict full PID/PPID snapshot so
+   its own gate process cannot be mistaken for a launcher descendant.
 6. Preserve launcher/backend/frontend logs on failure.
 7. Atomically write a schema-v2 `smoke-summary.json` that binds the target-native host,
    lifecycle receipt, and exact archive name, size, and SHA-256. Public release
@@ -261,8 +269,10 @@ node --check scripts/portable-release-smoke-workflow.cjs
 node --check scripts/download-portable-release-asset.cjs
 node --check scripts/verify-portable-smoke-attestation.cjs
 node --check scripts/smoke-portable-archive.cjs
-go test scripts/portable-health-probe/main.go \
-  scripts/portable-health-probe/main_test.go
+GO111MODULE=off go test ./scripts/portable-health-probe
+GO111MODULE=off GOOS=windows GOARCH=amd64 go build -trimpath \
+  -ldflags="-s -w" -o /tmp/smartperfetto-windows-gate-helper.exe \
+  ./scripts/portable-health-probe
 node --test scripts/__tests__/portable-release-smoke-workflow.test.mjs \
   scripts/__tests__/smoke-portable-archive.test.mjs \
   scripts/__tests__/verify-portable-smoke-evidence.test.mjs \

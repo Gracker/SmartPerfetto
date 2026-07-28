@@ -869,6 +869,10 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
     join(root, 'scripts/portable-release-smoke-workflow.cjs'),
     'utf8',
   );
+  const smoke = readFileSync(
+    join(root, 'scripts/smoke-portable-archive.cjs'),
+    'utf8',
+  );
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /group: portable-exact-archive-smoke-\$\{\{ inputs\.release_id \}\}/);
   assert.match(workflow, /permissions:\s+contents: read/);
@@ -895,15 +899,15 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
     /actions\/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7/,
   );
   assert.match(workflow, /go-version: '1\.25\.0'/);
-  assert.match(workflow, /go test[\s\S]*?portable-health-probe\/main_test\.go/);
-  assert.match(workflow, /go build -trimpath[\s\S]*?portable-health-probe\/main\.go/);
+  assert.match(workflow, /GO111MODULE: 'off'[\s\S]*?go test \.\/gate\/scripts\/portable-health-probe/);
+  assert.match(workflow, /go build -trimpath[\s\S]*?\.\/gate\/scripts\/portable-health-probe/);
   assert.match(
     workflow,
-    /SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-health-probe\.exe/,
+    /SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-windows-gate-helper\.exe/,
   );
   assert.equal(
     workflow.match(
-      /SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-health-probe\.exe/g,
+      /SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: \$\{\{ runner\.temp \}\}\/smartperfetto-windows-gate-helper\.exe/g,
     )?.length,
     3,
   );
@@ -912,12 +916,13 @@ test('workflow fixes trust roots, target hosts, token scope, and evidence layout
       workflow.indexOf('runs-on: ${{ matrix.runner }}'),
       workflow.indexOf('steps:', workflow.indexOf('runs-on: ${{ matrix.runner }}')),
     ),
-    /SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH/,
+    /SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH/,
   );
   assert.match(
     workflow,
-    /if: \$\{\{ matrix\.target == 'windows-x64' \}\}[\s\S]*?Windows health probe runs its real fixed Go contract on Windows/,
+    /if: \$\{\{ matrix\.target == 'windows-x64' \}\}[\s\S]*?Windows fixed Go helper runs its real health and process contracts on Windows/,
   );
+  assert.doesNotMatch(smoke, /Get-CimInstance|WindowsPowerShell/);
   assert.match(workflow, /Fetch the unchanged draft after target smoke/);
   assert.match(workflow, /Preserve untrusted target evidence and logs/);
   assert.match(workflow, /merge-multiple: false/);

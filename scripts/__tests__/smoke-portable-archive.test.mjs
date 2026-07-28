@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import assert from 'node:assert/strict';
-import {spawn} from 'node:child_process';
+import {spawn, spawnSync} from 'node:child_process';
 import {EventEmitter} from 'node:events';
 import {createRequire} from 'node:module';
 import fs from 'node:fs';
@@ -26,6 +26,7 @@ const {
   healthProbeIdForTarget,
   isolatedSmokeEnv,
   packagePaths,
+  parseWindowsProcessSnapshot,
   parseArgs,
   runArchiveBinary,
   sanitizedSmokeEnv,
@@ -34,6 +35,7 @@ const {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
+  windowsDescendantPids,
   windowsGoHealthProbe,
   windowsSystemBinary,
 } = require(path.join(repoRoot, 'scripts/smoke-portable-archive.cjs'));
@@ -61,7 +63,7 @@ async function closeHttpServer(server) {
 function mockWindowsProbeEnvironment(overrides = {}) {
   return {
     PATH: process.env.PATH,
-    SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH:
+    SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH:
       'C:\\gate\\smartperfetto-health-probe.exe',
     SystemRoot: 'C:\\Windows',
     ...overrides,
@@ -509,9 +511,105 @@ for (const [streamName, limitBytes] of [
   });
 }
 
-test('Windows health probe runs its real fixed Go contract on Windows', {
+test('Windows fixed Go helper runs its real health and process contracts on Windows', {
   skip: process.platform !== 'win32',
 }, async (t) => {
+  const fixtureLauncher = spawn(
+    process.execPath,
+    ['-e', [
+      'const {spawn}=require("node:child_process");',
+      'const child=spawn(process.execPath,["-e","setInterval(() => {}, 1000)"],{stdio:"ignore"});',
+      'process.stdout.write(`${child.pid}\\n`);',
+      'setInterval(() => {}, 1000);',
+    ].join('\n')],
+    {stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true},
+  );
+  const fixtureClosed = new Promise((resolve) => {
+    fixtureLauncher.once('close', resolve);
+  });
+  t.after(async () => {
+    if (fixtureLauncher.pid) {
+      let alive = true;
+      try {
+        process.kill(fixtureLauncher.pid, 0);
+      } catch (error) {
+        if (error?.code !== 'ESRCH') throw error;
+        alive = false;
+      }
+      if (alive) {
+        const result = spawnSync(
+          windowsSystemBinary('taskkill.exe', process.env),
+          ['/T', '/F', '/PID', String(fixtureLauncher.pid)],
+          {
+            encoding: 'utf8',
+            timeout: 5_000,
+            windowsHide: true,
+          },
+        );
+        let survivedCleanup = false;
+        if (!result.error && result.status !== 0 && !result.signal) {
+          try {
+            process.kill(fixtureLauncher.pid, 0);
+            survivedCleanup = true;
+          } catch (error) {
+            if (error?.code !== 'ESRCH') throw error;
+          }
+        }
+        if (
+          result.error ||
+          result.signal ||
+          (result.status !== 0 && survivedCleanup)
+        ) {
+          throw new Error(
+            `fixture cleanup failed: ${
+              result.error?.message ||
+              String(result.stderr || '').trim() ||
+              `exit ${result.status}, signal ${result.signal || 'none'}`
+            }`,
+          );
+        }
+      }
+    }
+    await Promise.race([
+      fixtureClosed,
+      new Promise((_, reject) => {
+        const deadline = setTimeout(
+          () => reject(new Error('fixture launcher did not close after cleanup')),
+          5_000,
+        );
+        deadline.unref();
+      }),
+    ]);
+  });
+  const fixtureChildPid = await new Promise((resolve, reject) => {
+    let output = '';
+    const deadline = setTimeout(
+      () => reject(new Error('fixture launcher did not report its child PID')),
+      5_000,
+    );
+    fixtureLauncher.once('error', (error) => {
+      clearTimeout(deadline);
+      reject(error);
+    });
+    fixtureLauncher.once('exit', (code, signal) => {
+      clearTimeout(deadline);
+      reject(new Error(
+        `fixture launcher exited before reporting its child: code=${code}, signal=${signal}`,
+      ));
+    });
+    fixtureLauncher.stdout.on('data', (chunk) => {
+      output += chunk.toString('utf8');
+      const match = /^(\d+)\r?\n/.exec(output);
+      if (!match) return;
+      clearTimeout(deadline);
+      resolve(Number(match[1]));
+    });
+  });
+
+  const fixtureDescendants = windowsDescendantPids(fixtureLauncher.pid);
+  assert.deepEqual(fixtureDescendants, [fixtureChildPid]);
+  assert.equal(fixtureDescendants.includes(process.pid), false);
+
   let redirected = false;
   const health = http.createServer((request, response) => {
     if (request.url === '/redirect') {
@@ -1065,6 +1163,88 @@ test('portable smoke records process-enumeration failures instead of failing ope
   assert.equal(evidence.enumerationSucceeded, false);
   assert.equal(evidence.samples, 0);
   assert.ok(evidence.failures.some(message => message.includes('permission denied')));
+});
+
+test('Windows process snapshot parser accepts only complete canonical rows', () => {
+  assert.deepEqual(
+    parseWindowsProcessSnapshot('0 0\n10 1\n20 10\n'),
+    ['0 0', '10 1', '20 10'],
+  );
+
+  for (const snapshot of [
+    '',
+    '10 1',
+    '10 1\r\n',
+    '10  1\n',
+    '010 1\n',
+    '10 nope\n',
+    '4294967296 1\n',
+    '10 1\n10 2\n',
+    '10 1\n\n',
+  ]) {
+    assert.throws(
+      () => parseWindowsProcessSnapshot(snapshot),
+      /Windows process snapshot/,
+      snapshot,
+    );
+  }
+});
+
+test('Windows process enumeration uses the fixed Go helper and strict tree rows', () => {
+  let invocation;
+  const descendants = windowsDescendantPids(
+    10,
+    mockWindowsProbeEnvironment({GH_TOKEN: 'must-not-leak'}),
+    (command, args, options) => {
+      invocation = {args, command, options};
+      return {
+        error: undefined,
+        signal: null,
+        status: 0,
+        stderr: '',
+        stdout: '0 0\n10 1\n20 10\n30 20\n40 10\n',
+      };
+    },
+    mockRegularProbeFile,
+  );
+
+  assert.deepEqual(descendants, [30, 20, 40]);
+  assert.equal(invocation.command, 'C:\\gate\\smartperfetto-health-probe.exe');
+  assert.deepEqual(invocation.args, ['process-snapshot']);
+  assert.equal(invocation.options.timeout, 5_000);
+  assert.equal(invocation.options.windowsHide, true);
+  assert.equal(invocation.options.env.GH_TOKEN, undefined);
+});
+
+test('Windows process enumeration fails closed on helper failures', () => {
+  const oversized = `${'x'.repeat(8 * 1024 * 1024)}x`;
+  const failures = [
+    {
+      error: Object.assign(new Error('timed out'), {code: 'ETIMEDOUT'}),
+      signal: null,
+      status: null,
+      stderr: '',
+      stdout: '',
+    },
+    {error: undefined, signal: null, status: 1, stderr: 'snapshot failed', stdout: ''},
+    {error: undefined, signal: 'SIGKILL', status: null, stderr: '', stdout: ''},
+    {error: undefined, signal: null, status: 0, stderr: '', stdout: ''},
+    {error: undefined, signal: null, status: 0, stderr: '', stdout: 'not rows\n'},
+    {error: undefined, signal: null, status: 0, stderr: '', stdout: '10 1\n10 2\n'},
+    {error: undefined, signal: null, status: 0, stderr: '', stdout: oversized},
+  ];
+
+  for (const result of failures) {
+    assert.throws(
+      () => windowsDescendantPids(
+        10,
+        mockWindowsProbeEnvironment(),
+        () => result,
+        mockRegularProbeFile,
+      ),
+      /Windows process/,
+    );
+  }
 });
 
 test('portable smoke resolves taskkill from trusted Windows System32', () => {

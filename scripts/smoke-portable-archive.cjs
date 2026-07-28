@@ -51,6 +51,11 @@ const HEALTH_PROBE_OUTPUT_LIMIT_BYTES = 128 * 1024;
 const HEALTH_PROBE_ERROR_LIMIT_BYTES = 32 * 1024;
 const HEALTH_PROBE_TERMINATION_GRACE_MS = 250;
 const HEALTH_PROBE_TERMINATION_SETTLEMENT_MS = 2_000;
+const WINDOWS_GATE_HELPER_ENV = 'SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH';
+const WINDOWS_PROCESS_SNAPSHOT_LIMIT_BYTES = 8 * 1024 * 1024;
+const WINDOWS_PROCESS_SNAPSHOT_ERROR_LIMIT_BYTES = 32 * 1024;
+const WINDOWS_PROCESS_SNAPSHOT_MAX_ENTRIES = 65_536;
+const WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS = 5_000;
 const HEALTH_PROBE_IDS = Object.freeze({
   node: 'node-http',
   windows: 'windows-go-net-http',
@@ -394,6 +399,34 @@ function parseWindowsHealthProbeOutput(output) {
   };
 }
 
+function resolveWindowsGateHelperPath(
+  sourceEnv,
+  statHelperPath = process.platform === 'win32' ? fs.lstatSync : undefined,
+) {
+  const helperPath = envValue(sourceEnv, WINDOWS_GATE_HELPER_ENV);
+  if (
+    !helperPath ||
+    !path.win32.isAbsolute(helperPath) ||
+    path.win32.extname(helperPath).toLowerCase() !== '.exe'
+  ) {
+    throw new Error(`${WINDOWS_GATE_HELPER_ENV} must name an absolute .exe path`);
+  }
+  if (!statHelperPath) return helperPath;
+
+  let helperStat;
+  try {
+    helperStat = statHelperPath(helperPath);
+  } catch (error) {
+    throw new Error(`Windows gate helper executable is unavailable: ${error.message}`, {
+      cause: error,
+    });
+  }
+  if (!helperStat.isFile() || helperStat.isSymbolicLink()) {
+    throw new Error('Windows gate helper executable must be a regular non-symlink file');
+  }
+  return helperPath;
+}
+
 function windowsGoHealthProbe(
   url,
   timeoutMs,
@@ -411,32 +444,10 @@ function windowsGoHealthProbe(
   if (signal?.aborted) {
     return Promise.reject(signal.reason || new Error('health probe cancelled'));
   }
-  const probePath = envValue(
+  const probePath = resolveWindowsGateHelperPath(
     sourceEnv,
-    'SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH',
+    statProbePath,
   );
-  if (
-    !probePath ||
-    !path.win32.isAbsolute(probePath) ||
-    path.win32.extname(probePath).toLowerCase() !== '.exe'
-  ) {
-    throw new Error(
-      'SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH must name an absolute .exe path',
-    );
-  }
-  if (statProbePath) {
-    let probeStat;
-    try {
-      probeStat = statProbePath(probePath);
-    } catch (error) {
-      throw new Error(`Windows health probe executable is unavailable: ${error.message}`, {
-        cause: error,
-      });
-    }
-    if (!probeStat.isFile() || probeStat.isSymbolicLink()) {
-      throw new Error('Windows health probe executable must be a regular non-symlink file');
-    }
-  }
   const taskkill = windowsSystemBinary('taskkill.exe', sourceEnv);
   const requestTimeoutMs = Math.max(1, Math.floor(timeoutMs * 0.8));
   const env = sanitizedSmokeEnv(sourceEnv);
@@ -835,37 +846,90 @@ function unixDescendantPids(rootPid, runner = spawnSync) {
   return collectDescendantPids(String(result.stdout || '').split(/\r?\n/), rootPid);
 }
 
-function windowsDescendantPids(rootPid, sourceEnv = process.env, runner = spawnSync) {
-  const powershell = windowsSystemBinary(
-    path.join('WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    sourceEnv,
-  );
-  const script = [
-    '$rows = Get-CimInstance Win32_Process | ForEach-Object {',
-    '  "$($_.ProcessId) $($_.ParentProcessId)"',
-    '}',
-    '[Console]::Out.Write(($rows -join "`n"))',
-  ].join('; ');
+function parseWindowsProcessSnapshot(output) {
+  const snapshot = String(output || '');
+  if (
+    !snapshot ||
+    !snapshot.endsWith('\n') ||
+    snapshot.includes('\r') ||
+    Buffer.byteLength(snapshot, 'utf8') > WINDOWS_PROCESS_SNAPSHOT_LIMIT_BYTES
+  ) {
+    throw new Error('Windows process snapshot is empty, truncated, or non-canonical');
+  }
+
+  const lines = snapshot.slice(0, -1).split('\n');
+  if (
+    lines.length === 0 ||
+    lines.length > WINDOWS_PROCESS_SNAPSHOT_MAX_ENTRIES
+  ) {
+    throw new Error('Windows process snapshot contains an invalid entry count');
+  }
+
+  const rows = [];
+  const seenProcessIDs = new Set();
+  for (const line of lines) {
+    const match = /^(0|[1-9]\d*) (0|[1-9]\d*)$/.exec(line);
+    if (!match) {
+      throw new Error(`Windows process snapshot contains an invalid row: ${line}`);
+    }
+    const processID = Number(match[1]);
+    const parentProcessID = Number(match[2]);
+    if (
+      !Number.isSafeInteger(processID) ||
+      !Number.isSafeInteger(parentProcessID) ||
+      processID > 0xffff_ffff ||
+      parentProcessID > 0xffff_ffff
+    ) {
+      throw new Error('Windows process snapshot contains an out-of-range PID');
+    }
+    if (seenProcessIDs.has(processID)) {
+      throw new Error(`Windows process snapshot contains duplicate PID ${processID}`);
+    }
+    seenProcessIDs.add(processID);
+    rows.push(`${processID} ${parentProcessID}`);
+  }
+  return rows;
+}
+
+function windowsDescendantPids(
+  rootPid,
+  sourceEnv = process.env,
+  runner = spawnSync,
+  statHelperPath = process.platform === 'win32' ? fs.lstatSync : undefined,
+) {
+  const helperPath = resolveWindowsGateHelperPath(sourceEnv, statHelperPath);
   const result = runner(
-    powershell,
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+    helperPath,
+    ['process-snapshot'],
     {
       encoding: 'utf8',
       env: sanitizedSmokeEnv(sourceEnv),
       killSignal: 'SIGKILL',
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 10_000,
+      maxBuffer: WINDOWS_PROCESS_SNAPSHOT_LIMIT_BYTES,
+      timeout: WINDOWS_PROCESS_SNAPSHOT_TIMEOUT_MS,
       windowsHide: true,
     },
   );
-  if (result.error || result.status !== 0) {
+  const stderr = String(result.stderr || '');
+  if (
+    Buffer.byteLength(stderr, 'utf8') >
+    WINDOWS_PROCESS_SNAPSHOT_ERROR_LIMIT_BYTES
+  ) {
+    throw new Error('Windows process snapshot stderr exceeded its limit');
+  }
+  if (result.error || result.status !== 0 || result.signal) {
     throw new Error(
       `Windows process enumeration failed: ${
-        result.error?.message || String(result.stderr || '').trim() || `exit ${result.status}`
+        result.error?.message ||
+        stderr.trim() ||
+        `exit ${result.status}, signal ${result.signal || 'none'}`
       }`,
     );
   }
-  return collectDescendantPids(String(result.stdout || '').split(/\r?\n/), rootPid);
+  return collectDescendantPids(
+    parseWindowsProcessSnapshot(result.stdout),
+    rootPid,
+  );
 }
 
 function descendantPids(rootPid, sourceEnv = process.env, runner = spawnSync) {
@@ -1403,5 +1467,7 @@ module.exports = {
   waitForHealth,
   waitForReadiness,
   windowsGoHealthProbe,
+  windowsDescendantPids,
+  parseWindowsProcessSnapshot,
   windowsSystemBinary,
 };

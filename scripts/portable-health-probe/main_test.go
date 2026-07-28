@@ -94,6 +94,7 @@ func TestRunRejectsUntrustedInput(t *testing.T) {
 		args []string
 	}{
 		{name: "missing arguments", args: []string{"portable-health-probe"}},
+		{name: "snapshot arguments", args: []string{"portable-health-probe", "process-snapshot", "123"}},
 		{name: "hostname", args: []string{"portable-health-probe", "http://localhost:3000/health", "1000"}},
 		{name: "no port", args: []string{"portable-health-probe", "http://127.0.0.1/health", "1000"}},
 		{name: "invalid port", args: []string{"portable-health-probe", "http://127.0.0.1:65536/health", "1000"}},
@@ -112,6 +113,56 @@ func TestRunRejectsUntrustedInput(t *testing.T) {
 			}
 			if stderr.Len() == 0 {
 				t.Fatal("run returned no diagnostic")
+			}
+		})
+	}
+}
+
+func TestFormatProcessSnapshotProducesCanonicalRows(t *testing.T) {
+	output, err := formatProcessSnapshot([]processEntry{
+		{processID: 0, parentProcessID: 0},
+		{processID: 42, parentProcessID: 7},
+		{processID: 99, parentProcessID: 42},
+	}, 42)
+	if err != nil {
+		t.Fatalf("format process snapshot: %v", err)
+	}
+	if got, want := string(output), "0 0\n42 7\n99 42\n"; got != want {
+		t.Fatalf("snapshot = %q, want %q", got, want)
+	}
+}
+
+func TestFormatProcessSnapshotRejectsIncompleteEvidence(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []processEntry
+		selfPID uint32
+	}{
+		{name: "empty", selfPID: 42},
+		{
+			name: "duplicate PID",
+			entries: []processEntry{
+				{processID: 42, parentProcessID: 7},
+				{processID: 42, parentProcessID: 8},
+			},
+			selfPID: 42,
+		},
+		{
+			name: "helper PID absent",
+			entries: []processEntry{
+				{processID: 7, parentProcessID: 1},
+			},
+			selfPID: 42,
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			if _, err := formatProcessSnapshot(
+				testCase.entries,
+				testCase.selfPID,
+			); err == nil {
+				t.Fatal("formatProcessSnapshot unexpectedly succeeded")
 			}
 		})
 	}

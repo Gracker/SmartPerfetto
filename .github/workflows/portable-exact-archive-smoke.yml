@@ -211,7 +211,7 @@ jobs:
         with:
           node-version: 24
 
-      - name: Set up fixed Go 1.25 for the Windows health probe
+      - name: Set up fixed Go 1.25 for the Windows gate helper
         if: ${{ matrix.target == 'windows-x64' }}
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -245,35 +245,35 @@ jobs:
           --run-id "${{ github.run_id }}"
           --run-attempt "${{ github.run_attempt }}"
 
-      - name: Test the fixed Windows health probe source
+      - name: Test the fixed Windows gate helper source
         if: ${{ matrix.target == 'windows-x64' }}
-        run: >-
-          go test
-          gate/scripts/portable-health-probe/main.go
-          gate/scripts/portable-health-probe/main_test.go
+        env:
+          GO111MODULE: 'off'
+        run: go test ./gate/scripts/portable-health-probe
 
-      - name: Build the fixed Windows health probe
+      - name: Build the fixed Windows gate helper
         if: ${{ matrix.target == 'windows-x64' }}
         shell: pwsh
         env:
-          SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: ${{ runner.temp }}/smartperfetto-health-probe.exe
+          GO111MODULE: 'off'
+          SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: ${{ runner.temp }}/smartperfetto-windows-gate-helper.exe
         run: >-
           go build -trimpath '-ldflags=-s -w'
-          -o "$env:SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH"
-          gate/scripts/portable-health-probe/main.go
+          -o "$env:SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH"
+          ./gate/scripts/portable-health-probe
 
-      - name: Verify the real fixed Go Windows health probe
+      - name: Verify the real fixed Go Windows gate helper
         if: ${{ matrix.target == 'windows-x64' }}
         env:
-          SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: ${{ runner.temp }}/smartperfetto-health-probe.exe
+          SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: ${{ runner.temp }}/smartperfetto-windows-gate-helper.exe
         run: >-
           node --test
-          --test-name-pattern "Windows health probe runs its real fixed Go contract on Windows"
+          --test-name-pattern "Windows fixed Go helper runs its real health and process contracts on Windows"
           gate/scripts/__tests__/smoke-portable-archive.test.mjs
 
       - name: Run the release contract against the exact archive
         env:
-          SMARTPERFETTO_WINDOWS_HEALTH_PROBE_PATH: ${{ runner.temp }}/smartperfetto-health-probe.exe
+          SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: ${{ runner.temp }}/smartperfetto-windows-gate-helper.exe
         run: >-
           node gate/scripts/portable-release-smoke-workflow.cjs run
           --plan "${{ runner.temp }}/smartperfetto-plan/portable-smoke-plan.json"

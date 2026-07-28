@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -20,17 +21,30 @@ import (
 )
 
 const (
-	maxProbeTimeout = 60 * time.Second
-	responseLimit   = 64 * 1024
+	maxProbeTimeout       = 60 * time.Second
+	responseLimit         = 64 * 1024
+	maxSnapshotEntries    = 65_536
+	maxSnapshotOutputSize = 8 * 1024 * 1024
 )
+
+type processEntry struct {
+	processID       uint32
+	parentProcessID uint32
+}
 
 func main() {
 	os.Exit(run(os.Args, os.Stdout, os.Stderr))
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	if len(args) == 2 && args[1] == "process-snapshot" {
+		return runProcessSnapshot(stdout, stderr)
+	}
 	if len(args) != 3 {
-		fmt.Fprintln(stderr, "usage: portable-health-probe <loopback-url> <timeout-ms>")
+		fmt.Fprintln(
+			stderr,
+			"usage: portable-health-probe <loopback-url> <timeout-ms> | process-snapshot",
+		)
 		return 2
 	}
 
@@ -47,8 +61,83 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 1
 	}
 
-	fmt.Fprintf(stdout, "%d\n%s", statusCode, base64.StdEncoding.EncodeToString(body))
+	if _, err := fmt.Fprintf(
+		stdout,
+		"%d\n%s",
+		statusCode,
+		base64.StdEncoding.EncodeToString(body),
+	); err != nil {
+		fmt.Fprintf(stderr, "write health response: %v\n", err)
+		return 1
+	}
 	return 0
+}
+
+func runProcessSnapshot(stdout io.Writer, stderr io.Writer) int {
+	entries, err := snapshotProcesses()
+	if err != nil {
+		fmt.Fprintf(stderr, "process snapshot failed: %v\n", err)
+		return 1
+	}
+	output, err := formatProcessSnapshot(entries, uint32(os.Getpid()))
+	if err != nil {
+		fmt.Fprintf(stderr, "process snapshot failed: %v\n", err)
+		return 1
+	}
+	if _, err := stdout.Write(output); err != nil {
+		fmt.Fprintf(stderr, "write process snapshot: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func formatProcessSnapshot(entries []processEntry, selfProcessID uint32) ([]byte, error) {
+	if len(entries) == 0 {
+		return nil, errors.New("process snapshot is empty")
+	}
+	if len(entries) > maxSnapshotEntries {
+		return nil, fmt.Errorf(
+			"process snapshot exceeded %d entries",
+			maxSnapshotEntries,
+		)
+	}
+
+	seen := make(map[uint32]struct{}, len(entries))
+	selfFound := false
+	var output bytes.Buffer
+	for _, entry := range entries {
+		if _, duplicate := seen[entry.processID]; duplicate {
+			return nil, fmt.Errorf(
+				"process snapshot contains duplicate PID %d",
+				entry.processID,
+			)
+		}
+		seen[entry.processID] = struct{}{}
+		if entry.processID == selfProcessID {
+			selfFound = true
+		}
+		if _, err := fmt.Fprintf(
+			&output,
+			"%d %d\n",
+			entry.processID,
+			entry.parentProcessID,
+		); err != nil {
+			return nil, fmt.Errorf("format process snapshot: %w", err)
+		}
+		if output.Len() > maxSnapshotOutputSize {
+			return nil, fmt.Errorf(
+				"process snapshot exceeded %d bytes",
+				maxSnapshotOutputSize,
+			)
+		}
+	}
+	if !selfFound {
+		return nil, fmt.Errorf(
+			"process snapshot does not contain helper PID %d",
+			selfProcessID,
+		)
+	}
+	return output.Bytes(), nil
 }
 
 func probe(rawURL string, timeout time.Duration) (int, []byte, error) {
