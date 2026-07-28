@@ -11,6 +11,7 @@
 import express from 'express';
 import * as fs from 'fs';
 import * as path from 'path';
+import {randomUUID} from 'crypto';
 import {
   getTraceProcessorService,
   type TraceInfo,
@@ -160,16 +161,14 @@ import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skill
 import type { ConversationTurn, Finding, Intent } from '../agent/types';
 import {
   validateFeedbackInput,
-  enrichFeedbackEntry,
-  type SessionLookup as FeedbackSessionLookup,
 } from '../agentv3/selfImprove/feedbackEnricher';
 import { formatToolCallNarration, looksLikeGenericToolMessage } from '../agentv3/toolNarration';
-import { applyFeedbackToPattern } from '../agentv3/analysisPatternMemory';
+import {patternExistsForFeedback} from '../agentv3/analysisPatternMemory';
 import { backendLogPath } from '../runtimePaths';
 import { CaseLibrary } from '../services/caseLibrary';
 import { saveCaseCandidates } from '../services/caseEvolution/saveCaseCandidates';
 import { openCaseCandidateOutbox } from '../services/caseEvolution/caseCandidateOutbox';
-import { recordCaseCandidateFeedback } from '../services/caseEvolution/caseCandidateFeedback';
+import {caseCandidateKnowledgeScope} from '../services/caseEvolution/caseCandidateBuilder';
 import {
   attachCaseHitsToContractSync,
   projectEvidenceSignaturesByCluster,
@@ -228,7 +227,18 @@ import {
   type RunManifestLifecycle,
 } from '../services/selfEvolution/runManifestLifecycle';
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
+import {
+  FeedbackEventStore,
+  privateFeedbackStorePaths,
+} from '../services/selfEvolution/feedbackEventStore';
+import {
+  FeedbackProjectionService,
+} from '../services/selfEvolution/feedbackProjectionService';
+import {
+  getSelfEvolutionLifecycleSnapshot,
+} from '../services/selfEvolution/selfEvolutionLifecycle';
 import type {
+  AppendFeedbackEventInput,
   RunManifestAttributionSink,
   RunManifestScope,
 } from '../types/selfEvolution';
@@ -3618,25 +3628,62 @@ router.delete('/:sessionId', async (req, res) => {
   res.json({ success: true });
 });
 
-function feedbackFileForScope(scope: KnowledgeScope): {dir: string; file: string} {
-  const resolved = resolveKnowledgeScope(scope);
-  const dir = backendLogPath(
-    'feedback',
-    resolved.tenantId,
-    resolved.workspaceId,
-  );
-  return {dir, file: path.join(dir, 'feedback.jsonl')};
-}
-
-function privateFeedbackResponse() {
+function privateFeedbackResponse(input: {
+  durable: boolean;
+  eventId?: string;
+  feedbackId?: string;
+}) {
   return {
     success: true,
     schemaVersion: 1 as const,
-    durableFeedbackStored: false,
-    storageDisposition: 'discarded_private' as const,
+    durableFeedbackStored: input.durable,
+    storageDisposition: 'stored_private_local' as const,
+    ...(input.eventId ? {eventId: input.eventId} : {}),
+    ...(input.feedbackId ? {feedbackId: input.feedbackId} : {}),
     patternStatus: null,
     caseCandidateFeedbackAdded: null,
   };
+}
+
+function feedbackTargetBelongsToSession(
+  session: AnalysisSession,
+  targetKind: string,
+  targetId: string,
+  runId: string,
+  manifest: ReturnType<ReturnType<typeof getRunManifestStore>['getByRunId']>,
+): boolean {
+  if (targetKind === 'session') return targetId === session.sessionId;
+  if (targetKind === 'conclusion') {
+    return targetId === runId || targetId === session.sessionId;
+  }
+  if (targetKind === 'finding') {
+    const findings = [
+      ...((session.result as any)?.findings ?? []),
+      ...((session as any).findings ?? []),
+    ];
+    return findings.some((finding: any) =>
+      finding?.id === targetId || finding?.findingId === targetId);
+  }
+  if (targetKind === 'claim') {
+    return (session.claimSupport ?? []).some((claim: any) =>
+      claim?.claimId === targetId || claim?.id === targetId);
+  }
+  if (targetKind === 'evidence') {
+    return (session.dataEnvelopes ?? []).some((envelope: any) =>
+      envelope?.meta?.evidenceRefId === targetId ||
+      envelope?.evidenceRefId === targetId);
+  }
+  if (targetKind === 'skill_note') {
+    return manifest?.injections.skillNotes.some(note => note.id === targetId) ??
+      false;
+  }
+  if (targetKind === 'injection') {
+    if (!manifest) return false;
+    return Object.values(manifest.injections)
+      .flat()
+      .some(reference => reference.id === targetId);
+  }
+  return false;
 }
 
 /**
@@ -3656,85 +3703,183 @@ router.post('/:sessionId/feedback', async (req, res) => {
 
   const session = getAuthorizedSession(req, res, sessionId);
   if (!session) return;
-  const feedbackKnowledgeScope = knowledgeScopeFromRequestContext(
-    requireRequestContext(req),
-  );
-  if (sessionUsesPrivateKnowledge(session)) {
-    return res.json(privateFeedbackResponse());
+  const requestContext = requireRequestContext(req);
+  if (!hasRbacPermission(requestContext, 'agent:run')) {
+    return sendForbidden(res, 'Feedback mutation requires agent:run');
   }
-  const lookup: FeedbackSessionLookup | null = session
-    ? { traceId: session.traceId, referenceTraceId: session.referenceTraceId }
-    : null;
-
-  const entry = enrichFeedbackEntry(sessionId, validated.value, lookup);
-  const feedbackStorage = feedbackFileForScope(feedbackKnowledgeScope);
+  const feedbackKnowledgeScope = knowledgeScopeFromRequestContext(
+    requestContext,
+  );
+  const targetRun = resolveSessionRun(session, validated.value.runId);
+  if (!targetRun) {
+    return res.status(404).json({
+      success: false,
+      error: 'Feedback run not found in session',
+    });
+  }
   const resolvedFeedbackScope = resolveKnowledgeScope(feedbackKnowledgeScope);
+  const runManifest = getRunManifestStore().getByRunId(
+    resolvedFeedbackScope,
+    targetRun.runId,
+  );
+  const targetKind = validated.value.targetKind ??
+    (validated.value.patternId
+      ? 'pattern'
+      : validated.value.caseCandidateId
+        ? 'case_candidate'
+        : 'session');
+  const targetId = validated.value.targetId ??
+    validated.value.patternId ??
+    validated.value.caseCandidateId ??
+    sessionId;
+  if (
+    validated.value.patternId &&
+    (targetKind !== 'pattern' || targetId !== validated.value.patternId)
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'patternId must identify a pattern target',
+    });
+  }
+  if (
+    validated.value.caseCandidateId &&
+    (
+      targetKind !== 'case_candidate' ||
+      targetId !== validated.value.caseCandidateId
+    )
+  ) {
+    return res.status(400).json({
+      success: false,
+      error: 'caseCandidateId must identify a case_candidate target',
+    });
+  }
+  if (targetKind === 'pattern') {
+    if (!patternExistsForFeedback(targetId, feedbackKnowledgeScope)) {
+      return res.status(404).json({success: false, error: 'Pattern not found'});
+    }
+  } else if (targetKind === 'case_candidate') {
+    const outbox = openCaseCandidateOutbox();
+    try {
+      const candidate = outbox.getCandidate(targetId);
+      const candidateScope = candidate
+        ? caseCandidateKnowledgeScope(candidate.candidate)
+        : null;
+      if (
+        !candidate ||
+        !candidateScope ||
+        candidateScope.tenantId !== resolvedFeedbackScope.tenantId ||
+        candidateScope.workspaceId !== resolvedFeedbackScope.workspaceId
+      ) {
+        return res.status(404).json({
+          success: false,
+          error: 'Case candidate not found',
+        });
+      }
+    } finally {
+      outbox.close();
+    }
+  } else if (!feedbackTargetBelongsToSession(
+    session,
+    targetKind,
+    targetId,
+    targetRun.runId,
+    runManifest,
+  )) {
+    return res.status(404).json({
+      success: false,
+      error: 'Feedback target not found in session run',
+    });
+  }
 
+  const idempotencyKey = validated.value.idempotencyKey ??
+    (typeof req.header('Idempotency-Key') === 'string'
+      ? req.header('Idempotency-Key')!
+      : randomUUID());
+  const eventInput: AppendFeedbackEventInput = {
+    kind: validated.value.eventKind ?? 'created',
+    feedbackId: validated.value.feedbackId,
+    supersedesEventId: validated.value.supersedesEventId,
+    idempotencyKey,
+    runId: targetRun.runId,
+    runManifestId: runManifest?.runManifestId,
+    sessionId,
+    rating: validated.value.rating,
+    dimensions: validated.value.dimensions,
+    comment: validated.value.comment,
+    targetKind,
+    targetId,
+    patternId: validated.value.patternId,
+    caseCandidateId: validated.value.caseCandidateId,
+    source: validated.value.source ?? 'ui',
+    actor: {
+      userId: requestContext.userId,
+      permissionSnapshot: 'agent:run',
+    },
+    scope: {
+      tenantId: resolvedFeedbackScope.tenantId,
+      workspaceId: resolvedFeedbackScope.workspaceId,
+    },
+  };
+
+  let store: FeedbackEventStore | null = null;
   try {
-    fs.mkdirSync(feedbackStorage.dir, { recursive: true });
-    fs.appendFileSync(feedbackStorage.file, JSON.stringify({
-      ...entry,
-      storageScope: {
-        tenantId: resolvedFeedbackScope.tenantId,
-        workspaceId: resolvedFeedbackScope.workspaceId,
-      },
-    }) + '\n');
+    if (sessionUsesPrivateKnowledge(session)) {
+      const persistence =
+        getSelfEvolutionLifecycleSnapshot().persistence.persistence ===
+        'available';
+      const paths = privateFeedbackStorePaths({
+        scope: eventInput.scope,
+        userId: requestContext.userId,
+        durable: persistence,
+      });
+      store = new FeedbackEventStore({
+        scope: eventInput.scope,
+        ...paths,
+      });
+      const appended = await store.append(eventInput);
+      for (const target of store.listDirtyTargets()) {
+        store.markTargetApplied(target);
+      }
+      return res.json(privateFeedbackResponse({
+        durable: appended.storage === 'durable',
+        eventId: appended.event.eventId,
+        feedbackId: appended.event.feedbackId,
+      }));
+    }
+
+    store = new FeedbackEventStore({scope: eventInput.scope});
+    const projected = await new FeedbackProjectionService({
+      store,
+      knowledgeScope: feedbackKnowledgeScope,
+    }).append(eventInput);
+    return res.json({
+      success: true,
+      schemaVersion: projected.event.schemaVersion,
+      eventId: projected.event.eventId,
+      feedbackId: projected.event.feedbackId,
+      idempotencyKey: projected.event.idempotencyKey,
+      idempotent: projected.idempotent,
+      durableFeedbackStored: true,
+      storageDisposition: 'stored_scoped',
+      patternStatus: projected.patternStatus,
+      caseCandidateFeedbackAdded:
+        projected.caseCandidateProjection?.found ?? null,
+    });
   } catch (err) {
     console.error('[Feedback] Failed to save feedback:', (err as Error).message);
-    return res.status(500).json({ success: false, error: 'Failed to save feedback' });
+    const code = (err as Error).message;
+    const conflict = code === 'legacy_feedback_not_retractable' ||
+      code.startsWith('feedback_supersedes_') ||
+      code === 'feedback_idempotency_conflict' ||
+      code === 'feedback_id_conflict';
+    return res.status(conflict ? 409 : 500).json({
+      success: false,
+      error: code,
+      idempotencyKey,
+    });
+  } finally {
+    store?.close();
   }
-
-  // Feed the rating into the pattern state machine when the client
-  // identified the pattern. Best-effort: log and continue if it fails so
-  // the JSONL audit trail is the canonical record either way.
-  let patternStatusAfter: string | null = null;
-  if (validated.value.patternId) {
-    try {
-      patternStatusAfter = await applyFeedbackToPattern(
-        validated.value.patternId,
-        validated.value.rating,
-        feedbackKnowledgeScope,
-      );
-    } catch (err) {
-      console.warn('[Feedback] Pattern state update failed:', (err as Error).message);
-    }
-  }
-
-  let caseCandidateFeedbackAdded: boolean | null = null;
-  if (validated.value.caseCandidateId) {
-    let outbox: ReturnType<typeof openCaseCandidateOutbox> | null = null;
-    try {
-      outbox = openCaseCandidateOutbox();
-      const feedbackResult = applyCaseCandidateFeedbackForRoute({
-        candidateId: validated.value.caseCandidateId,
-        sessionId,
-        rating: validated.value.rating,
-        surfacedAt: validated.value.caseCandidateSurfacedAt,
-        receivedAt: Date.parse(entry.timestamp),
-        outbox,
-        library: new CaseLibrary(backendLogPath('case_library.json')),
-        knowledgeScope: feedbackKnowledgeScope,
-      });
-      caseCandidateFeedbackAdded = feedbackResult.added;
-    } catch (err) {
-      console.warn('[Feedback] Case candidate state update failed:', (err as Error).message);
-    } finally {
-      try {
-        outbox?.close();
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-
-  res.json({
-    success: true,
-    schemaVersion: entry.schemaVersion,
-    durableFeedbackStored: true,
-    storageDisposition: 'stored_scoped',
-    patternStatus: patternStatusAfter,
-    caseCandidateFeedbackAdded,
-  });
 });
 
 /**
@@ -5053,34 +5198,6 @@ registerAgentReportRoutes(router, {
 // ============================================================================
 
 type CaseCandidateSaveFn = (input: CaseCandidateCaptureInput) => Promise<unknown>;
-
-interface ApplyCaseCandidateFeedbackForRouteInput {
-  candidateId: string;
-  sessionId: string;
-  rating: 'positive' | 'negative';
-  surfacedAt?: number;
-  receivedAt: number;
-  outbox: ReturnType<typeof openCaseCandidateOutbox>;
-  library: CaseLibrary;
-  knowledgeScope: KnowledgeScope;
-  recordFeedback?: typeof recordCaseCandidateFeedback;
-}
-
-export function applyCaseCandidateFeedbackForRoute(
-  input: ApplyCaseCandidateFeedbackForRouteInput,
-): ReturnType<typeof recordCaseCandidateFeedback> {
-  const recordFeedback = input.recordFeedback ?? recordCaseCandidateFeedback;
-  return recordFeedback({
-    candidateId: input.candidateId,
-    sourceSessionId: input.sessionId,
-    rating: input.rating,
-    surfacedAt: input.surfacedAt,
-    receivedAt: input.receivedAt,
-    outbox: input.outbox,
-    library: input.library,
-    knowledgeScope: input.knowledgeScope,
-  });
-}
 
 export interface CaptureCaseCandidatesAfterQualityArtifactsInput {
   sessionId: string;

@@ -49,6 +49,8 @@ const originalAgentRuntime = process.env.SMARTPERFETTO_AGENT_RUNTIME;
 const originalAiEnabled = process.env.SMARTPERFETTO_AI_ENABLED;
 const originalCodeAware = process.env.SMARTPERFETTO_CODE_AWARE;
 const originalOutputLanguage = process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
+const originalBackendDataDir = process.env.SMARTPERFETTO_BACKEND_DATA_DIR;
+const originalBackendLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
 
 type DeferredRuntime = {
   promise: Promise<unknown>;
@@ -202,6 +204,8 @@ afterEach(async () => {
   restoreEnvValue('SMARTPERFETTO_AI_ENABLED', originalAiEnabled);
   restoreEnvValue('SMARTPERFETTO_CODE_AWARE', originalCodeAware);
   restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
+  restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
+  restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
   sessionContextManager.remove('session-resume-integration');
 });
 
@@ -303,6 +307,107 @@ describe('agent route RBAC', () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('Forbidden');
     expect(res.body.details).toContain('agent:run');
+  });
+
+  it('enforces feedback RBAC, run ownership, and scoped event storage', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-feedback-rbac-'));
+    const deferreds: DeferredRuntime[] = [];
+    try {
+      const traceId = 'trace-feedback-rbac';
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env.SMARTPERFETTO_BACKEND_DATA_DIR = path.join(tmpDir, 'data');
+      process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(tmpDir, 'logs');
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'enterprise-data');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+
+      await writeTraceMetadata({
+        id: traceId,
+        filename: `${traceId}.trace`,
+        size: 11,
+        uploadedAt: new Date().toISOString(),
+        status: 'ready',
+        path: tracePath,
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      });
+      setTraceProcessorServiceForTests({
+        getOrLoadTrace: jest.fn(async () => ({
+          id: traceId,
+          filename: `${traceId}.trace`,
+          size: 11,
+          filePath: tracePath,
+          uploadTime: new Date(),
+          status: 'ready',
+        })),
+        getTrace: jest.fn(() => ({
+          id: traceId,
+          filename: `${traceId}.trace`,
+          size: 11,
+          filePath: tracePath,
+          uploadTime: new Date(),
+          status: 'ready',
+        })),
+        ensureProcessorForLease: jest.fn(async () => undefined),
+        runWithLease: jest.fn(() => createDeferredRuntime(deferreds).promise),
+        query: jest.fn(async () => ({columns: [], rows: [], durationMs: 1})),
+      } as any);
+
+      const app = makeApp();
+      const analyze = await analystHeaders(
+        request(app).post('/api/agent/v1/analyze'),
+      ).send({traceId, query: 'analyze for feedback'});
+      expect(analyze.status).toBe(200);
+
+      const viewerOwner = viewerHeaders(
+        request(app).post(`/api/agent/v1/${analyze.body.sessionId}/feedback`),
+      )
+        .set('X-SmartPerfetto-SSO-User-Id', 'analyst-user')
+        .send({rating: 'positive', runId: analyze.body.runId});
+      expect((await viewerOwner).status).toBe(403);
+
+      const crossWorkspace = await scopedAnalystHeaders(
+        request(app).post(`/api/agent/v1/${analyze.body.sessionId}/feedback`),
+        {userId: 'analyst-user', workspaceId: 'workspace-b'},
+      ).send({rating: 'positive', runId: analyze.body.runId});
+      expect(crossWorkspace.status).toBe(404);
+
+      const stored = await analystHeaders(
+        request(app).post(`/api/agent/v1/${analyze.body.sessionId}/feedback`),
+      )
+        .set('Idempotency-Key', 'feedback-rbac-request')
+        .send({rating: 'positive', runId: analyze.body.runId});
+      expect(stored.status).toBe(200);
+      expect(stored.body).toMatchObject({
+        success: true,
+        storageDisposition: 'stored_scoped',
+        idempotencyKey: 'feedback-rbac-request',
+      });
+      const feedbackLog = path.join(
+        tmpDir,
+        'logs',
+        'feedback',
+        'tenant-a',
+        'workspace-a',
+        'feedback.jsonl',
+      );
+      const lines = (await fs.readFile(feedbackLog, 'utf8')).trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0])).toMatchObject({
+        eventId: stored.body.eventId,
+        feedbackId: stored.body.feedbackId,
+        runId: analyze.body.runId,
+        scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+      });
+    } finally {
+      await rejectPendingDeferredRuntimes(deferreds, 'feedback test cleanup');
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
   });
 
   it('rejects analyze requests after tenant tombstone before trace access is evaluated', async () => {

@@ -1,7 +1,7 @@
 # Self-Improving 运行契约
 
 **状态**：部分能力已接入生产路径，其余组件默认关闭或尚未接入
-**最后核对**：2026-07-21
+**最后核对**：2026-07-28
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
 Self-Improving 的目标是让历史分析结果在受控边界内改善后续分析，同时不把模型输出
@@ -12,7 +12,9 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 
 | 能力 | 当前状态 | 启用边界 |
 |---|---|---|
-| Feedback 与 pattern memory | 已接入 | 分析结果、用户反馈和自动确认 sweep 使用现有存储与状态机 |
+| FeedbackEventV1 与可逆投影 | 已接入 | scope JSONL 是唯一事实源；`effective_feedback` 增量投影；private feedback 物理隔离 |
+| Pattern memory | 已接入 | `intrinsicStatus` 与 `feedbackProjectionStatus` 分离；读取 effective status |
+| Legacy FeedbackPipeline | 已退役 | 旧 `feedbackPipeline.ts` 已删除，不再存在第二套“反馈→学习产物”状态机 |
 | Curated/runtime Skill Notes 注入 | 已接入，默认关闭 | `SELF_IMPROVE_NOTES_INJECT_ENABLED=1`；quick path 预算默认 0 |
 | Case Evolution capture/review/retrieve | 已接入，全部默认关闭 | 后端启动时读取 `CASE_EVOLUTION_*`；依赖关系校验失败时会降级或拒绝 |
 | Legacy ReviewWorker | 组件和单测存在，未接入应用启动 | `SELF_IMPROVE_REVIEW_ENABLED` 只影响已显式构造的 worker |
@@ -30,7 +32,7 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 turn 和 trace 内容身份；当前主 runtime 写入 session/turn，并按 `traceFeatures` 相似度和
 可选 `bucketKey` 去重。正向、负向与 quick bucket 分开存储，避免短期经验污染长期结果。
 
-状态转换保留反馈时间语义：
+Pattern 的生命周期状态与反馈投影分开持久化。active feedback 仍保留时间语义：
 
 ```text
 provisional
@@ -42,6 +44,14 @@ provisional
 
 Quick pattern 只有在 scene/architecture/domain 相容、相似度和 insight 重合满足门槛、
 full-path 验证通过且没有负向状态时，才能创建新的长期 pattern。它不是原样搬运。
+
+反馈写入按 `(tenantId, workspaceId)` 单写者分配 sequence，先 fsync append-only
+JSONL，再推进 `effective_feedback` 与 dirty-target revision。崩溃不会回滚事实日志；
+下一次 append 或离线 `npm run self-evolution:feedback-migrate -- --rebuild` 会幂等补投影。
+旧 pattern 的当前状态一次性冻结为 `intrinsicStatus`，旧反馈不可撤销。旧
+`candidate_feedback` 表自 M2 起只作历史审计源，不再写入；迁移仅把该表中旧流程
+已接受的 `short` 行规范化追加到事实日志，旧 JSONL 中的 mis-tap、重复或写库失败
+记录继续保留审计但不进入有效投影。
 
 ### Skill Notes
 

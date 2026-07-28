@@ -482,6 +482,8 @@ export type PatternStatus =
   | 'disputed'         // reverse feedback within 10s–24h window
   | 'disputed_late';   // reverse feedback >24h after first feedback
 
+export type PatternStatusMigrationSource = 'legacy_frozen' | 'native_v2';
+
 /**
  * Provenance fields linking an entry to the run that produced it.
  * Per-turn primary key allows future feedback to map back to the right entry
@@ -523,8 +525,14 @@ export interface AnalysisPatternEntry {
    * skips cross-artifact deduplication.
    */
   failureModeHash?: string;
-  /** Lifecycle state. Defaults to 'confirmed' when absent (legacy entries). */
+  /** Deprecated effective-state mirror for compatibility with older readers. */
   status?: PatternStatus;
+  /** Lifecycle state owned by creation and auto-confirm, never by feedback. */
+  intrinsicStatus?: PatternStatus;
+  /** Reversible state derived from active FeedbackEvent rows. */
+  feedbackProjectionStatus?: PatternStatus;
+  /** Whether intrinsic state was frozen from legacy storage or created native. */
+  migrationSource?: PatternStatusMigrationSource;
   /** First feedback timestamp — used to choose the `disputed` vs `disputed_late` window. */
   firstFeedbackAt?: number;
   /** Most recent feedback timestamp. */
@@ -556,8 +564,11 @@ export interface NegativePatternEntry {
   matchCount: number;
   /** Stable failure-mode hash. See AnalysisPatternEntry.failureModeHash. */
   failureModeHash?: string;
-  /** Lifecycle state. Defaults to 'confirmed' when absent (legacy entries). */
+  /** Deprecated effective-state mirror for compatibility with older readers. */
   status?: PatternStatus;
+  intrinsicStatus?: PatternStatus;
+  feedbackProjectionStatus?: PatternStatus;
+  migrationSource?: PatternStatusMigrationSource;
   firstFeedbackAt?: number;
   lastFeedbackAt?: number;
   /** Provenance fields tying this entry to the originating run. */

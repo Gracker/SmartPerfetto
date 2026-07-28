@@ -12,6 +12,18 @@
  * See docs/architecture/self-improving-design.md "Failure taxonomy 与证据边界".
  */
 
+import {
+  FEEDBACK_EVENT_KINDS,
+  FEEDBACK_NEGATIVE_DIMENSIONS,
+  FEEDBACK_POSITIVE_DIMENSIONS,
+  FEEDBACK_SOURCES,
+  FEEDBACK_TARGET_KINDS,
+  type FeedbackDimension,
+  type FeedbackEventKind,
+  type FeedbackSource,
+  type FeedbackTargetKind,
+} from '../../types/selfEvolution';
+
 const MAX_COMMENT_CHARS = 500;
 const MAX_TRACE_ID_CHARS = 200;
 const MAX_SCENE_TYPE_CHARS = 50;
@@ -21,6 +33,12 @@ const MAX_PATTERN_ID_CHARS = 100;
 const MAX_CASE_CANDIDATE_ID_CHARS = 120;
 const MAX_FINDING_ID_CHARS = 100;
 const MAX_FINDING_IDS_LENGTH = 20;
+const MAX_EVENT_ID_CHARS = 160;
+const MAX_FEEDBACK_ID_CHARS = 160;
+const MAX_IDEMPOTENCY_KEY_CHARS = 240;
+const MAX_RUN_ID_CHARS = 200;
+const MAX_TARGET_ID_CHARS = 240;
+const MAX_DIMENSIONS_LENGTH = 12;
 const SUPPORTED_SCHEMA_VERSION = 1;
 
 /**
@@ -30,7 +48,7 @@ const SUPPORTED_SCHEMA_VERSION = 1;
  * New clients may attach metadata that the backend would otherwise have to reverse-look up.
  */
 export interface FeedbackInputSchema {
-  rating: 'positive' | 'negative';
+  rating?: 'positive' | 'negative';
   comment?: string;
   turnIndex?: number;
   traceId?: string;
@@ -41,6 +59,15 @@ export interface FeedbackInputSchema {
   patternId?: string;
   caseCandidateId?: string;
   caseCandidateSurfacedAt?: number;
+  eventKind?: FeedbackEventKind;
+  feedbackId?: string;
+  supersedesEventId?: string;
+  idempotencyKey?: string;
+  runId?: string;
+  targetKind?: FeedbackTargetKind;
+  targetId?: string;
+  dimensions?: FeedbackDimension[];
+  source?: FeedbackSource;
   schemaVersion?: number;
 }
 
@@ -80,7 +107,19 @@ export type ValidationResult =
   | { ok: true; value: FeedbackInputSchema }
   | { ok: false; error: string };
 
-type StringFieldKey = 'comment' | 'traceId' | 'sceneType' | 'architecture' | 'packageName' | 'patternId' | 'caseCandidateId';
+type StringFieldKey =
+  | 'comment'
+  | 'traceId'
+  | 'sceneType'
+  | 'architecture'
+  | 'packageName'
+  | 'patternId'
+  | 'caseCandidateId'
+  | 'feedbackId'
+  | 'supersedesEventId'
+  | 'idempotencyKey'
+  | 'runId'
+  | 'targetId';
 
 const STRING_FIELDS: ReadonlyArray<{ key: StringFieldKey; max: number }> = [
   { key: 'comment', max: MAX_COMMENT_CHARS },
@@ -90,7 +129,22 @@ const STRING_FIELDS: ReadonlyArray<{ key: StringFieldKey; max: number }> = [
   { key: 'packageName', max: MAX_PACKAGE_NAME_CHARS },
   { key: 'patternId', max: MAX_PATTERN_ID_CHARS },
   { key: 'caseCandidateId', max: MAX_CASE_CANDIDATE_ID_CHARS },
+  { key: 'feedbackId', max: MAX_FEEDBACK_ID_CHARS },
+  { key: 'supersedesEventId', max: MAX_EVENT_ID_CHARS },
+  { key: 'idempotencyKey', max: MAX_IDEMPOTENCY_KEY_CHARS },
+  { key: 'runId', max: MAX_RUN_ID_CHARS },
+  { key: 'targetId', max: MAX_TARGET_ID_CHARS },
 ];
+
+const EVENT_KINDS = new Set<string>(FEEDBACK_EVENT_KINDS);
+const TARGET_KINDS = new Set<string>(FEEDBACK_TARGET_KINDS);
+const SOURCES = new Set<string>(FEEDBACK_SOURCES);
+const DIMENSIONS = new Set<string>([
+  ...FEEDBACK_NEGATIVE_DIMENSIONS,
+  ...FEEDBACK_POSITIVE_DIMENSIONS,
+]);
+const NEGATIVE_DIMENSIONS = new Set<string>(FEEDBACK_NEGATIVE_DIMENSIONS);
+const POSITIVE_DIMENSIONS = new Set<string>(FEEDBACK_POSITIVE_DIMENSIONS);
 
 /**
  * Validate the raw HTTP body and produce a sanitized FeedbackInputSchema.
@@ -114,11 +168,25 @@ export function validateFeedbackInput(body: unknown): ValidationResult {
     }
   }
 
-  if (raw.rating !== 'positive' && raw.rating !== 'negative') {
+  const eventKind = raw.eventKind ?? 'created';
+  if (typeof eventKind !== 'string' || !EVENT_KINDS.has(eventKind)) {
+    return {ok: false, error: 'eventKind must be "created", "replaced", or "retracted"'};
+  }
+
+  if (eventKind === 'retracted') {
+    if (raw.rating !== undefined || raw.dimensions !== undefined) {
+      return {ok: false, error: 'retracted feedback must not include rating or dimensions'};
+    }
+  } else if (raw.rating !== 'positive' && raw.rating !== 'negative') {
     return { ok: false, error: 'rating must be "positive" or "negative"' };
   }
 
-  const value: FeedbackInputSchema = { rating: raw.rating };
+  const value: FeedbackInputSchema = {
+    ...(raw.rating === 'positive' || raw.rating === 'negative'
+      ? {rating: raw.rating}
+      : {}),
+    eventKind: eventKind as FeedbackEventKind,
+  };
 
   for (const { key, max } of STRING_FIELDS) {
     const v = raw[key];
@@ -162,6 +230,66 @@ export function validateFeedbackInput(body: unknown): ValidationResult {
     value.findingIds = cleaned;
   }
 
+  if (raw.targetKind !== undefined) {
+    if (typeof raw.targetKind !== 'string' || !TARGET_KINDS.has(raw.targetKind)) {
+      return {ok: false, error: 'targetKind is not supported'};
+    }
+    value.targetKind = raw.targetKind as FeedbackTargetKind;
+  }
+
+  if (raw.source !== undefined) {
+    if (typeof raw.source !== 'string' || !SOURCES.has(raw.source)) {
+      return {ok: false, error: 'source must be "ui", "cli", or "api"'};
+    }
+    value.source = raw.source as FeedbackSource;
+  }
+
+  if (raw.dimensions !== undefined) {
+    if (!Array.isArray(raw.dimensions)) {
+      return {ok: false, error: 'dimensions must be an array'};
+    }
+    const dimensions: FeedbackDimension[] = [];
+    for (const dimension of raw.dimensions) {
+      if (typeof dimension !== 'string' || !DIMENSIONS.has(dimension)) {
+        return {ok: false, error: `unsupported feedback dimension: ${String(dimension)}`};
+      }
+      if (!dimensions.includes(dimension as FeedbackDimension)) {
+        dimensions.push(dimension as FeedbackDimension);
+      }
+      if (dimensions.length >= MAX_DIMENSIONS_LENGTH) break;
+    }
+    value.dimensions = dimensions;
+  }
+
+  if (eventKind !== 'created') {
+    if (!value.feedbackId || !value.supersedesEventId) {
+      return {
+        ok: false,
+        error: `${eventKind} feedback requires feedbackId and supersedesEventId`,
+      };
+    }
+  } else {
+    if (value.feedbackId) {
+      return {ok: false, error: 'created feedbackId is server-assigned'};
+    }
+    if (value.supersedesEventId) {
+      return {ok: false, error: 'created feedback must not include supersedesEventId'};
+    }
+  }
+
+  if (
+    value.rating &&
+    value.dimensions?.some(dimension =>
+      value.rating === 'positive'
+        ? !POSITIVE_DIMENSIONS.has(dimension)
+        : !NEGATIVE_DIMENSIONS.has(dimension))
+  ) {
+    return {
+      ok: false,
+      error: `dimensions must match ${value.rating} feedback`,
+    };
+  }
+
   return { ok: true, value };
 }
 
@@ -177,6 +305,9 @@ export function enrichFeedbackEntry(
   session: SessionLookup | null,
   now: Date = new Date(),
 ): EnrichedFeedbackEntry {
+  if (!input.rating) {
+    throw new Error('feedback_rating_required_for_enrichment');
+  }
   let enrichedFromSession = false;
 
   let traceId = input.traceId;

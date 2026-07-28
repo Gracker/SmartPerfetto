@@ -116,6 +116,99 @@ describe('validateFeedbackInput', () => {
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.findingIds?.[0].length).toBe(100);
   });
+
+  it('accepts a closed replaced-event payload', () => {
+    const result = validateFeedbackInput({
+      eventKind: 'replaced',
+      feedbackId: 'feedback-1',
+      supersedesEventId: 'event-1',
+      idempotencyKey: 'request-2',
+      runId: 'run-1',
+      rating: 'negative',
+      dimensions: ['wrong_conclusion', 'insufficient_evidence'],
+      targetKind: 'finding',
+      targetId: 'finding-1',
+      source: 'api',
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        eventKind: 'replaced',
+        feedbackId: 'feedback-1',
+        supersedesEventId: 'event-1',
+        dimensions: ['wrong_conclusion', 'insufficient_evidence'],
+      },
+    });
+  });
+
+  it('requires a chain head for replacement and retraction', () => {
+    expect(validateFeedbackInput({
+      eventKind: 'replaced',
+      rating: 'negative',
+    })).toMatchObject({ok: false});
+    expect(validateFeedbackInput({
+      eventKind: 'retracted',
+      feedbackId: 'feedback-1',
+    })).toMatchObject({ok: false});
+  });
+
+  it('forbids rating payload on a retraction', () => {
+    expect(validateFeedbackInput({
+      eventKind: 'retracted',
+      feedbackId: 'feedback-1',
+      supersedesEventId: 'event-1',
+      rating: 'positive',
+    })).toMatchObject({
+      ok: false,
+      error: expect.stringContaining('must not include rating'),
+    });
+  });
+
+  it('rejects unknown dimensions, targets, sources, and event kinds', () => {
+    expect(validateFeedbackInput({
+      rating: 'positive',
+      dimensions: ['unknown'],
+    }).ok).toBe(false);
+    expect(validateFeedbackInput({
+      rating: 'positive',
+      targetKind: 'unknown',
+    }).ok).toBe(false);
+    expect(validateFeedbackInput({
+      rating: 'positive',
+      source: 'unknown',
+    }).ok).toBe(false);
+    expect(validateFeedbackInput({
+      rating: 'positive',
+      eventKind: 'unknown',
+    }).ok).toBe(false);
+  });
+
+  it('keeps created feedback identity server-owned', () => {
+    expect(validateFeedbackInput({
+      rating: 'positive',
+      feedbackId: 'client-selected-id',
+    })).toEqual({
+      ok: false,
+      error: 'created feedbackId is server-assigned',
+    });
+  });
+
+  it('rejects dimensions whose polarity disagrees with the rating', () => {
+    expect(validateFeedbackInput({
+      rating: 'positive',
+      dimensions: ['wrong_conclusion'],
+    })).toEqual({
+      ok: false,
+      error: 'dimensions must match positive feedback',
+    });
+    expect(validateFeedbackInput({
+      rating: 'negative',
+      dimensions: ['actionable'],
+    })).toEqual({
+      ok: false,
+      error: 'dimensions must match negative feedback',
+    });
+  });
 });
 
 describe('enrichFeedbackEntry', () => {

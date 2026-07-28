@@ -122,7 +122,7 @@ describe('caseCandidateOutbox', () => {
     const migrated = openCaseCandidateOutbox({dbPath});
     try {
       const row = migrated.getCandidate(legacy.candidateId)!;
-      expect(migrated.schemaVersion()).toBe(2);
+      expect(migrated.schemaVersion()).toBe(3);
       expect(row.state).toBe('pending_review');
       expect(row.candidate.schemaVersion).toBe('case_candidate@2');
       expect(row.candidate.provenance.originScope).toEqual({
@@ -138,14 +138,16 @@ describe('caseCandidateOutbox', () => {
     }
   });
 
-  it('computes supported as a generated column', () => {
+  it('computes supported from overwrite-only effective feedback projection', () => {
     const item = candidate({candidateId: 'cand-supported'});
     const enqueued = outbox.enqueue(item, {dedupeKey: 'trace::scrolling::shader_compile'});
     expect(enqueued.enqueued).toBe(true);
 
-    outbox.addFeedback(item.candidateId, {sourceSessionId: 's1', rating: 'positive'});
-    outbox.addFeedback(item.candidateId, {sourceSessionId: 's2', rating: 'positive'});
-    outbox.addFeedback(item.candidateId, {sourceSessionId: 's3', rating: 'positive'});
+    outbox.applyFeedbackProjection(item.candidateId, [
+      {rating: 'positive'},
+      {rating: 'positive'},
+      {rating: 'positive'},
+    ]);
     expect(outbox.getCandidate(item.candidateId)!.supported).toBe(0);
 
     outbox.markReviewed(item.candidateId, {review: review(item.candidateId), notePath: 'logs/case_candidates/cand-supported.json'});
@@ -204,13 +206,122 @@ describe('caseCandidateOutbox', () => {
     expect(row.lastError).toBe('fatal');
   });
 
-  it('rejects duplicate feedback for the same candidate and source session', () => {
+  it('keeps the legacy candidate_feedback table read-only', () => {
     outbox.enqueue(candidate({candidateId: 'cand-feedback'}), {dedupeKey: 'feedback'});
-    expect(outbox.addFeedback('cand-feedback', {sourceSessionId: 'source-session', rating: 'positive'})).toMatchObject({added: true});
     expect(outbox.addFeedback('cand-feedback', {sourceSessionId: 'source-session', rating: 'positive'})).toMatchObject({
       added: false,
-      reason: 'duplicate',
+      reason: 'legacy_read_only',
     });
+    expect(outbox.legacyFeedbackStats()).toEqual({
+      totalPositive: 0,
+      totalNegative: 0,
+      distinctSessions: 0,
+    });
+  });
+
+  it('exports only legacy feedback rows accepted into candidate counts', () => {
+    const dir = fs.mkdtempSync(path.join(
+      os.tmpdir(),
+      'smartperfetto-case-feedback-migration-',
+    ));
+    const dbPath = path.join(dir, 'case-evolution.db');
+    const persisted = openCaseCandidateOutbox({dbPath});
+    const item = candidate({candidateId: 'cand-legacy-feedback'});
+    persisted.enqueue(item, {dedupeKey: 'legacy-feedback'});
+    persisted.close();
+
+    const raw = new Database(dbPath);
+    const insert = raw.prepare(`
+      INSERT INTO candidate_feedback (
+        candidate_id, source_session_id, source_analysis_run_id, rating,
+        received_at, received_within_seconds, within_time_window, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+    `);
+    insert.run(
+      item.candidateId,
+      'session-accepted',
+      'run-1',
+      'positive',
+      20_000,
+      20,
+      'short',
+    );
+    insert.run(
+      item.candidateId,
+      'session-audit-only',
+      'run-1',
+      'negative',
+      90_000_000,
+      90_000,
+      'audit_only',
+    );
+    raw.close();
+
+    const reopened = openCaseCandidateOutbox({dbPath});
+    try {
+      expect(reopened.listAcceptedLegacyFeedback({
+        tenantId: 'default-dev-tenant',
+        workspaceId: 'default-workspace',
+      })).toEqual([{
+        sourceRowId: 1,
+        candidateId: item.candidateId,
+        sourceSessionId: 'session-accepted',
+        sourceAnalysisRunId: 'run-1',
+        rating: 'positive',
+        receivedAt: 20_000,
+      }]);
+      expect(reopened.listAcceptedLegacyFeedback({
+        tenantId: 'other-tenant',
+        workspaceId: 'default-workspace',
+      })).toEqual([]);
+    } finally {
+      reopened.close();
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
+  });
+
+  it('reverses feedback-only rejection without changing intrinsic governance state', () => {
+    const item = candidate({candidateId: 'cand-reversible'});
+    outbox.enqueue(item, {dedupeKey: 'reversible'});
+    outbox.markReviewed(item.candidateId, {review: review(item.candidateId)});
+
+    expect(outbox.applyFeedbackProjection(item.candidateId, [
+      {rating: 'negative'},
+      {rating: 'negative'},
+    ])).toMatchObject({rejected: true});
+    expect(outbox.getCandidate(item.candidateId)).toMatchObject({
+      state: 'rejected',
+      intrinsicState: 'reviewed',
+      feedbackProjectionRejected: true,
+    });
+
+    outbox.applyFeedbackProjection(item.candidateId, []);
+    expect(outbox.getCandidate(item.candidateId)).toMatchObject({
+      state: 'reviewed',
+      intrinsicState: 'reviewed',
+      feedbackProjectionRejected: false,
+    });
+  });
+
+  it('keeps reversible rejected candidates in the active dedupe set', () => {
+    const first = candidate({candidateId: 'cand-reversible-dedupe'});
+    const duplicate = candidate({candidateId: 'cand-reversible-duplicate'});
+    outbox.enqueue(first, {dedupeKey: 'reversible-dedupe'});
+    outbox.applyFeedbackProjection(first.candidateId, [
+      {rating: 'negative'},
+      {rating: 'negative'},
+    ]);
+
+    expect(outbox.enqueue(duplicate, {
+      dedupeKey: 'reversible-dedupe',
+    })).toMatchObject({
+      enqueued: false,
+      reason: 'duplicate_active',
+    });
+    expect(outbox.applyFeedbackProjection(first.candidateId, []))
+      .toMatchObject({found: true, rejected: false});
+    expect(outbox.getCandidate(first.candidateId)?.state)
+      .toBe('pending_review');
   });
 
   // MAJOR-5 regression: after one worker has leased the only pending row, a

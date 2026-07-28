@@ -35,6 +35,14 @@ import type {
   SelfEvolutionLifecycleSnapshot,
   SelfEvolutionMetrics,
 } from '../../types/selfEvolution';
+import {
+  FeedbackEventStore,
+  publicFeedbackIndexPath,
+} from '../../services/selfEvolution/feedbackEventStore';
+import {
+  resolveKnowledgeScope,
+  type KnowledgeScope,
+} from '../../services/scopedKnowledgeStore';
 
 const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
 const NEGATIVE_PATTERNS_FILE = backendLogPath('analysis_negative_patterns.json');
@@ -87,6 +95,8 @@ export function collectSelfImproveMetrics(opts: {
   negativePatternsFile?: string;
   quickPatternsFile?: string;
   feedbackFile?: string;
+  feedbackStore?: Pick<FeedbackEventStore, 'effectiveStats' | 'close'>;
+  knowledgeScope?: KnowledgeScope;
   skillNotesDir?: string;
   curatedSkillNotesDir?: string;
   reviewOutboxDbPath?: string;
@@ -129,7 +139,13 @@ export function collectSelfImproveMetrics(opts: {
     opts.curatedSkillNotesDir ?? CURATED_SKILL_NOTES_DIR,
     warnings,
   );
-  const feedback = countFeedback(opts.feedbackFile ?? FEEDBACK_FILE, warnings);
+  const feedback = opts.feedbackFile
+    ? countFeedback(opts.feedbackFile, warnings)
+    : countEffectiveFeedback(
+        opts.feedbackStore,
+        opts.knowledgeScope,
+        warnings,
+      );
 
   return {
     collectedAt: Date.now(),
@@ -148,6 +164,42 @@ export function collectSelfImproveMetrics(opts: {
     ),
     warnings,
   };
+}
+
+function countEffectiveFeedback(
+  injectedStore: Pick<FeedbackEventStore, 'effectiveStats' | 'close'> | undefined,
+  knowledgeScope: KnowledgeScope | undefined,
+  warnings: string[],
+): FeedbackMetrics {
+  if (!injectedStore && !fs.existsSync(publicFeedbackIndexPath())) {
+    return countFeedback(FEEDBACK_FILE, warnings);
+  }
+  let store = injectedStore;
+  const close = !store;
+  try {
+    if (!store) {
+      const scope = resolveKnowledgeScope(knowledgeScope);
+      store = new FeedbackEventStore({
+        scope: {
+          tenantId: scope.tenantId,
+          workspaceId: scope.workspaceId,
+        },
+      });
+    }
+    const stats = store.effectiveStats();
+    return {
+      total: stats.totalPositive + stats.totalNegative,
+      positive: stats.totalPositive,
+      negative: stats.totalNegative,
+    };
+  } catch (err) {
+    warnings.push(`failed to read effective feedback: ${(err as Error).message}`);
+    return {total: 0, positive: 0, negative: 0};
+  } finally {
+    if (close) {
+      try { store?.close(); } catch { /* ignore */ }
+    }
+  }
 }
 
 function selfEvolutionMetrics(

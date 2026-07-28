@@ -15,6 +15,14 @@ import {
 import { LEARNED_CASE_SOURCE } from './caseCandidateIngester';
 import { loadCaseEvolutionConfig } from './caseEvolutionConfig';
 import { getCaseEvolutionRuntimeMetrics } from './caseEvolutionRuntimeMetrics';
+import {
+  FeedbackEventStore,
+  publicFeedbackIndexPath,
+} from '../selfEvolution/feedbackEventStore';
+import {
+  resolveKnowledgeScope,
+  type KnowledgeScope,
+} from '../scopedKnowledgeStore';
 
 const DEFAULT_DB_PATH = backendDataPath('self_improve', 'case_evolution.db');
 const DEFAULT_SIDECAR_DIR = backendLogPath('case_candidates');
@@ -68,9 +76,11 @@ export interface CollectCaseEvolutionMetricsOptions {
   caseLibraryPath?: string;
   caseLibrary?: Pick<CaseLibrary, 'listCases'>;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
+  knowledgeScope?: KnowledgeScope;
+  feedbackStore?: Pick<FeedbackEventStore, 'effectiveStats' | 'close'>;
   outbox?: Pick<
     CaseCandidateOutboxHandle,
-    'countCandidatesByState' | 'countSupported' | 'dailyCounts' | 'workerHealth' | 'feedbackStats' | 'close'
+    'countCandidatesByState' | 'countSupported' | 'dailyCounts' | 'workerHealth' | 'close'
   >;
 }
 
@@ -97,12 +107,28 @@ export function collectCaseEvolutionMetrics(
       supported = outbox.countSupported();
       daily = outbox.dailyCounts(now);
       workerHealth = outbox.workerHealth();
-      feedback = outbox.feedbackStats();
     } catch (err) {
       warnings.push(`failed to read case_evolution outbox: ${errorMessage(err)}`);
     } finally {
       if (closeOutbox) {
         try { outbox.close(); } catch { /* ignore */ }
+      }
+    }
+  }
+
+  const feedbackStore = opts.feedbackStore ?? openFeedbackStoreIfPresent(
+    opts.knowledgeScope,
+    warnings,
+  );
+  const closeFeedbackStore = !opts.feedbackStore && !!feedbackStore;
+  if (feedbackStore) {
+    try {
+      feedback = feedbackStore.effectiveStats('case_candidate');
+    } catch (err) {
+      warnings.push(`failed to read effective feedback: ${errorMessage(err)}`);
+    } finally {
+      if (closeFeedbackStore) {
+        try { feedbackStore.close(); } catch { /* ignore */ }
       }
     }
   }
@@ -144,6 +170,25 @@ export function collectCaseEvolutionMetrics(
     flags,
     warnings,
   };
+}
+
+function openFeedbackStoreIfPresent(
+  knowledgeScope: KnowledgeScope | undefined,
+  warnings: string[],
+): FeedbackEventStore | null {
+  if (!fs.existsSync(publicFeedbackIndexPath())) return null;
+  try {
+    const scope = resolveKnowledgeScope(knowledgeScope);
+    return new FeedbackEventStore({
+      scope: {
+        tenantId: scope.tenantId,
+        workspaceId: scope.workspaceId,
+      },
+    });
+  } catch (err) {
+    warnings.push(`failed to open feedback projection: ${errorMessage(err)}`);
+    return null;
+  }
 }
 
 function countLearnedCases(

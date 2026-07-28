@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 import type { CaseCandidate, CaseCandidateReview } from '../../../types/caseEvolution';
 import { CaseLibrary } from '../../caseLibrary';
 import { openCaseCandidateOutbox, type CaseCandidateOutboxHandle } from '../caseCandidateOutbox';
-import { recordCaseCandidateFeedback } from '../caseCandidateFeedback';
+import { syncCaseCandidateFeedbackProjection } from '../caseCandidateFeedback';
 
 let outbox: CaseCandidateOutboxHandle;
 let library: CaseLibrary;
@@ -127,81 +127,129 @@ function seedReviewedCase() {
   });
 }
 
-describe('recordCaseCandidateFeedback', () => {
-  it('ignores mis-taps under ten seconds', () => {
+function feedback(
+  ratings: Array<'positive' | 'negative'>,
+): any[] {
+  return ratings.map((rating, index) => ({
+    feedbackId: `feedback-${index}`,
+    currentEventId: `event-${index}`,
+    sequence: index + 1,
+    legacy: false,
+    runId: 'run-1',
+    sessionId: `session-${index}`,
+    rating,
+    dimensions: [],
+    targetKind: 'case_candidate',
+    targetId: 'cand-feedback-1',
+    caseCandidateId: 'cand-feedback-1',
+    source: 'ui',
+    actor: {userId: 'user-1'},
+    scope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
+    timestamp: new Date(20_000 + index).toISOString(),
+  }));
+}
+
+describe('syncCaseCandidateFeedbackProjection', () => {
+  it('marks a learned case supported after three active positives', () => {
     seedReviewedCase();
 
-    const result = recordCaseCandidateFeedback({
+    const result = syncCaseCandidateFeedbackProjection({
       candidateId: 'cand-feedback-1',
-      sourceSessionId: 'session-a',
-      rating: 'positive',
-      surfacedAt: 1_000,
-      receivedAt: 5_000,
+      feedback: feedback(['positive', 'positive', 'positive']),
       outbox,
       library,
       knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
     });
 
-    expect(result).toMatchObject({ added: false, reason: 'mis_tap' });
-    expect(outbox.getCandidate('cand-feedback-1')?.supportingEvidence).toBe(0);
-  });
-
-  it('marks a learned case supported after three distinct positive sessions', () => {
-    seedReviewedCase();
-
-    for (const sourceSessionId of ['a', 'b', 'c']) {
-      expect(recordCaseCandidateFeedback({
-        candidateId: 'cand-feedback-1',
-        sourceSessionId,
-        rating: 'positive',
-        surfacedAt: 1_000,
-        receivedAt: 20_000,
-        outbox,
-        library,
-        knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
-      }).added).toBe(true);
-    }
-
+    expect(result).toMatchObject({found: true, supported: true});
     expect(outbox.getCandidate('cand-feedback-1')?.supported).toBe(1);
     expect(library.getCase('learned:cand-feedback')?.knowledge?.context['caseEvolution.v1']).toMatchObject({
       supportingEvidence: 3,
       supported: true,
     });
+    const firstMarker = library.getCase('learned:cand-feedback')
+      ?.knowledge?.context['caseEvolution.v1'] as Record<string, unknown>;
+
+    syncCaseCandidateFeedbackProjection({
+      candidateId: 'cand-feedback-1',
+      feedback: feedback(['positive', 'positive', 'positive']),
+      outbox,
+      library,
+      knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
+    });
+    const retriedMarker = library.getCase('learned:cand-feedback')
+      ?.knowledge?.context['caseEvolution.v1'] as Record<string, unknown>;
+    expect(retriedMarker.supportedAt).toBe(firstMarker.supportedAt);
+
+    syncCaseCandidateFeedbackProjection({
+      candidateId: 'cand-feedback-1',
+      feedback: [],
+      outbox,
+      library,
+      knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
+    });
+    expect(library.getCase('learned:cand-feedback')
+      ?.knowledge?.context['caseEvolution.v1']).not.toHaveProperty('supportedAt');
   });
 
-  it('rejects the candidate and demotes its CaseNode to private after two negatives', () => {
+  it('retracts feedback-only rejection and restores the prior Case status', () => {
     seedReviewedCase();
 
-    for (const sourceSessionId of ['a', 'b']) {
-      recordCaseCandidateFeedback({
-        candidateId: 'cand-feedback-1',
-        sourceSessionId,
-        rating: 'negative',
-        surfacedAt: 1_000,
-        receivedAt: 20_000,
-        outbox,
-        library,
-        knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
-      });
-    }
-
-    expect(outbox.getCandidate('cand-feedback-1')?.state).toBe('rejected');
+    syncCaseCandidateFeedbackProjection({
+      candidateId: 'cand-feedback-1',
+      feedback: feedback(['negative', 'negative']),
+      outbox,
+      library,
+      knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
+    });
+    expect(outbox.getCandidate('cand-feedback-1')).toMatchObject({
+      state: 'rejected',
+      intrinsicState: 'reviewed',
+    });
     expect(library.getCase('learned:cand-feedback')?.status).toBe('private');
+
+    syncCaseCandidateFeedbackProjection({
+      candidateId: 'cand-feedback-1',
+      feedback: [],
+      outbox,
+      library,
+      knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
+    });
+    expect(outbox.getCandidate('cand-feedback-1')?.state).toBe('reviewed');
+    expect(library.getCase('learned:cand-feedback')?.status).toBe('draft');
   });
 
   it('rejects feedback from another tenant before mutating counters', () => {
     seedReviewedCase();
-    const result = recordCaseCandidateFeedback({
+    const result = syncCaseCandidateFeedbackProjection({
       candidateId: 'cand-feedback-1',
-      sourceSessionId: 'cross-tenant',
-      rating: 'positive',
-      receivedAt: 20_000,
+      feedback: feedback(['positive']),
       outbox,
       library,
       knowledgeScope: {tenantId: 'tenant-b', workspaceId: 'default-workspace'},
     });
 
-    expect(result).toEqual({added: false, reason: 'scope_mismatch'});
+    expect(result).toMatchObject({found: false, reason: 'scope_mismatch'});
     expect(outbox.getCandidate('cand-feedback-1')?.supportingEvidence).toBe(0);
+  });
+
+  it('updates published Case evidence without changing published governance', () => {
+    seedReviewedCase();
+    library.publishCase('learned:cand-feedback', {reviewer: 'maintainer'});
+
+    syncCaseCandidateFeedbackProjection({
+      candidateId: 'cand-feedback-1',
+      feedback: feedback(['negative', 'negative']),
+      outbox,
+      library,
+      knowledgeScope: {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'},
+    });
+
+    const published = library.getCase('learned:cand-feedback');
+    expect(published?.status).toBe('published');
+    expect(published?.knowledge?.context['caseEvolution.v1']).toMatchObject({
+      contradictingEvidence: 2,
+      feedbackProjectionRejected: true,
+    });
   });
 });

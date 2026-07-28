@@ -98,6 +98,7 @@
     "case-evolution:rederive": "tsx src/services/caseEvolution/caseEvolutionRederiveCli.ts",
     "case-evolution:retract": "tsx src/services/caseEvolution/caseEvolutionRetractCli.ts",
     "self-improve:migrate-failure-mode-hash": "tsx src/agentv3/selfImprove/migrateFailureModeHash.ts",
+    "self-evolution:feedback-migrate": "tsx src/services/selfEvolution/feedbackMigrationCli.ts",
     "skill:test": "tsx src/cli/index.ts test",
     "skill:smoke": "tsx src/cli/index.ts smoke",
     "skill:list": "tsx src/cli/index.ts list",

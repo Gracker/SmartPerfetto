@@ -7,7 +7,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { backendDataPath } from '../../runtimePaths';
 import type { CaseCandidate, CaseCandidateReview, CaseCandidateState } from '../../types/caseEvolution';
+import type {EffectiveFeedbackV1} from '../../types/selfEvolution';
 import {resolveKnowledgeScope} from '../scopedKnowledgeStore';
+import type {KnowledgeScope} from '../scopedKnowledgeStore';
+import {caseCandidateKnowledgeScope} from './caseCandidateBuilder';
 
 export interface CaseCandidateOutboxOptions {
   dbPath?: string;
@@ -29,6 +32,8 @@ export interface EnqueueCaseCandidateResult {
 export interface LeasedCaseCandidate {
   candidateId: string;
   state: CaseCandidateState;
+  intrinsicState: CaseCandidateState;
+  feedbackProjectionRejected: boolean;
   dedupeKey: string;
   priority: number;
   attempts: number;
@@ -59,10 +64,27 @@ export interface AddCandidateFeedbackInput {
 
 export interface AddCandidateFeedbackResult {
   added: boolean;
-  reason?: 'duplicate' | 'error';
+  reason?: 'duplicate' | 'error' | 'legacy_read_only';
 }
 
-const SCHEMA_VERSION_LATEST = 2;
+export interface CandidateFeedbackProjectionResult {
+  found: boolean;
+  supportingEvidence: number;
+  contradictingEvidence: number;
+  rejected: boolean;
+  supported: boolean;
+}
+
+export interface AcceptedLegacyCandidateFeedback {
+  sourceRowId: number;
+  candidateId: string;
+  sourceSessionId: string;
+  sourceAnalysisRunId?: string;
+  rating: 'positive' | 'negative';
+  receivedAt: number;
+}
+
+const SCHEMA_VERSION_LATEST = 3;
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
@@ -158,6 +180,7 @@ function applyPendingMigrations(db: Database.Database): void {
     createSchema();
   }
   if (!applied.has(2)) migrateLegacyCandidateScopes(db);
+  if (!applied.has(3)) migrateCandidateFeedbackProjection(db);
 }
 
 function migrateLegacyCandidateScopes(db: Database.Database): void {
@@ -223,10 +246,41 @@ function migrateLegacyCandidateScopes(db: Database.Database): void {
   migrate();
 }
 
+function migrateCandidateFeedbackProjection(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    const columns = db.pragma('table_info(case_candidates)') as Array<{name: string}>;
+    if (!columns.some(column => column.name === 'feedback_projection_rejected')) {
+      db.exec(`
+        ALTER TABLE case_candidates
+        ADD COLUMN feedback_projection_rejected INTEGER NOT NULL DEFAULT 0
+          CHECK(feedback_projection_rejected IN (0,1));
+      `);
+    }
+    db.exec(`
+      DROP INDEX IF EXISTS idx_candidates_dedupe_active;
+      CREATE UNIQUE INDEX idx_candidates_dedupe_active
+        ON case_candidates(dedupe_key)
+        WHERE state IN ('pending_review','reviewed');
+      CREATE INDEX IF NOT EXISTS idx_candidates_feedback_projection
+        ON case_candidates(feedback_projection_rejected, state);
+    `);
+    db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+      3,
+      Date.now(),
+    );
+  });
+  migrate();
+}
+
 function rowToCandidate(row: Record<string, unknown>): LeasedCaseCandidate {
+  const intrinsicState = row.state as CaseCandidateState;
+  const feedbackProjectionRejected =
+    Number(row.feedback_projection_rejected || 0) === 1;
   return {
     candidateId: String(row.candidate_id),
-    state: row.state as CaseCandidateState,
+    state: feedbackProjectionRejected ? 'rejected' : intrinsicState,
+    intrinsicState,
+    feedbackProjectionRejected,
     dedupeKey: String(row.dedupe_key),
     priority: Number(row.priority || 0),
     attempts: Number(row.attempts || 0),
@@ -237,7 +291,7 @@ function rowToCandidate(row: Record<string, unknown>): LeasedCaseCandidate {
     supportingEvidence: Number(row.supporting_evidence || 0),
     contradictingEvidence: Number(row.contradicting_evidence || 0),
     maintainerPromoted: Number(row.maintainer_promoted || 0),
-    supported: Number(row.supported || 0),
+    supported: feedbackProjectionRejected ? 0 : Number(row.supported || 0),
     learnedCaseId: row.learned_case_id as string | null,
     candidate: JSON.parse(String(row.payload_json)) as CaseCandidate,
     review: row.review_json ? JSON.parse(String(row.review_json)) as CaseCandidateReview : null,
@@ -302,6 +356,7 @@ export class CaseCandidateOutboxHandle {
       const row = this.db.prepare(`
         SELECT candidate_id FROM case_candidates
         WHERE state = 'pending_review'
+          AND feedback_projection_rejected = 0
           AND lease_owner IS NULL
           AND attempts < ?
         ORDER BY priority DESC, created_at ASC
@@ -321,7 +376,9 @@ export class CaseCandidateOutboxHandle {
             lease_until = ?,
             attempts = attempts + 1,
             updated_at = ?
-        WHERE candidate_id = ? AND state = 'pending_review' AND lease_owner IS NULL
+        WHERE candidate_id = ? AND state = 'pending_review'
+          AND feedback_projection_rejected = 0
+          AND lease_owner IS NULL
       `).run(input.workerOwner, leaseUntil, now, row.candidate_id);
       if (claim.changes !== 1) return null;
       return this.db.prepare('SELECT * FROM case_candidates WHERE candidate_id = ?').get(row.candidate_id) as Record<string, unknown>;
@@ -404,46 +461,68 @@ export class CaseCandidateOutboxHandle {
   }
 
   addFeedback(candidateId: string, input: AddCandidateFeedbackInput): AddCandidateFeedbackResult {
-    const tx = this.db.transaction(() => {
-      const effectiveWindow = input.withinTimeWindow ?? 'short';
+    void candidateId;
+    void input;
+    return {added: false, reason: 'legacy_read_only'};
+  }
+
+  applyFeedbackProjection(
+    candidateId: string,
+    feedback: readonly Pick<EffectiveFeedbackV1, 'rating'>[],
+  ): CandidateFeedbackProjectionResult {
+    const supportingEvidence = feedback.reduce(
+      (count, row) => count + (row.rating === 'positive' ? 1 : 0),
+      0,
+    );
+    const contradictingEvidence = feedback.length - supportingEvidence;
+    const rejected = contradictingEvidence >= 2;
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`
+        SELECT state, maintainer_promoted
+        FROM case_candidates
+        WHERE candidate_id = ?
+      `).get(candidateId) as {
+        state: CaseCandidateState;
+        maintainer_promoted: number;
+      } | undefined;
+      if (!row) {
+        return {
+          found: false,
+          supportingEvidence: 0,
+          contradictingEvidence: 0,
+          rejected: false,
+          supported: false,
+        };
+      }
       this.db.prepare(`
-        INSERT INTO candidate_feedback (
-          candidate_id,
-          source_session_id,
-          source_analysis_run_id,
-          rating,
-          received_at,
-          received_within_seconds,
-          within_time_window,
-          metadata_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        UPDATE case_candidates
+        SET supporting_evidence = ?,
+            contradicting_evidence = ?,
+            feedback_projection_rejected = ?,
+            lease_owner = CASE WHEN ? = 1 THEN NULL ELSE lease_owner END,
+            lease_until = CASE WHEN ? = 1 THEN NULL ELSE lease_until END,
+            updated_at = ?
+        WHERE candidate_id = ?
       `).run(
+        supportingEvidence,
+        contradictingEvidence,
+        rejected ? 1 : 0,
+        rejected ? 1 : 0,
+        rejected ? 1 : 0,
+        Date.now(),
         candidateId,
-        input.sourceSessionId,
-        input.sourceAnalysisRunId ?? null,
-        input.rating,
-        input.receivedAt ?? Date.now(),
-        input.receivedWithinSeconds ?? null,
-        effectiveWindow,
-        input.metadata ? JSON.stringify(input.metadata) : null,
       );
-      if (effectiveWindow === 'short') {
-        const column = input.rating === 'positive' ? 'supporting_evidence' : 'contradicting_evidence';
-        this.db.prepare(`
-          UPDATE case_candidates SET ${column} = ${column} + 1, updated_at = ? WHERE candidate_id = ?
-        `).run(Date.now(), candidateId);
-      }
-    });
-    try {
-      tx();
-      return {added: true};
-    } catch (err) {
-      if ((err as {code?: string}).code === 'SQLITE_CONSTRAINT_UNIQUE') {
-        return {added: false, reason: 'duplicate'};
-      }
-      console.error('[CaseCandidateOutbox] addFeedback failed:', (err as Error).message);
-      return {added: false, reason: 'error'};
-    }
+      const supported = !rejected &&
+        row.state === 'reviewed' &&
+        (row.maintainer_promoted === 1 || supportingEvidence >= 3);
+      return {
+        found: true,
+        supportingEvidence,
+        contradictingEvidence,
+        rejected,
+        supported,
+      };
+    })();
   }
 
   getCandidate(candidateId: string): LeasedCaseCandidate | null {
@@ -452,15 +531,13 @@ export class CaseCandidateOutboxHandle {
   }
 
   listCandidates(opts: {states?: CaseCandidateState[]} = {}): LeasedCaseCandidate[] {
-    const states = opts.states;
-    const rows = states && states.length > 0
-      ? this.db.prepare(`
-          SELECT * FROM case_candidates
-          WHERE state IN (${states.map(() => '?').join(',')})
-          ORDER BY candidate_id
-        `).all(...states) as Array<Record<string, unknown>>
-      : this.db.prepare('SELECT * FROM case_candidates ORDER BY candidate_id').all() as Array<Record<string, unknown>>;
-    return rows.map(rowToCandidate);
+    const rows = this.db.prepare(
+      'SELECT * FROM case_candidates ORDER BY candidate_id',
+    ).all() as Array<Record<string, unknown>>;
+    const candidates = rows.map(rowToCandidate);
+    return opts.states && opts.states.length > 0
+      ? candidates.filter(candidate => opts.states!.includes(candidate.state))
+      : candidates;
   }
 
   countCandidatesByState(): Record<CaseCandidateState, number> {
@@ -470,13 +547,16 @@ export class CaseCandidateOutboxHandle {
       rejected: 0,
       archived: 0,
     };
-    const rows = this.db.prepare('SELECT state, COUNT(*) AS count FROM case_candidates GROUP BY state').all() as Array<{state: CaseCandidateState; count: number}>;
-    for (const row of rows) counts[row.state] = row.count;
+    for (const candidate of this.listCandidates()) counts[candidate.state] += 1;
     return counts;
   }
 
   countSupported(): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS count FROM case_candidates WHERE supported = 1').get() as {count: number};
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM case_candidates
+      WHERE supported = 1 AND feedback_projection_rejected = 0
+    `).get() as {count: number};
     return row.count;
   }
 
@@ -487,7 +567,8 @@ export class CaseCandidateOutboxHandle {
         SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END) AS todayEnqueued,
         SUM(CASE WHEN state = 'reviewed' AND updated_at >= ? THEN 1 ELSE 0 END) AS todayReviewed,
         SUM(CASE WHEN learned_case_id IS NOT NULL AND updated_at >= ? THEN 1 ELSE 0 END) AS todayIngested,
-        SUM(CASE WHEN state = 'rejected' AND updated_at >= ? THEN 1 ELSE 0 END) AS todayFailed
+        SUM(CASE WHEN (state = 'rejected' OR feedback_projection_rejected = 1)
+          AND updated_at >= ? THEN 1 ELSE 0 END) AS todayFailed
       FROM case_candidates
     `).get(since, since, since, since) as {todayEnqueued: number | null; todayReviewed: number | null; todayIngested: number | null; todayFailed: number | null};
     return {
@@ -504,7 +585,9 @@ export class CaseCandidateOutboxHandle {
     for (const row of rows) attemptsHistogram[row.attempts] = row.count;
     const leased = this.db.prepare(`
       SELECT COUNT(*) AS count FROM case_candidates
-      WHERE state = 'pending_review' AND lease_owner IS NOT NULL
+      WHERE state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner IS NOT NULL
     `).get() as {count: number};
     return {
       pending: this.pendingCount(),
@@ -513,7 +596,7 @@ export class CaseCandidateOutboxHandle {
     };
   }
 
-  feedbackStats(): {totalPositive: number; totalNegative: number; distinctSessions: number} {
+  legacyFeedbackStats(): {totalPositive: number; totalNegative: number; distinctSessions: number} {
     const row = this.db.prepare(`
       SELECT
         SUM(CASE WHEN rating = 'positive' THEN 1 ELSE 0 END) AS totalPositive,
@@ -528,6 +611,54 @@ export class CaseCandidateOutboxHandle {
     };
   }
 
+  listAcceptedLegacyFeedback(
+    scope: KnowledgeScope,
+  ): AcceptedLegacyCandidateFeedback[] {
+    const requestedScope = resolveKnowledgeScope(scope);
+    const rows = this.db.prepare(`
+      SELECT
+        feedback.id AS sourceRowId,
+        feedback.candidate_id AS candidateId,
+        feedback.source_session_id AS sourceSessionId,
+        feedback.source_analysis_run_id AS sourceAnalysisRunId,
+        feedback.rating,
+        feedback.received_at AS receivedAt,
+        candidates.payload_json AS candidateJson
+      FROM candidate_feedback AS feedback
+      JOIN case_candidates AS candidates
+        ON candidates.candidate_id = feedback.candidate_id
+      WHERE feedback.within_time_window = 'short'
+      ORDER BY feedback.id
+    `).all() as Array<
+      AcceptedLegacyCandidateFeedback & {candidateJson: string}
+    >;
+    return rows.flatMap(row => {
+      let candidate: CaseCandidate;
+      try {
+        candidate = JSON.parse(row.candidateJson) as CaseCandidate;
+      } catch {
+        return [];
+      }
+      const candidateScope = caseCandidateKnowledgeScope(candidate);
+      if (
+        !candidateScope ||
+        candidateScope.tenantId !== requestedScope.tenantId ||
+        candidateScope.workspaceId !== requestedScope.workspaceId
+      ) {
+        return [];
+      }
+      const {
+        candidateJson: _candidateJson,
+        sourceAnalysisRunId,
+        ...accepted
+      } = row;
+      return [{
+        ...accepted,
+        ...(sourceAnalysisRunId ? {sourceAnalysisRunId} : {}),
+      }];
+    });
+  }
+
   close(): void {
     this.db.close();
   }
@@ -535,7 +666,9 @@ export class CaseCandidateOutboxHandle {
   private pendingCount(): number {
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count FROM case_candidates
-      WHERE state = 'pending_review' AND lease_owner IS NULL
+      WHERE state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner IS NULL
     `).get() as {count: number};
     return row.count;
   }

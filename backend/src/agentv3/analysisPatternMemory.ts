@@ -51,6 +51,7 @@ import {withFilesystemRegistryLockAsync} from '../services/filesystemRegistryLoc
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import { bucketPackageDomain } from '../services/caseEvolution/domainBucket';
+import type {EffectiveFeedbackV1} from '../types/selfEvolution';
 
 const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
 const NEGATIVE_PATTERNS_FILE = backendLogPath('analysis_negative_patterns.json');
@@ -292,13 +293,33 @@ function evictionScore(p: { createdAt: number; matchCount: number }): number {
   return confidenceDecay(p.createdAt) * (1 + Math.log2(1 + p.matchCount));
 }
 
-/** Legacy entries (no `status` field on disk) behave as `confirmed`. */
-function getEffectiveStatus(p: { status?: PatternStatus }): PatternStatus {
-  return p.status ?? 'confirmed';
+interface PatternStatusProjection {
+  status?: PatternStatus;
+  intrinsicStatus?: PatternStatus;
+  feedbackProjectionStatus?: PatternStatus;
+  migrationSource?: 'legacy_frozen' | 'native_v2';
 }
 
-function getStatusWeight(p: { status?: PatternStatus }): number {
+/** Legacy entries (without split fields) preserve their current status. */
+function getEffectiveStatus(p: PatternStatusProjection): PatternStatus {
+  return p.feedbackProjectionStatus ??
+    p.intrinsicStatus ??
+    p.status ??
+    'confirmed';
+}
+
+function getStatusWeight(p: PatternStatusProjection): number {
   return INJECTION_WEIGHTS[getEffectiveStatus(p)];
+}
+
+function freezeLegacyPatternStatus(p: PatternStatusProjection): boolean {
+  if (p.intrinsicStatus && p.migrationSource) return false;
+  const frozen = getEffectiveStatus(p);
+  p.intrinsicStatus = frozen;
+  p.feedbackProjectionStatus = undefined;
+  p.migrationSource = 'legacy_frozen';
+  p.status = frozen;
+  return true;
 }
 
 /**
@@ -311,9 +332,11 @@ function autoConfirmIfRipe(
   p: AnalysisPatternEntry | NegativePatternEntry,
   now: number,
 ): boolean {
-  if (p.status !== 'provisional') return false;
+  freezeLegacyPatternStatus(p);
+  if (p.intrinsicStatus !== 'provisional') return false;
   if (now - p.createdAt < AUTO_CONFIRM_AFTER_MS) return false;
-  p.status = 'confirmed';
+  p.intrinsicStatus = 'confirmed';
+  p.status = getEffectiveStatus(p);
   return true;
 }
 
@@ -675,6 +698,7 @@ export async function saveAnalysisPattern(
     if (existingIdx >= 0) {
       // Update existing pattern: merge insights, bump match count
       const existing = patterns[existingIdx];
+      freezeLegacyPatternStatus(existing);
       const uniqueInsights = new Set([...existing.keyInsights, ...insights]);
       existing.keyInsights = Array.from(uniqueInsights).slice(0, 10);
       existing.matchCount++;
@@ -696,6 +720,8 @@ export async function saveAnalysisPattern(
         createdAt: now,
         matchCount: 0,
         status: extras.status ?? 'provisional',
+        intrinsicStatus: extras.status ?? 'provisional',
+        migrationSource: 'native_v2',
         failureModeHash: extras.failureModeHash,
         bucketKey: extras.bucketKey,
         provenance,
@@ -747,6 +773,7 @@ export async function saveNegativePattern(
 
     if (existingIdx >= 0) {
       const existing = patterns[existingIdx];
+      freezeLegacyPatternStatus(existing);
       const existingKeys = new Set(existing.failedApproaches.map(a => `${a.type}:${a.approach}`));
       for (const approach of failedApproaches) {
         const key = `${approach.type}:${approach.approach}`;
@@ -771,6 +798,8 @@ export async function saveNegativePattern(
         createdAt: now,
         matchCount: 0,
         status: extras.status ?? 'provisional',
+        intrinsicStatus: extras.status ?? 'provisional',
+        migrationSource: 'native_v2',
         failureModeHash: extras.failureModeHash,
         bucketKey: extras.bucketKey,
         provenance,
@@ -938,6 +967,8 @@ export async function saveQuickPathPattern(
       createdAt: now,
       matchCount: 0,
       status: extras.status ?? 'provisional',
+      intrinsicStatus: extras.status ?? 'provisional',
+      migrationSource: 'native_v2',
       failureModeHash: extras.failureModeHash,
       bucketKey: extras.bucketKey,
       provenance,
@@ -1042,37 +1073,35 @@ export async function promoteQuickPatternIfMatching(input: {
 }
 
 // =============================================================================
-// Feedback-driven state machine
+// FeedbackEvent-driven reversible projection
 // =============================================================================
 
 export type FeedbackRating = 'positive' | 'negative';
 
 /**
- * Apply a feedback rating to the pattern matching `patternId` (across both
- * positive and quick buckets). Implements the time-window rules from §4.3:
- *   <10s reverse: last-write-wins (audit only)
- *   10s–24h reverse: → disputed
- *   >24h reverse: → disputed_late
- * Same-direction feedback simply refreshes lastFeedbackAt.
- *
- * Returns the resulting status, or `null` when the pattern was not found.
+ * Recompute one pattern from its intrinsic status plus every currently active
+ * FeedbackEvent row. The event projection is the only production writer.
  */
-export async function applyFeedbackToPattern(
+export async function applyEffectiveFeedbackProjection(
   patternId: string,
-  rating: FeedbackRating,
+  feedback: readonly EffectiveFeedbackV1[],
   scope: KnowledgeScope,
-  now: number = Date.now(),
 ): Promise<PatternStatus | null> {
   const applyToBucket = <T extends AnalysisPatternEntry | NegativePatternEntry>(
     spec: PatternBucketSpec<T>,
   ) => mutatePatternBucket(spec, scope, entries => {
     const target = entries.find(entry => entry.id === patternId);
     if (!target) return {entries, result: null};
-    const next = transitionStatus(target, rating, now);
-    target.status = next;
-    target.lastFeedbackAt = now;
-    if (target.firstFeedbackAt === undefined) target.firstFeedbackAt = now;
-    return {entries, result: next};
+    freezeLegacyPatternStatus(target);
+    const projected = projectPatternFeedbackStatus(
+      target.intrinsicStatus!,
+      feedback,
+    );
+    target.feedbackProjectionStatus = projected.feedbackProjectionStatus;
+    target.firstFeedbackAt = projected.firstFeedbackAt;
+    target.lastFeedbackAt = projected.lastFeedbackAt;
+    target.status = projected.effectiveStatus;
+    return {entries, result: projected.effectiveStatus};
   });
 
   const positive = await applyToBucket(POSITIVE_PATTERN_BUCKET);
@@ -1082,17 +1111,71 @@ export async function applyFeedbackToPattern(
   return applyToBucket(NEGATIVE_PATTERN_BUCKET);
 }
 
-/**
- * Pure state transition for feedback. Splits `disputed` (10s–24h reverse) from
- * `disputed_late` (>24h reverse) so the auditor can tell ergonomic flips from
- * considered re-evaluations.
- */
+export function patternExistsForFeedback(
+  patternId: string,
+  scope: KnowledgeScope,
+): boolean {
+  return [
+    ...loadPatternBucket(POSITIVE_PATTERN_BUCKET, scope),
+    ...loadPatternBucket(QUICK_PATTERN_BUCKET, scope),
+    ...loadPatternBucket(NEGATIVE_PATTERN_BUCKET, scope),
+  ].some(entry => entry.id === patternId &&
+    patternMatchesKnowledgeScope(entry, scope));
+}
+
+export interface ProjectedPatternFeedbackStatus {
+  effectiveStatus: PatternStatus;
+  feedbackProjectionStatus?: PatternStatus;
+  firstFeedbackAt?: number;
+  lastFeedbackAt?: number;
+}
+
+export function projectPatternFeedbackStatus(
+  intrinsicStatus: PatternStatus,
+  feedback: readonly Pick<
+    EffectiveFeedbackV1,
+    'rating' | 'sequence' | 'timestamp' | 'currentEventId'
+  >[],
+): ProjectedPatternFeedbackStatus {
+  const ordered = [...feedback].sort((left, right) =>
+    (left.sequence ?? Number.MIN_SAFE_INTEGER) -
+      (right.sequence ?? Number.MIN_SAFE_INTEGER) ||
+    left.currentEventId.localeCompare(right.currentEventId));
+  if (ordered.length === 0) return {effectiveStatus: intrinsicStatus};
+
+  let current = intrinsicStatus;
+  const firstFeedbackAt = Date.parse(ordered[0].timestamp);
+  if (!Number.isFinite(firstFeedbackAt)) {
+    throw new Error('feedback_projection_timestamp_invalid');
+  }
+  let lastFeedbackAt = firstFeedbackAt;
+  for (const row of ordered) {
+    const observedAt = Date.parse(row.timestamp);
+    if (!Number.isFinite(observedAt)) {
+      throw new Error('feedback_projection_timestamp_invalid');
+    }
+    current = transitionStatus(
+      current,
+      row.rating,
+      firstFeedbackAt,
+      observedAt,
+    );
+    lastFeedbackAt = observedAt;
+  }
+  return {
+    effectiveStatus: current,
+    feedbackProjectionStatus: current,
+    firstFeedbackAt,
+    lastFeedbackAt,
+  };
+}
+
 function transitionStatus(
-  entry: { status?: PatternStatus; firstFeedbackAt?: number },
+  current: PatternStatus,
   rating: FeedbackRating,
+  firstFeedbackAt: number,
   now: number,
 ): PatternStatus {
-  const current = getEffectiveStatus(entry);
   if (current === 'rejected') return 'rejected';
 
   const targetForRating: PatternStatus = rating === 'positive' ? 'confirmed' : 'rejected';
@@ -1103,8 +1186,7 @@ function transitionStatus(
   if (current === 'confirmed' && rating === 'positive') return 'confirmed';
 
   // Reverse feedback — choose disputed window by elapsed time since first feedback.
-  const since = entry.firstFeedbackAt ?? now;
-  const elapsed = now - since;
+  const elapsed = now - firstFeedbackAt;
   if (elapsed < TEN_SECONDS_MS) {
     // Treat as misclick: last-write-wins, no audit trail expansion.
     return targetForRating;
@@ -1113,6 +1195,67 @@ function transitionStatus(
     return 'disputed';
   }
   return 'disputed_late';
+}
+
+export interface PatternStatusMigrationResult {
+  migrated: number;
+  positive: number;
+  negative: number;
+  quick: number;
+}
+
+export async function migrateLegacyPatternStatuses(
+  scope?: KnowledgeScope,
+): Promise<PatternStatusMigrationResult> {
+  const migrateBucket = <
+    T extends AnalysisPatternEntry | NegativePatternEntry
+  >(
+    spec: PatternBucketSpec<T>,
+  ) => mutatePatternBucket(spec, scope, entries => {
+    let migrated = 0;
+    for (const entry of entries) {
+      if (freezeLegacyPatternStatus(entry)) migrated += 1;
+    }
+    return {entries, result: migrated};
+  });
+  const positive = await migrateBucket(POSITIVE_PATTERN_BUCKET);
+  const negative = await migrateBucket(NEGATIVE_PATTERN_BUCKET);
+  const quick = await migrateBucket(QUICK_PATTERN_BUCKET);
+  return {
+    migrated: positive + negative + quick,
+    positive,
+    negative,
+    quick,
+  };
+}
+
+export async function migrateAllLegacyPatternStatuses():
+  Promise<PatternStatusMigrationResult> {
+  if (
+    !enterpriseKnowledgeStoreEnabled() &&
+    !enterpriseKnowledgeDbWritesEnabled()
+  ) {
+    return migrateLegacyPatternStatuses();
+  }
+  const partitions = listScopedKnowledgePartitions([
+    patternBucketRowScope(POSITIVE_PATTERN_BUCKET.externalId),
+    patternBucketRowScope(NEGATIVE_PATTERN_BUCKET.externalId),
+    patternBucketRowScope(QUICK_PATTERN_BUCKET.externalId),
+  ]);
+  const total: PatternStatusMigrationResult = {
+    migrated: 0,
+    positive: 0,
+    negative: 0,
+    quick: 0,
+  };
+  for (const scope of partitions) {
+    const result = await migrateLegacyPatternStatuses(scope);
+    total.migrated += result.migrated;
+    total.positive += result.positive;
+    total.negative += result.negative;
+    total.quick += result.quick;
+  }
+  return total;
 }
 
 // =============================================================================

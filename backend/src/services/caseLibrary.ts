@@ -75,6 +75,15 @@ export interface ArchiveOptions {
   reason: string;
 }
 
+export interface CaseEvolutionFeedbackProjection {
+  candidateId: string;
+  supportingEvidence: number;
+  contradictingEvidence: number;
+  maintainerPromoted: boolean;
+  supported: boolean;
+  feedbackProjectionRejected: boolean;
+}
+
 /**
  * CaseLibrary — local file-backed case storage with a cross-process
  * read-modify-write lease for every filesystem mutation.
@@ -332,6 +341,113 @@ export class CaseLibrary {
     }
     return this.mutateFilesystem(() => {
       const next = archive(this.cases.get(caseId));
+      this.cases.set(caseId, next);
+      return next;
+    });
+  }
+
+  /**
+   * Update only Case Evolution evidence projection. Published governance is
+   * immutable here; non-published cases remember and restore their prior
+   * status when a reversible negative projection is later retracted.
+   */
+  applyCaseEvolutionFeedbackProjection(
+    caseId: string,
+    projection: CaseEvolutionFeedbackProjection,
+    scope?: KnowledgeScope,
+  ): CaseNode {
+    this.load();
+    const project = (existing: CaseNode | undefined): CaseNode => {
+      if (!existing) throw new Error(`Cannot project case '${caseId}': not found`);
+      if (!existing.knowledge) {
+        throw new Error(`Cannot project case '${caseId}': knowledge missing`);
+      }
+      const previousMarker =
+        existing.knowledge.context?.['caseEvolution.v1'];
+      const marker = previousMarker &&
+        typeof previousMarker === 'object' &&
+        !Array.isArray(previousMarker)
+        ? previousMarker as Record<string, unknown>
+        : {};
+      const previousStatus = marker.statusBeforeFeedbackProjection;
+      const statusBeforeProjection: CurationStatus | undefined =
+        previousStatus === 'draft' ||
+        previousStatus === 'reviewed' ||
+        previousStatus === 'private'
+          ? previousStatus
+          : undefined;
+      const {
+        statusBeforeFeedbackProjection: _statusBeforeFeedbackProjection,
+        supportedAt: previousSupportedAt,
+        ...markerWithoutPreviousStatus
+      } = marker;
+      const nextStatusBeforeProjection =
+        projection.feedbackProjectionRejected &&
+        existing.status !== 'published'
+          ? statusBeforeProjection ??
+            (existing.status === 'private' ? undefined : existing.status)
+          : undefined;
+      const nextStatus = existing.status === 'published'
+        ? 'published'
+        : projection.feedbackProjectionRejected
+          ? 'private'
+          : statusBeforeProjection && existing.status === 'private'
+            ? statusBeforeProjection
+            : existing.status;
+      return {
+        ...existing,
+        status: nextStatus,
+        knowledge: {
+          ...existing.knowledge,
+          context: {
+            ...existing.knowledge.context,
+            'caseEvolution.v1': {
+              ...markerWithoutPreviousStatus,
+              candidateId: projection.candidateId,
+              supportingEvidence: projection.supportingEvidence,
+              contradictingEvidence: projection.contradictingEvidence,
+              maintainerPromoted: projection.maintainerPromoted,
+              supported: projection.supported,
+              feedbackProjectionRejected:
+                projection.feedbackProjectionRejected,
+              ...(projection.supported
+                ? {
+                    supportedAt: typeof previousSupportedAt === 'number'
+                      ? previousSupportedAt
+                      : Date.now(),
+                  }
+                : {}),
+              ...(nextStatusBeforeProjection
+                ? {statusBeforeFeedbackProjection: nextStatusBeforeProjection}
+                : {}),
+            },
+          },
+        },
+      };
+    };
+
+    const filesystemWrites = legacyKnowledgeFilesystemWritesEnabled();
+    const databaseWrites = enterpriseKnowledgeDbWritesEnabled();
+    if (databaseWrites) {
+      return mutateScopedKnowledgeRecordWithSideEffect<CaseNode>(
+        KNOWLEDGE_KIND,
+        caseId,
+        scope,
+        current => {
+          const next = project(current);
+          return {record: next, rowScope: caseRowScope(next.status)};
+        },
+        (next, current) => {
+          if (!filesystemWrites) return;
+          this.mutateFilesystem(() => {
+            assertReplicaMatches('case', caseId, current, this.cases.get(caseId));
+            this.cases.set(caseId, next);
+          });
+        },
+      );
+    }
+    return this.mutateFilesystem(() => {
+      const next = project(this.cases.get(caseId));
       this.cases.set(caseId, next);
       return next;
     });

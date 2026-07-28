@@ -202,6 +202,139 @@ export interface RunManifestV1 {
   wallclockMs: number;
 }
 
+export const FEEDBACK_NEGATIVE_DIMENSIONS = [
+  'wrong_conclusion',
+  'missed_root_cause',
+  'insufficient_evidence',
+  'wrong_scope',
+  'too_shallow',
+  'too_verbose',
+  'too_slow',
+  'bad_format',
+  'wrong_identity',
+  'other',
+] as const;
+
+export type FeedbackNegativeDimension =
+  (typeof FEEDBACK_NEGATIVE_DIMENSIONS)[number];
+
+export const FEEDBACK_POSITIVE_DIMENSIONS = [
+  'accurate_root_cause',
+  'good_evidence',
+  'actionable',
+  'concise',
+  'fast',
+] as const;
+
+export type FeedbackPositiveDimension =
+  (typeof FEEDBACK_POSITIVE_DIMENSIONS)[number];
+
+export type FeedbackDimension =
+  | FeedbackNegativeDimension
+  | FeedbackPositiveDimension;
+
+export const FEEDBACK_TARGET_KINDS = [
+  'session',
+  'conclusion',
+  'finding',
+  'claim',
+  'evidence',
+  'pattern',
+  'case_candidate',
+  'skill_note',
+  'injection',
+] as const;
+
+export type FeedbackTargetKind = (typeof FEEDBACK_TARGET_KINDS)[number];
+
+export const FEEDBACK_EVENT_KINDS = [
+  'created',
+  'replaced',
+  'retracted',
+] as const;
+
+export type FeedbackEventKind = (typeof FEEDBACK_EVENT_KINDS)[number];
+
+export const FEEDBACK_SOURCES = ['ui', 'cli', 'api'] as const;
+export type FeedbackSource = (typeof FEEDBACK_SOURCES)[number];
+
+export interface FeedbackEventV1 {
+  schemaVersion: 1;
+  eventId: string;
+  feedbackId: string;
+  supersedesEventId?: string;
+  sequence: number;
+  checksum: string;
+  idempotencyKey: string;
+  kind: FeedbackEventKind;
+
+  runId: string;
+  runManifestId?: string;
+  sessionId: string;
+
+  rating?: 'positive' | 'negative';
+  dimensions?: FeedbackDimension[];
+  comment?: string;
+
+  targetKind: FeedbackTargetKind;
+  targetId?: string;
+  patternId?: string;
+  caseCandidateId?: string;
+
+  source: FeedbackSource;
+  actor: {userId?: string; permissionSnapshot?: string};
+  scope: RunManifestScope;
+  timestamp: string;
+}
+
+export interface AppendFeedbackEventInput {
+  kind: FeedbackEventKind;
+  feedbackId?: string;
+  supersedesEventId?: string;
+  idempotencyKey: string;
+  runId: string;
+  runManifestId?: string;
+  sessionId: string;
+  rating?: 'positive' | 'negative';
+  dimensions?: FeedbackDimension[];
+  comment?: string;
+  targetKind: FeedbackTargetKind;
+  targetId?: string;
+  patternId?: string;
+  caseCandidateId?: string;
+  source: FeedbackSource;
+  actor: FeedbackEventV1['actor'];
+  scope: RunManifestScope;
+  timestamp?: string;
+}
+
+export interface AppendFeedbackEventResult {
+  event: FeedbackEventV1;
+  idempotent: boolean;
+  storage: 'durable' | 'temporary_private';
+}
+
+export interface EffectiveFeedbackV1 {
+  feedbackId: string;
+  currentEventId: string;
+  sequence: number | null;
+  legacy: boolean;
+  runId?: string;
+  runManifestId?: string;
+  sessionId: string;
+  rating: 'positive' | 'negative';
+  dimensions: FeedbackDimension[];
+  comment?: string;
+  targetKind: FeedbackTargetKind;
+  targetId: string;
+  patternId?: string;
+  caseCandidateId?: string;
+  source: FeedbackSource;
+  actor: FeedbackEventV1['actor'];
+  scope: RunManifestScope;
+  timestamp: string;
+}
+
 export interface RunSkillDefinitionAttribution {
   skillId: string;
   version: string;

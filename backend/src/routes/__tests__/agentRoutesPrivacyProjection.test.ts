@@ -23,12 +23,14 @@ const sessionId = 'private-route-projection';
 afterEach(() => clearCodeAwareOutputGuards(sessionId));
 
 describe('agent route private projections', () => {
-  it('keeps the numeric feedback schema stable when private feedback is discarded', () => {
-    expect(agentRoutesPrivacyProjectionTestSeam.privateFeedbackResponse()).toEqual({
+  it('reports private feedback as locally stored without public projection', () => {
+    expect(agentRoutesPrivacyProjectionTestSeam.privateFeedbackResponse({
+      durable: true,
+    })).toEqual({
       success: true,
       schemaVersion: 1,
-      durableFeedbackStored: false,
-      storageDisposition: 'discarded_private',
+      durableFeedbackStored: true,
+      storageDisposition: 'stored_private_local',
       patternStatus: null,
       caseCandidateFeedbackAdded: null,
     });

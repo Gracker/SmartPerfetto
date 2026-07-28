@@ -136,9 +136,11 @@ describe('caseEvolutionMetricsAggregator', () => {
       box.enqueue(candidate('cand-pending'), {dedupeKey: 'pending'});
       box.enqueue(candidate('cand-reviewed'), {dedupeKey: 'reviewed'});
       box.enqueue(candidate('cand-rejected'), {dedupeKey: 'rejected'});
-      box.addFeedback('cand-reviewed', {sourceSessionId: 's1', rating: 'positive'});
-      box.addFeedback('cand-reviewed', {sourceSessionId: 's2', rating: 'positive'});
-      box.addFeedback('cand-reviewed', {sourceSessionId: 's3', rating: 'positive'});
+      box.applyFeedbackProjection('cand-reviewed', [
+        {rating: 'positive'},
+        {rating: 'positive'},
+        {rating: 'positive'},
+      ]);
       box.markReviewed('cand-reviewed', {review: review('cand-reviewed'), notePath: 'logs/case_candidates/cand-reviewed.json'});
       box.markRejected('cand-rejected', 'bad review');
     });
@@ -181,6 +183,33 @@ describe('caseEvolutionMetricsAggregator', () => {
 
     expect(metrics.candidates.byState.pending_review).toBe(0);
     expect(metrics.warnings.join('\n')).toMatch(/case_evolution outbox/);
+  });
+
+  it('counts only effective case-candidate feedback', () => {
+    const requestedTargetKinds: unknown[] = [];
+    const metrics = collectCaseEvolutionMetrics({
+      dbPath: path.join(tempDir, 'missing.db'),
+      sidecarDir: path.join(tempDir, 'missing-sidecars'),
+      feedbackStore: {
+        effectiveStats: targetKind => {
+          requestedTargetKinds.push(targetKind);
+          return {
+            totalPositive: 2,
+            totalNegative: 1,
+            distinctSessions: 3,
+          };
+        },
+        close: () => undefined,
+      },
+      env: {},
+    });
+
+    expect(requestedTargetKinds).toEqual(['case_candidate']);
+    expect(metrics.feedback).toEqual({
+      totalPositive: 2,
+      totalNegative: 1,
+      distinctSessions: 3,
+    });
   });
 
   it('includes process-local retriever and prompt counters', () => {

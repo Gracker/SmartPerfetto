@@ -128,7 +128,9 @@ import {
   saveQuickPathPattern,
   matchQuickPatternsAsBackup,
   promoteQuickPatternIfMatching,
-  applyFeedbackToPattern,
+  applyEffectiveFeedbackProjection,
+  projectPatternFeedbackStatus,
+  migrateLegacyPatternStatuses,
   sweepAutoConfirm,
   buildPatternContextSection,
   buildNegativePatternSection,
@@ -937,7 +939,7 @@ describe('promoteQuickPatternIfMatching', () => {
   });
 });
 
-describe('applyFeedbackToPattern state machine', () => {
+describe('FeedbackEvent pattern projection', () => {
   const feedbackScope = {
     tenantId: 'default-dev-tenant',
     workspaceId: 'default-workspace',
@@ -951,74 +953,111 @@ describe('applyFeedbackToPattern state machine', () => {
     },
   };
 
+  function feedback(
+    rating: 'positive' | 'negative',
+    sequence: number,
+    timestamp = 1_700_000_000_000 + sequence * 1_000,
+  ): any {
+    return {
+      feedbackId: `feedback-${sequence}`,
+      currentEventId: `event-${sequence}`,
+      sequence,
+      legacy: false,
+      sessionId: 'session-1',
+      rating,
+      dimensions: [],
+      targetKind: 'pattern',
+      targetId: 'p1',
+      patternId: 'p1',
+      source: 'ui',
+      actor: {userId: 'user-1'},
+      scope: feedbackScope,
+      timestamp: new Date(timestamp).toISOString(),
+    };
+  }
+
   it('returns null when patternId not found', async () => {
-    const result = await applyFeedbackToPattern('missing', 'positive', feedbackScope);
+    const result = await applyEffectiveFeedbackProjection(
+      'missing',
+      [feedback('positive', 1)],
+      feedbackScope,
+    );
     expect(result).toBeNull();
   });
 
-  it('flips provisional → confirmed on positive feedback', async () => {
+  it('projects positive feedback without overwriting intrinsic state', async () => {
     mockPatterns = [{ ...baseEntry, status: 'provisional', createdAt: Date.now() }];
-    const status = await applyFeedbackToPattern('p1', 'positive', feedbackScope);
+    const status = await applyEffectiveFeedbackProjection(
+      'p1',
+      [feedback('positive', 1)],
+      feedbackScope,
+    );
     expect(status).toBe('confirmed');
     expect(mockPatterns[0].status).toBe('confirmed');
+    expect(mockPatterns[0].intrinsicStatus).toBe('provisional');
+    expect(mockPatterns[0].feedbackProjectionStatus).toBe('confirmed');
+    expect(mockPatterns[0].migrationSource).toBe('legacy_frozen');
     expect(mockPatterns[0].lastFeedbackAt).toBeDefined();
   });
 
-  it('flips provisional → rejected on negative feedback', async () => {
+  it('retraction returns effective status to the frozen intrinsic state', async () => {
     mockPatterns = [{ ...baseEntry, status: 'provisional', createdAt: Date.now() }];
-    const status = await applyFeedbackToPattern('p1', 'negative', feedbackScope);
-    expect(status).toBe('rejected');
+    await applyEffectiveFeedbackProjection(
+      'p1',
+      [feedback('negative', 1)],
+      feedbackScope,
+    );
+    expect(mockPatterns[0].status).toBe('rejected');
+
+    const status = await applyEffectiveFeedbackProjection(
+      'p1',
+      [],
+      feedbackScope,
+    );
+    expect(status).toBe('provisional');
+    expect(mockPatterns[0].status).toBe('provisional');
+    expect(mockPatterns[0].feedbackProjectionStatus).toBeUndefined();
+    expect(mockPatterns[0].firstFeedbackAt).toBeUndefined();
   });
 
-  it('reverse feedback within 10s is treated as misclick (last-write-wins)', async () => {
+  it('keeps the existing reverse-feedback time windows deterministic', () => {
     const t0 = 1_700_000_000_000;
-    mockPatterns = [{
-      ...baseEntry, status: 'confirmed', createdAt: t0 - 1000,
-      firstFeedbackAt: t0, lastFeedbackAt: t0,
-    }];
-    const status = await applyFeedbackToPattern('p1', 'negative', feedbackScope, t0 + 5_000);
-    expect(status).toBe('rejected');
-  });
-
-  it('reverse feedback in the 10s–24h window enters disputed', async () => {
-    const t0 = 1_700_000_000_000;
-    mockPatterns = [{
-      ...baseEntry, status: 'confirmed', createdAt: t0 - 1000,
-      firstFeedbackAt: t0, lastFeedbackAt: t0,
-    }];
-    const status = await applyFeedbackToPattern('p1', 'negative', feedbackScope, t0 + 60 * 60 * 1000); // 1h later
-    expect(status).toBe('disputed');
-  });
-
-  it('reverse feedback >24h later enters disputed_late', async () => {
-    const t0 = 1_700_000_000_000;
-    mockPatterns = [{
-      ...baseEntry, status: 'confirmed', createdAt: t0 - 1000,
-      firstFeedbackAt: t0, lastFeedbackAt: t0,
-    }];
-    const status = await applyFeedbackToPattern('p1', 'negative', feedbackScope, t0 + 48 * 60 * 60 * 1000); // 2 days later
-    expect(status).toBe('disputed_late');
-  });
-
-  it('rejected entries stay rejected regardless of subsequent positives', async () => {
-    mockPatterns = [{ ...baseEntry, status: 'rejected', createdAt: Date.now() }];
-    const status = await applyFeedbackToPattern('p1', 'positive', feedbackScope);
-    expect(status).toBe('rejected');
+    expect(projectPatternFeedbackStatus('confirmed', [
+      feedback('positive', 1, t0),
+      feedback('negative', 2, t0 + 5_000),
+    ]).effectiveStatus).toBe('rejected');
+    expect(projectPatternFeedbackStatus('confirmed', [
+      feedback('positive', 1, t0),
+      feedback('negative', 2, t0 + 60 * 60 * 1_000),
+    ]).effectiveStatus).toBe('disputed');
+    expect(projectPatternFeedbackStatus('confirmed', [
+      feedback('positive', 1, t0),
+      feedback('negative', 2, t0 + 48 * 60 * 60 * 1_000),
+    ]).effectiveStatus).toBe('disputed_late');
   });
 
   it('finds patterns across positive / quick / negative buckets', async () => {
     mockQuickPatterns = [{ ...baseEntry, id: 'q1', status: 'provisional', createdAt: Date.now() }];
-    const status = await applyFeedbackToPattern('q1', 'positive', feedbackScope);
+    const row = {...feedback('positive', 1), targetId: 'q1', patternId: 'q1'};
+    const status = await applyEffectiveFeedbackProjection(
+      'q1',
+      [row],
+      feedbackScope,
+    );
     expect(status).toBe('confirmed');
     expect(mockQuickPatterns[0].status).toBe('confirmed');
   });
 
   it('does not mutate a matching id owned by another tenant', async () => {
     mockPatterns = [{...baseEntry, status: 'provisional', createdAt: Date.now()}];
-    const status = await applyFeedbackToPattern('p1', 'negative', {
-      tenantId: 'tenant-b',
-      workspaceId: feedbackScope.workspaceId,
-    });
+    const status = await applyEffectiveFeedbackProjection(
+      'p1',
+      [feedback('negative', 1)],
+      {
+        tenantId: 'tenant-b',
+        workspaceId: feedbackScope.workspaceId,
+      },
+    );
 
     expect(status).toBeNull();
     expect(mockPatterns[0].status).toBe('provisional');
@@ -1087,6 +1126,46 @@ describe('sweepAutoConfirm', () => {
     expect(mockPatterns.find(p => p.id === 'pos-b').status).toBe('provisional');
     expect(mockNegativePatterns.find(p => p.id === 'neg-a').status).toBe('confirmed');
     expect(mockNegativePatterns.find(p => p.id === 'neg-b').status).toBe('provisional');
+  });
+});
+
+describe('legacy pattern status migration', () => {
+  it('freezes each legacy effective status exactly once', async () => {
+    mockPatterns = [{
+      id: 'legacy-positive',
+      traceFeatures: ['x'],
+      sceneType: 'scrolling',
+      keyInsights: ['legacy'],
+      confidence: 0.5,
+      createdAt: Date.now(),
+      matchCount: 0,
+      status: 'rejected',
+    }];
+    mockQuickPatterns = [{
+      id: 'legacy-quick',
+      traceFeatures: ['y'],
+      sceneType: 'scrolling',
+      keyInsights: ['legacy'],
+      confidence: 0.3,
+      createdAt: Date.now(),
+      matchCount: 0,
+    }];
+
+    const first = await migrateLegacyPatternStatuses();
+    const second = await migrateLegacyPatternStatuses();
+
+    expect(first).toMatchObject({migrated: 2, positive: 1, quick: 1});
+    expect(second.migrated).toBe(0);
+    expect(mockPatterns[0]).toMatchObject({
+      status: 'rejected',
+      intrinsicStatus: 'rejected',
+      migrationSource: 'legacy_frozen',
+    });
+    expect(mockQuickPatterns[0]).toMatchObject({
+      status: 'confirmed',
+      intrinsicStatus: 'confirmed',
+      migrationSource: 'legacy_frozen',
+    });
   });
 });
 

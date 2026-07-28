@@ -4,7 +4,6 @@
 
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import {
-  applyCaseCandidateFeedbackForRoute,
   buildCaseEvolutionSnapshotPath,
   captureCaseCandidatesAfterQualityArtifacts,
   resolveCaseEvolutionArchitectureType,
@@ -359,39 +358,5 @@ describe('agentRoutes frontend traceContext envelopes', () => {
     expect(second).toHaveLength(1);
     expect(first[0].meta.queryHash).toBe(second[0].meta.queryHash);
     expect(first[0].meta.evidenceRefId).toBe(second[0].meta.evidenceRefId);
-  });
-});
-
-describe('agentRoutes case candidate feedback seam', () => {
-  it('passes CaseLibrary to the feedback state machine so CaseNode context stays in sync', () => {
-    const outbox = { close: jest.fn() } as any;
-    const library = { getCase: jest.fn() } as any;
-    const recordFeedback = jest.fn<(input: any) => { added: boolean }>(
-      () => ({ added: true }),
-    );
-
-    const result = applyCaseCandidateFeedbackForRoute({
-      candidateId: 'cand-route',
-      sessionId: 'session-1',
-      rating: 'positive',
-      surfacedAt: 1000,
-      receivedAt: 2000,
-      outbox,
-      library,
-      knowledgeScope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
-      recordFeedback,
-    });
-
-    expect(result.added).toBe(true);
-    expect(recordFeedback).toHaveBeenCalledWith(expect.objectContaining({
-      candidateId: 'cand-route',
-      sourceSessionId: 'session-1',
-      rating: 'positive',
-      surfacedAt: 1000,
-      receivedAt: 2000,
-      outbox,
-      library,
-      knowledgeScope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
-    }));
   });
 });
