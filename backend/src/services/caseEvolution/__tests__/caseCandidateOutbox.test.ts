@@ -122,7 +122,9 @@ describe('caseCandidateOutbox', () => {
     const migrated = openCaseCandidateOutbox({dbPath});
     try {
       const row = migrated.getCandidate(legacy.candidateId)!;
-      expect(migrated.schemaVersion()).toBe(3);
+      expect(migrated.schemaVersion()).toBe(
+        __testing.SCHEMA_VERSION_LATEST,
+      );
       expect(row.state).toBe('pending_review');
       expect(row.candidate.schemaVersion).toBe('case_candidate@2');
       expect(row.candidate.provenance.originScope).toEqual({
@@ -132,6 +134,47 @@ describe('caseCandidateOutbox', () => {
       expect(row.dedupeKey).toBe(
         'default-dev-tenant::default-workspace::trace-hash::scrolling::shader_compile',
       );
+    } finally {
+      migrated.close();
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
+  });
+
+  it('invalidates pre-token leases during the fencing migration', () => {
+    const dir = fs.mkdtempSync(path.join(
+      os.tmpdir(),
+      'smartperfetto-case-lease-migration-',
+    ));
+    const dbPath = path.join(dir, 'case-evolution.db');
+    const initial = openCaseCandidateOutbox({dbPath});
+    initial.enqueue(candidate({candidateId: 'legacy-lease'}), {
+      dedupeKey: 'legacy-lease',
+    });
+    initial.leaseNext({
+      candidateId: 'legacy-lease',
+      workerOwner: 'legacy-worker',
+    });
+    initial.close();
+
+    const raw = new Database(dbPath);
+    raw.prepare('DELETE FROM schema_migrations WHERE version = 4').run();
+    raw.prepare(`
+      UPDATE case_candidates
+      SET lease_token = NULL,
+          lease_owner = 'legacy-worker',
+          lease_until = ?
+      WHERE candidate_id = 'legacy-lease'
+    `).run(Date.now() + 60_000);
+    raw.close();
+
+    const migrated = openCaseCandidateOutbox({dbPath});
+    try {
+      expect(migrated.getCandidate('legacy-lease')).toMatchObject({
+        state: 'pending_review',
+        leaseOwner: null,
+        leaseToken: null,
+        leaseUntil: null,
+      });
     } finally {
       migrated.close();
       fs.rmSync(dir, {recursive: true, force: true});
@@ -150,7 +193,14 @@ describe('caseCandidateOutbox', () => {
     ]);
     expect(outbox.getCandidate(item.candidateId)!.supported).toBe(0);
 
-    outbox.markReviewed(item.candidateId, {review: review(item.candidateId), notePath: 'logs/case_candidates/cand-supported.json'});
+    const lease = outbox.leaseNext({
+      candidateId: item.candidateId,
+      workerOwner: 'test-supported',
+    })!;
+    outbox.completeReviewedLease(lease.lease!, {
+      review: review(item.candidateId),
+      notePath: 'logs/case_candidates/cand-supported.json',
+    });
     expect(outbox.getCandidate(item.candidateId)!.supported).toBe(1);
   });
 
@@ -162,7 +212,11 @@ describe('caseCandidateOutbox', () => {
       reason: 'duplicate_active',
     });
 
-    outbox.markReviewed('cand-1', {review: review('cand-1')});
+    const lease = outbox.leaseNext({
+      candidateId: 'cand-1',
+      workerOwner: 'test-dedupe',
+    })!;
+    outbox.completeReviewedLease(lease.lease!, {review: review('cand-1')});
     expect(outbox.enqueue(candidate({candidateId: 'cand-3'}), {dedupeKey: 'dup'})).toMatchObject({
       enqueued: false,
       reason: 'duplicate_active',
@@ -196,11 +250,15 @@ describe('caseCandidateOutbox', () => {
   it('retries failures until max attempts, then rejects', () => {
     outbox.enqueue(candidate({candidateId: 'cand-fail'}), {dedupeKey: 'fail'});
     const first = outbox.leaseNext({workerOwner: 'worker-1', maxAttempts: 2})!;
-    outbox.markFailed(first.candidateId, 'transient', 2);
+    outbox.failLease(first.lease!, 'transient', 2);
     expect(outbox.getCandidate(first.candidateId)!.state).toBe('pending_review');
 
-    outbox.leaseNext({workerOwner: 'worker-1', maxAttempts: 2});
-    outbox.markFailed(first.candidateId, 'fatal', 2);
+    const second = outbox.leaseNext({
+      candidateId: first.candidateId,
+      workerOwner: 'worker-1',
+      maxAttempts: 2,
+    })!;
+    outbox.failLease(second.lease!, 'fatal', 2);
     const row = outbox.getCandidate(first.candidateId)!;
     expect(row.state).toBe('rejected');
     expect(row.lastError).toBe('fatal');
@@ -283,7 +341,13 @@ describe('caseCandidateOutbox', () => {
   it('reverses feedback-only rejection without changing intrinsic governance state', () => {
     const item = candidate({candidateId: 'cand-reversible'});
     outbox.enqueue(item, {dedupeKey: 'reversible'});
-    outbox.markReviewed(item.candidateId, {review: review(item.candidateId)});
+    const lease = outbox.leaseNext({
+      candidateId: item.candidateId,
+      workerOwner: 'test-reversible',
+    })!;
+    outbox.completeReviewedLease(lease.lease!, {
+      review: review(item.candidateId),
+    });
 
     expect(outbox.applyFeedbackProjection(item.candidateId, [
       {rating: 'negative'},
@@ -338,5 +402,43 @@ describe('caseCandidateOutbox', () => {
     // return it — there are no other leasable rows.
     const secondLease = outbox.leaseNext({workerOwner: 'worker-2'});
     expect(secondLease).toBeNull();
+  });
+
+  it('fences stale terminal writes by scope, owner, token, and expiry', () => {
+    outbox.enqueue(candidate({candidateId: 'cand-fenced'}), {
+      dedupeKey: 'fenced',
+    });
+    const first = outbox.leaseNext({
+      workerOwner: 'worker-1',
+      leaseDurationMs: 10,
+      now: 100,
+    })!;
+    expect(first.leaseToken).toBeTruthy();
+    expect(first.lease).toMatchObject({
+      scope: {
+        tenantId: 'default-dev-tenant',
+        workspaceId: 'default-workspace',
+      },
+      owner: 'worker-1',
+    });
+    expect(outbox.expireStaleLeases(111)).toBe(1);
+    const second = outbox.leaseNext({
+      workerOwner: 'worker-2',
+      leaseDurationMs: 10,
+      now: 112,
+    })!;
+
+    expect(() => outbox.completeReviewedLease(
+      first.lease!,
+      {review: review('cand-fenced')},
+      113,
+    )).toThrow('scoped_outbox_lease_lost');
+    expect(outbox.getCandidate('cand-fenced')?.state).toBe('pending_review');
+    outbox.completeReviewedLease(
+      second.lease!,
+      {review: review('cand-fenced')},
+      113,
+    );
+    expect(outbox.getCandidate('cand-fenced')?.state).toBe('reviewed');
   });
 });

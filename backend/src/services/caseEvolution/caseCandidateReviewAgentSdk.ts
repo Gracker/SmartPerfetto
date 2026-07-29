@@ -2,11 +2,12 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
-
-import { createSdkEnv, getSdkBinaryOption } from '../../agentv3/claudeConfig';
 import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader';
 import type { CaseCandidate } from '../../types/caseEvolution';
+import {
+  executeStructuredReview,
+  extractFirstJsonObject,
+} from '../evolutionLifecycle/reviewExecution';
 import { CASE_EVOLUTION_ALLOWED_RELATION_KINDS } from './caseCandidateReviewValidator';
 
 const DEFAULT_TIMEOUT_MS = 90_000;
@@ -82,98 +83,17 @@ export async function executeCaseCandidateReviewViaSdk(
     return {ok: false, reason: 'sdk_invalid', details: errorMessage(err)};
   }
 
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const model = opts.model ?? process.env.CLAUDE_LIGHT_MODEL ?? DEFAULT_MODEL;
-  const sdkEnv = createSdkEnv();
-  const stream = sdkQuery({
+  const result = await executeStructuredReview({
     prompt,
-    options: {
-      model,
-      maxTurns: MAX_TURNS,
-      settingSources: [],
-      tools: [],
-      permissionMode: 'bypassPermissions' as const,
-      allowDangerouslySkipPermissions: true,
-      env: sdkEnv,
-      stderr: (data: string) => {
-        console.warn(`[CaseCandidateReviewAgentSdk] SDK stderr: ${data.trimEnd()}`);
-      },
-      ...getSdkBinaryOption(sdkEnv),
-    },
+    logPrefix: 'CaseCandidateReviewAgentSdk',
+    defaultModel: DEFAULT_MODEL,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    maxTurns: MAX_TURNS,
+    model: opts.model,
   });
-
-  let result = '';
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    console.warn(`[CaseCandidateReviewAgentSdk] timed out after ${timeoutMs / 1000}s`);
-    try { stream.close(); } catch { /* ignore */ }
-  }, timeoutMs);
-
-  try {
-    for await (const msg of stream) {
-      if (timedOut) break;
-      if (msg.type === 'result' && (msg as { subtype?: string }).subtype === 'success') {
-        result = (msg as { result?: string }).result || '';
-      }
-    }
-  } catch (err) {
-    clearTimeout(timer);
-    try { stream.close(); } catch { /* ignore */ }
-    return {ok: false, reason: 'sdk_error', details: errorMessage(err)};
-  } finally {
-    clearTimeout(timer);
-    try { stream.close(); } catch { /* ignore */ }
-  }
-
-  if (timedOut) {
-    return {ok: false, reason: 'sdk_timeout', details: `${timeoutMs}ms budget exhausted`};
-  }
-
-  const parsed = extractJsonObject(result);
-  if (!parsed) {
-    return {ok: false, reason: 'sdk_invalid', details: 'no JSON object in agent response'};
-  }
-  return {ok: true, review: parsed};
-}
-
-function extractJsonObject(text: string): Record<string, unknown> | null {
-  const start = text.indexOf('{');
-  if (start < 0) return null;
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-  for (let index = start; index < text.length; index += 1) {
-    const ch = text[index];
-    if (inString) {
-      if (escape) {
-        escape = false;
-      } else if (ch === '\\') {
-        escape = true;
-      } else if (ch === '"') {
-        inString = false;
-      }
-      continue;
-    }
-    if (ch === '"') {
-      inString = true;
-    } else if (ch === '{') {
-      depth += 1;
-    } else if (ch === '}') {
-      depth -= 1;
-      if (depth === 0) {
-        try {
-          const parsed = JSON.parse(text.slice(start, index + 1));
-          return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-            ? parsed as Record<string, unknown>
-            : null;
-        } catch {
-          return null;
-        }
-      }
-    }
-  }
-  return null;
+  return result.ok
+    ? {ok: true, review: result.value}
+    : result;
 }
 
 function errorMessage(error: unknown): string {
@@ -181,7 +101,7 @@ function errorMessage(error: unknown): string {
 }
 
 export const __testing = {
-  extractJsonObject,
+  extractJsonObject: extractFirstJsonObject,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_MODEL,
   MAX_TURNS,

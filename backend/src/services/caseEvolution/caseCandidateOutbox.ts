@@ -10,6 +10,10 @@ import type { CaseCandidate, CaseCandidateReview, CaseCandidateState } from '../
 import type {EffectiveFeedbackV1} from '../../types/selfEvolution';
 import {resolveKnowledgeScope} from '../scopedKnowledgeStore';
 import type {KnowledgeScope} from '../scopedKnowledgeStore';
+import {
+  ScopedOutbox,
+  type ScopedLeaseFence,
+} from '../evolutionLifecycle/scopedOutbox';
 import {caseCandidateKnowledgeScope} from './caseCandidateBuilder';
 
 export interface CaseCandidateOutboxOptions {
@@ -38,7 +42,9 @@ export interface LeasedCaseCandidate {
   priority: number;
   attempts: number;
   leaseOwner: string | null;
+  leaseToken: string | null;
   leaseUntil: number | null;
+  lease: ScopedLeaseFence | null;
   createdAt: number;
   updatedAt: number;
   supportingEvidence: number;
@@ -84,7 +90,20 @@ export interface AcceptedLegacyCandidateFeedback {
   receivedAt: number;
 }
 
-const SCHEMA_VERSION_LATEST = 3;
+interface CaseLeaseCompletion {
+  state: 'reviewed' | 'rejected';
+  review?: CaseCandidateReview;
+  notePath?: string | null;
+  learnedCaseId?: string | null;
+  reason?: string;
+}
+
+interface CaseLeaseFailure {
+  reason: string;
+  maxAttempts: number;
+}
+
+const SCHEMA_VERSION_LATEST = 4;
 const DEFAULT_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_ATTEMPTS = 3;
 
@@ -181,6 +200,7 @@ function applyPendingMigrations(db: Database.Database): void {
   }
   if (!applied.has(2)) migrateLegacyCandidateScopes(db);
   if (!applied.has(3)) migrateCandidateFeedbackProjection(db);
+  if (!applied.has(4)) migrateScopedLeaseFencing(db);
 }
 
 function migrateLegacyCandidateScopes(db: Database.Database): void {
@@ -272,10 +292,99 @@ function migrateCandidateFeedbackProjection(db: Database.Database): void {
   migrate();
 }
 
+function migrateScopedLeaseFencing(db: Database.Database): void {
+  const migrate = db.transaction(() => {
+    const columns = db.pragma('table_info(case_candidates)') as Array<{name: string}>;
+    if (!columns.some(column => column.name === 'tenant_id')) {
+      db.exec('ALTER TABLE case_candidates ADD COLUMN tenant_id TEXT');
+    }
+    if (!columns.some(column => column.name === 'workspace_id')) {
+      db.exec('ALTER TABLE case_candidates ADD COLUMN workspace_id TEXT');
+    }
+    if (!columns.some(column => column.name === 'lease_token')) {
+      db.exec('ALTER TABLE case_candidates ADD COLUMN lease_token TEXT');
+    }
+
+    const rows = db.prepare(`
+      SELECT candidate_id, payload_json
+      FROM case_candidates
+      WHERE tenant_id IS NULL OR workspace_id IS NULL
+      ORDER BY candidate_id
+    `).all() as Array<{candidate_id: string; payload_json: string}>;
+    const updateScope = db.prepare(`
+      UPDATE case_candidates
+      SET tenant_id = ?, workspace_id = ?, updated_at = ?
+      WHERE candidate_id = ?
+    `);
+    for (const row of rows) {
+      let candidate: CaseCandidate;
+      try {
+        candidate = JSON.parse(row.payload_json) as CaseCandidate;
+      } catch (error) {
+        throw new Error(
+          `Cannot migrate case candidate ${row.candidate_id}: invalid payload_json: ${(error as Error).message}`,
+        );
+      }
+      const scope = caseCandidateKnowledgeScope(candidate);
+      if (!scope) {
+        throw new Error(
+          `Cannot migrate case candidate ${row.candidate_id}: origin scope is missing`,
+        );
+      }
+      updateScope.run(
+        scope.tenantId,
+        scope.workspaceId,
+        Date.now(),
+        row.candidate_id,
+      );
+    }
+    // A pre-v4 lease has no fencing token and cannot be safely honored by the
+    // new worker. Migrations run before workers start, so invalidate those
+    // legacy leases and let a fenced worker reclaim the pending row.
+    db.exec(`
+      UPDATE case_candidates
+      SET lease_owner = NULL,
+          lease_until = NULL
+      WHERE lease_token IS NULL
+        AND lease_owner IS NOT NULL;
+    `);
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_candidates_scope_state_priority
+        ON case_candidates(
+          tenant_id,
+          workspace_id,
+          state,
+          priority DESC,
+          created_at
+        );
+    `);
+    db.prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)').run(
+      4,
+      Date.now(),
+    );
+  });
+  migrate();
+}
+
 function rowToCandidate(row: Record<string, unknown>): LeasedCaseCandidate {
+  const candidate = JSON.parse(String(row.payload_json)) as CaseCandidate;
   const intrinsicState = row.state as CaseCandidateState;
   const feedbackProjectionRejected =
     Number(row.feedback_projection_rejected || 0) === 1;
+  const leaseOwner = row.lease_owner as string | null;
+  const leaseToken = row.lease_token as string | null;
+  const leaseUntil = row.lease_until as number | null;
+  const candidateScope = caseCandidateKnowledgeScope(candidate);
+  const scope = candidateScope ? resolveKnowledgeScope(candidateScope) : null;
+  const lease = leaseOwner && leaseToken && leaseUntil && scope
+    ? {
+        scope,
+        jobId: String(row.candidate_id),
+        owner: leaseOwner,
+        token: leaseToken,
+        leaseUntil,
+      }
+    : null;
   return {
     candidateId: String(row.candidate_id),
     state: feedbackProjectionRejected ? 'rejected' : intrinsicState,
@@ -284,8 +393,10 @@ function rowToCandidate(row: Record<string, unknown>): LeasedCaseCandidate {
     dedupeKey: String(row.dedupe_key),
     priority: Number(row.priority || 0),
     attempts: Number(row.attempts || 0),
-    leaseOwner: row.lease_owner as string | null,
-    leaseUntil: row.lease_until as number | null,
+    leaseOwner,
+    leaseToken,
+    leaseUntil,
+    lease,
     createdAt: Number(row.created_at || 0),
     updatedAt: Number(row.updated_at || 0),
     supportingEvidence: Number(row.supporting_evidence || 0),
@@ -293,7 +404,7 @@ function rowToCandidate(row: Record<string, unknown>): LeasedCaseCandidate {
     maintainerPromoted: Number(row.maintainer_promoted || 0),
     supported: feedbackProjectionRejected ? 0 : Number(row.supported || 0),
     learnedCaseId: row.learned_case_id as string | null,
-    candidate: JSON.parse(String(row.payload_json)) as CaseCandidate,
+    candidate,
     review: row.review_json ? JSON.parse(String(row.review_json)) as CaseCandidateReview : null,
     notePath: row.note_path as string | null,
     lastError: row.last_error as string | null,
@@ -305,7 +416,25 @@ function truncateError(reason: string): string {
 }
 
 export class CaseCandidateOutboxHandle {
-  constructor(private readonly db: Database.Database) {}
+  private readonly lifecycle: ScopedOutbox<
+    Record<string, unknown>,
+    CaseLeaseCompletion,
+    CaseLeaseFailure
+  >;
+
+  constructor(private readonly db: Database.Database) {
+    this.lifecycle = new ScopedOutbox({
+      claim: input => this.claimLease(input),
+      assertActive: (fence, now) => this.assertLease(fence, now),
+      renew: (fence, now, leaseUntil) =>
+        this.renewLeaseRow(fence, now, leaseUntil),
+      complete: (fence, completion, now) =>
+        this.completeLeaseRow(fence, completion, now),
+      fail: (fence, failure, now) =>
+        this.failLeaseRow(fence, failure, now),
+      release: (fence, now) => this.releaseLeaseRow(fence, now),
+    });
+  }
 
   schemaVersion(): number {
     const row = this.db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {version: number | null};
@@ -320,16 +449,24 @@ export class CaseCandidateOutboxHandle {
   enqueue(candidate: CaseCandidate, opts: EnqueueCaseCandidateOptions): EnqueueCaseCandidateResult {
     const start = Date.now();
     try {
+      // Legacy/test callers may still enqueue an unscoped payload. Keep the
+      // row in the default partition so the worker can reject it explicitly;
+      // new capture paths always provide immutable originScope.
+      const scope = caseCandidateKnowledgeScope(candidate) ??
+        resolveKnowledgeScope();
       if (opts.queueMax !== undefined && this.pendingCount() >= opts.queueMax) {
         return {enqueued: false, reason: 'queue_full', latencyMs: Date.now() - start};
       }
       const now = Date.now();
       this.db.prepare(`
         INSERT INTO case_candidates (
-          candidate_id, state, dedupe_key, priority, attempts, created_at, updated_at, payload_json
-        ) VALUES (?, 'pending_review', ?, ?, 0, ?, ?, ?)
+          candidate_id, tenant_id, workspace_id, state, dedupe_key, priority,
+          attempts, created_at, updated_at, payload_json
+        ) VALUES (?, ?, ?, 'pending_review', ?, ?, 0, ?, ?, ?)
       `).run(
         candidate.candidateId,
+        scope.tenantId,
+        scope.workspaceId,
         opts.dedupeKey,
         opts.priority ?? 0,
         now,
@@ -346,67 +483,94 @@ export class CaseCandidateOutboxHandle {
     }
   }
 
-  leaseNext(input: {workerOwner: string; leaseDurationMs?: number; maxAttempts?: number}): LeasedCaseCandidate | null {
+  leaseNext(input: {
+    candidateId?: string;
+    workerOwner: string;
+    leaseDurationMs?: number;
+    maxAttempts?: number;
+    now?: number;
+  }): LeasedCaseCandidate | null {
     const leaseDurationMs = input.leaseDurationMs ?? DEFAULT_LEASE_MS;
     const maxAttempts = input.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
-    const now = Date.now();
-    const leaseUntil = now + leaseDurationMs;
-
-    const tx = this.db.transaction(() => {
-      const row = this.db.prepare(`
-        SELECT candidate_id FROM case_candidates
-        WHERE state = 'pending_review'
-          AND feedback_projection_rejected = 0
-          AND lease_owner IS NULL
-          AND attempts < ?
-        ORDER BY priority DESC, created_at ASC
-        LIMIT 1
-      `).get(maxAttempts) as {candidate_id: string} | undefined;
-      if (!row) return null;
-      // Claim the row atomically. The `WHERE ... AND lease_owner IS NULL`
-      // guard makes this correct under concurrency even though better-sqlite3
-      // serializes transactions in WAL mode: if a competing worker already
-      // claimed the row between our SELECT and UPDATE (or the row transitioned
-      // out of pending_review), `changes` is 0 and we must NOT return the row
-      // — it is now owned by someone else. Returning it anyway would let two
-      // workers process the same candidate.
-      const claim = this.db.prepare(`
-        UPDATE case_candidates
-        SET lease_owner = ?,
-            lease_until = ?,
-            attempts = attempts + 1,
-            updated_at = ?
-        WHERE candidate_id = ? AND state = 'pending_review'
-          AND feedback_projection_rejected = 0
-          AND lease_owner IS NULL
-      `).run(input.workerOwner, leaseUntil, now, row.candidate_id);
-      if (claim.changes !== 1) return null;
-      return this.db.prepare('SELECT * FROM case_candidates WHERE candidate_id = ?').get(row.candidate_id) as Record<string, unknown>;
+    const claimed = this.lifecycle.claim({
+      owner: input.workerOwner,
+      jobId: input.candidateId,
+      leaseDurationMs,
+      maxAttempts,
+      now: input.now,
     });
-
-    const row = tx();
-    if (!row) return null;
+    if (!claimed) return null;
     try {
-      return rowToCandidate(row);
+      return {
+        ...rowToCandidate(claimed.job),
+        lease: claimed.fence,
+        leaseOwner: claimed.fence.owner,
+        leaseToken: claimed.fence.token,
+        leaseUntil: claimed.fence.leaseUntil,
+      };
     } catch (err) {
-      const candidateId = String(row.candidate_id);
-      this.markRejected(candidateId, `invalid payload_json: ${(err as Error).message}`);
+      this.lifecycle.complete(claimed.fence, {
+        state: 'rejected',
+        reason: `invalid payload_json: ${(err as Error).message}`,
+      });
       return null;
     }
   }
 
-  markReviewed(candidateId: string, input: {review: CaseCandidateReview; notePath?: string | null}): void {
-    this.db.prepare(`
-      UPDATE case_candidates
-      SET state = 'reviewed',
-          review_json = ?,
-          note_path = ?,
-          lease_owner = NULL,
-          lease_until = NULL,
-          updated_at = ?,
-          last_error = NULL
-      WHERE candidate_id = ?
-    `).run(JSON.stringify(input.review), input.notePath ?? null, Date.now(), candidateId);
+  assertLeaseActive(fence: ScopedLeaseFence, now: number = Date.now()): void {
+    this.lifecycle.assertActive(fence, now);
+  }
+
+  renewLease(
+    fence: ScopedLeaseFence,
+    leaseDurationMs: number = DEFAULT_LEASE_MS,
+    now: number = Date.now(),
+  ): ScopedLeaseFence {
+    return this.lifecycle.renew(fence, leaseDurationMs, now);
+  }
+
+  completeReviewedLease(
+    fence: ScopedLeaseFence,
+    input: {
+      review: CaseCandidateReview;
+      notePath?: string | null;
+      learnedCaseId?: string | null;
+    },
+    now: number = Date.now(),
+  ): void {
+    this.lifecycle.complete(fence, {
+      state: 'reviewed',
+      review: input.review,
+      notePath: input.notePath ?? null,
+      learnedCaseId: input.learnedCaseId ?? null,
+    }, now);
+  }
+
+  rejectLease(
+    fence: ScopedLeaseFence,
+    reason: string,
+    now: number = Date.now(),
+  ): void {
+    this.lifecycle.complete(fence, {
+      state: 'rejected',
+      reason,
+    }, now);
+  }
+
+  failLease(
+    fence: ScopedLeaseFence,
+    reason: string,
+    maxAttempts: number = DEFAULT_MAX_ATTEMPTS,
+    now: number = Date.now(),
+  ): void {
+    this.lifecycle.fail(fence, {reason, maxAttempts}, now);
+  }
+
+  releaseFencedLease(
+    fence: ScopedLeaseFence,
+    now: number = Date.now(),
+  ): void {
+    this.lifecycle.release(fence, now);
   }
 
   setLearnedCaseId(candidateId: string, learnedCaseId: string | null): void {
@@ -417,44 +581,31 @@ export class CaseCandidateOutboxHandle {
     `).run(learnedCaseId, Date.now(), candidateId);
   }
 
-  markRejected(candidateId: string, reason: string): void {
-    this.db.prepare(`
+  /**
+   * Explicit post-review governance transition. This is not a worker terminal
+   * operation: it only applies to an already reviewed, unleased row.
+   */
+  rejectReviewedForGovernance(candidateId: string, reason: string): void {
+    const result = this.db.prepare(`
       UPDATE case_candidates
       SET state = 'rejected',
-          lease_owner = NULL,
-          lease_until = NULL,
           updated_at = ?,
           last_error = ?
       WHERE candidate_id = ?
+        AND state = 'reviewed'
+        AND lease_owner IS NULL
+        AND lease_token IS NULL
     `).run(Date.now(), truncateError(reason), candidateId);
-  }
-
-  markFailed(candidateId: string, reason: string, maxAttempts: number = DEFAULT_MAX_ATTEMPTS): void {
-    const row = this.db.prepare('SELECT attempts FROM case_candidates WHERE candidate_id = ?').get(candidateId) as {attempts: number} | undefined;
-    const nextState: CaseCandidateState = row && row.attempts >= maxAttempts ? 'rejected' : 'pending_review';
-    this.db.prepare(`
-      UPDATE case_candidates
-      SET state = ?,
-          lease_owner = NULL,
-          lease_until = NULL,
-          updated_at = ?,
-          last_error = ?
-      WHERE candidate_id = ?
-    `).run(nextState, Date.now(), truncateError(reason), candidateId);
-  }
-
-  releaseLease(candidateId: string): void {
-    this.db.prepare(`
-      UPDATE case_candidates
-      SET lease_owner = NULL, lease_until = NULL, updated_at = ?
-      WHERE candidate_id = ?
-    `).run(Date.now(), candidateId);
+    if (result.changes !== 1) {
+      throw new Error(`case_governance_transition_rejected:${candidateId}`);
+    }
   }
 
   expireStaleLeases(now: number = Date.now()): number {
     const result = this.db.prepare(`
       UPDATE case_candidates
-      SET lease_owner = NULL, lease_until = NULL, updated_at = ?
+      SET lease_owner = NULL, lease_token = NULL, lease_until = NULL,
+          updated_at = ?
       WHERE state = 'pending_review' AND lease_owner IS NOT NULL AND lease_until <= ?
     `).run(now, now);
     return result.changes;
@@ -500,12 +651,14 @@ export class CaseCandidateOutboxHandle {
             contradicting_evidence = ?,
             feedback_projection_rejected = ?,
             lease_owner = CASE WHEN ? = 1 THEN NULL ELSE lease_owner END,
+            lease_token = CASE WHEN ? = 1 THEN NULL ELSE lease_token END,
             lease_until = CASE WHEN ? = 1 THEN NULL ELSE lease_until END,
             updated_at = ?
         WHERE candidate_id = ?
       `).run(
         supportingEvidence,
         contradictingEvidence,
+        rejected ? 1 : 0,
         rejected ? 1 : 0,
         rejected ? 1 : 0,
         rejected ? 1 : 0,
@@ -661,6 +814,264 @@ export class CaseCandidateOutboxHandle {
 
   close(): void {
     this.db.close();
+  }
+
+  private claimLease(input: {
+    jobId?: string;
+    owner: string;
+    token: string;
+    now: number;
+    leaseUntil: number;
+    maxAttempts: number;
+  }) {
+    return this.db.transaction(() => {
+      const selected = this.db.prepare(`
+        SELECT candidate_id, tenant_id, workspace_id
+        FROM case_candidates
+        WHERE state = 'pending_review'
+          AND (? IS NULL OR candidate_id = ?)
+          AND feedback_projection_rejected = 0
+          AND lease_owner IS NULL
+          AND lease_token IS NULL
+          AND attempts < ?
+        ORDER BY priority DESC, created_at ASC
+        LIMIT 1
+      `).get(
+        input.jobId ?? null,
+        input.jobId ?? null,
+        input.maxAttempts,
+      ) as {
+        candidate_id: string;
+        tenant_id: string;
+        workspace_id: string;
+      } | undefined;
+      if (!selected) return {changes: 0};
+      const claim = this.db.prepare(`
+        UPDATE case_candidates
+        SET lease_owner = ?,
+            lease_token = ?,
+            lease_until = ?,
+            attempts = attempts + 1,
+            updated_at = ?
+        WHERE candidate_id = ?
+          AND tenant_id = ?
+          AND workspace_id = ?
+          AND state = 'pending_review'
+          AND feedback_projection_rejected = 0
+          AND lease_owner IS NULL
+          AND lease_token IS NULL
+      `).run(
+        input.owner,
+        input.token,
+        input.leaseUntil,
+        input.now,
+        selected.candidate_id,
+        selected.tenant_id,
+        selected.workspace_id,
+      );
+      if (claim.changes !== 1) return {changes: claim.changes};
+      const job = this.db.prepare(`
+        SELECT * FROM case_candidates
+        WHERE candidate_id = ?
+          AND tenant_id = ?
+          AND workspace_id = ?
+      `).get(
+        selected.candidate_id,
+        selected.tenant_id,
+        selected.workspace_id,
+      ) as Record<string, unknown> | undefined;
+      return {
+        changes: claim.changes,
+        job,
+        scope: {
+          tenantId: selected.tenant_id,
+          workspaceId: selected.workspace_id,
+        },
+        jobId: selected.candidate_id,
+      };
+    })();
+  }
+
+  private assertLease(fence: ScopedLeaseFence, now: number): number {
+    return this.db.prepare(`
+      UPDATE case_candidates
+      SET updated_at = updated_at
+      WHERE candidate_id = ?
+        AND tenant_id = ?
+        AND workspace_id = ?
+        AND state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner = ?
+        AND lease_token = ?
+        AND lease_until > ?
+    `).run(
+      fence.jobId,
+      fence.scope.tenantId,
+      fence.scope.workspaceId,
+      fence.owner,
+      fence.token,
+      now,
+    ).changes;
+  }
+
+  private renewLeaseRow(
+    fence: ScopedLeaseFence,
+    now: number,
+    leaseUntil: number,
+  ): number {
+    return this.db.prepare(`
+      UPDATE case_candidates
+      SET lease_until = ?, updated_at = ?
+      WHERE candidate_id = ?
+        AND tenant_id = ?
+        AND workspace_id = ?
+        AND state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner = ?
+        AND lease_token = ?
+        AND lease_until > ?
+    `).run(
+      leaseUntil,
+      now,
+      fence.jobId,
+      fence.scope.tenantId,
+      fence.scope.workspaceId,
+      fence.owner,
+      fence.token,
+      now,
+    ).changes;
+  }
+
+  private completeLeaseRow(
+    fence: ScopedLeaseFence,
+    completion: CaseLeaseCompletion,
+    now: number,
+  ): number {
+    if (completion.state === 'reviewed') {
+      if (!completion.review) {
+        throw new Error('case_outbox_review_required');
+      }
+      return this.db.prepare(`
+        UPDATE case_candidates
+        SET state = 'reviewed',
+            review_json = ?,
+            note_path = ?,
+            learned_case_id = ?,
+            lease_owner = NULL,
+            lease_token = NULL,
+            lease_until = NULL,
+            updated_at = ?,
+            last_error = NULL
+        WHERE candidate_id = ?
+          AND tenant_id = ?
+          AND workspace_id = ?
+          AND state = 'pending_review'
+          AND feedback_projection_rejected = 0
+          AND lease_owner = ?
+          AND lease_token = ?
+          AND lease_until > ?
+      `).run(
+        JSON.stringify(completion.review),
+        completion.notePath ?? null,
+        completion.learnedCaseId ?? null,
+        now,
+        fence.jobId,
+        fence.scope.tenantId,
+        fence.scope.workspaceId,
+        fence.owner,
+        fence.token,
+        now,
+      ).changes;
+    }
+    return this.db.prepare(`
+      UPDATE case_candidates
+      SET state = 'rejected',
+          lease_owner = NULL,
+          lease_token = NULL,
+          lease_until = NULL,
+          updated_at = ?,
+          last_error = ?
+      WHERE candidate_id = ?
+        AND tenant_id = ?
+        AND workspace_id = ?
+        AND state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner = ?
+        AND lease_token = ?
+        AND lease_until > ?
+    `).run(
+      now,
+      truncateError(completion.reason ?? 'rejected'),
+      fence.jobId,
+      fence.scope.tenantId,
+      fence.scope.workspaceId,
+      fence.owner,
+      fence.token,
+      now,
+    ).changes;
+  }
+
+  private failLeaseRow(
+    fence: ScopedLeaseFence,
+    failure: CaseLeaseFailure,
+    now: number,
+  ): number {
+    return this.db.prepare(`
+      UPDATE case_candidates
+      SET state = CASE
+            WHEN attempts >= ? THEN 'rejected'
+            ELSE 'pending_review'
+          END,
+          lease_owner = NULL,
+          lease_token = NULL,
+          lease_until = NULL,
+          updated_at = ?,
+          last_error = ?
+      WHERE candidate_id = ?
+        AND tenant_id = ?
+        AND workspace_id = ?
+        AND state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner = ?
+        AND lease_token = ?
+        AND lease_until > ?
+    `).run(
+      failure.maxAttempts,
+      now,
+      truncateError(failure.reason),
+      fence.jobId,
+      fence.scope.tenantId,
+      fence.scope.workspaceId,
+      fence.owner,
+      fence.token,
+      now,
+    ).changes;
+  }
+
+  private releaseLeaseRow(fence: ScopedLeaseFence, now: number): number {
+    return this.db.prepare(`
+      UPDATE case_candidates
+      SET lease_owner = NULL,
+          lease_token = NULL,
+          lease_until = NULL,
+          updated_at = ?
+      WHERE candidate_id = ?
+        AND tenant_id = ?
+        AND workspace_id = ?
+        AND state = 'pending_review'
+        AND feedback_projection_rejected = 0
+        AND lease_owner = ?
+        AND lease_token = ?
+        AND lease_until > ?
+    `).run(
+      now,
+      fence.jobId,
+      fence.scope.tenantId,
+      fence.scope.workspaceId,
+      fence.owner,
+      fence.token,
+      now,
+    ).changes;
   }
 
   private pendingCount(): number {

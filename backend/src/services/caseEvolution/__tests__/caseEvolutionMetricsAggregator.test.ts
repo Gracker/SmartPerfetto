@@ -141,8 +141,19 @@ describe('caseEvolutionMetricsAggregator', () => {
         {rating: 'positive'},
         {rating: 'positive'},
       ]);
-      box.markReviewed('cand-reviewed', {review: review('cand-reviewed'), notePath: 'logs/case_candidates/cand-reviewed.json'});
-      box.markRejected('cand-rejected', 'bad review');
+      const reviewedLease = box.leaseNext({
+        candidateId: 'cand-reviewed',
+        workerOwner: 'test-metrics-reviewed',
+      })!;
+      box.completeReviewedLease(reviewedLease.lease!, {
+        review: review('cand-reviewed'),
+        notePath: 'logs/case_candidates/cand-reviewed.json',
+      });
+      const rejectedLease = box.leaseNext({
+        candidateId: 'cand-rejected',
+        workerOwner: 'test-metrics-rejected',
+      })!;
+      box.rejectLease(rejectedLease.lease!, 'bad review');
     });
     const sidecarDir = path.join(tempDir, 'case_candidates');
     fs.mkdirSync(sidecarDir, {recursive: true});

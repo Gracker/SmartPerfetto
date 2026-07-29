@@ -353,6 +353,81 @@ export interface EvalScoreV1 {
   };
 }
 
+export const PROPOSAL_KINDS = [
+  'phase_hint',
+  'skill_note',
+  'strategy_section',
+  'skill_overlay_delta',
+  'skill_sql',
+  'new_skill_draft',
+  'retire_injection',
+] as const;
+
+export type CurationProposalKind = (typeof PROPOSAL_KINDS)[number];
+
+export const PROPOSAL_TIERS = [
+  'T0',
+  'T1',
+  'T2',
+  'T3',
+  'T4',
+  'T5a',
+] as const;
+
+export type CurationProposalTier = (typeof PROPOSAL_TIERS)[number];
+
+export interface ProposalDelta {
+  op: 'add' | 'modify' | 'remove';
+  targetKind:
+    | 'skill_overlay'
+    | 'strategy_overlay'
+    | 'skill_note'
+    | 'injection';
+  targetId: string;
+  operationId: string;
+  anchor: string;
+  baseContentHash: string;
+  before?: string;
+  after?: string;
+}
+
+/**
+ * M7 owns the closed gate-result schema. M6 draft proposals always omit this
+ * field; the explicit alias keeps the PLAN contract reference available
+ * without inventing M7 fields early.
+ */
+export type ProposalGateResultV1 = Record<string, never>;
+
+export interface CurationProposalV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  revision: number;
+  idempotencyKey: string;
+  kind: CurationProposalKind;
+  tier: CurationProposalTier;
+  title: string;
+  rationale: string;
+  deltas: ProposalDelta[];
+  expectedRegistryFingerprint: string;
+  expectedOverlayGeneration: string;
+  evidence: {
+    negativeRunIds: string[];
+    positiveRunIds: string[];
+    labeledCount: number;
+    negativeCount: number;
+    distinctTraceCount: number;
+    distinctSessionCount: number;
+    statisticalVerdict: 'hypothesis_only';
+  };
+  pairedGateVerdict?: 'not_run' | 'passed' | 'failed' | 'inconclusive';
+  expectedEffect: string;
+  riskLevel: 'low' | 'medium' | 'high';
+  gateResult?: ProposalGateResultV1;
+  status: 'draft' | 'gated' | 'accepted' | 'applied' | 'rejected' | 'reverted';
+  scope: RunManifestScope;
+  createdAt: string;
+}
+
 export const FEEDBACK_TARGET_KINDS = [
   'session',
   'conclusion',

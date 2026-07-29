@@ -363,6 +363,24 @@ describe('FeedbackEventStore', () => {
     expect(durable.databasePath).not.toBe(dbPath);
     expect(durable.storage).toBe('durable');
     expect(temporary.storage).toBe('temporary_private');
+    expect(durable.visibility).toBe('private_local');
+    expect(temporary.visibility).toBe('private_local');
+
+    const privateDurableStore = new FeedbackEventStore({
+      scope,
+      ...durable,
+    });
+    expect(privateDurableStore.provenance).toEqual({
+      visibility: 'private_local',
+      durability: 'durable',
+    });
+    privateDurableStore.close();
+    const publicStore = openStore();
+    expect(publicStore.provenance).toEqual({
+      visibility: 'public_scoped',
+      durability: 'durable',
+    });
+    publicStore.close();
   });
 
   it('filters effective metrics by target kind', async () => {

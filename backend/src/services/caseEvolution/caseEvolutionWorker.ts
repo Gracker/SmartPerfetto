@@ -8,13 +8,9 @@ import { CaseGraph } from '../caseGraph';
 import { CaseLibrary } from '../caseLibrary';
 import { getDefaultRagStore } from '../ragStore';
 import type { LeasedCaseCandidate, CaseCandidateOutboxHandle } from './caseCandidateOutbox';
-import { anonymizeCaseReview } from './caseAnonymizer';
 import { loadCaseEvolutionConfig } from './caseEvolutionConfig';
 import { validateCaseEvolutionConfig } from './caseEvolutionConfig';
-import {
-  validateCaseCandidateReview,
-  type CaseCandidateReviewValidatorDeps,
-} from './caseCandidateReviewValidator';
+import type {CaseCandidateReviewValidatorDeps} from './caseCandidateReviewValidator';
 import {
   writeCaseCandidateSidecar,
   type WriteCaseCandidateSidecarResult,
@@ -33,6 +29,11 @@ import {
   recordCaseEvolutionWorkerRunning,
 } from './caseEvolutionRuntimeMetrics';
 import {caseCandidateKnowledgeScope} from './caseCandidateBuilder';
+import {projectCaseCandidateReviewArtifact} from './caseCandidateArtifactProjection';
+import {
+  ScopedLeaseLostError,
+  type ScopedLeaseFence,
+} from '../evolutionLifecycle/scopedOutbox';
 
 export type CaseCandidateReviewExecutor =
   (candidate: LeasedCaseCandidate['candidate']) => Promise<CaseCandidateReviewExecutionResult>;
@@ -152,6 +153,7 @@ export class CaseEvolutionWorker {
         workerOwner: this.workerOwner,
         leaseDurationMs: this.config.leaseMs,
         maxAttempts: this.config.maxAttempts,
+        now,
       });
       if (!job) break;
       jobs.push(job);
@@ -175,71 +177,88 @@ export class CaseEvolutionWorker {
 
   private async processJob(job: LeasedCaseCandidate): Promise<void> {
     this.stats.attempted += 1;
+    let fence = job.lease;
+    if (!fence) {
+      this.stats.failedPermanent += 1;
+      throw new Error(`case_worker_missing_lease:${job.candidateId}`);
+    }
     try {
       const knowledgeScope = caseCandidateKnowledgeScope(job.candidate);
       if (!knowledgeScope) {
-        this.stats.rejected += 1;
-        this.outbox.markRejected(
-          job.candidateId,
+        this.outbox.rejectLease(
+          fence,
           'candidate is missing a valid immutable origin scope',
+          this.clock(),
         );
+        this.stats.rejected += 1;
         return;
       }
       const result = await this.executeReview(job.candidate);
       if (!result.ok) {
-        this.markTransientFailure(job, `${result.reason}: ${result.details}`);
-        return;
-      }
-
-      const validation = validateCaseCandidateReview(
-        result.review,
-        job.candidate,
-        this.validatorDeps,
-      );
-      if (!validation.ok) {
-        this.stats.rejected += 1;
-        this.outbox.markRejected(job.candidateId, validation.errors.join('; '));
-        return;
-      }
-
-      // §3.4 PII gate: anonymize the validated review BEFORE any persistence
-      // (sidecar write + markReviewed both store the review). Required-field
-      // PII rejects the candidate permanently; optional-field PII is redacted.
-      // This runs after schema/domain validation so we only ever reject a
-      // structurally-valid review on PII grounds.
-      const anonymizedReview = anonymizeCaseReview(validation.review);
-      if (!anonymizedReview.ok) {
-        this.stats.rejected += 1;
-        this.outbox.markRejected(
-          job.candidateId,
-          `review rejected by anonymizer: ${anonymizedReview.errors.join('; ')}`,
+        this.markTransientFailure(
+          job,
+          fence,
+          `${result.reason}: ${result.details}`,
         );
         return;
       }
-      const cleanReview = anonymizedReview.review;
-      const reviewWarnings = [...validation.warnings, ...anonymizedReview.warnings];
+      fence = this.renewForSideEffect(fence);
 
+      const projection = projectCaseCandidateReviewArtifact({
+        value: result.review,
+        candidate: job.candidate,
+        validatorDeps: this.validatorDeps,
+      });
+      if (!projection.ok) {
+        this.outbox.rejectLease(
+          fence,
+          projection.errors.join('; '),
+          this.clock(),
+        );
+        this.stats.rejected += 1;
+        return;
+      }
+
+      const cleanReview = projection.artifact;
+      const reviewWarnings = projection.warnings;
+
+      if (this.config.notesWriteEnabled) {
+        fence = this.renewForSideEffect(fence);
+      }
       const notePath = this.config.notesWriteEnabled
         ? this.writeSidecar(job, cleanReview, reviewWarnings)
         : null;
       if (notePath && !notePath.ok) {
         if (notePath.reason === 'io_error') {
-          this.markTransientFailure(job, `sidecar ${notePath.reason}: ${notePath.details}`);
+          this.markTransientFailure(
+            job,
+            fence,
+            `sidecar ${notePath.reason}: ${notePath.details}`,
+          );
         } else {
+          this.outbox.rejectLease(
+            fence,
+            `sidecar ${notePath.reason}: ${notePath.details}`,
+            this.clock(),
+          );
           this.stats.rejected += 1;
-          this.outbox.markRejected(job.candidateId, `sidecar ${notePath.reason}: ${notePath.details}`);
         }
         return;
       }
 
       if (cleanReview.decision !== 'promote') {
+        this.outbox.rejectLease(
+          fence,
+          `review decision: ${cleanReview.decision}`,
+          this.clock(),
+        );
         this.stats.rejected += 1;
-        this.outbox.markRejected(job.candidateId, `review decision: ${cleanReview.decision}`);
         return;
       }
 
       let learnedCaseId: string | null = null;
       if (this.config.ingestEnabled) {
+        fence = this.renewForSideEffect(fence);
         try {
           const ingestResult = this.ingestReviewedCandidate({
             candidate: job.candidate,
@@ -252,21 +271,31 @@ export class CaseEvolutionWorker {
           });
           learnedCaseId = ingestResult.learnedCaseId;
         } catch (err) {
-          this.markTransientFailure(job, `ingest failed: ${err instanceof Error ? err.message : String(err)}`);
+          this.markTransientFailure(
+            job,
+            fence,
+            `ingest failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
           return;
         }
       }
 
-      this.stats.reviewed += 1;
-      this.outbox.markReviewed(job.candidateId, {
+      this.outbox.completeReviewedLease(fence, {
         review: cleanReview,
         notePath: notePath?.path ?? null,
-      });
-      if (learnedCaseId) {
-        this.outbox.setLearnedCaseId(job.candidateId, learnedCaseId);
-      }
+        learnedCaseId,
+      }, this.clock());
+      this.stats.reviewed += 1;
     } catch (err) {
-      this.markTransientFailure(job, `unhandled: ${err instanceof Error ? err.message : String(err)}`);
+      if (err instanceof ScopedLeaseLostError) {
+        this.stats.failedTransient += 1;
+        return;
+      }
+      this.markTransientFailure(
+        job,
+        fence,
+        `unhandled: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -282,9 +311,31 @@ export class CaseEvolutionWorker {
     });
   }
 
-  private markTransientFailure(job: LeasedCaseCandidate, reason: string): void {
+  private renewForSideEffect(fence: ScopedLeaseFence): ScopedLeaseFence {
+    return this.outbox.renewLease(
+      fence,
+      this.config.leaseMs,
+      this.clock(),
+    );
+  }
+
+  private markTransientFailure(
+    job: LeasedCaseCandidate,
+    fence: ScopedLeaseFence,
+    reason: string,
+  ): void {
     this.stats.failedTransient += 1;
-    this.outbox.markFailed(job.candidateId, reason, this.config.maxAttempts);
+    try {
+      this.outbox.failLease(
+        fence,
+        reason,
+        this.config.maxAttempts,
+        this.clock(),
+      );
+    } catch (error) {
+      if (error instanceof ScopedLeaseLostError) return;
+      throw error;
+    }
     const row = this.outbox.getCandidate(job.candidateId);
     if (row?.state === 'rejected') this.stats.failedPermanent += 1;
   }

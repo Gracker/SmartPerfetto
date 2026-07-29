@@ -313,4 +313,45 @@ describe('CaseEvolutionWorker', () => {
 
     expect(outbox.getCandidate('cand-worker-1')!.state).toBe('reviewed');
   });
+
+  it('rechecks the fence before sidecar and ingest side effects', async () => {
+    enqueue();
+    let now = 100;
+    const ingestReviewedCandidate = jest.fn(
+      (_input: IngestReviewedCaseCandidateOptions) => ({
+        learnedCaseId: 'learned:stale',
+        warnings: [],
+      }),
+    );
+    const worker = new CaseEvolutionWorker({
+      outbox,
+      executeReview: jest.fn(async () => {
+        now = 111;
+        return {
+          ok: true as const,
+          review: review() as unknown as Record<string, unknown>,
+        };
+      }),
+      ingestReviewedCandidate,
+      config: {
+        captureEnabled: true,
+        reviewEnabled: true,
+        notesWriteEnabled: true,
+        ingestEnabled: true,
+        leaseMs: 10,
+      },
+      notesDir: tempDir,
+      clock: () => now,
+    });
+
+    await worker.tick();
+
+    expect(fs.readdirSync(tempDir)).toEqual([]);
+    expect(ingestReviewedCandidate).not.toHaveBeenCalled();
+    expect(outbox.getCandidate('cand-worker-1')).toMatchObject({
+      state: 'pending_review',
+      leaseOwner: 'case-evolution-' + process.pid,
+    });
+    expect(worker.stats.failedTransient).toBe(1);
+  });
 });

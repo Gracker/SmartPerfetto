@@ -28,11 +28,20 @@ import {
 import {withFilesystemRegistryLockAsync} from '../filesystemRegistryLock';
 import {canonicalContentHash, canonicalJsonString} from './canonicalJson';
 
-interface FeedbackEventStoreOptions {
+export interface FeedbackEventStoreOptions {
   scope: RunManifestScope;
   eventLogPath?: string;
   databasePath?: string;
   storage?: AppendFeedbackEventResult['storage'];
+  visibility?: FeedbackStoreVisibility;
+}
+
+export type FeedbackStoreVisibility = 'public_scoped' | 'private_local';
+export type FeedbackStoreDurability = 'durable' | 'temporary';
+
+export interface FeedbackStoreProvenance {
+  visibility: FeedbackStoreVisibility;
+  durability: FeedbackStoreDurability;
 }
 
 export interface FeedbackProjectionTarget {
@@ -368,7 +377,12 @@ export function privateFeedbackStorePaths(input: {
   scope: RunManifestScope;
   userId: string;
   durable: boolean;
-}): {eventLogPath: string; databasePath: string; storage: AppendFeedbackEventResult['storage']} {
+}): {
+  eventLogPath: string;
+  databasePath: string;
+  storage: AppendFeedbackEventResult['storage'];
+  visibility: 'private_local';
+} {
   const segments = [
     safeSegment(input.scope.tenantId),
     safeSegment(input.scope.workspaceId),
@@ -386,22 +400,35 @@ export function privateFeedbackStorePaths(input: {
     eventLogPath: path.join(root, 'feedback.jsonl'),
     databasePath: path.join(root, 'feedback_index.db'),
     storage: input.durable ? 'durable' : 'temporary_private',
+    visibility: 'private_local',
   };
 }
 
 export class FeedbackEventStore {
-  private readonly scope: RunManifestScope;
-  private readonly eventLogPath: string;
-  private readonly databasePath: string;
-  private readonly storage: AppendFeedbackEventResult['storage'];
+  private readonly scope!: RunManifestScope;
+  private readonly eventLogPath!: string;
+  private readonly databasePath!: string;
+  private readonly storage!: AppendFeedbackEventResult['storage'];
+  readonly provenance!: FeedbackStoreProvenance;
   private database: Database.Database | undefined;
 
   constructor(options: FeedbackEventStoreOptions) {
-    this.scope = {...options.scope};
-    this.eventLogPath = options.eventLogPath ??
-      publicFeedbackLogPath(options.scope);
-    this.databasePath = options.databasePath ?? publicFeedbackIndexPath();
-    this.storage = options.storage ?? 'durable';
+    const storage = options.storage ?? 'durable';
+    const provenance = Object.freeze({
+      visibility: options.visibility ?? 'public_scoped',
+      durability: storage === 'durable' ? 'durable' : 'temporary',
+    });
+    Object.defineProperties(this, {
+      scope: immutableProperty(Object.freeze({...options.scope})),
+      eventLogPath: immutableProperty(
+        options.eventLogPath ?? publicFeedbackLogPath(options.scope),
+      ),
+      databasePath: immutableProperty(
+        options.databasePath ?? publicFeedbackIndexPath(),
+      ),
+      storage: immutableProperty(storage),
+      provenance: immutableProperty(provenance),
+    });
   }
 
   async append(input: AppendFeedbackEventInput): Promise<AppendFeedbackEventResult> {
@@ -637,6 +664,35 @@ export class FeedbackEventStore {
       totalNegative: row.totalNegative ?? 0,
       distinctSessions: row.distinctSessions ?? 0,
     };
+  }
+
+  listEffective(): EffectiveFeedbackV1[] {
+    const rows = this.db().prepare(`
+      SELECT *
+      FROM effective_feedback
+      WHERE tenant_id = ? AND workspace_id = ?
+      ORDER BY COALESCE(sequence, -1), event_index_id, feedback_id
+    `).all(
+      this.scope.tenantId,
+      this.scope.workspaceId,
+    ) as EffectiveFeedbackRow[];
+    return rows.map(row => ({
+      ...parseEffectiveRow(row),
+      scope: {...this.scope},
+    }));
+  }
+
+  async listEffectiveSnapshot(): Promise<EffectiveFeedbackV1[]> {
+    return withFilesystemRegistryLockAsync(
+      this.eventLogPath,
+      'feedback_event_store_busy',
+      async lease => {
+        lease.assertHeld();
+        this.catchUpLocked();
+        lease.assertHeld();
+        return this.listEffective();
+      },
+    );
   }
 
   close(): void {
@@ -1241,6 +1297,126 @@ export class FeedbackEventStore {
     `);
     return this.database;
   }
+}
+
+function immutableProperty<T>(value: T): PropertyDescriptor {
+  return {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value,
+  };
+}
+
+Object.freeze(FeedbackEventStore.prototype);
+
+const publicCurationStoreAppend = FeedbackEventStore.prototype.append;
+const publicCurationStoreList =
+  FeedbackEventStore.prototype.listEffectiveSnapshot;
+const publicCurationStoreClose = FeedbackEventStore.prototype.close;
+
+const canonicalPublicCurationSources = new WeakMap<object, {
+  store: FeedbackEventStore;
+  scope: RunManifestScope;
+  eventLogPath: string;
+  databasePath: string;
+}>();
+
+/**
+ * Opaque provenance capability for M6 curation.
+ *
+ * A durable private store cannot be wrapped as this capability. Curation code
+ * accepts only instances created by the canonical public-scoped factory, so
+ * visibility is never inferred from a path or the word "durable".
+ */
+export class PublicFeedbackCurationSource {
+  readonly #store: FeedbackEventStore;
+  readonly provenance: FeedbackStoreProvenance = Object.freeze({
+    visibility: 'public_scoped',
+    durability: 'durable',
+  });
+  readonly scope: RunManifestScope;
+
+  private constructor(
+    store: FeedbackEventStore,
+    scope: RunManifestScope,
+  ) {
+    this.#store = store;
+    this.scope = Object.freeze({...scope});
+  }
+
+  static open(options: {scope: RunManifestScope}): PublicFeedbackCurationSource {
+    return PublicFeedbackCurationSource.#create(options.scope);
+  }
+
+  static #create(scope: RunManifestScope): PublicFeedbackCurationSource {
+    const eventLogPath = publicFeedbackLogPath(scope);
+    const databasePath = publicFeedbackIndexPath();
+    const store = new FeedbackEventStore({
+      scope,
+      eventLogPath,
+      databasePath,
+      storage: 'durable',
+      visibility: 'public_scoped',
+    });
+    const source = new PublicFeedbackCurationSource(
+      store,
+      scope,
+    );
+    canonicalPublicCurationSources.set(source, {
+      store,
+      scope: Object.freeze({...scope}),
+      eventLogPath,
+      databasePath,
+    });
+    Object.freeze(source);
+    return source;
+  }
+
+  async append(
+    input: AppendFeedbackEventInput,
+  ): Promise<AppendFeedbackEventResult> {
+    return publicCurationStoreAppend.call(this.#store, input);
+  }
+
+  async listEffective(): Promise<EffectiveFeedbackV1[]> {
+    return publicCurationStoreList.call(this.#store);
+  }
+
+  close(): void {
+    publicCurationStoreClose.call(this.#store);
+  }
+}
+
+Object.freeze(PublicFeedbackCurationSource.prototype);
+
+export function isCanonicalPublicFeedbackCurationSource(
+  value: unknown,
+): value is PublicFeedbackCurationSource {
+  const canonical = value && typeof value === 'object'
+    ? canonicalPublicCurationSources.get(value)
+    : undefined;
+  const storeIdentity = canonical?.store as unknown as {
+    scope: RunManifestScope;
+    eventLogPath: string;
+    databasePath: string;
+    storage: AppendFeedbackEventResult['storage'];
+  } | undefined;
+  return !!value &&
+    typeof value === 'object' &&
+    !!canonical &&
+    (value as PublicFeedbackCurationSource).provenance.visibility ===
+      'public_scoped' &&
+    (value as PublicFeedbackCurationSource).provenance.durability ===
+      'durable' &&
+    canonical.store.provenance.visibility ===
+      'public_scoped' &&
+    canonical.store.provenance.durability ===
+      'durable' &&
+    storeIdentity?.storage === 'durable' &&
+    storeIdentity.eventLogPath === canonical.eventLogPath &&
+    storeIdentity.databasePath === canonical.databasePath &&
+    sameScope(storeIdentity.scope, canonical.scope);
 }
 
 export const feedbackEventStoreTesting = {

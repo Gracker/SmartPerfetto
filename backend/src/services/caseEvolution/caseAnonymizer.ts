@@ -49,7 +49,7 @@ export function anonymizeCaseCandidate(candidate: CaseCandidate): CaseCandidateA
 
 /**
  * Anonymize a review in isolation, BEFORE the worker persists it
- * (`markReviewed` / sidecar write). This is the §3.4 PII gate for the
+ * (fenced outbox completion / sidecar write). This is the §3.4 PII gate for the
  * review half. Required-field PII (title, finding titles, recommendation
  * actions) rejects the review; optional-field PII is redacted.
  */

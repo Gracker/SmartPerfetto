@@ -96,7 +96,11 @@ function review(candidateId = 'cand-feedback-1'): CaseCandidateReview {
 function seedReviewedCase() {
   const item = candidate();
   outbox.enqueue(item, { dedupeKey: 'dedupe' });
-  outbox.markReviewed(item.candidateId, { review: review() });
+  const lease = outbox.leaseNext({
+    candidateId: item.candidateId,
+    workerOwner: 'test-feedback',
+  })!;
+  outbox.completeReviewedLease(lease.lease!, {review: review()});
   outbox.setLearnedCaseId(item.candidateId, 'learned:cand-feedback');
   library.saveCase({
     schemaVersion: 1,

@@ -171,17 +171,32 @@ describe('caseCandidateIngester', () => {
     const firstLearned = learnedCaseIdForCandidate(first.candidateId);
     const secondLearned = learnedCaseIdForCandidate(second.candidateId);
     outbox.enqueue(first, { dedupeKey: 'dedupe-1' });
-    outbox.markReviewed(first.candidateId, { review: review(first.candidateId) });
+    const firstLease = outbox.leaseNext({
+      candidateId: first.candidateId,
+      workerOwner: 'test-ingest-first',
+    })!;
+    outbox.completeReviewedLease(firstLease.lease!, {
+      review: review(first.candidateId),
+    });
     outbox.setLearnedCaseId(first.candidateId, firstLearned);
     outbox.enqueue(second, { dedupeKey: 'dedupe-2' });
-    outbox.markReviewed(second.candidateId, { review: review(second.candidateId) });
+    const secondLease = outbox.leaseNext({
+      candidateId: second.candidateId,
+      workerOwner: 'test-ingest-second',
+    })!;
+    outbox.completeReviewedLease(secondLease.lease!, {
+      review: review(second.candidateId),
+    });
     outbox.setLearnedCaseId(second.candidateId, secondLearned);
 
     rederiveLearnedCandidates({ outbox, library, graph, ragStore });
     expect(library.getCase(firstLearned)?.status).toBe('draft');
     expect(library.getCase(secondLearned)?.status).toBe('draft');
 
-    outbox.markRejected('cand-ingest-2', 'operator rejected');
+    outbox.rejectReviewedForGovernance(
+      'cand-ingest-2',
+      'operator rejected',
+    );
     rederiveLearnedCandidates({ outbox, library, graph, ragStore });
 
     expect(library.getCase(firstLearned)?.status).toBe('draft');
