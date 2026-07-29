@@ -1,7 +1,7 @@
 # Self-Improving 运行契约
 
 **状态**：Self-Evolution V1 已接入生产控制面并默认关闭；legacy 组件边界见下文
-**最后核对**：2026-07-29
+**最后核对**：2026-07-30
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
 Self-Improving 的目标是让历史分析结果在受控边界内改善后续分析，同时不把模型输出
@@ -65,6 +65,11 @@ fingerprint drift、验证失败和 publish failure 都进入 reconciliation rep
 继续生效。apply 前会从持久化 Gate attempt 重新加载候选物化与 paired replay proof，
 复验候选、treatment artifact、完整 treatment contract，并要求 overlay payload 与
 treatment entries 一一对应；调用方临时构造的任意 artifact 不能越过该绑定。
+
+`set_metadata` 的 allowlist 字段按叶路径整体替换，不做深合并。当前叶路径是
+`meta.description`、`meta.tags`、`triggers.keywords` 和 `triggers.patterns`。
+其中 `triggers.keywords` 整体是一个叶路径：只提交 `zh` 会清除原有 `en`，反之亦然；
+需要保留双语关键词时，overlay 必须同时重述 `zh` 与 `en`。
 
 ### 隐私、授权与 RBAC
 
@@ -262,8 +267,7 @@ Self-Improving 或 Case Evolution 改动至少按影响面运行：
 ```bash
 cd backend
 npm run typecheck
-npx jest --runInBand src/agentv3/selfImprove
-npx jest --runInBand src/services/selfEvolution
+npm run test:self-evolution
 npx jest --runInBand src/services/caseEvolution
 npm run test:scene-trace-regression
 ```
