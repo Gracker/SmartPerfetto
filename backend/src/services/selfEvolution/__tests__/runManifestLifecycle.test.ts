@@ -185,6 +185,7 @@ describe('RunManifestLifecycle', () => {
       getAppliedOverlayIds: () => [],
       getVendorOverride: () => undefined,
       getVendorOverridesForSkill: () => [],
+      getVendorOverrideLoadIssues: () => [],
       findMatchingSkill: () => undefined,
     };
     const snapshot: EffectiveRuntimeRegistrySnapshot = {
@@ -198,6 +199,11 @@ describe('RunManifestLifecycle', () => {
         overlayGeneration: 'builtin:registry-a',
         getStrategy: () => undefined,
         getAllStrategies: () => [],
+      },
+      skillNotes: {
+        registryFingerprint: 'skill-notes-a',
+        getSkillNotes: () => [],
+        getSkillIds: () => [],
       },
     };
     const pinned = new RunManifestLifecycle({

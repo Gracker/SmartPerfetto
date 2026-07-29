@@ -147,6 +147,11 @@ describe('strategy registry snapshots', () => {
       overlayGeneration: 'overlay:test',
       skillRegistry: {} as never,
       strategyRegistry: snapshot,
+      skillNotes: {
+        registryFingerprint: 'skill-notes-a',
+        getSkillNotes: () => [],
+        getSkillIds: () => [],
+      },
     };
 
     withEffectiveRuntimeRegistrySnapshot(runtimeSnapshot, () => {

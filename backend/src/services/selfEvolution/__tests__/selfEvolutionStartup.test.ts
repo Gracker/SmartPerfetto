@@ -13,7 +13,10 @@ import {EvolutionOverlayRegistry} from '../evolutionOverlayRegistry';
 import type {OverlayReconciler} from '../overlayReconciler';
 import type {ProposalApplicationService} from '../proposalApplicationService';
 import type {ProposalStore} from '../proposalStore';
-import {reconcileSelfEvolutionOnStartup} from '../selfEvolutionStartup';
+import {
+  LOCAL_SELF_EVOLUTION_SCOPE,
+  reconcileSelfEvolutionOnStartup,
+} from '../selfEvolutionStartup';
 
 const available: SelfEvolutionPersistenceCapability = {
   persistence: 'available',
@@ -59,7 +62,7 @@ describe('self-evolution M8 startup ordering', () => {
     expect(result.status).toBe('reconciled');
     expect(events).toEqual([
       'recover',
-      'reconcile:local:local',
+      `reconcile:${LOCAL_SELF_EVOLUTION_SCOPE.tenantId}:${LOCAL_SELF_EVOLUTION_SCOPE.workspaceId}`,
     ]);
   });
 
