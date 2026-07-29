@@ -27,6 +27,7 @@ import * as path from 'path';
 import { readSkillNotesFile, type SkillNotesFile, type PersistedSkillNote } from './skillNotesWriter';
 import { backendLogPath } from '../../runtimePaths';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
+import {currentEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {currentRunManifestAttributionSink} from '../../services/selfEvolution/runManifestLifecycle';
 import {
   isEvaluationInjectionAllowed,
@@ -230,6 +231,20 @@ export function loadSkillNotes(
   skillId: string,
   opts: NoteSourceOptions = {},
 ): PersistedSkillNote[] {
+  const pinned = currentEffectiveRuntimeRegistrySnapshot();
+  if (pinned) {
+    return [...pinned.skillNotes.getSkillNotes(skillId)];
+  }
+  return applyEvaluationSkillNoteDeltas(
+    skillId,
+    loadSkillNotesFromSources(skillId, opts),
+  );
+}
+
+export function loadSkillNotesFromSources(
+  skillId: string,
+  opts: NoteSourceOptions = {},
+): PersistedSkillNote[] {
   const runtimeDir = opts.runtimeDir ?? DEFAULT_RUNTIME_NOTES_DIR;
   const curatedDir = opts.curatedDir ?? DEFAULT_CURATED_NOTES_DIR;
 
@@ -248,10 +263,10 @@ export function loadSkillNotes(
     seen.add(n.id);
     return true;
   });
-  return applyEvaluationSkillNoteDeltas(skillId, deduplicated);
+  return deduplicated;
 }
 
-function skillNoteContentHash(note: PersistedSkillNote): string {
+export function skillNoteContentHash(note: PersistedSkillNote): string {
   return canonicalContentHash({
     failureCategory: note.failureCategory,
     failureModeHash: note.failureModeHash ?? null,

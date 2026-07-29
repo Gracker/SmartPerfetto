@@ -89,6 +89,9 @@ import {startTraceProcessorLeaseSupervisor} from './services/traceProcessorLease
 import {
   initializeSelfEvolutionLifecycle,
 } from './services/selfEvolution/selfEvolutionLifecycle';
+import {
+  reconcileSelfEvolutionOnStartup,
+} from './services/selfEvolution/selfEvolutionStartup';
 
 const app = express();
 const activeHttpResponses = createActiveHttpResponseTracker();
@@ -349,17 +352,16 @@ for (const error of selfEvolutionLifecycle.errors) {
   console.error(`[SelfEvolution] ${error.message}`);
 }
 
-const caseEvolutionWorkerHandle = startCaseEvolutionWorker();
-const patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
-const androidInternalsPackUpdateWorkerHandle = startAndroidInternalsPackUpdateWorker();
-const applicationUpdateWorkerHandle = startApplicationUpdateWorker();
-const traceProcessorLeaseSupervisorHandle = startTraceProcessorLeaseSupervisor();
-
-if (shouldCleanOrphanProcessorsOnStartup()) {
-  killOrphanProcessors();
-} else {
-  console.log('[TraceProcessor] Skipping global orphan cleanup for isolated process ownership');
-}
+let caseEvolutionWorkerHandle:
+  ReturnType<typeof startCaseEvolutionWorker> | undefined;
+let patternMemorySweepHandle:
+  ReturnType<typeof startPatternMemoryAutoConfirmSweep> | undefined;
+let androidInternalsPackUpdateWorkerHandle:
+  ReturnType<typeof startAndroidInternalsPackUpdateWorker> | undefined;
+let applicationUpdateWorkerHandle:
+  ReturnType<typeof startApplicationUpdateWorker> | undefined;
+let traceProcessorLeaseSupervisorHandle:
+  ReturnType<typeof startTraceProcessorLeaseSupervisor> | undefined;
 
 // Graceful shutdown handler
 let shutdownStarted = false;
@@ -379,19 +381,19 @@ function gracefulShutdown(signal: string) {
   resetPortPool();
 
   console.log('🧠 Stopping case evolution worker...');
-  caseEvolutionWorkerHandle.stop();
+  caseEvolutionWorkerHandle?.stop();
 
   console.log('🧠 Stopping pattern memory sweep...');
-  patternMemorySweepHandle.stop();
+  patternMemorySweepHandle?.stop();
 
   console.log('📚 Stopping Android Internals Knowledge Pack updater...');
-  androidInternalsPackUpdateWorkerHandle.stop();
+  androidInternalsPackUpdateWorkerHandle?.stop();
 
   console.log('⬆️ Stopping application update checker...');
-  applicationUpdateWorkerHandle.stop();
+  applicationUpdateWorkerHandle?.stop();
 
   console.log('🧹 Stopping trace processor lease supervisor...');
-  traceProcessorLeaseSupervisorHandle.stop();
+  traceProcessorLeaseSupervisorHandle?.stop();
   const closedEventStreams = activeHttpResponses.closeEventStreams();
   if (closedEventStreams > 0) {
     console.log(`📡 Closed ${closedEventStreams} active SSE connection(s).`);
@@ -441,30 +443,69 @@ process.on('unhandledRejection', (reason, promise) => {
   console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
-// Start server
-server = app.listen(PORT, serverConfig.bindHost, () => {
-  const advertisedHost = serverConfig.bindHost === '0.0.0.0'
-    ? '127.0.0.1'
-    : serverConfig.bindHost === '::'
-      ? '[::1]'
-      : serverConfig.bindHost.includes(':')
-        ? `[${serverConfig.bindHost}]`
-        : serverConfig.bindHost;
-  console.log(`🚀 Server running on ${serverConfig.bindHost}:${PORT}`);
-  console.log(`📊 Environment: ${NODE_ENV}`);
-  console.log(`🔗 API URL: http://${advertisedHost}:${PORT}/api`);
-  console.log(`❤️  Health check: http://${advertisedHost}:${PORT}/health`);
-  console.log(`📈 Stats: http://${advertisedHost}:${PORT}/api/traces/stats`);
-});
+async function startBackend(): Promise<void> {
+  const startup = await reconcileSelfEvolutionOnStartup({
+    lifecycle: selfEvolutionLifecycle,
+    traceProcessorVersion:
+      process.env.SMARTPERFETTO_TRACE_PROCESSOR_VERSION,
+  });
+  if (startup.status === 'reconciled') {
+    console.log(
+      `[SelfEvolution] Reconciled ${startup.reconciliations.length} scope(s) before startup`,
+    );
+  } else if (startup.status === 'identity_unavailable') {
+    console.warn(
+      '[SelfEvolution] Overlay reconciliation skipped because the current build identity is not comparable; persisted overlays remain unpublished',
+    );
+  }
 
-server.on('upgrade', (req, socket, head) => {
-  upgradedSockets.add(socket);
-  socket.once('close', () => upgradedSockets.delete(socket));
-  if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
-  socket.destroy();
-});
+  caseEvolutionWorkerHandle = startCaseEvolutionWorker();
+  patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
+  androidInternalsPackUpdateWorkerHandle =
+    startAndroidInternalsPackUpdateWorker();
+  applicationUpdateWorkerHandle = startApplicationUpdateWorker();
+  traceProcessorLeaseSupervisorHandle =
+    startTraceProcessorLeaseSupervisor();
 
-// Handle server close
-server.on('close', () => {
-  console.log('🔒 Server closed');
+  if (shouldCleanOrphanProcessorsOnStartup()) {
+    killOrphanProcessors();
+  } else {
+    console.log(
+      '[TraceProcessor] Skipping global orphan cleanup for isolated process ownership',
+    );
+  }
+
+  server = app.listen(PORT, serverConfig.bindHost, () => {
+    const advertisedHost = serverConfig.bindHost === '0.0.0.0'
+      ? '127.0.0.1'
+      : serverConfig.bindHost === '::'
+        ? '[::1]'
+        : serverConfig.bindHost.includes(':')
+          ? `[${serverConfig.bindHost}]`
+          : serverConfig.bindHost;
+    console.log(`🚀 Server running on ${serverConfig.bindHost}:${PORT}`);
+    console.log(`📊 Environment: ${NODE_ENV}`);
+    console.log(`🔗 API URL: http://${advertisedHost}:${PORT}/api`);
+    console.log(`❤️  Health check: http://${advertisedHost}:${PORT}/health`);
+    console.log(`📈 Stats: http://${advertisedHost}:${PORT}/api/traces/stats`);
+  });
+
+  server.on('upgrade', (req, socket, head) => {
+    upgradedSockets.add(socket);
+    socket.once('close', () => upgradedSockets.delete(socket));
+    if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
+    socket.destroy();
+  });
+
+  server.on('close', () => {
+    console.log('🔒 Server closed');
+  });
+}
+
+void startBackend().catch(error => {
+  console.error(
+    '[SelfEvolution] Startup reconciliation failed; backend listener remains closed:',
+    error,
+  );
+  process.exitCode = 1;
 });

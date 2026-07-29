@@ -5,6 +5,10 @@
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {
+  PhaseHint,
+  StrategyRegistryContribution,
+} from '../agentv3/strategyLoader';
+import type {
   DisplayConfig,
   SkillStep,
 } from '../services/skillEngine/types';
@@ -589,9 +593,409 @@ export interface CurationProposalV1 {
   expectedEffect: string;
   riskLevel: 'low' | 'medium' | 'high';
   gateResult?: ProposalGateResultV1;
+  activeActionId?: string;
   status: 'draft' | 'gated' | 'accepted' | 'applied' | 'rejected' | 'reverted';
   scope: RunManifestScope;
   createdAt: string;
+}
+
+export type EvolutionOverlayKind =
+  | 'skill_delta'
+  | 'strategy_delta'
+  | 'skill_note';
+
+export type EvolutionBaseRelation =
+  | 'unchanged'
+  | 'changed'
+  | 'absorbed'
+  | 'missing'
+  | 'incompatible';
+
+export type EvolutionOverlayValidationState =
+  | 'pending'
+  | 'passed'
+  | 'failed'
+  | 'error';
+
+export type EvolutionOverlayActivationState =
+  | 'active'
+  | 'inactive'
+  | 'quarantined'
+  | 'obsolete'
+  | 'disabled';
+
+export type EvolutionOverlayActionState =
+  | 'staged'
+  | 'committed'
+  | 'aborted';
+
+export interface EvolutionValidationBoundInputsV1 {
+  overlayContentHash: string;
+  validatedAgainstBaseFingerprint: string;
+  skillRegistryFingerprint: string;
+  strategyRegistryFingerprint?: string;
+  fragmentsFingerprint?: string;
+  toolAllowlistFingerprint?: string;
+  promptTemplatesFingerprint?: string;
+  loaderSchemaVersion: string;
+  buildIdentityFingerprint: string;
+  overlayGeneration: string;
+}
+
+export interface EvolutionOverlayProvenanceV1 {
+  schemaVersion: 1;
+  overlayId: string;
+  overlayKind: EvolutionOverlayKind;
+  overlayContentHash: string;
+  deltaSchemaVersion: number;
+  proposalId: string;
+  proposalRevision: number;
+  gateVerdict: 'passed' | 'failed' | 'inconclusive';
+  evalFingerprints?: {
+    evalSetId: string;
+    baselineHash: string;
+    candidateHash: string;
+  };
+  derivedFrom: {
+    baseKind: 'skill' | 'strategy';
+    baseId: string;
+    baseVersion: string;
+    baseContentFingerprint: string;
+    baseOrigin: 'built_in' | 'external_pack';
+    basePackId?: string;
+    basePackVersion?: string;
+    baseTrustState?: string;
+  };
+  dependencyFingerprints: {
+    fragments?: string;
+    toolAllowlist?: string;
+    promptTemplates?: string;
+    loaderSchemaVersion: string;
+  };
+  producedUnder: {
+    buildIdentity: {
+      distribution: string;
+      channel: string;
+      version: string;
+      commit?: string;
+      target?: string;
+    };
+    traceProcessorVersion: string;
+    perfettoStdlibFingerprint?: string;
+    testedMatrix: Array<{
+      runtime: AgentRuntimeKind;
+      providerId?: string;
+      model?: string;
+    }>;
+  };
+  compatibility: {
+    smartPerfettoMinVersion: string;
+    smartPerfettoMaxVersionTested: string;
+  };
+  supersedesOverlayId?: string;
+  validation?: {
+    result: 'passed' | 'failed' | 'error';
+    validatorVersion: string;
+    at: number;
+    validationInputFingerprint: string;
+    boundInputs: EvolutionValidationBoundInputsV1;
+  };
+  createdAt: number;
+  appliedAt?: number;
+  reconciledAt?: number;
+  actor: {userId?: string};
+  scope: RunManifestScope;
+}
+
+export type EvolutionStrategyDeltaV1 =
+  | {
+      kind: 'strategy_contribution';
+      contribution: StrategyRegistryContribution;
+    }
+  | {
+      kind: 'phase_hint_delta';
+      op: 'add' | 'modify' | 'remove';
+      scene: string;
+      hintId: string;
+      beforeContentHash?: string;
+      after?: PhaseHint;
+    }
+  | {
+      kind: 'retire_phase_hint';
+      hintId: string;
+      contentHash: string;
+      scene?: string;
+    };
+
+export interface EvolutionSkillNoteV1 {
+  schemaVersion: 1;
+  noteId: string;
+  content: string;
+  keywords: string[];
+}
+
+export type EvolutionSkillNoteDeltaV1 =
+  | {
+      kind: 'skill_note_delta';
+      op: 'add' | 'modify' | 'remove';
+      skillId: string;
+      noteId: string;
+      beforeContentHash?: string;
+      after?: EvolutionSkillNoteV1;
+    }
+  | {
+      kind: 'retire_skill_note';
+      noteId: string;
+      contentHash: string;
+      skillId?: string;
+    };
+
+export type EvolutionOverlayPayloadV1 =
+  | {
+      schemaVersion: 1;
+      payloadKind: 'skill_delta';
+      skillOverlay: SkillOverlayDeltaV1;
+    }
+  | {
+      schemaVersion: 1;
+      payloadKind: 'strategy_delta';
+      strategyDelta: EvolutionStrategyDeltaV1;
+    }
+  | {
+      schemaVersion: 1;
+      payloadKind: 'skill_note';
+      skillNoteDelta: EvolutionSkillNoteDeltaV1;
+    };
+
+export interface EvolutionOverlayArtifactV1 {
+  schemaVersion: 1;
+  artifactId: string;
+  payload: EvolutionOverlayPayloadV1;
+  provenance: EvolutionOverlayProvenanceV1;
+  contentHash: string;
+}
+
+export interface EvolutionOverlayRegistryEntryV1 {
+  schemaVersion: 1;
+  entryId: string;
+  overlayId: string;
+  overlayKind: EvolutionOverlayKind;
+  scope: RunManifestScope;
+  proposalId: string;
+  proposalRevision: number;
+  artifactContentHash: string;
+  actionId: string;
+  actionState: EvolutionOverlayActionState;
+  baseRelation: EvolutionBaseRelation;
+  validationState: EvolutionOverlayValidationState;
+  activationState: EvolutionOverlayActivationState;
+  effectiveEnabled: boolean;
+  userDisabled: boolean;
+  validationReason?: string;
+  createdAt: number;
+  reconciledAt?: number;
+  provenance: EvolutionOverlayProvenanceV1;
+}
+
+export interface EvolutionGenerationRecordV1 {
+  schemaVersion: 1;
+  scope: RunManifestScope;
+  candidateGeneration: string;
+  publishedGeneration: string | null;
+  fence: number;
+  state: 'prepared' | 'published' | 'aborted';
+  actionId?: string;
+  persistedAt: number;
+}
+
+export interface UpgradeReconciliationIssueV1 {
+  schemaVersion: 1;
+  issueId: string;
+  source: 'overlay' | 'vendor_override';
+  kind:
+    | 'orphan'
+    | 'parse_failure'
+    | 'validation_failure'
+    | 'validation_error'
+    | 'generation_publish_failure';
+  sourcePath?: string;
+  overlayId?: string;
+  baseId?: string;
+  reasonCode: string;
+  message: string;
+}
+
+export interface UpgradeReconciliationReportV1 {
+  schemaVersion: 1;
+  reportId: string;
+  scope: RunManifestScope;
+  previousBuildIdentity: ApplicationBuildIdentity | null;
+  currentBuildIdentity: ApplicationBuildIdentity;
+  candidateGeneration: string;
+  publishedGeneration: string;
+  byBaseRelation: Record<
+    EvolutionBaseRelation,
+    string[]
+  >;
+  byValidationState: Record<
+    EvolutionOverlayValidationState,
+    string[]
+  >;
+  byActivationState: Record<
+    EvolutionOverlayActivationState,
+    string[]
+  >;
+  issues: UpgradeReconciliationIssueV1[];
+  createdAt: number;
+  contentHash: string;
+}
+
+export type ProposalActionKind = 'apply' | 'revert';
+export type ProposalActionState =
+  | 'pending'
+  | 'executing'
+  | 'finalized'
+  | 'failed';
+export type ProposalActionFailureClass =
+  | 'terminal_before_side_effect'
+  | 'retryable_before_side_effect'
+  | 'recovery_required_after_side_effect';
+
+export interface ProposalActionRecordV1 {
+  schemaVersion: 1;
+  actionId: string;
+  kind: ProposalActionKind;
+  scope: RunManifestScope;
+  proposalId: string;
+  artifactContentHashes: string[];
+  expectedRevision: 3 | 4;
+  targetRevision: 4 | 5;
+  state: ProposalActionState;
+  failureClass?: ProposalActionFailureClass;
+  sideEffectKind:
+    | 'runtime_overlay'
+    | 'repository_patch'
+    | 'case_retract'
+    | 'skill_note_disable';
+  sideEffectReceiptHash?: string;
+  errorCode?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AppliedProposalRevisionV1 {
+  schemaVersion: 1;
+  ordinal: number;
+  proposalId: string;
+  proposalRevision: 4 | 5;
+  actionId: string;
+  kind: ProposalActionKind;
+  scope: RunManifestScope;
+  overlayIds: string[];
+  generation: string;
+  receiptContentHashes: string[];
+  actor: {userId?: string};
+  createdAt: number;
+  contentHash: string;
+}
+
+export interface RepositoryTargetBindingV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  proposalRevision: 1;
+  repositoryRootIdentityHash: string;
+  repositoryRelativePath: string;
+  allowedRoot: string;
+  baseCommit: string;
+  baseBlobOid: string;
+  baseFileMode: string;
+  baseFileContentHash: string;
+  structuralPath: string;
+  anchorFingerprint: string;
+  proposedFileContent: string;
+  proposedFileContentHash: string;
+  symlinkFree: true;
+  containmentVerified: true;
+  contentHash: string;
+}
+
+export interface RepositoryPatchArtifactV1 {
+  schemaVersion: 1;
+  artifactId: string;
+  proposalId: string;
+  gateAttemptId: string;
+  gateAttemptOrdinal: number;
+  targetBindingContentHash: string;
+  patch: string;
+  patchContentHash: string;
+  reversePatch: string;
+  reversePatchContentHash: string;
+  applyCheck: 'passed';
+  sourceMaintainer: true;
+  gitCapability: 'available';
+  createdAt: number;
+  contentHash: string;
+}
+
+export interface ContributionBundleArtifactV1 {
+  schemaVersion: 1;
+  artifactId: string;
+  proposalId: string;
+  gateAttemptId: string;
+  gateAttemptOrdinal: number;
+  archivePath: string;
+  archiveContentHash: string;
+  entryContentHashes: Array<{
+    path: string;
+    contentHash: string;
+  }>;
+  deidentified: true;
+  createdAt: number;
+  contentHash: string;
+}
+
+export interface ProposalChannelArtifactRevisionV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  ordinal: number;
+  channel: 'repository_patch' | 'contribution_bundle';
+  gateAttemptId: string;
+  gateAttemptOrdinal: number;
+  gateResultContentHash: string;
+  artifactId: string;
+  artifactContentHash: string;
+  state: 'active' | 'revoked';
+  createdAt: number;
+  contentHash: string;
+}
+
+export interface EvolutionRollbackReceiptV1 {
+  schemaVersion: 1;
+  actionId: string;
+  scope: RunManifestScope;
+  kind:
+    | 'local_overlay_reverted'
+    | 'repository_patch_revoked'
+    | 'case_retracted'
+    | 'skill_note_disabled';
+  targetId: string;
+  idempotent: boolean;
+  sideEffectContentHash: string;
+  createdAt: number;
+  contentHash: string;
+}
+
+export interface EvolutionDegradationAlertV1 {
+  schemaVersion: 1;
+  alertId: string;
+  scope: RunManifestScope;
+  overlayIds: string[];
+  observedGeneration: string;
+  reasonCode: string;
+  evidenceContentHashes: string[];
+  autoRollback: false;
+  createdAt: number;
+  contentHash: string;
 }
 
 export const FEEDBACK_TARGET_KINDS = [

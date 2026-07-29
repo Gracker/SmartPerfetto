@@ -33,6 +33,7 @@ describe('enterprise RBAC matrix', () => {
     expect(hasRbacPermission(context('viewer'), 'analysis_result:create')).toBe(false);
     expect(hasRbacPermission(context('viewer'), 'trace:write')).toBe(false);
     expect(hasRbacPermission(context('viewer'), 'agent:run')).toBe(false);
+    expect(hasRbacPermission(context('viewer'), 'self_evolution:read')).toBe(false);
 
     expect(hasRbacPermission(context('analyst'), 'trace:write')).toBe(true);
     expect(hasRbacPermission(context('analyst'), 'agent:run')).toBe(true);
@@ -41,6 +42,8 @@ describe('enterprise RBAC matrix', () => {
     expect(hasRbacPermission(context('analyst'), 'codebase:read')).toBe(true);
     expect(hasRbacPermission(context('analyst'), 'codebase:manage')).toBe(false);
     expect(hasRbacPermission(context('analyst'), 'trace:delete_any')).toBe(false);
+    expect(hasRbacPermission(context('analyst'), 'self_evolution:read')).toBe(true);
+    expect(hasRbacPermission(context('analyst'), 'self_evolution:apply')).toBe(false);
 
     expect(hasRbacPermission(context('workspace_admin'), 'trace:delete_any')).toBe(true);
     expect(hasRbacPermission(context('workspace_admin'), 'analysis_result:delete')).toBe(true);
@@ -49,10 +52,15 @@ describe('enterprise RBAC matrix', () => {
     expect(hasRbacPermission(context('workspace_admin'), 'runtime:manage')).toBe(true);
     expect(hasRbacPermission(context('workspace_admin'), 'codebase:manage')).toBe(true);
     expect(hasRbacPermission(context('workspace_admin'), 'codebase:admin')).toBe(false);
+    expect(hasRbacPermission(context('workspace_admin'), 'self_evolution:curate')).toBe(true);
+    expect(hasRbacPermission(context('workspace_admin'), 'self_evolution:apply')).toBe(true);
+    expect(hasRbacPermission(context('workspace_admin'), 'self_evolution:export')).toBe(true);
+    expect(hasRbacPermission(context('workspace_admin'), 'self_evolution:revert')).toBe(true);
 
     expect(hasRbacPermission(context('org_admin'), 'provider:manage_org')).toBe(true);
     expect(hasRbacPermission(context('org_admin'), 'runtime:manage')).toBe(true);
     expect(hasRbacPermission(context('org_admin'), 'codebase:admin')).toBe(true);
+    expect(hasRbacPermission(context('org_admin'), 'self_evolution:revert')).toBe(true);
   });
 
   test('lets explicit scopes authorize API key contexts without granting unrelated permissions', () => {

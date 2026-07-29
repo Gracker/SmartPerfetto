@@ -11,6 +11,7 @@ import type {
   ProposalGateCheckV1,
   ProposalGateId,
   ProposalGateVerdict,
+  RepositoryTargetBindingV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
 import {PROPOSAL_GATE_IDS} from '../../types/selfEvolution';
@@ -81,6 +82,10 @@ export interface ProposalGateServiceOptions {
     proposal: CurationProposalV1,
   ): ProposalBaseSnapshotV1 | Promise<ProposalBaseSnapshotV1>;
   staticValidation: ProposalStaticGateOptions;
+  resolveRepositoryTargetBinding?(
+    proposal: CurationProposalV1,
+  ): RepositoryTargetBindingV1 | undefined
+    | Promise<RepositoryTargetBindingV1 | undefined>;
   runPairedReplay?(
     proposal: CurationProposalV1,
     candidate: ProposalCandidateMaterializationV1,
@@ -98,7 +103,7 @@ export interface ProposalGateServiceOptions {
 export function proposalGatePolicyFingerprint(
   options: Pick<
     ProposalGateServiceOptions,
-    'planner' | 'staticValidation'
+    'planner' | 'staticValidation' | 'resolveRepositoryTargetBinding'
   >,
 ): string {
   return canonicalContentHash({
@@ -129,6 +134,11 @@ export function proposalGatePolicyFingerprint(
       forbiddenTiers: ['T4', 'T5a'],
       forbiddenVerdict: 'inconclusive',
     },
+    repositoryTargetBinding: {
+      schemaVersion: 1,
+      enabled: options.resolveRepositoryTargetBinding !== undefined,
+      eligibleTiers: ['T4', 'T5a'],
+    },
   });
 }
 
@@ -156,6 +166,21 @@ export class ProposalGateService {
       gatePolicyFingerprint: proposalGatePolicyFingerprint(this.options),
       startedAt: this.now().toISOString(),
     });
+    if (
+      (proposal.tier === 'T4' || proposal.tier === 'T5a')
+      && this.options.resolveRepositoryTargetBinding
+    ) {
+      const binding = await this.options.resolveRepositoryTargetBinding(
+        proposal,
+      );
+      if (binding) {
+        this.options.store.recordGateEvidence(
+          session,
+          'repository_target_binding',
+          binding,
+        );
+      }
+    }
     const checks = createEmptyChecks();
     let plan: ReturnType<ProposalMaterializationPlanner['plan']> | undefined;
     let containment: ProposalContainmentProbeV1 | undefined;

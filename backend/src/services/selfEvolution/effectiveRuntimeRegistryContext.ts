@@ -5,9 +5,13 @@
 import {AsyncLocalStorage} from 'async_hooks';
 
 import type {StrategyDefinition} from '../../agentv3/strategyLoader';
+import type {PersistedSkillNote} from '../../agentv3/selfImprove/skillNotesWriter';
 import type {RunManifestScope} from '../../types/selfEvolution';
 import type {SkillOriginMetadata} from '../skillPacks/skillPackTypes';
-import type {VendorOverride} from '../skillEngine/skillLoader';
+import type {
+  VendorOverride,
+  VendorOverrideLoadIssue,
+} from '../skillEngine/skillLoader';
 import type {SkillDefinition} from '../skillEngine/types';
 
 export interface ReadonlySkillRegistrySnapshot {
@@ -21,6 +25,7 @@ export interface ReadonlySkillRegistrySnapshot {
   getAppliedOverlayIds(name: string): readonly string[];
   getVendorOverride(skillId: string, vendor: string): VendorOverride | undefined;
   getVendorOverridesForSkill(skillId: string): VendorOverride[];
+  getVendorOverrideLoadIssues(): VendorOverrideLoadIssue[];
   findMatchingSkill(question: string): SkillDefinition | undefined;
 }
 
@@ -29,6 +34,12 @@ export interface ReadonlyStrategyRegistrySnapshot {
   readonly overlayGeneration: string;
   getStrategy(scene: string): StrategyDefinition | undefined;
   getAllStrategies(): StrategyDefinition[];
+}
+
+export interface ReadonlySkillNoteRegistrySnapshot {
+  readonly registryFingerprint: string;
+  getSkillNotes(skillId: string): readonly PersistedSkillNote[];
+  getSkillIds(): readonly string[];
 }
 
 export interface EffectiveRuntimeRegistrySnapshot {
@@ -42,9 +53,11 @@ export interface EffectiveRuntimeRegistrySnapshot {
     readonly materializedInputHash: string;
     readonly effectiveSkillRegistryFingerprint: string;
     readonly effectiveStrategyRegistryFingerprint: string;
+    readonly effectiveSkillNoteRegistryFingerprint: string;
   };
   readonly skillRegistry: ReadonlySkillRegistrySnapshot;
   readonly strategyRegistry: ReadonlyStrategyRegistrySnapshot;
+  readonly skillNotes: ReadonlySkillNoteRegistrySnapshot;
 }
 
 const context = new AsyncLocalStorage<EffectiveRuntimeRegistrySnapshot>();

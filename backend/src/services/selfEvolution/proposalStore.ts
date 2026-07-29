@@ -9,11 +9,16 @@ import Database from 'better-sqlite3';
 
 import {userDataPath} from '../../runtimePaths';
 import type {
+  AppliedProposalRevisionV1,
   CurationProposalV1,
+  ProposalActionFailureClass,
+  ProposalActionRecordV1,
   ProposalGateCheckV1,
   ProposalGateResultV1,
   ProposalGateVerdict,
   ProposalPairedReplayProofV1,
+  ProposalChannelArtifactRevisionV1,
+  RepositoryTargetBindingV1,
   ProposalSqlRegressionProofV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
@@ -38,9 +43,18 @@ import {
   parseProposalGateResultV1,
   parseProposalMaterializationPlanV1,
   parseProposalPairedReplayProofV1,
+  parseRepositoryTargetBindingV1,
   parseProposalSqlRegressionProofV1,
   proposalDraftContentHash,
+  assertProposalEligibleForAcceptance,
+  assertProposalEligibleForApply,
 } from './proposalGateContract';
+import {
+  createAppliedProposalRevisionV1,
+  createProposalChannelArtifactRevisionV1,
+  parseAppliedProposalRevisionV1,
+  parseProposalChannelArtifactRevisionV1,
+} from './evolutionOverlayContract';
 import {
   parseProposalContainmentProbeV1,
   type ProposalContainmentProbeV1,
@@ -60,6 +74,7 @@ export type ProposalGateEvidenceKind =
   | 'candidate_materialization'
   | 'base_snapshot_initial'
   | 'base_snapshot_final'
+  | 'repository_target_binding'
   | 'static_validation'
   | 'sql_regression'
   | 'paired_replay';
@@ -278,6 +293,473 @@ export class ProposalStore {
     ) as Array<{proposal_json: string}>;
     return rows.map(row =>
       parseCurationProposalV1(JSON.parse(row.proposal_json)));
+  }
+
+  accept(
+    scope: RunManifestScope,
+    proposalId: string,
+  ): CurationProposalV1 {
+    return this.db.transaction(() => {
+      const current = this.get(scope, proposalId);
+      if (!current) throw new Error('curation_proposal_not_found');
+      const eligible = assertProposalEligibleForAcceptance(current);
+      const accepted = parseCurationProposalV1({
+        ...eligible,
+        revision: 3,
+        status: 'accepted',
+      });
+      this.compareAndSwapProposal(eligible, accepted);
+      return accepted;
+    })();
+  }
+
+  reject(
+    scope: RunManifestScope,
+    proposalId: string,
+  ): CurationProposalV1 {
+    return this.db.transaction(() => {
+      const current = this.get(scope, proposalId);
+      if (!current) throw new Error('curation_proposal_not_found');
+      const eligible = assertProposalEligibleForAcceptance(current);
+      const rejected = parseCurationProposalV1({
+        ...eligible,
+        revision: 3,
+        status: 'rejected',
+      });
+      this.compareAndSwapProposal(eligible, rejected);
+      return rejected;
+    })();
+  }
+
+  reserveAction(input: {
+    actionId: string;
+    scope: RunManifestScope;
+    proposalId: string;
+    kind: 'apply' | 'revert';
+    sideEffectKind: ProposalActionRecordV1['sideEffectKind'];
+    artifactContentHashes?: string[];
+    now?: number;
+  }): ProposalActionRecordV1 {
+    return this.db.transaction(() => {
+      const existing = this.getAction(input.actionId);
+      if (existing) {
+        assertSameActionReservation(existing, input);
+        return existing;
+      }
+      const proposal = this.get(input.scope, input.proposalId);
+      if (!proposal) throw new Error('curation_proposal_not_found');
+      if (input.kind === 'apply') {
+        assertProposalEligibleForApply(proposal);
+      } else if (
+        proposal.status !== 'applied'
+        || proposal.revision !== 4
+        || proposal.activeActionId !== undefined
+      ) {
+        throw new Error('proposal_not_eligible_for_revert');
+      }
+      const now = input.now ?? Date.now();
+      const artifactContentHashes = [
+        ...new Set(input.artifactContentHashes ?? []),
+      ].sort();
+      if (!artifactContentHashes.every(value => /^[0-9a-f]{64}$/.test(value))) {
+        throw new Error('proposal_action_artifact_hash_invalid');
+      }
+      const action = parseProposalActionRecordV1({
+        schemaVersion: 1,
+        actionId: input.actionId,
+        kind: input.kind,
+        scope: input.scope,
+        proposalId: input.proposalId,
+        artifactContentHashes,
+        expectedRevision: input.kind === 'apply' ? 3 : 4,
+        targetRevision: input.kind === 'apply' ? 4 : 5,
+        state: 'pending',
+        sideEffectKind: input.sideEffectKind,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const reservedProposal = parseCurationProposalV1({
+        ...proposal,
+        activeActionId: action.actionId,
+      });
+      this.db.prepare(`
+        INSERT INTO proposal_actions (
+          action_id, tenant_id, workspace_id, proposal_id,
+          state, failure_class, action_json, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, ?)
+      `).run(
+        action.actionId,
+        action.scope.tenantId,
+        action.scope.workspaceId,
+        action.proposalId,
+        canonicalJsonString(action),
+        action.createdAt,
+        action.updatedAt,
+      );
+      this.compareAndSwapProposal(proposal, reservedProposal, action.actionId);
+      return action;
+    })();
+  }
+
+  markActionExecuting(
+    actionId: string,
+    now: number = Date.now(),
+  ): ProposalActionRecordV1 {
+    return this.transitionProposalAction({
+      actionId,
+      fromStates: ['pending'],
+      now,
+      update: current => ({...current, state: 'executing'}),
+    });
+  }
+
+  recordActionSideEffectReceipt(
+    actionId: string,
+    sideEffectReceiptHash: string,
+    now: number = Date.now(),
+  ): ProposalActionRecordV1 {
+    if (!/^[0-9a-f]{64}$/.test(sideEffectReceiptHash)) {
+      throw new Error('proposal_action_receipt_hash_invalid');
+    }
+    return this.transitionProposalAction({
+      actionId,
+      fromStates: ['executing'],
+      now,
+      update: current => ({
+        ...current,
+        sideEffectReceiptHash,
+      }),
+    });
+  }
+
+  failAction(input: {
+    actionId: string;
+    failureClass: ProposalActionFailureClass;
+    errorCode: string;
+    now?: number;
+  }): ProposalActionRecordV1 {
+    if (!input.errorCode.trim()) {
+      throw new Error('proposal_action_error_code_invalid');
+    }
+    return this.db.transaction(() => {
+      const failed = this.transitionProposalAction({
+        actionId: input.actionId,
+        fromStates: ['pending', 'executing'],
+        now: input.now ?? Date.now(),
+        update: current => ({
+          ...current,
+          state: 'failed',
+          failureClass: input.failureClass,
+          errorCode: input.errorCode,
+        }),
+      });
+      if (input.failureClass === 'terminal_before_side_effect') {
+        this.clearActionReservation(failed);
+      }
+      return failed;
+    })();
+  }
+
+  retryAction(
+    actionId: string,
+    now: number = Date.now(),
+  ): ProposalActionRecordV1 {
+    return this.transitionProposalAction({
+      actionId,
+      fromStates: ['failed'],
+      now,
+      update: current => {
+        if (current.failureClass === 'terminal_before_side_effect') {
+          throw new Error('proposal_action_terminal');
+        }
+        const {
+          failureClass: _failureClass,
+          errorCode: _errorCode,
+          ...retryable
+        } = current;
+        return {...retryable, state: 'pending'};
+      },
+    });
+  }
+
+  getAction(actionId: string): ProposalActionRecordV1 | undefined {
+    const row = this.db.prepare(`
+      SELECT action_json FROM proposal_actions WHERE action_id = ?
+    `).get(actionId) as {action_json: string} | undefined;
+    return row
+      ? parseProposalActionRecordV1(JSON.parse(row.action_json))
+      : undefined;
+  }
+
+  listRecoverableActions(): ProposalActionRecordV1[] {
+    const rows = this.db.prepare(`
+      SELECT action_json
+      FROM proposal_actions
+      WHERE state IN ('pending', 'executing')
+        OR (
+          state = 'failed'
+          AND failure_class IN (
+            'retryable_before_side_effect',
+            'recovery_required_after_side_effect'
+          )
+        )
+      ORDER BY created_at, action_id
+    `).all() as Array<{action_json: string}>;
+    return rows.map(row =>
+      parseProposalActionRecordV1(JSON.parse(row.action_json)));
+  }
+
+  commitAppliedRevision(input: {
+    actionId: string;
+    generation: string;
+    overlayIds: string[];
+    receiptContentHashes: string[];
+    actor: {userId?: string};
+    now?: number;
+  }): AppliedProposalRevisionV1 {
+    if (
+      !input.generation.trim()
+      || !input.overlayIds.every(value => value.trim())
+      || !input.receiptContentHashes.every(value =>
+        /^[0-9a-f]{64}$/.test(value))
+    ) {
+      throw new Error('applied_proposal_revision_input_invalid');
+    }
+    return this.db.transaction(() => {
+      const prior = this.db.prepare(`
+        SELECT revision_json
+        FROM applied_proposal_revisions
+        WHERE action_id = ?
+      `).get(input.actionId) as {revision_json: string} | undefined;
+      if (prior) {
+        return parseAppliedProposalRevisionV1(JSON.parse(prior.revision_json));
+      }
+      const action = this.getAction(input.actionId);
+      if (!action || action.state !== 'executing') {
+        throw new Error('proposal_action_not_executing');
+      }
+      const proposal = this.get(action.scope, action.proposalId);
+      if (
+        !proposal
+        || proposal.revision !== action.expectedRevision
+        || proposal.activeActionId !== action.actionId
+      ) {
+        throw new Error('proposal_action_reservation_lost');
+      }
+      const ordinalRow = this.db.prepare(`
+        SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal
+        FROM applied_proposal_revisions
+        WHERE proposal_id = ?
+      `).get(action.proposalId) as {ordinal: number};
+      const applied = createAppliedProposalRevisionV1({
+        ordinal: ordinalRow.ordinal,
+        proposalId: action.proposalId,
+        proposalRevision: action.targetRevision,
+        actionId: action.actionId,
+        kind: action.kind,
+        scope: action.scope,
+        overlayIds: [...new Set(input.overlayIds)].sort(),
+        generation: input.generation,
+        receiptContentHashes:
+          [...new Set(input.receiptContentHashes)].sort(),
+        actor: input.actor.userId ? {userId: input.actor.userId} : {},
+        createdAt: input.now ?? Date.now(),
+      });
+      this.db.prepare(`
+        INSERT INTO applied_proposal_revisions (
+          proposal_id, ordinal, action_id, proposal_revision,
+          revision_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        applied.proposalId,
+        applied.ordinal,
+        applied.actionId,
+        applied.proposalRevision,
+        canonicalJsonString(applied),
+        applied.createdAt,
+      );
+      const {
+        activeActionId: _activeActionId,
+        ...proposalWithoutReservation
+      } = proposal;
+      const finalizedProposal = parseCurationProposalV1({
+        ...proposalWithoutReservation,
+        revision: action.targetRevision,
+        status: action.kind === 'apply' ? 'applied' : 'reverted',
+      });
+      this.compareAndSwapProposal(proposal, finalizedProposal, null);
+      return applied;
+    })();
+  }
+
+  finalizeActionRecord(
+    actionId: string,
+    now: number = Date.now(),
+  ): ProposalActionRecordV1 {
+    return this.transitionProposalAction({
+      actionId,
+      fromStates: ['executing'],
+      now,
+      update: current => ({...current, state: 'finalized'}),
+    });
+  }
+
+  finalizeAction(input: {
+    actionId: string;
+    generation: string;
+    overlayIds: string[];
+    receiptContentHashes: string[];
+    actor: {userId?: string};
+    now?: number;
+  }): AppliedProposalRevisionV1 {
+    const applied = this.commitAppliedRevision(input);
+    this.finalizeActionRecord(input.actionId, input.now ?? Date.now());
+    return applied;
+  }
+
+  listAppliedRevisions(
+    proposalId: string,
+  ): AppliedProposalRevisionV1[] {
+    const rows = this.db.prepare(`
+      SELECT revision_json
+      FROM applied_proposal_revisions
+      WHERE proposal_id = ?
+      ORDER BY ordinal
+    `).all(proposalId) as Array<{revision_json: string}>;
+    return rows.map(row =>
+      parseAppliedProposalRevisionV1(JSON.parse(row.revision_json)));
+  }
+
+  recordChannelArtifact(input: Omit<
+    ProposalChannelArtifactRevisionV1,
+    'schemaVersion' | 'ordinal' | 'state' | 'contentHash'
+  > & {scope: RunManifestScope}): ProposalChannelArtifactRevisionV1 {
+    return this.db.transaction(() => {
+      if (!this.get(input.scope, input.proposalId)) {
+        throw new Error('proposal_channel_artifact_not_found');
+      }
+      const prior = this.db.prepare(`
+        SELECT revision_json
+        FROM proposal_channel_artifact_revisions
+        WHERE proposal_id = ? AND channel = ? AND artifact_id = ?
+        ORDER BY ordinal DESC
+        LIMIT 1
+      `).get(
+        input.proposalId,
+        input.channel,
+        input.artifactId,
+      ) as {revision_json: string} | undefined;
+      if (prior) {
+        const existing = parseProposalChannelArtifactRevisionV1(
+          JSON.parse(prior.revision_json),
+        );
+        if (
+          existing.state === 'active'
+          && existing.artifactContentHash === input.artifactContentHash
+          && existing.gateAttemptId === input.gateAttemptId
+          && existing.gateAttemptOrdinal === input.gateAttemptOrdinal
+          && existing.gateResultContentHash === input.gateResultContentHash
+        ) {
+          return existing;
+        }
+        throw new Error('proposal_channel_artifact_idempotency_conflict');
+      }
+      const ordinal = this.nextChannelArtifactOrdinal(input.proposalId);
+      const {scope: _scope, ...revisionInput} = input;
+      const revision = createProposalChannelArtifactRevisionV1({
+        ...revisionInput,
+        ordinal,
+        state: 'active',
+      });
+      this.db.prepare(`
+        INSERT INTO proposal_channel_artifact_revisions (
+          proposal_id, ordinal, channel, artifact_id,
+          state, revision_json, created_at
+        ) VALUES (?, ?, ?, ?, 'active', ?, ?)
+      `).run(
+        revision.proposalId,
+        revision.ordinal,
+        revision.channel,
+        revision.artifactId,
+        canonicalJsonString(revision),
+        revision.createdAt,
+      );
+      return revision;
+    })();
+  }
+
+  revokeChannelArtifact(input: {
+    scope: RunManifestScope;
+    proposalId: string;
+    channel: ProposalChannelArtifactRevisionV1['channel'];
+    artifactId: string;
+    createdAt?: number;
+  }): ProposalChannelArtifactRevisionV1 {
+    return this.db.transaction(() => {
+      if (!this.get(input.scope, input.proposalId)) {
+        throw new Error('proposal_channel_artifact_not_found');
+      }
+      const prior = this.db.prepare(`
+        SELECT revision_json
+        FROM proposal_channel_artifact_revisions
+        WHERE proposal_id = ? AND channel = ? AND artifact_id = ?
+        ORDER BY ordinal DESC
+        LIMIT 1
+      `).get(
+        input.proposalId,
+        input.channel,
+        input.artifactId,
+      ) as {revision_json: string} | undefined;
+      if (!prior) throw new Error('proposal_channel_artifact_not_found');
+      const current = parseProposalChannelArtifactRevisionV1(
+        JSON.parse(prior.revision_json),
+      );
+      if (current.state === 'revoked') return current;
+      const {
+        schemaVersion: _schemaVersion,
+        contentHash: _contentHash,
+        ordinal: _ordinal,
+        state: _state,
+        ...binding
+      } = current;
+      const revision = createProposalChannelArtifactRevisionV1({
+        ...binding,
+        ordinal: this.nextChannelArtifactOrdinal(input.proposalId),
+        state: 'revoked',
+        createdAt: input.createdAt ?? Date.now(),
+      });
+      this.db.prepare(`
+        INSERT INTO proposal_channel_artifact_revisions (
+          proposal_id, ordinal, channel, artifact_id,
+          state, revision_json, created_at
+        ) VALUES (?, ?, ?, ?, 'revoked', ?, ?)
+      `).run(
+        revision.proposalId,
+        revision.ordinal,
+        revision.channel,
+        revision.artifactId,
+        canonicalJsonString(revision),
+        revision.createdAt,
+      );
+      return revision;
+    })();
+  }
+
+  listChannelArtifactRevisions(
+    scope: RunManifestScope,
+    proposalId: string,
+  ): ProposalChannelArtifactRevisionV1[] {
+    if (!this.get(scope, proposalId)) {
+      throw new Error('proposal_channel_artifact_not_found');
+    }
+    const rows = this.db.prepare(`
+      SELECT revision_json
+      FROM proposal_channel_artifact_revisions
+      WHERE proposal_id = ?
+      ORDER BY ordinal
+    `).all(proposalId) as Array<{revision_json: string}>;
+    return rows.map(row =>
+      parseProposalChannelArtifactRevisionV1(JSON.parse(row.revision_json)));
   }
 
   beginGateAttempt(input: {
@@ -528,6 +1010,52 @@ export class ProposalStore {
     return row ? gateAttemptRecord(row) : undefined;
   }
 
+  getLatestRepositoryTargetBinding(
+    scope: RunManifestScope,
+    proposalId: string,
+  ): {
+    attemptId: string;
+    attemptOrdinal: number;
+    gateResultContentHash: string;
+    binding: RepositoryTargetBindingV1;
+  } | undefined {
+    const row = this.db.prepare(`
+      SELECT
+        attempt.attempt_id,
+        attempt.attempt_ordinal,
+        attempt.gate_result_hash,
+        evidence.artifact_json
+      FROM proposal_gate_attempts AS attempt
+      JOIN proposal_gate_evidence AS evidence
+        ON evidence.attempt_id = attempt.attempt_id
+      WHERE attempt.tenant_id = ?
+        AND attempt.workspace_id = ?
+        AND attempt.proposal_id = ?
+        AND attempt.state = 'completed'
+        AND evidence.evidence_kind = 'repository_target_binding'
+      ORDER BY attempt.attempt_ordinal DESC
+      LIMIT 1
+    `).get(
+      scope.tenantId,
+      scope.workspaceId,
+      proposalId,
+    ) as {
+      attempt_id: string;
+      attempt_ordinal: number;
+      gate_result_hash: string;
+      artifact_json: string;
+    } | undefined;
+    if (!row?.gate_result_hash) return undefined;
+    return immutableCanonicalSnapshot({
+      attemptId: row.attempt_id,
+      attemptOrdinal: row.attempt_ordinal,
+      gateResultContentHash: row.gate_result_hash,
+      binding: parseRepositoryTargetBindingV1(
+        JSON.parse(row.artifact_json),
+      ),
+    });
+  }
+
   /**
    * M7 gate results may only be finalized from a fenced attempt whose full
    * evidence bundle was persisted first. The old hash-only entry point is
@@ -541,6 +1069,106 @@ export class ProposalStore {
     gateResult: ProposalGateResultV1;
   }): never {
     throw new Error('curation_gate_attempt_required');
+  }
+
+  private compareAndSwapProposal(
+    current: CurationProposalV1,
+    updated: CurationProposalV1,
+    activeActionId: string | null =
+      updated.activeActionId ?? null,
+  ): void {
+    const changed = this.db.prepare(`
+      UPDATE curation_proposals
+      SET revision = ?,
+          status = ?,
+          active_action_id = ?,
+          proposal_json = ?
+      WHERE tenant_id = ?
+        AND workspace_id = ?
+        AND proposal_id = ?
+        AND revision = ?
+        AND status = ?
+        AND proposal_json = ?
+    `).run(
+      updated.revision,
+      updated.status,
+      activeActionId,
+      canonicalJsonString(updated),
+      current.scope.tenantId,
+      current.scope.workspaceId,
+      current.proposalId,
+      current.revision,
+      current.status,
+      canonicalJsonString(current),
+    );
+    if (changed.changes !== 1) {
+      throw new Error('curation_proposal_compare_and_swap_failed');
+    }
+  }
+
+  private nextChannelArtifactOrdinal(proposalId: string): number {
+    const row = this.db.prepare(`
+      SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal
+      FROM proposal_channel_artifact_revisions
+      WHERE proposal_id = ?
+    `).get(proposalId) as {ordinal: number};
+    return row.ordinal;
+  }
+
+  private transitionProposalAction(input: {
+    actionId: string;
+    fromStates: ProposalActionRecordV1['state'][];
+    now: number;
+    update(
+      current: ProposalActionRecordV1,
+    ): Omit<ProposalActionRecordV1, 'updatedAt'>;
+  }): ProposalActionRecordV1 {
+    return this.db.transaction(() => {
+      const current = this.getAction(input.actionId);
+      if (!current || !input.fromStates.includes(current.state)) {
+        throw new Error('proposal_action_state_conflict');
+      }
+      const updated = parseProposalActionRecordV1({
+        ...input.update(current),
+        updatedAt: input.now,
+      });
+      const changed = this.db.prepare(`
+        UPDATE proposal_actions
+        SET state = ?,
+            failure_class = ?,
+            action_json = ?,
+            updated_at = ?
+        WHERE action_id = ? AND state = ? AND action_json = ?
+      `).run(
+        updated.state,
+        updated.failureClass ?? null,
+        canonicalJsonString(updated),
+        updated.updatedAt,
+        current.actionId,
+        current.state,
+        canonicalJsonString(current),
+      );
+      if (changed.changes !== 1) {
+        throw new Error('proposal_action_compare_and_swap_failed');
+      }
+      return updated;
+    })();
+  }
+
+  private clearActionReservation(action: ProposalActionRecordV1): void {
+    const proposal = this.get(action.scope, action.proposalId);
+    if (!proposal || proposal.activeActionId !== action.actionId) {
+      throw new Error('proposal_action_reservation_lost');
+    }
+    const {
+      activeActionId: _activeActionId,
+      ...withoutReservation
+    } = proposal;
+    this.compareAndSwapProposal(
+      proposal,
+      parseCurationProposalV1(withoutReservation),
+      null,
+    );
   }
 
   private assertGateAttempt(
@@ -698,6 +1326,7 @@ export class ProposalStore {
             'candidate_materialization',
             'base_snapshot_initial',
             'base_snapshot_final',
+            'repository_target_binding',
             'static_validation',
             'sql_regression',
             'paired_replay'
@@ -708,7 +1337,102 @@ export class ProposalStore {
         PRIMARY KEY(attempt_id, evidence_kind),
         FOREIGN KEY(attempt_id) REFERENCES proposal_gate_attempts(attempt_id)
       );
+      CREATE TABLE IF NOT EXISTS proposal_actions (
+        action_id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        proposal_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(
+          state IN ('pending','executing','finalized','failed')
+        ),
+        failure_class TEXT CHECK(
+          failure_class IS NULL OR failure_class IN (
+            'terminal_before_side_effect',
+            'retryable_before_side_effect',
+            'recovery_required_after_side_effect'
+          )
+        ),
+        action_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        FOREIGN KEY(proposal_id) REFERENCES curation_proposals(proposal_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_proposal_actions_recovery
+        ON proposal_actions(state, failure_class, created_at);
+      CREATE TABLE IF NOT EXISTS applied_proposal_revisions (
+        proposal_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal > 0),
+        action_id TEXT NOT NULL UNIQUE,
+        proposal_revision INTEGER NOT NULL CHECK(
+          proposal_revision IN (4, 5)
+        ),
+        revision_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(proposal_id, ordinal),
+        FOREIGN KEY(proposal_id) REFERENCES curation_proposals(proposal_id),
+        FOREIGN KEY(action_id) REFERENCES proposal_actions(action_id)
+      );
+      CREATE TABLE IF NOT EXISTS proposal_channel_artifact_revisions (
+        proposal_id TEXT NOT NULL,
+        ordinal INTEGER NOT NULL CHECK(ordinal > 0),
+        channel TEXT NOT NULL CHECK(
+          channel IN ('repository_patch', 'contribution_bundle')
+        ),
+        artifact_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('active', 'revoked')),
+        revision_json TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY(proposal_id, ordinal),
+        FOREIGN KEY(proposal_id) REFERENCES curation_proposals(proposal_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_proposal_channel_artifact_lookup
+        ON proposal_channel_artifact_revisions(
+          proposal_id, channel, artifact_id, ordinal
+        );
     `);
+    this.migrateProposalGateEvidenceTable();
+  }
+
+  private migrateProposalGateEvidenceTable(): void {
+    const current = this.db.prepare(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'proposal_gate_evidence'
+    `).get() as {sql: string} | undefined;
+    if (!current || /'repository_target_binding'/i.test(current.sql)) return;
+    this.db.transaction(() => {
+      this.db.exec(`
+        ALTER TABLE proposal_gate_evidence
+          RENAME TO proposal_gate_evidence_m7;
+        CREATE TABLE proposal_gate_evidence (
+          attempt_id TEXT NOT NULL,
+          evidence_kind TEXT NOT NULL CHECK(
+            evidence_kind IN (
+              'materialization_plan',
+              'containment_probe',
+              'containment_probe_final',
+              'candidate_materialization',
+              'base_snapshot_initial',
+              'base_snapshot_final',
+              'repository_target_binding',
+              'static_validation',
+              'sql_regression',
+              'paired_replay'
+            )
+          ),
+          content_hash TEXT NOT NULL,
+          artifact_json TEXT NOT NULL,
+          PRIMARY KEY(attempt_id, evidence_kind),
+          FOREIGN KEY(attempt_id) REFERENCES proposal_gate_attempts(attempt_id)
+        );
+        INSERT INTO proposal_gate_evidence (
+          attempt_id, evidence_kind, content_hash, artifact_json
+        )
+        SELECT attempt_id, evidence_kind, content_hash, artifact_json
+        FROM proposal_gate_evidence_m7;
+        DROP TABLE proposal_gate_evidence_m7;
+      `);
+    })();
   }
 
   private migrateProposalTable(): void {
@@ -721,43 +1445,168 @@ export class ProposalStore {
       this.createProposalTable();
       return;
     }
-    const supportsGated = /'gated'/i.test(current.sql);
-    const supportsFutureM8States =
-      /'accepted'|'applied'|'rejected'|'reverted'/i.test(current.sql);
-    if (supportsGated && !supportsFutureM8States) {
+    const supportsM8States = [
+      'draft',
+      'gated',
+      'accepted',
+      'applied',
+      'rejected',
+      'reverted',
+    ].every(status => current.sql.includes(`'${status}'`));
+    const columns = this.db.prepare(`
+      PRAGMA table_info(curation_proposals)
+    `).all() as Array<{name: string}>;
+    const hasActiveAction = columns.some(
+      column => column.name === 'active_action_id',
+    );
+    if (supportsM8States && hasActiveAction) {
       this.db.exec(`
         CREATE INDEX IF NOT EXISTS idx_curation_proposals_scope
           ON curation_proposals(tenant_id, workspace_id, created_at);
       `);
       return;
     }
-    this.db.transaction(() => {
-      const unsupported = this.db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM curation_proposals
-        WHERE status NOT IN ('draft','gated')
-      `).get() as {count: number};
-      if (unsupported.count > 0) {
-        throw new Error('curation_proposal_future_status_migration_blocked');
-      }
+    const hasGateAttempts = this.tableExists('proposal_gate_attempts');
+    const hasGateEvidence = this.tableExists('proposal_gate_evidence');
+    const foreignKeysEnabled =
+      this.db.pragma('foreign_keys', {simple: true}) === 1;
+    if (foreignKeysEnabled) this.db.pragma('foreign_keys = OFF');
+    try {
+      this.db.transaction(() => {
+        this.db.exec(`
+          DROP INDEX IF EXISTS idx_curation_proposals_scope;
+          DROP INDEX IF EXISTS idx_curation_proposals_active_action;
+          ALTER TABLE curation_proposals
+            RENAME TO curation_proposals_pre_m8;
+        `);
+        this.createProposalTable();
+        this.db.exec(hasActiveAction ? `
+          INSERT INTO curation_proposals (
+            proposal_id, tenant_id, workspace_id, revision,
+            idempotency_key, status, active_action_id,
+            proposal_json, created_at
+          )
+          SELECT
+            proposal_id, tenant_id, workspace_id, revision,
+            idempotency_key, status, active_action_id,
+            proposal_json, created_at
+          FROM curation_proposals_pre_m8;
+        ` : `
+          INSERT INTO curation_proposals (
+            proposal_id, tenant_id, workspace_id, revision,
+            idempotency_key, status, active_action_id,
+            proposal_json, created_at
+          )
+          SELECT
+            proposal_id, tenant_id, workspace_id, revision,
+            idempotency_key, status, NULL,
+            proposal_json, created_at
+          FROM curation_proposals_pre_m8;
+        `);
+        if (hasGateAttempts) {
+          this.rebuildGateTablesForProposalMigration(hasGateEvidence);
+        }
+        this.db.exec('DROP TABLE curation_proposals_pre_m8;');
+      })();
+    } finally {
+      if (foreignKeysEnabled) this.db.pragma('foreign_keys = ON');
+    }
+  }
+
+  private rebuildGateTablesForProposalMigration(
+    hasGateEvidence: boolean,
+  ): void {
+    if (hasGateEvidence) {
       this.db.exec(`
-        DROP INDEX IF EXISTS idx_curation_proposals_scope;
-        ALTER TABLE curation_proposals
-          RENAME TO curation_proposals_m6;
+        ALTER TABLE proposal_gate_evidence
+          RENAME TO proposal_gate_evidence_pre_m8;
       `);
-      this.createProposalTable();
+    }
+    this.db.exec(`
+      DROP INDEX IF EXISTS idx_proposal_gate_attempts_scope;
+      DROP INDEX IF EXISTS idx_proposal_gate_attempt_running;
+      ALTER TABLE proposal_gate_attempts
+        RENAME TO proposal_gate_attempts_pre_m8;
+      CREATE TABLE proposal_gate_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        attempt_ordinal INTEGER NOT NULL CHECK(attempt_ordinal > 0),
+        proposal_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        draft_content_hash TEXT NOT NULL,
+        gate_policy_fingerprint TEXT NOT NULL,
+        fence_token TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(
+          state IN ('running','completed','abandoned')
+        ),
+        verdict TEXT CHECK(
+          verdict IS NULL OR verdict IN ('passed','failed','inconclusive')
+        ),
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        gate_result_hash TEXT,
+        gate_result_json TEXT,
+        UNIQUE(tenant_id, workspace_id, proposal_id, attempt_ordinal),
+        FOREIGN KEY(proposal_id) REFERENCES curation_proposals(proposal_id)
+      );
+      INSERT INTO proposal_gate_attempts (
+        attempt_id, attempt_ordinal, proposal_id, tenant_id, workspace_id,
+        draft_content_hash, gate_policy_fingerprint, fence_token, state,
+        verdict, started_at, completed_at, gate_result_hash, gate_result_json
+      )
+      SELECT
+        attempt_id, attempt_ordinal, proposal_id, tenant_id, workspace_id,
+        draft_content_hash, gate_policy_fingerprint, fence_token, state,
+        verdict, started_at, completed_at, gate_result_hash, gate_result_json
+      FROM proposal_gate_attempts_pre_m8;
+      CREATE INDEX idx_proposal_gate_attempts_scope
+        ON proposal_gate_attempts(
+          tenant_id, workspace_id, proposal_id, attempt_ordinal
+        );
+      CREATE UNIQUE INDEX idx_proposal_gate_attempt_running
+        ON proposal_gate_attempts(tenant_id, workspace_id, proposal_id)
+        WHERE state = 'running';
+      CREATE TABLE proposal_gate_evidence (
+        attempt_id TEXT NOT NULL,
+        evidence_kind TEXT NOT NULL CHECK(
+          evidence_kind IN (
+            'materialization_plan',
+            'containment_probe',
+            'containment_probe_final',
+            'candidate_materialization',
+            'base_snapshot_initial',
+            'base_snapshot_final',
+            'repository_target_binding',
+            'static_validation',
+            'sql_regression',
+            'paired_replay'
+          )
+        ),
+        content_hash TEXT NOT NULL,
+        artifact_json TEXT NOT NULL,
+        PRIMARY KEY(attempt_id, evidence_kind),
+        FOREIGN KEY(attempt_id) REFERENCES proposal_gate_attempts(attempt_id)
+      );
+    `);
+    if (hasGateEvidence) {
       this.db.exec(`
-        INSERT INTO curation_proposals (
-          proposal_id, tenant_id, workspace_id, revision,
-          idempotency_key, status, proposal_json, created_at
+        INSERT INTO proposal_gate_evidence (
+          attempt_id, evidence_kind, content_hash, artifact_json
         )
-        SELECT
-          proposal_id, tenant_id, workspace_id, revision,
-          idempotency_key, status, proposal_json, created_at
-        FROM curation_proposals_m6;
-        DROP TABLE curation_proposals_m6;
+        SELECT attempt_id, evidence_kind, content_hash, artifact_json
+        FROM proposal_gate_evidence_pre_m8;
+        DROP TABLE proposal_gate_evidence_pre_m8;
       `);
-    })();
+    }
+    this.db.exec('DROP TABLE proposal_gate_attempts_pre_m8;');
+  }
+
+  private tableExists(name: string): boolean {
+    return this.db.prepare(`
+      SELECT 1
+      FROM sqlite_master
+      WHERE type = 'table' AND name = ?
+    `).get(name) !== undefined;
   }
 
   private createProposalTable(): void {
@@ -769,14 +1618,20 @@ export class ProposalStore {
         revision INTEGER NOT NULL,
         idempotency_key TEXT NOT NULL,
         status TEXT NOT NULL CHECK(
-          status IN ('draft','gated')
+          status IN (
+            'draft','gated','accepted','applied','rejected','reverted'
+          )
         ),
+        active_action_id TEXT,
         proposal_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         UNIQUE(tenant_id, workspace_id, idempotency_key)
       );
       CREATE INDEX IF NOT EXISTS idx_curation_proposals_scope
         ON curation_proposals(tenant_id, workspace_id, created_at);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_curation_proposals_active_action
+        ON curation_proposals(active_action_id)
+        WHERE active_action_id IS NOT NULL;
     `);
   }
 
@@ -1070,6 +1925,8 @@ function parseGateEvidence(
     case 'base_snapshot_initial':
     case 'base_snapshot_final':
       return parseSnapshotEvidence(value);
+    case 'repository_target_binding':
+      return parseRepositoryTargetBindingV1(value);
     case 'static_validation':
       return parseProposalStaticValidationProofV1(value);
     case 'sql_regression':
@@ -1168,6 +2025,156 @@ function evidenceContentHash(value: unknown): string {
     throw new Error('curation_gate_evidence_hash_invalid');
   }
   return value.contentHash;
+}
+
+function parseProposalActionRecordV1(
+  value: unknown,
+): ProposalActionRecordV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('proposal_action_invalid');
+  }
+  const action = value as Record<string, unknown>;
+  const allowed = new Set([
+    'schemaVersion',
+    'actionId',
+    'kind',
+    'scope',
+    'proposalId',
+    'artifactContentHashes',
+    'expectedRevision',
+    'targetRevision',
+    'state',
+    'failureClass',
+    'sideEffectKind',
+    'sideEffectReceiptHash',
+    'errorCode',
+    'createdAt',
+    'updatedAt',
+  ]);
+  const required = [
+    'schemaVersion',
+    'actionId',
+    'kind',
+    'scope',
+    'proposalId',
+    'artifactContentHashes',
+    'expectedRevision',
+    'targetRevision',
+    'state',
+    'sideEffectKind',
+    'createdAt',
+    'updatedAt',
+  ];
+  const scope = action.scope as Record<string, unknown> | undefined;
+  if (
+    Object.keys(action).some(key => !allowed.has(key))
+    || required.some(key => !(key in action))
+    || action.schemaVersion !== 1
+    || typeof action.actionId !== 'string'
+    || !action.actionId.trim()
+    || !['apply', 'revert'].includes(String(action.kind))
+    || !scope
+    || typeof scope !== 'object'
+    || Array.isArray(scope)
+    || Object.keys(scope).some(key =>
+      !['tenantId', 'workspaceId'].includes(key))
+    || typeof scope.tenantId !== 'string'
+    || !scope.tenantId.trim()
+    || typeof scope.workspaceId !== 'string'
+    || !scope.workspaceId.trim()
+    || typeof action.proposalId !== 'string'
+    || !action.proposalId.trim()
+    || !Array.isArray(action.artifactContentHashes)
+    || action.artifactContentHashes.some(value =>
+      typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value))
+    || action.artifactContentHashes.some((value, index, values) =>
+      index > 0 && value <= values[index - 1])
+    || !['pending', 'executing', 'finalized', 'failed']
+      .includes(String(action.state))
+    || ![
+      'runtime_overlay',
+      'repository_patch',
+      'case_retract',
+      'skill_note_disable',
+    ].includes(String(action.sideEffectKind))
+    || !Number.isSafeInteger(action.createdAt)
+    || Number(action.createdAt) < 0
+    || !Number.isSafeInteger(action.updatedAt)
+    || Number(action.updatedAt) < Number(action.createdAt)
+    || (
+      action.kind === 'apply'
+      && (action.expectedRevision !== 3 || action.targetRevision !== 4)
+    )
+    || (
+      action.kind === 'revert'
+      && (action.expectedRevision !== 4 || action.targetRevision !== 5)
+    )
+    || (
+      action.failureClass !== undefined
+      && ![
+        'terminal_before_side_effect',
+        'retryable_before_side_effect',
+        'recovery_required_after_side_effect',
+      ].includes(String(action.failureClass))
+    )
+    || (
+      action.state === 'failed'
+      && (
+        action.failureClass === undefined
+        || typeof action.errorCode !== 'string'
+        || !action.errorCode.trim()
+      )
+    )
+    || (
+      action.state !== 'failed'
+      && (
+        action.failureClass !== undefined
+        || action.errorCode !== undefined
+      )
+    )
+    || (
+      action.sideEffectReceiptHash !== undefined
+      && (
+        typeof action.sideEffectReceiptHash !== 'string'
+        || !/^[0-9a-f]{64}$/.test(action.sideEffectReceiptHash)
+      )
+    )
+  ) {
+    throw new Error('proposal_action_invalid');
+  }
+  return immutableCanonicalSnapshot(action) as unknown as
+    ProposalActionRecordV1;
+}
+
+function assertSameActionReservation(
+  existing: ProposalActionRecordV1,
+  requested: {
+    actionId: string;
+    scope: RunManifestScope;
+    proposalId: string;
+    kind: 'apply' | 'revert';
+    sideEffectKind: ProposalActionRecordV1['sideEffectKind'];
+    artifactContentHashes?: string[];
+  },
+): void {
+  const requestedArtifactContentHashes = [
+    ...new Set(requested.artifactContentHashes ?? []),
+  ].sort();
+  if (
+    existing.actionId !== requested.actionId
+    || existing.scope.tenantId !== requested.scope.tenantId
+    || existing.scope.workspaceId !== requested.scope.workspaceId
+    || existing.proposalId !== requested.proposalId
+    || existing.kind !== requested.kind
+    || existing.sideEffectKind !== requested.sideEffectKind
+    || existing.artifactContentHashes.length
+      !== requestedArtifactContentHashes.length
+    || existing.artifactContentHashes.some(
+      (value, index) => value !== requestedArtifactContentHashes[index],
+    )
+  ) {
+    throw new Error('proposal_action_idempotency_conflict');
+  }
 }
 
 function validateGateEvidenceBundle(input: {

@@ -28,6 +28,7 @@ import {
   resolveEvaluationRoleVariant,
   withEvaluationRoleVariant,
 } from '../../../services/selfEvolution/evaluationTreatment';
+import {canonicalContentHash} from '../../../services/selfEvolution/canonicalJson';
 
 const sampleNote: PersistedSkillNote = {
   id: 'note-1',
@@ -194,6 +195,7 @@ describe('loadSkillNotes', () => {
     };
     const artifact = createEvaluationTreatmentArtifact({
       artifactId: 'candidate-a',
+      sourceCandidateContentHash: canonicalContentHash('candidate-a'),
       scope: {tenantId: 'local', workspaceId: 'local'},
       baseSkillRegistryFingerprint: 'a'.repeat(64),
       baseStrategyRegistryFingerprint: 'b'.repeat(64),
@@ -288,6 +290,8 @@ describe('loadSkillNotes', () => {
     };
     const artifact = createEvaluationTreatmentArtifact({
       artifactId: 'candidate-modify',
+      sourceCandidateContentHash:
+        canonicalContentHash('candidate-modify'),
       scope: {tenantId: 'local', workspaceId: 'local'},
       baseSkillRegistryFingerprint: 'a'.repeat(64),
       baseStrategyRegistryFingerprint: 'b'.repeat(64),

@@ -10,6 +10,7 @@ import type {
   ProposalGateVerdict,
   ProposalMaterializationPlanV1,
   ProposalPairedReplayProofV1,
+  RepositoryTargetBindingV1,
   ProposalSqlRegressionProofV1,
 } from '../../types/selfEvolution';
 import {
@@ -191,12 +192,15 @@ export function parseCurationProposalV1(
 ): CurationProposalV1 {
   const proposal = record(value, 'proposal_invalid');
   if (proposal.status === 'draft') return parseM6DraftProposal(proposal);
-  if (
-    proposal.status !== 'gated'
-    || proposal.revision !== 2
-    || !('gateResult' in proposal)
-  ) {
-    fail('proposal_status_invalid_for_m7');
+  const expectedRevision = {
+    gated: 2,
+    accepted: 3,
+    rejected: 3,
+    applied: 4,
+    reverted: 5,
+  }[String(proposal.status)];
+  if (expectedRevision === undefined || proposal.revision !== expectedRevision) {
+    fail('proposal_status_revision_invalid');
   }
   const draftInput: Record<string, unknown> = {
     ...proposal,
@@ -205,6 +209,7 @@ export function parseCurationProposalV1(
     pairedGateVerdict: 'not_run',
   };
   delete draftInput.gateResult;
+  delete draftInput.activeActionId;
   const draft = parseM6DraftProposal(draftInput);
   const gateResult = parseProposalGateResultV1(proposal.gateResult);
   const draftHash = proposalDraftContentHash(draft);
@@ -215,13 +220,40 @@ export function parseCurationProposalV1(
   ) {
     fail('proposal_gate_result_binding_mismatch');
   }
+  if (
+    proposal.activeActionId !== undefined
+    && (
+      !nonEmpty(proposal.activeActionId)
+      || !['accepted', 'applied'].includes(String(proposal.status))
+    )
+  ) {
+    fail('proposal_active_action_invalid');
+  }
   return immutableCanonicalSnapshot({
     ...draft,
-    revision: 2,
+    revision: expectedRevision,
     pairedGateVerdict: gateResult.pairedGateVerdict,
     gateResult,
-    status: 'gated',
+    ...(proposal.activeActionId === undefined
+      ? {}
+      : {activeActionId: proposal.activeActionId as string}),
+    status: proposal.status as
+      'gated' | 'accepted' | 'rejected' | 'applied' | 'reverted',
   });
+}
+
+export function assertProposalEligibleForAcceptance(
+  value: unknown,
+): CurationProposalV1 {
+  const proposal = parseCurationProposalV1(value);
+  if (
+    proposal.status !== 'gated'
+    || proposal.revision !== 2
+    || !gateResultPassed(proposal)
+  ) {
+    fail('proposal_not_eligible_for_acceptance');
+  }
+  return proposal;
 }
 
 export function assertProposalEligibleForApply(
@@ -229,16 +261,98 @@ export function assertProposalEligibleForApply(
 ): CurationProposalV1 {
   const proposal = parseCurationProposalV1(value);
   if (
-    proposal.status !== 'gated'
-    || proposal.revision !== 2
-    || proposal.gateResult?.overallVerdict !== 'passed'
-    || proposal.gateResult.pairedGateVerdict !== 'passed'
-    || proposal.pairedGateVerdict !== 'passed'
-    || proposal.gateResult.checks.some(check => check.verdict !== 'passed')
+    proposal.status !== 'accepted'
+    || proposal.revision !== 3
+    || proposal.activeActionId !== undefined
+    || !gateResultPassed(proposal)
   ) {
     fail('proposal_not_eligible_for_apply');
   }
   return proposal;
+}
+
+function gateResultPassed(proposal: CurationProposalV1): boolean {
+  return proposal.gateResult?.overallVerdict === 'passed'
+    && proposal.gateResult.pairedGateVerdict === 'passed'
+    && proposal.pairedGateVerdict === 'passed'
+    && proposal.gateResult.checks.every(check => check.verdict === 'passed');
+}
+
+export function createRepositoryTargetBindingV1(
+  value: Omit<RepositoryTargetBindingV1, 'schemaVersion' | 'contentHash'>,
+): RepositoryTargetBindingV1 {
+  return parseRepositoryTargetBindingV1(withHash(value));
+}
+
+export function parseRepositoryTargetBindingV1(
+  value: unknown,
+): RepositoryTargetBindingV1 {
+  return parseContentHashedArtifact(
+    value,
+    'repository_target_binding_invalid',
+    artifact => {
+      exactKeys(artifact, [
+        'schemaVersion',
+        'proposalId',
+        'proposalRevision',
+        'repositoryRootIdentityHash',
+        'repositoryRelativePath',
+        'allowedRoot',
+        'baseCommit',
+        'baseBlobOid',
+        'baseFileMode',
+        'baseFileContentHash',
+        'structuralPath',
+        'anchorFingerprint',
+        'proposedFileContent',
+        'proposedFileContentHash',
+        'symlinkFree',
+        'containmentVerified',
+        'contentHash',
+      ]);
+      if (
+        artifact.schemaVersion !== 1
+        || !nonEmpty(artifact.proposalId)
+        || artifact.proposalRevision !== 1
+        || !hash(artifact.repositoryRootIdentityHash)
+        || !safeRelativePath(artifact.repositoryRelativePath)
+        || !safeRelativePath(artifact.allowedRoot)
+        || !/^[0-9a-f]{40,64}$/.test(String(artifact.baseCommit))
+        || !/^[0-9a-f]{40,64}$/.test(String(artifact.baseBlobOid))
+        || !/^[0-7]{6}$/.test(String(artifact.baseFileMode))
+        || !hash(artifact.baseFileContentHash)
+        || !nonEmpty(artifact.structuralPath)
+        || !hash(artifact.anchorFingerprint)
+        || typeof artifact.proposedFileContent !== 'string'
+        || !hash(artifact.proposedFileContentHash)
+        || artifact.proposedFileContentHash
+          !== canonicalContentHash(artifact.proposedFileContent)
+        || artifact.symlinkFree !== true
+        || artifact.containmentVerified !== true
+      ) {
+        fail('repository_target_binding_invalid');
+      }
+      return {
+        schemaVersion: 1,
+        proposalId: artifact.proposalId as string,
+        proposalRevision: 1,
+        repositoryRootIdentityHash:
+          artifact.repositoryRootIdentityHash as string,
+        repositoryRelativePath: artifact.repositoryRelativePath as string,
+        allowedRoot: artifact.allowedRoot as string,
+        baseCommit: artifact.baseCommit as string,
+        baseBlobOid: artifact.baseBlobOid as string,
+        baseFileMode: artifact.baseFileMode as string,
+        baseFileContentHash: artifact.baseFileContentHash as string,
+        structuralPath: artifact.structuralPath as string,
+        anchorFingerprint: artifact.anchorFingerprint as string,
+        proposedFileContent: artifact.proposedFileContent as string,
+        proposedFileContentHash: artifact.proposedFileContentHash as string,
+        symlinkFree: true,
+        containmentVerified: true,
+      };
+    },
+  );
 }
 
 export function parseProposalMaterializationPlanV1(

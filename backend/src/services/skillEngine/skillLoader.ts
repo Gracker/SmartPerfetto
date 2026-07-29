@@ -305,6 +305,18 @@ export interface VendorOverride {
   overrideParams?: Record<string, any>;
 }
 
+export interface VendorOverrideLoadIssue {
+  kind: 'orphan' | 'parse_failure';
+  sourcePath: string;
+  vendor: string;
+  extends?: string;
+  reasonCode:
+    | 'vendor_override_base_missing'
+    | 'vendor_override_base_not_built_in'
+    | 'vendor_override_parse_failure';
+  message: string;
+}
+
 export interface SkillRootDescriptor {
   rootPath: string;
   origin: 'built_in' | 'external_pack';
@@ -324,6 +336,7 @@ export class SkillRegistry {
   private fragmentCache: Map<string, string> = new Map();  // SQL fragment path → content
   /** Vendor overrides keyed by base skill ID (from `extends` field) */
   private vendorOverrides: Map<string, VendorOverride[]> = new Map();
+  private vendorOverrideLoadIssues: VendorOverrideLoadIssue[] = [];
   private skillOrigins: Map<string, SkillOriginMetadata> = new Map();
   private displayContractIssues: DisplayContractIssue[] = [];
   private displayContractIssueKeys: Set<string> = new Set();
@@ -343,6 +356,13 @@ export class SkillRegistry {
 
     for (const root of roots) {
       await this.loadSkillRoot(root);
+    }
+    for (const root of roots) {
+      if (root.origin !== 'built_in') continue;
+      const vendorsDir = path.join(root.rootPath, 'vendors');
+      if (fs.existsSync(vendorsDir)) {
+        this.loadVendorOverrides(vendorsDir);
+      }
     }
 
     this.initialized = true;
@@ -380,12 +400,6 @@ export class SkillRegistry {
       await this.loadPipelineSkills(pipelinesDir, root);
     }
 
-    if (root.origin === 'built_in') {
-      const vendorsDir = path.join(skillsDir, 'vendors');
-      if (fs.existsSync(vendorsDir)) {
-        this.loadVendorOverrides(vendorsDir);
-      }
-    }
   }
 
   /**
@@ -648,23 +662,44 @@ export class SkillRegistry {
         const filePath = path.join(vendorDir, file);
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
-          const raw = yaml.load(content) as any;
+          const raw = parseVendorOverrideSource(yaml.load(content));
 
-          if (!raw || typeof raw !== 'object' || !raw.extends) {
-            logger.warn('SkillLoader', `Vendor override ${filePath} missing 'extends' field, skipping`);
+          // Normalize the base skill ID: "composite/startup_analysis" → "startup_analysis"
+          const baseSkillId = raw.extends.includes('/')
+            ? raw.extends.split('/').pop()!
+            : raw.extends;
+          const baseOrigin = this.skillOrigins.get(baseSkillId);
+          if (!baseOrigin) {
+            this.recordVendorOverrideLoadIssue({
+              kind: 'orphan',
+              sourcePath: vendorOverrideSourcePath(dir, filePath),
+              vendor: vendorName,
+              extends: baseSkillId,
+              reasonCode: 'vendor_override_base_missing',
+              message: `Vendor override base skill is missing: ${baseSkillId}`,
+            });
+            continue;
+          }
+          if (baseOrigin.origin !== 'built_in') {
+            this.recordVendorOverrideLoadIssue({
+              kind: 'orphan',
+              sourcePath: vendorOverrideSourcePath(dir, filePath),
+              vendor: vendorName,
+              extends: baseSkillId,
+              reasonCode: 'vendor_override_base_not_built_in',
+              message:
+                `Vendor override base must be built in: ${baseSkillId}`,
+            });
             continue;
           }
 
-          // Normalize the base skill ID: "composite/startup_analysis" → "startup_analysis"
-          const baseSkillId = String(raw.extends).includes('/')
-            ? String(raw.extends).split('/').pop()!
-            : String(raw.extends);
-
           const override: VendorOverride = {
-            vendor: raw.meta?.vendor || vendorName,
+            vendor: isNonEmptyString(raw.meta?.vendor)
+              ? raw.meta.vendor
+              : vendorName,
             extends: baseSkillId,
-            displayName: raw.meta?.display_name,
-            description: raw.meta?.description,
+            displayName: optionalNonEmptyString(raw.meta?.display_name),
+            description: optionalNonEmptyString(raw.meta?.description),
             detection: {
               signatures: Array.isArray(raw.vendor_detection?.signatures)
                 ? raw.vendor_detection.signatures.map((s: any) => ({
@@ -697,7 +732,14 @@ export class SkillRegistry {
 
           logger.debug('SkillLoader', `Loaded vendor override: ${vendorName}/${file} → extends ${baseSkillId}`);
         } catch (error: any) {
-          logger.error('SkillLoader', `Failed to load vendor override ${filePath}: ${error.message}`);
+          const message = error instanceof Error ? error.message : String(error);
+          this.recordVendorOverrideLoadIssue({
+            kind: 'parse_failure',
+            sourcePath: vendorOverrideSourcePath(dir, filePath),
+            vendor: vendorName,
+            reasonCode: 'vendor_override_parse_failure',
+            message,
+          });
         }
       }
     }
@@ -740,6 +782,18 @@ export class SkillRegistry {
       count += overrides.length;
     }
     return count;
+  }
+
+  getVendorOverrideLoadIssues(): VendorOverrideLoadIssue[] {
+    return this.vendorOverrideLoadIssues.map(issue => ({...issue}));
+  }
+
+  private recordVendorOverrideLoadIssue(issue: VendorOverrideLoadIssue): void {
+    this.vendorOverrideLoadIssues.push(issue);
+    logger.warn(
+      'SkillLoader',
+      `${issue.kind} vendor override ${issue.sourcePath}: ${issue.message}`,
+    );
   }
 
   /**
@@ -978,6 +1032,7 @@ export class SkillRegistry {
     this.moduleSkills.clear();
     this.fragmentCache.clear();
     this.vendorOverrides.clear();
+    this.vendorOverrideLoadIssues = [];
     this.skillOrigins.clear();
     this.displayContractIssues = [];
     this.displayContractIssueKeys.clear();
@@ -989,6 +1044,136 @@ export class SkillRegistry {
   getDisplayContractIssues(): DisplayContractIssue[] {
     return [...this.displayContractIssues];
   }
+}
+
+interface ParsedVendorOverrideSource {
+  extends: string;
+  version?: unknown;
+  meta?: Record<string, unknown>;
+  vendor_detection?: {
+    signatures?: Array<{
+      pattern: string;
+      confidence: 'high' | 'medium' | 'low';
+    }>;
+  };
+  additional_steps?: unknown[];
+  override_params?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}
+
+function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
+  if (!isPlainRecord(value) || !isNonEmptyString(value.extends)) {
+    throw new Error('vendor_override_schema_invalid:extends');
+  }
+  if (value.meta !== undefined && !isPlainRecord(value.meta)) {
+    throw new Error('vendor_override_schema_invalid:meta');
+  }
+  if (isPlainRecord(value.meta)) {
+    for (const field of ['vendor', 'display_name', 'description']) {
+      if (
+        value.meta[field] !== undefined
+        && !isNonEmptyString(value.meta[field])
+      ) {
+        throw new Error(`vendor_override_schema_invalid:meta.${field}`);
+      }
+    }
+  }
+  if (
+    value.additional_steps !== undefined
+    && !Array.isArray(value.additional_steps)
+  ) {
+    throw new Error('vendor_override_schema_invalid:additional_steps');
+  }
+  if (
+    value.override_params !== undefined
+    && !isPlainRecord(value.override_params)
+  ) {
+    throw new Error('vendor_override_schema_invalid:override_params');
+  }
+  if (value.output !== undefined && !isPlainRecord(value.output)) {
+    throw new Error('vendor_override_schema_invalid:output');
+  }
+  let vendorDetection: ParsedVendorOverrideSource['vendor_detection'];
+  if (value.vendor_detection !== undefined) {
+    if (!isPlainRecord(value.vendor_detection)) {
+      throw new Error('vendor_override_schema_invalid:vendor_detection');
+    }
+    const signatures = value.vendor_detection.signatures;
+    if (signatures !== undefined && !Array.isArray(signatures)) {
+      throw new Error(
+        'vendor_override_schema_invalid:vendor_detection.signatures',
+      );
+    }
+    if (Array.isArray(signatures) && signatures.length === 0) {
+      throw new Error(
+        'vendor_override_schema_invalid:vendor_detection.signatures',
+      );
+    }
+    vendorDetection = {
+      ...(signatures === undefined
+        ? {}
+        : {
+            signatures: signatures.map((entry, index) => {
+              if (
+                !isPlainRecord(entry)
+                || !isNonEmptyString(entry.pattern)
+                || !['high', 'medium', 'low'].includes(
+                  String(entry.confidence),
+                )
+              ) {
+                throw new Error(
+                  `vendor_override_schema_invalid:signature[${index}]`,
+                );
+              }
+              return {
+                pattern: entry.pattern,
+                confidence:
+                  entry.confidence as 'high' | 'medium' | 'low',
+              };
+            }),
+          }),
+    };
+  }
+  return {
+    extends: value.extends,
+    ...(value.version === undefined ? {} : {version: value.version}),
+    ...(value.meta === undefined
+      ? {}
+      : {meta: value.meta as Record<string, unknown>}),
+    ...(vendorDetection ? {vendor_detection: vendorDetection} : {}),
+    ...(value.additional_steps === undefined
+      ? {}
+      : {additional_steps: value.additional_steps}),
+    ...(value.override_params === undefined
+      ? {}
+      : {override_params: value.override_params as Record<string, unknown>}),
+    ...(value.output === undefined
+      ? {}
+      : {output: value.output as Record<string, unknown>}),
+  };
+}
+
+function vendorOverrideSourcePath(
+  vendorDirectory: string,
+  filePath: string,
+): string {
+  return path.relative(path.dirname(vendorDirectory), filePath)
+    .split(path.sep)
+    .join('/');
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object'
+    && value !== null
+    && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function optionalNonEmptyString(value: unknown): string | undefined {
+  return isNonEmptyString(value) ? value : undefined;
 }
 
 // 单例

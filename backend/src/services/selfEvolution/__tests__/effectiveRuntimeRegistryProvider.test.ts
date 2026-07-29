@@ -13,6 +13,7 @@ import {
 import {
   buildEffectiveRuntimeRegistrySnapshot,
   clearEffectiveRuntimeRegistrySnapshotsForTests,
+  getEffectiveRuntimeRegistrySnapshot,
   getPublishedEffectiveRuntimeRegistrySnapshot,
   publishEffectiveRuntimeRegistrySnapshot,
   resolveEffectiveSkillRegistryForRuntime,
@@ -280,6 +281,17 @@ describe('effective runtime registry provider', () => {
       expect(resolveEffectiveSkillRegistryForRuntime(fallback))
         .toBe(snapshot.skillRegistry);
     });
+  });
+
+  it('rejects persistent deltas at the production read boundary', async () => {
+    const base = baseSkill();
+    mockWorkspace(base);
+    await expect(getEffectiveRuntimeRegistrySnapshot({
+      scope: scopeA,
+      skillOverlays: [overlay(base, 'ad_hoc_overlay')],
+    })).rejects.toThrow(
+      'effective_runtime_registry_ad_hoc_publish_forbidden',
+    );
   });
 
   it('materializes role-only Skill and phase-hint mutations without changing the common generation', async () => {
