@@ -391,12 +391,178 @@ export interface ProposalDelta {
   after?: string;
 }
 
-/**
- * M7 owns the closed gate-result schema. M6 draft proposals always omit this
- * field; the explicit alias keeps the PLAN contract reference available
- * without inventing M7 fields early.
- */
-export type ProposalGateResultV1 = Record<string, never>;
+export const PROPOSAL_GATE_IDS = [
+  'schema',
+  'containment',
+  'prompt_injection',
+  'size',
+  'semantic_preservation',
+  'optimistic_concurrency',
+  'static_validation',
+  'paired_replay',
+] as const;
+
+export type ProposalGateId = (typeof PROPOSAL_GATE_IDS)[number];
+export type ProposalGateVerdict =
+  | 'not_run'
+  | 'passed'
+  | 'failed'
+  | 'inconclusive';
+
+export interface ProposalGateCheckV1 {
+  schemaVersion: 1;
+  gateId: ProposalGateId;
+  verdict: ProposalGateVerdict;
+  reasonCodes: string[];
+  evidenceContentHashes: string[];
+  durationMs: number;
+}
+
+export interface ProposalMaterializationPlanV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  proposalRevision: 1;
+  proposalKind: CurationProposalKind;
+  draftContentHash: string;
+  materializationRegistryContentHash: string;
+  rootId: string;
+  rootIdentityHash: string;
+  relativeTargetPath: string;
+  targetKind: ProposalDelta['targetKind'];
+  tier: CurationProposalTier;
+  channel: 'runtime_overlay' | 'maintainer_draft' | 'contribution_bundle';
+  fileExtension: '.json' | '.yaml' | '.md' | '.sql';
+  archiveEntries: Array<{
+    relativePath: string;
+    contentHash: string;
+  }>;
+  baseContentHash: string;
+  expectedRegistryFingerprint: string;
+  expectedOverlayGeneration: string;
+  contentHash: string;
+}
+
+export interface ProposalCandidateMaterializationV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  proposalRevision: 1;
+  draftContentHash: string;
+  planContentHash: string;
+  artifactId: string;
+  targetKind: ProposalDelta['targetKind'];
+  serializedContent: string;
+  serializedContentHash: string;
+  contentHash: string;
+}
+
+export interface ProposalSqlRegressionProofV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  proposalRevision: 1;
+  draftContentHash: string;
+  candidateMaterializationContentHash: string;
+  gateAttemptId: string;
+  gateAttemptOrdinal: number;
+  gatePolicyFingerprint: string;
+  corpusFingerprint: string;
+  traceProcessorVersion: string;
+  sqlValidatorVersion: string;
+  sqlGuardrailFingerprint: string;
+  oracleFingerprint: string;
+  budget: {
+    timeoutMs: number;
+    maxCpuMs: number;
+    maxRows: number;
+    maxResponseBytes: number;
+  };
+  cases: Array<{
+    caseId: string;
+    traceContentHash: string;
+    queryContentHash: string;
+    baselineQueryContentHash: string;
+    baselineResultContentHash: string;
+    candidateResultContentHash: string;
+    oracleContentHash: string;
+    orderPolicy: 'sql_order_by' | 'canonical_row_sort';
+    rowCount: number;
+    columns: string[];
+    durationMs: number;
+    traceProcessorCpuMs: number;
+    resultBytes: number;
+    verdict: 'passed' | 'failed' | 'inconclusive';
+    reasonCode?: string;
+  }>;
+  verdict: Exclude<ProposalGateVerdict, 'not_run'>;
+  contentHash: string;
+}
+
+export interface ProposalPairedReplaySplitSummaryV1 {
+  split: 'validation' | 'holdout';
+  caseCount: number;
+  baselineClaimVerifiedRatioMean: number;
+  candidateClaimVerifiedRatioMean: number;
+  baselineUnsupportedClaims: number;
+  candidateUnsupportedClaims: number;
+  baselineEvidenceAnchors: number;
+  candidateEvidenceAnchors: number;
+  verdict: Exclude<ProposalGateVerdict, 'not_run'>;
+}
+
+export interface ProposalPairedReplayProofV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  proposalRevision: 1;
+  gateAttemptId: string;
+  gateAttemptOrdinal: number;
+  gatePolicyFingerprint: string;
+  draftContentHash: string;
+  candidateArtifactId: string;
+  candidateMaterializationContentHash: string;
+  runId: string;
+  runSpecContentHash: string;
+  pinnedContentHash: string;
+  candidateContentHash: string;
+  treatmentArtifactContentHash: string;
+  materializedInputHash: string;
+  fullTreatmentContractHash: string;
+  caseContentHashes: Array<{
+    caseId: string;
+    split: EvalCaseV1['split'];
+    contentHash: string;
+  }>;
+  publishedRecords: Array<{
+    caseId: string;
+    role: 'baseline' | 'candidate';
+    resultRef: string;
+    contentHash: string;
+  }>;
+  attestationContentHashes: string[];
+  splitSummaries: ProposalPairedReplaySplitSummaryV1[];
+  epsilon: 0.02;
+  verdict: Exclude<ProposalGateVerdict, 'not_run'>;
+  contentHash: string;
+}
+
+export interface ProposalGateResultV1 {
+  schemaVersion: 1;
+  proposalId: string;
+  gateAttemptId: string;
+  gateAttemptOrdinal: number;
+  gatePolicyFingerprint: string;
+  draftRevision: 1;
+  gatedRevision: 2;
+  draftContentHash: string;
+  startedAt: string;
+  completedAt: string;
+  checks: ProposalGateCheckV1[];
+  overallVerdict: Exclude<ProposalGateVerdict, 'not_run'>;
+  pairedGateVerdict: ProposalGateVerdict;
+  materializationPlanContentHash?: string;
+  candidateMaterializationContentHash?: string;
+  sqlRegressionProofContentHash?: string;
+  pairedReplayProofContentHash?: string;
+  contentHash: string;
+}
 
 export interface CurationProposalV1 {
   schemaVersion: 1;
@@ -419,7 +585,7 @@ export interface CurationProposalV1 {
     distinctSessionCount: number;
     statisticalVerdict: 'hypothesis_only';
   };
-  pairedGateVerdict?: 'not_run' | 'passed' | 'failed' | 'inconclusive';
+  pairedGateVerdict?: ProposalGateVerdict;
   expectedEffect: string;
   riskLevel: 'low' | 'medium' | 'high';
   gateResult?: ProposalGateResultV1;

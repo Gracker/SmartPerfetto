@@ -30,6 +30,7 @@ const scope = {tenantId: 'local', workspaceId: 'local'};
 function artifact(content = 'Candidate note') {
   return createEvaluationTreatmentArtifact({
     artifactId: 'candidate-a',
+    sourceCandidateContentHash: canonicalContentHash('candidate-a'),
     scope,
     baseSkillRegistryFingerprint: 'a'.repeat(64),
     baseStrategyRegistryFingerprint: 'b'.repeat(64),
@@ -111,6 +112,8 @@ describe('evaluation treatment artifacts', () => {
     const retiredInjectionHash = 'd'.repeat(64);
     const value = createEvaluationTreatmentArtifact({
       artifactId: 'candidate-before-after',
+      sourceCandidateContentHash:
+        canonicalContentHash('candidate-before-after'),
       scope,
       baseSkillRegistryFingerprint: 'a'.repeat(64),
       baseStrategyRegistryFingerprint: 'b'.repeat(64),

@@ -205,6 +205,8 @@ describe('OrchestratorReplayExecutor', () => {
     };
     const artifact = createEvaluationTreatmentArtifact({
       artifactId: 'candidate-a',
+      sourceCandidateContentHash:
+        canonicalContentHash('candidate-a-source'),
       scope,
       baseSkillRegistryFingerprint:
         common.skillRegistry.registryFingerprint,
@@ -229,6 +231,12 @@ describe('OrchestratorReplayExecutor', () => {
     });
     const fullTreatmentContractHash =
       evaluationFullTreatmentContractHash(roleVariant);
+    const treatmentBinding = {
+      candidateContentHash: artifact.sourceCandidateContentHash,
+      treatmentArtifactContentHash: artifact.contentHash,
+      materializedInputHash: roleVariant.materializedInputHash,
+      fullTreatmentContractHash,
+    };
     const traceServiceCalls = {
       registered: 0,
       ensured: 0,
@@ -326,6 +334,7 @@ describe('OrchestratorReplayExecutor', () => {
       evalCase,
       role: 'baseline',
       candidateId: artifact.artifactId,
+      treatmentBinding,
       pinned,
       attempt: 1,
       priorUsage: {
@@ -343,6 +352,7 @@ describe('OrchestratorReplayExecutor', () => {
       evalCase,
       role: 'candidate',
       candidateId: artifact.artifactId,
+      treatmentBinding,
       pinned,
       attempt: 1,
       priorUsage: {

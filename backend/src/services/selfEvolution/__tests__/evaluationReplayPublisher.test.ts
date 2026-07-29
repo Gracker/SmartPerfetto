@@ -171,6 +171,12 @@ describe('EvaluationReplayPublisher', () => {
   }
 
   it('uses the M4 cache but rejects stale M5 role-treatment proof bindings', async () => {
+    const treatmentBinding = {
+      candidateContentHash: '9'.repeat(64),
+      treatmentArtifactContentHash: '8'.repeat(64),
+      materializedInputHash: '7'.repeat(64),
+      fullTreatmentContractHash: 'f'.repeat(64),
+    };
     const start = environmentStart();
     const runManifest = manifest(start);
     manifestStore.append(scope, runManifest);
@@ -199,6 +205,10 @@ describe('EvaluationReplayPublisher', () => {
       contract: roleContract,
       materialization: createEvaluationMaterializationProof({
         artifactId: 'baseline:candidate-a',
+        sourceCandidateContentHash: treatmentBinding.candidateContentHash,
+        treatmentArtifactContentHash:
+          treatmentBinding.treatmentArtifactContentHash,
+        materializedInputHash: treatmentBinding.materializedInputHash,
         baseRegistryContentHash: 'c'.repeat(64),
         persistentOverlayGeneration: pinned.overlayGeneration,
         treatmentGeneration: 'evaluation:baseline',
@@ -255,6 +265,7 @@ describe('EvaluationReplayPublisher', () => {
       environmentProof,
       roleProof,
       roleContract,
+      treatmentBinding,
       fullTreatmentContractHash: currentTreatmentHash,
       frozenArtifactsHash: '1'.repeat(64),
       executionFence: {
@@ -268,6 +279,7 @@ describe('EvaluationReplayPublisher', () => {
       evalCase,
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     })).toBeUndefined();
     expect(await publisher.loadPublished({scope, resultRef}))
       .toBeUndefined();
@@ -275,10 +287,18 @@ describe('EvaluationReplayPublisher', () => {
     publicationCommitted = true;
     await publisher.commitPublication({scope, resultRef});
     expect(evalStore.getScore(scope, resultRef)).toEqual(score);
+    expect(await publisher.loadPublishedRecord({scope, resultRef}))
+      .toMatchObject({
+        resultRef,
+        score,
+        roleProof,
+        contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
     expect((await publisher.lookupBaseline({
       evalCase,
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     }))?.resultRef).toBe(resultRef);
 
     publicationCommitted = false;
@@ -286,6 +306,7 @@ describe('EvaluationReplayPublisher', () => {
       evalCase,
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     })).toBeUndefined();
     expect(await publisher.loadPublished({scope, resultRef}))
       .toBeUndefined();
@@ -296,12 +317,17 @@ describe('EvaluationReplayPublisher', () => {
       evalCase,
       pinned,
       candidateId: 'candidate-b',
+      treatmentBinding,
     })).toBeUndefined();
     await expect(publisher.publish({
       score,
       environmentProof,
       roleProof,
       roleContract,
+      treatmentBinding: {
+        ...treatmentBinding,
+        fullTreatmentContractHash: currentTreatmentHash,
+      },
       fullTreatmentContractHash: currentTreatmentHash,
       frozenArtifactsHash: '1'.repeat(64),
       executionFence: {

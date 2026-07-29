@@ -294,6 +294,8 @@ describe('effective runtime registry provider', () => {
     expect(existingHint).toBeDefined();
     const artifact = createEvaluationTreatmentArtifact({
       artifactId: 'candidate-treatment-a',
+      sourceCandidateContentHash:
+        canonicalContentHash('candidate-treatment-a'),
       scope: scopeA,
       baseSkillRegistryFingerprint:
         common.skillRegistry.registryFingerprint,
@@ -372,6 +374,7 @@ describe('effective runtime registry provider', () => {
     ) => {
       const artifact = createEvaluationTreatmentArtifact({
         artifactId,
+        sourceCandidateContentHash: canonicalContentHash(artifactId),
         scope: scopeA,
         baseSkillRegistryFingerprint:
           common.skillRegistry.registryFingerprint,

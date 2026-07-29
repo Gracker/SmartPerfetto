@@ -30,6 +30,9 @@ import {
 export interface EvaluationMaterializationProofV1 {
   schemaVersion: 1;
   artifactId: string;
+  sourceCandidateContentHash: string;
+  treatmentArtifactContentHash: string;
+  materializedInputHash: string;
   baseRegistryContentHash: string;
   persistentOverlayGeneration: string;
   treatmentGeneration: string;
@@ -110,6 +113,15 @@ export function createEvaluationMaterializationProof(input: Omit<
   EvaluationMaterializationProofV1,
   'schemaVersion' | 'materializedHash' | 'contentHash'
 >): EvaluationMaterializationProofV1 {
+  for (const hash of [
+    input.sourceCandidateContentHash,
+    input.treatmentArtifactContentHash,
+    input.materializedInputHash,
+  ]) {
+    if (!/^[0-9a-f]{64}$/.test(hash)) {
+      throw new Error('evaluation_materialization_binding_invalid');
+    }
+  }
   const materializedRefs = normalizeRefs(input.materializedRefs);
   const withoutContentHash = {
     schemaVersion: 1 as const,

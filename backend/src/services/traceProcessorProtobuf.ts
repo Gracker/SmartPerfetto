@@ -385,7 +385,10 @@ function parseCellsBatch(buf: Buffer, offset: number, length: number): {
 /**
  * Decode QueryResult protobuf message
  */
-export function decodeQueryResult(buf: Buffer): ParsedQueryResult {
+export function decodeQueryResult(
+  buf: Buffer,
+  limits: {maxRows?: number} = {},
+): ParsedQueryResult {
   const columnNames: string[] = [];
   let error: string | undefined;
   const batches: ReturnType<typeof parseCellsBatch>[] = [];
@@ -433,6 +436,20 @@ export function decodeQueryResult(buf: Buffer): ParsedQueryResult {
   const numColumns = columnNames.length;
 
   if (numColumns > 0) {
+    const encodedRowCount = batches.reduce(
+      (total, batch) => total + Math.ceil(batch.cells.length / numColumns),
+      0,
+    );
+    if (
+      limits.maxRows !== undefined
+      && (
+        !Number.isSafeInteger(limits.maxRows)
+        || limits.maxRows < 0
+        || encodedRowCount > limits.maxRows
+      )
+    ) {
+      throw new Error('trace_processor_row_budget_exceeded');
+    }
     for (const batch of batches) {
       let varintIdx = 0;
       let float64Idx = 0;

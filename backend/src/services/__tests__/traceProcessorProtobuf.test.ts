@@ -59,6 +59,16 @@ describe('traceProcessorProtobuf', () => {
       expect(result.columnNames).toEqual(['i', 'f', 's', 'n', 'b']);
       expect(result.rows).toEqual([[-1, 1.5, 'text', null, Buffer.from([1, 2, 3])]]);
     });
+
+    it('rejects an encoded result before materializing rows over budget', () => {
+      const encoded = encodeQueryResult({
+        columnNames: ['value'],
+        rows: [[1], [2]],
+      });
+
+      expect(() => decodeQueryResult(encoded, {maxRows: 1}))
+        .toThrow('trace_processor_row_budget_exceeded');
+    });
   });
 
   describe('query args decoding', () => {

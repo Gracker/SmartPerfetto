@@ -250,40 +250,134 @@ function assertKindDeltaMapping(
   tier: string,
   delta: ProposalDelta,
 ): void {
-  if (
-    kind === 'skill_note' &&
-    (
-      tier !== 'T1' ||
-      delta.targetKind !== 'skill_note' ||
-      parseCanonicalAnchorId(
+  switch (kind) {
+    case 'phase_hint': {
+      const [scene, hintId] = parseCanonicalAnchorValues(
         delta.anchor,
-        /^skillNotes\[skillId=(.+)\]$/,
-        'proposal_skill_note_mapping_invalid',
-      ) !== delta.targetId
-    )
-  ) {
-    fail('proposal_skill_note_mapping_invalid');
-  }
-  if (kind === 'retire_injection') {
-    const match = /^injections\.(phaseHints|skillNotes)\[id=(.+)\]$/.exec(
-      delta.anchor,
-    );
-    if (!match) fail('proposal_retire_mapping_invalid');
-    const category = match[1] as 'phaseHints' | 'skillNotes';
-    const targetId = parseCanonicalJsonString(
-      match[2],
-      'proposal_retire_mapping_invalid',
-    );
-    const expectedTier = category === 'phaseHints' ? 'T0' : 'T1';
-    if (
-      tier !== expectedTier ||
-      delta.targetKind !== 'injection' ||
-      delta.op !== 'remove' ||
-      targetId !== delta.targetId
-    ) {
-      fail('proposal_retire_mapping_invalid');
+        /^injections\.phaseHints\[scene=("(?:\\.|[^"\\])*")\]\[id=("(?:\\.|[^"\\])*")\]$/,
+        'proposal_phase_hint_mapping_invalid',
+      );
+      if (
+        tier !== 'T0'
+        || delta.targetKind !== 'injection'
+        || !scene
+        || hintId !== delta.targetId
+      ) {
+        fail('proposal_phase_hint_mapping_invalid');
+      }
+      return;
     }
+    case 'skill_note':
+      if (
+        tier !== 'T1'
+        || delta.targetKind !== 'skill_note'
+        || parseCanonicalAnchorId(
+          delta.anchor,
+          /^skillNotes\[skillId=(.+)\]$/,
+          'proposal_skill_note_mapping_invalid',
+        ) !== delta.targetId
+      ) {
+        fail('proposal_skill_note_mapping_invalid');
+      }
+      return;
+    case 'strategy_section': {
+      const [scene, operationId] = parseCanonicalAnchorValues(
+        delta.anchor,
+        /^strategies\[scene=("(?:\\.|[^"\\])*")\]\.sections\[operationId=("(?:\\.|[^"\\])*")\]$/,
+        'proposal_strategy_section_mapping_invalid',
+      );
+      if (
+        tier !== 'T2'
+        || delta.targetKind !== 'strategy_overlay'
+        || scene !== delta.targetId
+        || operationId !== delta.operationId
+      ) {
+        fail('proposal_strategy_section_mapping_invalid');
+      }
+      return;
+    }
+    case 'skill_overlay_delta': {
+      const [skillId, operationId] = parseCanonicalAnchorValues(
+        delta.anchor,
+        /^skills\[id=("(?:\\.|[^"\\])*")\]\.overlays\[operationId=("(?:\\.|[^"\\])*")\]$/,
+        'proposal_skill_overlay_mapping_invalid',
+      );
+      if (
+        tier !== 'T3'
+        || delta.targetKind !== 'skill_overlay'
+        || delta.op !== 'add'
+        || skillId !== delta.targetId
+        || operationId !== delta.operationId
+      ) {
+        fail('proposal_skill_overlay_mapping_invalid');
+      }
+      return;
+    }
+    case 'skill_sql': {
+      const [skillId, stepId] = parseCanonicalAnchorValues(
+        delta.anchor,
+        /^skills\[id=("(?:\\.|[^"\\])*")\]\.sql\[stepId=("(?:\\.|[^"\\])*")\]$/,
+        'proposal_skill_sql_mapping_invalid',
+      );
+      if (
+        tier !== 'T4'
+        || delta.targetKind !== 'skill_overlay'
+        || delta.op === 'remove'
+        || skillId !== delta.targetId
+        || stepId !== delta.operationId
+      ) {
+        fail('proposal_skill_sql_mapping_invalid');
+      }
+      return;
+    }
+    case 'new_skill_draft':
+      if (
+        tier !== 'T5a'
+        || delta.targetKind !== 'skill_overlay'
+        || delta.op !== 'add'
+        || parseCanonicalAnchorId(
+          delta.anchor,
+          /^skills\[id=(.+)\]$/,
+          'proposal_new_skill_mapping_invalid',
+        ) !== delta.targetId
+      ) {
+        fail('proposal_new_skill_mapping_invalid');
+      }
+      return;
+    case 'retire_injection': {
+      const match = /^injections\.(phaseHints|skillNotes)\[id=(.+)\]$/.exec(
+        delta.anchor,
+      );
+      if (!match) fail('proposal_retire_mapping_invalid');
+      const category = match[1] as 'phaseHints' | 'skillNotes';
+      const targetId = parseCanonicalJsonString(
+        match[2],
+        'proposal_retire_mapping_invalid',
+      );
+      const expectedTier = category === 'phaseHints' ? 'T0' : 'T1';
+      if (
+        tier !== expectedTier
+        || delta.targetKind !== 'injection'
+        || delta.op !== 'remove'
+        || targetId !== delta.targetId
+      ) {
+        fail('proposal_retire_mapping_invalid');
+      }
+      return;
+    }
+    default:
+      fail('proposal_kind_mapping_missing');
   }
+}
+
+function parseCanonicalAnchorValues(
+  anchor: string,
+  pattern: RegExp,
+  code: string,
+): string[] {
+  const match = pattern.exec(anchor);
+  if (!match) fail(code);
+  return match.slice(1).map(value => parseCanonicalJsonString(value, code));
 }
 
 function parseCanonicalAnchorId(

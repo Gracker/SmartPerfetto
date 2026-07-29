@@ -40,6 +40,10 @@ import type {
   PublishedReplayResult,
   ReplayResultPublisher,
 } from './replayRunner';
+import {
+  parseReplayTreatmentBindingV1,
+  type ReplayTreatmentBindingV1,
+} from './evalReplayRunStore';
 
 export interface EvaluationReplayPublishedRecordV1
   extends PublishedReplayResult {
@@ -58,6 +62,7 @@ export interface EvaluationReplayPublisherOptions {
     evalCase: EvalCaseV1;
     pinned: EvalPinnedEnvironmentV1;
     candidateId: string;
+    treatmentBinding: ReplayTreatmentBindingV1;
   }): {
     environmentStart: EvaluationEnvironmentStartV1;
     roleContract: EvaluationRoleInjectionContractV1;
@@ -111,6 +116,7 @@ function createPublishedRecord(input: {
   environmentProof: EvaluationEnvironmentProofV1;
   roleProof: EvaluationRoleProofV2;
   roleContract: EvaluationRoleInjectionContractV1;
+  treatmentBinding: ReplayTreatmentBindingV1;
   fullTreatmentContractHash: string;
   frozenArtifactsHash: string;
   executionFence: EvaluationPublicationFenceV1;
@@ -121,6 +127,9 @@ function createPublishedRecord(input: {
   );
   const roleProof = parseEvaluationRoleProofV2(input.roleProof);
   const roleContract = parseRoleContract(input.roleContract);
+  const treatmentBinding = parseReplayTreatmentBindingV1(
+    input.treatmentBinding,
+  );
   assertEvaluationExposureMatchesContract({
     contract: roleContract,
     receipt: roleProof.exposureReceipt,
@@ -129,9 +138,25 @@ function createPublishedRecord(input: {
     roleProof.role !== score.role
     || roleProof.runId !== score.runId
     || roleProof.runManifestId !== score.runManifestId
+    || canonicalJsonString(roleProof.scope)
+      !== canonicalJsonString(score.scope)
+    || canonicalJsonString(environmentProof.scope)
+      !== canonicalJsonString(score.scope)
+    || canonicalJsonString(roleProof.pinned)
+      !== canonicalJsonString(score.pinned)
+    || canonicalJsonString(environmentProof.pinned)
+      !== canonicalJsonString(score.pinned)
     || roleProof.baseEnvironmentProofContentHash
       !== environmentProof.contentHash
     || roleProof.roleContractHash !== roleContract.contractHash
+    || roleProof.materialization.sourceCandidateContentHash
+      !== treatmentBinding.candidateContentHash
+    || roleProof.materialization.treatmentArtifactContentHash
+      !== treatmentBinding.treatmentArtifactContentHash
+    || roleProof.materialization.materializedInputHash
+      !== treatmentBinding.materializedInputHash
+    || input.fullTreatmentContractHash
+      !== treatmentBinding.fullTreatmentContractHash
     || (
       score.role === 'candidate'
       && roleProof.materialization.artifactId !== score.candidateId
@@ -157,6 +182,7 @@ function createPublishedRecord(input: {
     environmentProof,
     roleProof,
     roleContract,
+    treatmentBinding,
     fullTreatmentContractHash: input.fullTreatmentContractHash,
     frozenArtifactsHash: input.frozenArtifactsHash,
     executionFence: immutableCanonicalSnapshot(input.executionFence),
@@ -213,6 +239,7 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
     evalCase: EvalCaseV1;
     pinned: EvalPinnedEnvironmentV1;
     candidateId: string;
+    treatmentBinding: ReplayTreatmentBindingV1;
   }) {
     const context = await this.resolveBaselineContext(input);
     const hit = this.evalCaseStore.lookupBaseline({
@@ -226,6 +253,8 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
     if (
       !record
       || record.score.role !== 'baseline'
+      || record.roleProof.materialization.artifactId
+        !== `baseline:${input.candidateId}`
       || record.environmentProof.contentHash !== hit.proof.contentHash
       || record.roleProof.baseEnvironmentProofContentHash
         !== hit.proof.contentHash
@@ -233,6 +262,10 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
         !== context.roleContract.contractHash
       || record.fullTreatmentContractHash
         !== context.fullTreatmentContractHash
+      || canonicalJsonString(record.treatmentBinding)
+        !== canonicalJsonString(input.treatmentBinding)
+      || context.fullTreatmentContractHash
+        !== input.treatmentBinding.fullTreatmentContractHash
       || canonicalJsonString(record.score) !== canonicalJsonString(hit.score)
       || !this.isPublicationCommitted({
         scope: input.evalCase.scope,
@@ -247,6 +280,7 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
       environmentProof: record.environmentProof,
       roleProof: record.roleProof,
       roleContract: record.roleContract,
+      treatmentBinding: record.treatmentBinding,
       fullTreatmentContractHash: record.fullTreatmentContractHash,
       resultRef: record.resultRef,
     };
@@ -257,6 +291,7 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
     environmentProof: EvaluationEnvironmentProofV1;
     roleProof: EvaluationRoleProofV2;
     roleContract: EvaluationRoleInjectionContractV1;
+    treatmentBinding: ReplayTreatmentBindingV1;
     fullTreatmentContractHash: string;
     frozenArtifactsHash: string;
     executionFence: EvaluationPublicationFenceV1;
@@ -311,6 +346,21 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
     scope: RunManifestScope;
     resultRef: string;
   }): Promise<PublishedReplayResult | undefined> {
+    const record = await this.loadPublishedRecord(input);
+    if (!record) return undefined;
+    return {
+      score: record.score,
+      roleProof: record.roleProof,
+      roleContract: record.roleContract,
+      treatmentBinding: record.treatmentBinding,
+      fullTreatmentContractHash: record.fullTreatmentContractHash,
+    };
+  }
+
+  async loadPublishedRecord(input: {
+    scope: RunManifestScope;
+    resultRef: string;
+  }): Promise<EvaluationReplayPublishedRecordV1 | undefined> {
     const record = this.get(input.scope, input.resultRef);
     if (
       !record
@@ -323,12 +373,7 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
       return undefined;
     }
     await this.commitPublication(input);
-    return {
-      score: record.score,
-      roleProof: record.roleProof,
-      roleContract: record.roleContract,
-      fullTreatmentContractHash: record.fullTreatmentContractHash,
-    };
+    return record;
   }
 
   close(): void {

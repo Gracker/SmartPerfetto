@@ -163,6 +163,78 @@ describe('TraceProcessorSqlWorker', () => {
     worker = null;
   });
 
+  it('enforces bounded query row and response-byte limits', async () => {
+    const encoded = encodeQueryResult({
+      columnNames: ['value'],
+      rows: [[1], [2]],
+    });
+    const observedLimits: Array<number | undefined> = [];
+    worker = new TraceProcessorSqlWorker({
+      processorId: 'processor-bounded-result',
+      traceId: 'trace-bounded-result',
+      port: 1,
+      forceInline: true,
+      rawExecutor: async request => {
+        observedLimits.push(request.maxResponseBytes);
+        return encoded;
+      },
+    });
+
+    await expect(worker.queryBounded('SELECT value', {
+      maxRows: 1,
+      maxResponseBytes: 1024,
+    })).resolves.toMatchObject({
+      rows: [],
+      error: 'trace_processor_row_budget_exceeded',
+    });
+    expect(observedLimits).toEqual([1024]);
+
+    await expect(worker.queryBounded('SELECT value', {
+      maxRows: Number.NaN,
+      maxResponseBytes: 1024,
+    })).resolves.toMatchObject({
+      rows: [],
+      error: 'trace_processor_query_budget_invalid',
+    });
+    await expect(worker.queryBounded('SELECT value', {
+      maxRows: 10,
+      maxResponseBytes: -1,
+    })).resolves.toMatchObject({
+      rows: [],
+      error: 'trace_processor_query_budget_invalid',
+    });
+    expect(observedLimits).toEqual([1024]);
+
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, {'Content-Type': 'application/x-protobuf'});
+      res.end(encoded);
+    });
+    await new Promise<void>(resolve =>
+      server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('test HTTP server did not bind to a port');
+    }
+    worker.destroy();
+    worker = new TraceProcessorSqlWorker({
+      processorId: 'processor-bounded-response',
+      traceId: 'trace-bounded-response',
+      port: address.port,
+      forceInline: true,
+    });
+    try {
+      await expect(worker.queryBounded('SELECT value', {
+        maxRows: 10,
+        maxResponseBytes: encoded.byteLength - 1,
+      })).resolves.toMatchObject({
+        rows: [],
+        error: 'trace_processor_response_budget_exceeded',
+      });
+    } finally {
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it('applies the query deadline while a task is waiting in the queue', async () => {
     const gate = deferred<Buffer>();
     worker = new TraceProcessorSqlWorker({

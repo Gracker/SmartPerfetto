@@ -167,7 +167,7 @@ function dataEnvelopesFromUpdate(
   return {valid, invalid};
 }
 
-function assertRolePlan(
+export function assertRolePlan(
   replay: ReplayExecutorInput,
   plan: EvaluationReplayRolePlan,
   commonRegistry: EffectiveRuntimeRegistrySnapshot,
@@ -207,6 +207,14 @@ function assertRolePlan(
     || plan.injectionContract.mode !== replay.pinned.injections
     || plan.fullTreatmentContractHash
       !== evaluationFullTreatmentContractHash(plan.roleVariant)
+    || plan.roleVariant.sourceCandidateContentHash
+      !== replay.treatmentBinding.candidateContentHash
+    || plan.roleVariant.treatmentArtifactContentHash
+      !== replay.treatmentBinding.treatmentArtifactContentHash
+    || plan.roleVariant.materializedInputHash
+      !== replay.treatmentBinding.materializedInputHash
+    || plan.fullTreatmentContractHash
+      !== replay.treatmentBinding.fullTreatmentContractHash
     || plan.roleVariant.artifactId !== replay.candidateId
     || canonicalJsonString(roleRefs.materializedRefs)
       !== canonicalJsonString(
@@ -751,6 +759,12 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
               artifactId: replay.role === 'candidate'
                 ? rolePlan.roleVariant.artifactId
                 : `baseline:${rolePlan.roleVariant.artifactId}`,
+              sourceCandidateContentHash:
+                rolePlan.roleVariant.sourceCandidateContentHash,
+              treatmentArtifactContentHash:
+                rolePlan.roleVariant.treatmentArtifactContentHash,
+              materializedInputHash:
+                rolePlan.roleVariant.materializedInputHash,
               baseRegistryContentHash: commonBaseRegistryContentHash,
               persistentOverlayGeneration:
                 input.commonRegistry.overlayGeneration,

@@ -33,6 +33,12 @@ export interface TraceProcessorQueryOptions {
   signal?: AbortSignal;
 }
 
+export interface TraceProcessorBoundedQueryOptions
+  extends TraceProcessorQueryOptions {
+  maxResponseBytes: number;
+  maxRows: number;
+}
+
 export interface TraceProcessorSqlWorkerOptions {
   processorId: string;
   traceId: string;
@@ -52,6 +58,7 @@ interface QueueTask {
   deadlineAt: number;
   queueTimer?: NodeJS.Timeout;
   signal?: AbortSignal;
+  maxResponseBytes?: number;
   onAbort?: () => void;
   resolve: (body: Buffer) => void;
   reject: (error: Error) => void;
@@ -186,7 +193,50 @@ export class TraceProcessorSqlWorker {
     }
   }
 
+  async queryBounded(
+    sql: string,
+    options: TraceProcessorBoundedQueryOptions,
+  ): Promise<QueryResult> {
+    const startTime = Date.now();
+    try {
+      if (
+        !Number.isSafeInteger(options.maxResponseBytes)
+        || options.maxResponseBytes < 0
+        || !Number.isSafeInteger(options.maxRows)
+        || options.maxRows < 0
+      ) {
+        throw new Error('trace_processor_query_budget_invalid');
+      }
+      const response = await this.enqueueRawInternal(
+        encodeQueryArgs(sql),
+        options,
+      );
+      const parsed = decodeQueryResult(response, {maxRows: options.maxRows});
+      return {
+        columns: parsed.columnNames,
+        rows: parsed.rows,
+        durationMs: Date.now() - startTime,
+        ...(parsed.error ? {error: parsed.error} : {}),
+      };
+    } catch (error: any) {
+      if (isTraceProcessorQueryCancelledError(error)) throw error;
+      return {
+        columns: [],
+        rows: [],
+        durationMs: Date.now() - startTime,
+        error: error?.message || String(error),
+      };
+    }
+  }
+
   enqueueRaw(body: Buffer, options: TraceProcessorQueryOptions = {}): Promise<Buffer> {
+    return this.enqueueRawInternal(body, options);
+  }
+
+  private enqueueRawInternal(
+    body: Buffer,
+    options: TraceProcessorQueryOptions & {maxResponseBytes?: number},
+  ): Promise<Buffer> {
     if (this.destroyed) {
       return Promise.reject(new Error(`SQL worker for processor ${this.processorId} is destroyed`));
     }
@@ -214,6 +264,7 @@ export class TraceProcessorSqlWorker {
         timeoutMs,
         deadlineAt: Date.now() + timeoutMs,
         signal: options.signal,
+        maxResponseBytes: options.maxResponseBytes,
         resolve,
         reject,
       };
@@ -292,6 +343,7 @@ export class TraceProcessorSqlWorker {
       body: task.body,
       timeoutMs: remainingTimeoutMs,
       signal: task.signal,
+      maxResponseBytes: task.maxResponseBytes,
     };
 
     if (this.forceInline || this.rawExecutor) {
@@ -370,6 +422,7 @@ export class TraceProcessorSqlWorker {
         port: this.port,
         body: task.body,
         timeoutMs,
+        maxResponseBytes: task.maxResponseBytes,
       });
     });
   }

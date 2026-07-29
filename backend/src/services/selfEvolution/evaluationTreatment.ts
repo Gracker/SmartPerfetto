@@ -69,6 +69,7 @@ export type EvaluationTreatmentEntryV1 =
 export interface EvaluationTreatmentArtifactV1 {
   schemaVersion: 1;
   artifactId: string;
+  sourceCandidateContentHash: string;
   scope: RunManifestScope;
   baseSkillRegistryFingerprint: string;
   baseStrategyRegistryFingerprint: string;
@@ -80,6 +81,8 @@ export interface EvaluationTreatmentArtifactV1 {
 export interface EvaluationRoleVariantV1 {
   schemaVersion: 1;
   artifactId: string;
+  sourceCandidateContentHash: string;
+  treatmentArtifactContentHash: string;
   scope: RunManifestScope;
   baseSkillRegistryFingerprint: string;
   baseStrategyRegistryFingerprint: string;
@@ -158,6 +161,8 @@ export function evaluationFullTreatmentContractHash(
 ): string {
   return canonicalContentHash({
     artifactId: variant.artifactId,
+    sourceCandidateContentHash: variant.sourceCandidateContentHash,
+    treatmentArtifactContentHash: variant.treatmentArtifactContentHash,
     scope: variant.scope,
     treatmentGeneration: variant.treatmentGeneration,
     materializedInputHash: variant.materializedInputHash,
@@ -582,6 +587,10 @@ export function createEvaluationTreatmentArtifact(input: Omit<
       input.artifactId,
       'evaluation_treatment_artifact_id_invalid',
     ),
+    sourceCandidateContentHash: assertHash(
+      input.sourceCandidateContentHash,
+      'evaluation_treatment_source_candidate_hash_invalid',
+    ),
     scope: {
       tenantId: nonempty(
         input.scope.tenantId,
@@ -621,6 +630,7 @@ export function parseEvaluationTreatmentArtifact(
     [
       'schemaVersion',
       'artifactId',
+      'sourceCandidateContentHash',
       'scope',
       'baseSkillRegistryFingerprint',
       'baseStrategyRegistryFingerprint',
@@ -632,6 +642,7 @@ export function parseEvaluationTreatmentArtifact(
   );
   const normalized = createEvaluationTreatmentArtifact({
     artifactId: artifact.artifactId,
+    sourceCandidateContentHash: artifact.sourceCandidateContentHash,
     scope: artifact.scope,
     baseSkillRegistryFingerprint: artifact.baseSkillRegistryFingerprint,
     baseStrategyRegistryFingerprint: artifact.baseStrategyRegistryFingerprint,
@@ -689,6 +700,8 @@ export function resolveEvaluationRoleVariant(input: {
     entry.kind === 'retire_injection' ? [entry] : []);
   const artifactCreatedAtMs = Date.parse(artifact.createdAt);
   const materializedInputHash = canonicalContentHash({
+    sourceCandidateContentHash: artifact.sourceCandidateContentHash,
+    treatmentArtifactContentHash: artifact.contentHash,
     skillOverlays,
     strategyContributions,
     phaseHintDeltas,
@@ -699,6 +712,8 @@ export function resolveEvaluationRoleVariant(input: {
   return immutableCanonicalSnapshot({
     schemaVersion: 1,
     artifactId: artifact.artifactId,
+    sourceCandidateContentHash: artifact.sourceCandidateContentHash,
+    treatmentArtifactContentHash: artifact.contentHash,
     scope: artifact.scope,
     baseSkillRegistryFingerprint: artifact.baseSkillRegistryFingerprint,
     baseStrategyRegistryFingerprint: artifact.baseStrategyRegistryFingerprint,

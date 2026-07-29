@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {randomUUID} from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
@@ -9,6 +10,11 @@ import Database from 'better-sqlite3';
 import {userDataPath} from '../../runtimePaths';
 import type {
   CurationProposalV1,
+  ProposalGateCheckV1,
+  ProposalGateResultV1,
+  ProposalGateVerdict,
+  ProposalPairedReplayProofV1,
+  ProposalSqlRegressionProofV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
 import {
@@ -17,10 +23,89 @@ import {
   type ScopedLease,
   type ScopedLeaseFence,
 } from '../evolutionLifecycle/scopedOutbox';
-import {canonicalJsonString} from './canonicalJson';
+import {
+  canonicalContentHash,
+  canonicalJsonString,
+  immutableCanonicalSnapshot,
+} from './canonicalJson';
 import type {SelectedCurationCandidate} from './curationContracts';
 import {selectSingleCurationCandidate} from './curationCoordinator';
 import {parseM6DraftProposal} from './proposalContract';
+import {
+  createProposalGateResultV1,
+  parseCurationProposalV1,
+  parseProposalCandidateMaterializationV1,
+  parseProposalGateResultV1,
+  parseProposalMaterializationPlanV1,
+  parseProposalPairedReplayProofV1,
+  parseProposalSqlRegressionProofV1,
+  proposalDraftContentHash,
+} from './proposalGateContract';
+import {
+  parseProposalContainmentProbeV1,
+  type ProposalContainmentProbeV1,
+} from './proposalContainmentGate';
+import {
+  parseProposalStaticValidationProofV1,
+  type ProposalStaticValidationProofV1,
+} from './proposalStaticGate';
+import type {ProposalBaseSnapshotV1} from './proposalSemanticGate';
+import {assertTrustedProposalPairedReplayProof} from './proposalPairedReplayGate';
+import {assertTrustedProposalSqlRegressionProof} from './proposalSqlRegression';
+
+export type ProposalGateEvidenceKind =
+  | 'materialization_plan'
+  | 'containment_probe'
+  | 'containment_probe_final'
+  | 'candidate_materialization'
+  | 'base_snapshot_initial'
+  | 'base_snapshot_final'
+  | 'static_validation'
+  | 'sql_regression'
+  | 'paired_replay';
+
+export interface ProposalGateAttemptSessionV1 {
+  schemaVersion: 1;
+  attemptId: string;
+  ordinal: number;
+  scope: RunManifestScope;
+  proposalId: string;
+  draftContentHash: string;
+  gatePolicyFingerprint: string;
+  fenceToken: string;
+  startedAt: string;
+}
+
+export interface ProposalGateSnapshotEvidenceV1 {
+  schemaVersion: 1;
+  snapshot: ProposalBaseSnapshotV1;
+  snapshotHash: string;
+  contentHash: string;
+}
+
+export interface ProposalGateAttemptRecordV1 {
+  session: Omit<ProposalGateAttemptSessionV1, 'fenceToken'>;
+  state: 'running' | 'completed' | 'abandoned';
+  verdict?: Exclude<ProposalGateVerdict, 'not_run'>;
+  gateResult?: ProposalGateResultV1;
+  completedAt?: string;
+}
+
+interface GateAttemptRow {
+  attempt_id: string;
+  attempt_ordinal: number;
+  tenant_id: string;
+  workspace_id: string;
+  proposal_id: string;
+  draft_content_hash: string;
+  gate_policy_fingerprint: string;
+  fence_token: string;
+  state: 'running' | 'completed' | 'abandoned';
+  verdict: Exclude<ProposalGateVerdict, 'not_run'> | null;
+  started_at: string;
+  completed_at: string | null;
+  gate_result_json: string | null;
+}
 
 interface ProposalJob {
   jobId: string;
@@ -159,7 +244,7 @@ export class ProposalStore {
       proposalId,
     ) as {proposal_json: string} | undefined;
     return row
-      ? parseM6DraftProposal(JSON.parse(row.proposal_json))
+      ? parseCurationProposalV1(JSON.parse(row.proposal_json))
       : undefined;
   }
 
@@ -177,7 +262,7 @@ export class ProposalStore {
       idempotencyKey,
     ) as {proposal_json: string} | undefined;
     return row
-      ? parseM6DraftProposal(JSON.parse(row.proposal_json))
+      ? parseCurationProposalV1(JSON.parse(row.proposal_json))
       : undefined;
   }
 
@@ -192,7 +277,317 @@ export class ProposalStore {
       scope.workspaceId,
     ) as Array<{proposal_json: string}>;
     return rows.map(row =>
-      parseM6DraftProposal(JSON.parse(row.proposal_json)));
+      parseCurationProposalV1(JSON.parse(row.proposal_json)));
+  }
+
+  beginGateAttempt(input: {
+    scope: RunManifestScope;
+    proposalId: string;
+    gatePolicyFingerprint: string;
+    startedAt?: string;
+  }): ProposalGateAttemptSessionV1 {
+    if (!/^[0-9a-f]{64}$/.test(input.gatePolicyFingerprint)) {
+      throw new Error('curation_gate_policy_fingerprint_invalid');
+    }
+    return this.db.transaction(() => {
+      const proposal = this.get(input.scope, input.proposalId);
+      if (!proposal) throw new Error('curation_proposal_not_found');
+      if (proposal.status !== 'draft' || proposal.revision !== 1) {
+        throw new Error('curation_proposal_not_gateable');
+      }
+      const draft = parseM6DraftProposal(proposal);
+      const draftContentHash = proposalDraftContentHash(draft);
+      const startedAt = input.startedAt ?? new Date().toISOString();
+      if (!Number.isFinite(Date.parse(startedAt))) {
+        throw new Error('curation_gate_attempt_time_invalid');
+      }
+      this.db.prepare(`
+        UPDATE proposal_gate_attempts
+        SET state = 'abandoned', completed_at = ?
+        WHERE tenant_id = ?
+          AND workspace_id = ?
+          AND proposal_id = ?
+          AND state = 'running'
+      `).run(
+        startedAt,
+        input.scope.tenantId,
+        input.scope.workspaceId,
+        input.proposalId,
+      );
+      const ordinalRow = this.db.prepare(`
+        SELECT COALESCE(MAX(attempt_ordinal), 0) + 1 AS ordinal
+        FROM proposal_gate_attempts
+        WHERE tenant_id = ? AND workspace_id = ? AND proposal_id = ?
+      `).get(
+        input.scope.tenantId,
+        input.scope.workspaceId,
+        input.proposalId,
+      ) as {ordinal: number};
+      const session: ProposalGateAttemptSessionV1 = {
+        schemaVersion: 1,
+        attemptId: randomUUID(),
+        ordinal: ordinalRow.ordinal,
+        scope: immutableCanonicalSnapshot(input.scope),
+        proposalId: input.proposalId,
+        draftContentHash,
+        gatePolicyFingerprint: input.gatePolicyFingerprint,
+        fenceToken: randomUUID(),
+        startedAt,
+      };
+      this.db.prepare(`
+        INSERT INTO proposal_gate_attempts (
+          attempt_id, attempt_ordinal, tenant_id, workspace_id,
+          proposal_id, draft_content_hash, gate_policy_fingerprint,
+          fence_token, state, started_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)
+      `).run(
+        session.attemptId,
+        session.ordinal,
+        session.scope.tenantId,
+        session.scope.workspaceId,
+        session.proposalId,
+        session.draftContentHash,
+        session.gatePolicyFingerprint,
+        session.fenceToken,
+        session.startedAt,
+      );
+      return immutableCanonicalSnapshot(session);
+    })();
+  }
+
+  recordGateEvidence(
+    session: ProposalGateAttemptSessionV1,
+    kind: ProposalGateEvidenceKind,
+    value: unknown,
+  ): string {
+    const artifact = parseGateEvidence(kind, value);
+    const contentHash = evidenceContentHash(artifact);
+    return this.db.transaction(() => {
+      this.assertGateAttempt(session);
+      const existing = this.db.prepare(`
+        SELECT content_hash, artifact_json
+        FROM proposal_gate_evidence
+        WHERE attempt_id = ? AND evidence_kind = ?
+      `).get(session.attemptId, kind) as {
+        content_hash: string;
+        artifact_json: string;
+      } | undefined;
+      const payload = canonicalJsonString(artifact);
+      if (existing) {
+        if (
+          existing.content_hash !== contentHash
+          || existing.artifact_json !== payload
+        ) {
+          throw new Error('curation_gate_evidence_conflict');
+        }
+        return existing.content_hash;
+      }
+      this.db.prepare(`
+        INSERT INTO proposal_gate_evidence (
+          attempt_id, evidence_kind, content_hash, artifact_json
+        ) VALUES (?, ?, ?, ?)
+      `).run(session.attemptId, kind, contentHash, payload);
+      return contentHash;
+    })();
+  }
+
+  finalizeGateAttempt(input: {
+    session: ProposalGateAttemptSessionV1;
+    checks: ProposalGateCheckV1[];
+    trustedEvidence?: {
+      sqlRegressionProof?: ProposalSqlRegressionProofV1;
+      pairedReplayProof?: ProposalPairedReplayProofV1;
+    };
+    completedAt?: string;
+  }): CurationProposalV1 {
+    return this.db.transaction(() => {
+      const attempt = this.assertGateAttempt(input.session, true);
+      const current = this.get(
+        input.session.scope,
+        input.session.proposalId,
+      );
+      if (!current) throw new Error('curation_proposal_not_found');
+      if (attempt.state === 'completed') {
+        if (!attempt.gate_result_json) {
+          throw new Error('curation_gate_attempt_result_missing');
+        }
+        const existingResult = parseProposalGateResultV1(
+          JSON.parse(attempt.gate_result_json),
+        );
+        if (
+          canonicalJsonString(existingResult.checks)
+            !== canonicalJsonString(input.checks)
+        ) {
+          throw new Error('curation_gate_attempt_idempotency_conflict');
+        }
+        return current;
+      }
+      if (attempt.state !== 'running') {
+        throw new Error('curation_gate_attempt_not_active');
+      }
+      if (current.status !== 'draft' || current.revision !== 1) {
+        throw new Error('curation_gate_result_revision_conflict');
+      }
+      const proposal = parseM6DraftProposal(current);
+      if (
+        proposalDraftContentHash(proposal)
+          !== input.session.draftContentHash
+      ) {
+        throw new Error('curation_gate_result_draft_hash_conflict');
+      }
+      const evidence = this.loadGateEvidence(input.session.attemptId);
+      assertTrustedGateEvidence(evidence, input.trustedEvidence);
+      const finalized = validateGateEvidenceBundle({
+        proposal,
+        session: input.session,
+        checks: input.checks,
+        evidence,
+      });
+      const completedAt = input.completedAt ?? new Date().toISOString();
+      if (
+        !Number.isFinite(Date.parse(completedAt))
+        || Date.parse(completedAt) < Date.parse(input.session.startedAt)
+      ) {
+        throw new Error('curation_gate_attempt_time_invalid');
+      }
+      const gateResult = createGateResultFromEvidence({
+        proposal,
+        session: input.session,
+        checks: input.checks,
+        evidence: finalized,
+        completedAt,
+      });
+      const changedAttempt = this.db.prepare(`
+        UPDATE proposal_gate_attempts
+        SET state = 'completed',
+            verdict = ?,
+            completed_at = ?,
+            gate_result_hash = ?,
+            gate_result_json = ?
+        WHERE attempt_id = ? AND fence_token = ? AND state = 'running'
+      `).run(
+        gateResult.overallVerdict,
+        completedAt,
+        gateResult.contentHash,
+        canonicalJsonString(gateResult),
+        input.session.attemptId,
+        input.session.fenceToken,
+      );
+      if (changedAttempt.changes !== 1) {
+        throw new Error('curation_gate_attempt_fence_lost');
+      }
+      if (gateResult.overallVerdict !== 'passed') return proposal;
+
+      const gated = parseCurationProposalV1({
+        ...proposal,
+        revision: 2,
+        pairedGateVerdict: gateResult.pairedGateVerdict,
+        gateResult,
+        status: 'gated',
+      });
+      const changed = this.db.prepare(`
+        UPDATE curation_proposals
+        SET revision = 2,
+            status = 'gated',
+            proposal_json = ?
+        WHERE tenant_id = ?
+          AND workspace_id = ?
+          AND proposal_id = ?
+          AND revision = 1
+          AND status = 'draft'
+          AND proposal_json = ?
+      `).run(
+        canonicalJsonString(gated),
+        input.session.scope.tenantId,
+        input.session.scope.workspaceId,
+        input.session.proposalId,
+        canonicalJsonString(proposal),
+      );
+      if (changed.changes !== 1) {
+        throw new Error('curation_gate_result_compare_and_swap_failed');
+      }
+      return gated;
+    })();
+  }
+
+  getLatestGateAttempt(
+    scope: RunManifestScope,
+    proposalId: string,
+  ): ProposalGateAttemptRecordV1 | undefined {
+    const row = this.db.prepare(`
+      SELECT *
+      FROM proposal_gate_attempts
+      WHERE tenant_id = ? AND workspace_id = ? AND proposal_id = ?
+      ORDER BY attempt_ordinal DESC
+      LIMIT 1
+    `).get(
+      scope.tenantId,
+      scope.workspaceId,
+      proposalId,
+    ) as GateAttemptRow | undefined;
+    return row ? gateAttemptRecord(row) : undefined;
+  }
+
+  /**
+   * M7 gate results may only be finalized from a fenced attempt whose full
+   * evidence bundle was persisted first. The old hash-only entry point is
+   * intentionally fail-closed.
+   */
+  recordGateResult(_input: {
+    scope: RunManifestScope;
+    proposalId: string;
+    expectedRevision: 1;
+    draftContentHash: string;
+    gateResult: ProposalGateResultV1;
+  }): never {
+    throw new Error('curation_gate_attempt_required');
+  }
+
+  private assertGateAttempt(
+    session: ProposalGateAttemptSessionV1,
+    allowCompleted = false,
+  ): GateAttemptRow {
+    const row = this.db.prepare(`
+      SELECT *
+      FROM proposal_gate_attempts
+      WHERE attempt_id = ?
+    `).get(session.attemptId) as GateAttemptRow | undefined;
+    if (
+      !row
+      || row.attempt_ordinal !== session.ordinal
+      || row.tenant_id !== session.scope.tenantId
+      || row.workspace_id !== session.scope.workspaceId
+      || row.proposal_id !== session.proposalId
+      || row.draft_content_hash !== session.draftContentHash
+      || row.gate_policy_fingerprint !== session.gatePolicyFingerprint
+      || row.fence_token !== session.fenceToken
+      || row.started_at !== session.startedAt
+      || (!allowCompleted && row.state !== 'running')
+    ) {
+      throw new Error('curation_gate_attempt_fence_lost');
+    }
+    return row;
+  }
+
+  private loadGateEvidence(
+    attemptId: string,
+  ): Map<ProposalGateEvidenceKind, unknown> {
+    const rows = this.db.prepare(`
+      SELECT evidence_kind, artifact_json
+      FROM proposal_gate_evidence
+      WHERE attempt_id = ?
+      ORDER BY evidence_kind
+    `).all(attemptId) as Array<{
+      evidence_kind: ProposalGateEvidenceKind;
+      artifact_json: string;
+    }>;
+    return new Map(rows.map(row => [
+      row.evidence_kind,
+      parseGateEvidence(
+        row.evidence_kind,
+        JSON.parse(row.artifact_json),
+      ),
+    ]));
   }
 
   expireStaleLeases(now: number = Date.now()): number {
@@ -258,13 +653,124 @@ export class ProposalStore {
           created_at
         );
 
+    `);
+    this.migrateProposalTable();
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS proposal_gate_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        attempt_ordinal INTEGER NOT NULL CHECK(attempt_ordinal > 0),
+        proposal_id TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        draft_content_hash TEXT NOT NULL,
+        gate_policy_fingerprint TEXT NOT NULL,
+        fence_token TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(
+          state IN ('running','completed','abandoned')
+        ),
+        verdict TEXT CHECK(
+          verdict IS NULL OR verdict IN ('passed','failed','inconclusive')
+        ),
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        gate_result_hash TEXT,
+        gate_result_json TEXT,
+        UNIQUE(tenant_id, workspace_id, proposal_id, attempt_ordinal),
+        FOREIGN KEY(proposal_id) REFERENCES curation_proposals(proposal_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_proposal_gate_attempts_scope
+        ON proposal_gate_attempts(
+          tenant_id,
+          workspace_id,
+          proposal_id,
+          attempt_ordinal
+        );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_proposal_gate_attempt_running
+        ON proposal_gate_attempts(tenant_id, workspace_id, proposal_id)
+        WHERE state = 'running';
+      CREATE TABLE IF NOT EXISTS proposal_gate_evidence (
+        attempt_id TEXT NOT NULL,
+        evidence_kind TEXT NOT NULL CHECK(
+          evidence_kind IN (
+            'materialization_plan',
+            'containment_probe',
+            'containment_probe_final',
+            'candidate_materialization',
+            'base_snapshot_initial',
+            'base_snapshot_final',
+            'static_validation',
+            'sql_regression',
+            'paired_replay'
+          )
+        ),
+        content_hash TEXT NOT NULL,
+        artifact_json TEXT NOT NULL,
+        PRIMARY KEY(attempt_id, evidence_kind),
+        FOREIGN KEY(attempt_id) REFERENCES proposal_gate_attempts(attempt_id)
+      );
+    `);
+  }
+
+  private migrateProposalTable(): void {
+    const current = this.db.prepare(`
+      SELECT sql
+      FROM sqlite_master
+      WHERE type = 'table' AND name = 'curation_proposals'
+    `).get() as {sql: string} | undefined;
+    if (!current) {
+      this.createProposalTable();
+      return;
+    }
+    const supportsGated = /'gated'/i.test(current.sql);
+    const supportsFutureM8States =
+      /'accepted'|'applied'|'rejected'|'reverted'/i.test(current.sql);
+    if (supportsGated && !supportsFutureM8States) {
+      this.db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_curation_proposals_scope
+          ON curation_proposals(tenant_id, workspace_id, created_at);
+      `);
+      return;
+    }
+    this.db.transaction(() => {
+      const unsupported = this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM curation_proposals
+        WHERE status NOT IN ('draft','gated')
+      `).get() as {count: number};
+      if (unsupported.count > 0) {
+        throw new Error('curation_proposal_future_status_migration_blocked');
+      }
+      this.db.exec(`
+        DROP INDEX IF EXISTS idx_curation_proposals_scope;
+        ALTER TABLE curation_proposals
+          RENAME TO curation_proposals_m6;
+      `);
+      this.createProposalTable();
+      this.db.exec(`
+        INSERT INTO curation_proposals (
+          proposal_id, tenant_id, workspace_id, revision,
+          idempotency_key, status, proposal_json, created_at
+        )
+        SELECT
+          proposal_id, tenant_id, workspace_id, revision,
+          idempotency_key, status, proposal_json, created_at
+        FROM curation_proposals_m6;
+        DROP TABLE curation_proposals_m6;
+      `);
+    })();
+  }
+
+  private createProposalTable(): void {
+    this.db.exec(`
       CREATE TABLE IF NOT EXISTS curation_proposals (
         proposal_id TEXT PRIMARY KEY,
         tenant_id TEXT NOT NULL,
         workspace_id TEXT NOT NULL,
         revision INTEGER NOT NULL,
         idempotency_key TEXT NOT NULL,
-        status TEXT NOT NULL CHECK(status = 'draft'),
+        status TEXT NOT NULL CHECK(
+          status IN ('draft','gated')
+        ),
         proposal_json TEXT NOT NULL,
         created_at TEXT NOT NULL,
         UNIQUE(tenant_id, workspace_id, idempotency_key)
@@ -494,6 +1000,399 @@ export class ProposalStore {
       ...extra,
     });
   }
+}
+
+type ParsedPlan = ReturnType<typeof parseProposalMaterializationPlanV1>;
+type ParsedCandidate =
+  ReturnType<typeof parseProposalCandidateMaterializationV1>;
+type ParsedSql = ReturnType<typeof parseProposalSqlRegressionProofV1>;
+type ParsedPaired = ReturnType<typeof parseProposalPairedReplayProofV1>;
+
+interface ValidatedGateEvidence {
+  plan?: ParsedPlan;
+  containment?: ProposalContainmentProbeV1;
+  finalContainment?: ProposalContainmentProbeV1;
+  candidate?: ParsedCandidate;
+  initialBase?: ProposalGateSnapshotEvidenceV1;
+  finalBase?: ProposalGateSnapshotEvidenceV1;
+  staticProof?: ProposalStaticValidationProofV1;
+  sqlProof?: ParsedSql;
+  pairedProof?: ParsedPaired;
+}
+
+function assertTrustedGateEvidence(
+  evidence: Map<ProposalGateEvidenceKind, unknown>,
+  trusted: {
+    sqlRegressionProof?: ProposalSqlRegressionProofV1;
+    pairedReplayProof?: ProposalPairedReplayProofV1;
+  } | undefined,
+): void {
+  const storedSql = evidence.get('sql_regression') as ParsedSql | undefined;
+  if (storedSql) {
+    if (
+      !trusted?.sqlRegressionProof
+      || storedSql.contentHash !== trusted.sqlRegressionProof.contentHash
+    ) {
+      throw new Error('curation_gate_sql_evidence_not_authoritative');
+    }
+    assertTrustedProposalSqlRegressionProof(trusted.sqlRegressionProof);
+  } else if (trusted?.sqlRegressionProof) {
+    throw new Error('curation_gate_sql_evidence_not_recorded');
+  }
+
+  const storedPaired = evidence.get('paired_replay') as
+    ParsedPaired | undefined;
+  if (storedPaired) {
+    if (
+      !trusted?.pairedReplayProof
+      || storedPaired.contentHash !== trusted.pairedReplayProof.contentHash
+    ) {
+      throw new Error('curation_gate_paired_evidence_not_authoritative');
+    }
+    assertTrustedProposalPairedReplayProof(trusted.pairedReplayProof);
+  } else if (trusted?.pairedReplayProof) {
+    throw new Error('curation_gate_paired_evidence_not_recorded');
+  }
+}
+
+function parseGateEvidence(
+  kind: ProposalGateEvidenceKind,
+  value: unknown,
+): unknown {
+  switch (kind) {
+    case 'materialization_plan':
+      return parseProposalMaterializationPlanV1(value);
+    case 'containment_probe':
+    case 'containment_probe_final':
+      return parseProposalContainmentProbeV1(value);
+    case 'candidate_materialization':
+      return parseProposalCandidateMaterializationV1(value);
+    case 'base_snapshot_initial':
+    case 'base_snapshot_final':
+      return parseSnapshotEvidence(value);
+    case 'static_validation':
+      return parseProposalStaticValidationProofV1(value);
+    case 'sql_regression':
+      return parseProposalSqlRegressionProofV1(value);
+    case 'paired_replay':
+      return parseProposalPairedReplayProofV1(value);
+  }
+}
+
+function parseSnapshotEvidence(
+  value: unknown,
+): ProposalGateSnapshotEvidenceV1 {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('curation_gate_snapshot_evidence_invalid');
+  }
+  const evidence = value as ProposalGateSnapshotEvidenceV1;
+  const snapshot = evidence.snapshot;
+  if (
+    evidence.schemaVersion !== 1
+    || Object.keys(evidence).some(key =>
+      !['schemaVersion', 'snapshot', 'snapshotHash', 'contentHash'].includes(
+        key,
+      ))
+    || !snapshot
+    || typeof snapshot !== 'object'
+    || Array.isArray(snapshot)
+    || Object.keys(snapshot).some(key => ![
+      'targetId',
+      'contentHash',
+      'content',
+      'anchorContent',
+      'registryFingerprint',
+      'skillRegistryFingerprint',
+      'strategyRegistryFingerprint',
+      'overlayGeneration',
+    ].includes(key))
+    || !snapshot.targetId?.trim()
+    || (
+      snapshot.content !== undefined
+      && typeof snapshot.content !== 'string'
+    )
+    || (
+      snapshot.anchorContent !== undefined
+      && typeof snapshot.anchorContent !== 'string'
+    )
+    || !snapshot.overlayGeneration?.trim()
+    || [
+      snapshot.contentHash,
+      snapshot.registryFingerprint,
+      snapshot.skillRegistryFingerprint,
+      snapshot.strategyRegistryFingerprint,
+      evidence.snapshotHash,
+      evidence.contentHash,
+    ].some(hash => !/^[0-9a-f]{64}$/.test(hash))
+    || evidence.snapshotHash !== canonicalContentHash(snapshot)
+  ) {
+    throw new Error('curation_gate_snapshot_evidence_invalid');
+  }
+  const withoutHash = {
+    schemaVersion: 1 as const,
+    snapshot: immutableCanonicalSnapshot(snapshot),
+    snapshotHash: evidence.snapshotHash,
+  };
+  if (canonicalContentHash(withoutHash) !== evidence.contentHash) {
+    throw new Error('curation_gate_snapshot_evidence_hash_mismatch');
+  }
+  return immutableCanonicalSnapshot({
+    ...withoutHash,
+    contentHash: evidence.contentHash,
+  });
+}
+
+export function createProposalGateSnapshotEvidenceV1(
+  snapshot: ProposalBaseSnapshotV1,
+): ProposalGateSnapshotEvidenceV1 {
+  const withoutHash = {
+    schemaVersion: 1 as const,
+    snapshot: immutableCanonicalSnapshot(snapshot),
+    snapshotHash: canonicalContentHash(snapshot),
+  };
+  return parseSnapshotEvidence({
+    ...withoutHash,
+    contentHash: canonicalContentHash(withoutHash),
+  });
+}
+
+function evidenceContentHash(value: unknown): string {
+  if (
+    !value
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || !('contentHash' in value)
+    || typeof value.contentHash !== 'string'
+    || !/^[0-9a-f]{64}$/.test(value.contentHash)
+  ) {
+    throw new Error('curation_gate_evidence_hash_invalid');
+  }
+  return value.contentHash;
+}
+
+function validateGateEvidenceBundle(input: {
+  proposal: CurationProposalV1;
+  session: ProposalGateAttemptSessionV1;
+  checks: ProposalGateCheckV1[];
+  evidence: Map<ProposalGateEvidenceKind, unknown>;
+}): ValidatedGateEvidence {
+  const get = <T>(kind: ProposalGateEvidenceKind): T | undefined =>
+    input.evidence.get(kind) as T | undefined;
+  const bundle: ValidatedGateEvidence = {
+    plan: get<ParsedPlan>('materialization_plan'),
+    containment: get<ProposalContainmentProbeV1>('containment_probe'),
+    finalContainment:
+      get<ProposalContainmentProbeV1>('containment_probe_final'),
+    candidate: get<ParsedCandidate>('candidate_materialization'),
+    initialBase:
+      get<ProposalGateSnapshotEvidenceV1>('base_snapshot_initial'),
+    finalBase: get<ProposalGateSnapshotEvidenceV1>('base_snapshot_final'),
+    staticProof:
+      get<ProposalStaticValidationProofV1>('static_validation'),
+    sqlProof: get<ParsedSql>('sql_regression'),
+    pairedProof: get<ParsedPaired>('paired_replay'),
+  };
+  const allowedHashes = new Set([
+    input.session.draftContentHash,
+    ...[...input.evidence.values()].map(evidenceContentHash),
+  ]);
+  if (
+    input.checks.length !== 8
+    || input.checks.some(check =>
+      check.evidenceContentHashes.some(hash => !allowedHashes.has(hash)))
+  ) {
+    throw new Error('curation_gate_evidence_reference_untrusted');
+  }
+  const passed = (index: number) =>
+    input.checks[index]?.verdict === 'passed';
+  if (
+    passed(1)
+    && (
+      !bundle.plan
+      || !bundle.containment
+      || bundle.containment.verdict !== 'passed'
+      || bundle.plan.proposalId !== input.proposal.proposalId
+      || bundle.plan.draftContentHash !== input.session.draftContentHash
+      || bundle.containment.planContentHash !== bundle.plan.contentHash
+      || bundle.containment.materializationRegistryContentHash
+        !== bundle.plan.materializationRegistryContentHash
+    )
+  ) {
+    throw new Error('curation_gate_containment_evidence_invalid');
+  }
+  if (
+    passed(4)
+    && (
+      !bundle.candidate
+      || !bundle.plan
+      || bundle.candidate.proposalId !== input.proposal.proposalId
+      || bundle.candidate.draftContentHash
+        !== input.session.draftContentHash
+      || bundle.candidate.planContentHash !== bundle.plan.contentHash
+    )
+  ) {
+    throw new Error('curation_gate_candidate_evidence_invalid');
+  }
+  if (
+    passed(5)
+    && (
+      !bundle.initialBase
+      || !bundle.finalBase
+      || !bundle.containment
+      || !bundle.finalContainment
+      || bundle.initialBase.snapshotHash !== bundle.finalBase.snapshotHash
+      || bundle.containment.contentHash
+        !== bundle.finalContainment.contentHash
+      || bundle.initialBase.snapshot.targetId
+        !== input.proposal.deltas[0].targetId
+      || bundle.initialBase.snapshot.contentHash
+        !== input.proposal.deltas[0].baseContentHash
+      || bundle.initialBase.snapshot.registryFingerprint
+        !== input.proposal.expectedRegistryFingerprint
+      || bundle.initialBase.snapshot.overlayGeneration
+        !== input.proposal.expectedOverlayGeneration
+    )
+  ) {
+    throw new Error('curation_gate_optimistic_evidence_invalid');
+  }
+  if (
+    passed(6)
+    && (
+      !bundle.staticProof
+      || !bundle.candidate
+      || !bundle.initialBase
+      || bundle.staticProof.verdict !== 'passed'
+      || bundle.staticProof.proposalId !== input.proposal.proposalId
+      || bundle.staticProof.candidateMaterializationContentHash
+        !== bundle.candidate.contentHash
+      || bundle.staticProof.gateAttemptId !== input.session.attemptId
+      || bundle.staticProof.gateAttemptOrdinal !== input.session.ordinal
+      || bundle.staticProof.gatePolicyFingerprint
+        !== input.session.gatePolicyFingerprint
+      || bundle.staticProof.baseSkillRegistryFingerprint
+        !== bundle.initialBase.snapshot.skillRegistryFingerprint
+      || bundle.staticProof.baseStrategyRegistryFingerprint
+        !== bundle.initialBase.snapshot.strategyRegistryFingerprint
+    )
+  ) {
+    throw new Error('curation_gate_static_evidence_invalid');
+  }
+  if (
+    bundle.staticProof?.sqlRegressionProof
+    && (
+      !bundle.sqlProof
+      || bundle.sqlProof.contentHash
+        !== bundle.staticProof.sqlRegressionProof.contentHash
+      || bundle.sqlProof.gateAttemptId !== input.session.attemptId
+      || bundle.sqlProof.gateAttemptOrdinal !== input.session.ordinal
+      || bundle.sqlProof.gatePolicyFingerprint
+        !== input.session.gatePolicyFingerprint
+    )
+  ) {
+    throw new Error('curation_gate_sql_evidence_invalid');
+  }
+  if (
+    passed(7)
+    && (
+      !bundle.pairedProof
+      || !bundle.candidate
+      || bundle.pairedProof.verdict !== 'passed'
+      || bundle.pairedProof.proposalId !== input.proposal.proposalId
+      || bundle.pairedProof.draftContentHash
+        !== input.session.draftContentHash
+      || bundle.pairedProof.candidateMaterializationContentHash
+        !== bundle.candidate.contentHash
+      || bundle.pairedProof.candidateContentHash
+        !== bundle.candidate.contentHash
+      || bundle.pairedProof.gateAttemptId !== input.session.attemptId
+      || bundle.pairedProof.gateAttemptOrdinal !== input.session.ordinal
+      || bundle.pairedProof.gatePolicyFingerprint
+        !== input.session.gatePolicyFingerprint
+    )
+  ) {
+    throw new Error('curation_gate_paired_evidence_invalid');
+  }
+  return bundle;
+}
+
+function createGateResultFromEvidence(input: {
+  proposal: CurationProposalV1;
+  session: ProposalGateAttemptSessionV1;
+  checks: ProposalGateCheckV1[];
+  evidence: ValidatedGateEvidence;
+  completedAt: string;
+}): ProposalGateResultV1 {
+  const overallVerdict = input.checks.every(check =>
+    check.verdict === 'passed')
+    ? 'passed'
+    : input.checks.some(check => check.verdict === 'failed')
+      ? 'failed'
+      : 'inconclusive';
+  return createProposalGateResultV1({
+    proposalId: input.proposal.proposalId,
+    gateAttemptId: input.session.attemptId,
+    gateAttemptOrdinal: input.session.ordinal,
+    gatePolicyFingerprint: input.session.gatePolicyFingerprint,
+    draftRevision: 1,
+    gatedRevision: 2,
+    draftContentHash: input.session.draftContentHash,
+    startedAt: input.session.startedAt,
+    completedAt: input.completedAt,
+    checks: input.checks,
+    overallVerdict,
+    pairedGateVerdict: input.checks[7].verdict,
+    ...(input.evidence.plan
+      ? {materializationPlanContentHash: input.evidence.plan.contentHash}
+      : {}),
+    ...(input.evidence.candidate
+      ? {
+          candidateMaterializationContentHash:
+            input.evidence.candidate.contentHash,
+        }
+      : {}),
+    ...(input.evidence.sqlProof
+      ? {
+          sqlRegressionProofContentHash:
+            input.evidence.sqlProof.contentHash,
+        }
+      : {}),
+    ...(input.evidence.pairedProof
+      ? {
+          pairedReplayProofContentHash:
+            input.evidence.pairedProof.contentHash,
+        }
+      : {}),
+  });
+}
+
+function gateAttemptRecord(
+  row: GateAttemptRow,
+): ProposalGateAttemptRecordV1 {
+  return immutableCanonicalSnapshot({
+    session: {
+      schemaVersion: 1 as const,
+      attemptId: row.attempt_id,
+      ordinal: row.attempt_ordinal,
+      scope: {
+        tenantId: row.tenant_id,
+        workspaceId: row.workspace_id,
+      },
+      proposalId: row.proposal_id,
+      draftContentHash: row.draft_content_hash,
+      gatePolicyFingerprint: row.gate_policy_fingerprint,
+      startedAt: row.started_at,
+    },
+    state: row.state,
+    ...(row.verdict ? {verdict: row.verdict} : {}),
+    ...(row.gate_result_json
+      ? {
+          gateResult: parseProposalGateResultV1(
+            JSON.parse(row.gate_result_json),
+          ),
+        }
+      : {}),
+    ...(row.completed_at ? {completedAt: row.completed_at} : {}),
+  });
 }
 
 function assertProposalMatchesCandidate(

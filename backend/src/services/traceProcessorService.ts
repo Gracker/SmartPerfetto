@@ -8,7 +8,10 @@ import fs from 'fs';
 import path from 'path';
 import { uuidv4 } from '../utils/uuid';
 import { WorkingTraceProcessor, TraceProcessorFactory } from './workingTraceProcessor';
-import type { TraceProcessorQueryOptions } from './traceProcessorSqlWorker';
+import type {
+  TraceProcessorBoundedQueryOptions,
+  TraceProcessorQueryOptions,
+} from './traceProcessorSqlWorker';
 import {
   getTraceProcessorLeaseStore,
   type TraceProcessorLeaseMode,
@@ -80,6 +83,13 @@ export type TraceProcessorServiceQueryOptions = TraceProcessorQueryOptions & {
   leaseMode?: TraceProcessorLeaseMode | string;
   leaseScope?: EnterpriseRepositoryScope;
 };
+
+export type TraceProcessorServiceBoundedQueryOptions =
+  TraceProcessorBoundedQueryOptions & {
+    leaseId?: string;
+    leaseMode?: TraceProcessorLeaseMode | string;
+    leaseScope?: EnterpriseRepositoryScope;
+  };
 
 export interface TraceProcessorLeaseRestartPolicy {
   backoffMs?: number[];
@@ -259,6 +269,36 @@ export class TraceProcessorService extends EventEmitter {
     this.traces.set(input.id, traceInfo);
     this.emit('trace-initialized', traceInfo);
     return traceInfo;
+  }
+
+  /**
+   * Remove metadata for a trace registered from a managed external file.
+   * Unlike deleteTrace(), this never deletes the source file.
+   */
+  public unregisterStoredTrace(
+    traceId: string,
+    expectedFilePath: string,
+  ): boolean {
+    const trace = this.traces.get(traceId);
+    if (!trace) return false;
+    if (
+      path.resolve(this.getTraceFilePath(traceId))
+      !== path.resolve(expectedFilePath)
+    ) {
+      throw new Error(
+        `Trace ${traceId} is registered from an unexpected path`,
+      );
+    }
+    if ([...this.processors.values()].some(
+      processor => processor.traceId === traceId,
+    )) {
+      throw new Error(
+        `Trace ${traceId} still has an active processor`,
+      );
+    }
+    this.traces.delete(traceId);
+    this.emit('trace-unregistered', traceId);
+    return true;
   }
 
   /**
@@ -515,6 +555,37 @@ export class TraceProcessorService extends EventEmitter {
       const processor = await this.processorForQuery(traceId, options);
       const { leaseId: _leaseId, leaseMode: _leaseMode, leaseScope: _leaseScope, ...queryOptions } = options;
       const result = await processor.query(sql, queryOptions);
+      recordRunManifestSqlStatements(sql, !result.error);
+      return result;
+    } catch (error) {
+      recordRunManifestSqlStatements(sql, false);
+      throw error;
+    }
+  }
+
+  public async queryBounded(
+    traceId: string,
+    sql: string,
+    options: TraceProcessorServiceBoundedQueryOptions,
+  ): Promise<QueryResult> {
+    try {
+      const processor = await this.processorForQuery(traceId, options);
+      const boundedProcessor = processor as TraceProcessor & {
+        queryBounded?: (
+          boundedSql: string,
+          boundedOptions: TraceProcessorBoundedQueryOptions,
+        ) => Promise<QueryResult>;
+      };
+      if (!boundedProcessor.queryBounded) {
+        throw new Error('bounded_query_not_supported_by_trace_processor');
+      }
+      const {
+        leaseId: _leaseId,
+        leaseMode: _leaseMode,
+        leaseScope: _leaseScope,
+        ...queryOptions
+      } = options;
+      const result = await boundedProcessor.queryBounded(sql, queryOptions);
       recordRunManifestSqlStatements(sql, !result.error);
       return result;
     } catch (error) {

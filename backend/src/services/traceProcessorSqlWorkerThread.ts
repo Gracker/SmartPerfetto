@@ -11,6 +11,7 @@ interface WorkerQueryMessage {
   port: number;
   body: Uint8Array;
   timeoutMs: number;
+  maxResponseBytes?: number;
   cancel?: false;
 }
 
@@ -39,6 +40,7 @@ parentPort.on('message', (message: WorkerQueryMessage | WorkerCancelMessage) => 
         port: message.port,
         body: Buffer.from(message.body),
         timeoutMs: message.timeoutMs,
+        maxResponseBytes: message.maxResponseBytes,
         signal: controller.signal,
       });
       parentPort!.postMessage({

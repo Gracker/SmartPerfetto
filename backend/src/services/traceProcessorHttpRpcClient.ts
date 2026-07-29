@@ -19,6 +19,7 @@ export interface TraceProcessorHttpRpcRequest {
   body: Buffer;
   timeoutMs: number;
   signal?: AbortSignal;
+  maxResponseBytes?: number;
 }
 
 export interface TraceProcessorHttpRpcSqlRequest {
@@ -40,6 +41,15 @@ export async function executeTraceProcessorHttpRpcRaw(
   request: TraceProcessorHttpRpcRequest,
 ): Promise<Buffer> {
   throwIfTraceProcessorQueryCancelled(request.signal);
+  if (
+    request.maxResponseBytes !== undefined
+    && (
+      !Number.isSafeInteger(request.maxResponseBytes)
+      || request.maxResponseBytes < 0
+    )
+  ) {
+    throw new Error('trace_processor_response_budget_invalid');
+  }
   const hostname = request.hostname || '127.0.0.1';
   const path = request.path || '/query';
 
@@ -90,7 +100,21 @@ export async function executeTraceProcessorHttpRpcRaw(
       timeout: request.timeoutMs,
     }, (res) => {
       const chunks: Buffer[] = [];
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      let responseBytes = 0;
+      res.on('data', chunk => {
+        if (settled) return;
+        const buffer = Buffer.from(chunk);
+        responseBytes += buffer.byteLength;
+        if (
+          request.maxResponseBytes !== undefined
+          && responseBytes > request.maxResponseBytes
+        ) {
+          req?.destroy();
+          finish(new Error('trace_processor_response_budget_exceeded'));
+          return;
+        }
+        chunks.push(buffer);
+      });
       res.on('end', () => {
         const responseBody = Buffer.concat(chunks);
         if (res.statusCode !== 200) {

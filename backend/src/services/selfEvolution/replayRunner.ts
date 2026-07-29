@@ -14,6 +14,7 @@ import {
   EvalReplayRunStore,
   type ReplayTaskRecordV1,
   type ReplayTaskRole,
+  type ReplayTreatmentBindingV1,
   type ReplayTaskUsageV1,
 } from './evalReplayRunStore';
 import {
@@ -54,6 +55,7 @@ export interface ReplayExecutorInput {
   evalCase: EvalCaseV1;
   role: ReplayTaskRole;
   candidateId?: string;
+  treatmentBinding: ReplayTreatmentBindingV1;
   pinned: EvalPinnedEnvironmentV1;
   attempt: number;
   priorUsage: ReplayTaskUsageV1;
@@ -73,6 +75,7 @@ export interface PublishedReplayResult {
   score: EvalScoreV1;
   roleProof: EvaluationRoleProofV2;
   roleContract: EvaluationRoleInjectionContractV1;
+  treatmentBinding: ReplayTreatmentBindingV1;
   fullTreatmentContractHash: string;
 }
 
@@ -95,11 +98,13 @@ export interface ReplayResultPublisher {
     evalCase: EvalCaseV1;
     pinned: EvalPinnedEnvironmentV1;
     candidateId: string;
+    treatmentBinding: ReplayTreatmentBindingV1;
   }): Promise<{
     score: EvalScoreV1;
     environmentProof: EvaluationEnvironmentProofV1;
     roleProof: EvaluationRoleProofV2;
     roleContract: EvaluationRoleInjectionContractV1;
+    treatmentBinding: ReplayTreatmentBindingV1;
     fullTreatmentContractHash: string;
     resultRef: string;
   } | undefined>;
@@ -108,6 +113,7 @@ export interface ReplayResultPublisher {
     environmentProof: EvaluationEnvironmentProofV1;
     roleProof: EvaluationRoleProofV2;
     roleContract: EvaluationRoleInjectionContractV1;
+    treatmentBinding: ReplayTreatmentBindingV1;
     fullTreatmentContractHash: string;
     frozenArtifactsHash: string;
     executionFence: EvaluationPublicationFenceV1;
@@ -148,6 +154,7 @@ export interface ReplayRunInput {
   cases: EvalCaseV1[];
   pinned: EvalPinnedEnvironmentV1;
   candidateId: string;
+  treatmentBinding: ReplayTreatmentBindingV1;
 }
 
 export interface ReplayRunResult {
@@ -351,6 +358,7 @@ export class ReplayRunner {
       })),
       pinned: input.pinned,
       candidateId: input.candidateId,
+      treatmentBinding: input.treatmentBinding,
       executionPolicy: this.executionPolicy(),
       createdAt,
       absoluteDeadlineAt: deadline,
@@ -370,6 +378,7 @@ export class ReplayRunner {
         role: 'baseline',
         pinned: input.pinned,
         candidateId: input.candidateId,
+        treatmentBinding: input.treatmentBinding,
         absoluteDeadlineAt: deadline,
         now: this.now(),
       });
@@ -521,6 +530,7 @@ export class ReplayRunner {
           role: 'candidate',
           pinned: baseline.pinned,
           candidateId: baseline.candidateId,
+          treatmentBinding: baseline.treatmentBinding,
           absoluteDeadlineAt: baseline.absoluteDeadlineAt,
           ...(runnable
             ? {}
@@ -661,6 +671,7 @@ export class ReplayRunner {
         evalCase,
         pinned: task.pinned,
         candidateId: task.candidateId ?? '',
+        treatmentBinding: task.treatmentBinding,
       });
       if (
         settlePausingIfNeeded(task.usage)
@@ -731,6 +742,7 @@ export class ReplayRunner {
         evalCase,
         role: task.role,
         ...(task.candidateId ? {candidateId: task.candidateId} : {}),
+        treatmentBinding: task.treatmentBinding,
         pinned: task.pinned,
         attempt: task.attempt,
         priorUsage: task.usage,
@@ -743,6 +755,18 @@ export class ReplayRunner {
       }), controller.signal, this.abortTimeoutMs, () => {
         void requestExecutorAbort();
       });
+      if (
+        result.fullTreatmentContractHash
+          !== task.treatmentBinding.fullTreatmentContractHash
+        || result.roleProof.materialization.sourceCandidateContentHash
+          !== task.treatmentBinding.candidateContentHash
+        || result.roleProof.materialization.treatmentArtifactContentHash
+          !== task.treatmentBinding.treatmentArtifactContentHash
+        || result.roleProof.materialization.materializedInputHash
+          !== task.treatmentBinding.materializedInputHash
+      ) {
+        throw new Error('evaluation_executor_treatment_binding_mismatch');
+      }
       currentAttemptUsage = usageFromArtifacts(result.artifacts, task.usage);
       if (
         settlePausingIfNeeded(currentAttemptUsage)
@@ -771,6 +795,7 @@ export class ReplayRunner {
         environmentProof: result.environmentProof,
         roleProof: result.roleProof,
         roleContract: result.roleContract,
+        treatmentBinding: task.treatmentBinding,
         fullTreatmentContractHash: result.fullTreatmentContractHash,
         frozenArtifactsHash: scored.frozenArtifactsHash,
         executionFence: {

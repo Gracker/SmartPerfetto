@@ -71,7 +71,7 @@
     "trace:validate": "node ../Trace/tools/trace-corpus.cjs validate --check-generated",
     "trace:build": "node ../Trace/tools/trace-corpus.cjs build --check",
     "trace:materialize": "node ../Trace/tools/trace-corpus.cjs materialize",
-    "trace:test": "TP_PORT_MIN=9900 TP_PORT_MAX=9999 tsx tests/trace-corpus/trace_corpus_regression.ts",
+    "trace:test": "TP_PORT_MIN=9900 TP_PORT_MAX=9999 tsx tests/trace-corpus/trace_corpus_regression.ts && TP_PORT_MIN=9900 TP_PORT_MAX=9999 tsx tests/trace-corpus/proposal_sql_gate_regression.ts",
     "trace:sql-regression": "npm run trace:validate && npm run trace:materialize && npm run trace:test",
     "trace:regression": "npm run trace:validate && npm run trace:build && npm run trace:test",
     "test:state-timeline-regression": "TP_PORT_MIN=9800 TP_PORT_MAX=9899 tsx tests/skill-eval/state_timeline_regression.ts",

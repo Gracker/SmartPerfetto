@@ -516,12 +516,18 @@ describe('evaluation replay core', () => {
       return sealEvaluationExposureReceipt();
     });
     const commonBaseHash = 'e'.repeat(64);
+    const candidateContentHash = '5'.repeat(64);
+    const treatmentArtifactContentHash = '6'.repeat(64);
+    const materializedInputHash = '7'.repeat(64);
     const baselineProof = createEvaluationRoleProofV2({
       role: 'baseline',
       baseProof: baseProof('baseline'),
       contract: baselineContract,
       materialization: createEvaluationMaterializationProof({
         artifactId: 'baseline:candidate-a',
+        sourceCandidateContentHash: candidateContentHash,
+        treatmentArtifactContentHash,
+        materializedInputHash,
         baseRegistryContentHash: commonBaseHash,
         persistentOverlayGeneration: pinned.overlayGeneration,
         treatmentGeneration: 'evaluation:baseline',
@@ -538,6 +544,9 @@ describe('evaluation replay core', () => {
       contract: candidateContract,
       materialization: createEvaluationMaterializationProof({
         artifactId: 'candidate-a',
+        sourceCandidateContentHash: candidateContentHash,
+        treatmentArtifactContentHash,
+        materializedInputHash,
         baseRegistryContentHash: commonBaseHash,
         persistentOverlayGeneration: pinned.overlayGeneration,
         treatmentGeneration: 'evaluation:candidate',

@@ -21,6 +21,7 @@ import { getPerfettoStdlibModules, groupModulesByNamespace } from './perfettoStd
 import { readProcessRssBytes } from './processRss';
 import {
   TraceProcessorSqlWorker,
+  type TraceProcessorBoundedQueryOptions,
   type TraceProcessorQueryOptions,
 } from './traceProcessorSqlWorker';
 import {
@@ -848,6 +849,40 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
     logger.sql('TraceProcessor', sql);
     return this.enqueueHttpQuery(sql, options);
+  }
+
+  async queryBounded(
+    sql: string,
+    options: TraceProcessorBoundedQueryOptions,
+  ): Promise<QueryResult> {
+    throwIfTraceProcessorQueryCancelled(options.signal);
+    if (this.status !== 'ready') {
+      throw new Error(`Trace processor not ready (status: ${this.status})`);
+    }
+    if (!this.serverReady) {
+      throw new Error('HTTP server not ready');
+    }
+
+    if (!this._criticalModulesLoaded
+        && this._criticalModulesLoadFailures < WorkingTraceProcessor.MAX_STDLIB_LOAD_RETRIES
+        && !this._criticalModulesLoadPromise) {
+      this._criticalModulesLoadPromise = this._loadCriticalModulesSequentially();
+    }
+    if (this._criticalModulesLoadPromise) {
+      await raceWithTraceProcessorCancellation(this._criticalModulesLoadPromise, options.signal);
+    }
+    throwIfTraceProcessorQueryCancelled(options.signal);
+
+    logger.sql('TraceProcessor', sql);
+    this._activeQueries++;
+    try {
+      return await this.sqlWorker.queryBounded(sql, {
+        ...options,
+        timeoutMs: options.timeoutMs ?? traceProcessorConfig.queryTimeoutMs,
+      });
+    } finally {
+      this._activeQueries--;
+    }
   }
 
   async queryRaw(body: Buffer, options: TraceProcessorQueryOptions = {}): Promise<Buffer> {

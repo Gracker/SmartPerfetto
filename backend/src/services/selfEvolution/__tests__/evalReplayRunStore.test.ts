@@ -52,6 +52,12 @@ const pinned: EvalPinnedEnvironmentV1 = {
   overlayGeneration: 'builtin:registry',
 };
 const executionContractFingerprint = 'f'.repeat(64);
+const treatmentBinding = {
+  candidateContentHash: canonicalContentHash('candidate-content'),
+  treatmentArtifactContentHash: canonicalContentHash('treatment-artifact'),
+  materializedInputHash: canonicalContentHash('materialized-input'),
+  fullTreatmentContractHash: canonicalContentHash('full-treatment-contract'),
+};
 
 function putRunSpec(
   store: EvalReplayRunStore,
@@ -67,6 +73,7 @@ function putRunSpec(
     })),
     pinned,
     candidateId: 'candidate-a',
+    treatmentBinding,
     executionPolicy: {
       concurrency: 1,
       taskTimeoutMs: 100,
@@ -123,6 +130,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       caseId: 'case-a',
       role: 'candidate',
       candidateId: 'candidate-a',
+      treatmentBinding,
       pinned,
       absoluteDeadlineAt: 1_000,
       now: 0,
@@ -218,6 +226,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
           caseId: value.caseId,
           role: 'candidate',
           candidateId: spec.candidateId,
+          treatmentBinding,
           pinned,
           absoluteDeadlineAt: spec.absoluteDeadlineAt,
           now: 0,
@@ -301,6 +310,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [evalCase('case-retry')],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     });
 
     expect(priorTokens).toEqual([0, 7]);
@@ -333,6 +343,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [duplicate, duplicate],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     })).rejects.toThrow('evaluation_cases_scope_or_identity_invalid');
     await expect(runner.run({
       scope,
@@ -342,6 +353,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       }],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     })).rejects.toThrow('evaluation_cases_scope_or_identity_invalid');
     store.close();
   });
@@ -381,6 +393,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [evalCase('case-provider'), evalCase('case-trace')],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     });
     expect(maximum).toBeLessThanOrEqual(2);
     expect(result.tasks).toHaveLength(4);
@@ -422,6 +435,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [evalCase('case-timeout')],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     });
     expect(new Set(result.tasks.map(task => task.inconclusiveReason)))
       .toEqual(new Set([
@@ -480,6 +494,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [evalCase('case-pause')],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     });
     await new Promise(resolve => setTimeout(resolve, 5));
     const runId = store.list(scope)[0].runId;
@@ -547,6 +562,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [evalCase('case-unconfirmed-pause')],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     });
     await new Promise(resolve => setTimeout(resolve, 5));
     const runId = store.list(scope)[0].runId;
@@ -594,6 +610,7 @@ describe('EvalReplayRunStore and ReplayRunner', () => {
       cases: [evalCase('case-resolver')],
       pinned,
       candidateId: 'candidate-a',
+      treatmentBinding,
     });
     await new Promise(resolve => setTimeout(resolve, 5));
     const runId = store.list(scope)[0].runId;

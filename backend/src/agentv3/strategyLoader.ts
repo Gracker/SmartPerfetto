@@ -718,7 +718,7 @@ function parseDetailContribution(
   };
 }
 
-function parseStrategyContribution(
+export function parseStrategyContribution(
   value: unknown,
 ): StrategyRegistryContribution {
   if (

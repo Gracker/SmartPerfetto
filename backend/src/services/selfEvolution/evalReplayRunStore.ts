@@ -38,6 +38,18 @@ export interface ReplayTaskUsageV1 {
   traceProcessorCpuMs: number;
 }
 
+/**
+ * Immutable content binding for the candidate actually injected by a replay.
+ * Keeping this on both the run spec and every task prevents a task/result from
+ * being detached from the proposal materialization it is supposed to test.
+ */
+export interface ReplayTreatmentBindingV1 {
+  candidateContentHash: string;
+  treatmentArtifactContentHash: string;
+  materializedInputHash: string;
+  fullTreatmentContractHash: string;
+}
+
 export interface ReplayTaskRecordV1 {
   schemaVersion: 1;
   taskId: string;
@@ -48,6 +60,7 @@ export interface ReplayTaskRecordV1 {
   role: ReplayTaskRole;
   pinned: EvalPinnedEnvironmentV1;
   candidateId?: string;
+  treatmentBinding: ReplayTreatmentBindingV1;
   state: ReplayTaskState;
   attempt: number;
   executionToken: string | null;
@@ -74,6 +87,7 @@ export interface ReplayRunSpecV1 {
   }>;
   pinned: EvalPinnedEnvironmentV1;
   candidateId: string;
+  treatmentBinding: ReplayTreatmentBindingV1;
   executionPolicy: {
     concurrency: number;
     taskTimeoutMs: number;
@@ -135,6 +149,32 @@ function contentHash(
   return canonicalContentHash(value);
 }
 
+export function parseReplayTreatmentBindingV1(
+  value: ReplayTreatmentBindingV1,
+): ReplayTreatmentBindingV1 {
+  if (
+    !value
+    || typeof value !== 'object'
+    || Array.isArray(value)
+    || Object.keys(value).some(key => ![
+      'candidateContentHash',
+      'treatmentArtifactContentHash',
+      'materializedInputHash',
+      'fullTreatmentContractHash',
+    ].includes(key))
+    || Object.values(value).some(hash =>
+      typeof hash !== 'string' || !/^[0-9a-f]{64}$/.test(hash))
+  ) {
+    throw new Error('eval_replay_treatment_binding_invalid');
+  }
+  return immutableCanonicalSnapshot({
+    candidateContentHash: value.candidateContentHash,
+    treatmentArtifactContentHash: value.treatmentArtifactContentHash,
+    materializedInputHash: value.materializedInputHash,
+    fullTreatmentContractHash: value.fullTreatmentContractHash,
+  });
+}
+
 function snapshotTask(
   value: Omit<ReplayTaskRecordV1, 'contentHash'>,
 ): ReplayTaskRecordV1 {
@@ -161,6 +201,7 @@ function parseTask(value: unknown): ReplayTaskRecordV1 {
     'role',
     'pinned',
     'candidateId',
+    'treatmentBinding',
     'state',
     'attempt',
     'executionToken',
@@ -187,6 +228,7 @@ function parseTask(value: unknown): ReplayTaskRecordV1 {
   }
   evalContractTesting.parseScope(task.scope);
   evalContractTesting.parsePinned(task.pinned);
+  parseReplayTreatmentBindingV1(task.treatmentBinding);
   const strings = [
     task.taskId,
     task.runId,
@@ -282,6 +324,7 @@ function normalizeRunSpec(
   if (
     !value.runId.trim()
     || !value.candidateId.trim()
+    || !value.treatmentBinding
     || caseFingerprints.length === 0
     || new Set(caseFingerprints.map(entry => entry.caseId)).size
       !== caseFingerprints.length
@@ -320,6 +363,7 @@ function normalizeRunSpec(
     caseFingerprints,
     pinned: evalContractTesting.parsePinned(value.pinned),
     candidateId: value.candidateId,
+    treatmentBinding: parseReplayTreatmentBindingV1(value.treatmentBinding),
     executionPolicy: {
       concurrency: policy.concurrency,
       taskTimeoutMs: policy.taskTimeoutMs,
@@ -340,7 +384,7 @@ function normalizeRunSpec(
   });
 }
 
-function parseRunSpec(value: unknown): ReplayRunSpecV1 {
+export function parseReplayRunSpecV1(value: unknown): ReplayRunSpecV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('eval_replay_run_spec_invalid');
   }
@@ -351,6 +395,7 @@ function parseRunSpec(value: unknown): ReplayRunSpecV1 {
     caseFingerprints: spec.caseFingerprints,
     pinned: spec.pinned,
     candidateId: spec.candidateId,
+    treatmentBinding: spec.treatmentBinding,
     executionPolicy: spec.executionPolicy,
     createdAt: spec.createdAt,
     absoluteDeadlineAt: spec.absoluteDeadlineAt,
@@ -364,6 +409,7 @@ function parseRunSpec(value: unknown): ReplayRunSpecV1 {
       'caseFingerprints',
       'pinned',
       'candidateId',
+      'treatmentBinding',
       'executionPolicy',
       'createdAt',
       'absoluteDeadlineAt',
@@ -416,7 +462,7 @@ export class EvalReplayRunStore {
         spec.runId,
       ) as ReplayRunSpecRow | undefined;
       if (existing) {
-        const parsed = parseRunSpec(JSON.parse(existing.spec_json));
+        const parsed = parseReplayRunSpecV1(JSON.parse(existing.spec_json));
         if (parsed.contentHash !== spec.contentHash) {
           throw new Error('eval_replay_run_spec_conflict');
         }
@@ -442,7 +488,7 @@ export class EvalReplayRunStore {
     const key = `${scopeKey(spec.scope)}\0${spec.runId}`;
     const existing = this.ephemeralRunSpecs.get(key);
     if (existing) {
-      const parsed = parseRunSpec(JSON.parse(existing));
+      const parsed = parseReplayRunSpecV1(JSON.parse(existing));
       if (parsed.contentHash !== spec.contentHash) {
         throw new Error('eval_replay_run_spec_conflict');
       }
@@ -464,12 +510,12 @@ export class EvalReplayRunStore {
       `).get(scope.tenantId, scope.workspaceId, runId) as
         | ReplayRunSpecRow
         | undefined;
-      return row ? parseRunSpec(JSON.parse(row.spec_json)) : undefined;
+    return row ? parseReplayRunSpecV1(JSON.parse(row.spec_json)) : undefined;
     }
     const payload = this.ephemeralRunSpecs.get(
       `${scopeKey(scope)}\0${runId}`,
     );
-    return payload ? parseRunSpec(JSON.parse(payload)) : undefined;
+    return payload ? parseReplayRunSpecV1(JSON.parse(payload)) : undefined;
   }
 
   enqueue(input: {
@@ -480,6 +526,7 @@ export class EvalReplayRunStore {
     role: ReplayTaskRole;
     pinned: EvalPinnedEnvironmentV1;
     candidateId?: string;
+    treatmentBinding: ReplayTreatmentBindingV1;
     absoluteDeadlineAt: number;
     initialInconclusiveReason?: string;
     now?: number;
@@ -508,6 +555,10 @@ export class EvalReplayRunStore {
       || canonicalJsonString(runSpec.pinned)
         !== canonicalJsonString(input.pinned)
       || runSpec.candidateId !== input.candidateId
+      || canonicalJsonString(runSpec.treatmentBinding)
+        !== canonicalJsonString(
+          parseReplayTreatmentBindingV1(input.treatmentBinding),
+        )
       || runSpec.absoluteDeadlineAt !== input.absoluteDeadlineAt
       || !runSpec.caseFingerprints.some(entry => entry.caseId === input.caseId)
     ) {
@@ -528,6 +579,7 @@ export class EvalReplayRunStore {
       role: input.role,
       pinned: immutableCanonicalSnapshot(input.pinned),
       ...(input.candidateId ? {candidateId: input.candidateId} : {}),
+      treatmentBinding: parseReplayTreatmentBindingV1(input.treatmentBinding),
       state: input.initialInconclusiveReason ? 'inconclusive' : 'queued',
       attempt: 0,
       executionToken: null,
@@ -684,15 +736,18 @@ export class EvalReplayRunStore {
     now?: number;
   }): ReplayTaskRecordV1 {
     const current = this.requireOwned(input);
+    const {
+      inconclusiveReason: _inconclusiveReason,
+      ...active
+    } = current;
     return this.compareAndSwap(current, {
-      ...current,
+      ...active,
       state: 'completed',
       executionToken: null,
       completedExecutionToken: input.executionToken,
       leaseExpiresAt: null,
       usage: immutableCanonicalSnapshot(input.usage),
       resultRef: input.resultRef,
-      inconclusiveReason: undefined,
       updatedAt: input.now ?? Date.now(),
     });
   }
