@@ -217,6 +217,35 @@ export interface StrategyRegistryContribution {
   operations: StrategyRegistryContributionOperation[];
 }
 
+export function buildStrategyRegistrySnapshotFromDefinitions(input: {
+  definitions: readonly StrategyDefinition[];
+  overlayGeneration: string;
+}): ReadonlyStrategyRegistrySnapshot {
+  const orderedDefinitions = input.definitions
+    .map(cloneStrategyDefinition)
+    .sort((left, right) => left.scene.localeCompare(right.scene));
+  const definitions = new Map(
+    orderedDefinitions.map(definition => [definition.scene, definition]),
+  );
+  if (definitions.size !== orderedDefinitions.length) {
+    throw new Error('strategy_snapshot_duplicate_scene');
+  }
+  const registryFingerprint = canonicalContentHash(
+    orderedDefinitions.map(definition =>
+      strategyFingerprintPayload(definition)),
+  );
+  return Object.freeze({
+    registryFingerprint,
+    overlayGeneration: input.overlayGeneration,
+    getStrategy(scene: string): StrategyDefinition | undefined {
+      return definitions.get(scene);
+    },
+    getAllStrategies(): StrategyDefinition[] {
+      return [...orderedDefinitions];
+    },
+  });
+}
+
 function parseExpectedCalls(value: unknown): ExpectedCall[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -894,21 +923,9 @@ export function buildStrategyRegistrySnapshot(input: {
     }));
   }
 
-  const orderedDefinitions = [...definitions.values()]
-    .sort((left, right) => left.scene.localeCompare(right.scene));
-  const registryFingerprint = canonicalContentHash(
-    orderedDefinitions.map(definition =>
-      strategyFingerprintPayload(definition)),
-  );
-  return Object.freeze({
-    registryFingerprint,
+  return buildStrategyRegistrySnapshotFromDefinitions({
+    definitions: [...definitions.values()],
     overlayGeneration: input.overlayGeneration,
-    getStrategy(scene: string): StrategyDefinition | undefined {
-      return definitions.get(scene);
-    },
-    getAllStrategies(): StrategyDefinition[] {
-      return [...orderedDefinitions];
-    },
   });
 }
 

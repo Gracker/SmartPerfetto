@@ -50,6 +50,10 @@ import {
 import {withFilesystemRegistryLockAsync} from '../services/filesystemRegistryLock';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
+import {
+  isEvaluationInjectionAllowed,
+  registerEvaluationInjection,
+} from '../services/selfEvolution/evaluationInjectionContext';
 import { bucketPackageDomain } from '../services/caseEvolution/domainBucket';
 import type {EffectiveFeedbackV1} from '../types/selfEvolution';
 
@@ -1353,21 +1357,37 @@ export function buildPatternContextSection(
   }
   if (matches.length === 0) return undefined;
 
-  const lines = matches.map((m, i) => {
+  const entries = matches.map((m, i) => {
     const insightText = m.keyInsights.slice(0, 3).map(ins => `  - ${ins}`).join('\n');
     const decayPct = (confidenceDecay(m.createdAt) * 100).toFixed(0);
-    return `${i + 1}. **${m.sceneType}${m.architectureType ? ` (${m.architectureType})` : ''}** (相似度 ${(m.score * 100).toFixed(0)}%, 信心 ${decayPct}%, 匹配 ${m.matchCount + 1} 次)\n${insightText}`;
-  });
+    const line = `${i + 1}. **${m.sceneType}${m.architectureType ? ` (${m.architectureType})` : ''}** (相似度 ${(m.score * 100).toFixed(0)}%, 信心 ${decayPct}%, 匹配 ${m.matchCount + 1} 次)\n${insightText}`;
+    return {match: m, line, contentHash: canonicalContentHash(line)};
+  }).filter(entry => isEvaluationInjectionAllowed({
+    category: 'patterns',
+    id: entry.match.id,
+    contentHash: entry.contentHash,
+  }));
+  if (entries.length === 0) return undefined;
   const sink = currentRunManifestAttributionSink();
-  for (const [index, match] of matches.entries()) {
-    sink?.recordInjection('patterns', match.id, canonicalContentHash(lines[index]));
+  for (const entry of entries) {
+    registerEvaluationInjection({
+      category: 'patterns',
+      id: entry.match.id,
+      contentHash: entry.contentHash,
+      placement: 'system_prompt:pattern_memory',
+    });
+    sink?.recordInjection(
+      'patterns',
+      entry.match.id,
+      entry.contentHash,
+    );
   }
 
   return `## 历史分析经验（跨会话记忆）
 
 以下是过往类似 trace 的分析经验，供参考（不一定适用于当前 trace）：
 
-${lines.join('\n\n')}
+${entries.map(entry => entry.line).join('\n\n')}
 
 > 这些经验来自之前的分析会话。如果当前 trace 的数据与历史经验矛盾，以当前数据为准。`;
 }
@@ -1400,15 +1420,33 @@ export function buildNegativePatternSection(
 
   if (uniqueLines.length === 0) return undefined;
   const sink = currentRunManifestAttributionSink();
+  const allowedLines = new Set<string>();
   for (const [id, lines] of attributedLines) {
-    sink?.recordInjection('patterns', id, canonicalContentHash(lines.join('\n')));
+    const contentHash = canonicalContentHash(lines.join('\n'));
+    if (!isEvaluationInjectionAllowed({
+      category: 'patterns',
+      id,
+      contentHash,
+    })) {
+      continue;
+    }
+    for (const line of lines) allowedLines.add(line);
+    registerEvaluationInjection({
+      category: 'patterns',
+      id,
+      contentHash,
+      placement: 'system_prompt:negative_pattern_memory',
+    });
+    sink?.recordInjection('patterns', id, contentHash);
   }
+  const filteredLines = uniqueLines.filter(line => allowedLines.has(line));
+  if (filteredLines.length === 0) return undefined;
 
   return `## 历史踩坑记录（避免重复失败）
 
 以下策略在类似 trace 的分析中**失败过**，请优先尝试其他方案：
 
-${uniqueLines.join('\n')}
+${filteredLines.join('\n')}
 
 > 这些是跨会话积累的失败经验。如果没有替代方案，可以谨慎尝试，但请准备 fallback 策略。`;
 }

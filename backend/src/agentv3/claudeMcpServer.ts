@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { createHash } from 'crypto';
 import * as fs from 'fs';
@@ -26,6 +26,20 @@ import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFing
 import {
   currentEffectiveRuntimeRegistrySnapshot,
 } from '../services/selfEvolution/effectiveRuntimeRegistryContext';
+import {
+  commitEvaluationExposureSince,
+  currentEvaluationInjectionContract,
+  discardPendingEvaluationExposures,
+  evaluationExposureCursor,
+  registerEvaluationInjection,
+} from '../services/selfEvolution/evaluationInjectionContext';
+import {
+  currentEvaluationTelemetryActive,
+  recordEvaluationToolCall,
+} from '../services/selfEvolution/evaluationTelemetry';
+import {
+  evaluationPhaseHintInjectionContentHash,
+} from '../services/selfEvolution/evaluationTreatment';
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
 import type {
@@ -115,6 +129,33 @@ import {
 } from '../middleware/auth';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
+
+const tool: typeof sdkTool = ((
+  name: string,
+  description: string,
+  schema: unknown,
+  handler: (...args: unknown[]) => unknown,
+) => sdkTool(
+  name,
+  description,
+  schema as never,
+  async (...args: unknown[]) => {
+    if (currentEvaluationTelemetryActive()) recordEvaluationToolCall();
+    const cursor = currentEvaluationInjectionContract()
+      ? evaluationExposureCursor()
+      : undefined;
+    try {
+      const result = await handler(...args);
+      if (cursor !== undefined) {
+        commitEvaluationExposureSince(cursor, 'sdk_handoff_observed');
+      }
+      return result as never;
+    } catch (error) {
+      if (cursor !== undefined) discardPendingEvaluationExposures(cursor);
+      throw error;
+    }
+  },
+)) as unknown as typeof sdkTool;
 import {
   createTraceSimilarityService,
   type TraceSimilaritySnapshotRepository,
@@ -136,7 +177,10 @@ import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseSe
 import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../services/codebase/patchProposer';
 import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/codeAwareFeature';
-import {filterRagLookup} from '../services/rag/lookupResponseFilter';
+import {
+  filterRagLookup,
+  type SanitizedRagResult,
+} from '../services/rag/lookupResponseFilter';
 import {
   getDefaultAndroidInternalsPackStore,
   isAndroidInternalsPackRevoked,
@@ -1176,33 +1220,134 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
   } => ({...payload, dataTrust: 'untrusted_retrieved_data'});
-  const recordKnowledgeDocuments = (value: unknown): void => {
-    const visited = new Set<object>();
-    const visit = (entry: unknown, depth: number): void => {
-      if (!entry || typeof entry !== 'object' || depth > 5) return;
-      if (visited.has(entry)) return;
-      visited.add(entry);
-      if (Array.isArray(entry)) {
-        entry.forEach(item => visit(item, depth + 1));
-        return;
+  const filterAndRecordKnowledgeDocuments = (
+    value: SanitizedRagResult,
+  ): SanitizedRagResult => {
+    const exactKeys = (
+      record: Record<string, unknown>,
+      allowed: readonly string[],
+    ) => Object.keys(record).every(key => allowed.includes(key));
+    if (
+      !value
+      || typeof value !== 'object'
+      || Array.isArray(value)
+      || !exactKeys(value as unknown as Record<string, unknown>, [
+        'query',
+        'hits',
+        'probed',
+        'retrievedAt',
+        'unsupportedReason',
+        'legacyPath',
+        'backgroundKnowledgeReferences',
+      ])
+      || typeof value.query !== 'string'
+      || !Array.isArray(value.hits)
+      || !Array.isArray(value.probed)
+      || !value.probed.every(entry => typeof entry === 'string')
+      || !Number.isFinite(value.retrievedAt)
+      || typeof value.legacyPath !== 'boolean'
+      || (
+        value.unsupportedReason !== undefined
+        && typeof value.unsupportedReason !== 'string'
+      )
+      || (
+        value.backgroundKnowledgeReferences !== undefined
+        && (
+          !Array.isArray(value.backgroundKnowledgeReferences)
+          || value.backgroundKnowledgeReferences.some(reference =>
+            !reference
+            || typeof reference !== 'object'
+            || Array.isArray(reference)
+            || Object.values(reference).some(field =>
+              typeof field !== 'string' && field !== undefined)
+          )
+        )
+      )
+    ) {
+      throw new Error('evaluation_knowledge_payload_invalid');
+    }
+    const hits = value.hits.flatMap(hit => {
+      if (
+        !hit
+        || typeof hit !== 'object'
+        || Array.isArray(hit)
+        || !exactKeys(hit as unknown as Record<string, unknown>, [
+          'chunkId',
+          'score',
+          'metadata',
+          'snippet',
+          'unsupportedReason',
+          'redactedCount',
+        ])
+        || typeof hit.chunkId !== 'string'
+        || !hit.chunkId.trim()
+        || !Number.isFinite(hit.score)
+        || (
+          hit.snippet !== undefined
+          && typeof hit.snippet !== 'string'
+        )
+        || (
+          hit.unsupportedReason !== undefined
+          && typeof hit.unsupportedReason !== 'string'
+        )
+        || (
+          hit.redactedCount !== undefined
+          && !Number.isSafeInteger(hit.redactedCount)
+        )
+        || (
+          hit.metadata !== undefined
+          && (
+            !hit.metadata
+            || typeof hit.metadata !== 'object'
+            || Array.isArray(hit.metadata)
+            || Object.values(hit.metadata).some(field =>
+              field !== undefined
+              && typeof field !== 'string'
+              && typeof field !== 'number'
+              && typeof field !== 'boolean'
+              && (
+                !field
+                || typeof field !== 'object'
+                || Array.isArray(field)
+                || !exactKeys(field as Record<string, unknown>, ['start', 'end'])
+                || Object.values(field).some(boundary =>
+                  !Number.isSafeInteger(boundary))
+              )
+            )
+          )
+        )
+      ) {
+        throw new Error('evaluation_knowledge_payload_invalid');
       }
-      const record = entry as Record<string, unknown>;
-      const id = [
-        record.id,
-        record.chunkId,
-        record.docId,
-        record.sourceId,
-      ].find(candidate => typeof candidate === 'string' && candidate.trim());
-      if (typeof id === 'string') {
-        runManifestAttributionSink?.recordInjection(
-          'knowledgeDocs',
-          id,
-          canonicalContentHash(record),
-        );
-      }
-      Object.values(record).forEach(child => visit(child, depth + 1));
-    };
-    visit(value, 0);
+      const normalizedHit = {
+        chunkId: hit.chunkId,
+        score: hit.score,
+        ...(hit.metadata === undefined ? {} : {metadata: hit.metadata}),
+        ...(hit.snippet === undefined ? {} : {snippet: hit.snippet}),
+        ...(hit.unsupportedReason === undefined
+          ? {}
+          : {unsupportedReason: hit.unsupportedReason}),
+        ...(hit.redactedCount === undefined
+          ? {}
+          : {redactedCount: hit.redactedCount}),
+      };
+      if (normalizedHit.snippet === undefined) return [normalizedHit];
+      const contentHash = canonicalContentHash(normalizedHit);
+      const decision = registerEvaluationInjection({
+        category: 'knowledgeDocs',
+        id: hit.chunkId,
+        contentHash,
+        placement: 'mcp:knowledge_lookup',
+      });
+      if (!decision.allowed) return [];
+      runManifestAttributionSink?.recordInjection(
+        'knowledgeDocs',
+        hit.chunkId,
+        contentHash,
+      );
+      return [normalizedHit];
+    });
+    return {...value, hits};
   };
   const knowledgeSourceCapabilityHint = knowledgeSourceIds.length > 0
     ? ` Request-authorized knowledge source ids: ${knowledgeSourceIds.join(', ')}.`
@@ -3832,10 +3977,29 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      const id = `knowledge-topic-${canonicalContentHash(topic).slice(0, 16)}`;
+      const contentHash = canonicalContentHash(content);
+      const decision = registerEvaluationInjection({
+        category: 'knowledgeDocs',
+        id,
+        contentHash,
+        placement: 'mcp:lookup_knowledge',
+      });
+      if (!decision.allowed) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              unsupportedReason: 'evaluation_injection_filtered',
+            }),
+          }],
+        };
+      }
       runManifestAttributionSink?.recordInjection(
         'knowledgeDocs',
-        `knowledge-topic-${canonicalContentHash(topic).slice(0, 16)}`,
-        canonicalContentHash(content),
+        id,
+        contentHash,
       );
       return {
         content: [{ type: 'text' as const, text: content }],
@@ -3895,11 +4059,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (isAndroidInternalsPackRevoked(androidInternalsPackStore.handle)) {
           throw new Error('analysis_context_changed_restart_required');
         }
-        recordKnowledgeDocuments(filtered);
+        const evaluated = filterAndRecordKnowledgeDocuments(filtered);
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify(retrievedData({success: true, result: filtered})),
+            text: JSON.stringify(retrievedData({success: true, result: evaluated})),
           }],
         };
       }
@@ -3959,23 +4123,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
         await codeLookupLedger?.flush();
         assertPrivateAnalysisContextCurrent();
-        recordKnowledgeDocuments(filtered);
+        const evaluated = filterAndRecordKnowledgeDocuments(filtered);
         return {
           content: [{
             type: 'text' as const,
-            text: JSON.stringify(retrievedData({success: true, result: filtered})),
+            text: JSON.stringify(retrievedData({success: true, result: evaluated})),
           }],
         };
       }
-      const result = ragStore.search(query, {
+      const raw = ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['androidperformance.com'],
         scope: knowledgeScope,
         activeCodebaseGenerations: activeCodebaseGenerations(codebaseIds),
       });
-      recordKnowledgeDocuments(result);
+      const filtered = await filterRagLookup(raw, {
+        toolName: 'lookup_blog_knowledge',
+        turn: 0,
+        ledger: codeLookupLedger,
+        sessionId: options.sessionId,
+      });
+      await codeLookupLedger?.flush();
+      const evaluated = filterAndRecordKnowledgeDocuments(filtered);
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(retrievedData({...result})) }],
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(retrievedData({...evaluated})),
+        }],
       };
     },
     { annotations: { readOnlyHint: true } },
@@ -5325,21 +5499,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
 
         if (matchedHint) {
-          runManifestAttributionSink?.recordInjection(
-            'phaseHints',
-            matchedHint.id,
-            canonicalContentHash({
+          const contentHash =
+            evaluationPhaseHintInjectionContentHash(matchedHint);
+          const decision = registerEvaluationInjection({
+            category: 'phaseHints',
+            id: matchedHint.id,
+            contentHash,
+            placement: 'mcp:update_plan_phase',
+          });
+          if (decision.allowed) {
+            runManifestAttributionSink?.recordInjection(
+              'phaseHints',
+              matchedHint.id,
+              contentHash,
+            );
+            response.next_phase_reminder = {
+              phaseId: nextPhase.id,
+              name: nextPhase.name,
               constraints: matchedHint.constraints,
               criticalTools: matchedHint.criticalTools,
-            }),
-          );
-          response.next_phase_reminder = {
-            phaseId: nextPhase.id,
-            name: nextPhase.name,
-            constraints: matchedHint.constraints,
-            criticalTools: matchedHint.criticalTools,
-          };
-          console.log(`[MCP] Phase hint injected: ${matchedHint.id} for ${options.sceneType}`);
+            };
+            console.log(`[MCP] Phase hint injected: ${matchedHint.id} for ${options.sceneType}`);
+          }
         } else if (hints.length > 0) {
           console.log(
             `[MCP] Phase hint not found for ${options.sceneType}: ` +

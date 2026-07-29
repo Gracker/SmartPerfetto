@@ -16,6 +16,11 @@ import { getProviderService, resetProviderService } from '../../services/provide
 import { saveClaudeSessionMapToRuntimeSnapshots } from '../../services/runtimeSnapshotStore';
 import type { TraceProcessorService } from '../../services/traceProcessorService';
 import * as quickEvidenceDirectAnswer from '../../agentRuntime/quickEvidenceDirectAnswer';
+import {evaluationRuntimeCapabilities} from '../../services/selfEvolution/evaluationRuntimeCapabilities';
+import {
+  snapshotEvaluationUsageReceipt,
+  withEvaluationTelemetry,
+} from '../../services/selfEvolution/evaluationTelemetry';
 import { ClaudeRuntime, __testing } from '../claudeRuntime';
 
 const claudeSdkMock = require('@anthropic-ai/claude-agent-sdk') as {
@@ -1686,6 +1691,88 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  it('records authoritative first-turn Claude result usage including cache tokens', async () => {
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: [], rows: []}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set('trace-evaluation-usage', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'assistant',
+        session_id: 'sdk-evaluation-usage',
+        message: {content: []},
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-evaluation-usage',
+        num_turns: 1,
+        usage: {
+          input_tokens: 10,
+          output_tokens: 3,
+          cache_read_input_tokens: 7,
+          cache_creation_input_tokens: 2,
+        },
+        result: [
+          '# 启动性能分析报告',
+          '',
+          '## 综合结论',
+          '',
+          '启动分析完成，证据来自 data:art-usage。',
+          '',
+          '## 关键证据链',
+          '',
+          '- data:art-usage: 启动路径证据。',
+          '',
+          '## 优化建议',
+          '',
+          '- 缩短主线程初始化。',
+        ].join('\n'),
+      };
+    });
+
+    const receipt = await withEvaluationTelemetry({
+      limits: {
+        schemaVersion: 1,
+        maxTokens: 100,
+        maxToolCalls: 100,
+        maxWallclockMs: 30_000,
+        maxTraceProcessorCpuMs: 30_000,
+      },
+      capabilities: evaluationRuntimeCapabilities({
+        runtime: 'claude-agent-sdk',
+      }),
+      signal: new AbortController().signal,
+      isAuthoritative: () => true,
+    }, async () => {
+      const result = await runtime.analyze(
+        '分析启动性能',
+        'session-evaluation-usage',
+        'trace-evaluation-usage',
+        {
+          analysisMode: 'full',
+          packageName: 'com.example.app',
+        },
+      );
+      expect(result.success).toBe(true);
+      return snapshotEvaluationUsageReceipt();
+    });
+
+    expect(receipt.tokens).toMatchObject({
+      used: 22,
+      guarantee: 'soft_observed',
+    });
+    sessionContextManager.remove('session-evaluation-usage');
   });
 
   it('uses scoped Claude provider tuning when preparing full SDK options', async () => {

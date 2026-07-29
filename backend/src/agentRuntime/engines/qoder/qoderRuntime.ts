@@ -15,6 +15,10 @@ import { sessionContextManager } from '../../../agent/context/enhancedSessionCon
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
+import {
+  commitEvaluationSdkHandoffIfActive,
+  recordEvaluationTokenDeltaIfPresent,
+} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {
   buildNegativePatternSection,
@@ -570,6 +574,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       };
 
       // Execute the query with timeout
+      commitEvaluationSdkHandoffIfActive();
       const q = sdk.query({ prompt: fullPrompt, options: sdkOptions });
       sessionState.sdkQuery = q;
 
@@ -608,6 +613,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             }
           } else if (msgType === 'result') {
             const msg = message as Record<string, unknown>;
+            recordEvaluationTokenDeltaIfPresent(
+              msg.usage ?? msg.tokens ?? msg,
+            );
             const subtype = typeof msg.subtype === 'string' ? msg.subtype : 'success';
             if (subtype === 'success' && msg.is_error !== true) {
               const resultText = typeof msg.result === 'string' ? msg.result : extractAssistantText(message);

@@ -23,6 +23,10 @@ import { sessionContextManager } from '../../../agent/context/enhancedSessionCon
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
+import {
+  commitEvaluationSdkHandoffIfActive,
+  recordEvaluationTokenDeltaIfPresent,
+} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {
   buildNegativePatternSection,
@@ -1620,6 +1624,16 @@ function openCodeAssistantMessagesResponse(messages: Record<string, unknown>[]):
   return { data: messages };
 }
 
+function recordOpenCodeAssistantUsage(
+  messages: readonly Record<string, unknown>[],
+): void {
+  for (const message of messages) {
+    recordEvaluationTokenDeltaIfPresent(
+      isRecord(message.info) ? message.info.usage ?? message.info.tokens : message,
+    );
+  }
+}
+
 function getLatestOpenCodeAssistantMessage(value: unknown): Record<string, unknown> | undefined {
   const messages = getOpenCodeAssistantMessages(value);
   return messages[messages.length - 1];
@@ -1671,6 +1685,7 @@ export async function runOpenCodePrompt(
     const baselineSignatures = getOpenCodeAssistantMessages(baselineMessagesResponse)
       .map(getOpenCodeAssistantMessageSignature);
 
+    commitEvaluationSdkHandoffIfActive();
     assertSdkSuccess(
       await opencode.client.session.promptAsync(promptInput),
       'OpenCode async prompt',
@@ -1704,12 +1719,15 @@ export async function runOpenCodePrompt(
           sessionStatus === 'idle' &&
           extractOpenCodeAssistantText(currentTurnMessagesResponse)
         ) {
+          recordOpenCodeAssistantUsage(newAssistantMessages);
           return { messagesResponse: currentTurnMessagesResponse };
         }
         if (sessionStatus === 'unknown' && latestAssistantComplete) {
+          recordOpenCodeAssistantUsage(newAssistantMessages);
           return { messagesResponse: currentTurnMessagesResponse };
         }
       } else if (latestAssistantComplete) {
+        recordOpenCodeAssistantUsage(newAssistantMessages);
         return { messagesResponse: currentTurnMessagesResponse };
       }
     }
@@ -1717,6 +1735,7 @@ export async function runOpenCodePrompt(
   }
 
   if (isAborted?.()) throw new Error('OpenCode prompt aborted');
+  commitEvaluationSdkHandoffIfActive();
   const promptResponse = unwrapSdkData(await opencode.client.session.prompt(promptInput), 'OpenCode prompt');
   if (isAborted?.()) throw new Error('OpenCode prompt aborted');
   const messagesResponse = opencode.client.session.messages
@@ -1725,6 +1744,11 @@ export async function runOpenCodePrompt(
         query: { directory: projectDir, limit: 50, order: 'asc' },
       }), 'OpenCode messages')
     : undefined;
+  const promptAssistantMessages = getOpenCodeAssistantMessages(promptResponse);
+  const observedAssistantMessages = promptAssistantMessages.length > 0
+    ? promptAssistantMessages
+    : getOpenCodeAssistantMessages(messagesResponse).slice(-1);
+  recordOpenCodeAssistantUsage(observedAssistantMessages);
   return { promptResponse, messagesResponse };
 }
 

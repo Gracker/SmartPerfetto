@@ -9,6 +9,14 @@ import {
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
   query as sdkQuery,
 } from '@anthropic-ai/claude-agent-sdk';
+import {
+  commitEvaluationExposureSince,
+  currentEvaluationInjectionContract,
+} from '../../../services/selfEvolution/evaluationInjectionContext';
+import {
+  currentEvaluationTelemetryActive,
+  recordEvaluationObservedTokenDelta,
+} from '../../../services/selfEvolution/evaluationTelemetry';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
@@ -725,6 +733,9 @@ function sdkQueryWithRetry(
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (closed) return;
       try {
+        if (currentEvaluationInjectionContract()) {
+          commitEvaluationExposureSince(0, 'sdk_handoff_observed');
+        }
         currentQuery = sdkQuery(mergedParams);
         // Yield all messages from the stream
         for await (const msg of currentQuery) {
@@ -1405,6 +1416,27 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       let turnCounter = 0;
       let firstTokenReceived = false;
 
+      function recordAuthoritativeEvaluationUsage(
+        usage: Record<string, unknown> | undefined,
+      ): void {
+        if (!currentEvaluationTelemetryActive() || !usage) return;
+        const tokenFields = [
+          'input_tokens',
+          'output_tokens',
+          'cache_read_input_tokens',
+          'cache_creation_input_tokens',
+        ] as const;
+        const total = tokenFields.reduce((sum, field) => {
+          const value = usage[field];
+          return sum + (
+            typeof value === 'number' && Number.isFinite(value) && value >= 0
+              ? value
+              : 0
+          );
+        }, 0);
+        recordEvaluationObservedTokenDelta(total);
+      }
+
       // Phase 3-3 of v2.1 (monitor-only): track when the running conversation
       // crosses the pre-rot threshold so prod can quantify how often we *would*
       // have benefited from an interrupt+resume cycle. The actual interrupt+
@@ -1478,6 +1510,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 modelUsage: (msg as any).modelUsage,
                 total_cost_usd: (msg as any).total_cost_usd,
               });
+              recordAuthoritativeEvaluationUsage((msg as any).usage);
             }
             missingSdkConversationError = sdkResultError;
             continue;
@@ -1749,6 +1782,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               modelUsage: (msg as any).modelUsage,
               total_cost_usd: (msg as any).total_cost_usd,
             });
+            recordAuthoritativeEvaluationUsage((msg as any).usage);
           }
         }
         // Clean up any remaining sub-agent timers

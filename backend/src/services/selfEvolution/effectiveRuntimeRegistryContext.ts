@@ -36,6 +36,13 @@ export interface EffectiveRuntimeRegistrySnapshot {
   readonly baseSkillRegistryFingerprint: string;
   readonly baseStrategyRegistryFingerprint: string;
   readonly overlayGeneration: string;
+  readonly evaluationTreatment?: {
+    readonly artifactId: string;
+    readonly treatmentGeneration: string;
+    readonly materializedInputHash: string;
+    readonly effectiveSkillRegistryFingerprint: string;
+    readonly effectiveStrategyRegistryFingerprint: string;
+  };
   readonly skillRegistry: ReadonlySkillRegistrySnapshot;
   readonly strategyRegistry: ReadonlyStrategyRegistrySnapshot;
 }
@@ -59,6 +66,8 @@ export function withEffectiveRuntimeRegistrySnapshot<T>(
       inherited.scope.tenantId !== snapshot.scope.tenantId
       || inherited.scope.workspaceId !== snapshot.scope.workspaceId
       || inherited.overlayGeneration !== snapshot.overlayGeneration
+      || inherited.evaluationTreatment?.treatmentGeneration
+        !== snapshot.evaluationTreatment?.treatmentGeneration
     )
   ) {
     throw new Error('effective_runtime_registry_snapshot_context_conflict');

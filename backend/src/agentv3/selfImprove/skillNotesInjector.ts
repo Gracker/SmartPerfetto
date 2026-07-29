@@ -28,6 +28,15 @@ import { readSkillNotesFile, type SkillNotesFile, type PersistedSkillNote } from
 import { backendLogPath } from '../../runtimePaths';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {currentRunManifestAttributionSink} from '../../services/selfEvolution/runManifestLifecycle';
+import {
+  isEvaluationInjectionAllowed,
+  registerEvaluationInjection,
+} from '../../services/selfEvolution/evaluationInjectionContext';
+import {
+  currentEvaluationRoleVariant,
+  evaluationSkillNoteInjectionContentHash,
+  type EvaluationSkillNoteV1,
+} from '../../services/selfEvolution/evaluationTreatment';
 
 export type AnalysisPathMode = 'full' | 'quick' | 'retry';
 
@@ -110,10 +119,31 @@ export class SkillNotesBudget {
       return null;
     }
     const skillCeiling = Math.min(this.perSkillCap, remainingTotal);
+    const evaluationVariant = currentEvaluationRoleVariant();
+    const evaluationNoteIds = new Set(
+      evaluationVariant?.skillNoteDeltas
+        .filter(delta =>
+          delta.skillId === skillId
+          && delta.op !== 'remove')
+        .map(delta => delta.noteId)
+        ?? [],
+    );
 
     const eligible = candidates
       .filter(n => n.cooldownUntil <= now)
-      .sort((a, b) => b.createdAt - a.createdAt);
+      .filter(note => {
+        const contentHash = skillNoteContentHash(note);
+        return isEvaluationInjectionAllowed({
+          category: 'skillNotes',
+          id: note.id,
+          contentHash,
+        });
+      })
+      .sort((a, b) =>
+        Number(evaluationNoteIds.has(b.id))
+          - Number(evaluationNoteIds.has(a.id))
+        || b.createdAt - a.createdAt
+        || a.id.localeCompare(b.id));
     if (eligible.length === 0) {
       this.dropped.push({ skillId, reason: 'no_eligible_notes' });
       return null;
@@ -145,17 +175,16 @@ export class SkillNotesBudget {
     this.injected.add(skillId);
     const sink = currentRunManifestAttributionSink();
     for (const note of selected) {
+      registerEvaluationInjection({
+        category: 'skillNotes',
+        id: note.id,
+        contentHash: skillNoteContentHash(note),
+        placement: `skill:${skillId}`,
+      });
       sink?.recordInjection(
         'skillNotes',
         note.id,
-        canonicalContentHash({
-          failureCategory: note.failureCategory,
-          failureModeHash: note.failureModeHash ?? null,
-          evidenceSummary: note.evidenceSummary,
-          candidateKeywords: note.candidateKeywords,
-          candidateConstraints: note.candidateConstraints,
-          candidateCriticalTools: note.candidateCriticalTools,
-        }),
+        skillNoteContentHash(note),
       );
     }
     return { text, tokensUsed: used };
@@ -214,11 +243,98 @@ export function loadSkillNotes(
   }
   // Dedupe by note id so a curated copy of the same note doesn't double up.
   const seen = new Set<string>();
-  return merged.filter(n => {
+  const deduplicated = merged.filter(n => {
     if (seen.has(n.id)) return false;
     seen.add(n.id);
     return true;
   });
+  return applyEvaluationSkillNoteDeltas(skillId, deduplicated);
+}
+
+function skillNoteContentHash(note: PersistedSkillNote): string {
+  return canonicalContentHash({
+    failureCategory: note.failureCategory,
+    failureModeHash: note.failureModeHash ?? null,
+    evidenceSummary: note.evidenceSummary,
+    candidateKeywords: note.candidateKeywords,
+    candidateConstraints: note.candidateConstraints,
+    candidateCriticalTools: note.candidateCriticalTools,
+  });
+}
+
+function materializeEvaluationSkillNote(
+  value: EvaluationSkillNoteV1,
+  input: {
+    createdAt: number;
+    existing?: PersistedSkillNote;
+  },
+): PersistedSkillNote {
+  const materialized: PersistedSkillNote = {
+    id: value.noteId,
+    failureCategory: 'unknown',
+    evidenceSummary: value.content,
+    candidateKeywords: [...value.keywords],
+    candidateConstraints: '',
+    candidateCriticalTools: [],
+    createdAt: input.existing?.createdAt ?? input.createdAt,
+    cooldownUntil: input.existing?.cooldownUntil ?? 0,
+    byteSize: Buffer.byteLength(value.content, 'utf8'),
+    ...(input.existing?.sourceSessionId === undefined
+      ? {}
+      : {sourceSessionId: input.existing.sourceSessionId}),
+    ...(input.existing?.sourceTurnIndex === undefined
+      ? {}
+      : {sourceTurnIndex: input.existing.sourceTurnIndex}),
+  };
+  if (
+    skillNoteContentHash(materialized)
+    !== evaluationSkillNoteInjectionContentHash(value)
+  ) {
+    throw new Error('evaluation_skill_note_hash_invariant_failed');
+  }
+  return materialized;
+}
+
+function applyEvaluationSkillNoteDeltas(
+  skillId: string,
+  base: PersistedSkillNote[],
+): PersistedSkillNote[] {
+  const variant = currentEvaluationRoleVariant();
+  if (!variant) return base;
+  const notes = new Map(base.map(note => [note.id, note]));
+  for (const delta of variant.skillNoteDeltas
+    .filter(entry => entry.skillId === skillId)
+    .sort((left, right) => left.noteId.localeCompare(right.noteId))) {
+    const existing = notes.get(delta.noteId);
+    if (delta.op === 'add') {
+      if (existing || !delta.after) {
+        throw new Error('evaluation_skill_note_add_conflict');
+      }
+      notes.set(delta.noteId, materializeEvaluationSkillNote(delta.after, {
+        createdAt: variant.artifactCreatedAtMs,
+      }));
+      continue;
+    }
+    if (
+      !existing
+      || !delta.beforeContentHash
+      || skillNoteContentHash(existing) !== delta.beforeContentHash
+    ) {
+      throw new Error('evaluation_skill_note_before_hash_mismatch');
+    }
+    if (delta.op === 'modify') {
+      if (!delta.after) {
+        throw new Error('evaluation_skill_note_modify_invalid');
+      }
+      notes.set(delta.noteId, materializeEvaluationSkillNote(delta.after, {
+        createdAt: variant.artifactCreatedAtMs,
+        existing,
+      }));
+    } else {
+      notes.delete(delta.noteId);
+    }
+  }
+  return [...notes.values()];
 }
 
 export const __testing = {
@@ -226,4 +342,5 @@ export const __testing = {
   renderNote,
   DEFAULT_RUNTIME_NOTES_DIR,
   DEFAULT_CURATED_NOTES_DIR,
+  skillNoteContentHash,
 };

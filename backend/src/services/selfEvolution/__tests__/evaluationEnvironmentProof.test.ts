@@ -199,6 +199,83 @@ describe('evaluation environment proof', () => {
     expect(JSON.stringify(proof)).not.toContain('eval-secret');
   });
 
+  it('records the actual dynamic injection set for on mode', () => {
+    pinned = {...pinned, injections: 'on'};
+    const environmentStart = captureEvaluationEnvironmentStart({
+      providerService: service,
+      scope: {tenantId: 'local', workspaceId: 'local'},
+      pinned,
+      selector: {
+        schemaVersion: 1,
+        mode: 'on',
+        selected: EMPTY_INJECTIONS,
+      },
+      capturedAt: '2026-07-29T00:00:00.000Z',
+    });
+    const actual = {
+      ...EMPTY_INJECTIONS,
+      knowledgeDocs: [{
+        id: 'dynamic-hit',
+        contentHash: 'a'.repeat(64),
+      }],
+    };
+    const proof = finalize(environmentStart, 'run-dynamic', {
+      injections: actual,
+    });
+
+    expect(proof.injections).toEqual(actual);
+    expect(proof.injectionSetHash).toBe(canonicalContentHash(actual));
+    expect(proof.environmentFingerprint)
+      .toBe(environmentStart.environmentFingerprint);
+  });
+
+  it('accepts a selective selector miss but rejects an unselected actual hit', () => {
+    const selectedRef = {
+      id: 'selected-pattern',
+      contentHash: 'b'.repeat(64),
+    };
+    pinned = {...pinned, injections: 'selective'};
+    const environmentStart = captureEvaluationEnvironmentStart({
+      providerService: service,
+      scope: {tenantId: 'local', workspaceId: 'local'},
+      pinned,
+      selector: {
+        schemaVersion: 1,
+        mode: 'selective',
+        selected: {
+          ...EMPTY_INJECTIONS,
+          patterns: [selectedRef],
+        },
+      },
+      capturedAt: '2026-07-29T00:00:00.000Z',
+    });
+    expect(finalize(environmentStart, 'run-selective-miss', {
+      injections: EMPTY_INJECTIONS,
+    }).injections)
+      .toEqual(EMPTY_INJECTIONS);
+
+    const manifest = manifestForEvaluationStart(
+      environmentStart,
+      'run-selective-forged',
+      {
+        injections: {
+          ...EMPTY_INJECTIONS,
+          patterns: [{
+            id: 'not-selected',
+            contentHash: 'c'.repeat(64),
+          }],
+        },
+      },
+    );
+    manifestStore.append(environmentStart.scope, manifest);
+    expect(() => finalizeEvaluationEnvironmentProof({
+      providerService: service,
+      runManifestStore: manifestStore,
+      start: environmentStart,
+      runManifestId: manifest.runManifestId,
+    })).toThrow('evaluation_environment_run_manifest_injections_mismatch');
+  });
+
   it('rejects provider mutations during a run, including A to B to A', () => {
     const environmentStart = start();
     service.activate(providerId);
@@ -292,7 +369,7 @@ describe('evaluation environment proof', () => {
       runManifestStore: manifestStore,
       start: environmentStart,
       runManifestId: injectedManifest.runManifestId,
-    })).toThrow('evaluation_environment_run_manifest_environment_mismatch');
+    })).toThrow('evaluation_environment_run_manifest_injections_mismatch');
 
     const forgedBinding = manifestForEvaluationStart(
       environmentStart,
@@ -333,23 +410,28 @@ describe('evaluation environment proof', () => {
         mode: 'off',
         selected: EMPTY_INJECTIONS,
       },
+      capturedAt: '2026-07-29T00:00:00.000Z',
     })).toThrow('evaluation_environment_provider_scope_required');
   });
 
-  it('fails closed for ambient environment providers without a mutation generation', () => {
-    expect(() => captureEvaluationEnvironmentStart({
+  it('binds env/default fallback runs when providerId is explicitly null', () => {
+    const environmentStart = captureEvaluationEnvironmentStart({
       providerService: service,
       scope: {tenantId: 'local', workspaceId: 'local'},
-      pinned: {...pinned, providerId: null},
+      pinned: {...pinned, providerId: null, model: undefined},
       selector: {
         schemaVersion: 1,
         mode: 'off',
         selected: EMPTY_INJECTIONS,
       },
-    })).toThrow('evaluation_environment_managed_provider_required');
+      capturedAt: '2026-07-29T00:00:00.000Z',
+    });
+    const proof = finalize(environmentStart, 'run-env-fallback');
+    expect(proof.pinned.providerId).toBeNull();
+    expect(parseEvaluationEnvironmentProof(proof)).toEqual(proof);
   });
 
-  it('rejects self-consistent forged ambient start and proof records', () => {
+  it('parses self-consistent null-provider records without inventing a managed provider', () => {
     const environmentStart = start();
     const nullPinned = {...environmentStart.pinned, providerId: null};
     const forgedStartWithoutContentHash = {
@@ -360,7 +442,6 @@ describe('evaluation environment proof', () => {
         providerSnapshotHash: environmentStart.providerSnapshotHash,
         providerMutationGenerationFingerprint:
           environmentStart.providerMutationGenerationFingerprint,
-        injectionSetHash: environmentStart.injectionSetHash,
         injectionSelectorConfigFingerprint:
           environmentStart.injectionSelectorConfigFingerprint,
       }),
@@ -373,8 +454,8 @@ describe('evaluation environment proof', () => {
       ...forgedStartPayload,
       contentHash: __testing.startContentHash(forgedStartPayload),
     };
-    expect(() => parseEvaluationEnvironmentStart(forgedStart))
-      .toThrow('evaluation_environment_managed_provider_required');
+    expect(parseEvaluationEnvironmentStart(forgedStart).pinned.providerId)
+      .toBeNull();
 
     const proof = finalize(environmentStart, 'run-managed');
     const forgedProofWithoutContentHash = {
@@ -385,7 +466,6 @@ describe('evaluation environment proof', () => {
         providerSnapshotHash: proof.providerSnapshotHash,
         providerMutationGenerationFingerprint:
           proof.providerMutationGenerationFingerprint,
-        injectionSetHash: proof.injectionSetHash,
         injectionSelectorConfigFingerprint:
           proof.injectionSelectorConfigFingerprint,
       }),
@@ -398,8 +478,8 @@ describe('evaluation environment proof', () => {
       ...forgedProofPayload,
       contentHash: __testing.proofContentHash(forgedProofPayload),
     };
-    expect(() => parseEvaluationEnvironmentProof(forgedProof))
-      .toThrow('evaluation_environment_managed_provider_required');
+    expect(parseEvaluationEnvironmentProof(forgedProof).pinned.providerId)
+      .toBeNull();
   });
 
   it('detects tampering in both start and final proof records', () => {

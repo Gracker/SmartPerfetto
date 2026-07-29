@@ -4,6 +4,7 @@
 
 import {
   buildStrategyRegistrySnapshot,
+  buildStrategyRegistrySnapshotFromDefinitions,
   fingerprintStrategyDefinition,
   type StrategyRegistryContribution,
 } from '../../agentv3/strategyLoader';
@@ -36,11 +37,13 @@ import {
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
 } from './inProcessValidator';
+import type {EvaluationRoleVariantV1} from './evaluationTreatment';
 
 export interface BuildEffectiveRuntimeRegistrySnapshotInput {
   scope: EnterpriseRepositoryScope;
   skillOverlays?: readonly SkillOverlayDeltaV1[];
   strategyContributions?: readonly StrategyRegistryContribution[];
+  evaluationRoleVariant?: EvaluationRoleVariantV1;
   workspaceOptions?: WorkspaceSkillRegistryProviderOptions;
 }
 
@@ -114,6 +117,7 @@ function buildReadonlySkillRegistry(input: {
     EffectiveSkillCompositionResult,
     {validationState: 'passed'}
   >;
+  appliedOverlayIds?: Readonly<Record<string, readonly string[]>>;
   overlayGeneration: string;
 }): ReadonlySkillRegistrySnapshot {
   const skills = [...input.composition.skills];
@@ -156,7 +160,9 @@ function buildReadonlySkillRegistry(input: {
       return origin ? frozenJsonClone(origin) : undefined;
     },
     getAppliedOverlayIds(name: string): readonly string[] {
-      return input.composition.appliedOverlayIds[name] ?? [];
+      return input.appliedOverlayIds?.[name]
+        ?? input.composition.appliedOverlayIds[name]
+        ?? [];
     },
     getVendorOverride(skillId: string, vendor: string): VendorOverride | undefined {
       const override = vendorOverrides.get(skillId)
@@ -174,6 +180,91 @@ function buildReadonlySkillRegistry(input: {
   registryFingerprint = buildSkillRegistryAttribution(snapshot)
     .registryFingerprint;
   return snapshot;
+}
+
+function mergeAppliedOverlayIds(
+  common: Readonly<Record<string, readonly string[]>>,
+  role: Readonly<Record<string, readonly string[]>>,
+): Readonly<Record<string, readonly string[]>> {
+  const skillIds = new Set([...Object.keys(common), ...Object.keys(role)]);
+  return Object.fromEntries([...skillIds].sort().map(skillId => [
+    skillId,
+    [...(common[skillId] ?? []), ...(role[skillId] ?? [])],
+  ]));
+}
+
+function sameScope(
+  left: RunManifestScope,
+  right: RunManifestScope,
+): boolean {
+  return left.tenantId === right.tenantId
+    && left.workspaceId === right.workspaceId;
+}
+
+function applyEvaluationPhaseHintDeltas(input: {
+  snapshot: ReturnType<typeof buildStrategyRegistrySnapshot>;
+  variant: EvaluationRoleVariantV1;
+  overlayGeneration: string;
+}): ReturnType<typeof buildStrategyRegistrySnapshot> {
+  const byScene = new Map(
+    input.snapshot.getAllStrategies().map(definition => [
+      definition.scene,
+      definition,
+    ]),
+  );
+  const targetKeys = new Set<string>();
+  for (const delta of [...input.variant.phaseHintDeltas].sort((left, right) =>
+    left.scene.localeCompare(right.scene)
+    || left.hintId.localeCompare(right.hintId))) {
+    const targetKey = `${delta.scene}\0${delta.hintId}`;
+    if (targetKeys.has(targetKey)) {
+      throw new Error('evaluation_strategy_mutation_duplicate_target');
+    }
+    targetKeys.add(targetKey);
+    const definition = byScene.get(delta.scene);
+    if (!definition) {
+      throw new Error('evaluation_strategy_mutation_scene_missing');
+    }
+    const index = definition.phaseHints.findIndex(hint => hint.id === delta.hintId);
+    if (delta.op === 'add') {
+      if (index >= 0 || !delta.after || delta.after.id !== delta.hintId) {
+        throw new Error('evaluation_strategy_mutation_add_conflict');
+      }
+      byScene.set(delta.scene, {
+        ...definition,
+        phaseHints: [...definition.phaseHints, delta.after],
+      });
+      continue;
+    }
+    if (index < 0 || !delta.beforeContentHash) {
+      throw new Error('evaluation_strategy_mutation_target_missing');
+    }
+    if (
+      canonicalContentHash(definition.phaseHints[index])
+      !== delta.beforeContentHash
+    ) {
+      throw new Error('evaluation_strategy_mutation_before_hash_mismatch');
+    }
+    if (delta.op === 'modify') {
+      if (!delta.after || delta.after.id !== delta.hintId) {
+        throw new Error('evaluation_strategy_mutation_modify_invalid');
+      }
+      const phaseHints = [...definition.phaseHints];
+      phaseHints[index] = delta.after;
+      byScene.set(delta.scene, {...definition, phaseHints});
+    } else {
+      byScene.set(delta.scene, {
+        ...definition,
+        phaseHints: definition.phaseHints.filter(
+          hint => hint.id !== delta.hintId,
+        ),
+      });
+    }
+  }
+  return buildStrategyRegistrySnapshotFromDefinitions({
+    definitions: [...byScene.values()],
+    overlayGeneration: input.overlayGeneration,
+  });
 }
 
 function deriveOverlayGeneration(input: {
@@ -203,13 +294,65 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
   );
   const skillOverlays = input.skillOverlays ?? [];
   const strategyContributions = input.strategyContributions ?? [];
-  const composition = requireSuccessfulComposition(composeEffectiveSkills({
+  const commonComposition = requireSuccessfulComposition(composeEffectiveSkills({
     scope,
     baseSkills: baseHandle.registry.getAllSkills(),
     fragments: baseHandle.registry.getFragmentCache(),
     overlays: skillOverlays,
   }));
-  const affectedSkillIds = Object.keys(composition.appliedOverlayIds);
+  const baseStrategySnapshot = buildStrategyRegistrySnapshot({
+    scope,
+    overlayGeneration: 'building:base',
+  });
+  const commonStrategySnapshot = buildStrategyRegistrySnapshot({
+    scope,
+    overlayGeneration: 'building:common',
+    contributions: strategyContributions,
+  });
+  const commonOverlayGeneration = deriveOverlayGeneration({
+    scope,
+    baseSkillRegistryFingerprint: baseHandle.registryFingerprint,
+    baseStrategyRegistryFingerprint: baseStrategySnapshot.registryFingerprint,
+    compositionFingerprint: commonComposition.compositionFingerprint,
+    effectiveStrategyRegistryFingerprint:
+      commonStrategySnapshot.registryFingerprint,
+    hasContributions:
+      skillOverlays.length > 0 || strategyContributions.length > 0,
+  });
+  const commonSkillRegistry = buildReadonlySkillRegistry({
+    baseRegistry: baseHandle.registry,
+    composition: commonComposition,
+    appliedOverlayIds: commonComposition.appliedOverlayIds,
+    overlayGeneration: commonOverlayGeneration,
+  });
+  const variant = input.evaluationRoleVariant;
+  if (
+    variant
+    && (
+      !sameScope(variant.scope, scope)
+      || variant.baseSkillRegistryFingerprint
+        !== commonSkillRegistry.registryFingerprint
+      || variant.baseStrategyRegistryFingerprint
+        !== commonStrategySnapshot.registryFingerprint
+    )
+  ) {
+    throw new Error('evaluation_role_variant_base_mismatch');
+  }
+  const composition = variant
+    ? requireSuccessfulComposition(composeEffectiveSkills({
+        scope,
+        baseSkills: commonComposition.skills,
+        fragments: baseHandle.registry.getFragmentCache(),
+        overlays: variant.skillOverlays,
+      }))
+    : commonComposition;
+  const appliedOverlayIds = variant
+    ? mergeAppliedOverlayIds(
+        commonComposition.appliedOverlayIds,
+        composition.appliedOverlayIds,
+      )
+    : commonComposition.appliedOverlayIds;
+  const affectedSkillIds = Object.keys(appliedOverlayIds);
   if (affectedSkillIds.length > 0) {
     const validation = validateSkillDefinitionsInProcess({
       definitions: composition.skills,
@@ -227,22 +370,28 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
       ].filter(Boolean).join(':'));
     }
   }
-  const baseStrategySnapshot = buildStrategyRegistrySnapshot({
-    scope,
-    overlayGeneration: 'building:base',
-  });
   const composedStrategySnapshot = buildStrategyRegistrySnapshot({
     scope,
-    overlayGeneration: 'building:composed',
-    contributions: strategyContributions,
+    overlayGeneration: commonOverlayGeneration,
+    contributions: [
+      ...strategyContributions,
+      ...(variant?.strategyContributions ?? []),
+    ],
   });
+  const effectiveStrategySnapshot = variant
+    ? applyEvaluationPhaseHintDeltas({
+        snapshot: composedStrategySnapshot,
+        variant,
+        overlayGeneration: commonOverlayGeneration,
+      })
+    : composedStrategySnapshot;
   const baseStrategies = new Map(
     baseStrategySnapshot.getAllStrategies().map(definition => [
       definition.scene,
       definition,
     ]),
   );
-  const affectedScenes = composedStrategySnapshot.getAllStrategies()
+  const affectedScenes = effectiveStrategySnapshot.getAllStrategies()
     .filter(definition => {
       const base = baseStrategies.get(definition.scene);
       return !base
@@ -252,7 +401,7 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
     .map(definition => definition.scene);
   if (affectedScenes.length > 0) {
     const validation = validateStrategyDefinitionsInProcess({
-      definitions: composedStrategySnapshot.getAllStrategies(),
+      definitions: effectiveStrategySnapshot.getAllStrategies(),
       affectedScenes,
       knownSkillIds: new Set(
         composition.skills.map(definition => definition.name),
@@ -268,31 +417,35 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
       ].filter(Boolean).join(':'));
     }
   }
-  const overlayGeneration = deriveOverlayGeneration({
-    scope,
-    baseSkillRegistryFingerprint: baseHandle.registryFingerprint,
-    baseStrategyRegistryFingerprint: baseStrategySnapshot.registryFingerprint,
-    compositionFingerprint: composition.compositionFingerprint,
-    effectiveStrategyRegistryFingerprint:
-      composedStrategySnapshot.registryFingerprint,
-    hasContributions:
-      skillOverlays.length > 0 || strategyContributions.length > 0,
-  });
-  const strategyRegistry = buildStrategyRegistrySnapshot({
-    scope,
-    overlayGeneration,
-    contributions: strategyContributions,
-  });
+  const overlayGeneration = commonOverlayGeneration;
+  const strategyRegistry = effectiveStrategySnapshot;
   const skillRegistry = buildReadonlySkillRegistry({
     baseRegistry: baseHandle.registry,
     composition,
+    appliedOverlayIds,
     overlayGeneration,
   });
+  const evaluationTreatment = variant
+    ? Object.freeze({
+        artifactId: variant.artifactId,
+        treatmentGeneration: `evaluation:${canonicalContentHash({
+          declared: variant.treatmentGeneration,
+          materializedInputHash: variant.materializedInputHash,
+          effectiveSkillRegistryFingerprint: skillRegistry.registryFingerprint,
+          effectiveStrategyRegistryFingerprint:
+            strategyRegistry.registryFingerprint,
+        })}`,
+        materializedInputHash: variant.materializedInputHash,
+        effectiveSkillRegistryFingerprint: skillRegistry.registryFingerprint,
+        effectiveStrategyRegistryFingerprint: strategyRegistry.registryFingerprint,
+      })
+    : undefined;
   return Object.freeze({
     scope: deepFreeze({...scope}),
     baseSkillRegistryFingerprint: baseHandle.registryFingerprint,
     baseStrategyRegistryFingerprint: baseStrategySnapshot.registryFingerprint,
     overlayGeneration,
+    ...(evaluationTreatment ? {evaluationTreatment} : {}),
     skillRegistry,
     strategyRegistry,
   });
@@ -320,6 +473,9 @@ export function publishEffectiveRuntimeRegistrySnapshot(
 export async function getEffectiveRuntimeRegistrySnapshot(
   input: BuildEffectiveRuntimeRegistrySnapshotInput,
 ): Promise<EffectiveRuntimeRegistrySnapshot> {
+  if (input.evaluationRoleVariant) {
+    return buildEffectiveRuntimeRegistrySnapshot(input);
+  }
   return publishEffectiveRuntimeRegistrySnapshot(
     await buildEffectiveRuntimeRegistrySnapshot(input),
   );

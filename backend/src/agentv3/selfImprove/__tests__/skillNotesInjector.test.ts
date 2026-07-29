@@ -15,6 +15,19 @@ import {
   __testing,
 } from '../skillNotesInjector';
 import type { PersistedSkillNote } from '../skillNotesWriter';
+import {
+  assertEvaluationExposureMatchesContract,
+  commitEvaluationExposureSince,
+  createEvaluationRoleInjectionContract,
+  sealEvaluationExposureReceipt,
+  withEvaluationInjectionContext,
+} from '../../../services/selfEvolution/evaluationInjectionContext';
+import {
+  createEvaluationTreatmentArtifact,
+  evaluationSkillNoteInjectionContentHash,
+  resolveEvaluationRoleVariant,
+  withEvaluationRoleVariant,
+} from '../../../services/selfEvolution/evaluationTreatment';
 
 const sampleNote: PersistedSkillNote = {
   id: 'note-1',
@@ -170,5 +183,144 @@ describe('loadSkillNotes', () => {
     const merged = loadSkillNotes('s1', { runtimeDir, curatedDir });
     expect(merged).toHaveLength(1);
     expect(merged[0].id).toBe('shared-1');
+  });
+
+  it('materializes and selects the candidate note before a newer ambient note', async () => {
+    const evaluationNote = {
+      schemaVersion: 1 as const,
+      noteId: 'candidate-note',
+      content: `candidate-priority-${'c'.repeat(320)}`,
+      keywords: ['startup'],
+    };
+    const artifact = createEvaluationTreatmentArtifact({
+      artifactId: 'candidate-a',
+      scope: {tenantId: 'local', workspaceId: 'local'},
+      baseSkillRegistryFingerprint: 'a'.repeat(64),
+      baseStrategyRegistryFingerprint: 'b'.repeat(64),
+      entries: [{
+        kind: 'skill_note',
+        op: 'add',
+        skillId: 's1',
+        noteId: evaluationNote.noteId,
+        after: evaluationNote,
+      }],
+      createdAt: '2026-07-29T00:00:00.000Z',
+    });
+    const variant = resolveEvaluationRoleVariant({
+      artifact,
+      scope: artifact.scope,
+      baseSkillRegistryFingerprint: artifact.baseSkillRegistryFingerprint,
+      baseStrategyRegistryFingerprint:
+        artifact.baseStrategyRegistryFingerprint,
+    });
+    const evaluationRef = {
+      category: 'skillNotes' as const,
+      id: evaluationNote.noteId,
+      contentHash: evaluationSkillNoteInjectionContentHash(evaluationNote),
+    };
+    fs.writeFileSync(path.join(runtimeDir, 's1.notes.json'), JSON.stringify({
+      schemaVersion: 1,
+      skillId: 's1',
+      notes: [{
+        ...sampleNote,
+        id: 'newer-ambient-note',
+        evidenceSummary: `ambient-newer-${'a'.repeat(320)}`,
+        createdAt: Date.parse('2026-07-30T00:00:00.000Z'),
+      }],
+      lastUpdated: 0,
+      totalBytes: 0,
+    }));
+    const contract = createEvaluationRoleInjectionContract({
+      role: 'candidate',
+      mode: 'on',
+      selected: {
+        patterns: [],
+        skillNotes: [],
+        cases: [],
+        phaseHints: [],
+        knowledgeDocs: [],
+      },
+      reservedTreatmentNamespace: [evaluationRef],
+      expectedMaterializedRefs: [evaluationRef],
+      expectedObservedRefs: [{
+        ref: evaluationRef,
+        minimumGuarantee: 'sdk_handoff_observed',
+      }],
+      forbiddenObservedRefs: [],
+    });
+
+    const receipt = await withEvaluationRoleVariant(variant, () =>
+      withEvaluationInjectionContext({contract}, async () => {
+        const candidates = loadSkillNotes('s1', {runtimeDir, curatedDir});
+        const output = new SkillNotesBudget({mode: 'full'})
+          .tryConsume('s1', candidates);
+        expect(output?.text).toContain('candidate-priority');
+        expect(output?.text).not.toContain('ambient-newer');
+        commitEvaluationExposureSince(0, 'sdk_handoff_observed');
+        return sealEvaluationExposureReceipt();
+      }));
+
+    expect(() => assertEvaluationExposureMatchesContract({
+      contract,
+      receipt,
+    })).not.toThrow();
+  });
+
+  it('preserves non-semantic provenance when modifying a note', async () => {
+    const existing: PersistedSkillNote = {
+      ...sampleNote,
+      sourceSessionId: 'source-session',
+      sourceTurnIndex: 7,
+      failureModeHash: 'f'.repeat(64),
+    };
+    fs.writeFileSync(path.join(runtimeDir, 's1.notes.json'), JSON.stringify({
+      schemaVersion: 1,
+      skillId: 's1',
+      notes: [existing],
+      lastUpdated: 0,
+      totalBytes: 0,
+    }));
+    const replacement = {
+      schemaVersion: 1 as const,
+      noteId: existing.id,
+      content: 'Replacement evaluation note.',
+      keywords: ['replacement'],
+    };
+    const artifact = createEvaluationTreatmentArtifact({
+      artifactId: 'candidate-modify',
+      scope: {tenantId: 'local', workspaceId: 'local'},
+      baseSkillRegistryFingerprint: 'a'.repeat(64),
+      baseStrategyRegistryFingerprint: 'b'.repeat(64),
+      entries: [{
+        kind: 'skill_note',
+        op: 'modify',
+        skillId: 's1',
+        noteId: existing.id,
+        beforeContentHash: __testing.skillNoteContentHash(existing),
+        after: replacement,
+      }],
+      createdAt: '2026-07-29T00:00:00.000Z',
+    });
+    const variant = resolveEvaluationRoleVariant({
+      artifact,
+      scope: artifact.scope,
+      baseSkillRegistryFingerprint: artifact.baseSkillRegistryFingerprint,
+      baseStrategyRegistryFingerprint:
+        artifact.baseStrategyRegistryFingerprint,
+    });
+
+    const [materialized] = await withEvaluationRoleVariant(
+      variant,
+      async () => loadSkillNotes('s1', {runtimeDir, curatedDir}),
+    );
+    expect(materialized).toMatchObject({
+      id: existing.id,
+      evidenceSummary: replacement.content,
+      createdAt: existing.createdAt,
+      cooldownUntil: existing.cooldownUntil,
+      sourceSessionId: existing.sourceSessionId,
+      sourceTurnIndex: existing.sourceTurnIndex,
+    });
+    expect(materialized.failureModeHash).toBeUndefined();
   });
 });

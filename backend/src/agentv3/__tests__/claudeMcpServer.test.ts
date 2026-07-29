@@ -255,6 +255,13 @@ import {RagStore} from '../../services/ragStore';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {makeSparkProvenance} from '../../types/sparkContracts';
+import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
+import {
+  assertEvaluationExposureMatchesContract,
+  createEvaluationRoleInjectionContract,
+  sealEvaluationExposureReceipt,
+  withEvaluationInjectionContext,
+} from '../../services/selfEvolution/evaluationInjectionContext';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -4699,6 +4706,145 @@ describe('createClaudeMcpServer', () => {
         'Binder 线程池',
         {topK: 5},
       );
+    });
+  });
+
+  describe('evaluation knowledge isolation', () => {
+    function publicKnowledgeStore(lineRange: Record<string, unknown> = {
+      start: 1,
+      end: 2,
+    }) {
+      return {
+        search: jest.fn((query: string) => ({
+          ...makeSparkProvenance({source: 'knowledge-test'}),
+          query,
+          results: [{
+            chunkId: 'knowledge-chunk-a',
+            score: 1,
+            chunk: {
+              chunkId: 'knowledge-chunk-a',
+              kind: 'androidperformance.com',
+              uri: 'https://androidperformance.com/knowledge-a',
+              title: 'Knowledge A',
+              snippet: 'Public background knowledge.',
+              indexedAt: Date.now(),
+              lineRange,
+            },
+          }],
+          probed: ['androidperformance.com'],
+          retrievedAt: Date.now(),
+        })),
+      };
+    }
+
+    it('fails closed on a deep unknown field in a sanitized knowledge hit', async () => {
+      const {tools} = createTestServer({
+        ragStore: publicKnowledgeStore({
+          start: 1,
+          end: 2,
+          undeclared: 'must-not-cross-evaluation-boundary',
+        }),
+      });
+
+      await expect(callTool(tools, 'lookup_blog_knowledge', {
+        query: 'knowledge',
+      })).rejects.toThrow('evaluation_knowledge_payload_invalid');
+    });
+
+    it('drops a real lookup hit when the evaluation selector is off', async () => {
+      const contract = createEvaluationRoleInjectionContract({
+        role: 'baseline',
+        mode: 'off',
+        selected: {
+          patterns: [],
+          skillNotes: [],
+          cases: [],
+          phaseHints: [],
+          knowledgeDocs: [],
+        },
+        reservedTreatmentNamespace: [],
+        expectedMaterializedRefs: [],
+        expectedObservedRefs: [],
+        forbiddenObservedRefs: [],
+      });
+      const {tools} = createTestServer({
+        ragStore: publicKnowledgeStore(),
+      });
+
+      const {result, receipt} = await withEvaluationInjectionContext({
+        contract,
+      }, async () => {
+        const result = await callTool(tools, 'lookup_blog_knowledge', {
+          query: 'knowledge',
+        });
+        return {
+          result,
+          receipt: sealEvaluationExposureReceipt(),
+        };
+      });
+
+      expect(result).toEqual(expect.objectContaining({
+        hits: [],
+      }));
+      expect(receipt.observed).toEqual([]);
+    });
+
+    it('commits an allowed knowledge hit at the real MCP SDK handoff boundary', async () => {
+      const ref = {
+        category: 'knowledgeDocs' as const,
+        id: 'knowledge-chunk-a',
+        contentHash: canonicalContentHash({
+          chunkId: 'knowledge-chunk-a',
+          score: 1,
+          metadata: {
+            kind: 'androidperformance.com',
+            lineRange: {start: 1, end: 2},
+            title: 'Knowledge A',
+            uri: 'https://androidperformance.com/knowledge-a',
+          },
+          snippet: 'Public background knowledge.',
+        }),
+      };
+      const contract = createEvaluationRoleInjectionContract({
+        role: 'candidate',
+        mode: 'on',
+        selected: {
+          patterns: [],
+          skillNotes: [],
+          cases: [],
+          phaseHints: [],
+          knowledgeDocs: [],
+        },
+        reservedTreatmentNamespace: [ref],
+        expectedMaterializedRefs: [ref],
+        expectedObservedRefs: [{
+          ref,
+          minimumGuarantee: 'sdk_handoff_observed',
+        }],
+        forbiddenObservedRefs: [],
+      });
+      const {tools} = createTestServer({
+        ragStore: publicKnowledgeStore(),
+      });
+
+      const receipt = await withEvaluationInjectionContext({
+        contract,
+      }, async () => {
+        const result = await callTool(tools, 'lookup_blog_knowledge', {
+          query: 'knowledge',
+        });
+        expect(result.hits).toHaveLength(1);
+        return sealEvaluationExposureReceipt();
+      });
+
+      expect(() => assertEvaluationExposureMatchesContract({
+        contract,
+        receipt,
+      })).not.toThrow();
+      expect(receipt.observed[0]).toMatchObject({
+        ...ref,
+        guarantee: 'sdk_handoff_observed',
+      });
     });
   });
 

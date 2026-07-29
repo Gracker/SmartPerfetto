@@ -13,6 +13,10 @@ import {
   type RunStreamEvent,
 } from '@openai/agents';
 import OpenAI from 'openai';
+import {
+  commitEvaluationSdkHandoffIfActive,
+  recordEvaluationTokenDeltaIfPresent,
+} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
@@ -1230,15 +1234,18 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               controller.abort();
             }, OPENAI_PLAN_COMPLETE_IDLE_ABORT_MS);
           };
-          const runStream = () => runner.run(agent, currentInput, {
-              stream: true,
-              maxTurns: quickMode ? config.quickMaxTurns : config.maxTurns,
-              context: { signal: controller.signal },
-              signal: controller.signal,
-              ...(currentPreviousResponseId
-                ? { previousResponseId: currentPreviousResponseId }
-                : {}),
-            });
+          const runStream = () => {
+            commitEvaluationSdkHandoffIfActive();
+            return runner.run(agent, currentInput, {
+                stream: true,
+                maxTurns: quickMode ? config.quickMaxTurns : config.maxTurns,
+                context: { signal: controller.signal },
+                signal: controller.signal,
+                ...(currentPreviousResponseId
+                  ? { previousResponseId: currentPreviousResponseId }
+                  : {}),
+              });
+          };
           let stream!: Awaited<ReturnType<typeof runStream>>;
 
           let streamCompleted = false;
@@ -1271,6 +1278,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               }
               clearPlanCompleteIdleTimer();
               await stream.completed;
+              const evaluationUsage =
+                (stream as any).runContext?.usage
+                ?? (stream as any).context?.usage
+                ?? (stream as any).state?.usage;
+              recordEvaluationTokenDeltaIfPresent(evaluationUsage);
               streamCompleted = true;
             } catch (error) {
               if (!(isAbortLikeError(error) && (completedByPlanIdle || timedOut))) {

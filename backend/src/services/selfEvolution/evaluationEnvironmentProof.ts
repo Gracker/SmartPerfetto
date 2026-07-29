@@ -327,10 +327,24 @@ function environmentFingerprint(input: {
   pinned: EvalPinnedEnvironmentV1;
   providerSnapshotHash: string;
   providerMutationGenerationFingerprint: string;
-  injectionSetHash: string;
   injectionSelectorConfigFingerprint: string;
 }): string {
   return canonicalContentHash(input);
+}
+
+function injectionKeys(injections: RunInjectionAttribution): Set<string> {
+  return new Set(INJECTION_CATEGORIES.flatMap(category =>
+    injections[category].map(
+      ref => `${category}\0${ref.id}\0${ref.contentHash}`,
+    )));
+}
+
+function isInjectionSubset(
+  actual: RunInjectionAttribution,
+  allowed: RunInjectionAttribution,
+): boolean {
+  const allowedKeys = injectionKeys(allowed);
+  return [...injectionKeys(actual)].every(key => allowedKeys.has(key));
 }
 
 function proofContentHash(
@@ -399,9 +413,6 @@ export function captureEvaluationEnvironmentStart(
   assertProviderScope(input.scope, input.providerScope);
   const pinned = evalContractTesting.parsePinned(input.pinned);
   const scope = evalContractTesting.parseScope(input.scope);
-  if (pinned.providerId === null) {
-    throw new Error('evaluation_environment_managed_provider_required');
-  }
   const selector = normalizeEvaluationInjectionSelector(input.selector);
   if (pinned.injections !== selector.mode) {
     throw new Error('evaluation_environment_selector_mode_mismatch');
@@ -428,7 +439,6 @@ export function captureEvaluationEnvironmentStart(
       pinned,
       providerSnapshotHash: stable.snapshotHash,
       providerMutationGenerationFingerprint,
-      injectionSetHash,
       injectionSelectorConfigFingerprint: selectorFingerprint,
     }),
     capturedAt: input.capturedAt ?? new Date().toISOString(),
@@ -508,9 +518,6 @@ export function parseEvaluationEnvironmentStart(
       'evaluation_environment_content_hash_invalid',
     ),
   };
-  if (normalized.pinned.providerId === null) {
-    throw new Error('evaluation_environment_managed_provider_required');
-  }
   if (!Number.isFinite(Date.parse(normalized.capturedAt))) {
     throw new Error('evaluation_environment_captured_at_invalid');
   }
@@ -533,7 +540,6 @@ export function parseEvaluationEnvironmentStart(
     pinned: normalized.pinned,
     providerSnapshotHash: normalized.providerSnapshotHash,
     providerMutationGenerationFingerprint: generationFingerprint,
-    injectionSetHash,
     injectionSelectorConfigFingerprint:
       normalized.injectionSelectorConfigFingerprint,
   });
@@ -617,10 +623,17 @@ export function finalizeEvaluationEnvironmentProof(
   const actualInjections = normalizeRunInjections(manifest.injections);
   if (
     canonicalJsonString(actualPinned) !== canonicalJsonString(start.pinned)
-    || canonicalJsonString(actualInjections)
-      !== canonicalJsonString(start.injections)
   ) {
     throw new Error('evaluation_environment_run_manifest_environment_mismatch');
+  }
+  if (
+    (start.pinned.injections === 'off' && hasInjections(actualInjections))
+    || (
+      start.pinned.injections === 'selective'
+      && !isInjectionSubset(actualInjections, start.injections)
+    )
+  ) {
+    throw new Error('evaluation_environment_run_manifest_injections_mismatch');
   }
   const stable = stableProviderSnapshot({
     providerService: input.providerService,
@@ -657,7 +670,7 @@ export function finalizeEvaluationEnvironmentProof(
     providerMutationGenerationFingerprint:
       start.providerMutationGenerationFingerprint,
     injections: actualInjections,
-    injectionSetHash: start.injectionSetHash,
+    injectionSetHash: canonicalContentHash(actualInjections),
     injectionSelectorConfigFingerprint:
       start.injectionSelectorConfigFingerprint,
     environmentFingerprint: start.environmentFingerprint,
@@ -747,9 +760,6 @@ export function parseEvaluationEnvironmentProof(
       'evaluation_environment_content_hash_invalid',
     ),
   };
-  if (normalized.pinned.providerId === null) {
-    throw new Error('evaluation_environment_managed_provider_required');
-  }
   if (!Number.isFinite(Date.parse(normalized.capturedAt))) {
     throw new Error('evaluation_environment_captured_at_invalid');
   }
@@ -761,25 +771,16 @@ export function parseEvaluationEnvironmentProof(
     normalized.providerMutationGeneration,
   );
   const injectionSetHash = canonicalContentHash(normalized.injections);
-  const selectorFingerprint = canonicalContentHash(
-    normalizeEvaluationInjectionSelector({
-      schemaVersion: 1,
-      mode: normalized.pinned.injections,
-      selected: normalized.injections,
-    }),
-  );
   const expectedEnvironmentFingerprint = environmentFingerprint({
     pinned: normalized.pinned,
     providerSnapshotHash: normalized.providerSnapshotHash,
     providerMutationGenerationFingerprint: generationFingerprint,
-    injectionSetHash,
     injectionSelectorConfigFingerprint:
       normalized.injectionSelectorConfigFingerprint,
   });
   if (
     normalized.providerMutationGenerationFingerprint !== generationFingerprint
     || normalized.injectionSetHash !== injectionSetHash
-    || normalized.injectionSelectorConfigFingerprint !== selectorFingerprint
     || normalized.environmentFingerprint !== expectedEnvironmentFingerprint
   ) {
     throw new Error('evaluation_environment_proof_fingerprint_mismatch');

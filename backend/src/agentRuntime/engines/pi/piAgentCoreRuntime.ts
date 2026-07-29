@@ -13,6 +13,10 @@ import { sessionContextManager } from '../../../agent/context/enhancedSessionCon
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
+import {
+  commitEvaluationSdkHandoffIfActive,
+  recordEvaluationTokenDeltaIfPresent,
+} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {resolveEffectiveAnalysisMode} from '../../../services/effectiveAnalysisMode';
@@ -1109,6 +1113,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     this.activeAgents.set(sessionId, agent);
 
     const unsubscribe = agent.subscribe((event) => {
+      if (event.type === 'done') {
+        recordEvaluationTokenDeltaIfPresent(event.message);
+      }
       const update = projectPiAgentCoreEventToStreamingUpdate(event);
       if (update) this.emit('update', update);
     });
@@ -1125,6 +1132,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         },
         timestamp: Date.now(),
       });
+      commitEvaluationSdkHandoffIfActive();
       await agent.prompt(query);
     } finally {
       if (privateAnalysisContext) {
@@ -1310,6 +1318,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let correctedConclusion: string | undefined;
     const unsubscribe = agent.subscribe((event) => {
       if (event.type === 'turn_end') rounds++;
+      if (event.type === 'done') {
+        recordEvaluationTokenDeltaIfPresent(event.message);
+      }
       const update = projectPiAgentCoreEventToStreamingUpdate(event);
       if (correctionInProgress && update?.type === 'error') return;
       if (update) this.emit('update', update);
@@ -1330,6 +1341,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         },
         timestamp: Date.now(),
       });
+      commitEvaluationSdkHandoffIfActive();
       await agent.prompt(prep.prompt);
       while (finalReportContinuations < PI_AGENT_CORE_MAX_FINAL_REPORT_CONTINUATIONS) {
         const latestAssistant = latestAssistantMessage(agent.state.messages);
@@ -1370,6 +1382,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           },
           timestamp: Date.now(),
         });
+        commitEvaluationSdkHandoffIfActive();
         await agent.prompt(loadPiFinalReportContinuationPrompt(prep.analysisRunSpec.outputLanguage));
       }
 
@@ -1443,6 +1456,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               agent.state.systemPrompt = loadPiFinalReportCorrectionSystemPrompt(
                 prep.analysisRunSpec.outputLanguage,
               );
+              commitEvaluationSdkHandoffIfActive();
               await agent.prompt(generateCorrectionPrompt(
                 heuristicIssues,
                 baseConclusion,

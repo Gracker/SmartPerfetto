@@ -3,6 +3,7 @@
 
 import {jest} from '@jest/globals';
 
+import {buildStrategyRegistrySnapshot} from '../../../agentv3/strategyLoader';
 import type {SkillDefinition} from '../../skillEngine/types';
 import {getWorkspaceSkillRegistry} from '../../skillPacks/workspaceSkillRegistryProvider';
 import {
@@ -18,6 +19,11 @@ import {
 } from '../effectiveRuntimeRegistryProvider';
 import {fingerprintSkillDefinition} from '../skillFingerprint';
 import type {SkillOverlayDeltaV1} from '../../../types/selfEvolution';
+import {
+  createEvaluationTreatmentArtifact,
+  resolveEvaluationRoleVariant,
+} from '../evaluationTreatment';
+import {canonicalContentHash} from '../canonicalJson';
 
 jest.mock('../../skillPacks/workspaceSkillRegistryProvider', () => ({
   getWorkspaceSkillRegistry: jest.fn(),
@@ -69,7 +75,37 @@ function overlay(
 }
 
 function mockWorkspace(base: SkillDefinition): void {
-  const definitions = [base];
+  const referencedSkillIds = new Set<string>();
+  const strategies = buildStrategyRegistrySnapshot({
+    scope: scopeA,
+    overlayGeneration: 'test:base',
+  }).getAllStrategies();
+  for (const strategy of strategies) {
+    for (const content of [
+      strategy.content,
+      ...strategy.detailSections.map(section => section.content),
+      ...strategy.phaseHints.map(hint => hint.constraints),
+    ]) {
+      for (const match of content.matchAll(
+        /invoke_skill\(\s*["']([^"']+)["']/g,
+      )) {
+        referencedSkillIds.add(match[1]);
+      }
+    }
+  }
+  referencedSkillIds.delete(base.name);
+  const definitions = [
+    base,
+    ...[...referencedSkillIds].sort().map((name): SkillDefinition => ({
+      name,
+      version: '1',
+      type: 'pipeline_definition',
+      meta: {
+        display_name: `Referenced ${name}`,
+        description: 'Strategy-reference test fixture.',
+      },
+    })),
+  ];
   const registry = {
     isInitialized: () => true,
     getAllSkills: () => definitions,
@@ -244,5 +280,144 @@ describe('effective runtime registry provider', () => {
       expect(resolveEffectiveSkillRegistryForRuntime(fallback))
         .toBe(snapshot.skillRegistry);
     });
+  });
+
+  it('materializes role-only Skill and phase-hint mutations without changing the common generation', async () => {
+    const base = baseSkill();
+    mockWorkspace(base);
+    const common = await buildEffectiveRuntimeRegistrySnapshot({
+      scope: scopeA,
+    });
+    const strategy = common.strategyRegistry.getAllStrategies()[0];
+    expect(strategy).toBeDefined();
+    const existingHint = strategy.phaseHints[0];
+    expect(existingHint).toBeDefined();
+    const artifact = createEvaluationTreatmentArtifact({
+      artifactId: 'candidate-treatment-a',
+      scope: scopeA,
+      baseSkillRegistryFingerprint:
+        common.skillRegistry.registryFingerprint,
+      baseStrategyRegistryFingerprint:
+        common.strategyRegistry.registryFingerprint,
+      entries: [
+        {
+          kind: 'skill_overlay_delta',
+          overlay: overlay(base, 'candidate_overlay'),
+        },
+        {
+          kind: 'phase_hint_delta',
+          op: 'modify',
+          scene: strategy.scene,
+          hintId: existingHint.id,
+          beforeContentHash: canonicalContentHash(existingHint),
+          after: {
+            ...existingHint,
+            constraints: `${existingHint.constraints}\nCandidate-only constraint.`,
+          },
+        },
+      ],
+      createdAt: '2026-07-29T00:00:00.000Z',
+    });
+    const variant = resolveEvaluationRoleVariant({
+      artifact,
+      scope: scopeA,
+      baseSkillRegistryFingerprint:
+        common.skillRegistry.registryFingerprint,
+      baseStrategyRegistryFingerprint:
+        common.strategyRegistry.registryFingerprint,
+    });
+    const candidate = await buildEffectiveRuntimeRegistrySnapshot({
+      scope: scopeA,
+      evaluationRoleVariant: variant,
+    });
+
+    expect(candidate.overlayGeneration).toBe(common.overlayGeneration);
+    expect(candidate.evaluationTreatment).toMatchObject({
+      artifactId: artifact.artifactId,
+    });
+    expect(candidate.skillRegistry.getSkill(base.name)?.steps?.map(
+      step => step.id,
+    )).toContain('ovl_candidate_overlay_extra');
+    expect(candidate.strategyRegistry.getStrategy(strategy.scene)?.phaseHints
+      .find(hint => hint.id === existingHint.id)?.constraints)
+      .toContain('Candidate-only constraint.');
+    expect(common.skillRegistry.getSkill(base.name)?.steps?.map(
+      step => step.id,
+    )).toEqual(['base_step']);
+    expect(common.strategyRegistry.getStrategy(strategy.scene)?.phaseHints
+      .find(hint => hint.id === existingHint.id))
+      .toEqual(existingHint);
+
+    const productionAgain = await buildEffectiveRuntimeRegistrySnapshot({
+      scope: scopeA,
+    });
+    expect(productionAgain.skillRegistry.registryFingerprint)
+      .toBe(common.skillRegistry.registryFingerprint);
+    expect(productionAgain.strategyRegistry.registryFingerprint)
+      .toBe(common.strategyRegistry.registryFingerprint);
+  });
+
+  it('applies phase-hint add and remove operations to role snapshots', async () => {
+    const base = baseSkill();
+    mockWorkspace(base);
+    const common = await buildEffectiveRuntimeRegistrySnapshot({
+      scope: scopeA,
+    });
+    const strategy = common.strategyRegistry.getAllStrategies()[0];
+    const existingHint = strategy.phaseHints[0];
+
+    const buildRole = async (
+      artifactId: string,
+      entry: Parameters<typeof createEvaluationTreatmentArtifact>[0]['entries'][number],
+    ) => {
+      const artifact = createEvaluationTreatmentArtifact({
+        artifactId,
+        scope: scopeA,
+        baseSkillRegistryFingerprint:
+          common.skillRegistry.registryFingerprint,
+        baseStrategyRegistryFingerprint:
+          common.strategyRegistry.registryFingerprint,
+        entries: [entry],
+        createdAt: '2026-07-29T00:00:00.000Z',
+      });
+      return buildEffectiveRuntimeRegistrySnapshot({
+        scope: scopeA,
+        evaluationRoleVariant: resolveEvaluationRoleVariant({
+          artifact,
+          scope: scopeA,
+          baseSkillRegistryFingerprint:
+            common.skillRegistry.registryFingerprint,
+          baseStrategyRegistryFingerprint:
+            common.strategyRegistry.registryFingerprint,
+        }),
+      });
+    };
+    const added = await buildRole('candidate-add', {
+      kind: 'phase_hint_delta',
+      op: 'add',
+      scene: strategy.scene,
+      hintId: 'candidate_only_hint',
+      after: {
+        id: 'candidate_only_hint',
+        keywords: ['candidate'],
+        constraints: 'Candidate-only phase constraint.',
+        criticalTools: [],
+        critical: false,
+      },
+    });
+    expect(added.strategyRegistry.getStrategy(strategy.scene)?.phaseHints
+      .some(hint => hint.id === 'candidate_only_hint')).toBe(true);
+
+    const removed = await buildRole('candidate-remove', {
+      kind: 'phase_hint_delta',
+      op: 'remove',
+      scene: strategy.scene,
+      hintId: existingHint.id,
+      beforeContentHash: canonicalContentHash(existingHint),
+    });
+    expect(removed.strategyRegistry.getStrategy(strategy.scene)?.phaseHints
+      .some(hint => hint.id === existingHint.id)).toBe(false);
+    expect(common.strategyRegistry.getStrategy(strategy.scene)?.phaseHints
+      .some(hint => hint.id === existingHint.id)).toBe(true);
   });
 });

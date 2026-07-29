@@ -21,6 +21,10 @@ import {
 } from './caseEvolutionRuntimeMetrics';
 import {canonicalContentHash} from '../selfEvolution/canonicalJson';
 import {currentRunManifestAttributionSink} from '../selfEvolution/runManifestLifecycle';
+import {
+  isEvaluationInjectionAllowed,
+  registerEvaluationInjection,
+} from '../selfEvolution/evaluationInjectionContext';
 
 const TEMPLATE_NAMES: Record<OutputLanguage, {context: string; line: string}> = {
   'zh-CN': {
@@ -86,7 +90,19 @@ export function buildCaseBackgroundContext(
     topK: opts.topK ?? DEFAULT_TOP_K,
     knowledgeScope,
   });
-  if (cases.length === 0) return undefined;
+  const eligibleCases = cases.map(caseNode => ({
+    caseNode,
+    contentHash: canonicalContentHash({
+      title: caseNode.title,
+      status: caseNode.status,
+      knowledge: caseNode.knowledge,
+    }),
+  })).filter(entry => isEvaluationInjectionAllowed({
+    category: 'cases',
+    id: entry.caseNode.caseId,
+    contentHash: entry.contentHash,
+  }));
+  if (eligibleCases.length === 0) return undefined;
 
   const outputLanguage = opts.outputLanguage ?? 'zh-CN';
   const templateNames = TEMPLATE_NAMES[outputLanguage];
@@ -95,7 +111,9 @@ export function buildCaseBackgroundContext(
   const lineTemplate = templateLoader(templateNames.line);
   if (!template || !lineTemplate) return undefined;
   const context = renderTemplate(template, {
-    case_lines: cases.map(caseNode => formatCaseLine(caseNode, lineTemplate)).join('\n'),
+    case_lines: eligibleCases
+      .map(({caseNode}) => formatCaseLine(caseNode, lineTemplate))
+      .join('\n'),
   });
   const maxTokens = opts.maxTokens ?? DEFAULT_CASE_BACKGROUND_TOKEN_BUDGET;
   if (estimatePromptTokens(context) > maxTokens) {
@@ -103,15 +121,17 @@ export function buildCaseBackgroundContext(
     return undefined;
   }
   const sink = currentRunManifestAttributionSink();
-  for (const caseNode of cases) {
+  for (const {caseNode, contentHash} of eligibleCases) {
+    registerEvaluationInjection({
+      category: 'cases',
+      id: caseNode.caseId,
+      contentHash,
+      placement: 'system_prompt:case_background',
+    });
     sink?.recordInjection(
       'cases',
       caseNode.caseId,
-      canonicalContentHash({
-        title: caseNode.title,
-        status: caseNode.status,
-        knowledge: caseNode.knowledge,
-      }),
+      contentHash,
     );
   }
   recordCaseEvolutionPromptSegmentBuilt();

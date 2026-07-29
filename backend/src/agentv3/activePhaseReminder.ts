@@ -27,6 +27,15 @@ import { matchPhaseHintForNextPhase } from './phaseHintMatcher';
 import { getPhaseHints } from './strategyLoader';
 import type { AnalysisPlanV3 } from './types';
 import type { SceneType } from './sceneClassifier';
+import {
+  registerEvaluationInjection,
+} from '../services/selfEvolution/evaluationInjectionContext';
+import {
+  evaluationPhaseHintInjectionContentHash,
+} from '../services/selfEvolution/evaluationTreatment';
+import {
+  currentRunManifestAttributionSink,
+} from '../services/selfEvolution/runManifestLifecycle';
 
 export const REMINDER_PREFIX = '\n\n[计划提醒]';
 
@@ -65,6 +74,21 @@ export function buildActivePhaseReminder(
   if (!matched) {
     return `${REMINDER_PREFIX} 当前阶段「${activePhase.name}」: ${activePhase.goal}`.slice(0, 200);
   }
+  const contentHash = evaluationPhaseHintInjectionContentHash(matched);
+  const decision = registerEvaluationInjection({
+    category: 'phaseHints',
+    id: matched.id,
+    contentHash,
+    placement: 'active_phase_reminder',
+  });
+  if (!decision.allowed) {
+    return `${REMINDER_PREFIX} 当前阶段「${activePhase.name}」: ${activePhase.goal}`.slice(0, 200);
+  }
+  currentRunManifestAttributionSink()?.recordInjection(
+    'phaseHints',
+    matched.id,
+    contentHash,
+  );
 
   // Trim aggressively — this string lives at the tail of every full/rows
   // fetch_artifact response, and we'd rather drop the criticalTools list
