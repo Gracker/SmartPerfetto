@@ -13,7 +13,9 @@ import type {CurationProposalV1} from '../../../types/selfEvolution';
 import {PROPOSAL_GATE_IDS} from '../../../types/selfEvolution';
 import {canonicalContentHash, canonicalJsonString} from '../canonicalJson';
 import {
+  createProposalCandidateMaterializationV1,
   createProposalGateResultV1,
+  createProposalPairedReplayProofV1,
   parseCurationProposalV1,
   proposalDraftContentHash,
 } from '../proposalGateContract';
@@ -115,6 +117,73 @@ describe('ProposalStore M8 action saga', () => {
         expect.objectContaining({ordinal: 1, proposalRevision: 4}),
         expect.objectContaining({ordinal: 2, proposalRevision: 5}),
       ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('reloads authoritative candidate and paired evidence for apply', () => {
+    fs.rmSync(databasePath, {force: true});
+    const fixture = applicationGateFixture();
+    createM7Database(databasePath, fixture.proposal);
+    const store = new ProposalStore({databasePath});
+    try {
+      const database = new Database(databasePath);
+      try {
+        database.prepare(`
+          INSERT INTO proposal_gate_attempts (
+            attempt_id, attempt_ordinal, tenant_id, workspace_id,
+            proposal_id, draft_content_hash, gate_policy_fingerprint,
+            fence_token, state, verdict, started_at, completed_at,
+            gate_result_hash, gate_result_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', 'passed', ?, ?, ?, ?)
+        `).run(
+          fixture.proposal.gateResult!.gateAttemptId,
+          fixture.proposal.gateResult!.gateAttemptOrdinal,
+          scope.tenantId,
+          scope.workspaceId,
+          fixture.proposal.proposalId,
+          fixture.proposal.gateResult!.draftContentHash,
+          fixture.proposal.gateResult!.gatePolicyFingerprint,
+          'application-gate-fence',
+          fixture.proposal.gateResult!.startedAt,
+          fixture.proposal.gateResult!.completedAt,
+          fixture.proposal.gateResult!.contentHash,
+          canonicalJsonString(fixture.proposal.gateResult),
+        );
+        const insertEvidence = database.prepare(`
+          INSERT INTO proposal_gate_evidence (
+            attempt_id, evidence_kind, content_hash, artifact_json
+          ) VALUES (?, ?, ?, ?)
+        `);
+        insertEvidence.run(
+          fixture.proposal.gateResult!.gateAttemptId,
+          'candidate_materialization',
+          fixture.candidate.contentHash,
+          canonicalJsonString(fixture.candidate),
+        );
+        insertEvidence.run(
+          fixture.proposal.gateResult!.gateAttemptId,
+          'paired_replay',
+          fixture.pairedReplayProof.contentHash,
+          canonicalJsonString(fixture.pairedReplayProof),
+        );
+      } finally {
+        database.close();
+      }
+
+      store.accept(scope, fixture.proposal.proposalId);
+      expect(store.getApplicationGateEvidence(
+        scope,
+        fixture.proposal.proposalId,
+      )).toEqual({
+        candidate: fixture.candidate,
+        pairedReplayProof: fixture.pairedReplayProof,
+      });
+      expect(() => store.getApplicationGateEvidence(
+        {tenantId: 'other', workspaceId: scope.workspaceId},
+        fixture.proposal.proposalId,
+      )).toThrow('proposal_application_gate_evidence_invalid');
     } finally {
       store.close();
     }
@@ -397,6 +466,128 @@ function gatedProposal(): CurationProposalV1 {
     gateResult,
     status: 'gated',
   });
+}
+
+function applicationGateFixture() {
+  const draft = draftProposal();
+  const candidate = createProposalCandidateMaterializationV1({
+    proposalId: draft.proposalId,
+    proposalRevision: 1,
+    draftContentHash: proposalDraftContentHash(draft),
+    planContentHash: canonicalContentHash('application-plan'),
+    artifactId: 'application-candidate',
+    targetKind: 'skill_note',
+    serializedContent: 'bounded application candidate',
+  });
+  const pairedReplayProof = createProposalPairedReplayProofV1({
+    proposalId: draft.proposalId,
+    proposalRevision: 1,
+    gateAttemptId: 'attempt-application',
+    gateAttemptOrdinal: 1,
+    gatePolicyFingerprint: '8'.repeat(64),
+    draftContentHash: proposalDraftContentHash(draft),
+    candidateArtifactId: candidate.artifactId,
+    candidateMaterializationContentHash: candidate.contentHash,
+    runId: 'application-run',
+    runSpecContentHash: canonicalContentHash('application-run-spec'),
+    pinnedContentHash: canonicalContentHash('application-pinned'),
+    candidateContentHash: candidate.contentHash,
+    treatmentArtifactContentHash:
+      canonicalContentHash('application-treatment'),
+    materializedInputHash: canonicalContentHash('application-input'),
+    fullTreatmentContractHash:
+      canonicalContentHash('application-contract'),
+    caseContentHashes: [
+      {
+        caseId: 'validation-a',
+        split: 'validation',
+        contentHash: canonicalContentHash('validation-a'),
+      },
+      {
+        caseId: 'holdout-a',
+        split: 'holdout',
+        contentHash: canonicalContentHash('holdout-a'),
+      },
+    ],
+    publishedRecords: [
+      ['validation-a', 'baseline'],
+      ['validation-a', 'candidate'],
+      ['holdout-a', 'baseline'],
+      ['holdout-a', 'candidate'],
+    ].map(([caseId, role]) => ({
+      caseId,
+      role: role as 'baseline' | 'candidate',
+      resultRef: `${caseId}-${role}`,
+      contentHash: canonicalContentHash(`${caseId}-${role}`),
+    })),
+    attestationContentHashes: [
+      canonicalContentHash('application-validation-attestation'),
+      canonicalContentHash('application-holdout-attestation'),
+    ].sort(),
+    splitSummaries: [
+      applicationSplitSummary('validation'),
+      applicationSplitSummary('holdout'),
+    ],
+    epsilon: 0.02,
+    verdict: 'passed',
+  });
+  const planContentHash = canonicalContentHash('application-plan-evidence');
+  const checks = PROPOSAL_GATE_IDS.map((gateId, index) => ({
+    schemaVersion: 1 as const,
+    gateId,
+    verdict: 'passed' as const,
+    reasonCodes: [],
+    evidenceContentHashes: index === 1
+      ? [planContentHash]
+      : index === 4
+        ? [candidate.contentHash]
+        : index === 7
+          ? [pairedReplayProof.contentHash]
+          : [],
+    durationMs: 1,
+  }));
+  const gateResult = createProposalGateResultV1({
+    proposalId: draft.proposalId,
+    gateAttemptId: pairedReplayProof.gateAttemptId,
+    gateAttemptOrdinal: pairedReplayProof.gateAttemptOrdinal,
+    gatePolicyFingerprint: pairedReplayProof.gatePolicyFingerprint,
+    draftRevision: 1,
+    gatedRevision: 2,
+    draftContentHash: proposalDraftContentHash(draft),
+    startedAt: '2026-07-29T00:00:01.000Z',
+    completedAt: '2026-07-29T00:00:02.000Z',
+    checks,
+    overallVerdict: 'passed',
+    pairedGateVerdict: 'passed',
+    materializationPlanContentHash: planContentHash,
+    candidateMaterializationContentHash: candidate.contentHash,
+    pairedReplayProofContentHash: pairedReplayProof.contentHash,
+  });
+  return {
+    proposal: parseCurationProposalV1({
+      ...draft,
+      revision: 2,
+      pairedGateVerdict: 'passed',
+      gateResult,
+      status: 'gated',
+    }),
+    candidate,
+    pairedReplayProof,
+  };
+}
+
+function applicationSplitSummary(split: 'validation' | 'holdout') {
+  return {
+    split,
+    caseCount: 1,
+    baselineClaimVerifiedRatioMean: 1,
+    candidateClaimVerifiedRatioMean: 1,
+    baselineUnsupportedClaims: 0,
+    candidateUnsupportedClaims: 0,
+    baselineEvidenceAnchors: 1,
+    candidateEvidenceAnchors: 1,
+    verdict: 'passed' as const,
+  };
 }
 
 function createM7Database(

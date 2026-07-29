@@ -15,12 +15,18 @@ import type {
   AppliedProposalRevisionV1,
   CurationProposalV1,
   EvolutionOverlayPayloadV1,
+  ProposalPairedReplayProofV1,
   SelfEvolutionPersistenceCapability,
 } from '../../../types/selfEvolution';
 import {canonicalContentHash} from '../canonicalJson';
 import {
   createEvolutionOverlayArtifactV1,
 } from '../evolutionOverlayContract';
+import {
+  createEvaluationTreatmentArtifact,
+  evaluationFullTreatmentContractHash,
+  resolveEvaluationRoleVariant,
+} from '../evaluationTreatment';
 import {EvolutionOverlayArtifactStore} from '../evolutionOverlayArtifactStore';
 import {EvolutionOverlayRegistry} from '../evolutionOverlayRegistry';
 import {
@@ -30,6 +36,9 @@ import {
 } from '../effectiveRuntimeRegistryProvider';
 import {OverlayReconciler} from '../overlayReconciler';
 import {ProposalApplicationService} from '../proposalApplicationService';
+import {
+  createProposalCandidateMaterializationV1,
+} from '../proposalGateContract';
 import type {ProposalStore} from '../proposalStore';
 import {fingerprintSkillDefinition} from '../skillFingerprint';
 
@@ -204,6 +213,45 @@ describe('OverlayReconciler', () => {
     const overlayId = 'overlay_apply_revert';
     const proposalId = `proposal_${overlayId}`;
     const artifact = artifactFor(overlayId, 'applied_tag');
+    const candidate = createProposalCandidateMaterializationV1({
+      proposalId,
+      proposalRevision: 1,
+      draftContentHash: 'a'.repeat(64),
+      planContentHash: 'b'.repeat(64),
+      artifactId: `candidate:${proposalId}`,
+      targetKind: 'skill_overlay',
+      serializedContent: 'candidate',
+    });
+    const treatment = createEvaluationTreatmentArtifact({
+      artifactId: candidate.artifactId,
+      sourceCandidateContentHash: candidate.contentHash,
+      scope,
+      baseSkillRegistryFingerprint: 'c'.repeat(64),
+      baseStrategyRegistryFingerprint: 'd'.repeat(64),
+      entries: [{
+        kind: 'skill_overlay_delta',
+        overlay: artifact.payload.payloadKind === 'skill_delta'
+          ? artifact.payload.skillOverlay
+          : failUnexpectedPayload(),
+      }],
+      createdAt: '2026-07-29T00:00:00.000Z',
+    });
+    const roleVariant = resolveEvaluationRoleVariant({
+      artifact: treatment,
+      scope,
+      baseSkillRegistryFingerprint:
+        treatment.baseSkillRegistryFingerprint,
+      baseStrategyRegistryFingerprint:
+        treatment.baseStrategyRegistryFingerprint,
+    });
+    const pairedReplayProof = {
+      candidateContentHash: candidate.contentHash,
+      candidateMaterializationContentHash: candidate.contentHash,
+      treatmentArtifactContentHash: treatment.contentHash,
+      materializedInputHash: roleVariant.materializedInputHash,
+      fullTreatmentContractHash:
+        evaluationFullTreatmentContractHash(roleVariant),
+    } as ProposalPairedReplayProofV1;
     let proposal = {
       proposalId,
       revision: 3,
@@ -287,6 +335,10 @@ describe('OverlayReconciler', () => {
       finalizeActionRecord: () => undefined,
       listAppliedRevisions: () => revisions,
       getAction: () => undefined,
+      getApplicationGateEvidence: () => ({
+        candidate,
+        pairedReplayProof,
+      }),
     } as unknown as ProposalStore;
     const reconcile = new OverlayReconciler({
       registry,
@@ -306,12 +358,67 @@ describe('OverlayReconciler', () => {
       artifactStore,
       reconciler: reconcile,
       authorize: () => undefined,
-      materializeArtifacts: () => [artifact],
+      materializeArtifacts: () => ({
+        candidate,
+        treatment,
+        artifacts: [artifact],
+      }),
       now: (() => {
         let now = 20;
         return () => now++;
       })(),
     });
+
+    const mismatchedService = new ProposalApplicationService({
+      proposalStore,
+      overlayRegistry: registry,
+      artifactStore,
+      reconciler: reconcile,
+      authorize: () => undefined,
+      materializeArtifacts: () => ({
+        candidate,
+        treatment,
+        artifacts: [artifactFor(overlayId, 'tampered_tag')],
+      }),
+    });
+    await expect(mismatchedService.apply({
+      actionId: 'invalid_action',
+      scope,
+      proposalId,
+      actor: {userId: 'maintainer'},
+    })).rejects.toThrow(
+      'proposal_application_treatment_payload_mismatch',
+    );
+
+    const unboundTreatment = createEvaluationTreatmentArtifact({
+      artifactId: treatment.artifactId,
+      sourceCandidateContentHash: treatment.sourceCandidateContentHash,
+      scope,
+      baseSkillRegistryFingerprint:
+        treatment.baseSkillRegistryFingerprint,
+      baseStrategyRegistryFingerprint:
+        treatment.baseStrategyRegistryFingerprint,
+      entries: treatment.entries,
+      createdAt: '2026-07-29T00:00:01.000Z',
+    });
+    const unboundService = new ProposalApplicationService({
+      proposalStore,
+      overlayRegistry: registry,
+      artifactStore,
+      reconciler: reconcile,
+      authorize: () => undefined,
+      materializeArtifacts: () => ({
+        candidate,
+        treatment: unboundTreatment,
+        artifacts: [artifact],
+      }),
+    });
+    await expect(unboundService.apply({
+      actionId: 'unbound_action',
+      scope,
+      proposalId,
+      actor: {userId: 'maintainer'},
+    })).rejects.toThrow('proposal_application_gate_binding_mismatch');
 
     await service.apply({
       actionId: 'apply_action',
@@ -446,6 +553,10 @@ function baseSkill(): SkillDefinition {
       sql: 'SELECT 1 AS value',
     }],
   };
+}
+
+function failUnexpectedPayload(): never {
+  throw new Error('expected_skill_delta_payload');
 }
 
 function persistence(root: string): SelfEvolutionPersistenceCapability {

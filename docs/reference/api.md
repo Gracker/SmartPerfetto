@@ -392,6 +392,36 @@ Admin path: `/api/admin`
 | `POST` | `/strategies/reload` | 重新加载策略 |
 | `GET` | `/self-improve/metrics` | 自改进指标 |
 
+## Self-Evolution Admin API
+
+Base path: `/api/admin/self-evolution`
+
+所有端点都使用标准 SmartPerfetto 鉴权和请求 scope。提案、operation、overlay 与对账
+结果按 `tenantId + workspaceId` 隔离。
+
+| 方法 | 路径 | RBAC | 说明 |
+|---|---|---|---|
+| `GET` | `/overview` | `self_evolution:read` | 生效/请求配置、持久化、提案/overlay/operation、generation、对账与 L2 状态 |
+| `GET` | `/proposals` | `self_evolution:read` | 当前 workspace 的提案列表 |
+| `GET` | `/proposals/:proposalId` | `self_evolution:read` | 提案、最近 gate attempt 和 applied revisions |
+| `POST` | `/operations/curation` | `self_evolution:curate` | 显式启动一次有界策展，返回 `202 {operationId}` |
+| `GET` | `/operations/:operationId/events` | `self_evolution:curate` | SSE replay + live progress；终态后结束 |
+| `POST` | `/proposals/:proposalId/gate` | `self_evolution:curate` | 运行固定 validation + holdout paired evaluation |
+| `POST` | `/proposals/:proposalId/accept` | `self_evolution:curate` | 人工接受已通过 gate 的提案 |
+| `POST` | `/proposals/:proposalId/reject` | `self_evolution:curate` | 人工拒绝提案 |
+| `POST` | `/proposals/:proposalId/export` | `self_evolution:export` | 生成本地去标识 contribution bundle，不上传 |
+| `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | 应用已接受提案；body 必须包含唯一 `actionId` |
+| `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | 回滚已应用提案；body 必须包含唯一 `actionId` |
+| `GET` | `/overlays` | `self_evolution:read` | 当前 workspace 的 overlay registry entries |
+| `GET` | `/reconciliation` | `self_evolution:read` | 最近 upgrade reconciliation report |
+
+控制面默认关闭。`SELF_EVOLUTION_ENABLED=true` 才允许策展/gate/接受/拒绝/导出；
+apply/revert 还要求 `SELF_EVOLUTION_APPLY=true` 和可写、包外 user data root。依赖
+不成立时返回 `503` 并保持 fail-closed；operation 容量耗尽返回 `429`；状态冲突返回
+`409`。浏览器必须用 `fetch()` 消费 SSE，确保 Authorization 与 workspace header
+继续发送。每个 tenant/workspace 最多同时运行 4 个策展 operation、保留 20 个，
+单次运行最长 5 分钟；scope 或全局容量耗尽都返回 `429`。
+
 ## Provider Manager API
 
 Legacy base path: `/api/v1/providers`。新集成优先使用

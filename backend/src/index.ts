@@ -25,6 +25,7 @@ import templateAnalysisRoutes from './routes/templateAnalysisRoutes';
 import skillRoutes from './routes/skillRoutes';
 import skillAdminRoutes from './routes/skillAdminRoutes';
 import strategyAdminRoutes from './routes/strategyAdminRoutes';
+import selfEvolutionAdminRoutes from './routes/selfEvolutionAdminRoutes';
 import reportRoutes from './routes/reportRoutes';
 import agentRoutes from './routes/agentRoutes';
 import providerRoutes from './routes/providerRoutes';
@@ -89,6 +90,9 @@ import {startTraceProcessorLeaseSupervisor} from './services/traceProcessorLease
 import {
   initializeSelfEvolutionLifecycle,
 } from './services/selfEvolution/selfEvolutionLifecycle';
+import {
+  closeSelfEvolutionAdminService,
+} from './services/selfEvolution/selfEvolutionAdminRuntime';
 import {
   reconcileSelfEvolutionOnStartup,
 } from './services/selfEvolution/selfEvolutionStartup';
@@ -246,6 +250,7 @@ app.use('/api/skills', rejectEnterpriseUnscopedApi, skillRoutes);
 app.use('/api/admin/runtime', enterpriseRuntimeDashboardRoutes);
 app.use('/api/admin', skillAdminRoutes);
 app.use('/api/admin', strategyAdminRoutes);
+app.use('/api/admin/self-evolution', selfEvolutionAdminRoutes);
 app.use(
   '/api/reports',
   markLegacyApi(
@@ -394,6 +399,9 @@ function gracefulShutdown(signal: string) {
 
   console.log('🧹 Stopping trace processor lease supervisor...');
   traceProcessorLeaseSupervisorHandle?.stop();
+
+  console.log('🧬 Closing self-evolution admin control plane...');
+  closeSelfEvolutionAdminService();
   const closedEventStreams = activeHttpResponses.closeEventStreams();
   if (closedEventStreams > 0) {
     console.log(`📡 Closed ${closedEventStreams} active SSE connection(s).`);

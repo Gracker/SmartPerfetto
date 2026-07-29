@@ -393,6 +393,40 @@ Admin path: `/api/admin`
 | `POST` | `/strategies/reload` | Reload strategies |
 | `GET` | `/self-improve/metrics` | Self-improvement metrics |
 
+## Self-Evolution Admin API
+
+Base path: `/api/admin/self-evolution`
+
+Every endpoint uses standard SmartPerfetto authentication and request scope.
+Proposals, operations, overlays, and reconciliation results are isolated by
+`tenantId + workspaceId`.
+
+| Method | Path | RBAC | Purpose |
+|---|---|---|---|
+| `GET` | `/overview` | `self_evolution:read` | Effective/requested config, persistence, proposal/overlay/operation counts, generation, reconciliation, and L2 status |
+| `GET` | `/proposals` | `self_evolution:read` | List proposals in the current workspace |
+| `GET` | `/proposals/:proposalId` | `self_evolution:read` | Proposal, latest gate attempt, and applied revisions |
+| `POST` | `/operations/curation` | `self_evolution:curate` | Explicitly start one bounded curation run; returns `202 {operationId}` |
+| `GET` | `/operations/:operationId/events` | `self_evolution:curate` | SSE replay plus live progress; closes after a terminal event |
+| `POST` | `/proposals/:proposalId/gate` | `self_evolution:curate` | Run fixed validation + holdout paired evaluation |
+| `POST` | `/proposals/:proposalId/accept` | `self_evolution:curate` | Human-accept a proposal that passed its gate |
+| `POST` | `/proposals/:proposalId/reject` | `self_evolution:curate` | Human-reject a proposal |
+| `POST` | `/proposals/:proposalId/export` | `self_evolution:export` | Create a local deidentified contribution bundle; never uploads |
+| `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | Apply an accepted proposal; body requires a unique `actionId` |
+| `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | Revert an applied proposal; body requires a unique `actionId` |
+| `GET` | `/overlays` | `self_evolution:read` | Overlay registry entries for the current workspace |
+| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report |
+
+The control plane is off by default. `SELF_EVOLUTION_ENABLED=true` is required
+for curation/gate/accept/reject/export. Apply/revert additionally require
+`SELF_EVOLUTION_APPLY=true` and a writable user data root outside the package.
+Unsatisfied dependencies return `503` and stay fail-closed; operation capacity
+returns `429`; state conflicts return `409`. Browser clients must consume SSE
+with `fetch()` so Authorization and workspace headers remain attached.
+Each tenant/workspace may run at most four curation operations concurrently
+and retain 20 operations; one operation may run for at most five minutes.
+Exhausting either scoped or process-wide capacity returns `429`.
+
 ## Provider Manager API
 
 Legacy base path: `/api/v1/providers`. New integrations should prefer

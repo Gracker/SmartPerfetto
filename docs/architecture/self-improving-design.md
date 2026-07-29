@@ -1,7 +1,7 @@
 # Self-Improving 运行契约
 
-**状态**：部分能力已接入生产路径，其余组件默认关闭或尚未接入
-**最后核对**：2026-07-28
+**状态**：Self-Evolution V1 已接入生产控制面并默认关闭；legacy 组件边界见下文
+**最后核对**：2026-07-29
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
 Self-Improving 的目标是让历史分析结果在受控边界内改善后续分析，同时不把模型输出
@@ -20,9 +20,66 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | Legacy ReviewWorker | 组件和单测存在，未接入应用启动 | `SELF_IMPROVE_REVIEW_ENABLED` 只影响已显式构造的 worker |
 | Strategy auto-patch | 组件和单测存在，未接入应用启动 | 不读取 `SELF_IMPROVE_AUTOPATCH_ENABLED`，不能作为产品能力启用 |
 | Skill SQL auto-patch | 不支持 | 没有生产入口，不允许模型直接修改 Skill SQL |
+| Self-Evolution manifest / feedback / eval corpus | 已接入，默认关闭 | `SELF_EVOLUTION_ENABLED=true`；private feedback 与 public curation 物理隔离 |
+| 显式策展与提案生命周期 | 已接入，默认关闭 | 只处理 effective public feedback；每次人工触发最多生成一个有界提案 |
+| 固定 paired evaluation gate | 已接入，默认关闭 | 所有 evidence run 必须共享同一 pinned 环境，再运行 baseline/candidate；validation 与 holdout 都不可缺失 |
+| Overlay apply / reconcile / rollback | 已接入，默认关闭且 fail-closed | 还需 `SELF_EVOLUTION_APPLY=true` 和可写、包外 user data root |
+| 管理 API、SSE 与 UI | 已接入 | 独立 RBAC；设置页 `自进化 / Evolution` 控制台 |
+| 贡献包导出 | 已接入 | 只允许 public evidence；持久化去标识 artifact，不自动上传 |
+| 外部 L2 judge | 未配置 | 必须逐次明确授权；当前没有环境变量、provider 调用或后台任务 |
 
 “组件存在”不等于“产品已启用”。对外说明、配置示例和运维判断必须以上表和
 `backend/src/index.ts` 的实际启动链为准。
+
+## Self-Evolution V1 控制闭环
+
+生产路径保持“统计假设”和“上线资格”分离：
+
+```text
+public feedback
+  -> explicit bounded curation
+  -> draft proposal
+  -> fixed validation + holdout paired replay
+  -> human accept or reject
+  -> optional deidentified local contribution bundle
+  -> explicit apply
+  -> immutable overlay artifact + generation publish
+  -> reconciliation / explicit revert
+```
+
+在线反馈统计只用于形成 `hypothesis_only` 提案，不能替代 paired replay。评测固定
+runtime、provider、model、output language、tool allowlist、registry fingerprint 和
+overlay generation；baseline 与 candidate 使用同一 case 集、预算和并发策略。任何一侧
+失败、case split 缺失、registry 漂移或持久化不可用都会阻止 gate/apply。
+
+提案状态按 revision 单向推进：
+
+```text
+draft(1) -> gated(2) -> accepted|rejected(3)
+accepted(3) -> applied(4) -> reverted(5)
+```
+
+apply/revert 使用调用方提供的幂等 `actionId`，经 proposal action saga、artifact store、
+overlay registry 和 reconciler 发布 generation。启动或升级时会再次对账；孤儿、
+fingerprint drift、验证失败和 publish failure 都进入 reconciliation report，不会静默
+继续生效。apply 前会从持久化 Gate attempt 重新加载候选物化与 paired replay proof，
+复验候选、treatment artifact、完整 treatment contract，并要求 overlay payload 与
+treatment entries 一一对应；调用方临时构造的任意 artifact 不能越过该绑定。
+
+### 隐私、授权与 RBAC
+
+- private feedback 写入独立路径，策展源只打开 public effective feedback；
+- `self_evolution:read` 读取 overview、提案、overlay 和对账；
+- `self_evolution:curate` 显式启动策展、读取该 scope 的 SSE、运行 gate 和接受/拒绝；
+- `self_evolution:export`、`self_evolution:apply`、`self_evolution:revert` 相互独立；
+- 操作与 SSE 按 tenant/workspace 隔离；每个 scope 最多同时运行 4 个并保留 20 个，
+  单次最长 5 分钟，终态事件最多保留 15 分钟；进程内最多保留 100 个 operation，
+  每个最多 64 个事件；
+- contribution bundle 只落本地、去标识且要求所有 evidence run 都来自 public
+  effective feedback；不会自动提交到仓库或远端；
+- L2 judge 当前固定返回 `not_configured /
+  explicit_external_judge_consent_required`。增加外部 judge 前必须设计版本化 rubric、
+  采样/争议策略和逐次明确授权，不能复用普通 provider 同意。
 
 ## 已接入的生产数据流
 
@@ -134,6 +191,12 @@ supersede、phase-hint renderer 和 worktree runner。这些是可测试组件�
 | Runtime Skill Notes | backend runtime logs/data path | 不进 git |
 | Curated Skill Notes | `backend/skills/curated_skill_notes/` | 人工晋升并随代码评审 |
 | Phase hint templates | `backend/strategies/phase_hint_templates/` | 受控模板，不是自由 YAML patch |
+| Run manifests | user data `self_improve/run_manifests.db` | scope/run 身份与 pinned runtime 事实源 |
+| Feedback event/index | user data `self_improve/` 下的 public/private 日志与 `feedback_index.db` | append-only 事件；private 目录不进入策展 |
+| Eval corpus | user data `self_improve/eval.db` 与 `eval-corpus/` | immutable case artifact 与 split 元数据 |
+| Proposals / gate attempts | user data `self_improve/proposals.db` | revision、gate session、channel artifact 和 action saga |
+| Overlay artifacts / registry | user data `self_improve/overlays/objects/` 与 `evolution_registry.db` | content-addressed artifact、generation 与 reconciliation |
+| Contribution bundles | user data `self_improve/contribution-bundles/` | 本地去标识归档；不自动上传 |
 
 SQLite 路径通过 `backendDataPath()` 解析，不应从进程 cwd 拼接。写入使用事务/原子替换、
 lease 和有界重试；损坏或未初始化的可选 store 不能让主分析路径崩溃。私有分析输出必须
@@ -149,8 +212,20 @@ curl -H "Authorization: Bearer $SMARTPERFETTO_API_KEY" \
   http://localhost:3000/api/admin/self-improve/metrics
 ```
 
-该端点聚合 pattern、Skill Notes、legacy outbox/supersede 和 Case Evolution 状态。它是
-观测面，不会自动启用组件。响应中的 warning 需要结合当前 flag 与启动日志判断。
+该端点继续使用既有 `audit:read` 权限，并向原响应追加 `selfEvolution.operational`，
+聚合 proposal/overlay/generation/reconciliation、运行中 operation 和 L2 judge 状态。
+它是观测面，不会自动启用组件。响应中的 warning 需要结合当前 flag 与启动日志判断。
+
+Self-Evolution 控制面使用单独 base path：
+
+```text
+/api/admin/self-evolution
+```
+
+浏览器入口位于 **AI Assistant Settings → 自进化 / Evolution**。SSE 客户端使用
+`fetch()` 读取流，以便继续发送 Authorization 与 workspace headers；不要改成无法携带
+这些 header 的原生 `EventSource`。运维端点和 RBAC 矩阵见
+[API 参考](../reference/api.md)。
 
 历史 pattern 的一次性迁移：
 
@@ -173,6 +248,9 @@ npm run self-improve:migrate-failure-mode-hash -- --apply
 | Case Evolution 配置与 worker | `backend/src/services/caseEvolution/` |
 | Worker 启动/停止 | `backend/src/index.ts` |
 | 指标端点 | `backend/src/routes/strategyAdminRoutes.ts` |
+| Self-Evolution lifecycle / stores / gate / overlay | `backend/src/services/selfEvolution/` |
+| Self-Evolution 管理控制面 | `backend/src/routes/selfEvolutionAdminRoutes.ts` |
+| Self-Evolution UI | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/self_evolution_*` |
 
 新增 flag 或生产入口时，必须先改配置解析/校验和生命周期测试，再更新本文；不要在文档里
 声明源码没有读取的环境变量。
@@ -185,9 +263,14 @@ Self-Improving 或 Case Evolution 改动至少按影响面运行：
 cd backend
 npm run typecheck
 npx jest --runInBand src/agentv3/selfImprove
+npx jest --runInBand src/services/selfEvolution
 npx jest --runInBand src/services/caseEvolution
 npm run test:scene-trace-regression
 ```
+
+控制台 UI 改动还要运行 Perfetto UI typecheck/相关 unit tests，在
+`./scripts/start-dev.sh` 中完成浏览器验证，再用 `./scripts/update-frontend.sh`
+更新仓库根目录的 committed prebuild。
 
 Strategy/Skill 或公开证据合约变化还要遵守
 [测试规则](../../.claude/rules/testing.md)和

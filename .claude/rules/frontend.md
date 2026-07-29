@@ -20,6 +20,8 @@ Key files:
 - `session_manager.ts`: localStorage session persistence.
 - `assistant_command_bus.ts`: cross-component command bus.
 - `provider_panel.ts`, `provider_form.ts`, `provider_switcher.ts`: provider UI.
+- `self_evolution_api.ts`, `self_evolution_panel.ts`: scoped Self-Evolution
+  admin client and control-plane UI.
 - `comparison_state_manager.ts`: reference trace comparison state.
 - `critical_path_extension.ts`: selected-slice critical path UI extension.
 - `ai_area_selection_tab.ts`: area/range selection workflow.
@@ -91,6 +93,24 @@ The plugin talks to `/api/agent/v1/*`.
 - Mode/provider changes that alter SDK context must start a fresh backend agent
   session instead of reusing a session with incompatible turn budgets or
   provider state.
+- The Self-Evolution admin stream is under
+  `/api/admin/self-evolution/operations/:operationId/events`. Consume it with
+  `fetch()` plus a bounded incremental parser, not native `EventSource`, because
+  backend Authorization and workspace headers are mandatory.
+
+## Self-Evolution UI
+
+- Bind the panel to the saved backend URL and credential. If connection edits
+  are unsaved, keep reads on the saved backend and disable mutations.
+- Render requested/effective flags, persistence failure reason, proposal
+  lifecycle/diff, overlay state, reconciliation identity, and the explicit
+  external-judge consent status. Do not imply that a requested flag is
+  effective.
+- Gate, accept/reject, contribution export, apply, and revert remain distinct
+  human actions. Disable impossible actions for the known lifecycle state, but
+  treat backend RBAC/state checks as authoritative.
+- Keep dynamic counts tabular, dense lists separated by dividers, and action
+  hit areas at least 40px. Avoid nested decorative cards and `transition: all`.
 
 ## UI Implementation Conventions
 

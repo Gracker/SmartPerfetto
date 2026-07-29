@@ -20,7 +20,13 @@ Claude Code、OpenAI Agents SDK、Pi Agent Core、OpenCode 和 Qoder Agent SDK �
 
 如果一个第三方 provider 同时给了 Claude-compatible 和 OpenAI-compatible 两组 endpoint，UI 里可以保存两组地址和同一个共享 key，但运行时仍只会激活其中一侧。只用 `.env` 时，解注释 Claude-compatible block 或 OpenAI-compatible block 其中一个；不要为了“更完整”把两边都打开。
 
-Perfetto UI 的 AI Assistant 设置面板分为两类配置：`Connection` 页配置 SmartPerfetto 后端地址，`Providers` 页配置模型 provider profile。`Connection` 页里的高级 backend auth token 是可选项，只在后端启动时设置了 `SMARTPERFETTO_API_KEY` 才需要填写；它不是第三方大模型 provider key。模型 provider 凭证可以来自 Claude Code 本地配置、下面的后端/Docker env 文件，也可以通过前端 `Providers` 页写入后端 Provider Manager。
+Perfetto UI 的 AI Assistant 设置面板包含 `Connection`、`Providers`、`Codebases` 和
+`自进化 / Evolution`。前两页分别配置 SmartPerfetto 后端和模型 provider profile；
+Codebases 管理 code-aware 数据源；自进化页只操作当前已保存后端的受控
+Self-Evolution 工作流。`Connection` 页里的高级 backend auth token 是可选项，只在后端
+启动时设置了 `SMARTPERFETTO_API_KEY` 才需要填写；它不是第三方大模型 provider key。
+模型 provider 凭证可以来自 Claude Code 本地配置、下面的后端/Docker env 文件，也可以
+通过前端 `Providers` 页写入后端 Provider Manager。
 
 初学者优先走 UI，最不容易混淆：
 
@@ -46,6 +52,29 @@ cp backend/.env.example backend/.env
 ```bash
 cp .env.example .env
 ```
+
+## Self-Evolution（默认关闭）
+
+Self-Evolution 不会因为已有反馈或已配置 provider 自动启用。源码当前只读取下面两个
+Self-Evolution 专用开关：
+
+```bash
+# 允许人工显式触发 public feedback 策展、固定 paired evaluation 和提案审阅。
+SELF_EVOLUTION_ENABLED=true
+
+# 允许人工 apply/revert；必须同时启用上面的总开关。
+SELF_EVOLUTION_APPLY=true
+```
+
+两个开关默认都是 `false`。只启用 `SELF_EVOLUTION_ENABLED` 可以策展、运行 gate、
+接受/拒绝与查看结果，但不能 apply/revert。`SELF_EVOLUTION_APPLY=true` 还要求通用
+user data root 可写、位于程序包之外并满足当前分发方式的持久化检查；否则启动会把
+effective apply 降为关闭，API 返回 `503`，不会退回包内临时目录。
+
+设置后重启后端，在 **AI Assistant Settings → 自进化 / Evolution** 查看 requested /
+effective 状态。操作权限独立使用 `self_evolution:read`、`curate`、`export`、`apply`
+和 `revert`。private feedback 永远不进入策展；贡献包只写本地且不会自动上传。
+外部 L2 judge 当前未配置，也没有额外环境变量；未来接入必须逐次明确授权。
 
 npm CLI 不使用 Web UI 的 `Connection` 配置。第一次用 CLI 时，推荐运行：
 

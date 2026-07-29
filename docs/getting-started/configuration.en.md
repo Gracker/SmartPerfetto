@@ -20,7 +20,15 @@ Claude Code, OpenAI Agents SDK, Pi Agent Core, OpenCode, and Qoder Agent SDK are
 
 If a third-party provider exposes both Claude-compatible and OpenAI-compatible endpoints, the UI can store both endpoints and one shared key, but only one side is active at runtime. With `.env` only, uncomment either the Claude-compatible block or the OpenAI-compatible block; do not enable both just to be "complete."
 
-The AI Assistant settings panel in Perfetto UI has two configuration areas: the `Connection` tab configures the SmartPerfetto backend URL, and the `Providers` tab configures model-provider profiles. The advanced backend auth token on the `Connection` tab is optional; fill it only when the backend was started with `SMARTPERFETTO_API_KEY`. It is not a model-provider key field. Model-provider credentials can come from Claude Code local config, from the backend/Docker env files below, or from Provider Manager profiles created in the frontend.
+The AI Assistant settings panel in Perfetto UI contains `Connection`,
+`Providers`, `Codebases`, and `Evolution`. The first two configure the
+SmartPerfetto backend and model-provider profiles; Codebases manages code-aware
+sources; Evolution operates the controlled Self-Evolution workflow on the
+currently saved backend. The advanced backend auth token on the `Connection`
+tab is optional; fill it only when the backend was started with
+`SMARTPERFETTO_API_KEY`. It is not a model-provider key field. Model-provider
+credentials can come from Claude Code local config, from the backend/Docker env
+files below, or from Provider Manager profiles created in the frontend.
 
 For beginners, the UI path is the least ambiguous:
 
@@ -46,6 +54,36 @@ If you choose the Docker env-file path, both Docker Hub images and local source 
 ```bash
 cp .env.example .env
 ```
+
+## Self-Evolution (off by default)
+
+Existing feedback or a configured provider never enables Self-Evolution
+automatically. The source currently reads only these two
+Self-Evolution-specific switches:
+
+```bash
+# Allow humans to explicitly curate public feedback, run fixed paired
+# evaluation, and review proposals.
+SELF_EVOLUTION_ENABLED=true
+
+# Allow human apply/revert; the root switch above is also required.
+SELF_EVOLUTION_APPLY=true
+```
+
+Both default to `false`. Enabling only `SELF_EVOLUTION_ENABLED` allows
+curation, gate execution, accept/reject, and observation, but not apply/revert.
+`SELF_EVOLUTION_APPLY=true` additionally requires the general user data root to
+be writable, outside the package, and valid for the current distribution. If
+that persistence check fails, startup downgrades effective apply to off and the
+API returns `503`; it never falls back to a package-local temporary directory.
+
+Restart the backend after changing these values, then inspect requested and
+effective state under **AI Assistant Settings → Evolution**. Operations use
+separate `self_evolution:read`, `curate`, `export`, `apply`, and `revert`
+permissions. Private feedback never enters curation; contribution bundles are
+local-only and are never uploaded automatically. No external L2 judge is
+configured and there is no additional environment variable for one; any future
+integration requires per-use explicit consent.
 
 npm CLI does not use the Web UI `Connection` settings. For first-time CLI setup, run:
 

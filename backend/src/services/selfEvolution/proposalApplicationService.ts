@@ -7,22 +7,39 @@ import type {
   CurationProposalV1,
   EvolutionOverlayArtifactV1,
   EvolutionRollbackReceiptV1,
+  ProposalCandidateMaterializationV1,
   ProposalActionRecordV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
 import {canonicalContentHash} from './canonicalJson';
 import {
   createEvolutionRollbackReceiptV1,
+  createEvolutionOverlayPayloadFromTreatmentEntry,
   parseEvolutionOverlayArtifactV1,
 } from './evolutionOverlayContract';
+import {
+  evaluationFullTreatmentContractHash,
+  parseEvaluationTreatmentArtifact,
+  resolveEvaluationRoleVariant,
+  type EvaluationTreatmentArtifactV1,
+} from './evaluationTreatment';
 import {EvolutionOverlayArtifactStore} from './evolutionOverlayArtifactStore';
 import {EvolutionOverlayRegistry} from './evolutionOverlayRegistry';
 import type {OverlayReconciler} from './overlayReconciler';
+import {
+  parseProposalCandidateMaterializationV1,
+} from './proposalGateContract';
 import type {ProposalStore} from './proposalStore';
 
 export type ProposalApplicationPermission =
   | 'self_evolution:apply'
   | 'self_evolution:revert';
+
+export interface ProposalApplicationMaterializationV1 {
+  candidate: ProposalCandidateMaterializationV1;
+  treatment: EvaluationTreatmentArtifactV1;
+  artifacts: EvolutionOverlayArtifactV1[];
+}
 
 export interface ProposalApplicationServiceOptions {
   proposalStore: ProposalStore;
@@ -35,7 +52,8 @@ export interface ProposalApplicationServiceOptions {
   ): void;
   materializeArtifacts(
     proposal: CurationProposalV1,
-  ): EvolutionOverlayArtifactV1[] | Promise<EvolutionOverlayArtifactV1[]>;
+  ): ProposalApplicationMaterializationV1
+    | Promise<ProposalApplicationMaterializationV1>;
   now?: () => number;
 }
 
@@ -64,11 +82,19 @@ export class ProposalApplicationService {
     if (proposal.tier === 'T4' || proposal.tier === 'T5a') {
       throw new Error('proposal_runtime_apply_forbidden');
     }
-    const artifacts = (await this.options.materializeArtifacts(proposal))
+    const materialization =
+      await this.options.materializeArtifacts(proposal);
+    const artifacts = materialization.artifacts
       .map(parseEvolutionOverlayArtifactV1);
     if (artifacts.length === 0) {
       throw new Error('proposal_overlay_artifact_missing');
     }
+    assertMaterializationBoundToGate({
+      materialization,
+      artifacts,
+      proposal,
+      proposalStore: this.options.proposalStore,
+    });
     for (const artifact of artifacts) {
       assertArtifactBoundToProposal(artifact, proposal);
       this.options.artifactStore.put(artifact);
@@ -344,5 +370,58 @@ function assertArtifactBoundToProposal(
     || artifact.provenance.gateVerdict !== 'passed'
   ) {
     throw new Error('proposal_overlay_artifact_binding_invalid');
+  }
+}
+
+function assertMaterializationBoundToGate(input: {
+  materialization: ProposalApplicationMaterializationV1;
+  artifacts: EvolutionOverlayArtifactV1[];
+  proposal: CurationProposalV1;
+  proposalStore: ProposalStore;
+}): void {
+  const candidate = parseProposalCandidateMaterializationV1(
+    input.materialization.candidate,
+  );
+  const treatment = parseEvaluationTreatmentArtifact(
+    input.materialization.treatment,
+  );
+  const evidence = input.proposalStore.getApplicationGateEvidence(
+    input.proposal.scope,
+    input.proposal.proposalId,
+  );
+  const roleVariant = resolveEvaluationRoleVariant({
+    artifact: treatment,
+    scope: input.proposal.scope,
+    baseSkillRegistryFingerprint:
+      treatment.baseSkillRegistryFingerprint,
+    baseStrategyRegistryFingerprint:
+      treatment.baseStrategyRegistryFingerprint,
+  });
+  if (
+    candidate.contentHash !== evidence.candidate.contentHash
+    || treatment.sourceCandidateContentHash !== candidate.contentHash
+    || treatment.contentHash
+      !== evidence.pairedReplayProof.treatmentArtifactContentHash
+    || roleVariant.materializedInputHash
+      !== evidence.pairedReplayProof.materializedInputHash
+    || evaluationFullTreatmentContractHash(roleVariant)
+      !== evidence.pairedReplayProof.fullTreatmentContractHash
+  ) {
+    throw new Error('proposal_application_gate_binding_mismatch');
+  }
+  const expectedPayloadHashes = treatment.entries
+    .map(createEvolutionOverlayPayloadFromTreatmentEntry)
+    .map(canonicalContentHash)
+    .sort();
+  const actualPayloadHashes = input.artifacts
+    .map(artifact => canonicalContentHash(artifact.payload))
+    .sort();
+  if (
+    expectedPayloadHashes.length !== actualPayloadHashes.length
+    || expectedPayloadHashes.some(
+      (value, index) => value !== actualPayloadHashes[index],
+    )
+  ) {
+    throw new Error('proposal_application_treatment_payload_mismatch');
   }
 }

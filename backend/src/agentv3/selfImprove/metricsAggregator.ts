@@ -31,6 +31,9 @@ import { backendLogPath } from '../../runtimePaths';
 import {
   getSelfEvolutionLifecycleSnapshot,
 } from '../../services/selfEvolution/selfEvolutionLifecycle';
+import {
+  collectSelfEvolutionAdminOperationalMetrics,
+} from '../../services/selfEvolution/selfEvolutionAdminRuntime';
 import type {
   SelfEvolutionLifecycleSnapshot,
   SelfEvolutionMetrics,
@@ -69,6 +72,10 @@ export interface FeedbackMetrics {
   negative: number;
 }
 
+export type SelfEvolutionOperationalMetrics = ReturnType<
+  typeof collectSelfEvolutionAdminOperationalMetrics
+>;
+
 export interface SelfImproveMetrics {
   collectedAt: number;
   patterns: {
@@ -85,7 +92,9 @@ export interface SelfImproveMetrics {
   feedback: FeedbackMetrics;
   /** Active analyze() snapshots — surfaced so memory leaks are visible. */
   activeRunSnapshots: number;
-  selfEvolution: SelfEvolutionMetrics;
+  selfEvolution: SelfEvolutionMetrics & {
+    operational: SelfEvolutionOperationalMetrics | null;
+  };
   /** Errors that happened during aggregation. Empty array on a clean run. */
   warnings: string[];
 }
@@ -102,6 +111,8 @@ export function collectSelfImproveMetrics(opts: {
   reviewOutboxDbPath?: string;
   supersedeDbPath?: string;
   selfEvolutionSnapshot?: SelfEvolutionLifecycleSnapshot;
+  selfEvolutionOperationalMetrics?:
+    () => SelfEvolutionOperationalMetrics;
 } = {}): SelfImproveMetrics {
   const warnings: string[] = [];
 
@@ -159,11 +170,40 @@ export function collectSelfImproveMetrics(opts: {
     skillNotes,
     feedback,
     activeRunSnapshots: runSnapshots.size(),
-    selfEvolution: selfEvolutionMetrics(
-      opts.selfEvolutionSnapshot ?? getSelfEvolutionLifecycleSnapshot(),
-    ),
+    selfEvolution: {
+      ...selfEvolutionMetrics(
+        opts.selfEvolutionSnapshot ?? getSelfEvolutionLifecycleSnapshot(),
+      ),
+      operational: readSelfEvolutionOperationalMetrics(
+        opts.selfEvolutionOperationalMetrics,
+        opts.knowledgeScope,
+        warnings,
+      ),
+    },
     warnings,
   };
+}
+
+function readSelfEvolutionOperationalMetrics(
+  injected: (() => SelfEvolutionOperationalMetrics) | undefined,
+  knowledgeScope: KnowledgeScope | undefined,
+  warnings: string[],
+): SelfEvolutionOperationalMetrics | null {
+  try {
+    if (injected) return injected();
+    const scope = resolveKnowledgeScope(knowledgeScope);
+    return collectSelfEvolutionAdminOperationalMetrics({
+      tenantId: scope.tenantId,
+      workspaceId: scope.workspaceId,
+    });
+  } catch (error) {
+    warnings.push(
+      `failed to read self-evolution operations: ${
+        (error as Error).message
+      }`,
+    );
+    return null;
+  }
 }
 
 function countEffectiveFeedback(

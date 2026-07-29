@@ -120,6 +120,31 @@ Tool visibility is request-shaped:
 - External/public contracts should be derived from the registry view, not from
   an old static tool list.
 
+## Self-Evolution Control Plane
+
+- `backend/src/services/selfEvolution/` owns manifests, feedback isolation,
+  evaluation corpus, proposal lifecycle, paired replay, overlay artifacts,
+  generation publishing, reconciliation, contribution bundles, and rollback.
+- `backend/src/routes/selfEvolutionAdminRoutes.ts` is the only HTTP control
+  plane. Keep handlers thin and preserve separate
+  `self_evolution:read|curate|export|apply|revert` permissions.
+- Curation is explicit and public-feedback-only. Private feedback must never
+  enter proposal evidence, contribution bundles, metrics detail, or an
+  external judge.
+- Online feedback statistics are hypothesis generation only. Apply eligibility
+  requires the fixed validation + holdout baseline/candidate replay and human
+  acceptance.
+- `SELF_EVOLUTION_ENABLED` and `SELF_EVOLUTION_APPLY` default off. Apply/revert
+  must fail closed unless effective apply is enabled and persistent user data
+  outside the package is available.
+- Keep operation streams scope-bound and bounded. Browser consumers require
+  fetch-based SSE so Authorization and workspace headers remain attached.
+- Contribution export creates a local deidentified artifact and never uploads,
+  commits, opens a PR, or changes the TypeScript runtime.
+- External L2 judge use requires a versioned rubric, sampled/disputed routing,
+  and explicit per-use consent. Do not infer consent from Provider Manager or
+  add an undocumented environment switch.
+
 ## Analysis Options Propagation
 
 `agentRoutes.ts` passes options into `orchestrator.analyze(...)` through an

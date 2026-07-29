@@ -78,6 +78,40 @@ describe('collectSelfImproveMetrics', () => {
       reviewOutboxDbPath: path.join(tmp, 'stores', 'review.db'),
       supersedeDbPath: path.join(tmp, 'stores', 'supersede.db'),
       selfEvolutionSnapshot: selfEvolutionSnapshot(),
+      selfEvolutionOperationalMetrics: () => ({
+        proposalCounts: {
+          draft: 1,
+          gated: 0,
+          accepted: 0,
+          applied: 0,
+          rejected: 0,
+          reverted: 0,
+        },
+        overlayCounts: {
+          total: 0,
+          effective: 0,
+          byActivationState: {
+            active: 0,
+            inactive: 0,
+            quarantined: 0,
+            obsolete: 0,
+            disabled: 0,
+          },
+          byValidationState: {
+            pending: 0,
+            passed: 0,
+            failed: 0,
+            error: 0,
+          },
+        },
+        generationHead: null,
+        latestReconciliationContentHash: null,
+        activeOperations: 0,
+        l2Judge: {
+          status: 'not_configured' as const,
+          reason: 'explicit_external_judge_consent_required' as const,
+        },
+      }),
     };
   }
 
@@ -97,6 +131,14 @@ describe('collectSelfImproveMetrics', () => {
       migration: 'not_attempted_persistence_unavailable',
       migrationErrorCode: 'test_migration_error',
       lastReconciledBuildIdentity: null,
+      operational: {
+        proposalCounts: {draft: 1},
+        activeOperations: 0,
+        l2Judge: {
+          status: 'not_configured',
+          reason: 'explicit_external_judge_consent_required',
+        },
+      },
     });
     expect(fs.existsSync(path.join(tmp, 'stores'))).toBe(false);
   });

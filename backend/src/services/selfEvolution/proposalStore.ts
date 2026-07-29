@@ -13,6 +13,7 @@ import type {
   CurationProposalV1,
   ProposalActionFailureClass,
   ProposalActionRecordV1,
+  ProposalCandidateMaterializationV1,
   ProposalGateCheckV1,
   ProposalGateResultV1,
   ProposalGateVerdict,
@@ -104,6 +105,11 @@ export interface ProposalGateAttemptRecordV1 {
   verdict?: Exclude<ProposalGateVerdict, 'not_run'>;
   gateResult?: ProposalGateResultV1;
   completedAt?: string;
+}
+
+export interface ProposalApplicationGateEvidenceV1 {
+  candidate: ProposalCandidateMaterializationV1;
+  pairedReplayProof: ProposalPairedReplayProofV1;
 }
 
 interface GateAttemptRow {
@@ -1008,6 +1014,73 @@ export class ProposalStore {
       proposalId,
     ) as GateAttemptRow | undefined;
     return row ? gateAttemptRecord(row) : undefined;
+  }
+
+  getApplicationGateEvidence(
+    scope: RunManifestScope,
+    proposalId: string,
+  ): ProposalApplicationGateEvidenceV1 {
+    const proposal = this.get(scope, proposalId);
+    const gateResult = proposal?.gateResult;
+    if (
+      !proposal
+      || proposal.status !== 'accepted'
+      || proposal.revision !== 3
+      || proposal.pairedGateVerdict !== 'passed'
+      || gateResult?.overallVerdict !== 'passed'
+      || gateResult.pairedGateVerdict !== 'passed'
+      || !gateResult.candidateMaterializationContentHash
+      || !gateResult.pairedReplayProofContentHash
+    ) {
+      throw new Error('proposal_application_gate_evidence_invalid');
+    }
+    const attempt = this.db.prepare(`
+      SELECT gate_result_hash
+      FROM proposal_gate_attempts
+      WHERE attempt_id = ?
+        AND tenant_id = ?
+        AND workspace_id = ?
+        AND proposal_id = ?
+        AND state = 'completed'
+        AND verdict = 'passed'
+    `).get(
+      gateResult.gateAttemptId,
+      scope.tenantId,
+      scope.workspaceId,
+      proposalId,
+    ) as {gate_result_hash: string | null} | undefined;
+    if (attempt?.gate_result_hash !== gateResult.contentHash) {
+      throw new Error('proposal_application_gate_evidence_invalid');
+    }
+    const evidence = this.loadGateEvidence(gateResult.gateAttemptId);
+    const candidate = evidence.get('candidate_materialization') as
+      ProposalCandidateMaterializationV1 | undefined;
+    const pairedReplayProof = evidence.get('paired_replay') as
+      ProposalPairedReplayProofV1 | undefined;
+    if (
+      !candidate
+      || !pairedReplayProof
+      || candidate.proposalId !== proposalId
+      || candidate.draftContentHash !== gateResult.draftContentHash
+      || candidate.contentHash
+        !== gateResult.candidateMaterializationContentHash
+      || pairedReplayProof.proposalId !== proposalId
+      || pairedReplayProof.gateAttemptId !== gateResult.gateAttemptId
+      || pairedReplayProof.gateAttemptOrdinal
+        !== gateResult.gateAttemptOrdinal
+      || pairedReplayProof.gatePolicyFingerprint
+        !== gateResult.gatePolicyFingerprint
+      || pairedReplayProof.draftContentHash !== gateResult.draftContentHash
+      || pairedReplayProof.candidateMaterializationContentHash
+        !== candidate.contentHash
+      || pairedReplayProof.candidateContentHash !== candidate.contentHash
+      || pairedReplayProof.contentHash
+        !== gateResult.pairedReplayProofContentHash
+      || pairedReplayProof.verdict !== 'passed'
+    ) {
+      throw new Error('proposal_application_gate_evidence_invalid');
+    }
+    return immutableCanonicalSnapshot({candidate, pairedReplayProof});
   }
 
   getLatestRepositoryTargetBinding(
