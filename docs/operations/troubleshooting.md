@@ -189,6 +189,35 @@ Docker Hub 和普通 source Docker build 都消费提交的 `frontend/`，不要
 
 确认普通源码路径正常后再回到 Docker；只有修改 Perfetto UI plugin 时才使用 `./scripts/start-dev.sh`。
 
+## Self-Evolution 不可用或没有提案
+
+先进入 **AI Assistant Settings → 自进化 / Evolution**，区分 requested config、
+effective config、权限和持久化状态：
+
+- 页面显示默认关闭：部署环境没有设置 `SELF_EVOLUTION_ENABLED=true`。已有 feedback
+  或 provider 不会自动打开它。
+- 策展可用但 apply/revert 关闭：确认同时设置
+  `SELF_EVOLUTION_APPLY=true`，并重启后端。
+- API 返回 `503`：查看 persistence reason。`external_data_dir_not_configured`
+  表示没有显式配置 `SMARTPERFETTO_BACKEND_DATA_DIR`；
+  `data_root_inside_package` 表示目录仍在程序包内；
+  `docker_data_root_not_mounted` 表示 Docker 路径不是持久化挂载。
+- API 返回 `403`：当前身份缺少对应的 `self_evolution:*` 权限。Analyst 只能 read；
+  企业 API key、SSO 和其他生产身份应检查持久化 roles/scopes 绑定。部署运维者的
+  `SMARTPERFETTO_API_KEY` 是例外：它是默认拥有 `org_admin` 与 `*` 的 bootstrap
+  凭据，不应分发给终端用户。
+- 策展完成但没有提案：只有 effective public feedback 会进入策展，单条反馈或
+  private feedback 不保证产生提案。这不是运行失败。
+- gate 变为 inconclusive/pending：provider、model、config、registry、case split、
+  budget 或 materialized treatment 已变化，旧 proof 不能复用；在固定环境中重新 gate。
+- apply 后新分析未使用 overlay：检查 generation、overlay validation/activation 和
+  reconciliation report。已有 run 固定旧 snapshot，只有新 run 读取新 generation。
+
+外部 L2 judge 当前应显示
+`not_configured / explicit_external_judge_consent_required`；这表示没有外部调用，
+不是 provider 配置错误。完整流程与验收矩阵见
+[Self-Evolution 使用与验收](../getting-started/self-evolution.md)。
+
 ## Skill 校验失败
 
 运行：

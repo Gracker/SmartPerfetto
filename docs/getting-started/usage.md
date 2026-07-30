@@ -26,6 +26,23 @@ SmartPerfetto 最适合 Android 12+ trace，尤其是包含 FrameTimeline 数据
 
 智能模式会先返回“场景盘点”，按时间顺序列出 trace 中识别到的启动、滑动、点击、导航、设备状态、ANR 等场景，并显示可深钻的范围按钮。选择“全部”或某一类场景后，才会进入对应的启动/滑动/点击等深钻分析。
 
+## Self-Evolution 管理流程
+
+Self-Evolution 默认关闭，不影响上面的分析步骤。完成公开分析后，普通用户可以使用
+勾/叉反馈；有权限的管理员可进入 **AI Assistant Settings → 自进化 / Evolution**
+查看状态并显式启动策展。
+
+控制台中的标准顺序是：
+
+```text
+策展 -> gate -> 检查 before/after 与证据 -> accept/reject
+     -> 可选 export -> apply -> 新分析验证 -> revert
+```
+
+没有足够有效公开反馈时，“无提案”是正常结果。private feedback 不会进入策展；
+apply/revert 还要求部署者启用专用开关和包外持久化目录。完整权限、故障与验收步骤见
+[Self-Evolution 使用与验收](self-evolution.md)。
+
 ## 常见问题模板
 
 ```text

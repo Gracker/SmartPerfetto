@@ -167,6 +167,44 @@ events.
 `code: "FEATURE_DISABLED"` means `FEATURE_AGENT_SCENE_RECONSTRUCT` is disabled
 in this environment.
 
+## Self-Evolution Is Unavailable Or Has No Proposal
+
+Open **AI Assistant Settings -> Evolution** and distinguish requested config,
+effective config, permissions, and persistence:
+
+- The panel says off by default: the deployment does not set
+  `SELF_EVOLUTION_ENABLED=true`. Existing feedback or a provider never enables
+  it automatically.
+- Curation works but apply/revert is off: also set
+  `SELF_EVOLUTION_APPLY=true` and restart the backend.
+- The API returns `503`: inspect the persistence reason.
+  `external_data_dir_not_configured` means
+  `SMARTPERFETTO_BACKEND_DATA_DIR` was not explicitly configured;
+  `data_root_inside_package` means it is still inside the package; and
+  `docker_data_root_not_mounted` means the Docker path is not a persistent
+  mount.
+- The API returns `403`: the identity lacks the corresponding
+  `self_evolution:*` permission. Analysts are read-only; inspect the durable
+  roles/scopes binding for enterprise API keys, SSO, and other production
+  identities. The deployment operator's `SMARTPERFETTO_API_KEY` is the
+  exception: it is a bootstrap credential with `org_admin` and `*` by default
+  and must not be distributed to end users.
+- Curation completes without a proposal: only effective public feedback enters
+  curation. One item or private feedback does not guarantee a proposal; this is
+  not a runtime failure.
+- A gate becomes inconclusive/pending: provider, model, config, registry, case
+  split, budget, or materialized treatment changed. Old proof cannot be reused;
+  run the gate again in a fixed environment.
+- A new analysis does not use an applied overlay: inspect generation, overlay
+  validation/activation, and reconciliation. An existing run pins its old
+  snapshot; only a new run resolves the new generation.
+
+The external L2 judge should currently report
+`not_configured / explicit_external_judge_consent_required`. That means no
+external call is made; it is not a provider configuration failure. See
+[Self-Evolution Usage And Acceptance](../getting-started/self-evolution.en.md)
+for the full workflow and acceptance matrix.
+
 ## Skill Validation Fails
 
 ```bash

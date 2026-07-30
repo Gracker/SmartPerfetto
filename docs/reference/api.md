@@ -422,6 +422,13 @@ apply/revert 还要求 `SELF_EVOLUTION_APPLY=true` 和可写、包外 user data 
 继续发送。每个 tenant/workspace 最多同时运行 4 个策展 operation、保留 20 个，
 单次运行最长 5 分钟；scope 或全局容量耗尽都返回 `429`。
 
+默认 RBAC 中 Analyst 只有 `self_evolution:read`；Workspace Admin 和 Org Admin
+拥有 curate/export/apply/revert。部署运维者的 bootstrap 凭据
+`SMARTPERFETTO_API_KEY` 默认是 `org_admin` 并拥有 `*`；企业 API key、SSO 和其他
+生产身份继续从持久化绑定解析最小 roles/scopes。
+启用方式、控制台顺序、fail-closed 场景和重启验收见
+[Self-Evolution 使用与验收](../getting-started/self-evolution.md)。
+
 ## Provider Manager API
 
 Legacy base path: `/api/v1/providers`。新集成优先使用

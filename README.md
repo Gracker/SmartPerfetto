@@ -116,13 +116,19 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 - Compares completed analysis results across multiple traces, windows, or workspace users without requiring both Perfetto UI windows to stay open.
 - Ships a signed Android Internals Knowledge Pack for bounded background retrieval, while keeping private source/knowledge access explicitly authorized and separate from trace evidence.
 - Supports deterministic multi-trace Skill batches and side-effect-free Android capture proposals before explicit device recording.
+- Provides an off-by-default Self-Evolution control plane that turns effective
+  public feedback into gated, human-approved, reversible overlays without
+  automatic commits, pushes, or external judge calls.
 - Uses a TypeScript backend to run agent workflows, query `trace_processor_shell`, invoke YAML analysis skills, and stream results to the browser.
 - Supports Anthropic directly, Claude/Anthropic-compatible providers, OpenAI/OpenAI-compatible providers, Pi Agent Core custom models, OpenCode custom models, and opt-in Qoder Agent SDK profiles through the matching backend runtime.
 - Ships with registry-discovered YAML skill/config files and scene strategies for Android performance investigation.
 
 ## Feature Overview
 
-- [Feature Overview](docs/getting-started/features.en.md): AI Assistant workflows, Smart scene inventory and selected deep dives, performance scenarios, selection-aware analysis, reports, raw/result comparison, Android Internals knowledge, code-aware local-source analysis, provider management, batch/capture automation, and runtime options.
+- [Feature Overview](docs/getting-started/features.en.md): AI Assistant workflows, Smart scene inventory and selected deep dives, performance scenarios, selection-aware analysis, reports, raw/result comparison, Android Internals knowledge, code-aware local-source analysis, provider management, controlled Self-Evolution, batch/capture automation, and runtime options.
+- [Self-Evolution Usage And Acceptance](docs/getting-started/self-evolution.en.md):
+  default-off behavior, permissions, persistence, apply/revert, reconciliation,
+  and user/maintainer tests.
 
 ## Tech Stack
 

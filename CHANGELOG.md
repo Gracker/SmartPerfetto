@@ -13,6 +13,24 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+### Added
+- An off-by-default Self-Evolution control plane now covers immutable run
+  attribution, reversible public/private feedback projections, fixed
+  validation/holdout paired replay, reviewable proposals, qualification gates,
+  content-addressed overlays, upgrade reconciliation, and explicit rollback.
+- The AI Assistant Evolution settings page and scoped admin API expose
+  proposal diffs, progress, overlay generations, persistence diagnostics, and
+  reconciliation without configuring an external L2 judge.
+
+### Changed
+- Analysis runtimes now consume run-pinned effective registry snapshots so a
+  newly published overlay affects only new runs. Apply/revert requires an
+  accepted and still-qualified proposal plus writable external user data, and
+  remains fail-closed otherwise.
+- Feedback is an append-only scoped fact stream with rebuildable effective
+  projections. Private feedback stays in a separate local path and never enters
+  curation or contribution bundles.
+
 ## [1.3.0] - 2026-07-28
 
 ### Added
@@ -247,7 +265,8 @@ Detailed commit-level history is available via `git log`.
 - HTML report generation and CSV / JSON export.
 - AGPL v3.0 licensing throughout.
 
-[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/Gracker/SmartPerfetto/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.8...v1.3.0
 [1.2.4]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.3...v1.2.4
 [1.2.1]: https://github.com/Gracker/SmartPerfetto/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Gracker/SmartPerfetto/compare/v1.1.1...v1.2.0

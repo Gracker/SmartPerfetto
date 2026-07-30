@@ -17,6 +17,7 @@ be checked against the public product surfaces below.
 | npm CLI | `npm install -g @gracker/smartperfetto`; `smp` | automation and terminal users | Requires host Node.js `>=24 <25`, no Web UI |
 | CLI trace capture | `smp capture ...` | terminal users collecting traces | Uses Android capture presets/configs, optional post-capture `--analyze`, and local turn artifacts |
 | HTTP/SSE API | `/api/agent/v1/*`, `/api/traces/*`, `/api/reports/*` | integrations and frontend | Keep response contracts stable or regenerate frontend types |
+| Self-Evolution admin | Settings `Evolution`, `/api/admin/self-evolution/*` | authorized analysts and administrators | Default off; preserve RBAC/scope, immutable run snapshots, persistence fail-closed, gate binding, reconciliation, and revert |
 
 ## Runtime And Provider Matrix
 
@@ -75,6 +76,9 @@ affected:
   identity resolution, and analysis-result snapshots.
 - Runtime-read content: Skills, Strategies, rendering pipeline docs, SQL schema
   indexes, pre-built UI, and trace processor assets.
+- Self-Evolution: feedback visibility, RunManifest attribution, fixed
+  validation/holdout replay, admin RBAC/SSE, overlay generation, external user
+  data, restart/upgrade reconciliation, and explicit revert.
 - Node.js 24 boundary: source/npm require Node `>=24 <25`; portable packages
   bundle Node 24; Docker does not require host Node.
 - Generated files and artifacts: frontend types, committed `frontend/`,
@@ -125,5 +129,7 @@ frontend outputs.
   under `docs/reference/` and `.claude/rules/`.
 - Architecture-affecting changes need `docs/architecture/overview*.md` and the
   relevant subsystem doc updated.
+- Self-Evolution behavior changes also need the bilingual user acceptance guide,
+  configuration/API references, and `self-improving-design.md` kept consistent.
 - If a doc path is runtime-read, update code references before moving or
   deleting it.

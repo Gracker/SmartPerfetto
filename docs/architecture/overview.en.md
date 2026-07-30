@@ -12,6 +12,7 @@ Frontend: Perfetto UI @ :10000
        ├─ trace upload / open trace
        ├─ AI panel / floating window
        ├─ Codebase Config Panel
+       ├─ Self-Evolution control plane
        ├─ DataEnvelope tables and charts
        └─ SSE client
 
@@ -20,6 +21,7 @@ Backend: Express @ :3000
   ├─ /api/traces/*            trace upload and lifecycle
   ├─ /api/rag/*               RAG and codebase management
   ├─ /api/skills/*            Skill query and execution
+  ├─ /api/admin/self-evolution managed loop and SSE
   ├─ /api/export/*            exports
   ├─ /api/reports/*           HTML reports
   └─ trace_processor_shell    HTTP RPC pool, 9100-9900
@@ -70,6 +72,7 @@ and frontend readiness.
 | Skill engine | `backend/src/services/skillEngine/` | YAML Skill loading, parameter substitution, SQL execution, DataEnvelope output |
 | Skills | `backend/skills/` | Atomic, composite, deep, and rendering-pipeline analysis |
 | Strategies | `backend/strategies/` | Scene strategies, prompt templates, knowledge templates |
+| Self-Evolution | `backend/src/services/selfEvolution/`, `backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest, feedback projection, eval/replay, proposal gates, overlays, reconciliation, and the RBAC control plane |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | Local codebase registry, source ingestion, symbol resolution, lookup filtering, and patch status verification |
 | External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | Full-corpus Wiki audit, version/fingerprint identity, generation indexing, license/consent/scope, and private-content projection |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | Trace loading, RPC management, SQL query execution |
@@ -136,6 +139,24 @@ source/external-knowledge selection, authorization fingerprints, non-resume
 semantics, and deletion lifecycle. The boundary applies to regular analysis,
 Smart Profile deep dives, Web UI, CLI, and every runtime currently registered
 in `PRODUCTION_RUNTIME_KINDS`.
+
+## Self-Evolution Control Loop
+
+Self-Evolution is decoupled from online analysis. An analysis first seals an
+immutable RunManifest. Feedback enters an append-only fact log and rebuildable
+projection, and only effective public feedback is available to explicitly
+started curation. A proposal must complete baseline/candidate validation and
+holdout paired replay in the same pinned environment and receive human
+acceptance before it can be explicitly applied.
+
+Apply publishes a content-addressed overlay artifact and a new generation.
+Existing runs retain their old snapshots; only new runs resolve the new
+generation. Startup and upgrade reconcile before publication, quarantining
+conflicts, drift, or validation failures. Explicit revert publishes another
+generation without the overlay. This path is off by default, and apply also
+requires external persistent storage. See the
+[runtime contract](self-improving-design.md) and
+[user acceptance guide](../getting-started/self-evolution.en.md).
 
 ## Runtime And Provider Boundaries
 

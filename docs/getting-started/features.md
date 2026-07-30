@@ -221,7 +221,28 @@ SmartPerfetto 支持在 UI 中管理模型 provider，也支持通过 `.env` 配
 
 完整配置见 [配置指南](configuration.md)。
 
-## 11. 自动化、API 和 CLI
+## 11. 受控 Self-Evolution
+
+Self-Evolution 把有效的公开反馈变成可审阅提案，并在固定 validation/holdout case
+上配对比较 baseline 与 candidate。功能默认关闭，只面向有权限的维护者和管理员。
+
+入口：
+
+- 普通分析完成后的勾/叉反馈。
+- **AI Assistant Settings → 自进化 / Evolution** 控制台。
+- `/api/admin/self-evolution` 管理 API。
+
+效果：
+
+- 每次分析用不可变 RunManifest 固定归因和 overlay generation。
+- private feedback 只存本地私有路径；只有 effective public feedback 可被显式策展。
+- 提案必须通过固定 paired evaluation 并由人接受，才能显式 apply；overlay 可对账、
+  可 revert，不会自动 commit、push 或调用 GitHub。
+- 未配置包外持久化、缺少权限或 gate 失效时 fail-closed；默认状态不会改变普通分析。
+
+完整操作与验收步骤见 [Self-Evolution 使用与验收](self-evolution.md)。
+
+## 12. 自动化、API 和 CLI
 
 除了 UI，SmartPerfetto 也提供 workspace API、CLI 和 MCP 工具，适合自动化场景。
 
@@ -243,7 +264,7 @@ SmartPerfetto 支持在 UI 中管理模型 provider，也支持通过 `.env` 配
   `smp capture android` 抓取；Camera 等 preset 会声明所需证据类别。
 - 可以复用相同的 Skill、策略、报告和 evidence-backed 输出机制。
 
-## 12. 运行和分发方式
+## 13. 运行和分发方式
 
 SmartPerfetto 支持多种运行方式：
 
@@ -272,6 +293,7 @@ SmartPerfetto 支持多种运行方式：
 | 跨窗口/跨用户对比已完成结果 | `fact_check` 多 Trace 分析结果对比 |
 | 查询 Android Internals 背景 | 内置 Knowledge Pack；私有资料用显式 knowledge source |
 | 把结论映射到本机源码文件和行号 | Code-Aware Analysis |
+| 审阅并应用经过门控的分析改进 | 设置 → 自进化 / Evolution |
 | 对多条本机 trace 跑同一个确定性分析 | `smp batch skill` |
 | 先生成采集配置、再从 Android 设备抓 trace | `smp capture suggest/config/android` |
 | 接入脚本或平台 | API / CLI / MCP 工具 |

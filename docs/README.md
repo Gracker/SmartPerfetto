@@ -14,6 +14,7 @@
 - [功能总览](getting-started/features.md)
 - [基本使用](getting-started/usage.md)
 - [配置指南](getting-started/configuration.md)
+- [Self-Evolution 使用与验收](getting-started/self-evolution.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.md)
 - [多 Trace 分析结果对比](getting-started/multi-trace-result-comparison.md)
 - [Android Internals 知识包与私有知识库](getting-started/android-internals-knowledge.md)
@@ -40,6 +41,8 @@
 - [双 Trace 工作区](architecture/dual-trace-workspace.md)：双窗与 comparison 状态机。
 - [私有分析上下文](architecture/private-analysis-context.md)：授权、连续性与删除边界。
 - [Self-Improving](architecture/self-improving-design.md)：当前已接入能力与明确未接入能力。
+- Self-Evolution 的用户入口、权限、持久化和测试步骤以
+  [使用与验收指南](getting-started/self-evolution.md)为准。
 - [Data Contract](../backend/docs/DATA_CONTRACT_DESIGN.md)：DataEnvelope、Query Review、
   Analysis Receipt、UI Action 和多端投影。
 

@@ -84,6 +84,8 @@ permissions. Private feedback never enters curation; contribution bundles are
 local-only and are never uploaded automatically. No external L2 judge is
 configured and there is no additional environment variable for one; any future
 integration requires per-use explicit consent.
+See [Self-Evolution Usage And Acceptance](self-evolution.en.md) for the complete
+default-off, apply/revert, restart-reconciliation, and fail-closed checks.
 
 npm CLI does not use the Web UI `Connection` settings. For first-time CLI setup, run:
 

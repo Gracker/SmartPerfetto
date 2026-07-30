@@ -50,6 +50,8 @@ Primary directories:
 - `backend/src/agentv3/`: shared MCP, strategy loading, planning, and verifier
   compatibility namespace;
 - `backend/src/services/skillEngine/`: YAML Skill execution;
+- `backend/src/services/selfEvolution/`: RunManifest, feedback projections,
+  eval/replay, proposals, gates, overlay generations, and upgrade reconciliation;
 - `backend/skills/`: deterministic trace-evidence programs;
 - `backend/strategies/`: scene methodology, prompts/templates, and report rules;
 - `backend/src/services/traceProcessorService.ts`: trace processor lifecycle and leases;
@@ -208,7 +210,35 @@ The resolved analysis context pins codebase/knowledge generations,
 tenant/workspace/user, provider consent, and session continuity. Resume,
 reports, and snapshots must preserve those boundaries.
 
-## 10. Output And Persistence
+## 10. Self-Evolution Data And Publication
+
+Immutable identity decouples online analysis from evolution publication:
+
+```text
+RunManifest + effective public feedback
+  -> bounded curation proposal
+  -> materialized treatment
+  -> validation/holdout paired replay
+  -> qualified + accepted proposal
+  -> content-addressed overlay artifact
+  -> atomic generation pointer
+  -> immutable effective registry snapshot for each new run
+```
+
+Persistence has explicit responsibilities. Feedback JSONL is the fact source
+and SQLite is a rebuildable projection. Eval cases, replay, proposals/gate
+attempts, the overlay registry, and reconciliation retain separate versioned
+artifacts and bindings. Private feedback uses another path that the curation
+reader never opens.
+
+Publication does not mutate the global Skill registry in place. A sealed run
+retains one snapshot; only a new run resolves a new generation. Apply/revert
+publishes through an idempotent action saga, while startup/upgrade reconciles
+build identity and base fingerprints. Missing persistence, gate binding, or
+successful reconciliation fails closed. See the
+[Self-Evolution guide](../getting-started/self-evolution.en.md).
+
+## 11. Output And Persistence
 
 The final result is not one Markdown string:
 
@@ -224,7 +254,7 @@ The final result is not one Markdown string:
 outputs on shared semantics rather than patching one provider-specific string
 at one exit.
 
-## 11. Release Assets
+## 12. Release Assets
 
 Release surfaces are independent:
 
@@ -240,7 +270,7 @@ Release surfaces are independent:
 See the [Release Runbook](../reference/release.en.md) and
 [Portable Packaging](../reference/portable-packaging.en.md).
 
-## 12. Verification
+## 13. Verification
 
 Verification depends on change type; the complete landing gate is:
 
@@ -255,6 +285,7 @@ Important focused entries:
 cd backend
 npm run validate:skills
 npm run validate:strategies
+npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
 npm run verify:codebase-aware
@@ -272,7 +303,7 @@ Additionally:
 - Android capture can claim a recording smoke only with a connected device;
   offline checks prove proposal/config/CLI contracts only.
 
-## 13. Change Map
+## 14. Change Map
 
 | Goal | Change location |
 |---|---|
@@ -283,6 +314,7 @@ Additionally:
 | Change API contract | route/application service + tests + API docs |
 | Change AI Assistant UI | Perfetto plugin + dev/browser test + `frontend/` prebuild |
 | Change runtime/provider | `agentRuntime/` + Provider Manager + session snapshot tests |
+| Change Self-Evolution | `services/selfEvolution/` + admin routes/UI + focused tests + current contract docs |
 | Change release assets | package/release scripts + runtime-asset tests + release docs |
 
 After architecture changes, use [`AGENTS.md`](../../AGENTS.md) and the relevant

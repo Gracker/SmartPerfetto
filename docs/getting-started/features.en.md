@@ -226,7 +226,34 @@ Output:
 
 See [Configuration Guide](configuration.en.md) for setup details.
 
-## 11. Automation, API, And CLI
+## 11. Controlled Self-Evolution
+
+Self-Evolution turns effective public feedback into reviewable proposals and
+compares a baseline and candidate on fixed validation/holdout cases. It is off
+by default and intended for authorized maintainers and administrators.
+
+Entry points:
+
+- Thumbs up/down after a normal analysis.
+- **AI Assistant Settings -> Evolution** control plane.
+- `/api/admin/self-evolution` admin API.
+
+Output:
+
+- Every analysis uses an immutable RunManifest to pin attribution and overlay
+  generation.
+- Private feedback stays in a private local path; only effective public
+  feedback can enter explicit curation.
+- A proposal needs fixed paired evaluation and human acceptance before explicit
+  apply. Overlays can be reconciled and reverted and never commit, push, or call
+  GitHub automatically.
+- Missing external persistence, permissions, or a valid gate binding fails
+  closed; the default state does not change normal analysis.
+
+See [Self-Evolution Usage And Acceptance](self-evolution.en.md) for the complete
+workflow and tests.
+
+## 12. Automation, API, And CLI
 
 SmartPerfetto also provides workspace APIs, a CLI, and MCP tools for automation.
 
@@ -250,7 +277,7 @@ Output:
   presets such as Camera declare the required evidence categories.
 - Reuse the same Skills, strategies, reports, and evidence-backed output flow.
 
-## 12. Runtime And Distribution Options
+## 13. Runtime And Distribution Options
 
 SmartPerfetto supports multiple runtime paths:
 
@@ -280,6 +307,7 @@ running directory. See [Application Updates](../../README.md#application-updates
 | Compare completed results across windows or users | `fact_check` multi-trace result comparison |
 | Retrieve Android Internals background | Built-in Knowledge Pack; explicit knowledge source for private material |
 | Map findings to local source files and line ranges | Code-Aware Analysis |
+| Review and apply a qualified analysis improvement | Settings -> Evolution |
 | Run one deterministic analysis across local traces | `smp batch skill` |
 | Propose a config, then record from an Android device | `smp capture suggest/config/android` |
 | Integrate with scripts or platforms | API / CLI / MCP tools |

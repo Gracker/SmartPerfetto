@@ -12,6 +12,7 @@ Frontend: Perfetto UI @ :10000
        ├─ trace upload / open trace
        ├─ AI panel / floating window
        ├─ Codebase Config Panel
+       ├─ Self-Evolution control plane
        ├─ DataEnvelope tables and charts
        └─ SSE client
 
@@ -20,6 +21,7 @@ Backend: Express @ :3000
   ├─ /api/traces/*            trace 上传和生命周期
   ├─ /api/rag/*               RAG 与 codebase 管理
   ├─ /api/skills/*            Skill 查询和执行
+  ├─ /api/admin/self-evolution 管理闭环与 SSE
   ├─ /api/export/*            导出
   ├─ /api/reports/*           HTML report
   └─ trace_processor_shell    HTTP RPC pool, 9100-9900
@@ -66,6 +68,7 @@ backend 与 frontend。
 | Skill engine | `backend/src/services/skillEngine/` | YAML Skill 加载、参数替换、SQL 执行、DataEnvelope 输出 |
 | Skills | `backend/skills/` | 原子、组合、深度、渲染管线分析 |
 | Strategies | `backend/strategies/` | 场景策略、Prompt 模板、知识模板 |
+| Self-Evolution | `backend/src/services/selfEvolution/`、`backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest、反馈投影、eval/replay、提案门控、overlay、对账、RBAC 控制面 |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | 本地代码库注册、源码索引、符号解析、lookup 过滤、patch 三态校验 |
 | External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | 外部 Wiki 全库审计、版本/指纹、分代索引、许可/同意/scope 和私有内容投影 |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | trace 加载、RPC 管理、SQL 查询 |
@@ -129,6 +132,20 @@ chunk 引用/哈希/许可/出处。Wiki 背景不能被 claim verifier 当作�
 源码与外部知识的选择、授权指纹、非恢复策略和删除生命周期见
 [私有分析上下文架构](private-analysis-context.md)。该边界同时覆盖普通分析、Smart
 Profile 深度分析、Web UI、CLI 和 `PRODUCTION_RUNTIME_KINDS` 当前注册的 runtime。
+
+## Self-Evolution 控制闭环
+
+Self-Evolution 与在线分析解耦：分析先 seal 不可变 RunManifest；反馈进入 append-only
+事实日志和可重建投影；只有 effective public feedback 能被人工触发的策展读取。
+提案必须在同一 pinned 环境中完成 baseline/candidate 的 validation + holdout 配对
+回放，并经人工 accept，才可能显式 apply。
+
+apply 发布 content-addressed overlay artifact 和新 generation。已有 run 保留旧
+snapshot，新 run 才解析新 generation。启动和升级会先对账；冲突、漂移或验证失败
+的 overlay 被隔离，显式 revert 再发布一个不含该 overlay 的 generation。该路径默认
+关闭，apply 还要求包外持久化能力；详见
+[运行契约](self-improving-design.md)和
+[用户验收指南](../getting-started/self-evolution.md)。
 
 ## Runtime 与 Provider 边界
 

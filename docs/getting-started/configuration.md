@@ -75,6 +75,8 @@ effective apply 降为关闭，API 返回 `503`，不会退回包内临时目录
 effective 状态。操作权限独立使用 `self_evolution:read`、`curate`、`export`、`apply`
 和 `revert`。private feedback 永远不进入策展；贡献包只写本地且不会自动上传。
 外部 L2 judge 当前未配置，也没有额外环境变量；未来接入必须逐次明确授权。
+从默认关闭到 apply/revert、重启对账和 fail-closed 的完整验收步骤见
+[Self-Evolution 使用与验收](self-evolution.md)。
 
 npm CLI 不使用 Web UI 的 `Connection` 配置。第一次用 CLI 时，推荐运行：
 

@@ -47,6 +47,8 @@ flowchart LR
 - `backend/src/agentRuntime/`：provider-neutral runtime 与输出收敛；
 - `backend/src/agentv3/`：共享 MCP、策略加载、计划/verifier 等兼容命名空间；
 - `backend/src/services/skillEngine/`：YAML Skill 执行；
+- `backend/src/services/selfEvolution/`：RunManifest、反馈投影、eval/replay、
+  提案、门控、overlay generation 和升级对账；
 - `backend/skills/`：确定性 trace 证据程序；
 - `backend/strategies/`：场景方法、prompt/template 和报告要求；
 - `backend/src/services/traceProcessorService.ts`：trace processor 生命周期和租约；
@@ -192,7 +194,32 @@ SmartPerfetto 维护两类不同对比：
 统一 analysis context 会固定 codebase/knowledge generation、tenant/workspace/user、
 provider consent 和 session continuity。恢复、报告和 snapshot 不能绕过这些边界。
 
-## 10. 输出与持久化
+## 10. Self-Evolution 数据与发布路径
+
+在线分析和进化发布通过 immutable identity 解耦：
+
+```text
+RunManifest + effective public feedback
+  -> bounded curation proposal
+  -> materialized treatment
+  -> validation/holdout paired replay
+  -> qualified + accepted proposal
+  -> content-addressed overlay artifact
+  -> atomic generation pointer
+  -> immutable effective registry snapshot for each new run
+```
+
+事实存储分工明确：feedback JSONL 是事实源，SQLite 是可重建投影；eval case、
+replay、proposal/gate attempt、overlay registry 和 reconciliation 分别保存版本化
+artifact 与绑定关系。private feedback 使用独立路径，策展读取端不会打开它。
+
+发布不是原地修改全局 Skill registry。一个 run seal 后始终使用同一 snapshot；新
+generation 只供新 run 解析。apply/revert 通过幂等 action saga 发布，启动/升级通过
+build identity 和 base fingerprint 对账。持久化能力、门控绑定或对账失败时
+fail-closed。用户操作和验证见
+[Self-Evolution 指南](../getting-started/self-evolution.md)。
+
+## 11. 输出与持久化
 
 最终输出不是单一 Markdown 字符串：
 
@@ -207,7 +234,7 @@ provider consent 和 session continuity。恢复、报告和 snapshot 不能绕�
 `final_report_contract`、normalizer 和质量门禁负责让各 runtime 收敛到共享结果语义，
 而不是用 provider-specific 字符串补丁修某一个出口。
 
-## 11. 发布资产
+## 12. 发布资产
 
 发布面彼此独立：
 
@@ -219,7 +246,7 @@ provider consent 和 session continuity。恢复、报告和 snapshot 不能绕�
 发布顺序、签名和 smoke 见 [发布手册](../reference/release.md) 与
 [portable 打包](../reference/portable-packaging.md)。
 
-## 12. 验证策略
+## 13. 验证策略
 
 最小验证由改动类型决定，完整合入门禁是：
 
@@ -234,6 +261,7 @@ npm run verify:pr
 cd backend
 npm run validate:skills
 npm run validate:strategies
+npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
 npm run verify:codebase-aware
@@ -250,7 +278,7 @@ npm run verify:codebase-aware
 - Android capture 只有连接真实设备时才能声明抓取 smoke 通过，离线只证明
   proposal/config/CLI contract。
 
-## 13. 修改位置速查
+## 14. 修改位置速查
 
 | 目标 | 修改位置 |
 |---|---|
@@ -261,6 +289,7 @@ npm run verify:codebase-aware
 | 修改 API contract | route/application service + tests + API 文档 |
 | 修改 AI Assistant UI | Perfetto plugin source + dev/browser test + `frontend/` prebuild |
 | 修改 runtime/provider | `agentRuntime/` + Provider Manager + session snapshot tests |
+| 修改 Self-Evolution | `services/selfEvolution/` + admin routes/UI + focused tests + current contract docs |
 | 修改发布资产 | package/release scripts + runtime-asset tests + release docs |
 
 架构修改完成后，再按

@@ -26,6 +26,26 @@ SmartPerfetto works best with Android 12+ traces, especially traces that include
 
 Auto mode first returns a scene inventory for mixed-action traces. The timeline lists detected startup, scrolling, click, navigation, device-state, ANR, and related scenes, then shows scope buttons. Select all scenes or one scene family before SmartPerfetto runs the matching startup, scrolling, click, or other deep-dive analysis.
 
+## Self-Evolution Admin Flow
+
+Self-Evolution is off by default and does not change the analysis flow above.
+After a public analysis, regular users can submit thumbs feedback. Authorized
+administrators can open **AI Assistant Settings -> Evolution** to inspect state
+and start explicit curation.
+
+The control-plane sequence is:
+
+```text
+curate -> gate -> inspect before/after and evidence -> accept/reject
+        -> optional export -> apply -> verify a new analysis -> revert
+```
+
+“No proposal” is normal when there is not enough effective public feedback.
+Private feedback never enters curation. Apply/revert also requires dedicated
+deployment switches and an external persistent data directory. See
+[Self-Evolution Usage And Acceptance](self-evolution.en.md) for permissions,
+failures, and complete acceptance tests.
+
 ## Common Prompt Templates
 
 ```text

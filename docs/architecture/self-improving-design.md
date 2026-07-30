@@ -5,8 +5,11 @@
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
 Self-Improving 的目标是让历史分析结果在受控边界内改善后续分析，同时不把模型输出
-直接升级成事实、代码或公共知识。Web UI、CLI、API、四种 runtime、报告、snapshot
+直接升级成事实、代码或公共知识。Web UI、CLI、API、五种 runtime、报告、snapshot
 和私有知识投影仍遵守[产品面规则](../../.claude/rules/product-surface.md)。
+面向部署者和管理员的启用、权限、用户影响与测试步骤见
+[Self-Evolution 使用与验收](../getting-started/self-evolution.md)；本文只维护运行时
+和数据契约。
 
 ## 当前能力矩阵
 
@@ -111,7 +114,7 @@ full-path 验证通过且没有负向状态时，才能创建新的长期 patter
 JSONL，再推进 `effective_feedback` 与 dirty-target revision。崩溃不会回滚事实日志；
 下一次 append 或离线 `npm run self-evolution:feedback-migrate -- --rebuild` 会幂等补投影。
 旧 pattern 的当前状态一次性冻结为 `intrinsicStatus`，旧反馈不可撤销。旧
-`candidate_feedback` 表自 M2 起只作历史审计源，不再写入；迁移仅把该表中旧流程
+`candidate_feedback` 表现在只作历史审计源，不再写入；迁移仅把该表中旧流程
 已接受的 `short` 行规范化追加到事实日志，旧 JSONL 中的 mis-tap、重复或写库失败
 记录继续保留审计但不进入有效投影。
 
@@ -230,7 +233,8 @@ Self-Evolution 控制面使用单独 base path：
 浏览器入口位于 **AI Assistant Settings → 自进化 / Evolution**。SSE 客户端使用
 `fetch()` 读取流，以便继续发送 Authorization 与 workspace headers；不要改成无法携带
 这些 header 的原生 `EventSource`。运维端点和 RBAC 矩阵见
-[API 参考](../reference/api.md)。
+[API 参考](../reference/api.md)，端到端人工验收见
+[Self-Evolution 使用与验收](../getting-started/self-evolution.md)。
 
 历史 pattern 的一次性迁移：
 

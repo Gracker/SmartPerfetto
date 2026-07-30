@@ -116,13 +116,17 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 - 支持跨多个 Trace、多个窗口或同一 workspace 用户的已完成分析结果对比，不要求另一个 Perfetto UI 窗口持续打开。
 - 随产品分发签名 Android Internals Knowledge Pack，用于预算受控的背景检索；私有源码/知识仍需显式授权，并与 trace 证据分离。
 - 支持确定性多 Trace Skill batch，以及在显式连接设备抓取前生成无副作用 Android 采集建议。
+- 提供默认关闭的 Self-Evolution 控制面，把有效公开反馈转成经过门控、人工确认且可回滚的
+  overlay；不会自动 commit、push 或调用外部 judge。
 - 通过 TypeScript 后端编排 Agent 流程、查询 `trace_processor_shell`、调用 YAML Skill，并把结果实时流式传给浏览器。
 - 支持 Anthropic 直连、Claude/Anthropic-compatible provider、通过 OpenAI Agents SDK 接入 OpenAI/OpenAI-compatible provider，以及 Pi Agent Core / OpenCode custom model 和显式启用的 Qoder Agent SDK profile。
 - 内置通过 registry/file-tree 发现的 YAML Skill/配置文件和多场景分析策略，用于 Android 性能排查。
 
 ## 功能总览
 
-- [功能总览](docs/getting-started/features.md)：AI Assistant 工作流、智能场景盘点与选择性深钻、常见性能场景、选区分析、报告、raw/result 对比、Android Internals 知识、Code-Aware 本机源码分析、Provider 管理、batch/capture 自动化和运行方式。
+- [功能总览](docs/getting-started/features.md)：AI Assistant 工作流、智能场景盘点与选择性深钻、常见性能场景、选区分析、报告、raw/result 对比、Android Internals 知识、Code-Aware 本机源码分析、Provider 管理、受控 Self-Evolution、batch/capture 自动化和运行方式。
+- [Self-Evolution 使用与验收](docs/getting-started/self-evolution.md)：默认关闭、
+  权限、持久化、apply/revert、升级对账和用户/维护者测试。
 
 ## 技术栈
 

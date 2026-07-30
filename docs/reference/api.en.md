@@ -427,6 +427,14 @@ Each tenant/workspace may run at most four curation operations concurrently
 and retain 20 operations; one operation may run for at most five minutes.
 Exhausting either scoped or process-wide capacity returns `429`.
 
+In the default RBAC matrix, Analysts have only `self_evolution:read`;
+Workspace Admins and Org Admins have curate/export/apply/revert. The deployment
+operator bootstrap credential `SMARTPERFETTO_API_KEY` defaults to `org_admin`
+with `*`; enterprise API keys, SSO, and other production identities continue
+to resolve least-privilege roles and scopes from durable bindings. See
+[Self-Evolution Usage And Acceptance](../getting-started/self-evolution.en.md)
+for enablement, control-plane order, fail-closed cases, and restart acceptance.
+
 ## Provider Manager API
 
 Legacy base path: `/api/v1/providers`. New integrations should prefer
