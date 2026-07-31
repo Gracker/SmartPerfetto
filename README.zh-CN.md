@@ -417,6 +417,8 @@ npm CLI 包是正式独立终端产品，不启动也不包含 Web UI launcher�
 
 本地单人使用时不要设置 `SMARTPERFETTO_API_KEY` 也可以正常运行。如果后端不只在本机使用，建议在 `backend/.env` 设置它。开启后，受保护接口需要带上 `Authorization: Bearer <token>`。这个静态 key 是具有本地管理权限的部署运维凭证，不应分发给普通用户。
 
+企业浏览器登录支持标准 OIDC Authorization Code + PKCE。配置 issuer、client、回调地址、精确的前端 origin 以及租户/工作区成员关系后，用户可以直接在 **AI Assistant Settings** 中登录、切换已授权工作区并退出。浏览器会话使用 HttpOnly Cookie，工作区角色以 SmartPerfetto 持久化的成员关系为准，不信任用户可自报的 IdP role claim。配置方式见[配置说明](docs/getting-started/configuration.md#企业-oidc-登录)，接口合约见 [API 参考](docs/reference/api.md#oidc-与浏览器会话-api)。
+
 企业或共享部署还应单独设置至少 32 字节的 `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`。它只用于签发 trace-processor proxy 的短期浏览器 WebSocket capability，长期 backend API key 不会被放进 URL；轮换该 secret 会立即使尚未过期的 capability 失效。Docker Compose 会通过项目根目录的 `.env` 传入该变量。
 
 ## 架构

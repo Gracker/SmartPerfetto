@@ -507,6 +507,25 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(output.providerSnapshotHash).toBe('hash-from-engine');
   });
 
+  it('persists the selected OpenAI-compatible model as CLI provenance', async () => {
+    const previousModel = process.env.OPENAI_MODEL;
+    process.env.OPENAI_MODEL = 'deepseek-provenance-test';
+    try {
+      const output = await new CliAnalyzeService().runTurn({
+        ...cliTurnBinding,
+        traceId: 'trace-cli',
+        query: '分析启动慢',
+        onEvent: jest.fn(),
+      });
+
+      expect(output.agentRuntimeKind).toBe('openai-agents-sdk');
+      expect(output.model).toBe('deepseek-provenance-test');
+    } finally {
+      if (previousModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = previousModel;
+    }
+  });
+
   it('passes prepared continuity agentQuery to the runtime while preserving the user query for persistence', async () => {
     mockPreparedSession.agentQuery = [
       'System context continuity notice:',

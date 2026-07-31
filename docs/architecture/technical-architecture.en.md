@@ -83,6 +83,31 @@ POST /api/agent/v1/analyze
 When a reference trace, codebase, or private knowledge source requires full
 context, a requested `fast` mode must not silently drop the capability.
 
+### 3.1 Enterprise Identity Boundary
+
+`/api/auth/oidc/login` and its callback are public bootstrap boundaries. Other
+`/api` routes pass through the unified `authenticate` middleware by default.
+`EnterpriseOidcClient` uses standard discovery plus Authorization Code and
+PKCE, validating the ID Token and nonce inside that boundary. A short-lived
+state/nonce/PKCE transaction lives in a signed HttpOnly cookie. After login,
+only an opaque signed session id is stored in a HttpOnly cookie; tenant,
+workspace, role, scope, revocation, and expiry remain backed by enterprise
+SQLite state.
+
+OIDC identity locates the tenant and user but does not grant workspace access.
+The durable role in `memberships` is authoritative; IdP claims cannot override
+it. The frontend OIDC component owns sign-in, workspace onboarding, and local
+sign-out. Analysis, Provider, codebase, and trace requests share one
+credentialed-fetch policy for the cookie while preserving explicit API-key
+compatibility. An identity or workspace change retires the old backend session
+and resets AIPanel Trace/transient state plus the storage namespace to prevent
+cross-identity reuse.
+
+Cookie-authenticated mutations use an exact Origin check in addition to CORS,
+because CORS alone does not prevent a browser from sending a cross-site
+mutation. Popup callbacks post only to an allowlisted `targetOrigin` and use
+`no-store` plus a strict CSP.
+
 ## 4. Runtimes And Providers
 
 Every runtime currently registered by `PRODUCTION_RUNTIME_KINDS` implements the

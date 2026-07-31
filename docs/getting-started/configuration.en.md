@@ -431,6 +431,64 @@ Protected APIs then require:
 Authorization: Bearer <SMARTPERFETTO_API_KEY>
 ```
 
+## Enterprise OIDC Sign-In
+
+Browser SSO uses the OIDC Authorization Code Flow with PKCE S256, `state`, and
+`nonce`. The backend discovers provider metadata and validates the ID Token
+signature, issuer, audience, expiry, and nonce before creating a SmartPerfetto
+session. The session exists only in a HttpOnly cookie; it is never written to
+`localStorage` or exposed in browser JSON responses.
+
+Register the callback URI with the identity provider, then configure:
+
+```bash
+SMARTPERFETTO_ENTERPRISE=true
+SMARTPERFETTO_SSO_COOKIE_SECRET=replace_with_at_least_32_random_bytes
+SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.com
+SMARTPERFETTO_OIDC_CLIENT_ID=smartperfetto
+SMARTPERFETTO_OIDC_CLIENT_SECRET=replace_with_oidc_client_secret
+SMARTPERFETTO_OIDC_REDIRECT_URI=https://backend.example.com/api/auth/oidc/callback
+SMARTPERFETTO_OIDC_SCOPES=openid email profile
+SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD=client_secret_post
+CORS_ORIGINS=https://perfetto.example.com
+
+# Use either or both to map a validated identity to an existing tenant:
+SMARTPERFETTO_OIDC_EMAIL_DOMAIN_MAP=example.com=tenant-a
+# SMARTPERFETTO_OIDC_DEFAULT_TENANT_ID=tenant-a
+```
+
+`SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD` supports `client_secret_post`,
+`client_secret_basic`, and public-client `none`. Issuers must use HTTPS by
+default. `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` is only for a local test
+provider. Domain mapping uses only email with `email_verified=true` by default.
+If a controlled provider does not publish that claim, explicitly set
+`SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL=false` and use a tenant claim or
+default tenant to control admission.
+
+`CORS_ORIGINS` must list the browser frontend's exact origin (scheme, host, and
+port); wildcards and paths are not accepted. The login popup can report only to
+an allowlisted return origin. An HTTPS callback enables Secure cookies by
+default. Set `SMARTPERFETTO_SSO_COOKIE_SAME_SITE=none` only for a genuinely
+cross-site frontend and also set `SMARTPERFETTO_SSO_COOKIE_SECURE=true`.
+Same-site or reverse-proxy deployments should keep the `lax` default.
+
+Sign-in establishes identity and a local session; it does not grant workspace
+access. The user must already have a durable workspace role in `memberships`.
+That role is authoritative, and IdP `roles/groups` cannot override it. Open
+**AI Assistant → Settings → Backend Connection** to sign in and choose a
+workspace. Sign-out revokes the SmartPerfetto session only; it does not end the
+identity provider's global session.
+
+Acceptance order:
+
+1. `GET /api/auth/config` returns `oidc.enabled: true`.
+2. After the settings popup returns, `GET /api/auth/session` returns the
+   validated user and workspace choices.
+3. Switching workspace isolates the AI session, transient Trace state, and
+   local storage namespace.
+4. After sign-out, `/api/auth/session` returns `authenticated: false` and
+   protected APIs return `401`.
+
 ## Uploads and Trace Processor
 
 ```bash

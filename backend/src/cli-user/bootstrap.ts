@@ -82,11 +82,12 @@ export function bootstrap(options: BootstrapOptions = {}): BootstrapResult {
 }
 
 /**
- * Load env from (in order, later files override earlier files):
- *   1. --env-file argument
- *   2. backend/.env relative to this compiled file
+ * Load env with this precedence (highest first):
+ *   1. --env-file argument (explicitly requested, so it overrides inherited env)
+ *   2. inherited process environment
  *   3. <resolved CLI home>/env (`--session-dir`, SMARTPERFETTO_HOME, or
  *      ~/.smartperfetto)
+ *   4. backend/.env relative to this compiled file
  *
  * Missing files are silently skipped; only an explicitly-passed --env-file
  * is required to exist.
@@ -101,13 +102,19 @@ function loadEnv(explicitFile?: string, sessionDir?: string): void {
     return;
   }
 
+  // A shell/CI caller may deliberately pin a provider, runtime, or model for
+  // one invocation. Default env files must provide fallbacks, never replace
+  // that invocation-scoped configuration. Keep the initial key set so the
+  // user-level env file can still override the package fallback below.
+  const inheritedKeys = new Set(Object.keys(process.env));
+
   // Try backend/.env (sibling of this module's package root).
   // __dirname at runtime will be something like dist/cli-user or src/cli-user.
   // Walk up to find the first ancestor containing package.json with our name.
   const backendRoot = findBackendRoot();
   if (backendRoot) {
     const envPath = path.join(backendRoot, '.env');
-    if (fs.existsSync(envPath)) dotenv.config({ path: envPath, quiet: true, override: true });
+    loadDefaultEnvFile(envPath, inheritedKeys);
   }
 
   // Last chance: user-level override. Keep this aligned with computePaths()
@@ -116,7 +123,15 @@ function loadEnv(explicitFile?: string, sessionDir?: string): void {
     ?? (process.env.SMARTPERFETTO_HOME?.trim() ? path.resolve(process.env.SMARTPERFETTO_HOME) : undefined)
     ?? path.join(process.env.HOME || '', '.smartperfetto');
   const userEnv = path.join(cliHome, 'env');
-  if (fs.existsSync(userEnv)) dotenv.config({ path: userEnv, quiet: true, override: true });
+  loadDefaultEnvFile(userEnv, inheritedKeys);
+}
+
+function loadDefaultEnvFile(envPath: string, inheritedKeys: ReadonlySet<string>): void {
+  if (!fs.existsSync(envPath)) return;
+  const values = dotenv.parse(fs.readFileSync(envPath));
+  for (const [key, value] of Object.entries(values)) {
+    if (!inheritedKeys.has(key)) process.env[key] = value;
+  }
 }
 
 /**

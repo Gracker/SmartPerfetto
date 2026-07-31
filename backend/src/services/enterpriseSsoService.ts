@@ -21,7 +21,7 @@ const STATE_COOKIE_NAME = 'sp_oidc_state';
 const SESSION_TOKEN_PREFIX = 'sp_sso_';
 const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
-interface WorkspaceMembership {
+export interface WorkspaceMembership {
   workspaceId: string;
   name: string;
   role: string;
@@ -48,6 +48,7 @@ interface StoredSsoSession {
 export interface OidcStatePayload {
   state: string;
   nonce: string;
+  codeVerifier?: string;
   returnTo?: string;
   createdAt: number;
 }
@@ -79,6 +80,20 @@ export interface RequestSsoIdentity {
   workspaceId: string;
   roles: string[];
   scopes: string[];
+}
+
+export interface EnterpriseSsoSessionSummary {
+  authenticated: true;
+  status: Exclude<OnboardingStatus, 'needs_tenant_join'>;
+  tenantId: string;
+  userId: string;
+  workspaceId?: string;
+  email?: string;
+  displayName?: string;
+  roles: string[];
+  scopes: string[];
+  workspaces: WorkspaceMembership[];
+  expiresAt: number;
 }
 
 function nowMs(): number {
@@ -130,14 +145,6 @@ function claimString(userInfo: EnterpriseOidcUserInfo, keys: string[]): string |
   return undefined;
 }
 
-function claimValue(userInfo: EnterpriseOidcUserInfo, keys: string[]): unknown {
-  for (const key of keys) {
-    const value = userInfo.claims[key];
-    if (value !== undefined && value !== null) return value;
-  }
-  return undefined;
-}
-
 function parseDomainTenantMap(value: string | undefined): Map<string, string> {
   const map = new Map<string, string>();
   if (!value) return map;
@@ -173,23 +180,39 @@ function scopesForRole(role: string): string[] {
   return ['trace:read', 'trace:write', 'agent:run', 'report:read'];
 }
 
-function normalizeRoles(input: unknown, fallbackRole = 'analyst'): string[] {
-  const raw = Array.isArray(input)
-    ? input
-    : typeof input === 'string'
-      ? input.split(',')
-      : [];
-  const roles = raw
-    .map(role => sanitizeId(role))
-    .filter(Boolean);
-  return roles.length > 0 ? [...new Set(roles)] : [fallbackRole];
-}
-
-function normalizeReturnTo(value: unknown): string | undefined {
+export function normalizeOidcReturnTo(
+  value: unknown,
+  allowedOrigins: ReadonlySet<string> = new Set(),
+): string | undefined {
   const candidate = safeString(value);
-  if (!candidate || !candidate.startsWith('/')) return undefined;
-  if (candidate.startsWith('//')) return undefined;
-  return candidate;
+  if (!candidate) return undefined;
+  if (candidate.startsWith('/') && !candidate.startsWith('//')) {
+    // WHATWG URL parsing treats backslashes as path separators for HTTP(S)
+    // URLs. Without this check, `/\attacker.example` becomes an external URL.
+    if (candidate.includes('\\')) return undefined;
+    try {
+      const base = new URL('https://smartperfetto.invalid');
+      const parsed = new URL(candidate, base);
+      if (parsed.origin !== base.origin) return undefined;
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+      return undefined;
+    }
+  }
+  try {
+    const parsed = new URL(candidate);
+    if (
+      !['http:', 'https:'].includes(parsed.protocol)
+      || parsed.username
+      || parsed.password
+      || !allowedOrigins.has(parsed.origin)
+    ) {
+      return undefined;
+    }
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 export class EnterpriseSsoService {
@@ -220,11 +243,14 @@ export class EnterpriseSsoService {
     return STATE_COOKIE_NAME;
   }
 
-  createStatePayload(returnTo?: string): OidcStatePayload {
+  createStatePayload(
+    returnTo?: string,
+    allowedOrigins: ReadonlySet<string> = new Set(),
+  ): OidcStatePayload {
     return {
       state: crypto.randomBytes(24).toString('base64url'),
       nonce: crypto.randomBytes(24).toString('base64url'),
-      returnTo: normalizeReturnTo(returnTo),
+      returnTo: normalizeOidcReturnTo(returnTo, allowedOrigins),
       createdAt: nowMs(),
     };
   }
@@ -236,7 +262,9 @@ export class EnterpriseSsoService {
   verifyStatePayload(signedValue: string | undefined): OidcStatePayload | null {
     if (!signedValue) return null;
     const parsed = this.verifyJson<OidcStatePayload>(signedValue);
-    if (!parsed || !parsed.state || !parsed.nonce) return null;
+    if (!parsed || !parsed.state || !parsed.nonce || !parsed.codeVerifier) {
+      return null;
+    }
     if (nowMs() - parsed.createdAt > 10 * 60 * 1000) return null;
     return parsed;
   }
@@ -248,7 +276,10 @@ export class EnterpriseSsoService {
   resolveRequestIdentityFromRequest(req: Request): RequestSsoIdentity | null {
     const token = this.extractSessionToken(req);
     if (!token) return null;
-    const session = this.getSessionFromToken(token);
+    const storedSession = this.getSessionFromToken(token);
+    const session = storedSession
+      ? this.reconcileSessionAuthorization(storedSession)
+      : null;
     if (!session || !session.selectedWorkspaceId) return null;
     return {
       userId: session.userId,
@@ -268,7 +299,32 @@ export class EnterpriseSsoService {
 
   getOnboardingSessionFromRequest(req: Request): StoredSsoSession | null {
     const token = this.extractSessionToken(req);
-    return token ? this.getSessionFromToken(token) : null;
+    const session = token ? this.getSessionFromToken(token) : null;
+    return session ? this.reconcileSessionAuthorization(session) : null;
+  }
+
+  getSessionSummaryFromRequest(req: Request): EnterpriseSsoSessionSummary | null {
+    const session = this.getOnboardingSessionFromRequest(req);
+    if (!session) return null;
+    const workspaces = this.listMemberships(session.tenantId, session.userId);
+    const status: EnterpriseSsoSessionSummary['status'] = session.selectedWorkspaceId
+      ? 'ready'
+      : workspaces.length > 0
+        ? 'needs_workspace_selection'
+        : 'no_workspace_membership';
+    return {
+      authenticated: true,
+      status,
+      tenantId: session.tenantId,
+      userId: session.userId,
+      workspaceId: session.selectedWorkspaceId,
+      email: session.authContext.email,
+      displayName: session.authContext.displayName,
+      roles: session.authContext.roles,
+      scopes: session.authContext.scopes,
+      workspaces,
+      expiresAt: session.expiresAt,
+    };
   }
 
   completeOidcLogin(userInfo: EnterpriseOidcUserInfo): OnboardingResult {
@@ -295,10 +351,9 @@ export class EnterpriseSsoService {
 
     const memberships = this.listMemberships(tenantId, userId);
     const selectedWorkspace = this.resolveSelectedWorkspace(userInfo, memberships);
-    const roleClaim = claimValue(userInfo, ['roles', 'groups']);
     const roles = selectedWorkspace
-      ? normalizeRoles(roleClaim, selectedWorkspace.role)
-      : normalizeRoles(roleClaim);
+      ? [selectedWorkspace.role]
+      : ['analyst'];
     const scopes = [...new Set(roles.flatMap(scopesForRole))];
     const session = this.createSsoSession({
       tenantId,
@@ -551,7 +606,10 @@ export class EnterpriseSsoService {
     ]));
     if (claimTenant) return claimTenant;
 
-    const email = userInfo.email || claimString(userInfo, ['email']);
+    // EnterpriseOidcClient deliberately suppresses an unverified email.
+    // Never fall back to the raw claim here or domain mapping would bypass
+    // SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL.
+    const email = userInfo.email;
     const domain = email?.split('@')[1]?.toLowerCase();
     if (domain) {
       const mappedTenant = parseDomainTenantMap(process.env.SMARTPERFETTO_OIDC_EMAIL_DOMAIN_MAP).get(domain);
@@ -637,6 +695,63 @@ export class EnterpriseSsoService {
       return memberships.find(item => item.workspaceId === claimWorkspace) || null;
     }
     return memberships.length === 1 ? memberships[0] : null;
+  }
+
+  private reconcileSessionAuthorization(
+    session: StoredSsoSession,
+  ): StoredSsoSession {
+    if (!session.selectedWorkspaceId) return session;
+
+    const membership = this.db.prepare<unknown[], { role: string }>(`
+      SELECT role
+      FROM memberships
+      WHERE tenant_id = ? AND workspace_id = ? AND user_id = ?
+    `).get(
+      session.tenantId,
+      session.selectedWorkspaceId,
+      session.userId,
+    );
+    if (!membership) {
+      const authContext = {
+        ...session.authContext,
+        roles: [],
+        scopes: [],
+      };
+      this.db.prepare(`
+        UPDATE sso_sessions
+        SET selected_workspace_id = NULL, workspace_id = NULL, auth_context_json = ?
+        WHERE id = ?
+      `).run(JSON.stringify(authContext), session.id);
+      return {
+        ...session,
+        workspaceId: undefined,
+        selectedWorkspaceId: undefined,
+        authContext,
+      };
+    }
+
+    const roles = [membership.role];
+    const scopes = scopesForRole(membership.role);
+    if (
+      session.authContext.roles.join('\u0000') === roles.join('\u0000')
+      && session.authContext.scopes.join('\u0000') === scopes.join('\u0000')
+    ) {
+      return session;
+    }
+    const authContext = {
+      ...session.authContext,
+      roles,
+      scopes,
+    };
+    this.db.prepare(`
+      UPDATE sso_sessions
+      SET auth_context_json = ?
+      WHERE id = ?
+    `).run(JSON.stringify(authContext), session.id);
+    return {
+      ...session,
+      authContext,
+    };
   }
 
   private auditWorkspaceReady(

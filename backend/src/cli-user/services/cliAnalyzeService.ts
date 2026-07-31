@@ -50,6 +50,10 @@ import {
   resolveAgentRuntimeSelection,
   type BackendAgentRuntimeKind,
 } from '../../agentRuntime/runtimeSelection';
+import {
+  getRuntimeDiagnosticModel,
+  getRuntimeDiagnostics,
+} from '../../agentRuntime/runtimeDiagnostics';
 import { isProductionAgentRuntimeKind } from '../../agentRuntime/runtimeKinds';
 import {
   getSnapshotRuntimeKind,
@@ -582,6 +586,24 @@ export class CliAnalyzeService {
         const runtimeSelection = persistedRuntimeKind ? null : resolveAgentRuntimeSelection(session.providerId ?? null);
         const resolvedRuntimeKind = persistedRuntimeKind ?? runtimeSelection?.kind;
         const publicRuntimeKind = isProductionAgentRuntimeKind(resolvedRuntimeKind) ? resolvedRuntimeKind : undefined;
+        const modelRuntimeSelection = runtimeSelection ?? {
+          kind: resolvedRuntimeKind!,
+          source: persistedProviderId ? 'provider' as const : 'env' as const,
+          ...(persistedProviderId ? {providerId: persistedProviderId} : {}),
+        };
+        let model: string | undefined;
+        try {
+          model = getRuntimeDiagnosticModel(
+            getRuntimeDiagnostics(modelRuntimeSelection),
+          ) || undefined;
+        } catch (error) {
+          // Provenance is optional metadata. Do not turn a completed analysis into
+          // a CLI failure when a runtime's diagnostic adapter is unavailable.
+          console.warn(
+            '[CliAnalyzeService] Failed to resolve runtime model provenance:',
+            (error as Error).message,
+          );
+        }
 
         // SDK/session id is runtime-specific and exposed only through the orchestrator hook.
         const sdkSessionId =
@@ -602,10 +624,7 @@ export class CliAnalyzeService {
           reportHtml: reportOutput.html,
           reportError:
             privateKnowledge && reportOutput.error ? privateAnalysisFailureMessage(outputLanguage) : reportOutput.error,
-          // The Claude model name is stored on ClaudeRuntime's config; not trivially
-          // exposed via IOrchestrator. Left undefined for PR1; fills in PR2 via
-          // CLAUDE_MODEL env read if needed for config.json provenance.
-          model: process.env.CLAUDE_MODEL,
+          model,
           providerId: persistedProviderId !== undefined ? persistedProviderId : (session.providerId ?? null),
           agentRuntimeKind: publicRuntimeKind,
           providerSnapshotHash:

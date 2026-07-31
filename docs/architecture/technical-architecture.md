@@ -80,6 +80,25 @@ POST /api/agent/v1/analyze
 reference trace、codebase 或私有 knowledge source 需要完整上下文时，不能为了满足
 用户传入的 `fast` 而静默丢掉能力。
 
+### 3.1 企业身份边界
+
+`/api/auth/oidc/login` 和 callback 是公开 bootstrap 边界；其他 `/api` 默认经过统一
+`authenticate` 中间件。`EnterpriseOidcClient` 用标准 discovery + Authorization
+Code + PKCE，并在边界内完成 ID Token 与 nonce 校验。短期 state/nonce/PKCE
+transaction 使用签名 HttpOnly Cookie；登录完成后只把不透明签名 session id 放入
+HttpOnly Cookie，具体 tenant、workspace、role、scope 和撤销/到期状态仍从企业
+SQLite 读取。
+
+OIDC 身份只负责定位 tenant/user，不直接授予工作区权限。`memberships` 中的 role 是
+授权真相，IdP claims 不能覆盖它。前端的 OIDC 组件只管理登录、workspace onboarding
+和本地退出；所有分析、Provider、codebase 与 trace 请求通过共享 credentialed fetch
+策略携带 Cookie，同时继续兼容显式 API key。身份或 workspace 改变时，AIPanel 必须
+结束旧后端 session，并重置 Trace/临时状态和 storage namespace，防止跨身份复用。
+
+Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS 本身不会阻止浏览器
+发送跨站 mutation。popup callback 只向 allowlisted `targetOrigin` 发送消息，并使用
+`no-store` 与严格 CSP。
+
 ## 4. Runtime 与 Provider
 
 `PRODUCTION_RUNTIME_KINDS` 当前注册的 production runtime 都实现共享

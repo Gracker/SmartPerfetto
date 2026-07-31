@@ -12,6 +12,45 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` 是部署运维凭证；企业用户应使用带明确角色和 scope 的持久化
 API key。
 
+## OIDC 与浏览器会话 API
+
+Base path：`/api/auth`。这些 bootstrap 接口自行决定公开/会话边界，不经过普通
+`/api` 鉴权中间件；成功登录后的其余 API 仍统一鉴权。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| `GET` | `/config` | 公开返回 enterprise/OIDC 是否启用、issuer、client ID、scope 与登录路径；不返回 secret |
+| `GET` | `/oidc/login?returnTo=<url>` | 创建 10 分钟的签名 state/nonce/PKCE transaction，并重定向到 IdP；绝对回跳必须属于 `CORS_ORIGINS`，同后端相对地址必须以单个 `/` 开头且不能包含反斜杠 |
+| `GET` | `/oidc/callback` | 校验 code、state、PKCE、ID Token 和 nonce，设置 HttpOnly session Cookie；popup 响应为 no-store + CSP |
+| `GET` | `/session` | 返回当前用户、tenant、workspace、roles/scopes、可用 workspace 与到期时间；不返回 session token |
+| `POST` | `/onboarding/workspace` | 从持久化 membership 中选择 workspace；Cookie 请求必须带 allowlisted `Origin` |
+| `POST` | `/logout` | 撤销 SmartPerfetto 本地会话并清 Cookie；不会退出 IdP 全局会话 |
+
+浏览器请求必须使用 `credentials: include`。工作区选择成功后的 session 示例：
+
+```json
+{
+  "success": true,
+  "authenticated": true,
+  "status": "ready",
+  "tenantId": "tenant-a",
+  "userId": "sso-0123456789abcdef",
+  "workspaceId": "workspace-a",
+  "email": "alice@example.com",
+  "roles": ["analyst"],
+  "scopes": ["trace:read", "trace:write", "agent:run", "report:read"],
+  "workspaces": [
+    {"workspaceId": "workspace-a", "name": "Workspace A", "role": "analyst"}
+  ],
+  "expiresAt": 1760000000000
+}
+```
+
+未登录时 `/session` 返回
+`{"success":true,"authenticated":false}`。存在合法身份但没有 workspace 时，
+`status` 为 `needs_workspace_selection` 或 `no_workspace_membership`；这种 session
+不能访问普通受保护 API。
+
 ## 健康检查
 
 | 方法 | 路径 | 说明 |

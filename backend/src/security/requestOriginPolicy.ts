@@ -12,6 +12,18 @@ function normalizeOrigin(origin: string): string | undefined {
   }
 }
 
+const SAFE_HTTP_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function cookieHeaderHasName(
+  cookieHeader: string | undefined,
+  name: string,
+): boolean {
+  return Boolean(cookieHeader?.split(';').some(part => {
+    const separator = part.indexOf('=');
+    return separator > 0 && part.slice(0, separator).trim() === name;
+  }));
+}
+
 export function isCorsOriginAllowed(
   requestOrigin: string,
   allowedOrigins: ReadonlySet<string>,
@@ -25,6 +37,40 @@ export function normalizeCorsOrigins(origins: readonly string[]): ReadonlySet<st
     const normalized = normalizeOrigin(origin.replace(/\/+$/, ''));
     return normalized ? [normalized] : [];
   }));
+}
+
+export function isSsoCookieMutationOriginAllowed(input: {
+  method: string;
+  cookieHeader?: string;
+  authorizationHeader?: string;
+  apiKeyHeader?: string;
+  requestOrigin?: string;
+  requestProtocol: string;
+  requestHost: string;
+  allowedOrigins: ReadonlySet<string>;
+  sessionCookieName?: string;
+}): boolean {
+  if (SAFE_HTTP_METHODS.has(input.method.toUpperCase())) return true;
+  if (
+    input.authorizationHeader?.startsWith('Bearer ')
+    || Boolean(input.apiKeyHeader?.trim())
+  ) {
+    return true;
+  }
+  if (!cookieHeaderHasName(
+    input.cookieHeader,
+    input.sessionCookieName || 'sp_sso_session',
+  )) {
+    return true;
+  }
+  if (!input.requestOrigin) return false;
+  if (isCorsOriginAllowed(input.requestOrigin, input.allowedOrigins)) return true;
+  const normalizedRequestOrigin = normalizeOrigin(input.requestOrigin);
+  const normalizedBackendOrigin = normalizeOrigin(
+    `${input.requestProtocol}://${input.requestHost}`,
+  );
+  return normalizedRequestOrigin !== undefined
+    && normalizedRequestOrigin === normalizedBackendOrigin;
 }
 
 export function isLoopbackRequestHostname(hostname: string): boolean {

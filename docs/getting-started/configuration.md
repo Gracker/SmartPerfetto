@@ -415,6 +415,56 @@ SMARTPERFETTO_API_KEY=replace_with_a_strong_random_secret
 Authorization: Bearer <SMARTPERFETTO_API_KEY>
 ```
 
+## 企业 OIDC 登录
+
+浏览器企业登录使用 OIDC Authorization Code Flow、PKCE S256、`state` 和
+`nonce`。后端通过 discovery 获取 IdP 元数据，并在创建 SmartPerfetto 会话前验证
+ID Token 的签名、issuer、audience、有效期和 nonce；会话只保存在
+HttpOnly Cookie 中，不写入 `localStorage` 或浏览器 JSON 响应。
+
+先在 IdP 注册回调地址，然后配置后端：
+
+```bash
+SMARTPERFETTO_ENTERPRISE=true
+SMARTPERFETTO_SSO_COOKIE_SECRET=replace_with_at_least_32_random_bytes
+SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.com
+SMARTPERFETTO_OIDC_CLIENT_ID=smartperfetto
+SMARTPERFETTO_OIDC_CLIENT_SECRET=replace_with_oidc_client_secret
+SMARTPERFETTO_OIDC_REDIRECT_URI=https://backend.example.com/api/auth/oidc/callback
+SMARTPERFETTO_OIDC_SCOPES=openid email profile
+SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD=client_secret_post
+CORS_ORIGINS=https://perfetto.example.com
+
+# 二选一或结合使用，把已验证身份映射到现有 tenant：
+SMARTPERFETTO_OIDC_EMAIL_DOMAIN_MAP=example.com=tenant-a
+# SMARTPERFETTO_OIDC_DEFAULT_TENANT_ID=tenant-a
+```
+
+`SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD` 支持 `client_secret_post`、
+`client_secret_basic` 和无 secret 的 `none`。Issuer 默认必须是 HTTPS；
+`SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` 只用于本机测试 IdP。域名映射默认
+只使用 `email_verified=true` 的 email；若受控 IdP 不发布该 claim，可以显式设置
+`SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL=false`，并改用 tenant claim 或默认
+tenant 控制准入。
+
+`CORS_ORIGINS` 必须列出浏览器前端的完整 origin（scheme、host、port），不接受
+通配符或路径。登录 popup 只会回传到该精确 allowlist 中的地址。HTTPS 回调会默认
+启用 Secure Cookie；只有前后端确实跨站时才设置
+`SMARTPERFETTO_SSO_COOKIE_SAME_SITE=none`，且必须同时启用
+`SMARTPERFETTO_SSO_COOKIE_SECURE=true`。同站或反向代理部署保持默认 `lax`。
+
+登录后端只建立身份与本地会话，不会自动授予工作区权限。用户必须已经在
+`memberships` 中拥有 workspace role；该持久化 role 是授权真相，IdP 的
+`roles/groups` 不会覆盖它。打开 **AI 助手 → 设置 → 后端连接** 完成登录和工作区
+选择。退出会撤销 SmartPerfetto 本地会话，但不会结束 IdP 的全局会话。
+
+验收顺序：
+
+1. `GET /api/auth/config` 返回 `oidc.enabled: true`；
+2. 设置页登录 popup 返回后，`GET /api/auth/session` 返回已验证用户和 workspace；
+3. 切换 workspace 后，AI 会话、Trace 临时状态和本地存储命名空间同步隔离；
+4. 退出后 `/api/auth/session` 返回 `authenticated: false`，受保护 API 返回 `401`。
+
 ## 上传与 trace processor
 
 ```bash

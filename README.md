@@ -461,6 +461,8 @@ The browser UI talks to the backend through REST and SSE. If you want to build y
 
 Leave `SMARTPERFETTO_API_KEY` unset for local single-user runs. Set it in `backend/.env` only if you expose the backend beyond your local machine. Protected APIs then require `Authorization: Bearer <token>`. This static key is the deployment-operator credential with local administration authority; do not distribute it to ordinary users.
 
+Enterprise browser SSO supports standards-based OIDC Authorization Code + PKCE. Configure the issuer, client, callback URL, exact frontend origin, and tenant/workspace membership; users can then sign in, switch authorized workspaces, and sign out from **AI Assistant Settings**. Browser sessions use an HttpOnly cookie, while workspace roles come from SmartPerfetto's durable membership store instead of self-asserted IdP role claims. See [Configuration](docs/getting-started/configuration.en.md#enterprise-oidc-sign-in) and the [API Reference](docs/reference/api.en.md#oidc-and-browser-session-api).
+
 For enterprise or shared deployments, also set a dedicated 32-byte-or-longer `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`. It signs only the short-lived browser WebSocket capability used by the trace-processor proxy, so the long-lived backend API key is never placed in a URL. Rotating this secret invalidates outstanding capabilities. Docker Compose passes it through the project `.env` file.
 
 ## Architecture

@@ -64,4 +64,35 @@ describe('CLI bootstrap runtime storage', () => {
     expect(process.env.SMARTPERFETTO_PACKAGE_ROOT).toBe('/configured/package');
     expect(process.env.SMARTPERFETTO_DISTRIBUTION).toBe('portable');
   });
+
+  it('keeps inherited runtime pins ahead of default CLI env files', () => {
+    fs.writeFileSync(path.join(tempDir, 'env'), [
+      'SMARTPERFETTO_AGENT_RUNTIME=claude-agent-sdk',
+      'OPENAI_MODEL=from-cli-home-env',
+    ].join('\n'));
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.OPENAI_MODEL = 'from-inherited-env';
+
+    const {bootstrap} = require('../bootstrap') as typeof import('../bootstrap');
+    bootstrap({sessionDir: tempDir});
+
+    expect(process.env.SMARTPERFETTO_AGENT_RUNTIME).toBe('openai-agents-sdk');
+    expect(process.env.OPENAI_MODEL).toBe('from-inherited-env');
+  });
+
+  it('lets an explicit env file override inherited runtime pins', () => {
+    const envFile = path.join(tempDir, 'explicit.env');
+    fs.writeFileSync(envFile, [
+      'SMARTPERFETTO_AGENT_RUNTIME=claude-agent-sdk',
+      'OPENAI_MODEL=from-explicit-env-file',
+    ].join('\n'));
+    process.env.SMARTPERFETTO_AGENT_RUNTIME = 'openai-agents-sdk';
+    process.env.OPENAI_MODEL = 'from-inherited-env';
+
+    const {bootstrap} = require('../bootstrap') as typeof import('../bootstrap');
+    bootstrap({envFile, sessionDir: tempDir});
+
+    expect(process.env.SMARTPERFETTO_AGENT_RUNTIME).toBe('claude-agent-sdk');
+    expect(process.env.OPENAI_MODEL).toBe('from-explicit-env-file');
+  });
 });

@@ -67,6 +67,7 @@ import {
 import {
   isCorsOriginAllowed,
   isLoopbackRequestHostname,
+  isSsoCookieMutationOriginAllowed,
   normalizeCorsOrigins,
 } from './security/requestOriginPolicy';
 import {rejectEnterpriseUnscopedApi} from './middleware/enterpriseRouteBoundary';
@@ -119,6 +120,32 @@ app.use(cors({
   },
   credentials: true,
 }));
+
+// A browser session cookie may authenticate every API surface. CORS controls
+// response visibility, but it does not stop a cross-site form from sending a
+// mutation, so reject cookie-authenticated unsafe methods unless their Origin
+// is an exact configured frontend origin (or the backend's own origin).
+app.use('/api', (req, res, next) => {
+  if (!isSsoCookieMutationOriginAllowed({
+    method: req.method,
+    cookieHeader: req.headers.cookie,
+    authorizationHeader: req.headers.authorization,
+    apiKeyHeader: typeof req.headers['x-api-key'] === 'string'
+      ? req.headers['x-api-key']
+      : undefined,
+    requestOrigin: req.headers.origin,
+    requestProtocol: req.protocol,
+    requestHost: req.get('host') || '',
+    allowedOrigins: corsAllowedOrigins,
+  })) {
+    res.status(403).json({
+      success: false,
+      error: 'Cookie-authenticated mutations require an allowed Origin',
+    });
+    return;
+  }
+  next();
+});
 
 app.use(express.json({ limit: serverConfig.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
