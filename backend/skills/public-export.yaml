@@ -1294,6 +1294,9 @@ strategies:
     workflow: trace-comparison
     disposition: exported
     destination: references/generated/strategies/comparison-result-methodology.template.md
+  backend/strategies/external-issue-triage.template.md:
+    disposition: product-only
+    reason: SmartPerfetto feedback sessions, provider pinning, review attestation, and draft-only GitHub handoff
   backend/strategies/game.strategy.md:
     workflow: frameworks-games
     disposition: exported
@@ -1572,6 +1575,12 @@ strategies:
     workflow: scrolling
     disposition: exported
     destination: references/generated/strategies/scrolling.strategy.md
+  backend/strategies/selfevolve-proposal.template.md:
+    disposition: product-only
+    reason: SmartPerfetto self-evolution proposal generation, persistence, and gated overlay lifecycle
+  backend/strategies/selfevolve-synthetic-eval-seeds.registry.yaml:
+    disposition: product-only
+    reason: SmartPerfetto self-evolution evaluation corpus and gated overlay lifecycle
   backend/strategies/selection-area.template.md:
     workflow: trace-overview
     disposition: exported
