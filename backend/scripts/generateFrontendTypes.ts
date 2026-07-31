@@ -22,6 +22,10 @@ const conclusionContractPath = path.join(projectRoot, 'backend/src/agent/core/co
 const evidenceContractPath = path.join(projectRoot, 'backend/src/types/evidenceContract.ts');
 const claimVerificationPath = path.join(projectRoot, 'backend/src/types/claimVerification.ts');
 const identityContractPath = path.join(projectRoot, 'backend/src/types/identityContract.ts');
+const externalIssueReportingPath = path.join(
+  projectRoot,
+  'backend/src/types/externalIssueReporting.ts',
+);
 const frontendOutputPath = path.join(
   projectRoot,
   'perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/generated/data_contract.types.ts'
@@ -85,6 +89,12 @@ const identityContractContent = fs.readFileSync(identityContractPath, 'utf-8')
   // EvidenceContract and IdentityContract are separate backend modules but
   // generated frontend types are concatenated into one file.
   .replace(/export type TraceTimestampNs = string \| number;\n\n/, '');
+const externalIssueReportingContent = fs
+  .readFileSync(externalIssueReportingPath, 'utf-8')
+  .trim()
+  .replace(/^\/\/ SPDX-License-Identifier:[^\n]*\n/, '')
+  .replace(/^\/\/ Copyright[^\n]*\n/, '')
+  .replace(/^\/\/ This file[^\n]*\n\n/, '');
 
 // Transform content for frontend
 console.log('Transforming for frontend compatibility...');
@@ -273,6 +283,12 @@ ${claimVerificationContent}
 ${identityContractContent}
 
 ${queryReviewFrontendContent}
+
+// =============================================================================
+// Agent-assisted external Issue reporting
+// =============================================================================
+
+${externalIssueReportingContent}
 `);
 
 // Column Types Section

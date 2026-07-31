@@ -501,6 +501,7 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
       scope: replay.evalCase.scope,
       runtime: replay.pinned.runtime,
       providerId: replay.pinned.providerId,
+      providerSnapshotHash: environmentStart.providerSnapshotHash,
       ...(replay.pinned.model ? {model: replay.pinned.model} : {}),
       outputLanguage: replay.pinned.outputLanguage,
       analysisMode: replay.evalCase.analysisMode,

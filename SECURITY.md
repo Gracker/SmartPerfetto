@@ -15,9 +15,15 @@ issue. Instead:
 **Preferred**: Use GitHub's private [security advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new) reporting.
 
 **Alternative**: Email **smartperfetto@gracker.dev** with:
+
 - A description of the vulnerability and its impact
 - Steps to reproduce (a minimal proof of concept helps)
 - Your name / handle for attribution (optional)
+
+The in-product Agent-assisted feedback flow follows the same boundary. Marking
+a candidate as security-sensitive prevents a public draft and routes the user
+to the private advisory path. SmartPerfetto never submits the report
+automatically.
 
 ## Response Timeline
 
@@ -66,6 +72,15 @@ target `main`; older tags receive fixes only on request.
 - **Input redaction**: Logged request bodies and device properties go through
   `sanitizeLogData` before persistence (see
   `backend/src/services/sessionLogger.ts`).
+- **Public-artifact boundary**: Agent-assisted GitHub drafts and local
+  contribution bundles use the shared public-artifact sanitizer. Drafts reject
+  structural prompt attacks and redact credentials, emails, device/network
+  identifiers, absolute paths, and package identities before preview.
+- **Validated Agent output**: External-issue triage runs without tools, accepts
+  only a bounded JSON contract with real source-run references, and falls back
+  deterministically when provider pinning or validation fails.
+- **No GitHub write credential**: The feedback assistant builds an HTTPS
+  `issues/new` URL only. It accepts no GitHub token and calls no GitHub API.
 
 ## Acknowledgements
 

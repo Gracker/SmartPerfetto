@@ -119,6 +119,9 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 - Provides an off-by-default Self-Evolution control plane that turns effective
   public feedback into gated, human-approved, reversible overlays without
   automatic commits, pushes, or external judge calls.
+- Helps users turn evidence gaps and runtime/Skill failures into reviewable
+  GitHub drafts: a source-run-pinned Agent explains whether to report, what to
+  contribute, and what evidence is missing; the user still reviews and submits.
 - Uses a TypeScript backend to run agent workflows, query `trace_processor_shell`, invoke YAML analysis skills, and stream results to the browser.
 - Supports Anthropic directly, Claude/Anthropic-compatible providers, OpenAI/OpenAI-compatible providers, Pi Agent Core custom models, OpenCode custom models, and opt-in Qoder Agent SDK profiles through the matching backend runtime.
 - Ships with registry-discovered YAML skill/config files and scene strategies for Android performance investigation.
@@ -129,6 +132,8 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 - [Self-Evolution Usage And Acceptance](docs/getting-started/self-evolution.en.md):
   default-off behavior, permissions, persistence, apply/revert, reconciliation,
   and user/maintainer tests.
+- [Agent-Assisted GitHub Feedback](docs/getting-started/agent-assisted-feedback.en.md):
+  reportability triage, contribution guidance, privacy boundaries, and tests.
 
 ## Tech Stack
 
@@ -548,6 +553,11 @@ Contributions are welcome. Good first contributions include:
 - Fixing UI issues in the Perfetto plugin
 - Adding regression coverage for known trace scenarios
 
+If a completed analysis exposed the opportunity, start with **Ask the Agent
+whether to report this** below the result. It separates observed facts from
+uncertainty, identifies the affected product surface, and suggests the minimum
+Bug, Skill, Strategy, runtime, documentation, UI, or trace-fixture contribution.
+
 Before opening a PR:
 
 1. Read [CONTRIBUTING.md](CONTRIBUTING.md).
@@ -558,7 +568,9 @@ Before opening a PR:
 
 ## Contact
 
-- Bugs and feature requests: [GitHub Issues](https://github.com/Gracker/SmartPerfetto/issues)
+- Analysis-derived feedback:
+  [Agent-Assisted Analysis Feedback](https://github.com/Gracker/SmartPerfetto/issues/new?template=analysis_feedback.yml)
+- Other bugs and feature requests: [GitHub Issues](https://github.com/Gracker/SmartPerfetto/issues)
 - Security reports: [GitHub private advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new) or `smartperfetto@gracker.dev`
 - Collaboration, commercial support, and sponsorship: WeChat `553000664`
 

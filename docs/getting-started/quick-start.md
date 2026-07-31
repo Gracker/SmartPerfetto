@@ -82,6 +82,11 @@ Knowledge Pack；不需要宿主机下载这些运行时资产。
 - `帮我看看这个 ANR`
 - `这个 trace 的应用包名和主要进程是什么？`
 
+分析完成后，如果结果旁出现反馈机会提示，可以点击 **让 Agent 判断反馈内容**。Agent 会
+结合该次运行的持久化证据说明是否值得反馈、归属哪个模块、可以贡献什么；用户回答必要
+问题并完成敏感信息复核后，SmartPerfetto 只打开未提交的 GitHub 草稿。详见
+[Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)。
+
 ## 6. 必要检查
 
 按改动类型选择最小测试层。维护者和 LLM/Agent 需要先读

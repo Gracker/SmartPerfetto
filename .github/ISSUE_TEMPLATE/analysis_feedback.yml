@@ -1,0 +1,134 @@
+name: Agent-Assisted Analysis Feedback
+description: Report an evidence-backed analysis, Skill, strategy, runtime, UI, documentation, or trace-fixture opportunity
+title: "[Analysis Feedback]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form when a completed SmartPerfetto analysis suggests a product
+        problem or a useful contribution. The AI Assistant can first run
+        **Ask the Agent whether to report this**, explain what kind of
+        contribution is useful, collect missing context, and create a
+        deidentified draft.
+
+        Do not publish raw traces, private source code, account details, local
+        paths, API keys, provider credentials, or company-confidential data.
+        For a security vulnerability, stop here and use the private
+        [Security Advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new).
+
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Agent triage outcome
+      options:
+        - Ready to report
+        - Needs user input
+        - Needs verification
+        - Safe fallback guidance (Agent unavailable)
+        - Prepared manually
+    validations:
+      required: true
+
+  - type: dropdown
+    id: ownership
+    attributes:
+      label: Likely ownership
+      options:
+        - Analysis logic
+        - Skill
+        - Strategy / prompt
+        - Runtime / provider compatibility
+        - Trace data / missing evidence
+        - Product UI
+        - Documentation
+        - Unknown
+    validations:
+      required: true
+
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: What can be contributed?
+      options:
+        - Bug report
+        - Skill improvement
+        - Strategy improvement
+        - Runtime compatibility details
+        - Documentation change
+        - UI feedback
+        - Deidentified trace fixture
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed facts
+      description: Include only facts present in the completed analysis and its evidence references.
+      placeholder: |
+        - Signal:
+        - Claim / finding / evidence ref:
+        - User-visible impact:
+    validations:
+      required: true
+
+  - type: textarea
+    id: assessment
+    attributes:
+      label: Agent assessment
+      description: Paste the Agent assessment or explain why you believe this belongs in SmartPerfetto.
+    validations:
+      required: true
+
+  - type: textarea
+    id: confirmation
+    attributes:
+      label: User confirmation and reproduction
+      description: Answer the questions raised by the Agent and provide minimum reproduction steps.
+      placeholder: |
+        Expected behavior:
+        Actual behavior:
+        Minimum reproduction:
+    validations:
+      required: true
+
+  - type: textarea
+    id: missing
+    attributes:
+      label: Missing evidence or uncertainty
+      description: State what has not been verified. Do not turn an inference into a fact.
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        SmartPerfetto version / commit:
+        Entry point: ./start.sh / dev UI / Docker / portable / CLI
+        Runtime and provider type:
+        OS and browser:
+    validations:
+      required: true
+
+  - type: textarea
+    id: redactions
+    attributes:
+      label: Redactions and public-data review
+      description: List automatic redactions and any fields you removed manually.
+
+  - type: input
+    id: fingerprint
+    attributes:
+      label: SmartPerfetto draft fingerprint
+      description: Optional non-secret fingerprint from the generated draft. Never paste a credential or raw trace identifier.
+
+  - type: checkboxes
+    id: consent
+    attributes:
+      label: Public submission checks
+      options:
+        - label: I reviewed this report and it contains no raw trace data, private source code, account details, local paths, or secrets.
+          required: true
+        - label: I understand the Agent created a draft only; I am responsible for the final public submission.
+          required: true

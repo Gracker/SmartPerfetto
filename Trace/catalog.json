@@ -1760,6 +1760,7 @@
           "callstack_analysis",
           "fence_wait_decomposition",
           "global_trace_sanity_check",
+          "longest_process_slices",
           "main_thread_slices_in_range",
           "main_thread_states_in_range",
           "multi_trace_result_comparison",
@@ -1859,7 +1860,6 @@
             ],
             "required_sql_steps": [
               "trace_window",
-              "top_long_slices",
               "top_d_state_threads",
               "top_runnable_waits",
               "runqueue_pressure",
@@ -1869,6 +1869,46 @@
             "isolated_sql_probes": [],
             "expected_condition_skips": [],
             "semantic_step": "trace_window",
+            "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
+          },
+          {
+            "id": "execute-longest_process_slices",
+            "type": "skill",
+            "target": "longest_process_slices",
+            "mode": "semantic",
+            "source_file": "backend/skills/atomic/longest_process_slices.skill.yaml",
+            "parameters": {
+              "max_rows": 5
+            },
+            "required_steps": [
+              "root"
+            ],
+            "required_sql_steps": [
+              "root"
+            ],
+            "forced_sql_steps": [],
+            "isolated_sql_probes": [],
+            "expected_condition_skips": [],
+            "semantic_step": "root",
+            "min_rows": 5,
+            "max_rows": 5,
+            "assertions": [
+              {
+                "column": "duration_ms",
+                "operator": "gt",
+                "value": 0
+              },
+              {
+                "column": "process_name",
+                "operator": "matches",
+                "value": ".+"
+              },
+              {
+                "column": "track_scope",
+                "operator": "matches",
+                "value": "^(thread_track|process_track)$"
+              }
+            ],
             "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
           },
           {

@@ -205,6 +205,34 @@ external call is made; it is not a provider configuration failure. See
 [Self-Evolution Usage And Acceptance](../getting-started/self-evolution.en.md)
 for the full workflow and acceptance matrix.
 
+## Agent-Assisted GitHub Feedback Is Unavailable
+
+First confirm that the source message received `analysis_completed`. M10 reads
+the persisted completion event, RunManifest, and optional result snapshot. It
+does not inspect an in-flight chat object.
+
+- "No feedback needed" means deterministic detection found no evidence/claim
+  gate, Skill, scene-confidence, identity, or report-output signal. You may
+  still use the GitHub Issue Form manually.
+- A private/code-aware source is fail-closed. Do not bypass this by disabling
+  redaction or copying private output. Route security findings to a private
+  advisory.
+- A legacy run may lack a provider pin, or the active provider snapshot may
+  have changed. M10 never switches that old run to the current provider. Run a
+  new analysis to create a complete pin.
+- An Agent fallback means that the source runtime does not yet support
+  independent triage, the pinned credential is unavailable, or model output
+  failed strict JSON/evidence validation. The conservative deterministic
+  guidance remains usable, but is not labeled as an Agent result.
+- "Create GitHub draft" stays disabled until every required question is
+  answered and the sensitive-data review is checked. A security-sensitive
+  candidate can only route to the private-advisory path.
+- No Issue exists after opening GitHub until the user submits it. SmartPerfetto
+  holds no GitHub token, calls no GitHub API, and never clicks submit.
+
+See [Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md)
+for the complete states, fields, and manual acceptance steps.
+
 ## Skill Validation Fails
 
 ```bash

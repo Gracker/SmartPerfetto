@@ -87,6 +87,20 @@ integration requires per-use explicit consent.
 See [Self-Evolution Usage And Acceptance](self-evolution.en.md) for the complete
 default-off, apply/revert, restart-reconciliation, and fail-closed checks.
 
+Agent-assisted GitHub feedback does not require either `SELF_EVOLUTION_*`
+switch. It creates an unsubmitted draft at
+`https://github.com/Gracker/SmartPerfetto/issues/new` by default. A self-hosted
+fork may point it to its own HTTPS issue-new endpoint:
+
+```bash
+SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
+```
+
+This is not a GitHub API token and never enables automatic submission. Agent
+review reuses only the source run's pinned provider/runtime and falls back
+explicitly when that pin is absent or changed. See
+[Agent-Assisted GitHub Feedback](agent-assisted-feedback.en.md).
+
 npm CLI does not use the Web UI `Connection` settings. For first-time CLI setup, run:
 
 ```bash
@@ -383,6 +397,8 @@ NODE_ENV=development
 FRONTEND_URL=http://localhost:10000
 # For reverse proxies, HTTPS, or custom Docker host ports:
 # SMARTPERFETTO_BACKEND_PUBLIC_URL=http://localhost:3000
+# Optional HTTPS issue-new endpoint for a self-hosted fork; never auto-submits.
+# SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
 ```
 
 Default local ports:

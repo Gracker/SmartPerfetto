@@ -101,6 +101,7 @@ function buildCatalogCases(repoRoot, options = {}) {
       const provenance = {
         schema_version: 1,
         generator_version: entry.construction.generator_version,
+        base_case_id: entry.construction.base_case_id,
         scenario_file: path.relative(repoRoot, path.resolve(entry.case_dir, entry.construction.scenario_file)).split(path.sep).join('/'),
         overlay_file: path.relative(repoRoot, committedOverlayPath).split(path.sep).join('/'),
         output_file: entry.construction.output,

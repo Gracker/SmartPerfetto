@@ -91,6 +91,30 @@ const suites = {
       'verification_failed',
     ],
   },
+  'external-issue': {
+    label: 'M10 Agent-assisted external issue triage gate',
+    output: 'test-output/e2e-deepseek-external-issue-real.json',
+    args: [
+      '--mode',
+      'full',
+      '--provider-id',
+      'env',
+      '--trace',
+      '../Trace/real/android-startup-heavy/trace.pftrace',
+      '--query',
+      '这是反馈路径验证：请明确调用 anr_analysis 检查这个启动 Trace 是否包含 ANR；即使结果为空也必须如实完成分析，不要编造。',
+      '--output',
+      'test-output/e2e-deepseek-external-issue-real.json',
+      '--keep-session',
+      '--require-tool',
+      'invoke_skill',
+      '--require-skill',
+      'anr_analysis',
+      '--require-external-issue-triage',
+      '--forbid-degraded-fallback',
+      'verification_failed',
+    ],
+  },
   'dual-trace': {
     label: 'raw dual-trace comparison gate',
     output: 'test-output/e2e-deepseek-dual-trace-real.json',
@@ -210,7 +234,7 @@ function main() {
 
   const credential = resolveDeepseekCredential();
   const suiteNames = options.suite === 'all'
-    ? ['startup', 'scrolling', 'dual-trace', ...CONTEXT_SUITE_NAMES]
+    ? ['startup', 'scrolling', 'external-issue', 'dual-trace', ...CONTEXT_SUITE_NAMES]
     : options.suite === 'context'
       ? CONTEXT_SUITE_NAMES
       : [options.suite];
@@ -290,7 +314,7 @@ function resolveRuntimeKinds(value) {
 }
 
 function printUsage() {
-  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|all-deepseek]');
+  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|all-deepseek]');
   console.log('');
   console.log('Runs SmartPerfetto Agent SSE E2E with Deepseek-backed SmartPerfetto runtimes.');
   console.log('');

@@ -12,6 +12,10 @@ PR、推送远端或改写 TypeScript。
 普通分析用户无需启用此功能。所有专用开关默认关闭；关闭时，既有 AI 分析、报告、
 CLI 和 feedback 入口保持原样。
 
+M10 的 [Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)是另一条普通用户路径：
+它分析单次完成 run、解释是否值得公开反馈并生成用户审查的草稿，但不会自动写入
+feedback 事实、启动策展、创建提案/overlay 或提交 GitHub。
+
 ## 当前闭环
 
 ```text
@@ -28,6 +32,22 @@ CLI 和 feedback 入口保持原样。
   -> 新 run 使用固定 snapshot
   -> 启动/升级对账或显式 revert
 ```
+
+## M0–M10 机制与用户影响
+
+| 里程碑 | 落地机制 | 用户真正得到什么 |
+|---|---|---|
+| M0 | 解析分级开关，探测包外可写持久化目录，记录 build identity | 默认关闭且不干扰现有分析；存储不可靠时 apply 明确禁用，不会假装成功 |
+| M1 | 每次 run 在发出 receipt 前 seal 不可变 RunManifest，固定 runtime、provider、model、配置、Skill/Strategy、工具和 overlay generation | 每条反馈和报告都能追溯到当时真实运行环境，不再用当前配置猜历史 |
+| M2 | feedback 进入 append-only 事件流，再生成可重建的 effective projection；private 与 legacy 规则独立 | 勾/叉可撤销，历史记录不被错误改写，私有反馈不会进入公开改进 |
+| M3 | 抽取共享 evaluator，并用 scope-keyed snapshot composer 组合有效 Skill overlay | 已验证的 Skill 改动能真正进入后续 run，同时运行中的分析不被热替换 |
+| M4 | 建立不可变 EvalCase corpus、validation/holdout 划分和按环境指纹缓存的 baseline | 候选不再只靠线上印象判断，而是在固定题集和固定基线上比较 |
+| M5 | 对 baseline/candidate 做同输入、同预算、同并发的 paired replay，使用 L0/L1/L3 scorer 与 Pareto 判定 | provider 故障或证据不足会显示 inconclusive，不会被包装成“更好” |
+| M6 | 用规则归因公开有效反馈，只生成一个最小 `hypothesis_only` proposal | 管理员先看到可解释的问题归属和最小改法，线上统计本身不能直接改系统 |
+| M7 | 通过 Schema、Containment、注入、尺寸、语义、并发、静态校验和配对回放八道门 | 越界、恶意、过大、过期或回放退化的候选无法取得 apply 资格 |
+| M8 | 把通过且人工接受的 proposal 发布为内容寻址 overlay；支持三种本地交付通道、升级对账和显式 revert | 新 run 才使用新 generation；升级漂移会被隔离，管理员可以回滚且不会自动 commit/push |
+| M9 | 提供 Evolution 管理面、SSE 进度、diff、权限、metrics、运维与双语文档；外部 L2 judge 保持未配置 | 管理员能看清每一步状态、拒绝变更、导出本地产物并按证据验收 |
+| M10 | 从同一完成 run 检测反馈机会，固定原 provider/runtime 做无工具 Agent triage，严格校验后只生成用户确认的 GitHub 草稿 | 普通用户会被告知是否值得反馈、问题归属、还缺什么、能贡献什么；系统不自动提交 GitHub |
 
 关键边界：
 
@@ -52,7 +72,7 @@ CLI 和 feedback 入口保持原样。
 
 | 用户 | 当前影响 |
 |---|---|
-| 普通分析用户 | 默认无行为变化。完成分析后仍可点勾/叉；反馈可被更正，private 分析的反馈只保存在本地私有路径 |
+| 普通分析用户 | 完成分析后仍可点勾/叉；有可疑 gap 时可显式请求 Agent 判断外部反馈。private 分析的反馈只保存在本地私有路径且不生成公开草稿 |
 | Analyst | 具备 `self_evolution:read` 时可查看当前状态、提案、overlay 和对账，不能据此 apply |
 | Workspace/Org Admin | 在部署者启用功能后，可显式策展、gate、接受/拒绝、导出、apply 和 revert |
 | 部署者 | 必须决定是否启用两个开关，并为 apply 提供可写、包外、可跨升级保留的数据目录 |
@@ -108,6 +128,8 @@ SSO/API 身份：
 4. 确认页面显示“默认关闭”，`requested/effective enabled` 都为关闭。
 5. 确认 L2 显示未配置，且没有外部授权或调用提示。
 6. 完成一次普通 trace 分析，确认聊天、报告和勾/叉反馈仍正常。
+7. 若结果出现外部反馈信号，确认 Agent 草稿入口无需启用
+   `SELF_EVOLUTION_ENABLED`，且操作后控制台没有自动新增 proposal/overlay。
 
 ### 2. 只启用策展
 
@@ -157,6 +179,7 @@ npm run verify:i18n
 
 ```bash
 npm --prefix backend run test:self-evolution
+npm --prefix backend run test:external-issue-reporting
 npm --prefix backend run typecheck
 npm --prefix backend run test:scene-trace-regression
 ```
@@ -170,6 +193,8 @@ npm run verify:pr
 `test:self-evolution` 覆盖配置依赖、持久化探测、RunManifest、反馈迁移/投影、
 eval corpus、paired replay、门控、overlay、apply/revert、升级对账、RBAC/scope
 和管理 API。它证明代码契约，不替代上述真实启动、浏览器、持久化重启和权限测试。
+`test:external-issue-reporting` 单独证明 M10 的源 run 解析、Agent 输出校验、脱敏、
+草稿确认和权限/私有分析 fail-closed；两套测试互不替代。
 
 如果修改了 Self-Evolution UI 源码，还必须在 `./scripts/start-dev.sh` 中完成浏览器
 验证、运行相关 Perfetto UI tests/typecheck，并执行 `./scripts/update-frontend.sh`

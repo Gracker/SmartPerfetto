@@ -17,6 +17,7 @@ be checked against the public product surfaces below.
 | npm CLI | `npm install -g @gracker/smartperfetto`; `smp` | automation and terminal users | Requires host Node.js `>=24 <25`, no Web UI |
 | CLI trace capture | `smp capture ...` | terminal users collecting traces | Uses Android capture presets/configs, optional post-capture `--analyze`, and local turn artifacts |
 | HTTP/SSE API | `/api/agent/v1/*`, `/api/traces/*`, `/api/reports/*` | integrations and frontend | Keep response contracts stable or regenerate frontend types |
+| Agent external feedback | Analysis message CTA, `/api/agent/v1/:sessionId/external-issue/*` | users reporting analysis, Skill, runtime, docs, or UI gaps | Resolve the persisted source run; pin provider/runtime; validate and deidentify; never submit to GitHub |
 | Self-Evolution admin | Settings `Evolution`, `/api/admin/self-evolution/*` | authorized analysts and administrators | Default off; preserve RBAC/scope, immutable run snapshots, persistence fail-closed, gate binding, reconciliation, and revert |
 
 ## Runtime And Provider Matrix
@@ -55,6 +56,7 @@ AI analysis output is consumed through several surfaces:
 | HTML report | `/api/reports/*`, report export | Keeps evidence, claim verification, identities, and appendix detail |
 | CLI turn artifacts | `~/.smartperfetto/` session/report files | Used by `smp run`, `smp ask`, `smp capture --analyze`, and `smp report` |
 | Analysis-result snapshot | snapshot services and frontend comparison state | Used for multi-result comparison and later review |
+| Agent-assisted issue draft | `/api/agent/v1/:sessionId/external-issue/*`, per-message UI state | Uses persisted run evidence and user confirmation; a durable public thumbs-down may add only an explicit triage signal, while Agent invocation, drafting, Self-Evolution actions, and GitHub submission remain separate |
 | Frontend generated contract | generated DataEnvelope/analysis types | Regenerate when backend contract types change |
 
 Do not collapse these into one behavior. A readability fix for chat should not
@@ -79,6 +81,10 @@ affected:
 - Self-Evolution: feedback visibility, RunManifest attribution, fixed
   validation/holdout replay, admin RBAC/SSE, overlay generation, external user
   data, restart/upgrade reconciliation, and explicit revert.
+- Agent external feedback: current/historical completed runs, exact provider
+  snapshot pin, unsupported-runtime fallback, strict source refs, public
+  sanitization, private/security fail-closed behavior, user confirmation, and
+  no GitHub write.
 - Node.js 24 boundary: source/npm require Node `>=24 <25`; portable packages
   bundle Node 24; Docker does not require host Node.
 - Generated files and artifacts: frontend types, committed `frontend/`,
@@ -131,5 +137,9 @@ frontend outputs.
   relevant subsystem doc updated.
 - Self-Evolution behavior changes also need the bilingual user acceptance guide,
   configuration/API references, and `self-improving-design.md` kept consistent.
+- Agent external-feedback changes also need the bilingual
+  `agent-assisted-feedback` guide, API/configuration/troubleshooting references,
+  Issue Forms, security policy, and data/runtime architecture docs kept
+  consistent.
 - If a doc path is runtime-read, update code references before moving or
   deleting it.

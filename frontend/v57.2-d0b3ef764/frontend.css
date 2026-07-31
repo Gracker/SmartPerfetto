@@ -7398,6 +7398,204 @@ kbd.pf-keycap.pf-spacing-large {
   opacity: 1;
 }
 
+.ai-external-issue-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--chat-border);
+  border-radius: 10px;
+  background: var(--chat-bg-secondary);
+  color: var(--chat-text);
+  font-size: 12px;
+}
+.ai-external-issue-card.muted {
+  flex-direction: row;
+  align-items: center;
+  color: var(--chat-text-muted);
+}
+.ai-external-issue-card.error {
+  border-color: var(--chat-error);
+}
+
+.ai-external-issue-heading,
+.ai-external-issue-review-source,
+.ai-external-issue-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-external-issue-description,
+.ai-external-issue-assessment,
+.ai-external-issue-contribution,
+.ai-external-issue-model,
+.ai-external-issue-fallback {
+  color: var(--chat-text-secondary);
+  line-height: 1.45;
+}
+
+.ai-external-issue-primary,
+.ai-external-issue-secondary,
+.ai-external-issue-candidate-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid var(--chat-border);
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+}
+.ai-external-issue-primary:disabled,
+.ai-external-issue-secondary:disabled,
+.ai-external-issue-candidate-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ai-external-issue-primary {
+  align-self: flex-start;
+  border-color: var(--chat-primary);
+  background: var(--chat-primary);
+  color: white;
+}
+
+.ai-external-issue-secondary,
+.ai-external-issue-candidate-select {
+  align-self: flex-start;
+  background: transparent;
+  color: var(--chat-text);
+}
+
+.ai-external-issue-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.ai-external-issue-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px;
+  border: 1px solid var(--chat-border);
+  border-radius: 8px;
+  background: var(--chat-bg);
+}
+.ai-external-issue-candidate.selected {
+  border-color: var(--chat-primary);
+  box-shadow: 0 0 0 1px var(--chat-primary);
+}
+
+.ai-external-issue-candidate-select {
+  justify-content: flex-start;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  text-align: left;
+}
+
+.ai-external-issue-badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--chat-bg-tertiary, var(--chat-bg-secondary));
+  color: var(--chat-text-secondary);
+  font-size: 10px;
+}
+.ai-external-issue-badge.report {
+  color: var(--chat-success);
+}
+.ai-external-issue-badge.needs_user_input, .ai-external-issue-badge.needs_verification {
+  color: var(--chat-warning);
+}
+
+.ai-external-issue-missing {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--chat-text-secondary);
+}
+.ai-external-issue-missing .label {
+  list-style: none;
+  margin-left: -18px;
+  font-weight: 600;
+}
+
+.ai-external-issue-confirmation {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--chat-border);
+}
+
+.ai-external-issue-question {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ai-external-issue-question textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 7px;
+  border: 1px solid var(--chat-border);
+  border-radius: 6px;
+  background: var(--chat-bg);
+  color: var(--chat-text);
+  font: inherit;
+}
+
+.ai-external-issue-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  line-height: 1.4;
+}
+.ai-external-issue-check input {
+  margin-top: 2px;
+}
+
+.ai-external-issue-security,
+.ai-external-issue-blocked,
+.ai-external-issue-draft-notice {
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--chat-bg);
+  color: var(--chat-text-secondary);
+  line-height: 1.45;
+}
+
+.ai-external-issue-security {
+  border: 1px solid var(--chat-error);
+}
+
+.ai-external-issue-draft {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--chat-border);
+}
+.ai-external-issue-draft pre {
+  max-height: 260px;
+  margin: 0;
+  padding: 9px;
+  overflow: auto;
+  white-space: pre-wrap;
+  border-radius: 6px;
+  background: var(--chat-bg);
+  color: var(--chat-text-secondary);
+  font-size: 11px;
+}
+
+.ai-external-issue-redactions {
+  color: var(--chat-warning);
+}
+
 .ai-sub-agent-cards {
   display: flex;
   flex-wrap: wrap;

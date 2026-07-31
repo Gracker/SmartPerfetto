@@ -94,6 +94,7 @@ import { TraceProcessorFactory } from '../services/workingTraceProcessor';
 import { registerAgentLogsRoutes } from './agentLogsRoutes';
 import { registerAgentQuickSceneRoutes } from './agentQuickSceneRoutes';
 import { registerAgentReportRoutes } from './agentReportRoutes';
+import { registerAgentExternalIssueRoutes } from './agentExternalIssueRoutes';
 import { registerAgentResumeRoutes } from './agentResumeRoutes';
 import { registerAgentSessionCatalogRoutes } from './agentSessionCatalogRoutes';
 import { registerTeachingRoutes } from './agentTeachingRoutes';
@@ -1129,6 +1130,9 @@ async function createHttpRunManifestLifecycle(
     startedAt: run.startedAt,
     runtime: session.runtimeKind,
     providerId: session.providerId ?? null,
+    ...(session.providerSnapshotHash
+      ? {providerSnapshotHash: session.providerSnapshotHash}
+      : {}),
     outputLanguage: sessionOutputLanguage(session),
     analysisMode: options.analysisMode ?? session.analysisMode ?? 'auto',
     referenceTraceId: options.referenceTraceId ?? session.referenceTraceId,
@@ -1204,9 +1208,12 @@ function finalizeHttpRunManifestLifecycle(
   }
 }
 
-function agentEventScopeFromSession(session: AnalysisSession, runId?: string): AgentEventPersistenceScope | null {
+function baseAgentEventScopeFromSession(
+  session: AnalysisSession,
+  runId?: string,
+): AgentEventPersistenceScope | null {
   const run = resolveSessionRun(session, runId);
-  if (!resolveFeatureConfig().enterprise || !session.tenantId || !session.workspaceId || !run?.runId) {
+  if (!session.tenantId || !session.workspaceId || !run?.runId) {
     return null;
   }
   return {
@@ -1220,6 +1227,15 @@ function agentEventScopeFromSession(session: AnalysisSession, runId?: string): A
       ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
       : run.query || session.query,
   };
+}
+
+function agentEventScopeFromSession(
+  session: AnalysisSession,
+  runId?: string,
+): AgentEventPersistenceScope | null {
+  return resolveFeatureConfig().enterprise
+    ? baseAgentEventScopeFromSession(session, runId)
+    : null;
 }
 
 function analysisRunScopeFromSession(session: AnalysisSession, runId?: string): AnalysisRunPersistenceScope | null {
@@ -1291,7 +1307,12 @@ function isPersistedSessionRunFresh(session: AnalysisSession, now: number): bool
 }
 
 function persistBufferedAgentEvent(session: AnalysisSession, event: SerializedAgentEvent, runId?: string): void {
-  const scope = agentEventScopeFromSession(session, runId);
+  const scope = agentEventScopeFromSession(session, runId) ??
+    (
+      event.eventType === 'analysis_completed'
+        ? baseAgentEventScopeFromSession(session, runId)
+        : null
+    );
   if (!scope) return;
   try {
     const durableEvent = sessionUsesPrivateKnowledge(session)
@@ -5201,6 +5222,12 @@ registerAgentReportRoutes(router, {
   buildClientFindings,
   buildSessionResultContract,
   getCompletedPayload: ensureCompletedAnalysisResultPayload,
+});
+
+registerAgentExternalIssueRoutes(router, {
+  getSessionOwner: (sessionId) =>
+    assistantAppService.getSession(sessionId) ??
+    SessionPersistenceService.getInstance().getSession(sessionId)?.metadata,
 });
 
 // ============================================================================

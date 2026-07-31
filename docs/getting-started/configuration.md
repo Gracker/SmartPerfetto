@@ -78,6 +78,18 @@ effective 状态。操作权限独立使用 `self_evolution:read`、`curate`、`
 从默认关闭到 apply/revert、重启对账和 fail-closed 的完整验收步骤见
 [Self-Evolution 使用与验收](self-evolution.md)。
 
+Agent 辅助 GitHub 反馈不需要 `SELF_EVOLUTION_*` 开关。它默认使用
+`https://github.com/Gracker/SmartPerfetto/issues/new` 生成未提交草稿。自托管 fork
+可以把下面变量设为自己的 HTTPS Issue 新建地址：
+
+```bash
+SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
+```
+
+该变量不是 GitHub API token，也不会启用自动提交。Agent review 只复用源 run
+固定的 provider/runtime；provider pin 缺失或变化时明确降级。完整边界见
+[Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)。
+
 npm CLI 不使用 Web UI 的 `Connection` 配置。第一次用 CLI 时，推荐运行：
 
 ```bash
@@ -370,6 +382,8 @@ NODE_ENV=development
 FRONTEND_URL=http://localhost:10000
 # 反向代理、HTTPS 或 Docker 宿主端口不等于容器端口时设置：
 # SMARTPERFETTO_BACKEND_PUBLIC_URL=http://localhost:3000
+# 可选：自托管 fork 的 HTTPS Issue 新建地址；不会自动提交。
+# SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
 ```
 
 本地开发默认端口：

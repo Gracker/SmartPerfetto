@@ -52,6 +52,8 @@ Primary directories:
 - `backend/src/services/skillEngine/`: YAML Skill execution;
 - `backend/src/services/selfEvolution/`: RunManifest, feedback projections,
   eval/replay, proposals, gates, overlay generations, and upgrade reconciliation;
+- `backend/src/services/externalIssueReporting/`: completed-run opportunity
+  detection, provider pins, no-tool triage, output validation, and GitHub drafts;
 - `backend/skills/`: deterministic trace-evidence programs;
 - `backend/strategies/`: scene methodology, prompts/templates, and report rules;
 - `backend/src/services/traceProcessorService.ts`: trace processor lifecycle and leases;
@@ -238,6 +240,27 @@ build identity and base fingerprints. Missing persistence, gate binding, or
 successful reconciliation fails closed. See the
 [Self-Evolution guide](../getting-started/self-evolution.en.md).
 
+## 10A. Agent-Assisted External Feedback
+
+```text
+persisted analysis_completed + RunManifest + optional snapshot
+  -> deterministic opportunity signals
+  -> explicit user action
+  -> same provider/runtime snapshot, no-tool triage
+  -> strict reference/trust/content validation
+  -> user answers + sensitive-data confirmation
+  -> deidentified notSubmitted GitHub draft
+```
+
+Source resolution cross-checks `(tenant, workspace, sessionId, runId,
+runManifestId, snapshotId)` and never reads the current session result or
+triggers completed-result recovery. `providerSnapshotHash` binds review to the
+source run; missing, changed, or unsupported pins return deterministic
+verification guidance only. The neutral `publicArtifactSanitizer` is shared by
+M9 contribution bundles and M10 drafts, but their business state machines never
+call each other. See
+[Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md).
+
 ## 11. Output And Persistence
 
 The final result is not one Markdown string:
@@ -315,6 +338,7 @@ Additionally:
 | Change AI Assistant UI | Perfetto plugin + dev/browser test + `frontend/` prebuild |
 | Change runtime/provider | `agentRuntime/` + Provider Manager + session snapshot tests |
 | Change Self-Evolution | `services/selfEvolution/` + admin routes/UI + focused tests + current contract docs |
+| Change Agent external feedback | `services/externalIssueReporting/` + agent route + AI plugin + Issue Form + `test:external-issue-reporting` |
 | Change release assets | package/release scripts + runtime-asset tests + release docs |
 
 After architecture changes, use [`AGENTS.md`](../../AGENTS.md) and the relevant

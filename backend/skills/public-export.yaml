@@ -405,6 +405,11 @@ skills:
     workflow: io-network-media
     disposition: exported
     destination: references/generated/skills/logcat_analysis.md
+  longest_process_slices:
+    source: backend/skills/atomic/longest_process_slices.skill.yaml
+    workflow: trace-overview
+    disposition: exported
+    destination: references/generated/skills/longest_process_slices.md
   main_thread_file_io_in_range:
     source: backend/skills/atomic/main_thread_file_io_in_range.skill.yaml
     workflow: io-network-media

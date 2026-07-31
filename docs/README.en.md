@@ -16,6 +16,7 @@ and agent evidence are not maintained as permanent documentation.
 - [Feature Overview](getting-started/features.en.md)
 - [Basic Usage](getting-started/usage.en.md)
 - [Configuration](getting-started/configuration.en.md)
+- [Agent-Assisted GitHub Feedback](getting-started/agent-assisted-feedback.en.md)
 - [Self-Evolution Usage And Acceptance](getting-started/self-evolution.en.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.en.md)
 - [Multi-Trace Analysis Result Comparison](getting-started/multi-trace-result-comparison.en.md)
@@ -45,6 +46,9 @@ and agent evidence are not maintained as permanent documentation.
 - [Self-Improving](architecture/self-improving-design.md): currently integrated and explicitly unavailable capabilities.
 - Use the [Self-Evolution guide](getting-started/self-evolution.en.md) for the
   user entry point, permissions, persistence, and acceptance tests.
+- Use [Agent-Assisted GitHub Feedback](getting-started/agent-assisted-feedback.en.md)
+  when a regular user turns an analysis gap into an external report; it never
+  enters Self-Evolution or GitHub automatically.
 - [Data Contract](../backend/docs/DATA_CONTRACT_DESIGN.en.md): DataEnvelope, Query Review,
   Analysis Receipt, UI Actions, and cross-surface projections.
 

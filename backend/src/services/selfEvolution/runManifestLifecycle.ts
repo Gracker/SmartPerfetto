@@ -52,6 +52,7 @@ export interface CreateRunManifestLifecycleInput {
   startedAt?: number;
   runtime: AgentRuntimeKind;
   providerId?: string | null;
+  providerSnapshotHash?: string;
   model?: string;
   outputLanguage: string;
   analysisMode: RunManifestV1['analysisMode'];

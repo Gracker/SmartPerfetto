@@ -40,6 +40,7 @@ const requiredFiles = [
   'prebuilts/trace_processor/win32-x64/trace_processor_shell.exe',
   'prebuilts/android-platform-tools/README.md',
   'prebuilts/perfetto-recording-tools/README.md',
+  'skills/atomic/longest_process_slices.skill.yaml',
   'skills/composite/scrolling_analysis.skill.yaml',
   'strategies/scrolling.strategy.md',
   'knowledge/android-internals-capability-map.yaml',

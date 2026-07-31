@@ -620,6 +620,7 @@ test('rebuilds a repository constructed case with matching source hash and prove
   assert.ok(fs.existsSync(path.join(repoRoot, result[0].output)));
   assert.ok(fs.existsSync(path.join(repoRoot, result[0].provenance_file)));
   const provenance = JSON.parse(fs.readFileSync(path.join(repoRoot, result[0].provenance_file), 'utf8'));
+  assert.equal(provenance.base_case_id, 'android-startup-heavy');
   assert.equal(provenance.trace_processor.sha256.length, 64);
   assert.match(provenance.trace_processor.version, /^Perfetto /);
 });

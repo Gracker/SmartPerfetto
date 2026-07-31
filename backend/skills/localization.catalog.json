@@ -7,11 +7,11 @@
     "authoredNarrativeRemainsVerbatim": true
   },
   "inventory": {
-    "skillCount": 234,
+    "skillCount": 235,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1223,
-    "explicitColumnCount": 3468
+    "stepCount": 1225,
+    "explicitColumnCount": 3478
   },
   "skills": {
     "ams_module": {
@@ -19703,6 +19703,96 @@
               "label": {
                 "zh-CN": "消息",
                 "en": "Msg Preview"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "longest_process_slices": {
+      "displayName": {
+        "zh-CN": "最长进程 Slice",
+        "en": "Longest Process Slices"
+      },
+      "description": {
+        "zh-CN": "按时间窗重叠时长列出最长的 process/thread track slice",
+        "en": "Analyzes Longest Process Slices using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "最长进程 Slice",
+            "en": "Longest Process Slices"
+          },
+          "columns": {
+            "ts": {
+              "label": {
+                "zh-CN": "开始",
+                "en": "Ts"
+              }
+            },
+            "duration_ms": {
+              "label": {
+                "zh-CN": "时长",
+                "en": "Duration ms"
+              }
+            },
+            "slice_name": {
+              "label": {
+                "zh-CN": "SliceName",
+                "en": "Slice"
+              }
+            },
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "thread_name": {
+              "label": {
+                "zh-CN": "线程",
+                "en": "Thread Name"
+              }
+            },
+            "track_scope": {
+              "label": {
+                "zh-CN": "Track 范围",
+                "en": "Track Scope"
+              }
+            },
+            "dur_ns": {
+              "label": {
+                "zh-CN": "时长(ns)",
+                "en": "Dur ns"
+              }
+            },
+            "slice_start_ts": {
+              "label": {
+                "zh-CN": "原始Slice开始",
+                "en": "Slice Start Ts"
+              }
+            },
+            "slice_id": {
+              "label": {
+                "zh-CN": "SliceId",
+                "en": "Slice ID"
+              }
+            },
+            "slice_dur_ns": {
+              "label": {
+                "zh-CN": "原始Slice时长",
+                "en": "Slice Dur ns"
               }
             }
           },

@@ -1,6 +1,7 @@
 # Self-Improving 运行契约
 
-**状态**：Self-Evolution V1 已接入生产控制面并默认关闭；legacy 组件边界见下文
+**状态**：Self-Evolution V1 已接入生产控制面并默认关闭；M10 外部反馈是独立用户面；
+legacy 组件边界见下文
 **最后核对**：2026-07-30
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
@@ -29,6 +30,7 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | Overlay apply / reconcile / rollback | 已接入，默认关闭且 fail-closed | 还需 `SELF_EVOLUTION_APPLY=true` 和可写、包外 user data root |
 | 管理 API、SSE 与 UI | 已接入 | 独立 RBAC；设置页 `自进化 / Evolution` 控制台 |
 | 贡献包导出 | 已接入 | 只允许 public evidence；持久化去标识 artifact，不自动上传 |
+| Agent 辅助外部反馈 | 已接入，独立于 Self-Evolution | 从已完成源 run 检测机会，固定原 provider/runtime 做无工具 triage，用户确认后只打开未提交 GitHub 草稿 |
 | 外部 L2 judge | 未配置 | 必须逐次明确授权；当前没有环境变量、provider 调用或后台任务 |
 
 “组件存在”不等于“产品已启用”。对外说明、配置示例和运维判断必须以上表和
@@ -85,6 +87,11 @@ treatment entries 一一对应；调用方临时构造的任意 artifact 不能�
   每个最多 64 个事件；
 - contribution bundle 只落本地、去标识且要求所有 evidence run 都来自 public
   effective feedback；不会自动提交到仓库或远端；
+- M10 外部反馈只额外读取同一 run 的 effective public negative feedback 作为
+  `user_reported_inaccuracy` 信号，不读取 proposal，也不触发策展、gate、apply 或
+  contribution bundle。private/code-aware 源 run fail-closed；送入外部 triage
+  Provider 的信号和公开草稿都经过统一 public-artifact 扫描与去标识，安全问题只允许
+  转到 private advisory；
 - L2 judge 当前固定返回 `not_configured /
   explicit_external_judge_consent_required`。增加外部 judge 前必须设计版本化 rubric、
   采样/争议策略和逐次明确授权，不能复用普通 provider 同意。
@@ -205,6 +212,7 @@ supersede、phase-hint renderer 和 worktree runner。这些是可测试组件�
 | Proposals / gate attempts | user data `self_improve/proposals.db` | revision、gate session、channel artifact 和 action saga |
 | Overlay artifacts / registry | user data `self_improve/overlays/objects/` 与 `evolution_registry.db` | content-addressed artifact、generation 与 reconciliation |
 | Contribution bundles | user data `self_improve/contribution-bundles/` | 本地去标识归档；不自动上传 |
+| M10 外部反馈 | 不创建独立事实库；默认路径仅额外持久化完成态 `analysis_completed` 证据 | 按请求从持久化源 run 与同 run effective public negative feedback 解析信号与 review；只返回 `notSubmitted` 草稿，不写 GitHub |
 
 SQLite 路径通过 `backendDataPath()` 解析，不应从进程 cwd 拼接。写入使用事务/原子替换、
 lease 和有界重试；损坏或未初始化的可选 store 不能让主分析路径崩溃。私有分析输出必须
@@ -260,6 +268,9 @@ npm run self-improve:migrate-failure-mode-hash -- --apply
 | Self-Evolution lifecycle / stores / gate / overlay | `backend/src/services/selfEvolution/` |
 | Self-Evolution 管理控制面 | `backend/src/routes/selfEvolutionAdminRoutes.ts` |
 | Self-Evolution UI | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/self_evolution_*` |
+| M10 信号、Agent triage、校验与草稿 | `backend/src/services/externalIssueReporting/` |
+| M10 HTTP 控制面 | `backend/src/routes/agentExternalIssueRoutes.ts` |
+| M10 UI | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/external_issue_reporting.ts` 与 `ai_panel.ts` |
 
 新增 flag 或生产入口时，必须先改配置解析/校验和生命周期测试，再更新本文；不要在文档里
 声明源码没有读取的环境变量。
@@ -272,6 +283,7 @@ Self-Improving 或 Case Evolution 改动至少按影响面运行：
 cd backend
 npm run typecheck
 npm run test:self-evolution
+npm run test:external-issue-reporting
 npx jest --runInBand src/services/caseEvolution
 npm run test:scene-trace-regression
 ```

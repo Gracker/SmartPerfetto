@@ -242,7 +242,22 @@ Self-Evolution 把有效的公开反馈变成可审阅提案，并在固定 vali
 
 完整操作与验收步骤见 [Self-Evolution 使用与验收](self-evolution.md)。
 
-## 12. 自动化、API 和 CLI
+## 12. Agent 辅助 GitHub 反馈
+
+完成分析后，SmartPerfetto 会从该 run 的持久化回执、证据和运行归因中检测可能值得
+反馈或贡献的信号。用户点击后，独立 Agent 判断是否适合公开反馈、影响面是什么、
+用户能贡献什么，以及仍缺什么证据。
+
+- 支持当前和历史完成消息，不读取当前 session 的临时 result。
+- review 固定到源 run 的 provider/runtime snapshot；不匹配时明确降级，不切换模型。
+- Agent 输出必须引用真实 signal/claim/evidence/Skill，并经过固定校验和脱敏。
+- private/code-aware 分析禁用公开反馈；安全问题改走 private advisory。
+- 只生成可预览 GitHub 草稿，绝不自动提交或触发 Self-Evolution。
+
+操作、隐私边界和测试见
+[Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)。
+
+## 13. 自动化、API 和 CLI
 
 除了 UI，SmartPerfetto 也提供 workspace API、CLI 和 MCP 工具，适合自动化场景。
 
@@ -264,7 +279,7 @@ Self-Evolution 把有效的公开反馈变成可审阅提案，并在固定 vali
   `smp capture android` 抓取；Camera 等 preset 会声明所需证据类别。
 - 可以复用相同的 Skill、策略、报告和 evidence-backed 输出机制。
 
-## 13. 运行和分发方式
+## 14. 运行和分发方式
 
 SmartPerfetto 支持多种运行方式：
 
@@ -293,6 +308,7 @@ SmartPerfetto 支持多种运行方式：
 | 跨窗口/跨用户对比已完成结果 | `fact_check` 多 Trace 分析结果对比 |
 | 查询 Android Internals 背景 | 内置 Knowledge Pack；私有资料用显式 knowledge source |
 | 把结论映射到本机源码文件和行号 | Code-Aware Analysis |
+| 判断一次分析是否值得反馈、能贡献什么 | 结果下方“让 Agent 帮我判断是否应反馈” |
 | 审阅并应用经过门控的分析改进 | 设置 → 自进化 / Evolution |
 | 对多条本机 trace 跑同一个确定性分析 | `smp batch skill` |
 | 先生成采集配置、再从 Android 设备抓 trace | `smp capture suggest/config/android` |

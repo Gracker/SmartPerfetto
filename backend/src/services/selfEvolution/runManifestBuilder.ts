@@ -34,6 +34,7 @@ export interface CreateRunManifestBuilderInput {
   startedAt?: number;
   runtime: AgentRuntimeKind;
   providerId?: string | null;
+  providerSnapshotHash?: string;
   model?: string;
   outputLanguage: string;
   analysisMode: RunManifestV1['analysisMode'];
@@ -115,6 +116,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     this.runtime = {
       runtime: input.runtime,
       providerId: input.providerId ?? null,
+      ...(input.providerSnapshotHash
+        ? {providerSnapshotHash: input.providerSnapshotHash}
+        : {}),
       ...(input.model ? {model: input.model} : {}),
       outputLanguage: input.outputLanguage,
     };
@@ -375,6 +379,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       sqlErrorCount: this.sqlErrorCount,
       runtime: this.runtime.runtime,
       providerId: this.runtime.providerId,
+      ...(this.runtime.providerSnapshotHash
+        ? {providerSnapshotHash: this.runtime.providerSnapshotHash}
+        : {}),
       ...(this.runtime.model ? {model: this.runtime.model} : {}),
       outputLanguage: this.runtime.outputLanguage ?? 'zh-CN',
       toolAllowlistHash: this.toolAllowlistHash,

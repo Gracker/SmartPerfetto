@@ -14,6 +14,13 @@ Detailed commit-level history is available via `git log`.
 ## [Unreleased]
 
 ### Added
+- Completed analysis results can now run source-run-pinned, no-tool Agent
+  triage for external feedback. It classifies reportability, ownership, and
+  useful contribution type, collects missing user context, and creates a
+  deidentified GitHub draft without submitting it.
+- A dedicated Agent-Assisted Analysis Feedback Issue Form, public-artifact
+  sanitizer, private/security fail-closed routing, and focused backend/UI tests
+  document and enforce the new feedback boundary.
 - An off-by-default Self-Evolution control plane now covers immutable run
   attribution, reversible public/private feedback projections, fixed
   validation/holdout paired replay, reviewable proposals, qualification gates,
@@ -23,6 +30,10 @@ Detailed commit-level history is available via `git log`.
   reconciliation without configuring an external L2 judge.
 
 ### Changed
+- New RunManifests persist a non-secret provider snapshot hash. Historical
+  feedback triage must match the source run's provider/runtime snapshot or use
+  explicit deterministic fallback; it never switches silently to the current
+  provider.
 - Analysis runtimes now consume run-pinned effective registry snapshots so a
   newly published overlay affects only new runs. Apply/revert requires an
   accepted and still-qualified proposal plus writable external user data, and

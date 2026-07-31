@@ -73,6 +73,7 @@ and frontend readiness.
 | Skills | `backend/skills/` | Atomic, composite, deep, and rendering-pipeline analysis |
 | Strategies | `backend/strategies/` | Scene strategies, prompt templates, knowledge templates |
 | Self-Evolution | `backend/src/services/selfEvolution/`, `backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest, feedback projection, eval/replay, proposal gates, overlays, reconciliation, and the RBAC control plane |
+| Agent external feedback | `backend/src/services/externalIssueReporting/`, `agentExternalIssueRoutes.ts`, AI Assistant plugin | Source-run signals, pinned-provider triage, strict validation, and deidentified GitHub drafts with no automatic submission |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | Local codebase registry, source ingestion, symbol resolution, lookup filtering, and patch status verification |
 | External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | Full-corpus Wiki audit, version/fingerprint identity, generation indexing, license/consent/scope, and private-content projection |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | Trace loading, RPC management, SQL query execution |
@@ -157,6 +158,21 @@ generation without the overlay. This path is off by default, and apply also
 requires external persistent storage. See the
 [runtime contract](self-improving-design.md) and
 [user acceptance guide](../getting-started/self-evolution.en.md).
+
+## Agent-Assisted External Feedback Loop
+
+M10 builds a deterministic opportunity from the persisted
+`analysis_completed` event, matching RunManifest, and optional result snapshot.
+A source-provider/runtime-pinned, no-tool triage runs only after user action.
+Reference allowlists, confidence, Skill trust, byte limits, and public-artifact
+sanitization validate Agent output before user answers can produce a
+`notSubmitted` GitHub draft.
+
+This path never reads the current `session.result`, calls the GitHub API, or
+creates a Self-Evolution feedback event, proposal, or overlay. Private and
+code-aware results cannot create public drafts, and security reports use a
+private advisory. See
+[Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md).
 
 ## Runtime And Provider Boundaries
 

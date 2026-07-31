@@ -19,6 +19,7 @@ import {
   type QuickTraceFactEvidenceInput,
 } from '../quickTraceFactEvidence';
 import { buildQuickTraceFactDirectAnswer } from '../quickTraceFactDirectAnswer';
+import { requestedLongestProcessSliceRows } from '../../agentv3/longestProcessSlicesIntent';
 import type { DataEnvelope } from '../../types/dataContract';
 import { runClaimVerification } from '../../services/verifier/claimVerificationRunner';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
@@ -302,7 +303,20 @@ function traceFactEnvelope(overrides?: {
 }
 
 describe('shouldBuildQuickTraceFactEvidence', () => {
+  it('clamps requested longest-slice row counts to the quick-answer budget', () => {
+    expect(requestedLongestProcessSliceRows('longest process slices')).toBe(5);
+    expect(requestedLongestProcessSliceRows('top-0 longest process slices')).toBe(1);
+    expect(requestedLongestProcessSliceRows('top 999 longest process slices')).toBe(20);
+    expect(requestedLongestProcessSliceRows('前 12 个耗时最长的进程 slice')).toBe(12);
+  });
+
   it('selects only bounded trace facts that have deterministic runtime evidence', () => {
+    expect(shouldBuildQuickTraceFactEvidence('summarize top-5 longest process slices')).toBe(true);
+    expect(shouldBuildQuickTraceFactEvidence('top 5 long slices in current selection')).toBe(true);
+    expect(shouldBuildQuickTraceFactEvidence('列出前 5 个耗时最长的进程 slice')).toBe(true);
+    expect(shouldBuildQuickTraceFactEvidence('why are these long slices slow?')).toBe(false);
+    expect(shouldBuildQuickTraceFactEvidence('why is the longest slice slow?')).toBe(false);
+    expect(shouldBuildQuickTraceFactEvidence('分析最长 slice 的原因')).toBe(false);
     expect(shouldBuildQuickTraceFactEvidence('滑动 FPS 是多少？')).toBe(true);
     expect(shouldBuildQuickTraceFactEvidence('总帧数是多少？')).toBe(true);
     expect(shouldBuildQuickTraceFactEvidence('这个 trace 一共有多少帧？')).toBe(true);
@@ -3449,6 +3463,149 @@ describe('buildQuickTraceFactEvidence', () => {
 });
 
 describe('buildQuickTraceFactDirectAnswer', () => {
+  it('builds a multi-row verifier-backed answer for the issue #235 longest-slice query', async () => {
+    const query = jest.fn<QueryTrace>();
+    const rows = [
+      ['100', '50000000', 50, 'slice-a', 'process-a', 'thread-a', 'thread_track'],
+      ['200', '40000000', 40, 'slice-b', 'process-b', '<process track>', 'process_track'],
+      ['300', '30000000', 30, 'slice-c', 'process-c', 'thread-c', 'thread_track'],
+      ['400', '20000000', 20, 'slice-d', 'process-d', '<process track>', 'process_track'],
+      ['500', '10000000', 10, 'slice-e', 'process-e', 'thread-e', 'thread_track'],
+    ];
+    const execute = jest.fn(async (
+      _skillId: string,
+      _traceId: string,
+      _params?: Record<string, unknown>,
+      _inherited?: Record<string, unknown>,
+    ) => ({
+      skillId: 'longest_process_slices',
+      skillName: 'Longest Process Slices',
+      success: true,
+      displayResults: [{
+        stepId: 'root',
+        title: 'Longest Process Slices',
+        level: 'detail',
+        format: 'table',
+        data: {
+          columns: ['ts', 'dur_ns', 'duration_ms', 'slice_name', 'process_name', 'thread_name', 'track_scope'],
+          rows,
+        },
+      }],
+      diagnostics: [],
+      executionTimeMs: 1,
+    } as any));
+
+    const evidence = await buildQuickTraceFactEvidence({
+      traceProcessor: { query },
+      skillExecutor: { execute },
+      traceId: 'trace-1',
+      query: 'summarize top-5 longest process slices',
+      outputLanguage: 'en',
+    });
+    const direct = buildQuickTraceFactDirectAnswer({
+      evidence,
+      outputLanguage: 'en',
+    });
+
+    expect(query).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledWith(
+      'longest_process_slices',
+      'trace-1',
+      expect.objectContaining({ max_rows: 5 }),
+      expect.any(Object),
+    );
+    expect(evidence.evidenceKind).toBe('longest_process_slices');
+    expect(evidence.envelopes[0].data.rows).toHaveLength(5);
+    expect(evidence.envelopes[0].meta.evidenceRefId)
+      .toMatch(/^data:skill:longest_process_slices:current:[a-f0-9]{12}:root$/);
+    expect(direct?.conclusion).toContain('The 5 longest process slices');
+    expect(direct?.conclusion).toContain('5. slice-e — 10 ms');
+    expect(direct?.conclusion).toContain('track_scope=`process_track`');
+    expect(direct?.conclusionContract.evidenceChain?.[0].text)
+      .toContain('track_scope=thread_track');
+
+    const references = direct?.conclusionContract.claims?.[0].references ?? [];
+    expect(references).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rowIndex: 0, column: 'slice_name', value: 'slice-a' }),
+      expect.objectContaining({ rowIndex: 4, column: 'duration_ms', value: 10 }),
+      expect.objectContaining({ rowIndex: 4, column: 'process_name', value: 'process-e' }),
+      expect.objectContaining({ rowIndex: 1, column: 'track_scope', value: 'process_track' }),
+    ]));
+    expect(new Set(references.map(reference => reference.rowIndex))).toEqual(new Set([0, 1, 2, 3, 4]));
+
+    const verified = runClaimVerification({
+      conclusionContract: direct?.conclusionContract,
+      dataEnvelopes: evidence.envelopes,
+      policy: 'record_only',
+    });
+    expect(verified.claimVerificationResult).toEqual(expect.objectContaining({
+      status: 'passed',
+      passed: true,
+      checkedClaimCount: 1,
+      unsupportedClaimCount: 0,
+    }));
+  });
+
+  it.each([
+    {
+      name: 'missing track scope',
+      columns: ['ts', 'dur_ns', 'duration_ms', 'slice_name', 'process_name', 'thread_name'],
+      row: ['100', '50000000', 50, 'slice-a', 'process-a', 'thread-a'],
+    },
+    {
+      name: 'generic track scope',
+      columns: ['ts', 'dur_ns', 'duration_ms', 'slice_name', 'process_name', 'thread_name', 'track_scope'],
+      row: ['100', '50000000', 50, 'slice-a', 'process-a', 'track-a', 'generic_track'],
+    },
+    {
+      name: 'fabricated process-track thread',
+      columns: ['ts', 'dur_ns', 'duration_ms', 'slice_name', 'process_name', 'thread_name', 'track_scope'],
+      row: ['100', '50000000', 50, 'slice-a', 'process-a', 'fake-thread', 'process_track'],
+    },
+    {
+      name: 'thread track using the process-track marker',
+      columns: ['ts', 'dur_ns', 'duration_ms', 'slice_name', 'process_name', 'thread_name', 'track_scope'],
+      row: ['100', '50000000', 50, 'slice-a', 'process-a', '<process track>', 'thread_track'],
+    },
+    {
+      name: 'thread track with an empty thread name',
+      columns: ['ts', 'dur_ns', 'duration_ms', 'slice_name', 'process_name', 'thread_name', 'track_scope'],
+      row: ['100', '50000000', 50, 'slice-a', 'process-a', '', 'thread_track'],
+    },
+  ])('rejects longest-slice evidence with $name', async ({ columns, row }) => {
+    const execute = jest.fn(async () => ({
+      skillId: 'longest_process_slices',
+      skillName: 'Longest Process Slices',
+      success: true,
+      displayResults: [{
+        stepId: 'root',
+        title: 'Longest Process Slices',
+        level: 'detail',
+        format: 'table',
+        data: { columns, rows: [row] },
+      }],
+      diagnostics: [],
+      executionTimeMs: 1,
+    } as any));
+
+    const evidence = await buildQuickTraceFactEvidence({
+      traceProcessor: { query: jest.fn<QueryTrace>() },
+      skillExecutor: { execute },
+      traceId: 'trace-1',
+      query: 'summarize top-5 longest process slices',
+      outputLanguage: 'en',
+    });
+
+    expect(evidence).toEqual({
+      envelopes: [],
+      evidenceKind: 'longest_process_slices',
+    });
+    expect(buildQuickTraceFactDirectAnswer({
+      evidence,
+      outputLanguage: 'en',
+    })).toBeUndefined();
+  });
+
   it('answers selected-range duration with verifier-backed selection evidence', () => {
     const payload = {
       evidenceKind: 'selection_duration' as const,

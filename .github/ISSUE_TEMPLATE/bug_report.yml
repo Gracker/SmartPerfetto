@@ -8,6 +8,11 @@ body:
       value: |
         Thanks for taking the time to report this bug.
 
+        For feedback discovered in a completed analysis, prefer the AI
+        Assistant action **Ask the Agent whether to report this** or the
+        Agent-Assisted Analysis Feedback form. It separates facts, uncertainty,
+        missing evidence, and the contribution type before you publish.
+
         If you are using an AI assistant to prepare this report, ask it to read
         `AGENTS.md` and the relevant `.claude/rules/*` files first. This helps
         us get the right product surface, runtime/provider, logs, and verification context.

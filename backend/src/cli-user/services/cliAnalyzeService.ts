@@ -409,6 +409,9 @@ export class CliAnalyzeService {
       userId: resolvedScope.userId,
       runtime: session.runtimeKind,
       providerId: session.providerId ?? null,
+      ...(session.providerSnapshotHash
+        ? {providerSnapshotHash: session.providerSnapshotHash}
+        : {}),
       outputLanguage,
       analysisMode: requestedAnalysisMode,
       referenceTraceId: effectiveReferenceTraceId,

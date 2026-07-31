@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+name: longest_process_slices
+version: "1.0"
+type: atomic
+category: system
+tier: B
+
+meta:
+  display_name: "最长进程 Slice"
+  description: "按时间窗重叠时长列出最长的 process/thread track slice"
+  icon: "hourglass_top"
+  tags: [system, sanity, trace, slice, process, thread, duration, atomic]
+
+triggers:
+  keywords:
+    zh: [最长 slice, 最长进程 slice, 耗时最长 slice, top slice]
+    en: [longest slices, longest process slices, top slices, slice duration]
+  patterns:
+    - ".*(最长|耗时最长).*(slice|切片).*"
+    - ".*top[-_ ]*[0-9]+.*longest.*slices?.*"
+    - ".*longest.*process.*slices?.*"
+
+prerequisites:
+  required_tables:
+    - slice
+    - track
+    - thread_track
+    - thread
+    - process
+    - process_track
+
+inputs:
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)，默认 trace_start()"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)，默认 trace_end()"
+  - name: max_rows
+    type: integer
+    required: false
+    default: 20
+    description: "返回行数，范围 1-100"
+
+display:
+  level: detail
+  layer: list
+  title: "时间窗内最长 Slice"
+  columns:
+    - name: ts
+      label: "开始"
+      type: timestamp
+      unit: ns
+      clickAction: navigate_range
+      durationColumn: dur_ns
+    - name: duration_ms
+      label: "时长"
+      type: duration
+      unit: ms
+      format: duration_ms
+    - name: slice_name
+      label: "Slice"
+      type: string
+      format: truncate
+    - name: process_name
+      label: "进程"
+      type: string
+      format: truncate
+    - name: thread_name
+      label: "线程"
+      type: string
+      format: truncate
+    - name: track_scope
+      label: "Track 范围"
+      type: string
+      hidden: true
+    - name: dur_ns
+      label: "时长(ns)"
+      type: duration
+      unit: ns
+      hidden: true
+    - name: slice_start_ts
+      label: "原始Slice开始"
+      type: timestamp
+      unit: ns
+      hidden: true
+    - name: slice_id
+      label: "Slice ID"
+      type: number
+      hidden: true
+    - name: slice_dur_ns
+      label: "原始Slice时长"
+      type: duration
+      unit: ns
+      hidden: true
+
+sql: |
+  WITH
+  raw_input AS (
+    SELECT
+      COALESCE(${start_ts}, trace_start()) AS raw_start_ts,
+      COALESCE(${end_ts}, trace_end()) AS raw_end_ts,
+      MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 100) AS max_rows
+  ),
+  input AS (
+    SELECT
+      MIN(raw_start_ts, raw_end_ts) AS start_ts,
+      MAX(raw_start_ts, raw_end_ts) AS end_ts,
+      max_rows
+    FROM raw_input
+  ),
+  normalized AS (
+    SELECT
+      s.id AS slice_id,
+      s.ts,
+      IIF(s.dur = -1, trace_end() - s.ts, s.dur) AS effective_dur,
+      COALESCE(NULLIF(TRIM(s.name), ''), '<unnamed>') AS slice_name,
+      CASE
+        WHEN tt.id IS NOT NULL THEN COALESCE(NULLIF(TRIM(p.name), ''), '<unnamed process>')
+        ELSE COALESCE(NULLIF(TRIM(pp.name), ''), '<unnamed process>')
+      END AS process_name,
+      CASE
+        WHEN tt.id IS NOT NULL THEN COALESCE(NULLIF(TRIM(t.name), ''), '<unnamed thread>')
+        ELSE '<process track>'
+      END AS thread_name,
+      CASE
+        WHEN tt.id IS NOT NULL THEN 'thread_track'
+        ELSE 'process_track'
+      END AS track_scope
+    FROM slice s
+    LEFT JOIN thread_track tt ON s.track_id = tt.id
+    LEFT JOIN thread t ON tt.utid = t.utid
+    LEFT JOIN process p ON t.upid = p.upid
+    LEFT JOIN process_track pt ON s.track_id = pt.id
+    LEFT JOIN process pp ON pt.upid = pp.upid
+    WHERE p.upid IS NOT NULL OR pp.upid IS NOT NULL
+  ),
+  overlapped AS (
+    SELECT
+      n.*,
+      MAX(n.ts, input.start_ts) AS overlap_start_ts,
+      MIN(n.ts + n.effective_dur, input.end_ts) - MAX(n.ts, input.start_ts) AS overlap_dur
+    FROM normalized n, input
+    WHERE n.effective_dur > 0
+      AND n.ts < input.end_ts
+      AND n.ts + n.effective_dur > input.start_ts
+  )
+  SELECT
+    printf('%d', overlap_start_ts) AS ts,
+    printf('%d', overlap_dur) AS dur_ns,
+    ROUND(overlap_dur / 1e6, 6) AS duration_ms,
+    ROUND(overlap_dur / 1e6, 6) AS overlap_ms,
+    ROUND(effective_dur / 1e6, 6) AS slice_total_ms,
+    printf('%d', ts) AS slice_start_ts,
+    slice_id,
+    printf('%d', effective_dur) AS slice_dur_ns,
+    slice_name,
+    process_name,
+    thread_name,
+    track_scope
+  FROM overlapped
+  ORDER BY overlap_dur DESC, effective_dur DESC, ts ASC, slice_id ASC
+  LIMIT (SELECT max_rows FROM input)

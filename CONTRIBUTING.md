@@ -112,6 +112,40 @@ npm test
 | Flutter TextureView | `Scroll-Flutter-327-TextureView.pftrace` |
 | Flutter SurfaceView | `Scroll-Flutter-SurfaceView-Wechat-Wenyiwen.pftrace` |
 
+## Starting From Agent-Assisted Feedback
+
+After a completed Web UI analysis, SmartPerfetto can detect evidence gaps,
+Skill/runtime failures, unresolved identities, and other actionable signals.
+Select **Ask Agent what to report** to get a source-run-pinned review of whether
+the finding belongs in this repository and what kind of contribution would
+help. The flow separates observed facts, Agent assessment, user confirmation,
+missing evidence, and redactions; it only opens an unsubmitted GitHub draft.
+
+For a useful issue or contribution:
+
+- keep source-run facts distinct from model inference and your own
+  confirmation;
+- attach the smallest public, sanitized reproducer or trace fixture you are
+  allowed to share;
+- use the suggested ownership and contribution kind as guidance, then inspect
+  the relevant Skill, strategy, runtime, documentation, or UI source;
+- never paste provider keys, absolute local paths, private codebase content,
+  or sensitive trace identities into a public Issue;
+- report security-sensitive findings through the
+  [private advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new).
+
+The manual [Analysis feedback Issue Form](https://github.com/Gracker/SmartPerfetto/issues/new?template=analysis_feedback.yml)
+is available when the in-product Agent flow is not. Maintainers changing this
+subsystem should run:
+
+```bash
+cd backend
+npm run test:external-issue-reporting
+```
+
+See [Agent-Assisted GitHub Feedback](docs/getting-started/agent-assisted-feedback.en.md)
+for the provider pin, fallback, privacy, and browser acceptance contract.
+
 ## Contributing Skills
 
 Skills are YAML-based analysis pipelines. See [Skill System Guide](docs/reference/skill-system.md) for the full DSL reference.
@@ -169,6 +203,7 @@ npm run test:scene-trace-regression
 - [ ] Extra targeted tests for the changed area are listed in the PR test plan
 - [ ] No hardcoded prompt content in TypeScript — use `.strategy.md` / `.template.md`
 - [ ] No new secrets or API keys in committed files
+- [ ] Public issue text, trace fixtures, and screenshots passed sensitive-data review
 
 ### Commit Convention
 

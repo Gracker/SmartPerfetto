@@ -120,6 +120,9 @@ function runtimeConfigScript() {
     process.env.SMARTPERFETTO_BACKEND_URL ||
     ''
   ).trim();
+  const externalIssueUrl = (
+    process.env.SMARTPERFETTO_EXTERNAL_ISSUE_URL || ''
+  ).trim();
   const config = {
     backendPort: safePort(
       process.env.SMARTPERFETTO_BACKEND_PUBLIC_PORT ||
@@ -132,6 +135,7 @@ function runtimeConfigScript() {
       '10000',
     ),
     ...(backendUrl ? {backendUrl} : {}),
+    ...(externalIssueUrl ? {externalIssueUrl} : {}),
   };
   const serialized = JSON.stringify(config)
     .replace(/</g, '\\u003c')

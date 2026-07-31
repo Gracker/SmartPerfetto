@@ -74,6 +74,25 @@ Provider connection fields map to runtime-specific env:
 | `openCodeSdkModulePath` / `openCodeModelJson` / `openCodeSystemPrompt` plus OpenAI-compatible endpoint fields | `opencode` | `SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH` / `SMARTPERFETTO_OPENCODE_MODEL_JSON` / `SMARTPERFETTO_OPENCODE_SYSTEM_PROMPT` plus `OPENAI_BASE_URL` / `OPENAI_API_KEY` / `OPENAI_MODEL` when model JSON is omitted |
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 
+## M10 Independent Feedback Triage
+
+Agent-assisted GitHub feedback does not resume the main analysis session. New
+RunManifests may persist `providerSnapshotHash` at completion. When the user
+selects the feedback CTA, the backend resolves the persisted source run again
+and requires the currently available provider snapshot to match that hash
+exactly. It never reads a later active provider or falls back to another
+runtime.
+
+Claude/Anthropic-compatible source runs use a no-tool Claude SDK call for
+triage. OpenAI/OpenAI-compatible source runs use a lightweight Chat
+Completions call. Both receive only bounded public source context and do not
+share the analysis SDK session. Pi Agent Core, OpenCode, Qoder, legacy
+manifests, unavailable credentials, snapshot drift, or invalid model output
+use an explicit deterministic fallback in V1 and are never presented as if the
+same Agent reviewed the result. See
+[Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md)
+for the user-visible contract.
+
 ## Key Files
 
 | File | Responsibility |
@@ -93,6 +112,8 @@ Provider connection fields map to runtime-specific env:
 | `backend/src/services/finalReportContractGate.ts` | Strategy-owned `final_report_contract` validation |
 | `backend/src/services/providerManager/` | Provider configuration and runtime/protocol/env mapping |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot for SDK and Pi/OpenCode/Qoder runtime state |
+| `backend/src/services/externalIssueReporting/providerPin.ts` | M10 source-run provider snapshot validation |
+| `backend/src/services/externalIssueReporting/triageRunner.ts` | M10 no-tool Agent triage and deterministic fallback |
 
 `backend/src/agentOpenAI/` and individual files such as
 `agentv3/claudeRuntime.ts` retain compatibility re-exports for old import paths.

@@ -26,6 +26,22 @@ SmartPerfetto works best with Android 12+ traces, especially traces that include
 
 Auto mode first returns a scene inventory for mixed-action traces. The timeline lists detected startup, scrolling, click, navigation, device-state, ANR, and related scenes, then shows scope buttons. Select all scenes or one scene family before SmartPerfetto runs the matching startup, scrolling, click, or other deep-dive analysis.
 
+## Agent-Assisted External Feedback
+
+When a completed result says signals may be worth reporting or contributing:
+
+1. Click **Ask the Agent whether to report this**.
+2. Review its decision, ownership, contribution type, and missing evidence.
+3. Answer required questions and manually inspect everything that may become
+   public.
+4. Confirm sensitive-data review and create a GitHub draft.
+5. Recheck the preview, then explicitly open and submit the GitHub issue.
+
+SmartPerfetto never submits it automatically or turns the action into thumbs
+feedback or a Self-Evolution proposal. Public feedback is unavailable for
+private/code-aware results; security reports use a private advisory. See
+[Agent-Assisted GitHub Feedback](agent-assisted-feedback.en.md).
+
 ## Self-Evolution Admin Flow
 
 Self-Evolution is off by default and does not change the analysis flow above.

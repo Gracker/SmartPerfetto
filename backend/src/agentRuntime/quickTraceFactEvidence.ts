@@ -13,10 +13,23 @@ import {
   localize,
   type OutputLanguage,
 } from '../agentv3/outputLanguage';
+import {
+  matchesLongestProcessSlicesFactQuery,
+  requestedLongestProcessSliceRows,
+} from '../agentv3/longestProcessSlicesIntent';
 import type {
   QueryResult,
   TraceProcessorService,
 } from '../services/traceProcessorService';
+import { SkillExecutor } from '../services/skillEngine/skillExecutor';
+import {
+  getSkillsDir,
+  SkillRegistry,
+} from '../services/skillEngine/skillLoader';
+import type {
+  SkillDefinition,
+  SkillExecutionResult,
+} from '../services/skillEngine/types';
 import {
   buildColumnDefinitions,
   createDataEnvelope,
@@ -26,8 +39,11 @@ import {
 import {
   cellText,
   columnIndex,
+  runtimeSkillSourceToolCallId,
   numericValue,
   rowValue,
+  stableQuickEvidenceHash,
+  withQuickEvidenceProvenance,
 } from './quickEvidenceTable';
 
 export type QuickTraceFactEvidenceKind =
@@ -49,6 +65,7 @@ export type QuickTraceFactEvidenceKind =
   | 'scheduler_data_presence'
   | 'gpu_data_presence'
   | 'slice_data_presence'
+  | 'longest_process_slices'
   | 'network_packet_presence'
   | 'logcat_presence'
   | 'thread_count'
@@ -81,6 +98,7 @@ const QUICK_TRACE_FACT_KIND_POLICY = {
   scheduler_data_presence: { scoped: false, skipFocusDetection: true },
   gpu_data_presence: { scoped: false, skipFocusDetection: true },
   slice_data_presence: { scoped: false, skipFocusDetection: true },
+  longest_process_slices: { scoped: true, skipFocusDetection: true },
   network_packet_presence: { scoped: false, skipFocusDetection: true },
   logcat_presence: { scoped: false, skipFocusDetection: true },
   thread_count: { scoped: false, skipFocusDetection: true },
@@ -106,6 +124,7 @@ export interface QuickTraceFactEvidencePayload {
 
 export interface QuickTraceFactEvidenceInput {
   traceProcessor: Pick<TraceProcessorService, 'query'>;
+  skillExecutor?: Pick<SkillExecutor, 'execute'>;
   traceId: string;
   query: string;
   focusResult?: FocusAppDetectionResult;
@@ -114,6 +133,14 @@ export interface QuickTraceFactEvidenceInput {
   traceSide?: DataEnvelopeTraceSide;
   outputLanguage?: OutputLanguage;
 }
+
+const LONGEST_PROCESS_SLICES_SKILL_ID = 'longest_process_slices';
+const LONGEST_PROCESS_SLICES_SKILL_PATH = 'atomic/longest_process_slices.skill.yaml';
+
+let cachedLongestProcessSlicesSkill:
+  | { skill: SkillDefinition; fragments: Map<string, string> }
+  | null
+  | undefined;
 
 const FRAME_METRIC_COLUMNS = [
   'package_name',
@@ -309,6 +336,15 @@ const SLICE_DATA_PRESENCE_COLUMNS = [
   'process_track_count',
   'thread_track_count',
   'source_table',
+];
+
+const LONGEST_PROCESS_SLICES_COLUMNS = [
+  'ts',
+  'dur_ns',
+  'duration_ms',
+  'slice_name',
+  'process_name',
+  'thread_name',
 ];
 
 const NETWORK_PACKET_PRESENCE_COLUMNS = [
@@ -660,6 +696,7 @@ function detectQuickTraceFactEvidenceKind(query: string): QuickTraceFactEvidence
   if (matchesMemoryCounterPresencePattern(trimmed)) return 'memory_counter_presence';
   if (matchesSchedulerDataPresencePattern(trimmed)) return 'scheduler_data_presence';
   if (matchesGpuDataPresencePattern(trimmed)) return 'gpu_data_presence';
+  if (matchesLongestProcessSlicesFactQuery(trimmed)) return 'longest_process_slices';
   if (matchesSliceDataPresencePattern(trimmed)) return 'slice_data_presence';
   if (matchesNetworkPacketPresencePattern(trimmed)) return 'network_packet_presence';
   if (matchesLogcatPresencePattern(trimmed)) return 'logcat_presence';
@@ -878,6 +915,34 @@ export function joinRuntimeEvidenceContexts(
   return parts.length > 0 ? parts.join('\n\n') : undefined;
 }
 
+function loadLongestProcessSlicesSkill() {
+  if (cachedLongestProcessSlicesSkill !== undefined) return cachedLongestProcessSlicesSkill;
+
+  const registry = new SkillRegistry();
+  const skill = registry.loadSingleSkill(getSkillsDir(), LONGEST_PROCESS_SLICES_SKILL_PATH);
+  cachedLongestProcessSlicesSkill = skill
+    ? { skill, fragments: new Map(registry.getFragmentCache()) }
+    : null;
+  return cachedLongestProcessSlicesSkill;
+}
+
+export function createQuickLongestProcessSlicesSkillExecutor(
+  traceProcessor: ConstructorParameters<typeof SkillExecutor>[0],
+): SkillExecutor {
+  const executor = new SkillExecutor(traceProcessor);
+  const loaded = loadLongestProcessSlicesSkill();
+  if (loaded) {
+    executor.registerSkill(loaded.skill);
+    executor.setFragmentRegistry(new Map(loaded.fragments));
+  }
+  return executor;
+}
+
+function hasDisplayRows(result: SkillExecutionResult): boolean {
+  return result.displayResults.some(display =>
+    Array.isArray(display.data.rows) && display.data.rows.length > 0);
+}
+
 function stableHash(value: unknown): string {
   return createHash('sha256')
     .update(JSON.stringify(value))
@@ -935,6 +1000,25 @@ export function hasUsableTraceFactEvidence(evidence: QuickTraceFactEvidencePaylo
     const scopeEndNs = numericValue(rowValue(row, index, 'scope_end_ns'));
     const durationS = numericValue(rowValue(row, index, 'duration_s')) ?? 0;
     return scopeStartNs !== undefined && scopeEndNs !== undefined && scopeEndNs > scopeStartNs && durationS > 0;
+  }
+
+  if (evidence.evidenceKind === 'longest_process_slices') {
+    return envelope.data.rows.every(candidate => {
+      const durationMs = numericValue(rowValue(candidate, index, 'duration_ms')) ?? 0;
+      const sliceName = String(rowValue(candidate, index, 'slice_name') ?? '').trim();
+      const processName = String(rowValue(candidate, index, 'process_name') ?? '').trim();
+      const threadName = String(rowValue(candidate, index, 'thread_name') ?? '').trim();
+      const trackScope = String(rowValue(candidate, index, 'track_scope') ?? '').trim();
+      const hasConsistentThreadIdentity = trackScope === 'process_track'
+        ? threadName === '<process track>'
+        : trackScope === 'thread_track'
+          && threadName !== ''
+          && threadName !== '<process track>';
+      return durationMs > 0
+        && sliceName !== ''
+        && processName !== ''
+        && hasConsistentThreadIdentity;
+    });
   }
 
   if (evidence.evidenceKind === 'cpu_core_count') {
@@ -1369,6 +1453,7 @@ function preferredColumnsForEvidenceKind(
   if (kind === 'memory_counter_presence') return MEMORY_COUNTER_PRESENCE_COLUMNS;
   if (kind === 'scheduler_data_presence') return SCHEDULER_DATA_PRESENCE_COLUMNS;
   if (kind === 'gpu_data_presence') return GPU_DATA_PRESENCE_COLUMNS;
+  if (kind === 'longest_process_slices') return LONGEST_PROCESS_SLICES_COLUMNS;
   if (kind === 'slice_data_presence') return SLICE_DATA_PRESENCE_COLUMNS;
   if (kind === 'network_packet_presence') return NETWORK_PACKET_PRESENCE_COLUMNS;
   if (kind === 'logcat_presence') return LOGCAT_PRESENCE_COLUMNS;
@@ -1470,6 +1555,11 @@ function titleForEvidenceKind(
       ? '## Current Trace Runtime Evidence: GPU Slice and Counter Data Availability'
       : '## 当前 Trace 运行时预证据：GPU slice 和 counter 数据可用性';
   }
+  if (kind === 'longest_process_slices') {
+    return outputLanguage === 'en'
+      ? '## Current Trace Runtime Evidence: Longest Process Slices'
+      : '## 当前 Trace 运行时预证据：最长进程 Slice';
+  }
   if (kind === 'slice_data_presence') {
     return outputLanguage === 'en'
       ? '## Current Trace Runtime Evidence: Generic Slice and Track Data Availability'
@@ -1570,6 +1660,13 @@ function displayTitleForEvidenceKind(
   scoped = false,
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): string {
+  if (kind === 'longest_process_slices') {
+    return localize(
+      outputLanguage,
+      scoped ? '当前选区最长进程 Slice' : '当前 Trace 最长进程 Slice',
+      scoped ? 'Longest process slices in the current selection' : 'Longest process slices in the current trace',
+    );
+  }
   let englishTitle = 'Runtime observed CPU core count pre-evidence';
   if (scoped && kind === 'frame_metrics') englishTitle = 'Runtime selected-range frame metrics pre-evidence';
   else if (kind === 'selection_duration') englishTitle = 'Runtime selected-range duration pre-evidence';
@@ -1766,6 +1863,17 @@ function explicitColumnDefinitionsForEvidenceKind(kind: QuickTraceFactEvidenceKi
       { name: 'gpu_counter_names', type: 'string' as const, format: 'code' as const },
       { name: 'gpu_slice_names', type: 'string' as const, format: 'code' as const },
       { name: 'source_table', type: 'string' as const, format: 'code' as const },
+    ];
+  }
+  if (kind === 'longest_process_slices') {
+    return [
+      { name: 'ts', type: 'timestamp' as const, unit: 'ns' as const, format: 'timestamp_relative' as const },
+      { name: 'dur_ns', type: 'duration' as const, unit: 'ns' as const, format: 'duration_ms' as const },
+      { name: 'duration_ms', type: 'duration' as const, unit: 'ms' as const, format: 'duration_ms' as const },
+      { name: 'slice_name', type: 'string' as const, format: 'code' as const },
+      { name: 'process_name', type: 'string' as const, format: 'code' as const },
+      { name: 'thread_name', type: 'string' as const, format: 'code' as const },
+      { name: 'track_scope', type: 'string' as const, format: 'code' as const },
     ];
   }
   if (kind === 'slice_data_presence') {
@@ -3292,19 +3400,101 @@ export async function buildQuickTraceFactEvidence(
 
   const traceSide = input.traceSide ?? 'current';
   const outputLanguage = input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
+  const maxRows = kind === 'longest_process_slices'
+    ? requestedLongestProcessSliceRows(input.query)
+    : undefined;
   const params = {
     kind,
     packageName,
     timeRange,
+    maxRows,
   };
-  const queryHash = stableHash({
-    traceId: input.traceId,
-    traceSide,
-    params,
-  });
+  const queryHash = kind === 'longest_process_slices'
+    ? stableQuickEvidenceHash({
+        traceId: input.traceId,
+        traceSide,
+        skillId: LONGEST_PROCESS_SLICES_SKILL_ID,
+        params,
+      })
+    : stableHash({
+        traceId: input.traceId,
+        traceSide,
+        params,
+      });
   const toolCallId = sourceToolCallId(kind, queryHash);
 
   try {
+    if (kind === 'longest_process_slices') {
+      const skillExecutor = input.skillExecutor
+        ?? createQuickLongestProcessSlicesSkillExecutor(input.traceProcessor);
+      const result = await skillExecutor.execute(
+        LONGEST_PROCESS_SLICES_SKILL_ID,
+        input.traceId,
+        {
+          start_ts: timeRange?.startNs,
+          end_ts: timeRange?.endNs,
+          max_rows: maxRows,
+        },
+        { __outputLanguage: outputLanguage },
+      );
+      if (!result.success || !hasDisplayRows(result)) {
+        return { envelopes: [], evidenceKind: kind };
+      }
+
+      const skillToolCallId = runtimeSkillSourceToolCallId(
+        LONGEST_PROCESS_SLICES_SKILL_ID,
+        queryHash,
+      );
+      const envelopes = SkillExecutor.toDataEnvelopes(result, undefined, {
+        traceId: input.traceId,
+        traceSide,
+      }).map((envelope, index) => withQuickEvidenceProvenance(
+        {
+          ...envelope,
+          data: {
+            ...envelope.data,
+            rows: envelope.data.rows?.slice(0, maxRows),
+          },
+        },
+        {
+          skillId: LONGEST_PROCESS_SLICES_SKILL_ID,
+          traceId: input.traceId,
+          traceSide,
+          queryHash,
+          sourceToolCallId: skillToolCallId,
+          index,
+          planPhaseGoal: localize(
+            outputLanguage,
+            '复用最长进程 Slice Skill 回答 Top-N 时长事实问题',
+            'Reuse the longest process slices Skill for Top-N duration facts',
+          ),
+          toolNarration: localize(
+            outputLanguage,
+            '查询最长进程 Slice',
+            'Query longest process slices',
+          ),
+          producerReason: localize(
+            outputLanguage,
+            '快速问答启动阶段已用最长进程 Slice Skill 查询确定性结果。',
+            'The quick-answer startup path already queried deterministic results with the longest process slices Skill.',
+          ),
+          intent: 'runtime_trace_fact_lookup',
+          outputLanguage,
+        },
+      ));
+      const payload: QuickTraceFactEvidencePayload = {
+        envelopes,
+        evidenceKind: kind,
+      };
+      if (!hasUsableTraceFactEvidence(payload)) {
+        return { envelopes: [], evidenceKind: kind };
+      }
+      return {
+        ...payload,
+        promptContext: buildPromptContext(payload, outputLanguage),
+      };
+    }
+
     if (kind === 'selection_duration') {
       if (!timeRange) return { envelopes: [], evidenceKind: kind };
       const durationNs = timeRange.endNs - timeRange.startNs;

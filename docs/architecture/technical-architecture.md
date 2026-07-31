@@ -49,6 +49,8 @@ flowchart LR
 - `backend/src/services/skillEngine/`：YAML Skill 执行；
 - `backend/src/services/selfEvolution/`：RunManifest、反馈投影、eval/replay、
   提案、门控、overlay generation 和升级对账；
+- `backend/src/services/externalIssueReporting/`：完成 run 的反馈机会检测、provider
+  pin、无工具 triage、输出校验和 GitHub 草稿；
 - `backend/skills/`：确定性 trace 证据程序；
 - `backend/strategies/`：场景方法、prompt/template 和报告要求；
 - `backend/src/services/traceProcessorService.ts`：trace processor 生命周期和租约；
@@ -219,6 +221,25 @@ build identity 和 base fingerprint 对账。持久化能力、门控绑定或�
 fail-closed。用户操作和验证见
 [Self-Evolution 指南](../getting-started/self-evolution.md)。
 
+## 10A. Agent 辅助外部反馈
+
+```text
+persisted analysis_completed + RunManifest + optional snapshot
+  -> deterministic opportunity signals
+  -> explicit user action
+  -> same provider/runtime snapshot, no-tool triage
+  -> strict reference/trust/content validation
+  -> user answers + sensitive-data confirmation
+  -> deidentified notSubmitted GitHub draft
+```
+
+源解析按 `(tenant, workspace, sessionId, runId, runManifestId, snapshotId)` 交叉校验，
+不会使用当前 session 的 result 或触发 completed recovery。`providerSnapshotHash`
+把 review 绑定到源 run；pin 缺失、变化或不支持时只返回确定性验证建议。
+`publicArtifactSanitizer` 是 M9 contribution bundle 与 M10 草稿共享的中立公开边界，
+但两条业务状态机互不调用。详见
+[Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
+
 ## 11. 输出与持久化
 
 最终输出不是单一 Markdown 字符串：
@@ -290,6 +311,7 @@ npm run verify:codebase-aware
 | 修改 AI Assistant UI | Perfetto plugin source + dev/browser test + `frontend/` prebuild |
 | 修改 runtime/provider | `agentRuntime/` + Provider Manager + session snapshot tests |
 | 修改 Self-Evolution | `services/selfEvolution/` + admin routes/UI + focused tests + current contract docs |
+| 修改 Agent 外部反馈 | `services/externalIssueReporting/` + agent route + AI plugin + Issue Form + `test:external-issue-reporting` |
 | 修改发布资产 | package/release scripts + runtime-asset tests + release docs |
 
 架构修改完成后，再按

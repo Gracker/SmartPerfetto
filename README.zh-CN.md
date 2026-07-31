@@ -118,6 +118,8 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 - 支持确定性多 Trace Skill batch，以及在显式连接设备抓取前生成无副作用 Android 采集建议。
 - 提供默认关闭的 Self-Evolution 控制面，把有效公开反馈转成经过门控、人工确认且可回滚的
   overlay；不会自动 commit、push 或调用外部 judge。
+- 把证据缺口、Runtime/Skill 失败变成可审查的 GitHub 草稿：锁定源 run 的 Agent
+  会解释是否应反馈、用户能贡献什么、还缺什么证据，最终仍由用户检查和提交。
 - 通过 TypeScript 后端编排 Agent 流程、查询 `trace_processor_shell`、调用 YAML Skill，并把结果实时流式传给浏览器。
 - 支持 Anthropic 直连、Claude/Anthropic-compatible provider、通过 OpenAI Agents SDK 接入 OpenAI/OpenAI-compatible provider，以及 Pi Agent Core / OpenCode custom model 和显式启用的 Qoder Agent SDK profile。
 - 内置通过 registry/file-tree 发现的 YAML Skill/配置文件和多场景分析策略，用于 Android 性能排查。
@@ -127,6 +129,8 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 - [功能总览](docs/getting-started/features.md)：AI Assistant 工作流、智能场景盘点与选择性深钻、常见性能场景、选区分析、报告、raw/result 对比、Android Internals 知识、Code-Aware 本机源码分析、Provider 管理、受控 Self-Evolution、batch/capture 自动化和运行方式。
 - [Self-Evolution 使用与验收](docs/getting-started/self-evolution.md)：默认关闭、
   权限、持久化、apply/revert、升级对账和用户/维护者测试。
+- [Agent 辅助 GitHub 反馈](docs/getting-started/agent-assisted-feedback.md)：反馈判断、
+  贡献引导、隐私边界和测试步骤。
 
 ## 技术栈
 
@@ -505,6 +509,10 @@ npm run test:core
 - 修复 Perfetto 插件里的 UI 问题
 - 为已知 trace 场景补充回归测试
 
+如果问题来自一次已完成分析，先在结果下点击 **让 Agent 帮我判断是否应反馈**。
+它会分开已观察事实与不确定性，判断影响面，并说明适合提交 Bug、Skill、Strategy、
+Runtime、文档、UI 还是脱敏 Trace fixture。
+
 提交 PR 前：
 
 1. 阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。
@@ -515,7 +523,9 @@ npm run test:core
 
 ## 联系
 
-- Bug 和功能建议：[GitHub Issues](https://github.com/Gracker/SmartPerfetto/issues)
+- 分析结果衍生反馈：
+  [Agent-Assisted Analysis Feedback](https://github.com/Gracker/SmartPerfetto/issues/new?template=analysis_feedback.yml)
+- 其他 Bug 和功能建议：[GitHub Issues](https://github.com/Gracker/SmartPerfetto/issues)
 - 安全问题：[GitHub private advisory](https://github.com/Gracker/SmartPerfetto/security/advisories/new) 或 `smartperfetto@gracker.dev`
 - 合作、商业支持、赞助：微信 `553000664`
 

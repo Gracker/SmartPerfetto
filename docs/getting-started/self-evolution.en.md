@@ -15,6 +15,12 @@ Regular analysis users do not need to enable it. Every dedicated switch is off
 by default; when it is off, existing AI analysis, reports, CLI behavior, and
 feedback entry points continue normally.
 
+M10 [Agent-Assisted GitHub Feedback](agent-assisted-feedback.en.md) is a
+separate regular-user path. It reviews one completed run, explains whether a
+public report is useful, and creates a user-reviewed draft, but never writes a
+feedback fact, starts curation, creates a proposal/overlay, or submits to
+GitHub automatically.
+
 ## Current Loop
 
 ```text
@@ -31,6 +37,22 @@ analysis run
   -> new runs use a pinned snapshot
   -> startup/upgrade reconciliation or explicit revert
 ```
+
+## M0-M10 Mechanics And User Impact
+
+| Milestone | Mechanism delivered | What users actually gain |
+|---|---|---|
+| M0 | Parse tiered switches, probe writable external persistence, and record build identity | The feature stays off by default and does not disturb normal analysis; unreliable storage disables apply instead of pretending it succeeded |
+| M1 | Seal an immutable RunManifest before emitting a receipt, pinning runtime, provider, model, configuration, Skills/Strategies, tools, and overlay generation | Feedback and reports can be traced to the exact historical runtime instead of being guessed from current settings |
+| M2 | Write feedback to an append-only event stream, then build a rebuildable effective projection with separate private and legacy rules | Thumbs feedback is retractable, historical records are not rewritten incorrectly, and private feedback never enters public improvement |
+| M3 | Extract a shared evaluator and compose effective Skill overlays through scope-keyed snapshots | A validated Skill change can affect later runs while an in-progress analysis keeps its original registry |
+| M4 | Create an immutable EvalCase corpus, validation/holdout split, and baseline cache keyed by the environment fingerprint | Candidates are compared on fixed cases and a fixed baseline instead of online impressions alone |
+| M5 | Run baseline and candidate with the same inputs, budgets, and concurrency, then score L0/L1/L3 and apply Pareto comparison | Provider failure or missing evidence becomes inconclusive rather than being presented as an improvement |
+| M6 | Attribute effective public feedback with deterministic rules and generate one minimal `hypothesis_only` proposal | Administrators see an explainable ownership hypothesis and minimal change; online statistics alone cannot modify the system |
+| M7 | Enforce eight gates for schema, containment, injection, size, semantics, concurrency, static validation, and paired replay | Escaping, malicious, oversized, stale, or regressing candidates cannot qualify for apply |
+| M8 | Publish an accepted, still-qualified proposal as a content-addressed overlay with three local delivery channels, upgrade reconciliation, and explicit revert | Only new runs use the new generation; upgrade drift is quarantined, rollback is explicit, and no commit or push happens automatically |
+| M9 | Add the Evolution admin UI, SSE progress, diffs, permissions, metrics, operations guidance, and bilingual docs while leaving the external L2 judge unconfigured | Administrators can inspect every state, reject a change, export local artifacts, and accept it only with evidence |
+| M10 | Detect feedback opportunities from the same completed run, pin no-tool Agent triage to the original provider/runtime, validate its output, and create only a user-confirmed GitHub draft | Regular users learn whether to report, who likely owns the problem, what is missing, and what they can contribute; GitHub is never submitted automatically |
 
 Important boundaries:
 
@@ -61,7 +83,7 @@ for the detailed data contracts, overlay operations, and legacy boundaries.
 
 | User | Current impact |
 |---|---|
-| Regular analysis user | No default behavior change. A completed analysis still has thumbs up/down feedback; feedback can be corrected, and feedback from a private analysis stays in a private local path |
+| Regular analysis user | A completed analysis still has thumbs feedback; a user can explicitly ask the Agent to review a suspicious gap. Private feedback stays local and private analyses cannot create public drafts |
 | Analyst | With `self_evolution:read`, can inspect status, proposals, overlays, and reconciliation, but cannot apply |
 | Workspace/Org Admin | After a deployer enables the feature, can explicitly curate, gate, accept/reject, export, apply, and revert |
 | Deployer | Chooses whether to enable the two switches and must provide writable external storage that survives upgrades before apply is available |
@@ -125,6 +147,8 @@ identity's authorization when an operation returns `403`; do not disable RBAC.
 5. Confirm L2 is not configured and there is no external consent or call.
 6. Complete a normal trace analysis and verify chat, report, and thumbs
    feedback still work.
+7. If the result has an external-feedback signal, confirm its Agent draft entry
+   does not require `SELF_EVOLUTION_ENABLED` and creates no proposal or overlay.
 
 ### 2. Curation Only
 
@@ -183,6 +207,7 @@ Run focused Self-Evolution verification:
 
 ```bash
 npm --prefix backend run test:self-evolution
+npm --prefix backend run test:external-issue-reporting
 npm --prefix backend run typecheck
 npm --prefix backend run test:scene-trace-regression
 ```
@@ -198,6 +223,9 @@ RunManifest, feedback migration/projection, eval corpus, paired replay, gates,
 overlays, apply/revert, upgrade reconciliation, RBAC/scope, and the admin API.
 It proves code contracts; it does not replace a real startup, browser,
 persistence-restart, and permission test.
+`test:external-issue-reporting` separately proves M10 source-run resolution,
+Agent-output validation, redaction, draft confirmation, authorization, and
+private-analysis fail-closed behavior. Neither suite replaces the other.
 
 When the Self-Evolution UI source changes, also verify it in
 `./scripts/start-dev.sh`, run the relevant Perfetto UI tests/typecheck, and run

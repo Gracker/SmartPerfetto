@@ -218,6 +218,28 @@ effective config、权限和持久化状态：
 不是 provider 配置错误。完整流程与验收矩阵见
 [Self-Evolution 使用与验收](../getting-started/self-evolution.md)。
 
+## Agent 辅助 GitHub 反馈不可用
+
+先确认源消息已经收到 `analysis_completed`。M10 只基于持久化完成事件、
+RunManifest 和可选 result snapshot 工作，不会读取仍在运行的聊天状态。
+
+- 显示“当前分析不需要反馈”：确定性检测没有发现 evidence/claim gate、Skill、
+  scene confidence、identity 或 report 输出异常；仍可从 GitHub Issue Form 手工反馈。
+- 显示 private/code-aware 不可导出：这是 fail-closed 隐私边界，不能用关闭脱敏或复制
+  私有结果绕过。安全问题请改走 GitHub private advisory。
+- 历史 run 缺少 provider pin，或 active provider snapshot 已变化：旧 run 不会改用
+  当前 provider。重新运行一次分析以生成完整 pin；不要把 fallback 当作同一模型复核。
+- 显示 Agent fallback：源 runtime 暂不支持独立 triage、固定 provider 的凭据不可用，
+  或模型输出没有通过严格 JSON/evidence 校验。界面仍会给保守的确定性建议，但不会把
+  它伪装成 Agent 结论。
+- “生成 GitHub 草稿”仍禁用：回答所有必答问题，并勾选敏感信息复核。安全敏感候选
+  不能生成公开草稿，只会返回 private advisory 入口。
+- 打开 GitHub 后没有 Issue：这是预期行为。SmartPerfetto 只预填页面，不持有 token、
+  不调用 GitHub API，也不会替用户点击提交。
+
+完整字段、状态和人工验收步骤见
+[Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
+
 ## Skill 校验失败
 
 运行：

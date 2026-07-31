@@ -8,6 +8,9 @@ body:
       value: |
         Skills are YAML-based analysis pipelines that power SmartPerfetto's trace analysis.
         Use this template to propose new skills or improvements to existing ones.
+        A completed analysis can also use **Ask the Agent whether to report
+        this** to identify the affected Skill and the minimum fixture, expected
+        output, or validation evidence worth contributing.
 
   - type: dropdown
     id: type

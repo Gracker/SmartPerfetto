@@ -123,6 +123,10 @@ jest.mock('../../../runtimePromptContext', () => ({
 import { QoderRuntime } from '../qoderRuntime';
 import { createSkillExecutor } from '../../../../services/skillEngine/skillExecutor';
 import { sessionContextManager } from '../../../../agent/context/enhancedSessionContext';
+import { createArchitectureDetector } from '../../../../agent/detectors/architectureDetector';
+import { detectFocusApps } from '../../../../agentv3/focusAppDetector';
+import { probeTraceCompleteness } from '../../../../agentv3/traceCompletenessProber';
+import * as quickEvidenceDirectAnswer from '../../../quickEvidenceDirectAnswer';
 
 function createRuntime(env: Record<string, string | undefined> = {}) {
   return new QoderRuntime({
@@ -206,6 +210,115 @@ describe('QoderRuntime', () => {
 
       const callArgs = mockQuery.mock.calls[0][0] as any;
       expect(callArgs.options.cwd).not.toBe(process.cwd());
+    });
+  });
+
+  describe('runtime pre-evidence direct answers', () => {
+    it('answers the issue #235 query without preflight detection or a Qoder SDK call', async () => {
+      const directEvidenceSpy = jest.spyOn(
+        quickEvidenceDirectAnswer,
+        'buildRuntimeQuickEvidenceDirectAnswer',
+      ).mockResolvedValueOnce({
+        directAnswer: {
+          conclusion: 'The 5 longest process slices are backed by deterministic trace evidence.',
+          conclusionContract: {
+            schemaVersion: 'conclusion_contract_v1',
+            mode: 'focused_answer',
+            conclusions: [{
+              rank: 1,
+              statement: 'The 5 longest process slices are backed by deterministic trace evidence.',
+              evidenceRefIds: ['evidence-1'],
+            }],
+            clusters: [],
+            evidenceChain: [],
+            claims: [],
+            uncertainties: [],
+            nextSteps: [],
+            metadata: {
+              confidencePercent: 100,
+              rounds: 0,
+              claimDerivation: 'explicit_model_contract',
+              claimVerificationScope: 'explicit_claims',
+            },
+          },
+          confidence: 1,
+        },
+        evidenceCounts: {
+          currentRunDataEnvelopes: 1,
+          citedEvidenceRefs: 1,
+        },
+      } as any);
+      try {
+        const updates: any[] = [];
+        const runtime = createRuntime();
+        runtime.on('update', update => updates.push(update));
+
+        const result = await runtime.analyze(
+          'summarize top-5 longest process slices',
+          'session-1',
+          'trace-1',
+        );
+
+        expect(directEvidenceSpy).toHaveBeenCalledWith(expect.objectContaining({
+          query: 'summarize top-5 longest process slices',
+          traceId: 'trace-1',
+          quickTraceFactPreEvidence: true,
+        }));
+        expect(createArchitectureDetector).not.toHaveBeenCalled();
+        expect(detectFocusApps).not.toHaveBeenCalled();
+        expect(probeTraceCompleteness).not.toHaveBeenCalled();
+        expect(createSkillExecutor).not.toHaveBeenCalled();
+        expect(mockCreateClaudeMcpServer).not.toHaveBeenCalled();
+        expect(mockQuery).not.toHaveBeenCalled();
+        expect(result).toEqual(expect.objectContaining({
+          success: true,
+          rounds: 0,
+          confidence: 1,
+        }));
+        expect(result.quickRun).toEqual(expect.objectContaining({
+          resolvedMode: 'quick',
+          actualTurns: 0,
+          stopReason: 'answered',
+        }));
+        expect(updates).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            type: 'progress',
+            content: expect.objectContaining({ model: 'runtime-pre-evidence' }),
+          }),
+          expect.objectContaining({ type: 'conclusion' }),
+          expect.objectContaining({
+            type: 'answer_token',
+            content: expect.objectContaining({ done: true }),
+          }),
+        ]));
+      } finally {
+        directEvidenceSpy.mockRestore();
+      }
+    });
+
+    it('falls back to the normal Qoder path when deterministic evidence is unavailable', async () => {
+      const directEvidenceSpy = jest.spyOn(
+        quickEvidenceDirectAnswer,
+        'buildRuntimeQuickEvidenceDirectAnswer',
+      ).mockResolvedValueOnce(undefined);
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
+      ]));
+      try {
+        const result = await createRuntime().analyze(
+          'summarize top-5 longest process slices',
+          'session-1',
+          'trace-1',
+        );
+
+        expect(createArchitectureDetector).toHaveBeenCalled();
+        expect(createSkillExecutor).toHaveBeenCalled();
+        expect(mockCreateClaudeMcpServer).toHaveBeenCalled();
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        expect(result.conclusion).toBe('## Final Report\nfallback');
+      } finally {
+        directEvidenceSpy.mockRestore();
+      }
     });
   });
 

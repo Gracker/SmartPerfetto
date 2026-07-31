@@ -267,6 +267,33 @@ test('frontend runtime config escapes script-closing environment values', async 
   assert.match(response.body, /\\u003c\/script>\\u003cscript>/);
 });
 
+test('frontend runtime config exposes the trusted external issue endpoint', async (t) => {
+  const {root} = createFrontendFixture(t);
+  const original = process.env.SMARTPERFETTO_EXTERNAL_ISSUE_URL;
+  process.env.SMARTPERFETTO_EXTERNAL_ISSUE_URL =
+    'https://github.example.com/org/repo/issues/new';
+  t.after(() => {
+    if (original === undefined) {
+      delete process.env.SMARTPERFETTO_EXTERNAL_ISSUE_URL;
+    } else {
+      process.env.SMARTPERFETTO_EXTERNAL_ISSUE_URL = original;
+    }
+  });
+  const testServer = createFrontendServer(root);
+  t.after(() => closeFrontendServer(testServer));
+  await new Promise((resolve, reject) => {
+    testServer.once('error', reject);
+    listenFrontend(testServer, {host: '127.0.0.1', port: 0}, resolve);
+  });
+
+  const response = await request(testServer, '/');
+  assert.equal(response.status, 200);
+  assert.match(
+    response.body,
+    /"externalIssueUrl":"https:\/\/github\.example\.com\/org\/repo\/issues\/new"/,
+  );
+});
+
 test('frontend static reads reject a directory-symlink swap after open', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-static-race-root-'));
   const inside = path.join(root, 'inside');

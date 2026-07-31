@@ -28,6 +28,10 @@ const conclusionContractPath = path.join(projectRoot, 'backend/src/agent/core/co
 const evidenceContractPath = path.join(projectRoot, 'backend/src/types/evidenceContract.ts');
 const claimVerificationPath = path.join(projectRoot, 'backend/src/types/claimVerification.ts');
 const identityContractPath = path.join(projectRoot, 'backend/src/types/identityContract.ts');
+const externalIssueReportingPath = path.join(
+  projectRoot,
+  'backend/src/types/externalIssueReporting.ts',
+);
 const frontendTypesPath = path.join(
   projectRoot,
   'perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/generated/data_contract.types.ts'
@@ -215,6 +219,14 @@ function frontendContractFragment(content: string, options?: { removeTraceTimest
     : trimmed;
 }
 
+function frontendExternalIssueReportingFragment(content: string): string {
+  return content
+    .trim()
+    .replace(/^\/\/ SPDX-License-Identifier:[^\n]*\n/, '')
+    .replace(/^\/\/ Copyright[^\n]*\n/, '')
+    .replace(/^\/\/ This file[^\n]*\n\n/, '');
+}
+
 function findOutOfSyncContractFragments(frontendContent: string, fragments: Array<{ name: string; content: string }>): string[] {
   const normalizedFrontend = normalizeForComparison(frontendContent);
   return fragments
@@ -278,7 +290,12 @@ async function checkTypesSync(): Promise<boolean> {
     console.error(`❌ Conclusion contract file not found: ${conclusionContractPath}`);
     process.exit(2);
   }
-  for (const filePath of [evidenceContractPath, claimVerificationPath, identityContractPath]) {
+  for (const filePath of [
+    evidenceContractPath,
+    claimVerificationPath,
+    identityContractPath,
+    externalIssueReportingPath,
+  ]) {
     if (!fs.existsSync(filePath)) {
       console.error(`❌ Analysis quality contract file not found: ${filePath}`);
       process.exit(2);
@@ -292,6 +309,10 @@ async function checkTypesSync(): Promise<boolean> {
   const evidenceContractContent = fs.readFileSync(evidenceContractPath, 'utf-8');
   const claimVerificationContent = fs.readFileSync(claimVerificationPath, 'utf-8');
   const identityContractContent = fs.readFileSync(identityContractPath, 'utf-8');
+  const externalIssueReportingContent = fs.readFileSync(
+    externalIssueReportingPath,
+    'utf-8',
+  );
   const frontendContent = fs.readFileSync(frontendTypesPath, 'utf-8');
 
   // Extract and compare type definitions
@@ -353,13 +374,19 @@ async function checkTypesSync(): Promise<boolean> {
     return false;
   }
 
-    const outOfSyncFragments = findOutOfSyncContractFragments(frontendContent, [
+  const outOfSyncFragments = findOutOfSyncContractFragments(frontendContent, [
     { name: 'conclusionContract.ts', content: frontendContractFragment(conclusionContractContent) },
-      { name: 'evidenceContract.ts', content: frontendContractFragment(evidenceContractContent) },
+    { name: 'evidenceContract.ts', content: frontendContractFragment(evidenceContractContent) },
     { name: 'claimVerification.ts', content: frontendContractFragment(claimVerificationContent) },
     {
       name: 'identityContract.ts',
       content: frontendContractFragment(identityContractContent, { removeTraceTimestampAlias: true }),
+    },
+    {
+      name: 'externalIssueReporting.ts',
+      content: frontendExternalIssueReportingFragment(
+        externalIssueReportingContent,
+      ),
     },
   ]);
   if (outOfSyncFragments.length > 0) {
@@ -391,6 +418,7 @@ async function checkTypesSync(): Promise<boolean> {
   console.log(`  DisplayFormat: ${types.displayFormats.split(' | ').length} values`);
   console.log('  ConclusionContract: synced (sceneId/clusterPolicy + analysis_completed reference)');
   console.log('  AnalysisQualityContracts: synced (Evidence/Verifier/Identity + SSE fields)');
+  console.log('  ExternalIssueReporting: synced (Opportunity/Review/Draft + attestation)');
 
   return true;
 }

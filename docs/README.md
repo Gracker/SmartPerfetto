@@ -14,6 +14,7 @@
 - [功能总览](getting-started/features.md)
 - [基本使用](getting-started/usage.md)
 - [配置指南](getting-started/configuration.md)
+- [Agent 辅助 GitHub 反馈](getting-started/agent-assisted-feedback.md)
 - [Self-Evolution 使用与验收](getting-started/self-evolution.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.md)
 - [多 Trace 分析结果对比](getting-started/multi-trace-result-comparison.md)
@@ -43,6 +44,9 @@
 - [Self-Improving](architecture/self-improving-design.md)：当前已接入能力与明确未接入能力。
 - Self-Evolution 的用户入口、权限、持久化和测试步骤以
   [使用与验收指南](getting-started/self-evolution.md)为准。
+- 普通用户把分析 gap 转成外部反馈时，以
+  [Agent 辅助 GitHub 反馈](getting-started/agent-assisted-feedback.md)为准；它不会自动
+  进入 Self-Evolution 或 GitHub。
 - [Data Contract](../backend/docs/DATA_CONTRACT_DESIGN.md)：DataEnvelope、Query Review、
   Analysis Receipt、UI Action 和多端投影。
 

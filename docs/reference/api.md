@@ -245,12 +245,40 @@ Base path: `/api/agent/v1`
 | `GET` | `/:sessionId/report` | 获取分析报告 |
 | `DELETE` | `/:sessionId` | 删除 session |
 | `POST` | `/:sessionId/feedback` | 提交反馈，进入 self-improving 链路 |
+| `POST` | `/:sessionId/external-issue/opportunity` | 从指定持久化 run 检测外部反馈信号 |
+| `POST` | `/:sessionId/external-issue/review` | 使用源 run 固定 provider 做无工具 Agent 判断，或返回带短时效服务器证明的安全降级 |
+| `POST` | `/:sessionId/external-issue/draft` | 重验 provider pin、服务器 review 证明、用户回答和敏感信息确认后生成未提交 GitHub 草稿 |
 | `POST` | `/scene-detect-quick` | 快速场景检测 |
 | `POST` | `/teaching/pipeline` | 渲染管线教学 |
 | `GET` | `/sessions` | session catalog |
 | `GET` | `/logs` | agent logs，受 feature flag 控制 |
 
 Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路径与上表一致。`/api/agent/v1` 当前仍存在，但会通过 legacy telemetry 标记迁移目标。
+
+### Agent 辅助外部 Issue
+
+三个 M10 POST 都要求 `agent:run` 且 session owner 必须匹配请求上下文。公共请求固定
+引用同一完成 run：
+
+```json
+{
+  "runId": "run-id",
+  "runManifestId": "manifest-id",
+  "resultSnapshotId": "optional-snapshot-id"
+}
+```
+
+`opportunity` 返回 `external_issue_opportunity@1` 和确定性 signal。`review` 只在用户
+显式触发后运行，返回 `external_issue_review@1`；Agent 只能引用 signal 中已有的
+claim/finding/evidence/Skill id。源 provider snapshot 不匹配或 runtime 不支持时，
+`source=deterministic_fallback` 且候选只能要求继续验证。
+
+`draft` 还要求前一个完整 review、`candidateId`、最多两个 `answers` 和
+`sensitiveDataReviewed=true`，返回 `external_issue_draft@1`、`notSubmitted=true`
+以及 HTTPS 浏览器 URL。它不接收 GitHub token，也不调用 GitHub API。传入
+`securitySensitive=true` 返回 `PRIVATE_SECURITY_ADVISORY_REQUIRED`。private/code-aware
+源分析 fail-closed。完整用户和隐私契约见
+[Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
 
 启动分析：
 

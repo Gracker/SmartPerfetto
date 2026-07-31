@@ -12,6 +12,7 @@ on:
           - all
           - startup
           - scrolling
+          - external-issue
           - context
 
 permissions:
@@ -62,6 +63,9 @@ jobs:
               ;;
             scrolling)
               npm run verify:e2e:deepseek-scrolling
+              ;;
+            external-issue)
+              npm run verify:e2e:deepseek-external-issue
               ;;
             context)
               npm run verify:e2e:deepseek-context

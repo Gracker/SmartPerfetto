@@ -233,6 +233,8 @@ export interface RunManifestV1 {
 
   runtime: AgentRuntimeKind;
   providerId: string | null;
+  /** Non-secret hash of the provider/runtime configuration pinned to this run. */
+  providerSnapshotHash?: string;
   model?: string;
   outputLanguage: string;
   toolAllowlistHash: string;
@@ -1131,6 +1133,7 @@ export interface RunSkillInvocationOutcome {
 export interface RunManifestRuntimeAttribution {
   runtime: AgentRuntimeKind;
   providerId: string | null;
+  providerSnapshotHash?: string;
   model?: string;
   outputLanguage?: string;
 }

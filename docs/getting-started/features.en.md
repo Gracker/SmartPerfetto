@@ -253,7 +253,29 @@ Output:
 See [Self-Evolution Usage And Acceptance](self-evolution.en.md) for the complete
 workflow and tests.
 
-## 12. Automation, API, And CLI
+## 12. Agent-Assisted GitHub Feedback
+
+After an analysis, SmartPerfetto detects signals worth reporting or
+contributing from that run's persisted receipt, evidence, and runtime
+attribution. On user request, an independent Agent decides whether a public
+report is appropriate, which surface owns it, what the user can contribute,
+and what evidence is still missing.
+
+- Works for current and historical completed messages without reading the
+  current session's temporary result.
+- Review pins the source run's provider/runtime snapshot; mismatch produces
+  explicit fallback, never a silent model switch.
+- Agent output must reference real signals, claims, evidence, and Skills and
+  passes deterministic validation and redaction.
+- Private/code-aware analysis disables public feedback; security reports use a
+  private advisory.
+- It creates a reviewable GitHub draft only and never submits or triggers
+  Self-Evolution automatically.
+
+See [Agent-Assisted GitHub Feedback](agent-assisted-feedback.en.md) for the
+workflow, privacy boundary, and tests.
+
+## 13. Automation, API, And CLI
 
 SmartPerfetto also provides workspace APIs, a CLI, and MCP tools for automation.
 
@@ -277,7 +299,7 @@ Output:
   presets such as Camera declare the required evidence categories.
 - Reuse the same Skills, strategies, reports, and evidence-backed output flow.
 
-## 13. Runtime And Distribution Options
+## 14. Runtime And Distribution Options
 
 SmartPerfetto supports multiple runtime paths:
 
@@ -307,6 +329,7 @@ running directory. See [Application Updates](../../README.md#application-updates
 | Compare completed results across windows or users | `fact_check` multi-trace result comparison |
 | Retrieve Android Internals background | Built-in Knowledge Pack; explicit knowledge source for private material |
 | Map findings to local source files and line ranges | Code-Aware Analysis |
+| Decide whether an analysis is worth reporting and what to contribute | “Ask the Agent whether to report this” below the result |
 | Review and apply a qualified analysis improvement | Settings -> Evolution |
 | Run one deterministic analysis across local traces | `smp batch skill` |
 | Propose a config, then record from an Android device | `smp capture suggest/config/android` |

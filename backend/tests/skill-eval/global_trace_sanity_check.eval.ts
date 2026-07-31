@@ -124,7 +124,28 @@ describeWithTrace('global_trace_sanity_check skill', TRACE_FILE, () => {
 
     expect(result.success).toBe(true);
     expect(result.data.length).toBeGreaterThan(0);
-    expect(result.data.some(row => row.slice_name === 'VSync' && row.process_name !== '<no process>')).toBe(true);
+    expect(result.data.some(row =>
+      row.slice_name === 'VSync'
+      && row.track_scope === 'process_track'
+      && row.process_name !== '<unnamed process>'
+      && row.thread_name === '<process track>',
+    )).toBe(true);
+  }, 30000);
+
+  it('returns only process-attributed track scopes without fabricating thread identities', async () => {
+    const result = await evaluator.executeStep('top_long_slices', { max_rows: 100 });
+
+    expect(result.success).toBe(true);
+    expect(result.data.length).toBeGreaterThan(0);
+    for (const row of result.data) {
+      expect(['thread_track', 'process_track']).toContain(row.track_scope);
+      expect(row.process_name).not.toBe('<unnamed process>');
+      if (row.track_scope === 'process_track') {
+        expect(row.thread_name).toBe('<process track>');
+      } else {
+        expect(row.thread_name).not.toBe('<process track>');
+      }
+    }
   }, 30000);
 
   it('clips range timestamps and durations to the requested window', async () => {
@@ -154,6 +175,43 @@ describeWithTrace('global_trace_sanity_check skill', TRACE_FILE, () => {
       expect(toNs(row.dur_ns)).toBeLessThanOrEqual(endTs - startTs);
     }
   }, 30000);
+
+  it('preserves positive duration evidence for a one-nanosecond overlap', async () => {
+    const seed = await evaluator.executeStep('top_long_slices', { max_rows: 1 });
+    expect(seed.success).toBe(true);
+    expect(seed.data.length).toBeGreaterThan(0);
+
+    const startTs = toNs(seed.data[0].slice_start_ts);
+    const result = await evaluator.executeStep('top_long_slices', {
+      start_ts: startTs.toString(),
+      end_ts: (startTs + 1n).toString(),
+      max_rows: 1,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveLength(1);
+    expect(toNs(result.data[0].dur_ns)).toBe(1n);
+    expect(Number(result.data[0].duration_ms)).toBeGreaterThan(0);
+  }, 30000);
+
+  it('enforces real Skill row-count boundaries', async () => {
+    const atomicEvaluator = createSkillEvaluator('longest_process_slices');
+    try {
+      await atomicEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
+      const minimum = await atomicEvaluator.executeRuntimeSkill({ max_rows: 0 });
+      const requested = await atomicEvaluator.executeRuntimeSkill({ max_rows: 5 });
+      const maximum = await atomicEvaluator.executeRuntimeSkill({ max_rows: 999 });
+
+      expect(minimum.success).toBe(true);
+      expect(minimum.displayResults[0]?.data?.rows).toHaveLength(1);
+      expect(requested.success).toBe(true);
+      expect(requested.displayResults[0]?.data?.rows).toHaveLength(5);
+      expect(maximum.success).toBe(true);
+      expect(maximum.displayResults[0]?.data?.rows).toHaveLength(100);
+    } finally {
+      await atomicEvaluator.cleanup();
+    }
+  }, 120000);
 
   it('executes on every canonical trace fixture', async () => {
     for (const traceFile of TRACE_FILES) {

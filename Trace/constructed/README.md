@@ -7,7 +7,7 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 | --- | --- | --- | --- | --- | --- |
 | [Binder, lock, and I/O blocking](./binder-io-blocking/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 25 target(s) |
 | [Framework rendering pipeline signatures](./framework-pipelines/) | pipeline | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 33 target(s) |
-| [General analysis and runtime contracts](./general-runtime-contracts/) | general | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 14 target(s) |
+| [General analysis and runtime contracts](./general-runtime-contracts/) | general | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 15 target(s) |
 | [GPU workload and frequency](./gpu-workload/) | gpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 11 target(s) |
 | [Input and interaction latency](./input-interaction-latency/) | interaction | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 14 target(s) |
 | [Linux and Android system state](./linux-system-state/) | linux | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |

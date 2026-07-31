@@ -16,6 +16,7 @@ function createBuilder(now = jest.fn(() => 1_010)) {
     startedAt: 1_000,
     runtime: 'qoder-agent-sdk',
     providerId: 'provider-a',
+    providerSnapshotHash: 'provider-snapshot-a',
     outputLanguage: 'zh-CN',
     analysisMode: 'auto',
     now,
@@ -65,6 +66,7 @@ describe('RunManifestBuilder', () => {
     builder.recordTurnCount(3);
     builder.recordRuntime({
       runtime: 'qoder-agent-sdk',
+      providerSnapshotHash: 'provider-snapshot-a',
       providerId: 'provider-a',
       model: 'qoder-model',
     });

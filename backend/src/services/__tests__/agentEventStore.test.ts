@@ -12,6 +12,7 @@ import {
 } from '../enterpriseDb';
 import {
   listSerializedAgentEventsAfter,
+  getLatestSerializedAgentEventByType,
   persistSerializedAgentEvent,
   resetAgentEventStoreForTests,
   type AgentEventPersistenceScope,
@@ -87,6 +88,23 @@ describe('agent event store', () => {
       }),
     ]);
     expect(listSerializedAgentEventsAfter(scope({ workspaceId: 'workspace-b' }), 'run-a', 0)).toEqual([]);
+    expect(
+      getLatestSerializedAgentEventByType(
+        eventScope,
+        'run-a',
+        'analysis_completed',
+      ),
+    ).toEqual(expect.objectContaining({
+      cursor: 2,
+      eventType: 'analysis_completed',
+    }));
+    expect(
+      getLatestSerializedAgentEventByType(
+        scope({workspaceId: 'workspace-b'}),
+        'run-a',
+        'analysis_completed',
+      ),
+    ).toBeNull();
 
     const db = openEnterpriseDb();
     try {

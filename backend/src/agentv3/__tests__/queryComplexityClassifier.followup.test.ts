@@ -1090,6 +1090,8 @@ describe('classifyQueryComplexity — local scope rules and semantic fallback', 
       '为什么 slice 很慢？',
       '分析 slice 耗时',
       'why are slices slow?',
+      'why is the longest slice slow?',
+      '分析最长 slice 的原因',
     ];
 
     for (const query of cases) {
@@ -1102,6 +1104,23 @@ describe('classifyQueryComplexity — local scope rules and semantic fallback', 
       expect(result.source).toBe('ai');
       expect(result.reason).toMatch(/ai-fallback-mock/);
     }
+  });
+
+  it.each([
+    'summarize top-5 longest process slices',
+    'top 5 long slices in current selection',
+    'show top 10 slices by longest duration',
+    '列出前 5 个耗时最长的进程 slice',
+    '最长 process slices 是哪些？',
+  ])('hard-routes deterministic longest-slice lookup %p to quick trace facts', async (query) => {
+    const result = await classifyQueryComplexity(makeInput({
+      query,
+      sceneType: 'general',
+    }));
+
+    expect(result.complexity).toBe('quick');
+    expect(result.source).toBe('hard_rule');
+    expect(result.reason).toMatch(/trace fact lookup/);
   });
 
   it('does not hard-route network diagnostics as simple trace fact lookups', async () => {

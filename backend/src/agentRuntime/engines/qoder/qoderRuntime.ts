@@ -8,7 +8,7 @@ import type {
   AnalysisResult,
   IOrchestrator,
 } from '../../../agent/core/orchestratorTypes';
-import type { Finding, StreamingUpdate } from '../../../agent/types';
+import type { ConversationTurn, Finding, StreamingUpdate } from '../../../agent/types';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
@@ -66,11 +66,12 @@ import {
 import { analysisContextUsesPrivateKnowledge } from '../../../services/resolvedAnalysisContext';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
-import { createAnalysisRunSpec } from '../../analysisRunSpec';
+import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
   createRuntimeSkillNotesBudget,
   isTruncationVerificationIssue,
   repairTruncatedFinalReport,
+  resolveQuickTurnBudget,
   toProtocolHypothesis,
 } from '../../runtimeCommon';
 import { knowledgeScopeFromAnalysisOptions } from '../../runtimeScopes';
@@ -80,6 +81,16 @@ import {
 } from '../../runtimePromptContext';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import {
+  buildRuntimeQuickEvidenceDirectAnswer,
+  type RuntimeQuickEvidenceCounts,
+  type RuntimeQuickEvidenceDirectAnswer,
+} from '../../quickEvidenceDirectAnswer';
+import {
+  buildQuickDirectEvidenceAnalysisResult,
+  emitQuickDirectAnswerEvents,
+  emitQuickDirectQualityGateIssue,
+} from '../../quickDirectResult';
 import { isTraceProcessorQueryCancelledError } from '../../../services/traceProcessorCancellation';
 import { QODER_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
 import {
@@ -266,6 +277,66 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const privateAnalysisContext = analysisContextUsesPrivateKnowledge(normalizedOptions);
     const knowledgeScope = knowledgeScopeFromAnalysisOptions(normalizedOptions);
 
+    const quickModeResolution = resolveRuntimeQuickMode({
+      query,
+      sceneType,
+      analysisMode: options?.analysisMode,
+      selectionContext: options?.selectionContext,
+      packageName,
+      hasReferenceTrace: Boolean(options?.referenceTraceId),
+      previousTurns,
+    });
+    const directEvidenceAnswer = quickModeResolution.quickMode
+      ? await buildRuntimeQuickEvidenceDirectAnswer({
+          query,
+          traceId,
+          packageName,
+          selectionContext: options?.selectionContext,
+          traceProcessorService,
+          outputLanguage,
+          quickFocusAppPreEvidence: quickModeResolution.quickFocusAppPreEvidence,
+          quickProcessIdentityPreEvidence: quickModeResolution.quickProcessIdentityPreEvidence,
+          quickTraceFactPreEvidence: quickModeResolution.quickTraceFactPreEvidence,
+          quickScrollingTriagePreEvidence: quickModeResolution.quickScrollingTriagePreEvidence,
+          emitUpdate: update => this.emitUpdate(update),
+        })
+      : undefined;
+    if (directEvidenceAnswer) {
+      const directOptions = {
+        ...normalizedOptions,
+        ...(directEvidenceAnswer.effectivePackageName ? {
+          packageName: directEvidenceAnswer.effectivePackageName,
+        } : {}),
+      };
+      const directAnalysisRunSpec = createAnalysisRunSpec({
+        query,
+        sessionId,
+        traceId,
+        options: directOptions,
+        runtimeSelection: this.selection,
+        engineCapabilities: getQoderEngineCapabilities(),
+        sceneType,
+        outputLanguage,
+        previousTurns,
+        resolvedMode: 'quick',
+        budget: { model: 'runtime-pre-evidence' },
+      });
+      return this.buildDirectQuickEvidenceResult({
+        query,
+        sessionId,
+        options: directOptions,
+        startedAt: startTime,
+        sceneType,
+        outputLanguage,
+        sessionContext,
+        previousTurns,
+        analysisRunSpec: directAnalysisRunSpec,
+        directAnswer: directEvidenceAnswer.directAnswer,
+        evidenceCounts: directEvidenceAnswer.evidenceCounts,
+        persistSessionTurn: !privateAnalysisContext,
+      });
+    }
+
     // Architecture detection
     let architecture: ArchitectureInfo | undefined;
     try {
@@ -302,17 +373,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     } catch {
       // Non-fatal
     }
-
-    // Resolve quick mode
-    const quickModeResolution = resolveRuntimeQuickMode({
-      query,
-      sceneType,
-      analysisMode: options?.analysisMode,
-      selectionContext: options?.selectionContext,
-      packageName,
-      hasReferenceTrace: Boolean(options?.referenceTraceId),
-      previousTurns,
-    });
 
     const analysisRunSpec = createAnalysisRunSpec({
       query,
@@ -995,6 +1055,76 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  private buildDirectQuickEvidenceResult(input: {
+    query: string;
+    sessionId: string;
+    options: AnalysisOptions;
+    startedAt: number;
+    sceneType: SceneType;
+    outputLanguage: OutputLanguage;
+    sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
+    previousTurns: ConversationTurn[];
+    analysisRunSpec: AnalysisRunSpec;
+    directAnswer: RuntimeQuickEvidenceDirectAnswer;
+    evidenceCounts: RuntimeQuickEvidenceCounts;
+    persistSessionTurn: boolean;
+  }): AnalysisResult {
+    const quickBudget = resolveQuickTurnBudget({
+      env: this.env,
+      hardCapTurns: this.config.quickMaxTurns,
+      targetEnvKeys: ['AGENT_QUICK_TARGET_TURNS'],
+      hardCapEnvKeys: ['AGENT_QUICK_MAX_TURNS', 'QODER_QUICK_MAX_TURNS'],
+      enforcement: 'turn_cap',
+    });
+    const result = buildQuickDirectEvidenceAnalysisResult({
+      query: input.query,
+      sessionId: input.sessionId,
+      options: input.options,
+      startedAt: input.startedAt,
+      analysisRunSpec: input.analysisRunSpec,
+      budget: quickBudget,
+      directAnswer: input.directAnswer,
+      evidenceCounts: input.evidenceCounts,
+      previousTurns: input.previousTurns,
+    });
+    emitQuickDirectQualityGateIssue({
+      emitUpdate: update => this.emitUpdate(update),
+      module: 'qoderRuntime',
+      result,
+      query: input.query,
+      sceneType: input.sceneType,
+    });
+    if (input.persistSessionTurn) {
+      input.sessionContext.addTurn(
+        input.query,
+        {
+          primaryGoal: input.query,
+          aspects: [],
+          expectedOutputType: 'diagnosis',
+          complexity: 'simple',
+          followUpType: input.previousTurns.length > 0 ? 'extend' : 'initial',
+        },
+        {
+          agentId: QODER_AGENT_RUNTIME_KIND,
+          success: result.success,
+          findings: result.findings,
+          confidence: result.confidence,
+          message: result.conclusion,
+        },
+        result.findings,
+      );
+    }
+    emitQuickDirectAnswerEvents({
+      emitUpdate: update => this.emitUpdate(update),
+      result,
+      startedAt: input.startedAt,
+      outputLanguage: input.outputLanguage,
+      runtime: QODER_AGENT_RUNTIME_KIND,
+      model: 'runtime-pre-evidence',
+    });
+    return result;
+  }
 
   private emitUpdate(update: StreamingUpdate): void {
     this.emit('update', update);

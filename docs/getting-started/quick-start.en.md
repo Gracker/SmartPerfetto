@@ -88,6 +88,13 @@ Common prompts:
 - `Analyze this ANR`
 - `What is the app package name and main process in this trace?`
 
+If a completed result shows a feedback opportunity, select **Ask Agent what to
+report**. The Agent uses that run's persisted evidence to explain whether the
+finding is actionable, who owns it, and what contribution could help. After
+required answers and sensitive-data review, SmartPerfetto opens only an
+unsubmitted GitHub draft. See
+[Agent-Assisted GitHub Feedback](agent-assisted-feedback.en.md).
+
 ## 6. Required Checks
 
 Pick the smallest validation layer that proves your change. Maintainers and

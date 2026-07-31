@@ -115,6 +115,8 @@ interface VerifyOptions {
   requireQuickRun: boolean;
   /** Allow capability-limited preview runtimes that only prove routing/SSE/finalization. */
   allowCapabilityLimitedRuntime: boolean;
+  /** Require a real source-run-pinned external issue opportunity and Agent triage. */
+  requireExternalIssueTriage: boolean;
   /** Tool names that must be dispatched during the run. */
   requiredTools: string[];
   /** Private lookup tools that must return at least one provenance-bearing chunk. */
@@ -174,6 +176,11 @@ interface SseSummary {
   analysisCompletedPartial?: boolean;
   analysisCompletedTerminationReason?: string;
   analysisCompletedTerminationMessage?: string;
+  externalIssueSource?: {
+    runId: string;
+    runManifestId: string;
+    resultSnapshotId?: string;
+  };
   quickRun?: {
     requestedMode?: string;
     resolvedMode?: string;
@@ -261,6 +268,7 @@ function printUsage(): void {
   console.log('  --require-quick-run                Require analysis_completed.quickRun receipt metadata');
   console.log('  --allow-no-data-envelopes          Do not require data envelopes in full mode');
   console.log('  --allow-capability-limited-runtime Do not require plan/tool/data events for preview runtime smoke tests');
+  console.log('  --require-external-issue-triage    Require source-run-pinned M10 opportunity and live Agent review');
   console.log('  --output <path>                   JSON report output path');
   console.log('  --require-conclusion-evidence     Fail unless analysis_completed conclusion has concrete evidence refs');
   console.log('  --keep-session                    Do not delete session after verification');
@@ -327,6 +335,7 @@ function parseArgs(argv: string[]): VerifyOptions {
     requireDataEnvelope: false,
     requireQuickRun: false,
     allowCapabilityLimitedRuntime: false,
+    requireExternalIssueTriage: false,
     requiredTools: [],
     requiredSuccessfulLookups: [],
     requiredSkills: [],
@@ -412,6 +421,11 @@ function parseArgs(argv: string[]): VerifyOptions {
     if (arg === '--allow-capability-limited-runtime') {
       options.allowCapabilityLimitedRuntime = true;
       options.allowNoDataEnvelopes = true;
+      continue;
+    }
+
+    if (arg === '--require-external-issue-triage') {
+      options.requireExternalIssueTriage = true;
       continue;
     }
 
@@ -1349,6 +1363,20 @@ async function collectSseSummary(
             if (typeof payload?.terminationMessage === 'string') {
               summary.analysisCompletedTerminationMessage = payload.terminationMessage;
             }
+            const receipt = asRecord(payload?.analysisReceipt);
+            const receiptOutputs = asRecord(receipt?.outputs);
+            if (
+              typeof receipt?.runId === 'string' &&
+              typeof receipt.runManifestId === 'string'
+            ) {
+              summary.externalIssueSource = {
+                runId: receipt.runId,
+                runManifestId: receipt.runManifestId,
+                ...(typeof receiptOutputs?.resultSnapshotId === 'string'
+                  ? {resultSnapshotId: receiptOutputs.resultSnapshotId}
+                  : {}),
+              };
+            }
             if (payload?.quickRun && typeof payload.quickRun === 'object' && !Array.isArray(payload.quickRun)) {
               const quickRun = payload.quickRun as Record<string, any>;
               const evidence = quickRun.evidence && typeof quickRun.evidence === 'object'
@@ -1430,6 +1458,186 @@ async function collectSseSummary(
 
   summary.stageNames = Array.from(stageNameSet);
   return summary;
+}
+
+interface ExternalIssueE2eVerification {
+  checks: Record<string, boolean>;
+  passed: boolean;
+  summary: {
+    opportunityStatus?: string;
+    signalKinds: string[];
+    reviewSource?: string;
+    candidateDecisions: string[];
+    candidateOwnership: string[];
+    draftAttempted: boolean;
+    draftNotSubmitted?: boolean;
+    githubUrlIsHttps?: boolean;
+  };
+}
+
+async function verifyExternalIssueTriage(
+  baseUrl: string,
+  sessionId: string,
+  source: SseSummary['externalIssueSource'],
+): Promise<ExternalIssueE2eVerification> {
+  const summary: ExternalIssueE2eVerification['summary'] = {
+    signalKinds: [],
+    candidateDecisions: [],
+    candidateOwnership: [],
+    draftAttempted: false,
+  };
+  const checks: Record<string, boolean> = {
+    externalIssueSourcePersisted: Boolean(source),
+    externalIssueNegativeFeedbackStored: false,
+    externalIssueOpportunityAvailable: false,
+    externalIssueHasUserReportedInaccuracySignal: false,
+    externalIssueAgentReviewUsed: false,
+    externalIssueHasValidatedCandidates: false,
+    externalIssueDraftBoundaryVerified: false,
+  };
+  if (!source) {
+    return {checks, passed: false, summary};
+  }
+
+  const feedbackResponse = await postJsonResponse(
+    baseUrl,
+    `/api/agent/v1/${encodeURIComponent(sessionId)}/feedback`,
+    {
+      rating: 'negative',
+      runId: source.runId,
+      targetKind: 'conclusion',
+      targetId: source.runId,
+      source: 'api',
+      idempotencyKey: `external-issue-e2e:${source.runId}`,
+    },
+  );
+  checks.externalIssueNegativeFeedbackStored =
+    feedbackResponse.ok &&
+    feedbackResponse.payload.durableFeedbackStored === true;
+  if (!checks.externalIssueNegativeFeedbackStored) {
+    return {checks, passed: false, summary};
+  }
+
+  const opportunityResponse = await postJsonResponse(
+    baseUrl,
+    `/api/agent/v1/${encodeURIComponent(sessionId)}/external-issue/opportunity`,
+    source,
+  );
+  const opportunity = asRecord(opportunityResponse.payload.opportunity);
+  summary.opportunityStatus =
+    typeof opportunity?.status === 'string' ? opportunity.status : undefined;
+  summary.signalKinds = Array.isArray(opportunity?.signals)
+    ? opportunity.signals
+      .map(item => asRecord(item)?.kind)
+      .filter((kind): kind is string => typeof kind === 'string')
+    : [];
+  checks.externalIssueOpportunityAvailable =
+    opportunityResponse.ok && opportunity?.status === 'available';
+  checks.externalIssueHasUserReportedInaccuracySignal =
+    summary.signalKinds.includes('user_reported_inaccuracy');
+  if (!checks.externalIssueOpportunityAvailable) {
+    return {checks, passed: false, summary};
+  }
+
+  const reviewResponse = await postJsonResponse(
+    baseUrl,
+    `/api/agent/v1/${encodeURIComponent(sessionId)}/external-issue/review`,
+    source,
+  );
+  const review = asRecord(reviewResponse.payload.review);
+  const candidates = Array.isArray(review?.candidates)
+    ? review.candidates
+      .map(candidate => asRecord(candidate))
+      .filter((candidate): candidate is Record<string, unknown> => candidate !== null)
+    : [];
+  summary.reviewSource =
+    typeof review?.source === 'string' ? review.source : undefined;
+  summary.candidateDecisions = candidates
+    .map(candidate => candidate.decision)
+    .filter((decision): decision is string => typeof decision === 'string');
+  summary.candidateOwnership = candidates
+    .map(candidate => candidate.ownership)
+    .filter((ownership): ownership is string => typeof ownership === 'string');
+  checks.externalIssueAgentReviewUsed =
+    reviewResponse.ok && review?.source === 'agent';
+  checks.externalIssueHasValidatedCandidates =
+    candidates.length > 0 && candidates.length <= 3;
+  if (!checks.externalIssueAgentReviewUsed || candidates.length === 0) {
+    return {checks, passed: false, summary};
+  }
+
+  const readyCandidate = candidates.find(candidate =>
+    candidate.decision === 'report' || candidate.decision === 'needs_user_input');
+  if (!readyCandidate || typeof readyCandidate.candidateId !== 'string') {
+    checks.externalIssueDraftBoundaryVerified = summary.candidateDecisions.every(
+      decision => decision === 'needs_verification' || decision === 'not_reportable',
+    );
+    return {
+      checks,
+      passed: Object.values(checks).every(Boolean),
+      summary,
+    };
+  }
+
+  const questions = Array.isArray(readyCandidate.userQuestions)
+    ? readyCandidate.userQuestions
+      .map(question => asRecord(question))
+      .filter((question): question is Record<string, unknown> => question !== null)
+    : [];
+  const answers = questions
+    .filter(question => typeof question.questionId === 'string')
+    .map(question => ({
+      questionId: question.questionId,
+      answer: 'Reproduced by the isolated real-provider E2E run; no private trace content is attached.',
+    }));
+  summary.draftAttempted = true;
+  const draftResponse = await postJsonResponse(
+    baseUrl,
+    `/api/agent/v1/${encodeURIComponent(sessionId)}/external-issue/draft`,
+    {
+      ...source,
+      review,
+      candidateId: readyCandidate.candidateId,
+      answers,
+      sensitiveDataReviewed: true,
+    },
+  );
+  const draft = asRecord(draftResponse.payload.draft);
+  summary.draftNotSubmitted = draft?.notSubmitted === true;
+  summary.githubUrlIsHttps =
+    typeof draft?.githubUrl === 'string' &&
+    draft.githubUrl.startsWith('https://github.com/');
+  checks.externalIssueDraftBoundaryVerified =
+    draftResponse.ok &&
+    summary.draftNotSubmitted &&
+    summary.githubUrlIsHttps;
+  return {
+    checks,
+    passed: Object.values(checks).every(Boolean),
+    summary,
+  };
+}
+
+async function postJsonResponse(
+  baseUrl: string,
+  route: string,
+  body: Record<string, unknown>,
+): Promise<{
+  ok: boolean;
+  status: number;
+  payload: Record<string, unknown>;
+}> {
+  const response = await fetch(`${baseUrl}${route}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body),
+  });
+  let payload: Record<string, unknown> = {};
+  try {
+    payload = await response.json() as Record<string, unknown>;
+  } catch {
+  }
+  return {ok: response.ok, status: response.status, payload};
 }
 
 function findSessionLogFile(sessionId: string): string | null {
@@ -1678,6 +1886,14 @@ async function main(): Promise<void> {
           (sse.quickRun?.targetTurns ?? 0) <= (sse.quickRun?.hardCapTurns ?? 0),
       }
       : {};
+    const externalIssueVerification = options.requireExternalIssueTriage
+      ? await verifyExternalIssueTriage(
+        baseUrl,
+        sessionId,
+        sse.externalIssueSource,
+      )
+      : undefined;
+    const externalIssueChecks = externalIssueVerification?.checks ?? {};
     const checks = {
       ...requiredChecks,
       ...fullModeChecks,
@@ -1698,6 +1914,7 @@ async function main(): Promise<void> {
       ...degradedFallbackChecks,
       ...dataEnvelopeChecks,
       ...quickRunChecks,
+      ...externalIssueChecks,
     };
     let passed = Object.values(requiredChecks).every(Boolean)
       && Object.values(modeExpectationChecks).every(Boolean)
@@ -1717,6 +1934,7 @@ async function main(): Promise<void> {
       && Object.values(degradedFallbackChecks).every(Boolean)
       && Object.values(dataEnvelopeChecks).every(Boolean)
       && Object.values(quickRunChecks).every(Boolean)
+      && Object.values(externalIssueChecks).every(Boolean)
       && (isQuickMode || Object.values(fullModeChecks).every(Boolean));
     let followUpOutput: Record<string, unknown> | undefined;
     if (options.followUpQuery) {
@@ -1814,6 +2032,7 @@ async function main(): Promise<void> {
       checks,
       passed,
       summary: sse,
+      externalIssue: externalIssueVerification?.summary,
       followUp: followUpOutput,
       sessionLogFile,
     };

@@ -26,6 +26,20 @@ SmartPerfetto 最适合 Android 12+ trace，尤其是包含 FrameTimeline 数据
 
 智能模式会先返回“场景盘点”，按时间顺序列出 trace 中识别到的启动、滑动、点击、导航、设备状态、ANR 等场景，并显示可深钻的范围按钮。选择“全部”或某一类场景后，才会进入对应的启动/滑动/点击等深钻分析。
 
+## Agent 辅助外部反馈
+
+如果完成结果下方出现“可能值得反馈或贡献”的提示：
+
+1. 点击 **让 Agent 帮我判断是否应反馈**。
+2. 查看 Agent 的判断、影响面、贡献类型和缺失证据。
+3. 回答必答问题，并人工检查待公开内容。
+4. 勾选敏感信息复核后生成 GitHub 草稿。
+5. 在草稿预览中再次检查，最后手动打开并提交 GitHub Issue。
+
+系统不会自动提交，也不会把这次操作自动变成勾/叉 feedback 或 Self-Evolution
+提案。private/code-aware 结果不开放公开反馈；安全问题只走 private advisory。
+详见 [Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)。
+
 ## Self-Evolution 管理流程
 
 Self-Evolution 默认关闭，不影响上面的分析步骤。完成公开分析后，普通用户可以使用

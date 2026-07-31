@@ -131,6 +131,26 @@ DataEnvelope 可以派生受限的 UI action proposal：
 动作必须引用已有 evidence/artifact/Skill 来源。前端只执行允许的 typed action，
 不能执行模型生成的任意脚本、SQL 或 URL。
 
+## Agent 外部反馈
+
+`ExternalIssueOpportunityV1`、`ExternalIssueReviewV1` 和
+`ExternalIssueDraftV1` 是分析完成后的独立派生合约，不属于
+`UiActionProposalV1`，也不改变 `AnalysisRunSpec`。
+
+- opportunity 只从持久化 `analysis_completed`、匹配 RunManifest 与可选 result
+  snapshot 检测确定性信号；
+- review 只允许最多三个候选，每个候选必须使用该次 run 的真实 evidence、Skill、
+  claim gate、identity 或 report 引用；Agent JSON 经过精确键、枚举、大小和公开内容
+  校验；review endpoint 还会附加短时效服务器完整性证明；
+- draft 合并已校验候选、用户回答和敏感信息确认，分开呈现事实、Agent 判断、用户确认、
+  缺失证据与脱敏记录；生成前会重验 provider pin 和服务器证明，并固定返回
+  `notSubmitted: true`；
+- private/code-aware 源 run、provider pin 缺失/漂移或安全敏感内容都 fail-closed。
+
+RunManifest 的可选 `providerSnapshotHash` 让新 run 绑定 review 使用的 provider
+配置快照；旧 manifest 仍可读取，但不会静默借用当前 provider。前端类型继续由同一生成器
+从后端权威类型输出。
+
 ## 生成与验证
 
 后端合约变化后：
@@ -168,6 +188,8 @@ npm run verify:pr
 
 - 后端类型仍是唯一手写源；生成文件没有被直接编辑。
 - SSE、报告、CLI、snapshot、comparison 和 verifier 的投影边界都已检查。
+- external-issue opportunity/review/draft 保留源 run 引用、provider pin、服务器
+  review 证明、用户确认和 `notSubmitted` 边界。
 - `empty`、`optional_error`、uncertainty 没有被混成确定性结论。
 - current/reference 和 identity/provenance 信息没有在转换中丢失。
 - 列单位、时间精度和 click action 与真实数据一致。

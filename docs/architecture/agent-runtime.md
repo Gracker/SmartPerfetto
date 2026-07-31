@@ -72,6 +72,20 @@ Provider connection 支持两套端点字段：
 | `qoderAccessToken` / `qoderCliPath` / `qoderModel` / `qoderSystemPrompt` | `qoder-agent-sdk` | `QODER_PERSONAL_ACCESS_TOKEN` / `QODERCLI_PATH` / `QODER_MODEL` / `SMARTPERFETTO_QODER_SYSTEM_PROMPT` |
 | `baseUrl` / `apiKey` | legacy/shared | 作为旧配置兼容或双协议共享 key |
 
+## M10 独立反馈 triage
+
+Agent 辅助 GitHub 反馈不是主分析 session 的 resume。分析完成时，新 RunManifest 可保存
+`providerSnapshotHash`；用户点击反馈 CTA 后，后端重新解析持久化源 run，并要求当前可用
+provider snapshot 与该 hash 完全一致。它不会读取后来切换的 active provider，也不会
+回退到另一个 runtime。
+
+Claude/Anthropic-compatible 源 run 通过无工具 Claude SDK 调用执行 triage；
+OpenAI/OpenAI-compatible 源 run 通过轻量 Chat Completions 调用执行。两者都只接收有界的
+公开 source context，不共享主分析 SDK session。Pi Agent Core、OpenCode、Qoder、旧
+manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使用明确的确定性 fallback，
+不会伪装成同一 Agent 已复核。完整用户边界见
+[Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
+
 ## 关键文件
 
 | 文件 | 责任 |
@@ -91,6 +105,8 @@ Provider connection 支持两套端点字段：
 | `backend/src/services/finalReportContractGate.ts` | 执行 strategy `final_report_contract` 完整性检查 |
 | `backend/src/services/providerManager/` | Provider 配置、runtime/protocol/env 映射 |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | 统一会话快照，含 Claude/OpenAI SDK 状态和 Pi/OpenCode/Qoder runtime state |
+| `backend/src/services/externalIssueReporting/providerPin.ts` | M10 源 run provider snapshot 校验 |
+| `backend/src/services/externalIssueReporting/triageRunner.ts` | M10 无工具 Agent triage 与确定性 fallback |
 
 `backend/src/agentOpenAI/` 以及 `agentv3/claudeRuntime.ts` 等具体文件继续提供
 旧 import path 的 compatibility re-export；`agentv3/` 目录内的 MCP、strategy、

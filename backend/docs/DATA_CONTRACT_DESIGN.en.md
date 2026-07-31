@@ -149,6 +149,32 @@ Actions must reference existing evidence, artifacts, or Skill output. The
 frontend executes only allowed typed actions, never arbitrary model-generated
 scripts, SQL, or URLs.
 
+## Agent External Feedback
+
+`ExternalIssueOpportunityV1`, `ExternalIssueReviewV1`, and
+`ExternalIssueDraftV1` are independent post-completion derivative contracts.
+They are not `UiActionProposalV1` variants and do not change
+`AnalysisRunSpec`.
+
+- Opportunity detection reads only the persisted `analysis_completed` event,
+  matching RunManifest, and optional result snapshot.
+- A review contains at most three candidates. Each candidate must cite real
+  evidence, Skill, claim-gate, identity, or report references from that run.
+  Agent JSON passes exact-key, enum, size, and public-content validation. The
+  review endpoint also attaches a short-lived server integrity attestation.
+- A draft combines a validated candidate, user answers, and explicit
+  sensitive-data confirmation. Facts, Agent assessment, user confirmation,
+  missing evidence, and redactions remain separate. The provider pin and
+  server attestation are revalidated before generation, and
+  `notSubmitted` is always `true`.
+- Private/code-aware source runs, missing or drifted provider pins, and
+  security-sensitive content fail closed.
+
+The optional RunManifest `providerSnapshotHash` binds new runs to the provider
+configuration used for review. Legacy manifests remain readable but never
+silently borrow the current provider. The existing generator emits the
+frontend types from the backend sources of truth.
+
 ## Generation And Verification
 
 After changing the backend contract:
@@ -188,6 +214,9 @@ npm run verify:pr
 - Backend types remain the only handwritten source; generated files were not
   edited directly.
 - SSE, report, CLI, snapshot, comparison, and verifier projections were checked.
+- External-issue opportunity/review/draft preserve source-run references,
+  provider pinning, server review attestation, user confirmation, and the
+  `notSubmitted` boundary.
 - `empty`, `optional_error`, and uncertainty were not collapsed into a
   deterministic conclusion.
 - Current/reference and identity/provenance fields survive conversion.

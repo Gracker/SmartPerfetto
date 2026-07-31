@@ -69,6 +69,7 @@ backend 与 frontend。
 | Skills | `backend/skills/` | 原子、组合、深度、渲染管线分析 |
 | Strategies | `backend/strategies/` | 场景策略、Prompt 模板、知识模板 |
 | Self-Evolution | `backend/src/services/selfEvolution/`、`backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest、反馈投影、eval/replay、提案门控、overlay、对账、RBAC 控制面 |
+| Agent 外部反馈 | `backend/src/services/externalIssueReporting/`、`agentExternalIssueRoutes.ts`、AI Assistant plugin | 源 run 信号、固定 provider triage、严格校验、去标识 GitHub 草稿；不自动提交 |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | 本地代码库注册、源码索引、符号解析、lookup 过滤、patch 三态校验 |
 | External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | 外部 Wiki 全库审计、版本/指纹、分代索引、许可/同意/scope 和私有内容投影 |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | trace 加载、RPC 管理、SQL 查询 |
@@ -146,6 +147,18 @@ snapshot，新 run 才解析新 generation。启动和升级会先对账；冲�
 关闭，apply 还要求包外持久化能力；详见
 [运行契约](self-improving-design.md)和
 [用户验收指南](../getting-started/self-evolution.md)。
+
+## Agent 辅助外部反馈闭环
+
+M10 从持久化 `analysis_completed`、匹配 RunManifest 和可选 result snapshot 构建
+deterministic opportunity；用户点击后才运行源 provider/runtime 固定的无工具
+triage。Agent 输出经过引用白名单、置信度、Skill trust、大小和公共工件脱敏校验，
+再结合用户回答生成 `notSubmitted` GitHub 草稿。
+
+这条路径不读取当前 session.result，不调用 GitHub API，也不创建 Self-Evolution
+feedback/proposal/overlay。private/code-aware 结果禁用公开草稿，安全漏洞改道到
+private advisory。详见
+[Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
 
 ## Runtime 与 Provider 边界
 

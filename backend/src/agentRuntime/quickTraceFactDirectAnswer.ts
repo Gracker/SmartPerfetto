@@ -78,12 +78,13 @@ function directClaimReference(input: {
   envelope: DataEnvelope;
   column: string;
   value: string | number | boolean;
+  rowIndex?: number;
 }): ConclusionContractClaimReference {
   return {
     evidenceRefId: input.envelope.meta.evidenceRefId,
     sourceToolCallId: input.envelope.meta.sourceToolCallId,
     sourceRef: input.envelope.display?.title,
-    rowIndex: 0,
+    rowIndex: input.rowIndex ?? 0,
     column: input.column,
     value: input.value,
   };
@@ -186,6 +187,99 @@ export function buildQuickTraceFactDirectAnswer(input: {
   const evidenceRefId = envelope.meta.evidenceRefId;
   if (!evidenceRefId) return undefined;
   const sourceRef = envelope.display?.title ?? envelope.meta.source ?? 'runtime trace fact pre-evidence';
+
+  if (evidence.evidenceKind === 'longest_process_slices') {
+    const items = envelope.data.rows.slice(0, 20).map((candidate, rowIndex) => {
+      const ts = cellText(rowValue(candidate, index, 'ts'));
+      const durationMs = numericValue(rowValue(candidate, index, 'duration_ms'));
+      const sliceName = cellText(rowValue(candidate, index, 'slice_name'));
+      const processName = cellText(rowValue(candidate, index, 'process_name'));
+      const threadName = cellText(rowValue(candidate, index, 'thread_name'));
+      const trackScope = cellText(rowValue(candidate, index, 'track_scope'));
+      if (durationMs === undefined || durationMs <= 0) return undefined;
+      return {
+        rowIndex,
+        ts,
+        durationMs,
+        sliceName,
+        processName,
+        threadName,
+        trackScope,
+      };
+    });
+    if (items.some(item => !item)) return undefined;
+    const verifiedItems = items.filter((item): item is NonNullable<typeof item> => Boolean(item));
+    if (verifiedItems.length === 0) return undefined;
+
+    const rankedRows = verifiedItems.map((item, index) => localize(
+      outputLanguage,
+      `${index + 1}. ${item.sliceName} — ${item.durationMs} ms；进程 ${item.processName}；线程 ${item.threadName}`,
+      `${index + 1}. ${item.sliceName} — ${item.durationMs} ms; process ${item.processName}; thread ${item.threadName}`,
+    ));
+    const statement = localize(
+      outputLanguage,
+      `当前范围内时长最长的 ${verifiedItems.length} 个 process slice 为：\n${rankedRows.join('\n')}`,
+      `The ${verifiedItems.length} longest process slices in the current range are:\n${rankedRows.join('\n')}`,
+    );
+    const references = verifiedItems.flatMap(item => [
+      directClaimReference({
+        envelope,
+        rowIndex: item.rowIndex,
+        column: 'ts',
+        value: item.ts,
+      }),
+      directClaimReference({
+        envelope,
+        rowIndex: item.rowIndex,
+        column: 'duration_ms',
+        value: item.durationMs,
+      }),
+      directClaimReference({
+        envelope,
+        rowIndex: item.rowIndex,
+        column: 'slice_name',
+        value: item.sliceName,
+      }),
+      directClaimReference({
+        envelope,
+        rowIndex: item.rowIndex,
+        column: 'process_name',
+        value: item.processName,
+      }),
+      directClaimReference({
+        envelope,
+        rowIndex: item.rowIndex,
+        column: 'thread_name',
+        value: item.threadName,
+      }),
+      directClaimReference({
+        envelope,
+        rowIndex: item.rowIndex,
+        column: 'track_scope',
+        value: item.trackScope,
+      }),
+    ]);
+    return {
+      conclusion: buildDirectConclusion({
+        statement,
+        evidenceRefId,
+        sourceRef,
+        outputLanguage,
+        rows: verifiedItems.map(item =>
+          `rowIndex=\`${item.rowIndex}\`; ts=\`${item.ts}\`; duration_ms=\`${item.durationMs}\`; slice_name=\`${item.sliceName}\`; process_name=\`${item.processName}\`; thread_name=\`${item.threadName}\`; track_scope=\`${item.trackScope}\``
+        ),
+      }),
+      conclusionContract: buildDirectConclusionContract({
+        statement,
+        evidenceText: `${sourceRef}: ${verifiedItems.map(item =>
+          `rowIndex=${item.rowIndex}, ts=${item.ts}, duration_ms=${item.durationMs}, slice_name=${item.sliceName}, process_name=${item.processName}, thread_name=${item.threadName}, track_scope=${item.trackScope}`
+        ).join('; ')}`,
+        references,
+        kind: evidence.evidenceKind,
+      }),
+      confidence: 1,
+    };
+  }
 
   if (evidence.evidenceKind === 'selection_duration') {
     const scope = cellText(rowValue(row, index, 'scope'));

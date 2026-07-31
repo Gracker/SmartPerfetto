@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Private security report
+    url: https://github.com/Gracker/SmartPerfetto/security/advisories/new
+    about: Report vulnerabilities privately instead of opening a public issue
   - name: Documentation
     url: https://github.com/Gracker/SmartPerfetto/tree/main/docs
     about: Check existing documentation before opening an issue

@@ -262,6 +262,9 @@ Base path: `/api/agent/v1`
 | `GET` | `/:sessionId/report` | Fetch generated report |
 | `DELETE` | `/:sessionId` | Delete a session |
 | `POST` | `/:sessionId/feedback` | Submit feedback into the self-improving path |
+| `POST` | `/:sessionId/external-issue/opportunity` | Detect external-feedback signals from an exact persisted run |
+| `POST` | `/:sessionId/external-issue/review` | Run source-pinned, no-tool Agent triage or return a safe fallback with a short-lived server attestation |
+| `POST` | `/:sessionId/external-issue/draft` | Revalidate the provider pin, server review attestation, user answers, and sensitive-data confirmation, then create an unsubmitted GitHub draft |
 | `POST` | `/scene-detect-quick` | Quick scene detection |
 | `POST` | `/teaching/pipeline` | Rendering pipeline teaching |
 | `GET` | `/sessions` | Session catalog |
@@ -270,6 +273,36 @@ Base path: `/api/agent/v1`
 The workspace-scoped agent base is `/api/workspaces/:workspaceId/agent`, with
 the same child paths as the table above. `/api/agent/v1` still exists and is
 tracked by legacy telemetry with a migration target.
+
+### Agent-Assisted External Issue
+
+All three M10 POST routes require `agent:run`, and the session owner must match
+the request context. Public requests pin one completed run:
+
+```json
+{
+  "runId": "run-id",
+  "runManifestId": "manifest-id",
+  "resultSnapshotId": "optional-snapshot-id"
+}
+```
+
+`opportunity` returns `external_issue_opportunity@1` with deterministic
+signals. `review` runs only after explicit user action and returns
+`external_issue_review@1`; Agent output may reference only claim, finding,
+evidence, and Skill ids present in those signals. A source-provider snapshot
+mismatch or unsupported runtime returns `source=deterministic_fallback`, whose
+candidates can request verification but cannot claim an Agent recommended a
+report.
+
+`draft` additionally requires the full prior review, `candidateId`, at most two
+`answers`, and `sensitiveDataReviewed=true`. It returns
+`external_issue_draft@1`, `notSubmitted=true`, and an HTTPS browser URL. It
+accepts no GitHub token and makes no GitHub API call.
+`securitySensitive=true` returns `PRIVATE_SECURITY_ADVISORY_REQUIRED`.
+Private/code-aware sources fail closed. See
+[Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md)
+for the user and privacy contract.
 
 Start analysis:
 

@@ -297,4 +297,90 @@ describe('agent route private projections', () => {
       fs.rmSync(tmpDir, {recursive: true, force: true});
     }
   });
+
+  it('persists only completed M10 source evidence outside enterprise mode', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'm10-source-db-'));
+    const originalEnterprise = process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+    const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'local.sqlite');
+    const session = {
+      sessionId: 'local-m10-session',
+      traceId: 'local-m10-trace',
+      tenantId: 'default-dev-tenant',
+      workspaceId: 'default-workspace',
+      userId: 'dev-user-123',
+      query: 'analyze local trace',
+      activeRun: {
+        runId: 'local-m10-run',
+        requestId: 'local-m10-request',
+        sequence: 1,
+        query: 'analyze local trace',
+        startedAt: 1,
+        status: 'completed',
+      },
+      logger: {warn: () => undefined},
+    } as any;
+
+    try {
+      agentRoutesPrivacyProjectionTestSeam.persistBufferedAgentEvent(
+        session,
+        {
+          cursor: 1,
+          eventType: 'progress',
+          eventData: JSON.stringify({data: {phase: 'completed'}}),
+          createdAt: 1,
+        },
+      );
+      agentRoutesPrivacyProjectionTestSeam.persistBufferedAgentEvent(
+        session,
+        {
+          cursor: 2,
+          eventType: 'analysis_completed',
+          eventData: JSON.stringify({
+            type: 'analysis_completed',
+            data: {
+              conclusion: 'No ANR was found.',
+              analysisReceipt: {
+                schemaVersion: 2,
+                runId: 'local-m10-run',
+                sessionId: 'local-m10-session',
+                runManifestId: 'local-m10-manifest',
+                outputs: {},
+              },
+            },
+          }),
+          createdAt: 2,
+        },
+      );
+
+      const db = openEnterpriseDb();
+      try {
+        expect(db.prepare(`
+          SELECT event_type AS eventType
+          FROM agent_events
+          WHERE run_id = ?
+          ORDER BY cursor
+        `).all('local-m10-run')).toEqual([
+          {eventType: 'analysis_completed'},
+        ]);
+      } finally {
+        db.close();
+      }
+    } finally {
+      resetAnalysisRunStoreForTests();
+      resetAgentEventStoreForTests();
+      if (originalEnterprise === undefined) {
+        delete process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+      } else {
+        process.env[ENTERPRISE_FEATURE_FLAG_ENV] = originalEnterprise;
+      }
+      if (originalDbPath === undefined) {
+        delete process.env[ENTERPRISE_DB_PATH_ENV];
+      } else {
+        process.env[ENTERPRISE_DB_PATH_ENV] = originalDbPath;
+      }
+      fs.rmSync(tmpDir, {recursive: true, force: true});
+    }
+  });
 });

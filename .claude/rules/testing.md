@@ -9,14 +9,16 @@ npm run verify:pr
 ```
 
 This runs root quality checks, Rust checks, backend Skill/Strategy validation,
-typecheck, build, CLI package checks, core, architecture and Self-Evolution
-tests, trace-processor availability, the constructed Trace SQL regression, and
-the 6-trace scene regression gate.
+typecheck, build, CLI package checks, core, architecture, Self-Evolution, and
+external issue-reporting tests, trace-processor availability, the constructed
+Trace SQL regression, and the 6-trace scene regression gate.
 
 ## New Test Files Must Be Registered
 
 `test:core`, `test:architecture`, and `test:self-evolution` enumerate their
-targets, and `tsconfig.json` excludes `src/**/__tests__/**` and `src/**/*.test.ts`.
+targets; new subsystems may use a directory-scoped gate such as
+`test:external-issue-reporting`. `tsconfig.json` excludes
+`src/**/__tests__/**` and `src/**/*.test.ts`.
 Therefore `npm run typecheck` cannot catch a type break inside a test file, and
 an unregistered suite never runs in `verify:pr`.
 
@@ -48,6 +50,7 @@ A suite that is green locally but absent from `test:gate` counts as untested.
 | Frontend generated types | `cd backend && npm run generate:frontend-types` plus relevant tests |
 | AI plugin UI | Browser verification in `start-dev.sh`, relevant `perfetto/ui` tests/typecheck, then `./scripts/update-frontend.sh` |
 | Self-Evolution control plane | `cd backend && npm run test:self-evolution` plus `npm run typecheck` and scene trace regression; add the AI plugin UI gate when the panel changes. That script covers RBAC/scope isolation, disabled and dependency fail-closed cases, and fixed validation + holdout replay selection. It is wired into `test:gate`, so `npm run verify:pr` runs it too |
+| Agent-assisted external issue reporting | `cd backend && npm run test:external-issue-reporting`, `npm run typecheck`, strategy validation, scene trace regression, AI plugin typecheck/unit tests, browser verification in `start-dev.sh`, and `./scripts/update-frontend.sh`; verify private/security fail-closed and that no GitHub write occurs |
 | Perfetto upstream sync, trace processor pin, SQL/stdlib index, or committed UI prebuild | Follow `.claude/rules/perfetto-sync.md`; normally `git diff --check`, `npm run check:frontend-prebuild`, `npm --prefix backend run cli:e2e`, scene trace regression, submodule remote reachability, and Skill/Strategy validation when those files changed |
 | Code-aware analysis, codebase registry, source ingestion, symbol resolution, or CodeRef report/export | `npm --prefix backend run verify:codebase-aware` plus `npm run verify:pr` before landing |
 | npm CLI package/release | `npm --prefix backend run cli:pack-check` plus isolated install smoke |
@@ -391,7 +394,25 @@ cd backend
 OPENAI_API_KEY=... npm run verify:e2e:deepseek-scrolling
 ```
 
-Startup plus scrolling:
+M10 Agent-assisted external issue triage:
+
+```bash
+cd backend
+OPENAI_API_KEY=... npm run verify:e2e:deepseek-external-issue
+```
+
+This suite requires a persisted source-run provider snapshot, an actionable
+deterministic signal, a validated live-Agent review, and either an unsubmitted
+GitHub draft or an Agent decision that intentionally blocks public drafting.
+The verifier creates that deterministic signal inside its isolated user-data
+root by posting a negative conclusion rating through the production feedback
+API before requesting the opportunity; it does not inject a synthetic signal
+or write to GitHub.
+Also verify in browser that a durable public thumbs-down refreshes the same
+message into an explicit Agent-triage opportunity without invoking the Agent
+or opening GitHub automatically. It never calls the GitHub API.
+
+Complete real-provider matrix:
 
 ```bash
 cd backend
@@ -400,8 +421,8 @@ OPENAI_API_KEY=... npm run verify:e2e:deepseek
 
 For CI-backed real-provider validation, use the manual GitHub Actions workflow
 `Agent Deepseek E2E`. It requires the repository secret `DEEPSEEK_API_KEY` and
-accepts `suite=all|startup|scrolling|context`; keep it manual because it consumes
-provider quota and secrets.
+accepts `suite=all|startup|scrolling|external-issue|context`; keep it manual
+because it consumes provider quota and secrets.
 
 Flutter TextureView and SurfaceView must be verified separately because their
 rendering pipelines differ:

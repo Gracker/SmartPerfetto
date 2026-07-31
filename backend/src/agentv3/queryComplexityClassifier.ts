@@ -21,6 +21,7 @@ import {
   shouldUseQuickScrollingTriageIntent,
 } from './quickScrollingTriageIntent';
 import { buildComplexityClassifierPrompt } from './queryComplexityPrompt';
+import { matchesLongestProcessSlicesFactQuery } from './longestProcessSlicesIntent';
 import type { ComplexityClassifierInput, QueryComplexity } from './types';
 
 /** Confirm-like keywords force 'quick' when the query is short — covers "谢谢"/"ok" style follow-ups. */
@@ -335,6 +336,12 @@ function applyTraceFactRule(
     input.selectionContext &&
     SELECTION_DURATION_FACT_PATTERNS.some(pattern => pattern.test(trimmed)) &&
     !DEEP_DIAGNOSTIC_INTENT_PATTERNS.some(pattern => pattern.test(trimmed))
+  ) {
+    return { complexity: 'quick', reason: TRACE_FACT_LOOKUP_REASON };
+  }
+  if (
+    matchesLongestProcessSlicesFactQuery(trimmed)
+    && !DEEP_DIAGNOSTIC_INTENT_PATTERNS.some(pattern => pattern.test(trimmed))
   ) {
     return { complexity: 'quick', reason: TRACE_FACT_LOOKUP_REASON };
   }

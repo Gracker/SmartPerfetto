@@ -243,3 +243,37 @@ export function listSerializedAgentEventsAfter(
     createdAt: row.created_at,
   }));
 }
+
+export function getLatestSerializedAgentEventByType(
+  scope: EnterpriseRepositoryScope,
+  runId: string,
+  eventType: string,
+): SerializedAgentEvent | null {
+  const normalizedRunId = runId.trim();
+  const normalizedEventType = eventType.trim();
+  if (!normalizedRunId || !normalizedEventType) return null;
+
+  const row = getAgentEventDb().prepare<unknown[], AgentEventRow>(`
+    SELECT cursor, event_type, payload_json, created_at
+    FROM agent_events
+    WHERE tenant_id = ?
+      AND workspace_id = ?
+      AND run_id = ?
+      AND event_type = ?
+    ORDER BY cursor DESC
+    LIMIT 1
+  `).get(
+    scope.tenantId,
+    scope.workspaceId,
+    normalizedRunId,
+    normalizedEventType,
+  );
+  return row
+    ? {
+        cursor: row.cursor,
+        eventType: row.event_type,
+        eventData: row.payload_json,
+        createdAt: row.created_at,
+      }
+    : null;
+}

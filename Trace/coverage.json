@@ -118,6 +118,7 @@
       "lock_contention_in_range",
       "lock_contention_module",
       "logcat_analysis",
+      "longest_process_slices",
       "main_thread_file_io_in_range",
       "main_thread_handler_callback_slices",
       "main_thread_sched_latency_in_range",
@@ -273,7 +274,8 @@
     "semantic": [
       "android_heap_dominator_path_extract",
       "camera_trace_evidence",
-      "gpu_compute_kernel_analysis"
+      "gpu_compute_kernel_analysis",
+      "longest_process_slices"
     ],
     "execution": [
       "ams_module",
