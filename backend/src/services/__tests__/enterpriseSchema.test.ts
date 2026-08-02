@@ -95,6 +95,19 @@ describe('enterprise core schema', () => {
     }
     expect(tables.has('enterprise_schema_migrations')).toBe(true);
     expect(tables.has('sso_sessions')).toBe(true);
+    expectColumns(db!, 'sso_personal_workspaces', [
+      'tenant_id',
+      'user_id',
+      'workspace_id',
+      'created_at',
+    ]);
+    expectColumns(db!, 'sso_tenant_admin_grants', [
+      'tenant_id',
+      'user_id',
+      'source',
+      'created_at',
+      'updated_at',
+    ]);
 
     expectColumns(db!, 'organizations', [
       'id',
@@ -476,6 +489,8 @@ describe('enterprise core schema', () => {
       'idx_api_keys_scope',
       'idx_api_keys_owner',
       'idx_api_keys_expiry',
+      'idx_sso_personal_workspaces_workspace',
+      'idx_sso_tenant_admin_grants_user',
     ]) {
       expect(indexes.has(index)).toBe(true);
     }
@@ -806,6 +821,7 @@ describe('enterprise core schema', () => {
       { version: 13 },
       { version: 14 },
       { version: 15 },
+      { version: 16 },
     ]);
   });
 

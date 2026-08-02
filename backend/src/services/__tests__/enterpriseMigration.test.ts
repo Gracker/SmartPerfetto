@@ -125,6 +125,32 @@ describe('enterprise migration phases', () => {
     }));
   });
 
+  it('uses scoped DB authority by default for built-in OIDC only', () => {
+    const oidcEnv = {
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI:
+        'https://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'https://app.example.test',
+    } as NodeJS.ProcessEnv;
+
+    expect(resolveEnterpriseMigrationPlan(oidcEnv)).toEqual(expect.objectContaining({
+      phase: 'retired',
+      readAuthority: 'db',
+      writeFilesystem: false,
+      writeDb: true,
+    }));
+    expect(() => resolveEnterpriseMigrationPlan({
+      ...oidcEnv,
+      [ENTERPRISE_MIGRATION_PHASE_ENV]: 'dual-write',
+    })).toThrow(/OIDC requires DB-authoritative storage/);
+    expect(resolveEnterpriseMigrationPlan({
+      [ENTERPRISE_FEATURE_FLAG_ENV]: 'true',
+    }).phase).toBe('dual-write');
+  });
+
   it('refuses DB-authoritative cutover without an explicit reconciliation confirmation', () => {
     expect(() => resolveEnterpriseMigrationPlan({
       [ENTERPRISE_FEATURE_FLAG_ENV]: 'true',

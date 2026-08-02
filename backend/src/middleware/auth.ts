@@ -5,7 +5,7 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { ErrorResponse } from '../types';
-import { resolveFeatureConfig } from '../config';
+import { isOidcConfigurationPresent, resolveFeatureConfig } from '../config';
 import {
   EnterpriseApiKeyService,
   requestHasEnterpriseApiKeyCredential,
@@ -47,6 +47,43 @@ const MAX_TRACE_REQUESTS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_MAX_T
 
 const usageTracker = new Map<string, { resetAt: number; total: number; trace: number }>();
 
+function isSafeMethod(method: string): boolean {
+  return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
+}
+
+function enforceSsoCookieMutationProtection(
+  req: Request,
+  res: Response,
+  service: EnterpriseSsoService,
+): boolean {
+  if (typeof req.headers.authorization === 'string'
+    && req.headers.authorization.startsWith(`Bearer ${SSO_SESSION_TOKEN_PREFIX}`)) {
+    return true;
+  }
+  if (isSafeMethod(req.method) || !service.isCookieAuthenticatedRequest(req)) return true;
+  const configuredFrontendUrl = process.env.FRONTEND_URL?.trim();
+  const origin = req.headers.origin;
+  if (origin && configuredFrontendUrl) {
+    try {
+      if (new URL(origin).origin !== new URL(configuredFrontendUrl).origin) {
+        res.status(403).json({ error: 'Forbidden', details: 'Invalid request origin' });
+        return false;
+      }
+    } catch {
+      res.status(403).json({ error: 'Forbidden', details: 'Invalid request origin' });
+      return false;
+    }
+  }
+  const csrfToken = typeof req.headers['x-csrf-token'] === 'string'
+    ? req.headers['x-csrf-token']
+    : undefined;
+  if (!service.verifyCsrfTokenForRequest(req, csrfToken)) {
+    res.status(403).json({ error: 'Forbidden', details: 'Invalid CSRF token' });
+    return false;
+  }
+  return true;
+}
+
 interface ResolvedIdentity {
   userId: string;
   email: string;
@@ -80,6 +117,25 @@ const requestHasSsoSessionCredential = (req: Request): boolean => {
       const [name, value = ''] = cookie.trim().split('=');
       return name === SSO_SESSION_COOKIE_NAME
         && decodeURIComponent(value).startsWith(SSO_SESSION_TOKEN_PREFIX);
+    });
+};
+
+const requestHasOidcSessionCredential = (req: Request): boolean => {
+  const authHeader = req.headers.authorization;
+  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    return authHeader.slice('Bearer '.length).trim().startsWith(SSO_SESSION_TOKEN_PREFIX);
+  }
+  return typeof req.headers.cookie === 'string'
+    && req.headers.cookie.split(';').some((cookie) => {
+      const part = cookie.trim();
+      const separator = part.indexOf('=');
+      if (separator <= 0 || part.slice(0, separator) !== SSO_SESSION_COOKIE_NAME) return false;
+      try {
+        return decodeURIComponent(part.slice(separator + 1))
+          .startsWith(SSO_SESSION_TOKEN_PREFIX);
+      } catch {
+        return false;
+      }
     });
 };
 
@@ -269,17 +325,23 @@ export const authenticate = async (
   res: Response,
   next: NextFunction
 ): Promise<void> => {
-  const ssoIdentity = resolveTrustedSsoIdentity(req);
+  const oidcConfigured = isOidcConfigurationPresent(process.env);
+  const ssoIdentity = oidcConfigured ? null : resolveTrustedSsoIdentity(req);
   if (ssoIdentity) {
     attachIdentity(req, ssoIdentity);
     next();
     return;
   }
 
-  if (requestHasSsoSessionCredential(req)) {
+  const hasSessionCredential = oidcConfigured
+    ? requestHasOidcSessionCredential(req)
+    : requestHasSsoSessionCredential(req);
+  if (hasSessionCredential) {
     try {
-      const sessionIdentity = EnterpriseSsoService.getInstance().resolveRequestIdentityFromRequest(req);
+      const ssoService = EnterpriseSsoService.getInstance();
+      const sessionIdentity = ssoService.resolveRequestIdentityFromRequest(req);
       if (sessionIdentity) {
+        if (oidcConfigured && !enforceSsoCookieMutationProtection(req, res, ssoService)) return;
         attachIdentity(req, sessionIdentity);
         next();
         return;
@@ -295,7 +357,7 @@ export const authenticate = async (
     }
   }
 
-  if (requestHasEnterpriseApiKeyCredential(req)) {
+  if (!oidcConfigured && requestHasEnterpriseApiKeyCredential(req)) {
     try {
       const apiKeyIdentity = EnterpriseApiKeyService.getInstance().resolveRequestIdentityFromRequest(req);
       if (apiKeyIdentity) {
@@ -314,6 +376,11 @@ export const authenticate = async (
         return;
       }
     }
+  }
+
+  if (oidcConfigured) {
+    sendUnauthorized(res, 'OIDC session authentication is required');
+    return;
   }
 
   const configuredKey = process.env[API_KEY_ENV];

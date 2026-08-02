@@ -6,6 +6,8 @@ import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import {resolveAuthConfig} from '../../config';
+import {deriveServerSecret} from '../../security/serverSecret';
 import {withFilesystemRegistryLock} from '../filesystemRegistryLock';
 
 const sodium = require('sodium-native') as {
@@ -24,7 +26,7 @@ export const SECRET_STORE_KEYRING_ACCOUNT_ENV = 'SMARTPERFETTO_SECRET_STORE_KEYR
 export const SECRET_STORE_ALLOW_LOCAL_MASTER_KEY_ENV = 'SMARTPERFETTO_SECRET_STORE_ALLOW_LOCAL_MASTER_KEY';
 
 type SecretAlgorithm = 'libsodium-secretbox';
-type MasterKeySource = 'env' | 'keyring' | 'local-dev-file';
+type MasterKeySource = 'env' | 'server-secret' | 'keyring' | 'local-dev-file';
 
 interface EncryptedSecretEntry {
   version: number;
@@ -243,6 +245,16 @@ function resolveMasterKey(dir: string): {key: Buffer; source: MasterKeySource} {
         `SecretStore master key exists only in local file ${path.join(dir, '.master-key')}; OS keyring is unavailable. Set ${SECRET_STORE_MASTER_KEY_ENV} for tests/dev or configure OS keyring.`,
       );
     }
+  }
+
+  if (resolveAuthConfig(process.env).oidcEnabled) {
+    return {
+      key: deriveServerSecret({
+        purpose: 'provider-secret-store',
+        minimumBytes: 32,
+      }),
+      source: 'server-secret',
+    };
   }
 
   const newKey = randomMasterKey();

@@ -3,6 +3,21 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+smartperfetto_needs_bash=false
+if [ -z "${BASH_VERSION:-}" ]; then
+  smartperfetto_needs_bash=true
+elif command -v shopt >/dev/null 2>&1 && shopt -qo posix; then
+  smartperfetto_needs_bash=true
+fi
+if [ "$smartperfetto_needs_bash" = true ]; then
+  if command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  echo "ERROR: SmartPerfetto start-dev.sh requires Bash." >&2
+  exit 1
+fi
+unset smartperfetto_needs_bash
+
 # SmartPerfetto Frontend Development Script
 # Builds Perfetto UI from source (requires perfetto submodule) + starts backend with watch.
 # Use this when modifying the AI Assistant plugin code (ai_panel.ts, styles.scss, etc.)

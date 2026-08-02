@@ -23,6 +23,17 @@ const originalEnv = {
   secretStoreMasterKey: process.env[SECRET_STORE_MASTER_KEY_ENV],
   migrationPhase: process.env[ENTERPRISE_MIGRATION_PHASE_ENV],
 };
+const oidcEnvKeys = [
+  'SMARTPERFETTO_OIDC_ISSUER_URL',
+  'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_CLIENT_SECRET',
+  'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  'SMARTPERFETTO_SERVER_SECRET',
+  'FRONTEND_URL',
+] as const;
+const originalOidcEnv = Object.fromEntries(
+  oidcEnvKeys.map(key => [key, process.env[key]]),
+) as Record<(typeof oidcEnvKeys)[number], string | undefined>;
 
 interface ProviderCredentialRow {
   id: string;
@@ -74,6 +85,17 @@ function workspaceScope(): ProviderScope {
   };
 }
 
+function enableOidcTestMode(): void {
+  process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+  process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+  process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
+  process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
+    'https://app.example.test/api/auth/oidc/callback';
+  process.env.SMARTPERFETTO_SERVER_SECRET =
+    'test-server-secret-at-least-32-bytes';
+  process.env.FRONTEND_URL = 'https://app.example.test';
+}
+
 function readProviderRows(): ProviderCredentialRow[] {
   const db = openEnterpriseDb(dbPath);
   try {
@@ -96,6 +118,7 @@ beforeEach(async () => {
   process.env[SECRET_STORE_DIR_ENV] = secretDir;
   process.env[SECRET_STORE_MASTER_KEY_ENV] = Buffer.alloc(32, 3).toString('base64');
   process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+  for (const key of oidcEnvKeys) delete process.env[key];
   svc = new ProviderService(path.join(tmpDir, 'providers.json'));
 });
 
@@ -105,6 +128,7 @@ afterEach(async () => {
   restoreEnvValue(SECRET_STORE_DIR_ENV, originalEnv.secretStoreDir);
   restoreEnvValue(SECRET_STORE_MASTER_KEY_ENV, originalEnv.secretStoreMasterKey);
   restoreEnvValue(ENTERPRISE_MIGRATION_PHASE_ENV, originalEnv.migrationPhase);
+  for (const key of oidcEnvKeys) restoreEnvValue(key, originalOidcEnv[key]);
   if (tmpDir) {
     await fs.rm(tmpDir, { recursive: true, force: true });
     tmpDir = undefined;
@@ -112,6 +136,29 @@ afterEach(async () => {
 });
 
 describe('enterprise provider store', () => {
+  it('keeps providers isolated when OIDC uses its default storage plan', () => {
+    delete process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+    delete process.env[ENTERPRISE_MIGRATION_PHASE_ENV];
+    enableOidcTestMode();
+    const oidcService = new ProviderService(path.join(tmpDir!, 'oidc-providers.json'));
+
+    const providerA = oidcService.create({
+      ...input,
+      name: 'OIDC Provider A',
+      connection: {openaiApiKey: 'sk-user-a'},
+    }, scope('user-a'));
+    const providerB = oidcService.create({
+      ...input,
+      name: 'OIDC Provider B',
+      connection: {openaiApiKey: 'sk-user-b'},
+    }, scope('user-b'));
+
+    expect(oidcService.list(scope('user-a')).map(item => item.id)).toEqual([providerA.id]);
+    expect(oidcService.list(scope('user-b')).map(item => item.id)).toEqual([providerB.id]);
+    expect(oidcService.getRaw(providerB.id, scope('user-a'))).toBeUndefined();
+    expect(oidcService.getRaw(providerA.id, scope('user-b'))).toBeUndefined();
+  });
+
   it('tracks scoped provider mutation generations without leaking personal revisions', () => {
     expect(svc.getMutationGeneration(scope('user-a')).entries.map(entry => ({
       level: entry.scope.level,
@@ -292,6 +339,99 @@ describe('enterprise provider store', () => {
       scope: 'personal',
     }));
     expect(JSON.parse(personalRow!.policy_json).isActive).toBe(true);
+  });
+
+  it('allows inherited provider reads without allowing cross-scope mutations', () => {
+    enableOidcTestMode();
+    const workspaceProvider = svc.create({
+      ...input,
+      name: 'Workspace Default',
+      connection: {openaiApiKey: 'sk-workspace-default'},
+    }, workspaceScope());
+
+    expect(svc.getRaw(workspaceProvider.id, scope('user-a'))?.id)
+      .toBe(workspaceProvider.id);
+    expect(svc.getEnvForProvider(workspaceProvider.id, scope('user-a'))?.OPENAI_API_KEY)
+      .toBe('sk-workspace-default');
+
+    expect(() => svc.update(
+      workspaceProvider.id,
+      {name: 'Hijacked'},
+      scope('user-a'),
+    )).toThrow(/Provider not found/);
+    expect(() => svc.activate(workspaceProvider.id, scope('user-a')))
+      .toThrow(/Provider not found/);
+    expect(() => svc.rotateSecret(workspaceProvider.id, scope('user-a')))
+      .toThrow(/Provider not found/);
+    expect(() => svc.delete(workspaceProvider.id, scope('user-a')))
+      .toThrow(/Provider not found/);
+
+    const storedRow = readProviderRows().find(row => row.id === workspaceProvider.id);
+    expect(storedRow?.policy_json).toBeDefined();
+    expect(storedRow && JSON.parse(storedRow.policy_json).isActive).toBe(false);
+    const db = openEnterpriseDb(dbPath);
+    try {
+      const stored = db.prepare('SELECT name FROM provider_credentials WHERE id = ?')
+        .get(workspaceProvider.id) as {name: string} | undefined;
+      expect(stored?.name).toBe('Workspace Default');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('preserves inherited provider mutations outside OIDC', () => {
+    const workspaceProvider = svc.create({
+      ...input,
+      name: 'Workspace Default',
+      connection: {openaiApiKey: 'sk-workspace-default'},
+    }, workspaceScope());
+
+    expect(svc.update(
+      workspaceProvider.id,
+      {name: 'Updated From Personal Scope'},
+      scope('user-a'),
+    ).name).toBe('Updated From Personal Scope');
+    expect(svc.rotateSecret(workspaceProvider.id, scope('user-a'))).toBeGreaterThan(0);
+    expect(() => svc.delete(workspaceProvider.id, scope('user-a'))).not.toThrow();
+    expect(svc.getRaw(workspaceProvider.id, workspaceScope())).toBeUndefined();
+
+    const activatable = svc.create({
+      ...input,
+      name: 'Workspace Activatable',
+    }, workspaceScope());
+    expect(() => svc.activate(activatable.id, scope('user-a'))).not.toThrow();
+  });
+
+  it('preserves cross-scope dual writes outside OIDC', async () => {
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'dual-write';
+    const filePath = path.join(tmpDir!, 'dual-write-providers.json');
+    const dualWriteService = new ProviderService(filePath);
+    const workspaceProvider = dualWriteService.create({
+      ...input,
+      name: 'Workspace Default',
+      connection: {openaiApiKey: 'sk-workspace-default'},
+    }, workspaceScope());
+
+    expect(dualWriteService.update(
+      workspaceProvider.id,
+      {name: 'Hijacked'},
+      scope('user-a'),
+    ).name).toBe('Hijacked');
+
+    const fileProviders = JSON.parse(await fs.readFile(filePath, 'utf8')) as Array<{
+      id: string;
+      name: string;
+    }>;
+    expect(fileProviders.find(provider => provider.id === workspaceProvider.id)?.name)
+      .toBe('Hijacked');
+    const db = openEnterpriseDb(dbPath);
+    try {
+      const stored = db.prepare('SELECT name FROM provider_credentials WHERE id = ?')
+        .get(workspaceProvider.id) as {name: string} | undefined;
+      expect(stored?.name).toBe('Hijacked');
+    } finally {
+      db.close();
+    }
   });
 
   it('rotates provider secrets and audits secret lifecycle operations', () => {

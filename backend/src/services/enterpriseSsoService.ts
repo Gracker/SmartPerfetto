@@ -5,8 +5,9 @@
 import crypto from 'crypto';
 import type { Request } from 'express';
 import type Database from 'better-sqlite3';
-import { resolveFeatureConfig } from '../config';
+import { resolveAuthConfig } from '../config';
 import type { RequestContextAuthType } from '../middleware/auth';
+import {deriveServerSecret} from '../security/serverSecret';
 import {
   listEnterpriseAuditEvents,
   recordEnterpriseAuditEvent,
@@ -19,9 +20,11 @@ import type { EnterpriseOidcUserInfo } from './enterpriseOidcClient';
 const SESSION_COOKIE_NAME = 'sp_sso_session';
 const STATE_COOKIE_NAME = 'sp_oidc_state';
 const SESSION_TOKEN_PREFIX = 'sp_sso_';
-const DEFAULT_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const PERSONAL_WORKSPACE_NAME = 'Personal Workspace';
+const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const SESSION_COOKIE_SAME_SITE = 'lax' as const;
 
-export interface WorkspaceMembership {
+interface WorkspaceMembership {
   workspaceId: string;
   name: string;
   role: string;
@@ -48,7 +51,7 @@ interface StoredSsoSession {
 export interface OidcStatePayload {
   state: string;
   nonce: string;
-  codeVerifier?: string;
+  codeVerifier: string;
   returnTo?: string;
   createdAt: number;
 }
@@ -61,6 +64,7 @@ export type OnboardingStatus =
 
 export interface OnboardingResult {
   status: OnboardingStatus;
+  /** Internal bearer value used to set the HttpOnly cookie; never serialize it. */
   accessToken?: string;
   sessionId?: string;
   tenantId?: string;
@@ -69,6 +73,23 @@ export interface OnboardingResult {
   expiresAt?: number;
   workspaces?: WorkspaceMembership[];
   reason?: string;
+  user?: {
+    id: string;
+    email: string;
+    displayName?: string;
+  };
+  tenant?: {
+    id: string;
+    name: string;
+  };
+  workspace?: {
+    id: string;
+    name: string;
+    kind: 'personal';
+  };
+  roles?: string[];
+  scopes?: string[];
+  csrfToken?: string;
 }
 
 export interface RequestSsoIdentity {
@@ -80,20 +101,6 @@ export interface RequestSsoIdentity {
   workspaceId: string;
   roles: string[];
   scopes: string[];
-}
-
-export interface EnterpriseSsoSessionSummary {
-  authenticated: true;
-  status: Exclude<OnboardingStatus, 'needs_tenant_join'>;
-  tenantId: string;
-  userId: string;
-  workspaceId?: string;
-  email?: string;
-  displayName?: string;
-  roles: string[];
-  scopes: string[];
-  workspaces: WorkspaceMembership[];
-  expiresAt: number;
 }
 
 function nowMs(): number {
@@ -111,8 +118,14 @@ function safeString(value: unknown): string | undefined {
   return trimmed ? trimmed.replace(/[\r\n]/g, '').slice(0, 320) : undefined;
 }
 
-function hmac(value: string, secret: string): string {
+function hmac(value: string, secret: string | Buffer): string {
   return crypto.createHmac('sha256', secret).update(value).digest('base64url');
+}
+
+function safeEqualStrings(left: string, right: string): boolean {
+  const a = Buffer.from(left);
+  const b = Buffer.from(right);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
 function parseCookieHeader(header: string | undefined): Map<string, string> {
@@ -123,7 +136,12 @@ function parseCookieHeader(header: string | undefined): Map<string, string> {
     if (index <= 0) continue;
     const name = part.slice(0, index).trim();
     const value = part.slice(index + 1).trim();
-    if (name) cookies.set(name, decodeURIComponent(value));
+    if (!name) continue;
+    try {
+      cookies.set(name, decodeURIComponent(value));
+    } catch {
+      // Ignore malformed cookie values instead of turning authentication into a 500.
+    }
   }
   return cookies;
 }
@@ -145,71 +163,38 @@ function claimString(userInfo: EnterpriseOidcUserInfo, keys: string[]): string |
   return undefined;
 }
 
-function parseDomainTenantMap(value: string | undefined): Map<string, string> {
-  const map = new Map<string, string>();
-  if (!value) return map;
-  const trimmed = value.trim();
-  if (!trimmed) return map;
-
-  try {
-    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-    for (const [domain, tenantId] of Object.entries(parsed)) {
-      const sanitizedTenant = sanitizeId(tenantId);
-      if (domain.trim() && sanitizedTenant) {
-        map.set(domain.trim().toLowerCase(), sanitizedTenant);
-      }
-    }
-    return map;
-  } catch {
-    // Fall through to comma-separated "example.com=tenant-a" parsing.
-  }
-
-  for (const entry of trimmed.split(',')) {
-    const [domain, tenantId] = entry.split('=').map(part => part?.trim());
-    const sanitizedTenant = sanitizeId(tenantId);
-    if (domain && sanitizedTenant) {
-      map.set(domain.toLowerCase(), sanitizedTenant);
-    }
-  }
-  return map;
-}
-
 function scopesForRole(role: string): string[] {
-  if (role === 'org_admin' || role === 'workspace_admin') return ['*'];
+  if (role === 'org_admin') return ['*'];
+  if (role === 'workspace_admin' || role === 'personal_workspace_owner') {
+    return [
+      'trace:read',
+      'trace:write',
+      'agent:run',
+      'report:read',
+      'analysis_result:read',
+      'analysis_result:create',
+      'comparison:create',
+      'comparison:read',
+      'codebase:read',
+      'provider:manage_workspace',
+    ];
+  }
+  if (role === 'tenant_admin') return ['tenant:metadata'];
   if (role === 'viewer') return ['trace:read', 'report:read'];
   return ['trace:read', 'trace:write', 'agent:run', 'report:read'];
 }
 
-export function normalizeOidcReturnTo(
-  value: unknown,
-  allowedOrigins: ReadonlySet<string> = new Set(),
-): string | undefined {
+export function normalizeOidcReturnTo(value: unknown): string | undefined {
   const candidate = safeString(value);
-  if (!candidate) return undefined;
-  if (candidate.startsWith('/') && !candidate.startsWith('//')) {
-    // WHATWG URL parsing treats backslashes as path separators for HTTP(S)
-    // URLs. Without this check, `/\attacker.example` becomes an external URL.
-    if (candidate.includes('\\')) return undefined;
-    try {
-      const base = new URL('https://smartperfetto.invalid');
-      const parsed = new URL(candidate, base);
-      if (parsed.origin !== base.origin) return undefined;
-      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
-    } catch {
-      return undefined;
-    }
+  if (!candidate || !candidate.startsWith('/') || candidate.startsWith('//')) {
+    return undefined;
   }
+  if (candidate.includes('\\')) return undefined;
   try {
-    const parsed = new URL(candidate);
-    if (
-      !['http:', 'https:'].includes(parsed.protocol)
-      || parsed.username
-      || parsed.password
-      || !allowedOrigins.has(parsed.origin)
-    ) {
-      return undefined;
-    }
-    return parsed.toString();
+    const base = new URL('https://smartperfetto.invalid');
+    const parsed = new URL(candidate, base);
+    if (parsed.origin !== base.origin) return undefined;
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return undefined;
   }
@@ -243,14 +228,32 @@ export class EnterpriseSsoService {
     return STATE_COOKIE_NAME;
   }
 
-  createStatePayload(
-    returnTo?: string,
-    allowedOrigins: ReadonlySet<string> = new Set(),
-  ): OidcStatePayload {
+  get authMode(): ReturnType<typeof resolveAuthConfig>['mode'] {
+    return resolveAuthConfig(process.env).mode;
+  }
+
+  get sessionTtlMsValue(): number {
+    return SESSION_TTL_MS;
+  }
+
+  get sessionCookieMaxAgeSeconds(): number {
+    return Math.max(1, Math.floor(this.sessionTtlMsValue / 1000));
+  }
+
+  get sessionCookieSecure(): boolean {
+    return resolveAuthConfig(process.env).cookieSecure;
+  }
+
+  get sessionCookieSameSite(): 'lax' | 'strict' | 'none' {
+    return SESSION_COOKIE_SAME_SITE;
+  }
+
+  createStatePayload(returnTo?: string): OidcStatePayload {
     return {
       state: crypto.randomBytes(24).toString('base64url'),
       nonce: crypto.randomBytes(24).toString('base64url'),
-      returnTo: normalizeOidcReturnTo(returnTo, allowedOrigins),
+      codeVerifier: crypto.randomBytes(32).toString('base64url'),
+      returnTo: normalizeOidcReturnTo(returnTo),
       createdAt: nowMs(),
     };
   }
@@ -262,9 +265,7 @@ export class EnterpriseSsoService {
   verifyStatePayload(signedValue: string | undefined): OidcStatePayload | null {
     if (!signedValue) return null;
     const parsed = this.verifyJson<OidcStatePayload>(signedValue);
-    if (!parsed || !parsed.state || !parsed.nonce || !parsed.codeVerifier) {
-      return null;
-    }
+    if (!parsed || !parsed.state || !parsed.nonce || !parsed.codeVerifier) return null;
     if (nowMs() - parsed.createdAt > 10 * 60 * 1000) return null;
     return parsed;
   }
@@ -273,14 +274,70 @@ export class EnterpriseSsoService {
     return accessToken;
   }
 
+  csrfTokenForRequest(req: Request): string | null {
+    const token = this.extractSessionToken(req);
+    return token ? this.csrfTokenForSessionToken(token) : null;
+  }
+
+  verifyCsrfTokenForRequest(req: Request, token: string | undefined): boolean {
+    const expected = this.csrfTokenForRequest(req);
+    if (!expected || !token) return false;
+    return safeEqualStrings(expected, token);
+  }
+
+  isCookieAuthenticatedRequest(req: Request): boolean {
+    const cookieToken = parseCookieHeader(req.headers.cookie).get(SESSION_COOKIE_NAME);
+    return Boolean(cookieToken?.startsWith(SESSION_TOKEN_PREFIX));
+  }
+
+  private csrfTokenForSessionToken(accessToken: string): string | null {
+    const sessionId = this.sessionIdFromToken(accessToken);
+    if (!sessionId || !this.getSessionFromToken(accessToken)) return null;
+    return hmac(`csrf:${sessionId}`, this.cookieSecret());
+  }
+
+  private authoritativeRoles(session: StoredSsoSession): string[] | null {
+    let roles: string[];
+    if (this.isPersonalWorkspaceMode()) {
+      if (!session.selectedWorkspaceId || !this.db.prepare<unknown[], { workspace_id: string }>(`
+        SELECT workspace_id
+        FROM sso_personal_workspaces
+        WHERE tenant_id = ? AND user_id = ? AND workspace_id = ?
+        LIMIT 1
+      `).get(session.tenantId, session.userId, session.selectedWorkspaceId)) {
+        return null;
+      }
+      roles = ['personal_workspace_owner'];
+    } else {
+      const membership = session.selectedWorkspaceId
+        ? this.db.prepare<unknown[], { role: string }>(`
+            SELECT role FROM memberships
+            WHERE tenant_id = ? AND workspace_id = ? AND user_id = ?
+            LIMIT 1
+          `).get(session.tenantId, session.selectedWorkspaceId, session.userId)
+        : undefined;
+      if (!membership) return null;
+      roles = [membership.role];
+    }
+    if (this.hasTenantAdminGrant(session.tenantId, session.userId)) roles.push('tenant_admin');
+    return [...new Set(roles.length > 0 ? roles : ['analyst'])];
+  }
+
+  private hasTenantAdminGrant(tenantId: string, userId: string): boolean {
+    return Boolean(this.db.prepare<unknown[], { user_id: string }>(`
+      SELECT user_id FROM sso_tenant_admin_grants
+      WHERE tenant_id = ? AND user_id = ?
+      LIMIT 1
+    `).get(tenantId, userId));
+  }
+
   resolveRequestIdentityFromRequest(req: Request): RequestSsoIdentity | null {
     const token = this.extractSessionToken(req);
     if (!token) return null;
-    const storedSession = this.getSessionFromToken(token);
-    const session = storedSession
-      ? this.reconcileSessionAuthorization(storedSession)
-      : null;
+    const session = this.getSessionFromToken(token);
     if (!session || !session.selectedWorkspaceId) return null;
+    const roles = this.authoritativeRoles(session);
+    if (!roles) return null;
     return {
       userId: session.userId,
       email: session.authContext.email || '',
@@ -288,8 +345,8 @@ export class EnterpriseSsoService {
       authType: 'sso',
       tenantId: session.tenantId,
       workspaceId: session.selectedWorkspaceId,
-      roles: session.authContext.roles,
-      scopes: session.authContext.scopes,
+      roles,
+      scopes: [...new Set(roles.flatMap(scopesForRole))],
     };
   }
 
@@ -299,31 +356,89 @@ export class EnterpriseSsoService {
 
   getOnboardingSessionFromRequest(req: Request): StoredSsoSession | null {
     const token = this.extractSessionToken(req);
-    const session = token ? this.getSessionFromToken(token) : null;
-    return session ? this.reconcileSessionAuthorization(session) : null;
+    return token ? this.getSessionFromToken(token) : null;
   }
 
-  getSessionSummaryFromRequest(req: Request): EnterpriseSsoSessionSummary | null {
-    const session = this.getOnboardingSessionFromRequest(req);
-    if (!session) return null;
-    const workspaces = this.listMemberships(session.tenantId, session.userId);
-    const status: EnterpriseSsoSessionSummary['status'] = session.selectedWorkspaceId
+  getSessionView(req: Request): Record<string, unknown> {
+    const token = this.extractSessionToken(req);
+    const session = token ? this.getSessionFromToken(token) : null;
+    const authMode = this.authMode;
+    const authContract = {
+      authMode,
+      loginUrl: authMode === 'oidc' ? '/api/auth/oidc/login' : null,
+      workspaceMode: authMode === 'oidc' ? 'personal_single' : 'managed',
+      managedIdentity: authMode === 'oidc',
+    };
+    if (!session) {
+      return {
+        success: true,
+        authenticated: false,
+        ...authContract,
+        status: 'unauthenticated',
+      };
+    }
+
+    const roles = session.selectedWorkspaceId
+      ? this.authoritativeRoles(session)
+      : [...(session.authContext.roles || ['analyst'])];
+    if (!roles) {
+      return {
+        success: true,
+        authenticated: false,
+        ...authContract,
+        status: 'unauthenticated',
+      };
+    }
+    const user = this.db.prepare<unknown[], {
+      email: string;
+      display_name: string | null;
+    }>(`
+      SELECT email, display_name FROM users WHERE id = ? AND tenant_id = ? LIMIT 1
+    `).get(session.userId, session.tenantId);
+    const tenant = this.db.prepare<unknown[], { id: string; name: string }>(`
+      SELECT id, name FROM organizations WHERE id = ? LIMIT 1
+    `).get(session.tenantId);
+    const workspace = session.selectedWorkspaceId
+      ? this.db.prepare<unknown[], { id: string; name: string }>(`
+          SELECT id, name FROM workspaces WHERE tenant_id = ? AND id = ? LIMIT 1
+        `).get(session.tenantId, session.selectedWorkspaceId)
+      : undefined;
+    const workspaces = this.isPersonalWorkspaceMode() && workspace
+      ? [{ workspaceId: workspace.id, name: workspace.name, role: 'personal_workspace_owner' }]
+      : this.listMemberships(session.tenantId, session.userId);
+    const status = workspace
       ? 'ready'
-      : workspaces.length > 0
-        ? 'needs_workspace_selection'
-        : 'no_workspace_membership';
+      : workspaces.length > 0 ? 'needs_workspace_selection' : 'no_workspace_membership';
+
     return {
+      success: true,
       authenticated: true,
+      ...authContract,
       status,
+      user: {
+        id: session.userId,
+        email: user?.email || session.authContext.email || '',
+        ...(user?.display_name || session.authContext.displayName
+          ? { displayName: user?.display_name || session.authContext.displayName }
+          : {}),
+      },
+      tenant: {
+        id: session.tenantId,
+        name: tenant?.name || session.tenantId,
+      },
+      workspace: workspace ? {
+        id: workspace.id,
+        name: workspace.name,
+        kind: this.isPersonalWorkspaceMode() ? 'personal' : 'managed',
+      } : null,
+      workspaces,
+      roles,
+      scopes: [...new Set(roles.flatMap(scopesForRole))],
+      expiresAt: session.expiresAt,
+      csrfToken: token ? this.csrfTokenForSessionToken(token) : null,
       tenantId: session.tenantId,
       userId: session.userId,
-      workspaceId: session.selectedWorkspaceId,
-      email: session.authContext.email,
-      displayName: session.authContext.displayName,
-      roles: session.authContext.roles,
-      scopes: session.authContext.scopes,
-      workspaces,
-      expiresAt: session.expiresAt,
+      workspaceId: workspace?.id,
     };
   }
 
@@ -332,91 +447,135 @@ export class EnterpriseSsoService {
     if (!tenantId) {
       return {
         status: 'needs_tenant_join',
-        reason: 'No tenant claim, domain mapping, or default tenant matched this SSO identity',
+        reason: 'OIDC identity did not include a valid issuer',
       };
     }
 
-    const createdUser = this.upsertTenantAndUser(tenantId, userInfo);
     const userId = this.userIdFor(userInfo);
-    if (createdUser) {
+    const transaction = this.db.transaction(() => {
+      const createdUser = this.upsertTenantAndUser(tenantId, userInfo);
+      if (createdUser) {
+        this.recordAudit({
+          tenantId,
+          actorUserId: userId,
+          action: 'user_created',
+          resourceType: 'user',
+          resourceId: userId,
+          metadata: { source: 'oidc', issuer: userInfo.issuer },
+        });
+      }
+
+      const isTenantAdmin = this.hasTenantAdminGrant(tenantId, userId);
+      const memberships = this.listMemberships(tenantId, userId);
+      const personalMode = this.isPersonalWorkspaceMode();
+      const selectedWorkspace = personalMode
+        ? this.ensurePersonalWorkspace(tenantId, userId, userInfo)
+        : this.resolveSelectedWorkspace(userInfo, memberships);
+      const baseRoles = personalMode
+        ? (selectedWorkspace ? ['personal_workspace_owner'] : [])
+        : (selectedWorkspace ? [selectedWorkspace.role] : []);
+      const roles = [
+        ...baseRoles,
+        ...(isTenantAdmin ? ['tenant_admin'] : []),
+      ];
+      const effectiveRoles = roles.length > 0 ? roles : ['analyst'];
+      const scopes = [...new Set(effectiveRoles.flatMap(scopesForRole))];
+      const session = this.createSsoSession({
+        tenantId,
+        userId,
+        selectedWorkspaceId: selectedWorkspace?.workspaceId,
+        roles: effectiveRoles,
+        scopes,
+        email: userInfo.email,
+        displayName: userInfo.displayName,
+      });
+
       this.recordAudit({
         tenantId,
+        workspaceId: selectedWorkspace?.workspaceId,
         actorUserId: userId,
-        action: 'user_created',
-        resourceType: 'user',
-        resourceId: userId,
-        metadata: { source: 'oidc', issuer: userInfo.issuer },
+        action: 'sso_login',
+        resourceType: 'sso_session',
+        resourceId: session.sessionId,
+        metadata: { issuer: userInfo.issuer, subjectHash: this.subjectHash(userInfo) },
       });
-    }
 
-    const memberships = this.listMemberships(tenantId, userId);
-    const selectedWorkspace = this.resolveSelectedWorkspace(userInfo, memberships);
-    const roles = selectedWorkspace
-      ? [selectedWorkspace.role]
-      : ['analyst'];
-    const scopes = [...new Set(roles.flatMap(scopesForRole))];
-    const session = this.createSsoSession({
-      tenantId,
-      userId,
-      selectedWorkspaceId: selectedWorkspace?.workspaceId,
-      roles,
-      scopes,
-      email: userInfo.email,
-      displayName: userInfo.displayName,
-    });
+      if (!selectedWorkspace && memberships.length === 0) {
+        return {
+          status: 'no_workspace_membership' as const,
+          accessToken: session.accessToken,
+          sessionId: session.sessionId,
+          tenantId,
+          userId,
+          expiresAt: session.expiresAt,
+          workspaces: [],
+          roles: effectiveRoles,
+          scopes,
+          csrfToken: this.csrfTokenForSessionToken(session.accessToken) || undefined,
+        };
+      }
+      if (!selectedWorkspace) {
+        return {
+          status: 'needs_workspace_selection' as const,
+          accessToken: session.accessToken,
+          sessionId: session.sessionId,
+          tenantId,
+          userId,
+          expiresAt: session.expiresAt,
+          workspaces: memberships,
+          roles: effectiveRoles,
+          scopes,
+          csrfToken: this.csrfTokenForSessionToken(session.accessToken) || undefined,
+        };
+      }
 
-    this.recordAudit({
-      tenantId,
-      workspaceId: selectedWorkspace?.workspaceId,
-      actorUserId: userId,
-      action: 'sso_login',
-      resourceType: 'sso_session',
-      resourceId: session.sessionId,
-      metadata: { issuer: userInfo.issuer, subjectHash: this.subjectHash(userInfo) },
-    });
-
-    if (!selectedWorkspace && memberships.length === 0) {
+      this.auditWorkspaceReady(tenantId, userId, selectedWorkspace.workspaceId, session.sessionId, true);
       return {
-        status: 'no_workspace_membership',
+        status: 'ready' as const,
         accessToken: session.accessToken,
         sessionId: session.sessionId,
         tenantId,
         userId,
+        workspaceId: selectedWorkspace.workspaceId,
         expiresAt: session.expiresAt,
-        workspaces: [],
+        workspaces: [selectedWorkspace],
+        roles: effectiveRoles,
+        scopes,
+        csrfToken: this.csrfTokenForSessionToken(session.accessToken) || undefined,
+        user: {
+          id: userId,
+          email: userInfo.email || `${userId}@sso.local`,
+          ...(userInfo.displayName ? { displayName: userInfo.displayName } : {}),
+        },
+        tenant: { id: tenantId, name: tenantId },
+        workspace: {
+          id: selectedWorkspace.workspaceId,
+          name: selectedWorkspace.name,
+          kind: 'personal' as const,
+        },
       };
-    }
-    if (!selectedWorkspace) {
-      return {
-        status: 'needs_workspace_selection',
-        accessToken: session.accessToken,
-        sessionId: session.sessionId,
-        tenantId,
-        userId,
-        expiresAt: session.expiresAt,
-        workspaces: memberships,
-      };
-    }
-
-    this.auditWorkspaceReady(tenantId, userId, selectedWorkspace.workspaceId, session.sessionId, true);
-    return {
-      status: 'ready',
-      accessToken: session.accessToken,
-      sessionId: session.sessionId,
-      tenantId,
-      userId,
-      workspaceId: selectedWorkspace.workspaceId,
-      expiresAt: session.expiresAt,
-      workspaces: memberships,
-    };
+    });
+    return transaction();
   }
 
   selectWorkspace(accessToken: string, workspaceIdInput: string): OnboardingResult {
-    const workspaceId = sanitizeId(workspaceIdInput);
     const session = this.getSessionFromToken(accessToken);
     if (!session) {
       return { status: 'needs_tenant_join', reason: 'SSO session is missing or expired' };
     }
+    if (this.isPersonalWorkspaceMode()) {
+      return {
+        status: 'ready',
+        accessToken,
+        sessionId: session.id,
+        tenantId: session.tenantId,
+        userId: session.userId,
+        workspaceId: session.selectedWorkspaceId,
+        expiresAt: session.expiresAt,
+        reason: 'OIDC personal workspace is assigned by the server and cannot be changed',
+      };
+    }
+    const workspaceId = sanitizeId(workspaceIdInput);
     const membership = this.listMemberships(session.tenantId, session.userId)
       .find(item => item.workspaceId === workspaceId);
     if (!membership) {
@@ -432,8 +591,11 @@ export class EnterpriseSsoService {
       };
     }
 
-    const roles = [membership.role];
-    const scopes = scopesForRole(membership.role);
+    const roles = [
+      membership.role,
+      ...(this.hasTenantAdminGrant(session.tenantId, session.userId) ? ['tenant_admin'] : []),
+    ];
+    const scopes = [...new Set(roles.flatMap(scopesForRole))];
     this.db.prepare(`
       UPDATE sso_sessions
       SET selected_workspace_id = ?, workspace_id = ?, auth_context_json = ?
@@ -583,41 +745,117 @@ export class EnterpriseSsoService {
     }
   }
 
-  private cookieSecret(): string {
-    const configured = process.env.SMARTPERFETTO_SSO_COOKIE_SECRET
-      || process.env.SMARTPERFETTO_API_KEY;
-    if (configured && configured.length >= 16) return configured;
-    if (resolveFeatureConfig(process.env).enterprise) {
-      throw new Error('SMARTPERFETTO_SSO_COOKIE_SECRET must be set for enterprise SSO');
-    }
-    return 'dev-only-smartperfetto-sso-cookie-secret';
+  private cookieSecret(): Buffer {
+    return deriveServerSecret({purpose: 'browser-session', minimumBytes: 16});
   }
 
   private sessionTtlMs(): number {
-    const parsed = Number.parseInt(process.env.SMARTPERFETTO_SSO_SESSION_TTL_MS || '', 10);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SESSION_TTL_MS;
+    return SESSION_TTL_MS;
+  }
+
+  private isPersonalWorkspaceMode(): boolean {
+    return resolveAuthConfig(process.env).oidcEnabled;
+  }
+
+  private ensurePersonalWorkspace(
+    tenantId: string,
+    userId: string,
+    userInfo: EnterpriseOidcUserInfo,
+  ): WorkspaceMembership {
+    const existing = this.db.prepare<unknown[], {
+      workspace_id: string;
+      name: string;
+    }>(`
+      SELECT p.workspace_id, w.name
+      FROM sso_personal_workspaces p
+      JOIN workspaces w
+        ON w.tenant_id = p.tenant_id AND w.id = p.workspace_id
+      WHERE p.tenant_id = ? AND p.user_id = ?
+      LIMIT 1
+    `).get(tenantId, userId);
+    if (existing) {
+      this.db.prepare(`
+        INSERT INTO memberships(tenant_id, workspace_id, user_id, role, created_at)
+        VALUES (?, ?, ?, 'workspace_admin', ?)
+        ON CONFLICT(tenant_id, workspace_id, user_id) DO UPDATE SET role = 'workspace_admin'
+      `).run(tenantId, existing.workspace_id, userId, nowMs());
+      return { workspaceId: existing.workspace_id, name: existing.name, role: 'workspace_admin' };
+    }
+
+    let workspaceId = `sso-personal-${userId}`;
+    const now = nowMs();
+    const workspaceInsert = this.db.prepare(`
+      INSERT INTO workspaces
+        (id, tenant_id, name, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING
+    `).run(workspaceId, tenantId, PERSONAL_WORKSPACE_NAME, now, now);
+    if (workspaceInsert.changes === 0) {
+      workspaceId = `sso-personal-${crypto.randomUUID()}`;
+      this.db.prepare(`
+        INSERT INTO workspaces
+          (id, tenant_id, name, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(workspaceId, tenantId, PERSONAL_WORKSPACE_NAME, now, now);
+    }
+    const mappingInsert = this.db.prepare(`
+      INSERT INTO sso_personal_workspaces(tenant_id, user_id, workspace_id, created_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(tenant_id, user_id) DO NOTHING
+    `).run(tenantId, userId, workspaceId, now);
+    const selectedWorkspace = this.db.prepare<unknown[], {
+      workspace_id: string;
+      name: string;
+    }>(`
+      SELECT p.workspace_id, w.name
+      FROM sso_personal_workspaces p
+      JOIN workspaces w
+        ON w.tenant_id = p.tenant_id AND w.id = p.workspace_id
+      WHERE p.tenant_id = ? AND p.user_id = ?
+      LIMIT 1
+    `).get(tenantId, userId);
+    if (!selectedWorkspace) {
+      throw new Error('Failed to create the OIDC personal workspace');
+    }
+    this.db.prepare(`
+      INSERT INTO memberships(tenant_id, workspace_id, user_id, role, created_at)
+      VALUES (?, ?, ?, 'workspace_admin', ?)
+      ON CONFLICT(tenant_id, workspace_id, user_id) DO UPDATE SET role = 'workspace_admin'
+    `).run(tenantId, selectedWorkspace.workspace_id, userId, now);
+    if (mappingInsert.changes > 0) {
+      this.recordAudit({
+        tenantId,
+        workspaceId: selectedWorkspace.workspace_id,
+        actorUserId: userId,
+        action: 'personal_workspace_created',
+        resourceType: 'workspace',
+        resourceId: selectedWorkspace.workspace_id,
+        metadata: {
+          source: 'oidc',
+          issuer: userInfo.issuer,
+        },
+      });
+    }
+    return {
+      workspaceId: selectedWorkspace.workspace_id,
+      name: selectedWorkspace.name,
+      role: 'workspace_admin',
+    };
   }
 
   private resolveTenantId(userInfo: EnterpriseOidcUserInfo): string | null {
-    const claimTenant = sanitizeId(claimString(userInfo, [
-      'smartperfetto_tenant_id',
-      'tenant_id',
-      'https://smartperfetto.dev/tenant_id',
-    ]));
-    if (claimTenant) return claimTenant;
-
-    // EnterpriseOidcClient deliberately suppresses an unverified email.
-    // Never fall back to the raw claim here or domain mapping would bypass
-    // SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL.
-    const email = userInfo.email;
-    const domain = email?.split('@')[1]?.toLowerCase();
-    if (domain) {
-      const mappedTenant = parseDomainTenantMap(process.env.SMARTPERFETTO_OIDC_EMAIL_DOMAIN_MAP).get(domain);
-      if (mappedTenant) return mappedTenant;
+    if (!resolveAuthConfig(process.env).oidcEnabled) {
+      const claimTenant = sanitizeId(claimString(userInfo, [
+        'smartperfetto_tenant_id',
+        'tenant_id',
+        'https://smartperfetto.dev/tenant_id',
+      ]));
+      if (claimTenant) return claimTenant;
     }
-
-    const defaultTenant = sanitizeId(process.env.SMARTPERFETTO_OIDC_DEFAULT_TENANT_ID);
-    return defaultTenant || null;
+    const issuer = safeString(userInfo.issuer)?.replace(/\/+$/, '');
+    if (!issuer) return null;
+    const issuerHash = crypto.createHash('sha256').update(issuer).digest('hex').slice(0, 32);
+    return `oidc-${issuerHash}`;
   }
 
   private userIdFor(userInfo: EnterpriseOidcUserInfo): string {
@@ -638,7 +876,13 @@ export class EnterpriseSsoService {
   }
 
   private upsertTenantAndUser(tenantId: string, userInfo: EnterpriseOidcUserInfo): boolean {
-    const existing = this.db.prepare('SELECT id FROM users WHERE id = ?').get(this.userIdFor(userInfo));
+    const userId = this.userIdFor(userInfo);
+    const existing = this.db.prepare<unknown[], { id: string; tenant_id: string }>(
+      'SELECT id, tenant_id FROM users WHERE id = ?',
+    ).get(userId);
+    if (existing && existing.tenant_id !== tenantId) {
+      throw new Error('OIDC subject is already bound to a different tenant');
+    }
     const now = nowMs();
     this.db.prepare(`
       INSERT OR IGNORE INTO organizations (id, name, status, plan, created_at, updated_at)
@@ -653,7 +897,7 @@ export class EnterpriseSsoService {
         idp_subject = excluded.idp_subject,
         updated_at = excluded.updated_at
     `).run(
-      this.userIdFor(userInfo),
+      userId,
       tenantId,
       userInfo.email || `${this.userIdFor(userInfo)}@sso.local`,
       userInfo.displayName || userInfo.email || this.userIdFor(userInfo),
@@ -695,63 +939,6 @@ export class EnterpriseSsoService {
       return memberships.find(item => item.workspaceId === claimWorkspace) || null;
     }
     return memberships.length === 1 ? memberships[0] : null;
-  }
-
-  private reconcileSessionAuthorization(
-    session: StoredSsoSession,
-  ): StoredSsoSession {
-    if (!session.selectedWorkspaceId) return session;
-
-    const membership = this.db.prepare<unknown[], { role: string }>(`
-      SELECT role
-      FROM memberships
-      WHERE tenant_id = ? AND workspace_id = ? AND user_id = ?
-    `).get(
-      session.tenantId,
-      session.selectedWorkspaceId,
-      session.userId,
-    );
-    if (!membership) {
-      const authContext = {
-        ...session.authContext,
-        roles: [],
-        scopes: [],
-      };
-      this.db.prepare(`
-        UPDATE sso_sessions
-        SET selected_workspace_id = NULL, workspace_id = NULL, auth_context_json = ?
-        WHERE id = ?
-      `).run(JSON.stringify(authContext), session.id);
-      return {
-        ...session,
-        workspaceId: undefined,
-        selectedWorkspaceId: undefined,
-        authContext,
-      };
-    }
-
-    const roles = [membership.role];
-    const scopes = scopesForRole(membership.role);
-    if (
-      session.authContext.roles.join('\u0000') === roles.join('\u0000')
-      && session.authContext.scopes.join('\u0000') === scopes.join('\u0000')
-    ) {
-      return session;
-    }
-    const authContext = {
-      ...session.authContext,
-      roles,
-      scopes,
-    };
-    this.db.prepare(`
-      UPDATE sso_sessions
-      SET auth_context_json = ?
-      WHERE id = ?
-    `).run(JSON.stringify(authContext), session.id);
-    return {
-      ...session,
-      authContext,
-    };
   }
 
   private auditWorkspaceReady(

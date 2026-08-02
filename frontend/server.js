@@ -34,6 +34,13 @@ const DEFAULT_SHUTDOWN_POLL_INTERVAL_MS = 100;
 const DEFAULT_SHUTDOWN_DEADLINE_MS = 5_000;
 const liveReloadResponsesByServer = new WeakMap();
 const socketsByServer = new WeakMap();
+const RUNTIME_ENV_FILE_KEYS = [
+  'SMARTPERFETTO_BACKEND_PUBLIC_URL',
+  'SMARTPERFETTO_BACKEND_URL',
+  'SMARTPERFETTO_OIDC_ISSUER_URL',
+  'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_REDIRECT_URI',
+];
 
 const MIME_TYPES = {
   '.html': 'text/html',
@@ -64,6 +71,27 @@ function safePort(value, fallback) {
   return Number.isInteger(parsed) && parsed >= 1 && parsed <= 65535
     ? String(parsed)
     : fallback;
+}
+
+function parseRuntimeEnvFile(content) {
+  const parsed = {};
+  for (const sourceLine of content.split(/\r?\n/)) {
+    const line = sourceLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const separator = line.indexOf('=');
+    if (separator <= 0) continue;
+    const key = line.slice(0, separator).trim().replace(/^export\s+/, '');
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue;
+    let value = line.slice(separator + 1).trim();
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, '').trim();
+    }
+    parsed[key] = value;
+  }
+  return parsed;
 }
 
 function resolveBindHost(value) {
@@ -114,16 +142,61 @@ function resolveStaticRequest(rawUrl, distDir = DIST_DIR) {
   return {filePath, urlPath};
 }
 
-function runtimeConfigScript() {
-  const backendUrl = (
-    process.env.SMARTPERFETTO_BACKEND_PUBLIC_URL ||
-    process.env.SMARTPERFETTO_BACKEND_URL ||
-    ''
-  ).trim();
+function runtimeEnvFileValues(distDir) {
+  const values = {};
+  const explicitEnvFile = process.env.SMARTPERFETTO_ENV_FILE;
+  const candidates = explicitEnvFile
+    ? [explicitEnvFile]
+    : [
+      path.resolve(distDir, '../backend/.env'),
+      path.resolve(distDir, '../.env'),
+    ];
+  for (const candidate of candidates) {
+    let parsed;
+    try {
+      parsed = parseRuntimeEnvFile(fs.readFileSync(candidate, 'utf8'));
+    } catch {
+      continue;
+    }
+    for (const key of RUNTIME_ENV_FILE_KEYS) {
+      if (values[key] === undefined && parsed[key] !== undefined) {
+        values[key] = parsed[key];
+      }
+    }
+  }
+  return values;
+}
+
+function runtimeConfig(distDir = DIST_DIR) {
+  const fileEnv = runtimeEnvFileValues(distDir);
+  const oidcEnvValue = (key) => process.env[key] ?? fileEnv[key] ?? '';
   const externalIssueUrl = (
     process.env.SMARTPERFETTO_EXTERNAL_ISSUE_URL || ''
   ).trim();
-  const config = {
+  const oidcEnabled = [
+    oidcEnvValue('SMARTPERFETTO_OIDC_ISSUER_URL'),
+    oidcEnvValue('SMARTPERFETTO_OIDC_CLIENT_ID'),
+    oidcEnvValue('SMARTPERFETTO_OIDC_REDIRECT_URI'),
+  ].some((value) => value.trim().length > 0);
+  let backendUrl = (
+    process.env.SMARTPERFETTO_BACKEND_PUBLIC_URL ||
+    process.env.SMARTPERFETTO_BACKEND_URL ||
+    (oidcEnabled
+      ? fileEnv.SMARTPERFETTO_BACKEND_PUBLIC_URL ||
+        fileEnv.SMARTPERFETTO_BACKEND_URL
+      : '') ||
+    ''
+  ).trim();
+  if (!backendUrl && oidcEnabled) {
+    try {
+      backendUrl = new URL(
+        oidcEnvValue('SMARTPERFETTO_OIDC_REDIRECT_URI'),
+      ).origin;
+    } catch {
+      backendUrl = '';
+    }
+  }
+  return {
     backendPort: safePort(
       process.env.SMARTPERFETTO_BACKEND_PUBLIC_PORT ||
       process.env.SMARTPERFETTO_BACKEND_PORT,
@@ -134,9 +207,14 @@ function runtimeConfigScript() {
       process.env.PORT,
       '10000',
     ),
+    ...(oidcEnabled ? {authProbeRequired: true, oidcEnabled: true} : {}),
     ...(backendUrl ? {backendUrl} : {}),
     ...(externalIssueUrl ? {externalIssueUrl} : {}),
   };
+}
+
+function runtimeConfigScript(distDir = DIST_DIR) {
+  const config = runtimeConfig(distDir);
   const serialized = JSON.stringify(config)
     .replace(/</g, '\\u003c')
     .replace(/\u2028/g, '\\u2028')
@@ -144,10 +222,10 @@ function runtimeConfigScript() {
   return `<script>window.__SMARTPERFETTO_CONFIG__=${serialized};</script>`;
 }
 
-function injectRuntimeConfig(filePath, data) {
+function injectRuntimeConfig(filePath, data, distDir = DIST_DIR) {
   if (path.basename(filePath) !== 'index.html') return data;
   const html = data.toString('utf8');
-  const script = runtimeConfigScript();
+  const script = runtimeConfigScript(distDir);
   const marker = '</head>';
   if (html.includes(marker)) {
     return Buffer.from(html.replace(marker, `${script}\n${marker}`));
@@ -317,8 +395,13 @@ function createFrontendServer(distDir = DIST_DIR) {
           res.end('Not found');
           return;
         }
-        const body = injectRuntimeConfig(result.realPath, result.data);
-        res.writeHead(200, {'Content-Type': getMime(result.realPath)});
+        const body = injectRuntimeConfig(result.realPath, result.data, root);
+        const isIndex = path.basename(result.realPath) === 'index.html';
+        const oidcIndex = isIndex && runtimeConfig(root).oidcEnabled;
+        res.writeHead(200, {
+          'Content-Type': getMime(result.realPath),
+          ...(oidcIndex ? {'Cache-Control': 'no-store'} : {}),
+        });
         res.end(body);
       });
     };

@@ -394,7 +394,8 @@ SMARTPERFETTO_BACKEND_PORT=3000
 SMARTPERFETTO_FRONTEND_PORT=10000
 PORT=3000
 NODE_ENV=development
-FRONTEND_URL=http://localhost:10000
+# Set only when the browser-visible origin differs from the local port:
+# FRONTEND_URL=https://smartperfetto.example.com
 # For reverse proxies, HTTPS, or custom Docker host ports:
 # SMARTPERFETTO_BACKEND_PUBLIC_URL=http://localhost:3000
 # Optional HTTPS issue-new endpoint for a self-hosted fork; never auto-submits.
@@ -409,8 +410,11 @@ Default local ports:
 
 Use `SMARTPERFETTO_BACKEND_PORT` for the backend port. `PORT` remains a
 compatibility fallback for Node/Docker/PaaS environments. Use
-`SMARTPERFETTO_FRONTEND_PORT` for the Perfetto UI server. When the browser
-cannot infer the backend address, set `SMARTPERFETTO_BACKEND_PUBLIC_URL`.
+`SMARTPERFETTO_FRONTEND_PORT` for the Perfetto UI server. Source launchers
+derive the local `FRONTEND_URL` from that port, so it does not need to be
+configured twice. Set `FRONTEND_URL` only when the browser-visible frontend
+origin differs, such as HTTPS or a reverse proxy. When the browser cannot infer
+the backend address, set `SMARTPERFETTO_BACKEND_PUBLIC_URL`.
 
 ## API Authentication
 
@@ -431,63 +435,70 @@ Protected APIs then require:
 Authorization: Bearer <SMARTPERFETTO_API_KEY>
 ```
 
-## Enterprise OIDC Sign-In
+## OIDC Browser Login
 
-Browser SSO uses the OIDC Authorization Code Flow with PKCE S256, `state`, and
-`nonce`. The backend discovers provider metadata and validates the ID Token
-signature, issuer, audience, expiry, and nonce before creating a SmartPerfetto
-session. The session exists only in a HttpOnly cookie; it is never written to
-`localStorage` or exposed in browser JSON responses.
+OIDC mode turns the Web UI into an authentication gate. Startup first requests
+`GET /api/auth/session`; the Perfetto application bundle loads only when the
+session is `ready`. Otherwise the page shows only the OIDC login state. The
+backend exchanges the authorization code, validates state, PKCE, nonce, JWT
+signature, issuer, and audience, writes an `HttpOnly` session cookie, and
+redirects to `FRONTEND_URL`. Browser API requests include the cookie, and
+mutations also send the CSRF token returned by the session endpoint.
 
-Register the callback URI with the identity provider, then configure:
+Without OIDC configuration, this gate is disabled and the frontend does not
+probe an authentication session before starting Perfetto. The original
+local/static startup behavior remains available even when the AI backend is
+temporarily unavailable.
 
 ```bash
-SMARTPERFETTO_ENTERPRISE=true
-SMARTPERFETTO_SSO_COOKIE_SECRET=replace_with_at_least_32_random_bytes
-SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.com
+SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.com/application/o/smartperfetto/
 SMARTPERFETTO_OIDC_CLIENT_ID=smartperfetto
 SMARTPERFETTO_OIDC_CLIENT_SECRET=replace_with_oidc_client_secret
-SMARTPERFETTO_OIDC_REDIRECT_URI=https://backend.example.com/api/auth/oidc/callback
-SMARTPERFETTO_OIDC_SCOPES=openid email profile
-SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD=client_secret_post
-CORS_ORIGINS=https://perfetto.example.com
-
-# Use either or both to map a validated identity to an existing tenant:
-SMARTPERFETTO_OIDC_EMAIL_DOMAIN_MAP=example.com=tenant-a
-# SMARTPERFETTO_OIDC_DEFAULT_TENANT_ID=tenant-a
+SMARTPERFETTO_OIDC_REDIRECT_URI=https://smartperfetto.example.com/api/auth/oidc/callback
+SMARTPERFETTO_SERVER_SECRET=replace_with_at_least_32_random_bytes
+FRONTEND_URL=https://smartperfetto.example.com
 ```
 
-`SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD` supports `client_secret_post`,
-`client_secret_basic`, and public-client `none`. Issuers must use HTTPS by
-default. `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` is only for a local test
-provider. Domain mapping uses only email with `email_verified=true` by default.
-If a controlled provider does not publish that claim, explicitly set
-`SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL=false` and use a tenant claim or
-default tenant to control admission.
+Supplying any of the four OIDC values enables OIDC mode. A partial set makes
+startup fail closed instead of falling back to a local identity.
+`SMARTPERFETTO_SERVER_SECRET` is a separate server-side signing root of at
+least 32 bytes and must not reuse the OIDC client secret. Sessions are fixed at
+eight hours with `SameSite=Lax`; HTTPS automatically enables Secure cookies,
+and scopes are fixed at `openid email profile`.
 
-`CORS_ORIGINS` must list the browser frontend's exact origin (scheme, host, and
-port); wildcards and paths are not accepted. The login popup can report only to
-an allowlisted return origin. An HTTPS callback enables Secure cookies by
-default. Set `SMARTPERFETTO_SSO_COOKIE_SAME_SITE=none` only for a genuinely
-cross-site frontend and also set `SMARTPERFETTO_SSO_COOKIE_SECURE=true`.
-Same-site or reverse-proxy deployments should keep the `lax` default.
+For local split-port testing through `./start.sh` or `./scripts/start-dev.sh`,
+set only `SMARTPERFETTO_FRONTEND_PORT`; the launcher derives `FRONTEND_URL`.
+The explicit `FRONTEND_URL` above is for domain or reverse-proxy deployments,
+not a second copy of the local port setting.
 
-Sign-in establishes identity and a local session; it does not grant workspace
-access. The user must already have a durable workspace role in `memberships`.
-That role is authoritative, and IdP `roles/groups` cannot override it. Open
-**AI Assistant → Settings → Backend Connection** to sign in and choose a
-workspace. Sign-out revokes the SmartPerfetto session only; it does not end the
-identity provider's global session.
+For one issuer, the backend creates exactly one managed personal workspace per
+OIDC subject. Different users may have the same workspace display name, but
+their user IDs, workspace IDs, memberships, and data scopes remain separate.
+The OIDC frontend does not let users change the workspace, backend URL, or API
+key. Tenant identity is derived only from the normalized issuer and cannot be
+overridden by a user claim. Built-in OIDC cannot be combined with
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` or the legacy
+`SMARTPERFETTO_API_KEY`.
+OIDC automatically uses the scoped database as the only read and write
+authority. No enterprise migration phase is required, and OIDC rejects the
+`legacy` and `dual-write` modes that do not preserve user-level isolation.
 
-Acceptance order:
-
-1. `GET /api/auth/config` returns `oidc.enabled: true`.
-2. After the settings popup returns, `GET /api/auth/session` returns the
-   validated user and workspace choices.
-3. Switching workspace isolates the AI session, transient Trace state, and
-   local storage namespace.
-4. After sign-out, `/api/auth/session` returns `authenticated: false` and
-   protected APIs return `401`.
+Production mode requires HTTPS for the issuer, callback, and frontend URL and
+uses Secure cookies by default. Only controlled test deployments may explicitly
+set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`; this permits plaintext HTTP
+and disables Secure cookies by default, so it must not be used on an untrusted
+network. `FRONTEND_URL` must be the browser-visible frontend origin, and
+must not be a container-internal address. The frontend URL and OIDC callback
+must use the same scheme and hostname; their ports may differ. By default the
+frontend derives the backend address from the callback origin, so
+`SMARTPERFETTO_BACKEND_PUBLIC_URL` is not required. Set it only when a reverse
+proxy exposes the backend under a path prefix or another base URL that cannot
+be derived from the origin; its scheme, hostname, and path prefix must match
+the callback. This supports split frontend and backend ports on one server
+while ensuring the browser sends the `SameSite=Lax` session cookie. OIDC
+deployments must use SmartPerfetto's dynamic frontend server or an equivalent
+reverse proxy that injects runtime config; do not publish `frontend/` as a
+backend-unaware static directory.
 
 ## Uploads and Trace Processor
 

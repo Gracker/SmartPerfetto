@@ -108,40 +108,287 @@ Technical Information:
       window.onerror = errHandler;
       window.onunhandledrejection = errHandler;
 
-      const versionStr = document.body.dataset['perfetto_version'] || '{}';
-      const versionMap = JSON.parse(versionStr);
-      const channel = localStorage.getItem('perfettoUiChannel') || 'stable';
-
-      // The '.' below is a fallback for the case of opening a pinned version
-      // (e.g., ui.perfetto.dev/v1.2.3./). In that case, the index.html has no
-      // valid version map; we want to load the frontend from the same
-      // sub-directory directory, hence ./frontend_bundle.js.
-      const version = versionMap[channel] || versionMap['stable'] || '.';
-
-      // Preloading reduce latency of key assets requires for drawing the app.
-      // We need to strike a balance here to avoid kicking off too many
-      // concurrent requests and slowing down everything.
-      // Note: Fonts (and only fonts) require "crossorigin" as per
-      // https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Attributes/rel/preload.
-      const fontAttrs = {crossOrigin: '', as: 'font', type: 'font/woff2'}
-      const assetsPreload = {
-        '/frontend.css': {as: 'style'},
-        '/assets/MaterialSymbolsOutlined.woff2': fontAttrs,
-        '/assets/Roboto.woff2': fontAttrs,
-      };
-      for (const [preloadPath, preloadAttrs] of Object.entries(assetsPreload)) {
-        const preloadLink = document.createElement('link');
-        preloadLink.rel = 'preload';
-        preloadLink.href = version + preloadPath;
-        Object.assign(preloadLink, preloadAttrs);
-        document.head.append(preloadLink);
+      let runtimeConfig = {};
+      try {
+        runtimeConfig = window.__SMARTPERFETTO_CONFIG__ || {};
+      } catch (_) {
+        // Keep the local, non-OIDC startup path usable if runtime config is unavailable.
       }
 
-      const script = document.createElement('script');
-      script.async = true;
-      script.src = version + '/frontend_bundle.js';
-      script.onerror = () => errHandler(`Failed to load ${script.src}`);
-      document.head.append(script);
+      function resolveBackendUrl() {
+        const configured = typeof runtimeConfig.backendUrl === 'string'
+          ? runtimeConfig.backendUrl.trim().replace(/\/+$/, '')
+          : '';
+        if (configured) {
+          try {
+            const parsed = new URL(configured);
+            if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+              return configured;
+            }
+          } catch (_) {
+            // Fall through to the existing port-based runtime resolution.
+          }
+        }
+        const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+        const port = String(runtimeConfig.backendPort || '3000').trim();
+        if (!/^\d+$/.test(port)) return '';
+        return `${protocol}//${window.location.hostname}:${port}`;
+      }
+
+      function currentReturnTo() {
+        return `${window.location.pathname}${window.location.search}${window.location.hash}` || '/';
+      }
+
+      function buildOidcLoginUrl(backendUrl) {
+        try {
+          const loginUrl = new URL(`${backendUrl}/api/auth/oidc/login`);
+          loginUrl.searchParams.set('returnTo', currentReturnTo());
+          return loginUrl.toString();
+        } catch (_) {
+          return '';
+        }
+      }
+
+      function setOidcRuntimeMode(enabled) {
+        runtimeConfig.oidcEnabled = enabled;
+        try {
+          window.__SMARTPERFETTO_CONFIG__ = runtimeConfig;
+        } catch (_) {
+          // The backend remains authoritative even if the runtime object is frozen.
+        }
+      }
+
+      function renderGate(title, message, action) {
+        document.title = title;
+        document.body.innerHTML = '';
+        const main = document.createElement('main');
+        main.style.cssText = [
+          'box-sizing:border-box',
+          'min-height:100vh',
+          'display:flex',
+          'align-items:center',
+          'justify-content:center',
+          'padding:24px',
+          'background:#f4f6f8',
+          'font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+          'color:#253142',
+        ].join(';');
+
+        const content = document.createElement('section');
+        content.style.cssText = [
+          'box-sizing:border-box',
+          'width:min(100%,440px)',
+          'padding:32px',
+          'background:#fff',
+          'border:1px solid #d9e0e7',
+          'border-radius:8px',
+          'box-shadow:0 8px 24px rgba(30,48,70,.08)',
+        ].join(';');
+        const heading = document.createElement('h1');
+        heading.textContent = title;
+        heading.style.cssText = 'margin:0 0 12px;font-size:24px;line-height:1.25;';
+        const detail = document.createElement('p');
+        detail.textContent = message;
+        detail.style.cssText = 'margin:0;color:#536273;line-height:1.6;';
+        content.append(heading, detail);
+        if (action) {
+          const button = document.createElement('a');
+          button.href = action.href;
+          button.textContent = action.label;
+          button.style.cssText = [
+            'display:inline-block',
+            'margin-top:24px',
+            'padding:10px 16px',
+            'border-radius:6px',
+            'background:#2f67c8',
+            'color:#fff',
+            'text-decoration:none',
+            'font-weight:600',
+          ].join(';');
+          content.append(button);
+        }
+        main.append(content);
+        document.body.append(main);
+      }
+
+      async function disableOidcServiceWorkerCache() {
+        const hasServiceWorker = 'serviceWorker' in navigator;
+        const hasCacheStorage = 'caches' in window;
+        if (!hasServiceWorker && !hasCacheStorage) return true;
+        if (hasServiceWorker && !hasCacheStorage) return false;
+        try {
+          if (hasCacheStorage) {
+            // This is the same marker used by Perfetto's ServiceWorkerController.
+            await caches.open('BYPASS_SERVICE_WORKER');
+            await caches.delete('ui-perfetto-dev');
+          }
+          if (hasServiceWorker) {
+            const registrations = await navigator.serviceWorker.getRegistrations();
+            await Promise.all(registrations.map((registration) => registration.unregister()));
+          }
+          return true;
+        } catch (error) {
+          console.error(
+            '[SmartPerfetto] Could not disable the Service Worker cache for OIDC:',
+            error,
+          );
+          return false;
+        }
+      }
+
+      function loadPerfettoBundle() {
+        const versionStr = document.body.dataset['perfetto_version'] || '{}';
+        const versionMap = JSON.parse(versionStr);
+        const channel = localStorage.getItem('perfettoUiChannel') || 'stable';
+
+        // The '.' below is a fallback for the case of opening a pinned version
+        // (e.g., ui.perfetto.dev/v1.2.3./). In that case, the index.html has no
+        // valid version map; we want to load the frontend from the same
+        // sub-directory directory, hence ./frontend_bundle.js.
+        const version = versionMap[channel] || versionMap['stable'] || '.';
+
+        // Preload only after the OIDC session is ready. This keeps the complete
+        // Perfetto UI out of the unauthenticated page.
+        const fontAttrs = {crossOrigin: '', as: 'font', type: 'font/woff2'};
+        const assetsPreload = {
+          '/frontend.css': {as: 'style'},
+          '/assets/MaterialSymbolsOutlined.woff2': fontAttrs,
+          '/assets/Roboto.woff2': fontAttrs,
+        };
+        for (const [preloadPath, preloadAttrs] of Object.entries(assetsPreload)) {
+          const preloadLink = document.createElement('link');
+          preloadLink.rel = 'preload';
+          preloadLink.href = version + preloadPath;
+          Object.assign(preloadLink, preloadAttrs);
+          document.head.append(preloadLink);
+        }
+
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = version + '/frontend_bundle.js';
+        script.onerror = () => errHandler(`Failed to load ${script.src}`);
+        document.head.append(script);
+      }
+
+      async function checkOidcSession(backendUrl) {
+        const controller = typeof AbortController === 'function'
+          ? new AbortController()
+          : undefined;
+        const timeout = controller ? window.setTimeout(() => controller.abort(), 8000) : undefined;
+        try {
+          const response = await fetch(`${backendUrl}/api/auth/session`, {
+            credentials: 'include',
+            cache: 'no-store',
+            headers: {Accept: 'application/json'},
+            ...(controller ? {signal: controller.signal} : {}),
+          });
+          if (!response.ok) return {kind: 'backend-error'};
+          let session;
+          try {
+            session = await response.json();
+          } catch (_) {
+            return {kind: 'backend-error'};
+          }
+          const authMode = typeof session?.authMode === 'string'
+            ? session.authMode
+            : runtimeConfig.oidcEnabled === true ? 'oidc' : 'local';
+          if (authMode !== 'oidc') return {kind: 'local'};
+          if (session && session.authenticated === true && session.status === 'ready') {
+            if (!session.user?.id || !session.tenant?.id || !session.workspace?.id) {
+              return {kind: 'backend-error'};
+            }
+            return {kind: 'ready', session};
+          }
+          if (session && session.authenticated === true) {
+            return {kind: 'not-ready'};
+          }
+          return {kind: 'login'};
+        } catch (_) {
+          return {kind: 'backend-error'};
+        } finally {
+          if (timeout !== undefined) window.clearTimeout(timeout);
+        }
+      }
+
+      async function bootstrap() {
+        const authProbeRequired = runtimeConfig.authProbeRequired === true
+          || runtimeConfig.oidcEnabled === true;
+        if (!authProbeRequired) {
+          loadPerfettoBundle();
+          return;
+        }
+
+        const backendUrl = resolveBackendUrl();
+        if (!backendUrl) {
+          if (runtimeConfig.oidcEnabled === true) {
+            renderGate(
+              '无法连接 SmartPerfetto',
+              '认证服务地址未配置，页面已停止加载。',
+            );
+          } else {
+            loadPerfettoBundle();
+          }
+          return;
+        }
+        const result = await checkOidcSession(backendUrl);
+        if (result.kind === 'local') {
+          if (runtimeConfig.oidcEnabled === true) {
+            renderGate(
+              '认证配置不一致',
+              '前端已启用 OIDC，但后端仍处于普通模式。请统一前后端配置后刷新。',
+            );
+          } else {
+            loadPerfettoBundle();
+          }
+          return;
+        }
+        if (result.kind === 'backend-error') {
+          if (runtimeConfig.oidcEnabled === true) {
+            renderGate(
+              '无法连接认证服务',
+              '认证后端没有正常响应，页面已停止加载。请确认服务运行后刷新。',
+            );
+          } else {
+            loadPerfettoBundle();
+          }
+          return;
+        }
+        setOidcRuntimeMode(true);
+        if (!await disableOidcServiceWorkerCache()) {
+          renderGate(
+            '无法安全启动',
+            '浏览器缓存服务未能关闭，页面已停止加载。请刷新后重试。',
+          );
+          return;
+        }
+        if (result.kind === 'ready') {
+          try {
+            window.__SMARTPERFETTO_AUTH_SESSION__ = result.session;
+          } catch (_) {
+            // The bundle still starts; the backend remains the authority.
+          }
+          loadPerfettoBundle();
+          return;
+        }
+        if (result.kind === 'login') {
+          const loginUrl = buildOidcLoginUrl(backendUrl);
+          renderGate(
+            '需要登录 SmartPerfetto',
+            '请先完成企业单点登录，登录成功后才能打开 Perfetto 分析页面。',
+            loginUrl ? {href: loginUrl, label: '使用 OIDC 登录'} : undefined,
+          );
+          return;
+        }
+        if (result.kind === 'not-ready') {
+          renderGate(
+            '账号初始化失败',
+            '后端没有为当前 OIDC 账号建立个人工作区，页面已停止加载。请检查后端日志后重试。',
+          );
+          return;
+        }
+      }
+
+      void bootstrap();
     })();
   </script>
 </body>

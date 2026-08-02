@@ -4,7 +4,8 @@
 
 import crypto from 'crypto';
 
-import {resolveFeatureConfig} from '../../config';
+import {resolveAuthConfig, resolveFeatureConfig} from '../../config';
+import {deriveServerSecret} from '../../security/serverSecret';
 import {
   canonicalContentHash,
   canonicalJsonString,
@@ -41,6 +42,12 @@ interface ExternalIssueReviewScope {
 let devProcessSecret: Buffer | undefined;
 
 function attestationSecret(): Buffer {
+  if (resolveAuthConfig(process.env).oidcEnabled) {
+    return deriveServerSecret({
+      purpose: 'external-issue-review',
+      minimumBytes: MIN_SECRET_BYTES,
+    });
+  }
   const configured = [
     process.env.SMARTPERFETTO_SSO_COOKIE_SECRET,
     process.env.SMARTPERFETTO_API_KEY,

@@ -6,7 +6,11 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { ENTERPRISE_FEATURE_FLAG_ENV, resolveFeatureConfig } from '../config';
+import {
+  ENTERPRISE_FEATURE_FLAG_ENV,
+  resolveAuthConfig,
+  resolveFeatureConfig,
+} from '../config';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import { ENTERPRISE_MINIMAL_SCHEMA_TABLES } from './enterpriseSchema';
 
@@ -125,11 +129,18 @@ function parseEnterpriseMigrationPhase(
 export function resolveEnterpriseMigrationPlan(
   env: NodeJS.ProcessEnv = process.env,
 ): EnterpriseMigrationPlan {
+  const authConfig = resolveAuthConfig(env);
   const enterpriseEnabled = resolveFeatureConfig(env).enterprise;
   const phase = parseEnterpriseMigrationPhase(
-    env[ENTERPRISE_MIGRATION_PHASE_ENV],
+    env[ENTERPRISE_MIGRATION_PHASE_ENV]
+      || (authConfig.oidcEnabled ? 'retired' : undefined),
     enterpriseEnabled,
   );
+  if (authConfig.oidcEnabled && (phase === 'legacy' || phase === 'dual-write')) {
+    throw new Error(
+      `Built-in OIDC requires DB-authoritative storage; unset ${ENTERPRISE_MIGRATION_PHASE_ENV} or set it to retired`,
+    );
+  }
   if (
     phase === 'cutover' &&
     !['1', 'true', 'yes', 'on'].includes(

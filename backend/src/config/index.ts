@@ -57,6 +57,8 @@ function parseFeatureFlag(value: string | undefined, defaultValue: boolean = fal
 // =============================================================================
 
 export const ENTERPRISE_FEATURE_FLAG_ENV = 'SMARTPERFETTO_ENTERPRISE';
+export const SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV = 'SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP';
+export const SMARTPERFETTO_SERVER_SECRET_ENV = 'SMARTPERFETTO_SERVER_SECRET';
 export const SMARTPERFETTO_BACKEND_PORT_ENV = 'SMARTPERFETTO_BACKEND_PORT';
 export const SMARTPERFETTO_FRONTEND_PORT_ENV = 'SMARTPERFETTO_FRONTEND_PORT';
 export const SMARTPERFETTO_BACKEND_PUBLIC_PORT_ENV = 'SMARTPERFETTO_BACKEND_PUBLIC_PORT';
@@ -75,9 +77,163 @@ export interface FeatureConfig {
   enterprise: boolean;
 }
 
+export type SmartPerfettoAuthMode = 'local' | 'api_key' | 'oidc';
+
+export interface AuthConfig {
+  mode: SmartPerfettoAuthMode;
+  oidcEnabled: boolean;
+  cookieSecure: boolean;
+  allowInsecureHttp: boolean;
+}
+
+const OIDC_CONFIG_ENV_KEYS = [
+  'SMARTPERFETTO_OIDC_ISSUER_URL',
+  'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_CLIENT_SECRET',
+  'SMARTPERFETTO_OIDC_REDIRECT_URI',
+] as const;
+
+function hasConfiguredValue(value: string | undefined): boolean {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+export function isOidcConfigurationPresent(env: NodeJS.ProcessEnv = process.env): boolean {
+  return OIDC_CONFIG_ENV_KEYS.some(key => hasConfiguredValue(env[key]));
+}
+
+/**
+ * Resolve the browser authentication contract. Supplying any built-in OIDC
+ * value enables OIDC, while a partial configuration fails closed.
+ */
+export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
+  const oidcConfigured = isOidcConfigurationPresent(env);
+  const mode: SmartPerfettoAuthMode = oidcConfigured
+    ? 'oidc'
+    : hasConfiguredValue(env.SMARTPERFETTO_API_KEY) ? 'api_key' : 'local';
+  const allowInsecureHttp = mode === 'oidc'
+    && parseBoolEnv(SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV, false, env);
+
+  if (mode === 'oidc') {
+    const missing = OIDC_CONFIG_ENV_KEYS.filter(key => !hasConfiguredValue(env[key]));
+    if (missing.length > 0) {
+      throw new Error(
+        `OIDC mode requires ${missing.join(', ')}; refusing to start with a partial OIDC configuration`,
+      );
+    }
+    if (!hasConfiguredValue(env.FRONTEND_URL)) {
+      throw new Error('OIDC mode requires FRONTEND_URL for the post-login redirect');
+    }
+    if (hasConfiguredValue(env.SMARTPERFETTO_API_KEY)) {
+      throw new Error('OIDC mode cannot be combined with SMARTPERFETTO_API_KEY');
+    }
+    const serverSecret = env[SMARTPERFETTO_SERVER_SECRET_ENV]?.trim()
+      || env.SMARTPERFETTO_SSO_COOKIE_SECRET?.trim();
+    if (!serverSecret || Buffer.byteLength(serverSecret, 'utf8') < 32) {
+      throw new Error(
+        `OIDC mode requires ${SMARTPERFETTO_SERVER_SECRET_ENV} (at least 32 bytes)`,
+      );
+    }
+    if (parseBoolEnv('SMARTPERFETTO_SSO_TRUSTED_HEADERS', false, env)) {
+      throw new Error('OIDC mode cannot be combined with SMARTPERFETTO_SSO_TRUSTED_HEADERS');
+    }
+    const urls = new Map<string, URL>();
+    for (const key of ['SMARTPERFETTO_OIDC_ISSUER_URL', 'SMARTPERFETTO_OIDC_REDIRECT_URI', 'FRONTEND_URL'] as const) {
+      try {
+        const url = new URL(env[key]!);
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+          throw new Error('http_required');
+        }
+        if (url.username || url.password || url.hash) {
+          throw new Error('credentials_or_fragment_not_allowed');
+        }
+        if (key !== 'SMARTPERFETTO_OIDC_REDIRECT_URI' && url.search) {
+          throw new Error('query_not_allowed');
+        }
+        if (url.protocol !== 'https:' && !allowInsecureHttp) {
+          throw new Error('https_required');
+        }
+        urls.set(key, url);
+      } catch {
+        const suffix = !allowInsecureHttp
+          ? 'absolute HTTPS URL'
+          : 'absolute HTTP(S) URL';
+        throw new Error(`${key} must be an ${suffix} in OIDC mode`);
+      }
+    }
+    const redirectUrl = urls.get('SMARTPERFETTO_OIDC_REDIRECT_URI')!;
+    const frontendUrl = urls.get('FRONTEND_URL')!;
+    if (redirectUrl.search || !redirectUrl.pathname.endsWith('/api/auth/oidc/callback')) {
+      throw new Error(
+        'SMARTPERFETTO_OIDC_REDIRECT_URI must end with /api/auth/oidc/callback and must not contain a query or fragment',
+      );
+    }
+    if (frontendUrl.pathname !== '/' || frontendUrl.search || frontendUrl.hash) {
+      throw new Error('FRONTEND_URL must be a browser origin without a path, query, or fragment');
+    }
+    if (redirectUrl.protocol !== frontendUrl.protocol
+      || redirectUrl.hostname !== frontendUrl.hostname) {
+      throw new Error(
+        'OIDC mode requires FRONTEND_URL and SMARTPERFETTO_OIDC_REDIRECT_URI '
+        + 'to use the same scheme and hostname; ports may differ',
+      );
+    }
+    const configuredBackendUrl = env[SMARTPERFETTO_BACKEND_PUBLIC_URL_ENV]?.trim()
+      || env.SMARTPERFETTO_BACKEND_URL?.trim();
+    if (configuredBackendUrl) {
+      let backendUrl: URL;
+      try {
+        backendUrl = new URL(configuredBackendUrl);
+      } catch {
+        throw new Error(`${SMARTPERFETTO_BACKEND_PUBLIC_URL_ENV} must be an absolute HTTP(S) URL`);
+      }
+      if (
+        !['http:', 'https:'].includes(backendUrl.protocol)
+        || backendUrl.username
+        || backendUrl.password
+        || backendUrl.search
+        || backendUrl.hash
+      ) {
+        throw new Error(
+          `${SMARTPERFETTO_BACKEND_PUBLIC_URL_ENV} must be an absolute HTTP(S) URL without credentials, query, or fragment`,
+        );
+      }
+      if (backendUrl.protocol !== 'https:' && !allowInsecureHttp) {
+        throw new Error(`${SMARTPERFETTO_BACKEND_PUBLIC_URL_ENV} must be an absolute HTTPS URL in OIDC mode`);
+      }
+      if (backendUrl.protocol !== redirectUrl.protocol
+        || backendUrl.hostname !== redirectUrl.hostname) {
+        throw new Error(
+          `${SMARTPERFETTO_BACKEND_PUBLIC_URL_ENV} and SMARTPERFETTO_OIDC_REDIRECT_URI must use the same scheme and hostname; ports may differ`,
+        );
+      }
+      const backendBasePath = backendUrl.pathname.replace(/\/+$/, '');
+      if (redirectUrl.pathname !== `${backendBasePath}/api/auth/oidc/callback`) {
+        throw new Error(
+          'SMARTPERFETTO_OIDC_REDIRECT_URI must match the configured backend public URL plus /api/auth/oidc/callback',
+        );
+      }
+    } else if (redirectUrl.pathname !== '/api/auth/oidc/callback') {
+      throw new Error(
+        `A callback path prefix requires ${SMARTPERFETTO_BACKEND_PUBLIC_URL_ENV}`,
+      );
+    }
+  }
+
+  const cookieSecure = mode === 'oidc'
+    && new URL(env.SMARTPERFETTO_OIDC_REDIRECT_URI!).protocol === 'https:';
+
+  return {
+    mode,
+    oidcEnabled: mode === 'oidc',
+    cookieSecure,
+    allowInsecureHttp,
+  };
+}
+
 export function resolveFeatureConfig(env: NodeJS.ProcessEnv = process.env): FeatureConfig {
   return {
-    enterprise: parseFeatureFlag(env[ENTERPRISE_FEATURE_FLAG_ENV], false),
+    enterprise: parseFeatureFlag(env[ENTERPRISE_FEATURE_FLAG_ENV], false)
+      || resolveAuthConfig(env).oidcEnabled,
   };
 }
 

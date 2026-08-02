@@ -2,27 +2,20 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import crypto from 'crypto';
 import type {
-  ClientAuth,
   Configuration,
   DiscoveryRequestOptions,
 } from 'openid-client';
 
-export type OidcClientAuthMethod =
-  | 'client_secret_post'
-  | 'client_secret_basic'
-  | 'none';
-
 export interface OidcRuntimeConfig {
   issuerUrl: string;
   clientId: string;
-  clientSecret?: string;
-  clientAuthMethod: OidcClientAuthMethod;
+  clientSecret: string;
   redirectUri: string;
   scopes: string[];
   allowInsecureHttp: boolean;
-  requireVerifiedEmail: boolean;
-  timeoutSeconds: number;
+  requestTimeoutMs: number;
 }
 
 export interface EnterpriseOidcUserInfo {
@@ -33,15 +26,10 @@ export interface EnterpriseOidcUserInfo {
   claims: Record<string, unknown>;
 }
 
-export interface OidcAuthorizationRequest {
-  authorizationUrl: string;
+export interface OidcExchangeOptions {
   codeVerifier: string;
-}
-
-export interface OidcAuthorizationTransaction {
-  state: string;
-  nonce: string;
-  codeVerifier: string;
+  expectedState: string;
+  expectedNonce: string;
 }
 
 type OpenidClientModule = typeof import('openid-client');
@@ -51,13 +39,12 @@ export const OIDC_ENV = {
   issuerUrl: 'SMARTPERFETTO_OIDC_ISSUER_URL',
   clientId: 'SMARTPERFETTO_OIDC_CLIENT_ID',
   clientSecret: 'SMARTPERFETTO_OIDC_CLIENT_SECRET',
-  clientAuthMethod: 'SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD',
   redirectUri: 'SMARTPERFETTO_OIDC_REDIRECT_URI',
-  scopes: 'SMARTPERFETTO_OIDC_SCOPES',
   allowInsecureHttp: 'SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP',
-  requireVerifiedEmail: 'SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL',
-  timeoutSeconds: 'SMARTPERFETTO_OIDC_TIMEOUT_SECONDS',
 } as const;
+
+const OIDC_SCOPES = ['openid', 'email', 'profile'];
+const OIDC_REQUEST_TIMEOUT_MS = 10_000;
 
 function truthy(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on', 'enabled'].includes(
@@ -65,43 +52,23 @@ function truthy(value: string | undefined): boolean {
   );
 }
 
-function falsey(value: string | undefined): boolean {
-  return ['0', 'false', 'no', 'off', 'disabled'].includes(
-    value?.trim().toLowerCase() || '',
-  );
-}
-
-function parsePositiveInteger(value: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(value || '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function normalizeHttpUrl(
-  value: string,
-  label: string,
-  allowInsecureHttp: boolean,
-): string {
+function normalizeIssuerUrl(value: string, allowInsecureHttp: boolean): string {
   let parsed: URL;
   try {
     parsed = new URL(value);
   } catch {
-    throw new Error(`${label} must be a valid URL`);
+    throw new Error('OIDC issuer URL must be a valid URL');
   }
-  if (parsed.username || parsed.password || parsed.hash) {
-    throw new Error(`${label} must not contain credentials or a fragment`);
-  }
-  if (parsed.search) {
-    throw new Error(`${label} must not contain a query`);
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('OIDC issuer URL must not contain credentials, a query, or a fragment');
   }
   if (/\/\.well-known\/openid-configuration\/?$/.test(parsed.pathname)) {
-    throw new Error(
-      `${label} must be an issuer identifier, not a discovery document URL`,
-    );
+    throw new Error('OIDC issuer URL must be an issuer identifier, not a discovery document URL');
   }
   if (parsed.protocol !== 'https:' && !(allowInsecureHttp && parsed.protocol === 'http:')) {
-    throw new Error(`${label} must use HTTPS`);
+    throw new Error('OIDC issuer URL must use HTTPS');
   }
-  return parsed.toString().replace(/\/+$/, '');
+  return parsed.toString();
 }
 
 function normalizeRedirectUri(value: string): string {
@@ -115,75 +82,14 @@ function normalizeRedirectUri(value: string): string {
     !['http:', 'https:'].includes(parsed.protocol)
     || parsed.username
     || parsed.password
+    || parsed.search
     || parsed.hash
   ) {
     throw new Error(
-      'OIDC redirect URI must be an HTTP(S) URL without credentials or a fragment',
+      'OIDC redirect URI must be an HTTP(S) URL without credentials, a query, or a fragment',
     );
   }
   return parsed.toString();
-}
-
-function parseClientAuthMethod(
-  value: string | undefined,
-  hasClientSecret: boolean,
-): OidcClientAuthMethod {
-  const normalized = value?.trim().toLowerCase();
-  const fallback = hasClientSecret ? 'client_secret_post' : 'none';
-  if (!normalized) return fallback;
-  if (
-    normalized !== 'client_secret_post'
-    && normalized !== 'client_secret_basic'
-    && normalized !== 'none'
-  ) {
-    throw new Error(
-      'SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD must be client_secret_post, client_secret_basic, or none',
-    );
-  }
-  if (normalized !== 'none' && !hasClientSecret) {
-    throw new Error(
-      `SMARTPERFETTO_OIDC_CLIENT_SECRET is required for ${normalized}`,
-    );
-  }
-  return normalized;
-}
-
-function parseScopes(value: string | undefined): string[] {
-  const configured = (value || 'openid email profile')
-    .split(/[,\s]+/)
-    .map(scope => scope.trim())
-    .filter(Boolean);
-  return [...new Set(['openid', ...configured])];
-}
-
-export function resolveOidcRuntimeConfig(
-  env: NodeJS.ProcessEnv = process.env,
-): OidcRuntimeConfig | null {
-  const issuerUrl = env[OIDC_ENV.issuerUrl]?.trim();
-  const clientId = env[OIDC_ENV.clientId]?.trim();
-  const redirectUri = env[OIDC_ENV.redirectUri]?.trim();
-  if (!issuerUrl || !clientId || !redirectUri) return null;
-
-  const allowInsecureHttp = truthy(env[OIDC_ENV.allowInsecureHttp]);
-  const clientSecret = env[OIDC_ENV.clientSecret]?.trim() || undefined;
-  return {
-    issuerUrl: normalizeHttpUrl(
-      issuerUrl,
-      'OIDC issuer URL',
-      allowInsecureHttp,
-    ),
-    clientId,
-    clientSecret,
-    clientAuthMethod: parseClientAuthMethod(
-      env[OIDC_ENV.clientAuthMethod],
-      Boolean(clientSecret),
-    ),
-    redirectUri: normalizeRedirectUri(redirectUri),
-    scopes: parseScopes(env[OIDC_ENV.scopes]),
-    allowInsecureHttp,
-    requireVerifiedEmail: !falsey(env[OIDC_ENV.requireVerifiedEmail]),
-    timeoutSeconds: parsePositiveInteger(env[OIDC_ENV.timeoutSeconds], 15),
-  };
 }
 
 function stringClaim(
@@ -196,14 +102,33 @@ function stringClaim(
   return trimmed || undefined;
 }
 
-function resolveEmail(
-  claims: Record<string, unknown>,
-  requireVerifiedEmail: boolean,
-): string | undefined {
-  const email = stringClaim(claims, 'email');
-  if (!email) return undefined;
-  if (requireVerifiedEmail && claims.email_verified !== true) return undefined;
-  return email;
+function verifiedEmail(claims: Record<string, unknown>): string | undefined {
+  if (claims.email_verified !== true) return undefined;
+  return stringClaim(claims, 'email');
+}
+
+export function createPkceChallenge(verifier: string): string {
+  return crypto.createHash('sha256').update(verifier).digest('base64url');
+}
+
+export function resolveOidcRuntimeConfig(
+  env: NodeJS.ProcessEnv = process.env,
+): OidcRuntimeConfig | null {
+  const issuerUrl = env[OIDC_ENV.issuerUrl]?.trim();
+  const clientId = env[OIDC_ENV.clientId]?.trim();
+  const clientSecret = env[OIDC_ENV.clientSecret]?.trim();
+  const redirectUri = env[OIDC_ENV.redirectUri]?.trim();
+  if (!issuerUrl || !clientId || !clientSecret || !redirectUri) return null;
+  const allowInsecureHttp = truthy(env[OIDC_ENV.allowInsecureHttp]);
+  return {
+    issuerUrl: normalizeIssuerUrl(issuerUrl, allowInsecureHttp),
+    clientId,
+    clientSecret,
+    redirectUri: normalizeRedirectUri(redirectUri),
+    scopes: OIDC_SCOPES,
+    allowInsecureHttp,
+    requestTimeoutMs: OIDC_REQUEST_TIMEOUT_MS,
+  };
 }
 
 export class EnterpriseOidcClient {
@@ -216,57 +141,44 @@ export class EnterpriseOidcClient {
     private readonly loadClient: OpenidClientLoader = () => import('openid-client'),
   ) {}
 
-  static fromEnv(
-    env: NodeJS.ProcessEnv = process.env,
-  ): EnterpriseOidcClient | null {
+  static fromEnv(env: NodeJS.ProcessEnv = process.env): EnterpriseOidcClient | null {
     const config = resolveOidcRuntimeConfig(env);
     return config ? new EnterpriseOidcClient(config) : null;
   }
 
-  get publicConfig(): Pick<OidcRuntimeConfig, 'issuerUrl' | 'clientId' | 'scopes'> {
-    return {
-      issuerUrl: this.config.issuerUrl,
-      clientId: this.config.clientId,
-      scopes: this.config.scopes,
-    };
-  }
-
-  async buildAuthorizationRequest(params: {
+  async buildAuthorizationUrl(params: {
     state: string;
     nonce: string;
-  }): Promise<OidcAuthorizationRequest> {
+    codeChallenge: string;
+  }): Promise<string> {
     const [client, configuration] = await this.getClient();
-    const codeVerifier = client.randomPKCECodeVerifier();
-    const codeChallenge = await client.calculatePKCECodeChallenge(codeVerifier);
-    const authorizationUrl = client.buildAuthorizationUrl(configuration, {
+    return client.buildAuthorizationUrl(configuration, {
+      response_type: 'code',
+      response_mode: 'query',
       redirect_uri: this.config.redirectUri,
       scope: this.config.scopes.join(' '),
       state: params.state,
       nonce: params.nonce,
-      code_challenge: codeChallenge,
+      code_challenge: params.codeChallenge,
       code_challenge_method: 'S256',
-    });
-    return {
-      authorizationUrl: authorizationUrl.toString(),
-      codeVerifier,
-    };
+    }).toString();
   }
 
   async exchangeCodeForUserInfo(
-    callbackUrl: URL,
-    transaction: OidcAuthorizationTransaction,
+    code: string,
+    options: OidcExchangeOptions,
   ): Promise<EnterpriseOidcUserInfo> {
     const [client, configuration] = await this.getClient();
-    const normalizedCallbackUrl = new URL(this.config.redirectUri);
-    normalizedCallbackUrl.search = callbackUrl.search;
-
+    const callbackUrl = new URL(this.config.redirectUri);
+    callbackUrl.searchParams.set('code', code);
+    callbackUrl.searchParams.set('state', options.expectedState);
     const tokens = await client.authorizationCodeGrant(
       configuration,
-      normalizedCallbackUrl,
+      callbackUrl,
       {
-        pkceCodeVerifier: transaction.codeVerifier,
-        expectedState: transaction.state,
-        expectedNonce: transaction.nonce,
+        pkceCodeVerifier: options.codeVerifier,
+        expectedState: options.expectedState,
+        expectedNonce: options.expectedNonce,
         idTokenExpected: true,
       },
     );
@@ -298,7 +210,7 @@ export class EnterpriseOidcClient {
     return {
       issuer: configuration.serverMetadata().issuer,
       subject,
-      email: resolveEmail(claims, this.config.requireVerifiedEmail),
+      email: verifiedEmail(claims),
       displayName:
         stringClaim(claims, 'name')
         || stringClaim(claims, 'preferred_username'),
@@ -311,40 +223,26 @@ export class EnterpriseOidcClient {
       return [this.clientModule, this.configuration];
     }
     const client = await this.loadClient();
-    const clientAuth = this.createClientAuth(client);
     const options: DiscoveryRequestOptions = {
-      timeout: this.config.timeoutSeconds,
+      timeout: Math.max(1, Math.ceil(this.config.requestTimeoutMs / 1000)),
       [client.customFetch]: this.fetchImpl,
       ...(this.config.allowInsecureHttp
-        ? { execute: [client.allowInsecureRequests] }
+        ? {execute: [client.allowInsecureRequests]}
         : {}),
     };
     const configuration = await client.discovery(
       new URL(this.config.issuerUrl),
       this.config.clientId,
       {
-        ...(this.config.clientSecret
-          ? { client_secret: this.config.clientSecret }
-          : {}),
-        token_endpoint_auth_method: this.config.clientAuthMethod,
+        client_secret: this.config.clientSecret,
+        token_endpoint_auth_method: 'client_secret_basic',
       },
-      clientAuth,
+      client.ClientSecretBasic(this.config.clientSecret),
       options,
     );
     configuration[client.customFetch] = this.fetchImpl;
     this.clientModule = client;
     this.configuration = configuration;
     return [client, configuration];
-  }
-
-  private createClientAuth(client: OpenidClientModule): ClientAuth {
-    switch (this.config.clientAuthMethod) {
-      case 'client_secret_basic':
-        return client.ClientSecretBasic(this.config.clientSecret);
-      case 'client_secret_post':
-        return client.ClientSecretPost(this.config.clientSecret);
-      case 'none':
-        return client.None();
-    }
   }
 }

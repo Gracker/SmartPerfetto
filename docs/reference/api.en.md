@@ -13,45 +13,20 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` is the deployment-operator credential. Enterprise
 users should use durable API keys with explicit roles and scopes.
 
-## OIDC And Browser Session API
-
-Base path: `/api/auth`. These bootstrap endpoints own their public/session
-boundary instead of passing through the ordinary `/api` middleware. All other
-APIs still use unified authentication after sign-in.
+## OIDC Authentication
 
 | Method | Path | Purpose |
 |---|---|---|
-| `GET` | `/config` | Public enterprise/OIDC enablement, issuer, client ID, scopes, and login path; never returns a secret |
-| `GET` | `/oidc/login?returnTo=<url>` | Create a signed 10-minute state/nonce/PKCE transaction and redirect to the IdP; an absolute return target must be in `CORS_ORIGINS`, while a same-backend relative target must start with one `/` and cannot contain backslashes |
-| `GET` | `/oidc/callback` | Validate code, state, PKCE, ID Token, and nonce, then set the HttpOnly session cookie; popup HTML is no-store and CSP-protected |
-| `GET` | `/session` | Current user, tenant, workspace, roles/scopes, memberships, and expiry; never returns the session token |
-| `POST` | `/onboarding/workspace` | Select a workspace from durable memberships; cookie requests require an allowlisted `Origin` |
-| `POST` | `/logout` | Revoke the local SmartPerfetto session and clear its cookie; does not end the global IdP session |
+| `GET` | `/api/auth/oidc/login` | Create signed state, nonce, and PKCE values, then redirect to the OIDC provider |
+| `GET` | `/api/auth/oidc/callback` | Validate the callback, establish the HttpOnly session cookie, and redirect to the frontend |
+| `GET` | `/api/auth/session` | Return login state, read-only user/tenant/workspace, roles/scopes, expiry, and the CSRF token |
+| `POST` | `/api/auth/logout` | Validate CSRF for the cookie session, revoke it, and clear the cookie |
 
-Browser requests must use `credentials: include`. A ready session response:
-
-```json
-{
-  "success": true,
-  "authenticated": true,
-  "status": "ready",
-  "tenantId": "tenant-a",
-  "userId": "sso-0123456789abcdef",
-  "workspaceId": "workspace-a",
-  "email": "alice@example.com",
-  "roles": ["analyst"],
-  "scopes": ["trace:read", "trace:write", "agent:run", "report:read"],
-  "workspaces": [
-    {"workspaceId": "workspace-a", "name": "Workspace A", "role": "analyst"}
-  ],
-  "expiresAt": 1760000000000
-}
-```
-
-Without a session, `/session` returns
-`{"success":true,"authenticated":false}`. A validated identity without a ready
-workspace has `needs_workspace_selection` or `no_workspace_membership`; that
-session cannot access ordinary protected APIs.
+The OIDC session is the sole identity authority. Browser requests must use
+`credentials: include`, and mutations also require `X-CSRF-Token`. Browser
+tenant/workspace headers cannot override the session binding. Built-in personal
+workspace mode has no workspace switch, and equal display names across users
+do not share internal workspace IDs or data.
 
 ## Health
 

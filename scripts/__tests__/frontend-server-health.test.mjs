@@ -81,8 +81,11 @@ function openLiveReload(port) {
   });
 }
 
-function createFrontendFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-frontend-health-'));
+function createFrontendFixture(
+  t,
+  root = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-frontend-health-')),
+) {
+  fs.mkdirSync(root, {recursive: true});
   const version = 'v1.2-test';
   const versionDir = path.join(root, version);
   fs.mkdirSync(versionDir);
@@ -90,6 +93,7 @@ function createFrontendFixture(t) {
     path.join(root, 'index.html'),
     `<body data-perfetto_version='{"stable":"${version}"}'></body>`,
   );
+  fs.writeFileSync(path.join(root, 'service_worker.js'), 'fixture:service-worker');
   const resources = {};
   for (const asset of REQUIRED_RUNTIME_ASSETS) {
     resources[asset] = 'sha256-test';
@@ -113,6 +117,7 @@ function request(server, requestPath) {
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('end', () => resolve({
         body: Buffer.concat(chunks).toString('utf8'),
+        headers: response.headers,
         status: response.statusCode,
       }));
     });
@@ -292,6 +297,155 @@ test('frontend runtime config exposes the trusted external issue endpoint', asyn
     response.body,
     /"externalIssueUrl":"https:\/\/github\.example\.com\/org\/repo\/issues\/new"/,
   );
+});
+
+test('frontend runtime config preserves the original startup path when OIDC is not configured', async (t) => {
+  const {root} = createFrontendFixture(t);
+  const keys = [
+    'SMARTPERFETTO_OIDC_ISSUER_URL',
+    'SMARTPERFETTO_OIDC_CLIENT_ID',
+    'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  ];
+  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  t.after(() => {
+    for (const key of keys) {
+      if (original[key] === undefined) delete process.env[key];
+      else process.env[key] = original[key];
+    }
+  });
+  const testServer = createFrontendServer(root);
+  t.after(() => closeFrontendServer(testServer));
+  await new Promise((resolve, reject) => {
+    testServer.once('error', reject);
+    listenFrontend(testServer, {host: '127.0.0.1', port: 0}, resolve);
+  });
+
+  const response = await request(testServer, '/');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers['cache-control'], undefined);
+  assert.doesNotMatch(response.body, /"authProbeRequired"/);
+  assert.doesNotMatch(response.body, /"oidcEnabled"/);
+});
+
+test('frontend runtime config enables the OIDC gate without exposing OIDC values', async (t) => {
+  const {root} = createFrontendFixture(t);
+  const keys = [
+    'SMARTPERFETTO_OIDC_ISSUER_URL',
+    'SMARTPERFETTO_OIDC_CLIENT_ID',
+    'SMARTPERFETTO_OIDC_CLIENT_SECRET',
+    'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  ];
+  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+  process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+  process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'must-not-appear-in-html';
+  process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
+    'https://backend.example.test/api/auth/oidc/callback';
+  t.after(() => {
+    for (const key of keys) {
+      if (original[key] === undefined) delete process.env[key];
+      else process.env[key] = original[key];
+    }
+  });
+  const testServer = createFrontendServer(root);
+  t.after(() => closeFrontendServer(testServer));
+  await new Promise((resolve, reject) => {
+    testServer.once('error', reject);
+    listenFrontend(testServer, {host: '127.0.0.1', port: 0}, resolve);
+  });
+
+  const response = await request(testServer, '/');
+  assert.equal(response.status, 200);
+  assert.equal(response.headers['cache-control'], 'no-store');
+  assert.match(response.body, /"authProbeRequired":true/);
+  assert.match(response.body, /"oidcEnabled":true/);
+  assert.match(
+    response.body,
+    /"backendUrl":"https:\/\/backend\.example\.test"/,
+  );
+  assert.doesNotMatch(response.body, /idp\.example\.test/);
+  assert.doesNotMatch(response.body, /client-a/);
+  assert.doesNotMatch(response.body, /must-not-appear-in-html/);
+});
+
+test('frontend runtime config reads only public browser values from the packaged env file', async (t) => {
+  const {root} = createFrontendFixture(t);
+  const envPath = path.join(root, 'user.env');
+  fs.writeFileSync(envPath, [
+    'SMARTPERFETTO_BACKEND_PUBLIC_URL=https://backend.example.test',
+    'SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.test',
+    'SMARTPERFETTO_OIDC_CLIENT_ID=client-from-env-file',
+    'SMARTPERFETTO_OIDC_REDIRECT_URI=https://backend.example.test/api/auth/oidc/callback',
+    'SMARTPERFETTO_OIDC_CLIENT_SECRET=packaged-secret-must-not-appear',
+  ].join('\n'));
+  const originalEnvFile = process.env.SMARTPERFETTO_ENV_FILE;
+  process.env.SMARTPERFETTO_ENV_FILE = envPath;
+  t.after(() => {
+    if (originalEnvFile === undefined) delete process.env.SMARTPERFETTO_ENV_FILE;
+    else process.env.SMARTPERFETTO_ENV_FILE = originalEnvFile;
+  });
+  const testServer = createFrontendServer(root);
+  t.after(() => closeFrontendServer(testServer));
+  await new Promise((resolve, reject) => {
+    testServer.once('error', reject);
+    listenFrontend(testServer, {host: '127.0.0.1', port: 0}, resolve);
+  });
+
+  const response = await request(testServer, '/');
+  assert.equal(response.status, 200);
+  assert.match(response.body, /"authProbeRequired":true/);
+  assert.match(response.body, /"backendUrl":"https:\/\/backend\.example\.test"/);
+  assert.match(response.body, /"oidcEnabled":true/);
+  assert.doesNotMatch(response.body, /idp\.example\.test/);
+  assert.doesNotMatch(response.body, /client-from-env-file/);
+  assert.doesNotMatch(response.body, /packaged-secret-must-not-appear/);
+});
+
+test('an explicit runtime env file does not fall back to a sibling root env file', async (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-explicit-env-'));
+  const root = path.join(parent, 'frontend');
+  createFrontendFixture(t, root);
+  fs.writeFileSync(path.join(parent, '.env'), [
+    'SMARTPERFETTO_OIDC_ISSUER_URL=https://unexpected-idp.example.test',
+    'SMARTPERFETTO_OIDC_CLIENT_ID=unexpected-client',
+    'SMARTPERFETTO_OIDC_REDIRECT_URI=https://unexpected.example.test/callback',
+  ].join('\n'));
+  const explicitEnvPath = path.join(parent, 'source.env');
+  fs.writeFileSync(explicitEnvPath, 'SMARTPERFETTO_BACKEND_PUBLIC_URL=https://backend.example.test\n');
+  t.after(() => fs.rmSync(parent, {recursive: true, force: true}));
+
+  const keys = [
+    'SMARTPERFETTO_ENV_FILE',
+    'SMARTPERFETTO_BACKEND_PUBLIC_URL',
+    'SMARTPERFETTO_BACKEND_URL',
+    'SMARTPERFETTO_OIDC_ISSUER_URL',
+    'SMARTPERFETTO_OIDC_CLIENT_ID',
+    'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  ];
+  const original = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) delete process.env[key];
+  process.env.SMARTPERFETTO_ENV_FILE = explicitEnvPath;
+  t.after(() => {
+    for (const key of keys) {
+      if (original[key] === undefined) delete process.env[key];
+      else process.env[key] = original[key];
+    }
+  });
+
+  const testServer = createFrontendServer(root);
+  t.after(() => closeFrontendServer(testServer));
+  await new Promise((resolve, reject) => {
+    testServer.once('error', reject);
+    listenFrontend(testServer, {host: '127.0.0.1', port: 0}, resolve);
+  });
+
+  const response = await request(testServer, '/');
+  assert.equal(response.status, 200);
+  assert.doesNotMatch(response.body, /"authProbeRequired"/);
+  assert.doesNotMatch(response.body, /"oidcEnabled"/);
+  assert.doesNotMatch(response.body, /backend\.example\.test/);
+  assert.doesNotMatch(response.body, /unexpected-idp|unexpected-client/);
 });
 
 test('frontend static reads reject a directory-symlink swap after open', async (t) => {

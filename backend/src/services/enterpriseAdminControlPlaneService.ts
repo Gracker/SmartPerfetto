@@ -74,6 +74,19 @@ function getMembershipRole(
   `).get(tenantId, workspaceId, userId)?.role;
 }
 
+function isPersonalWorkspace(
+  db: Database.Database,
+  tenantId: string,
+  workspaceId: string,
+): boolean {
+  return Boolean(db.prepare<unknown[], { workspace_id: string }>(`
+    SELECT workspace_id
+    FROM sso_personal_workspaces
+    WHERE tenant_id = ? AND workspace_id = ?
+    LIMIT 1
+  `).get(tenantId, workspaceId));
+}
+
 function assertMembershipMutationAllowed(
   context: RequestContext,
   targetUserId: string,
@@ -350,6 +363,10 @@ export function updateEnterpriseWorkspace(
 
   return db.transaction(() => {
     ensureTenantAndActor(db, context, now);
+    if (isPersonalWorkspace(db, context.tenantId, workspaceId)
+      && typeof input.name === 'string' && input.name.trim()) {
+      throw new EnterpriseAdminControlPlaneError(403, 'Personal workspace name is managed by OIDC');
+    }
     const result = db.prepare(`
       UPDATE workspaces
       SET ${updates.join(', ')}, updated_at = ?
@@ -432,6 +449,9 @@ export function upsertEnterpriseWorkspaceMember(
     if (!workspace) {
       throw new EnterpriseAdminControlPlaneError(404, 'Workspace not found');
     }
+    if (isPersonalWorkspace(db, context.tenantId, workspaceId)) {
+      throw new EnterpriseAdminControlPlaneError(403, 'Personal workspace membership is managed by OIDC');
+    }
     const existingRole = getMembershipRole(db, context.tenantId, workspaceId, userId);
     assertMembershipMutationAllowed(context, userId, existingRole, role);
     assertNotLastOrgAdmin(db, context, existingRole, role);
@@ -472,6 +492,9 @@ export function deleteEnterpriseWorkspaceMember(
   const workspaceId = assertSafeId(workspaceIdInput, 'workspaceId');
   const userId = assertSafeId(userIdInput, 'userId');
   return db.transaction(() => {
+    if (isPersonalWorkspace(db, context.tenantId, workspaceId)) {
+      throw new EnterpriseAdminControlPlaneError(403, 'Personal workspace membership is managed by OIDC');
+    }
     const existingRole = getMembershipRole(db, context.tenantId, workspaceId, userId);
     if (!existingRole) {
       throw new EnterpriseAdminControlPlaneError(404, 'Membership not found');

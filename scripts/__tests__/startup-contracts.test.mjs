@@ -3,12 +3,27 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {execFileSync} from 'node:child_process';
 import test from 'node:test';
 
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const read = (relativePath) => fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+
+test('source launcher re-execs Bash when invoked through sh', () => {
+  for (const [scriptPath, expected] of [
+    ['start.sh', /Usage: \.\/start\.sh \[--clean\]/],
+    ['scripts/start-dev.sh', /Usage: .*\/scripts\/start-dev\.sh \[OPTIONS\]/],
+  ]) {
+    const output = execFileSync(
+      'sh',
+      [path.join(repoRoot, scriptPath), '--help'],
+      {encoding: 'utf8'},
+    );
+    assert.match(output, expected);
+  }
+});
 
 test('source launchers share ownership-aware lifecycle semantics', () => {
   const lifecycle = read('scripts/service-lifecycle.sh');
@@ -31,6 +46,18 @@ test('source launchers share ownership-aware lifecycle semantics', () => {
 
   const restartBackend = read('scripts/restart-backend.sh');
   assert.match(restartBackend, /launch-detached\.mjs/);
+
+  for (const scriptPath of [
+    'start.sh',
+    'scripts/start-dev.sh',
+    'scripts/restart-backend.sh',
+  ]) {
+    const script = read(scriptPath);
+    assert.doesNotMatch(
+      script,
+      /SOURCE_ENV_FILE="\$\{SMARTPERFETTO_ENV_FILE:-\$PROJECT_ROOT\/backend\/\.env\}"/,
+    );
+  }
 });
 
 test('dev launcher uses canonical dependencies and a complete UI/WASM build', () => {
@@ -111,6 +138,39 @@ test('source readiness and default browser URLs use explicit IPv4 loopback', () 
   assert.match(start, /xdg-open "\$FRONTEND_URL"/);
 });
 
+test('source launchers preserve the original explicit-then-default env lookup order', (t) => {
+  const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-ports-'));
+  t.after(() => fs.rmSync(temporaryRoot, {recursive: true, force: true}));
+  const explicitEnv = path.join(temporaryRoot, 'source.env');
+  fs.writeFileSync(
+    path.join(temporaryRoot, '.env'),
+    'FRONTEND_URL=http://wrong-root.example:9999\n',
+  );
+  fs.writeFileSync(explicitEnv, 'SMARTPERFETTO_FRONTEND_PORT=10001\n');
+
+  const output = execFileSync(
+    'bash',
+    [
+      '-c',
+      'source "$1"; smartperfetto_init_service_ports; printf "%s|%s" "$FRONTEND_PORT" "$FRONTEND_URL"',
+      'bash',
+      path.join(repoRoot, 'scripts/service-ports.sh'),
+    ],
+    {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PROJECT_ROOT: temporaryRoot,
+        SMARTPERFETTO_ENV_FILE: explicitEnv,
+        SMARTPERFETTO_FRONTEND_PORT: '',
+        FRONTEND_URL: '',
+      },
+    },
+  );
+
+  assert.equal(output, '10001|http://wrong-root.example:9999');
+});
+
 test('launch surfaces expose package identity without bypassing persistence probing', () => {
   const start = read('start.sh');
   assert.match(start, /SMARTPERFETTO_PACKAGE_ROOT="\$PROJECT_ROOT"/);
@@ -149,6 +209,14 @@ test('launch surfaces expose package identity without bypassing persistence prob
   assert.match(
     portableLauncher,
     /"SMARTPERFETTO_LOCK_RUNTIME_IDENTITY":\s+"1"/,
+  );
+  assert.match(
+    portableLauncher,
+    /frontendEnv := mergeEnv[\s\S]*"SMARTPERFETTO_ENV_FILE":\s+envPath/,
+  );
+  assert.match(
+    portableLauncher,
+    /backendEnv := mergeEnv[\s\S]*"FRONTEND_URL":\s+frontendURL/,
   );
 
   const backendIndex = read('backend/src/index.ts');

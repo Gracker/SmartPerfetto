@@ -94,19 +94,22 @@ only an opaque signed session id is stored in a HttpOnly cookie; tenant,
 workspace, role, scope, revocation, and expiry remain backed by enterprise
 SQLite state.
 
-OIDC identity locates the tenant and user but does not grant workspace access.
-The durable role in `memberships` is authoritative; IdP claims cannot override
-it. The frontend OIDC component owns sign-in, workspace onboarding, and local
-sign-out. Analysis, Provider, codebase, and trace requests share one
-credentialed-fetch policy for the cookie while preserving explicit API-key
-compatibility. An identity or workspace change retires the old backend session
-and resets AIPanel Trace/transient state plus the storage namespace to prevent
-cross-identity reuse.
+Built-in OIDC trusts only the normalized issuer and subject. The issuer derives
+the tenant id, and issuer plus subject derive the user id. Login automatically
+creates or reuses that user's single personal workspace.
+`sso_personal_workspaces` plus database triggers prevent another user from
+joining it. IdP tenant, workspace, and role claims cannot override this
+ownership boundary. The frontend completes the session gate before loading
+Perfetto. Analysis, Provider, codebase, trace, and Trace Processor heartbeat
+requests use the shared credentialed fetch/header policy with the cookie and
+required CSRF token. Browser storage is tenant/user/workspace scoped, and OIDC
+mode never imports old unscoped data.
 
 Cookie-authenticated mutations use an exact Origin check in addition to CORS,
 because CORS alone does not prevent a browser from sending a cross-site
-mutation. Popup callbacks post only to an allowlisted `targetOrigin` and use
-`no-store` plus a strict CSP.
+mutation, and they also require the session-derived CSRF token. The callback
+establishes the session and redirects directly to `FRONTEND_URL`; there is no
+popup or frontend workspace-selection flow.
 
 ## 4. Runtimes And Providers
 
