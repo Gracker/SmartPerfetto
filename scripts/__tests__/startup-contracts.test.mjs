@@ -14,7 +14,7 @@ const read = (relativePath) => fs.readFileSync(path.join(repoRoot, relativePath)
 test('source launcher re-execs Bash when invoked through sh', () => {
   for (const [scriptPath, expected] of [
     ['start.sh', /Usage: \.\/start\.sh \[--clean\]/],
-    ['scripts/start-dev.sh', /Usage: .*\/scripts\/start-dev\.sh \[OPTIONS\]/],
+    ['scripts/start-dev.sh', /Usage: .*[/\\]scripts[/\\]start-dev\.sh \[OPTIONS\]/],
   ]) {
     const output = execFileSync(
       'sh',
