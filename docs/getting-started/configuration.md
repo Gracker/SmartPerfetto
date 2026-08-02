@@ -379,7 +379,8 @@ SMARTPERFETTO_BACKEND_PORT=3000
 SMARTPERFETTO_FRONTEND_PORT=10000
 PORT=3000
 NODE_ENV=development
-FRONTEND_URL=http://localhost:10000
+# 仅当浏览器实际访问地址与本地端口推导结果不同时设置：
+# FRONTEND_URL=https://smartperfetto.example.com
 # 反向代理、HTTPS 或 Docker 宿主端口不等于容器端口时设置：
 # SMARTPERFETTO_BACKEND_PUBLIC_URL=http://localhost:3000
 # 可选：自托管 fork 的 HTTPS Issue 新建地址；不会自动提交。
@@ -394,7 +395,9 @@ FRONTEND_URL=http://localhost:10000
 
 后端端口优先使用 `SMARTPERFETTO_BACKEND_PORT`；`PORT` 仍保留为
 Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
-`SMARTPERFETTO_FRONTEND_PORT`。浏览器无法安全推导后端地址时，显式设置
+`SMARTPERFETTO_FRONTEND_PORT`。源码启动脚本会由这个端口推导本地
+`FRONTEND_URL`，不用重复配置。只有浏览器实际访问的前端 Origin 不同（例如 HTTPS
+域名或反向代理）时才显式设置 `FRONTEND_URL`。浏览器无法安全推导后端地址时，显式设置
 `SMARTPERFETTO_BACKEND_PUBLIC_URL`。
 
 ## API 鉴权
@@ -415,55 +418,53 @@ SMARTPERFETTO_API_KEY=replace_with_a_strong_random_secret
 Authorization: Bearer <SMARTPERFETTO_API_KEY>
 ```
 
-## 企业 OIDC 登录
+## OIDC 浏览器登录
 
-浏览器企业登录使用 OIDC Authorization Code Flow、PKCE S256、`state` 和
-`nonce`。后端通过 discovery 获取 IdP 元数据，并在创建 SmartPerfetto 会话前验证
-ID Token 的签名、issuer、audience、有效期和 nonce；会话只保存在
-HttpOnly Cookie 中，不写入 `localStorage` 或浏览器 JSON 响应。
+OIDC 模式会把 Web UI 改成登录门禁：前端启动时先请求
+`GET /api/auth/session`，只有 Session 为 `ready` 才加载 Perfetto 主程序；未登录时只显示
+OIDC 登录页。授权码回调由后端换取 Token、校验 `state`、PKCE、`nonce`、JWT 签名、
+issuer 和 audience，再写入 `HttpOnly` Session Cookie 并跳回 `FRONTEND_URL`。浏览器
+业务请求统一携带 Cookie，写请求同时发送 Session 返回的 CSRF Token。
 
-先在 IdP 注册回调地址，然后配置后端：
+没有配置 OIDC 时不启用这道门禁，也不在 Perfetto 启动前探测认证 Session；前端继续按
+原来的本地/静态方式加载，即使 AI 后端暂时不可用也不会把普通用户挡在登录页外。
 
 ```bash
-SMARTPERFETTO_ENTERPRISE=true
-SMARTPERFETTO_SSO_COOKIE_SECRET=replace_with_at_least_32_random_bytes
-SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.com
+SMARTPERFETTO_OIDC_ISSUER_URL=https://idp.example.com/application/o/smartperfetto/
 SMARTPERFETTO_OIDC_CLIENT_ID=smartperfetto
 SMARTPERFETTO_OIDC_CLIENT_SECRET=replace_with_oidc_client_secret
-SMARTPERFETTO_OIDC_REDIRECT_URI=https://backend.example.com/api/auth/oidc/callback
-SMARTPERFETTO_OIDC_SCOPES=openid email profile
-SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD=client_secret_post
-CORS_ORIGINS=https://perfetto.example.com
-
-# 二选一或结合使用，把已验证身份映射到现有 tenant：
-SMARTPERFETTO_OIDC_EMAIL_DOMAIN_MAP=example.com=tenant-a
-# SMARTPERFETTO_OIDC_DEFAULT_TENANT_ID=tenant-a
+SMARTPERFETTO_OIDC_REDIRECT_URI=https://smartperfetto.example.com/api/auth/oidc/callback
+SMARTPERFETTO_SERVER_SECRET=replace_with_at_least_32_random_bytes
+FRONTEND_URL=https://smartperfetto.example.com
 ```
 
-`SMARTPERFETTO_OIDC_CLIENT_AUTH_METHOD` 支持 `client_secret_post`、
-`client_secret_basic` 和无 secret 的 `none`。Issuer 默认必须是 HTTPS；
-`SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` 只用于本机测试 IdP。域名映射默认
-只使用 `email_verified=true` 的 email；若受控 IdP 不发布该 claim，可以显式设置
-`SMARTPERFETTO_OIDC_REQUIRE_VERIFIED_EMAIL=false`，并改用 tenant claim 或默认
-tenant 控制准入。
+四个 OIDC 参数中只要出现任意一个，后端就进入 OIDC 模式；缺少其余参数时会拒绝启动，
+不会悄悄退回本地身份。`SMARTPERFETTO_SERVER_SECRET` 是独立的服务端签名根，至少 32
+字节，不能复用 OIDC Client Secret。Session 固定为 8 小时、`SameSite=Lax`，Secure
+Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email profile`。
 
-`CORS_ORIGINS` 必须列出浏览器前端的完整 origin（scheme、host、port），不接受
-通配符或路径。登录 popup 只会回传到该精确 allowlist 中的地址。HTTPS 回调会默认
-启用 Secure Cookie；只有前后端确实跨站时才设置
-`SMARTPERFETTO_SSO_COOKIE_SAME_SITE=none`，且必须同时启用
-`SMARTPERFETTO_SSO_COOKIE_SECURE=true`。同站或反向代理部署保持默认 `lax`。
+使用 `./start.sh` 或 `./scripts/start-dev.sh` 做本地分端口联调时，只设置
+`SMARTPERFETTO_FRONTEND_PORT` 即可，脚本会生成对应的 `FRONTEND_URL`。上面的
+`FRONTEND_URL` 是域名/反向代理部署示例，不需要和本地端口重复填写。
 
-登录后端只建立身份与本地会话，不会自动授予工作区权限。用户必须已经在
-`memberships` 中拥有 workspace role；该持久化 role 是授权真相，IdP 的
-`roles/groups` 不会覆盖它。打开 **AI 助手 → 设置 → 后端连接** 完成登录和工作区
-选择。退出会撤销 SmartPerfetto 本地会话，但不会结束 IdP 的全局会话。
+同一个 Issuer 下，每个 OIDC Subject 只创建一个由后端管理的个人工作区。不同用户的
+工作区显示名称可以相同，但内部 User ID、Workspace ID、成员关系和所有数据范围都不同；
+OIDC 前端不会允许用户修改工作区、后端地址或 API Key。租户 ID 只由标准化 Issuer
+稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` 或旧的 `SMARTPERFETTO_API_KEY` 同时启用。
+OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要再配置企业迁移阶段，也不允许
+回退到会忽略用户范围的 `legacy` 或 `dual-write` 模式。
 
-验收顺序：
-
-1. `GET /api/auth/config` 返回 `oidc.enabled: true`；
-2. 设置页登录 popup 返回后，`GET /api/auth/session` 返回已验证用户和 workspace；
-3. 切换 workspace 后，AI 会话、Trace 临时状态和本地存储命名空间同步隔离；
-4. 退出后 `/api/auth/session` 返回 `authenticated: false`，受保护 API 返回 `401`。
+生产模式默认要求 Issuer、回调和前端 URL 全部使用 HTTPS，并使用 Secure Cookie。
+只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`；该开关会
+允许明文 HTTP 并默认关闭 Secure Cookie，不能用于不可信网络。`FRONTEND_URL` 必须是
+浏览器实际访问的前端 Origin，不能填写容器内部地址。前端 URL 与 OIDC 回调必须使用相同
+协议和主机，端口可以不同；前端默认直接从回调地址的 Origin 推导后端地址，不需要再填写
+`SMARTPERFETTO_BACKEND_PUBLIC_URL`。只有后端公开地址带路径前缀等无法从 Origin 推导的
+代理场景才设置该变量，并且它必须与回调地址的协议、主机和路径前缀一致。这既支持同一
+服务器上的前后端分端口部署，也保证 `SameSite=Lax` Session Cookie 能被浏览器业务请求
+携带。OIDC 部署必须使用项目的动态前端服务器或等价的反向代理注入运行时配置，不能把
+`frontend/` 当成不知道后端地址的纯静态目录直接发布。
 
 ## 上传与 trace processor
 

@@ -91,6 +91,8 @@ export const ENTERPRISE_CORE_SCHEMA_TABLES = [
   'batch_trace_metrics',
   'tenant_tombstones',
   'audit_events',
+  'sso_personal_workspaces',
+  'sso_tenant_admin_grants',
 ] as const;
 
 export const ENTERPRISE_MINIMAL_SCHEMA_TABLES = [
@@ -1100,6 +1102,72 @@ const MIGRATIONS: MigrationStep[] = [
         );
         CREATE INDEX IF NOT EXISTS idx_provider_mutation_leases_scope
           ON provider_mutation_leases(scope_key, started_at);
+      `);
+    },
+  },
+  {
+    version: 16,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS sso_personal_workspaces (
+          tenant_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, user_id),
+          UNIQUE (tenant_id, workspace_id),
+          FOREIGN KEY (tenant_id, user_id)
+            REFERENCES users(tenant_id, id) ON DELETE CASCADE,
+          FOREIGN KEY (tenant_id, workspace_id)
+            REFERENCES workspaces(tenant_id, id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_sso_personal_workspaces_workspace
+          ON sso_personal_workspaces(tenant_id, workspace_id);
+
+        CREATE TABLE IF NOT EXISTS sso_tenant_admin_grants (
+          tenant_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          source TEXT NOT NULL,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, user_id),
+          FOREIGN KEY (tenant_id, user_id)
+            REFERENCES users(tenant_id, id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_sso_tenant_admin_grants_user
+          ON sso_tenant_admin_grants(user_id, tenant_id);
+      `);
+      if (!tableHasColumn(db, 'memberships', 'workspace_id')) return;
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS trg_personal_workspace_member_insert
+        BEFORE INSERT ON memberships
+        WHEN EXISTS (
+          SELECT 1 FROM sso_personal_workspaces p
+          WHERE p.tenant_id = NEW.tenant_id AND p.workspace_id = NEW.workspace_id
+        ) AND NOT EXISTS (
+          SELECT 1 FROM sso_personal_workspaces p
+          WHERE p.tenant_id = NEW.tenant_id
+            AND p.workspace_id = NEW.workspace_id
+            AND p.user_id = NEW.user_id
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'personal workspace cannot accept additional members');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_personal_workspace_member_update
+        BEFORE UPDATE OF tenant_id, workspace_id, user_id, role ON memberships
+        WHEN EXISTS (
+          SELECT 1 FROM sso_personal_workspaces p
+          WHERE p.tenant_id = OLD.tenant_id AND p.workspace_id = OLD.workspace_id
+        ) AND (
+          NEW.tenant_id <> OLD.tenant_id
+          OR NEW.workspace_id <> OLD.workspace_id
+          OR NEW.user_id <> OLD.user_id
+          OR NEW.role <> 'workspace_admin'
+        )
+        BEGIN
+          SELECT RAISE(ABORT, 'personal workspace ownership cannot be changed');
+        END;
       `);
     },
   },

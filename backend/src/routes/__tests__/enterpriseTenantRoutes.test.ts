@@ -327,7 +327,7 @@ describe('enterprise tenant lifecycle routes', () => {
 
     const tenantListDenied = await analystHeaders(request(app).get('/api/tenant/workspaces'));
     expect(tenantListDenied.status).toBe(403);
-    expect(tenantListDenied.body.details).toContain('Tenant management requires');
+    expect(tenantListDenied.body.details).toContain('Tenant metadata requires');
 
     const ownWorkspaceUpdate = await workspaceAdminHeaders(
       request(app).patch('/api/tenant/workspaces/workspace-a/policies'),

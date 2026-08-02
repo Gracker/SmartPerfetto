@@ -64,6 +64,7 @@ and frontend readiness.
 |---|---|---|
 | Perfetto UI plugin | `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/` | Panel, SSE, result rendering, scene navigation, selection interaction |
 | Express backend | `backend/src/index.ts` | Route registration, health checks, middleware, process cleanup |
+| OIDC and request identity | `backend/src/routes/enterpriseAuthRoutes.ts`, `enterpriseSsoService.ts`, `middleware/auth.ts` | Login callback, session/CSRF, personal-workspace ownership, and request-scoped tenant/workspace/RBAC binding |
 | Runtime contract and registry | `backend/src/agentRuntime/runtimeKinds.ts`, `runtimeDescriptors.ts`, `runtimeSelection.ts` | Defines the current production runtime set, capabilities, canonical loaders, and per-session selection |
 | Runtime engines | `backend/src/agentRuntime/engines/{claude,openai,pi,opencode,qoder}/` | Canonical implementations of the five currently registered runtimes behind shared orchestrator, result, and safety contracts |
 | Shared agent capabilities | `backend/src/agentv3/` | MCP server/registry, strategy injection, planning, verification, and memory; individual runtime files may remain as compatibility re-exports |
@@ -83,6 +84,14 @@ and frontend readiness.
 | Comparison services | `backend/src/services/comparison*Service.ts` | Shared evidence/report contract for raw-trace and analysis-result comparison |
 
 ## Main Analysis Data Flow
+
+In OIDC mode, the static entry point gates startup through `/api/auth/session`
+and does not load the Perfetto bundle until the session is ready. After the
+callback establishes the backend session, every browser request derives tenant,
+user, and workspace authority from the session and database ownership. Frontend
+context headers carry routing context but cannot change authorization. Personal
+workspaces are unique per `(tenant, user)`, and tenant administrators receive
+metadata-only visibility.
 
 ```text
 1. User loads a trace

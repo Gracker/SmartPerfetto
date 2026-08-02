@@ -453,4 +453,84 @@ describe('Provider Routes', () => {
       db.close();
     }
   });
+
+  it('preserves inherited org provider mutation behavior outside OIDC', async () => {
+    const dbPath = path.join(dir, 'enterprise.sqlite');
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = dbPath;
+    process.env[SECRET_STORE_DIR_ENV] = path.join(dir, 'secrets');
+    process.env[SECRET_STORE_ALLOW_LOCAL_MASTER_KEY_ENV] = 'true';
+    delete process.env.SMARTPERFETTO_API_KEY;
+    resetProviderService();
+
+    const { default: workspaceProviderRoutes } = await import('../../../routes/providerRoutes');
+    const workspaceApp = express();
+    workspaceApp.use(express.json());
+    workspaceApp.use(
+      '/api/workspaces/:workspaceId/providers',
+      bindWorkspaceRouteContext,
+      authenticate,
+      requireWorkspaceRouteContext,
+      workspaceProviderRoutes,
+    );
+
+    const createRes = await ssoHeaders(
+      request(workspaceApp).post('/api/workspaces/workspace-a/providers'),
+    ).send({
+      name: 'Organization Default',
+      category: 'official',
+      type: 'openai',
+      models: { primary: 'gpt-5.5', light: 'gpt-5.4-mini' },
+      connection: {
+        agentRuntime: 'openai-agents-sdk',
+        openaiApiKey: 'sk-org-provider',
+      },
+    });
+    expect(createRes.status).toBe(201);
+    const id = createRes.body.provider.id;
+
+    const db = openEnterpriseDb(dbPath);
+    try {
+      db.prepare(`
+        UPDATE provider_credentials
+        SET scope = 'org', workspace_id = NULL, owner_user_id = NULL
+        WHERE id = ?
+      `).run(id);
+    } finally {
+      db.close();
+    }
+
+    const inherited = await ssoHeaders(
+      request(workspaceApp).get(`/api/workspaces/workspace-a/providers/${id}`),
+    );
+    expect(inherited.status).toBe(200);
+
+    const update = await ssoHeaders(request(workspaceApp)
+      .patch(`/api/workspaces/workspace-a/providers/${id}`))
+      .send({name: 'Updated Outside OIDC'});
+    expect(update.status).toBe(200);
+
+    const verifyDb = openEnterpriseDb(dbPath);
+    try {
+      const row = verifyDb.prepare(`
+        SELECT scope, workspace_id, name, policy_json
+        FROM provider_credentials
+        WHERE id = ?
+      `).get(id) as {
+        scope: string;
+        workspace_id: string | null;
+        name: string;
+        policy_json: string;
+      };
+      expect(row).toMatchObject({
+        scope: 'org',
+        workspace_id: null,
+        name: 'Updated Outside OIDC',
+      });
+      expect(JSON.parse(row.policy_json).isActive).toBe(false);
+    } finally {
+      verifyDb.close();
+    }
+  });
 });

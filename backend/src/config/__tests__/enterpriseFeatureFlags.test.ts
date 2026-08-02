@@ -7,6 +7,7 @@ import {
   DEFAULT_BACKEND_PORT,
   DEFAULT_FRONTEND_PORT,
   ENTERPRISE_FEATURE_FLAG_ENV,
+  resolveAuthConfig,
   resolveFeatureConfig,
   resolveServerConfig,
   SMARTPERFETTO_BACKEND_PORT_ENV,
@@ -34,6 +35,137 @@ describe('enterprise feature flag', () => {
 
   it('does not enable enterprise mode for unknown values', () => {
     expect(resolveFeatureConfig({ [ENTERPRISE_FEATURE_FLAG_ENV]: 'enterprise' }).enterprise).toBe(false);
+  });
+
+  it('enables enterprise behavior with minimal OIDC values and a server secret', () => {
+    const env = {
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test:3000/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'https://app.example.test:10000',
+    } as NodeJS.ProcessEnv;
+    expect(resolveAuthConfig(env)).toMatchObject({
+      mode: 'oidc',
+      oidcEnabled: true,
+      cookieSecure: true,
+    });
+    expect(resolveFeatureConfig(env).enterprise).toBe(true);
+  });
+
+  it('fails closed for partial OIDC configuration', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+    })).toThrow(/requires SMARTPERFETTO_OIDC_CLIENT_ID/);
+  });
+
+  it('requires a dedicated persistent server secret for OIDC sessions', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+      FRONTEND_URL: 'https://app.example.test',
+    })).toThrow(/SMARTPERFETTO_SERVER_SECRET/);
+  });
+
+  it('rejects plaintext OIDC URLs unless the test-only override is explicit', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'http://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'http://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'http://app.example.test',
+    })).toThrow(/absolute HTTPS URL/);
+  });
+
+  it('allows an explicit plaintext OIDC test deployment without Secure cookies', () => {
+    expect(resolveAuthConfig({
+      NODE_ENV: 'production',
+      SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP: 'true',
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'http://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'http://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'http://app.example.test',
+    })).toMatchObject({
+      mode: 'oidc',
+      allowInsecureHttp: true,
+      cookieSecure: false,
+    });
+  });
+
+  it('rejects trusted identity headers when the built-in OIDC flow is active', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      SMARTPERFETTO_SSO_TRUSTED_HEADERS: 'true',
+      FRONTEND_URL: 'https://app.example.test',
+    })).toThrow(/cannot be combined/);
+  });
+
+  it('rejects the legacy static API key when the built-in OIDC flow is active', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      SMARTPERFETTO_API_KEY: 'legacy-static-key',
+      FRONTEND_URL: 'https://app.example.test',
+    })).toThrow(/cannot be combined with SMARTPERFETTO_API_KEY/);
+  });
+
+  it('rejects cross-site frontend and callback hosts for Lax session cookies', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://backend.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'https://app.example.test',
+    })).toThrow(/same scheme and hostname/);
+  });
+
+  it('rejects a browser backend URL that cannot receive the callback cookie', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI:
+        'https://backend.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      SMARTPERFETTO_BACKEND_PUBLIC_URL: 'https://other.example.test',
+      FRONTEND_URL: 'https://backend.example.test',
+    })).toThrow(/BACKEND_PUBLIC_URL.*same scheme and hostname/i);
+  });
+
+  it('validates the public callback path before startup', () => {
+    expect(() => resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/wrong-callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'https://app.example.test',
+    })).toThrow(/must end with \/api\/auth\/oidc\/callback/);
+
+    expect(resolveAuthConfig({
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI:
+        'https://app.example.test/smartperfetto/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      SMARTPERFETTO_BACKEND_PUBLIC_URL: 'https://app.example.test/smartperfetto',
+      FRONTEND_URL: 'https://app.example.test',
+    }).mode).toBe('oidc');
   });
 });
 

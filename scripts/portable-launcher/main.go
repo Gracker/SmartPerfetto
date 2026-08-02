@@ -317,6 +317,7 @@ func runLauncher(options launchOptions) (runErr error) {
 	backendEnv := mergeEnv(baseEnv, map[string]string{
 		"NODE_ENV":                            "production",
 		"PORT":                                backendPort,
+		"FRONTEND_URL":                        frontendURL,
 		"SMARTPERFETTO_BACKEND_PORT":          backendPort,
 		"SMARTPERFETTO_BIND_HOST":             ipv4LoopbackHost,
 		"SMARTPERFETTO_FRONTEND_PORT":         frontendPort,
@@ -351,6 +352,7 @@ func runLauncher(options launchOptions) (runErr error) {
 	})
 	frontendEnv := mergeEnv(baseEnv, map[string]string{
 		"PORT":                              frontendPort,
+		"SMARTPERFETTO_ENV_FILE":             envPath,
 		"SMARTPERFETTO_BACKEND_PORT":        backendPort,
 		"SMARTPERFETTO_FRONTEND_PORT":       frontendPort,
 		"SMARTPERFETTO_FRONTEND_BIND_HOST":  ipv4LoopbackHost,

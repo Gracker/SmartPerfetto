@@ -89,15 +89,17 @@ transaction 使用签名 HttpOnly Cookie；登录完成后只把不透明签名 
 HttpOnly Cookie，具体 tenant、workspace、role、scope 和撤销/到期状态仍从企业
 SQLite 读取。
 
-OIDC 身份只负责定位 tenant/user，不直接授予工作区权限。`memberships` 中的 role 是
-授权真相，IdP claims 不能覆盖它。前端的 OIDC 组件只管理登录、workspace onboarding
-和本地退出；所有分析、Provider、codebase 与 trace 请求通过共享 credentialed fetch
-策略携带 Cookie，同时继续兼容显式 API key。身份或 workspace 改变时，AIPanel 必须
-结束旧后端 session，并重置 Trace/临时状态和 storage namespace，防止跨身份复用。
+内置 OIDC 模式只信任标准化 Issuer 与 Subject：tenant 由 Issuer 稳定派生，user id 由
+Issuer + Subject 派生。登录事务会自动创建或复用该用户唯一的个人工作区，
+`sso_personal_workspaces` 映射和数据库 trigger 阻止其他用户加入。IdP tenant、workspace
+或 role claim 都不能覆盖这条所有权边界。前端入口先完成 Session 门禁，再加载 Perfetto；
+所有分析、Provider、codebase、trace 和 Trace Processor 心跳请求都通过共享的
+credentialed fetch/header 策略携带 Cookie 与必要的 CSRF Token。本地缓存按
+tenant/user/workspace 分区，OIDC 模式不读取旧的未分区数据。
 
 Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS 本身不会阻止浏览器
-发送跨站 mutation。popup callback 只向 allowlisted `targetOrigin` 发送消息，并使用
-`no-store` 与严格 CSP。
+发送跨站 mutation；同时必须携带 Session 派生的 CSRF Token。回调建立 Session 后直接
+跳回 `FRONTEND_URL`，不使用 popup 或前端工作区选择流程。
 
 ## 4. Runtime 与 Provider
 

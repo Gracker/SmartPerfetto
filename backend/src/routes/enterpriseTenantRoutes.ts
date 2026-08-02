@@ -53,6 +53,12 @@ function canManageTenant(context: RequestContext): boolean {
     || context.roles.includes('org_admin');
 }
 
+function canReadTenantMetadata(context: RequestContext): boolean {
+  return canManageTenant(context)
+    || context.scopes.includes('tenant:metadata')
+    || context.roles.includes('tenant_admin');
+}
+
 function canManageWorkspace(context: RequestContext, workspaceId: string): boolean {
   return canManageTenant(context)
     || context.scopes.includes('workspace:manage')
@@ -69,6 +75,12 @@ function requireTenantDeletePermission(context: RequestContext, res: Response): 
 function requireTenantManagePermission(context: RequestContext, res: Response): boolean {
   if (canManageTenant(context)) return true;
   sendForbidden(res, 'Tenant management requires org_admin or tenant:manage scope');
+  return false;
+}
+
+function requireTenantMetadataPermission(context: RequestContext, res: Response): boolean {
+  if (canReadTenantMetadata(context)) return true;
+  sendForbidden(res, 'Tenant metadata requires tenant_admin, org_admin, or tenant:metadata scope');
   return false;
 }
 
@@ -100,7 +112,7 @@ router.use(authenticate);
 
 router.get('/admin/summary', (req, res) => {
   const context = requireRequestContext(req);
-  if (!requireTenantManagePermission(context, res)) return;
+  if (!requireTenantMetadataPermission(context, res)) return;
   const db = openEnterpriseDb();
   try {
     res.json(getEnterpriseAdminControlPlaneSummary(db, context));
@@ -113,7 +125,7 @@ router.get('/admin/summary', (req, res) => {
 
 router.get('/workspaces', (req, res) => {
   const context = requireRequestContext(req);
-  if (!requireTenantManagePermission(context, res)) return;
+  if (!requireTenantMetadataPermission(context, res)) return;
   const db = openEnterpriseDb();
   try {
     res.json(listEnterpriseWorkspaces(db, context));

@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
+import {resolveAuthConfig} from '../../config';
 import { openEnterpriseDb } from '../enterpriseDb';
 import {
   enterpriseDbReadAuthorityEnabled,
@@ -86,6 +87,10 @@ function enterpriseProviderDbWritesEnabled(): boolean {
 
 function legacyProviderWritesEnabled(): boolean {
   return legacyFilesystemWritesEnabled();
+}
+
+function oidcProviderWriteIsolationEnabled(): boolean {
+  return resolveAuthConfig(process.env).oidcEnabled;
 }
 
 function assertSafeScopeSegment(value: string, label: string): string {
@@ -256,6 +261,22 @@ function accessibleProviderWhere(): string {
       (scope = 'personal' AND workspace_id = @workspaceId AND owner_user_id = @userId)
       OR (scope = 'workspace' AND workspace_id = @workspaceId AND owner_user_id IS NULL)
       OR (scope = 'org' AND workspace_id IS NULL AND owner_user_id IS NULL)
+    )
+  `;
+}
+
+function writableProviderWhere(): string {
+  return `
+    tenant_id = @tenantId
+    AND (
+      (@userId IS NOT NULL
+        AND scope = 'personal'
+        AND workspace_id = @workspaceId
+        AND owner_user_id = @userId)
+      OR (@userId IS NULL
+        AND scope = 'workspace'
+        AND workspace_id = @workspaceId
+        AND owner_user_id IS NULL)
     )
   `;
 }
@@ -433,11 +454,21 @@ export class ProviderStore {
     id: string,
     scope?: ProviderScope,
   ): ProviderMutationScope {
+    const oidcWriteIsolation = oidcProviderWriteIsolationEnabled();
     if (!enterpriseProviderStoreEnabled()) {
+      if (oidcWriteIsolation && enterpriseProviderDbWritesEnabled()) {
+        const resolved = resolveProviderScope(scope);
+        const existing = this.getEnterpriseRowById(id);
+        if (existing && !this.getWritableEnterpriseRowById(id, resolved)) {
+          throw new Error(`Provider not found: ${id}`);
+        }
+      }
       return localProviderMutationScope();
     }
     const resolved = resolveProviderScope(scope);
-    const row = this.getEnterpriseRowById(id, resolved);
+    const row = oidcWriteIsolation
+      ? this.getWritableEnterpriseRowById(id, resolved)
+      : this.getAccessibleEnterpriseRowById(id, resolved);
     if (!row) throw new Error(`Provider not found: ${id}`);
     return {
       level: row.scope,
@@ -499,7 +530,13 @@ export class ProviderStore {
   private setEnterprise(provider: ProviderConfig, scope?: ProviderScope): void {
     const resolved = resolveProviderScope(scope);
     ensureEnterpriseProviderGraph(resolved);
-    const existing = this.getEnterpriseRowById(provider.id, resolved);
+    const oidcWriteIsolation = oidcProviderWriteIsolationEnabled();
+    const existing = oidcWriteIsolation
+      ? this.getWritableEnterpriseRowById(provider.id, resolved)
+      : this.getAccessibleEnterpriseRowById(provider.id, resolved);
+    if (oidcWriteIsolation && !existing && this.getEnterpriseRowById(provider.id)) {
+      throw new Error(`Provider not found: ${provider.id}`);
+    }
     const effectiveScope = existing?.scope ?? (resolved.userId ? 'personal' : 'workspace');
     const workspaceId = effectiveScope === 'org' ? null : resolved.workspaceId;
     const ownerUserId = effectiveScope === 'personal' ? resolved.userId : null;
@@ -517,36 +554,81 @@ export class ProviderStore {
 
     const db = openEnterpriseDb();
     try {
-      db.prepare(`
-        INSERT INTO provider_credentials
-          (id, tenant_id, workspace_id, owner_user_id, scope, name, type, models_json, secret_ref, policy_json, created_at, updated_at)
-        VALUES
-          (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          tenant_id = excluded.tenant_id,
-          workspace_id = excluded.workspace_id,
-          owner_user_id = excluded.owner_user_id,
-          scope = excluded.scope,
-          name = excluded.name,
-          type = excluded.type,
-          models_json = excluded.models_json,
-          secret_ref = excluded.secret_ref,
-          policy_json = excluded.policy_json,
-          updated_at = excluded.updated_at
-      `).run(
-        provider.id,
-        resolved.tenantId,
-        workspaceId,
-        ownerUserId,
-        effectiveScope,
-        provider.name,
-        provider.type,
-        JSON.stringify(provider.models),
-        secretRef,
-        JSON.stringify(policy),
-        existing?.created_at ?? toEpochMs(provider.createdAt),
-        toEpochMs(provider.updatedAt),
-      );
+      if (!oidcWriteIsolation) {
+        db.prepare(`
+          INSERT INTO provider_credentials
+            (id, tenant_id, workspace_id, owner_user_id, scope, name, type, models_json, secret_ref, policy_json, created_at, updated_at)
+          VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET
+            tenant_id = excluded.tenant_id,
+            workspace_id = excluded.workspace_id,
+            owner_user_id = excluded.owner_user_id,
+            scope = excluded.scope,
+            name = excluded.name,
+            type = excluded.type,
+            models_json = excluded.models_json,
+            secret_ref = excluded.secret_ref,
+            policy_json = excluded.policy_json,
+            updated_at = excluded.updated_at
+        `).run(
+          provider.id,
+          resolved.tenantId,
+          workspaceId,
+          ownerUserId,
+          effectiveScope,
+          provider.name,
+          provider.type,
+          JSON.stringify(provider.models),
+          secretRef,
+          JSON.stringify(policy),
+          existing?.created_at ?? toEpochMs(provider.createdAt),
+          toEpochMs(provider.updatedAt),
+        );
+      } else if (existing) {
+        const result = db.prepare(`
+          UPDATE provider_credentials
+          SET name = @name,
+              type = @type,
+              models_json = @modelsJson,
+              secret_ref = @secretRef,
+              policy_json = @policyJson,
+              updated_at = @updatedAt
+          WHERE id = @id AND ${writableProviderWhere()}
+        `).run({
+          ...resolved,
+          id: provider.id,
+          name: provider.name,
+          type: provider.type,
+          modelsJson: JSON.stringify(provider.models),
+          secretRef,
+          policyJson: JSON.stringify(policy),
+          updatedAt: toEpochMs(provider.updatedAt),
+        });
+        if (result.changes !== 1) {
+          throw new Error(`Provider not found: ${provider.id}`);
+        }
+      } else {
+        db.prepare(`
+          INSERT INTO provider_credentials
+            (id, tenant_id, workspace_id, owner_user_id, scope, name, type, models_json, secret_ref, policy_json, created_at, updated_at)
+          VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          provider.id,
+          resolved.tenantId,
+          workspaceId,
+          ownerUserId,
+          effectiveScope,
+          provider.name,
+          provider.type,
+          JSON.stringify(provider.models),
+          secretRef,
+          JSON.stringify(policy),
+          toEpochMs(provider.createdAt),
+          toEpochMs(provider.updatedAt),
+        );
+      }
       this.recordProviderSecretAudit(db, {
         action: existing ? 'provider.secret.write' : 'provider.secret.create',
         row: {
@@ -565,13 +647,16 @@ export class ProviderStore {
 
   private deleteEnterprise(id: string, scope?: ProviderScope): boolean {
     const resolved = resolveProviderScope(scope);
-    const row = this.getEnterpriseRowById(id, resolved);
+    const oidcWriteIsolation = oidcProviderWriteIsolationEnabled();
+    const row = oidcWriteIsolation
+      ? this.getWritableEnterpriseRowById(id, resolved)
+      : this.getAccessibleEnterpriseRowById(id, resolved);
     if (!row) return false;
     const db = openEnterpriseDb();
     try {
       const result = db.prepare(`
         DELETE FROM provider_credentials
-        WHERE id = @id AND ${accessibleProviderWhere()}
+        WHERE id = @id AND ${oidcWriteIsolation ? writableProviderWhere() : accessibleProviderWhere()}
       `).run({ ...resolved, id });
       if (result.changes > 0) {
         this.getSecretStore().delete(row.secret_ref);
@@ -589,7 +674,10 @@ export class ProviderStore {
 
   private rotateEnterpriseSecret(id: string, scope?: ProviderScope): number | undefined {
     const resolved = resolveProviderScope(scope);
-    const row = this.getEnterpriseRowById(id, resolved);
+    const oidcWriteIsolation = oidcProviderWriteIsolationEnabled();
+    const row = oidcWriteIsolation
+      ? this.getWritableEnterpriseRowById(id, resolved)
+      : this.getAccessibleEnterpriseRowById(id, resolved);
     if (!row) return undefined;
     const secretVersion = this.getSecretStore().rotate(row.secret_ref);
     const policy = {
@@ -601,7 +689,7 @@ export class ProviderStore {
       db.prepare(`
         UPDATE provider_credentials
         SET policy_json = @policyJson, updated_at = @updatedAt
-        WHERE id = @id AND ${accessibleProviderWhere()}
+        WHERE id = @id AND ${oidcWriteIsolation ? writableProviderWhere() : accessibleProviderWhere()}
       `).run({
         ...resolved,
         id,
@@ -621,7 +709,7 @@ export class ProviderStore {
 
   private getActiveEnterprisePeer(id: string, scope?: ProviderScope): ProviderConfig | undefined {
     const resolved = resolveProviderScope(scope);
-    const row = this.getEnterpriseRowById(id, resolved);
+    const row = this.getAccessibleEnterpriseRowById(id, resolved);
     if (!row) return undefined;
     return this.getActiveEnterpriseInCredentialScope({
       tenantId: row.tenant_id,
@@ -668,13 +756,47 @@ export class ProviderStore {
     }
   }
 
-  private getEnterpriseRowById(id: string, scope: ResolvedProviderScope): ProviderCredentialRow | undefined {
+  private getEnterpriseRowById(id: string): ProviderCredentialRow | undefined {
+    const db = openEnterpriseDb();
+    try {
+      return db.prepare<unknown[], ProviderCredentialRow>(`
+        SELECT *
+        FROM provider_credentials
+        WHERE id = ?
+        LIMIT 1
+      `).get(id);
+    } finally {
+      db.close();
+    }
+  }
+
+  private getAccessibleEnterpriseRowById(
+    id: string,
+    scope: ResolvedProviderScope,
+  ): ProviderCredentialRow | undefined {
     const db = openEnterpriseDb();
     try {
       return db.prepare<unknown[], ProviderCredentialRow>(`
         SELECT *
         FROM provider_credentials
         WHERE id = @id AND ${accessibleProviderWhere()}
+        LIMIT 1
+      `).get({ ...scope, id });
+    } finally {
+      db.close();
+    }
+  }
+
+  private getWritableEnterpriseRowById(
+    id: string,
+    scope: ResolvedProviderScope,
+  ): ProviderCredentialRow | undefined {
+    const db = openEnterpriseDb();
+    try {
+      return db.prepare<unknown[], ProviderCredentialRow>(`
+        SELECT *
+        FROM provider_credentials
+        WHERE id = @id AND ${writableProviderWhere()}
         LIMIT 1
       `).get({ ...scope, id });
     } finally {

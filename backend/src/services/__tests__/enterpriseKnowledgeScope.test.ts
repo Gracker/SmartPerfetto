@@ -31,6 +31,14 @@ const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
   enterpriseDbPath: process.env[ENTERPRISE_DB_PATH_ENV],
   migrationPhase: process.env[ENTERPRISE_MIGRATION_PHASE_ENV],
+  oidcIssuerUrl: process.env.SMARTPERFETTO_OIDC_ISSUER_URL,
+  oidcClientId: process.env.SMARTPERFETTO_OIDC_CLIENT_ID,
+  oidcClientSecret: process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET,
+  oidcRedirectUri: process.env.SMARTPERFETTO_OIDC_REDIRECT_URI,
+  serverSecret: process.env.SMARTPERFETTO_SERVER_SECRET,
+  frontendUrl: process.env.FRONTEND_URL,
+  apiKey: process.env.SMARTPERFETTO_API_KEY,
+  trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
 };
 
 const scopeA: KnowledgeScope = {
@@ -140,6 +148,14 @@ function makeEdge(overrides: Partial<CaseEdge> = {}): CaseEdge {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'enterprise-knowledge-scope-'));
   dbPath = path.join(tmpDir, 'enterprise.sqlite');
+  delete process.env.SMARTPERFETTO_OIDC_ISSUER_URL;
+  delete process.env.SMARTPERFETTO_OIDC_CLIENT_ID;
+  delete process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET;
+  delete process.env.SMARTPERFETTO_OIDC_REDIRECT_URI;
+  delete process.env.SMARTPERFETTO_SERVER_SECRET;
+  delete process.env.FRONTEND_URL;
+  delete process.env.SMARTPERFETTO_API_KEY;
+  delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
   process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
   process.env[ENTERPRISE_DB_PATH_ENV] = dbPath;
   process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
@@ -149,10 +165,52 @@ afterEach(() => {
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
   restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnv.enterpriseDbPath);
   restoreEnvValue(ENTERPRISE_MIGRATION_PHASE_ENV, originalEnv.migrationPhase);
+  restoreEnvValue('SMARTPERFETTO_OIDC_ISSUER_URL', originalEnv.oidcIssuerUrl);
+  restoreEnvValue('SMARTPERFETTO_OIDC_CLIENT_ID', originalEnv.oidcClientId);
+  restoreEnvValue('SMARTPERFETTO_OIDC_CLIENT_SECRET', originalEnv.oidcClientSecret);
+  restoreEnvValue('SMARTPERFETTO_OIDC_REDIRECT_URI', originalEnv.oidcRedirectUri);
+  restoreEnvValue('SMARTPERFETTO_SERVER_SECRET', originalEnv.serverSecret);
+  restoreEnvValue('FRONTEND_URL', originalEnv.frontendUrl);
+  restoreEnvValue('SMARTPERFETTO_API_KEY', originalEnv.apiKey);
+  restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
   fs.rmSync(tmpDir, {recursive: true, force: true});
 });
 
 describe('enterprise knowledge scope', () => {
+  it('uses DB-only scoped storage by default when OIDC is enabled', () => {
+    delete process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+    delete process.env[ENTERPRISE_MIGRATION_PHASE_ENV];
+    process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
+    process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
+      'https://app.example.test/api/auth/oidc/callback';
+    process.env.SMARTPERFETTO_SERVER_SECRET =
+      'test-server-secret-at-least-32-bytes';
+    process.env.FRONTEND_URL = 'https://app.example.test';
+
+    const legacyPath = path.join(tmpDir, 'baselines.json');
+    const baselineStore = new BaselineStore(legacyPath);
+    baselineStore.addBaseline(
+      makeBaseline({curatorNote: 'tenant-a'}),
+      scopeA,
+    );
+    baselineStore.addBaseline(
+      makeBaseline({curatorNote: 'tenant-b'}),
+      scopeB,
+    );
+
+    expect(
+      baselineStore.getBaseline(deriveBaselineId(BASELINE_KEY), scopeA)
+        ?.curatorNote,
+    ).toBe('tenant-a');
+    expect(
+      baselineStore.getBaseline(deriveBaselineId(BASELINE_KEY), scopeB)
+        ?.curatorNote,
+    ).toBe('tenant-b');
+    expect(fs.existsSync(legacyPath)).toBe(false);
+  });
+
   it('filters RAG candidates by tenant/workspace before keyword retrieval', () => {
     const store = new RagStore(path.join(tmpDir, 'rag.json'));
     store.addChunk(makeChunk({snippet: 'binder latency tenant a'}), scopeA);

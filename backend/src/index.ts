@@ -12,7 +12,7 @@ import type { Server } from 'http';
 import type { Duplex } from 'stream';
 
 // Import configuration
-import { resolveFeatureConfig, serverConfig } from './config';
+import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
@@ -479,6 +479,11 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 async function startBackend(): Promise<void> {
+  // Validate the selected browser authentication contract before starting any
+  // workers or opening the listener. Partial OIDC configuration must fail
+  // closed instead of silently becoming a development identity.
+  resolveAuthConfig(process.env);
+
   const startup = await reconcileSelfEvolutionOnStartup({
     lifecycle: selfEvolutionLifecycle,
     traceProcessorVersion:

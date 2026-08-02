@@ -67,6 +67,7 @@ describe('enterprise SQLite WAL database', () => {
         { version: 13 },
         { version: 14 },
         { version: 15 },
+        { version: 16 },
       ]);
     } finally {
       db.close();

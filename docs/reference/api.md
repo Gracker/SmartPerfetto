@@ -12,44 +12,19 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` 是部署运维凭证；企业用户应使用带明确角色和 scope 的持久化
 API key。
 
-## OIDC 与浏览器会话 API
-
-Base path：`/api/auth`。这些 bootstrap 接口自行决定公开/会话边界，不经过普通
-`/api` 鉴权中间件；成功登录后的其余 API 仍统一鉴权。
+## OIDC 鉴权
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| `GET` | `/config` | 公开返回 enterprise/OIDC 是否启用、issuer、client ID、scope 与登录路径；不返回 secret |
-| `GET` | `/oidc/login?returnTo=<url>` | 创建 10 分钟的签名 state/nonce/PKCE transaction，并重定向到 IdP；绝对回跳必须属于 `CORS_ORIGINS`，同后端相对地址必须以单个 `/` 开头且不能包含反斜杠 |
-| `GET` | `/oidc/callback` | 校验 code、state、PKCE、ID Token 和 nonce，设置 HttpOnly session Cookie；popup 响应为 no-store + CSP |
-| `GET` | `/session` | 返回当前用户、tenant、workspace、roles/scopes、可用 workspace 与到期时间；不返回 session token |
-| `POST` | `/onboarding/workspace` | 从持久化 membership 中选择 workspace；Cookie 请求必须带 allowlisted `Origin` |
-| `POST` | `/logout` | 撤销 SmartPerfetto 本地会话并清 Cookie；不会退出 IdP 全局会话 |
+| `GET` | `/api/auth/oidc/login` | 创建签名 state、nonce 和 PKCE，跳转到 OIDC Provider |
+| `GET` | `/api/auth/oidc/callback` | 校验回调、建立 HttpOnly Session Cookie，并跳回前端 |
+| `GET` | `/api/auth/session` | 返回登录状态、只读 user/tenant/workspace、roles/scopes、过期时间和 CSRF Token |
+| `POST` | `/api/auth/logout` | 校验 Cookie Session 的 CSRF Token，撤销 Session 并清除 Cookie |
 
-浏览器请求必须使用 `credentials: include`。工作区选择成功后的 session 示例：
-
-```json
-{
-  "success": true,
-  "authenticated": true,
-  "status": "ready",
-  "tenantId": "tenant-a",
-  "userId": "sso-0123456789abcdef",
-  "workspaceId": "workspace-a",
-  "email": "alice@example.com",
-  "roles": ["analyst"],
-  "scopes": ["trace:read", "trace:write", "agent:run", "report:read"],
-  "workspaces": [
-    {"workspaceId": "workspace-a", "name": "Workspace A", "role": "analyst"}
-  ],
-  "expiresAt": 1760000000000
-}
-```
-
-未登录时 `/session` 返回
-`{"success":true,"authenticated":false}`。存在合法身份但没有 workspace 时，
-`status` 为 `needs_workspace_selection` 或 `no_workspace_membership`；这种 session
-不能访问普通受保护 API。
+OIDC Session 是请求身份的唯一来源。浏览器请求必须使用
+`credentials: include`，写请求还必须携带 `X-CSRF-Token`。浏览器提供的
+tenant/workspace header 不能覆盖 Session 绑定；内置个人工作区模式不提供工作区切换，
+不同用户即使看到相同工作区显示名称也不会共享内部 Workspace ID 或数据。
 
 ## 健康检查
 

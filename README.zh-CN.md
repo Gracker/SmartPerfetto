@@ -211,6 +211,11 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
 
 上传文件、日志和 Provider Manager profile 保存在 Docker volume 中，容器重启后仍会保留。
 
+共享部署可以启用内置 OIDC 门禁。启用后，未登录用户只会看到登录页，Perfetto 主程序不会
+加载；每个 OIDC 用户由后端固定到独立的个人工作区，AI 设置页不再允许修改工作区、后端
+地址或 API Key。完整环境变量和 HTTP 联调限制见
+[配置说明](docs/getting-started/configuration.md#oidc-浏览器登录)。
+
 ### 免安装包
 
 如果用户不想安装 Docker，可以使用维护者打出的 Windows、macOS、Linux 免安装包。包内包含 Node.js 24 runtime、目标平台原生 `node_modules`、预构建 Perfetto UI、后端运行时代码、固定版本的 `trace_processor_shell` 和签名 Android Internals Knowledge Pack。
@@ -417,9 +422,9 @@ npm CLI 包是正式独立终端产品，不启动也不包含 Web UI launcher�
 
 本地单人使用时不要设置 `SMARTPERFETTO_API_KEY` 也可以正常运行。如果后端不只在本机使用，建议在 `backend/.env` 设置它。开启后，受保护接口需要带上 `Authorization: Bearer <token>`。这个静态 key 是具有本地管理权限的部署运维凭证，不应分发给普通用户。
 
-企业浏览器登录支持标准 OIDC Authorization Code + PKCE。配置 issuer、client、回调地址、精确的前端 origin 以及租户/工作区成员关系后，用户可以直接在 **AI Assistant Settings** 中登录、切换已授权工作区并退出。浏览器会话使用 HttpOnly Cookie，工作区角色以 SmartPerfetto 持久化的成员关系为准，不信任用户可自报的 IdP role claim。配置方式见[配置说明](docs/getting-started/configuration.md#企业-oidc-登录)，接口合约见 [API 参考](docs/reference/api.md#oidc-与浏览器会话-api)。
+企业浏览器登录使用 OIDC Authorization Code + PKCE 作为部署级门禁。后端从 Issuer 派生稳定租户，并为每个 OIDC Subject 创建独立个人工作区；用户不能在 AI Assistant 设置里选择后端、API Key 或工作区。浏览器会话使用 HttpOnly Cookie，写请求需要 Session 返回的 CSRF Token。未配置 OIDC 时不启用登录门禁，普通用户仍按原来的本地/静态方式打开 Perfetto。配置方式见[配置说明](docs/getting-started/configuration.md#oidc-浏览器登录)，接口合约见 [API 参考](docs/reference/api.md#oidc-鉴权)。
 
-企业或共享部署还应单独设置至少 32 字节的 `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`。它只用于签发 trace-processor proxy 的短期浏览器 WebSocket capability，长期 backend API key 不会被放进 URL；轮换该 secret 会立即使尚未过期的 capability 失效。Docker Compose 会通过项目根目录的 `.env` 传入该变量。
+OIDC 部署必须设置独立且至少 32 字节的 `SMARTPERFETTO_SERVER_SECRET`。SmartPerfetto 会从它派生浏览器 Session 和内部能力票据各自的签名密钥；`SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET` 只作为 trace-processor 独立轮换的可选覆盖项。
 
 ## 架构
 

@@ -3,6 +3,24 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+# `sh start.sh` ignores the Bash shebang. Re-exec before the shell reaches
+# Bash-only syntax such as process substitution in start_with_logs(). macOS
+# /bin/sh reports BASH_VERSION but runs Bash in POSIX mode, so detect that too.
+smartperfetto_needs_bash=false
+if [ -z "${BASH_VERSION:-}" ]; then
+  smartperfetto_needs_bash=true
+elif command -v shopt >/dev/null 2>&1 && shopt -qo posix; then
+  smartperfetto_needs_bash=true
+fi
+if [ "$smartperfetto_needs_bash" = true ]; then
+  if command -v bash >/dev/null 2>&1; then
+    exec bash "$0" "$@"
+  fi
+  echo "ERROR: SmartPerfetto start.sh requires Bash." >&2
+  exit 1
+fi
+unset smartperfetto_needs_bash
+
 # SmartPerfetto Quick Start
 # Uses pre-built frontend (no Perfetto submodule required) + backend with tsx watch.
 #

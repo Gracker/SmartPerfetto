@@ -232,6 +232,13 @@ Stop the container with `docker compose -f docker-compose.hub.yml down`.
 
 Uploads, logs, and Provider Manager profiles are stored in Docker volumes, so they survive container restarts.
 
+Shared deployments can enable the built-in OIDC gate. Unauthenticated users
+then see only the login page and the Perfetto application is not loaded. The
+backend binds each OIDC user to an isolated personal workspace, while AI
+settings no longer expose workspace, backend URL, or API-key controls. See
+[Configuration](docs/getting-started/configuration.en.md#oidc-browser-login)
+for the environment contract and plaintext-HTTP test restriction.
+
 If analysis fails with `Claude Code native binary not found at .../claude-agent-sdk-linux-x64-musl/claude` (or the glibc variant), this is the SDK's per-platform native binary auto-selection misfiring inside the container — it is unrelated to your AI provider configuration. The backend will normally auto-fall-back to an installed sibling variant; if it still mispicks, set `CLAUDE_BINARY_PATH` in `.env` to the actual installed binary. See `.env.example` for details.
 
 ### Portable Packages
@@ -461,9 +468,9 @@ The browser UI talks to the backend through REST and SSE. If you want to build y
 
 Leave `SMARTPERFETTO_API_KEY` unset for local single-user runs. Set it in `backend/.env` only if you expose the backend beyond your local machine. Protected APIs then require `Authorization: Bearer <token>`. This static key is the deployment-operator credential with local administration authority; do not distribute it to ordinary users.
 
-Enterprise browser SSO supports standards-based OIDC Authorization Code + PKCE. Configure the issuer, client, callback URL, exact frontend origin, and tenant/workspace membership; users can then sign in, switch authorized workspaces, and sign out from **AI Assistant Settings**. Browser sessions use an HttpOnly cookie, while workspace roles come from SmartPerfetto's durable membership store instead of self-asserted IdP role claims. See [Configuration](docs/getting-started/configuration.en.md#enterprise-oidc-sign-in) and the [API Reference](docs/reference/api.en.md#oidc-and-browser-session-api).
+Enterprise browser SSO uses OIDC Authorization Code + PKCE as a deployment-level gate. The backend derives a stable tenant from the issuer and creates one isolated personal workspace per OIDC subject; users do not choose a backend, API key, or workspace in AI Assistant settings. Browser sessions use an HttpOnly cookie and write requests require the session CSRF token. When OIDC is not configured, the login gate stays disabled and ordinary users keep the original local/static Perfetto startup path. See [Configuration](docs/getting-started/configuration.en.md#oidc-browser-login) and the [API Reference](docs/reference/api.en.md#oidc-authentication).
 
-For enterprise or shared deployments, also set a dedicated 32-byte-or-longer `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`. It signs only the short-lived browser WebSocket capability used by the trace-processor proxy, so the long-lived backend API key is never placed in a URL. Rotating this secret invalidates outstanding capabilities. Docker Compose passes it through the project `.env` file.
+OIDC deployments require a separate 32-byte-or-longer `SMARTPERFETTO_SERVER_SECRET`. SmartPerfetto derives purpose-specific keys from it for browser sessions and internal capabilities. `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET` remains an optional trace-processor-only rotation override.
 
 ## Architecture
 

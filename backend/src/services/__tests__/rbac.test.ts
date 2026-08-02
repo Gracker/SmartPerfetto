@@ -57,6 +57,12 @@ describe('enterprise RBAC matrix', () => {
     expect(hasRbacPermission(context('workspace_admin'), 'self_evolution:export')).toBe(true);
     expect(hasRbacPermission(context('workspace_admin'), 'self_evolution:revert')).toBe(true);
 
+    expect(hasRbacPermission(context('personal_workspace_owner'), 'trace:delete_any')).toBe(true);
+    expect(hasRbacPermission(context('personal_workspace_owner'), 'provider:manage_workspace')).toBe(true);
+    expect(hasRbacPermission(context('personal_workspace_owner'), 'runtime:manage')).toBe(false);
+    expect(hasRbacPermission(context('personal_workspace_owner'), 'audit:read')).toBe(false);
+    expect(hasRbacPermission(context('personal_workspace_owner'), 'self_evolution:apply')).toBe(false);
+
     expect(hasRbacPermission(context('org_admin'), 'provider:manage_org')).toBe(true);
     expect(hasRbacPermission(context('org_admin'), 'runtime:manage')).toBe(true);
     expect(hasRbacPermission(context('org_admin'), 'codebase:admin')).toBe(true);

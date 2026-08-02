@@ -4,8 +4,9 @@
 
 import crypto from 'crypto';
 
-import {resolveFeatureConfig} from '../config';
+import {resolveAuthConfig, resolveFeatureConfig} from '../config';
 import type {RequestContext, RequestContextAuthType} from '../middleware/auth';
+import {deriveServerSecret, resetServerSecretForTests} from '../security/serverSecret';
 
 export const TRACE_PROCESSOR_CAPABILITY_SECRET_ENV =
   'SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET';
@@ -35,6 +36,13 @@ export interface TraceProcessorProxyCapability {
 let devProcessSecret: Buffer | undefined;
 
 function capabilitySecret(): Buffer {
+  if (resolveAuthConfig(process.env).oidcEnabled) {
+    return deriveServerSecret({
+      purpose: 'trace-processor-capability',
+      preferredEnvKeys: [TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
+      minimumBytes: MIN_SECRET_BYTES,
+    });
+  }
   const configured = [
     process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
     process.env.SMARTPERFETTO_SSO_COOKIE_SECRET,
@@ -171,6 +179,7 @@ export function stripTraceProcessorCapabilityProtocols(
 
 export function resetTraceProcessorProxyCapabilitiesForTests(): void {
   devProcessSecret = undefined;
+  resetServerSecretForTests();
 }
 
 export const __testing = {

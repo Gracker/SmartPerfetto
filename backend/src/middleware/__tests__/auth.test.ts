@@ -14,6 +14,15 @@ import {
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
+const oidcEnvKeys = [
+  'SMARTPERFETTO_OIDC_ISSUER_URL',
+  'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_CLIENT_SECRET',
+  'SMARTPERFETTO_OIDC_REDIRECT_URI',
+] as const;
+const originalOidcEnv = Object.fromEntries(
+  oidcEnvKeys.map(key => [key, process.env[key]]),
+);
 
 function makeProbeApp(middleware = authenticate): express.Express {
   const app = express();
@@ -43,6 +52,10 @@ afterEach(() => {
     delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
   } else {
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = originalSsoTrustedHeaders;
+  }
+  for (const key of oidcEnvKeys) {
+    if (originalOidcEnv[key] === undefined) delete process.env[key];
+    else process.env[key] = originalOidcEnv[key];
   }
 });
 
@@ -176,6 +189,46 @@ describe('authenticate RequestContext', () => {
       authType: 'api_key',
       roles: ['org_admin'],
       scopes: ['*'],
+    });
+  });
+
+  it('does not allow the legacy static API key to bypass built-in OIDC', async () => {
+    process.env.SMARTPERFETTO_API_KEY = 'test-secret';
+    process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
+    process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
+      'https://app.example.test/api/auth/oidc/callback';
+
+    const res = await request(makeProbeApp())
+      .get('/probe')
+      .set('Authorization', 'Bearer test-secret')
+      .set('X-Tenant-Id', 'tenant-a')
+      .set('X-Workspace-Id', 'workspace-a');
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({
+      error: 'Unauthorized',
+      details: 'OIDC session authentication is required',
+    });
+  });
+
+  it('treats a malformed OIDC session cookie as unauthorized instead of failing', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
+    process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
+      'https://app.example.test/api/auth/oidc/callback';
+
+    const res = await request(makeProbeApp())
+      .get('/probe')
+      .set('Cookie', 'sp_sso_session=%');
+
+    expect(res.status).toBe(401);
+    expect(res.body).toEqual({
+      error: 'Unauthorized',
+      details: 'OIDC session authentication is required',
     });
   });
 
