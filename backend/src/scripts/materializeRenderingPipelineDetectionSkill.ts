@@ -59,8 +59,7 @@ export function serializePortableRenderingPipelineDetectionSkill(
   const serialized = GENERATED_HEADER + yaml.dump(skill, {
     noRefs: true,
     lineWidth: -1,
-    noCompatMode: true,
-    quotingType: '"',
+    quoteStyle: 'double',
   });
   return serialized.replace(/[ \t]+$/gm, '');
 }
