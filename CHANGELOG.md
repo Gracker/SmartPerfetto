@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
-## [Unreleased]
+## [1.4.0] - 2026-08-03
 
 ### Added
 - Enterprise OIDC now provides an off-by-default discovery/login/callback
