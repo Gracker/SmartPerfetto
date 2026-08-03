@@ -79,6 +79,26 @@ backend 与 frontend。
 | CLI | `backend/src/cli-user/` | `smp` / `smartperfetto` 命令、session/history/report export |
 | Comparison services | `backend/src/services/comparison*Service.ts` | Raw trace 与 analysis-result 对比共享证据/报告 contract |
 
+## 双 Trace Engine 边界
+
+Web UI 打开 trace 后会形成两条用途不同的处理路径：
+
+```text
+本地时间线与 Perfetto 插件
+  浏览器 -> WasmEngineProxy -> 提交在 frontend/ 中的 trace_processor.wasm
+
+AI、SQL、Skill、CLI 与报告证据
+  浏览器后台上传 -> /api/traces/upload
+    -> TraceProcessorService -> scripts/trace-processor-pin.env 固定的 trace_processor_shell
+```
+
+第一条路径只服务浏览器内的时间线、轨道和 Perfetto 插件查询；第二条路径是
+SmartPerfetto AI 证据与自动化契约的权威执行面。两个 engine 可以使用经过独立审查的
+不同 Perfetto pin，当前具体身份分别由提交的 `frontend/` 目录名和
+`scripts/trace-processor-pin.env` 声明。浏览器 WASM 新增的表、模块、解析格式或 SQL
+能力，在 native pin 完成五平台预构建、回归与发布门禁前，不得被 Skills、Strategies、
+CLI 或 AI 报告宣称为可用。
+
 ## 主分析数据流
 
 OIDC 模式下，静态入口先通过 `/api/auth/session` 完成门禁，未就绪时不加载 Perfetto
@@ -88,7 +108,9 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 
 ```text
 1. 用户加载 trace
-   UI -> /api/traces/upload -> TraceProcessorService -> trace_processor_shell
+   UI -> WasmEngineProxy -> frontend/trace_processor.wasm（本地时间线与插件）
+      -> 后台 /api/traces/upload -> TraceProcessorService
+         -> pinned trace_processor_shell（AI / SQL / Skill）
 
 2. 用户发起分析
    UI -> POST /api/agent/v1/analyze

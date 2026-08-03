@@ -31,6 +31,26 @@ Output:
 - The UI streams progress, SQL/Skill evidence, tables, and the final conclusion.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
 
+### Browser Trace Tools And Local WASM
+
+The committed Perfetto frontend also includes trace exploration capabilities
+that run directly in the browser:
+
+- Trace Doctor diagnostics and a unified Stack Samples/flamegraph entry point.
+- Raw multi-trace open/merge, Video Frames, and Pixel input-lifecycle and CUJ
+  views.
+- Experimental Memscope/OOM views, shown only when the trace contains the
+  required data and the corresponding experimental capability is available.
+- Local WASM parsing for zstd-compressed traces and `strace -ttt` input, plus
+  Perfetto UI query flows that execute multiple SQL statements at once.
+
+These capabilities belong to the local browser timeline and Perfetto plugins.
+Raw multi-trace open/merge is separate from SmartPerfetto dual-trace AI
+comparison, and new WASM capabilities do not automatically extend backend AI,
+Skills, CLI, or HTML reports. Those surfaces continue to use the packaged,
+pinned native `trace_processor_shell` until an independent upgrade passes the
+five-platform verification gates.
+
 ### Smart Analysis Mode
 
 Auto mode is designed for traces that contain a full test script, such as cold start, warm start, scrolling, taps, Back/Home, screen on/off, and another launch in one recording. It does not deep-dive every scene immediately. Instead, the main AI panel first returns a scene inventory:

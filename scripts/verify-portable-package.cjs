@@ -1187,8 +1187,7 @@ function main() {
   const engineBundleEntry = `${packageName}/${frontendRoot}/${frontendStableVersion}/engine_bundle.js`;
   const engineBundleText = readExtractedText(extractedRoot, engineBundleEntry);
   assert(
-    engineBundleText.includes('function requireTrace_processor()') &&
-      engineBundleText.includes('return locateFile("trace_processor.wasm")'),
+    engineBundleText.includes('"trace_processor.wasm"'),
     `${engineBundleEntry} is missing classic trace_processor.wasm loader glue`,
   );
 

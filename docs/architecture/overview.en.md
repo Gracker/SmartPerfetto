@@ -83,6 +83,29 @@ and frontend readiness.
 | CLI | `backend/src/cli-user/` | `smp` / `smartperfetto` commands, session/history/report export |
 | Comparison services | `backend/src/services/comparison*Service.ts` | Shared evidence/report contract for raw-trace and analysis-result comparison |
 
+## Dual Trace Engine Boundary
+
+Opening a trace in the Web UI creates two processing paths with different
+responsibilities:
+
+```text
+Local timeline and Perfetto plugins
+  browser -> WasmEngineProxy -> trace_processor.wasm committed under frontend/
+
+AI, SQL, Skills, CLI, and report evidence
+  browser background upload -> /api/traces/upload
+    -> TraceProcessorService -> trace_processor_shell pinned by scripts/trace-processor-pin.env
+```
+
+The first path serves only in-browser timeline, track, and Perfetto plugin
+queries. The second path is the authoritative execution surface for
+SmartPerfetto AI evidence and automation contracts. The two engines may use
+independently reviewed Perfetto pins; their current identities are declared by
+the committed `frontend/` directory name and `scripts/trace-processor-pin.env`.
+A table, module, input format, or SQL capability added to browser WASM must not
+be claimed by Skills, Strategies, the CLI, or AI reports until the native pin
+passes the five-platform prebuild, regression, and release gates.
+
 ## Main Analysis Data Flow
 
 In OIDC mode, the static entry point gates startup through `/api/auth/session`
@@ -95,7 +118,9 @@ metadata-only visibility.
 
 ```text
 1. User loads a trace
-   UI -> /api/traces/upload -> TraceProcessorService -> trace_processor_shell
+   UI -> WasmEngineProxy -> frontend/trace_processor.wasm (local timeline and plugins)
+      -> background /api/traces/upload -> TraceProcessorService
+         -> pinned trace_processor_shell (AI / SQL / Skills)
 
 2. User starts analysis
    UI -> POST /api/agent/v1/analyze

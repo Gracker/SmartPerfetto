@@ -18,6 +18,10 @@ import type { TraceProcessorService } from '../../services/traceProcessorService
 import * as quickEvidenceDirectAnswer from '../../agentRuntime/quickEvidenceDirectAnswer';
 import {evaluationRuntimeCapabilities} from '../../services/selfEvolution/evaluationRuntimeCapabilities';
 import {
+  clearCodeAwareOutputGuards,
+  registerCodeAwareCanary,
+} from '../../services/security/codeAwareOutputRegistry';
+import {
   snapshotEvaluationUsageReceipt,
   withEvaluationTelemetry,
 } from '../../services/selfEvolution/evaluationTelemetry';
@@ -75,6 +79,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   claudeSdkMock.__resetQueryMock();
+  clearCodeAwareOutputGuards('session-private-stream-recovery');
   sessionContextManager.remove('session-a');
   sessionContextManager.remove('session-quick');
   sessionContextManager.remove('session-quick-focus-evidence');
@@ -97,6 +102,108 @@ afterEach(async () => {
 });
 
 describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
+  it('does not manufacture a final report from completed plan evidence', () => {
+    const recovered = __testing.recoverClaudeInterruptedFinalReport({
+      accumulatedAnswer: '',
+      plan: {
+        phases: [
+          {
+            id: 'p1',
+            name: '启动概览',
+            goal: '确认启动指标',
+            expectedTools: ['invoke_skill'],
+            status: 'completed',
+            summary: '冷启动 TTID=1912ms，证据来自 art-1。',
+          },
+          {
+            id: 'p2',
+            name: '综合结论',
+            goal: '输出最终报告',
+            expectedTools: [],
+            status: 'pending',
+          },
+        ],
+        successCriteria: '形成可验证结论',
+        submittedAt: 1,
+        toolCallLog: [],
+      },
+      hypotheses: [],
+      outputLanguage: 'zh-CN',
+    });
+
+    expect(recovered).toBeUndefined();
+  });
+
+  it('preserves an evidence-backed truncated answer when recovering an interrupted report', () => {
+    const recovered = __testing.recoverClaudeInterruptedFinalReport({
+      accumulatedAnswer: [
+        '# 启动性能分析报告',
+        '',
+        '## 综合结论',
+        '',
+        '冷启动 TTID=1912ms，主线程热点 568.8ms，证据来自 art-1。',
+        '',
+        '## 优化建议',
+        '',
+        '- 拆分主线程初始化中的同步热点任务',
+      ].join('\n'),
+      plan: null,
+      hypotheses: [],
+      outputLanguage: 'zh-CN',
+    });
+
+    expect(recovered).toContain('冷启动 TTID=1912ms，主线程热点 568.8ms');
+    expect(recovered).not.toContain('拆分主线程初始化中的同步热点任务');
+    expect(recovered).toContain('## 截断恢复补充');
+  });
+
+  it('rejects metric-bearing process narration instead of promoting plan evidence', () => {
+    const recovered = __testing.recoverClaudeInterruptedFinalReport({
+      accumulatedAnswer:
+        '我需要继续执行 Phase 2，并调用 update_plan_phase。当前看到 TTID=9999ms，但还不能输出结论。',
+      plan: {
+        phases: [{
+          id: 'p1',
+          name: '启动概览',
+          goal: '确认启动指标',
+          expectedTools: ['invoke_skill'],
+          status: 'completed',
+          summary: '已验证冷启动 TTID=1912ms，证据来自 art-1。',
+        }],
+        successCriteria: '形成可验证结论',
+        submittedAt: 1,
+        toolCallLog: [],
+      },
+      hypotheses: [],
+      outputLanguage: 'zh-CN',
+    });
+
+    expect(recovered).toBeUndefined();
+  });
+
+  it('only treats bounded mid-stream failures as recoverable', () => {
+    const recoverable = (errorMessage: string, hasPartialEvidence = true) =>
+      __testing.isRecoverableClaudeStreamInterruption({
+        errorMessage,
+        streamStarted: true,
+        hasPartialEvidence,
+        quotaExceeded: false,
+      });
+
+    expect(recoverable('stream terminated before completion')).toBe(true);
+    expect(recoverable('Claude analysis error after tool execution')).toBe(false);
+    expect(recoverable('Claude analysis error after tool execution', false)).toBe(false);
+    expect(recoverable('401 unauthorized: invalid API key')).toBe(false);
+    expect(recoverable('No conversation found with session ID sdk-a')).toBe(false);
+    expect(recoverable('permission denied for configured cwd')).toBe(false);
+    expect(__testing.isRecoverableClaudeStreamInterruption({
+      errorMessage: 'stream terminated before completion',
+      streamStarted: true,
+      hasPartialEvidence: true,
+      quotaExceeded: true,
+    })).toBe(false);
+  });
+
   it('does not mark a correction timeout partial when the existing conclusion is deliverable', () => {
     const conclusion =
       '我来分析这个 WebView 应用的启动性能。首先提交分析计划并获取启动概览数据。计划已提交。开始 Phase 1：获取启动概览数据。\n\n' +
@@ -1594,6 +1701,187 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(runtime.getSdkSessionId(sessionId)).toBeUndefined();
       expect(JSON.stringify(Array.from((runtime as any).sessionMap.values())))
         .not.toContain('sdk-private-session-canary');
+    } finally {
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('keeps generic SDK execution errors failed after an evidence-backed streamed answer', async () => {
+    const sessionId = 'session-generic-stream-failure';
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: ['cnt'], rows: [[0]]}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set('trace-generic-stream-failure', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    const updates: Array<{type?: string; content?: Record<string, unknown>}> = [];
+    runtime.on('update', update => updates.push(update as any));
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'assistant',
+        session_id: 'sdk-generic-stream-failure',
+        message: {
+          content: [{
+            type: 'text',
+            text: [
+              '# 启动性能分析报告',
+              '',
+              '## 综合结论',
+              '',
+              '冷启动 TTID=1912ms，证据来自 art-1。',
+              '',
+              '## 关键证据链',
+              '',
+              '- art-1: 主线程热点 568.8ms。',
+              '',
+              '## 优化建议',
+              '',
+              '- 拆分主线程同步初始化。',
+            ].join('\n'),
+          }],
+        },
+      };
+      yield {
+        type: 'result',
+        subtype: 'error_during_execution',
+        session_id: 'sdk-generic-stream-failure',
+        num_turns: 2,
+        errors: ['Claude analysis error after tool execution'],
+      };
+    });
+
+    try {
+      const result = await runtime.analyze(
+        '分析启动性能',
+        sessionId,
+        'trace-generic-stream-failure',
+        {analysisMode: 'full'},
+      );
+
+      expect(result).toMatchObject({
+        success: false,
+        terminationReason: 'execution_error',
+      });
+      expect(result.partial).not.toBe(true);
+      expect(result.conclusion).toContain('分析过程中出错');
+      expect(updates).not.toContainEqual(expect.objectContaining({
+        type: 'degraded',
+        content: expect.objectContaining({
+          fallback: 'partial_result_after_stream_termination',
+        }),
+      }));
+    } finally {
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it.each([
+    {
+      name: 'stream execution failure',
+      subtype: 'error_during_execution',
+      errors: ['stream terminated before completion'],
+      terminationReason: 'execution_error',
+      fallback: 'partial_result_after_stream_termination',
+    },
+    {
+      name: 'maximum-turn termination',
+      subtype: 'error_max_turns',
+      errors: ['maximum turns reached'],
+      terminationReason: 'max_turns',
+      fallback: 'partial_result_after_max_turns',
+    },
+  ])('sanitizes a private streamed report before returning after $name', async ({
+    subtype,
+    errors,
+    terminationReason,
+    fallback,
+  }) => {
+    const sessionId = 'session-private-stream-recovery';
+    const privateCanary = 'PRIVATE_STREAM_RECOVERY_CANARY';
+    registerCodeAwareCanary(sessionId, privateCanary);
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: ['cnt'], rows: [[0]]}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set('trace-private-stream-recovery', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    const updates: Array<{type?: string; content?: Record<string, unknown>}> = [];
+    runtime.on('update', update => updates.push(update as any));
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'assistant',
+        session_id: 'sdk-private-stream-recovery',
+        message: {
+          content: [{
+            type: 'text',
+            text: [
+              '# 启动性能分析报告',
+              '',
+              '## 综合结论',
+              '',
+              `冷启动 TTID=1912ms，证据来自 art-1。${privateCanary}`,
+              '',
+              '## 关键证据链',
+              '',
+              '- art-1: 主线程热点 568.8ms。',
+              '',
+              '## 优化建议',
+              '',
+              '- 拆分主线程同步初始化。',
+            ].join('\n'),
+          }],
+        },
+      };
+      yield {
+        type: 'result',
+        subtype,
+        session_id: 'sdk-private-stream-recovery',
+        num_turns: 2,
+        errors,
+      };
+    });
+
+    try {
+      const result = await runtime.analyze(
+        '分析私有源码启动热点',
+        sessionId,
+        'trace-private-stream-recovery',
+        {
+          analysisMode: 'full',
+          codeAwareMode: 'metadata_only',
+          codebaseIds: ['private-app'],
+          tenantId: 'tenant-private',
+          workspaceId: 'workspace-private',
+          userId: 'user-private',
+        },
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        partial: true,
+        terminationReason,
+      });
+      expect(result.conclusion).toContain('TTID=1912ms');
+      expect(JSON.stringify(result)).not.toContain(privateCanary);
+      expect(updates).toContainEqual(expect.objectContaining({
+        type: 'degraded',
+        content: expect.objectContaining({
+          fallback,
+          partial: true,
+        }),
+      }));
     } finally {
       sessionContextManager.remove(sessionId);
     }

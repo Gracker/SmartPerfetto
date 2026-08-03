@@ -85,6 +85,7 @@ if (!exists(indexPath)) {
 
       for (const required of [
         'frontend_bundle.js',
+        'frontend.css',
         'engine_bundle.js',
         'traceconv_bundle.js',
         'trace_processor.wasm',
@@ -118,11 +119,30 @@ if (!exists(indexPath)) {
         }
         if (bundle === 'engine_bundle.js' && exists(bundlePath)) {
           const bundleText = readText(bundlePath);
-          if (
-            !bundleText.includes('function requireTrace_processor()') ||
-            !bundleText.includes('return locateFile("trace_processor.wasm")')
-          ) {
+          if (!bundleText.includes('"trace_processor.wasm"')) {
             fail(`${path.relative(root, bundlePath)} is missing classic trace_processor.wasm loader glue`);
+          }
+        }
+      }
+
+      const cssPath = path.join(versionDir, 'frontend.css');
+      if (exists(cssPath)) {
+        const cssText = readText(cssPath);
+        const cssAssetUrls = [...cssText.matchAll(/url\(\s*(["']?)([^"')]+)\1\s*\)/g)]
+          .map(match => match[2])
+          .filter(assetUrl => !/^(?:data:|https?:)/.test(assetUrl));
+        for (const assetUrl of [...new Set(cssAssetUrls)].sort()) {
+          const pathname = assetUrl.split(/[?#]/, 1)[0];
+          const assetPath = pathname.startsWith('/')
+            ? path.join(frontendDir, pathname.slice(1))
+            : path.resolve(versionDir, pathname);
+          const relativeAssetPath = path.relative(frontendDir, assetPath);
+          if (relativeAssetPath.startsWith('..') || path.isAbsolute(relativeAssetPath)) {
+            fail(`frontend CSS asset escapes frontend/: ${assetUrl}`);
+          } else if (!exists(assetPath)) {
+            fail(`frontend CSS references missing asset: ${path.relative(root, assetPath)}`);
+          } else if (fileSize(assetPath) === 0) {
+            fail(`frontend CSS asset is empty: ${path.relative(root, assetPath)}`);
           }
         }
       }

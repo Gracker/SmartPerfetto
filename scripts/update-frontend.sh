@@ -50,6 +50,42 @@ inject_smartperfetto_static_assets() {
   mv "$tmp" "$index_file"
 }
 
+normalize_frontend_font_asset_paths() {
+  local css_file="$1"
+  local version_dir="$2"
+
+  node - "$css_file" "$version_dir" <<'NODE'
+const fs = require('fs');
+const path = require('path');
+
+const [cssPath, versionDir] = process.argv.slice(2);
+const css = fs.readFileSync(cssPath, 'utf8');
+let replacements = 0;
+const normalized = css.replace(
+  /url\(\s*(["']?)([^"')]+\.woff2(?:[?#][^"')]+)?)\1\s*\)/g,
+  (full, quote, assetUrl) => {
+    if (/^(?:data:|https?:|\/)/.test(assetUrl)) return full;
+    const suffixIndex = assetUrl.search(/[?#]/);
+    const pathname = suffixIndex === -1 ? assetUrl : assetUrl.slice(0, suffixIndex);
+    const suffix = suffixIndex === -1 ? '' : assetUrl.slice(suffixIndex);
+    const basename = path.posix.basename(pathname);
+    const assetPath = path.join(versionDir, 'assets', basename);
+    if (!fs.existsSync(assetPath)) {
+      throw new Error(`CSS font asset is missing: ${assetPath}`);
+    }
+    const expectedUrl = `assets/${basename}${suffix}`;
+    if (assetUrl === expectedUrl) return full;
+    replacements += 1;
+    return `url(${quote}${expectedUrl}${quote})`;
+  },
+);
+if (replacements > 0) {
+  fs.writeFileSync(cssPath, normalized);
+  console.log(`Normalized ${replacements} frontend font URL(s)`);
+}
+NODE
+}
+
 # Find the versioned dist directory
 VERSION_DIR=$(find "$DIST_DIR" -maxdepth 1 -type d -name 'v*' -print 2>/dev/null | sort -V | tail -n 1 || true)
 if [ -z "$VERSION_DIR" ]; then
@@ -85,29 +121,12 @@ is_usable_runtime_bundle() {
   if [ "$(wc -c < "$candidate")" -lt 100000 ]; then
     return 1
   fi
-  if [ "$bundle" = "engine_bundle.js" ] && ! grep -q 'function requireTrace_processor()' "$candidate"; then
-    return 1
-  fi
-  if [ "$bundle" = "engine_bundle.js" ] && ! grep -q 'return locateFile("trace_processor.wasm")' "$candidate"; then
+  if [ "$bundle" = "engine_bundle.js" ] && ! grep -Fq '"trace_processor.wasm"' "$candidate"; then
     return 1
   fi
 
   return 0
 }
-
-# Keep the current checked-in engine bundles available while rsync replaces the
-# versioned directory. Some --only-wasm-memory64 builds emit a partial
-# engine_bundle.js that is large enough to pass a size-only stub check but lacks
-# the classic trace_processor.wasm JS glue required by older runtime paths.
-BUNDLE_BACKUP_DIR="$(mktemp -d)"
-trap 'rm -rf "$BUNDLE_BACKUP_DIR"' EXIT
-if [ -d "$FRONTEND_DIR/$VERSION" ]; then
-  for BUNDLE in engine_bundle.js traceconv_bundle.js; do
-    if [ -f "$FRONTEND_DIR/$VERSION/$BUNDLE" ]; then
-      cp "$FRONTEND_DIR/$VERSION/$BUNDLE" "$BUNDLE_BACKUP_DIR/$BUNDLE"
-    fi
-  done
-fi
 
 # Copy top-level files
 cp "$DIST_DIR/index.html"          "$FRONTEND_DIR/index.html"
@@ -123,9 +142,8 @@ if [ -d "$DIST_DIR/assets" ]; then
 fi
 
 # Sync versioned directory.
-# Exclude source maps (repo size). JS engine bundles are copied from the build
-# output by default; the fallback below only restores previous real bundles when
-# a --only-wasm-memory64 build produced small stubs.
+# Exclude source maps (repo size). JS engine bundles are copied from the same
+# complete build output and validated below.
 # WASM files ARE real products of the build and must be copied.
 rsync -a --delete \
   --exclude="*.map" \
@@ -144,10 +162,21 @@ if [ ! -f "$FRONTEND_DIR/$VERSION/trace_processor.wasm" ]; then
   fi
 fi
 
+# Vite/Rolldown can preserve a font URL relative to each importing SCSS
+# module before concatenating all module CSS into frontend.css. Those paths
+# then escape the version directory (for example ../assets/assets/*.woff2).
+# Canonicalize them at the committed-prebuild boundary and let the manifest
+# refresh below cover the generated CSS bytes.
+normalize_frontend_font_asset_paths \
+  "$FRONTEND_DIR/$VERSION/frontend.css" \
+  "$FRONTEND_DIR/$VERSION"
+
 # Rollup and upstream runtime assets can emit indented blank lines. Keep
 # checked-in generated text artifacts compatible with git diff --check.
 for TEXT_ARTIFACT in \
   "$FRONTEND_DIR/$VERSION/frontend_bundle.js" \
+  "$FRONTEND_DIR/$VERSION/assets/mermaid.min.js" \
+  "$FRONTEND_DIR/$VERSION/assets/syntaqlite-runtime.js" \
   "$FRONTEND_DIR/$VERSION/syntaqlite-runtime.js" \
   "$FRONTEND_DIR/assets/syntaqlite-runtime.js"; do
   if [ -f "$TEXT_ARTIFACT" ]; then
@@ -155,47 +184,20 @@ for TEXT_ARTIFACT in \
   fi
 done
 
-# Restore JS engine bundles if they are missing or are small stubs. The real
-# bundles live in the previous versioned directory committed in git; stubs from
-# --only-wasm-memory64 are ~38KB and must not be used.
+# Reject partial builds instead of pairing current WASM files with JavaScript
+# glue from a previous version. A committed prebuild must come from one complete
+# build so the Emscripten constants and loader ABI stay synchronized.
 for BUNDLE in engine_bundle.js traceconv_bundle.js; do
   TARGET="$FRONTEND_DIR/$VERSION/$BUNDLE"
-  NEEDS_RESTORE=false
-  if [ ! -f "$TARGET" ] || [ "$(wc -c < "$TARGET")" -lt 100000 ]; then
-    NEEDS_RESTORE=true
-  elif [ "$BUNDLE" = "engine_bundle.js" ] && ! grep -q 'function requireTrace_processor()' "$TARGET"; then
-    NEEDS_RESTORE=true
-  elif [ "$BUNDLE" = "engine_bundle.js" ] && ! grep -q 'return locateFile("trace_processor.wasm")' "$TARGET"; then
-    NEEDS_RESTORE=true
-  elif is_usable_runtime_bundle "$BUNDLE" "$BUNDLE_BACKUP_DIR/$BUNDLE" && ! cmp -s "$TARGET" "$BUNDLE_BACKUP_DIR/$BUNDLE"; then
-    NEEDS_RESTORE=true
-  fi
-  if [ "$NEEDS_RESTORE" = true ]; then
-    PREV=""
-    if is_usable_runtime_bundle "$BUNDLE" "$BUNDLE_BACKUP_DIR/$BUNDLE"; then
-      PREV="$BUNDLE_BACKUP_DIR/$BUNDLE"
-    else
-      while IFS= read -r candidate; do
-        if is_usable_runtime_bundle "$BUNDLE" "$candidate"; then
-          PREV="$candidate"
-          break
-        fi
-      done < <(find "$FRONTEND_DIR" -maxdepth 2 -name "$BUNDLE" ! -path "$TARGET" 2>/dev/null)
-    fi
-    if [ -n "$PREV" ]; then
-      echo "  Restoring $BUNDLE from previous build: $(basename "$(dirname "$PREV")")"
-      cp "$PREV" "$TARGET"
-    else
-      echo "ERROR: $BUNDLE is incomplete and no usable previous bundle was found." >&2
-      echo "       Run a full frontend build that emits classic wasm loader glue before updating frontend/." >&2
-      exit 1
-    fi
+  if ! is_usable_runtime_bundle "$BUNDLE" "$TARGET"; then
+    echo "ERROR: $BUNDLE is incomplete in the current frontend build." >&2
+    echo "       Run a full frontend build that emits classic wasm loader glue before updating frontend/." >&2
+    exit 1
   fi
 done
 
-# The generated manifest hashes the files from the build output. When we
-# preserve real JS engine bundles from a previous build, refresh those hashes
-# so the checked-in prebuild is internally consistent.
+# Refresh generated manifest hashes after normalizing committed artifacts so
+# the checked-in prebuild is internally consistent.
 node - "$FRONTEND_DIR/$VERSION/manifest.json" "$FRONTEND_DIR/$VERSION" <<'NODE'
 const fs = require('fs');
 const path = require('path');

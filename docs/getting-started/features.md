@@ -31,6 +31,21 @@ SmartPerfetto 在 Perfetto UI 中内置 AI Assistant 面板。用户加载 `.pft
 - UI 会流式展示进度、SQL/Skill 证据、表格结果和最终结论。
 - 结论应能追溯到具体时间段、线程、slice、SQL 行或 Skill 结果。
 
+### 浏览器 Trace 工具与本地 WASM
+
+提交的 Perfetto 前端还提供一组直接在浏览器中运行的 trace 探索能力：
+
+- Trace Doctor 诊断视图，以及统一的 Stack Samples / flamegraph 入口。
+- 原始多 trace 打开/合并、Video Frames，以及 Pixel 输入生命周期与 CUJ 视图。
+- 实验性的 Memscope/OOM 视图；只有 trace 含所需数据且相应实验能力可用时才显示。
+- 本地 WASM 可解析 zstd 压缩 trace 和 `strace -ttt` 输入，并支持一次执行多条 SQL
+  statement 的 Perfetto UI 查询场景。
+
+这些能力属于浏览器本地时间线和 Perfetto 插件。原始多 trace 打开/合并不同于
+SmartPerfetto 的双 Trace AI 对比；WASM 新能力也不会自动扩展后端 AI、Skill、CLI 或
+HTML 报告。后者继续使用发布包固定的 native `trace_processor_shell`，只有完成独立
+升级与五平台验证后才会吸收同名能力。
+
 ### 智能分析模式
 
 智能模式适合一条 trace 覆盖完整测试脚本的情况，例如冷启动、热启动、滑动、点击、Back/Home、亮灭屏和再次启动混在一起。它不会一开始就深钻所有场景，而是先在主 AI 面板中输出场景盘点：

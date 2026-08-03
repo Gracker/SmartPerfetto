@@ -112,6 +112,7 @@ import {extractSourceLookupCodeReferences} from '../../../services/codebase/sour
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
 import { verifyConclusion, generateCorrectionPrompt, isConclusionIncomplete } from './claudeVerifier';
+import {recoverInterruptedFinalReport} from '../../runtimeFinalReportRecovery';
 import { backendLogPath } from '../../../runtimePaths';
 import {
   applyFinalResultQualityGate,
@@ -166,6 +167,54 @@ function correctionResultLooksUsable(text: string): boolean {
     /(^|\n)\s*#{1,3}\s*(?:综合结论|Final Conclusion|关键证据链|Evidence|优化建议|Recommendations)(?:\s|[：:]|$)/i.test(trimmed);
   if (looksLikeProcessNarration(trimmed) && !hasFinalReportMarker) return false;
   return hasFinalReportMarker || !isConclusionIncomplete(trimmed);
+}
+
+function hasClaudeRecoveryEvidence(text: string): boolean {
+  return /(?:\bart-\d+\b|\bdata:[a-z0-9_:-]+\b|\bevidence[_-]?ref(?:_id)?\b|\bsource_tool_call_id\b|\bsource_ref\b|证据\s*(?:ID|引用))/i
+    .test(text);
+}
+
+function recoverClaudeInterruptedFinalReport(input: {
+  accumulatedAnswer: string;
+  plan: AnalysisPlanV3 | null;
+  hypotheses?: readonly Hypothesis[];
+  outputLanguage: OutputLanguage;
+}): string | undefined {
+  const candidate = sanitizeClaudeConclusionText(input.accumulatedAnswer);
+  const candidateIsUsable = candidate.length > 0 &&
+    hasDeliverableFinalReportHeading(candidate) &&
+    !looksLikeProcessNarration(candidate) &&
+    !looksLikeProcessNarrationConclusion(candidate) &&
+    !looksLikePhaseSummaryFallback(candidate) &&
+    hasClaudeRecoveryEvidence(candidate);
+
+  return recoverInterruptedFinalReport({
+    partialConclusion: candidateIsUsable ? candidate : undefined,
+    plan: input.plan,
+    hypotheses: input.hypotheses,
+    outputLanguage: input.outputLanguage,
+  });
+}
+
+function isRecoverableClaudeStreamInterruption(input: {
+  errorMessage: string;
+  streamStarted: boolean;
+  hasPartialEvidence: boolean;
+  quotaExceeded: boolean;
+}): boolean {
+  const message = input.errorMessage.trim().toLowerCase();
+  if (!message || input.quotaExceeded) return false;
+  if (
+    /(?:no conversation found|\b(?:401|403)\b|unauthori[sz]ed|forbidden|authentication|api[_ -]?key|credential|quota|credit|billing|spending|permission denied|access denied|invalid configuration|configuration error|model (?:is )?not found|unknown model|\benoent\b|invalid cwd)/i.test(message) ||
+    /\babort(?:ed|error)?\b/i.test(message)
+  ) {
+    return false;
+  }
+
+  const explicitStreamInterruption =
+    /(?:error_max_turns|stream (?:terminated|ended|closed|interrupted)|response (?:terminated|ended|closed)|connection (?:terminated|closed|reset|lost)|socket hang up|econnreset|epipe|etimedout|unexpected eof|prematurely ended)/i
+      .test(message);
+  return explicitStreamInterruption && input.streamStarted && input.hasPartialEvidence;
 }
 
 function findDeliverableReportHeadingIndex(text: string): number {
@@ -422,7 +471,7 @@ function chooseClaudeConclusionText(input: {
   return finalResult;
 }
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
-import { localize } from '../../../agentv3/outputLanguage';
+import { localize, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import {
   deleteClaudeSessionMapRuntimeSnapshot,
   deleteClaudeSessionMapRuntimeSnapshots,
@@ -659,6 +708,8 @@ export const __testing = {
   sanitizeClaudeConclusionText,
   shouldMarkCorrectionTimeoutPartial,
   projectClaudeToolResultForPlan,
+  recoverClaudeInterruptedFinalReport,
+  isRecoverableClaudeStreamInterruption,
 };
 
 /** Sleep for the given milliseconds. */
@@ -1001,6 +1052,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     let delegatedRetry = false;
     let outputLanguage = options.outputLanguage ?? this.config.outputLanguage;
     const metricsCollector = new AgentMetricsCollector(sessionId);
+    let interruptionRecoveryState: {
+      streamStarted: boolean;
+      getAccumulatedAnswer: () => string;
+      flushPendingAnswer: () => void;
+      getPlan: () => AnalysisPlanV3 | null;
+    } | undefined;
 
     try {
       // Phase 0: Complexity classification — runs in parallel with early context prep
@@ -1240,7 +1297,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         analysisRunSpec,
       });
 
-      const { handleMessage: bridge, getAccumulatedAnswer } = createSseBridge((update: StreamingUpdate) => {
+      const {
+        handleMessage: bridge,
+        getAccumulatedAnswer,
+        flushPendingAnswer,
+      } = createSseBridge((update: StreamingUpdate) => {
         const normalizedUpdate = normalizeClaudeBridgeConclusionUpdate(
           update,
           ctx.sceneType,
@@ -1267,6 +1328,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       }, ((options.codeAwareMode && options.codeAwareMode !== 'off') || options.knowledgeSourceIds?.length)
         ? createCodeAwareStreamingTextProjection(sessionId, 'claude-full-answer')
         : undefined);
+      interruptionRecoveryState = {
+        streamStarted: false,
+        getAccumulatedAnswer,
+        flushPendingAnswer,
+        getPlan: () => ctx.analysisPlan.current,
+      };
 
       this.emitUpdate({
         type: 'progress',
@@ -1355,6 +1422,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       let finalResult: string | undefined;
       let terminationReason: AnalysisResult['terminationReason'];
       let terminationMessage: string | undefined;
+      let sdkStreamErrorMessage: string | undefined;
 
       // Safety timeout with stream cancellation via Promise.race.
       // Per-turn budget is env-configurable (CLAUDE_FULL_PER_TURN_MS, default 60s) so slower
@@ -1488,6 +1556,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const processStream = async () => {
         for await (const msg of stream) {
           if (timedOut) break; // P0-1: Actually cancel stream on timeout
+          if (interruptionRecoveryState) interruptionRecoveryState.streamStarted = true;
 
           // Detect SDK auto-compact boundary — conversation history was summarized
           if ((msg as any).type === 'system' && (msg as any).subtype === 'compact_boundary') {
@@ -1514,6 +1583,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             }
             missingSdkConversationError = sdkResultError;
             continue;
+          }
+          if (sdkResultError && !isSdkMaxTurnsSubtype((msg as any).subtype)) {
+            sdkStreamErrorMessage = sdkResultError;
           }
 
           // Track sub-agent lifecycle for per-agent timeouts
@@ -1867,6 +1939,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           outputLanguage,
         });
       }
+      if (sdkStreamErrorMessage) {
+        throw new Error(sdkStreamErrorMessage);
+      }
 
       // Prefer a deliverable streamed report over a short SDK terminal summary.
       // Some compatible providers put the full report in answer_token chunks but
@@ -2210,6 +2285,19 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       const isPartialResult = terminationReason === MAX_TURNS_TERMINATION_REASON;
       if (isPartialResult) {
+        const recoveredConclusion = recoverClaudeInterruptedFinalReport({
+          accumulatedAnswer: conclusionText,
+          plan: ctx.analysisPlan.current,
+          hypotheses: this.sessionHypotheses.get(sessionId) || [],
+          outputLanguage: runtimeConfig.outputLanguage,
+        });
+        if (recoveredConclusion) {
+          conclusionText = ensureClaudeFinalReportHeading(
+            recoveredConclusion,
+            ctx.sceneType,
+            runtimeConfig.outputLanguage,
+          );
+        }
         terminationMessage ||= buildMaxTurnsTerminationMessage({
           mode: 'full',
           turns: rounds,
@@ -2273,15 +2361,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         });
       }
 
-      if ((options.codeAwareMode && options.codeAwareMode !== 'off') || options.knowledgeSourceIds?.length) {
-        conclusionText = sanitizeCodeAwareText(sessionId, conclusionText);
-        mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
-      }
       conclusionText = completeFinalReportCodeReferences({
         plan: ctx.analysisPlan.current,
         conclusion: conclusionText,
         outputLanguage: runtimeConfig.outputLanguage,
       });
+      if (analysisContextUsesPrivateKnowledge(options)) {
+        conclusionText = sanitizeCodeAwareText(sessionId, conclusionText);
+      }
       mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
 
       const baseConfidence = this.estimateConfidence(mergedFindings);
@@ -2427,23 +2514,118 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const partialFindings = mergeFindings(allFindings);
       const hasPartialResults = partialFindings.length > 0;
       // P0-1: Export actual hypotheses even on error paths
-      const errorHypotheses = (this.sessionHypotheses.get(sessionId) || []).map(h => this.toProtocolHypothesis(h));
+      const runtimeHypotheses = this.sessionHypotheses.get(sessionId) || [];
+      const errorHypotheses = runtimeHypotheses.map(h => this.toProtocolHypothesis(h));
 
-      if (hasPartialResults) {
-        const partialConclusion = localize(
+      if (interruptionRecoveryState) {
+        try {
+          interruptionRecoveryState.flushPendingAnswer();
+        } catch (flushError) {
+          console.warn(
+            '[ClaudeRuntime] Failed to flush interrupted answer buffer:',
+            diagnosticLogIdentity((flushError as Error).message),
+          );
+        }
+        const recoveryPlan = interruptionRecoveryState.getPlan();
+        let recoveredConclusion = recoverClaudeInterruptedFinalReport({
+          accumulatedAnswer: interruptionRecoveryState.getAccumulatedAnswer(),
+          plan: recoveryPlan,
+          hypotheses: runtimeHypotheses,
+          outputLanguage,
+        });
+        const canRecover = recoveredConclusion && isRecoverableClaudeStreamInterruption({
+          errorMessage: rawErrorMessage,
+          streamStarted: interruptionRecoveryState.streamStarted,
+          hasPartialEvidence: true,
+          quotaExceeded,
+        });
+
+        if (canRecover && recoveredConclusion) {
+          recoveredConclusion = completeFinalReportCodeReferences({
+            plan: recoveryPlan,
+            conclusion: recoveredConclusion,
+            outputLanguage,
+          });
+          const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+          if (privateAnalysisContext) {
+            recoveredConclusion = sanitizeCodeAwareText(sessionId, recoveredConclusion);
+          }
+          const recoveryMessage = localize(
+            outputLanguage,
+            '分析流在最终报告完成前中断；以下为已验证证据范围内保留的部分结果。',
+            'The analysis stream ended before the final report completed; the partial result below preserves only available verified evidence.',
+          );
+          recoveredConclusion = prependPartialNotice(
+            recoveredConclusion,
+            recoveryMessage,
+            outputLanguage,
+          );
+          const recoveredFindings = extractFindingsFromText(recoveredConclusion);
+          const findings = privateAnalysisContext
+            ? mergeFindings([recoveredFindings])
+            : mergeFindings([...allFindings, recoveredFindings]);
+          const terminationReason: AnalysisResult['terminationReason'] =
+            /error_max_turns|max(?:imum)? turns/i.test(rawErrorMessage)
+              ? MAX_TURNS_TERMINATION_REASON
+              : /timeout|timed out|etimedout/i.test(rawErrorMessage)
+                ? 'timeout'
+                : 'execution_error';
+
+          this.emitUpdate({
+            type: 'degraded',
+            content: {
+              module: 'claudeRuntime',
+              fallback: 'partial_result_after_stream_termination',
+              message: recoveryMessage,
+              partial: true,
+              terminationReason,
+            },
+            timestamp: Date.now(),
+          });
+          return {
+            sessionId,
+            success: true,
+            findings,
+            hypotheses: errorHypotheses,
+            conclusion: recoveredConclusion,
+            confidence: capPartialConfidence(this.estimateConfidence(findings), findings.length > 0),
+            rounds,
+            totalDurationMs: Date.now() - startTime,
+            partial: true,
+            terminationReason,
+            terminationMessage: errMsg,
+          };
+        }
+      }
+
+      const canPreservePartialFindings = hasPartialResults && isRecoverableClaudeStreamInterruption({
+        errorMessage: rawErrorMessage,
+        streamStarted: interruptionRecoveryState?.streamStarted ?? false,
+        hasPartialEvidence: true,
+        quotaExceeded,
+      });
+      if (canPreservePartialFindings) {
+        let partialConclusion = localize(
           outputLanguage,
           `分析过程中出错 (${errMsg})，以下是已收集的部分发现：\n\n`,
           `An error occurred during analysis (${errMsg}). Partial findings collected so far:\n\n`,
         ) +
           partialFindings.map(f => `- **[${f.severity.toUpperCase()}]** ${f.title}: ${f.description || ''}`).join('\n');
+        const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+        if (privateAnalysisContext) {
+          partialConclusion = sanitizeCodeAwareText(sessionId, partialConclusion);
+        }
+        const safePartialFindings = privateAnalysisContext
+          ? mergeFindings([extractFindingsFromText(partialConclusion)])
+          : partialFindings;
         this.emitUpdate({
           type: 'progress',
           content: {
             phase: 'concluding',
             message: localize(
               outputLanguage,
-              `分析中断，已保留 ${partialFindings.length} 个部分发现`,
-              `Analysis interrupted; preserved ${partialFindings.length} partial finding(s)`,
+              `分析中断，已保留 ${safePartialFindings.length} 个部分发现`,
+              `Analysis interrupted; preserved ${safePartialFindings.length} partial finding(s)`,
             ),
           },
           timestamp: Date.now(),
@@ -2451,10 +2633,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         return {
           sessionId,
           success: true, // partial success — downstream can check confidence < 1
-          findings: partialFindings,
+          findings: safePartialFindings,
           hypotheses: errorHypotheses,
           conclusion: partialConclusion,
-          confidence: this.estimateConfidence(partialFindings) * 0.7, // penalize for incomplete
+          confidence: capPartialConfidence(
+            this.estimateConfidence(safePartialFindings),
+            safePartialFindings.length > 0,
+          ),
           rounds,
           totalDurationMs: Date.now() - startTime,
           partial: true,

@@ -7,6 +7,7 @@ import { describe, expect, it } from '@jest/globals';
 import {
   findTruncationVerificationIssue,
   isTruncationVerificationIssue,
+  recoverInterruptedFinalReport,
   repairTruncatedFinalReport,
 } from '../runtimeFinalReportRecovery';
 import { verifyHeuristic } from '../engines/claude/claudeVerifier';
@@ -63,6 +64,28 @@ function makeHypotheses(): Hypothesis[] {
 }
 
 describe('runtime final report truncation recovery', () => {
+  it('requires an existing streamed conclusion before interruption recovery', () => {
+    expect(recoverInterruptedFinalReport({
+      partialConclusion: '',
+      plan: makePlan(),
+      hypotheses: makeHypotheses(),
+      outputLanguage: 'zh-CN',
+    })).toBeUndefined();
+  });
+
+  it('repairs an evidence-backed streamed conclusion without replacing it with plan text', () => {
+    const recovered = recoverInterruptedFinalReport({
+      partialConclusion: '## 综合结论\n\n冷启动 TTID=1912ms，证据来自 art-1。\n\n未完成的建议',
+      plan: makePlan(),
+      hypotheses: makeHypotheses(),
+      outputLanguage: 'zh-CN',
+    });
+
+    expect(recovered).toContain('冷启动 TTID=1912ms，证据来自 art-1');
+    expect(recovered).toContain('未完成的建议');
+    expect(recovered).toContain('## 截断恢复补充');
+  });
+
   it('recognizes verifier truncation issues', () => {
     expect(isTruncationVerificationIssue({
       type: 'truncation',

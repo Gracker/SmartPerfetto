@@ -26,6 +26,13 @@ interface TruncatedFinalReportRepairInput {
   recoveryKind?: 'truncation' | 'missing_contract';
 }
 
+export interface InterruptedFinalReportRecoveryInput {
+  partialConclusion?: string;
+  plan: AnalysisPlanV3 | null;
+  hypotheses?: readonly Hypothesis[];
+  outputLanguage: OutputLanguage;
+}
+
 const MAX_SUMMARY_CHARS = 260;
 const MAX_PHASE_BULLETS = 6;
 const MAX_HYPOTHESIS_BULLETS = 5;
@@ -204,4 +211,26 @@ export function repairTruncatedFinalReport(
   ).trim();
 
   return repaired.length > input.conclusion.trim().length ? repaired : undefined;
+}
+
+/**
+ * Repair an existing streamed report after a runtime interruption. Plan state
+ * may supply bounded evidence for the recovery appendix, but it must never be
+ * used to manufacture a report when the model produced no deliverable answer.
+ * Callers remain responsible for validating partialConclusion and preserving
+ * the partial result contract.
+ */
+export function recoverInterruptedFinalReport(
+  input: InterruptedFinalReportRecoveryInput,
+): string | undefined {
+  const partialConclusion = input.partialConclusion?.trim() || '';
+  if (!partialConclusion) return undefined;
+
+  return repairTruncatedFinalReport({
+    conclusion: partialConclusion,
+    plan: input.plan,
+    hypotheses: input.hypotheses,
+    outputLanguage: input.outputLanguage,
+    recoveryKind: 'truncation',
+  }) || partialConclusion;
 }

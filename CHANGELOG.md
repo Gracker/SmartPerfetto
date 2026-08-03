@@ -14,6 +14,13 @@ Detailed commit-level history is available via `git log`.
 ## [Unreleased]
 
 ### Added
+- Enterprise OIDC now provides an off-by-default discovery/login/callback
+  flow, CSRF-protected backend sessions, and user-bound personal workspaces
+  without trusting caller-supplied tenant or workspace identity.
+- The committed Perfetto browser frontend now includes Trace Doctor, unified
+  Stack Samples/flamegraphs, raw multi-trace open/merge, Video Frames, Pixel
+  input/CUJ views, experimental Memscope/OOM views, and newer local WASM input
+  and query capabilities.
 - Completed analysis results can now run source-run-pinned, no-tool Agent
   triage for external feedback. It classifies reportability, ownership, and
   useful contribution type, collects missing user context, and creates a
@@ -30,6 +37,9 @@ Detailed commit-level history is available via `git log`.
   reconciliation without configuring an external L2 judge.
 
 ### Changed
+- Browser timeline/plugin queries now have an explicit local WASM engine
+  boundary, while AI, Skills, CLI, and report evidence continue to use the
+  independently pinned native `trace_processor_shell`.
 - New RunManifests persist a non-secret provider snapshot hash. Historical
   feedback triage must match the source run's provider/runtime snapshot or use
   explicit deterministic fallback; it never switches silently to the current
@@ -41,6 +51,16 @@ Detailed commit-level history is available via `git log`.
 - Feedback is an append-only scoped fact stream with rebuildable effective
   projections. Private feedback stays in a separate local path and never enters
   curation or contribution bundles.
+
+### Fixed
+- Claude-compatible runtimes can preserve an evidence-referenced final report
+  after an explicit stream interruption or maximum-turn termination. Generic
+  execution, authentication, quota, permission, and configuration errors remain
+  failed instead of being promoted to partial success.
+- OIDC callback identity, personal-workspace ownership, and request-scoped
+  authorization now stay aligned across login and subsequent API calls.
+- Cross-platform startup-contract tests normalize Windows script paths without
+  weakening the actual launcher contract.
 
 ## [1.3.0] - 2026-07-28
 
