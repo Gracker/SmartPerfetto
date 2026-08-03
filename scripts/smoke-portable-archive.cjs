@@ -684,6 +684,10 @@ async function waitForHealth(
       if (signal?.aborted) {
         throw signal.reason || error;
       }
+      if (error?.code === 'ERR_HEALTH_RESPONSE_TOO_LARGE') {
+        lastError = error;
+        break;
+      }
       lastError = error;
     }
     const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));

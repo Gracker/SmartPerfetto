@@ -1041,7 +1041,9 @@ test('portable readiness cancels both probes when the launcher exits', async (t)
 });
 
 test('portable health errors preserve bounded response-limit diagnostics', async (t) => {
+  let requestCount = 0;
   const oversized = http.createServer((_request, response) => {
+    requestCount += 1;
     response.writeHead(200, {'Content-Type': 'application/json'});
     response.end('x'.repeat(70 * 1024));
   });
@@ -1056,6 +1058,7 @@ test('portable health errors preserve bounded response-limit diagnostics', async
     ),
     /ERR_HEALTH_RESPONSE_TOO_LARGE/,
   );
+  assert.equal(requestCount, 1);
 });
 
 test('every archive runtime probe receives the isolated smoke environment', () => {
