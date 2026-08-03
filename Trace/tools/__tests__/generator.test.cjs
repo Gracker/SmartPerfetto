@@ -148,6 +148,39 @@ test('materializes a parseable trace with slice, counter, and sched evidence', (
   assert.match(output, /1,1,[1-9][0-9]*/);
 });
 
+test('encodes frame timeline events through the active TracePacket schema', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-frame-timeline-'));
+  const outputPath = path.join(tempDir, 'combined.pftrace');
+  const scenario = fixtureScenario();
+  scenario.signals.push({
+    type: 'frame-timeline',
+    at_ns: '100000000',
+    duration_ns: '16000000',
+    process: 'app',
+    cookie: 101,
+    token: 201,
+    display_frame_token: 301,
+    layer_name: 'SyntheticJankLayer',
+    jank_type: 64,
+  });
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 434343,
+  });
+
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(
+    outputPath,
+    `SELECT COUNT(*), MIN(p.name)
+     FROM actual_frame_timeline_slice a
+     JOIN process p USING (upid)
+     WHERE a.jank_type = 'App Deadline Missed'`,
+  );
+  assert.match(output, /\n1,"com\.smartperfetto\.fixture"\s*$/);
+});
+
 test('materializes ANR and perf callstack evidence for conditional SQL branches', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-conditional-'));
   const outputPath = path.join(tempDir, 'combined.pftrace');

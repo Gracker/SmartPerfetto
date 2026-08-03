@@ -6,7 +6,11 @@ const path = require('node:path');
 const {spawnSync} = require('node:child_process');
 const {randomUUID} = require('node:crypto');
 
-const {collectPacketSequenceIds, encodeTrace} = require('./perfetto-proto.cjs');
+const {
+  collectPacketSequenceIds,
+  encodeTrace,
+  resolveTracePacketFieldName,
+} = require('./perfetto-proto.cjs');
 const {sha256Buffer} = require('./hash.cjs');
 
 const FIRST_SYNTHETIC_PID = 700000;
@@ -15,6 +19,7 @@ const HEAP_GRAPH_LIMITS = Object.freeze({types: 5000, objects: 10000, roots: 100
 const GPU_COMPUTE_KERNELS_EXTENSION = '.perfetto.protos.GpuInternedData.computeKernels';
 const GPU_COMPUTE_ARG_NAMES_EXTENSION = '.perfetto.protos.GpuInternedData.computeArgNames';
 const GPU_COMPUTE_MAX_ARGS = 64;
+const FRAME_TIMELINE_TRACE_PACKET_FIELD_NUMBER = 76;
 const SUPPORTED_SIGNAL_TYPES = new Set([
   'atrace-slice', 'atrace-counter', 'atrace-async-slice', 'atrace-async-track-slice',
   'sched-running', 'process-stats', 'battery-counters', 'power-rail',
@@ -428,6 +433,9 @@ function schedSwitchEvent(timestamp, prev, next, prevState) {
 
 function encodeScenarioOverlay(repoRoot, scenario, options) {
   validateScenario(scenario);
+  const frameTimelineFieldName = scenario.signals.some((signal) => signal.type === 'frame-timeline')
+    ? resolveTracePacketFieldName(repoRoot, FRAME_TIMELINE_TRACE_PACKET_FIELD_NUMBER)
+    : null;
   const anchorNs = decimalString(options?.anchorNs, 'options.anchorNs');
   if (!Number.isInteger(options?.sequenceId) || options.sequenceId <= 0) {
     throw new Error('options.sequenceId must be a positive integer');
@@ -673,7 +681,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const cookie = nonNegativeInteger(signal.cookie, 'frame-timeline cookie');
       dataPackets.push({
         timestamp,
-        frameTimelineEvent: {
+        [frameTimelineFieldName]: {
           actualSurfaceFrameStart: {
             cookie,
             token: nonNegativeInteger(signal.token, 'frame-timeline token'),
@@ -689,7 +697,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
           },
         },
       });
-      dataPackets.push({timestamp: end, frameTimelineEvent: {frameEnd: {cookie}}});
+      dataPackets.push({timestamp: end, [frameTimelineFieldName]: {frameEnd: {cookie}}});
     } else if (signal.type === 'gpu-power-state') {
       eventsForCpu(signal.cpu ?? 0).push({
         timestamp,

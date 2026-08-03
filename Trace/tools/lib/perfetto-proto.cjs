@@ -1,9 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
+const fs = require('node:fs');
 const path = require('node:path');
 
 const cache = new Map();
+const OPTIONAL_TRACE_PACKET_EXTENSIONS = [
+  {
+    fieldNumber: 76,
+    path: 'protos/third_party/android/frameworks/native/tracing/frameworks_native_trace_packet.proto',
+  },
+];
 
 function loadTraceType(repoRoot) {
   const normalizedRoot = path.resolve(repoRoot);
@@ -21,10 +28,32 @@ function loadTraceType(repoRoot) {
     path.join(perfettoRoot, 'protos/third_party/android/art/heap_graph.proto'),
     path.join(perfettoRoot, 'protos/perfetto/trace/gpu/gpu_interned_data.proto'),
   ]);
+  const tracePacketType = root.lookupType('perfetto.protos.TracePacket');
+  for (const extension of OPTIONAL_TRACE_PACKET_EXTENSIONS) {
+    if (tracePacketType.fieldsArray.some((field) => field.id === extension.fieldNumber)) continue;
+    const extensionPath = path.join(perfettoRoot, extension.path);
+    if (fs.existsSync(extensionPath)) root.loadSync(extensionPath);
+  }
   root.resolveAll();
   const traceType = root.lookupType('perfetto.protos.Trace');
   cache.set(normalizedRoot, traceType);
   return traceType;
+}
+
+function resolveTracePacketFieldName(repoRoot, fieldNumber) {
+  if (!Number.isInteger(fieldNumber) || fieldNumber <= 0) {
+    throw new Error(`TracePacket field number must be a positive integer: ${fieldNumber}`);
+  }
+  const traceType = loadTraceType(repoRoot);
+  const tracePacketType = traceType.root.lookupType('perfetto.protos.TracePacket');
+  const matches = tracePacketType.fieldsArray.filter((field) => field.id === fieldNumber);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Perfetto TracePacket field ${fieldNumber} resolved to ${matches.length} schema fields; ` +
+      'load the required core or extension proto before encoding',
+    );
+  }
+  return matches[0].name;
 }
 
 function encodeTrace(repoRoot, packets) {
@@ -45,4 +74,9 @@ function collectPacketSequenceIds(repoRoot, traceBuffer) {
   );
 }
 
-module.exports = {collectPacketSequenceIds, encodeTrace, loadTraceType};
+module.exports = {
+  collectPacketSequenceIds,
+  encodeTrace,
+  loadTraceType,
+  resolveTracePacketFieldName,
+};
