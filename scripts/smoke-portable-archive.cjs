@@ -684,7 +684,11 @@ async function waitForHealth(
       if (signal?.aborted) {
         throw signal.reason || error;
       }
-      lastError = error;
+      // A final retry can have only a few milliseconds left. Keep an earlier,
+      // more actionable probe failure instead of replacing it with that timeout.
+      if (!lastError || error?.code !== 'ETIMEDOUT') {
+        lastError = error;
+      }
     }
     const delayMs = Math.min(250, Math.max(0, deadline - Date.now()));
     if (delayMs > 0) await abortableDelay(delayMs, signal);
