@@ -1,7 +1,7 @@
 # ============================
 # Stage 1: Build backend
 # ============================
-FROM node:24-bookworm AS backend-builder
+FROM node:25-bookworm AS backend-builder
 
 WORKDIR /app/backend
 COPY backend/package*.json ./
@@ -81,7 +81,7 @@ RUN . /tmp/pin.env && \
 # ============================
 # Stage 4: Verify pre-built frontend
 # ============================
-FROM node:24-bookworm-slim AS frontend-prebuild-check
+FROM node:25-bookworm-slim AS frontend-prebuild-check
 
 WORKDIR /app
 COPY scripts/check-frontend-prebuild.cjs ./scripts/check-frontend-prebuild.cjs
@@ -91,7 +91,7 @@ RUN node scripts/check-frontend-prebuild.cjs
 # ============================
 # Stage 5: Runtime
 # ============================
-FROM node:24-bookworm-slim
+FROM node:25-bookworm-slim
 
 ARG SMARTPERFETTO_BUILD_COMMIT=unknown
 ARG SMARTPERFETTO_UPDATE_CHANNEL=stable
