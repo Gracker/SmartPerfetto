@@ -260,6 +260,25 @@ describe('recordPlanToolCall', () => {
     expect(getSourceLookupCodeReferences(plan)).toEqual([reference]);
   });
 
+  it('records on-demand source references as ephemeral CodeRef evidence', () => {
+    const plan = createPlan();
+    const reference = {
+      referenceId: 'source-a1b2c3',
+      filePath: 'app/src/main/java/demo/StartupHooks.kt',
+      lineRange: {start: 42, end: 48},
+    };
+
+    const record = recordPlanToolCall(plan, {
+      toolName: 'read_codebase_file',
+      resultText: '{"success":true}',
+      returnedCodeReferenceHints: [reference],
+    });
+
+    expect(record).toMatchObject({success: true, returnedCodeReferences: true});
+    expect(JSON.stringify(plan)).not.toContain(reference.filePath);
+    expect(getSourceLookupCodeReferences(plan)).toEqual([reference]);
+  });
+
   it('moves ephemeral source metadata onto a plan when a pre-plan lookup is replayed', () => {
     const tracker: {current: AnalysisPlanV3 | null; prePlanToolCallLog?: AnalysisPlanV3['toolCallLog']} = {
       current: null,

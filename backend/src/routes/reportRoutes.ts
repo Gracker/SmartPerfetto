@@ -27,7 +27,10 @@ import { REPORT_LAYOUT_FIX_CSS, REPORT_LAYOUT_FIX_MARKER } from '../services/rep
 import { localize, parseOutputLanguage } from '../agentv3/outputLanguage';
 import { backendLogPath } from '../runtimePaths';
 import {WeightedLruMap} from '../services/weightedLruMap';
-import { resolveEnterpriseDataRoot } from '../services/traceMetadataStore';
+import {
+  readTraceMetadataForContext,
+  resolveEnterpriseDataRoot,
+} from '../services/traceMetadataStore';
 import { resolveEnterpriseRetentionExpiresAt } from '../services/enterpriseQuotaPolicyService';
 import {
   sendResourceNotFound,
@@ -82,6 +85,8 @@ type PersistedReport = ResourceOwnerFields & {
 
 const REPORT_CACHE_MAX_ENTRIES = 64;
 const REPORT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+const REPORT_FILENAME_STEM_MAX_LENGTH = 116;
+const UNSAFE_REPORT_FILENAME_CHAR_RE = /[<>:"/\\|?*\u0000-\u001f\u007f]/gu;
 
 export const reportStore = new WeightedLruMap<string, PersistedReport>(
   REPORT_CACHE_MAX_ENTRIES,
@@ -578,6 +583,107 @@ function getReportForContext(reportId: string, req: express.Request): PersistedR
   return report;
 }
 
+function resolveReportTraceIdForExport(
+  reportId: string,
+  report: PersistedReport,
+  context: RequestContext,
+): string | undefined {
+  if (report.traceId) return report.traceId;
+  if (!enterpriseReportStoreEnabled()) return undefined;
+
+  try {
+    return withEnterpriseReportDb((db) => {
+      const row = db.prepare<{
+        reportId: string;
+        tenantId: string;
+        workspaceId: string;
+        sessionId: string;
+      }, {trace_id: string}>(`
+        SELECT sessions.trace_id
+        FROM report_artifacts AS reports
+        INNER JOIN analysis_sessions AS sessions
+          ON sessions.id = reports.session_id
+          AND sessions.tenant_id = reports.tenant_id
+          AND sessions.workspace_id = reports.workspace_id
+        WHERE reports.id = @reportId
+          AND reports.tenant_id = @tenantId
+          AND reports.workspace_id = @workspaceId
+          AND reports.session_id = @sessionId
+        LIMIT 1
+      `).get({
+        reportId,
+        tenantId: context.tenantId,
+        workspaceId: context.workspaceId,
+        sessionId: report.sessionId,
+      });
+      return row?.trace_id;
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function reportTraceNameForExport(
+  reportId: string,
+  report: PersistedReport,
+  context: RequestContext,
+): Promise<string> {
+  const traceId = resolveReportTraceIdForExport(reportId, report, context);
+  if (!traceId) return reportId;
+
+  try {
+    return (await readTraceMetadataForContext(traceId, context))?.filename || traceId;
+  } catch {
+    return traceId;
+  }
+}
+
+function sanitizeReportFilenameLabel(value: string, fallback: string): string {
+  const basename = path.posix.basename(value.replace(/\\/gu, '/'));
+  const sanitized = basename
+    .normalize('NFKC')
+    .replace(UNSAFE_REPORT_FILENAME_CHAR_RE, '_')
+    .replace(/\s+/gu, ' ')
+    .replace(/_+/gu, '_')
+    .replace(/^\.+/u, '')
+    .replace(/[ .]+$/u, '')
+    .trim();
+  return sanitized || fallback;
+}
+
+function reportAnalysisTimestamp(generatedAt: number): string {
+  const date = new Date(generatedAt);
+  if (!Number.isFinite(date.getTime())) return 'unknown-time';
+  return date.toISOString().replace(/\.\d{3}Z$/u, 'Z').replace(/:/gu, '-');
+}
+
+function truncateReportFilenameLabel(value: string, maxLength: number): string {
+  let result = '';
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint !== undefined && codePoint >= 0xd800 && codePoint <= 0xdfff) {
+      continue;
+    }
+    if (result.length + character.length > maxLength) break;
+    result += character;
+  }
+  return result;
+}
+
+function reportExportFilename(
+  traceName: string,
+  reportId: string,
+  generatedAt: number,
+): string {
+  const fallback = sanitizeReportFilenameLabel(reportId, 'report');
+  const traceLabel = sanitizeReportFilenameLabel(traceName, fallback);
+  const suffix = `-${reportAnalysisTimestamp(generatedAt)}-SmartPerfetto`;
+  const prefixLimit = Math.max(1, REPORT_FILENAME_STEM_MAX_LENGTH - suffix.length);
+  const prefix = truncateReportFilenameLabel(traceLabel, prefixLimit)
+    .replace(/[ .]+$/u, '') || fallback;
+  return `${prefix}${suffix}.html`;
+}
+
 // Clean up old reports every 30 minutes (both memory and disk)
 const reportCleanupInterval = setInterval(() => {
   const now = Date.now();
@@ -618,7 +724,7 @@ reportCleanupInterval.unref?.();
  * endpoint together with the File System Access API so the user can choose the
  * local destination and filename.
  */
-router.get('/:reportId/export', (req, res) => {
+router.get('/:reportId/export', async (req, res) => {
   try {
     const { reportId } = req.params;
     const context = requireRequestContext(req);
@@ -631,10 +737,11 @@ router.get('/:reportId/export', (req, res) => {
       });
     }
 
-    const filename = `smartperfetto-${reportId}.html`;
+    const traceName = await reportTraceNameForExport(reportId, report, context);
+    const filename = reportExportFilename(traceName, reportId, report.generatedAt);
+    res.attachment(filename);
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     setReportDocumentSecurityHeaders(res);
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');

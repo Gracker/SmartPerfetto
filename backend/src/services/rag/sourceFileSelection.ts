@@ -161,13 +161,14 @@ function pathMatchesPrefix(relativePath: string, prefix: string, caseInsensitive
   return !comparablePrefix || comparablePath === comparablePrefix || comparablePath.startsWith(`${comparablePrefix}/`);
 }
 
-export function selectCodebasePreviewFiles(
-  preview: PathPreviewResult,
-  ref: CodebaseRef,
+export function codebaseSourcePathMatches(
+  ref: Pick<CodebaseRef, 'pathFilters' | 'excludeGlobs'>,
+  relativePath: string,
   pathPrefix?: string,
   platform: NodeJS.Platform = process.platform,
-): PathPreviewFile[] {
+): boolean {
   const caseInsensitive = platform === 'win32';
+  const normalizedPath = normalizeSourceRelativePath(relativePath);
   const registeredPrefixes = (ref.pathFilters ?? [])
     .filter(Boolean)
     .map(normalizeSourceRelativePath);
@@ -175,19 +176,26 @@ export function selectCodebasePreviewFiles(
   const excludePatterns = (ref.excludeGlobs ?? [])
     .filter(Boolean)
     .map(pattern => globToRegExp(pattern, caseInsensitive));
-  return preview.acceptedFiles.filter(file => {
-    const relativePath = normalizeSourceRelativePath(file.relativePath);
-    if (
-      registeredPrefixes.length > 0 &&
-      !registeredPrefixes.some(prefix => pathMatchesPrefix(relativePath, prefix, caseInsensitive))
-    ) {
-      return false;
-    }
-    if (requestedPrefix && !pathMatchesPrefix(relativePath, requestedPrefix, caseInsensitive)) {
-      return false;
-    }
-    return !excludePatterns.some(pattern => pattern.test(relativePath));
-  });
+  if (
+    registeredPrefixes.length > 0 &&
+    !registeredPrefixes.some(prefix => pathMatchesPrefix(normalizedPath, prefix, caseInsensitive))
+  ) {
+    return false;
+  }
+  if (requestedPrefix && !pathMatchesPrefix(normalizedPath, requestedPrefix, caseInsensitive)) {
+    return false;
+  }
+  return !excludePatterns.some(pattern => pattern.test(normalizedPath));
+}
+
+export function selectCodebasePreviewFiles(
+  preview: PathPreviewResult,
+  ref: CodebaseRef,
+  pathPrefix?: string,
+  platform: NodeJS.Platform = process.platform,
+): PathPreviewFile[] {
+  return preview.acceptedFiles.filter(file =>
+    codebaseSourcePathMatches(ref, file.relativePath, pathPrefix, platform));
 }
 
 /**

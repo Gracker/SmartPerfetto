@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { EventEmitter } from 'events';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { AnalysisResult } from '../../../agent/core/orchestratorTypes';
 import type { StreamingUpdate } from '../../../agent/types';
@@ -238,6 +241,8 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
   it('defaults codebase-only CLI analysis to private metadata mode', async () => {
     mockCodebaseGet.mockReturnValue({
       codebaseId: 'cb-cli',
+      lifecycleState: 'active',
+      rootRealpath: fs.realpathSync(process.cwd()),
       indexGeneration: 3,
       activeGeneration: 'codebase_3_test',
       contentFingerprint: 'a'.repeat(64),
@@ -299,6 +304,8 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
   ) => {
     mockCodebaseGet.mockReturnValue({
       codebaseId: 'cb-cli',
+      lifecycleState: 'active',
+      rootRealpath: fs.realpathSync(process.cwd()),
       indexGeneration: 3,
       activeGeneration: 'codebase_3_test',
       contentFingerprint: 'a'.repeat(64),
@@ -349,9 +356,39 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(mockAnalyze).not.toHaveBeenCalled();
   });
 
-  it('rejects a selected codebase that has no active indexed generation', async () => {
+  it('allows a selected codebase without an index when its registered root is available', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-on-demand-source-'));
+    const rootRealpath = fs.realpathSync(root);
+    try {
+      mockCodebaseGet.mockReturnValue({
+        codebaseId: 'cb-unindexed',
+        lifecycleState: 'active',
+        rootRealpath,
+        indexGeneration: 1,
+        chunkCount: 0,
+        consent: {sendToProvider: false, consentHash: 'consent'},
+      });
+
+      await expect(new CliAnalyzeService().runTurn({
+        ...cliTurnBinding,
+        traceId: 'trace-cli',
+        query: 'analyze source',
+        codebaseIds: ['cb-unindexed'],
+        onEvent: jest.fn(),
+      })).resolves.toEqual(expect.objectContaining({
+        result: expect.objectContaining({success: true}),
+      }));
+      expect(mockAnalyze).toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, {recursive: true, force: true});
+    }
+  });
+
+  it('rejects a selected codebase whose registered root is unavailable', async () => {
     mockCodebaseGet.mockReturnValue({
-      codebaseId: 'cb-unindexed',
+      codebaseId: 'cb-missing-root',
+      lifecycleState: 'active',
+      rootRealpath: '/definitely/missing/smartperfetto/source',
       indexGeneration: 1,
       chunkCount: 0,
       consent: {sendToProvider: false, consentHash: 'consent'},
@@ -361,9 +398,9 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       ...cliTurnBinding,
       traceId: 'trace-cli',
       query: 'analyze source',
-      codebaseIds: ['cb-unindexed'],
+      codebaseIds: ['cb-missing-root'],
       onEvent: jest.fn(),
-    })).rejects.toThrow('ANALYSIS_CONTEXT_CODEBASE_UNAVAILABLE');
+    })).rejects.toThrow('ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE');
     expect(mockAnalyze).not.toHaveBeenCalled();
   });
 

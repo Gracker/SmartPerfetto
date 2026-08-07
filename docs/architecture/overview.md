@@ -71,7 +71,7 @@ backend 与 frontend。
 | Strategies | `backend/strategies/` | 场景策略、Prompt 模板、知识模板 |
 | Self-Evolution | `backend/src/services/selfEvolution/`、`backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest、反馈投影、eval/replay、提案门控、overlay、对账、RBAC 控制面 |
 | Agent 外部反馈 | `backend/src/services/externalIssueReporting/`、`agentExternalIssueRoutes.ts`、AI Assistant plugin | 源 run 信号、固定 provider triage、严格校验、去标识 GitHub 草稿；不自动提交 |
-| Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | 本地代码库注册、源码索引、符号解析、lookup 过滤、patch 三态校验 |
+| Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | 本地路径注册、无索引按需搜索/读取、可选源码索引、符号解析、隐私投影与 patch 三态校验 |
 | External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | 外部 Wiki 全库审计、版本/指纹、分代索引、许可/同意/scope 和私有内容投影 |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | trace 加载、RPC 管理、SQL 查询 |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML 报告生成 |

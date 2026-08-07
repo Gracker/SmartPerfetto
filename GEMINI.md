@@ -17,6 +17,8 @@ High-priority reminders:
   reports, snapshots, CLI output, and frontend chat projection as separate
   surfaces; do not make chat readability fixes by deleting provenance.
 - For non-trivial tasks, follow the independent review gate in `AGENTS.md`.
+- For non-trivial delegated work, also read
+  `.claude/rules/agent-orchestration.md`.
 - Do not hand-edit generated files.
 - After AI Assistant plugin UI changes, run `./scripts/update-frontend.sh` so
   committed `frontend/` stays usable for Docker and `./start.sh` users.

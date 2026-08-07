@@ -302,6 +302,93 @@ export class PathSecurityGate {
     };
   }
 
+  getSourceSearchPolicy(): Readonly<{
+    allowedExtensions: readonly string[];
+    excludeNames: readonly string[];
+    caseInsensitive: boolean;
+  }> {
+    return {
+      allowedExtensions: [...this.allowedExtensions],
+      excludeNames: [...this.excludeNames],
+      caseInsensitive: this.platform === 'win32',
+    };
+  }
+
+  async validateRoot(
+    rootPath: string,
+    options: PathPreviewOptions = {},
+  ): Promise<string> {
+    const configuredRoots = this.allowlistRootsOverride ??
+      configuredAllowlistRoots(this.allowlistEnvironmentVariable);
+    const allowlistRoots = [
+      ...configuredRoots,
+      ...(options.additionalAllowlistRoots ?? []),
+    ];
+    const rootRealpath = await safeRealpathAsync(rootPath);
+    if (!rootRealpath) throw new Error('root_not_found');
+    if (allowlistRoots.length === 0 || !isWithinAllowlist(rootRealpath, allowlistRoots)) {
+      throw new Error('root_outside_allowlist');
+    }
+    return rootRealpath;
+  }
+
+  validateRelativeSourcePath(relativePath: string): string {
+    if (
+      typeof relativePath !== 'string' ||
+      !relativePath ||
+      relativePath.length > 4096 ||
+      relativePath.includes('\0') ||
+      path.posix.isAbsolute(relativePath) ||
+      path.win32.isAbsolute(relativePath)
+    ) {
+      throw new Error('source_path_invalid');
+    }
+    let normalized = relativePath.replace(/\\/g, '/');
+    while (normalized.startsWith('./')) normalized = normalized.slice(2);
+    normalized = normalized.replace(/\/+/g, '/');
+    const segments = normalized.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
+      throw new Error('source_path_invalid');
+    }
+    const basename = segments[segments.length - 1]!;
+    if (shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')) {
+      throw new Error('source_path_excluded');
+    }
+    const rawExtension = path.posix.extname(basename);
+    const extension = this.platform === 'win32'
+      ? rawExtension.toLocaleLowerCase('en-US')
+      : rawExtension;
+    if (!this.allowedExtensions.has(extension)) {
+      throw new Error('source_extension_not_allowed');
+    }
+    return normalized;
+  }
+
+  validateRelativeSourcePrefix(relativePath: string): string {
+    if (
+      typeof relativePath !== 'string' ||
+      !relativePath ||
+      relativePath.length > 1024 ||
+      relativePath.includes('\0') ||
+      path.posix.isAbsolute(relativePath) ||
+      path.win32.isAbsolute(relativePath)
+    ) {
+      throw new Error('source_path_prefix_invalid');
+    }
+    let normalized = relativePath.replace(/\\/g, '/');
+    while (normalized.startsWith('./')) normalized = normalized.slice(2);
+    normalized = normalized.replace(/\/+/g, '/').replace(/\/$/, '');
+    const segments = normalized.split('/');
+    if (segments.some(segment => !segment || segment === '.' || segment === '..')) {
+      throw new Error('source_path_prefix_invalid');
+    }
+    const basename = segments[segments.length - 1]!;
+    if (shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')) {
+      throw new Error('source_path_excluded');
+    }
+    return normalized;
+  }
+
   async preview(
     rootPath: string,
     options: PathPreviewOptions = {},

@@ -69,8 +69,8 @@ export function completeFinalReportCodeReferences(input: {
   const items = references.map(reference => reference.lineRange
     ? `- ${reference.filePath}:L${reference.lineRange.start}-L${reference.lineRange.end}`
     : input.outputLanguage === 'en'
-      ? `- filePath: ${reference.filePath}; chunkId: ${reference.chunkId}; line number unavailable`
-      : `- filePath: ${reference.filePath}; chunkId: ${reference.chunkId}; 行号不可用`);
+      ? `- filePath: ${reference.filePath}; sourceRef: ${reference.chunkId ?? reference.referenceId}; line number unavailable`
+      : `- filePath: ${reference.filePath}; sourceRef: ${reference.chunkId ?? reference.referenceId}; 行号不可用`);
   return `${input.conclusion.trimEnd()}\n\n${heading}\n\n${note}\n\n${items.join('\n')}`;
 }
 

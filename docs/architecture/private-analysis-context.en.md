@@ -3,17 +3,18 @@
 [English](private-analysis-context.en.md) | [中文](private-analysis-context.md)
 
 SmartPerfetto treats trace evidence, user source code, and external knowledge as
-three separate data domains. Source and external knowledge enter a runtime only
-when the current request selects them explicitly and their scope, license,
-consent, and active generation all validate. Global RAG, persisted sessions,
-and cross-session learning must not add them implicitly.
+three separate data domains. Source enters a runtime only when the request
+selects it explicitly, scope/consent validates, and its registered root remains
+available; it does not require an active index. External knowledge still
+requires license, consent, and an active generation. Global RAG, persisted
+sessions, and cross-session learning must not add either domain implicitly.
 
 ## Request Matrix
 
 | Source selection | External RAG selection | Effective behavior |
 |---|---|---|
 | None | None | Normal trace / Smart Profile analysis with no private retrieval tools |
-| Present | None | Exact `codebaseIds`; `metadata_only` exposes `CodeRef` only, while `provider_send` also requires registration-level consent |
+| Present | None | Exact `codebaseIds` and on-demand source tools; `metadata_only` exposes `CodeRef` only, while `provider_send` also requires registration-level consent |
 | None | Present | Exact `knowledgeSourceIds` and active generations; external prose is background, never current-trace evidence |
 | Present | Present | Both allowlists apply and validate independently, then share the private projection and report boundary |
 
@@ -42,6 +43,11 @@ the shared projection before chat, report, CLI artifact, and analysis-result
 snapshot surfaces receive them.
 
 ## Registration And Deletion Lifecycle
+
+On-demand search/read becomes available as soon as registration succeeds and
+the root remains accessible. Indexing is an optional capability for
+semantic/symbol lookup and patch flows, not an analysis prerequisite. A moved
+or missing registered root fails closed.
 
 Reindex is lease-fenced: it writes a unique staged generation, activates it only
 after integrity checks, then removes old generations. Deletion uses the same

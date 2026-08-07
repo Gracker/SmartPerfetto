@@ -7933,6 +7933,7 @@ kbd.pf-keycap.pf-spacing-large {
 .ai-message {
   display: flex;
   gap: 0;
+  min-width: 0;
   max-width: 100%;
   animation: messageSlideIn 0.2s ease-out;
 }
@@ -7942,8 +7943,10 @@ kbd.pf-keycap.pf-spacing-large {
   max-width: 85%;
 }
 .ai-message.ai-message-assistant {
-  align-self: flex-start;
-  max-width: 96%;
+  align-self: stretch;
+  flex-wrap: wrap;
+  width: 100%;
+  max-width: 100%;
 }
 
 .ai-message-progress {
@@ -7998,7 +8001,10 @@ kbd.pf-keycap.pf-spacing-large {
   align-items: flex-end;
 }
 .ai-message-assistant .ai-bubble-wrapper {
-  align-items: flex-start;
+  align-items: stretch;
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
 }
 
 .ai-msg-wrapper {
@@ -8030,6 +8036,10 @@ kbd.pf-keycap.pf-spacing-large {
 }
 .ai-message-assistant .ai-msg-content,
 .ai-message-assistant .ai-bubble {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   background: var(--chat-ai-bubble);
   border: 1px solid var(--chat-ai-border);
   border-radius: 6px;
@@ -8092,6 +8102,8 @@ kbd.pf-keycap.pf-spacing-large {
 
 .ai-msg-text,
 .ai-message-content {
+  min-width: 0;
+  max-width: 100%;
   line-height: 1.52;
 }
 .ai-msg-text p,
@@ -10620,7 +10632,10 @@ tr.detail-row .expanded-empty.compact .empty-sections {
   background: var(--chat-bg);
 }
 .ai-message-content .ai-mermaid-diagram {
+  max-width: 100%;
   overflow-x: auto;
+  background: var(--chat-bg);
+  color: var(--chat-text);
 }
 .ai-message-content .ai-mermaid-diagram svg {
   max-width: 100%;

@@ -38,6 +38,14 @@ export interface ProjectedPayload {
     snippetLength?: number;
     redactedCount?: number;
   }>;
+  sourceRefs?: Array<{
+    referenceId: string;
+    codebaseId: string;
+    lineRange?: {start: number; end: number};
+    snippetHash?: string;
+    snippetLength?: number;
+    redactedCount?: number;
+  }>;
   outcome: CodeLookupOutcome;
   legacyPath: boolean;
   backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
@@ -49,6 +57,13 @@ const SENSITIVE_RAG_TOOL_NAMES = new Set([
   'lookup_kernel_source',
   'lookup_aosp_source',
   'lookup_oem_sdk',
+  'search_codebase',
+  'read_codebase_file',
+]);
+
+const ON_DEMAND_SOURCE_TOOL_NAMES = new Set([
+  'search_codebase',
+  'read_codebase_file',
 ]);
 
 export function isSensitiveRagToolName(toolName: string): boolean {
@@ -61,6 +76,58 @@ function rejectedProjection(toolName: string): ProjectedPayload {
 
 function hashSnippet(snippet: string): string {
   return createHash('sha256').update(snippet).digest('hex').slice(0, 12);
+}
+
+function projectOnDemandSourceResult(
+  toolName: string,
+  raw: unknown,
+): ProjectedPayload | undefined {
+  if (!ON_DEMAND_SOURCE_TOOL_NAMES.has(toolName)) return undefined;
+  const payload = unwrapMcpPayload(raw);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const candidate = ((payload as {result?: unknown}).result ?? payload) as Record<string, unknown>;
+  const rawReferences = toolName === 'search_codebase'
+    ? candidate.matches
+    : candidate.reference === undefined ? [] : [candidate.reference];
+  if (!Array.isArray(rawReferences)) return undefined;
+  const sourceRefs = rawReferences.flatMap(rawReference => {
+    if (!rawReference || typeof rawReference !== 'object' || Array.isArray(rawReference)) return [];
+    const reference = rawReference as Record<string, unknown>;
+    if (typeof reference.referenceId !== 'string' || typeof reference.codebaseId !== 'string') return [];
+    const lineRange = reference.lineRange && typeof reference.lineRange === 'object'
+      ? reference.lineRange as Record<string, unknown>
+      : undefined;
+    const validLineRange = lineRange &&
+      Number.isInteger(lineRange.start) &&
+      Number.isInteger(lineRange.end) &&
+      Number(lineRange.start) > 0 &&
+      Number(lineRange.end) >= Number(lineRange.start)
+      ? {start: Number(lineRange.start), end: Number(lineRange.end)}
+      : undefined;
+    const text = typeof reference.text === 'string' ? reference.text : undefined;
+    return [{
+      referenceId: reference.referenceId,
+      codebaseId: reference.codebaseId,
+      ...(validLineRange ? {lineRange: validLineRange} : {}),
+      ...(text ? {snippetHash: hashSnippet(text), snippetLength: text.length} : {}),
+      ...(Number.isInteger(reference.redactedCount)
+        ? {redactedCount: Number(reference.redactedCount)}
+        : {}),
+    }];
+  });
+  const unsupportedReason = typeof candidate.unsupportedReason === 'string'
+    ? candidate.unsupportedReason
+    : undefined;
+  const outcome: CodeLookupOutcome = unsupportedReason?.includes('consent')
+    ? 'consent_blocked'
+    : candidate.success === false ? 'rejected' : 'success';
+  return {
+    toolName,
+    chunkRefs: [],
+    sourceRefs,
+    outcome,
+    legacyPath: false,
+  };
 }
 
 export function projectRagResultForSseAndLog(toolName: string, result: SanitizedRagResult): ProjectedPayload {
@@ -249,6 +316,8 @@ export function projectSensitiveRagToolResult(
 
 /** Fail closed for sensitive tool results copied to logs, SSE, or replay. */
 export function projectToolResultForExternalSurface(toolName: string, raw: unknown): unknown {
+  const onDemandProjection = projectOnDemandSourceResult(toolName, raw);
+  if (onDemandProjection) return onDemandProjection;
   const projected = projectSensitiveRagToolResult(toolName, raw);
   if (projected) return projected;
   const payload = unwrapMcpPayload(raw);

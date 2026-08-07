@@ -79,6 +79,32 @@ describe('codeReferenceContract', () => {
     })).toEqual([]);
   });
 
+  it('extracts bounded on-demand source references without requiring indexed chunks', () => {
+    expect(extractSourceLookupCodeReferences('search_codebase', {
+      success: true,
+      matches: [{
+        referenceId: 'source-a1b2c3',
+        codebaseId: 'codebase-a',
+        filePath: './app/src/main/java/demo/StartupHooks.kt',
+        lineRange: {start: 12, end: 12},
+        text: 'private source text',
+      }],
+    })).toEqual([{
+      referenceId: 'source-a1b2c3',
+      filePath: 'app/src/main/java/demo/StartupHooks.kt',
+      lineRange: {start: 12, end: 12},
+    }]);
+
+    expect(extractSourceLookupCodeReferences('read_codebase_file', {
+      success: true,
+      reference: {
+        referenceId: 'source-d4e5f6',
+        filePath: '../outside/Secret.kt',
+        lineRange: {start: 1, end: 2},
+      },
+    })).toEqual([]);
+  });
+
   it('deterministically completes a missing final CodeRef from ephemeral source metadata', () => {
     const plan: AnalysisPlanV3 = {
       phases: [],

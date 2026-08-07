@@ -11,7 +11,10 @@ import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { listEnterpriseAuditEvents } from '../../services/enterpriseAuditService';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
-import { ENTERPRISE_DATA_DIR_ENV } from '../../services/traceMetadataStore';
+import {
+  ENTERPRISE_DATA_DIR_ENV,
+  writeTraceMetadata,
+} from '../../services/traceMetadataStore';
 import reportRoutes, { persistReport, reportStore } from '../reportRoutes';
 
 const originalEnv = {
@@ -135,6 +138,50 @@ afterEach(async () => {
 });
 
 describe('enterprise report routes', () => {
+  it('starts an exported report filename with the current trace name', async () => {
+    const app = makeApp();
+    const reportId = 'report-trace-filename';
+    const generatedAt = 1_700_000_000_000;
+    const traceNamePrefix = `应用:trace?-${'a'.repeat(70)}`;
+    const safeTraceNamePrefix = `应用_trace_-${'a'.repeat(70)}`;
+
+    await writeTraceMetadata({
+      id: 'trace-filename',
+      filename: `../${traceNamePrefix}😀.pftrace`,
+      size: 128,
+      uploadedAt: new Date(generatedAt).toISOString(),
+      status: 'ready',
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+    });
+    persistReport(reportId, {
+      html: '<html><body>trace filename report</body></html>',
+      generatedAt,
+      sessionId: 'session-trace-filename',
+      runId: 'run-trace-filename',
+      traceId: 'trace-filename',
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+      visibility: 'private',
+    });
+
+    reportStore.clear();
+    const exportRes = await ssoHeaders(
+      request(app).get(`/api/reports/${reportId}/export`),
+    );
+    const encodedFilename = /filename\*=UTF-8''([^;]+)/u.exec(
+      exportRes.headers['content-disposition'] || '',
+    )?.[1];
+
+    expect(exportRes.status).toBe(200);
+    expect(encodedFilename).toBeDefined();
+    expect(decodeURIComponent(encodedFilename!)).toBe(
+      `${safeTraceNamePrefix}-2023-11-14T22-13-20Z-SmartPerfetto.html`,
+    );
+  });
+
   it('stores reports in report_artifacts and reloads them from scoped data storage', async () => {
     const app = makeApp();
     const reportId = 'report-a';

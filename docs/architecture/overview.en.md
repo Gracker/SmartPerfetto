@@ -75,7 +75,7 @@ and frontend readiness.
 | Strategies | `backend/strategies/` | Scene strategies, prompt templates, knowledge templates |
 | Self-Evolution | `backend/src/services/selfEvolution/`, `backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest, feedback projection, eval/replay, proposal gates, overlays, reconciliation, and the RBAC control plane |
 | Agent external feedback | `backend/src/services/externalIssueReporting/`, `agentExternalIssueRoutes.ts`, AI Assistant plugin | Source-run signals, pinned-provider triage, strict validation, and deidentified GitHub drafts with no automatic submission |
-| Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | Local codebase registry, source ingestion, symbol resolution, lookup filtering, and patch status verification |
+| Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | Local path registration, index-free on-demand search/read, optional source indexing, symbol resolution, private projection, and patch status verification |
 | External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | Full-corpus Wiki audit, version/fingerprint identity, generation indexing, license/consent/scope, and private-content projection |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | Trace loading, RPC management, SQL query execution |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML report generation |

@@ -8,6 +8,7 @@ development in this repository. For area-specific details, read:
 - `.claude/rules/prompts.md`
 - `.claude/rules/skills.md`
 - `.claude/rules/codebase-aware.md`
+- `.claude/rules/agent-orchestration.md`
 - `.claude/rules/product-surface.md`
 - `.claude/rules/testing.md`
 - `.claude/rules/git.md`

@@ -2,16 +2,17 @@
 
 [English](private-analysis-context.en.md) | [中文](private-analysis-context.md)
 
-SmartPerfetto 把 trace 证据、用户源码和外部知识视为三个独立的数据域。源码和外部
-知识只在本次请求显式选择并通过 scope、许可、同意与 active generation 校验后进入
-runtime；它们不能被全局 RAG、历史 session 或跨会话学习隐式带入分析。
+SmartPerfetto 把 trace 证据、用户源码和外部知识视为三个独立的数据域。源码只在本次
+请求显式选择、scope/同意有效且已注册根目录可访问时进入 runtime；不要求 active index。
+外部知识仍要求许可、同意与 active generation。两者都不能被全局 RAG、历史 session
+或跨会话学习隐式带入分析。
 
 ## 请求组合
 
 | 源码选择 | 外部 RAG 选择 | 有效行为 |
 |---|---|---|
 | 无 | 无 | 普通 trace / Smart Profile 分析，不开放私有检索工具 |
-| 有 | 无 | 使用精确 `codebaseIds`；`metadata_only` 只给 `CodeRef`，`provider_send` 还要求注册级同意 |
+| 有 | 无 | 使用精确 `codebaseIds` 和按需源码工具；`metadata_only` 只给 `CodeRef`，`provider_send` 还要求注册级同意 |
 | 无 | 有 | 使用精确 `knowledgeSourceIds` 和对应 active generation；外部知识仅作背景，不冒充当前 trace 证据 |
 | 有 | 有 | 两套 allowlist 同时生效，分别校验后进入同一私有投影和报告边界 |
 
@@ -34,6 +35,9 @@ runtime；它们不能被全局 RAG、历史 session 或跨会话学习隐式带
 CLI artifact 和 analysis-result snapshot。
 
 ## 注册与删除生命周期
+
+注册完成且根目录仍可访问时，按需搜索/读取立即可用。索引是语义/符号检索与 patch 的
+可选能力，不再是启动分析的前置条件；注册根目录漂移或丢失会 fail closed。
 
 索引重建按 lease 隔离，先写入唯一 staged generation，完整性校验通过后才原子切换
 active generation，再回收旧 generation。删除复用同一 lease，但顺序为：

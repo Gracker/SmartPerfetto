@@ -48,6 +48,7 @@ import {requireCodebaseScope} from '../services/auth/codebaseScopes';
 import {
   activeCodebaseGeneration,
   codebaseRegistrationRequirements,
+  codebaseRootAvailable,
   CodebaseRegistry,
   type CodebaseRef,
   isCodebaseKind,
@@ -151,6 +152,7 @@ function sanitizeCodebase(ref: CodebaseRef) {
   } = ref;
   return {
     ...rest,
+    rootAvailable: codebaseRootAvailable(ref),
     eligibleForSendToProvider: consent.sendToProvider,
     consent: {
       sendToProvider: consent.sendToProvider,

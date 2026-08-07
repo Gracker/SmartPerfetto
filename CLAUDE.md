@@ -94,6 +94,9 @@ logic, use Plan -> independent read-only review -> Revise -> Execute.
   structured self-review plus post-diff review, note the fallback, and rely on
   the relevant verification tier from `.claude/rules/testing.md`.
 - Reviewers must not edit files.
+- When delegation or parallel work can help a non-trivial task, read
+  `.claude/rules/agent-orchestration.md`; it extends this gate without
+  replacing Plan -> independent review -> Revise -> Execute.
 
 ## Detailed Rules
 
@@ -104,6 +107,7 @@ Read the relevant detailed rule before touching that area:
 - `.claude/rules/prompts.md`
 - `.claude/rules/skills.md`
 - `.claude/rules/codebase-aware.md`
+- `.claude/rules/agent-orchestration.md`
 - `.claude/rules/product-surface.md`
 - `.claude/rules/perfetto-sync.md`
 - `.claude/rules/release.md`

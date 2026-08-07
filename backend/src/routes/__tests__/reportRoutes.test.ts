@@ -39,6 +39,7 @@ A[foo] --> B[bar]</pre>
       <html>
       <head>
         <style>
+          /* smartperfetto-report-layout-fix-v1 */
           .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; }
           .metric-card { background: #f8f9fa; padding: 15px; border-radius: 8px; text-align: center; }
         </style>
@@ -56,9 +57,13 @@ A[foo] --> B[bar]</pre>
 
     const upgraded = upgradeLegacyReportHtml(legacy);
     expect(upgraded).toContain('smartperfetto-report-layout-fix-v1');
+    expect(upgraded).toContain('smartperfetto-report-layout-fix-v2');
+    expect(upgraded.match(/smartperfetto-report-layout-fix-v2/g)).toHaveLength(1);
     expect(upgraded).toContain('.metrics-grid');
     expect(upgraded).toContain('grid-template-columns: repeat(auto-fit, minmax(180px, 1fr))');
-    expect(upgradeLegacyReportHtml(upgraded)).toBe(upgraded);
+    const upgradedAgain = upgradeLegacyReportHtml(upgraded);
+    expect(upgradedAgain).toBe(upgraded);
+    expect(upgradedAgain.match(/smartperfetto-report-layout-fix-v2/g)).toHaveLength(1);
   });
 
   test('leaves already-upgraded reports unchanged', () => {

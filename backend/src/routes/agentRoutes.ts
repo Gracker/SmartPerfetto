@@ -186,7 +186,7 @@ import {
   type KnowledgeScope,
 } from '../services/scopedKnowledgeStore';
 import { getDefaultCodebaseRegistry } from '../services/codebase/defaultCodebaseServices';
-import {codebaseHasActiveIndex} from '../services/codebase/codebaseRegistry';
+import {codebaseRootAvailable} from '../services/codebase/codebaseRegistry';
 import {codeAwareFeatureEnabled} from '../services/codebase/codeAwareFeature';
 import {
   externalKnowledgeSourceHasActiveIndex,
@@ -2426,14 +2426,14 @@ async function handleAnalyzeRequest(
         );
         return;
       }
-      if (codebases.some(codebase => !codebase || !codebaseHasActiveIndex(codebase))) {
+      if (codebases.some(codebase => !codebase || !codebaseRootAvailable(codebase))) {
         res.status(409).json({
           success: false,
-          code: 'ANALYSIS_CONTEXT_CODEBASE_UNAVAILABLE',
+          code: 'ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE',
           error: localize(
             requestOutputLanguage,
-            '一个或多个所选源码库没有可用的活动索引代际',
-            'One or more selected codebases have no active indexed source generation',
+            '一个或多个所选源码库的已注册根目录当前不可用',
+            'One or more selected codebases have a registered root that is unavailable',
           ),
         });
         return;

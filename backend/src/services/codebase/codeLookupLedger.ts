@@ -25,7 +25,7 @@ export interface CodeLookupLedgerEntry {
   ts: number;
   toolName: 'resolve_symbol' | 'lookup_app_source' | 'lookup_aosp_source' |
     'lookup_kernel_source' | 'lookup_oem_sdk' | 'lookup_blog_knowledge' |
-    'propose_patch';
+    'search_codebase' | 'read_codebase_file' | 'propose_patch';
   codebaseId?: string;
   knowledgeSourceId?: string;
   sourceGeneration?: string;

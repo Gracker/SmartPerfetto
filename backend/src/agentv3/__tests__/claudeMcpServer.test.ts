@@ -254,6 +254,7 @@ import type { TraceSimilaritySnapshotRepository } from '../../services/similarit
 import {RagStore} from '../../services/ragStore';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
+import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
 import {makeSparkProvenance} from '../../types/sparkContracts';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {
@@ -276,6 +277,7 @@ function createTestServer(options: {
   codeAwareMode?: any;
   codebaseIds?: string[];
   codebaseRegistry?: any;
+  codeLookupLedger?: CodeLookupLedger;
   caseLibrary?: any;
   ragStore?: any;
   androidInternalsPackStore?: any;
@@ -346,6 +348,7 @@ function createTestServer(options: {
     codeAwareMode: options.codeAwareMode,
     codebaseIds: options.codebaseIds,
     codebaseRegistry: options.codebaseRegistry,
+    codeLookupLedger: options.codeLookupLedger,
     caseLibrary: options.caseLibrary,
     ragStore: options.ragStore,
     androidInternalsPackStore: options.androidInternalsPackStore ?? null,
@@ -876,6 +879,8 @@ describe('createClaudeMcpServer', () => {
         'execute_sql_on',
         'get_comparison_context',
         'list_codebases',
+        'search_codebase',
+        'read_codebase_file',
         'lookup_app_source',
         'lookup_kernel_source',
         'resolve_symbol',
@@ -894,25 +899,25 @@ describe('createClaudeMcpServer', () => {
         label: 'full default',
         options: {},
         present: ['fetch_artifact', 'submit_plan', 'update_plan_phase', 'revise_plan'],
-        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'list_codebases', 'lookup_app_source'],
+        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source'],
       },
       {
         label: 'full with code-aware disabled',
         options: { codeAwareMode: 'off', codebaseIds: ['app-codebase'] },
         present: ['fetch_artifact', 'submit_plan', 'update_plan_phase', 'revise_plan'],
-        absent: ['list_codebases', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
+        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
       },
       {
         label: 'full with code-aware metadata',
         options: { codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'] },
-        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
+        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
         absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context'],
       },
       {
         label: 'full comparison',
         options: { referenceTraceId: 'reference-trace-456' },
         present: ['fetch_artifact', 'submit_plan', 'compare_skill', 'execute_sql_on', 'get_comparison_context'],
-        absent: ['list_codebases', 'lookup_app_source', 'lookup_kernel_source'],
+        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source', 'lookup_kernel_source'],
       },
       {
         label: 'lightweight broad request',
@@ -923,7 +928,7 @@ describe('createClaudeMcpServer', () => {
           codebaseIds: ['app-codebase'],
         },
         present: ['execute_sql', 'invoke_skill', 'lookup_sql_schema', 'fetch_artifact'],
-        absent: ['submit_plan', 'update_plan_phase', 'compare_skill', 'execute_sql_on', 'list_codebases', 'lookup_app_source'],
+        absent: ['submit_plan', 'update_plan_phase', 'compare_skill', 'execute_sql_on', 'list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source'],
       },
     ])('keeps scoped registry expectations stable for $label', ({ options, present, absent }) => {
       const { tools, allowedTools, toolDefinitions } = createTestServer(options as any);
@@ -4845,6 +4850,89 @@ describe('createClaudeMcpServer', () => {
         ...ref,
         guarantee: 'sdk_handoff_observed',
       });
+    });
+  });
+
+  describe('on-demand codebase access', () => {
+    it('searches and reads a selected local source tree without an active index', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-on-demand-source-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'StartupHooks.kt'), [
+          'class StartupHooks {',
+          '  fun installTracing() = Unit',
+          '}',
+        ].join('\n'));
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const ledger = new CodeLookupLedger(
+          'on-demand-test',
+          12_000,
+          2,
+          path.join(tmpDir, 'ledger.jsonl'),
+        );
+        const {tools} = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          codeLookupLedger: ledger,
+          knowledgeScope: scope,
+        });
+
+        const listed = await callTool(tools, 'list_codebases');
+        const search = await callTool(tools, 'search_codebase', {
+          query: 'installTracing',
+        });
+        const read = await callTool(tools, 'read_codebase_file', {
+          codebase_id: ref.codebaseId,
+          file_path: 'src/StartupHooks.kt',
+          start_line: 1,
+          max_lines: 3,
+        });
+
+        expect(listed.codebases).toEqual([
+          expect.objectContaining({
+            codebaseId: ref.codebaseId,
+            rootAvailable: true,
+            chunkCount: 0,
+          }),
+        ]);
+        expect(listed.codebases[0]).not.toHaveProperty('activeGeneration');
+        expect(search).toEqual(expect.objectContaining({
+          success: true,
+          dataTrust: 'untrusted_retrieved_data',
+          matches: [expect.objectContaining({
+            filePath: 'src/StartupHooks.kt',
+            lineRange: {start: 2, end: 2},
+            text: '  fun installTracing() = Unit',
+          })],
+        }));
+        expect(read).toEqual(expect.objectContaining({
+          success: true,
+          dataTrust: 'untrusted_retrieved_data',
+          reference: expect.objectContaining({
+            filePath: 'src/StartupHooks.kt',
+            lineRange: {start: 1, end: 3},
+          }),
+        }));
+        expect(JSON.stringify({search, read})).not.toContain(root);
+        expect(ledger.getEntries()).toEqual([
+          expect.objectContaining({toolName: 'search_codebase', chunkIds: [], outcome: 'success'}),
+          expect.objectContaining({toolName: 'read_codebase_file', chunkIds: [], outcome: 'success'}),
+        ]);
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
     });
   });
 

@@ -502,6 +502,49 @@ describe('tool result projection and session registry', () => {
     expect(JSON.stringify(projected)).not.toContain('PUBLIC_BLOG_SNIPPET_CANARY');
   });
 
+  it.each(['search_codebase', 'read_codebase_file'])(
+    'projects %s results without persisting source text or paths',
+    toolName => {
+      const result = toolName === 'search_codebase'
+        ? {
+            success: true,
+            codebaseId: 'codebase-a',
+            matches: [{
+              referenceId: 'source-a1b2c3',
+              codebaseId: 'codebase-a',
+              filePath: 'app/src/main/java/demo/StartupHooks.kt',
+              lineRange: {start: 12, end: 12},
+              text: 'PRIVATE_ON_DEMAND_SOURCE_CANARY',
+            }],
+          }
+        : {
+            success: true,
+            codebaseId: 'codebase-a',
+            reference: {
+              referenceId: 'source-d4e5f6',
+              codebaseId: 'codebase-a',
+              filePath: 'app/src/main/java/demo/StartupHooks.kt',
+              lineRange: {start: 10, end: 20},
+              text: 'PRIVATE_ON_DEMAND_SOURCE_CANARY',
+            },
+          };
+
+      const projected = projectToolResultForExternalSurface(toolName, result);
+
+      expect(projected).toEqual(expect.objectContaining({
+        toolName,
+        outcome: 'success',
+        sourceRefs: [expect.objectContaining({
+          referenceId: expect.stringMatching(/^source-/),
+          codebaseId: 'codebase-a',
+          snippetHash: expect.any(String),
+        })],
+      }));
+      expect(JSON.stringify(projected)).not.toContain('StartupHooks.kt');
+      expect(JSON.stringify(projected)).not.toContain('PRIVATE_ON_DEMAND_SOURCE_CANARY');
+    },
+  );
+
   it('keeps runtime tool results namespaced by session/run/runtime/invocation', () => {
     const registry = new SessionToolResultRegistry();
     const target = {sessionId: 's1', runId: 'r1', runtime: 'openai' as const, invocationId: 'tool-1'};

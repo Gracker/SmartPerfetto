@@ -2,14 +2,14 @@
 
 [English](code-aware-analysis.en.md) | [中文](code-aware-analysis.md)
 
-Code-Aware Analysis 让 SmartPerfetto 在分析 trace 时按需引用本机代码库，把调用栈、native frame 或 kernel symbol 映射到 `CodeRef`。默认输出只展示 `chunkId`、相对路径、行号和 symbol；源码正文只通过受 RBAC 保护的 excerpt endpoint 临时读取，不写入 session、报告或导出。
+Code-Aware Analysis 让 SmartPerfetto 在分析 trace 时按需引用本机代码库，把调用栈、native frame 或 kernel symbol 映射到 `CodeRef`。注册路径后即可使用 `search_codebase` / `read_codebase_file`，不要求先建立索引。默认输出只展示 `referenceId` 或 `chunkId`、相对路径、行号和 symbol；源码正文不写入 session、报告或导出。
 
 ## 启用方式
 
 1. 启动后端：`./start.sh`。
 2. 在 Perfetto UI 打开 AI Assistant settings，进入 `Codebases`。
 3. 添加代码库时优先点击“选择文件夹”，再运行 preview。显示名称可留空，默认使用文件夹名。
-4. 注册后执行 reindex。
+4. 注册后即可选择并开始分析。`reindex` 是可选加速项，仍用于语义/符号检索和 patch 流程。
 5. 分析时使用 code-aware 模式，或在 CLI 传入 `--code-aware metadata_only|provider_send` 和 `--codebase-id <id>`。
 
 CLI 示例：
@@ -27,6 +27,7 @@ npm run cli:dev -- codebase register /path/to/app \
   --kind app_source \
   --path-filter app/src/main/
 
+# 可选：构建索引以启用语义/符号检索与 patch
 npm run cli:dev -- codebase reindex cb_xxx
 npm run cli:dev -- codebase symbols MainActivity --codebase-id cb_xxx
 
@@ -48,6 +49,8 @@ npm run cli:dev -- run --format json \
 | `--code-aware off` + codebase ID | 输入无效，直接拒绝，不静默忽略源码配置 |
 | 只传 `--knowledge-source-id` | 使用已授权的私有外部 RAG，完整分析 runtime |
 | codebase ID + knowledge source ID | 源码与外部 RAG 同时参与，同一隐私投影和完整分析 runtime |
+
+源码 codebase 只要求已注册根目录仍可访问；缺少 active generation 或索引分片不会阻止分析。外部知识源仍是 RAG 数据源，因此仍要求已授权且索引完成。注册路径被移动、卸载或删除时，Web/CLI 会返回 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，恢复原路径或重新注册即可。
 
 这里的“完整分析 runtime”意味着即使显式请求 `--analysis-mode fast`，只要选择了源码、私有 RAG 或 reference trace，系统也会解析为 `full`，避免在轻量路径里静默丢失能力。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
 
@@ -73,14 +76,15 @@ reindex，不会扩大进程全局 allowlist。注册项的 list/audit 元数据
 
 ## 安全边界
 
-- `metadata_only`：模型只看到 `CodeRef` 元数据，不看到源码片段。
-- `provider_send`：只有注册时同意 `sendToProvider` 的代码库才允许把筛选后的片段发给模型。
+- `metadata_only`：模型可按需搜索，但只看到相对路径、行号和 `referenceId`，不能读取源码正文。
+- `provider_send`：只有注册时同意 `sendToProvider` 的代码库才允许搜索和读取有界、脱敏后的片段。
+- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和 secret 脱敏约束；绝对 root 不进入工具结果。
 - 系统文件夹选择器的变更请求必须同时具有 loopback Host、socket 与 Origin；只读能力探测可省略 Origin。选择器在 Docker、enterprise 或非 loopback 监听模式下关闭；目录绝对路径不会出现在 codebase list/detail 响应中。
 - 私有源码/知识分析的原始 query、中间推理、工具参数和检索正文不写入 session、日志、报告或导出；Claude 本地 transcript 与 OpenAI Responses 存储会关闭，也不会读写跨会话 pattern、verifier 或 SQL 修复学习。最终结论与确定性 trace 证据会经过统一隐私投影；多轮连续性仅由当前进程内的受限会话上下文提供。
 - 旧 RAG chunk 不受 code-aware 规则破坏；`app_source`、`kernel_source` 或 `registryOrigin=codebase_registry` 的 chunk 缺少 codebase metadata 时会 fail-closed。
 - 旧 `/api/rag/chunks/:id` 和 `/api/rag/search` 对 code-aware chunk 返回 hash/长度等 sanitized 信息，不返回源码正文。
 - Web UI 的“删除源码库”会先撤销检索与 provider 授权，再清理当前 scope 内的全部索引代际；删除中断时可安全重试。已经发送给 provider 的历史内容无法由本地删除操作撤回。
-- Patch 只分三态：`verified`、`sketch`、`unverified`。`sketch` 和 `unverified` 不给 copyable diff。
+- Patch 只分三态：`verified`、`sketch`、`unverified`。本次改动仍要求先由 indexed lookup 获得 `chunkId`；按需工具的 `referenceId` 不直接授权 patch。`sketch` 和 `unverified` 不给 copyable diff。
 
 ## 验证
 

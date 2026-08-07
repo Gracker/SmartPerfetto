@@ -116,6 +116,7 @@ export interface CodebaseRefSummary {
   lifecycleState: 'active' | 'deleting';
   kind: CodebaseRef['kind'];
   displayName: string;
+  rootAvailable: boolean;
   rootAuthorization: CodebaseRootAuthorization;
   commitHash?: string;
   vendor?: string;
@@ -223,6 +224,7 @@ function toSummary(ref: CodebaseRef): CodebaseRefSummary {
     lifecycleState: ref.lifecycleState ?? 'active',
     kind: ref.kind,
     displayName: ref.displayName,
+    rootAvailable: codebaseRootAvailable(ref),
     rootAuthorization: ref.rootAuthorization ?? 'configured_allowlist',
     ...(ref.commitHash ? {commitHash: ref.commitHash} : {}),
     ...(ref.vendor ? {vendor: ref.vendor} : {}),
@@ -278,6 +280,21 @@ export function codebaseHasActiveIndex(
 ): boolean {
   return (ref.lifecycleState ?? 'active') === 'active' &&
     Boolean(ref.activeGeneration && ref.contentFingerprint && (ref.chunkCount ?? 0) > 0);
+}
+
+export function codebaseRootAvailable(
+  ref: Pick<CodebaseRef, 'lifecycleState' | 'rootRealpath'>,
+): boolean {
+  if ((ref.lifecycleState ?? 'active') !== 'active') return false;
+  try {
+    const current = fs.realpathSync(ref.rootRealpath);
+    const normalize = (value: string): string => process.platform === 'win32'
+      ? path.resolve(value).toLocaleLowerCase('en-US')
+      : path.resolve(value);
+    return normalize(current) === normalize(ref.rootRealpath);
+  } catch {
+    return false;
+  }
 }
 
 export class CodebaseRegistry {

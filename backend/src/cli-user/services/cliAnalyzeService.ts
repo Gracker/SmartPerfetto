@@ -71,9 +71,12 @@ import {
   normalizeCodeAwareMode,
   type CodeAwareMode,
 } from '../../services/codebase/codeAwareFeature';
-import {CodebaseRegistry, resolveCodebaseScope} from '../../services/codebase/codebaseRegistry';
+import {
+  CodebaseRegistry,
+  codebaseRootAvailable,
+  resolveCodebaseScope,
+} from '../../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../../services/codebase/defaultCodebaseServices';
-import {codebaseHasActiveIndex} from '../../services/codebase/codebaseRegistry';
 import {
   externalKnowledgeSourceHasActiveIndex,
   getDefaultExternalKnowledgeSourceRegistry,
@@ -209,12 +212,12 @@ function validateCliAnalysisContext(input: RunTurnInput, scope: KnowledgeScope):
         `Codebase '${codebaseId}' not found in the current analysis scope`,
       ));
     }
-    if (!codebaseHasActiveIndex(ref)) {
+    if (!codebaseRootAvailable(ref)) {
       throw new Error(
         localize(
           outputLanguage,
-          `ANALYSIS_CONTEXT_CODEBASE_UNAVAILABLE：源码库“${codebaseId}”没有可用的活动索引代际`,
-          `ANALYSIS_CONTEXT_CODEBASE_UNAVAILABLE: Codebase '${codebaseId}' has no active indexed source generation`,
+          `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE：源码库“${codebaseId}”的已注册根目录当前不可用`,
+          `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE: Codebase '${codebaseId}' has a registered root that is unavailable`,
         ),
       );
     }

@@ -5,22 +5,25 @@ Use these rules before touching code-aware analysis, codebase registry, source i
 ## Product Boundary
 
 - Treat source code as user-owned local material. Do not persist raw source snippets in sessions, reports, exports, telemetry, access logs, or frontend storage.
-- LLM-visible output should prefer `CodeRef` metadata: `chunkId`, relative `filePath`, `lineRange`, `symbol`, `codebaseId`, `buildId`, `vendor`.
+- LLM-visible output should prefer `CodeRef` metadata: `referenceId` or `chunkId`, relative `filePath`, `lineRange`, `symbol`, `codebaseId`, `buildId`, `vendor`.
 - Raw excerpts are only for explicit user inspection through RBAC-protected endpoints. Frontend excerpt caches must remain in memory and clear on session switch, trace switch, panel unmount, permission revoke, codebase reindex, and codebase delete.
 - `metadata_only` must never send source snippets to providers. `provider_send` still requires per-codebase `sendToProvider` consent.
 
 ## Backend
 
 - Register and preview paths through `PathSecurityGate`; never trust a client-supplied root directly.
+- A live registered root is sufficient for bounded `search_codebase` and `read_codebase_file`; an active index is optional acceleration, not an analysis prerequisite.
+- On-demand access must enforce the registered path filters, extension/size limits, provider consent, bounded results/line ranges, secret redaction, and the private-output projection. Never return an absolute root.
 - Code-aware chunks must carry `codebaseId` and `registryOrigin='codebase_registry'`.
 - `app_source`, `kernel_source`, or registry-origin chunks missing codebase metadata must fail closed with `invalid_codebase_metadata`.
-- Shared lookup handlers must pass through `LookupResponseFilter` before the model sees results.
+- Indexed lookup handlers must pass through `LookupResponseFilter`; on-demand handlers must pass through `OnDemandSourceAccessService` and the same external-surface projection boundary before results leave the runtime.
 - SSE/log/snapshot/report/export paths must use projected/sanitized payloads, not raw MCP tool results.
 - Keep prompt content in `backend/strategies/` and Skills in `backend/skills/`; do not hardcode code-aware prompting in TypeScript.
 
 ## Patch Proposals
 
 - `propose_patch` requires prior successful code lookup in `CodeLookupLedger`.
+- On-demand `referenceId` records deliberately do not authorize `propose_patch`; patch targets remain tied to previously looked-up indexed `chunkId` context.
 - Reject context from multiple codebases in Phase 1.
 - Verify target files are inside previously looked-up context.
 - Run `git apply --check` in the target codebase root before returning a `verified` patch.

@@ -210,14 +210,62 @@ afterEach(async () => {
 });
 
 describe('agent route RBAC', () => {
-  it('rejects a selected codebase that has no active indexed generation', async () => {
+  it('allows a selected codebase without an index when its registered root is available', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-route-on-demand-source-'));
+    const root = path.join(tmpDir, 'app');
+    await fs.mkdir(root);
+    const rootRealpath = await fs.realpath(root);
+    try {
+      delete process.env.SMARTPERFETTO_API_KEY;
+      delete process.env.SMARTPERFETTO_CODE_AWARE;
+      process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'zh-CN';
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      jest.spyOn(defaultCodebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue({
+        get: jest.fn(() => ({
+          codebaseId: 'codebase-unindexed',
+          lifecycleState: 'active',
+          rootRealpath,
+          indexGeneration: 1,
+          chunkCount: 0,
+          consent: {sendToProvider: false, consentHash: 'consent'},
+        })),
+      } as any);
+      const traceService = {getOrLoadTrace: jest.fn()};
+      setTraceProcessorServiceForTests(traceService as any);
+
+      const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+        .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
+        .send({
+          traceId: 'trace-a',
+          query: 'analyze with source',
+          options: {
+            analysisMode: 'fast',
+            codeAwareMode: 'metadata_only',
+            codebaseIds: ['codebase-unindexed'],
+          },
+        });
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual(expect.objectContaining({
+        success: false,
+        code: 'TRACE_NOT_UPLOADED',
+      }));
+      expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
+  it('rejects a selected codebase when its registered root is unavailable', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     delete process.env.SMARTPERFETTO_CODE_AWARE;
-    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'zh-CN';
+    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
     jest.spyOn(defaultCodebaseServices, 'getDefaultCodebaseRegistry').mockReturnValue({
       get: jest.fn(() => ({
-        codebaseId: 'codebase-unindexed',
+        codebaseId: 'codebase-missing-root',
+        lifecycleState: 'active',
+        rootRealpath: '/definitely/missing/smartperfetto/source',
         indexGeneration: 1,
         chunkCount: 0,
         consent: {sendToProvider: false, consentHash: 'consent'},
@@ -232,33 +280,20 @@ describe('agent route RBAC', () => {
         traceId: 'trace-a',
         query: 'analyze with source',
         options: {
-          analysisMode: 'fast',
           codeAwareMode: 'metadata_only',
-          codebaseIds: ['codebase-unindexed'],
+          codebaseIds: ['codebase-missing-root'],
         },
       });
 
     expect(res.status).toBe(409);
     expect(res.body).toEqual(expect.objectContaining({
       success: false,
-      code: 'ANALYSIS_CONTEXT_CODEBASE_UNAVAILABLE',
+      code: 'ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE',
     }));
-    expect(res.body.error).toContain('活动索引代际');
+    expect(res.body.error).toContain('registered root');
+    expect(res.body.error).toContain('unavailable');
+    expect(res.body.error).not.toContain('index');
     expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
-
-    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
-    const english = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
-      .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read,codebase:read')
-      .send({
-        traceId: 'trace-a',
-        query: 'analyze with source',
-        options: {
-          codeAwareMode: 'metadata_only',
-          codebaseIds: ['codebase-unindexed'],
-        },
-      });
-    expect(english.status).toBe(409);
-    expect(english.body.error).toContain('active indexed source generation');
   });
 
   it('rejects an activated knowledge source whose generation contains no chunks', async () => {
