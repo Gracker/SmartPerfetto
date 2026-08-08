@@ -417,10 +417,40 @@ function shouldInjectLegacyReportLayoutFix(html: string): boolean {
   );
 }
 
+function upgradePreviouslyGatedCausalMapScript(html: string): string {
+  const gateStart = "if (typeof mermaid !== 'undefined') {";
+  const causalMapMarker = '\n  function decodeMermaidSource';
+  const fallbackStart = '  if (mermaidTargets.length > 0) {\n    mermaid.initialize({';
+  const gateStartIndex = html.indexOf(`${gateStart}${causalMapMarker}`);
+  if (gateStartIndex === -1) return html;
+
+  const scriptEndIndex = html.indexOf('</script>', gateStartIndex);
+  if (scriptEndIndex === -1) return html;
+
+  const gateEndIndex = html.lastIndexOf('\n}', scriptEndIndex);
+  if (gateEndIndex === -1) return html;
+
+  const gatedBody = html.slice(gateStartIndex + gateStart.length, gateEndIndex);
+  if (!gatedBody.includes(fallbackStart)) return html;
+
+  const upgradedBody = gatedBody.replace(
+    fallbackStart,
+    `  if (mermaidTargets.length > 0) {
+    if (typeof mermaid === 'undefined') {
+      console.error('[SmartPerfetto] Mermaid library is unavailable; showing the original diagram source.');
+      return;
+    }
+
+    mermaid.initialize({`,
+  );
+  const upgradedScript = `(function() {${upgradedBody}\n})();`;
+  return `${html.slice(0, gateStartIndex)}${upgradedScript}${html.slice(gateEndIndex + 2)}`;
+}
+
 export function upgradeLegacyReportHtml(html: string): string {
   if (!html) return html;
 
-  let upgraded = html;
+  let upgraded = upgradePreviouslyGatedCausalMapScript(html);
 
   if (shouldInjectLegacyReportLayoutFix(upgraded)) {
     upgraded = injectReportStyle(upgraded, REPORT_LAYOUT_FIX_CSS);

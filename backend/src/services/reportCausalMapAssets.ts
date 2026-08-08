@@ -403,7 +403,7 @@ pre.mermaid .cluster span {
 `;
 
 export const REPORT_CAUSAL_MAP_SCRIPT = String.raw`
-if (typeof mermaid !== 'undefined') {
+(function() {
   function decodeMermaidSource(text) {
     return String(text || '')
       .replace(/&quot;/g, '"')
@@ -854,6 +854,11 @@ if (typeof mermaid !== 'undefined') {
   });
 
   if (mermaidTargets.length > 0) {
+    if (typeof mermaid === 'undefined') {
+      console.error('[SmartPerfetto] Mermaid library is unavailable; showing the original diagram source.');
+      return;
+    }
+
     mermaid.initialize({
       startOnLoad: false,
       theme: 'neutral',
@@ -892,5 +897,5 @@ if (typeof mermaid !== 'undefined') {
       console.error('[SmartPerfetto] Mermaid 渲染失败:', err);
     });
   }
-}
+})();
 `;

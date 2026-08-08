@@ -66,6 +66,42 @@ A[foo] --> B[bar]</pre>
     expect(upgradedAgain.match(/smartperfetto-report-layout-fix-v2/g)).toHaveLength(1);
   });
 
+  test('removes the Mermaid library gate from persisted causal-map reports', () => {
+    const previouslyGatedScript = `
+if (typeof mermaid !== 'undefined') {
+  function decodeMermaidSource(text) {
+    return String(text || '');
+  }
+
+  function parseMermaidFlowSource(source) {
+    return source;
+  }
+
+  const mermaidTargets = Array.from(document.querySelectorAll('pre.mermaid'));
+  if (mermaidTargets.length > 0) {
+    mermaid.initialize({
+      startOnLoad: false,
+    });
+  }
+}
+`.trim();
+    const persisted = `
+      <html>
+      <body>
+        <div class="mermaid-wrapper"><pre class="mermaid">graph TB
+A[foo] --> B[bar]</pre></div>
+        <script>${previouslyGatedScript}</script>
+      </body>
+      </html>
+    `;
+
+    const upgraded = upgradeLegacyReportHtml(persisted);
+    expect(upgraded).toContain('(function() {\n  function decodeMermaidSource');
+    expect(upgraded).toContain('if (typeof mermaid === \'undefined\')');
+    expect(upgraded).not.toContain("if (typeof mermaid !== 'undefined') {\n  function decodeMermaidSource");
+    expect(upgradeLegacyReportHtml(upgraded)).toBe(upgraded);
+  });
+
   test('leaves already-upgraded reports unchanged', () => {
     const html = '<html><body><script>function parseMermaidFlowSource(source) {}</script><div class="causal-map"></div></body></html>';
     expect(upgradeLegacyReportHtml(html)).toBe(html);
