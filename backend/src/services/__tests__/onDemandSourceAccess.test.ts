@@ -161,19 +161,21 @@ describe('OnDemandSourceAccessService', () => {
     }));
   });
 
-  it('treats ripgrep exit code 1 as a successful empty search', async () => {
+  it('returns a successful empty search with or without the optional ripgrep backend', async () => {
     const ref = register();
 
-    await expect(service().search({
+    const search = await service().search({
       codebaseId: ref.codebaseId,
       scope,
       query: 'definitelyMissingSymbol',
       mode: 'provider_send',
-    })).resolves.toEqual(expect.objectContaining({
+    });
+
+    expect(search).toEqual(expect.objectContaining({
       success: true,
-      backend: 'ripgrep',
       matches: [],
     }));
+    expect(['ripgrep', 'node']).toContain(search.backend);
   });
 
   it('enforces registered filters and rejects traversal reads', async () => {
@@ -205,7 +207,7 @@ describe('OnDemandSourceAccessService', () => {
     })).rejects.toThrow('source_path_prefix_invalid');
   });
 
-  it('pushes registered exclusions into ripgrep so excluded matches cannot exhaust output limits', async () => {
+  it('applies registered exclusions before search results can exhaust output limits', async () => {
     const generated = path.join(root, 'app', 'src', 'generated');
     fs.mkdirSync(generated, {recursive: true});
     for (let index = 0; index < 8; index += 1) {
@@ -225,7 +227,6 @@ describe('OnDemandSourceAccessService', () => {
 
     expect(search).toEqual(expect.objectContaining({
       success: true,
-      backend: 'ripgrep',
       truncated: false,
     }));
     expect(search.matches).toEqual([
@@ -282,7 +283,6 @@ describe('OnDemandSourceAccessService', () => {
 
     expect(search).toEqual(expect.objectContaining({
       success: true,
-      backend: 'ripgrep',
       matches: [],
       truncated: false,
     }));

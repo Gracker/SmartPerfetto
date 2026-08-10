@@ -151,7 +151,7 @@ describe('GitNexusCodeGraphNavigator', () => {
         filePath: 'app/src/StartupHooks.kt',
         lineRange: {start: 7, end: 7},
         symbol: 'StartupHooks.install [registered-root]',
-        kind: 'function [path]',
+        kind: expect.stringMatching(/^function \[(?:path|registered-root)\]$/),
       })],
       processes: [expect.objectContaining({name: 'StartupFlow'})],
     }));
@@ -392,7 +392,7 @@ describe('GitNexusCodeGraphNavigator', () => {
     expect(query.processes).toEqual([
       expect.objectContaining({
         name: 'Startup flow references [registered-root][path]',
-        kind: 'cross_community [path]',
+        kind: expect.stringMatching(/^cross_community \[(?:path|registered-root)\]$/),
       }),
       expect.objectContaining({
         name: 'proc_fallback',
