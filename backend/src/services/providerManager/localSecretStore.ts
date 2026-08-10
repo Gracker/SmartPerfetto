@@ -44,6 +44,7 @@ const WINDOWS_DPAPI_TIMEOUT_MS = 10_000;
 const WINDOWS_DPAPI_OUTPUT_LIMIT_BYTES = 64 * 1024;
 const WINDOWS_DPAPI_PROTECT_SCRIPT = [
   '$ErrorActionPreference = "Stop"',
+  'Add-Type -AssemblyName System.Security',
   '$raw = [Console]::In.ReadToEnd().Trim()',
   '$bytes = [Convert]::FromBase64String($raw)',
   '$protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
@@ -51,6 +52,7 @@ const WINDOWS_DPAPI_PROTECT_SCRIPT = [
 ].join('; ');
 const WINDOWS_DPAPI_UNPROTECT_SCRIPT = [
   '$ErrorActionPreference = "Stop"',
+  'Add-Type -AssemblyName System.Security',
   '$raw = [Console]::In.ReadToEnd().Trim()',
   '$bytes = [Convert]::FromBase64String($raw)',
   '$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
