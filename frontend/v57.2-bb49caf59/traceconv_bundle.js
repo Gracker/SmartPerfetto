@@ -25,7 +25,7 @@
 	}) : target, mod));
 	//#endregion
 	//#region \0perfetto:version:/Users/chris/Code/SmartPerfetto/SmartPerfetto/perfetto/ui/src/virtual/version
-	var VERSION = "v57.2-1b7fbd7b7";
+	var VERSION = "v57.2-bb49caf59";
 	//#endregion
 	//#region ../../ui/src/base/utils.ts
 	function exists(value) {

@@ -87730,8 +87730,8 @@ GROUP BY id, blocked_function;
 	};
 	//#endregion
 	//#region \0perfetto:version:/Users/chris/Code/SmartPerfetto/SmartPerfetto/perfetto/ui/src/virtual/version
-	var VERSION$2 = "v57.2-1b7fbd7b7";
-	var SCM_REVISION = "1b7fbd7b754449a5742399d464ba4b07823790b8";
+	var VERSION$2 = "v57.2-bb49caf59";
+	var SCM_REVISION = "bb49caf59ac60fa71612edbc283d22951c8ec5cd";
 	//#endregion
 	//#region ../../ui/src/base/logging.ts
 	var errorHandlers = [];
@@ -347455,7 +347455,7 @@ Trace processor RPC API: ${tpStatus.apiVersion}
 		function forceWasm() {
 			AppImpl.instance.httpRpc.newEngineMode = "FORCE_BUILTIN_WASM";
 		}
-		if (tpStatus.versionCode !== "" && tpStatus.versionCode !== "v57.2-1b7fbd7b7") {
+		if (tpStatus.versionCode !== "" && tpStatus.versionCode !== "v57.2-bb49caf59") {
 			const url = await isVersionAvailable(tpStatus.versionCode);
 			if (url !== void 0) {
 				const result = await showDialogVersionMismatch(tpStatus, url);
