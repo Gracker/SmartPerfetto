@@ -172,6 +172,81 @@ describe('LocalEncryptedSecretStore', () => {
     await expect(fs.access(path.join(secretDir, '.master-key'))).rejects.toBeTruthy();
   });
 
+  it('allows a bounded 20-second Windows DPAPI cold start without weakening the invocation contract', () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+    const originalSystemRoot = process.env.SystemRoot;
+    const secretDir = path.join(tmpDir, 'windows-dpapi-timeout-contract');
+    let generatedMasterKey = '';
+    const execFileSyncMock = jest.fn((
+      command: string,
+      args: string[],
+      options: {
+        encoding: string;
+        input: string;
+        maxBuffer: number;
+        stdio: string[];
+        timeout: number;
+        windowsHide: boolean;
+      },
+    ) => {
+      const script = args[args.length - 1] ?? '';
+      if (script.includes('::Protect(')) {
+        generatedMasterKey = options.input;
+        return Buffer.from('protected-by-dpapi').toString('base64');
+      }
+      if (script.includes('::Unprotect(')) {
+        return generatedMasterKey;
+      }
+      throw new Error(`Unexpected PowerShell script: ${script}`);
+    });
+
+    try {
+      jest.resetModules();
+      jest.doMock('child_process', () => ({
+        ...jest.requireActual<typeof import('child_process')>('child_process'),
+        execFileSync: execFileSyncMock,
+      }));
+      process.env.SystemRoot = 'C:\\Windows';
+      delete process.env[SECRET_STORE_MASTER_KEY_ENV];
+
+      jest.isolateModules(() => {
+        const isolated = require('../localSecretStore') as typeof import('../localSecretStore');
+        Object.defineProperty(process, 'platform', {value: 'win32'});
+        const first = new isolated.LocalEncryptedSecretStore(secretDir);
+        const second = new isolated.LocalEncryptedSecretStore(secretDir);
+
+        expect(first.info().masterKeySource).toBe('windows-dpapi');
+        expect(second.info().masterKeySource).toBe('windows-dpapi');
+      });
+
+      expect(execFileSyncMock).toHaveBeenCalledTimes(2);
+      for (const [command, args, options] of execFileSyncMock.mock.calls) {
+        expect(command).toBe(
+          'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        );
+        expect(args.slice(0, 4)).toEqual([
+          '-NoLogo',
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+        ]);
+        expect(options).toMatchObject({
+          encoding: 'utf-8',
+          maxBuffer: 64 * 1024,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          timeout: 20_000,
+          windowsHide: true,
+        });
+        expect(Buffer.from(options.input, 'base64').toString('base64')).toBe(options.input);
+      }
+    } finally {
+      jest.dontMock('child_process');
+      jest.resetModules();
+      if (platformDescriptor) Object.defineProperty(process, 'platform', platformDescriptor);
+      restoreEnvValue('SystemRoot', originalSystemRoot);
+    }
+  });
+
   it('rotates ciphertext and version without changing the decrypted secret', async () => {
     const store = new LocalEncryptedSecretStore(tmpDir);
     store.put('secret:provider:test', {openaiApiKey: 'sk-secret-value'});
