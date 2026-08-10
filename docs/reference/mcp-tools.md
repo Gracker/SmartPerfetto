@@ -24,7 +24,7 @@ Tool implementation
 |---|---|---|
 | Quick / lightweight | fast 或轻量分析路径 | `execute_sql`, `invoke_skill`, `lookup_sql_schema`, 可选 `fetch_artifact` |
 | Full analysis | 完整分析路径 | 数据访问、Skill、知识、baseline、记忆、规划/假设和 artifact 工具 |
-| Code-aware | 请求允许本地代码库访问 | `list_codebases`, `lookup_app_source`, `lookup_kernel_source`, `resolve_symbol`, `propose_patch` |
+| Code-aware | 请求允许本地代码库访问 | `list_codebases`、无索引搜索/读取、可选代码图导航、indexed lookup 与 patch 工具 |
 | Comparison | 请求包含 `referenceTraceId` | `execute_sql_on`, `compare_skill`, `get_comparison_context` |
 
 Registry 的 exposure level 用于区分公共/内部/需授权工具；它不等于“外部用户一定能看到”。最终可见集合由 runtime、analysis mode、artifact store、codebase permission、comparison context 和 allowlist 共同决定。
@@ -100,12 +100,27 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | Tool | 作用 | 边界 |
 |---|---|---|
 | `list_codebases` | 列出已授权代码库 | 需要 codebase permission |
+| `search_codebase` | 在已注册 live root 中做有界文本/symbol 搜索 | 不要求 SmartPerfetto 索引；只接受已选 codebase 和相对 path prefix |
+| `read_codebase_file` | 读取已注册 root 内的有界行范围 | `metadata_only` 不返回正文；`provider_send` 仍要求双重 consent 和脱敏 |
+| `query_code_graph` | 用可选本地代码图导航相关流程与 symbol | metadata-only；图不可用时返回结构化不可用结果 |
+| `inspect_code_symbol` | 查看候选 symbol 的有界关系与位置 | metadata-only；关系必须再由有界源码读取验证 |
 | `lookup_app_source` | 查询应用源码 | 输出需要 CodeRef 过滤 |
 | `lookup_kernel_source` | 查询内核源码 | 输出需要 CodeRef 过滤 |
 | `resolve_symbol` | 解析 trace 符号到源码位置 | 保持源码引用可追踪 |
 | `propose_patch` | 生成 patch proposal | 必须标记 verified / sketch / unverified |
 
-Code-aware 输出会进入 report/export/snapshot；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
+四个无索引/图导航工具都需要 codebase permission，并使用当前请求已选择的代码库。只有恰好选择一个 codebase 时才可省略 `codebase_id`；选择多个时必须明确指定：
+
+- `search_codebase`：必填 `query`；可选 `codebase_id`、相对 `path_prefix` 和有界 `max_results`。
+- `read_codebase_file`：必填相对 `file_path`；可选 `codebase_id`、`start_line` 和有界 `max_lines`。
+- `query_code_graph`：必填 `query`；可选 `codebase_id` 和有界 `max_results`。
+- `inspect_code_symbol`：必填 `symbol`；可选 `codebase_id`、相对 `file_path` 和有界 `max_relations`。
+
+注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。
+
+图工具输出只包含 `codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 和 `graph.verificationRequired`。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，会省略无法证明路径范围的全仓 process 摘要，并保留已授权的相对 `CodeRef`。代码图元数据既不是当前 trace 证据，也不是已经核对的源码事实；任何影响结论的关系都必须再用有界 `read_codebase_file` 验证，当前权限不允许读取时必须保持未验证状态。绝对 root 始终留在后端信任边界内。Code-aware 输出会进入 report/export/snapshot 时，只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
+
+GitNexus 是独立的第三方可选工具，其[官方项目](https://github.com/abhigyanpatwari/GitNexus)和 [npm 包](https://www.npmjs.com/package/gitnexus)目前声明使用 [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE)。使用前必须自行审阅上游条款；这不是法律建议。
 
 ## Comparison 工具
 
@@ -121,9 +136,11 @@ Comparison 工具只在请求包含 `referenceTraceId` 且 comparison context �
 
 1. 先确认场景、时间范围、进程身份和渲染架构。
 2. 有匹配 Skill 时优先 `invoke_skill`，用 SQL 补缺口或验证关键假设。
-3. 大结果通过 artifact 分页，不要把完整表塞进 agent context。
-4. 结论必须能回到 trace evidence、Skill output、claim verification 或显式不确定性。
-5. Chat 可以简化展示，HTML report、CLI artifacts 和 snapshots 必须保留可审计证据。
+3. Trace/Skill/SQL 已经指向具体实现时，才把可选代码图用于候选导航；不能用图关系替代 trace evidence。
+4. 用无索引 `search_codebase` 缩小范围，并在 consent 允许时用有界 `read_codebase_file` 核对影响结论的候选关系。
+5. 大结果通过 artifact 分页，不要把完整表塞进 agent context。
+6. 结论必须能回到 trace evidence、Skill output、claim verification 或显式不确定性。
+7. Chat 可以简化展示，HTML report、CLI artifacts 和 snapshots 必须保留可审计证据。
 
 ## 维护清单
 

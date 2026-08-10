@@ -18,6 +18,7 @@ const sourceCodeReferencesByOwner = new WeakMap<object, SourceLookupCodeReferenc
 export interface SourceLookupCodeReference {
   chunkId?: string;
   referenceId?: string;
+  codebaseId?: string;
   filePath: string;
   lineRange?: {
     start: number;
@@ -69,6 +70,22 @@ function normalizeChunkId(value: unknown): string | undefined {
   return normalized;
 }
 
+function normalizeCodebaseId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > 160 ||
+    normalized.includes('/') ||
+    normalized.includes('\\') ||
+    normalized.includes('://') ||
+    /[\s\u0000-\u001f\u007f]/.test(normalized)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
 function normalizeLineRange(value: unknown): SourceLookupCodeReference['lineRange'] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
@@ -86,17 +103,20 @@ function normalizeLineRange(value: unknown): SourceLookupCodeReference['lineRang
 function normalizeCodeReference(input: {
   chunkId?: unknown;
   referenceId?: unknown;
+  codebaseId?: unknown;
   filePath: unknown;
   lineRange?: unknown;
 }): SourceLookupCodeReference | undefined {
   const chunkId = normalizeChunkId(input.chunkId);
   const referenceId = normalizeChunkId(input.referenceId);
+  const codebaseId = normalizeCodebaseId(input.codebaseId);
   const filePath = normalizeRelativeCodePath(input.filePath);
   if ((!chunkId && !referenceId) || !filePath) return undefined;
   const lineRange = normalizeLineRange(input.lineRange);
   return {
     ...(chunkId ? {chunkId} : {}),
     ...(referenceId ? {referenceId} : {}),
+    ...(codebaseId ? {codebaseId} : {}),
     filePath,
     ...(lineRange ? {lineRange} : {}),
   };
@@ -104,6 +124,7 @@ function normalizeCodeReference(input: {
 
 function codeReferenceKey(reference: SourceLookupCodeReference): string {
   return [
+    reference.codebaseId ?? '',
     reference.filePath,
     reference.chunkId ?? reference.referenceId ?? '',
     reference.lineRange?.start ?? '',
@@ -137,6 +158,7 @@ function collectCodeReferences(
   const reference = normalizeCodeReference({
     chunkId: record.chunkId,
     referenceId: record.referenceId,
+    codebaseId: record.codebaseId ?? record.codebase_id ?? metadata?.codebaseId ?? metadata?.codebase_id,
     filePath: record.filePath ?? metadata?.filePath,
     lineRange: record.lineRange ?? metadata?.lineRange,
   });

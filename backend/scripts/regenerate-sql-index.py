@@ -20,19 +20,24 @@ import json
 import re
 import sys
 from datetime import datetime
+import os
 from pathlib import Path
 
 # Paths
 SCRIPT_DIR = Path(__file__).parent
 BACKEND_DIR = SCRIPT_DIR.parent
 REPO_ROOT = BACKEND_DIR.parent
-PERFETTO_DIR = REPO_ROOT / "perfetto"
+PERFETTO_DIR = Path(
+    os.environ.get("PERFETTO_SOURCE_ROOT", REPO_ROOT / "perfetto")
+).resolve()
 STDLIB_DIR = PERFETTO_DIR / "src" / "trace_processor" / "perfetto_sql" / "stdlib"
 METRICS_DIR = PERFETTO_DIR / "src" / "trace_processor" / "metrics" / "sql"
 LIGHT_OUTPUT_FILE = BACKEND_DIR / "data" / "perfettoSqlIndex.light.json"
 FULL_OUTPUT_FILE = BACKEND_DIR / "data" / "perfettoSqlIndex.json"
 # Relative path stored in output — portable across machines, no /Users/<name> leak.
-STDLIB_REL = STDLIB_DIR.relative_to(REPO_ROOT).as_posix()
+STDLIB_REL = "perfetto/src/trace_processor/perfetto_sql/stdlib"
+METRICS_REL = "perfetto/src/trace_processor/metrics/sql"
+GENERATED_FROM = os.environ.get("PERFETTO_GENERATED_FROM")
 
 # Also extract from the built-in views/tables
 BUILTIN_DIR = PERFETTO_DIR / "src" / "trace_processor" / "perfetto_sql" / "stdlib" / "prelude"
@@ -612,6 +617,7 @@ def main():
     light_output = {
         "version": "2.0",
         "generatedAt": datetime.now().isoformat(),
+        "generatedFrom": GENERATED_FROM,
         "source": STDLIB_REL,
         "templates": unique_light_templates,
         "scenarios": [],  # Preserved for compatibility
@@ -619,9 +625,10 @@ def main():
     full_output = {
         "version": "2.0",
         "generatedAt": datetime.now().isoformat(),
+        "generatedFrom": GENERATED_FROM,
         "source": {
             "stdlib": STDLIB_REL,
-            "metrics": METRICS_DIR.relative_to(REPO_ROOT).as_posix(),
+            "metrics": METRICS_REL,
         },
         "stats": build_stats(unique_full_templates),
         "templates": unique_full_templates,

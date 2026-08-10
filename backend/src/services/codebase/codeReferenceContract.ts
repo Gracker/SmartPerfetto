@@ -67,10 +67,10 @@ export function completeFinalReportCodeReferences(input: {
     ? 'These references come from source lookup authorized for this analysis and only locate candidate mechanisms; whether they occurred in this run remains grounded in Trace evidence.'
     : '以下引用来自本次已授权源码查询，仅用于定位候选机制；本次是否发生仍以 Trace 证据为准。';
   const items = references.map(reference => reference.lineRange
-    ? `- ${reference.filePath}:L${reference.lineRange.start}-L${reference.lineRange.end}`
+    ? `- ${reference.codebaseId ? `codebaseId: ${reference.codebaseId}; ` : ''}${reference.filePath}:L${reference.lineRange.start}-L${reference.lineRange.end}`
     : input.outputLanguage === 'en'
-      ? `- filePath: ${reference.filePath}; sourceRef: ${reference.chunkId ?? reference.referenceId}; line number unavailable`
-      : `- filePath: ${reference.filePath}; sourceRef: ${reference.chunkId ?? reference.referenceId}; 行号不可用`);
+      ? `- ${reference.codebaseId ? `codebaseId: ${reference.codebaseId}; ` : ''}filePath: ${reference.filePath}; sourceRef: ${reference.chunkId ?? reference.referenceId}; line number unavailable`
+      : `- ${reference.codebaseId ? `codebaseId: ${reference.codebaseId}; ` : ''}filePath: ${reference.filePath}; sourceRef: ${reference.chunkId ?? reference.referenceId}; 行号不可用`);
   return `${input.conclusion.trimEnd()}\n\n${heading}\n\n${note}\n\n${items.join('\n')}`;
 }
 

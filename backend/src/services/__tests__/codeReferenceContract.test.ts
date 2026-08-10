@@ -10,6 +10,7 @@ import {
 import {
   extractSourceLookupCodeReferences,
   rememberSourceLookupCodeReferences,
+  sourceLookupResultHasCodeReferences,
 } from '../codebase/sourceLookupTools';
 
 describe('codeReferenceContract', () => {
@@ -48,6 +49,7 @@ describe('codeReferenceContract', () => {
             hits: [
               {
                 chunkId: 'chunk-1',
+                codebaseId: 'codebase-a',
                 metadata: {
                   filePath: './StartupHooks.kt',
                   lineRange: {start: 10, end: 20},
@@ -70,6 +72,7 @@ describe('codeReferenceContract', () => {
 
     expect(references).toEqual([{
       chunkId: 'chunk-1',
+      codebaseId: 'codebase-a',
       filePath: 'StartupHooks.kt',
       lineRange: {start: 10, end: 20},
     }]);
@@ -91,6 +94,7 @@ describe('codeReferenceContract', () => {
       }],
     })).toEqual([{
       referenceId: 'source-a1b2c3',
+      codebaseId: 'codebase-a',
       filePath: 'app/src/main/java/demo/StartupHooks.kt',
       lineRange: {start: 12, end: 12},
     }]);
@@ -103,6 +107,33 @@ describe('codeReferenceContract', () => {
         lineRange: {start: 1, end: 2},
       },
     })).toEqual([]);
+  });
+
+  it('does not treat graph references as final source CodeRef evidence', () => {
+    const graphResult = {
+      success: true,
+      references: [
+        {
+          referenceId: 'graph-ref-a',
+          codebaseId: 'codebase-a',
+          filePath: 'src/Main.kt',
+          lineRange: {start: 1, end: 2},
+          symbol: 'Main',
+          kind: 'class',
+        },
+        {
+          referenceId: 'graph-ref-a',
+          codebaseId: 'codebase-b',
+          filePath: 'src/Main.kt',
+          lineRange: {start: 1, end: 2},
+          symbol: 'Main',
+          kind: 'class',
+        },
+      ],
+    };
+
+    expect(extractSourceLookupCodeReferences('query_code_graph', graphResult)).toEqual([]);
+    expect(sourceLookupResultHasCodeReferences('inspect_code_symbol', graphResult)).toBe(false);
   });
 
   it('deterministically completes a missing final CodeRef from ephemeral source metadata', () => {
@@ -119,6 +150,12 @@ describe('codeReferenceContract', () => {
     };
     rememberSourceLookupCodeReferences(plan, [{
       chunkId: 'chunk-1',
+      codebaseId: 'codebase-a',
+      filePath: 'app/src/main/java/demo/StartupHooks.kt',
+      lineRange: {start: 10, end: 20},
+    }, {
+      chunkId: 'chunk-1',
+      codebaseId: 'codebase-b',
       filePath: 'app/src/main/java/demo/StartupHooks.kt',
       lineRange: {start: 10, end: 20},
     }]);
@@ -130,6 +167,8 @@ describe('codeReferenceContract', () => {
     });
 
     expect(completed).toContain('app/src/main/java/demo/StartupHooks.kt:L10-L20');
+    expect(completed).toContain('codebaseId: codebase-a');
+    expect(completed).toContain('codebaseId: codebase-b');
     expect(completed).toContain('是否发生仍以 Trace 证据为准');
     expect(completed).not.toContain('chunk-1');
     expect(completeFinalReportCodeReferences({

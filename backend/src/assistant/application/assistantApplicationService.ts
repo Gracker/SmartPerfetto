@@ -108,7 +108,9 @@ export class AssistantApplicationService<T extends ManagedAssistantSession> {
         session.status === 'cancelled' ||
         session.status === 'quota_exceeded';
       const isAbandonedNonTerminal =
-        (session.status === 'pending' || session.status === 'running') &&
+        (session.status === 'pending' ||
+          session.status === 'running' ||
+          session.status === 'awaiting_user') &&
         session.sseClients.length === 0;
 
       if (

@@ -13,7 +13,7 @@ const SEVERITY_MAP: Record<string, Finding['severity']> = {
   INFO: 'info',
 };
 
-const PREFIX_SEVERITY_REGEX = /\*{0,2}\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\*{0,2}[^\S\r\n]*(\S[^\r\n]*)/g;
+const PREFIX_SEVERITY_REGEX = /^[ \t]*(?:#{1,6}[ \t]+|[-+*][ \t]+|\d+[.)][ \t]+)?\*{0,2}\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\*{0,2}[^\S\r\n]*(\S[^\r\n]*)/gm;
 const SUFFIX_SEVERITY_REGEX = /^([^\r\n]*?\S)[^\S\r\n]+\*{0,2}\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\*{0,2}[^\S\r\n]*$/gm;
 
 interface SeverityMatch {
@@ -71,10 +71,11 @@ function collectSeverityMatches(scanText: string): SeverityMatch[] {
   let prefixMatch: RegExpExecArray | null;
   while ((prefixMatch = PREFIX_SEVERITY_REGEX.exec(scanText)) !== null) {
     const sectionStart = scanText.lastIndexOf('\n', prefixMatch.index - 1) + 1;
+    const markerIndex = prefixMatch.index + prefixMatch[0].indexOf(`[${prefixMatch[1]}]`);
     matches.push({
       severityLabel: prefixMatch[1],
       title: normalizeFindingTitle(prefixMatch[2]),
-      markerIndex: prefixMatch.index,
+      markerIndex,
       sectionStart,
       afterTitleStart: prefixMatch.index + prefixMatch[0].length,
     });
@@ -272,12 +273,41 @@ function extractMetricListEvidence(text: string): string | undefined {
 }
 
 function extractInlineHeadingEvidence(title: string): string | undefined {
-  const inline = title.match(/\s+[—-]\s+(.{20,})$/s);
+  const inline = title.match(/(?:\s+[—-]\s+|[：:]\s*)(.{20,})$/s);
   if (!inline) return undefined;
 
   const evidence = inline[1].trim();
-  if (!looksLikeEvidenceMetricBlock(evidence)) return undefined;
+  if (!looksLikeEvidenceMetricBlock(evidence) || !hasObservedConcreteMetric(evidence)) return undefined;
   return evidence.substring(0, 500);
+}
+
+function hasObservedConcreteMetric(text: string): boolean {
+  const statements = text
+    .replace(/(\d)\.(\d)/g, '$1\u0000$2')
+    .split(/[\n。！？!?;；.]+/)
+    .map(statement => statement.replace(/\u0000/g, '.').trim())
+    .filter(Boolean);
+  const concreteMetric = /(?:(?:evidence_ref_id|source_ref)\s*[:=]\s*\S+|art-\d+|vsync_missed\s*[:=]\s*\d+|\d+(?:\.\d+)?\s*(?:ms|%|GHz|MHz|帧|次|calls?|frames?))/gi;
+  const projectedMetric = /预计|预期|期望|预估|估算|目标|收益|优化后|如果|若|可能|(?:将|会|能够|可以|可|能)\s*(?:降低|减少|提升|缩短|达到|改善|带来|节省)|降低|减少|提升|缩短|达到|改善|expected\b|estimate|estimated|target|projected|after\s+optimization|\bif\b|\bwould\b|\bcould\b|\bmay\b|\bmight\b|\bwill\b|\bcan\b|\bshould\b|\bshall\b|\b(?:reduce|improve|lower|decrease|save)\b/gi;
+  const observedContext = /当前|现有|实测|观测|测得|记录|显示|[A-Za-z_][\w.-]*\s*=|\bcurrent\b|\bobserved\b|\bmeasured\b|\brecorded\b|\bshows?\b|\btakes?\b|\btook\b/i;
+  const observedChangeContext = /(?:(?:实测|观测|测得|记录|显示)[^。！？!?]{0,120})?(?:已|已经)\s*(?:降低|减少|提升|缩短|达到|改善)/i;
+  const sourceReference = /^(?:(?:evidence_ref_id|source_ref)\s*[:=]|art-\d+)/i;
+
+  return statements.some(statement => {
+    const concreteMatches = [...statement.matchAll(concreteMetric)];
+    if (concreteMatches.length === 0) return false;
+    const projectedMatches = [...statement.matchAll(projectedMetric)];
+    if (projectedMatches.length === 0) return true;
+
+    return concreteMatches.some(match => {
+      const metricIndex = match.index ?? 0;
+      if (sourceReference.test(match[0])) return true;
+      const context = statement.slice(Math.max(0, metricIndex - 120), metricIndex + match[0].length);
+      const hasProjectedBeforeMetric = projectedMatches.some(projected => (projected.index ?? 0) < metricIndex);
+      if (hasProjectedBeforeMetric) return observedChangeContext.test(context);
+      return observedContext.test(context);
+    });
+  });
 }
 
 function extractMarkdownTableEvidence(text: string): string | undefined {
@@ -316,11 +346,21 @@ function extractQuantifiedRecommendationEvidence(text: string): string | undefin
     .filter(Boolean);
 
   const evidenceLines: string[] = [];
+  const observedEvidenceLines: string[] = [];
+  let hasCausalSupportLine = false;
   for (const line of lines) {
     if (/^(?:#{1,6}\s+|\*{0,2}\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\])/.test(line)) break;
+    if (/^\d+[.)]\s+/.test(line)) break;
     const content = line.replace(/^[-*+]\s*/, '');
-    if (/^\*{0,2}(?:收益|影响|WHY|为什么|依据|证据|Evidence|Impact|Why)\*{0,2}\s*[：:]/i.test(content)) {
+    if (/^[-*+]\s+/.test(line) && hasObservedConcreteMetric(content)) {
+      observedEvidenceLines.push(content);
+    }
+    const labeledEvidence = content.match(/^\*{0,2}(收益|影响|WHY|为什么|依据|证据|Evidence|Impact|Why)\*{0,2}\s*[：:]/i);
+    if (labeledEvidence) {
       evidenceLines.push(content);
+      if (/^(?:WHY|为什么|依据|证据|Evidence|Why)$/i.test(labeledEvidence[1])) {
+        hasCausalSupportLine = true;
+      }
       continue;
     }
     if (evidenceLines.length > 0 && /^[-*+]\s+/.test(line) && looksLikeEvidenceMetricBlock(content)) {
@@ -329,8 +369,12 @@ function extractQuantifiedRecommendationEvidence(text: string): string | undefin
     if (evidenceLines.length >= 4) break;
   }
 
+  const observedEvidence = observedEvidenceLines.join('\n').trim();
+  if (observedEvidence && looksLikeEvidenceMetricBlock(observedEvidence)) {
+    return observedEvidence.substring(0, 500);
+  }
   const evidence = evidenceLines.join('\n').trim();
-  if (!evidence || !looksLikeEvidenceMetricBlock(evidence)) return undefined;
+  if (!evidence || !hasCausalSupportLine || !looksLikeEvidenceMetricBlock(evidence)) return undefined;
   return evidence.substring(0, 500);
 }
 

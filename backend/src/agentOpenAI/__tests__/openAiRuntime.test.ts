@@ -174,7 +174,12 @@ type OpenAiRuntimeTestAccess = {
     sessionId: string,
     handle: {readonly aborted: boolean; abort(): void},
   ) => () => void;
-  sessionPlans: Map<string, { current: AnalysisPlanV3 | null; history: AnalysisPlanV3[] }>;
+  resetAnalysisSessionState: (sessionId: string) => unknown;
+  sessionPlans: Map<string, {
+    current: AnalysisPlanV3 | null;
+    history: AnalysisPlanV3[];
+    prePlanToolCallLog?: AnalysisPlanV3['toolCallLog'];
+  }>;
   sessionSqlErrors: Set<string>;
   sessionMap: Map<string, OpenAiSessionMapEntryForTest>;
 };
@@ -1158,6 +1163,23 @@ describe('OpenAIRuntime quick mode classification metadata', () => {
 });
 
 describe('OpenAIRuntime plan completion guard', () => {
+  it('drops unfinished pre-plan evidence when a new analysis run starts', () => {
+    const runtime = createOpenAiRuntimeForTest();
+    runtime.sessionPlans.set('s-stale-pre-plan', {
+      current: null,
+      history: [],
+      prePlanToolCallLog: [{
+        toolName: 'get_comparison_context',
+        timestamp: 10,
+        success: true,
+      }],
+    });
+
+    runtime.resetAnalysisSessionState('s-stale-pre-plan');
+
+    expect(runtime.sessionPlans.get('s-stale-pre-plan')?.prePlanToolCallLog).toEqual([]);
+  });
+
   it('treats full-mode runs as incomplete until every plan phase is closed', () => {
     const runtime = createOpenAiRuntimeForTest();
 
@@ -1618,6 +1640,7 @@ describe('OpenAIRuntime plan completion guard', () => {
       }));
     expect(getSourceLookupCodeReferences(currentPlan)).toEqual([{
       chunkId: 'source-1',
+      codebaseId: 'codebase-a',
       filePath: 'app/src/main/java/com/example/StartupHooks.kt',
       lineRange: {start: 10, end: 20},
     }]);
@@ -2017,6 +2040,34 @@ describe('OpenAIRuntime plan completion guard', () => {
     })).toBe(true);
   });
 
+  it('requests final-report continuation when a deliverable report violates a semantic quality boundary', () => {
+    const runtime = createOpenAiRuntimeForTest();
+    const planStatus = {complete: true, hasPlan: true, pendingPhases: []};
+    const report = startupFinalReportForReconciliation();
+
+    expect(runtime.shouldRequestFinalReportAfterPlanComplete({
+      quickMode: false,
+      planStatus,
+      conclusion: `${report}\n\n## 已排除因素\n\nblocked_function=do_epoll_wait 命中 120ms，说明主线程在磁盘 IO 阻塞，所以这是 IO 根因。`,
+      completedByPlanIdle: false,
+      timedOut: false,
+      finalReportContinuations: 0,
+      query: '分析启动性能',
+      sceneType: 'startup',
+    })).toBe(true);
+
+    expect(runtime.shouldRequestFinalReportAfterPlanComplete({
+      quickMode: false,
+      planStatus,
+      conclusion: `${report}\n\n## 已排除因素\n\nblocked_function=do_epoll_wait 通常表示等待事件或空闲，不是磁盘 IO 根因。`,
+      completedByPlanIdle: false,
+      timedOut: false,
+      finalReportContinuations: 0,
+      query: '分析启动性能',
+      sceneType: 'startup',
+    })).toBe(false);
+  });
+
   it('requests final-report continuation when a successful source lookup lacks a locatable CodeRef', () => {
     const runtime = createOpenAiRuntimeForTest();
     const completedPlan = plan([phase('p1', 'completed'), phase('p2', 'completed')]);
@@ -2226,6 +2277,8 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(zhPrompt).toContain('relative/path/File.kt:L10-L20');
     expect(zhPrompt).toContain('版本/政策敏感');
     expect(zhPrompt).toContain('缺失数据只能写成限制');
+    expect(zhPrompt).toContain('`epoll` / `poll`');
+    expect(zhPrompt).toContain('kernel wchan 单帧');
     expect(zhPrompt).not.toContain('2500-3500');
     expect(zhPrompt).not.toContain('最多 1200');
 
@@ -2238,6 +2291,8 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(enPrompt).toContain('evidence type');
     expect(enPrompt).toContain('version/policy-sensitive');
     expect(enPrompt).toContain('Missing data is a limitation');
+    expect(enPrompt).toContain('`epoll` / `poll`');
+    expect(enPrompt).toContain('single kernel wchan frame');
     expect(enPrompt).not.toContain('1,200-1,800');
     expect(enPrompt).not.toContain('at most 700');
   });

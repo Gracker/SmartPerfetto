@@ -244,6 +244,10 @@ Base path: `/api/agent/v1`
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `POST` | `/analyze` | 启动分析 |
+| `POST` | `/conversation` | 启动或继续轻量对话；可选附加 Trace 与已授权源码 |
+| `GET` | `/conversation/:sessionId/stream` | 对话 SSE，使用 `runId` 并支持 `Last-Event-ID` 重放 |
+| `POST` | `/conversation/:sessionId/cancel` | 取消精确对话 run |
+| `GET` | `/conversation/:sessionId/full-handoff` | 读取已建议的完整分析交接 |
 | `POST` | `/sessions/:sessionId/runs` | 在已有 session 下启动新 run |
 | `GET` | `/:sessionId/stream` | SSE 流 |
 | `GET` | `/runs/:runId/stream` | 按 run id 订阅 SSE |
@@ -268,6 +272,18 @@ Base path: `/api/agent/v1`
 | `GET` | `/logs` | agent logs，受 feature flag 控制 |
 
 Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路径与上表一致。`/api/agent/v1` 当前仍存在，但会通过 legacy telemetry 标记迁移目标。
+
+### 轻量对话
+
+四个 `/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
+user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 session 的新消息
+会先取消旧 run，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
+codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
+provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
+
+SSE 终态是 `run_completed` 或 `run_failed`。客户端重连可发送 `Last-Event-ID`，或使用
+`lastEventId` query；服务端按单调 `id` 去重重放。只有 outcome 为 `recommend_full` 时，
+`full-handoff` 才返回交接，否则返回 `409 FULL_ANALYSIS_NOT_RECOMMENDED`。
 
 ### Agent 辅助外部 Issue
 
@@ -329,7 +345,9 @@ curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
 终态 `analysis_completed` 事件可能携带 `analysisReceipt` 和
 `uiActionProposals`。`uiActionProposals` 只包含从
 DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转到时间范围、打开证据表
-或固定证据；客户端必须等待用户点击后再执行，不能把它当成自动命令。
+或 `pin_evidence`。其中 `pin_evidence` 只把证据或结果快照收藏到当前 UI 会话并供 `/pins`
+查看，不会固定时间线泳道，也不会自动加入后续 AI 上下文。客户端必须等待用户点击后
+再执行，不能把它当成自动命令。
 
 支持的 `selectionContext`：
 

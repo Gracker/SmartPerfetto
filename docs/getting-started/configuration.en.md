@@ -4,6 +4,10 @@
 
 For local source runs, SmartPerfetto can use Claude Code's local authentication and configuration directly. If `claude` already works in the same terminal, you do not need to create `.env`. Use env files when you need explicit API keys, compatible proxies, or Docker runtime credentials.
 
+Windows portable users should complete download, extraction, and startup through the
+[Windows guide](windows.en.md), then use the Provider fields on this page. Do not copy Unix
+source commands into the ordinary Windows portable path.
+
 ## First Answer: Which Runtime Do I Configure?
 
 Claude Code, OpenAI Agents SDK, Pi Agent Core, OpenCode, and Qoder Agent SDK are alternative runtime paths, not a checklist of required setup steps. Pick one source for your first setup:
@@ -32,7 +36,7 @@ files below, or from Provider Manager profiles created in the frontend.
 
 For beginners, the UI path is the least ambiguous:
 
-1. Start SmartPerfetto and open `http://localhost:10000`.
+1. Start SmartPerfetto; portable packages use the actual `Open:` URL printed by the launcher, while Docker defaults to `http://localhost:10000`.
 2. Open **AI Assistant Settings → Providers → Add Provider**.
 3. Choose the provider type, paste the **Provider API Key**, then check the preset Base URLs and SDK Runtime.
 4. Click **Create Provider**. This only saves the profile.
@@ -400,6 +404,8 @@ NODE_ENV=development
 # SMARTPERFETTO_BACKEND_PUBLIC_URL=http://localhost:3000
 # Optional HTTPS issue-new endpoint for a self-hosted fork; never auto-submits.
 # SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
+# Only when an operator confirms RFC 2544 fake-IP DNS from a local TUN:
+# SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS=storage.googleapis.com
 ```
 
 Default local ports:
@@ -415,6 +421,13 @@ derive the local `FRONTEND_URL` from that port, so it does not need to be
 configured twice. Set `FRONTEND_URL` only when the browser-visible frontend
 origin differs, such as HTTPS or a reverse proxy. When the browser cannot infer
 the backend address, set `SMARTPERFETTO_BACKEND_PUBLIC_URL`.
+
+URL Trace downloads reject private, reserved, and RFC 2544 `198.18.0.0/15`
+addresses by default. If a local TUN maps a trusted public hostname to fake IP,
+the deployment operator may list exact comma-separated hostnames in
+`SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS`. Do not use wildcards, IPs, or
+domains you do not control. This is a server-side SSRF trust boundary and
+cannot be widened by an ordinary request.
 
 ## API Authentication
 

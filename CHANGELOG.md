@@ -11,6 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.5.0] - 2026-08-10
+
+### Added
+- The AI Assistant now supports evidence-aware conversation sessions with
+  trace, Provider, runtime, source, and RAG context boundaries that are pinned
+  and revalidated across turns.
+- Analysis results can propose working timeline navigation, table opening, and
+  session-scoped evidence collection actions. Non-table insights retain a
+  bounded provenance snapshot, while table results retain their structured
+  rows and columns.
+- Windows portable installs now have a documented user-data layout, legacy
+  migration path, runtime health checks, and target-native release evidence.
+
+### Changed
+- OpenAI Agents, Pi, and OpenCode runtimes share stricter plan-completion,
+  final-report, claim-verification, and real DeepSeek regression contracts.
+- Code-aware analysis can use GitNexus graph navigation while keeping private
+  source queries out of persisted browser and backend projections.
+- Provider/runtime changes and Trace attachment changes establish explicit new
+  conversation identities instead of silently reusing stale model sessions.
+
+### Fixed
+- Timeline point/range actions now focus the intended timestamp or interval,
+  table actions reveal the referenced result, and collected evidence survives
+  reload without duplicate or legacy workspace shadow writes.
+- Conversation handoff evidence is intersected with authoritative backend
+  evidence, and previous private queries remain redacted from later model
+  output and durable UI storage.
+- Provider pinning, external-issue retries, public HTTP address validation,
+  portable data migration, Mermaid fallback rendering, and bounded report
+  continuation now fail closed at their documented boundaries.
+
 ## [1.4.0] - 2026-08-03
 
 ### Added

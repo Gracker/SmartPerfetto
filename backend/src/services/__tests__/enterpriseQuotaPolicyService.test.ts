@@ -205,6 +205,13 @@ describe('enterprise quota and retention policy service', () => {
       code: 'CONCURRENT_RUN_QUOTA_EXCEEDED',
       status: 'pending',
     }));
+    expect(evaluateAnalysisRunQuota(context(), {
+      now,
+      replacingRunId: 'run-active',
+    })).toEqual(expect.objectContaining({
+      allowed: true,
+      code: 'OK',
+    }));
 
     const db2 = openEnterpriseDb();
     try {
@@ -226,6 +233,47 @@ describe('enterprise quota and retention policy service', () => {
       allowed: false,
       code: 'MONTHLY_RUN_QUOTA_EXCEEDED',
       status: 'quota_exceeded',
+    }));
+  });
+
+  it('does not count a conversation awaiting clarification as a concurrent run', () => {
+    seedWorkspacePolicies({
+      quotaPolicy: { maxConcurrentRuns: 1 },
+    });
+    const now = Date.UTC(2026, 4, 8);
+    const db = openEnterpriseDb();
+    try {
+      seedAnalysisGraph(db, 'conversation-session', 'conversation-trace', now);
+      db.prepare(`
+        INSERT INTO analysis_runs
+          (id, tenant_id, workspace_id, session_id, mode, status, question, started_at)
+        VALUES
+          ('conversation-run', 'tenant-a', 'workspace-a', 'conversation-session',
+           'conversation', 'awaiting_user', '', ?)
+      `).run(now);
+    } finally {
+      db.close();
+    }
+
+    expect(evaluateAnalysisRunQuota(context(), { now })).toEqual(expect.objectContaining({
+      allowed: true,
+      code: 'OK',
+    }));
+
+    const db2 = openEnterpriseDb();
+    try {
+      db2.prepare(`
+        UPDATE analysis_runs
+        SET mode = 'agent'
+        WHERE id = 'conversation-run'
+      `).run();
+    } finally {
+      db2.close();
+    }
+
+    expect(evaluateAnalysisRunQuota(context(), { now })).toEqual(expect.objectContaining({
+      allowed: false,
+      code: 'CONCURRENT_RUN_QUOTA_EXCEEDED',
     }));
   });
 });

@@ -970,6 +970,41 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     }));
   });
 
+  it('does not run trace preflight for a no-trace conversation turn', async () => {
+    const traceProcessor = {
+      query: jest.fn(async () => {
+        throw new Error('no trace processor exists for conversation');
+      }),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-conversation-no-trace',
+        num_turns: 1,
+        result: '对话模式可用。',
+      };
+    });
+
+    await runtime.analyze(
+      '只回复：对话模式可用。',
+      'session-conversation-no-trace',
+      'conversation-no-trace:session-conversation-no-trace',
+      {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: false,
+      },
+    );
+
+    expect(traceProcessor.query).not.toHaveBeenCalled();
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+  });
+
   it('uses the request language throughout the quick path without mutating runtime defaults', async () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: ['cnt'], rows: [[0]]}),

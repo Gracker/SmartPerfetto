@@ -352,7 +352,7 @@ func runLauncher(options launchOptions) (runErr error) {
 	})
 	frontendEnv := mergeEnv(baseEnv, map[string]string{
 		"PORT":                              frontendPort,
-		"SMARTPERFETTO_ENV_FILE":             envPath,
+		"SMARTPERFETTO_ENV_FILE":            envPath,
 		"SMARTPERFETTO_BACKEND_PORT":        backendPort,
 		"SMARTPERFETTO_FRONTEND_PORT":       frontendPort,
 		"SMARTPERFETTO_FRONTEND_BIND_HOST":  ipv4LoopbackHost,
@@ -461,7 +461,14 @@ func runLauncher(options launchOptions) (runErr error) {
 	fmt.Println("Keep this launcher running while using SmartPerfetto.")
 	fmt.Println()
 	if !options.nonInteractive {
-		_ = openBrowser(frontendURL)
+		if err := openBrowser(frontendURL); err != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"Could not open the default browser: %v\nOpen this URL manually: %s\n",
+				err,
+				frontendURL,
+			)
+		}
 	}
 
 	exitCh := make(chan serviceExit, 2)

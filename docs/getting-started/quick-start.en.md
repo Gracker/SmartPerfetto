@@ -2,9 +2,19 @@
 
 [English](quick-start.en.md) | [中文](quick-start.md)
 
-This page gets SmartPerfetto running. For complete model and proxy configuration, see the [Configuration Guide](configuration.en.md).
+This page selects the shortest startup path. For complete model and proxy configuration, see the [Configuration Guide](configuration.en.md).
 
-## 1. Clone the Repository
+## 1. Choose A Distribution
+
+- **Windows desktop users**: prefer the `windows-x64` portable archive. Open the
+  [Latest Release](https://github.com/Gracker/SmartPerfetto/releases/latest), download and
+  verify SHA256, use Extract All, run `SmartPerfetto.exe`, save/test/activate a Provider in
+  the UI, then load a trace. Follow the complete [Windows guide](windows.en.md).
+- **Container deployment**: use Docker Desktop/Engine; Windows uses the WSL2 backend.
+- **Developers**: clone the repository for backend, Skill, or source work. Initialize the
+  `perfetto/` submodule only for Perfetto UI plugin development.
+
+## 2. Docker Or Source Users: Clone The Repository
 
 Regular users do not need to initialize the `perfetto/` submodule. The repository already includes a pre-built Perfetto UI bundle.
 
@@ -14,7 +24,7 @@ Step 2: run `cd SmartPerfetto`.
 
 Initialize the submodule only when you need to modify the AI Assistant frontend plugin.
 
-## 2. Prepare Model Configuration
+## 3. Prepare Model Configuration
 
 You do not need to configure every runtime. For first setup, pick one entry point: local `claude`, UI Provider Manager, one Claude-compatible env block, one OpenAI-compatible env block, a custom Pi Agent Core / OpenCode block, or an explicitly installed Qoder SDK with local CLI auth/PAT.
 
@@ -34,7 +44,7 @@ Step 2: edit `.env` and uncomment one provider block. Skip this if you will conf
 
 If a Provider Manager profile is active in the UI, it overrides `.env` fallback. Confirm the active source in the container startup log, Provider settings, or authenticated `/api/runtime-health`; public `/health` is liveness-only.
 
-## 3. Run with Docker
+## 4. Run with Docker
 
 Use this path when you only want to try SmartPerfetto and do not want to configure a local development toolchain.
 
@@ -48,7 +58,7 @@ The image already contains the pinned trace processor, committed UI, and signed
 Android Internals Knowledge Pack; the host does not download those runtime
 assets.
 
-## 4. Run Locally
+## 5. Run Locally
 
 Use this path for local use, backend debugging, strategy/Skill edits, or pull requests.
 
@@ -74,7 +84,7 @@ The repository also contains an offline Knowledge Pack snapshot. The background
 worker only checks signed updates according to configuration and never silently
 switches an active session's knowledge version.
 
-## 5. First Analysis
+## 6. Docker Or Source Users: First Analysis
 
 1. Open `http://localhost:10000`.
 2. Load a Perfetto trace.
@@ -95,7 +105,7 @@ required answers and sensitive-data review, SmartPerfetto opens only an
 unsubmitted GitHub draft. See
 [Agent-Assisted GitHub Feedback](agent-assisted-feedback.en.md).
 
-## 6. Required Checks
+## 7. Required Checks
 
 Pick the smallest validation layer that proves your change. Maintainers and
 LLM/agents should first read [Product Surface Rules](../../.claude/rules/product-surface.md)
@@ -111,7 +121,7 @@ Release, npm, Docker, or portable-package changes also need the
 [Release Runbook](../reference/release.en.md) and
 [Release Rules](../../.claude/rules/release.md).
 
-## 7. Trace Corpus
+## 8. Trace Corpus
 
 The repository's [Trace corpus](../../Trace/README.md) separates real cases from reproducible constructed cases. Each real case keeps its trace, analysis results, logs, provenance, and Android/API metadata in one directory. Constructed cases store deterministic overlays on real base traces and cover the current Skill and Strategy inventory.
 

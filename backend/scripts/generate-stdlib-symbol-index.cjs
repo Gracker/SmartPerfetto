@@ -9,9 +9,12 @@ const path = require('path');
 
 const backendRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(backendRoot, '..');
-const stdlibRoot = process.env.PERFETTO_STDLIB_PATH
+const perfettoRoot = process.env.PERFETTO_SOURCE_ROOT
+  ? path.resolve(process.env.PERFETTO_SOURCE_ROOT)
+  : path.join(repoRoot, 'perfetto');
+const stdlibRoot = !process.env.PERFETTO_SOURCE_ROOT && process.env.PERFETTO_STDLIB_PATH
   ? path.resolve(process.env.PERFETTO_STDLIB_PATH)
-  : path.join(repoRoot, 'perfetto', 'src', 'trace_processor', 'perfetto_sql', 'stdlib');
+  : path.join(perfettoRoot, 'src', 'trace_processor', 'perfetto_sql', 'stdlib');
 const outputPath = path.join(backendRoot, 'data', 'perfettoStdlibSymbols.json');
 
 const CREATE_REGEX =
@@ -47,8 +50,11 @@ function parseSymbols(sql) {
 }
 
 function getSubmoduleSha() {
+  if (process.env.PERFETTO_GENERATED_FROM) {
+    return process.env.PERFETTO_GENERATED_FROM;
+  }
   try {
-    return execFileSync('git', ['-C', path.join(repoRoot, 'perfetto'), 'rev-parse', 'HEAD'], {
+    return execFileSync('git', ['-C', perfettoRoot, 'rev-parse', 'HEAD'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();

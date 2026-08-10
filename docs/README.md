@@ -11,6 +11,7 @@
 ## 使用与运维
 
 - [快速开始](getting-started/quick-start.md)
+- [Windows 配置与运行](getting-started/windows.md)
 - [功能总览](getting-started/features.md)
 - [基本使用](getting-started/usage.md)
 - [配置指南](getting-started/configuration.md)

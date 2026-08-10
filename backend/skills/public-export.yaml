@@ -16,6 +16,12 @@ official_perfetto:
   stdlib_tree: 7f0459ca3eed8372a8762ae052ed7fdb48eb3d88
   official_skill_reference: ai/skills/perfetto/SKILL-template.md
   official_skill_role: gap_check_only
+runtime_perfetto:
+  repository: https://github.com/google/perfetto
+  reported_version: v57.2
+  revision: 7b573c1c00f5d5890f496a87b4876a995b6a1c66
+  rpc_api_version: 14
+  stdlib_tree: 0f6529d3ecf91c15c1572044c60512dcf14593d5
 sql_fragments:
   backend/skills/fragments/target_threads.sql:
     disposition: exported
@@ -1416,6 +1422,9 @@ strategies:
   backend/strategies/prompt-complexity-classifier.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
+  backend/strategies/prompt-conversation.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime session and conversation orchestration
   backend/strategies/prompt-code-reference-contract-en.template.md:
     disposition: product-only
     reason: SmartPerfetto source lookup tools and codebase-aware report orchestration
@@ -1450,10 +1459,22 @@ strategies:
   backend/strategies/prompt-openai-final-report-continuation-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
+  backend/strategies/prompt-opencode-final-report-quality-issue-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto final-report runtime orchestration
+  backend/strategies/prompt-opencode-final-report-quality-issue-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto final-report runtime orchestration
   backend/strategies/prompt-output-format.template.md:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/prompt-output-format.template.md
+  backend/strategies/prompt-pi-plan-completion-continuation-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime plan-completion orchestration
+  backend/strategies/prompt-pi-plan-completion-continuation-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime plan-completion orchestration
   backend/strategies/prompt-quick.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration

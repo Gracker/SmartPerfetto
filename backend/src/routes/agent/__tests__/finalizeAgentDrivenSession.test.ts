@@ -196,4 +196,28 @@ describe('finalizeAgentDrivenSession completed-cache invalidation', () => {
       confidence: 0.55,
     });
   });
+
+  it('passes the resolved scene through the final quality gate', () => {
+    const session = createSession();
+    const result = createResult();
+    const deps = createFinalizeDeps();
+    deps.applyFinalResultQualityGate = jest.fn(() => null);
+
+    finalizeAgentDrivenSession({
+      sessionId: 'session-a',
+      query: '检查是否存在 ANR',
+      traceId: 'trace-a',
+      sceneType: 'anr',
+      session,
+      result,
+      runId: 'run-current',
+      logComponent: 'test',
+    }, deps);
+
+    expect(deps.applyFinalResultQualityGate).toHaveBeenCalledWith({
+      result,
+      query: '检查是否存在 ANR',
+      sceneType: 'anr',
+    });
+  });
 });

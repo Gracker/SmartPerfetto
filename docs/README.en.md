@@ -13,6 +13,7 @@ and agent evidence are not maintained as permanent documentation.
 ## Usage And Operations
 
 - [Quick Start](getting-started/quick-start.en.md)
+- [Windows Setup And Run](getting-started/windows.en.md)
 - [Feature Overview](getting-started/features.en.md)
 - [Basic Usage](getting-started/usage.en.md)
 - [Configuration](getting-started/configuration.en.md)

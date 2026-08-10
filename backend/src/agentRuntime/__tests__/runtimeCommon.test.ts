@@ -233,6 +233,34 @@ describe('runtimeCommon', () => {
     })]);
   });
 
+  it('keeps a rejected original cause separate from a confirmed replacement cause', () => {
+    const rejected = toProtocolHypothesis({
+      id: 'h1',
+      statement: 'Measure/layout traversal dominates the long frame',
+      status: 'rejected',
+      evidence: 'animation=59.31ms, traversal=1.49ms, layout=0.55ms',
+      formedAt: 10,
+      resolvedAt: 20,
+    }, 'openai');
+    const replacement = toProtocolHypothesis({
+      id: 'h2',
+      statement: 'Animation callback work dominates the long frame',
+      status: 'confirmed',
+      evidence: 'animation=59.31ms',
+      formedAt: 21,
+      resolvedAt: 22,
+    }, 'openai');
+
+    expect(rejected.supportingEvidence).toEqual([]);
+    expect(rejected.contradictingEvidence).toEqual([
+      expect.objectContaining({description: expect.stringContaining('traversal=1.49ms')}),
+    ]);
+    expect(replacement.supportingEvidence).toEqual([
+      expect.objectContaining({description: 'animation=59.31ms'}),
+    ]);
+    expect(replacement.contradictingEvidence).toEqual([]);
+  });
+
   it('does not turn formed hypothesis evidence into protocol evidence', () => {
     const protocol = toProtocolHypothesis({
       id: 'h3',

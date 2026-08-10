@@ -27,6 +27,18 @@ export type {
   SceneTemplateRecord,
 };
 
+export function deriveConclusionSceneAspectsFromSkillIds(
+  skillIds: Iterable<string | null | undefined>,
+): string[] {
+  const aspects = new Set<string>();
+  for (const rawSkillId of skillIds) {
+    const skillId = String(rawSkillId || '').trim().toLowerCase();
+    const match = /^(.+)_analysis$/.exec(skillId);
+    if (match?.[1]) aspects.add(match[1]);
+  }
+  return [...aspects];
+}
+
 export function resolveConclusionScene(params: BuildScenePromptHintsInput): SceneRoutingResult {
   const templates = getSceneTemplates();
   return routeSceneTemplate({

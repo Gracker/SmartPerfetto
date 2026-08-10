@@ -17,6 +17,7 @@ import {
   projectPiAgentCoreEventToStreamingUpdate,
   repairPiAgentCoreSubmitPlanArgs,
   sanitizePiAgentCoreConclusionText,
+  selectAssistantConclusion,
   shouldContinuePiAgentCoreFinalReportAfterPlanComplete,
   verifyPiAgentCoreConclusionForCorrection,
   type PiAgentCoreEvent,
@@ -43,6 +44,7 @@ class FakePiAgent {
   private readonly listeners: Array<(event: PiAgentCoreEvent) => void> = [];
   readonly options?: Record<string, unknown>;
   lastPrompt = '';
+  prompts: string[] = [];
   promptCount = 0;
 
   constructor(options?: Record<string, unknown>) {
@@ -70,6 +72,7 @@ class FakePiAgent {
 
   async prompt(input: string): Promise<void> {
     this.lastPrompt = input;
+    this.prompts.push(input);
     this.promptCount += 1;
     const assistantMessage = {
       role: 'assistant',
@@ -746,7 +749,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       'resolve_hypothesis',
     ]));
     expect(agent.state.systemPrompt.length).toBeGreaterThan(500);
-    expect(agent.lastPrompt).toContain('分析启动性能');
+    expect(agent.prompts[0]).toContain('分析启动性能');
     expect(JSON.stringify(agent.state.model)).not.toContain('sk-pi-test-secret');
     expect((agent.state.model as any).apiKey).toBeUndefined();
     expect(result).toMatchObject({
@@ -907,9 +910,47 @@ describe('experimental Pi agent-core runtime contract', () => {
         ],
       }),
     });
-    expect(restoredAgent.lastPrompt).toContain('follow-up question');
-    expect(restoredAgent.lastPrompt).toContain('first question');
-    expect(restoredAgent.lastPrompt).toContain('First Pi answer');
+    expect(restoredAgent.prompts[0]).toContain('follow-up question');
+    expect(restoredAgent.prompts[0]).toContain('first question');
+    expect(restoredAgent.prompts[0]).toContain('First Pi answer');
+  });
+
+  it('never reuses a previous-turn Pi report as the current conclusion', async () => {
+    const previousReport = [
+      '## Final Conclusion',
+      'Previous-turn root cause report that must remain context only.',
+      '## Key Evidence Chain',
+      'Previous trace evidence.',
+    ].join('\n');
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+      },
+    );
+    FakePiAgent.promptMessages = [{
+      role: 'assistant',
+      content: [{type: 'text', text: previousReport}],
+    }];
+    await runtime.analyze('first question', 'session-pi-current-turn-boundary', 'trace-pi', {
+      analysisMode: 'fast',
+    });
+
+    FakePiAgent.promptMessages = [{
+      role: 'assistant',
+      content: [{type: 'text', text: 'Current-turn answer only.'}],
+    }];
+    const current = await runtime.analyze(
+      'follow-up question',
+      'session-pi-current-turn-boundary',
+      'trace-pi',
+      {analysisMode: 'fast'},
+    );
+
+    expect(current.conclusion).toBe('Current-turn answer only.');
+    expect(current.conclusion).not.toContain('Previous-turn root cause');
   });
 
   it('never reuses or retains opaque Pi transcripts across private analysis boundaries', async () => {
@@ -1208,6 +1249,321 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.conclusion).toContain('# 启动性能分析报告');
     expect(result.conclusion).toContain('ChaosTask');
     expect(result.conclusion).not.toContain('All phases are complete');
+  });
+
+  it('refreshes the final report when plan completion adds evidence without a new report', async () => {
+    const correctedReport = buildVerifiedPiReport();
+    const traceProcessorService = createFakeTraceProcessorService();
+    traceProcessorService.query.mockImplementation(async (_traceId: string, sql: string) => (
+      sql.includes('plan_completion_rows')
+        ? {
+            columns: ['value'],
+            rows: Array.from({length: 60}, (_, index) => [index]),
+            durationMs: 1,
+          }
+        : {columns: [], rows: [], durationMs: 1}
+    ));
+    const initialReport = [
+      correctedReport,
+      '',
+      '## 初稿扩展边界',
+      ...Array.from({length: 12}, (_, index) => (
+        `- 初稿边界 ${index + 1}：该描述尚未吸收后续 SQL 补证结果。`
+      )),
+    ].join('\n');
+    expect(initialReport.length).toBeGreaterThan(correctedReport.length);
+    FakePiAgent.promptHandler = async (agent, input, promptIndex) => {
+      if (promptIndex === 1) {
+        const submitPlan = agent.state.tools.find((tool: any) => tool.name === 'submit_plan') as any;
+        await submitPlan.execute('plan-call', {
+          phases: [{
+            id: 'p1',
+            name: '归纳性能证据',
+            goal: '整理已采集证据的关键数值与边界',
+            expectedTools: ['fetch_artifact'],
+            expectedCalls: [{tool: 'fetch_artifact'}],
+          }],
+          successCriteria: '输出证据、根因、建议和限制完整的报告',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: initialReport}],
+        }];
+      }
+      if (promptIndex === 2) {
+        expect(input).toContain('"hasPlan": true');
+        expect(input).toContain('"id": "p1"');
+        const executeSql = agent.state.tools.find((tool: any) => tool.name === 'execute_sql') as any;
+        await executeSql.execute('sql-artifact-source', {
+          sql: 'SELECT value FROM plan_completion_rows',
+        });
+        const updatePlanPhase = agent.state.tools.find(
+          (tool: any) => tool.name === 'update_plan_phase',
+        ) as any;
+        await updatePlanPhase.execute('phase-call', {
+          phaseId: 'p1',
+          status: 'completed',
+          summary: '已归纳当前 trace 的关键耗时、代表样本和证据边界。',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: '证据阶段已闭合，等待生成更新后的最终报告。'}],
+        }];
+      }
+      if (promptIndex === 3) {
+        expect(input).toContain('"tool": "fetch_artifact"');
+        const fetchArtifact = agent.state.tools.find(
+          (tool: any) => tool.name === 'fetch_artifact',
+        ) as any;
+        await fetchArtifact.execute('artifact-call', {
+          artifactId: 'art-1',
+          detail: 'rows',
+          offset: 0,
+          limit: 50,
+        });
+        const updatePlanPhase = agent.state.tools.find(
+          (tool: any) => tool.name === 'update_plan_phase',
+        ) as any;
+        await updatePlanPhase.execute('phase-after-artifact', {
+          phaseId: 'p1',
+          status: 'completed',
+          summary: '已补齐 artifact 分页调用，并重新归纳了关键耗时与证据边界。',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: '必需 artifact 调用已补齐，plan 现在已完成。'}],
+        }];
+      }
+      expect(input).toContain('Final Report Contract');
+      return [{
+        role: 'assistant',
+        content: [{type: 'text', text: correctedReport}],
+      }];
+    };
+    const runtime = new PiAgentCoreRuntime(
+      traceProcessorService,
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+      },
+    );
+
+    const result = await runtime.analyze(
+      '分析系统性能问题',
+      'session-pi-plan-completion',
+      'trace-pi',
+      {analysisMode: 'full'},
+    );
+    const agent = FakePiAgent.instances[0];
+
+    expect(agent.promptCount).toBe(4);
+    expect(result.conclusion).toBe(correctedReport);
+    expect(result.partial).not.toBe(true);
+    expect(result.terminationReason).toBeUndefined();
+  });
+
+  it('continues with tools to resolve hypotheses after the plan is complete', async () => {
+    const report = buildVerifiedPiReport();
+    FakePiAgent.promptHandler = async (agent, input, promptIndex) => {
+      if (promptIndex === 1) {
+        await submitCompletedMinimalPlan(agent);
+        const submitHypothesis = agent.state.tools.find(
+          (tool: any) => tool.name === 'submit_hypothesis',
+        ) as any;
+        await submitHypothesis.execute('hypothesis-call', {
+          id: 'h1',
+          statement: '主线程同步重计算是代表帧超预算的直接原因',
+          basis: '代表帧 ANIMATION 阶段同步执行 47-59ms',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: report}],
+        }];
+      }
+
+      expect(input).toContain('"unresolvedHypotheses"');
+      expect(input).toContain('"id": "h1"');
+      const resolveHypothesis = agent.state.tools.find(
+        (tool: any) => tool.name === 'resolve_hypothesis',
+      ) as any;
+      await resolveHypothesis.execute('resolve-hypothesis-call', {
+        hypothesisId: 'h1',
+        status: 'confirmed',
+        evidence: '代表帧 ANIMATION 阶段同步执行 47-59ms，6/7 帧命中相同模式。',
+      });
+      return [{
+        role: 'assistant',
+        content: [{type: 'text', text: report}],
+      }];
+    };
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+      },
+    );
+
+    const result = await runtime.analyze(
+      '分析系统性能问题',
+      'session-pi-hypothesis-completion',
+      'trace-pi',
+      {analysisMode: 'full'},
+    );
+
+    expect(FakePiAgent.instances[0].promptCount).toBe(2);
+    expect(result.hypotheses).toEqual(expect.arrayContaining([
+      expect.objectContaining({id: 'h1', status: 'confirmed'}),
+    ]));
+    expect(result.partial).not.toBe(true);
+    expect(result.terminationReason).toBeUndefined();
+  });
+
+  it('keeps a fresh hypothesis-resolution report after a process-only plan continuation', async () => {
+    const report = buildVerifiedPiReport();
+    FakePiAgent.promptHandler = async (agent, input, promptIndex) => {
+      if (promptIndex === 1) {
+        const submitPlan = agent.state.tools.find((tool: any) => tool.name === 'submit_plan') as any;
+        await submitPlan.execute('plan-call', {
+          phases: [{
+            id: 'p1',
+            name: '闭合证据计划',
+            goal: '完成已有证据的核对与收敛',
+            expectedTools: [],
+          }],
+          successCriteria: '输出已验证的完整报告',
+        });
+        const submitHypothesis = agent.state.tools.find(
+          (tool: any) => tool.name === 'submit_hypothesis',
+        ) as any;
+        await submitHypothesis.execute('hypothesis-call', {
+          id: 'h1',
+          statement: '主线程同步重计算是代表帧超预算的直接原因',
+          basis: '代表帧 ANIMATION 阶段同步执行 47-59ms',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: '计划和假设已建立，准备闭合证据阶段。'}],
+        }];
+      }
+      if (promptIndex === 2) {
+        expect(input).toContain('"id": "p1"');
+        const updatePlanPhase = agent.state.tools.find(
+          (tool: any) => tool.name === 'update_plan_phase',
+        ) as any;
+        await updatePlanPhase.execute('phase-call', {
+          phaseId: 'p1',
+          status: 'completed',
+          summary: '已有证据已核对，计划阶段完成。',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: '证据阶段已闭合，接下来处理未决假设。'}],
+        }];
+      }
+      if (promptIndex === 3) {
+        expect(input).toContain('"unresolvedHypotheses"');
+        const resolveHypothesis = agent.state.tools.find(
+          (tool: any) => tool.name === 'resolve_hypothesis',
+        ) as any;
+        await resolveHypothesis.execute('resolve-call', {
+          hypothesisId: 'h1',
+          status: 'confirmed',
+          evidence: '代表帧 ANIMATION 阶段同步执行 47-59ms，6/7 帧命中相同模式。',
+        });
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: report}],
+        }];
+      }
+      throw new Error('fresh hypothesis report must not trigger another continuation');
+    };
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+      },
+    );
+
+    const result = await runtime.analyze(
+      '分析系统性能问题',
+      'session-pi-hypothesis-fresh-report',
+      'trace-pi',
+      {analysisMode: 'full'},
+    );
+
+    expect(FakePiAgent.instances[0].promptCount).toBe(3);
+    expect(result.conclusion).toBe(report);
+    expect(result.partial).not.toBe(true);
+    expect(result.terminationReason).toBeUndefined();
+  });
+
+  it('selects the latest shorter deliverable report instead of the longest stale draft', () => {
+    const correctedReport = buildScrollingPiReport(true);
+    const initialReport = [
+      buildScrollingPiReport(false),
+      '',
+      '## 扩展边界说明',
+      ...Array.from({length: 20}, (_, index) => (
+        `- 初稿边界 ${index + 1}：本段仅用于记录已排除的外推范围，不替代代表帧证据。`
+      )),
+    ].join('\n');
+    expect(initialReport.length).toBeGreaterThan(correctedReport.length);
+
+    expect(selectAssistantConclusion([
+      {role: 'assistant', content: [{type: 'text', text: initialReport}]},
+      {role: 'assistant', content: [{type: 'text', text: correctedReport}]},
+      {role: 'assistant', content: [{type: 'text', text: 'All phases are complete.'}]},
+    ])).toBe(correctedReport);
+  });
+
+  it('does not reuse a stale draft when the bounded final-report continuation emits no report', async () => {
+    const staleDraft = [
+      buildVerifiedPiReport(),
+      '',
+      'blocked_function=do_epoll_wait 持续 120ms，证明磁盘 IO 是根因。',
+    ].join('\n');
+    const processOnlyReply = 'The continuation ended without a refreshed final report.';
+    FakePiAgent.promptHandler = async (agent, input, promptIndex) => {
+      if (promptIndex === 1) {
+        await submitCompletedMinimalPlan(agent);
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: staleDraft}],
+        }];
+      }
+      if (promptIndex === 2) {
+        expect(input).toContain('Final Report Contract');
+        return [{
+          role: 'assistant',
+          content: [{type: 'text', text: processOnlyReply}],
+        }];
+      }
+      throw new Error('text-only correction unavailable');
+    };
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+      },
+    );
+
+    const result = await runtime.analyze(
+      '分析系统性能问题',
+      'session-pi-final-refresh-boundary',
+      'trace-pi',
+      {analysisMode: 'full'},
+    );
+
+    expect(result.conclusion).not.toContain('do_epoll_wait');
+    expect(result.partial).toBe(true);
+    expect(result.terminationReason).toBeDefined();
   });
 
   it('uses a shorter verified Pi correction produced with tools disabled', async () => {

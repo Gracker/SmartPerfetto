@@ -72,6 +72,10 @@ export interface PerfettoSqlDocsAsset {
   generatedAt?: string;
   generatedFrom?: string;
   sourceDocs?: string;
+  sourceDocsMode?:
+    | 'full-json'
+    | 'metadata-plus-source-generator'
+    | 'runtime-revision-source-generator';
   pfsqlLineage?: {
     status: 'ok' | 'unavailable' | 'failed';
     binary?: string;

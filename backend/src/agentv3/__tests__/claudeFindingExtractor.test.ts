@@ -205,6 +205,66 @@ Binder: 0ms / GC: 0ms / IO: 0ms
     expect(findings[0].evidence?.[0]?.text).toContain('86%');
   });
 
+  it('should use colon-delimited inline metrics from a severity-tagged recommendation', () => {
+    const text = `
+### 优化建议
+
+1. **[CRITICAL] 移除/削减 onCreate 中的合成负载**：如果 \`LoadSimulator_ActivityInit\`、\`ChaosTask\`、\`SimulateInflation\` 复现了真实业务逻辑模式，应延迟非首帧必须的初始化。\`ChaosTask\` 70 次主线程阻塞调用是最大单一瓶颈（self=456ms）。
+`;
+
+    const findings = extractFindingsFromText(text);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe('critical');
+    expect(findings[0].evidence?.[0]?.text).toContain('70 次');
+    expect(findings[0].evidence?.[0]?.text).toContain('456ms');
+  });
+
+  it('should not treat keyword-only or projected colon text as observed inline evidence', () => {
+    const recommendations = [
+      '**[CRITICAL] 优化启动**：请将 IO 操作迁移到后台线程，避免主线程阻塞并继续采集数据确认。',
+      '**[CRITICAL] Optimize startup**: Please move Binder work off the main thread and collect more data.',
+      '**[CRITICAL] 优化启动**：预计优化后耗时降低 456ms，仍需采集当前 trace 数据确认。',
+      '**[CRITICAL] 优化启动**：请迁移 IO 到后台。将降低启动耗时456ms。',
+      '**[CRITICAL] Optimize startup**: Move IO off main thread. This will reduce startup time by 456ms.',
+      '**[CRITICAL] Optimize startup**: Moving Binder work can reduce startup time by 456ms.',
+      '**[CRITICAL] Optimize startup**: Binder latency is 456ms if optimized.',
+      '**[CRITICAL] Optimize startup**: IO latency is 456ms after optimization.',
+    ];
+
+    for (const recommendation of recommendations) {
+      const findings = extractFindingsFromText(`### 优化建议\n\n${recommendation}`);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence).toBeUndefined();
+    }
+  });
+
+  it('should retain an observed inline metric before a projected target in the same statement', () => {
+    const recommendations = [
+      '**[CRITICAL] 优化启动**：当前 ChaosTask self=456ms，优化后预计降低到100ms。',
+      '**[CRITICAL] Optimize startup**: Current Binder work takes 456ms, and optimization could reduce it to 100ms.',
+    ];
+
+    for (const recommendation of recommendations) {
+      const findings = extractFindingsFromText(`### 优化建议\n\n${recommendation}`);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence?.[0]?.text).toContain('456ms');
+    }
+  });
+
+  it('should retain observed Chinese metrics without mistaking ordinary words for future modality', () => {
+    const recommendations = [
+      '**[CRITICAL] 优化启动**：当前会话记录显示 IO self=456ms。',
+      '**[CRITICAL] 优化启动**：当前调度机会记录显示 Binder self=456ms。',
+      '**[CRITICAL] 优化启动**：实测 IO 耗时已降低至456ms，但仍高于预算。',
+    ];
+
+    for (const recommendation of recommendations) {
+      const findings = extractFindingsFromText(`### 优化建议\n\n${recommendation}`);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence?.[0]?.text).toContain('456ms');
+    }
+  });
+
   it('should use quantified impact bullets as evidence for severity-tagged recommendations', () => {
     const text = `
 ### 优化建议
@@ -222,6 +282,54 @@ Binder: 0ms / GC: 0ms / IO: 0ms
     expect(findings[0].evidence?.[0]?.text).toContain('6 帧掉帧');
     expect(findings[0].evidence?.[0]?.text).toContain('50–63ms');
     expect(findings[0].evidence?.[0]?.text).toContain('WHY');
+  });
+
+  it('should use an observed metric bullet before projected recommendation impact', () => {
+    const text = `
+### 优化建议
+
+1. **[CRITICAL] 排查 \`animation\` 59ms 热点**
+- Frame 2 中 \`animation\` 59.31ms 远超预算。这是 View 动画在 Choreographer#doFrame 中的集中耗时。
+- **建议**：使用 CPU Profiling 确认具体回调。
+- **收益预估**：将 animation 从 59ms 降至 <5ms，帧长从 63ms 降至 <12ms。
+`;
+
+    const findings = extractFindingsFromText(text);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].evidence?.[0]?.text).toContain('Frame 2');
+    expect(findings[0].evidence?.[0]?.text).toContain('59.31ms');
+    expect(findings[0].evidence?.[0]?.text).not.toContain('收益预估');
+  });
+
+  it('should not use a projected-only impact bullet as critical evidence', () => {
+    const impactLines = [
+      '- **收益预估**：将 animation 从 59ms 降至 <5ms，帧长从 63ms 降至 <12ms。',
+      '- **收益**：预计将 animation 从 59ms 降至 5ms。',
+      '- **Impact**: Expected frame duration will decrease from 59ms to 5ms.',
+    ];
+
+    for (const impactLine of impactLines) {
+      const text = `### 优化建议\n\n1. **[CRITICAL] 优化 animation 热点**\n${impactLine}`;
+      const findings = extractFindingsFromText(text);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence).toBeUndefined();
+    }
+  });
+
+  it('should not borrow an observed metric bullet from the next ordered recommendation', () => {
+    const text = `
+### 优化建议
+
+1. **[CRITICAL] 优化 animation 热点**
+- 需要继续采集数据确认。
+
+2. 后续验证
+- Frame 2 animation 59.31ms 已由另一项处理。
+`;
+
+    const findings = extractFindingsFromText(text);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].evidence).toBeUndefined();
   });
 
   it('should still extract severity headings whose title contains pipe characters', () => {

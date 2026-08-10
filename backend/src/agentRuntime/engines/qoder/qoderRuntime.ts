@@ -81,6 +81,7 @@ import {
 } from '../../runtimePromptContext';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import {resetPrePlanToolCallsForNewRun} from '../../../agentv3/planToolCallRecorder';
 import {
   buildRuntimeQuickEvidenceDirectAnswer,
   type RuntimeQuickEvidenceCounts,
@@ -272,6 +273,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const packageName = options?.packageName;
     const normalizedOptions = options ?? {};
+    const deferTracePreflightToModel = options?.assistantSurface === 'conversation';
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
     const privateAnalysisContext = analysisContextUsesPrivateKnowledge(normalizedOptions);
@@ -281,6 +283,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       query,
       sceneType,
       analysisMode: options?.analysisMode,
+      conversationSurface: deferTracePreflightToModel,
       selectionContext: options?.selectionContext,
       packageName,
       hasReferenceTrace: Boolean(options?.referenceTraceId),
@@ -339,39 +342,45 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     // Architecture detection
     let architecture: ArchitectureInfo | undefined;
-    try {
-      const detector = createArchitectureDetector();
-      architecture = await detector.detect({
-        traceId,
-        traceProcessorService,
-        packageName,
-      });
-      this.architectureCache.set(traceId, architecture);
-    } catch {
-      // Non-fatal — architecture detection is optional
+    if (!deferTracePreflightToModel) {
+      try {
+        const detector = createArchitectureDetector();
+        architecture = await detector.detect({
+          traceId,
+          traceProcessorService,
+          packageName,
+        });
+        this.architectureCache.set(traceId, architecture);
+      } catch {
+        // Non-fatal — architecture detection is optional
+      }
     }
 
     // Focus app detection
     let focusApps: DetectedFocusApp[] = [];
     let focusAppMethod: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none' = 'none';
-    try {
-      const focusResult = await detectFocusApps(
-        traceProcessorService,
-        traceId,
-        { timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined },
-      );
-      focusApps = focusResult.apps;
-      focusAppMethod = focusResult.method;
-    } catch {
-      // Non-fatal
+    if (!deferTracePreflightToModel) {
+      try {
+        const focusResult = await detectFocusApps(
+          traceProcessorService,
+          traceId,
+          { timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined },
+        );
+        focusApps = focusResult.apps;
+        focusAppMethod = focusResult.method;
+      } catch {
+        // Non-fatal
+      }
     }
 
     // Probe trace completeness
     let traceCompleteness: Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
-    try {
-      traceCompleteness = await probeTraceCompleteness(traceProcessorService, traceId);
-    } catch {
-      // Non-fatal
+    if (!deferTracePreflightToModel) {
+      try {
+        traceCompleteness = await probeTraceCompleteness(traceProcessorService, traceId);
+      } catch {
+        // Non-fatal
+      }
     }
 
     const analysisRunSpec = createAnalysisRunSpec({
@@ -498,6 +507,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       planState = { current: null, history: [] };
       if (!privateAnalysisContext) this.sessionPlans.set(sessionId, planState);
     }
+    if (planState.current) {
+      planState.history.push(planState.current);
+      if (planState.history.length > 3) planState.history.shift();
+    }
+    planState.current = null;
+    resetPrePlanToolCallsForNewRun(planState);
 
     let hypotheses = privateAnalysisContext ? undefined : this.sessionHypotheses.get(sessionId);
     if (!hypotheses) {
@@ -515,7 +530,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     const { server: mcpServer, allowedTools: allowedToolNames } = isQuickMode
       ? createClaudeMcpServer({
-        runManifestAttributionSink: options?.runManifestAttributionSink,
+          conversationTraceAttached: options?.assistantSurface === 'conversation'
+            ? options.conversationTraceAttached === true
+            : undefined,
+          runManifestAttributionSink: options?.runManifestAttributionSink,
           sessionId,
           traceId,
           traceProcessorService,
@@ -537,7 +555,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           androidInternalsPackPin: options?.androidInternalsPackPin,
         })
       : createClaudeMcpServer({
-        runManifestAttributionSink: options?.runManifestAttributionSink,
+          conversationTraceAttached: options?.assistantSurface === 'conversation'
+            ? options.conversationTraceAttached === true
+            : undefined,
+          runManifestAttributionSink: options?.runManifestAttributionSink,
           sessionId,
           traceId,
           userQuery: query,

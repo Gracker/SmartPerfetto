@@ -2,9 +2,19 @@
 
 [English](quick-start.en.md) | [中文](quick-start.md)
 
-本页用于把 SmartPerfetto 跑起来。更多模型和代理参数见 [配置指南](configuration.md)。
+本页用于选择最短启动路径。更多模型和代理参数见 [配置指南](configuration.md)。
 
-## 1. 克隆仓库
+## 1. 选择运行方式
+
+- **Windows 桌面用户**：优先下载 `windows-x64` 免安装包。打开
+  [Latest Release](https://github.com/Gracker/SmartPerfetto/releases/latest)，下载并校验
+  SHA256，全部解压，运行 `SmartPerfetto.exe`，在 UI 中保存、测试并激活 Provider，
+  再加载 trace。完整步骤见 [Windows 配置与运行指南](windows.md)。
+- **容器部署**：使用 Docker Desktop/Engine；Windows 上使用 WSL2 backend。
+- **开发者**：需要改后端、Skill 或源码时再克隆仓库；只有修改 Perfetto UI 插件时才
+  初始化 `perfetto/` submodule。
+
+## 2. Docker 或源码用户：克隆仓库
 
 普通使用不需要初始化 `perfetto/` submodule。仓库已经包含预构建 Perfetto UI。
 
@@ -14,7 +24,7 @@
 
 只有修改 AI Assistant 前端插件代码时，才需要初始化 submodule 并使用开发脚本。
 
-## 2. 准备模型配置
+## 3. 准备模型配置
 
 不需要把所有 runtime 都配置一遍。第一次只选一个入口：本机 `claude`、UI Provider Manager、一个 Claude-compatible env block、一个 OpenAI-compatible env block、Pi Agent Core / OpenCode custom block，或显式安装的 Qoder SDK 加本机 CLI 登录态/PAT。
 
@@ -34,7 +44,7 @@
 
 如果 UI 里已经激活了 Provider Manager profile，它会覆盖 `.env` fallback。当前来源可以在容器启动日志、Provider 设置页或带鉴权的 `/api/runtime-health` 中确认；公开 `/health` 只用于存活检查。
 
-## 3. Docker 运行
+## 4. Docker 运行
 
 适合只想试用，不想配置本机开发工具链的场景。
 
@@ -47,7 +57,7 @@
 Docker image 已包含固定 trace processor、提交版 UI 和签名 Android Internals
 Knowledge Pack；不需要宿主机下载这些运行时资产。
 
-## 4. 本地开发运行
+## 5. 本地开发运行
 
 适合本地使用、调试后端、改策略/Skill 或提交 PR。
 
@@ -65,7 +75,7 @@ Knowledge Pack；不需要宿主机下载这些运行时资产。
 仓库也已包含离线 Knowledge Pack snapshot；后台只会按配置异步检查签名更新，不会让
 运行中的 session 静默切换知识版本。
 
-## 5. 第一次分析
+## 6. Docker 或源码用户：第一次分析
 
 步骤 1：打开 `http://localhost:10000`。
 
@@ -87,7 +97,7 @@ Knowledge Pack；不需要宿主机下载这些运行时资产。
 问题并完成敏感信息复核后，SmartPerfetto 只打开未提交的 GitHub 草稿。详见
 [Agent 辅助 GitHub 反馈](agent-assisted-feedback.md)。
 
-## 6. 必要检查
+## 7. 必要检查
 
 按改动类型选择最小测试层。维护者和 LLM/Agent 需要先读
 [产品面规则](../../.claude/rules/product-surface.md) 和
@@ -103,7 +113,7 @@ Knowledge Pack；不需要宿主机下载这些运行时资产。
 [发布手册](../reference/release.md) 和
 [发布规则](../../.claude/rules/release.md)。
 
-## 7. Trace 案例库
+## 8. Trace 案例库
 
 仓库的 [Trace 案例库](../../Trace/README.md) 分为真实案例和可复现构造案例。真实案例按“一例一目录”保存 trace、分析结果、日志、来源和 Android/API 元数据；构造案例保存真实 base trace 上的确定性 overlay，并覆盖当前全部 Skill 与 Strategy。
 

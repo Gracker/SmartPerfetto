@@ -564,6 +564,42 @@ describe('QoderRuntime', () => {
   });
 
   describe('session resume', () => {
+    it('starts each analysis with a fresh plan while preserving bounded history', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: 'done' },
+      ]));
+      const runtime = createRuntime();
+      const previousPlan = {
+        phases: [{
+          id: 'p1',
+          name: '旧阶段',
+          goal: '旧 run 的分析阶段',
+          expectedTools: ['get_comparison_context'],
+          status: 'completed',
+          summary: '旧 run 已完成，不能被下一轮继续使用。',
+        }],
+        successCriteria: '旧 run 完成',
+        submittedAt: 1,
+        toolCallLog: [],
+      };
+      (runtime as any).sessionPlans.set('session-1', {
+        current: previousPlan,
+        history: [],
+        prePlanToolCallLog: [{
+          toolName: 'get_comparison_context',
+          timestamp: 10,
+          success: true,
+        }],
+      });
+
+      await runtime.analyze('second run', 'session-1', 'trace-1');
+
+      const planState = (mockCreateClaudeMcpServer.mock.calls[0][0] as any).analysisPlan;
+      expect(planState.current).toBeNull();
+      expect(planState.history).toEqual([previousPlan]);
+      expect(planState.prePlanToolCallLog).toEqual([]);
+    });
+
     it('captures session ID from system init message', async () => {
       const messages = [
         { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },

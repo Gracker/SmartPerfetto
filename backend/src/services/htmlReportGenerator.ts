@@ -43,6 +43,17 @@ interface ClaimSourceLookupEntry {
   count: number;
 }
 
+export interface AgentReportSourceDescriptor {
+  codebaseId: string;
+  displayName?: string;
+  kind?: string;
+}
+
+export interface AgentReportSourceContext {
+  selected: AgentReportSourceDescriptor[];
+  usedCodebaseIds?: string[];
+}
+
 type ReportTraceSide = 'current' | 'reference';
 type ReportPaneSide = NonNullable<DataEnvelope['meta']['paneSide']>;
 
@@ -167,6 +178,8 @@ export interface AgentDrivenReportData {
   comparisonReportSection?: ComparisonReportSection;
   /** Public explanatory citations; never current-trace evidence. */
   backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
+  /** Safe selected-vs-used source provenance for code-aware sessions. */
+  sourceContext?: AgentReportSourceContext;
 }
 
 export class HTMLReportGenerator {
@@ -4405,6 +4418,16 @@ export class HTMLReportGenerator {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       font-size: 12px; color: #334155; word-break: break-word;
     }
+    .source-context-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+    .source-context-column { border: 1px solid #dbeafe; border-radius: 8px; background: #f8fbff; padding: 12px; }
+    .source-context-title { font-weight: 700; color: #1e3a8a; margin-bottom: 8px; }
+    .source-context-list { list-style: none; display: grid; gap: 8px; margin: 0; padding: 0; }
+    .source-context-item { font-size: 12px; color: #334155; line-height: 1.45; }
+    .source-context-name { font-weight: 700; color: #111827; }
+    .source-context-meta {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      color: #64748b; word-break: break-word;
+    }
     .patch-status {
       display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; margin-left: 6px;
     }
@@ -4628,6 +4651,8 @@ export class HTMLReportGenerator {
     ${this.renderFindingsSection(result.findings, dataEnvelopes)}
 
     ${this.renderCodeAwareReferencesSection(result.conclusionContract, outputLanguage)}
+
+    ${this.renderSourceContextSection(data.sourceContext, outputLanguage)}
 
     ${this.renderBackgroundKnowledgeReferencesSection(
       data.backgroundKnowledgeReferences,
@@ -4915,7 +4940,7 @@ export class HTMLReportGenerator {
         case 'open_evidence_table':
           return localize(outputLanguage, '打开证据表', 'Open evidence table');
         case 'pin_evidence':
-          return localize(outputLanguage, '固定证据', 'Pin evidence');
+          return localize(outputLanguage, '收藏证据', 'Save evidence');
         default:
           return kind;
       }
@@ -5102,6 +5127,57 @@ export class HTMLReportGenerator {
         'These references explain system background only and do not replace current-trace SQL/Skill evidence.',
       )}</div>
       ${items}
+    </div>`;
+  }
+
+  private renderSourceContextSection(
+    sourceContext: AgentReportSourceContext | undefined,
+    outputLanguage: OutputLanguage,
+  ): string {
+    if (!sourceContext?.selected?.length) return '';
+    const selected = [...sourceContext.selected]
+      .filter(source => source.codebaseId)
+      .sort((left, right) => left.codebaseId.localeCompare(right.codebaseId));
+    if (selected.length === 0) return '';
+    const usedIds = new Set(sourceContext.usedCodebaseIds ?? []);
+    const used = selected.filter(source => usedIds.has(source.codebaseId));
+    const renderItem = (source: AgentReportSourceDescriptor) => {
+      const shortId = source.codebaseId.slice(0, 12);
+      const label = source.displayName || shortId;
+      const kind = source.kind || localize(outputLanguage, '未知类型', 'unknown kind');
+      return `
+        <li class="source-context-item">
+          <div class="source-context-name">${this.escapeHtml(label)}</div>
+          <div class="source-context-meta">${this.escapeHtml(kind)} · ${this.escapeHtml(shortId)}</div>
+        </li>`;
+    };
+    const emptyUsed = localize(
+      outputLanguage,
+      '本次没有返回源码或图引用的成功查询。',
+      'No successful lookup returned source or graph references in this run.',
+    );
+    return `
+    <div class="section">
+      <h2 class="section-title">${localize(outputLanguage, '源码上下文', 'Source Context')}</h2>
+      <div class="claim-source-note">
+        ${this.escapeHtml(localize(
+          outputLanguage,
+          '源码/图查询只定位候选机制；最终判断仍以 Trace、Skill 和 SQL 证据为准。',
+          'Source and graph lookup only locate candidate mechanisms; Trace, Skill, and SQL evidence remain authoritative.',
+        ))}
+      </div>
+      <div class="source-context-grid">
+        <div class="source-context-column">
+          <div class="source-context-title">${localize(outputLanguage, '已选择', 'Selected')}</div>
+          <ul class="source-context-list">${selected.map(renderItem).join('')}</ul>
+        </div>
+        <div class="source-context-column">
+          <div class="source-context-title">${localize(outputLanguage, '实际使用/查询到', 'Actually used/consulted')}</div>
+          ${used.length
+            ? `<ul class="source-context-list">${used.map(renderItem).join('')}</ul>`
+            : `<div class="empty-state">${this.escapeHtml(emptyUsed)}</div>`}
+        </div>
+      </div>
     </div>`;
   }
 

@@ -142,15 +142,29 @@ function workspaceTraceBytes(db: Database.Database, scope: EnterpriseRepositoryS
   return row?.total ?? 0;
 }
 
-function activeRunCount(db: Database.Database, scope: EnterpriseRepositoryScope): number {
+function activeRunCount(
+  db: Database.Database,
+  scope: EnterpriseRepositoryScope,
+  replacingRunId?: string,
+): number {
   const placeholders = ACTIVE_RUN_STATUSES.map(() => '?').join(', ');
+  const replacementClause = replacingRunId ? 'AND id <> ?' : '';
   const row = db.prepare<unknown[], CountRow>(`
     SELECT COUNT(*) AS count
     FROM analysis_runs
     WHERE tenant_id = ?
       AND workspace_id = ?
       AND status IN (${placeholders})
-  `).get(scope.tenantId, scope.workspaceId, ...ACTIVE_RUN_STATUSES);
+      -- Conversation clarification preserves logical session continuity after
+      -- its physical run has settled, so it must not consume a run slot.
+      AND NOT (mode = 'conversation' AND status = 'awaiting_user')
+      ${replacementClause}
+  `).get(
+    scope.tenantId,
+    scope.workspaceId,
+    ...ACTIVE_RUN_STATUSES,
+    ...(replacingRunId ? [replacingRunId] : []),
+  );
   return row?.count ?? 0;
 }
 
@@ -250,7 +264,7 @@ export function evaluateTraceUploadQuota(
 
 export function evaluateAnalysisRunQuota(
   context: RequestContext,
-  options: { now?: number } = {},
+  options: { now?: number; replacingRunId?: string } = {},
 ): EnterpriseQuotaDecision {
   if (!resolveFeatureConfig().enterprise) return allowedDecision();
   const now = options.now ?? Date.now();
@@ -281,7 +295,7 @@ export function evaluateAnalysisRunQuota(
     }
 
     if (quotaPolicy.maxConcurrentRuns !== undefined) {
-      const activeRuns = activeRunCount(db, scope);
+      const activeRuns = activeRunCount(db, scope, options.replacingRunId);
       if (activeRuns >= quotaPolicy.maxConcurrentRuns) {
         return denyDecision(
           'CONCURRENT_RUN_QUOTA_EXCEEDED',

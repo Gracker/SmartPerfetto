@@ -41,6 +41,7 @@ import {
   evaluationPhaseHintInjectionContentHash,
 } from '../services/selfEvolution/evaluationTreatment';
 import { createArchitectureDetector } from '../agent/detectors/architectureDetector';
+import {resolveRegisteredDrillDownSkillParams} from '../agent/core/drillDownEntityResolver';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
 import type {
   DisplayResult as SkillDisplayResult,
@@ -178,6 +179,10 @@ import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../services/codebase/patchProposer';
 import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import {OnDemandSourceAccessService} from '../services/codebase/onDemandSourceAccess';
+import {
+  GitNexusCodeGraphNavigator,
+  type CodeGraphNavigator,
+} from '../services/codebase/gitNexusCodeGraphNavigator';
 import {
   filterRagLookup,
   type SanitizedRagResult,
@@ -335,6 +340,28 @@ function parseToolArrayInput<T>(value: unknown): T[] | null {
     try {
       const parsed = JSON.parse(candidate);
       return Array.isArray(parsed) ? parsed as T[] : null;
+    } catch {
+      // Try the next normalization variant.
+    }
+  }
+  return null;
+}
+
+function parseToolObjectInput(value: unknown): Record<string, unknown> | null {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  if (typeof value !== 'string') return null;
+
+  const trimmed = value.trim();
+  const candidates = [trimmed, quoteLooseObjectKeys(trimmed)]
+    .filter((entry, index, all) => entry.length > 0 && all.indexOf(entry) === index);
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
     } catch {
       // Try the next normalization variant.
     }
@@ -501,8 +528,16 @@ const CORE_EXPECTED_CALL_TOOL_NAMES = new Set([
   'lookup_knowledge',
   'submit_hypothesis',
   'resolve_hypothesis',
-  'mark_uncertainty',
+  'flag_uncertainty',
 ]);
+const SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES = new Set([
+  'invoke_skill',
+  'compare_skill',
+]);
+const EXPECTED_CALLS_FIELD_ALIASES = ['expectedCalls', 'expected_calls'];
+const EXPECTED_CALL_TOOL_FIELD_ALIASES = ['tool', 'toolName', 'tool_name', 'name'];
+const EXPECTED_CALL_SKILL_FIELD_ALIASES = ['skillId', 'skill_id', 'skill', 'skillName', 'skill_name'];
+const EXPECTED_CALL_PARAMS_FIELD_ALIASES = ['params', 'arguments', 'args', 'input'];
 
 type SkillArtifactSummaryForModel = CompactArtifactSummary & {
   evidenceRefId: string;
@@ -514,25 +549,94 @@ function shortExpectedToolName(toolName: string): string {
   return toolName.startsWith(MCP_PREFIX) ? toolName.slice(MCP_PREFIX.length) : toolName;
 }
 
-function normalizeExpectedCall(call: unknown): NonNullable<PlanPhase['expectedCalls']>[number] | undefined {
+function collectMeaningfulAliasedValues(source: unknown, names: string[]): unknown[] {
+  if (!source || typeof source !== 'object') return [];
+  const record = source as Record<string, unknown>;
+  return names
+    .map(name => record[name])
+    .filter(value => {
+      if (value === undefined || value === null) return false;
+      if (typeof value !== 'string') return true;
+      const normalized = value.trim().toLowerCase();
+      return Boolean(normalized && normalized !== 'null' && normalized !== 'undefined');
+    });
+}
+
+function collectExpectedCallAliasStrings(source: unknown, names: string[]): string[] {
+  const values = collectMeaningfulAliasedValues(source, names)
+    .map(coercePlanString)
+    .filter((value): value is string => Boolean(value))
+    .map(value => shortExpectedToolName(value));
+  return [...new Set(values)];
+}
+
+function collectNonScalarExpectedCallAliases(source: unknown, names: string[]): string[] {
+  if (!source || typeof source !== 'object') return [];
+  const record = source as Record<string, unknown>;
+  return names.filter(name => {
+    if (collectMeaningfulAliasedValues({ [name]: record[name] }, [name]).length === 0) return false;
+    return !coercePlanString(record[name]);
+  });
+}
+
+type ExpectedCallResolution = {
+  call?: NonNullable<PlanPhase['expectedCalls']>[number];
+  errors: string[];
+};
+
+function resolveExpectedCall(call: unknown): ExpectedCallResolution {
   if (typeof call === 'string') {
-    return normalizeExpectedCall(parseExpectedCallShorthand(call));
+    return resolveExpectedCall(parseExpectedCallShorthand(call));
   }
-  if (!call || typeof call !== 'object') return undefined;
-  const tool = coercePlanString(readAliasedField(call, ['tool', 'toolName', 'tool_name', 'name']));
-  const nestedParams = readAliasedField(call, ['params', 'arguments', 'args', 'input']);
-  const nestedSkillId = nestedParams && typeof nestedParams === 'object'
-    ? coercePlanString(readAliasedField(nestedParams, ['skillId', 'skill_id', 'skill', 'skillName', 'skill_name']))
-    : undefined;
-  const skillId = coercePlanString(readAliasedField(call, ['skillId', 'skill_id', 'skill', 'skillName', 'skill_name'])) || nestedSkillId;
-  if (!tool) return undefined;
-  const normalizedTool = shortExpectedToolName(tool.trim());
-  const normalizedSkillId = skillId ? shortExpectedToolName(skillId.trim()) : undefined;
-  if (!normalizedTool) return undefined;
+  if (!call || typeof call !== 'object') return { errors: [] };
+
+  const errors: string[] = [];
+  const invalidToolAliases = collectNonScalarExpectedCallAliases(call, EXPECTED_CALL_TOOL_FIELD_ALIASES);
+  const invalidSkillAliases = collectNonScalarExpectedCallAliases(call, EXPECTED_CALL_SKILL_FIELD_ALIASES);
+  errors.push(...invalidToolAliases.map(name => `contains non-scalar tool alias "${name}"`));
+  errors.push(...invalidSkillAliases.map(name => `contains non-scalar skill alias "${name}"`));
+  const toolValues = collectExpectedCallAliasStrings(call, EXPECTED_CALL_TOOL_FIELD_ALIASES);
+  const skillValues = collectExpectedCallAliasStrings(call, EXPECTED_CALL_SKILL_FIELD_ALIASES);
+  for (const rawNestedParams of collectMeaningfulAliasedValues(call, EXPECTED_CALL_PARAMS_FIELD_ALIASES)) {
+    const nestedParams = parseToolObjectInput(rawNestedParams);
+    if (!nestedParams) {
+      if (
+        typeof rawNestedParams === 'string'
+        && /["']?(?:skillId|skill_id|skillName|skill_name|skill)["']?\s*[:=]/i.test(rawNestedParams)
+      ) {
+        errors.push('nested params contains a skill scope but is not a valid object');
+      } else {
+        errors.push('nested params must be an object or serialized object');
+      }
+      continue;
+    }
+    errors.push(...collectNonScalarExpectedCallAliases(nestedParams, EXPECTED_CALL_SKILL_FIELD_ALIASES)
+      .map(name => `contains non-scalar nested skill alias "${name}"`));
+    skillValues.push(...collectExpectedCallAliasStrings(nestedParams, EXPECTED_CALL_SKILL_FIELD_ALIASES));
+  }
+
+  const distinctSkillValues = [...new Set(skillValues)];
+  if (toolValues.length > 1) {
+    errors.push(`contains conflicting tool aliases: ${toolValues.join(', ')}`);
+  }
+  if (distinctSkillValues.length > 1) {
+    errors.push(`contains conflicting skill aliases: ${distinctSkillValues.join(', ')}`);
+  }
+  if (errors.length > 0 || toolValues.length === 0) return { errors };
+
+  const normalizedTool = toolValues[0];
+  const normalizedSkillId = distinctSkillValues[0];
   if (normalizedTool === 'invoke_skill' && normalizedSkillId && CORE_EXPECTED_CALL_TOOL_NAMES.has(normalizedSkillId)) {
-    return { tool: normalizedSkillId };
+    return { call: { tool: normalizedSkillId }, errors: [] };
   }
-  return normalizedSkillId ? { tool: normalizedTool, skillId: normalizedSkillId } : { tool: normalizedTool };
+  return {
+    call: normalizedSkillId ? { tool: normalizedTool, skillId: normalizedSkillId } : { tool: normalizedTool },
+    errors: [],
+  };
+}
+
+function normalizeExpectedCall(call: unknown): NonNullable<PlanPhase['expectedCalls']>[number] | undefined {
+  return resolveExpectedCall(call).call;
 }
 
 function parseExpectedCallShorthand(value: string): Record<string, unknown> | undefined {
@@ -573,7 +677,7 @@ function collectInformationalExpectationErrors(input: PlanPhaseToolInput, phaseI
     }
   }
 
-  const expectedCalls = normalizeExpectedCallsInput(readAliasedField(input, ['expectedCalls', 'expected_calls']));
+  const expectedCalls = normalizeExpectedCallsInput(readExpectedCallsInput(input));
   for (const call of expectedCalls ?? []) {
     const tool = shortExpectedToolName(call.tool.trim());
     const skillId = typeof call.skillId === 'string' ? shortExpectedToolName(call.skillId.trim()) : undefined;
@@ -601,25 +705,63 @@ function parseExpectedCallsInput(input: unknown): unknown[] | null {
   return null;
 }
 
+function readExpectedCallsInput(input: PlanPhaseToolInput): unknown {
+  return collectMeaningfulAliasedValues(input, EXPECTED_CALLS_FIELD_ALIASES)[0];
+}
+
 function collectExpectedCallShapeErrors(input: PlanPhaseToolInput, phaseIndex: number): string[] {
-  const rawExpectedCalls = readAliasedField(input, ['expectedCalls', 'expected_calls']);
-  if (rawExpectedCalls === undefined || rawExpectedCalls === null) return [];
-  if (typeof rawExpectedCalls === 'string') {
-    const trimmed = rawExpectedCalls.trim().toLowerCase();
-    if (!trimmed || trimmed === 'null' || trimmed === 'undefined') return [];
-  }
   const label = coercePlanString(readAliasedField(input, ['id', 'phaseId', 'phase_id'])) || `phase#${phaseIndex + 1}`;
-  const parsed = parseExpectedCallsInput(rawExpectedCalls);
-  if (!parsed) {
+  const rawExpectedCallsInputs = collectMeaningfulAliasedValues(input, EXPECTED_CALLS_FIELD_ALIASES);
+  if (rawExpectedCallsInputs.length === 0) return [];
+  const parsedInputs = rawExpectedCallsInputs.map(parseExpectedCallsInput);
+  if (parsedInputs.some(parsed => !parsed)) {
     return [`${label}.expectedCalls must be an array, JSON array string, or shorthand string`];
   }
+
   const errors: string[] = [];
-  parsed.forEach((call, index) => {
-    if (!normalizeExpectedCall(call)) {
-      errors.push(`${label}.expectedCalls[${index}] must include a non-empty tool/toolName/tool_name/name`);
-    }
+  for (const parsed of parsedInputs) {
+    parsed?.forEach((call, index) => {
+      const resolution = resolveExpectedCall(call);
+      if (resolution.errors.length > 0) {
+        errors.push(...resolution.errors.map(error => `${label}.expectedCalls[${index}] ${error}`));
+        return;
+      }
+      const normalizedCall = resolution.call;
+      if (!normalizedCall) {
+        errors.push(`${label}.expectedCalls[${index}] must include a non-empty tool/toolName/tool_name/name`);
+      } else if (
+        normalizedCall.tool === 'compare_skill'
+        && normalizedCall.skillId
+        && CORE_EXPECTED_CALL_TOOL_NAMES.has(normalizedCall.skillId)
+      ) {
+        errors.push(
+          `${label}.expectedCalls[${index}] cannot use core tool "${normalizedCall.skillId}" as compare_skill skillId; `
+          + 'compare_skill requires a registered analysis skill',
+        );
+      } else if (
+        normalizedCall.skillId
+        && !SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES.has(normalizedCall.tool)
+      ) {
+        errors.push(
+          `${label}.expectedCalls[${index}] cannot scope tool "${normalizedCall.tool}" by skillId; `
+          + 'only invoke_skill and compare_skill support skill-scoped expectedCalls',
+        );
+      }
+    });
+  }
+  const uniqueErrors = [...new Set(errors)];
+  if (uniqueErrors.length > 0) return uniqueErrors;
+
+  const canonicalInputs = parsedInputs.map(parsed => {
+    const normalized = normalizeExpectedCallsInput(parsed) ?? [];
+    return JSON.stringify(normalized
+      .map(call => `${call.tool}\u0000${call.skillId ?? ''}`)
+      .sort());
   });
-  return errors;
+  if (new Set(canonicalInputs).size > 1) {
+    return [`${label}.expectedCalls and expected_calls must not contain conflicting values`];
+  }
+  return [];
 }
 
 function collectPlanExpectedCallShapeErrors(inputs: PlanPhaseToolInput[]): string[] {
@@ -643,7 +785,7 @@ function normalizeExpectedCallsInput(input: unknown): PlanPhase['expectedCalls']
 }
 
 function normalizePlanPhaseToolInput(input: PlanPhaseToolInput): Omit<PlanPhase, 'status'> {
-  const expectedCalls = normalizeExpectedCallsInput(readAliasedField(input, ['expectedCalls', 'expected_calls']));
+  const expectedCalls = normalizeExpectedCallsInput(readExpectedCallsInput(input));
   return {
     id: coercePlanString(readAliasedField(input, ['id', 'phaseId', 'phase_id'])) || '',
     name: coercePlanString(readAliasedField(input, ['name', 'phaseName', 'phase_name', 'title'])) || '',
@@ -1134,6 +1276,8 @@ export interface ClaudeMcpServerOptions {
    *  Skips planning, hypothesis, knowledge, patterns, notes, and comparison tools.
    *  Also disables the plan gate since planning tools are not available. */
   lightweight?: boolean;
+  /** Conversation-only tool boundary. false exposes authorized source tools but no Trace tools. */
+  conversationTraceAttached?: boolean;
   /** Per-analysis budget for skill-notes injection on invoke_skill responses.
    *  When omitted (default) no notes are injected. The runtime constructs and
    *  passes the same instance for every tool call so the running totals are
@@ -1159,6 +1303,8 @@ export interface ClaudeMcpServerOptions {
   codebaseRegistry?: CodebaseRegistry;
   /** Test hook / alternate code lookup ledger. */
   codeLookupLedger?: CodeLookupLedger;
+  /** Test hook / alternate optional code graph navigator. */
+  codeGraphNavigator?: CodeGraphNavigator;
   /** Test hook / alternate case library. */
   caseLibrary?: CaseLibrary;
   /** Test hook / alternate case RAG store. */
@@ -1357,6 +1503,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     getDefaultExternalKnowledgeSourceRegistry();
   const codebaseRegistry = options.codebaseRegistry ?? getDefaultCodebaseRegistry();
   const onDemandSourceAccess = new OnDemandSourceAccessService({registry: codebaseRegistry});
+  const codeGraphNavigator = options.codeGraphNavigator ??
+    new GitNexusCodeGraphNavigator({registry: codebaseRegistry});
   const ragStore = options.ragStore ?? getRagStore();
   const androidInternalsPackStore = options.androidInternalsPackStore === undefined
     ? getDefaultAndroidInternalsPackStore(options.androidInternalsPackPin)
@@ -1507,6 +1655,58 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       buildSkillRegistryAttribution(pinnedSkillRegistry),
     );
     return pinnedSkillRegistry;
+  }
+
+  function collectUnavailableExpectedSkillErrors(
+    phases: ReadonlyArray<Pick<PlanPhase, 'id' | 'expectedTools' | 'expectedCalls'>>,
+    registry: SkillRegistryView,
+    availableToolNames: ReadonlySet<string>,
+  ): string[] {
+    return phases.flatMap(phase => {
+      const errors: string[] = [];
+      for (const tool of phase.expectedTools ?? []) {
+        const toolName = shortExpectedToolName(tool);
+        if (toolName && !availableToolNames.has(toolName)) {
+          errors.push(`${phase.id}.expectedTools references unavailable MCP tool "${toolName}"`);
+        }
+      }
+      for (const [index, call] of (phase.expectedCalls ?? []).entries()) {
+        const toolName = shortExpectedToolName(call.tool);
+        if (toolName && !availableToolNames.has(toolName)) {
+          errors.push(`${phase.id}.expectedCalls[${index}] references unavailable MCP tool "${toolName}"`);
+          continue;
+        }
+        if (!call.skillId) continue;
+        const skill = registry.getSkill(call.skillId);
+        if (!skill) {
+          errors.push(`${phase.id}.expectedCalls[${index}] references unavailable analysis skill "${call.skillId}"`);
+        } else if (skill.type === 'pipeline_definition' || skill.type === 'comparison') {
+          errors.push(`${phase.id}.expectedCalls[${index}] references non-executable metadata skill "${call.skillId}"`);
+        }
+      }
+      return errors;
+    });
+  }
+
+  function unavailableSkillResult(skillId: string, options: {comparison?: boolean} = {}) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          success: false,
+          ...(options.comparison ? {partial: false} : {}),
+          unavailable: true,
+          skillId,
+          error: localize(
+            outputLanguage,
+            `分析 Skill 不存在或未在当前会话注册：${skillId}`,
+            `Analysis Skill is unavailable or not registered for this session: ${skillId}`,
+          ),
+          action_required: 'list_skills',
+        }),
+      }],
+      isError: true,
+    };
   }
 
   function buildArchitectureTriggerContext(info: Partial<ArchitectureInfo> | undefined | null): string[] {
@@ -2395,6 +2595,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const expectedGapPhase = findBestPhaseForExpectedCallGap(
       plan,
       toolInputToPlanCallRecord(toolName, input),
+      'structured_only',
     );
     if (expectedGapPhase) {
       if (expectedGapPhase.status === 'pending') {
@@ -3059,7 +3260,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Don\'t use when: you need a custom query not covered by any skill (use execute_sql), or exploring what skills exist (use list_skills).\n\n' +
     'Examples:\n' +
     '1. Full scrolling analysis: skillId="scrolling_analysis", params={process_name: "com.example.app"}\n' +
-    '2. Single jank frame detail: skillId="jank_frame_detail", params={frame_number: 42, process_name: "com.example.app"}\n' +
+    '2. Single jank frame detail: skillId="jank_frame_detail", params={frame_id: 42, start_ts: 123, end_ts: 456, process_name: "com.example.app"}\n' +
     '3. Startup analysis: skillId="startup_analysis", params={process_name: "com.example.app"}\n' +
     '4. Selected range CPU scheduling/frequency: skillId="selection_range_cpu_sched_summary", params={start_ts: 123, end_ts: 456}',
     {
@@ -3142,6 +3343,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       try {
         const effectiveSkillRegistry = await bindSkillRuntimeRegistry();
         const skillDef = effectiveSkillRegistry.getSkill(skillId);
+        if (!skillDef) return unavailableSkillResult(skillId);
         if (skillDef?.type === 'pipeline_definition' || skillDef?.type === 'comparison') {
           const useHint = skillDef.type === 'comparison'
             ? 'It describes analysis result comparison. Use the multi-trace comparison API/tools instead.'
@@ -3157,10 +3359,22 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           };
         }
 
-        const effectiveParams = normalizeSkillParams(params, packageName);
+        const normalizedParams = normalizeSkillParams(params, packageName);
+        const paramResolution = await resolveRegisteredDrillDownSkillParams({
+          skillId,
+          params: normalizedParams,
+          traceId,
+          traceProcessorService,
+          signal,
+        });
+        const effectiveParams = paramResolution.params;
         const producer = createEvidenceProducerContext(
           'invoke_skill',
-          { skillId, params: effectiveParams },
+          {
+            skillId,
+            params: effectiveParams,
+            ...(paramResolution.audit ? {drillDownResolution: paramResolution.audit} : {}),
+          },
           localize(outputLanguage, `调用 Skill ${skillId}，收集本阶段结构化证据。`, `Run Skill ${skillId} to collect structured evidence for this phase.`),
         );
         const skillTraceProvenance = buildScopedTraceProvenance(traceId, 'current');
@@ -3425,6 +3639,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 skillId: result.skillId,
                 skillName: localizedSkillName,
                 ...(result.error ? { error: result.error } : {}),
+                ...(paramResolution.audit ? {drillDownResolution: paramResolution.audit} : {}),
                 ...(options.lightweight
                   ? {
                       quickMode: {
@@ -3469,6 +3684,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               skillId: result.skillId,
               skillName: localizedSkillName,
               ...(result.error ? { error: result.error } : {}),
+              ...(paramResolution.audit ? {drillDownResolution: paramResolution.audit} : {}),
               ...(result.identityResolution ? { identityResolution: result.identityResolution } : {}),
               ...(vendorOverrideHint ? { vendorOverride: vendorOverrideHint } : {}),
               displayResults: localizedDisplayResults.map(dr => ({
@@ -4426,28 +4642,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const listCodebases = tool(
     'list_codebases',
-    'List the app/AOSP/kernel/OEM codebases explicitly whitelisted for this analysis session. ' +
-    'Returns metadata only; it never exposes local root paths.',
+    'List whitelisted codebases; metadata only, no root paths.',
     {},
     async () => {
       assertPrivateAnalysisContextCurrent();
       const allowed = new Set(codebaseIds);
       const codebases = codebaseRegistry.list(knowledgeScope)
         .filter(ref => allowed.has(ref.codebaseId))
-        .map(ref => ({
-          codebaseId: ref.codebaseId,
-          kind: ref.kind,
-          displayName: ref.displayName,
-          rootAvailable: ref.rootAvailable,
-          indexGeneration: ref.indexGeneration,
-          activeGeneration: ref.activeGeneration,
-          contentFingerprint: ref.contentFingerprint,
-          indexedRevision: ref.indexedRevision,
-          indexedDirty: ref.indexedDirty,
-          commitProvenance: ref.commitProvenance,
-          chunkCount: ref.chunkCount,
-          eligibleForSendToProvider: ref.eligibleForSendToProvider,
-        }));
+        .map(ref => {
+          const fullRef = codebaseRegistry.get(ref.codebaseId, knowledgeScope);
+          return {
+            codebaseId: ref.codebaseId,
+            kind: ref.kind,
+            displayName: ref.displayName,
+            rootAvailable: ref.rootAvailable,
+            indexGeneration: ref.indexGeneration,
+            activeGeneration: ref.activeGeneration,
+            contentFingerprint: ref.contentFingerprint,
+            indexedRevision: ref.indexedRevision,
+            indexedDirty: ref.indexedDirty,
+            commitProvenance: ref.commitProvenance,
+            chunkCount: ref.chunkCount,
+            eligibleForSendToProvider: ref.eligibleForSendToProvider,
+            ...(ref.rootAvailable && fullRef && fs.existsSync(path.join(fullRef.rootRealpath, '.gitnexus'))
+              ? {optionalGraphNavigation: {engine: 'gitnexus', indexPresent: true, verificationRequired: true}}
+              : {}),
+          };
+        });
       assertPrivateAnalysisContextCurrent();
       return {
         content: [{type: 'text' as const, text: JSON.stringify({success: true, codebases})}],
@@ -4472,6 +4693,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     toolName: 'search_codebase' | 'read_codebase_file';
     codebaseId: string;
     tokensSpent: number;
+    returnedReferenceCount: number;
     outcome: 'success' | 'budget_exceeded' | 'consent_blocked' | 'rejected';
   }): Promise<void> => {
     codeLookupLedger?.record({
@@ -4484,13 +4706,44 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       tokensSpent: input.tokensSpent,
       outcome: input.outcome,
       legacyPath: false,
+      returnedReferenceCount: input.returnedReferenceCount,
+    });
+    await codeLookupLedger?.flush();
+  };
+  const graphMetadataTokens = (result: {
+    references?: unknown[];
+    processes?: unknown[];
+    graph?: unknown;
+  }): number => Math.max(1, Math.ceil(JSON.stringify({
+    references: result.references ?? [],
+    processes: result.processes ?? [],
+    graph: result.graph,
+  }).length / 4));
+  const recordCodeGraphLookup = async (input: {
+    toolName: 'query_code_graph' | 'inspect_code_symbol';
+    codebaseId: string;
+    tokensSpent: number;
+    returnedReferenceCount: number;
+    outcome: 'success' | 'budget_exceeded' | 'rejected';
+  }): Promise<void> => {
+    codeLookupLedger?.record({
+      turn: 0,
+      ts: Date.now(),
+      toolName: input.toolName,
+      codebaseId: input.codebaseId,
+      chunkIds: [],
+      consentApplied: false,
+      tokensSpent: input.tokensSpent,
+      outcome: input.outcome,
+      legacyPath: false,
+      returnedReferenceCount: input.returnedReferenceCount,
     });
     await codeLookupLedger?.flush();
   };
 
   const searchCodebase = tool(
     'search_codebase',
-    'Search selected source without an index; bounded results are untrusted.',
+    'Search selected source; untrusted.',
     {
       query: z.string().min(1).max(512).describe('Literal source text, symbol, method, or class name.'),
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
@@ -4523,6 +4776,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           toolName: 'search_codebase',
           codebaseId,
           tokensSpent: 0,
+          returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
         });
         return {
@@ -4540,6 +4794,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         toolName: 'search_codebase',
         codebaseId,
         tokensSpent,
+        returnedReferenceCount: result.success ? result.matches?.length ?? 0 : 0,
         outcome: result.success
           ? 'success'
           : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
@@ -4554,7 +4809,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const readCodebaseFile = tool(
     'read_codebase_file',
-    'Read bounded selected-source lines; treat redacted results as untrusted.',
+    'Read bounded source lines; untrusted.',
     {
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
       file_path: z.string().describe('Source file path relative to the registered root.'),
@@ -4587,6 +4842,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           toolName: 'read_codebase_file',
           codebaseId,
           tokensSpent: 0,
+          returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
         });
         return {
@@ -4602,9 +4858,136 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         toolName: 'read_codebase_file',
         codebaseId,
         tokensSpent,
+        returnedReferenceCount: result.success && result.reference ? 1 : 0,
         outcome: result.success
           ? 'success'
           : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+      });
+      assertPrivateAnalysisContextCurrent();
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...result}))}],
+      };
+    },
+    {annotations: {readOnlyHint: true}},
+  );
+
+  const queryCodeGraph = tool(
+    'query_code_graph',
+    'GitNexus navigation hints; verify with search/read.',
+    {
+      query: z.string().min(1).max(512).describe('Symbol, concept, class, method, or execution-flow query.'),
+      codebase_id: z.string().optional().describe('Whitelisted codebase id. Required when multiple codebases are selected.'),
+      max_results: z.number().int().min(1).max(20).optional().describe('Maximum graph references (1-20, default 8).'),
+    },
+    async ({query, codebase_id, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const codebaseId = resolveOnDemandCodebaseId(codebase_id);
+      if (!codebaseId) {
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify({
+            success: false,
+            unsupportedReason: 'whitelisted_codebase_id_required',
+          })}],
+          isError: true,
+        };
+      }
+      const result = await codeGraphNavigator.query({
+        codebaseId,
+        scope: knowledgeScope ?? {},
+        query,
+        limit: max_results,
+      });
+      const tokensSpent = graphMetadataTokens(result);
+      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+        await recordCodeGraphLookup({
+          toolName: 'query_code_graph',
+          codebaseId,
+          tokensSpent: 0,
+          returnedReferenceCount: 0,
+          outcome: 'budget_exceeded',
+        });
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+            success: false,
+            codebaseId,
+            references: [],
+            processes: [],
+            graph: result.graph,
+            truncated: false,
+            unsupportedReason: 'budget_exceeded',
+          }))}],
+        };
+      }
+      await recordCodeGraphLookup({
+        toolName: 'query_code_graph',
+        codebaseId,
+        tokensSpent,
+        returnedReferenceCount: result.references.length,
+        outcome: result.success ? 'success' : 'rejected',
+      });
+      assertPrivateAnalysisContextCurrent();
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...result}))}],
+      };
+    },
+    {annotations: {readOnlyHint: true}},
+  );
+
+  const inspectCodeSymbol = tool(
+    'inspect_code_symbol',
+    'GitNexus symbol hints; verify with search/read.',
+    {
+      symbol: z.string().min(1).max(256).describe('Exact or qualified symbol name.'),
+      codebase_id: z.string().optional().describe('Whitelisted codebase id. Required when multiple codebases are selected.'),
+      file_path: z.string().optional().describe('Optional relative source file path inside registered filters.'),
+      max_relations: z.number().int().min(1).max(20).optional().describe('Maximum graph references or relations (1-20, default 8).'),
+    },
+    async ({symbol, codebase_id, file_path, max_relations}) => {
+      assertPrivateAnalysisContextCurrent();
+      const codebaseId = resolveOnDemandCodebaseId(codebase_id);
+      if (!codebaseId) {
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify({
+            success: false,
+            unsupportedReason: 'whitelisted_codebase_id_required',
+          })}],
+          isError: true,
+        };
+      }
+      const result = await codeGraphNavigator.inspectSymbol({
+        codebaseId,
+        scope: knowledgeScope ?? {},
+        symbol,
+        filePath: normalizeOptionalToolString(file_path),
+        limit: max_relations,
+      });
+      const tokensSpent = graphMetadataTokens(result);
+      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+        await recordCodeGraphLookup({
+          toolName: 'inspect_code_symbol',
+          codebaseId,
+          tokensSpent: 0,
+          returnedReferenceCount: 0,
+          outcome: 'budget_exceeded',
+        });
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+            success: false,
+            codebaseId,
+            references: [],
+            processes: [],
+            graph: result.graph,
+            truncated: false,
+            unsupportedReason: 'budget_exceeded',
+          }))}],
+        };
+      }
+      await recordCodeGraphLookup({
+        toolName: 'inspect_code_symbol',
+        codebaseId,
+        tokensSpent,
+        returnedReferenceCount: result.references.length,
+        outcome: result.success ? 'success' : 'rejected',
       });
       assertPrivateAnalysisContextCurrent();
       return {
@@ -5332,6 +5715,32 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
+      const expectedSkillRegistry = await bindSkillRuntimeRegistry();
+      const unavailableExpectedSkills = collectUnavailableExpectedSkillErrors(
+        normalizedPhases,
+        expectedSkillRegistry,
+        new Set(registry.listForRequest(toolRequestScope).map(toolDefinition => toolDefinition.name)),
+      );
+      if (unavailableExpectedSkills.length > 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(
+                outputLanguage,
+                'submit_plan 只能声明当前会话可用的 MCP 工具，以及已注册且可执行的分析 Skill。',
+                'submit_plan can only declare MCP tools available in this session and registered executable analysis Skills.',
+              ),
+              unavailableExpectedSkills,
+              action_required: 'submit_plan',
+              hint: 'Use a tool exposed in this session; for invoke_skill/compare_skill, call list_skills and choose a registered analysis Skill.',
+            }),
+          }],
+          isError: true,
+        };
+      }
+
       // P1-G11: Validate against the scene template, honouring agent waivers.
       const validation = validatePhasesAgainstSceneTemplate(normalizedPhases, waiverInputs);
       const { warnings: planWarnings, missingAspectIds } = validation;
@@ -5836,6 +6245,32 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
+      const expectedSkillRegistry = await bindSkillRuntimeRegistry();
+      const unavailableExpectedSkills = collectUnavailableExpectedSkillErrors(
+        normalizedUpdatedPhases,
+        expectedSkillRegistry,
+        new Set(registry.listForRequest(toolRequestScope).map(toolDefinition => toolDefinition.name)),
+      );
+      if (unavailableExpectedSkills.length > 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(
+                outputLanguage,
+                'revise_plan 只能声明当前会话可用的 MCP 工具，以及已注册且可执行的分析 Skill。',
+                'revise_plan can only declare MCP tools available in this session and registered executable analysis Skills.',
+              ),
+              unavailableExpectedSkills,
+              action_required: 'revise_plan',
+              hint: 'Use a tool exposed in this session; for invoke_skill/compare_skill, call list_skills and choose a registered analysis Skill.',
+            }),
+          }],
+          isError: true,
+        };
+      }
+
       const plan = analysisPlanRef.current;
       if (!plan) {
         return {
@@ -6137,8 +6572,29 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       reasoning: z.string().optional().describe('Alias for basis, accepted for Claude SDK argument compatibility.'),
     },
     async ({ id, statement, title, basis, reasoning }) => {
-      const effectiveStatement = (statement ?? title)?.trim();
-      const effectiveBasis = (basis ?? reasoning)?.trim();
+      const normalizedStatement = statement?.trim();
+      const normalizedTitle = title?.trim();
+      const normalizedBasis = basis?.trim();
+      const normalizedReasoning = reasoning?.trim();
+      if (
+        (normalizedStatement && normalizedTitle && normalizedStatement !== normalizedTitle)
+        || (normalizedBasis && normalizedReasoning && normalizedBasis !== normalizedReasoning)
+      ) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: 'submit_hypothesis aliases must contain matching values',
+              action_required: 'retry_submit_hypothesis_with_matching_aliases',
+            }),
+          }],
+          isError: true,
+        };
+      }
+
+      const effectiveStatement = normalizedStatement || normalizedTitle;
+      const effectiveBasis = normalizedBasis || normalizedReasoning;
       if (!effectiveStatement) {
         return {
           content: [{
@@ -6155,9 +6611,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const requestedId = id?.trim();
       const existing = requestedId ? hypothesesRef.find(h => h.id === requestedId) : undefined;
       if (existing) {
-        if (existing.status === 'formed') {
-          existing.statement = effectiveStatement;
-          existing.basis = effectiveBasis;
+        if (existing.statement !== effectiveStatement) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                success: false,
+                error: `Hypothesis "${existing.id}" is already bound to a different immutable statement`,
+                hypothesisId: existing.id,
+                statement: existing.statement,
+                action_required: 'submit_new_hypothesis_id_for_replacement_statement',
+              }),
+            }],
+            isError: true,
+          };
         }
         return {
           content: [{
@@ -6165,6 +6632,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             text: JSON.stringify({
               success: true,
               hypothesisId: existing.id,
+              statement: existing.statement,
+              status: existing.status,
               reused: true,
             }),
           }],
@@ -6191,6 +6660,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             text: JSON.stringify({
               success: true,
               hypothesisId,
+              statement: hypothesis.statement,
             }),
           }],
         };
@@ -6199,23 +6669,43 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const resolveHypothesis = hypothesesRef ? tool(
     'resolve_hypothesis',
-    'Resolve a previously submitted hypothesis as confirmed or rejected. ' +
-    'Provide the evidence that supports your conclusion. ' +
-    'All hypotheses MUST be resolved before writing your final conclusion.',
+    'Resolve a submitted hypothesis\'s exact immutable statement. ' +
+    'confirmed supports that same causal claim; rejected contradicts or replaces it. ' +
+    'For a different cause, reject the original, then submit a new hypothesis. ' +
+    'Resolve all before the final conclusion.',
     {
       hypothesisId: z.string().optional().describe('Hypothesis ID to resolve (e.g., "h1"). Alias: id.'),
       id: z.string().optional().describe('Alias for hypothesisId, accepted for Claude SDK argument compatibility.'),
       status: z.enum(['confirmed', 'rejected']).optional().describe(
-        'Resolution: confirmed (evidence supports) or rejected (evidence contradicts). Alias: verdict.'
+        'Resolution of the original immutable statement: confirmed only if evidence supports it; rejected if evidence contradicts or replaces it. Alias: verdict.'
       ),
       verdict: z.enum(['confirmed', 'rejected']).optional().describe('Alias for status, accepted for Claude SDK argument compatibility.'),
       evidence: z.string().describe(
-        'The evidence supporting this resolution (specific data, timestamps, tool results)'
+        'Specific data, timestamps, or tool results showing why the original immutable statement is supported or contradicted.'
       ),
     },
     async ({ hypothesisId, id, status, verdict, evidence }) => {
-      const effectiveHypothesisId = (hypothesisId ?? id)?.trim();
-      const effectiveStatus = status ?? verdict;
+      const normalizedHypothesisId = hypothesisId?.trim();
+      const normalizedId = id?.trim();
+      if (
+        (normalizedHypothesisId && normalizedId && normalizedHypothesisId !== normalizedId)
+        || (status && verdict && status !== verdict)
+      ) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: 'resolve_hypothesis aliases must contain matching values',
+              action_required: 'retry_resolve_hypothesis_with_matching_aliases',
+            }),
+          }],
+          isError: true,
+        };
+      }
+
+      const effectiveHypothesisId = normalizedHypothesisId || normalizedId;
+      const effectiveStatus = status || verdict;
       if (!effectiveHypothesisId || !effectiveStatus) {
         return {
           content: [{
@@ -6230,38 +6720,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
       const hypothesis = hypothesesRef.find(h => h.id === effectiveHypothesisId);
       if (!hypothesis) {
-        const now = Date.now();
-        const backfilled: Hypothesis = {
-          id: effectiveHypothesisId,
-          statement: `Backfilled hypothesis ${effectiveHypothesisId}`,
-          status: effectiveStatus,
-          basis: 'resolve_hypothesis was called before submit_hypothesis; preserving the resolution evidence instead of failing the run.',
-          evidence,
-          formedAt: now,
-          resolvedAt: now,
-        };
-        hypothesesRef.push(backfilled);
-        const numericId = /^h(\d+)$/i.exec(effectiveHypothesisId);
-        if (numericId) {
-          hypothesisCounter = Math.max(hypothesisCounter, Number(numericId[1]));
-        }
-        const unresolvedCount = hypothesesRef.filter(h => h.status === 'formed').length;
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({
-              success: true,
+              success: false,
+              error: `Hypothesis "${effectiveHypothesisId}" was not submitted`,
               hypothesisId: effectiveHypothesisId,
-              status: effectiveStatus,
-              backfilled: true,
-              unresolvedCount,
+              action_required: 'submit_hypothesis_before_resolving',
             }),
           }],
+          isError: true,
         };
       }
       if (hypothesis.status !== 'formed') {
         return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ success: false, error: `Hypothesis "${effectiveHypothesisId}" already resolved as ${hypothesis.status}` }) }],
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            success: false,
+            error: `Hypothesis "${effectiveHypothesisId}" already resolved as ${hypothesis.status}`,
+            hypothesisId: effectiveHypothesisId,
+            statement: hypothesis.statement,
+            status: hypothesis.status,
+          }) }],
           isError: true,
         };
       }
@@ -6277,6 +6757,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           text: JSON.stringify({
             success: true,
             hypothesisId: effectiveHypothesisId,
+            statement: hypothesis.statement,
             status: effectiveStatus,
             unresolvedCount,
           }),
@@ -6674,6 +7155,27 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return { content: [{ type: 'text' as const, text: planError }] };
       }
       try {
+        const comparisonRegistry = await bindSkillRuntimeRegistry();
+        const comparisonSkillDef = comparisonRegistry.getSkill(skillId);
+        if (!comparisonSkillDef) return unavailableSkillResult(skillId, {comparison: true});
+        if (
+          comparisonSkillDef.type === 'pipeline_definition'
+          || comparisonSkillDef.type === 'comparison'
+        ) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                success: false,
+                partial: false,
+                skillId,
+                error: `Skill "${skillId}" is metadata-only and cannot be executed on either trace.`,
+                action_required: 'list_skills',
+              }),
+            }],
+            isError: true,
+          };
+        }
         const currentSideParams = currentParams ?? current_params;
         const referenceSideParams = referenceParams ?? reference_params;
         const referenceSharedParams = referenceSharedParamsForComparison(
@@ -6681,19 +7183,88 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           packageName,
           comparisonContext?.referencePackageName,
         );
-        const effectiveParams = normalizeSkillParams(
+        const normalizedCurrentParams = normalizeSkillParams(
           { ...(params ?? {}), ...(currentSideParams ?? {}) },
           packageName,
         );
-        const refParams = normalizeSkillParams(
+        const normalizedReferenceParams = normalizeSkillParams(
           { ...referenceSharedParams.params, ...(referenceSideParams ?? {}) },
           comparisonContext?.referencePackageName,
         );
+        const [currentParamResolution, referenceParamResolution] = await Promise.allSettled([
+          resolveRegisteredDrillDownSkillParams({
+            skillId,
+            params: normalizedCurrentParams,
+            traceId,
+            traceProcessorService,
+            signal,
+          }),
+          resolveRegisteredDrillDownSkillParams({
+            skillId,
+            params: normalizedReferenceParams,
+            traceId: referenceTraceId,
+            traceProcessorService,
+            signal,
+          }),
+        ]);
+        if (currentParamResolution.status === 'rejected') {
+          rethrowIfTraceProcessorQueryCancelled(currentParamResolution.reason);
+        }
+        if (referenceParamResolution.status === 'rejected') {
+          rethrowIfTraceProcessorQueryCancelled(referenceParamResolution.reason);
+        }
+        if (
+          currentParamResolution.status === 'rejected'
+          || referenceParamResolution.status === 'rejected'
+        ) {
+          const resolutionFailedSides = [
+            ...(currentParamResolution.status === 'rejected' ? ['current' as const] : []),
+            ...(referenceParamResolution.status === 'rejected' ? ['reference' as const] : []),
+          ];
+          const errorBySide = {
+            ...(currentParamResolution.status === 'rejected' ? {
+              current: currentParamResolution.reason instanceof Error
+                ? currentParamResolution.reason.message
+                : String(currentParamResolution.reason),
+            } : {}),
+            ...(referenceParamResolution.status === 'rejected' ? {
+              reference: referenceParamResolution.reason instanceof Error
+                ? referenceParamResolution.reason.message
+                : String(referenceParamResolution.reason),
+            } : {}),
+          };
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                success: false,
+                partial: false,
+                failedSides: resolutionFailedSides,
+                error: 'Dual-trace drill-down parameter resolution failed before skill execution.',
+                sideErrors: errorBySide,
+                action_required: 'retry_compare_skill_with_valid_side_params',
+              }),
+            }],
+            isError: true,
+          };
+        }
+        const effectiveParams = currentParamResolution.value.params;
+        const refParams = referenceParamResolution.value.params;
         const producerInput = {
           skillId,
-          params,
-          currentParams: currentSideParams,
-          referenceParams: referenceSideParams,
+          currentEffectiveParams: effectiveParams,
+          referenceEffectiveParams: refParams,
+          ...(currentParamResolution.value.audit ? {
+            currentDrillDownResolution: currentParamResolution.value.audit,
+          } : {}),
+          ...(referenceParamResolution.value.audit ? {
+            referenceDrillDownResolution: referenceParamResolution.value.audit,
+          } : {}),
+          parameterMapping: {
+            referenceIdentityRemapped: referenceSharedParams.identityRemapped,
+            currentOverrideKeys: Object.keys(currentSideParams ?? {}),
+            referenceOverrideKeys: Object.keys(referenceSideParams ?? {}),
+          },
         };
         const baseProducer = createEvidenceProducerContext(
           'compare_skill',
@@ -6756,7 +7327,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const refResult = referenceSettled.status === 'fulfilled'
           ? referenceSettled.value
           : rejectedResult(referenceSettled.reason);
-        const comparisonRegistry = await bindSkillRuntimeRegistry();
         const comparisonExternalAuthored =
           comparisonRegistry.getSkillOrigin(skillId)?.origin ===
           'external_pack';
@@ -6871,6 +7441,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             traceId,
             traceProvenance: currentTraceProvenance,
             effectiveParams,
+            drillDownResolution: currentParamResolution.value.audit,
             success: currentResult.success,
             stepCount: localizedCurrentDisplayResults.length,
             steps: buildStepSummary(localizedCurrentDisplayResults),
@@ -6884,6 +7455,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             traceId: referenceTraceId,
             traceProvenance: referenceTraceProvenance,
             effectiveParams: refParams,
+            drillDownResolution: referenceParamResolution.value.audit,
             success: refResult.success,
             stepCount: localizedReferenceDisplayResults.length,
             steps: buildStepSummary(localizedReferenceDisplayResults),
@@ -6987,10 +7559,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     // disabled because analysisPlan is not passed in lightweight mode.
     // `invoke_skill` returns artifact references, so `fetch_artifact` must
     // stay available or lightweight models try to query artifact IDs as SQL.
-    registry.registerSdk(executeSql, 'execute_sql', 'public');
-    registry.registerSdk(invokeSkill, 'invoke_skill', 'public');
-    registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public');
-    if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public');
+    const isConversation = options.conversationTraceAttached !== undefined;
+    if (!isConversation || options.conversationTraceAttached) {
+      registry.registerSdk(executeSql, 'execute_sql', 'public');
+      registry.registerSdk(invokeSkill, 'invoke_skill', 'public');
+      registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public');
+      if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public');
+    }
+    if (isConversation) {
+      if (knowledgeSourceIds.length > 0) {
+        registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public');
+      }
+      registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission');
+      registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission');
+      registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission');
+      registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission');
+      registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission');
+      registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission');
+      registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission');
+      registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission');
+    }
   } else {
     // Full mode: all always-on tools + conditional tools.
     registry.registerSdk(executeSql, 'execute_sql', 'public');
@@ -7007,6 +7595,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission');
     registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission');
     registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission');
+    registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission');
+    registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission');
     registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission');
     registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission');
     registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission');

@@ -57,7 +57,10 @@ import { sessionContextManager, EnhancedSessionContext } from '../agent/context/
 import { registerCoreTools, StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
 import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
-import { resolveConclusionScene } from '../agent/core/conclusionSceneTemplates';
+import {
+  deriveConclusionSceneAspectsFromSkillIds,
+  resolveConclusionScene,
+} from '../agent/core/conclusionSceneTemplates';
 import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { diagnosticLogIdentity } from '../utils/logger';
@@ -185,13 +188,7 @@ import {
   resolveKnowledgeScope,
   type KnowledgeScope,
 } from '../services/scopedKnowledgeStore';
-import { getDefaultCodebaseRegistry } from '../services/codebase/defaultCodebaseServices';
-import {codebaseRootAvailable} from '../services/codebase/codebaseRegistry';
-import {codeAwareFeatureEnabled} from '../services/codebase/codeAwareFeature';
-import {
-  externalKnowledgeSourceHasActiveIndex,
-  getDefaultExternalKnowledgeSourceRegistry,
-} from '../services/externalKnowledgeSourceRegistry';
+import {authorizeAnalysisContext} from '../services/analysisContextAuthorization';
 import {
   registerPrivateAnalysisQueryForEcho,
   revokeCodeAwareOutputGuards,
@@ -215,6 +212,10 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
 } from '../services/resolvedAnalysisContext';
 import {buildSmartDeepDiveAnalysisContext} from '../services/effectiveAnalysisMode';
+import {
+  cleanupIdleAgentConversationSessions,
+  registerAgentConversationRoutes,
+} from './agentConversationRoutes';
 import type { CaseCandidateCaptureInput, CaseEvolutionConfig } from '../types/caseEvolution';
 import type { CaseEvolutionEngine } from '../types/caseEvolution';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
@@ -1397,7 +1398,12 @@ function sanitizePersistedAnalysisCompletedEvent(
     uiActionProposals: data?.uiActionProposals,
   };
 
-  const issue = applyFinalResultQualityGate({ result, query: session.query });
+  const issue = applyFinalResultQualityGate({
+    result,
+    query: session.query,
+    sceneType: result.conclusionContract?.metadata?.sceneId ??
+      resolveAnalysisResultSceneType(session.query, session.dataEnvelopes),
+  });
   if (!issue && !privateKnowledge) return event;
   const outputLanguage = sessionOutputLanguage(session);
   const trustedPrivateProjection = privateKnowledge &&
@@ -1886,7 +1892,11 @@ function buildDisplayTurnResult(turn: ConversationTurn): ConversationTurn['resul
     claimVerificationResult: turn.result.claimVerificationResult,
     identityResolutions: turn.result.identityResolutions,
   };
-  applyFinalResultQualityGate({ result: resultForGate, query: turn.query });
+  applyFinalResultQualityGate({
+    result: resultForGate,
+    query: turn.query,
+    sceneType: resultForGate.conclusionContract?.metadata?.sceneId,
+  });
   return {
     ...turn.result,
     message: resultForGate.conclusion,
@@ -2035,6 +2045,8 @@ function annotateRecoveredResultQuality(
   const issue = applyFinalResultQualityGate({
     result,
     query: query || session.query,
+    sceneType: result.conclusionContract?.metadata?.sceneId ??
+      resolveAnalysisResultSceneType(session.query, session.dataEnvelopes),
   });
   if (!issue) return;
 
@@ -2096,11 +2108,12 @@ function buildFallbackIntentFromQuery(query?: string): Intent | null {
   };
 }
 
-function resolveConclusionSceneIdHint(params: {
+export function resolveConclusionSceneIdHint(params: {
   sessionId: string;
   query?: string;
   findings?: Finding[];
   intent?: Intent;
+  dataEnvelopes?: DataEnvelope[];
 }): string | undefined {
   const findings = Array.isArray(params.findings) ? params.findings : [];
   let intent = params.intent;
@@ -2119,9 +2132,16 @@ function resolveConclusionSceneIdHint(params: {
 
   if (!intent) return undefined;
 
+  const evidenceAspects = deriveConclusionSceneAspectsFromSkillIds(
+    (params.dataEnvelopes || []).map(envelope => envelope.meta?.skillId),
+  );
+  const routedIntent = evidenceAspects.length > 0
+    ? {...intent, aspects: evidenceAspects}
+    : intent;
+
   try {
     return resolveConclusionScene({
-      intent,
+      intent: routedIntent,
       findings,
       deepReasonLabel: DEEP_REASON_LABEL,
     }).selectedTemplate.id;
@@ -2387,105 +2407,16 @@ async function handleAnalyzeRequest(
     }
     const requestOutputLanguage = options.outputLanguage ?? configuredOutputLanguage();
 
-    if (options.codebaseIds?.length && !codeAwareFeatureEnabled()) {
-      res.status(409).json({
-        success: false,
-        code: 'FEATURE_DISABLED',
-        error: localize(
-          requestOutputLanguage,
-          '此后端已禁用注册源码分析',
-          'Registered source analysis is disabled on this backend',
-        ),
-      });
+    const analysisContextAuthorization = authorizeAnalysisContext({
+      selection: options,
+      scope: knowledgeScopeFromRequestContext(requestContext),
+      outputLanguage: requestOutputLanguage,
+      canReadRegisteredContext: hasRbacPermission(requestContext, 'codebase:read'),
+    });
+    if (!analysisContextAuthorization.allowed) {
+      res.status(analysisContextAuthorization.httpStatus)
+        .json(analysisContextAuthorization.payload);
       return;
-    }
-    if (options.codebaseIds?.length || options.knowledgeSourceIds?.length) {
-      if (!hasRbacPermission(requestContext, 'codebase:read')) {
-        sendForbidden(res, localize(
-          requestOutputLanguage,
-          '使用已注册分析上下文需要 codebase:read 权限',
-          'Using registered analysis context requires codebase:read permission',
-        ));
-        return;
-      }
-    }
-    if (options.codebaseIds?.length) {
-      const codebaseScope = knowledgeScopeFromRequestContext(requestContext);
-      const codebaseRegistry = getDefaultCodebaseRegistry();
-      const codebases = options.codebaseIds.map(codebaseId =>
-        codebaseRegistry.get(codebaseId, codebaseScope));
-      if (codebases.some(codebase => !codebase)) {
-        sendResourceNotFound(
-          res,
-          localize(
-            requestOutputLanguage,
-            '未找到一个或多个所选源码库',
-            'One or more selected codebases were not found',
-          ),
-          'ANALYSIS_CONTEXT_CODEBASE_NOT_FOUND',
-        );
-        return;
-      }
-      if (codebases.some(codebase => !codebase || !codebaseRootAvailable(codebase))) {
-        res.status(409).json({
-          success: false,
-          code: 'ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE',
-          error: localize(
-            requestOutputLanguage,
-            '一个或多个所选源码库的已注册根目录当前不可用',
-            'One or more selected codebases have a registered root that is unavailable',
-          ),
-        });
-        return;
-      }
-      if (
-        options.codeAwareMode === 'provider_send' &&
-        codebases.some(codebase => !codebase?.consent.sendToProvider)
-      ) {
-        res.status(409).json({
-          success: false,
-          code: 'ANALYSIS_CONTEXT_CODEBASE_NOT_CONSENTED',
-          error: localize(
-            requestOutputLanguage,
-            '完整源码分析要求每个所选源码库都明确授权发送给模型服务',
-            'Full source analysis requires explicit provider-send consent for every selected codebase',
-          ),
-        });
-        return;
-      }
-    }
-    if (options.knowledgeSourceIds?.length) {
-      const knowledgeScope = knowledgeScopeFromRequestContext(requestContext);
-      const knowledgeRegistry = getDefaultExternalKnowledgeSourceRegistry();
-      const sources = options.knowledgeSourceIds.map(sourceId =>
-        knowledgeRegistry.get(sourceId, knowledgeScope));
-      if (sources.some(source => !source)) {
-        sendResourceNotFound(
-          res,
-          localize(
-            requestOutputLanguage,
-            '未找到一个或多个所选知识源',
-            'One or more selected knowledge sources were not found',
-          ),
-          'ANALYSIS_CONTEXT_SOURCE_NOT_FOUND',
-        );
-        return;
-      }
-      if (sources.some(source =>
-        !source?.rightsAcknowledged ||
-        !source.sendToProvider ||
-        !externalKnowledgeSourceHasActiveIndex(source))) {
-        res.status(409).json({
-          success: false,
-          code: 'ANALYSIS_CONTEXT_SOURCE_UNAVAILABLE',
-          error: localize(
-            requestOutputLanguage,
-            '一个或多个知识源未激活，或尚未授权给模型服务使用',
-            'One or more knowledge sources are inactive or not consented for provider use',
-          ),
-        });
-        return;
-      }
     }
 
     if (requestedSessionId && !requestedSessionIsVisible(requestedSessionId, requestContext)) {
@@ -3142,6 +3073,8 @@ async function handleAnalyzeRequest(
   }
 }
 
+registerAgentConversationRoutes(router);
+
 router.post('/analyze', async (req, res) => {
   await handleAnalyzeRequest(req, res);
 });
@@ -3411,6 +3344,7 @@ router.get('/:sessionId/status', (req, res) => {
         sessionId,
         query: session.query,
         findings: recoveredResult.findings,
+        dataEnvelopes: session.dataEnvelopes,
       });
       const conclusionContract =
         deriveEvidenceBackedConclusionContractForNarrative(recoveredResult.conclusion, session.dataEnvelopes || [], {
@@ -4676,6 +4610,7 @@ function completeAgentDrivenSessionWithResult(input: {
   sessionId: string;
   query: string;
   traceId: string;
+  sceneType?: string;
   session: AnalysisSession;
   result: AgentRuntimeAnalysisResult;
   runId?: string;
@@ -5832,15 +5767,17 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     }
 
     if (runIsInactive()) return;
+    let sceneIdHint: string | undefined;
     if (result.success || result.partial === true) {
       // Read the case-evolution config ONCE per request so the attach-flag
       // and capture-flag decisions see the same snapshot (MINOR-2). Both the
       // retriever-attach gate below and the capture call below consume this.
       const caseEvolutionConfig = loadCaseEvolutionConfig();
-      const sceneIdHint = resolveConclusionSceneIdHint({
+      sceneIdHint = resolveConclusionSceneIdHint({
         sessionId,
         query,
         findings: result.findings,
+        dataEnvelopes: session.dataEnvelopes,
       });
       let normalizedConclusionContract = (deriveEvidenceBackedConclusionContractForNarrative(
         result.conclusion,
@@ -5903,6 +5840,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       sessionId,
       query,
       traceId,
+      sceneType: sceneIdHint,
       session,
       result,
       runId: runIdForAnalysis,
@@ -8343,6 +8281,7 @@ function ensureCompletedAnalysisResultPayload(
         sessionId: session.sessionId,
         query: session.query,
         findings: result.findings,
+        dataEnvelopes: session.dataEnvelopes,
       });
   const normalizedConclusionContract = replayOnlyScene
     ? undefined
@@ -8374,6 +8313,7 @@ function ensureCompletedAnalysisResultPayload(
     const readPathQualityIssue = applyFinalResultQualityGate({
       result,
       query: session.query,
+      sceneType: sceneIdHint ?? result.conclusionContract?.metadata?.sceneId,
     });
     if (readPathQualityIssue) {
       sessionContextManager.get(session.sessionId, session.traceId)?.annotateLatestCompletedTurn({
@@ -8767,6 +8707,7 @@ registerAgentLogsRoutes(router);
 
 // Cleanup old sessions on a configurable cadence.
 const sessionCleanupInterval = setInterval(() => {
+  cleanupIdleAgentConversationSessions();
   assistantAppService.cleanupIdleSessions({
     terminalMaxIdleMs: TERMINAL_SESSION_MAX_IDLE_MS,
     nonTerminalMaxIdleMs: NON_TERMINAL_SESSION_MAX_IDLE_MS,

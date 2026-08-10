@@ -27,7 +27,7 @@ import type { AnalyzeManagedSession } from '../assistant/application/agentAnalyz
 import { SessionPersistenceService } from './sessionPersistenceService';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import { getDefaultCodebaseRegistry } from './codebase/defaultCodebaseServices';
-import {activeCodebaseGeneration} from './codebase/codebaseRegistry';
+import {activeCodebaseGeneration, isCodebaseKind} from './codebase/codebaseRegistry';
 import { CodeLookupLedger } from './codebase/codeLookupLedger';
 import type { DataEnvelope } from '../types/dataContract';
 import type { SqlResultMessageBundle, SqlResultMessageEntry } from '../models/sessionSchema';
@@ -50,6 +50,16 @@ const MAX_SQL_RESULTS_PER_MESSAGE = 5;
 const MAX_SQL_RESULT_ENTRY_BYTES = 100 * 1024;
 const MAX_TRUNCATED_CELL_CHARS = 2048;
 const MAX_TRUNCATED_SQL_CHARS = 4096;
+const MAX_SAFE_CODEBASE_DISPLAY_NAME = 120;
+
+function safeCodebaseDisplayName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, ' ');
+  if (!trimmed || trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('://')) {
+    return undefined;
+  }
+  return trimmed.slice(0, MAX_SAFE_CODEBASE_DISPLAY_NAME);
+}
 
 type PersistableSqlEnvelope = DataEnvelope & {
   sql?: string;
@@ -70,6 +80,10 @@ function buildCodebaseSnapshot(
     .filter(Boolean)
     .map(ref => ({
       codebaseId: ref!.codebaseId,
+      ...(safeCodebaseDisplayName(ref!.displayName)
+        ? {displayName: safeCodebaseDisplayName(ref!.displayName)}
+        : {}),
+      ...(isCodebaseKind(ref!.kind) ? {kind: ref!.kind} : {}),
       indexGeneration: ref!.indexGeneration,
       activeGeneration: activeCodebaseGeneration(ref!),
       contentFingerprint: ref!.contentFingerprint,

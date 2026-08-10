@@ -45,6 +45,28 @@ describe('resolveRuntimeQuickMode', () => {
     });
   });
 
+  it('keeps conversation turns model-driven and defers all evidence lookup until requested', () => {
+    const resolution = resolveRuntimeQuickMode({
+      query: 'ok thanks, what should we discuss next?',
+      sceneType: 'general',
+      analysisMode: 'fast',
+      conversationSurface: true,
+      hasReferenceTrace: false,
+      previousTurns: [],
+    });
+
+    expect(resolution).toMatchObject({
+      quickMode: true,
+      quickAcknowledgementDirectAnswer: false,
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+      skipFocusDetection: true,
+      skipTracePreflightDetection: true,
+    });
+  });
+
   it('does not treat mixed acknowledgement plus fact requests as acknowledgement direct answers', () => {
     const resolution = resolveRuntimeQuickMode({
       query: 'ok, what is the jank rate?',

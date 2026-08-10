@@ -124,7 +124,7 @@ commit 的祖先，包、证据和远端 target 仍全部绑定该 release SHA�
 是只读的：脚本只验证完整三平台集合，完全一致时幂等退出，不会 clobber、编辑或
 替换任何 asset。没有刚构建过同版本同 commit 包时，不要使用 `--skip-build`。
 
-仅发布某个平台：
+仅构建/上传某个平台的 draft 候选（不能单独 promotion）：
 
 ```bash
 npm run release:portable -- <version> --targets macos-arm64
@@ -161,7 +161,11 @@ profile 后会通过 `xcrun notarytool submit --wait` 提交，并对 `.app` sta
 
 ## 用户数据目录
 
-- Windows：`%LOCALAPPDATA%\SmartPerfetto` 下的 `data/` 和 `logs/`。
+Windows 用户操作以 [Windows 配置与运行指南](../getting-started/windows.md) 为准；
+本节只定义打包与运维路径契约。
+
+- Windows：`%LOCALAPPDATA%\SmartPerfetto` 是 data root，直接包含 `backend/`、
+  `providers/`、`uploads/`、`user/`、`logs/` 和 `env`，没有额外的 `data/` 层。
 - macOS：`~/Library/Application Support/SmartPerfetto` 和 `~/Library/Logs/SmartPerfetto`。
 - Linux：`${XDG_DATA_HOME:-~/.local/share}/smartperfetto` 和
   `${XDG_STATE_HOME:-~/.local/state}/smartperfetto/logs`。
@@ -175,12 +179,18 @@ package-local `data/` 到 `%LOCALAPPDATA%\SmartPerfetto`，写入迁移回执后
 发现时使用：
 
 ```powershell
-SmartPerfetto.exe --migrate-from C:\path\to\old-package
+SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 ```
 
+显式迁移应在第一次标准启动、目标目录不存在时运行。目标已存在时命令会报错，
+不会合并或覆盖，来源和目标均保留。自动 sibling 发现只选择严格低于当前包版本的
+最高版本；无法解析当前包版本时保守跳过。
+
 需要真正随包移动的数据时，显式设置 `SMARTPERFETTO_PORTABLE_MODE=1`；该模式继续
-使用包内 `data/` / `logs/` 并禁用自动迁移。显式
-`SMARTPERFETTO_BACKEND_DATA_DIR` 同样优先于默认目录并禁用自动迁移。
+使用包内 `data/` / `logs/` 并禁用自动和显式迁移。需要测试或运维覆盖整个 portable
+data root 时使用 `SMARTPERFETTO_PORTABLE_DATA_DIR`；它同样禁用迁移。Launcher 会从
+该 root 派生 backend、Provider、uploads 和 user 路径；不要用
+`SMARTPERFETTO_BACKEND_DATA_DIR` 代替 portable root。
 
 ## 验证
 
@@ -216,6 +226,9 @@ clean commit 重新 build once 并 smoke。
 端口释放；Windows 必须建立 kill-on-close Job Object，macOS/Linux 服务使用独立
 进程组。失败时保留 launcher/backend/frontend 日志。它会拒绝在与 `--target`
 不匹配的宿主上运行。
+Windows smoke 还会实际加载 `better-sqlite3` 与 `sodium-native`，运行本地 Provider
+Create/Activate/Get/Cleanup 生命周期，并用包内后端代码验证 DPAPI SecretStore 的
+put/get/reopen；这些是默认 Provider 路径与 enterprise SecretStore 的两条独立证据。
 `--public-release` 生成公开发布证据，并在 macOS 上额外验证 Developer ID、Gatekeeper、
 notarization staple 与 `Accepted` notary receipt；仅验证草稿包时可以省略该参数。
 

@@ -2,6 +2,23 @@
 
 [English](troubleshooting.en.md) | [中文](troubleshooting.md)
 
+## Windows 免安装包
+
+Windows 用户先看完整的 [Windows 配置与运行指南](../getting-started/windows.md)。
+不要从本页照抄 Unix 命令：在解压目录用 PowerShell 运行
+`.\SmartPerfetto.exe`，并始终使用窗口打印的实际 `Open:` 地址。
+
+查看日志：
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\backend.log" -Tail 200
+Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\frontend.log" -Tail 200
+```
+
+当前 Windows 包未做 Authenticode 签名；SmartScreen/Defender 拦截时先核对官方
+Release 和 SHA256，不要关闭 Defender。Provider 保存后还必须测试并激活。显式迁移
+提示目标已存在是防覆盖行为，先备份，不要直接删除数据目录。
+
 ## AI backend not connected
 
 检查后端是否运行：

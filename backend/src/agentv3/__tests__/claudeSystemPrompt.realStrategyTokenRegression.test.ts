@@ -270,6 +270,13 @@ describe('system prompt token regression with real strategy files', () => {
     expect(parts.fullPrompt).toContain('启动类型与 TTID/TTFD');
   });
 
+  it('renders the immutable hypothesis resolution contract into the real system prompt', () => {
+    const prompt = buildSystemPromptParts(makeWorstCaseContext('scrolling')).fullPrompt;
+
+    expect(prompt).toContain('原始且不可变的假设命题');
+    expect(prompt).toContain('先 rejected 原命题，再 submit_hypothesis');
+  });
+
   it('keeps report contract when scene core is forcibly truncated under an artificial budget', () => {
     const parts = buildSystemPromptParts(
       makeWorstCaseContext('startup'),

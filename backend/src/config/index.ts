@@ -421,7 +421,7 @@ export function resolveAgentRuntimeBudgetConfig(
 export interface AgentSessionConfig {
   /** Idle retention for completed/failed assistant sessions. */
   terminalMaxIdleMs: number;
-  /** Idle retention for abandoned pending/running sessions without SSE clients. */
+  /** Idle retention for abandoned pending/running/awaiting-user sessions without SSE clients. */
   nonTerminalMaxIdleMs: number;
   /** In-memory multi-turn context TTL. Keep this >= nonTerminalMaxIdleMs unless intentionally pruning context. */
   contextMaxAgeMs: number;

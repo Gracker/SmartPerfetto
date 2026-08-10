@@ -2,14 +2,14 @@
 
 [English](code-aware-analysis.en.md) | [中文](code-aware-analysis.md)
 
-Code-Aware Analysis 让 SmartPerfetto 在分析 trace 时按需引用本机代码库，把调用栈、native frame 或 kernel symbol 映射到 `CodeRef`。注册路径后即可使用 `search_codebase` / `read_codebase_file`，不要求先建立索引。默认输出只展示 `referenceId` 或 `chunkId`、相对路径、行号和 symbol；源码正文不写入 session、报告或导出。
+Code-Aware Analysis 让 SmartPerfetto 在分析 trace 时按需引用本机代码库，把调用栈、native frame 或 kernel symbol 映射到 `CodeRef`。注册且仍可访问的路径会立即可选，并可直接使用 `search_codebase` / `read_codebase_file`；不要求先建立 SmartPerfetto 索引。默认输出只展示 `referenceId` 或 `chunkId`、相对路径、行号和 symbol；源码正文不写入 session、报告或导出。
 
 ## 启用方式
 
 1. 启动后端：`./start.sh`。
 2. 在 Perfetto UI 打开 AI Assistant settings，进入 `Codebases`。
 3. 添加代码库时优先点击“选择文件夹”，再运行 preview。显示名称可留空，默认使用文件夹名。
-4. 注册后即可选择并开始分析。`reindex` 是可选加速项，仍用于语义/符号检索和 patch 流程。
+4. 注册后即可选择并开始分析。SmartPerfetto 的 `reindex` 是可选加速项，仍用于语义/符号检索和 patch 流程；它与可选的外部代码图加速相互独立。
 5. 分析时使用 code-aware 模式，或在 CLI 传入 `--code-aware metadata_only|provider_send` 和 `--codebase-id <id>`。
 
 CLI 示例：
@@ -54,6 +54,18 @@ npm run cli:dev -- run --format json \
 
 这里的“完整分析 runtime”意味着即使显式请求 `--analysis-mode fast`，只要选择了源码、私有 RAG 或 reference trace，系统也会解析为 `full`，避免在轻量路径里静默丢失能力。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
 
+## 取证顺序与可选代码图
+
+默认分析顺序如下：
+
+1. 先用当前 trace、匹配的 Skill 和 Perfetto SQL 确认性能现象、时间范围、线程、slice 与 symbol。这些才是性能结论的主证据。
+2. 如果后端发现用户已经安装且当前可用的本地 GitNexus，AI 可以调用 `query_code_graph` / `inspect_code_symbol` 导航候选调用关系和 symbol。代码图只是可选定位加速，不是 trace 证据，也不是源码事实。
+3. 用无需索引的 `search_codebase` 缩小到相对文件与行号，并在当前 consent 允许时用有界的 `read_codebase_file` 核对实际源码。任何影响结论的图关系都必须完成这一步；若权限不允许读取，则保留 `verificationRequired`，不得把候选关系升级为已验证结论。
+
+`query_code_graph` 和 `inspect_code_symbol` 只返回元数据：`codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 与 `graph.verificationRequired`，不返回源码正文或绝对根目录。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，SmartPerfetto 会省略无法证明路径范围的全仓 process 摘要，仍保留已通过授权过滤的相对 `CodeRef`。GitNexus 未安装、不可用、版本不兼容、超时或调用失败时，图工具会返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；索引陈旧时只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都会继续使用现有 `search_codebase` / `read_codebase_file` 路径，注册、选择和 trace 分析不会因此失败。SmartPerfetto 不会安装、打包、再分发 GitNexus，也不会自动创建或刷新它的索引。
+
+GitNexus 是独立的第三方可选工具。其[官方项目](https://github.com/abhigyanpatwari/GitNexus)和 [npm 包](https://www.npmjs.com/package/gitnexus)目前声明使用 [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE)。启用前请自行审阅上游条款并确认你的使用方式符合许可，尤其是商业场景；这不是法律建议。
+
 ## 支持的代码库
 
 | kind | 用途 | 必要信息 |
@@ -78,7 +90,8 @@ reindex，不会扩大进程全局 allowlist。注册项的 list/audit 元数据
 
 - `metadata_only`：模型可按需搜索，但只看到相对路径、行号和 `referenceId`，不能读取源码正文。
 - `provider_send`：只有注册时同意 `sendToProvider` 的代码库才允许搜索和读取有界、脱敏后的片段。
-- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和 secret 脱敏约束；绝对 root 不进入工具结果。
+- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和 secret 脱敏约束；绝对 root 始终留在后端信任边界内，不进入工具结果、模型上下文、报告或导出。
+- 代码图结果始终是 metadata-only。报告、snapshot 和 CLI artifact 只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码或把图关系写成 trace 证据。
 - 系统文件夹选择器的变更请求必须同时具有 loopback Host、socket 与 Origin；只读能力探测可省略 Origin。选择器在 Docker、enterprise 或非 loopback 监听模式下关闭；目录绝对路径不会出现在 codebase list/detail 响应中。
 - 私有源码/知识分析的原始 query、中间推理、工具参数和检索正文不写入 session、日志、报告或导出；Claude 本地 transcript 与 OpenAI Responses 存储会关闭，也不会读写跨会话 pattern、verifier 或 SQL 修复学习。最终结论与确定性 trace 证据会经过统一隐私投影；多轮连续性仅由当前进程内的受限会话上下文提供。
 - 旧 RAG chunk 不受 code-aware 规则破坏；`app_source`、`kernel_source` 或 `registryOrigin=codebase_registry` 的 chunk 缺少 codebase metadata 时会 fail-closed。

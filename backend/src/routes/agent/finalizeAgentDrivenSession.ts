@@ -36,6 +36,7 @@ export interface FinalizeAgentDrivenSessionDeps<TSession extends FinalizeSession
   applyFinalResultQualityGate(input: {
     result: AgentRuntimeAnalysisResult;
     query: string;
+    sceneType?: string;
   }): { code: string; message: string } | null | undefined;
   isRunCurrent(session: TSession, runId?: string): boolean;
   broadcast(sessionId: string, update: StreamingUpdate, runId?: string): void;
@@ -73,12 +74,13 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
   sessionId: string;
   query: string;
   traceId: string;
+  sceneType?: string;
   session: TSession;
   result: AgentRuntimeAnalysisResult;
   runId?: string;
   logComponent: string;
 }, deps: FinalizeAgentDrivenSessionDeps<TSession>): void {
-  const { sessionId, query, traceId, session, result, runId } = input;
+  const { sessionId, query, traceId, sceneType, session, result, runId } = input;
   const { logger } = session;
   const completedRunId = getCompletedResultRunId(session, runId);
   if (!deps.isRunCurrent(session, runId)) {
@@ -98,7 +100,11 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
   delete session.completedAnalysisSseEvents;
   delete session.completedAnalysisSseEventsQualityGateVersion;
 
-  const finalQualityIssue = deps.applyFinalResultQualityGate({ result, query });
+  const finalQualityIssue = deps.applyFinalResultQualityGate({
+    result,
+    query,
+    sceneType: sceneType ?? result.conclusionContract?.metadata?.sceneId,
+  });
   if (finalQualityIssue) {
     const update: StreamingUpdate = {
       type: 'degraded',

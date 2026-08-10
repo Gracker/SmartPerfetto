@@ -40,7 +40,12 @@ import {
   DrillDownEntityType,
   DrillDownSkillConfig,
   getDrillDownSkillConfig,
+  isDrillDownEntityType,
 } from '../../config/drillDownRegistry';
+import {
+  normalizeDrillDownEntityId,
+  resolveDrillDownEntity,
+} from '../drillDownEntityResolver';
 
 // =============================================================================
 // Skill Mapping
@@ -289,41 +294,29 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
         // Build query params from interval metadata
         const entityId = interval.metadata.sourceEntityId;
         const entityType = interval.metadata.sourceEntityType;
-        const normalizedEntityId = this.normalizeLooseNumericId(entityId);
+        const normalizedEntityId = normalizeDrillDownEntityId(entityId);
 
-        if ((entityType === 'frame' || entityType === 'session' || entityType === 'startup') && !normalizedEntityId) {
+        if (!isDrillDownEntityType(entityType) || !normalizedEntityId) {
           emitter.log(`[DrillDown] Skip enrichment for ${interval.label}: invalid entity id (${String(entityId)})`);
           enrichedIntervals.push(interval);
           continue;
         }
 
-        let rowObj: Record<string, any> | null = null;
-        if (entityType === 'frame') {
-          const query = skillConfig.enrichmentQuery.replace('$frame_id', String(normalizedEntityId));
-          rowObj = await this.queryFirstRow(traceProcessorService, traceId, query);
-          if (!rowObj && normalizedEntityId) {
-            rowObj = await this.tryResolveFrameIntervalWithFallbacks(
-              traceProcessorService,
-              traceId,
-              normalizedEntityId,
-              emitter,
-              interval.label || `帧 ${normalizedEntityId}`
-            );
-          }
-        } else if (entityType === 'session') {
-          const query = skillConfig.enrichmentQuery.replace('$session_id', String(normalizedEntityId));
-          rowObj = await this.queryFirstRow(traceProcessorService, traceId, query);
-        } else if (entityType === 'startup') {
-          const query = skillConfig.enrichmentQuery.replace('$startup_id', String(normalizedEntityId));
-          rowObj = await this.queryFirstRow(traceProcessorService, traceId, query);
-        }
+        const resolution = await resolveDrillDownEntity({
+          entityType,
+          entityId: normalizedEntityId,
+          traceId,
+          traceProcessorService,
+          processName: interval.processName,
+        });
+        const rowObj = resolution?.row;
 
         if (rowObj) {
-          const resolvedFrameId = this.normalizeLooseNumericId(rowObj.frame_id);
-          const originalFrameId = this.normalizeLooseNumericId(entityId);
+          const resolvedFrameId = normalizeDrillDownEntityId(rowObj.frame_id);
+          const originalFrameId = normalizeDrillDownEntityId(entityId);
           const resolvedFromAlias =
             entityType === 'frame' &&
-            rowObj.resolve_source === 'doframe_alias' &&
+            resolution?.resolveSource === 'doframe_alias' &&
             resolvedFrameId !== null &&
             originalFrameId !== null &&
             resolvedFrameId !== originalFrameId;
@@ -341,7 +334,9 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
             ...interval,
             startTs: String(rowObj.start_ts || interval.startTs),
             endTs: String(rowObj.end_ts || interval.endTs),
-            processName: rowObj.process_name || interval.processName,
+            processName: rowObj.process_name != null
+              ? String(rowObj.process_name)
+              : interval.processName,
             label: enrichedLabel,
             metadata: {
               ...interval.metadata,
@@ -353,7 +348,9 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
                 original_frame_id: originalFrameId,
                 resolvedFrom: 'doframe_alias',
               }),
-              ...(rowObj.resolve_source && { resolveSource: rowObj.resolve_source }),
+              ...(resolution?.resolveSource && resolution.resolveSource !== 'registry' && {
+                resolveSource: resolution.resolveSource,
+              }),
               // Add any additional enriched fields
               ...(rowObj.jank_type !== undefined && rowObj.jank_type !== null && {
                 jankType: rowObj.jank_type,
@@ -405,160 +402,6 @@ export class DirectDrillDownExecutor implements AnalysisExecutor {
     }
 
     return enrichedIntervals;
-  }
-
-  private async queryFirstRow(
-    traceProcessorService: any,
-    traceId: string,
-    sql: string
-  ): Promise<Record<string, any> | null> {
-    const result = await this.executeTraceQuery(traceProcessorService, traceId, sql);
-    return this.toRowObject(result);
-  }
-
-  private async tryResolveFrameIntervalWithFallbacks(
-    traceProcessorService: any,
-    traceId: string,
-    frameId: string,
-    emitter: ProgressEmitter,
-    scopeLabel: string
-  ): Promise<Record<string, any> | null> {
-    const legacyRow = await this.queryFirstRow(
-      traceProcessorService,
-      traceId,
-      this.buildLegacyFrameEnrichmentQuery(frameId)
-    );
-    if (legacyRow) {
-      return { ...legacyRow, resolve_source: 'legacy_android_frames' };
-    }
-
-    const doFrameAliasRow = await this.queryFirstRow(
-      traceProcessorService,
-      traceId,
-      this.buildDoFrameAliasEnrichmentQuery(frameId)
-    );
-    if (doFrameAliasRow) {
-      return { ...doFrameAliasRow, resolve_source: 'doframe_alias' };
-    }
-
-    emitter.log(`[DrillDown] Fallback enrichment failed for frame ${frameId} (${scopeLabel})`);
-    return null;
-  }
-
-  private buildLegacyFrameEnrichmentQuery(frameId: string): string {
-    return `
-      SELECT
-        af.frame_id,
-        af.ts as start_ts,
-        af.ts + af.dur as end_ts,
-        af.dur,
-        p.name as process_name,
-        ej.jank_type,
-        ej.layer_name,
-        ej.vsync_missed
-      FROM android_frames af
-      LEFT JOIN expected_frame_timeline_events ej ON af.frame_id = ej.frame_id
-      LEFT JOIN process p ON af.upid = p.upid
-      WHERE af.frame_id = ${frameId}
-      LIMIT 1
-    `;
-  }
-
-  private buildDoFrameAliasEnrichmentQuery(frameId: string): string {
-    return `
-      WITH target_slice AS (
-        SELECT
-          s.ts,
-          s.dur,
-          t.upid
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        WHERE s.name = 'Choreographer#doFrame ${frameId}'
-           OR s.name GLOB '*Choreographer#doFrame ${frameId}*'
-           OR s.name = 'doFrame ${frameId}'
-           OR s.name GLOB '*doFrame ${frameId}*'
-        ORDER BY s.dur DESC
-        LIMIT 1
-      )
-      SELECT
-        COALESCE(a.display_frame_token, a.surface_frame_token) as frame_id,
-        a.ts as start_ts,
-        a.ts + a.dur as end_ts,
-        a.dur,
-        p.name as process_name,
-        a.jank_type,
-        a.layer_name,
-        NULL as vsync_missed
-      FROM actual_frame_timeline_slice a
-      JOIN target_slice ts
-        ON a.upid = ts.upid
-       AND a.ts < ts.ts + ts.dur + 5000000
-       AND a.ts + a.dur > ts.ts - 5000000
-      LEFT JOIN process p ON a.upid = p.upid
-      ORDER BY ABS((a.ts + a.dur / 2) - (ts.ts + ts.dur / 2)) ASC, a.dur DESC
-      LIMIT 1
-    `;
-  }
-
-  private toRowObject(result: { columns?: string[]; rows?: any[] } | null | undefined): Record<string, any> | null {
-    if (!result || !Array.isArray(result.rows) || result.rows.length === 0) {
-      return null;
-    }
-
-    const row = result.rows[0];
-    if (row && typeof row === 'object' && !Array.isArray(row)) {
-      return row as Record<string, any>;
-    }
-
-    const columns = Array.isArray(result.columns) ? result.columns : [];
-    if (!Array.isArray(row) || columns.length === 0) {
-      return null;
-    }
-
-    const rowObj: Record<string, any> = {};
-    columns.forEach((col: string, idx: number) => {
-      rowObj[col] = row[idx];
-    });
-    return rowObj;
-  }
-
-  private normalizeLooseNumericId(id: any): string | null {
-    if (id === null || id === undefined) return null;
-    if (typeof id === 'number' && Number.isFinite(id)) return String(Math.trunc(id));
-    const s = String(id).trim();
-    if (!s) return null;
-    const compact = s.replace(/[,\s，_]/g, '');
-    if (!/^\d+$/.test(compact)) return null;
-    return compact;
-  }
-
-  private async executeTraceQuery(
-    traceProcessorService: any,
-    traceId: string,
-    sql: string
-  ): Promise<{ columns: string[]; rows: any[] }> {
-    if (!traceProcessorService) {
-      throw new Error('Trace processor service is unavailable');
-    }
-
-    const queryFn = traceProcessorService.query;
-    if (typeof queryFn === 'function') {
-      if (queryFn.length === 1) {
-        return await queryFn.call(traceProcessorService, sql);
-      }
-      return await queryFn.call(traceProcessorService, traceId, sql);
-    }
-
-    const executeQueryFn = traceProcessorService.executeQuery;
-    if (typeof executeQueryFn === 'function') {
-      if (executeQueryFn.length === 1) {
-        return await executeQueryFn.call(traceProcessorService, sql);
-      }
-      return await executeQueryFn.call(traceProcessorService, traceId, sql);
-    }
-
-    throw new Error('Trace processor service does not expose query/executeQuery');
   }
 
   private refreshDrillDownJankContext(

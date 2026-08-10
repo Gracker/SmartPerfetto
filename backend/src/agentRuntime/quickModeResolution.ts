@@ -207,12 +207,23 @@ export function resolveRuntimeQuickMode(input: {
   query: string;
   sceneType: SceneType;
   analysisMode?: AnalysisOptions['analysisMode'];
+  conversationSurface?: boolean;
   selectionContext?: AnalysisOptions['selectionContext'];
   packageName?: AnalysisOptions['packageName'];
   hasReferenceTrace: boolean;
   previousTurns: PriorTurn[];
 }): RuntimeQuickModeResolution {
   const requestedMode = input.analysisMode ?? 'auto';
+  if (input.conversationSurface) {
+    return buildRuntimeQuickModeResolution({
+      requestedMode,
+      quickMode: true,
+      localReason: 'conversation surface uses on-demand evidence',
+      quickAcknowledgementDirectAnswer: false,
+      skipFocusDetection: true,
+      skipTracePreflightDetection: true,
+    });
+  }
   if (requestedMode === 'full') {
     return buildRuntimeQuickModeResolution({
       requestedMode,

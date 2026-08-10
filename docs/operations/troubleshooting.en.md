@@ -2,6 +2,25 @@
 
 [English](troubleshooting.en.md) | [中文](troubleshooting.md)
 
+## Windows Portable Archive
+
+Windows users should start with the complete
+[Windows setup and run guide](../getting-started/windows.en.md). Do not copy Unix commands
+from this page: run `.\SmartPerfetto.exe` from PowerShell in the extracted directory and
+always use the actual `Open:` URL printed by the launcher.
+
+Read the logs with:
+
+```powershell
+Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\backend.log" -Tail 200
+Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\frontend.log" -Tail 200
+```
+
+The current Windows archive is not Authenticode-signed. Verify the official Release and
+SHA256 before handling a SmartScreen/Defender warning; do not disable Defender. A saved
+Provider must also be tested and activated. An existing-destination migration error is
+overwrite protection, so back up first instead of deleting the data directory immediately.
+
 ## AI Backend Not Connected
 
 ```bash

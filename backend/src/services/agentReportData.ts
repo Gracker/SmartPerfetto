@@ -29,6 +29,71 @@ import {
   projectPrivateStructuredValue,
   sessionUsesPrivateKnowledge,
 } from './security/privateAnalysisProjection';
+import type {SessionStateSnapshot} from '../agentv3/sessionStateSnapshot';
+import {isCodebaseKind} from './codebase/codebaseRegistry';
+
+type AgentReportSourceContext = AgentDrivenReportData['sourceContext'];
+const MAX_REPORT_SOURCE_ID = 160;
+const MAX_REPORT_SOURCE_DISPLAY_NAME = 120;
+
+function safeReportSourceId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (
+    !trimmed ||
+    trimmed.length > MAX_REPORT_SOURCE_ID ||
+    trimmed.includes('/') ||
+    trimmed.includes('\\') ||
+    trimmed.includes('://') ||
+    /[\s\u0000-\u001f\u007f]/.test(trimmed)
+  ) {
+    return undefined;
+  }
+  return trimmed;
+}
+
+function safeReportSourceDisplayName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, ' ');
+  if (
+    !trimmed ||
+    trimmed.includes('/') ||
+    trimmed.includes('\\') ||
+    trimmed.includes('://')
+  ) {
+    return undefined;
+  }
+  return trimmed.slice(0, MAX_REPORT_SOURCE_DISPLAY_NAME);
+}
+
+function safeSourceContext(
+  snapshot: Pick<SessionStateSnapshot, 'codebaseSnapshot' | 'codeLookupSummary'> | undefined,
+): AgentReportSourceContext | undefined {
+  if (!snapshot?.codebaseSnapshot?.length) return undefined;
+  const selected = snapshot.codebaseSnapshot
+    .map(item => {
+      const codebaseId = safeReportSourceId(item.codebaseId);
+      if (!codebaseId) return undefined;
+      const displayName = safeReportSourceDisplayName(item.displayName);
+      const kind = isCodebaseKind(item.kind) ? item.kind : undefined;
+      return {
+        codebaseId,
+        ...(displayName ? {displayName} : {}),
+        ...(kind ? {kind} : {}),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  if (selected.length === 0) return undefined;
+  const selectedIds = new Set(selected.map(item => item.codebaseId));
+  const usedCodebaseIds = (snapshot.codeLookupSummary?.usedCodebaseIds ?? [])
+    .map(safeReportSourceId)
+    .filter((id): id is string => typeof id === 'string' && selectedIds.has(id))
+    .sort();
+  return {
+    selected,
+    usedCodebaseIds,
+  };
+}
 
 /**
  * The subset of `AnalysisResult` the builder reads. Stated explicitly so
@@ -119,6 +184,8 @@ export function buildAgentDrivenReportData(
     uncertaintyFlags?: unknown[];
     comparisonReportSection?: AgentDrivenReportData['comparisonReportSection'];
     backgroundKnowledgeReferences?: AgentDrivenReportData['backgroundKnowledgeReferences'];
+    codebaseSnapshot?: SessionStateSnapshot['codebaseSnapshot'];
+    codeLookupSummary?: SessionStateSnapshot['codeLookupSummary'];
   } })._lastSnapshot;
   const hypotheses = privateKnowledge
     ? projectPrivateHypotheses(session.sessionId, session.hypotheses as any[])
@@ -164,5 +231,6 @@ export function buildAgentDrivenReportData(
         )
       : snapshot?.comparisonReportSection ?? session.comparisonReportSection,
     backgroundKnowledgeReferences: snapshot?.backgroundKnowledgeReferences,
+    sourceContext: safeSourceContext(snapshot),
   };
 }

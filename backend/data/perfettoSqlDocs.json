@@ -1,19 +1,20 @@
 {
   "version": 1,
-  "generatedAt": "2026-07-03T06:02:02.424Z",
-  "generatedFrom": "bc652c5c9d562b16af45111809e6f6837290999f",
-  "sourceDocs": "frontend/v57.1-bc652c5c9/stdlib_docs.json",
+  "generatedAt": "2026-08-10T12:36:29.098Z",
+  "generatedFrom": "7b573c1c00f5d5890f496a87b4876a995b6a1c66",
+  "sourceDocs": "git:7b573c1c00f5d5890f496a87b4876a995b6a1c66:src/trace_processor/perfetto_sql/stdlib",
+  "sourceDocsMode": "runtime-revision-source-generator",
   "pfsqlLineage": {
     "status": "unavailable"
   },
   "stats": {
-    "moduleCount": 250,
-    "entryCount": 441,
+    "moduleCount": 257,
+    "entryCount": 457,
     "byType": {
-      "function": 69,
-      "table": 182,
+      "function": 72,
+      "table": 191,
       "table_function": 30,
-      "view": 139,
+      "view": 143,
       "macro": 21
     }
   },
@@ -69,7 +70,8 @@
         "android_app_process_starts"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -101,7 +103,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -249,7 +252,6 @@
       ],
       "transitiveIncludes": [
         "android.binder",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -259,7 +261,8 @@
         "intervals.overlap",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -325,9 +328,6 @@
         "android_cpu_cluster_mapping"
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -380,7 +380,8 @@
         "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -398,12 +399,39 @@
       "missingIncludes": [],
       "errors": [],
       "symbols": [
-        "android_jank_cuj"
+        "android_jank_cuj",
+        "android_jank_cuj_layer_name"
       ],
       "transitiveIncludes": [
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.cujs.boundaries",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.cujs.base",
+        "android.cujs.relevant_slices",
+        "android.surfaceflinger"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/boundaries.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": [
+        "android.cujs.base",
+        "android.cujs.relevant_slices",
+        "android.cujs.threads",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -422,7 +450,88 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.cujs.frames",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.cujs.base",
+        "android.cujs.boundaries",
+        "android.cujs.relevant_slices",
+        "android.cujs.threads",
+        "android.frames.jank_type",
+        "android.frames.timeline",
+        "android.surfaceflinger"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/frames.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": [
+        "android.cujs.base",
+        "android.cujs.boundaries",
+        "android.cujs.relevant_slices",
+        "android.cujs.threads",
+        "android.frames.jank_type",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.cujs.relevant_slices",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.cujs.base",
+        "android.cujs.threads",
+        "android.surfaceflinger"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/relevant_slices.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": [
+        "android.cujs.base",
+        "android.cujs.threads",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "android",
+      "module": "android.cujs.slices",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "android.cujs.boundaries",
+        "android.cujs.threads"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/slices.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": [
+        "android.cujs.base",
+        "android.cujs.boundaries",
+        "android.cujs.relevant_slices",
+        "android.cujs.threads",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -449,7 +558,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -461,7 +571,8 @@
         "ui"
       ],
       "includes": [
-        "android.cujs.base"
+        "android.cujs.base",
+        "android.surfaceflinger"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/threads.sql",
       "missingIncludes": [],
@@ -474,7 +585,9 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -511,7 +624,8 @@
       "missingIncludes": [],
       "errors": [],
       "symbols": [
-        "android_device_name"
+        "android_device_name",
+        "android_device_name_from_fingerprint"
       ],
       "transitiveIncludes": []
     },
@@ -599,7 +713,8 @@
         "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -647,6 +762,7 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -675,7 +791,8 @@
       ],
       "transitiveIncludes": [
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -694,7 +811,8 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -747,7 +865,8 @@
         "android.user_list",
         "android.version",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -843,6 +962,7 @@
       ],
       "includes": [
         "android.frames.timeline",
+        "android.surfaceflinger",
         "intervals.intersect",
         "slices.with_context"
       ],
@@ -856,10 +976,13 @@
         "android_motion_events"
       ],
       "transitiveIncludes": [
+        "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1160,6 +1283,7 @@
       "tags": [],
       "includes": [
         "android.memory.dmabuf_spans",
+        "android.memory.heap_graph.oome",
         "android.oom_adjuster",
         "linux.memory.process"
       ],
@@ -1171,11 +1295,13 @@
       ],
       "transitiveIncludes": [
         "android.memory.dmabuf_spans",
+        "android.memory.heap_graph.oome",
         "android.oom_adjuster",
         "counters.intervals",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1278,6 +1404,18 @@
     },
     {
       "package": "android",
+      "module": "android.memory.heap_profile.intervals",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_profile/intervals.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "android",
       "module": "android.memory.heap_profile.summary_tree",
       "moduleDoc": "",
       "tags": [
@@ -1322,7 +1460,8 @@
       "transitiveIncludes": [
         "android.oom_adjuster",
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1345,7 +1484,8 @@
       "transitiveIncludes": [
         "android.oom_adjuster",
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1371,7 +1511,8 @@
         "counters.intervals",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1457,7 +1598,8 @@
       ],
       "transitiveIncludes": [
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1632,7 +1774,8 @@
         "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1676,22 +1819,20 @@
       "transitiveIncludes": [
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.startup.startup_events",
         "android.startup.startups",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
-        "android.suspend",
         "android.user_list",
         "android.version",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.hierarchy",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1710,7 +1851,8 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1733,24 +1875,22 @@
       "transitiveIncludes": [
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.startup.startup_events",
         "android.startup.startups",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
-        "android.suspend",
         "android.user_list",
         "android.version",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.mipmap",
         "intervals.overlap",
         "sched.states",
         "slices.flat_slices",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1793,7 +1933,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1817,7 +1958,8 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "android.startup.startup_events",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1837,7 +1979,8 @@
       "symbols": [],
       "transitiveIncludes": [
         "android.startup.startup_events",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1882,7 +2025,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -1925,7 +2069,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2220,7 +2365,8 @@
         "chrome_deliver_android_input_event"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2257,7 +2403,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2284,7 +2431,8 @@
         "chrome.scroll_jank.scroll_offsets",
         "chrome.scroll_jank_v4",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2345,7 +2493,8 @@
         "chrome_surface_frame_id_to_first_display_id"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2390,7 +2539,8 @@
       "transitiveIncludes": [
         "chrome.android_input",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2416,7 +2566,8 @@
         "chrome.page_loads",
         "chrome.startups",
         "chrome.web_content_interactions",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2451,7 +2602,8 @@
         "chrome_loadline2_stages"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2488,7 +2640,8 @@
         "chrome_page_loads"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2525,6 +2678,7 @@
         "chrome.scroll_jank_v4",
         "intervals.intersect",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -2605,7 +2759,8 @@
         "chrome_select_scroll_jank_cause_thread"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2641,7 +2796,8 @@
         "chrome.scroll_jank.scroll_jank_v3_cause",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2824,7 +2980,8 @@
         "chrome_startups"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -2882,7 +3039,8 @@
         "chrome_web_content_interactions"
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -3092,7 +3250,6 @@
         "utilities"
       ],
       "includes": [
-        "android.monitor_contention",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ],
@@ -3106,9 +3263,6 @@
         "intervals_overlap_count_by_group"
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ]
@@ -3132,9 +3286,6 @@
         "linux_device_minor_id"
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -3307,7 +3458,8 @@
         "intervals.intersect",
         "linux.cpu.frequency",
         "linux.cpu.utilization.general",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -3628,7 +3780,26 @@
         "counters.global_tracks",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "package": "pixel",
+      "module": "pixel.touch",
+      "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/pixel/touch.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "pixel_touch_events"
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect"
       ]
     },
     {
@@ -3669,7 +3840,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.core",
-      "moduleDoc": "",
+      "moduleDoc": "Fundamental trace concepts and infrastructure. This module provides the core tables and views that represent fundamental trace concepts like trace boundaries and available metrics. Lists all metrics built-into trace processor.",
       "tags": [
         "metadata"
       ],
@@ -3686,7 +3857,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.counters",
-      "moduleDoc": "",
+      "moduleDoc": "Performance counters and counter tracks. This module provides counter-related tables and views for analyzing performance metrics collected across CPUs, processes, threads, GPUs, and other contexts.",
       "tags": [
         "utilities"
       ],
@@ -3714,7 +3885,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.cpu_scheduling",
-      "moduleDoc": "",
+      "moduleDoc": "CPU scheduling and thread state analysis. This module provides tables and views for analyzing CPU scheduling behavior, including scheduling slices, thread states, and CPU information.",
       "tags": [
         "cpu",
         "scheduling"
@@ -3740,7 +3911,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.events",
-      "moduleDoc": "",
+      "moduleDoc": "Event data and slices for trace analysis. This module provides tables and views for analyzing various types of events and slices including ftrace events, graphics frames, GPU events, and frame timeline information.",
       "tags": [
         "trace"
       ],
@@ -3767,7 +3938,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.gpu",
-      "moduleDoc": "",
+      "moduleDoc": "Contains information about the GPUs on the device this trace was taken on.",
       "tags": [],
       "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/gpu.sql",
@@ -3781,7 +3952,7 @@
     {
       "package": "prelude",
       "module": "prelude.after_eof.memory",
-      "moduleDoc": "",
+      "moduleDoc": "Memory and heap analysis tables. This module provides tables and views for analyzing memory usage, including heap graphs for Android Runtime (ART) and memory snapshots for detailed memory profiling.",
       "tags": [
         "memory"
       ],
@@ -3799,6 +3970,7 @@
         "heap_graph_primitive",
         "heap_graph_reference",
         "heap_graph_thread_callsite",
+        "heap_profile",
         "memory_snapshot",
         "memory_snapshot_edge",
         "memory_snapshot_node",
@@ -3832,8 +4004,55 @@
     },
     {
       "package": "prelude",
-      "module": "prelude.after_eof.tracks",
+      "module": "prelude.after_eof.stack_samples",
       "moduleDoc": "",
+      "tags": [],
+      "includes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "stack_sample",
+        "stack_sample_async_context",
+        "stack_sample_counter",
+        "stack_sample_counter_track",
+        "stack_sample_execution_context",
+        "stack_sample_session",
+        "stack_sample_task_context"
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "package": "prelude",
+      "module": "prelude.after_eof.state",
+      "moduleDoc": "State tracks and state events. This module provides state-related tables and views for analyzing states collected across processes and other contexts.",
+      "tags": [],
+      "includes": [
+        "prelude.after_eof.views"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/state.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [
+        "process_state_track",
+        "state_track",
+        "thread_state_track"
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "package": "prelude",
+      "module": "prelude.after_eof.tracks",
+      "moduleDoc": "Track infrastructure for organizing trace events. This module provides the track concept and specialized track tables for organizing events by thread, process, CPU, and GPU contexts.",
       "tags": [
         "trace"
       ],
@@ -3928,6 +4147,7 @@
         "demangle",
         "exp",
         "ln",
+        "regexp",
         "regexp_extract",
         "regexp_replace_simple",
         "reverse",
@@ -4096,9 +4316,6 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -4119,15 +4336,13 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "sched.thread_executing_span",
         "slices.flat_slices",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -4150,9 +4365,6 @@
         "sched_uninterruptible_sleep_thread_count"
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -4171,14 +4383,12 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.flat_slices",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -4213,14 +4423,18 @@
       "tags": [
         "scheduling"
       ],
-      "includes": [],
+      "includes": [
+        "std.thread.with_context"
+      ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/sched/with_context.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [
         "sched_with_thread_process"
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "std.thread.with_context"
+      ]
     },
     {
       "package": "slices",
@@ -4248,7 +4462,8 @@
         "linux.cpu.frequency",
         "linux.cpu.utilization.general",
         "linux.cpu.utilization.slice",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -4267,13 +4482,11 @@
       "errors": [],
       "symbols": [],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -4365,7 +4578,8 @@
       ],
       "transitiveIncludes": [
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -4375,7 +4589,9 @@
       "tags": [
         "trace"
       ],
-      "includes": [],
+      "includes": [
+        "std.thread.with_context"
+      ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/with_context.sql",
       "missingIncludes": [],
       "errors": [],
@@ -4384,7 +4600,9 @@
         "thread_or_process_slice",
         "thread_slice"
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "std.thread.with_context"
+      ]
     },
     {
       "package": "stack_trace",
@@ -4476,8 +4694,20 @@
     },
     {
       "package": "std",
-      "module": "std.traceinfo.metadata_for_primary_scope",
+      "module": "std.thread.with_context",
       "moduleDoc": "",
+      "tags": [],
+      "includes": [],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/thread/with_context.sql",
+      "missingIncludes": [],
+      "errors": [],
+      "symbols": [],
+      "transitiveIncludes": []
+    },
+    {
+      "package": "std",
+      "module": "std.traceinfo.metadata_for_primary_scope",
+      "moduleDoc": "Metadata summary table. A table containing a summary of metadata entries, picking the primary entry for each name (favoring the root trace and machine).",
       "tags": [],
       "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/traceinfo/metadata_for_primary_scope.sql",
@@ -4489,34 +4719,10 @@
     {
       "package": "std",
       "module": "std.traceinfo.trace",
-      "moduleDoc": "",
+      "moduleDoc": "Trace-level metadata functions and tables. A table containing pivoted metadata for each trace in the session.",
       "tags": [],
       "includes": [],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/traceinfo/trace.sql",
-      "missingIncludes": [],
-      "errors": [],
-      "symbols": [],
-      "transitiveIncludes": []
-    },
-    {
-      "package": "std",
-      "module": "std.trees.filter",
-      "moduleDoc": "",
-      "tags": [],
-      "includes": [],
-      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/trees/filter.sql",
-      "missingIncludes": [],
-      "errors": [],
-      "symbols": [],
-      "transitiveIncludes": []
-    },
-    {
-      "package": "std",
-      "module": "std.trees.propagate",
-      "moduleDoc": "",
-      "tags": [],
-      "includes": [],
-      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/std/trees/propagate.sql",
       "missingIncludes": [],
       "errors": [],
       "symbols": [],
@@ -4633,7 +4839,8 @@
       "symbols": [],
       "transitiveIncludes": [
         "graphs.scan",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -4791,7 +4998,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "android.gpu.work_period",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -5286,7 +5492,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "android.gpu.work_period",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -5396,7 +5601,6 @@
         "android.device",
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -5451,11 +5655,8 @@
       "symbols": [],
       "transitiveIncludes": [
         "android.device",
-        "android.monitor_contention",
         "android.process_metadata",
-        "android.suspend",
         "android.user_list",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "linux.irqs",
@@ -5597,6 +5798,7 @@
         "android.user_list",
         "android.version",
         "slices.with_context",
+        "std.thread.with_context",
         "wattson.utils"
       ]
     }
@@ -6144,7 +6346,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -6197,7 +6400,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -6237,6 +6441,7 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -6303,7 +6508,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -6384,7 +6590,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -6646,7 +6853,6 @@
       ],
       "transitiveIncludes": [
         "android.binder",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -6656,7 +6862,8 @@
         "intervals.overlap",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -6730,7 +6937,6 @@
       ],
       "transitiveIncludes": [
         "android.binder",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -6740,7 +6946,8 @@
         "intervals.overlap",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -7014,7 +7221,6 @@
       ],
       "transitiveIncludes": [
         "android.binder",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -7024,7 +7230,8 @@
         "intervals.overlap",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -7108,7 +7315,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -7664,7 +7872,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -7705,9 +7914,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -7874,6 +8080,7 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -8009,6 +8216,35 @@
           "description": "Machine identifier",
           "table": "machine",
           "column": "id"
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "id": "stdlib.android.device.android_device_name_from_fingerprint",
+      "name": "android_device_name_from_fingerprint",
+      "type": "function",
+      "category": "android",
+      "subcategory": "device",
+      "module": "android.device",
+      "package": "android",
+      "description": "Extracts the device code name from an Android build fingerprint",
+      "fullDescription": "Extracts the device code name from an Android build fingerprint.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "metadata"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.device;",
+      "moduleIncludes": [],
+      "returnType": "STRING",
+      "returnDescription": "Device code name (e.g. 'raven').",
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/device.sql",
+      "params": [
+        {
+          "name": "fingerprint",
+          "type": "STRING",
+          "description": "Android build fingerprint (e.g. 'Android/aosp_raven/raven:VanillaIceCream/...')."
         }
       ],
       "transitiveIncludes": []
@@ -8863,7 +9099,8 @@
       ],
       "transitiveIncludes": [
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -8933,6 +9170,7 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -9046,7 +9284,8 @@
       ],
       "transitiveIncludes": [
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -9106,7 +9345,8 @@
       ],
       "transitiveIncludes": [
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -9161,7 +9401,8 @@
       ],
       "transitiveIncludes": [
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -9274,7 +9515,8 @@
       ],
       "transitiveIncludes": [
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -9314,6 +9556,7 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -9354,6 +9597,7 @@
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -9653,7 +9897,8 @@
         "android.user_list",
         "android.version",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -10096,6 +10341,7 @@
       "include": "INCLUDE PERFETTO MODULE android.memory.heap_graph.heap_graph_stats;",
       "moduleIncludes": [
         "android.memory.dmabuf_spans",
+        "android.memory.heap_graph.oome",
         "android.oom_adjuster",
         "linux.memory.process"
       ],
@@ -10162,15 +10408,37 @@
           "name": "dmabuf_rss_size",
           "type": "LONG",
           "description": "The dmabuf size of the process (in bytes) at the time of the heap graph dump."
+        },
+        {
+          "name": "art_bytes_allocated",
+          "type": "LONG",
+          "description": "ART's view of cumulative heap memory usage"
+        },
+        {
+          "name": "is_out_of_memory_error",
+          "type": "BOOL",
+          "description": "Whether this is an OutOfMemoryError heap dump"
+        },
+        {
+          "name": "oome_failing_allocation_size",
+          "type": "LONG",
+          "description": "For OOME, what was the size of the allocation that resulted in the exception"
+        },
+        {
+          "name": "oome_remaining_art_free_bytes",
+          "type": "LONG",
+          "description": "For OOME, what was the actual heap size left"
         }
       ],
       "transitiveIncludes": [
         "android.memory.dmabuf_spans",
+        "android.memory.heap_graph.oome",
         "android.oom_adjuster",
         "counters.intervals",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -10273,6 +10541,7 @@
       "include": "INCLUDE PERFETTO MODULE android.input;",
       "moduleIncludes": [
         "android.frames.timeline",
+        "android.surfaceflinger",
         "intervals.intersect",
         "slices.with_context"
       ],
@@ -10305,10 +10574,13 @@
         }
       ],
       "transitiveIncludes": [
+        "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -10330,6 +10602,7 @@
       "include": "INCLUDE PERFETTO MODULE android.input;",
       "moduleIncludes": [
         "android.frames.timeline",
+        "android.surfaceflinger",
         "intervals.intersect",
         "slices.with_context"
       ],
@@ -10473,10 +10746,13 @@
         }
       ],
       "transitiveIncludes": [
+        "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -10817,7 +11093,8 @@
       "transitiveIncludes": [
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -10837,7 +11114,8 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.cujs.threads;",
       "moduleIncludes": [
-        "android.cujs.base"
+        "android.cujs.base",
+        "android.surfaceflinger"
       ],
       "returnDescription": "",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/threads.sql",
@@ -10881,7 +11159,48 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.cujs.base.android_jank_cuj_layer_name",
+      "name": "android_jank_cuj_layer_name",
+      "type": "table",
+      "category": "android",
+      "subcategory": "cujs.base",
+      "module": "android.cujs.base",
+      "package": "android",
+      "description": "Resolves the layer name for each CUJ",
+      "fullDescription": "Resolves the layer name for each CUJ. The layer can be identified in two ways: 1. Explicit Marker: The Android framework may log a 'layerId#<id>' instant event. If present, this is extracted into `cuj_layer_id` inside `_cuj_instant_events`. We then filter `_all_frames_in_cuj` to exactly that layer. 2. Fallback Inference: On older versions and when the proper way to report CUJs is not used (e.g. on some apps that copy the same convention to report CUJs), we try to infer the layer name. We check if the app rendered exactly one layer per frame during the CUJ (`HAVING MAX(layers_per_frame) = 1`). If so, we safely use that layer's name (extracted via `MAX(layer_name)`). If multiple layers were rendered simultaneously, we can't safely guess, and return NULL.",
+      "visibility": "public",
+      "tags": [
+        "android",
+        "ui"
+      ],
+      "include": "INCLUDE PERFETTO MODULE android.cujs.base;",
+      "moduleIncludes": [
+        "android.frames.timeline"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/base.sql",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG",
+          "description": "CUJ id."
+        },
+        {
+          "name": "layer_name",
+          "type": "STRING",
+          "description": "Layer name of the CUJ."
+        }
+      ],
+      "transitiveIncludes": [
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -10901,7 +11220,8 @@
       ],
       "include": "INCLUDE PERFETTO MODULE android.cujs.threads;",
       "moduleIncludes": [
-        "android.cujs.base"
+        "android.cujs.base",
+        "android.surfaceflinger"
       ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/threads.sql",
       "columns": [
@@ -10941,7 +11261,9 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -11057,7 +11379,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -11629,6 +11952,7 @@
       "include": "INCLUDE PERFETTO MODULE android.input;",
       "moduleIncludes": [
         "android.frames.timeline",
+        "android.surfaceflinger",
         "intervals.intersect",
         "slices.with_context"
       ],
@@ -11681,10 +12005,13 @@
         }
       ],
       "transitiveIncludes": [
+        "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -11795,7 +12122,8 @@
       "transitiveIncludes": [
         "android.oom_adjuster",
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -12533,6 +12861,7 @@
       "include": "INCLUDE PERFETTO MODULE android.input;",
       "moduleIncludes": [
         "android.frames.timeline",
+        "android.surfaceflinger",
         "intervals.intersect",
         "slices.with_context"
       ],
@@ -12580,10 +12909,13 @@
         }
       ],
       "transitiveIncludes": [
+        "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -12886,7 +13218,8 @@
       ],
       "transitiveIncludes": [
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -12922,7 +13255,8 @@
       ],
       "transitiveIncludes": [
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -12963,7 +13297,8 @@
       ],
       "transitiveIncludes": [
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -13226,7 +13561,8 @@
       "transitiveIncludes": [
         "android.oom_adjuster",
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -13326,7 +13662,8 @@
       "transitiveIncludes": [
         "android.oom_adjuster",
         "counters.intervals",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -13716,7 +14053,8 @@
         "intervals.fill_gaps",
         "slices.flow",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -13807,7 +14145,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -13933,22 +14272,20 @@
       "transitiveIncludes": [
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.startup.startup_events",
         "android.startup.startups",
         "android.startup.startups_maxsdk28",
         "android.startup.startups_minsdk29",
         "android.startup.startups_minsdk33",
-        "android.suspend",
         "android.user_list",
         "android.version",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "slices.hierarchy",
         "slices.with_context",
-        "std.metasql.unparenthesize"
+        "std.metasql.unparenthesize",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14012,7 +14349,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14103,7 +14441,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14173,7 +14512,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14243,7 +14583,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14386,7 +14727,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14439,7 +14781,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -14712,7 +15055,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -15037,7 +15381,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -15121,7 +15466,8 @@
         "android.cujs.base",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -15227,7 +15573,8 @@
         "android.startup.startups_minsdk33",
         "android.user_list",
         "android.version",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -16281,7 +16628,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -16355,7 +16703,8 @@
       "transitiveIncludes": [
         "chrome.android_input",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -16402,7 +16751,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -16442,7 +16792,8 @@
       "transitiveIncludes": [
         "chrome.android_input",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17076,7 +17427,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17113,7 +17465,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17175,7 +17528,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17333,7 +17687,8 @@
       "transitiveIncludes": [
         "chrome.android_input",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17373,7 +17728,8 @@
       "transitiveIncludes": [
         "chrome.android_input",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17429,7 +17785,8 @@
         "chrome.page_loads",
         "chrome.startups",
         "chrome.web_content_interactions",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17517,7 +17874,8 @@
         "chrome.scroll_jank.scroll_jank_v3_cause",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -17590,7 +17948,8 @@
         "chrome.scroll_jank.scroll_jank_v3_cause",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -18069,7 +18428,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -18249,7 +18609,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -18868,7 +19229,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -18931,6 +19293,11 @@
           "name": "real_abs_total_raw_delta_pixels",
           "type": "DOUBLE",
           "description": "The absolute total raw (unpredicted) delta of all real scroll updates included in this frame (in pixels). NULL if the first scroll update in this frame is synthetic."
+        },
+        {
+          "name": "real_total_raw_delta_pixels",
+          "type": "DOUBLE",
+          "description": "The total raw (unpredicted) delta of all real scroll updates included in this frame (in pixels). NULL if the first scroll update in this frame is synthetic, or if the trace was recorded before the field was added."
         },
         {
           "name": "browser_uptime_dur",
@@ -19362,7 +19729,8 @@
         "chrome.scroll_jank.scroll_offsets",
         "chrome.scroll_jank_v4",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -19604,7 +19972,8 @@
         "chrome.scroll_jank.scroll_jank_v3_cause",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -19653,6 +20022,7 @@
         "chrome.scroll_jank_v4",
         "intervals.intersect",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -19704,6 +20074,7 @@
         "chrome.scroll_jank_v4",
         "intervals.intersect",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -19830,6 +20201,11 @@
           "name": "real_abs_total_raw_delta_pixels",
           "type": "DOUBLE",
           "description": "The absolute total raw (unpredicted) delta of all real scroll updates included in this frame (in pixels). NULL if this frame contains no real scroll updates."
+        },
+        {
+          "name": "real_total_raw_delta_pixels",
+          "type": "DOUBLE",
+          "description": "The total raw (unpredicted) delta of all real scroll updates included in this frame (in pixels). NULL if this frame contains no real scroll updates, or if the trace was recorded before the field was added."
         },
         {
           "name": "real_max_abs_inertial_raw_delta_pixels",
@@ -20000,7 +20376,8 @@
         "chrome.scroll_jank.scroll_jank_v3_cause",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -20226,7 +20603,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -20607,7 +20985,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -20658,7 +21037,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -20849,7 +21229,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -20910,7 +21291,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -21011,7 +21393,8 @@
         "chrome.input",
         "chrome.scroll_jank.scroll_offsets",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -21112,7 +21495,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -21663,7 +22047,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -21700,7 +22085,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -21754,6 +22140,7 @@
         "chrome.scroll_jank_v4",
         "intervals.intersect",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -21810,6 +22197,7 @@
         "chrome.scroll_jank_v4",
         "intervals.intersect",
         "slices.with_context",
+        "std.thread.with_context",
         "time.conversion"
       ]
     },
@@ -21947,7 +22335,8 @@
       "transitiveIncludes": [
         "chrome.android_input",
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -22115,7 +22504,8 @@
         }
       ],
       "transitiveIncludes": [
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -23474,7 +23864,8 @@
         "intervals.intersect",
         "linux.cpu.frequency",
         "linux.cpu.utilization.general",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -23565,7 +23956,8 @@
         "intervals.intersect",
         "linux.cpu.frequency",
         "linux.cpu.utilization.general",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -23963,13 +24355,13 @@
       "moduleIncludes": [
         "prelude.after_eof.casts"
       ],
-      "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_cpu_profile_stack_sample LIMIT 1) AS has_data",
+      "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM cpu_profile_stack_sample LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/views.sql",
       "columns": [
         {
           "name": "id",
           "type": "ID",
-          "description": "The id of the row."
+          "description": "The id of the row. Joinable with stack_sample.id."
         },
         {
           "name": "ts",
@@ -24006,8 +24398,8 @@
       "subcategory": "cpu_profiling",
       "module": "stacks.cpu_profiling",
       "package": "stacks",
-      "description": "Table containing all the timestamped samples of CPU profiling which occurred during the trace",
-      "fullDescription": "Table containing all the timestamped samples of CPU profiling which occurred during the trace. Currently, this table is backed by the following data sources: * Linux perf * Simpleperf proto format * macOS instruments * Chrome CPU profiling * Legacy V8 CPU profiling * Profiling data in Gecko traces",
+      "description": "Table containing all the timestamped samples of CPU profiling which occurred during the trace: a convenience projection of the `stack_sample` view with thread and cpu information denormalized",
+      "fullDescription": "Table containing all the timestamped samples of CPU profiling which occurred during the trace: a convenience projection of the `stack_sample` view with thread and cpu information denormalized. This covers every callstack profiler source (linux perf, simpleperf, macOS instruments, Chrome, legacy V8, gecko, the StackSample packet, ...) but only samples from what is generally considered CPU profiling: sampling on time, cpu cycles or instructions. Samples from sessions known to sample on some other quantity (off-cpu sampling, tracepoint-based sampling, ...) are excluded.",
       "visibility": "public",
       "tags": [
         "cpu",
@@ -24022,7 +24414,7 @@
         {
           "name": "id",
           "type": "LONG",
-          "description": "The id of the sample."
+          "description": "The id of the sample. Joinable with stack_sample.id."
         },
         {
           "name": "ts",
@@ -24060,6 +24452,11 @@
           "name": "callsite_id",
           "type": "LONG",
           "description": "The callsite id of the sample."
+        },
+        {
+          "name": "source",
+          "type": "STRING",
+          "description": "The profiler that produced the sample (e.g. \"linux.perf\", \"chrome\")."
         }
       ],
       "transitiveIncludes": [
@@ -26461,6 +26858,64 @@
       ]
     },
     {
+      "id": "stdlib.prelude.after_eof.memory.heap_profile",
+      "name": "heap_profile",
+      "type": "view",
+      "category": "prelude",
+      "subcategory": "after_eof.memory",
+      "module": "prelude.after_eof.memory",
+      "package": "prelude",
+      "description": "A list of heap profiles (heapprofd dumps) captured during the trace",
+      "fullDescription": "A list of heap profiles (heapprofd dumps) captured during the trace. Each row describes the profiling window a single dump represents for a single heap. Joinable with heap_profile_allocation via (upid, heap_profile_allocation.ts = ts_end).",
+      "visibility": "public",
+      "tags": [
+        "memory"
+      ],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.memory;",
+      "moduleIncludes": [
+        "prelude.after_eof.views"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/memory.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this heap profile instance."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the start of the profiling window in nanoseconds."
+        },
+        {
+          "name": "ts_end",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the end of the profiling window (i.e. when the dump was taken) in nanoseconds."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the profiling window in nanoseconds (ts_end - ts)."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.upid)",
+          "description": "Unique PID of the target.",
+          "table": "process",
+          "column": "upid"
+        },
+        {
+          "name": "heap_name",
+          "type": "STRING",
+          "description": "Name of the heap this dump is for (e.g. \"libc.malloc\" for the native heap), or NULL if the producer did not report one."
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
       "id": "stdlib.prelude.after_eof.views.heap_profile_allocation",
       "name": "heap_profile_allocation",
       "type": "view",
@@ -26592,7 +27047,7 @@
         {
           "name": "id",
           "type": "ID",
-          "description": "The id of the row."
+          "description": "The id of the row. Joinable with stack_sample.id."
         },
         {
           "name": "ts",
@@ -26637,7 +27092,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE intervals.overlap;",
       "moduleIncludes": [
-        "android.monitor_contention",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ],
@@ -26657,9 +27111,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ]
@@ -26680,7 +27131,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE intervals.overlap;",
       "moduleIncludes": [
-        "android.monitor_contention",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ],
@@ -26700,9 +27150,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ]
@@ -26751,7 +27198,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE intervals.overlap;",
       "moduleIncludes": [
-        "android.monitor_contention",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ],
@@ -26776,9 +27222,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ]
@@ -26799,7 +27242,6 @@
       ],
       "include": "INCLUDE PERFETTO MODULE intervals.overlap;",
       "moduleIncludes": [
-        "android.monitor_contention",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ],
@@ -26829,9 +27271,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "std.metasql.unparenthesize"
       ]
@@ -26873,9 +27312,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -27015,9 +27451,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -27052,9 +27485,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -27948,7 +28378,7 @@
         {
           "name": "name",
           "type": "STRING",
-          "description": "Human-readable name of the machine, used as its label in the UI."
+          "description": "Human-readable name of the machine (e.g. from a perfetto_manifest override), used as its label in the UI."
         },
         {
           "name": "sysname",
@@ -27999,6 +28429,11 @@
           "name": "system_ram_gb",
           "type": "LONG",
           "description": "Total system RAM in gigabytes (rounded)."
+        },
+        {
+          "name": "label_index",
+          "type": "LONG",
+          "description": "1-based index of this machine among the non-host machines, used by the UI to label tracks (e.g. \"(machine 1)\"). The host machine (raw_id 0) gets 0, so it is never labelled."
         }
       ],
       "transitiveIncludes": [
@@ -28144,7 +28579,8 @@
         "counters.intervals",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -28692,8 +29128,8 @@
       "subcategory": "before_eof.views",
       "module": "prelude.before_eof.views",
       "package": "prelude",
-      "description": "Samples from the traced_perf profiler",
-      "fullDescription": "Samples from the traced_perf profiler.",
+      "description": "Samples from the traced_perf profiler and perf.data files",
+      "fullDescription": "Samples from the traced_perf profiler and perf.data files. One row per perf sample, including counter-only samples which have no callstack.",
       "visibility": "public",
       "tags": [],
       "include": "INCLUDE PERFETTO MODULE prelude.before_eof.views;",
@@ -28703,7 +29139,7 @@
         {
           "name": "id",
           "type": "ID",
-          "description": "Unique identifier for this perf sample."
+          "description": "Unique identifier for this perf sample. Joinable with stack_sample.id."
         },
         {
           "name": "ts",
@@ -28757,8 +29193,8 @@
       "subcategory": "after_eof.views",
       "module": "prelude.after_eof.views",
       "package": "prelude",
-      "description": "Contains the Linux perf sessions in the trace",
-      "fullDescription": "Contains the Linux perf sessions in the trace.",
+      "description": "Contains all Linux perf sessions in the trace, including sessions which only recorded counters and did not capture any callstacks",
+      "fullDescription": "Contains all Linux perf sessions in the trace, including sessions which only recorded counters and did not capture any callstacks.",
       "visibility": "public",
       "tags": [
         "trace"
@@ -28873,7 +29309,8 @@
         "counters.global_tracks",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -28939,7 +29376,107 @@
         "counters.global_tracks",
         "linux.memory.general",
         "linux.memory.process",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.pixel.touch.pixel_touch_events",
+      "name": "pixel_touch_events",
+      "type": "table",
+      "category": "pixel",
+      "subcategory": "touch",
+      "module": "pixel.touch",
+      "package": "pixel",
+      "description": "Pixel-specific touch events, including top and bottom half IRQ, and Twoshay touch processing",
+      "fullDescription": "Pixel-specific touch events, including top and bottom half IRQ, and Twoshay touch processing.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE pixel.touch;",
+      "moduleIncludes": [
+        "intervals.intersect"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/pixel/touch.sql",
+      "columns": [
+        {
+          "name": "in_ts",
+          "type": "LONG",
+          "description": "Hardware input event timestamp parsed from Twoshay driver logs."
+        },
+        {
+          "name": "ts_pixel_touch_th",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the top-half touch IRQ."
+        },
+        {
+          "name": "dur_pixel_touch_th",
+          "type": "DURATION",
+          "description": "Duration of the top-half touch IRQ."
+        },
+        {
+          "name": "id_pixel_touch_th",
+          "type": "LONG",
+          "description": "Slice ID of the top-half touch IRQ."
+        },
+        {
+          "name": "track_pixel_touch_th",
+          "type": "JOINID(track.id)",
+          "description": "Track ID of the top-half touch IRQ.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "ts_pixel_touch_bh",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the bottom-half touch IRQ thread."
+        },
+        {
+          "name": "dur_pixel_touch_bh",
+          "type": "DURATION",
+          "description": "Duration of the bottom-half touch IRQ thread."
+        },
+        {
+          "name": "id_pixel_touch_bh",
+          "type": "LONG",
+          "description": "Slice ID of the bottom-half touch IRQ thread."
+        },
+        {
+          "name": "track_pixel_touch_bh",
+          "type": "JOINID(track.id)",
+          "description": "Track ID of the bottom-half touch IRQ thread.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "ts_pixel_touch",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the Twoshay processing frame."
+        },
+        {
+          "name": "dur_pixel_touch",
+          "type": "DURATION",
+          "description": "Duration of the Twoshay processing frame."
+        },
+        {
+          "name": "id_pixel_touch",
+          "type": "LONG",
+          "description": "Slice ID of the Twoshay processing frame."
+        },
+        {
+          "name": "track_pixel_touch",
+          "type": "JOINID(track.id)",
+          "description": "Track ID of the Twoshay processing frame.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "resample_latency_offset",
+          "type": "LONG",
+          "description": "Resample latency offset (in nanoseconds)."
+        }
+      ],
+      "transitiveIncludes": [
+        "intervals.intersect"
       ]
     },
     {
@@ -29343,7 +29880,9 @@
         "trace"
       ],
       "include": "INCLUDE PERFETTO MODULE slices.with_context;",
-      "moduleIncludes": [],
+      "moduleIncludes": [
+        "std.thread.with_context"
+      ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/with_context.sql",
       "columns": [
         {
@@ -29430,7 +29969,76 @@
           "description": "Alias for `slice.thread_dur`."
         }
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.state.process_state_track",
+      "name": "process_state_track",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.state",
+      "module": "prelude.after_eof.state",
+      "package": "prelude",
+      "description": "Tracks containing state events associated to a process",
+      "fullDescription": "Tracks containing state events associated to a process.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.state;",
+      "moduleIncludes": [
+        "prelude.after_eof.views"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/state.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(track.id)",
+          "description": "Unique identifier for this process state track.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Name of the track."
+        },
+        {
+          "name": "type",
+          "type": "STRING",
+          "description": "The type of a track indicates the type of data the track contains. Every track is uniquely identified by the the combination of the type and a set of dimensions: type allow identifying a set of tracks with the same type of data within the whole universe of tracks while dimensions allow distinguishing between different tracks in that set."
+        },
+        {
+          "name": "parent_id",
+          "type": "JOINID(track.id)",
+          "description": "The track which is the \"parent\" of this track. Only non-null for tracks created using Perfetto's track_event API.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "source_arg_set_id",
+          "type": "ARGSETID",
+          "description": "Args for this track which store information about \"source\" of this track in the trace. For example: whether this track orginated from atrace, Chrome tracepoints etc."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine identifier",
+          "table": "machine",
+          "column": "id"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "The upid that the track is associated with.",
+          "table": "process",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.views"
+      ]
     },
     {
       "id": "stdlib.prelude.after_eof.tracks.process_track",
@@ -29782,6 +30390,73 @@
       ]
     },
     {
+      "id": "stdlib.prelude.before_eof.functions.regexp",
+      "name": "regexp",
+      "type": "function",
+      "category": "prelude",
+      "subcategory": "before_eof.functions",
+      "module": "prelude.before_eof.functions",
+      "package": "prelude",
+      "description": "Returns whether a regular expression partially matches an input string",
+      "fullDescription": "Returns whether a regular expression partially matches an input string. This two-argument overload is also used by the `input REGEXP pattern` operator and performs case-sensitive matching.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.before_eof.functions;",
+      "moduleIncludes": [],
+      "returnType": "BOOL",
+      "returnDescription": "Whether the pattern matches the input.",
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/before_eof/functions.sql",
+      "params": [
+        {
+          "name": "pattern",
+          "type": "STRING",
+          "description": "The regular expression pattern."
+        },
+        {
+          "name": "input",
+          "type": "STRING",
+          "description": "The input string to match against."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
+      "id": "stdlib.prelude.before_eof.functions.regexp",
+      "name": "regexp",
+      "type": "function",
+      "category": "prelude",
+      "subcategory": "before_eof.functions",
+      "module": "prelude.before_eof.functions",
+      "package": "prelude",
+      "description": "Returns whether a regular expression partially matches an input string",
+      "fullDescription": "Returns whether a regular expression partially matches an input string.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.before_eof.functions;",
+      "moduleIncludes": [],
+      "returnType": "BOOL",
+      "returnDescription": "Whether the pattern matches the input.",
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/before_eof/functions.sql",
+      "params": [
+        {
+          "name": "pattern",
+          "type": "STRING",
+          "description": "The regular expression pattern."
+        },
+        {
+          "name": "input",
+          "type": "STRING",
+          "description": "The input string to match against."
+        },
+        {
+          "name": "flags",
+          "type": "STRING",
+          "description": "Matching flags. `i` enables case-insensitive matching and `c` enables case-sensitive matching. If both are present, the last one takes effect."
+        }
+      ],
+      "transitiveIncludes": []
+    },
+    {
       "id": "stdlib.prelude.before_eof.functions.regexp_extract",
       "name": "regexp_extract",
       "type": "function",
@@ -29982,9 +30657,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -30189,9 +30861,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -30606,9 +31275,6 @@
         }
       ],
       "transitiveIncludes": [
-        "android.monitor_contention",
-        "android.suspend",
-        "intervals.fill_gaps",
         "intervals.intersect",
         "intervals.overlap",
         "std.metasql.unparenthesize"
@@ -30629,7 +31295,9 @@
         "scheduling"
       ],
       "include": "INCLUDE PERFETTO MODULE sched.with_context;",
-      "moduleIncludes": [],
+      "moduleIncludes": [
+        "std.thread.with_context"
+      ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/sched/with_context.sql",
       "columns": [
         {
@@ -30689,7 +31357,9 @@
           "description": "The kernel priority that the thread ran at."
         }
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "std.thread.with_context"
+      ]
     },
     {
       "id": "stdlib.prelude.after_eof.views.slice",
@@ -31264,6 +31934,11 @@
           "name": "deobfuscated_name",
           "type": "STRING",
           "description": "Deobfuscated name of the function this location is in."
+        },
+        {
+          "name": "type",
+          "type": "STRING",
+          "description": "The kind of frame (e.g. \"native\", \"kernel\", \"interpreted\", \"jit\", \"gc\", \"runtime\") if reported by the producer, else NULL."
         }
       ],
       "transitiveIncludes": [
@@ -31391,6 +32066,398 @@
       ]
     },
     {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample",
+      "name": "stack_sample",
+      "type": "view",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "Callstack samples from all profiler sources (linux perf, chrome, macOS instruments, the StackSample packet, ...): every profiler sample which captured a callstack",
+      "fullDescription": "Callstack samples from all profiler sources (linux perf, chrome, macOS instruments, the StackSample packet, ...): every profiler sample which captured a callstack. The underlying storage also holds samples without callstacks (e.g. perf counter-only samples); those remain visible through per-source views such as perf_sample.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this sample."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Timestamp of the sample."
+        },
+        {
+          "name": "source",
+          "type": "STRING",
+          "description": "The profiler that produced the sample (e.g. \"linux.perf\", \"chrome\", \"instruments\")."
+        },
+        {
+          "name": "task_context_id",
+          "type": "JOINID(stack_sample_task_context.id)",
+          "description": "Process, thread and/or stackful asynchronous context this sample is attributed to, if known.",
+          "table": "stack_sample_task_context",
+          "column": "id"
+        },
+        {
+          "name": "execution_context_id",
+          "type": "JOINID(stack_sample_execution_context.id)",
+          "description": "CPU and privilege mode in which this sample was captured, if known.",
+          "table": "stack_sample_execution_context",
+          "column": "id"
+        },
+        {
+          "name": "callsite_id",
+          "type": "JOINID(stack_profile_callsite.id)",
+          "description": "The captured callstack.",
+          "table": "stack_profile_callsite",
+          "column": "id"
+        },
+        {
+          "name": "session_id",
+          "type": "JOINID(stack_sample_session.id)",
+          "description": "The sampling session this sample came from, if known.",
+          "table": "stack_sample_session",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample_async_context",
+      "name": "stack_sample_async_context",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "Stackful asynchronous execution contexts referenced by task contexts",
+      "fullDescription": "Stackful asynchronous execution contexts referenced by task contexts.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this asynchronous context."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Human-readable name of the context."
+        },
+        {
+          "name": "kind",
+          "type": "STRING",
+          "description": "Kind of context, e.g. \"goroutine\", \"fiber\" or \"coroutine\"."
+        },
+        {
+          "name": "parent_id",
+          "type": "JOINID(stack_sample_async_context.id)",
+          "description": "Structural parent of this asynchronous context, if any.",
+          "table": "stack_sample_async_context",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample_counter",
+      "name": "stack_sample_counter",
+      "type": "view",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "Counter values recorded at a stack sample point",
+      "fullDescription": "Counter values recorded at a stack sample point. A sample can have one primary timebase counter and any number of follower counters.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(counter.id)",
+          "description": "Unique identifier for this counter value.",
+          "table": "counter",
+          "column": "id"
+        },
+        {
+          "name": "stack_sample_id",
+          "type": "JOINID(stack_sample.id)",
+          "description": "Stack sample this value was recorded with.",
+          "table": "stack_sample",
+          "column": "id"
+        },
+        {
+          "name": "track_id",
+          "type": "JOINID(stack_sample_counter_track.id)",
+          "description": "Counter instance this value belongs to.",
+          "table": "stack_sample_counter_track",
+          "column": "id"
+        },
+        {
+          "name": "value",
+          "type": "DOUBLE",
+          "description": "Counter value recorded at the sample point."
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample_counter_track",
+      "name": "stack_sample_counter_track",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "Counter tracks whose values are associated with stack samples",
+      "fullDescription": "Counter tracks whose values are associated with stack samples. A track is a counter instance within one sampling session and can optionally be scoped to a CPU.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(track.id)",
+          "description": "Unique identifier for this counter track.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Name of the counter."
+        },
+        {
+          "name": "type",
+          "type": "STRING",
+          "description": "Type of the underlying track."
+        },
+        {
+          "name": "parent_id",
+          "type": "JOINID(track.id)",
+          "description": "Parent track, if any.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "source_arg_set_id",
+          "type": "ARGSETID",
+          "description": "Args describing the source of the track."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine identifier.",
+          "table": "machine",
+          "column": "id"
+        },
+        {
+          "name": "unit",
+          "type": "STRING",
+          "description": "Unit of the counter values."
+        },
+        {
+          "name": "description",
+          "type": "STRING",
+          "description": "Human-readable description, if present."
+        },
+        {
+          "name": "session_id",
+          "type": "JOINID(stack_sample_session.id)",
+          "description": "Sampling session this counter belongs to.",
+          "table": "stack_sample_session",
+          "column": "id"
+        },
+        {
+          "name": "cpu",
+          "type": "LONG",
+          "description": "CPU this counter instance is scoped to, if any."
+        },
+        {
+          "name": "is_timebase",
+          "type": "BOOL",
+          "description": "Whether this counter is the sampling timebase for the session."
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample_execution_context",
+      "name": "stack_sample_execution_context",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "Execution states in which stack samples were captured",
+      "fullDescription": "Execution states in which stack samples were captured.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this execution context."
+        },
+        {
+          "name": "ucpu",
+          "type": "JOINID(cpu.id)",
+          "description": "Unique core the sample was taken on, if known.",
+          "table": "cpu",
+          "column": "id"
+        },
+        {
+          "name": "cpu_mode",
+          "type": "STRING",
+          "description": "Privilege mode the sample was taken in (e.g. \"user\", \"kernel\")."
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample_session",
+      "name": "stack_sample_session",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "A sampling session: one row per data source instance of a stack profiler (a linux perf session, a StackSample packet stream,",
+      "fullDescription": "A sampling session: one row per data source instance of a stack profiler (a linux perf session, a StackSample packet stream, ...).",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this session."
+        },
+        {
+          "name": "source",
+          "type": "STRING",
+          "description": "The profiler that produced this session's samples (e.g. \"linux.perf\")."
+        },
+        {
+          "name": "timebase_unit",
+          "type": "STRING",
+          "description": "Unit of the quantity the profiler sampled on: the session's primary (timebase) counter (e.g. \"ns\", \"cycles\", \"instructions\", \"count\"). NULL if unknown."
+        },
+        {
+          "name": "cmdline",
+          "type": "STRING",
+          "description": "Command line used to collect the data, if known."
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.stack_samples.stack_sample_task_context",
+      "name": "stack_sample_task_context",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.stack_samples",
+      "module": "prelude.after_eof.stack_samples",
+      "package": "prelude",
+      "description": "Tasks to which stack samples are attributed",
+      "fullDescription": "Tasks to which stack samples are attributed. A task can identify an OS process, an OS thread, a stackful asynchronous context, or a combination.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.stack_samples;",
+      "moduleIncludes": [
+        "prelude.after_eof.counters"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/stack_samples.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID",
+          "description": "Unique identifier for this task context."
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.id)",
+          "description": "Process the sample is attributed to, if known.",
+          "table": "process",
+          "column": "id"
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "Thread the sample is attributed to, if known.",
+          "table": "thread",
+          "column": "id"
+        },
+        {
+          "name": "async_context_id",
+          "type": "JOINID(stack_sample_async_context.id)",
+          "description": "Stackful asynchronous context the sample is attributed to, if any.",
+          "table": "stack_sample_async_context",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.counters",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
       "id": "stdlib.prelude.after_eof.views.state",
       "name": "state",
       "type": "view",
@@ -31453,6 +32520,71 @@
       ]
     },
     {
+      "id": "stdlib.prelude.after_eof.state.state_track",
+      "name": "state_track",
+      "type": "view",
+      "category": "prelude",
+      "subcategory": "after_eof.state",
+      "module": "prelude.after_eof.state",
+      "package": "prelude",
+      "description": "Tracks containing state events",
+      "fullDescription": "Tracks containing state events.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.state;",
+      "moduleIncludes": [
+        "prelude.after_eof.views"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/state.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(track.id)",
+          "description": "Unique identifier for this state track.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Name of the track."
+        },
+        {
+          "name": "parent_id",
+          "type": "JOINID(track.id)",
+          "description": "The track which is the \"parent\" of this track. Only non-null for tracks created using Perfetto's track_event API.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "type",
+          "type": "STRING",
+          "description": "The type of a track indicates the type of data the track contains. Every track is uniquely identified by the the combination of the type and a set of dimensions: type allow identifying a set of tracks with the same type of data within the whole universe of tracks while dimensions allow distinguishing between different tracks in that set."
+        },
+        {
+          "name": "dimension_arg_set_id",
+          "type": "ARGSETID",
+          "description": "The dimensions of the track which uniquely identify the track within a given type."
+        },
+        {
+          "name": "source_arg_set_id",
+          "type": "ARGSETID",
+          "description": "Args for this track which store information about \"source\" of this track in the trace. For example: whether this track orginated from atrace, Chrome tracepoints etc."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine identifier",
+          "table": "machine",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
       "id": "stdlib.prelude.before_eof.stats.stats",
       "name": "stats",
       "type": "view",
@@ -31491,7 +32623,7 @@
         {
           "name": "severity",
           "type": "STRING",
-          "description": "\"info\" | \"data_loss\" | \"error\"."
+          "description": "\"info\" | \"notice\" | \"data_loss\" | \"error\"."
         },
         {
           "name": "source",
@@ -31925,7 +33057,9 @@
         "trace"
       ],
       "include": "INCLUDE PERFETTO MODULE slices.with_context;",
-      "moduleIncludes": [],
+      "moduleIncludes": [
+        "std.thread.with_context"
+      ],
       "dataCheckSql": "SELECT EXISTS(SELECT 1 FROM __intrinsic_slice LIMIT 1) AS has_data",
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/with_context.sql",
       "columns": [
@@ -32020,7 +33154,9 @@
           "description": "Alias for `slice.arg_set_id`."
         }
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "std.thread.with_context"
+      ]
     },
     {
       "id": "stdlib.slices.with_context.thread_slice",
@@ -32037,7 +33173,9 @@
         "trace"
       ],
       "include": "INCLUDE PERFETTO MODULE slices.with_context;",
-      "moduleIncludes": [],
+      "moduleIncludes": [
+        "std.thread.with_context"
+      ],
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/slices/with_context.sql",
       "columns": [
         {
@@ -32146,7 +33284,9 @@
           "description": "Alias for `slice.thread_dur`."
         }
       ],
-      "transitiveIncludes": []
+      "transitiveIncludes": [
+        "std.thread.with_context"
+      ]
     },
     {
       "id": "stdlib.slices.cpu_time.thread_slice_cpu_cycles",
@@ -32224,7 +33364,8 @@
         "linux.cpu.frequency",
         "linux.cpu.utilization.general",
         "linux.cpu.utilization.slice",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -32298,7 +33439,8 @@
         "linux.cpu.frequency",
         "linux.cpu.utilization.general",
         "linux.cpu.utilization.slice",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -32381,7 +33523,8 @@
       ],
       "transitiveIncludes": [
         "intervals.intersect",
-        "slices.with_context"
+        "slices.with_context",
+        "std.thread.with_context"
       ]
     },
     {
@@ -32472,6 +33615,73 @@
           "type": "JOINID(cpu.id)",
           "description": "The unique CPU identifier that the thread executed on.",
           "table": "cpu",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "prelude.after_eof.casts",
+        "prelude.after_eof.views"
+      ]
+    },
+    {
+      "id": "stdlib.prelude.after_eof.state.thread_state_track",
+      "name": "thread_state_track",
+      "type": "table",
+      "category": "prelude",
+      "subcategory": "after_eof.state",
+      "module": "prelude.after_eof.state",
+      "package": "prelude",
+      "description": "Tracks containing state events associated to a thread",
+      "fullDescription": "Tracks containing state events associated to a thread.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE prelude.after_eof.state;",
+      "moduleIncludes": [
+        "prelude.after_eof.views"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/prelude/after_eof/state.sql",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(track.id)",
+          "description": "Unique identifier for this thread state track.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Name of the track."
+        },
+        {
+          "name": "type",
+          "type": "STRING",
+          "description": "The type of a track indicates the type of data the track contains. Every track is uniquely identified by the the combination of the type and a set of dimensions: type allow identifying a set of tracks with the same type of data within the whole universe of tracks while dimensions allow distinguishing between different tracks in that set."
+        },
+        {
+          "name": "parent_id",
+          "type": "JOINID(track.id)",
+          "description": "The track which is the \"parent\" of this track. Only non-null for tracks created using Perfetto's track_event API.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "source_arg_set_id",
+          "type": "ARGSETID",
+          "description": "Args for this track which store information about \"source\" of this track in the trace. For example: whether this track orginated from atrace, Chrome tracepoints etc."
+        },
+        {
+          "name": "machine_id",
+          "type": "JOINID(machine.id)",
+          "description": "Machine identifier",
+          "table": "machine",
+          "column": "id"
+        },
+        {
+          "name": "utid",
+          "type": "JOINID(thread.id)",
+          "description": "The utid that the track is associated with.",
+          "table": "thread",
           "column": "id"
         }
       ],
@@ -33728,7 +34938,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "android.gpu.work_period",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -33805,7 +35014,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "android.gpu.work_period",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -33882,7 +35090,6 @@
         "android.gpu.frequency",
         "android.gpu.mali_power_state",
         "android.gpu.work_period",
-        "android.monitor_contention",
         "android.process_metadata",
         "android.suspend",
         "android.user_list",
@@ -33972,6 +35179,7 @@
         "android.user_list",
         "android.version",
         "slices.with_context",
+        "std.thread.with_context",
         "wattson.utils"
       ]
     },
@@ -34024,6 +35232,7 @@
         "android.user_list",
         "android.version",
         "slices.with_context",
+        "std.thread.with_context",
         "wattson.utils"
       ]
     },
@@ -34076,6 +35285,7 @@
         "android.user_list",
         "android.version",
         "slices.with_context",
+        "std.thread.with_context",
         "wattson.utils"
       ]
     },
@@ -34128,6 +35338,7 @@
         "android.user_list",
         "android.version",
         "slices.with_context",
+        "std.thread.with_context",
         "wattson.utils"
       ]
     },
@@ -34328,6 +35539,7 @@
     "android_deep_idle_state": "android.battery.doze",
     "android_desktop_mode_windows": "android.desktop_mode",
     "android_device_name": "android.device",
+    "android_device_name_from_fingerprint": "android.device",
     "android_dmabuf_allocs": "android.memory.dmabuf",
     "android_dumpstate": "prelude.after_eof.views",
     "android_dumpsys_show_map": "android.dumpsys.show_map",
@@ -34375,6 +35587,7 @@
     "android_is_sf_jank_type": "android.frames.jank_type",
     "android_jank_cuj": "android.cujs.base",
     "android_jank_cuj_app_thread": "android.cujs.threads",
+    "android_jank_cuj_layer_name": "android.cujs.base",
     "android_jank_cuj_render_thread": "android.cujs.threads",
     "android_jank_latency_cujs": "android.cujs.sysui_cujs",
     "android_job_scheduler_events": "android.job_scheduler",
@@ -34599,6 +35812,7 @@
     "heap_graph_primitive": "prelude.after_eof.memory",
     "heap_graph_reference": "prelude.after_eof.memory",
     "heap_graph_thread_callsite": "prelude.after_eof.memory",
+    "heap_profile": "prelude.after_eof.memory",
     "heap_profile_allocation": "prelude.after_eof.views",
     "instant": "prelude.after_eof.views",
     "instruments_sample": "prelude.after_eof.views",
@@ -34640,16 +35854,19 @@
     "perf_session": "prelude.after_eof.views",
     "pixel_camera_frames": "pixel.camera",
     "pixel_camera_memory_span": "pixel.camera",
+    "pixel_touch_events": "pixel.touch",
     "pkvm_hypervisor_events": "pkvm.hypervisor",
     "process": "prelude.after_eof.views",
     "process_counter_track": "prelude.after_eof.counters",
     "process_memory_mappings": "prelude.after_eof.views",
     "process_memory_snapshot": "prelude.after_eof.memory",
     "process_slice": "slices.with_context",
+    "process_state_track": "prelude.after_eof.state",
     "process_track": "prelude.after_eof.tracks",
     "profiler_smaps": "prelude.after_eof.views",
     "protolog": "prelude.after_eof.views",
     "raw": "prelude.after_eof.events",
+    "regexp": "prelude.before_eof.functions",
     "regexp_extract": "prelude.before_eof.functions",
     "regexp_replace_simple": "prelude.before_eof.functions",
     "reverse": "prelude.before_eof.functions",
@@ -34679,7 +35896,15 @@
     "stack_profile_frame": "prelude.after_eof.views",
     "stack_profile_mapping": "prelude.after_eof.views",
     "stack_profile_symbol": "prelude.after_eof.views",
+    "stack_sample": "prelude.after_eof.stack_samples",
+    "stack_sample_async_context": "prelude.after_eof.stack_samples",
+    "stack_sample_counter": "prelude.after_eof.stack_samples",
+    "stack_sample_counter_track": "prelude.after_eof.stack_samples",
+    "stack_sample_execution_context": "prelude.after_eof.stack_samples",
+    "stack_sample_session": "prelude.after_eof.stack_samples",
+    "stack_sample_task_context": "prelude.after_eof.stack_samples",
     "state": "prelude.after_eof.views",
+    "state_track": "prelude.after_eof.state",
     "stats": "prelude.before_eof.stats",
     "surfaceflinger_layer": "prelude.after_eof.views",
     "surfaceflinger_layers_snapshot": "prelude.after_eof.views",
@@ -34692,6 +35917,7 @@
     "thread_slice_cpu_time": "slices.cpu_time",
     "thread_slice_time_in_state": "slices.time_in_state",
     "thread_state": "prelude.after_eof.cpu_scheduling",
+    "thread_state_track": "prelude.after_eof.state",
     "thread_track": "prelude.after_eof.tracks",
     "time_from_days": "time.conversion",
     "time_from_hours": "time.conversion",

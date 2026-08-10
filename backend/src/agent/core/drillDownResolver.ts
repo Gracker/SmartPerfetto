@@ -27,9 +27,9 @@ import type { FocusInterval } from '../strategies/types';
 import type { FrameEntity, SessionEntity } from '../context/entityStore';
 import {
   DrillDownEntityType,
-  getDrillDownSkillConfig,
   isDrillDownEntityType,
 } from '../config/drillDownRegistry';
+import {resolveDrillDownEntity} from './drillDownEntityResolver';
 
 // =============================================================================
 // Types
@@ -353,6 +353,10 @@ interface StartupResolutionEntity {
   ttfd_ms?: number | string;
 }
 
+function optionalStringOrNumber(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number' ? value : undefined;
+}
+
 function buildIntervalFromStartup(startup: StartupResolutionEntity): FocusInterval {
   return {
     id: parseInt(startup.startup_id, 10) || 0,
@@ -569,30 +573,35 @@ async function enrichStartup(
   const normalizedStartupId = normalizeLooseNumericId(startupId);
   if (!normalizedStartupId) return null;
 
-  const queryTemplate = getDrillDownSkillConfig('startup').enrichmentQuery;
-  if (!queryTemplate) return null;
-  const query = queryTemplate.replace('$startup_id', normalizedStartupId);
-
   try {
-    const result = await executeTraceQuery(tps, traceId, query);
-    const data = toRowObject(result);
+    const resolution = await resolveDrillDownEntity({
+      entityType: 'startup',
+      entityId: normalizedStartupId,
+      traceId,
+      traceProcessorService: tps,
+    });
+    const data = resolution?.row;
     if (!data) return null;
 
     const startup: StartupResolutionEntity = {
       startup_id: String(data.startup_id ?? normalizedStartupId),
       start_ts: data.start_ts !== undefined ? String(data.start_ts) : undefined,
       end_ts: data.end_ts !== undefined ? String(data.end_ts) : undefined,
-      process_name: data.process_name ?? data.package,
+      process_name: data.process_name != null
+        ? String(data.process_name)
+        : data.package != null
+          ? String(data.package)
+          : undefined,
       startup_type: data.startup_type !== undefined ? String(data.startup_type) : undefined,
-      dur_ms: data.dur_ms,
-      ttid_ms: data.ttid_ms,
-      ttfd_ms: data.ttfd_ms,
+      dur_ms: optionalStringOrNumber(data.dur_ms),
+      ttid_ms: optionalStringOrNumber(data.ttid_ms),
+      ttfd_ms: optionalStringOrNumber(data.ttfd_ms),
     };
 
     return {
       interval: buildIntervalFromStartup(startup),
       entity: startup,
-      query,
+      query: resolution.query,
     };
   } catch {
     return null;

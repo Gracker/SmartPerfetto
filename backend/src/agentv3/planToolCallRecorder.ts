@@ -40,6 +40,12 @@ export interface AnalysisPlanTracker {
   prePlanToolCallLog?: ToolCallRecord[];
 }
 
+export function resetPrePlanToolCallsForNewRun(
+  tracker: AnalysisPlanTracker | null | undefined,
+): void {
+  if (tracker) tracker.prePlanToolCallLog = [];
+}
+
 export interface PlanEvidenceGap {
   phase: PlanPhase;
   matchedCalls: ToolCallRecord[];
@@ -176,14 +182,18 @@ export function recordPlanToolCall(
   const canSatisfyEvidence = isEvidenceCapableToolName(shortName);
   const candidate = buildToolCallRecord(input);
 
-  const expectedGapPhase = canSatisfyEvidence ? findBestPhaseForExpectedCallGap(plan, candidate) : undefined;
+  const expectedGapPhase = canSatisfyEvidence
+    ? findBestPhaseForExpectedCallGap(plan, candidate, 'structured_only')
+    : undefined;
   const toolReturnedPhaseId = extractPlanPhaseIdFromToolResult(input.resultText);
   let matchedPhaseId = expectedGapPhase?.id;
 
   if (!matchedPhaseId && canSatisfyEvidence) {
-    matchedPhaseId = toolReturnedPhaseId &&
-      plan.phases.some(p => p.id === toolReturnedPhaseId)
-      ? toolReturnedPhaseId
+    const returnedPhase = toolReturnedPhaseId
+      ? plan.phases.find(phase => phase.id === toolReturnedPhaseId)
+      : undefined;
+    matchedPhaseId = returnedPhase && phaseMatchesCall(returnedPhase, candidate)
+      ? returnedPhase.id
       : undefined;
   }
 
@@ -194,10 +204,10 @@ export function recordPlanToolCall(
     }
   }
   if (!matchedPhaseId && canSatisfyEvidence) {
-    const pendingMatch = plan.phases.find(p =>
+    const pendingMatches = plan.phases.filter(p =>
       p.status === 'pending' && phaseMatchesCall(p, candidate),
     );
-    matchedPhaseId = pendingMatch?.id;
+    matchedPhaseId = pendingMatches.length === 1 ? pendingMatches[0].id : undefined;
   }
 
   const record = { ...candidate, matchedPhaseId };
@@ -243,7 +253,11 @@ export function replayPrePlanToolCalls(tracker: AnalysisPlanTracker | null | und
 
   let replayed = 0;
   for (const candidate of prePlanToolCallLog) {
-    const matchedPhase = findBestPhaseForExpectedCallGap(plan, candidate);
+    const matchedPhase = findBestPhaseForExpectedCallGap(
+      plan,
+      candidate,
+      'structured_or_generic',
+    );
     if (!matchedPhase) continue;
     plan.toolCallLog.push({
       ...candidate,
@@ -274,13 +288,22 @@ export function findMissingExpectedCallsForPhase(
 export function findBestPhaseForExpectedCallGap(
   plan: AnalysisPlanV3,
   record: ToolCallRecord,
+  mode: 'structured_only' | 'structured_or_generic',
 ): PlanPhase | undefined {
   const toolCallLog = Array.isArray(plan.toolCallLog) ? plan.toolCallLog : [];
-  const phasesWithMatchingGap = plan.phases.filter(phase => {
+  const phasesWithStructuredGap = plan.phases.filter(phase => {
     if (phase.status === 'skipped') return false;
     const missingExpectedCalls = findMissingExpectedCallsForPhase(phase, toolCallLog);
     return missingExpectedCalls.some(call => expectedCallMatchesRecord(call, record));
   });
+  const phasesWithMatchingGap = phasesWithStructuredGap.length > 0 || mode === 'structured_only'
+    ? phasesWithStructuredGap
+    : plan.phases.filter(phase => {
+        if (phase.status === 'skipped' || !phaseMatchesCall(phase, record)) return false;
+        return !toolCallLog.some(call =>
+          call.matchedPhaseId === phase.id && phaseMatchesCall(phase, call),
+        );
+      });
   if (phasesWithMatchingGap.length === 0) return undefined;
 
   const statusPriority: Record<PlanPhase['status'], number> = {
@@ -289,11 +312,13 @@ export function findBestPhaseForExpectedCallGap(
     pending: 2,
     skipped: 3,
   };
-  return [...phasesWithMatchingGap].sort((a, b) => {
-    const statusDelta = statusPriority[a.status] - statusPriority[b.status];
-    if (statusDelta !== 0) return statusDelta;
-    return plan.phases.indexOf(a) - plan.phases.indexOf(b);
-  })[0];
+  const highestPriority = Math.min(
+    ...phasesWithMatchingGap.map(phase => statusPriority[phase.status]),
+  );
+  const highestPriorityMatches = phasesWithMatchingGap.filter(
+    phase => statusPriority[phase.status] === highestPriority,
+  );
+  return highestPriorityMatches.length === 1 ? highestPriorityMatches[0] : undefined;
 }
 
 export function findCompletedPhaseEvidenceGaps(plan: AnalysisPlanV3): PlanEvidenceGap[] {

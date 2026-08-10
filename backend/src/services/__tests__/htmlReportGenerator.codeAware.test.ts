@@ -78,4 +78,39 @@ describe('HTMLReportGenerator code-aware rendering', () => {
     expect(html).toContain('不能替代当前 Trace 的 SQL/Skill 证据');
     expect(html).not.toContain('chunk-1</code></li>');
   });
+
+  it('renders selected and actually used source context without roots or snippets', () => {
+    const data = makeReportData({});
+    data.sourceContext = {
+      selected: [{
+        codebaseId: 'codebase-app-1234567890',
+        displayName: 'Demo App',
+        kind: 'app_source',
+      }, {
+        codebaseId: 'codebase-kernel-1234567890',
+        displayName: 'Kernel Source',
+        kind: 'kernel_source',
+      }],
+      usedCodebaseIds: ['codebase-app-1234567890'],
+    };
+
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML(data);
+
+    expect(html).toContain('源码上下文');
+    expect(html).toContain('已选择');
+    expect(html).toContain('实际使用/查询到');
+    expect(html).toContain('Demo App');
+    expect(html).toContain('Kernel Source');
+    expect(html).toContain('codebase-app');
+    expect(html).toContain('源码/图查询只定位候选机制');
+    expect(html).not.toContain('/Users/chris');
+    expect(html).not.toContain('raw source text');
+  });
+
+  it('leaves legacy reports without source context unchanged', () => {
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML(makeReportData({}));
+
+    expect(html).not.toContain('源码上下文');
+    expect(html).not.toContain('Source Context');
+  });
 });

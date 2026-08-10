@@ -4,6 +4,9 @@
 
 SmartPerfetto 本地源码运行时可以直接使用 Claude Code 的本地认证/配置；如果这个终端里的 `claude` 已经能正常写代码，可以不创建 `.env`。这既包括 Claude Code 官方订阅，也包括 Claude Code 已经配置好的第三方 base URL + API key。需要显式配置 API key、代理或 Docker 运行时，再使用 env 文件。
 
+Windows 免安装包用户先按 [Windows 配置与运行指南](windows.md) 完成下载、解压和启动，
+再使用本页的 Provider 字段。不要为普通 Windows 使用流程照抄 Unix 源码命令。
+
 ## 先回答：应该配置哪个 Runtime？
 
 Claude Code、OpenAI Agents SDK、Pi Agent Core、OpenCode 和 Qoder Agent SDK 是互斥可选的运行路径，不是都要完成的配置清单。第一次配置只选一个来源：
@@ -30,7 +33,7 @@ Self-Evolution 工作流。`Connection` 页里的高级 backend auth token 是�
 
 初学者优先走 UI，最不容易混淆：
 
-1. 启动 SmartPerfetto，打开 `http://localhost:10000`。
+1. 启动 SmartPerfetto；免安装包使用启动器打印的实际 `Open:` 地址，Docker 默认打开 `http://localhost:10000`。
 2. 打开 **AI Assistant Settings → Providers → Add Provider**。
 3. 选择 provider 类型，填写 **Provider API Key**，核对预置 Base URL 和 SDK Runtime。
 4. 点击 **Create Provider**。这一步只是保存 profile。
@@ -385,6 +388,8 @@ NODE_ENV=development
 # SMARTPERFETTO_BACKEND_PUBLIC_URL=http://localhost:3000
 # 可选：自托管 fork 的 HTTPS Issue 新建地址；不会自动提交。
 # SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
+# 仅当部署管理员确认本机 TUN 使用 RFC 2544 fake-IP 时，精确列出可信 Trace 主机：
+# SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS=storage.googleapis.com
 ```
 
 本地开发默认端口：
@@ -399,6 +404,11 @@ Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
 `FRONTEND_URL`，不用重复配置。只有浏览器实际访问的前端 Origin 不同（例如 HTTPS
 域名或反向代理）时才显式设置 `FRONTEND_URL`。浏览器无法安全推导后端地址时，显式设置
 `SMARTPERFETTO_BACKEND_PUBLIC_URL`。
+
+URL Trace 下载默认拒绝所有私有、保留和 RFC 2544 `198.18.0.0/15` 地址。若本机
+TUN 代理把可信公网域名解析为 fake-IP，部署管理员可以通过
+`SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS` 以逗号分隔精确主机名；不要配置
+通配符、IP 或不受你控制的域名。该配置是服务端 SSRF 信任边界，普通用户请求不能修改。
 
 ## API 鉴权
 

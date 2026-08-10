@@ -14,7 +14,11 @@ export type ExternalIssueProviderPinResolution =
   | {
       ok: true;
       providerId: string | null;
-      runtime: 'openai-agents-sdk' | 'claude-agent-sdk';
+      runtime:
+        | 'openai-agents-sdk'
+        | 'claude-agent-sdk'
+        | 'pi-agent-core'
+        | 'opencode';
       model?: string;
     }
   | {
@@ -31,7 +35,9 @@ export function resolveExternalIssueProviderPin(
   }
   if (
     manifest.runtime !== 'openai-agents-sdk' &&
-    manifest.runtime !== 'claude-agent-sdk'
+    manifest.runtime !== 'claude-agent-sdk' &&
+    manifest.runtime !== 'pi-agent-core' &&
+    manifest.runtime !== 'opencode'
   ) {
     return {ok: false, reason: 'runtime_not_supported'};
   }

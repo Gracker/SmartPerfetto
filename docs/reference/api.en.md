@@ -262,6 +262,10 @@ Base path: `/api/agent/v1`
 | Method | Path | Purpose |
 |---|---|---|
 | `POST` | `/analyze` | Start analysis |
+| `POST` | `/conversation` | Start or continue a lightweight conversation with optional trace and authorized source context |
+| `GET` | `/conversation/:sessionId/stream` | Conversation SSE by `runId`, with `Last-Event-ID` replay |
+| `POST` | `/conversation/:sessionId/cancel` | Cancel the exact conversation run |
+| `GET` | `/conversation/:sessionId/full-handoff` | Read a recommended full-analysis handoff |
 | `POST` | `/sessions/:sessionId/runs` | Start a new run in an existing session |
 | `GET` | `/:sessionId/stream` | Subscribe to SSE |
 | `GET` | `/runs/:runId/stream` | Subscribe to SSE by run id |
@@ -288,6 +292,23 @@ Base path: `/api/agent/v1`
 The workspace-scoped agent base is `/api/workspaces/:workspaceId/agent`, with
 the same child paths as the table above. `/api/agent/v1` still exists and is
 tracked by legacy telemetry with a migration target.
+
+### Lightweight Conversation
+
+All four `/conversation` endpoints require `agent:run` and revalidate tenant,
+workspace, and user ownership on every request. `POST /conversation` returns a
+`sessionId` and exact `runId`. A new turn in the same session cancels the older
+run before reserving the new run. Without `traceId`, the runtime exposes no
+trace tools. Codebase and knowledge-source selections still use the same
+permission, registered-root, rights, and provider-send authorization as
+`/analyze`. Private queries, tool bodies, and errors are projected before SSE
+replay or durable persistence.
+
+Terminal SSE events are `run_completed` and `run_failed`. Reconnecting clients
+can send `Last-Event-ID` or the `lastEventId` query parameter; replay uses
+monotonic event ids for deduplication. `full-handoff` succeeds only after a
+`recommend_full` outcome; otherwise it returns
+`409 FULL_ANALYSIS_NOT_RECOMMENDED`.
 
 ### Agent-Assisted External Issue
 
@@ -357,8 +378,10 @@ The terminal `analysis_completed` event can include `analysisReceipt` and
 `uiActionProposals`. `uiActionProposals` only
 contains safe UI proposals derived from DataEnvelope evidence and column click
 metadata, such as navigating to a time range, opening an evidence table, or
-pinning evidence. Clients must execute them only after an explicit user click;
-they are not automatic commands.
+`pin_evidence`. The `pin_evidence` action only saves an evidence or result snapshot
+in the current UI conversation for `/pins`; it does not pin a timeline track or
+automatically add the result to later AI context. Clients must execute actions
+only after an explicit user click; they are not automatic commands.
 
 Dual-trace comparison requires `referenceTraceId`, and it must be different from `traceId`.
 

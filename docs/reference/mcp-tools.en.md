@@ -24,7 +24,7 @@ The request-visible tool surface is shaped by the analysis request:
 |---|---|---|
 | Quick / lightweight | fast or lightweight path | `execute_sql`, `invoke_skill`, `lookup_sql_schema`, optional `fetch_artifact` |
 | Full analysis | full analysis path | data access, Skills, knowledge, baseline, memory, planning/hypothesis, and artifact tools |
-| Code-aware | local codebase access is allowed | `list_codebases`, `lookup_app_source`, `lookup_kernel_source`, `resolve_symbol`, `propose_patch` |
+| Code-aware | local codebase access is allowed | `list_codebases`, index-free search/read, optional graph navigation, indexed lookup, and patch tools |
 | Comparison | request includes `referenceTraceId` | `execute_sql_on`, `compare_skill`, `get_comparison_context` |
 
 Registry exposure levels distinguish public, internal, and permission-gated tools. They do not by themselves define the final user-visible set; runtime, mode, artifact store, codebase permission, comparison context, and allowlists all matter.
@@ -99,12 +99,27 @@ These tools enforce investigation discipline and reduce context size. Artifact s
 | Tool | Purpose | Boundary |
 |---|---|---|
 | `list_codebases` | List authorized codebases | Requires codebase permission |
+| `search_codebase` | Run a bounded text/symbol search in a registered live root | No SmartPerfetto index required; selected codebases and relative path prefixes only |
+| `read_codebase_file` | Read a bounded line range inside a registered root | `metadata_only` returns no text; `provider_send` still requires dual consent and redaction |
+| `query_code_graph` | Navigate related flows and symbols through an optional local graph | Metadata-only; returns a structured unavailable result when the graph cannot be used |
+| `inspect_code_symbol` | Inspect bounded relationships and locations for a candidate symbol | Metadata-only; relationships require bounded source verification |
 | `lookup_app_source` | Query app source | Must keep CodeRef filtering |
 | `lookup_kernel_source` | Query kernel source | Must keep CodeRef filtering |
 | `resolve_symbol` | Resolve trace symbols to source locations | Keeps source references traceable |
 | `propose_patch` | Generate a patch proposal | Must label verified / sketch / unverified |
 
-Code-aware output can appear in reports, exports, and snapshots; do not validate only the live chat view.
+All four index-free/graph-navigation tools require codebase permission and use codebases selected for the current request. `codebase_id` may be omitted only when exactly one codebase is selected; it is required when several are selected:
+
+- `search_codebase`: required `query`; optional `codebase_id`, relative `path_prefix`, and bounded `max_results`.
+- `read_codebase_file`: required relative `file_path`; optional `codebase_id`, `start_line`, and bounded `max_lines`.
+- `query_code_graph`: required `query`; optional `codebase_id` and bounded `max_results`.
+- `inspect_code_symbol`: required `symbol`; optional `codebase_id`, relative `file_path`, and bounded `max_relations`.
+
+A registered root that is still reachable immediately enables `search_codebase` / `read_codebase_file`; no active SmartPerfetto generation is required. `query_code_graph` / `inspect_code_symbol` only attempt to use a local GitNexus installation and index that the user already created. SmartPerfetto does not bundle, redistribute, install, require, or automatically index GitNexus. Missing, incompatible, timed-out, or failed graph access returns a structured unavailable result (`success=false` plus `unsupportedReason`); a stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues by calling the existing index-free search/read tools instead of blocking analysis.
+
+Graph tools return only `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. Registrations with `pathFilters` or `excludeGlobs` omit whole-repository process summaries whose path scope cannot be proven, while retaining authorized relative `CodeRef` values. Code-graph metadata is neither current-trace evidence nor verified source truth. Any relationship that affects a conclusion must be checked with bounded `read_codebase_file`; if the current permission mode blocks source reading, it must remain unverified. Absolute roots stay inside the backend trust boundary. When code-aware output reaches reports, exports, or snapshots, only safe names/IDs and relative `CodeRef` values may remain, never raw source. Do not validate only the live chat view.
+
+GitNexus is an independent optional third-party tool. Its [official project](https://github.com/abhigyanpatwari/GitNexus) and [npm package](https://www.npmjs.com/package/gitnexus) currently declare the [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE) license. Users must review the upstream terms before use. This is not legal advice.
 
 ## Comparison Tools
 
@@ -120,9 +135,11 @@ Comparison tools are registered only when `referenceTraceId` and comparison cont
 
 1. Confirm scene, time range, process identity, and rendering architecture.
 2. Prefer matching Skills; use SQL for gaps or hypothesis validation.
-3. Page large results through artifacts instead of filling agent context.
-4. Tie claims to trace evidence, Skill output, claim verification, or explicit uncertainty.
-5. Keep live chat readable while preserving audit evidence in reports, CLI artifacts, and snapshots.
+3. Use an optional code graph for candidate navigation only after trace/Skill/SQL points to an implementation; never substitute graph relationships for trace evidence.
+4. Narrow candidates with index-free `search_codebase`, then verify conclusion-bearing relationships with bounded `read_codebase_file` when consent permits.
+5. Page large results through artifacts instead of filling agent context.
+6. Tie claims to trace evidence, Skill output, claim verification, or explicit uncertainty.
+7. Keep live chat readable while preserving audit evidence in reports, CLI artifacts, and snapshots.
 
 ## Maintenance Checklist
 

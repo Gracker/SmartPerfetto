@@ -1,10 +1,9 @@
 // backend/src/services/providerManager/index.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import path from 'path';
 import { ProviderService } from './providerService';
 import { officialTemplates } from './templates';
-import { backendDataPath } from '../../runtimePaths';
+import {providerDataPath} from './providerPaths';
 
 export type {
   AgentRuntimeKind,
@@ -35,8 +34,7 @@ let instance: ProviderService | null = null;
 
 export function getProviderService(): ProviderService {
   if (!instance) {
-    const dir = process.env.PROVIDER_DATA_DIR_OVERRIDE || backendDataPath();
-    const file = path.join(dir, 'providers.json');
+    const file = providerDataPath('providers.json');
     instance = new ProviderService(file);
     const active = instance.list().find(p => p.isActive);
     if (active) {

@@ -2,14 +2,14 @@
 
 [English](code-aware-analysis.en.md) | [中文](code-aware-analysis.md)
 
-Code-Aware Analysis lets SmartPerfetto reference local source trees while analyzing a trace. It maps app frames, native frames, and kernel symbols to `CodeRef` metadata. Registration immediately enables `search_codebase` / `read_codebase_file`; no index is required first. Outputs preserve only `referenceId` or `chunkId`, relative paths, line ranges, and symbols. Raw source text is not persisted into sessions, reports, or exports.
+Code-Aware Analysis lets SmartPerfetto reference local source trees while analyzing a trace. It maps app frames, native frames, and kernel symbols to `CodeRef` metadata. A registered root that is still reachable becomes selectable immediately and enables `search_codebase` / `read_codebase_file`; no SmartPerfetto index is required first. Outputs preserve only `referenceId` or `chunkId`, relative paths, line ranges, and symbols. Raw source text is not persisted into sessions, reports, or exports.
 
 ## Enable It
 
 1. Start the backend with `./start.sh`.
 2. Open AI Assistant settings in Perfetto UI and select `Codebases`.
 3. Prefer **Choose folder** when adding a codebase, then run preview. Display name is optional and defaults to the folder name.
-4. Register it and start analysis immediately. Reindex is optional acceleration and still powers semantic/symbol lookup and patch workflows.
+4. Register it and start analysis immediately. SmartPerfetto reindexing is optional acceleration and still powers semantic/symbol lookup and patch workflows; it is independent of optional external code-graph acceleration.
 5. Use code-aware mode in analysis, or pass `--code-aware metadata_only|provider_send` and `--codebase-id <id>` in the CLI.
 
 CLI example:
@@ -54,6 +54,18 @@ A source codebase needs only a live registered root. Missing active generations 
 
 “Full runtime” means that an explicit `--analysis-mode fast` is resolved to `full` whenever source, private RAG, or a reference trace is selected, so capabilities are not silently dropped by a lightweight path. `provider_send` requires two independent authorizations: `--send-to-provider` at codebase registration and `--code-aware provider_send` for the current run.
 
+## Evidence Order And Optional Code Graphs
+
+The default investigation order is:
+
+1. Establish the performance symptom, time range, threads, slices, and symbols from the current trace, matching Skills, and Perfetto SQL. These are the primary evidence for performance claims.
+2. If the backend finds a local GitNexus installation that the user already installed and that is currently usable, the AI may call `query_code_graph` / `inspect_code_symbol` to navigate candidate call relationships and symbols. The graph is optional navigation acceleration, not trace evidence or source truth.
+3. Narrow the candidate to relative files and lines with index-free `search_codebase`, then verify the actual source with bounded `read_codebase_file` when current consent permits it. Any graph relationship that affects a conclusion must pass this check. If the permission mode blocks source reading, keep `verificationRequired` and do not promote the candidate to a verified claim.
+
+`query_code_graph` and `inspect_code_symbol` return metadata only: `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. They never return raw source text or absolute roots. When a registration uses `pathFilters` or `excludeGlobs`, SmartPerfetto omits whole-repository process summaries whose path scope cannot be proven; authorized relative `CodeRef` values remain available. If GitNexus is missing, unavailable, incompatible, times out, or fails, the graph tool returns a structured unavailable result (`success=false` plus `unsupportedReason`). A stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues through the existing `search_codebase` / `read_codebase_file` path, so registration, selection, and trace analysis remain available. SmartPerfetto does not install, bundle, redistribute, or automatically create or refresh a GitNexus index.
+
+GitNexus is an independent optional third-party tool. Its [official project](https://github.com/abhigyanpatwari/GitNexus) and [npm package](https://www.npmjs.com/package/gitnexus) currently declare the [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE) license. Review the upstream terms and confirm that your intended use is permitted before enabling it, especially for commercial use. This is not legal advice.
+
 ## Supported Codebases
 
 | kind | Use | Required metadata |
@@ -83,7 +95,8 @@ authorized through `SMARTPERFETTO_CODEBASE_ROOTS`.
 
 - `metadata_only`: the model can search on demand but receives only relative paths, line ranges, and `referenceId`, not source text.
 - `provider_send`: bounded, redacted search/read text can be sent only for codebases registered with `sendToProvider` consent.
-- On-demand tools enforce registered path filters, exclude globs, file types, per-file size, result and line limits, and secret redaction. Absolute roots never enter tool results.
+- On-demand tools enforce registered path filters, exclude globs, file types, per-file size, result and line limits, and secret redaction. Absolute roots remain inside the backend trust boundary and never enter tool results, model context, reports, or exports.
+- Code-graph results are always metadata-only. Reports, snapshots, and CLI artifacts may retain only safe names/IDs and relative `CodeRef` values, never raw source or a graph relationship presented as trace evidence.
 - System-picker mutation requests require a loopback Host, socket, and Origin; the read-only capability probe may omit Origin. The picker is disabled for Docker, enterprise, or non-loopback listeners. Absolute roots are never returned by codebase list/detail responses.
 - Raw queries, intermediate reasoning, tool arguments, and retrieved text from private source/knowledge runs are not persisted to sessions, logs, reports, or exports. Claude local transcripts and OpenAI Responses storage are disabled, and cross-session pattern, verifier, and SQL-fix learning is neither read nor written. Final conclusions and deterministic trace evidence pass through one shared privacy projection; bounded in-process session context provides multi-turn continuity.
 - Legacy RAG chunks keep their existing behavior; `app_source`, `kernel_source`, or `registryOrigin=codebase_registry` chunks without codebase metadata fail closed.

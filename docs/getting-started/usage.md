@@ -3,6 +3,7 @@
 [English](usage.en.md) | [中文](usage.md)
 
 如果你想先了解 SmartPerfetto 的完整功能边界、入口和输出效果，见 [功能总览](features.md)。
+Windows 免安装包从下载到首次分析的连续流程见 [Windows 指南](windows.md)。
 
 ## 推荐 trace 内容
 
@@ -17,14 +18,33 @@ SmartPerfetto 最适合 Android 12+ trace，尤其是包含 FrameTimeline 数据
 
 ## UI 分析流程
 
-1. 打开 `http://localhost:10000`。
+1. 打开运行入口给出的地址；Windows 免安装包使用启动器打印的实际 `Open:` URL，Docker 默认是 `http://localhost:10000`。
 2. 加载 `.pftrace` 或 `.perfetto-trace`。
 3. 打开 SmartPerfetto AI Assistant 面板。
-4. 选择分析模式：快速、完整或智能。
+4. 选择分析模式：对话、快速、完整或智能。
 5. 输入自然语言问题。
 6. 等待 SSE 流式输出、表格证据和最终结论。
 
 智能模式会先返回“场景盘点”，按时间顺序列出 trace 中识别到的启动、滑动、点击、导航、设备状态、ANR 等场景，并显示可深钻的范围按钮。选择“全部”或某一类场景后，才会进入对应的启动/滑动/点击等深钻分析。
+
+## 先对话，再决定是否分析
+
+`对话` 是默认入口。没有打开 Trace 时，顶部 AI 入口会进入独立对话页；打开
+Trace 后，同一个模式会在 AI Assistant 面板中附加当前 Trace。它适合先澄清目标、
+讨论性能原理或查询已授权源码。信息不足时会返回一个明确问题；只有确实需要完整
+Trace 因果分析时，才会给出可确认的完整分析交接，不会自行启动重型分析。
+
+连续快速发送会复用同一会话并先停止旧 run。新对话、清空对话、切换 Provider、
+输出语言、Workspace、源码授权或已附加 Trace 时都会建立新的安全边界。未附加 Trace
+的会话没有 Trace 查询工具；注册的本地源码根目录即使尚无索引，也可在授权后按需
+搜索和读取，索引只作为图谱/检索加速能力。
+
+## 使用分析结果操作
+
+分析结论下方的操作只会在用户点击后执行：**跳到时间点**会把目标时间点居中并
+明显缩放，**打开表格**会回到支撑结论的证据行，**收藏证据**会把证据或结果快照保存到
+当前会话。输入 `/pins` 可以查看收藏结果；收藏不会固定 Perfetto 时间线泳道，
+也不会自动把证据加入后续 AI 上下文。同一份 action 证据只收藏一次。
 
 ## Agent 辅助外部反馈
 
@@ -101,6 +121,7 @@ smp compare current.pftrace reference.pftrace \
 
 | 模式 | 推荐问题 | 不适合的问题 |
 |---|---|---|
+| 对话 | 澄清需求、性能原理、已授权源码、决定是否需要 Trace 深钻 | 期望立即执行完整 Trace 因果分析 |
 | 快速 | 包名、进程、trace 概览、简单数值 | `分析启动性能`、`分析滑动卡顿` 这类重查询 |
 | 完整 | 启动、滑动、ANR、复杂渲染根因 | 只问一个简单事实时成本偏高 |
 | 智能 | 混合脚本 trace、需要先看场景再决定深钻范围 | 明确只想直接分析单一场景时不如选择完整模式加具体问题 |
@@ -117,7 +138,7 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 这个 slice 前后有没有 Binder 或调度问题？
 ```
 
-多轮追问会复用 session。切换 fast/full/auto 模式会开启新的 SDK session，避免轻量上下文和完整上下文混用。
+多轮追问会复用 session。切换 conversation/fast/full/auto 模式会开启新的 SDK session，避免轻量上下文和完整上下文混用。
 
 ## 源码与 Android Internals 背景
 

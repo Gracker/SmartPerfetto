@@ -120,6 +120,27 @@ describe('verifyHeuristic', () => {
       expect(issues.filter(i => i.type === 'missing_evidence')).toHaveLength(0);
     });
 
+    it('should not extract a root-cause index severity as a duplicate finding', () => {
+      const conclusion = `
+### **[CRITICAL] SR12：bindApplication 阶段自定义代码过重（非框架 Slice 占 98.8%）**
+
+证据：startup_slow_reasons art-40 显示非框架 slice 占 bindApplication 98.8%，总耗时 568.8ms；actionable_main_thread_slices art-32 与 startup_breakdown art-4 交叉验证。
+
+## 根因编号引用
+
+- **SR12** [CRITICAL]：bindApplication 非框架 Slice 占比过高 — 命中（98.8%）
+
+以上索引只是对已证实发现的引用，不应生成一条脱离证据的新发现。
+`;
+      const findings = extractFindingsFromText(conclusion);
+      const issues = verifyHeuristic(findings, conclusion);
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].title).toContain('SR12');
+      expect(findings[0].evidence?.[0]?.text).toContain('art-40');
+      expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
+    });
+
     it('should not flag markdown severity table cells as CRITICAL findings without evidence', () => {
       const conclusion = `
 | 类型 | 帧数 | 占比 | 根因 | 严重度 |
@@ -178,6 +199,78 @@ describe('verifyHeuristic', () => {
       expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
     });
 
+    it('should not flag the real startup recommendation when colon-delimited inline metrics provide evidence', () => {
+      const conclusion = `
+### 优化建议
+
+1. **[CRITICAL] 移除/削减 onCreate 中的合成负载**：如果 \`LoadSimulator_ActivityInit\`、\`ChaosTask\`、\`SimulateInflation\` 复现了真实业务逻辑模式，应延迟非首帧必须的初始化。\`ChaosTask\` 70 次主线程阻塞调用是最大单一瓶颈（self=456ms）。
+`;
+      const findings = extractFindingsFromText(conclusion);
+      const issues = verifyHeuristic(findings, conclusion);
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence?.[0]?.text).toContain('456ms');
+      expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
+    });
+
+    it('should reject keyword-only and projected colon text as critical evidence', () => {
+      const recommendations = [
+        '**[CRITICAL] 优化启动**：请将 IO 操作迁移到后台线程，避免主线程阻塞并继续采集数据确认。',
+        '**[CRITICAL] Optimize startup**: Please move Binder work off the main thread and collect more data.',
+        '**[CRITICAL] 优化启动**：预计优化后耗时降低 456ms，仍需采集当前 trace 数据确认。',
+        '**[CRITICAL] 优化启动**：请迁移 IO 到后台。将降低启动耗时456ms。',
+        '**[CRITICAL] Optimize startup**: Move IO off main thread. This will reduce startup time by 456ms.',
+        '**[CRITICAL] Optimize startup**: Moving Binder work can reduce startup time by 456ms.',
+        '**[CRITICAL] Optimize startup**: Binder latency is 456ms if optimized.',
+        '**[CRITICAL] Optimize startup**: IO latency is 456ms after optimization.',
+      ];
+
+      for (const recommendation of recommendations) {
+        const conclusion = `### 优化建议\n\n${recommendation}`;
+        const findings = extractFindingsFromText(conclusion);
+        const issues = verifyHeuristic(findings, conclusion);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].evidence).toBeUndefined();
+        expect(issues.some(issue => issue.type === 'missing_evidence' && issue.severity === 'error')).toBe(true);
+      }
+    });
+
+    it('should accept observed Chinese metrics without treating ordinary words as future modality', () => {
+      const recommendations = [
+        '**[CRITICAL] 优化启动**：当前会话记录显示 IO self=456ms。',
+        '**[CRITICAL] 优化启动**：当前调度机会记录显示 Binder self=456ms。',
+        '**[CRITICAL] 优化启动**：实测 IO 耗时已降低至456ms，但仍高于预算。',
+      ];
+
+      for (const recommendation of recommendations) {
+        const conclusion = `### 优化建议\n\n${recommendation}`;
+        const findings = extractFindingsFromText(conclusion);
+        const issues = verifyHeuristic(findings, conclusion);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].evidence?.[0]?.text).toContain('456ms');
+        expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
+      }
+    });
+
+    it('should accept an observed inline metric before a projected target in the same statement', () => {
+      const recommendations = [
+        '**[CRITICAL] 优化启动**：当前 ChaosTask self=456ms，优化后预计降低到100ms。',
+        '**[CRITICAL] Optimize startup**: Current Binder work takes 456ms, and optimization could reduce it to 100ms.',
+      ];
+
+      for (const recommendation of recommendations) {
+        const conclusion = `### 优化建议\n\n${recommendation}`;
+        const findings = extractFindingsFromText(conclusion);
+        const issues = verifyHeuristic(findings, conclusion);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].evidence?.[0]?.text).toContain('456ms');
+        expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
+      }
+    });
+
     it('should bind a suffix severity heading to its following metric list', () => {
       const conclusion = `
 ### Frame 2 — workload_heavy **[CRITICAL]**
@@ -195,6 +288,59 @@ describe('verifyHeuristic', () => {
       expect(findings[0].title).toBe('Frame 2 — workload_heavy');
       expect(findings[0].evidence?.[0]?.text).toContain('62.73ms');
       expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
+    });
+
+    it('should accept an observed metric bullet before projected recommendation impact', () => {
+      const conclusion = `
+### 优化建议
+
+1. **[CRITICAL] 排查 \`animation\` 59ms 热点**
+- Frame 2 中 \`animation\` 59.31ms 远超预算。这是 View 动画在 Choreographer#doFrame 中的集中耗时。
+- **建议**：使用 CPU Profiling 确认具体回调。
+- **收益预估**：将 animation 从 59ms 降至 <5ms，帧长从 63ms 降至 <12ms。
+`;
+      const findings = extractFindingsFromText(conclusion);
+      const issues = verifyHeuristic(findings, conclusion);
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence?.[0]?.text).toContain('59.31ms');
+      expect(issues.filter(issue => issue.type === 'missing_evidence')).toHaveLength(0);
+    });
+
+    it('should reject projected-only recommendation impact as critical evidence', () => {
+      const impactLines = [
+        '- **收益预估**：将 animation 从 59ms 降至 <5ms，帧长从 63ms 降至 <12ms。',
+        '- **收益**：预计将 animation 从 59ms 降至 5ms。',
+        '- **Impact**: Expected frame duration will decrease from 59ms to 5ms.',
+      ];
+
+      for (const impactLine of impactLines) {
+        const conclusion = `### 优化建议\n\n1. **[CRITICAL] 优化 animation 热点**\n${impactLine}`;
+        const findings = extractFindingsFromText(conclusion);
+        const issues = verifyHeuristic(findings, conclusion);
+
+        expect(findings).toHaveLength(1);
+        expect(findings[0].evidence).toBeUndefined();
+        expect(issues.some(issue => issue.type === 'missing_evidence' && issue.severity === 'error')).toBe(true);
+      }
+    });
+
+    it('should not borrow evidence from the next ordered recommendation', () => {
+      const conclusion = `
+### 优化建议
+
+1. **[CRITICAL] 优化 animation 热点**
+- 需要继续采集数据确认。
+
+2. 后续验证
+- Frame 2 animation 59.31ms 已由另一项处理。
+`;
+      const findings = extractFindingsFromText(conclusion);
+      const issues = verifyHeuristic(findings, conclusion);
+
+      expect(findings).toHaveLength(1);
+      expect(findings[0].evidence).toBeUndefined();
+      expect(issues.some(issue => issue.type === 'missing_evidence' && issue.severity === 'error')).toBe(true);
     });
 
     it('should not treat an unquantified metric list as critical evidence', () => {
@@ -548,6 +694,56 @@ describe('verifyPlanAdherence', () => {
       i.severity === 'error' &&
       i.message.includes('综合结论与优化建议'),
     )).toBe(false);
+  });
+
+  it.each([
+    {
+      name: 'a wrong tool attributed to the evidence phase',
+      record: {
+        toolName: 'fetch_artifact',
+        success: true,
+        timestamp: 10,
+        matchedPhaseId: 'p1',
+      },
+    },
+    {
+      name: 'a failed expected tool attributed to the evidence phase',
+      record: {
+        toolName: 'get_comparison_context',
+        success: false,
+        timestamp: 10,
+        matchedPhaseId: 'p1',
+      },
+    },
+  ])('does not let $name stand in for prior evidence', ({record}) => {
+    const plan = makePlan({
+      phases: [
+        {
+          id: 'p1',
+          name: '证据采集',
+          goal: '读取双 Trace 对齐上下文',
+          expectedTools: ['get_comparison_context'],
+          status: 'skipped',
+          summary: '未完成有效证据采集。',
+        },
+        {
+          id: 'p2',
+          name: '综合结论',
+          goal: '基于前序有效证据输出报告',
+          expectedTools: ['fetch_artifact'],
+          status: 'completed',
+          summary: '声称已经基于前序证据完成报告。',
+        },
+      ],
+      toolCallLog: [record],
+    });
+
+    const issues = verifyPlanAdherence(plan);
+    expect(issues.some(issue =>
+      issue.type === 'plan_deviation' &&
+      issue.severity === 'error' &&
+      issue.message.includes('综合结论'),
+    )).toBe(true);
   });
 
   it('allows a comparison synthesis phase to reuse prior matching evidence calls', () => {
@@ -980,6 +1176,35 @@ describe('verifySceneCompleteness', () => {
       { toolName: 'lookup_knowledge', timestamp: Date.now(), inputSummary: 'rendering-pipeline', matchedPhaseId: 'p5' },
     ]);
     expect(issues.some(i => i.severity === 'error' && i.message.includes('深钻'))).toBe(true);
+  });
+
+  it.each([
+    {
+      name: 'a failed deep-drill Skill call',
+      call: {
+        toolName: 'invoke_skill',
+        skillId: 'jank_frame_detail',
+        success: false,
+        timestamp: 10,
+      },
+    },
+    {
+      name: 'a deep-drill skillId attached to the wrong tool',
+      call: {
+        toolName: 'lookup_knowledge',
+        skillId: 'jank_frame_detail',
+        success: true,
+        timestamp: 10,
+      },
+    },
+  ])('does not count $name as scrolling deep-drill evidence', ({call}) => {
+    const findings = [makeFinding({title: 'Jank', description: '真实掉帧 7 帧，App Deadline Missed'})];
+    const conclusion = '滑动分析：347帧中真实掉帧 7 帧，主要为 workload_heavy 和 lock_binder_wait。';
+    const issues = verifySceneCompleteness('scrolling', findings, conclusion, [call]);
+
+    expect(issues.some(issue =>
+      issue.severity === 'error' && issue.message.includes('深钻'),
+    )).toBe(true);
   });
 
   it('should pass scrolling with deep drill evidence present', () => {

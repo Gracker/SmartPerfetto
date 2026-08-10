@@ -11,6 +11,14 @@ Output language: {{output_language}}
 {{opportunity_json}}
 </untrusted_analysis_signals>
 
+<previous_validation_errors>
+{{validation_errors}}
+</previous_validation_errors>
+
+If the validation error list is non-empty, this is one repair attempt. Correct
+every listed structural or reference error while continuing to use only the
+untrusted signals above.
+
 Return exactly one JSON object with a `candidates` array containing at most
 three objects. Each object must have exactly this shape:
 

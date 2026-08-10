@@ -25,11 +25,14 @@ export interface CodeLookupLedgerEntry {
   ts: number;
   toolName: 'resolve_symbol' | 'lookup_app_source' | 'lookup_aosp_source' |
     'lookup_kernel_source' | 'lookup_oem_sdk' | 'lookup_blog_knowledge' |
-    'search_codebase' | 'read_codebase_file' | 'propose_patch';
+    'search_codebase' | 'read_codebase_file' | 'query_code_graph' |
+    'inspect_code_symbol' | 'propose_patch';
   codebaseId?: string;
   knowledgeSourceId?: string;
   sourceGeneration?: string;
   chunkIds: string[];
+  /** Bounded source/graph references returned by non-indexed lookup tools. */
+  returnedReferenceCount?: number;
   consentApplied: boolean;
   tokensSpent: number;
   outcome: CodeLookupOutcome;
@@ -41,7 +44,10 @@ export interface CodeLookupLedgerEntry {
 export interface CodeLookupSummary {
   lookupCount: number;
   patchCount: number;
+  /** Attempted/touched selected roots. Kept for compatibility. */
   referencedCodebaseIds: string[];
+  /** Roots that returned source/graph references successfully. */
+  usedCodebaseIds?: string[];
   usedKnowledgeSources?: Array<{
     knowledgeSourceId: string;
     sourceGenerations: string[];
@@ -86,7 +92,11 @@ export class CodeLookupLedger {
     const raw = fs.readFileSync(sidecarPath, 'utf-8');
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
-      const entry = JSON.parse(line) as CodeLookupLedgerEntry;
+      const parsed = JSON.parse(line) as Partial<CodeLookupLedgerEntry>;
+      const entry = {
+        ...parsed,
+        chunkIds: Array.isArray(parsed.chunkIds) ? parsed.chunkIds : [],
+      } as CodeLookupLedgerEntry;
       ledger.auditEntries.push(entry);
       if (
         authorizationFingerprint === undefined ||
@@ -155,9 +165,17 @@ export class CodeLookupLedger {
 
   toSnapshotSummary(): CodeLookupSummary {
     const codebaseIds = new Set<string>();
+    const usedCodebaseIds = new Set<string>();
     const knowledgeSources = new Map<string, Set<string>>();
     for (const entry of this.auditEntries) {
       if (entry.codebaseId) codebaseIds.add(entry.codebaseId);
+      if (
+        entry.codebaseId &&
+        entry.outcome === 'success' &&
+        ((entry.chunkIds?.length ?? 0) > 0 || (entry.returnedReferenceCount ?? 0) > 0)
+      ) {
+        usedCodebaseIds.add(entry.codebaseId);
+      }
       if (entry.outcome === 'success' && entry.knowledgeSourceId) {
         const generations = knowledgeSources.get(entry.knowledgeSourceId) ?? new Set<string>();
         if (entry.sourceGeneration) generations.add(entry.sourceGeneration);
@@ -172,6 +190,9 @@ export class CodeLookupLedger {
       lookupCount: this.auditEntries.filter(entry => entry.toolName !== 'propose_patch').length,
       patchCount: this.auditEntries.filter(entry => entry.toolName === 'propose_patch').length,
       referencedCodebaseIds: Array.from(codebaseIds).sort(),
+      ...(usedCodebaseIds.size > 0
+        ? {usedCodebaseIds: Array.from(usedCodebaseIds).sort()}
+        : {}),
       ...(usedKnowledgeSources.length > 0 ? {usedKnowledgeSources} : {}),
     };
   }

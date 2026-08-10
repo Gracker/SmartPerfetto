@@ -6,11 +6,19 @@
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const {
+  generateFullStdlibDocs,
+  loadFullStdlibDocs,
+  normalizeModuleDoc,
+} = require('./perfetto-stdlib-docs.cjs');
 
 const backendRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(backendRoot, '..');
 const outputPath = path.join(backendRoot, 'data', 'perfettoSqlDocs.json');
-const stdlibRoot = path.join(repoRoot, 'perfetto', 'src', 'trace_processor', 'perfetto_sql', 'stdlib');
+const perfettoRoot = process.env.PERFETTO_SOURCE_ROOT
+  ? path.resolve(process.env.PERFETTO_SOURCE_ROOT)
+  : path.join(repoRoot, 'perfetto');
+const stdlibRoot = path.join(perfettoRoot, 'src', 'trace_processor', 'perfetto_sql', 'stdlib');
 
 function readTextIfExists(file) {
   try {
@@ -66,11 +74,11 @@ function findStdlibDocsPath() {
 }
 
 function findPfsqlBin() {
-  if (process.env.PFSQL_BIN) {
+  if (!process.env.PERFETTO_SOURCE_ROOT && process.env.PFSQL_BIN) {
     const explicit = path.resolve(process.env.PFSQL_BIN);
     return fs.existsSync(explicit) ? explicit : undefined;
   }
-  const outRoot = path.join(repoRoot, 'perfetto', 'out');
+  const outRoot = path.join(perfettoRoot, 'out');
   if (!fs.existsSync(outRoot)) return undefined;
   const stack = [outRoot];
   while (stack.length) {
@@ -93,8 +101,11 @@ function findPfsqlBin() {
 }
 
 function getSubmoduleSha() {
+  if (process.env.PERFETTO_GENERATED_FROM) {
+    return process.env.PERFETTO_GENERATED_FROM;
+  }
   try {
-    return execFileSync('git', ['-C', path.join(repoRoot, 'perfetto'), 'rev-parse', 'HEAD'], {
+    return execFileSync('git', ['-C', perfettoRoot, 'rev-parse', 'HEAD'], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
@@ -181,13 +192,20 @@ function loadPfsqlLineage() {
   }
 }
 
-const docsPath = findStdlibDocsPath();
-if (!docsPath) {
+const docsPath = process.env.PERFETTO_SOURCE_ROOT ? undefined : findStdlibDocsPath();
+if (!process.env.PERFETTO_SOURCE_ROOT && !docsPath) {
   console.error('Could not find stdlib_docs.json. Set PERFETTO_STDLIB_DOCS_PATH to regenerate.');
   process.exit(1);
 }
 
-const docs = JSON.parse(fs.readFileSync(docsPath, 'utf-8'));
+const generatedFrom = getSubmoduleSha();
+const docsSource = process.env.PERFETTO_SOURCE_ROOT
+  ? {
+      docs: generateFullStdlibDocs({perfettoRoot, stdlibRoot}),
+      sourceDocsMode: 'runtime-revision-source-generator',
+    }
+  : loadFullStdlibDocs({docsPath, repoRoot, stdlibRoot});
+const {docs, sourceDocsMode} = docsSource;
 const pfsqlLineage = loadPfsqlLineage();
 
 const modules = [];
@@ -206,7 +224,7 @@ for (const group of docs) {
     const moduleBase = {
       package: packageName,
       module: moduleName,
-      moduleDoc: normalizeText(mod.module_doc),
+      moduleDoc: normalizeModuleDoc(mod.module_doc),
       tags: sortedUnique(mod.tags),
       includes,
       dataCheckSql: mod.data_check_sql || undefined,
@@ -364,8 +382,11 @@ const stats = {
 const asset = {
   version: 1,
   generatedAt: new Date().toISOString(),
-  generatedFrom: getSubmoduleSha(),
-  sourceDocs: path.relative(repoRoot, docsPath),
+  generatedFrom,
+  sourceDocs: docsPath
+    ? path.relative(repoRoot, docsPath)
+    : `git:${generatedFrom}:src/trace_processor/perfetto_sql/stdlib`,
+  sourceDocsMode,
   pfsqlLineage: {
     status: pfsqlLineage.status,
     ...(pfsqlLineage.binary ? { binary: pfsqlLineage.binary } : {}),

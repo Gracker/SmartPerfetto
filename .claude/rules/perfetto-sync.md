@@ -41,14 +41,20 @@ Use this order unless the task has a narrower explicit scope:
    version.
 5. Stop stale Perfetto UI watch/dev processes before rebuilding. Clear stale
    `perfetto/out/ui/watch.lock` only after confirming the owning process is gone.
-6. Rebuild or regenerate the affected Perfetto UI outputs.
+6. Rebuild or regenerate the affected Perfetto UI outputs. After browser
+   verification, stop the HMR dev server and run
+   `(cd perfetto && tools/node ui/build.mjs)` so the production bundle and CSS
+   exist before refreshing the committed prebuild.
 7. Refresh the committed `frontend/` prebuild with `./scripts/update-frontend.sh`
    when the plugin UI, Perfetto UI bundle, or generated UI assets changed.
 8. Update trace processor prebuilts and pin files only when that runtime is part
    of the sync. Keep independent recording-tool pins separate unless the task
    explicitly updates them too.
 9. Regenerate Perfetto SQL docs, SQL indexes, stdlib symbols, and light indexes
-   from source rather than hand-editing generated data.
+   from the exact trace-processor runtime revision with
+   `cd backend && npm run stdlib:generate-runtime-assets`; this creates one
+   temporary revision worktree for all outputs. Do not generate runtime
+   knowledge from the UI fork HEAD or hand-edit generated data.
 10. Feed new Perfetto SQL, stdlib, metric, or trace semantics into
     `backend/skills/` and `backend/strategies/` where they improve actual
     analysis quality. Do not stop at updating raw index files.

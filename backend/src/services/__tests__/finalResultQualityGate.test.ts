@@ -247,6 +247,24 @@ describe('final result quality gate', () => {
     expect(target.terminationMessage).toContain('最终结果质量闸门');
   });
 
+  it('appends the same quality issue only once across repeated projections', () => {
+    const target = result({
+      conclusion: 'epoll_wait 证明磁盘 IO 是根因。',
+      partial: true,
+      terminationMessage: 'runtime already degraded this result',
+    });
+
+    const issues = Array.from({length: 3}, () => applyFinalResultQualityGate({
+      result: target,
+      query: '分析 IO 根因',
+    }));
+
+    expect(issues.every(issue => issue?.code === 'kernel_blocking_claim_boundary')).toBe(true);
+    expect(target.terminationMessage).toContain('runtime already degraded this result');
+    const issueMessage = issues[0]!.message;
+    expect(target.terminationMessage!.split(issueMessage)).toHaveLength(2);
+  });
+
   it('flags process narration that leaked into the final conclusion', () => {
     const leaked = [
       '1. **冷启动**，dur=1338.65ms，原分类warm已被重分类为cold（R009）',
@@ -766,6 +784,39 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: localizedJankReport }),
       query: '分析滑动性能',
+    })).toBeUndefined();
+  });
+
+  it('accepts reports that exclude epoll and prove separate app file IO', () => {
+    const report = [
+      '# ANR 根因分析报告',
+      '',
+      '## 综合结论',
+      '',
+      'do_epoll_wait 只是等待事件，本次不作为 IO 根因。',
+      '独立的 SQLite file I/O slice 持续 200ms，Trace 证据 art-io-1 支持磁盘 IO 是本次阻塞根因。',
+      '',
+      '## 关键证据链',
+      '',
+      '- SQLite file I/O slice=200ms，主线程随后触发 ANR。',
+      '',
+      '## 优化建议',
+      '',
+      '- 将数据库写入移出主线程，并验证 art-io-1 对应区间。',
+    ].join('\n');
+
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: report,
+        findings: [{
+          severity: 'warning',
+          title: 'SQLite main-thread IO',
+          description: 'SQLite file I/O slice lasted 200ms',
+          evidence: ['art-io-1'],
+        } as any],
+      }),
+      query: '分析 ANR 根因',
+      sceneType: 'anr',
     })).toBeUndefined();
   });
 
@@ -1702,6 +1753,315 @@ describe('final result quality gate', () => {
 
     expect(issue?.code).toBe('kernel_blocking_claim_boundary');
     expect(issue?.message).toContain('epoll/poll');
+  });
+
+  it('flags poll IO claims that include decimal durations', () => {
+    const issue = assessFinalResultQuality({
+      result: result({
+        conclusion: 'do_epoll_wait 持续 120.5ms，证明磁盘 IO 是根因。',
+        findings: [{
+          severity: 'warning',
+          title: 'poll wait',
+          description: 'do_epoll_wait lasted 120.5ms',
+          evidence: ['blocked_function=do_epoll_wait dur=120.5ms'],
+        } as any],
+      }),
+      query: '解释这段阻塞的 IO 根因',
+    });
+
+    expect(issue?.code).toBe('kernel_blocking_claim_boundary');
+    expect(issue?.message).toContain('epoll/poll');
+  });
+
+  it('accepts explicit English poll root-cause boundaries', () => {
+    for (const conclusion of [
+      'epoll does not prove disk I/O as the root cause.',
+      'epoll cannot directly prove disk I/O as the root cause.',
+      'epoll alone is insufficient to establish disk I/O as the root cause.',
+      'epoll does not imply that disk I/O was the root cause.',
+      'epoll does not necessarily indicate that disk I/O caused the stall.',
+      'epoll is insufficient evidence to prove disk I/O as the root cause.',
+      'epoll cannot be used to prove disk I/O was the root cause.',
+      'epoll is not sufficient evidence to establish disk I/O as the root cause.',
+      'epoll cannot conclusively prove disk I/O as the root cause.',
+      'epoll neither proves nor establishes disk I/O as the root cause.',
+      'epoll 不足以证明磁盘 IO 是根因。',
+      'epoll cannot prove disk I/O was the root cause; it only indicates a candidate.',
+      'epoll cannot prove disk I/O was the root cause; this indicates storage I/O may be a candidate root cause.',
+      'epoll cannot prove disk I/O was the root cause; it indicates possible storage I/O as a root-cause candidate.',
+      'epoll 不能证明磁盘 IO 是根因；该信号表明存储 IO 可能只是根因候选。',
+      'epoll 不能证明磁盘 IO 是根因；它说明存储 IO 仍需补证。',
+      'epoll/poll 通常表示等待事件或空闲，但仍需要 IO 证据才能证明根因。',
+    ]) {
+      const issue = assessFinalResultQuality({
+        result: result({
+          conclusion,
+          findings: [{
+            severity: 'info',
+            title: 'poll boundary',
+            description: 'epoll is event wait evidence',
+            evidence: ['blocked_function=epoll_wait'],
+          } as any],
+        }),
+        query: 'Explain why epoll is not the root cause',
+      });
+
+      expect(issue).toBeUndefined();
+    }
+  });
+
+  it('accepts reports that explicitly found no poll evidence or IO misclassification risk', () => {
+    const baseReport = result({}).conclusion;
+    for (const boundary of [
+      '**内核等待语义自检**：两侧均未命中 `epoll`/`poll` 类 `blocked_function`；D 状态均 ≤1.7%，无 IO 误判风险。',
+      'Kernel wait check: no epoll or poll match was found, so there is no disk I/O root-cause evidence.',
+      '内核等待语义边界：epoll/poll 类 blocked_function 通常表示等待事件或空闲，只有 io_wait=1 或有明确文件/数据库证据时才可列为 IO 候选 — 当前二者均不具备；blocked_function 是 kernel wchan 单帧，非完整内核调用栈。',
+      'thread_state.blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待。当前 trace 缺失此数据源，470ms Sleeping 无法归因到具体原因。',
+      'blocked_function 能力边界内，blocked_functions 列为 `-`，Sleeping 状态的具体阻塞原因（epoll/poll/futex 等）无法确认。',
+    ]) {
+      const issue = assessFinalResultQuality({
+        result: result({
+          conclusion: `${baseReport}\n\n## 内核等待语义自检\n\n${boundary}`,
+        }),
+        query: '对比两条 Trace 的启动根因',
+      });
+
+      expect(issue).toBeUndefined();
+    }
+  });
+
+  it('still rejects poll root-cause claims when unrelated evidence is absent', () => {
+    for (const conclusion of [
+      '未发现其他证据，但 blocked_function=epoll_wait 证明磁盘 IO 是根因。',
+      '当前无 IO 证据，但 epoll_wait 仍说明磁盘 IO 是根因。',
+      'No other I/O evidence was found, but epoll proves disk I/O was the root cause.',
+      '未发现 epoll 之外的其他证据，但 epoll_wait 证明磁盘 IO 是根因。',
+      '没有命中 poll 以外的函数，poll_wait 说明磁盘 IO 是根因。',
+      '未发现 epoll/poll 之外的其他证据，但 epoll_wait 证明磁盘 IO 是根因。',
+      '未命中 epoll/poll 以外的函数，poll_wait 说明磁盘 IO 是根因。',
+      'No epoll evidence other than this match was found, but epoll proves disk I/O was the root cause.',
+      'epoll does not prove disk I/O as the root cause, but epoll proves storage I/O was the root cause.',
+      'epoll 不能证明磁盘 IO 是根因，但 epoll 证明存储 IO 是根因。',
+      'epoll 不但证明磁盘 IO 是根因，而且证明存储 IO 是根因。',
+      'Although epoll does not prove disk I/O as the root cause, epoll proves storage I/O was the root cause.',
+      '尽管 epoll 不能证明磁盘 IO 是根因，epoll 仍证明存储 IO 是根因。',
+      'epoll does not prove disk I/O as the root cause; conversely epoll proves storage I/O was the root cause.',
+      'epoll cannot prove disk I/O as the root cause; but it proves storage I/O was the root cause.',
+      'epoll cannot prove disk I/O as the root cause; however, this proves storage I/O was the root cause.',
+      'epoll 不能证明磁盘 IO 是根因；但它证明存储 IO 是根因。',
+      'epoll 不能证明磁盘 IO 是根因；不过该信号证明存储 IO 是根因。',
+      'epoll/poll 通常表示等待事件或空闲，但它证明磁盘 IO 是根因。',
+      'epoll/poll 通常表示等待事件或空闲，但 epoll_wait 证明磁盘 IO 是根因。',
+      'epoll/poll 通常表示等待事件或空闲，但仍证明磁盘 IO 是根因。',
+      'epoll/poll 通常表示等待事件或空闲，因此证明磁盘 IO 是根因。',
+      'epoll/poll usually represents an event wait, but still proves disk I/O was the root cause.',
+      'epoll/poll 通常表示等待事件或空闲，可是仍证明磁盘 IO 是根因。',
+      'epoll/poll 通常表示等待事件或空闲，尽管如此仍证明磁盘 IO 是根因。',
+      'epoll usually represents an event wait, yet still proves disk I/O was the root cause.',
+      'epoll 通常表示等待事件，但这个证据仍证明磁盘 IO 是根因。',
+      'epoll usually represents an event wait, but this evidence still proves disk I/O was the root cause.',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，但它证明磁盘 IO 是根因。',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，但 epoll_wait 证明磁盘 IO 是根因。',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，并证明磁盘 IO 是根因。',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，并且证明磁盘 IO 是根因。',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，从而证明磁盘 IO 是根因。',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，由此证明磁盘 IO 是根因。',
+      'epoll usually represents an event wait, and proves disk I/O was the root cause.',
+      'epoll usually represents an event wait, thereby proves disk I/O was the root cause.',
+    ]) {
+      const issue = assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析 IO 根因',
+      });
+
+      expect(issue?.code).toBe('kernel_blocking_claim_boundary');
+    }
+  });
+
+  it('accepts independent app IO evidence after a qualified poll boundary', () => {
+    for (const conclusion of [
+      'epoll 通常表示等待事件；独立 SQLite file I/O trace 证明磁盘 IO 是根因。',
+      'epoll usually represents an event wait; an independent SQLite file I/O trace proves disk I/O was the root cause.',
+      'epoll 通常表示等待事件，但独立 SQLite file I/O trace 证明磁盘 IO 是根因。',
+      'epoll 通常表示等待事件；fsync dur=100ms 证明磁盘 IO 是根因。',
+      'epoll usually represents an event wait; fsync dur=100ms proves disk I/O was the root cause.',
+      'epoll 不能证明磁盘 IO 是根因；CPU 饱和证明它才是根因。',
+      'epoll cannot prove disk I/O was the root cause; CPU saturation proves it was the root cause.',
+      'epoll usually represents an event wait, but lock contention proves it was the root cause.',
+      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，并且 fsync dur=100ms 证明磁盘 IO 是根因。',
+      'epoll usually represents an event wait, and fsync dur=100ms proves disk I/O was the root cause.',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析 IO 根因',
+      })).toBeUndefined();
+    }
+  });
+
+  it('accepts independent stack evidence after a qualified blocked-function boundary', () => {
+    for (const conclusion of [
+      'blocked_function is not a full call stack; other profiler data is a full kernel call stack.',
+      'blocked_function 不是完整内核调用栈；其他 profiler 数据是完整内核调用栈。',
+      'blocked_function 不是完整内核调用栈；unwinder 输出是完整内核调用栈。',
+      'blocked_function is not a full kernel call stack; unwinder output is a full kernel call stack.',
+      'blocked_function 不是完整内核调用栈；frame-pointer 重建结果是完整调用栈。',
+      'blocked_function is not a full kernel call stack; frame-pointer reconstruction is a full call stack.',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析内核调用栈证据边界',
+      })).toBeUndefined();
+    }
+  });
+
+  it('accepts explicit D-state and blocked-function evidence boundaries', () => {
+    for (const conclusion of [
+      'D-state alone cannot prove disk I/O as the root cause.',
+      'D 状态不能证明磁盘 IO 是根因。',
+      'D 状态不能证明磁盘 IO 是根因，但仍需 IO 证据才能证明根因。',
+      'D 状态只是不可中断等待，仍需 IO 证据才能证明根因。',
+      'D 状态仅表示不可中断等待，需要 IO 证据后才能归因。',
+      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著。',
+      '根因：合成负载在 performCreate 路径中密集运行 CPU 任务，主线程 100% 在大核上执行，无调度瓶颈（Q3 Runnable 仅 4.59ms / 0.3%），也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。瓶颈纯粹是同步计算量。',
+      '也非 IO 阻塞；独立 SQLite file I/O slice 持续 200ms，Trace 证据 art-io-1 支持磁盘 IO 是本次阻塞根因；Q4a D 状态仅 22.98ms / 1.7%。',
+      '也非 IO 阻塞；独立 fsync dur=200ms，Trace 证据 art-io-2 证明磁盘 IO 是本次阻塞根因；Q4a D 状态仅 22.98ms / 1.7%。',
+      'Q4a (D-state) is only 22.98ms, confirming that I/O blocking is not significant.',
+      'D-state only indicates uninterruptible sleep; it requires I/O evidence before root-cause attribution.',
+      '| **Q4a** | D (不可中断睡眠) | 22.98ms | 1.7% | 125 次，blocked_function 缺失，**不能直接归为磁盘 IO**；仅表明存在短暂的不可中断等待，具体原因需 io_wait 或 blocked_function 信号确认 |',
+      '| D 状态 → 磁盘 IO 根因 | **无法确认** | blocked_function 与 io_wait 均缺失；D 状态 22.98ms (1.7%) 仅表明存在不可中断等待，不能直接归因为磁盘 IO |',
+      '| **D 状态根因** | 22.98ms (1.7%)，因 io_wait 和 blocked_function 均缺失，不能归因为磁盘 IO |',
+      '| 主线程 IO 根因 | **无法确认** — D 状态 22.98ms (1.7%)，`blocked_function` 未采集 | 需 `sched_blocked_reason` |',
+      '内核等待语义自检：`blocked_function` 字段全部 null，无法判定是 Binder 等待、epoll 空闲还是其它类型阻塞，不能将其归为 IO 根因。',
+      '| **D/IO 阻塞** | Q4a（D 状态）仅 22.98ms / 1.7%，未达 >10% 干预阈值 |',
+      '所有依赖 ANR 窗口的后续分析步骤（CPU 健康、内存压力、I/O D-state、futex 锁等待、系统冻结检测、Top CPU 进程、根因诊断）均因无 ANR 窗口而返回空结果。',
+      '- **I/O 阻塞（D-state）**：未做不可中断等待（state=D）统计，无 process_name 与 uninterruptible_wait_ms 数据。',
+      '| 主线程 IO 根因 | **无法确认** — 但独立 CPU 饱和仍是启动慢的根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
+      '| 主线程 IO 根因 | **无法确认** — 独立 SQLite file I/O slice 持续 200ms，Trace 证据支持磁盘 IO 是根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 SQLite file I/O slice=200ms 证明磁盘 IO 是根因，因此不能将 epoll 归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 CPU 饱和证明它才是启动慢根因，因此不能将 epoll 归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 SQLite file I/O slice=200ms；它证明磁盘 IO 是根因，因此不能将 epoll 归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 CPU 饱和；它证明 CPU 才是启动慢根因，因此不能将 epoll 归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 SQLite file I/O slice=200ms；因此证明磁盘 IO 是根因，不能将 epoll 归为 IO 根因。',
+      'D 状态并非证明磁盘 IO 是根因，因此不能归因为磁盘 IO。',
+      'D 状态并不证明磁盘 IO 是根因，因此无法认定为磁盘 IO 根因。',
+      'D 状态不是磁盘 IO 根因，无法归因为磁盘 IO。',
+      'D-state 的 blocked_function 记录了具体阻塞根因。',
+      '本次 trace 中 **未检测到任何 ANR 事件**。`anr_analysis` Skill 已完整执行了 ANR 检测、ANR 上下文提取、系统 CPU 健康度、内存压力（LMK）、I/O D-state 阻塞、futex 锁等待探针以及系统冻结检测共七个步骤，`android_anrs` 表查询返回 `total_anr_count=0`，所有依赖 ANR 窗口的后续分析均因无窗口而无数据。',
+      '| I/O D-state 阻塞 | rowCount=0 | 无 ANR 窗口，跳过 |',
+      'blocked_function is not a full call stack.',
+      'blocked_function 不是完整调用栈。',
+      'blocked_function 不是完整调用栈，但仍需 perf sample 才能证明完整调用栈。',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析内核等待证据边界',
+      })).toBeUndefined();
+    }
+  });
+
+  it('rejects positive kernel claims after an unrelated negative boundary', () => {
+    for (const conclusion of [
+      'D-state alone cannot prove disk I/O as root cause. However D-state proves disk I/O was the root cause.',
+      'D 状态不能证明磁盘 IO 是根因，但 D 状态证明磁盘 IO 是根因。',
+      'D-state cannot prove disk I/O was the root cause, but still proves disk I/O was the root cause.',
+      'D-state cannot prove disk I/O was the root cause, yet still proves disk I/O was the root cause.',
+      'D 状态不能证明磁盘 IO 是根因，但仍证明磁盘 IO 是根因。',
+      'D 状态不能不归因为磁盘 IO 根因。',
+      'D 状态不能不认定磁盘 IO 是根因。',
+      '| D 状态 → 磁盘 IO 根因 | 无法确认，但仍证明磁盘 IO 是根因 |',
+      '| 主线程 IO 根因 | **无法确认** — D 状态仍证明磁盘 IO 是根因，22.98ms (1.7%) | 需 `sched_blocked_reason` |',
+      '| 主线程 IO 根因 | **无法确认** — 但仍证明磁盘 IO 是根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
+      '内核等待语义自检：`blocked_function` 字段全部 null，无法判定是 Binder 等待、epoll 空闲还是其它类型阻塞，不能将其归为 IO 根因，但仍证明磁盘 IO 是根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，但 epoll_wait 仍证明磁盘 IO 是根因，不过不能将其归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，不能不将其归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，并非不能将其归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；epoll 并非不证明磁盘 IO 是根因，因此不能将其归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` null，无法判定 epoll，epoll 证明磁盘 IO 是根因，不能归为 IO 根因。',
+      '内核等待语义自检：`blocked_function` null，无法判定 epoll，epoll 仍证明磁盘 IO 是根因，不能归为 IO 根因。',
+      '| **D/IO 阻塞** | Q4a（D 状态）仅 22.98ms / 1.7%，未达 >10% 干预阈值，但仍证明磁盘 IO 是根因 |',
+      '所有依赖 ANR 窗口的后续分析步骤（CPU 健康、内存压力、I/O D-state、futex 锁等待、系统冻结检测、Top CPU 进程、根因诊断）均因无 ANR 窗口而返回空结果，但 D-state 仍证明磁盘 IO 是根因。',
+      'I/O D-state 仍证明磁盘 IO 是根因，但根因诊断因无 ANR 窗口而返回空结果。',
+      'I/O D-state 根因诊断并非因无 ANR 窗口而返回空结果。',
+      '- **I/O 阻塞（D-state）**：未做不可中断等待（state=D）统计，无 process_name 与 uninterruptible_wait_ms 数据，但 D-state 仍证明磁盘 IO 是根因。',
+      '| **D/IO 阻塞** | Q4a（D 状态）为 22.98ms / 1.7%，并非未达 >10% 干预阈值 |',
+      'D 状态证明磁盘 IO 是根因，但因证据不足不能归因为磁盘 IO。',
+      'D 状态并非证明磁盘 IO 是根因，但 D 状态证明磁盘 IO 是根因，因此不能归因为磁盘 IO。',
+      'D 状态并非证明磁盘 IO 是根因但 D 状态证明磁盘 IO 是根因因此不能归因为磁盘 IO。',
+      'D 状态不能证明磁盘 IO 是根因但仍证明磁盘 IO 是根因因此不能归因为磁盘 IO。',
+      '| I/O D-state 阻塞 | rowCount=0 | 但仍证明磁盘 IO 是根因 |',
+      'D 状态证明磁盘 IO 是根因；另一检查 rowCount=0。',
+      '| I/O D-state 阻塞 | rowCount!=0 |',
+      '| I/O D-state 阻塞 | 预计 rowCount=0 |',
+      '| I/O D-state 阻塞 | 并非无 ANR 窗口 |',
+      '| I/O D-state 阻塞 | 未跳过 |',
+      '| I/O D-state 阻塞 | 不跳过 |',
+      '| I/O D-state 阻塞 | 无需跳过 |',
+      '| D 状态 → 磁盘 IO 根因 | 无法确认但仍证明磁盘 IO 是根因 |',
+      '| D 状态 → 磁盘 IO 根因 | 并非 **无法确认** |',
+      'D 状态并非 **不能归因** 为磁盘 IO 根因。',
+      'D 状态只是不可中断等待，仍需 IO 证据，但仍证明磁盘 IO 是根因。',
+      'Q4a（D 状态）为 22.98ms，印证 IO 阻塞显著，是启动慢的根因。',
+      'Q4a (D-state) is 22.98ms, confirming significant I/O blocking as the startup root cause.',
+      'Q4a（D 状态）仅 22.98ms，IO 阻塞并非不显著，是启动慢的根因。',
+      'D 状态证明磁盘 IO 是根因；也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。',
+      '也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%），但仍证明磁盘 IO 是根因。',
+      '也非 IO 阻塞，但 D 状态证明磁盘 IO 是根因，Q4a 仅 22.98ms / 1.7%。',
+      '也非 IO 阻塞（Q4a D 状态证明磁盘 IO 是根因，仅 22.98ms / 1.7%）。',
+      '并非非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。',
+      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著，但仍导致启动慢。',
+      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著，然而是启动慢的根因。',
+      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著。它仍证明 IO 阻塞是启动慢的根因。',
+      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著。它仍导致启动慢。',
+      'Q4a (D-state) is only 22.98ms, confirming that I/O blocking is not significant. It still causes startup slowdown.',
+      'Q4a (D-state) is 22.98ms, confirming I/O blocking is not insignificant.',
+      'Q4a (D-state) is 22.98ms, confirming I/O blocking is not negligible.',
+      'Q4a (D-state) is 22.98ms, confirming I/O blocking is not not significant.',
+      'blocked_function is not a full call stack. However sched_blocked_reason blocked_function is the full kernel call stack.',
+      'blocked_function 不是完整调用栈，但 sched_blocked_reason blocked_function 是完整内核调用栈。',
+      'blocked_function is not a full call stack, but still is a full kernel call stack.',
+      'blocked_function is not a full call stack, yet still is a full kernel call stack.',
+      'blocked_function 不是完整内核调用栈，但仍是完整内核调用栈。',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析内核等待证据边界',
+      })?.code).toBe('kernel_blocking_claim_boundary');
+    }
+  });
+
+  it('requires affirmative D-state IO evidence bound to the causal claim', () => {
+    for (const conclusion of [
+      'D 状态证明磁盘 IO 是根因。另有与该等待窗口无关的 SQLite file I/O slice=1ms。',
+      'D 状态证明磁盘 IO 是根因。注意：没有 io_wait=1 时不能归因。',
+      'D 状态证明磁盘 IO 是根因。后续需要采集 io_wait=1 或 filemap 证据。',
+      'D-state proves disk I/O was the root cause. No io_wait=1 evidence was captured.',
+      'D 状态证明磁盘 IO 是根因。另有 SQLite file I/O slice=1ms。',
+      'D 状态证明磁盘 IO 是根因。两分钟后 SQLite file I/O slice=1ms。',
+      'D 状态证明磁盘 IO 是根因。不同线程观测到 blocked_function=filemap_read dur=1ms。',
+      'D 状态证明磁盘 IO 是根因。只有 io_wait=1 才可归因，当前不具备。',
+      'D-state proves disk I/O was the root cause. We do not have io_wait=1 evidence.',
+      'D-state proves disk I/O was the root cause. io_wait=1 may be present but is unverified.',
+      'D 状态证明磁盘 IO 是根因。可能存在 io_wait=1，但尚未验证。',
+      'D 状态证明磁盘 IO 是根因。假设 io_wait=1 命中。',
+      'D-state proves disk I/O was the root cause. If io_wait=1 is observed, that would support it.',
+      'D 状态证明磁盘 IO 是根因，另有 SQLite file I/O slice=1ms。',
+      'D 状态证明磁盘 IO 是根因，同句记录 SQLite file I/O slice=1ms。',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析内核等待证据边界',
+      })?.code).toBe('kernel_blocking_claim_boundary');
+    }
+
+    for (const conclusion of [
+      '主线程 D 状态与 io_wait=1 在同一等待窗口命中，证明磁盘 IO 是根因。',
+      'D 状态证明磁盘 IO 是根因。同一等待窗口观测到 blocked_function=filemap_read dur=120ms。',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析内核等待证据边界',
+      })).toBeUndefined();
+    }
   });
 
   it('flags reports that turn D-state-only evidence into disk IO root cause', () => {

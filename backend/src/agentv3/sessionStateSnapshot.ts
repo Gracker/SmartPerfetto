@@ -594,6 +594,8 @@ export interface SessionStateSnapshot {
   /** Non-secret consent/index-generation state captured for resume/report safety. */
   codebaseSnapshot?: Array<{
     codebaseId: string;
+    displayName?: string;
+    kind?: import('../services/codebase/codebaseRegistry').CodebaseKind;
     indexGeneration: number;
     activeGeneration?: string;
     contentFingerprint?: string;

@@ -235,23 +235,35 @@ describe('HTMLReportGenerator', () => {
             resultSnapshotId: 'snapshot-receipt',
           },
         },
-        uiActionProposals: [{
-          schemaVersion: 1,
-          id: 'ui-open_evidence_table-1',
-          kind: 'open_evidence_table',
-          title: '打开启动证据表',
-          reason: '查看支撑结论的原始证据行',
-          source: {
-            evidenceRefId: 'data:startup:summary:123',
-            artifactId: 'artifact-startup',
-            skillId: 'startup_analysis',
+        uiActionProposals: [
+          {
+            schemaVersion: 1,
+            id: 'ui-open_evidence_table-1',
+            kind: 'open_evidence_table',
+            title: '打开启动证据表',
+            reason: '查看支撑结论的原始证据行',
+            source: {
+              evidenceRefId: 'data:startup:summary:123',
+              artifactId: 'artifact-startup',
+              skillId: 'startup_analysis',
+            },
+            payload: {
+              artifactId: 'artifact-startup',
+              evidenceRefId: 'data:startup:summary:123',
+            },
+            requiresConfirmation: true,
           },
-          payload: {
-            artifactId: 'artifact-startup',
-            evidenceRefId: 'data:startup:summary:123',
+          {
+            schemaVersion: 1,
+            id: 'ui-pin_evidence-1',
+            kind: 'pin_evidence',
+            title: '保存启动证据快照',
+            reason: '保存到当前会话',
+            source: {evidenceRefId: 'data:startup:summary:123'},
+            payload: {evidenceRefId: 'data:startup:summary:123'},
+            requiresConfirmation: true,
           },
-          requiresConfirmation: true,
-        }],
+        ],
       },
     });
 
@@ -261,6 +273,7 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('report-receipt');
     expect(html).toContain('snapshot-receipt');
     expect(html).toContain('UI 动作提案');
+    expect(html).toContain('收藏证据');
     expect(html).toContain('打开启动证据表');
     expect(html).toContain('artifact-startup');
     expect(html).not.toContain('SELECT ');

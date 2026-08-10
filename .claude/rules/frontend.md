@@ -54,8 +54,12 @@ After any change under `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/`:
 1. Run `./scripts/start-dev.sh`.
 2. Verify the UI change in the browser at `http://localhost:10000`.
 3. Run relevant Perfetto UI tests/typecheck for the touched code.
-4. Run `./scripts/update-frontend.sh`.
-5. Commit the plugin source, `frontend/index.html`, the active `frontend/v*`
+4. Stop `./scripts/start-dev.sh`. Its HMR server intentionally does not emit
+   the production `frontend_bundle.js` and `frontend.css` artifacts.
+5. Run `(cd perfetto && tools/node ui/build.mjs)` to produce the standalone
+   production bundle.
+6. Run `./scripts/update-frontend.sh`.
+7. Commit the plugin source, `frontend/index.html`, the active `frontend/v*`
    bundle, and any SmartPerfetto static assistant assets that changed.
 
 `scripts/update-frontend.sh` is the supported way to refresh `frontend/`. It

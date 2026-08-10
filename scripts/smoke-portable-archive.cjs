@@ -47,9 +47,11 @@ const SMOKE_ENV_ALLOWLIST = new Set([
   'WINDIR',
 ]);
 const HEALTH_RESPONSE_LIMIT_BYTES = 64 * 1024;
+const JSON_RESPONSE_LIMIT_BYTES = 256 * 1024;
 const HEALTH_PROBE_OUTPUT_LIMIT_BYTES = 128 * 1024;
 const HEALTH_PROBE_ERROR_LIMIT_BYTES = 32 * 1024;
 const HEALTH_PROBE_TERMINATION_GRACE_MS = 250;
+const DIRECT_LOOPBACK_HTTP_AGENT = new http.Agent({proxyEnv: {}});
 const HEALTH_PROBE_TERMINATION_SETTLEMENT_MS = 2_000;
 const WINDOWS_GATE_HELPER_ENV = 'SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH';
 const WINDOWS_PROCESS_SNAPSHOT_LIMIT_BYTES = 8 * 1024 * 1024;
@@ -148,6 +150,11 @@ function packagePaths(extractedRoot, packageName, target) {
     'bin',
     'opencode.exe',
   );
+  const sodiumPrebuild = target === 'windows-x64'
+    ? 'win32-x64'
+    : target === 'macos-arm64'
+      ? 'darwin-arm64'
+      : 'linux-x64';
   return {
     packageRoot,
     resources,
@@ -156,6 +163,35 @@ function packagePaths(extractedRoot, packageName, target) {
     traceProcessor,
     claude,
     opencode,
+    betterSqlite3: path.join(
+      resources,
+      'backend',
+      'node_modules',
+      'better-sqlite3',
+    ),
+    sodium: path.join(
+      resources,
+      'backend',
+      'node_modules',
+      'sodium-native',
+    ),
+    sodiumPrebuild: path.join(
+      resources,
+      'backend',
+      'node_modules',
+      'sodium-native',
+      'prebuilds',
+      sodiumPrebuild,
+      'sodium-native.node',
+    ),
+    localSecretStore: path.join(
+      resources,
+      'backend',
+      'dist',
+      'services',
+      'providerManager',
+      'localSecretStore.js',
+    ),
     manifest: path.join(packageRoot, 'PACKAGE-MANIFEST.json'),
     notarizationReceipt: path.join(packageRoot, 'NOTARIZATION-RECEIPT.json'),
   };
@@ -207,6 +243,216 @@ function runArchiveBinary(command, args, label, env, runner = runChecked) {
     killSignal: 'SIGKILL',
     timeout: 30_000,
   });
+}
+
+function probePortableNativeModules(paths, env, runner = runChecked) {
+  const script = [
+    "const Database = require(process.argv[1])",
+    "const sodium = require(process.argv[2])",
+    "const database = new Database(':memory:')",
+    "const sqliteValue = database.prepare('select 1 as value').get().value",
+    'database.close()',
+    "const message = Buffer.from('smartperfetto-native-smoke')",
+    'const key = Buffer.alloc(sodium.crypto_secretbox_KEYBYTES, 7)',
+    'const nonce = Buffer.alloc(sodium.crypto_secretbox_NONCEBYTES, 9)',
+    'const ciphertext = Buffer.alloc(message.length + sodium.crypto_secretbox_MACBYTES)',
+    'sodium.crypto_secretbox_easy(ciphertext, message, nonce, key)',
+    'const opened = Buffer.alloc(message.length)',
+    'const sodiumOpened = sodium.crypto_secretbox_open_easy(opened, ciphertext, nonce, key)',
+    "if (sqliteValue !== 1 || !sodiumOpened || !opened.equals(message)) process.exit(1)",
+    "process.stdout.write(JSON.stringify({betterSqlite3: 'query-ok', sodiumNative: 'secretbox-ok'}))",
+  ].join(';');
+  const result = runArchiveBinary(
+    paths.node,
+    ['-e', script, paths.betterSqlite3, paths.sodium],
+    'portable native modules',
+    env,
+    runner,
+  );
+  return JSON.parse(result.stdout);
+}
+
+function probeWindowsDpapiSecretStore(paths, dataDir, env, runner = runChecked) {
+  const secretDir = path.join(dataDir, 'windows-dpapi-secret-store-smoke');
+  const script = [
+    "const fs = require('fs')",
+    "const path = require('path')",
+    'const {LocalEncryptedSecretStore} = require(process.argv[1])',
+    'const dir = process.argv[2]',
+    "const ref = 'secret:provider:windows-package-smoke'",
+    "const expected = {openaiApiKey: 'smartperfetto-not-a-real-credential'}",
+    'const first = new LocalEncryptedSecretStore(dir)',
+    "if (first.info().masterKeySource !== 'windows-dpapi') process.exit(1)",
+    'first.put(ref, expected)',
+    'const second = new LocalEncryptedSecretStore(dir)',
+    'const actual = second.get(ref)',
+    "if (actual.openaiApiKey !== expected.openaiApiKey) process.exit(1)",
+    "if (!fs.existsSync(path.join(dir, '.master-key.dpapi'))) process.exit(1)",
+    "if (fs.existsSync(path.join(dir, '.master-key'))) process.exit(1)",
+    "process.stdout.write(JSON.stringify({source: second.info().masterKeySource, reopened: true, plaintextMasterKey: false}))",
+  ].join(';');
+  const result = runArchiveBinary(
+    paths.node,
+    ['-e', script, paths.localSecretStore, secretDir],
+    'Windows packaged DPAPI SecretStore',
+    {...env, NODE_ENV: 'production'},
+    runner,
+  );
+  return JSON.parse(result.stdout);
+}
+
+function requestLocalJson(url, {method = 'GET', body, timeoutMs = 10_000} = {}) {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1') {
+    throw new Error(`portable smoke only permits loopback HTTP requests: ${url}`);
+  }
+  const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let deadline;
+    const chunks = [];
+    let receivedBytes = 0;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(deadline);
+      callback(value);
+    };
+    const request = http.request({
+      agent: DIRECT_LOOPBACK_HTTP_AGENT,
+      hostname: '127.0.0.1',
+      port: Number(parsed.port),
+      path: `${parsed.pathname}${parsed.search}`,
+      method,
+      headers: {
+        Accept: 'application/json',
+        Connection: 'close',
+        ...(payload ? {
+          'Content-Type': 'application/json',
+          'Content-Length': String(payload.length),
+        } : {}),
+      },
+    }, (response) => {
+      response.on('data', (chunk) => {
+        receivedBytes += chunk.length;
+        if (receivedBytes > JSON_RESPONSE_LIMIT_BYTES) {
+          request.destroy(new Error(
+            `JSON response exceeded ${JSON_RESPONSE_LIMIT_BYTES} bytes`,
+          ));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.once('error', (error) => finish(reject, error));
+      response.once('end', () => {
+        try {
+          const raw = Buffer.concat(chunks).toString('utf8');
+          finish(resolve, {
+            statusCode: response.statusCode,
+            body: raw ? JSON.parse(raw) : null,
+          });
+        } catch (error) {
+          finish(reject, new Error(`invalid JSON response from ${url}: ${error.message}`));
+        }
+      });
+    });
+    request.once('error', (error) => finish(reject, error));
+    deadline = setTimeout(() => {
+      request.destroy(new Error(`loopback JSON request exceeded ${timeoutMs}ms: ${url}`));
+    }, timeoutMs);
+    if (payload) request.write(payload);
+    request.end();
+  });
+}
+
+async function smokeProviderConfiguration(
+  backendBaseUrl,
+  providerFile,
+  requester = requestLocalJson,
+) {
+  const credential = 'smartperfetto-not-a-real-credential';
+  const create = await requester(`${backendBaseUrl}/api/v1/providers`, {
+    method: 'POST',
+    body: {
+      name: 'Portable archive smoke provider',
+      category: 'official',
+      type: 'openai',
+      models: {primary: 'smoke-primary', light: 'smoke-light'},
+      connection: {
+        agentRuntime: 'openai-agents-sdk',
+        openaiApiKey: credential,
+      },
+    },
+  });
+  if (create.statusCode !== 201 || !create.body?.success || !create.body.provider?.id) {
+    throw new Error(`portable Provider create failed: ${JSON.stringify(create)}`);
+  }
+  const providerId = create.body.provider.id;
+  const activate = await requester(
+    `${backendBaseUrl}/api/v1/providers/${encodeURIComponent(providerId)}/activate`,
+    {method: 'POST'},
+  );
+  if (activate.statusCode !== 200 || !activate.body?.success) {
+    throw new Error(`portable Provider activation failed: ${JSON.stringify(activate)}`);
+  }
+  const effective = await requester(`${backendBaseUrl}/api/v1/providers/effective`);
+  const maskedKey = effective.body?.provider?.connection?.openaiApiKey;
+  if (
+    effective.statusCode !== 200
+    || effective.body?.source !== 'provider-manager'
+    || effective.body?.provider?.id !== providerId
+    || typeof maskedKey !== 'string'
+    || !maskedKey.startsWith('****')
+    || maskedKey === credential
+  ) {
+    throw new Error(`portable Provider effective state is invalid: ${JSON.stringify(effective)}`);
+  }
+  const persistedProvider = await requester(
+    `${backendBaseUrl}/api/v1/providers/${encodeURIComponent(providerId)}`,
+  );
+  if (
+    persistedProvider.statusCode !== 200
+    || persistedProvider.body?.provider?.id !== providerId
+    || persistedProvider.body?.provider?.connection?.openaiApiKey !== maskedKey
+  ) {
+    throw new Error(
+      `portable Provider persisted state is invalid: ${JSON.stringify(persistedProvider)}`,
+    );
+  }
+  if (!fs.existsSync(providerFile)) {
+    throw new Error(`portable Provider file was not persisted at ${providerFile}`);
+  }
+  const persistedBeforeCleanup = fs.readFileSync(providerFile, 'utf8');
+  if (
+    !persistedBeforeCleanup.includes(providerId)
+    || !persistedBeforeCleanup.includes(credential)
+  ) {
+    throw new Error('portable Provider was not persisted under the portable data root');
+  }
+  const deactivate = await requester(`${backendBaseUrl}/api/v1/providers/deactivate`, {
+    method: 'POST',
+  });
+  if (deactivate.statusCode !== 200 || !deactivate.body?.success) {
+    throw new Error(`portable Provider deactivation failed: ${JSON.stringify(deactivate)}`);
+  }
+  const remove = await requester(
+    `${backendBaseUrl}/api/v1/providers/${encodeURIComponent(providerId)}`,
+    {method: 'DELETE'},
+  );
+  if (remove.statusCode !== 200 || !remove.body?.success) {
+    throw new Error(`portable Provider cleanup failed: ${JSON.stringify(remove)}`);
+  }
+  const persisted = fs.readFileSync(providerFile, 'utf8');
+  if (persisted.includes(providerId) || persisted.includes(credential)) {
+    throw new Error('portable Provider cleanup left the dummy profile in providers.json');
+  }
+  return {
+    created: true,
+    activated: true,
+    responseMasked: true,
+    persistedUnderPortableDataRoot: true,
+    cleanedUp: true,
+  };
 }
 
 function versionAtLeast(actual, minimum) {
@@ -1229,6 +1475,14 @@ async function smoke(options) {
         runtimeEnv,
       ),
     };
+    if (target === 'windows-x64') {
+      runtimeEvidence.nativeModules = probePortableNativeModules(paths, runtimeEnv);
+      runtimeEvidence.dpapiSecretStore = probeWindowsDpapiSecretStore(
+        paths,
+        dataDir,
+        runtimeEnv,
+      );
+    }
     if (target === 'linux-x64') {
       runtimeEvidence.libc = runArchiveBinary(
         paths.node,
@@ -1326,6 +1580,12 @@ async function smoke(options) {
       launcherExitPromise,
       version,
     });
+    const providerConfiguration = target === 'windows-x64'
+      ? await smokeProviderConfiguration(
+          `http://127.0.0.1:${backendPort}`,
+          path.join(dataDir, 'providers', 'providers.json'),
+        )
+      : null;
     fs.writeFileSync(shutdownFile, 'shutdown\n', {flag: 'wx', mode: 0o600});
     const launcherExit = await launcherExitPromise;
     if (launcherExit.code !== 0 || launcherExit.signal) {
@@ -1377,6 +1637,7 @@ async function smoke(options) {
       healthProbe: healthProbe.id,
       ports: {backend: backendPort, frontend: frontendPort},
       health: {backend: backendHealth, frontend: frontendHealth},
+      providerConfiguration,
       runtimes: runtimeEvidence,
       lifecycleReceipt: receipt,
       processTree: processTreeEvidence,
@@ -1462,9 +1723,13 @@ module.exports = {
   healthProbeIdForTarget,
   packagePaths,
   parseArgs,
+  probePortableNativeModules,
+  probeWindowsDpapiSecretStore,
+  requestLocalJson,
   isolatedSmokeEnv,
   runArchiveBinary,
   sanitizedSmokeEnv,
+  smokeProviderConfiguration,
   startProcessTreeMonitor,
   validateLifecycleReceipt,
   versionAtLeast,

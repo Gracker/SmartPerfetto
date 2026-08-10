@@ -73,6 +73,7 @@ import {
 import {
   formatPlanEvidenceGap,
   recordPlanOrPrePlanToolCall,
+  resetPrePlanToolCallsForNewRun,
 } from '../../../agentv3/planToolCallRecorder';
 import {
   assessFinalResultComparisonIdentity,
@@ -101,6 +102,7 @@ import {
   buildRuntimeTracePairComparisonContext,
 } from '../../runtimePromptContext';
 import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
+import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
@@ -167,6 +169,8 @@ type EnvLike = Record<string, string | undefined>;
 const MAX_PI_OPAQUE_MESSAGES = 80;
 const MAX_PI_OPAQUE_BYTES = 512 * 1024;
 const SENSITIVE_OPAQUE_KEY_RE = /(?:api[_-]?key|auth|authorization|bearer|password|secret|token)/i;
+const PI_AGENT_CORE_MAX_PLAN_COMPLETION_CONTINUATIONS = 2;
+const PI_AGENT_CORE_MAX_HYPOTHESIS_RESOLUTION_CONTINUATIONS = 1;
 const PI_AGENT_CORE_MAX_FINAL_REPORT_CONTINUATIONS = 1;
 
 interface PiAgentCoreAgentState {
@@ -458,7 +462,7 @@ export function sanitizePiAgentCoreConclusionText(text: string): string {
   return prefixLooksProcessNarration ? reportText : trimmed;
 }
 
-function selectAssistantConclusion(messages: unknown[] | undefined): string {
+export function selectAssistantConclusion(messages: unknown[] | undefined): string {
   const assistantTexts = (messages ?? [])
     .filter(message => (message as { role?: string }).role === 'assistant')
     .map(extractAssistantText)
@@ -467,9 +471,7 @@ function selectAssistantConclusion(messages: unknown[] | undefined): string {
   if (assistantTexts.length === 0) return '';
   const reportTexts = assistantTexts.filter(looksLikeFinalReport);
   const candidates = reportTexts.length > 0 ? reportTexts : assistantTexts;
-  return candidates.reduce((best, text) => (
-    text.length > best.length ? text : best
-  ), candidates[0]);
+  return candidates[candidates.length - 1];
 }
 
 function latestAssistantMessage(messages: unknown[] | undefined): Record<string, unknown> | undefined {
@@ -586,6 +588,40 @@ function loadPiFinalReportContinuationPrompt(outputLanguage: OutputLanguage): st
     throw new Error(`Missing Pi final-report continuation prompt template: ${templateName}`);
   }
   return template;
+}
+
+function loadPiPlanCompletionContinuationPrompt(
+  planStatus: ReturnType<typeof getPiAgentCorePlanCompletionStatus>,
+  unresolvedHypotheses: Hypothesis[],
+  outputLanguage: OutputLanguage,
+): string {
+  const planStatusJson = JSON.stringify({
+    hasPlan: planStatus.hasPlan,
+    pendingPhases: planStatus.pendingPhases.map(phase => ({
+      id: phase.id,
+      name: phase.name,
+      goal: phase.goal,
+      status: phase.status,
+      expectedTools: phase.expectedTools ?? [],
+      expectedCalls: phase.expectedCalls ?? [],
+    })),
+    evidenceGaps: (planStatus.evidenceGaps ?? []).map(gap => ({
+      phaseId: gap.phase.id,
+      phaseName: gap.phase.name,
+      missingExpectedCalls: gap.missingExpectedCalls,
+    })),
+    unresolvedHypotheses: unresolvedHypotheses.map(hypothesis => ({
+      id: hypothesis.id,
+      statement: hypothesis.statement,
+      basis: hypothesis.basis,
+      status: hypothesis.status,
+    })),
+  }, null, 2);
+  return renderRequiredLocalizedStrategyTemplate(
+    'prompt-pi-plan-completion-continuation',
+    outputLanguage,
+    {plan_status_json: planStatusJson},
+  );
 }
 
 function loadPiFinalReportCorrectionSystemPrompt(outputLanguage: OutputLanguage): string {
@@ -1186,6 +1222,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       query,
       sceneType,
       analysisMode: options.analysisMode,
+      conversationSurface: options.assistantSurface === 'conversation',
       selectionContext: options.selectionContext,
       packageName: options.packageName,
       hasReferenceTrace: Boolean(options.referenceTraceId),
@@ -1308,9 +1345,18 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
     });
     this.activeAgents.set(sessionId, agent);
+    const analysisMessageBoundary = agent.state.messages?.length ?? 0;
+    const currentAnalysisMessages = (): unknown[] => (
+      (agent.state.messages ?? []).slice(analysisMessageBoundary)
+    );
 
     let rounds = 0;
+    let planCompletionContinuations = 0;
+    let hypothesisResolutionContinuations = 0;
     let finalReportContinuations = 0;
+    let lastPlanCompletionMessageBoundary: number | undefined;
+    let finalReportContinuationMessageBoundary: number | undefined;
+    let forceFinalReportContinuation = false;
     let correctionInProgress = false;
     let analysisTerminalAssistant: Record<string, unknown> | undefined;
     let analysisErrorMessage: string | undefined;
@@ -1343,8 +1389,90 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       });
       commitEvaluationSdkHandoffIfActive();
       await agent.prompt(prep.prompt);
+      while (!prep.quickMode) {
+        const latestAssistant = latestAssistantMessage(currentAnalysisMessages());
+        const stopReason = typeof latestAssistant?.stopReason === 'string'
+          ? latestAssistant.stopReason
+          : undefined;
+        const errorMessage = typeof latestAssistant?.errorMessage === 'string'
+          ? latestAssistant.errorMessage
+          : agent.state.errorMessage;
+        if (stopReason === 'error' || stopReason === 'aborted' || errorMessage) break;
+
+        const candidateMessages = lastPlanCompletionMessageBoundary === undefined
+          ? currentAnalysisMessages()
+          : (agent.state.messages ?? []).slice(lastPlanCompletionMessageBoundary);
+        const candidateConclusion = sanitizePiAgentCoreConclusionText(
+          selectAssistantConclusion(candidateMessages),
+        );
+        const closedFinalPhase = completePiAgentCoreFinalReportPhaseIfDelivered(
+          prep.analysisPlan.current,
+          candidateConclusion,
+          prep.analysisRunSpec.outputLanguage,
+        );
+        if (closedFinalPhase) {
+          this.emit('update', {
+            type: 'plan_phase_updated',
+            content: {
+              phaseId: closedFinalPhase.id,
+              status: closedFinalPhase.status,
+              summary: closedFinalPhase.summary,
+              phaseName: closedFinalPhase.name,
+            },
+            timestamp: Date.now(),
+          });
+        }
+
+        const planStatus = getPiAgentCorePlanCompletionStatus(prep.analysisPlan.current);
+        const unresolvedHypotheses = prep.hypotheses.filter(
+          hypothesis => hypothesis.status === 'formed',
+        );
+        if (planStatus.complete && lastPlanCompletionMessageBoundary !== undefined) {
+          forceFinalReportContinuation = !(
+            hasDeliverableFinalReportHeading(candidateConclusion) &&
+            looksLikeFinalReport(candidateConclusion)
+          );
+        }
+        const continuePlan = !planStatus.complete &&
+          planCompletionContinuations < PI_AGENT_CORE_MAX_PLAN_COMPLETION_CONTINUATIONS;
+        const resolveHypotheses = planStatus.complete &&
+          unresolvedHypotheses.length > 0 &&
+          hypothesisResolutionContinuations < PI_AGENT_CORE_MAX_HYPOTHESIS_RESOLUTION_CONTINUATIONS;
+        if (!continuePlan && !resolveHypotheses) {
+          break;
+        }
+
+        if (continuePlan) {
+          planCompletionContinuations++;
+        } else {
+          hypothesisResolutionContinuations++;
+        }
+        this.emit('update', {
+          type: 'progress',
+          content: {
+            module: 'pi-agent-core',
+            message: localize(
+              prep.analysisRunSpec.outputLanguage,
+              continuePlan
+                ? '分析 plan 尚未闭合，正在继续补齐未完成阶段和必需证据。'
+                : '分析 plan 已闭合，正在用已有证据处理尚未判定的假设。',
+              continuePlan
+                ? 'The analysis plan is still open; continuing the pending phases and required evidence.'
+                : 'The analysis plan is complete; resolving the remaining hypotheses against existing evidence.',
+            ),
+          },
+          timestamp: Date.now(),
+        });
+        commitEvaluationSdkHandoffIfActive();
+        lastPlanCompletionMessageBoundary = agent.state.messages?.length ?? 0;
+        await agent.prompt(loadPiPlanCompletionContinuationPrompt(
+          planStatus,
+          unresolvedHypotheses,
+          prep.analysisRunSpec.outputLanguage,
+        ));
+      }
       while (finalReportContinuations < PI_AGENT_CORE_MAX_FINAL_REPORT_CONTINUATIONS) {
-        const latestAssistant = latestAssistantMessage(agent.state.messages);
+        const latestAssistant = latestAssistantMessage(currentAnalysisMessages());
         const stopReason = typeof latestAssistant?.stopReason === 'string'
           ? latestAssistant.stopReason
           : undefined;
@@ -1354,10 +1482,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         if (stopReason === 'error' || stopReason === 'aborted' || errorMessage) break;
 
         const candidateConclusion = sanitizePiAgentCoreConclusionText(
-          selectAssistantConclusion(agent.state.messages),
+          selectAssistantConclusion(currentAnalysisMessages()),
         );
         const planStatus = getPiAgentCorePlanCompletionStatus(prep.analysisPlan.current);
-        if (!shouldContinuePiAgentCoreFinalReportAfterPlanComplete({
+        const shouldContinueFinalReport = forceFinalReportContinuation ||
+          shouldContinuePiAgentCoreFinalReportAfterPlanComplete({
           quickMode: prep.quickMode,
           planStatus,
           finalReportContinuations,
@@ -1365,10 +1494,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           query,
           sceneType: prep.sceneType,
           comparisonIdentity: prep.comparisonIdentity,
-        })) {
+        });
+        if (!shouldContinueFinalReport) {
           break;
         }
 
+        forceFinalReportContinuation = false;
         finalReportContinuations++;
         this.emit('update', {
           type: 'progress',
@@ -1383,18 +1514,22 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           timestamp: Date.now(),
         });
         commitEvaluationSdkHandoffIfActive();
+        finalReportContinuationMessageBoundary = agent.state.messages?.length ?? 0;
         await agent.prompt(loadPiFinalReportContinuationPrompt(prep.analysisRunSpec.outputLanguage));
       }
 
-      analysisTerminalAssistant = latestAssistantMessage(agent.state.messages);
+      analysisTerminalAssistant = latestAssistantMessage(currentAnalysisMessages());
       const analysisStopReason = typeof analysisTerminalAssistant?.stopReason === 'string'
         ? analysisTerminalAssistant.stopReason
         : undefined;
       analysisErrorMessage = typeof analysisTerminalAssistant?.errorMessage === 'string'
         ? analysisTerminalAssistant.errorMessage
         : agent.state.errorMessage;
+      const conclusionCandidateMessages = finalReportContinuationMessageBoundary === undefined
+        ? currentAnalysisMessages()
+        : (agent.state.messages ?? []).slice(finalReportContinuationMessageBoundary);
       baseConclusion = sanitizePiAgentCoreConclusionText(
-        selectAssistantConclusion(agent.state.messages) ||
+        selectAssistantConclusion(conclusionCandidateMessages) ||
         'Pi Agent Core runtime completed without assistant text.',
       );
 
@@ -1520,7 +1655,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    const latestAssistant = analysisTerminalAssistant ?? latestAssistantMessage(agent.state.messages);
+    const latestAssistant = analysisTerminalAssistant ?? latestAssistantMessage(currentAnalysisMessages());
     const stopReason = typeof latestAssistant?.stopReason === 'string'
       ? latestAssistant.stopReason
       : undefined;
@@ -1542,8 +1677,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       };
     }
 
+    const fallbackConclusionMessages = finalReportContinuationMessageBoundary === undefined
+      ? currentAnalysisMessages()
+      : (agent.state.messages ?? []).slice(finalReportContinuationMessageBoundary);
     let conclusion = correctedConclusion || baseConclusion || sanitizePiAgentCoreConclusionText(
-      selectAssistantConclusion(agent.state.messages) ||
+      selectAssistantConclusion(fallbackConclusionMessages) ||
       'Pi Agent Core runtime completed without assistant text.',
     );
     if (analysisContextUsesPrivateKnowledge(options)) {
@@ -1909,6 +2047,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       query,
       sceneType,
       analysisMode: options.analysisMode,
+      conversationSurface: options.assistantSurface === 'conversation',
       selectionContext: options.selectionContext,
       packageName: options.packageName,
       hasReferenceTrace: Boolean(options.referenceTraceId),
@@ -2007,6 +2146,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     }
     const previousPlan = analysisPlan.current ?? undefined;
     analysisPlan.current = null;
+    resetPrePlanToolCallsForNewRun(analysisPlan);
 
     if (!this.sessionHypotheses.has(sessionId)) {
       this.sessionHypotheses.set(sessionId, []);
@@ -2032,6 +2172,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     });
     const { toolDefinitions } = createClaudeMcpServer({
+      conversationTraceAttached: options.assistantSurface === 'conversation'
+        ? options.conversationTraceAttached === true
+        : undefined,
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,

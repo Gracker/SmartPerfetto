@@ -112,6 +112,7 @@ Step 4: Start or restart services. For Docker, run `docker compose -f docker-com
 
 - Analyzes Android Perfetto traces for scrolling jank, startup, ANR, interaction latency, memory, game, and rendering-pipeline issues.
 - Keeps Perfetto's timeline and SQL power, then adds an AI assistant panel inside the Perfetto UI.
+- Lets analysis-result actions focus a timestamp, reopen its evidence table, or save an evidence snapshot in the current conversation for `/pins`; saving evidence does not pin a timeline track or automatically add it to later AI context.
 - Reconstructs mixed-action traces in Smart mode before deep analysis, so users can inspect the scene timeline and choose all scenes or only startup, scrolling, click, navigation, device-state, or ANR ranges.
 - Compares completed analysis results across multiple traces, windows, or workspace users without requiring both Perfetto UI windows to stay open.
 - Ships a signed Android Internals Knowledge Pack for bounded background retrieval, while keeping private source/knowledge access explicitly authorized and separate from trace evidence.
@@ -192,7 +193,17 @@ Upgrade instructions remain distribution-specific:
 - Source checkout: inspect the linked commit or release, then update with your
   normal Git workflow.
 
-### Docker (Recommended)
+### Windows x64 Portable (Recommended for Windows desktop users)
+
+Download `smartperfetto-v<version>-windows-x64.zip` from the
+[official latest release](https://github.com/Gracker/SmartPerfetto/releases/latest),
+verify its SHA256, use **Extract All**, and run `SmartPerfetto.exe`. The package
+includes Node.js and all native runtimes. Follow the complete
+[Windows setup and run guide](docs/getting-started/windows.en.md) for Provider
+configuration, SmartScreen boundaries, data paths, updates, migration, QA, and
+troubleshooting.
+
+### Docker (Recommended for container deployment)
 
 Use this path if you only want to run SmartPerfetto. You need Docker Desktop/Engine; configure the AI provider in the UI Provider Manager after startup, or use the repository-root `.env` when you need scripted deployment. You do not need Node.js, a C++ toolchain, or the `perfetto/` submodule. Stable releases publish immutable SemVer tags plus `latest`; development builds publish the opt-in `nightly` tag from `main`. The image includes the backend, the pre-built Perfetto UI, and the pinned `trace_processor_shell`, so it also avoids first-run access to Google's artifact bucket on the host.
 
@@ -255,13 +266,16 @@ Assets:
   with glibc 2.34 or newer; musl-based distributions such as Alpine Linux are
   not supported by this archive. Extract and run `./SmartPerfetto`.
 
-All launchers start the backend and pre-built Perfetto UI, then open [http://127.0.0.1:10000](http://127.0.0.1:10000). Override ports with `SMARTPERFETTO_BACKEND_PORT` and `SMARTPERFETTO_FRONTEND_PORT`. AI analysis needs a Provider profile configured in the UI, or env credentials in the package's user data env file.
+All launchers start the backend and pre-built Perfetto UI. They prefer port `10000`, print the actual `Open:` URL, and open that URL in your browser. Override ports with `SMARTPERFETTO_BACKEND_PORT` and `SMARTPERFETTO_FRONTEND_PORT`. AI analysis needs a Provider profile configured in the UI, or env credentials in the package's user data env file.
 
 Windows stores durable data under `%LOCALAPPDATA%\SmartPerfetto`. On first
 launch, a new package safely copies an eligible older package-local `data/`
 directory and leaves the old package untouched. Use
 `SmartPerfetto.exe --migrate-from <old-package-or-data-directory>` when
-automatic discovery cannot identify the source. Set
+automatic discovery cannot identify the source, and run it before the first
+standard launch. If the destination already exists, explicit migration fails
+without merging or overwriting it. See the
+[Windows guide](docs/getting-started/windows.en.md) before moving either copy. Set
 `SMARTPERFETTO_PORTABLE_MODE=1` only when you intentionally want data beside
 the executable.
 

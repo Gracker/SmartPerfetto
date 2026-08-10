@@ -17,6 +17,11 @@ export interface DrillDownSkillConfig {
   domain: string;
   agentId: string;
   paramMapping: Record<string, string>;
+  intervalBindings?: ReadonlyArray<{
+    skillId: string;
+    paramMapping: Record<string, string>;
+    dropEntityParamAfterResolution?: boolean;
+  }>;
   enrichmentQuery?: string;
 }
 
@@ -44,6 +49,28 @@ export const DRILL_DOWN_SKILL_REGISTRY: Record<DrillDownEntityType, DrillDownSki
       jank_responsibility: 'jankResponsibility',
       frame_index: 'frameIndex',
     },
+    intervalBindings: [
+      {
+        skillId: 'frame_blocking_calls',
+        paramMapping: {
+          frame_id: 'frameId',
+          start_ts: 'startTs',
+          end_ts: 'endTs',
+          package: 'processName',
+        },
+        dropEntityParamAfterResolution: true,
+      },
+      {
+        skillId: 'blocking_chain_analysis',
+        paramMapping: {
+          frame_id: 'frameId',
+          start_ts: 'startTs',
+          end_ts: 'endTs',
+          package: 'processName',
+        },
+        dropEntityParamAfterResolution: true,
+      },
+    ],
     enrichmentQuery: `
       SELECT
         COALESCE(a.display_frame_token, a.surface_frame_token) as frame_id,
@@ -57,6 +84,7 @@ export const DRILL_DOWN_SKILL_REGISTRY: Record<DrillDownEntityType, DrillDownSki
       FROM actual_frame_timeline_slice a
       LEFT JOIN process p ON a.upid = p.upid
       WHERE COALESCE(a.display_frame_token, a.surface_frame_token) = $frame_id
+        AND ($process_name = '' OR p.name = $process_name OR p.name GLOB $process_name || ':*')
       ORDER BY a.ts
       LIMIT 1
     `,
@@ -88,6 +116,7 @@ export const DRILL_DOWN_SKILL_REGISTRY: Record<DrillDownEntityType, DrillDownSki
         LEFT JOIN expected_frame_timeline_events ej ON af.frame_id = ej.frame_id
         LEFT JOIN process p ON af.upid = p.upid
         WHERE ej.scroll_id = $session_id
+          AND ($process_name = '' OR p.name = $process_name OR p.name GLOB $process_name || ':*')
       )
       GROUP BY session_id
     `,
@@ -119,6 +148,7 @@ export const DRILL_DOWN_SKILL_REGISTRY: Record<DrillDownEntityType, DrillDownSki
       FROM android_startups s
       LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
       WHERE s.startup_id = $startup_id
+        AND ($process_name = '' OR s.package = $process_name OR s.package GLOB $process_name || ':*')
       LIMIT 1
     `,
   },
@@ -130,4 +160,32 @@ export function isDrillDownEntityType(value: string): value is DrillDownEntityTy
 
 export function getDrillDownSkillConfig(entityType: DrillDownEntityType): DrillDownSkillConfig {
   return DRILL_DOWN_SKILL_REGISTRY[entityType];
+}
+
+export function findDrillDownSkillConfig(skillId: string): {
+  entityType: DrillDownEntityType;
+  config: DrillDownSkillConfig;
+  paramMapping: Record<string, string>;
+  dropEntityParamAfterResolution: boolean;
+} | undefined {
+  for (const [entityType, config] of Object.entries(DRILL_DOWN_SKILL_REGISTRY)) {
+    if (config.skillId === skillId) {
+      return {
+        entityType: entityType as DrillDownEntityType,
+        config,
+        paramMapping: config.paramMapping,
+        dropEntityParamAfterResolution: false,
+      };
+    }
+    const binding = config.intervalBindings?.find(candidate => candidate.skillId === skillId);
+    if (binding) {
+      return {
+        entityType: entityType as DrillDownEntityType,
+        config,
+        paramMapping: binding.paramMapping,
+        dropEntityParamAfterResolution: binding.dropEntityParamAfterResolution === true,
+      };
+    }
+  }
+  return undefined;
 }

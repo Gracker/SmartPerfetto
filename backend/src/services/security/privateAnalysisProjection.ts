@@ -13,6 +13,7 @@ import type {ClaimVerificationResult} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
 import {sanitizeCodeAwareText} from './codeAwareOutputRegistry';
 import type {CodeLookupSummary} from '../codebase/codeLookupLedger';
+import {isCodebaseKind} from '../codebase/codebaseRegistry';
 
 type PrivateFinding = AnalysisResult['findings'][number];
 type PrivateHypothesis = AnalysisResult['hypotheses'][number];
@@ -34,6 +35,7 @@ const SAFE_TERMINATION_REASONS = new Set([
 ]);
 const MAX_PRIVATE_PROVENANCE_IDS = 100;
 const MAX_PRIVATE_SOURCE_GENERATIONS = 20;
+const MAX_PRIVATE_DISPLAY_NAME = 120;
 
 function boundedIdentifier(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
@@ -41,12 +43,39 @@ function boundedIdentifier(value: unknown): string | undefined {
   return trimmed ? trimmed.slice(0, 160) : undefined;
 }
 
+function strictBoundedIdentifier(value: unknown): string | undefined {
+  const bounded = boundedIdentifier(value);
+  if (
+    !bounded ||
+    bounded.includes('/') ||
+    bounded.includes('\\') ||
+    bounded.includes('://') ||
+    /[\s\u0000-\u001f\u007f]/.test(bounded)
+  ) {
+    return undefined;
+  }
+  return bounded;
+}
+
+function boundedDisplayName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, ' ');
+  if (!trimmed || trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('://')) {
+    return undefined;
+  }
+  return trimmed.slice(0, MAX_PRIVATE_DISPLAY_NAME);
+}
+
 function projectPrivateCodeLookupSummary(
   summary: CodeLookupSummary | undefined,
 ): CodeLookupSummary | undefined {
   if (!summary) return undefined;
   const referencedCodebaseIds = summary.referencedCodebaseIds
-    .map(boundedIdentifier)
+    .map(strictBoundedIdentifier)
+    .filter((value): value is string => Boolean(value))
+    .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
+  const usedCodebaseIds = summary.usedCodebaseIds
+    ?.map(strictBoundedIdentifier)
     .filter((value): value is string => Boolean(value))
     .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
   const usedKnowledgeSources = summary.usedKnowledgeSources
@@ -67,8 +96,48 @@ function projectPrivateCodeLookupSummary(
     lookupCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.lookupCount || 0))),
     patchCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.patchCount || 0))),
     referencedCodebaseIds,
+    ...(usedCodebaseIds?.length ? {usedCodebaseIds} : {}),
     ...(usedKnowledgeSources?.length ? {usedKnowledgeSources} : {}),
   };
+}
+
+function projectPrivateIdList(values: string[] | undefined): string[] | undefined {
+  const projected = values
+    ?.map(strictBoundedIdentifier)
+    .filter((value): value is string => Boolean(value))
+    .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
+  return projected?.length ? projected : undefined;
+}
+
+function projectPrivateCodebaseSnapshot(
+  snapshot: SessionStateSnapshot['codebaseSnapshot'],
+): SessionStateSnapshot['codebaseSnapshot'] {
+  if (!snapshot) return undefined;
+  return snapshot
+    .map(item => {
+      const codebaseId = strictBoundedIdentifier(item.codebaseId);
+      if (!codebaseId) return undefined;
+      const displayName = boundedDisplayName(item.displayName);
+      const kind = isCodebaseKind(item.kind) ? item.kind : undefined;
+      return {
+        codebaseId,
+        ...(displayName ? {displayName} : {}),
+        ...(kind ? {kind} : {}),
+        indexGeneration: Math.max(0, Math.min(1_000_000, Math.floor(item.indexGeneration || 0))),
+        ...(strictBoundedIdentifier(item.activeGeneration) ? {activeGeneration: strictBoundedIdentifier(item.activeGeneration)} : {}),
+        ...(strictBoundedIdentifier(item.contentFingerprint) ? {contentFingerprint: strictBoundedIdentifier(item.contentFingerprint)} : {}),
+        ...(strictBoundedIdentifier(item.indexedRevision) ? {indexedRevision: strictBoundedIdentifier(item.indexedRevision)} : {}),
+        ...(typeof item.indexedDirty === 'boolean' ? {indexedDirty: item.indexedDirty} : {}),
+        ...(item.commitProvenance === 'clean_git_revision' ||
+          item.commitProvenance === 'dirty_git_worktree' ||
+          item.commitProvenance === 'content_only'
+          ? {commitProvenance: item.commitProvenance}
+          : {}),
+        ...(strictBoundedIdentifier(item.consentHash) ? {consentHash: strictBoundedIdentifier(item.consentHash)} : {}),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
 }
 
 export function sessionUsesPrivateKnowledge(
@@ -335,6 +404,9 @@ export function projectPrivateSessionStateSnapshot(
   snapshot: SessionStateSnapshot,
 ): SessionStateSnapshot {
   const codeLookupSummary = projectPrivateCodeLookupSummary(snapshot.codeLookupSummary);
+  const codebaseSnapshot = projectPrivateCodebaseSnapshot(snapshot.codebaseSnapshot);
+  const codebaseIds = projectPrivateIdList(snapshot.codebaseIds);
+  const knowledgeSourceIds = projectPrivateIdList(snapshot.knowledgeSourceIds);
   return {
     version: snapshot.version,
     snapshotTimestamp: snapshot.snapshotTimestamp,
@@ -369,13 +441,11 @@ export function projectPrivateSessionStateSnapshot(
         }
       : {}),
     ...(snapshot.codeAwareMode ? {codeAwareMode: snapshot.codeAwareMode} : {}),
-    ...(snapshot.codebaseIds ? {codebaseIds: [...snapshot.codebaseIds]} : {}),
-    ...(snapshot.codebaseSnapshot
-      ? {codebaseSnapshot: snapshot.codebaseSnapshot.map(item => ({...item}))}
+    ...(codebaseIds ? {codebaseIds} : {}),
+    ...(codebaseSnapshot
+      ? {codebaseSnapshot}
       : {}),
-    ...(snapshot.knowledgeSourceIds
-      ? {knowledgeSourceIds: [...snapshot.knowledgeSourceIds]}
-      : {}),
+    ...(knowledgeSourceIds ? {knowledgeSourceIds} : {}),
     ...(snapshot.knowledgeSourceSnapshot
       ? {knowledgeSourceSnapshot: snapshot.knowledgeSourceSnapshot.map(item => ({...item}))}
       : {}),

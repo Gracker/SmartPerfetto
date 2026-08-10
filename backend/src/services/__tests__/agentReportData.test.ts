@@ -12,6 +12,17 @@ import {HTMLReportGenerator} from '../htmlReportGenerator';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/codeAwareOutputRegistry';
 
 describe('buildAgentDrivenReportData private knowledge projection', () => {
+  const baseResult = (sessionId: string) => ({
+    sessionId,
+    success: true,
+    findings: [],
+    hypotheses: [],
+    conclusion: 'Safe projected conclusion.',
+    confidence: 0.8,
+    rounds: 1,
+    totalDurationMs: 10,
+  });
+
   it('keeps verified conclusion and deterministic evidence but drops intermediate model prose', () => {
     const sessionId = 'private-report-session';
     [
@@ -45,6 +56,25 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
         runSequence: 1,
         queryHistory: [{query: 'PRIVATE_QUERY_HISTORY_CANARY'}],
         conclusionHistory: [{conclusion: 'PRIVATE_HISTORY_CANARY'}],
+        _lastSnapshot: {
+          codebaseSnapshot: [{
+            codebaseId: 'private-app',
+            displayName: 'Private App',
+            kind: 'app_source',
+            indexGeneration: 1,
+          }, {
+            codebaseId: 'private-kernel',
+            displayName: 'Private Kernel',
+            kind: 'kernel_source',
+            indexGeneration: 1,
+          }],
+          codeLookupSummary: {
+            lookupCount: 2,
+            patchCount: 0,
+            referencedCodebaseIds: ['private-app', 'private-kernel'],
+            usedCodebaseIds: ['private-app'],
+          },
+        },
       } as any,
       result: {
         sessionId,
@@ -95,6 +125,18 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(report.uncertaintyFlags).toEqual([]);
     expect(report.outputLanguage).toBe('en');
     expect(report.query).toContain('Private source or knowledge analysis request');
+    expect(report.sourceContext).toEqual({
+      selected: [{
+        codebaseId: 'private-app',
+        displayName: 'Private App',
+        kind: 'app_source',
+      }, {
+        codebaseId: 'private-kernel',
+        displayName: 'Private Kernel',
+        kind: 'kernel_source',
+      }],
+      usedCodebaseIds: ['private-app'],
+    });
     const html = new HTMLReportGenerator().generateAgentDrivenHTML({
       ...report,
       result: {
@@ -109,10 +151,112 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
       },
       hypotheses: [],
       dataEnvelopes: [],
+      sourceContext: report.sourceContext,
     });
     expect(html).toContain('<html lang="en">');
     expect(html).toContain('SmartPerfetto Agent-Driven Analysis Report');
+    expect(html).toContain('Source Context');
+    expect(html).toContain('Selected');
+    expect(html).toContain('Actually used/consulted');
+    expect(html).toContain('Private App');
+    expect(html).toContain('Private Kernel');
+    expect(html).toContain('Trace, Skill, and SQL evidence remain authoritative');
     expect(JSON.stringify(report)).not.toContain('PRIVATE_');
     clearCodeAwareOutputGuards(sessionId);
+  });
+
+  it('fail-closes malicious legacy source context at the report boundary', () => {
+    const sessionId = 'malicious-source-context-session';
+    const report = buildAgentDrivenReportData({
+      session: {
+        sessionId,
+        traceId: 'trace-a',
+        query: 'private source query',
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['safe-app'],
+        outputLanguage: 'en',
+        orchestrator: {},
+        hypotheses: [],
+        agentDialogue: [],
+        conversationSteps: [],
+        dataEnvelopes: [],
+        agentResponses: [],
+        runSequence: 1,
+        _lastSnapshot: {
+          codebaseSnapshot: [{
+            codebaseId: 'safe-app',
+            displayName: 'Safe App',
+            kind: 'app_source',
+            indexGeneration: 1,
+          }, {
+            codebaseId: '/Users/chris/Code/SecretApp',
+            displayName: 'Secret App',
+            kind: 'app_source',
+            indexGeneration: 1,
+          }, {
+            codebaseId: 'bad whitespace',
+            displayName: 'Bad Space',
+            kind: 'kernel_source',
+            indexGeneration: 1,
+          }, {
+            codebaseId: 'url-name',
+            displayName: 'https://example.com/source',
+            kind: 'aosp',
+            indexGeneration: 1,
+          }, {
+            codebaseId: 'bad-kind',
+            displayName: 'Bad Kind',
+            kind: 'unknown_kind',
+            indexGeneration: 1,
+          }],
+          codeLookupSummary: {
+            lookupCount: 5,
+            patchCount: 0,
+            referencedCodebaseIds: [
+              'safe-app',
+              '/Users/chris/Code/SecretApp',
+              'bad whitespace',
+              'url-name',
+              'bad-kind',
+            ],
+            usedCodebaseIds: [
+              'safe-app',
+              '/Users/chris/Code/SecretApp',
+              'missing-but-valid',
+              'bad whitespace',
+            ],
+          },
+        },
+      } as any,
+      result: baseResult(sessionId),
+    });
+
+    expect(report.sourceContext).toEqual({
+      selected: [{
+        codebaseId: 'safe-app',
+        displayName: 'Safe App',
+        kind: 'app_source',
+      }, {
+        codebaseId: 'url-name',
+        kind: 'aosp',
+      }, {
+        codebaseId: 'bad-kind',
+        displayName: 'Bad Kind',
+      }],
+      usedCodebaseIds: ['safe-app'],
+    });
+
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML({
+      ...report,
+      result: baseResult(sessionId),
+      hypotheses: [],
+      dataEnvelopes: [],
+    });
+    expect(html).toContain('Safe App');
+    expect(html).not.toContain('/Users/chris/Code/SecretApp');
+    expect(html).not.toContain('Secret App');
+    expect(html).not.toContain('Bad Space');
+    expect(html).not.toContain('https://example.com/source');
+    expect(JSON.stringify(report)).not.toContain('/Users/chris');
   });
 });

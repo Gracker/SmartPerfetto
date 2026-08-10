@@ -48,6 +48,7 @@ describe('deriveUiActionProposals', () => {
     const proposals = deriveUiActionProposals({
       dataEnvelopes: [tableEnvelope()],
       currentTraceId: 'trace-current',
+      outputLanguage: 'zh-CN',
     });
 
     expect(proposals.map(proposal => proposal.kind)).toEqual([
@@ -79,6 +80,8 @@ describe('deriveUiActionProposals', () => {
     }));
     expect(proposals[2]).toEqual(expect.objectContaining({
       kind: 'pin_evidence',
+      title: '收藏证据 掉帧帧列表',
+      reason: '把这份证据或结果快照收藏到当前会话，可通过 /pins 查看；不会固定时间线泳道，也不会自动加入后续 AI 上下文。',
       payload: {
         evidenceRefId: 'data:skill:scrolling_analysis:jank_frames:current:abc',
       },
@@ -135,10 +138,13 @@ describe('deriveUiActionProposals', () => {
     expect(proposals.map(proposal => proposal.title)).toEqual([
       'Inspect range 掉帧帧列表',
       'Open table 掉帧帧列表',
-      'Pin evidence 掉帧帧列表',
+      'Save evidence 掉帧帧列表',
     ]);
     expect(proposals[0].reason).toBe(
       'This time range comes from the evidence table timestamp and duration columns.',
+    );
+    expect(proposals[2].reason).toBe(
+      'Save this evidence or result snapshot in the current conversation and view it with /pins; this does not pin a timeline track or automatically add it to later AI context.',
     );
   });
 });

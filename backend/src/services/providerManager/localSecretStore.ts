@@ -9,6 +9,7 @@ import path from 'path';
 import {resolveAuthConfig} from '../../config';
 import {deriveServerSecret} from '../../security/serverSecret';
 import {withFilesystemRegistryLock} from '../filesystemRegistryLock';
+import {providerDataPath} from './providerPaths';
 
 const sodium = require('sodium-native') as {
   crypto_secretbox_easy: (ciphertext: Buffer, message: Buffer, nonce: Buffer, key: Buffer) => void;
@@ -26,7 +27,35 @@ export const SECRET_STORE_KEYRING_ACCOUNT_ENV = 'SMARTPERFETTO_SECRET_STORE_KEYR
 export const SECRET_STORE_ALLOW_LOCAL_MASTER_KEY_ENV = 'SMARTPERFETTO_SECRET_STORE_ALLOW_LOCAL_MASTER_KEY';
 
 type SecretAlgorithm = 'libsodium-secretbox';
-type MasterKeySource = 'env' | 'server-secret' | 'keyring' | 'local-dev-file';
+type MasterKeySource =
+  | 'env'
+  | 'server-secret'
+  | 'keyring'
+  | 'windows-dpapi'
+  | 'local-dev-file';
+
+const WINDOWS_DPAPI_MASTER_KEY_FILE = '.master-key.dpapi';
+const SECRET_STORE_STATE_FILES = [
+  'provider-secrets.enc.json',
+  '.master-key',
+  WINDOWS_DPAPI_MASTER_KEY_FILE,
+] as const;
+const WINDOWS_DPAPI_TIMEOUT_MS = 10_000;
+const WINDOWS_DPAPI_OUTPUT_LIMIT_BYTES = 64 * 1024;
+const WINDOWS_DPAPI_PROTECT_SCRIPT = [
+  '$ErrorActionPreference = "Stop"',
+  '$raw = [Console]::In.ReadToEnd().Trim()',
+  '$bytes = [Convert]::FromBase64String($raw)',
+  '$protected = [System.Security.Cryptography.ProtectedData]::Protect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
+  '[Console]::Out.Write([Convert]::ToBase64String($protected))',
+].join('; ');
+const WINDOWS_DPAPI_UNPROTECT_SCRIPT = [
+  '$ErrorActionPreference = "Stop"',
+  '$raw = [Console]::In.ReadToEnd().Trim()',
+  '$bytes = [Convert]::FromBase64String($raw)',
+  '$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($bytes, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)',
+  '[Console]::Out.Write([Convert]::ToBase64String($plain))',
+].join('; ');
 
 interface EncryptedSecretEntry {
   version: number;
@@ -63,9 +92,23 @@ export interface SecretStoreInfo {
 
 function resolveSecretStoreDir(): string {
   const configured = process.env[SECRET_STORE_DIR_ENV];
-  return path.resolve(configured && configured.trim().length > 0
-    ? configured
-    : path.join(process.cwd(), 'data', 'secrets'));
+  if (configured && configured.trim().length > 0) {
+    return path.resolve(configured);
+  }
+  const providerDir = path.resolve(providerDataPath('secrets'));
+  const legacyDir = path.resolve(process.cwd(), 'data', 'secrets');
+  if (
+    providerDir !== legacyDir
+    && !hasSecretStoreState(providerDir)
+    && hasSecretStoreState(legacyDir)
+  ) {
+    return legacyDir;
+  }
+  return providerDir;
+}
+
+function hasSecretStoreState(dir: string): boolean {
+  return SECRET_STORE_STATE_FILES.some(file => fs.existsSync(path.join(dir, file)));
 }
 
 function decodeMasterKey(raw: string): Buffer {
@@ -96,6 +139,108 @@ function randomNonce(): Buffer {
   const nonce = Buffer.alloc(sodium.crypto_secretbox_NONCEBYTES);
   sodium.randombytes_buf(nonce);
   return nonce;
+}
+
+function windowsPowerShellPath(): string {
+  const systemRoot = process.env.SystemRoot
+    || process.env.SYSTEMROOT
+    || process.env.WINDIR
+    || 'C:\\Windows';
+  if (!path.win32.isAbsolute(systemRoot)) {
+    throw new Error(`Windows SystemRoot is not absolute: ${systemRoot}`);
+  }
+  return path.win32.join(
+    systemRoot,
+    'System32',
+    'WindowsPowerShell',
+    'v1.0',
+    'powershell.exe',
+  );
+}
+
+function invokeWindowsDpapi(
+  operation: 'protect' | 'unprotect',
+  input: Buffer,
+): Buffer {
+  const script = operation === 'protect'
+    ? WINDOWS_DPAPI_PROTECT_SCRIPT
+    : WINDOWS_DPAPI_UNPROTECT_SCRIPT;
+  let output: string;
+  try {
+    output = execFileSync(windowsPowerShellPath(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      encoding: 'utf-8',
+      input: input.toString('base64'),
+      maxBuffer: WINDOWS_DPAPI_OUTPUT_LIMIT_BYTES,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: WINDOWS_DPAPI_TIMEOUT_MS,
+      windowsHide: true,
+    }).trim();
+  } catch (error) {
+    throw new Error(
+      `Windows DPAPI ${operation} failed through Windows PowerShell: ${(error as Error).message}`,
+    );
+  }
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(output)) {
+    throw new Error(`Windows DPAPI ${operation} returned invalid base64 output`);
+  }
+  const decoded = Buffer.from(output, 'base64');
+  if (decoded.length === 0) {
+    throw new Error(`Windows DPAPI ${operation} returned empty output`);
+  }
+  return decoded;
+}
+
+function windowsDpapiMasterKeyPath(dir: string): string {
+  return path.join(dir, WINDOWS_DPAPI_MASTER_KEY_FILE);
+}
+
+function readWindowsDpapiMasterKey(dir: string): Buffer | null {
+  const keyPath = windowsDpapiMasterKeyPath(dir);
+  if (!fs.existsSync(keyPath)) return null;
+  const protectedKey = fs.readFileSync(keyPath, 'utf-8').trim();
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(protectedKey)) {
+    throw new Error(`Windows DPAPI master key file is invalid: ${keyPath}`);
+  }
+  const key = invokeWindowsDpapi('unprotect', Buffer.from(protectedKey, 'base64'));
+  if (key.length !== sodium.crypto_secretbox_KEYBYTES) {
+    throw new Error(`Windows DPAPI master key has invalid length: ${keyPath}`);
+  }
+  return key;
+}
+
+function writeWindowsDpapiMasterKey(
+  dir: string,
+  key: Buffer,
+): {key: Buffer; created: boolean} {
+  const keyPath = windowsDpapiMasterKeyPath(dir);
+  const protectedKey = invokeWindowsDpapi('protect', key).toString('base64');
+  fs.mkdirSync(dir, {recursive: true});
+  try {
+    fs.writeFileSync(keyPath, `${protectedKey}\n`, {mode: 0o600, flag: 'wx'});
+    try { fs.chmodSync(keyPath, 0o600); } catch { /* Windows */ }
+    return {key, created: true};
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    const concurrentlyCreated = readWindowsDpapiMasterKey(dir);
+    if (!concurrentlyCreated) throw error;
+    return {key: concurrentlyCreated, created: false};
+  }
+}
+
+function removeLegacyLocalMasterKey(dir: string): void {
+  const keyPath = path.join(dir, '.master-key');
+  if (!fs.existsSync(keyPath)) return;
+  fs.unlinkSync(keyPath);
+}
+
+function keysEqual(left: Buffer, right: Buffer): boolean {
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
 function keyringService(): string {
@@ -232,8 +377,46 @@ function resolveMasterKey(dir: string): {key: Buffer; source: MasterKeySource} {
     return {key: decodeMasterKey(keyringSecret), source: 'keyring'};
   }
 
+  if (process.platform === 'win32') {
+    const protectedKey = readWindowsDpapiMasterKey(dir);
+    if (protectedKey) {
+      const legacyKey = readLegacyLocalMasterKey(dir);
+      if (legacyKey) {
+        if (!keysEqual(protectedKey, legacyKey)) {
+          throw new Error(
+            `Windows DPAPI and legacy SecretStore master keys disagree in ${dir}; refusing to choose one.`,
+          );
+        }
+        removeLegacyLocalMasterKey(dir);
+      }
+      return {key: protectedKey, source: 'windows-dpapi'};
+    }
+  }
+
   const legacyLocalKey = readLegacyLocalMasterKey(dir);
   if (legacyLocalKey) {
+    if (process.platform === 'win32') {
+      const persisted = writeWindowsDpapiMasterKey(dir, legacyLocalKey);
+      if (!keysEqual(persisted.key, legacyLocalKey)) {
+        if (persisted.created) {
+          fs.rmSync(windowsDpapiMasterKeyPath(dir), {force: true});
+        }
+        throw new Error(
+          `Windows DPAPI SecretStore master key conflicts with ${path.join(dir, '.master-key')}`,
+        );
+      }
+      try {
+        removeLegacyLocalMasterKey(dir);
+      } catch (error) {
+        if (persisted.created) {
+          fs.rmSync(windowsDpapiMasterKeyPath(dir), {force: true});
+        }
+        throw new Error(
+          `Windows DPAPI protected the SecretStore master key but could not remove legacy plaintext ${path.join(dir, '.master-key')}: ${(error as Error).message}`,
+        );
+      }
+      return {key: persisted.key, source: 'windows-dpapi'};
+    }
     try {
       writeKeyringSecret(encodeMasterKey(legacyLocalKey));
       return {key: legacyLocalKey, source: 'keyring'};
@@ -258,6 +441,16 @@ function resolveMasterKey(dir: string): {key: Buffer; source: MasterKeySource} {
   }
 
   const newKey = randomMasterKey();
+  if (process.platform === 'win32') {
+    try {
+      const persisted = writeWindowsDpapiMasterKey(dir, newKey);
+      return {key: persisted.key, source: 'windows-dpapi'};
+    } catch (error) {
+      throw new Error(
+        `Windows DPAPI is unavailable for the SecretStore master key. Set ${SECRET_STORE_MASTER_KEY_ENV} for tests/dev or restore Windows PowerShell/DPAPI access. ${(error as Error).message}`,
+      );
+    }
+  }
   try {
     writeKeyringSecret(encodeMasterKey(newKey));
     return {key: newKey, source: 'keyring'};

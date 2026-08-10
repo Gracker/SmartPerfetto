@@ -288,14 +288,14 @@ function pinProposalForEnvelope(env: DataEnvelope, outputLanguage: OutputLanguag
     id: proposalId('pin_evidence', source, payload),
     kind: 'pin_evidence',
     title: shortTitle(
-      localize(outputLanguage, '固定证据', 'Pin evidence'),
+      localize(outputLanguage, '收藏证据', 'Save evidence'),
       env.display?.title,
       localize(outputLanguage, '证据', 'Evidence'),
     ),
     reason: localize(
       outputLanguage,
-      '把这份证据加入后续追问上下文。',
-      'Add this evidence to follow-up context.',
+      '把这份证据或结果快照收藏到当前会话，可通过 /pins 查看；不会固定时间线泳道，也不会自动加入后续 AI 上下文。',
+      'Save this evidence or result snapshot in the current conversation and view it with /pins; this does not pin a timeline track or automatically add it to later AI context.',
     ),
     source,
     payload,

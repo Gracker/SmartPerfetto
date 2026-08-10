@@ -17,6 +17,15 @@ import {
 } from '../resolvedAnalysisContext';
 
 describe('effective analysis mode', () => {
+  it('keeps dedicated conversation lightweight with authorized source context', () => {
+    expect(resolveEffectiveAnalysisMode('fast', {
+      assistantSurface: 'conversation',
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['app'],
+      knowledgeSourceIds: ['wiki'],
+    })).toBe('fast');
+  });
+
   it.each([
     ['trace only', {}, false, 'fast'],
     ['codebase ids with implicit metadata mode', {codebaseIds: ['app']}, true, 'full'],

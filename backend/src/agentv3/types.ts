@@ -600,15 +600,15 @@ export type HypothesisStatus = 'formed' | 'confirmed' | 'rejected';
 
 /** A structured hypothesis formed during analysis that must be resolved before concluding. */
 export interface Hypothesis {
-  id: string;
-  /** The hypothesis statement (e.g., "RenderThread blocked by Binder causing jank") */
-  statement: string;
+  readonly id: string;
+  /** Immutable claim whose original causal meaning is resolved by status. */
+  readonly statement: string;
   status: HypothesisStatus;
   /** What observation or data prompted this hypothesis */
   basis?: string;
   /** Evidence for confirmation/rejection */
   evidence?: string;
-  formedAt: number;
+  readonly formedAt: number;
   resolvedAt?: number;
 }
 

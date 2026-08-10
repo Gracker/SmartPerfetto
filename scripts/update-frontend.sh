@@ -5,8 +5,9 @@
 
 # Update pre-built frontend after modifying the AI Assistant plugin.
 #
-# Run this after ./scripts/start-dev.sh has compiled the frontend and
-# you have verified your changes in the browser.
+# Run this after verifying the UI through ./scripts/start-dev.sh, stopping the
+# dev server, and producing a standalone build with:
+#   (cd perfetto && tools/node ui/build.mjs)
 #
 # Usage:
 #   ./scripts/update-frontend.sh
@@ -15,7 +16,7 @@ set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="${SMARTPERFETTO_FRONTEND_DIST_DIR:-$PROJECT_ROOT/perfetto/out/ui/ui/dist}"
-FRONTEND_DIR="$PROJECT_ROOT/frontend"
+FRONTEND_DIR="${SMARTPERFETTO_FRONTEND_DIR:-$PROJECT_ROOT/frontend}"
 
 inject_smartperfetto_static_assets() {
   local index_file="$1"
@@ -86,31 +87,6 @@ if (replacements > 0) {
 NODE
 }
 
-# Find the versioned dist directory
-VERSION_DIR=$(find "$DIST_DIR" -maxdepth 1 -type d -name 'v*' -print 2>/dev/null | sort -V | tail -n 1 || true)
-if [ -z "$VERSION_DIR" ]; then
-  echo "ERROR: No compiled frontend found at $DIST_DIR"
-  echo "       Run ./scripts/start-dev.sh first to build the frontend."
-  exit 1
-fi
-
-VERSION=$(basename "$VERSION_DIR")
-echo "Found compiled frontend: $VERSION"
-
-# Remember stale version directories. We remove them after restoring the JS
-# engine bundles because a --only-wasm-memory64 build may need to copy those
-# bundles from the previous committed version.
-STALE_DIRS=$(find "$FRONTEND_DIR" -maxdepth 1 -type d -name 'v*' ! -name "$VERSION" 2>/dev/null || true)
-if [ -n "$STALE_DIRS" ]; then
-  echo "Stale version directories found:"
-  while IFS= read -r stale_dir; do
-    printf '     %s\n' "$stale_dir"
-  done <<< "$STALE_DIRS"
-  echo ""
-fi
-
-echo "Updating frontend/ ..."
-
 is_usable_runtime_bundle() {
   local bundle="$1"
   local candidate="$2"
@@ -127,6 +103,55 @@ is_usable_runtime_bundle() {
 
   return 0
 }
+
+# Find the versioned dist directory
+VERSION_DIR=$(find "$DIST_DIR" -maxdepth 1 -type d -name 'v*' -print 2>/dev/null | sort -V | tail -n 1 || true)
+if [ -z "$VERSION_DIR" ]; then
+  echo "ERROR: No compiled frontend found at $DIST_DIR"
+  echo "       Run ./scripts/start-dev.sh first to build the frontend."
+  exit 1
+fi
+
+VERSION=$(basename "$VERSION_DIR")
+echo "Found compiled frontend: $VERSION"
+
+# Reject an incomplete quick/incremental build before touching the committed
+# frontend. The sync below uses --delete, so validating after it would corrupt
+# an otherwise usable prebuild before reporting the missing source artifact.
+for REQUIRED_SOURCE in \
+  "$DIST_DIR/index.html" \
+  "$VERSION_DIR/frontend.css" \
+  "$VERSION_DIR/frontend_bundle.js" \
+  "$VERSION_DIR/manifest.json"; do
+  if [ ! -f "$REQUIRED_SOURCE" ]; then
+    echo "ERROR: Compiled frontend is incomplete; missing $REQUIRED_SOURCE" >&2
+    echo "       Stop ./scripts/start-dev.sh, then run:" >&2
+    echo "       (cd perfetto && tools/node ui/build.mjs)" >&2
+    exit 1
+  fi
+done
+for BUNDLE in engine_bundle.js traceconv_bundle.js; do
+  if ! is_usable_runtime_bundle "$BUNDLE" "$VERSION_DIR/$BUNDLE"; then
+    echo "ERROR: $BUNDLE is incomplete in the current frontend build." >&2
+    echo "       Stop ./scripts/start-dev.sh, then run:" >&2
+    echo "       (cd perfetto && tools/node ui/build.mjs)" >&2
+    exit 1
+  fi
+done
+
+# Remember stale version directories. We remove them after restoring the JS
+# engine bundles because a --only-wasm-memory64 build may need to copy those
+# bundles from the previous committed version.
+STALE_DIRS=$(find "$FRONTEND_DIR" -maxdepth 1 -type d -name 'v*' ! -name "$VERSION" 2>/dev/null || true)
+if [ -n "$STALE_DIRS" ]; then
+  echo "Stale version directories found:"
+  while IFS= read -r stale_dir; do
+    printf '     %s\n' "$stale_dir"
+  done <<< "$STALE_DIRS"
+  echo ""
+fi
+
+echo "Updating frontend/ ..."
 
 # Copy top-level files
 cp "$DIST_DIR/index.html"          "$FRONTEND_DIR/index.html"

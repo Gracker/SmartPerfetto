@@ -15,6 +15,7 @@ const tsxCliPath = path.join(backendRoot, 'node_modules/tsx/dist/cli.mjs');
 loadBackendEnv();
 
 const DEFAULT_RUNTIME = 'openai-agents-sdk';
+const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const DEEPSEEK_RUNTIME_KINDS = [
   'openai-agents-sdk',
   'pi-agent-core',
@@ -110,6 +111,7 @@ const suites = {
       'invoke_skill',
       '--require-skill',
       'anr_analysis',
+      '--require-non-partial',
       '--require-external-issue-triage',
       '--forbid-degraded-fallback',
       'verification_failed',
@@ -242,7 +244,13 @@ function main() {
 
   for (const runtimeKind of runtimeKinds) {
     for (const suiteName of suiteNames) {
-      runSuite(suiteName, credential, runtimeKind, runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME);
+      runSuite(
+        suiteName,
+        credential,
+        runtimeKind,
+        runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME,
+        options.timeoutMs,
+      );
     }
   }
 
@@ -252,6 +260,7 @@ function main() {
 function parseArgs(argv) {
   let suite = 'all';
   let runtime = DEFAULT_RUNTIME;
+  let timeoutMs = DEFAULT_TIMEOUT_MS;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -274,6 +283,15 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === '--timeout-ms') {
+      const value = Number(argv[i + 1]);
+      if (!Number.isInteger(value) || value <= 0) {
+        throw new Error('--timeout-ms requires a positive integer');
+      }
+      timeoutMs = value;
+      i += 1;
+      continue;
+    }
     if (!arg.startsWith('-')) {
       suite = parseSuite(arg);
       continue;
@@ -281,7 +299,7 @@ function parseArgs(argv) {
     throw new Error(`Unknown option: ${arg}`);
   }
 
-  return { suite, runtime, help: false };
+  return { suite, runtime, timeoutMs, help: false };
 }
 
 function parseSuite(value) {
@@ -314,12 +332,13 @@ function resolveRuntimeKinds(value) {
 }
 
 function printUsage() {
-  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|all-deepseek]');
+  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|all-deepseek] [--timeout-ms <number>]');
   console.log('');
   console.log('Runs SmartPerfetto Agent SSE E2E with Deepseek-backed SmartPerfetto runtimes.');
   console.log('');
   console.log('Credential precedence: DEEPSEEK_API_KEY, then OPENAI_API_KEY.');
   console.log('OpenAI receives OPENAI_* pins; Pi/OpenCode receive generated Deepseek model JSON unless env already overrides it.');
+  console.log(`Each real SSE scenario has a ${DEFAULT_TIMEOUT_MS}ms default timeout; use --timeout-ms to override it.`);
 }
 
 function loadBackendEnv() {
@@ -340,11 +359,12 @@ function resolveDeepseekCredential() {
   return { apiKey, source };
 }
 
-function runSuite(suiteName, credential, runtimeKind, runtimeSpecificOutput) {
+function runSuite(suiteName, credential, runtimeKind, runtimeSpecificOutput, timeoutMs) {
   const suite = suites[suiteName];
-  const args = runtimeSpecificOutput
+  const suiteArgs = runtimeSpecificOutput
     ? withRuntimeOutputPath(suite.args, suite.output, runtimeKind)
     : suite.args;
+  const args = [...suiteArgs, '--timeout-ms', String(timeoutMs)];
   console.log(`\n[deepseek-e2e] suite=${suiteName} (${suite.label})`);
   console.log(`[deepseek-e2e] runtime=${runtimeKind}`);
   console.log(`[deepseek-e2e] output=${getOutputPathFromArgs(args) || suite.output}`);

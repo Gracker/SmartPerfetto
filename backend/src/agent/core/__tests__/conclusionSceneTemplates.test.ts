@@ -8,6 +8,7 @@ import path from 'path';
 import type { Finding, Intent } from '../../types';
 import {
   buildConclusionScenePromptHints,
+  deriveConclusionSceneAspectsFromSkillIds,
   getConclusionSceneTemplateDiagnostics,
   resetConclusionSceneTemplateCacheForTests,
 } from '../conclusionSceneTemplates';
@@ -217,6 +218,24 @@ describe('conclusionSceneTemplates', () => {
     expect(promptText).toContain('确认来源或证据缺口');
     expect(promptText).toContain('受害进程和根因进程');
     expect(promptText).toContain('nativePollOnce');
+  });
+
+  test('uses executed analysis skills to disambiguate mixed query wording', () => {
+    const hints = buildConclusionScenePromptHints({
+      intent: createIntent({
+        primaryGoal: '检查这个启动 Trace 是否包含 ANR',
+        aspects: deriveConclusionSceneAspectsFromSkillIds([
+          'anr_analysis',
+          'anr_analysis',
+          'blocking_chain_analysis',
+          'anr_detection',
+        ]),
+      }),
+      findings: [],
+      deepReasonLabel: '为什么慢',
+    });
+
+    expect(hints.sceneId).toBe('anr');
   });
 
   test('falls back to generic template when no scene hints are present', () => {

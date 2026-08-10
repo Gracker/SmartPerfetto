@@ -354,6 +354,8 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     const methodology = loadPromptTemplate('prompt-methodology');
     expect(methodology).toContain('lookup_knowledge("evidence-provenance")');
     expect(methodology).toContain('packet-level 网络 trace');
+    expect(methodology).toContain('原始且不可变的假设命题');
+    expect(methodology).toContain('先 rejected 原命题，再 submit_hypothesis');
 
     const knowledge = loadPromptTemplate('knowledge-evidence-provenance');
     expect(knowledge).toContain('## 证据来源与置信度边界');

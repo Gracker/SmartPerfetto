@@ -21,7 +21,14 @@ describe('perfettoSqlDocs', () => {
     expect(asset?.version).toBe(1);
     expect(asset?.stats?.moduleCount).toBeGreaterThan(200);
     expect(asset?.stats?.entryCount).toBeGreaterThan(350);
-    expect(asset?.sourceDocs).toContain('stdlib_docs.json');
+    expect(asset?.generatedFrom).toBe(
+      '7b573c1c00f5d5890f496a87b4876a995b6a1c66',
+    );
+    expect(asset?.sourceDocs).toBe(
+      'git:7b573c1c00f5d5890f496a87b4876a995b6a1c66:' +
+        'src/trace_processor/perfetto_sql/stdlib',
+    );
+    expect(asset?.sourceDocsMode).toBe('runtime-revision-source-generator');
   });
 
   it('returns rich docs for stdlib tables', () => {

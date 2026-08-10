@@ -11,6 +11,7 @@ import {
   DrillDownResolved,
   DrillDownResolutionTrace,
 } from '../drillDownResolver';
+import {resolveRegisteredDrillDownSkillParams} from '../drillDownEntityResolver';
 import { EnhancedSessionContext } from '../../context/enhancedSessionContext';
 import type { Intent, ReferencedEntity } from '../../types';
 import type { FollowUpResolution } from '../followUpHandler';
@@ -306,6 +307,13 @@ describe('drillDownResolver', () => {
         expect(result!.intervals[0].metadata?.startup_id).toBe('12');
         expect(result!.traces[0].entityType).toBe('startup');
         expect(result!.traces[0].used).toContain('enrichment');
+        expect(mockTps.executeQuery).toHaveBeenCalledWith(
+          'trace-1',
+          expect.not.stringContaining('$process_name'),
+        );
+        expect(mockTps.executeQuery.mock.calls[0]?.[1]).toContain(
+          "('' = '' OR s.package = '' OR s.package GLOB '' || ':*')",
+        );
       });
 
       test('supports trace processor query(traceId, sql) API for enrichment', async () => {
@@ -518,5 +526,27 @@ describe('drillDownResolver', () => {
         expect(result!.traces[0].used).toContain('explicit');
       });
     });
+  });
+});
+
+describe('resolveRegisteredDrillDownSkillParams', () => {
+  test('preserves parameters for external skills outside the drill-down registry', async () => {
+    const query = jest.fn();
+    const params = {
+      frameId: 'vendor-frame',
+      startTs: '10',
+      endTs: '20',
+    };
+
+    const result = await resolveRegisteredDrillDownSkillParams({
+      skillId: 'external_workspace_skill',
+      params,
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    });
+
+    expect(result).toEqual({params, enriched: false});
+    expect(result.params).not.toBe(params);
+    expect(query).not.toHaveBeenCalled();
   });
 });

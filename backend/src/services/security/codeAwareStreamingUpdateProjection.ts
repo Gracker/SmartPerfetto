@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {StreamingUpdate} from '../../agent/types';
+import type {VerificationIssue} from '../../agentv3/types';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {localize} from '../../agentv3/outputLanguage';
 import {sanitizeCodeAwareText} from './codeAwareOutputRegistry';
@@ -74,12 +75,39 @@ function privateDegradedFallback(
     : undefined;
 }
 
+const PRIVATE_SAFE_VERIFICATION_ISSUE_TYPES = new Set<VerificationIssue['type']>([
+  'missing_evidence',
+  'too_many_criticals',
+  'known_misdiagnosis',
+  'severity_mismatch',
+  'missing_check',
+  'plan_deviation',
+  'missing_reasoning',
+  'unresolved_hypothesis',
+  'truncation',
+]);
+
+function privateDegradedIssueType(
+  sourceType: StreamingUpdate['type'],
+  content: StreamingUpdate['content'],
+): VerificationIssue['type'] | undefined {
+  if (sourceType !== 'degraded' || !content || typeof content !== 'object' || Array.isArray(content)) {
+    return undefined;
+  }
+  const issueType = (content as Record<string, unknown>).verificationIssueType;
+  return typeof issueType === 'string' &&
+    PRIVATE_SAFE_VERIFICATION_ISSUE_TYPES.has(issueType as VerificationIssue['type'])
+    ? issueType as VerificationIssue['type']
+    : undefined;
+}
+
 function privateProgress(
   language: OutputLanguage,
   sourceType: StreamingUpdate['type'],
   sourceContent?: StreamingUpdate['content'],
 ): StreamingUpdate['content'] {
   const degradedFallback = privateDegradedFallback(sourceType, sourceContent);
+  const degradedIssueType = privateDegradedIssueType(sourceType, sourceContent);
   return {
     phase: sourceType,
     message: localize(
@@ -90,6 +118,7 @@ function privateProgress(
     privateModelTextSuppressed: true,
     sourceEventType: sourceType,
     ...(degradedFallback ? {degradedFallback} : {}),
+    ...(degradedIssueType ? {degradedIssueType} : {}),
   };
 }
 

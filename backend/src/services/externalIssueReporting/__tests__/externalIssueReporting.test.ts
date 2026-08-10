@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it} from '@jest/globals';
+import {describe, expect, it, jest} from '@jest/globals';
 
 import type {AnalysisReceiptV2} from '../../../types/dataContract';
 import type {RunManifestV1} from '../../../types/selfEvolution';
@@ -16,6 +16,7 @@ import {buildExternalIssueDraft} from '../draftBuilder';
 import {buildDeterministicExternalIssueReview} from '../deterministicFallback';
 import {resolveExternalIssueProviderPin} from '../providerPin';
 import {buildExternalIssueTriagePrompt} from '../triagePrompt';
+import {runExternalIssueTriage} from '../triageRunner';
 
 function manifest(
   overrides: Partial<RunManifestV1> = {},
@@ -439,6 +440,241 @@ describe('external issue reporting services', () => {
     expect(prompt).toContain('com.example.scrolling');
   });
 
+  it('repairs a structurally invalid Agent review once before falling back', async () => {
+    const exactHash = resolveProviderRuntimeSnapshot(
+      getProviderService(),
+      null,
+      'openai-agents-sdk',
+      providerScope,
+    ).snapshotHash;
+    const run = source({
+      manifest: manifest({providerSnapshotHash: exactHash}),
+    });
+    const opportunity = detectExternalIssueOpportunity(run);
+    const skillSignal = opportunity.signals.find(
+      item => item.kind === 'skill_error',
+    )!;
+    const prompts: string[] = [];
+
+    const result = await runExternalIssueTriage({
+      opportunity,
+      manifest: run.manifest,
+      providerScope,
+      options: {
+        complete: async input => {
+          prompts.push(input.prompt);
+          return {
+            text: JSON.stringify(
+              prompts.length === 1
+                ? {candidates: []}
+                : validAgentRaw(skillSignal.signalId),
+            ),
+            model: 'deepseek-v4-flash',
+          };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain(
+      'available opportunity requires at least one candidate',
+    );
+  });
+
+  it('stops repair when the sealed Provider snapshot changes between attempts', async () => {
+    const previousLightModel = process.env.OPENAI_LIGHT_MODEL;
+    try {
+      const exactHash = resolveProviderRuntimeSnapshot(
+        getProviderService(),
+        null,
+        'openai-agents-sdk',
+        providerScope,
+      ).snapshotHash;
+      const run = source({manifest: manifest({providerSnapshotHash: exactHash})});
+      const opportunity = detectExternalIssueOpportunity(run);
+      let completionCalls = 0;
+
+      const result = await runExternalIssueTriage({
+        opportunity,
+        manifest: run.manifest,
+        providerScope,
+        options: {
+          complete: async () => {
+            completionCalls += 1;
+            process.env.OPENAI_LIGHT_MODEL = `${previousLightModel || 'light-model'}-changed`;
+            return {text: JSON.stringify({candidates: []}), model: 'light-model'};
+          },
+        },
+      });
+
+      expect(result).toEqual({ok: false, reason: 'provider_snapshot_changed'});
+      expect(completionCalls).toBe(1);
+    } finally {
+      if (previousLightModel === undefined) delete process.env.OPENAI_LIGHT_MODEL;
+      else process.env.OPENAI_LIGHT_MODEL = previousLightModel;
+    }
+  });
+
+  it('uses bounded non-thinking JSON output for official DeepSeek reviews', async () => {
+    const previousEnv = {
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+      OPENAI_LIGHT_MODEL: process.env.OPENAI_LIGHT_MODEL,
+    };
+    const previousFetch = globalThis.fetch;
+    let requestBody: Record<string, unknown> | undefined;
+
+    try {
+      process.env.OPENAI_API_KEY = 'test-deepseek-key';
+      process.env.OPENAI_BASE_URL = 'https://api.deepseek.com/v1';
+      process.env.OPENAI_LIGHT_MODEL = 'deepseek-v4-flash';
+      const exactHash = resolveProviderRuntimeSnapshot(
+        getProviderService(),
+        null,
+        'openai-agents-sdk',
+        providerScope,
+      ).snapshotHash;
+      const run = source({
+        manifest: manifest({providerSnapshotHash: exactHash}),
+      });
+      const opportunity = detectExternalIssueOpportunity(run);
+      const skillSignal = opportunity.signals.find(
+        item => item.kind === 'skill_error',
+      )!;
+      globalThis.fetch = jest.fn(async (
+        _input: string | URL | Request,
+        init?: RequestInit,
+      ) => {
+        requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {content: JSON.stringify(validAgentRaw(skillSignal.signalId))},
+          }],
+        }), {status: 200});
+      }) as typeof fetch;
+
+      const result = await runExternalIssueTriage({
+        opportunity,
+        manifest: run.manifest,
+        providerScope,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(requestBody).toEqual(expect.objectContaining({
+        model: 'deepseek-v4-flash',
+        max_tokens: 8192,
+        response_format: {type: 'json_object'},
+        thinking: {type: 'disabled'},
+      }));
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const [name, value] of Object.entries(previousEnv)) {
+        if (value === undefined) {
+          delete process.env[name];
+        } else {
+          process.env[name] = value;
+        }
+      }
+    }
+  });
+
+  it('retries a compatible endpoint without response_format when JSON mode is unsupported', async () => {
+    const previousEnv = {
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
+      OPENAI_LIGHT_MODEL: process.env.OPENAI_LIGHT_MODEL,
+    };
+    const previousFetch = globalThis.fetch;
+    const requestBodies: Array<Record<string, unknown>> = [];
+
+    try {
+      process.env.OPENAI_API_KEY = 'test-compatible-key';
+      process.env.OPENAI_BASE_URL = 'https://compatible.example.test/v1';
+      process.env.OPENAI_LIGHT_MODEL = 'compatible-model';
+      const exactHash = resolveProviderRuntimeSnapshot(
+        getProviderService(),
+        null,
+        'openai-agents-sdk',
+        providerScope,
+      ).snapshotHash;
+      const run = source({manifest: manifest({providerSnapshotHash: exactHash})});
+      const opportunity = detectExternalIssueOpportunity(run);
+      const skillSignal = opportunity.signals.find(item => item.kind === 'skill_error')!;
+      globalThis.fetch = jest.fn(async (
+        _input: string | URL | Request,
+        init?: RequestInit,
+      ) => {
+        requestBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        if (requestBodies.length === 1) {
+          return new Response(JSON.stringify({
+            error: {message: 'Unsupported parameter: response_format'},
+          }), {status: 400});
+        }
+        return new Response(JSON.stringify({
+          choices: [{
+            message: {content: JSON.stringify(validAgentRaw(skillSignal.signalId))},
+          }],
+        }), {status: 200});
+      }) as typeof fetch;
+
+      const result = await runExternalIssueTriage({
+        opportunity,
+        manifest: run.manifest,
+        providerScope,
+      });
+
+      expect(result.ok).toBe(true);
+      expect(requestBodies).toHaveLength(2);
+      expect(requestBodies[0]).toHaveProperty('response_format', {type: 'json_object'});
+      expect(requestBodies[1]).not.toHaveProperty('response_format');
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const [name, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
+
+  it('keeps Pi Agent review on the exact sealed runtime snapshot', async () => {
+    const exactHash = resolveProviderRuntimeSnapshot(
+      getProviderService(),
+      null,
+      'pi-agent-core',
+      providerScope,
+    ).snapshotHash;
+    const run = source({
+      manifest: manifest({
+        runtime: 'pi-agent-core',
+        providerSnapshotHash: exactHash,
+      }),
+    });
+    const opportunity = detectExternalIssueOpportunity(run);
+    const skillSignal = opportunity.signals.find(
+      item => item.kind === 'skill_error',
+    )!;
+    const runtimes: string[] = [];
+
+    const result = await runExternalIssueTriage({
+      opportunity,
+      manifest: run.manifest,
+      providerScope,
+      options: {
+        complete: async input => {
+          runtimes.push(input.runtime);
+          return {
+            text: JSON.stringify(validAgentRaw(skillSignal.signalId)),
+            model: 'deepseek-v4-flash',
+          };
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(runtimes).toEqual(['pi-agent-core']);
+  });
+
   it('sanitizes Agent prose without mutating structural identifiers', () => {
     const runId =
       'run-agent-1785387663688-tpxhu0es-1-1785387663717-ia8tg8';
@@ -518,6 +754,18 @@ describe('external issue reporting services', () => {
       'openai-agents-sdk',
       providerScope,
     ).snapshotHash;
+    const piExactHash = resolveProviderRuntimeSnapshot(
+      getProviderService(),
+      null,
+      'pi-agent-core',
+      providerScope,
+    ).snapshotHash;
+    const openCodeExactHash = resolveProviderRuntimeSnapshot(
+      getProviderService(),
+      null,
+      'opencode',
+      providerScope,
+    ).snapshotHash;
 
     expect(resolveExternalIssueProviderPin(
       manifest({providerSnapshotHash: undefined}),
@@ -530,10 +778,25 @@ describe('external issue reporting services', () => {
     expect(resolveExternalIssueProviderPin(
       manifest({
         runtime: 'pi-agent-core',
-        providerSnapshotHash: exactHash,
+        providerSnapshotHash: piExactHash,
       }),
       providerScope,
-    )).toEqual({ok: false, reason: 'runtime_not_supported'});
+    )).toEqual(expect.objectContaining({
+      ok: true,
+      providerId: null,
+      runtime: 'pi-agent-core',
+    }));
+    expect(resolveExternalIssueProviderPin(
+      manifest({
+        runtime: 'opencode',
+        providerSnapshotHash: openCodeExactHash,
+      }),
+      providerScope,
+    )).toEqual(expect.objectContaining({
+      ok: true,
+      providerId: null,
+      runtime: 'opencode',
+    }));
     expect(resolveExternalIssueProviderPin(
       manifest({
         providerId: 'missing-provider-for-external-issue-test',

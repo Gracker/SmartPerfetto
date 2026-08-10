@@ -139,7 +139,7 @@ set and exits idempotently when it matches, without clobbering, editing, or
 replacing assets. Do not use `--skip-build` unless those same-version,
 same-commit packages were just built.
 
-Single-target release:
+Single-target draft candidate (not independently promotable):
 
 ```bash
 npm run release:portable -- <version> --targets macos-arm64
@@ -183,7 +183,13 @@ entitlements.
 
 ## User Data Directories
 
-- Windows: `data/` and `logs/` under `%LOCALAPPDATA%\SmartPerfetto`.
+Windows user operations are authoritative in the
+[Windows Setup And Run Guide](../getting-started/windows.en.md). This section defines the
+packaging and operations path contract only.
+
+- Windows: `%LOCALAPPDATA%\SmartPerfetto` is the data root. It directly contains
+  `backend/`, `providers/`, `uploads/`, `user/`, `logs/`, and `env`; there is no extra
+  `data/` layer.
 - macOS: `~/Library/Application Support/SmartPerfetto` and `~/Library/Logs/SmartPerfetto`.
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/smartperfetto` and
   `${XDG_STATE_HOME:-~/.local/state}/smartperfetto/logs`.
@@ -200,13 +206,21 @@ Symlinks, reparse points, and non-regular files are rejected. If automatic
 discovery cannot identify the source, use:
 
 ```powershell
-SmartPerfetto.exe --migrate-from C:\path\to\old-package
+SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 ```
+
+Run explicit migration before the first standard start and before the destination exists.
+An existing destination makes the command fail without merging or overwriting; source and
+destination are preserved. Automatic sibling discovery selects only the newest version that
+is strictly older than the current package. It skips conservatively when the current package
+version cannot be parsed.
 
 Set `SMARTPERFETTO_PORTABLE_MODE=1` only when data must intentionally travel
 beside the package. That mode keeps package-local `data/` and `logs/` and
-disables automatic migration. An explicit `SMARTPERFETTO_BACKEND_DATA_DIR`
-also takes precedence over the default and disables automatic migration.
+disables automatic and explicit migration. Use `SMARTPERFETTO_PORTABLE_DATA_DIR` to override
+the full portable data root for tests or operations; it also disables migration. The launcher
+derives backend, Provider, uploads, and user paths from that root. Do not use
+`SMARTPERFETTO_BACKEND_DATA_DIR` as a portable-root override.
 
 The bundled launcher prefers backend `3000` and frontend `10000`. If a preferred
 default port is already occupied, the launcher automatically selects the next
@@ -254,6 +268,10 @@ process containment, child PIDs, exit codes, escalation, and port release.
 Windows must establish a kill-on-close Job Object, while macOS/Linux services
 use independent process groups. Launcher/backend/frontend logs are preserved
 on failure. The command rejects a host that does not match `--target`.
+On Windows it also loads `better-sqlite3` and `sodium-native`, runs a local Provider
+Create/Activate/Get/Cleanup lifecycle, and uses packaged backend code to exercise DPAPI
+SecretStore put/get/reopen. The default Provider path and enterprise SecretStore remain two
+separate pieces of evidence.
 `--public-release` produces public-promotion evidence and also
 checks Developer ID, Gatekeeper, the notarization staple, and the `Accepted`
 notary receipt on macOS. Omit it only for draft-package smoke.

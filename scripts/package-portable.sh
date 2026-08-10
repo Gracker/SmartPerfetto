@@ -648,30 +648,98 @@ write_readme() {
       cat > "$package_dir/README-WINDOWS.txt" <<README
 SmartPerfetto Windows x64 package
 Version: $version
-Minimum OS: Windows 10 or Windows Server 2016
+Technical package floor: Windows 10 or Windows Server 2016, x64 only.
+Recommended: a maintained Windows 11 or Windows Server release.
+
+Full Windows guide:
+  https://github.com/Gracker/SmartPerfetto/blob/main/docs/getting-started/windows.en.md
+
+Download and verify:
+  1. Download the windows-x64 zip from the official GitHub Release page:
+     https://github.com/Gracker/SmartPerfetto/releases/latest
+  2. In PowerShell, run:
+     Get-FileHash .\smartperfetto-v$version-windows-x64.zip -Algorithm SHA256
+  3. Compare the result with the SHA256 digest shown on the Release page.
+
+The current Windows launcher is not Authenticode-signed, so Windows may show
+an Unknown Publisher or SmartScreen warning. Do not disable Microsoft Defender.
+Continue only when the zip came from the official Release and its hash matches.
 
 Run:
-  1. Extract the zip to a normal local path, for example C:\\SmartPerfetto.
-  2. Double-click SmartPerfetto.exe.
-  3. Open http://127.0.0.1:10000 if the browser does not open automatically.
+  1. Use Extract All. Do not run inside the zip or copy only SmartPerfetto.exe.
+  2. Extract to a normal local path, for example C:\\Apps\\SmartPerfetto\\v$version.
+  3. Double-click SmartPerfetto.exe and keep the launcher window open.
+  4. Use the exact Open: URL printed there; the port can change when 10000 is
+     already in use.
+  5. In AI Assistant Settings > Providers, create a provider, save it, test it,
+     and activate it before starting AI analysis.
+  6. Press Ctrl+C in the launcher window to stop SmartPerfetto cleanly.
 
 User data and logs:
   %LOCALAPPDATA%\\SmartPerfetto
+  %LOCALAPPDATA%\\SmartPerfetto\\providers
   %LOCALAPPDATA%\\SmartPerfetto\\logs
 
 On first launch, SmartPerfetto migrates data from an older package's data
-directory when it is in the current or a sibling extracted package. To choose
-the old package explicitly:
+directory when it is in the current package or an older sibling package. To
+choose the old package explicitly, run this before the first standard launch:
   SmartPerfetto.exe --migrate-from "C:\\path\\to\\old-package"
 
-The old data is preserved. To keep data beside the executable instead, set
-SMARTPERFETTO_PORTABLE_MODE=1 before launching; automatic migration is disabled.
+The old data is preserved. If %LOCALAPPDATA%\\SmartPerfetto already exists,
+explicit migration stops without overwriting it. Back up and move the existing
+destination before retrying. To keep data beside the executable instead, set
+SMARTPERFETTO_PORTABLE_MODE=1 before launching; automatic and explicit migration
+are disabled while that mode is active.
 
 AI analysis needs either a Provider profile configured in the UI or env credentials.
 To use env credentials, create %LOCALAPPDATA%\\SmartPerfetto\\env with provider
 settings, then restart SmartPerfetto.exe.
 
 Logs:
+  %LOCALAPPDATA%\\SmartPerfetto\\logs\\backend.log
+  %LOCALAPPDATA%\\SmartPerfetto\\logs\\frontend.log
+README
+      cat > "$package_dir/README-WINDOWS.zh-CN.txt" <<README
+SmartPerfetto Windows x64 免安装包
+版本：$version
+技术最低版本：Windows 10 或 Windows Server 2016，仅支持 x64。
+建议使用仍受支持的 Windows 11 或 Windows Server 版本。
+
+完整 Windows 指南：
+  https://github.com/Gracker/SmartPerfetto/blob/main/docs/getting-started/windows.md
+
+下载与校验：
+  1. 只从官方 GitHub Release 下载 windows-x64 zip：
+     https://github.com/Gracker/SmartPerfetto/releases/latest
+  2. 在 PowerShell 运行：
+     Get-FileHash .\smartperfetto-v$version-windows-x64.zip -Algorithm SHA256
+  3. 将结果与 Release 页面显示的 SHA256 digest 对比。
+
+当前 Windows 启动器还没有 Authenticode 签名，因此 Windows 可能显示
+Unknown Publisher 或 SmartScreen 提示。不要关闭 Microsoft Defender。
+只有下载来源是官方 Release 且 SHA256 一致时才继续。
+
+运行：
+  1. 使用"全部解压"。不要在 zip 预览中运行，也不要只复制 SmartPerfetto.exe。
+  2. 解压到普通本地目录，例如 C:\\Apps\\SmartPerfetto\\v${version}。
+  3. 双击 SmartPerfetto.exe，并保持启动器窗口打开。
+  4. 使用窗口中实际打印的 Open: 地址；10000 被占用时端口会自动变化。
+  5. 打开 AI Assistant 设置 > Providers，新建 Provider，保存、测试并激活。
+  6. 使用完毕后在启动器窗口按 Ctrl+C 正常停止。
+
+用户数据与日志：
+  %LOCALAPPDATA%\\SmartPerfetto
+  %LOCALAPPDATA%\\SmartPerfetto\\providers
+  %LOCALAPPDATA%\\SmartPerfetto\\logs
+
+首次标准启动前需要指定旧数据时运行：
+  SmartPerfetto.exe --migrate-from "C:\\path\\to\\old-package"
+
+旧数据不会被删除。如果 %LOCALAPPDATA%\\SmartPerfetto 已存在，显式迁移会
+停止且不会覆盖；请先备份并移动现有目标目录。设置
+SMARTPERFETTO_PORTABLE_MODE=1 后，数据保存在程序旁边，自动和显式迁移都会禁用。
+
+需要查看错误时，可在 PowerShell 中运行 .\SmartPerfetto.exe。日志位于：
   %LOCALAPPDATA%\\SmartPerfetto\\logs\\backend.log
   %LOCALAPPDATA%\\SmartPerfetto\\logs\\frontend.log
 README

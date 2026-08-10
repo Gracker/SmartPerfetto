@@ -45,6 +45,8 @@ After plugin UI changes:
 
 ```bash
 ./scripts/start-dev.sh
+# Stop the dev server after browser verification.
+(cd perfetto && tools/node ui/build.mjs)
 ./scripts/update-frontend.sh
 ```
 

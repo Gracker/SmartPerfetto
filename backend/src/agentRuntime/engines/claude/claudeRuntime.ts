@@ -80,7 +80,10 @@ import {
 } from '../../../services/resolvedAnalysisContext';
 import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, ComplexityClassifierInput, FailedApproach, Hypothesis, QueryComplexity, TraceCompleteness, UncertaintyFlag, VerificationIssue } from '../../../agentv3/types';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
-import { recordPlanOrPrePlanToolCall } from '../../../agentv3/planToolCallRecorder';
+import {
+  recordPlanOrPrePlanToolCall,
+  resetPrePlanToolCallsForNewRun,
+} from '../../../agentv3/planToolCallRecorder';
 import { buildRecoveryNote } from '../../../agentv3/recoveryNoteBuilder';
 import { evaluateThreshold as evaluateContextThreshold } from '../../../agentv3/contextTokenMeter';
 import {
@@ -1086,6 +1089,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         : resolvedRuntimeConfig;
       outputLanguage = runtimeConfig.outputLanguage;
       const emptyFocusResult = { apps: [], primaryApp: undefined, method: 'none' as const };
+      const conversationSurface = options.assistantSurface === 'conversation';
       let focusPromise: Promise<Awaited<ReturnType<typeof detectFocusApps>>> | undefined;
       const startFocusDetection = () => {
         focusPromise ??= detectFocusApps(this.traceProcessorService, traceId, {
@@ -1116,7 +1120,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
       const localQuickProcessIdentityPreEvidence = localQuickPreEvidenceFlags.quickProcessIdentityPreEvidence;
       const localQuickTraceFactPreEvidence = localQuickPreEvidenceFlags.quickTraceFactPreEvidence;
-      const localCanSkipFocusDetection = localQuickPreEvidenceFlags.skipFocusDetection;
+      const localCanSkipFocusDetection =
+        conversationSurface || localQuickPreEvidenceFlags.skipFocusDetection;
       if (!localCanSkipFocusDetection) {
         if (!localQuickAcknowledgementDirectAnswer) {
           startFocusDetection();
@@ -1175,6 +1180,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         skipQuickTracePreflightDetection = (
           quickProcessIdentityPreEvidence || quickTraceFactPreEvidence
         );
+      }
+
+      if (conversationSurface) {
+        quickAcknowledgementDirectAnswer = false;
+        quickFocusAppPreEvidence = false;
+        quickProcessIdentityPreEvidence = false;
+        quickTraceFactPreEvidence = false;
+        quickScrollingTriagePreEvidence = false;
+        quickSkipFocusDetection = true;
+        skipQuickTracePreflightDetection = true;
       }
 
       const analysisRunSpec = createAnalysisRunSpec({
@@ -2898,7 +2913,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       };
 
       const skipQuickPreflightForEvidence = skipQuickTracePreflightDetection || quickFocusAppPreEvidence;
-      const skipQuickPreflight = skipQuickPreflightForEvidence;
+      const deferQuickTracePreflightToModel = options.assistantSurface === 'conversation';
+      const skipQuickPreflight = skipQuickPreflightForEvidence || deferQuickTracePreflightToModel;
       const architecturePromise = skipQuickPreflight
         ? Promise.resolve(undefined)
         : detectQuickArchitecture();
@@ -2983,7 +2999,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         && (!quickProcessIdentityPreEvidence || useProcessIdentityEvidenceOnlyQuick)
         && (!quickTraceFactPreEvidence || useTraceFactEvidenceOnlyQuick);
 
-      if (skipQuickPreflightForEvidence && !useEvidenceOnlyQuick) {
+      if (
+        skipQuickPreflightForEvidence &&
+        !deferQuickTracePreflightToModel &&
+        !useEvidenceOnlyQuick
+      ) {
         architecture = await detectQuickArchitecture();
         sqlErrors = ensureSqlErrorsLoaded();
       }
@@ -3115,6 +3135,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           watchdogWarning,
           sceneType,
           lightweight: true,
+          conversationTraceAttached: options.assistantSurface === 'conversation'
+            ? options.conversationTraceAttached === true
+            : undefined,
           artifactStore: quickArtifactStore,
           recentSqlErrors: sqlErrors,
           skillNotesBudget: quickNotesBudget,
@@ -3980,6 +4003,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
     const previousPlan = analysisPlan.current ?? undefined;
     analysisPlan.current = null;
+    resetPrePlanToolCallsForNewRun(analysisPlan);
 
     // Phase 6.6: Watchdog feedback ref — shared between runtime watchdog and MCP tools
     const watchdogWarning: { current: string | null } = { current: null };
@@ -4016,6 +4040,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // P2-G1: Destructure to get both server and auto-derived allowedTools
     const fullNotesBudget = createRuntimeSkillNotesBudget(false);
     const { server: mcpServer, allowedTools } = createClaudeMcpServer({
+      conversationTraceAttached: options.assistantSurface === 'conversation'
+        ? options.conversationTraceAttached === true
+        : undefined,
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,

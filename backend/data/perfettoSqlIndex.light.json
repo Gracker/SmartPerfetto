@@ -1,6 +1,7 @@
 {
   "version": "2.0",
-  "generatedAt": "2026-07-03T14:02:35.520451",
+  "generatedAt": "2026-08-10T20:36:29.525460",
+  "generatedFrom": "7b573c1c00f5d5890f496a87b4876a995b6a1c66",
   "source": "perfetto/src/trace_processor/perfetto_sql/stdlib",
   "templates": [
     {
@@ -1326,11 +1327,18 @@
       ]
     },
     {
+      "id": "stdlib.android._is_relevant_blocking_call_expr",
+      "name": "_is_relevant_blocking_call_expr",
+      "category": "android",
+      "type": "macro",
+      "description": "Internal implementation detail. Expands to a boolean expression that is true when `slice_name` refers to a relevant blocking call. This is a macro (rather than a `PERFETTO FUNCTION`) purely for performance: trace_processor does not inline SQL functions, so calling one per row across the whole `thread_slice` table (millions of rows) adds several seconds of per-call dispatch overhead. A macro is expanded textually into the query, so the predicate is evaluated directly with no call overhead."
+    },
+    {
       "id": "stdlib.android._is_relevant_blocking_call",
       "name": "_is_relevant_blocking_call",
       "category": "android",
       "type": "function",
-      "description": "Function: _is_relevant_blocking_call"
+      "description": "Retained for backwards compatibility with any external callers. The `depth` argument is unused."
     },
     {
       "id": "stdlib.android._android_critical_blocking_calls",
@@ -1667,11 +1675,88 @@
       "columns": []
     },
     {
+      "id": "stdlib.android.android_jank_cuj_layer_name",
+      "name": "android_jank_cuj_layer_name",
+      "category": "android",
+      "type": "table",
+      "description": "Resolves the layer name for each CUJ. The layer can be identified in two ways: 1. Explicit Marker: The Android framework may log a 'layerId#<id>' instant event. If present, this is extracted into `cuj_layer_id` inside `_cuj_instant_events`. We then filter `_all_frames_in_cuj` to exactly that layer. 2. Fallback Inference: On older versions and when the proper way to report CUJs is not used (e.g. on some apps that copy the same convention to report CUJs), we try to infer the layer name. We check if the app rendered exactly one layer per frame during the CUJ (`HAVING MAX(layers_per_frame) = 1`). If so, we safely use that layer's name (extracted via `MAX(layer_name)`). If multiple layers were rendered simultaneously, we can't safely guess, and return NULL."
+    },
+    {
       "id": "stdlib.android.android_jank_cuj",
       "name": "android_jank_cuj",
       "category": "android",
       "type": "table",
       "description": "Table tracking all jank CUJs information."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_vsync_boundary",
+      "name": "_android_jank_cuj_vsync_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Stores the min and max vsync IDs for each of the CUJs which are extracted from the CUJ markers. For backward compatibility (In case the markers don't exist), We calculate that by extracting the vsync ID from the `Choreographer#doFrame` slices that are within the CUJ markers."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_main_thread_frame_boundary",
+      "name": "_android_jank_cuj_main_thread_frame_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Calculates the frame boundaries based on when we *expected* the work on a given frame to start and when the previous frame finished - not when Choreographer#doFrame actually started. We use MAX(expected time, previous frame ended) as the expected start time. Shifting the start time based on the previous frame is done to avoid having overlapping frame boundaries which would make further analysis more complicated. We also separately store the previous frame ts_end. This will allow us to look into cases where frame start was delayed due to some other work occupying the main thread (e.g. non-drawing callbacks or the previous frame taking much longer than expected)."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_main_thread_cuj_boundary",
+      "name": "_android_jank_cuj_main_thread_cuj_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Compute the CUJ boundary on the main thread from the frame boundaries."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_boundary",
+      "name": "_android_jank_cuj_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Compute the overall CUJ boundary (in the app process) based on the main thread CUJ boundaries and the actual timeline."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_render_thread_frame_boundary",
+      "name": "_android_jank_cuj_render_thread_frame_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Similar to `_android_jank_cuj_main_thread_frame_boundary` but for the render thread the expected start time is the time of the first `postAndWait` slice on the main thread. The query is slightly simpler because we don't have to handle the clock drift and data loss like with the frame timeline. One difference vs main thread is that there might be multiple DrawFrames slices for a single vsync - this happens when we are drawing multiple layers (e.g. status bar & notifications)."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_render_thread_cuj_boundary",
+      "name": "_android_jank_cuj_render_thread_cuj_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Compute the CUJ boundary on the render thread from the frame boundaries."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_vsync_boundary",
+      "name": "_android_jank_cuj_sf_vsync_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Similarly, extract the min/max vsync for the SF from commit/compose/onMessageInvalidate slices on its main thread."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_main_thread_cuj_boundary",
+      "name": "_android_jank_cuj_sf_main_thread_cuj_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Compute the CUJ boundary on the main thread from the frame boundaries."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_render_engine_frame_boundary",
+      "name": "_android_jank_cuj_sf_render_engine_frame_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "RenderEngine will only work on a frame if SF falls back to client composition. Because of that we do not calculate overall CUJ boundaries so there is no `_android_jank_cuj_sf_render_engine_cuj_boundary` table created. RenderEngine frame boundaries are calculated based on `composeSurfaces` slice start on the main thread (this calls into RenderEngine), and when `REThreaded::drawLayers` ends."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_boundary",
+      "name": "_android_jank_cuj_sf_boundary",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _android_jank_cuj_sf_boundary"
     },
     {
       "id": "stdlib.android._marker_missed_callback",
@@ -1768,6 +1853,161 @@
           "type": "TIMESTAMP"
         }
       ]
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_counter_metrics",
+      "name": "_android_jank_cuj_counter_metrics",
+      "category": "android",
+      "type": "table",
+      "description": "Counter metrics associated with each Jank CUJ, extracted from the counters logged around the end of each CUJ."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_frame_timeline",
+      "name": "_android_jank_cuj_frame_timeline",
+      "category": "android",
+      "type": "table",
+      "description": "Matches actual frame timeline slices within CUJ vsync boundaries to aggregate frame stats like app/SF missed status, callback delays, and layer names."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_frame",
+      "name": "_android_jank_cuj_frame",
+      "category": "android",
+      "type": "table",
+      "description": "Matches slices and boundaries to compute estimated frame boundaries across all threads. Joins with the actual timeline to figure out which frames missed the deadline and whether the app process or SF are at fault."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_frame",
+      "name": "_android_jank_cuj_sf_frame",
+      "category": "android",
+      "type": "table",
+      "description": "Similar to `_android_jank_cuj_frame` computes overall SF frame boundaries. The computation is somewhat simpler as most of SF work happens within the duration of the commit/composite slices on the main thread."
+    },
+    {
+      "id": "stdlib.android._vsync_from_name",
+      "name": "_vsync_from_name",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the vsync ID from a slice name like \"Choreographer#doFrame 1234\"."
+    },
+    {
+      "id": "stdlib.android._gpu_completion_fence_id_from_name",
+      "name": "_gpu_completion_fence_id_from_name",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the GPU completion fence ID from fence-related slice names."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_do_frame_slice",
+      "name": "_android_jank_cuj_do_frame_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Choreographer#doFrame slices between the CUJ markers. We extract vsync IDs from doFrame slice names and use these as the source of truth that allow us to get correct slices on the other threads."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_draw_frame_slice",
+      "name": "_android_jank_cuj_draw_frame_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Render thread DrawFrame slices matched by vsync IDs extracted from doFrame slices. In case of multiple layers being drawn, there might be multiple DrawFrames for a single vsync."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_gpu_completion_fence",
+      "name": "_android_jank_cuj_gpu_completion_fence",
+      "category": "android",
+      "type": "table",
+      "description": "Descendants of DrawFrames containing the GPU completion fence ID used for signaling that the GPU finished drawing."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_hwc_release_fence",
+      "name": "_android_jank_cuj_hwc_release_fence",
+      "category": "android",
+      "type": "table",
+      "description": "Descendants of DrawFrames containing the HWC release fence ID."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_hwc_release_slice",
+      "name": "_android_jank_cuj_hwc_release_slice",
+      "category": "android",
+      "type": "table",
+      "description": "HWC release slices indicating when the HWC released the buffer."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_gpu_completion_slice",
+      "name": "_android_jank_cuj_gpu_completion_slice",
+      "category": "android",
+      "type": "table",
+      "description": "GPU completion slices indicating when the GPU finished drawing."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_root_slice",
+      "name": "_android_jank_cuj_sf_root_slice",
+      "category": "android",
+      "type": "view",
+      "description": "View: _android_jank_cuj_sf_root_slice",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_gpu_completion_fence",
+      "name": "_android_jank_cuj_sf_gpu_completion_fence",
+      "category": "android",
+      "type": "table",
+      "description": "Descendants of SF main thread slices containing the GPU completion fence ID that is used for signaling that the GPU finished drawing."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_gpu_completion_slice",
+      "name": "_android_jank_cuj_sf_gpu_completion_slice",
+      "category": "android",
+      "type": "table",
+      "description": "SF GPU completion slices indicating when the GPU finished drawing."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_draw_layers_slice",
+      "name": "_android_jank_cuj_sf_draw_layers_slice",
+      "category": "android",
+      "type": "table",
+      "description": "REThreaded::drawLayers on RenderEngine thread. These will be only relevant if SF is doing client composition so we check if the drawLayers slice is completely within the bounds of composeSurfaces on SF main thread."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_slice",
+      "name": "_android_jank_cuj_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Slices overlapping with the CUJ boundaries in the app processes."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_main_thread_slice",
+      "name": "_android_jank_cuj_main_thread_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Slices overlapping with the main thread CUJ boundaries in the app processes."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_render_thread_slice",
+      "name": "_android_jank_cuj_render_thread_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Slices overlapping with the render thread CUJ boundaries in the app processes."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_slice",
+      "name": "_android_jank_cuj_sf_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Slices overlapping with the SF CUJ boundaries in SurfaceFlinger."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_main_thread_slice",
+      "name": "_android_jank_cuj_sf_main_thread_slice",
+      "category": "android",
+      "type": "table",
+      "description": "Slices overlapping with the SF main thread CUJ boundaries in SurfaceFlinger."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_render_engine_slice",
+      "name": "_android_jank_cuj_sf_render_engine_slice",
+      "category": "android",
+      "type": "table",
+      "description": "For RenderEngine thread we use a different approach as it's only used when SF falls back to client composition. Instead of taking all slices during CUJ, we look at each frame explicitly and only take slices that are within RenderEngine frame boundaries."
     },
     {
       "id": "stdlib.android.android_sysui_jank_cujs",
@@ -1867,11 +2107,66 @@
       "description": "Table captures thread information for 'RenderThread' for all CUJs."
     },
     {
+      "id": "stdlib.android._android_jank_cuj_main_thread",
+      "name": "_android_jank_cuj_main_thread",
+      "category": "android",
+      "type": "table",
+      "description": "Private table capturing thread information for main/UI thread for all CUJs."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_gpu_completion_thread",
+      "name": "_android_jank_cuj_gpu_completion_thread",
+      "category": "android",
+      "type": "table",
+      "description": "Private table capturing thread information for 'GPU completion' thread for all CUJs."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_hwc_release_thread",
+      "name": "_android_jank_cuj_hwc_release_thread",
+      "category": "android",
+      "type": "table",
+      "description": "Private table capturing thread information for 'HWC release' thread for all CUJs."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_process",
+      "name": "_android_jank_cuj_sf_process",
+      "category": "android",
+      "type": "table",
+      "description": "Private table capturing the SurfaceFlinger process."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_gpu_completion_thread",
+      "name": "_android_jank_cuj_sf_gpu_completion_thread",
+      "category": "android",
+      "type": "table",
+      "description": "Private table capturing the SurfaceFlinger 'GPU completion' thread."
+    },
+    {
+      "id": "stdlib.android._android_jank_cuj_sf_render_engine_thread",
+      "name": "_android_jank_cuj_sf_render_engine_thread",
+      "category": "android",
+      "type": "table",
+      "description": "Private table capturing the SurfaceFlinger 'RenderEngine' thread."
+    },
+    {
       "id": "stdlib.android.android_desktop_mode_windows",
       "name": "android_desktop_mode_windows",
       "category": "android",
       "type": "table",
       "description": "Desktop Windows with durations they were open."
+    },
+    {
+      "id": "stdlib.android.android_device_name_from_fingerprint",
+      "name": "android_device_name_from_fingerprint",
+      "category": "android",
+      "type": "function",
+      "description": "Extracts the device code name from an Android build fingerprint.",
+      "params": [
+        {
+          "name": "fingerprint",
+          "type": "STRING"
+        }
+      ]
     },
     {
       "id": "stdlib.android.android_device_name",
@@ -2056,7 +2351,7 @@
       "name": "_blocking_calls_frame_cuj",
       "category": "android",
       "type": "table",
-      "description": "Capture blocking call duration within frames within a CUJ.",
+      "description": "Capture blocking call duration within frames within a CUJ. The join between blocking calls and frames is split into two branches (one for the UI thread, one for the render thread) that are `UNION ALL`-ed together, rather than joining on `bc.utid = frame.ui_thread_utid OR bc.utid = frame.render_thread_utid`. An `OR` in a join condition forces a nested loop over the full cross product; two separate equality joins can each be executed efficiently. The `bc.utid != frame.ui_thread_utid` guard on the render branch keeps the two branches disjoint (so no row is double counted in the rare case where a frame's UI and render threads are the same), making this exactly equivalent to the original `OR` join.",
       "columns": [
         {
           "name": "dur",
@@ -3215,12 +3510,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: _first_non_dropped_frame_after_input",
-      "columns": [
-        {
-          "name": "app_surface_frame_token",
-          "type": "UNKNOWN"
-        }
-      ]
+      "columns": []
     },
     {
       "id": "stdlib.android._normalize_event_channel",
@@ -3255,10 +3545,6 @@
         },
         {
           "name": "ts_consume",
-          "type": "LONG"
-        },
-        {
-          "name": "ts_frame",
           "type": "LONG"
         },
         {
@@ -3307,18 +3593,6 @@
         },
         {
           "name": "dur_consume",
-          "type": "LONG"
-        },
-        {
-          "name": "id_frame",
-          "type": "LONG"
-        },
-        {
-          "name": "track_frame",
-          "type": "LONG"
-        },
-        {
-          "name": "dur_frame",
           "type": "LONG"
         },
         {
@@ -3363,10 +3637,6 @@
           "type": "LONG"
         },
         {
-          "name": "ts_frame",
-          "type": "LONG"
-        },
-        {
           "name": "id_reader",
           "type": "LONG"
         },
@@ -3412,18 +3682,6 @@
         },
         {
           "name": "dur_consume",
-          "type": "LONG"
-        },
-        {
-          "name": "id_frame",
-          "type": "LONG"
-        },
-        {
-          "name": "track_frame",
-          "type": "LONG"
-        },
-        {
-          "name": "dur_frame",
           "type": "LONG"
         },
         {
@@ -3641,10 +3899,6 @@
           "type": "LONG"
         },
         {
-          "name": "ts_frame",
-          "type": "LONG"
-        },
-        {
           "name": "id_reader",
           "type": "LONG"
         },
@@ -3693,18 +3947,6 @@
           "type": "LONG"
         },
         {
-          "name": "id_frame",
-          "type": "LONG"
-        },
-        {
-          "name": "track_frame",
-          "type": "LONG"
-        },
-        {
-          "name": "dur_frame",
-          "type": "LONG"
-        },
-        {
           "name": "is_speculative_frame",
           "type": "BOOL"
         }
@@ -3713,6 +3955,84 @@
         {
           "name": "slice_id",
           "type": "LONG"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._input_sf_composite",
+      "name": "_input_sf_composite",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _input_sf_composite",
+      "columns": [
+        {
+          "name": "vsync_id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.android._input_sf_resolved",
+      "name": "_input_sf_resolved",
+      "category": "android",
+      "type": "table",
+      "description": "Table: _input_sf_resolved",
+      "columns": []
+    },
+    {
+      "id": "stdlib.android._android_input_frames",
+      "name": "_android_input_frames",
+      "category": "android",
+      "type": "view",
+      "description": "View: _android_input_frames",
+      "columns": [
+        {
+          "name": "id_do_frame",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_do_frame",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_do_frame",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_do_frame",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id_draw_frames",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_draw_frames",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_draw_frames",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_draw_frames",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "id_sf",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "track_sf",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_sf",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur_sf",
+          "type": "UNKNOWN"
         }
       ]
     },
@@ -4443,6 +4763,23 @@
       "description": "Table summarizing java heap graphs collected with the ART perfetto module. Contains one row per heap graph, with summary statistics (e.g. total / reachable objects) and memory stats for the corresponding process at the time of the heap dump."
     },
     {
+      "id": "stdlib.android._heap_graph_class_name_hash",
+      "name": "_heap_graph_class_name_hash",
+      "category": "android",
+      "type": "table",
+      "description": "O(1) lookup from a class type_id to an int64 hash of its display name. Distinct classes (e.g. the same class loaded by different class loaders) have distinct type_ids but the same name; hashing the name here lets the path-hash scan coalesce them while keeping the hot loop purely int64. A class can have no name (e.g. in an incomplete/non-finalized graph), so coalesce to '' to keep HASH out of NULL (which it rejects); nameless classes collapse to one node.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "name_hash",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.android._heap_graph_type_path_hash",
       "name": "_heap_graph_type_path_hash",
       "category": "android",
@@ -4553,6 +4890,47 @@
       "category": "android",
       "type": "macro",
       "description": "Macro: _android_heap_profile_callstacks_for_allocations"
+    },
+    {
+      "id": "stdlib.android._android_heap_profile_intervals",
+      "name": "_android_heap_profile_intervals",
+      "category": "android",
+      "type": "table",
+      "description": "One row per (process, heap, dump): the dump as a slice over its profiling interval. The end is heap_profile.ts_end (the dump timestamp); the start is heap_profile.ts when present. For older producers without a start (ts == ts_end) we fall back to just after the previous dump of the same heap (or the trace start for the first), so continuous dumps tile the timeline without gaps. Each row also carries three byte totals for the interval: * allocated: bytes allocated during the interval. * retained:  bytes allocated during the interval that were still live at the dump (allocated but not freed within the interval). * delta:     net change (allocations minus all frees in the interval, including frees of memory allocated before the interval), so it can differ from retained. These are 1:1 with the flamegraph roots shown when a slice is selected (see heap_profile_details_panel.ts): allocated == \"Total\" (self_alloc_size) and retained == \"Unreleased\" (self_size).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "upid",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "heap_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "retained",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "allocated",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "delta",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.android._android_heap_profile_raw_callstacks",
@@ -4926,7 +5304,7 @@
       "name": "_children",
       "category": "android",
       "type": "table",
-      "description": "Monitor contention slices that are blocked by another monitor contention slice. They will have a |parent_id| field which is the id of the slice they are blocked by.",
+      "description": "Monitor contention slices that are blocked by another monitor contention slice. They will have a |parent_id| field which is the id of the slice they are blocked by. A slice blocked by N overlapping contentions appears N times, once per parent.",
       "columns": [
         {
           "name": "parent_id",
@@ -4935,25 +5313,21 @@
       ]
     },
     {
-      "id": "stdlib.android._parents",
-      "name": "_parents",
+      "id": "stdlib.android._child_of",
+      "name": "_child_of",
       "category": "android",
       "type": "table",
-      "description": "Monitor contention slices that are blocking another monitor contention slice. They will have a |child_id| field which is the id of the slice they are blocking.",
+      "description": "For each monitor contention slice that is blocking one or more other contention slices, a single representative |child_id| (the earliest slice it blocks). Collapsing to one child per blocking slice is what keeps |android_monitor_contention_chain| from exploding into the full cross product of a node's parents and children: a node with P parents and C children would otherwise produce P*C rows. The chain only needs one child reference per node; consumers that need every parent edge use |parent_id| (which is preserved in full). On the common case where a node blocks at most one other slice this is identical to the previous behaviour.",
       "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        },
         {
           "name": "child_id",
           "type": "UNKNOWN"
         }
       ]
-    },
-    {
-      "id": "stdlib.android._isolated",
-      "name": "_isolated",
-      "category": "android",
-      "type": "table",
-      "description": "Monitor contention slices that are neither blocking nor blocked by another monitor contention slice. They neither have |parent_id| nor |child_id| fields.",
-      "columns": []
     },
     {
       "id": "stdlib.android.android_monitor_contention_chain",
@@ -5653,6 +6027,19 @@
       "type": "table",
       "description": "List of startups with unique ids for each possible upid. The existing startup_ids are not necessarily unique (because of multiuser).",
       "columns": []
+    },
+    {
+      "id": "stdlib.android._startup_relevant_slices",
+      "name": "_startup_relevant_slices",
+      "category": "android",
+      "type": "table",
+      "description": "Startup slices overlapping a startup on its main thread, normalized with _normalize_android_string. Materialized once because it is referenced multiple times below (and inside _slice_remove_nulls_and_reparent), and the overlap join against the thread_slice view is expensive to re-evaluate.",
+      "columns": [
+        {
+          "name": "name",
+          "type": "UNKNOWN"
+        }
+      ]
     },
     {
       "id": "stdlib.android._startup_normalized_slices",
@@ -12905,6 +13292,63 @@
       "description": "Process memory and DMA heap usage timeline for Pixel Camera processes (GCA, HAL, CameraServer)."
     },
     {
+      "id": "stdlib.pixel._pixel_touch_twoshay_events",
+      "name": "_pixel_touch_twoshay_events",
+      "category": "pixel",
+      "type": "table",
+      "description": "Table: _pixel_touch_twoshay_events",
+      "columns": [
+        {
+          "name": "id",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.pixel._pixel_touch_bottom_half_events",
+      "name": "_pixel_touch_bottom_half_events",
+      "category": "pixel",
+      "type": "table",
+      "description": "Table: _pixel_touch_bottom_half_events",
+      "columns": []
+    },
+    {
+      "id": "stdlib.pixel._pixel_touch_top_half_events",
+      "name": "_pixel_touch_top_half_events",
+      "category": "pixel",
+      "type": "table",
+      "description": "Table: _pixel_touch_top_half_events",
+      "columns": [
+        {
+          "name": "th_slice_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "th_start_ts",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "th_dur",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "th_track_id",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "irq_idx",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.pixel.pixel_touch_events",
+      "name": "pixel_touch_events",
+      "category": "pixel",
+      "type": "table",
+      "description": "Pixel-specific touch events, including top and bottom half IRQ, and Twoshay touch processing."
+    },
+    {
       "id": "stdlib.pkvm.pkvm_hypervisor_events",
       "name": "pkvm_hypervisor_events",
       "category": "pkvm",
@@ -13520,6 +13964,35 @@
       ]
     },
     {
+      "id": "stdlib.prelude.heap_profile",
+      "name": "heap_profile",
+      "category": "prelude",
+      "type": "view",
+      "description": "A list of heap profiles (heapprofd dumps) captured during the trace. Each row describes the profiling window a single dump represents for a single heap. Joinable with heap_profile_allocation via (upid, heap_profile_allocation.ts = ts_end).",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "ts_end",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "dur",
+          "type": "DURATION"
+        },
+        {
+          "name": "upid",
+          "type": "JOINID(process.upid)"
+        }
+      ]
+    },
+    {
       "id": "stdlib.prelude.heap_graph_thread_callsite",
       "name": "heap_graph_thread_callsite",
       "category": "prelude",
@@ -13552,6 +14025,106 @@
           "type": "LONG"
         }
       ]
+    },
+    {
+      "id": "stdlib.prelude.stack_sample_session",
+      "name": "stack_sample_session",
+      "category": "prelude",
+      "type": "table",
+      "description": "A sampling session: one row per data source instance of a stack profiler (a linux perf session, a StackSample packet stream, ...)."
+    },
+    {
+      "id": "stdlib.prelude.stack_sample_async_context",
+      "name": "stack_sample_async_context",
+      "category": "prelude",
+      "type": "table",
+      "description": "Stackful asynchronous execution contexts referenced by task contexts."
+    },
+    {
+      "id": "stdlib.prelude.stack_sample_task_context",
+      "name": "stack_sample_task_context",
+      "category": "prelude",
+      "type": "table",
+      "description": "Tasks to which stack samples are attributed. A task can identify an OS process, an OS thread, a stackful asynchronous context, or a combination."
+    },
+    {
+      "id": "stdlib.prelude.stack_sample_execution_context",
+      "name": "stack_sample_execution_context",
+      "category": "prelude",
+      "type": "table",
+      "description": "Execution states in which stack samples were captured."
+    },
+    {
+      "id": "stdlib.prelude.stack_sample",
+      "name": "stack_sample",
+      "category": "prelude",
+      "type": "view",
+      "description": "Callstack samples from all profiler sources (linux perf, chrome, macOS instruments, the StackSample packet, ...): every profiler sample which captured a callstack. The underlying storage also holds samples without callstacks (e.g. perf counter-only samples); those remain visible through per-source views such as perf_sample.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID"
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP"
+        },
+        {
+          "name": "source",
+          "type": "STRING"
+        },
+        {
+          "name": "task_context_id",
+          "type": "JOINID(stack_sample_task_context.id)"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.prelude.stack_sample_counter_track",
+      "name": "stack_sample_counter_track",
+      "category": "prelude",
+      "type": "table",
+      "description": "Counter tracks whose values are associated with stack samples. A track is a counter instance within one sampling session and can optionally be scoped to a CPU."
+    },
+    {
+      "id": "stdlib.prelude.stack_sample_counter",
+      "name": "stack_sample_counter",
+      "category": "prelude",
+      "type": "view",
+      "description": "Counter values recorded at a stack sample point. A sample can have one primary timebase counter and any number of follower counters.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(counter.id)"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.prelude.state_track",
+      "name": "state_track",
+      "category": "prelude",
+      "type": "view",
+      "description": "Tracks containing state events.",
+      "columns": [
+        {
+          "name": "id",
+          "type": "ID(track.id)"
+        }
+      ]
+    },
+    {
+      "id": "stdlib.prelude.process_state_track",
+      "name": "process_state_track",
+      "category": "prelude",
+      "type": "table",
+      "description": "Tracks containing state events associated to a process."
+    },
+    {
+      "id": "stdlib.prelude.thread_state_track",
+      "name": "thread_state_track",
+      "category": "prelude",
+      "type": "table",
+      "description": "Tracks containing state events associated to a thread."
     },
     {
       "id": "stdlib.prelude.track",
@@ -13815,7 +14388,7 @@
       "name": "perf_session",
       "category": "prelude",
       "type": "view",
-      "description": "Contains the Linux perf sessions in the trace.",
+      "description": "Contains all Linux perf sessions in the trace, including sessions which only recorded counters and did not capture any callstacks.",
       "columns": [
         {
           "name": "id",
@@ -14583,6 +15156,10 @@
         {
           "name": "system_ram_gb",
           "type": "LONG"
+        },
+        {
+          "name": "label_index",
+          "type": "LONG"
         }
       ]
     },
@@ -14954,6 +15531,23 @@
       ]
     },
     {
+      "id": "stdlib.prelude.regexp",
+      "name": "regexp",
+      "category": "prelude",
+      "type": "function",
+      "description": "Returns whether a regular expression partially matches an input string. This two-argument overload is also used by the `input REGEXP pattern` operator and performs case-sensitive matching.",
+      "params": [
+        {
+          "name": "pattern",
+          "type": "STRING"
+        },
+        {
+          "name": "input",
+          "type": "STRING"
+        }
+      ]
+    },
+    {
       "id": "stdlib.prelude.regexp_replace_simple",
       "name": "regexp_replace_simple",
       "category": "prelude",
@@ -15263,7 +15857,7 @@
       "name": "perf_sample",
       "category": "prelude",
       "type": "view",
-      "description": "Samples from the traced_perf profiler.",
+      "description": "Samples from the traced_perf profiler and perf.data files. One row per perf sample, including counter-only samples which have no callstack.",
       "columns": [
         {
           "name": "id",
@@ -16817,7 +17411,7 @@
       "name": "cpu_profiling_samples",
       "category": "stacks",
       "type": "table",
-      "description": "Table containing all the timestamped samples of CPU profiling which occurred during the trace. Currently, this table is backed by the following data sources: * Linux perf * Simpleperf proto format * macOS instruments * Chrome CPU profiling * Legacy V8 CPU profiling * Profiling data in Gecko traces"
+      "description": "Table containing all the timestamped samples of CPU profiling which occurred during the trace: a convenience projection of the `stack_sample` view with thread and cpu information denormalized. This covers every callstack profiler source (linux perf, simpleperf, macOS instruments, Chrome, legacy V8, gecko, the StackSample packet, ...) but only samples from what is generally considered CPU profiling: sampling on time, cpu cycles or instructions. Samples from sessions known to sample on some other quantity (off-cpu sampling, tracepoint-based sampling, ...) are excluded."
     },
     {
       "id": "stdlib.stacks._cpu_profiling_self_callsites",
@@ -16903,6 +17497,23 @@
       "description": "Removes the surrounding parentheses from a parenthesised expression list, yielding a bare comma-separated expression list. Typically used when you already have something like `(a, b, c)` but need to splice it into a context (e.g. a `GROUP BY` clause or a `PARTITION BY` clause) that expects an unparenthesised list."
     },
     {
+      "id": "stdlib.std._thread_with_process",
+      "name": "_thread_with_process",
+      "category": "std",
+      "type": "table",
+      "description": "Each thread joined with its (optional) process, materialized into a table so that callers can attach thread+process context with a single INNER JOIN on `utid` instead of writing `thread LEFT JOIN process`. Why this exists: SQLite will not reorder a virtual table across a LEFT JOIN, so a context view that embeds `thread ... LEFT JOIN process` directly cannot be driven from a point-lookup on the fact table's id when it is joined into from another table (the id constraint is never offered to xBestIndex, and the join collapses into a full scan). Pre-computing the thread/process LEFT JOIN here lets those views use only INNER joins, which the planner can reorder freely. Internal only for now.",
+      "columns": [
+        {
+          "name": "thread_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "process_name",
+          "type": "UNKNOWN"
+        }
+      ]
+    },
+    {
       "id": "stdlib.std._metadata_for_primary_scope",
       "name": "_metadata_for_primary_scope",
       "category": "std",
@@ -16915,74 +17526,6 @@
       "category": "std",
       "type": "table",
       "description": "A table containing pivoted metadata for each trace in the session."
-    },
-    {
-      "id": "stdlib.std._tree_constraint",
-      "name": "_tree_constraint",
-      "category": "std",
-      "type": "function",
-      "description": "Creates a filter constraint for tree operations. Example: _tree_constraint('name', '!=', 'skip')",
-      "params": [
-        {
-          "name": "column",
-          "type": "STRING"
-        },
-        {
-          "name": "op",
-          "type": "STRING"
-        },
-        {
-          "name": "value",
-          "type": "ANY"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.std._tree_where",
-      "name": "_tree_where",
-      "category": "std",
-      "type": "function",
-      "description": "Combines multiple constraints with AND logic. Example: _tree_where(_tree_constraint('x', '>', 10), _tree_constraint('y', '<', 100))",
-      "params": [
-        {
-          "name": "constraints",
-          "type": "ANY..."
-        }
-      ]
-    },
-    {
-      "id": "stdlib.std._tree_filter",
-      "name": "_tree_filter",
-      "category": "std",
-      "type": "function",
-      "description": "Filters a tree structure using constraints, keeping only nodes that match and reparenting orphans. Implements the filter operation from RFC 0016: removes filtered nodes from the tree and reparents their children to the closest surviving ancestor. All filtering logic happens in C++ via __intrinsic_tree_filter(). Example usage: ``` SELECT * FROM _tree_to_table!( _tree_filter( _tree_from_table!((SELECT * FROM my_tree), (name)), _tree_where(_tree_constraint('name', 'GLOB', '*foo*')) ), (name) ); ```",
-      "params": [
-        {
-          "name": "tree_ptr",
-          "type": "ANY"
-        },
-        {
-          "name": "where_clause",
-          "type": "ANY"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.std._tree_propagate_down",
-      "name": "_tree_propagate_down",
-      "category": "std",
-      "type": "function",
-      "description": "Propagates column values from root toward leaves using BFS. For each spec, a new output column is created by copying the source column and then applying the aggregate operation downward through the tree. For each parent→child edge: output[child] = agg(output[parent], output[child]). Each spec is a string of the form 'AGG(source_col) AS output_col' where AGG is one of SUM, MIN, MAX, FIRST, LAST. Case-insensitive. Example usage: ``` SELECT * FROM _tree_to_table!( _tree_propagate_down( _tree_from_table!((SELECT * FROM calls), (fn, ones)), 'SUM(ones) AS depth' ), (fn, depth) ); ```",
-      "params": [
-        {
-          "name": "tree_ptr",
-          "type": "ANY"
-        },
-        {
-          "name": "specs",
-          "type": "ANY..."
-        }
-      ]
     },
     {
       "id": "stdlib.std._tree_from_table_col",
@@ -17637,11 +18180,7 @@
           "type": "UNKNOWN"
         },
         {
-          "name": "perf_sample_count",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "instruments_sample_count",
+          "name": "stack_sample_count",
           "type": "UNKNOWN"
         }
       ]
@@ -17714,35 +18253,14 @@
       ]
     },
     {
-      "id": "stdlib.viz._perf_sample_summary",
-      "name": "_perf_sample_summary",
+      "id": "stdlib.viz._stack_sample_summary",
+      "name": "_stack_sample_summary",
       "category": "viz",
       "type": "table",
-      "description": "Table: _perf_sample_summary",
+      "description": "Table: _stack_sample_summary",
       "columns": [
         {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "perf_sample_cnt",
-          "type": "UNKNOWN"
-        }
-      ]
-    },
-    {
-      "id": "stdlib.viz._instruments_sample_summary",
-      "name": "_instruments_sample_summary",
-      "category": "viz",
-      "type": "table",
-      "description": "Table: _instruments_sample_summary",
-      "columns": [
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "instruments_sample_cnt",
+          "name": "sample_count",
           "type": "UNKNOWN"
         }
       ]
@@ -20385,6 +20903,50 @@
       "category": "android",
       "type": "metric",
       "description": "Metric SQL: android/android_blocking_calls_cuj_metric.sql"
+    },
+    {
+      "id": "metric.android.android_blocking_calls_cuj_per_frame_draw_frames",
+      "name": "android_blocking_calls_cuj_per_frame_draw_frames",
+      "category": "android",
+      "type": "table",
+      "description": "Table: android_blocking_calls_cuj_per_frame_draw_frames",
+      "columns": [
+        {
+          "name": "process_name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "ts_end",
+          "type": "UNKNOWN"
+        }
+      ],
+      "dependencies": [
+        "metric:android/android_blocking_calls_cuj_per_frame_metric.sql"
+      ],
+      "requiredMetric": "android/android_blocking_calls_cuj_per_frame_metric.sql",
+      "setupSql": "SELECT RUN_METRIC('android/android_blocking_calls_cuj_per_frame_metric.sql');"
+    },
+    {
+      "id": "metric.android.android_blocking_calls_cuj_per_frame_hwui_tasks",
+      "name": "android_blocking_calls_cuj_per_frame_hwui_tasks",
+      "category": "android",
+      "type": "table",
+      "description": "Table: android_blocking_calls_cuj_per_frame_hwui_tasks",
+      "columns": [
+        {
+          "name": "name",
+          "type": "UNKNOWN"
+        },
+        {
+          "name": "dur",
+          "type": "UNKNOWN"
+        }
+      ],
+      "dependencies": [
+        "metric:android/android_blocking_calls_cuj_per_frame_metric.sql"
+      ],
+      "requiredMetric": "android/android_blocking_calls_cuj_per_frame_metric.sql",
+      "setupSql": "SELECT RUN_METRIC('android/android_blocking_calls_cuj_per_frame_metric.sql');"
     },
     {
       "id": "metric.android.android_blocking_calls_cuj_per_frame_calls",
@@ -24708,16 +25270,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_vsync_boundary",
-      "columns": [
-        {
-          "name": "vsync_min",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync_max",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24730,20 +25283,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_vsync_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync_min",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync_max",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24756,12 +25296,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_main_thread_frame_boundary",
-      "columns": [
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24774,28 +25309,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_main_thread_cuj_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24808,12 +25322,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_render_thread_frame_boundary",
-      "columns": [
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24826,28 +25335,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_render_thread_cuj_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24860,12 +25348,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_boundary",
-      "columns": [
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24878,28 +25361,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_main_thread_frame_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_main_thread_start",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24912,28 +25374,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_main_thread_cuj_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24946,32 +25387,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_render_engine_frame_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_draw_layers_start",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -24984,24 +25400,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_boundary",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/cujs_boundaries.sql"
       ],
@@ -25022,82 +25421,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_frame_timeline",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "app_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "sf_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "jank_score",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "sf_callback_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "hwui_callback_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "on_time_finish",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end_actual",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur_expected",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "number_of_layers_for_frame",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "frame_layer_name",
-          "type": "UNKNOWN"
-        }
-      ],
-      "dependencies": [
-        "metric:android/jank/frames.sql"
-      ],
-      "requiredMetric": "android/jank/frames.sql",
-      "setupSql": "SELECT RUN_METRIC('android/jank/frames.sql');"
-    },
-    {
-      "id": "metric.android.android_jank_cuj_layer_name",
-      "name": "android_jank_cuj_layer_name",
-      "category": "android",
-      "type": "table",
-      "description": "Table: android_jank_cuj_layer_name",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "layer_name",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/frames.sql"
       ],
@@ -25110,48 +25434,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_frame",
-      "columns": [
-        {
-          "name": "app_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "sf_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "jank_score",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "sf_callback_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "hwui_callback_missed",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "on_time_finish",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur_unadjusted",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "dur_expected",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/frames.sql"
       ],
@@ -25164,12 +25447,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_frame",
-      "columns": [
-        {
-          "name": "frame_number",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/frames.sql"
       ],
@@ -25190,72 +25468,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_counter_metrics",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "cuj_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "state",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "total_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "missed_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "missed_app_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "missed_sf_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "missed_frames_max_successive",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "anim_duration_ms",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "weighted_missed_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "weighted_missed_app_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "weighted_missed_sf_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "frame_dur_max",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "sf_callback_missed_frames",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "hwui_callback_missed_frames",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/internal/counters.sql"
       ],
@@ -25318,20 +25531,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_draw_frame_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25344,24 +25544,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_gpu_completion_fence",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "draw_frame_slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "fence_idx",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25374,24 +25557,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_hwc_release_fence",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "draw_frame_slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "fence_idx",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25404,20 +25570,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_hwc_release_slice",
-      "columns": [
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "draw_frame_slice_id",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25430,20 +25583,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_gpu_completion_slice",
-      "columns": [
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "hwc_release_ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25508,24 +25648,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_gpu_completion_fence",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "sf_root_slice_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "fence_idx",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25538,16 +25661,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_gpu_completion_slice",
-      "columns": [
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25560,24 +25674,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_draw_layers_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "vsync",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_compose_surfaces",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_slices.sql"
       ],
@@ -25598,20 +25695,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_main_thread",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "track_id",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/relevant_threads.sql"
       ],
@@ -25710,24 +25794,7 @@
       "category": "android",
       "type": "view",
       "description": "View: android_jank_cuj_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "process_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "thread_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
       ],
@@ -25740,24 +25807,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_main_thread_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
       ],
@@ -25770,24 +25820,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_render_thread_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
       ],
@@ -25800,28 +25833,7 @@
       "category": "android",
       "type": "view",
       "description": "View: android_jank_cuj_sf_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "process_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "thread_name",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
       ],
@@ -25834,24 +25846,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_main_thread_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
       ],
@@ -25864,24 +25859,7 @@
       "category": "android",
       "type": "table",
       "description": "Table: android_jank_cuj_sf_render_engine_slice",
-      "columns": [
-        {
-          "name": "cuj_id",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "upid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "utid",
-          "type": "UNKNOWN"
-        },
-        {
-          "name": "ts_end",
-          "type": "UNKNOWN"
-        }
-      ],
+      "columns": [],
       "dependencies": [
         "metric:android/jank/slices.sql"
       ],
@@ -28377,6 +28355,24 @@
       "description": "Metric SQL: chrome/chrome_args_class_names.sql"
     },
     {
+      "id": "metric.chrome.chrome_browser_main_thread_duration",
+      "name": "chrome_browser_main_thread_duration",
+      "category": "chrome",
+      "type": "view",
+      "description": "View: chrome_browser_main_thread_duration",
+      "columns": [
+        {
+          "name": "len",
+          "type": "UNKNOWN"
+        }
+      ],
+      "dependencies": [
+        "metric:chrome/chrome_browser_main_thread_duration.sql"
+      ],
+      "requiredMetric": "chrome/chrome_browser_main_thread_duration.sql",
+      "setupSql": "SELECT RUN_METRIC('chrome/chrome_browser_main_thread_duration.sql');"
+    },
+    {
       "id": "metric.chrome.chrome_event_metadata",
       "name": "chrome_event_metadata",
       "category": "chrome",
@@ -28508,11 +28504,11 @@
       "description": "View: all_chrome_processes",
       "columns": [
         {
-          "name": "arg_set_id",
+          "name": "upid",
           "type": "UNKNOWN"
         },
         {
-          "name": "string_value",
+          "name": "process_type",
           "type": "UNKNOWN"
         }
       ],
@@ -28586,7 +28582,12 @@
       "category": "chrome",
       "type": "view",
       "description": "View: chrome_thread",
-      "columns": [],
+      "columns": [
+        {
+          "name": "canonical_name",
+          "type": "UNKNOWN"
+        }
+      ],
       "dependencies": [
         "metric:chrome/chrome_processes.sql"
       ],

@@ -21,7 +21,7 @@ permissions:
 jobs:
   agent-deepseek-e2e:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 180
     defaults:
       run:
         working-directory: backend

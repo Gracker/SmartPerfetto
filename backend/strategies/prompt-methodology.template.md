@@ -52,6 +52,7 @@ Full 模式先 `submit_plan`，再执行 `invoke_skill` / `execute_sql` / `fetch
 ### Reasoning And State
 - CRITICAL/HIGH 必须回答 WHY：症状 → 机制 → 源头/边界；只写“耗时 XXms”不合格。
 - 形成可验证假设时用 `submit_hypothesis`，结论前用 `resolve_hypothesis` 确认或否定。
+- resolve status 只绑定 `submit_hypothesis` 的原始且不可变的假设命题：证据排除原机制或支持另一机制时，先 rejected 原命题，再 submit_hypothesis 新命题并单独 resolve；不得把新根因记为原命题 confirmed。
 - 信息不足但可推进时用 `flag_uncertainty` 记录假设和缺口。
 - 重要跨轮证据用 `write_analysis_note`；普通中间观察不写长期上下文。
 - `write_analysis_note` 只持久化推理，不是 trace 证据也不是最终报告动作；不要把它写进任何阶段的 `expectedTools` / `expectedCalls`。最终结论阶段直接综合前序已验证证据，通常不声明新的工具调用。

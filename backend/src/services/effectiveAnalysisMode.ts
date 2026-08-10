@@ -11,6 +11,7 @@ export interface AnalysisModeContext {
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: readonly string[];
   knowledgeSourceIds?: readonly string[];
+  assistantSurface?: AnalysisOptions['assistantSurface'];
 }
 
 export function analysisContextRequiresFullMode(context: AnalysisModeContext): boolean {
@@ -26,6 +27,7 @@ export function resolveEffectiveAnalysisMode(
   requested: AnalysisOptions['analysisMode'],
   context: AnalysisModeContext,
 ): AnalysisMode {
+  if (context.assistantSurface === 'conversation') return 'fast';
   return analysisContextRequiresFullMode(context) ? 'full' : requested ?? 'auto';
 }
 

@@ -371,7 +371,11 @@ function hasNonConclusionPhaseToolEvidence(
   return plan.toolCallLog.some(record => {
     if (!record.matchedPhaseId || record.matchedPhaseId === conclusionPhaseId) return false;
     const matchedPhase = phaseById.get(record.matchedPhaseId);
-    return Boolean(matchedPhase && !isConclusionLikePlanPhase(matchedPhase));
+    return Boolean(
+      matchedPhase &&
+      !isConclusionLikePlanPhase(matchedPhase) &&
+      phaseMatchesCall(matchedPhase, record),
+    );
   });
 }
 
@@ -437,7 +441,9 @@ export function verifyPlanAdherence(plan: AnalysisPlanV3 | null): VerificationIs
   // substantive work. ERROR severity triggers a correction retry.
   const completedPhases = plan.phases.filter(p => p.status === 'completed');
   for (const phase of completedPhases) {
-    const matchedCalls = plan.toolCallLog.filter(t => t.matchedPhaseId === phase.id);
+    const matchedCalls = plan.toolCallLog.filter(t =>
+      t.matchedPhaseId === phase.id && phaseMatchesCall(phase, t),
+    );
     const isConclusionPhase = isConclusionLikePlanPhase(phase);
     const isComparisonSynthesisPhase = isComparisonSynthesisPlanPhase(phase);
     const hasExternalEvidence = isConclusionPhase &&
@@ -549,7 +555,14 @@ export function verifySceneCompleteness(
       // Require at least one REAL analysis tool (not just lookup_knowledge which only reads background docs)
       // blocking_chain_analysis/binder_root_cause/jank_frame_detail/surfaceflinger_analysis/frame_production_gap = real deep-drill skills
       // lookup_knowledge is supplementary — counts as evidence only when combined with analysis output patterns
-      const calledSkills = toolCalls.map(call => `${call.toolName} ${call.skillId ?? ''} ${call.inputSummary ?? ''}`).join(' ').toLowerCase();
+      const calledSkills = toolCalls
+        .filter(call =>
+          expectedCallMatchesRecord({tool: 'invoke_skill'}, call) ||
+          expectedCallMatchesRecord({tool: 'compare_skill'}, call),
+        )
+        .map(call => `${call.toolName} ${call.skillId ?? ''} ${call.inputSummary ?? ''}`)
+        .join(' ')
+        .toLowerCase();
       const hasAnalysisTool = /blocking_chain_analysis|binder_root_cause|jank_frame_detail|frame_blocking_calls|surfaceflinger_analysis|frame_production_gap|阻塞链.*(?:唤醒|waker|blocker)|server_dur/i.test(allText) ||
         /jank_frame_detail|frame_blocking_calls|blocking_chain_analysis|binder_root_cause|surfaceflinger_analysis|frame_production_gap/i.test(calledSkills);
       const hasDeepDrill = hasAnalysisTool;

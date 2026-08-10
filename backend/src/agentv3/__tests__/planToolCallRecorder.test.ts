@@ -10,6 +10,7 @@ import {
   recordPlanOrPrePlanToolCall,
   replayPrePlanToolCalls,
 } from '../planToolCallRecorder';
+import {verifyPlanAdherence} from '../../agentRuntime/engines/claude/claudeVerifier';
 import {getSourceLookupCodeReferences} from '../../services/codebase/sourceLookupTools';
 
 function createPlan(): AnalysisPlanV3 {
@@ -190,6 +191,163 @@ describe('recordPlanToolCall', () => {
     ]);
   });
 
+  it('does not let a returned phase id bind the wrong tool to an expectedTools-only phase', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '对齐确认',
+        goal: '读取双 Trace 对比上下文',
+        expectedTools: ['get_comparison_context'],
+        expectedCalls: [],
+        status: 'completed',
+        completedAt: 100,
+        summary: '已完成双 Trace 对齐确认并记录左右窗口映射。',
+      }],
+      successCriteria: '确认双 Trace 可比',
+      submittedAt: 1,
+      toolCallLog: [],
+    };
+
+    const record = recordPlanToolCall(plan, {
+      toolName: 'fetch_artifact',
+      input: {artifactId: 'art-1'},
+      resultText: '{"success":true,"planPhaseId":"p1"}',
+      timestamp: 10,
+    });
+
+    expect(record?.matchedPhaseId).toBeUndefined();
+    expect(verifyPlanAdherence(plan)).toContainEqual(expect.objectContaining({
+      type: 'plan_deviation',
+      severity: 'error',
+    }));
+  });
+
+  it('does not let a failed returned phase call satisfy an expectedTools-only phase', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '对齐确认',
+        goal: '读取双 Trace 对比上下文',
+        expectedTools: ['get_comparison_context'],
+        expectedCalls: [],
+        status: 'completed',
+        completedAt: 100,
+        summary: '尝试读取双 Trace 对齐信息，但工具返回失败。',
+      }],
+      successCriteria: '确认双 Trace 可比',
+      submittedAt: 1,
+      toolCallLog: [],
+    };
+
+    const record = recordPlanToolCall(plan, {
+      toolName: 'get_comparison_context',
+      input: {},
+      resultText: '{"success":false,"planPhaseId":"p1"}',
+      timestamp: 10,
+    });
+
+    expect(record?.matchedPhaseId).toBeUndefined();
+    expect(verifyPlanAdherence(plan)).toContainEqual(expect.objectContaining({
+      type: 'plan_deviation',
+      severity: 'error',
+    }));
+  });
+
+  it('prefers an authoritative returned phase over an earlier generic expectedTools match', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [
+        {
+          id: 'p1',
+          name: '第一批证据',
+          goal: '采集第一批 artifact',
+          expectedTools: ['fetch_artifact'],
+          expectedCalls: [],
+          status: 'pending',
+        },
+        {
+          id: 'p2',
+          name: '第二批证据',
+          goal: '采集第二批 artifact',
+          expectedTools: ['fetch_artifact'],
+          expectedCalls: [],
+          status: 'pending',
+        },
+      ],
+      successCriteria: '采集两批证据',
+      submittedAt: 1,
+      toolCallLog: [],
+    };
+
+    const record = recordPlanToolCall(plan, {
+      toolName: 'fetch_artifact',
+      input: {artifactId: 'art-p2'},
+      resultText: '{"success":true,"planPhaseId":"p2"}',
+      timestamp: 10,
+    });
+
+    expect(record?.matchedPhaseId).toBe('p2');
+  });
+
+  it('does not arbitrarily bind duplicate structured gaps at the same priority', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [
+        {
+          id: 'p1',
+          name: '第一组启动详情',
+          goal: '采集第一组启动详情',
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{tool: 'invoke_skill', skillId: 'startup_detail'}],
+          status: 'pending',
+        },
+        {
+          id: 'p2',
+          name: '第二组启动详情',
+          goal: '采集第二组启动详情',
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{tool: 'invoke_skill', skillId: 'startup_detail'}],
+          status: 'pending',
+        },
+      ],
+      successCriteria: '分别验证两组启动详情',
+      submittedAt: 1,
+      toolCallLog: [],
+    };
+
+    const record = recordPlanToolCall(plan, {
+      toolName: 'invoke_skill',
+      input: {skillId: 'startup_detail'},
+      resultText: '{"success":true}',
+      timestamp: 10,
+    });
+
+    expect(record?.matchedPhaseId).toBeUndefined();
+  });
+
+  it('still records a unique pending expectedTools-only phase', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '对齐确认',
+        goal: '读取双 Trace 对比上下文',
+        expectedTools: ['get_comparison_context'],
+        expectedCalls: [],
+        status: 'pending',
+      }],
+      successCriteria: '确认双 Trace 可比',
+      submittedAt: 1,
+      toolCallLog: [],
+    };
+
+    const record = recordPlanToolCall(plan, {
+      toolName: 'get_comparison_context',
+      input: {},
+      resultText: '{"success":true}',
+      timestamp: 10,
+    });
+
+    expect(record?.matchedPhaseId).toBe('p1');
+  });
+
   it('records whether a source lookup actually returned a CodeRef', () => {
     const plan = createPlan();
     const withCodeRef = recordPlanToolCall(plan, {
@@ -353,6 +511,102 @@ describe('recordPlanToolCall', () => {
     ]);
     expect(tracker.prePlanToolCallLog).toEqual([]);
     expect(findCompletedPhaseEvidenceGaps(plan)).toEqual([]);
+  });
+
+  it('replays pre-plan comparison context calls for expectedTools-only phases', () => {
+    const tracker: { current: AnalysisPlanV3 | null; prePlanToolCallLog?: AnalysisPlanV3['toolCallLog'] } = {
+      current: null,
+    };
+
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'get_comparison_context',
+      input: {},
+      resultText: '{"success":true}',
+      timestamp: 10,
+    });
+
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '对齐确认与概览',
+        goal: '读取左右双 Trace 窗口映射和包名',
+        expectedTools: ['get_comparison_context'],
+        expectedCalls: [],
+        status: 'completed',
+        completedAt: 100,
+        summary: '已确认左右 Trace 的窗口、进程和时间范围均可直接对齐比较。',
+      }],
+      successCriteria: '确认双 Trace 窗口映射',
+      submittedAt: 20,
+      toolCallLog: [],
+    };
+    tracker.current = plan;
+
+    expect(replayPrePlanToolCalls(tracker)).toBe(1);
+    expect(plan.toolCallLog).toEqual([
+      expect.objectContaining({
+        toolName: 'get_comparison_context',
+        matchedPhaseId: 'p1',
+      }),
+    ]);
+    expect(verifyPlanAdherence(plan).filter(issue => issue.severity === 'error')).toEqual([]);
+  });
+
+  it.each([
+    {
+      name: 'a wrong tool',
+      staleRecord: {
+        toolName: 'fetch_artifact',
+        success: true,
+        timestamp: 5,
+        matchedPhaseId: 'p1',
+      },
+    },
+    {
+      name: 'a failed expected tool',
+      staleRecord: {
+        toolName: 'get_comparison_context',
+        success: false,
+        timestamp: 5,
+        matchedPhaseId: 'p1',
+      },
+    },
+  ])('replays valid pre-plan evidence after $name was historically attributed to the phase', ({staleRecord}) => {
+    const tracker: {
+      current: AnalysisPlanV3 | null;
+      prePlanToolCallLog?: AnalysisPlanV3['toolCallLog'];
+    } = {current: null};
+
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'get_comparison_context',
+      input: {},
+      resultText: '{"success":true}',
+      timestamp: 10,
+    });
+
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '对齐确认与概览',
+        goal: '读取左右双 Trace 窗口映射和包名',
+        expectedTools: ['get_comparison_context'],
+        expectedCalls: [],
+        status: 'pending',
+      }],
+      successCriteria: '确认双 Trace 窗口映射',
+      submittedAt: 20,
+      toolCallLog: [staleRecord],
+    };
+    tracker.current = plan;
+
+    expect(replayPrePlanToolCalls(tracker)).toBe(1);
+    expect(plan.toolCallLog).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        toolName: 'get_comparison_context',
+        matchedPhaseId: 'p1',
+        timestamp: 10,
+      }),
+    ]));
   });
 
   it('replays pre-plan compare_skill calls with the requested skillId', () => {

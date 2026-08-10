@@ -28,8 +28,12 @@ const {
   packagePaths,
   parseWindowsProcessSnapshot,
   parseArgs,
+  probePortableNativeModules,
+  probeWindowsDpapiSecretStore,
+  requestLocalJson,
   runArchiveBinary,
   sanitizedSmokeEnv,
+  smokeProviderConfiguration,
   startProcessTreeMonitor,
   validateLifecycleReceipt,
   versionAtLeast,
@@ -195,6 +199,19 @@ test('portable smoke resolves target-specific launcher and runtime paths', () =>
   const windows = packagePaths('/tmp/root', 'package', 'windows-x64');
   assert.equal(windows.launcher, path.join('/tmp/root', 'package', 'SmartPerfetto.exe'));
   assert.equal(windows.node, path.join('/tmp/root', 'package', 'runtime', 'node', 'node.exe'));
+  assert.equal(
+    windows.sodiumPrebuild,
+    path.join(
+      '/tmp/root',
+      'package',
+      'backend',
+      'node_modules',
+      'sodium-native',
+      'prebuilds',
+      'win32-x64',
+      'sodium-native.node',
+    ),
+  );
 
   const macos = packagePaths('/tmp/root', 'package', 'macos-arm64');
   assert.equal(
@@ -205,6 +222,199 @@ test('portable smoke resolves target-specific launcher and runtime paths', () =>
     macos.node.split(path.sep).join('/'),
     /SmartPerfetto\.app\/Contents\/Resources\/runtime\/node\/bin\/node$/,
   );
+});
+
+test('portable native-module probe performs sqlite and sodium operations', () => {
+  const evidence = probePortableNativeModules({
+    node: process.execPath,
+    betterSqlite3: path.join(
+      repoRoot,
+      'backend/node_modules/better-sqlite3',
+    ),
+    sodium: path.join(
+      repoRoot,
+      'backend/node_modules/sodium-native',
+    ),
+  }, process.env);
+
+  assert.deepEqual(evidence, {
+    betterSqlite3: 'query-ok',
+    sodiumNative: 'secretbox-ok',
+  });
+});
+
+test('Provider archive smoke creates, activates, masks, persists, and removes a local profile', async () => {
+  const providerId = 'provider-smoke-id';
+  const providerFile = path.join(os.tmpdir(), `providers-${process.pid}-${Date.now()}.json`);
+  fs.writeFileSync(providerFile, '[]\n');
+  const calls = [];
+  const requester = async (url, options = {}) => {
+    calls.push({url, options});
+    if (options.method === 'POST' && url.endsWith('/api/v1/providers')) {
+      fs.writeFileSync(providerFile, JSON.stringify([{
+        id: providerId,
+        connection: {openaiApiKey: 'smartperfetto-not-a-real-credential'},
+      }]));
+      return {statusCode: 201, body: {success: true, provider: {id: providerId}}};
+    }
+    if (options.method === 'POST' && url.endsWith(`/${providerId}/activate`)) {
+      return {statusCode: 200, body: {success: true}};
+    }
+    if (url.endsWith('/effective')) {
+      return {
+        statusCode: 200,
+        body: {
+          source: 'provider-manager',
+          provider: {
+            id: providerId,
+            connection: {openaiApiKey: '****tial'},
+          },
+        },
+      };
+    }
+    if (url.endsWith(`/${providerId}`) && !options.method) {
+      return {
+        statusCode: 200,
+        body: {
+          success: true,
+          provider: {
+            id: providerId,
+            connection: {openaiApiKey: '****tial'},
+          },
+        },
+      };
+    }
+    if (options.method === 'POST' && url.endsWith('/deactivate')) {
+      return {statusCode: 200, body: {success: true}};
+    }
+    if (options.method === 'DELETE' && url.endsWith(`/${providerId}`)) {
+      fs.writeFileSync(providerFile, '[]\n');
+      return {statusCode: 200, body: {success: true}};
+    }
+    throw new Error(`unexpected request: ${url}`);
+  };
+  try {
+    const evidence = await smokeProviderConfiguration(
+      'http://127.0.0.1:3000',
+      providerFile,
+      requester,
+    );
+    assert.deepEqual(evidence, {
+      created: true,
+      activated: true,
+      responseMasked: true,
+      persistedUnderPortableDataRoot: true,
+      cleanedUp: true,
+    });
+    assert.deepEqual(calls.map(call => call.options.method || 'GET'), [
+      'POST',
+      'POST',
+      'GET',
+      'GET',
+      'POST',
+      'DELETE',
+    ]);
+    assert.equal(calls.some(call => call.url.endsWith('/test')), false);
+  } finally {
+    fs.rmSync(providerFile, {force: true});
+  }
+});
+
+test('loopback JSON requester rejects non-loopback URLs and parses bounded JSON', async () => {
+  assert.throws(
+    () => requestLocalJson('https://example.test/api'),
+    /only permits loopback HTTP requests/,
+  );
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({success: true}));
+  });
+  const port = await listenOnLoopback(server);
+  try {
+    const result = await requestLocalJson(`http://127.0.0.1:${port}/api`);
+    assert.deepEqual(result, {statusCode: 200, body: {success: true}});
+  } finally {
+    await closeHttpServer(server);
+  }
+});
+
+test('loopback JSON requester bypasses ambient proxy settings', async (t) => {
+  let proxyRequests = 0;
+  const proxy = http.createServer((_request, response) => {
+    proxyRequests++;
+    response.writeHead(502);
+    response.end('proxy must not receive loopback Provider smoke traffic');
+  });
+  const proxyPort = await listenOnLoopback(proxy);
+  t.after(() => closeHttpServer(proxy));
+
+  let directRequests = 0;
+  const backend = http.createServer((_request, response) => {
+    directRequests++;
+    response.writeHead(200, {'Content-Type': 'application/json'});
+    response.end(JSON.stringify({success: true}));
+  });
+  const backendPort = await listenOnLoopback(backend);
+  t.after(() => closeHttpServer(backend));
+
+  const smokeModule = path.join(repoRoot, 'scripts/smoke-portable-archive.cjs');
+  const child = spawn(process.execPath, ['-e', [
+    `const {requestLocalJson}=require(${JSON.stringify(smokeModule)});`,
+    'requestLocalJson(process.argv[1])',
+    '  .then((result) => process.stdout.write(JSON.stringify(result)))',
+    '  .catch((error) => { console.error(error.stack || error); process.exitCode = 1; });',
+  ].join('\n'), `http://127.0.0.1:${backendPort}/api/v1/providers/effective`], {
+    env: {
+      ...process.env,
+      ALL_PROXY: `http://127.0.0.1:${proxyPort}`,
+      HTTP_PROXY: `http://127.0.0.1:${proxyPort}`,
+      HTTPS_PROXY: `http://127.0.0.1:${proxyPort}`,
+      NODE_USE_ENV_PROXY: '1',
+      NO_PROXY: '',
+      no_proxy: '',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const result = await waitForChild(child);
+
+  assert.deepEqual(
+    {code: result.code, signal: result.signal, stderr: result.stderr},
+    {code: 0, signal: null, stderr: ''},
+  );
+  assert.deepEqual(
+    JSON.parse(result.stdout),
+    {statusCode: 200, body: {success: true}},
+  );
+  assert.equal(proxyRequests, 0);
+  assert.equal(directRequests, 1);
+});
+
+test('Windows DPAPI package probe uses the packaged Node and SecretStore module', () => {
+  const invocations = [];
+  const evidence = probeWindowsDpapiSecretStore({
+    node: 'C:\\package\\runtime\\node\\node.exe',
+    localSecretStore: 'C:\\package\\backend\\dist\\services\\providerManager\\localSecretStore.js',
+  }, 'C:\\evidence\\data', {SYSTEMROOT: 'C:\\Windows'}, (...args) => {
+    invocations.push(args);
+    return {
+      status: 0,
+      stdout: JSON.stringify({
+        source: 'windows-dpapi',
+        reopened: true,
+        plaintextMasterKey: false,
+      }),
+      stderr: '',
+    };
+  });
+
+  assert.deepEqual(evidence, {
+    source: 'windows-dpapi',
+    reopened: true,
+    plaintextMasterKey: false,
+  });
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0][0], 'C:\\package\\runtime\\node\\node.exe');
+  assert.equal(invocations[0][3].env.NODE_ENV, 'production');
 });
 
 test('portable smoke parser rejects incomplete option values', () => {

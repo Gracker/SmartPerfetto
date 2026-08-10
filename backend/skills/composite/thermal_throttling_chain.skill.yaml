@@ -96,6 +96,7 @@ steps:
     type: skill
     name: "进程 CPU 利用率"
     skill: cpu_process_utilization_period
+    condition: "Boolean(package || process_name)"
     params:
       process_name: "${package || process_name || ''}"
       start_ts: "${start_ts}"
@@ -109,6 +110,7 @@ steps:
     type: skill
     name: "线程 CPU 利用率"
     skill: cpu_thread_utilization_period
+    condition: "Boolean(package || process_name)"
     params:
       process_name: "${package || process_name || ''}"
       start_ts: "${start_ts}"

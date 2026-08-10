@@ -1,6 +1,6 @@
 {
   "name": "smart-perfetto",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "AI-powered Perfetto analysis platform",
   "private": true,
   "scripts": {
@@ -14,7 +14,7 @@
     "shellcheck": "shellcheck -x start.sh scripts/*.sh",
     "check:frontend-prebuild": "node scripts/check-frontend-prebuild.cjs",
     "test:node-env": "bash scripts/test-node-env.sh",
-    "test:governance": "node --test scripts/__tests__/check-perfetto-skills-impact.test.mjs scripts/__tests__/process-harness.test.mjs scripts/__tests__/service-lifecycle.test.mjs scripts/__tests__/startup-contracts.test.mjs scripts/__tests__/frontend-server-health.test.mjs scripts/__tests__/ensure-trace-processor.test.mjs scripts/__tests__/runtime-distribution-assets.test.mjs scripts/__tests__/release-portable.test.mjs scripts/__tests__/portable-release-smoke-workflow.test.mjs scripts/__tests__/verify-portable-package-safety.test.mjs scripts/__tests__/smoke-portable-archive.test.mjs scripts/__tests__/verify-portable-smoke-evidence.test.mjs scripts/__tests__/native-runtime-compat.test.mjs scripts/__tests__/dual-trace-e2e-services.test.mjs scripts/__tests__/verify-docs.test.mjs scripts/__tests__/find-macho-files.test.mjs scripts/__tests__/i18n-heading-contract.test.mjs",
+    "test:governance": "node --test scripts/__tests__/check-perfetto-skills-impact.test.mjs scripts/__tests__/process-harness.test.mjs scripts/__tests__/service-lifecycle.test.mjs scripts/__tests__/startup-contracts.test.mjs scripts/__tests__/frontend-server-health.test.mjs scripts/__tests__/ensure-trace-processor.test.mjs scripts/__tests__/runtime-distribution-assets.test.mjs scripts/__tests__/release-portable.test.mjs scripts/__tests__/portable-release-smoke-workflow.test.mjs scripts/__tests__/verify-portable-package-safety.test.mjs scripts/__tests__/smoke-portable-archive.test.mjs scripts/__tests__/verify-portable-smoke-evidence.test.mjs scripts/__tests__/native-runtime-compat.test.mjs scripts/__tests__/dual-trace-e2e-services.test.mjs scripts/__tests__/perfetto-stdlib-docs.test.mjs scripts/__tests__/verify-docs.test.mjs scripts/__tests__/find-macho-files.test.mjs scripts/__tests__/i18n-heading-contract.test.mjs",
     "verify:docs": "node scripts/verify-docs.mjs",
     "verify:i18n": "npm --prefix backend run check:skill-localizations && node scripts/verify-i18n.mjs",
     "sync:rendering-pipelines": "node scripts/sync-rendering-pipelines.mjs",

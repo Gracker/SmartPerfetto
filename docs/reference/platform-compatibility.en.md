@@ -33,6 +33,14 @@ When one layer is missing, report only the layers that were actually completed.
 A Windows/Linux cross-build is not a Windows/Linux runtime smoke, and the
 Docker host OS is not the container target.
 
+The [Windows guide](../getting-started/windows.en.md) is authoritative for user operations.
+The current public v1.4.0 Windows x64 final archive ran on a Windows Server 2025 runner and
+proved bundled runtimes, health, a minimal trace-processor query, shutdown, and port release.
+That is not manual acceptance of Windows 10/11 desktop behavior, SmartScreen, or Provider UI.
+Future archive gates also require real SQLite/sodium loading, a local Provider lifecycle, and
+a Windows DPAPI SecretStore probe; they become evidence only after the matching final archive
+passes them.
+
 ## Network Binding Boundary
 
 Source Web binds both services to IPv4 loopback `127.0.0.1` by default. A
@@ -48,6 +56,7 @@ the compose publish host controls host exposure and defaults to host
 ## Sources Of Truth
 
 - Installation and first run: [Quick Start](../getting-started/quick-start.en.md)
+- Windows download, setup, updates, and troubleshooting: [Windows Guide](../getting-started/windows.en.md)
 - Node, providers, and deployment configuration: [Configuration](../getting-started/configuration.en.md)
 - npm CLI platforms and fallback: [CLI](cli.en.md)
 - Portable targets, data directories, and migration: [Portable Packaging](portable-packaging.en.md)

@@ -9,6 +9,8 @@ import net from 'net';
 import tls from 'tls';
 
 const MAX_REDIRECTS = 5;
+export const TRACE_URL_TRUSTED_FAKE_IP_HOSTS_ENV =
+  'SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS';
 
 export class PublicHttpUrlRejectedError extends Error {
   constructor(message: string) {
@@ -84,6 +86,23 @@ function ipv6IsPublic(address: string): boolean {
   const [first, second] = parts;
   if (parts.every(part => part === 0)) return false;
   if (parts.slice(0, 7).every(part => part === 0) && parts[7] === 1) return false;
+  // IPv4-compatible/translated and automatic transition prefixes can route an
+  // embedded private IPv4 destination even though the outer literal is IPv6.
+  // Treat the whole transition range as reserved at this public-only boundary.
+  if (parts.slice(0, 6).every(part => part === 0)) return false; // ::/96
+  if (
+    parts.slice(0, 4).every(part => part === 0) &&
+    parts[4] === 0xffff &&
+    parts[5] === 0
+  ) return false; // ::ffff:0:0/96 (IPv4-translated)
+  if (
+    first === 0x0064 &&
+    second === 0xff9b &&
+    parts.slice(2, 6).every(part => part === 0)
+  ) return false; // 64:ff9b::/96 (well-known NAT64)
+  if (first === 0x0064 && second === 0xff9b && parts[2] === 1) return false; // 64:ff9b:1::/48
+  if (first === 0x2001 && second === 0) return false; // 2001::/32 (Teredo)
+  if (first === 0x2002) return false; // 2002::/16 (6to4)
   if ((first & 0xfe00) === 0xfc00) return false;
   if ((first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0) return false;
   if ((first & 0xff00) === 0xff00) return false;
@@ -109,6 +128,32 @@ export function publicHttpAddressAllowed(address: string): boolean {
   return false;
 }
 
+/**
+ * RFC 2544 benchmark addresses are reserved and blocked by default. An
+ * administrator can opt specific HTTPS hostnames into TUN fake-IP routing via
+ * an exact allowlist; request-controlled input cannot widen this boundary.
+ */
+export function publicHttpResolvedAddressAllowed(
+  url: URL,
+  address: string,
+  env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): boolean {
+  if (publicHttpAddressAllowed(address)) return true;
+  const ipv4 = parseIpv4(address);
+  const hostname = url.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  const trustedFakeIpHosts = new Set(
+    String(env[TRACE_URL_TRUSTED_FAKE_IP_HOSTS_ENV] || '')
+      .split(/[\s,]+/)
+      .map(value => value.trim().toLowerCase())
+      .filter(value => value.length > 0 && net.isIP(value) === 0),
+  );
+  return url.protocol === 'https:' &&
+    net.isIP(hostname) === 0 &&
+    trustedFakeIpHosts.has(hostname) &&
+    ipv4?.[0] === 198 &&
+    (ipv4[1] === 18 || ipv4[1] === 19);
+}
+
 export function sanitizedPublicHttpUrl(url: URL): string {
   return `${url.protocol}//${url.host}${url.pathname}`;
 }
@@ -119,7 +164,10 @@ async function resolvePinnedPublicAddress(url: URL): Promise<{address: string; f
   const addresses = literalFamily
     ? [{address: hostname, family: literalFamily as 4 | 6}]
     : await lookup(hostname, {all: true, verbatim: true});
-  if (addresses.length === 0 || addresses.some(item => !publicHttpAddressAllowed(item.address))) {
+  if (
+    addresses.length === 0 ||
+    addresses.some(item => !publicHttpResolvedAddressAllowed(url, item.address))
+  ) {
     throw new PublicHttpUrlRejectedError(
       'Local, private, reserved, and mixed-address trace URLs are not supported',
     );

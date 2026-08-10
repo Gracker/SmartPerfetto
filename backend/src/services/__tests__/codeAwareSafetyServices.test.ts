@@ -134,6 +134,7 @@ describe('CodeLookupLedger', () => {
       lookupCount: 1,
       patchCount: 1,
       referencedCodebaseIds: ['cb_1'],
+      usedCodebaseIds: ['cb_1'],
     });
     expect(fs.readFileSync(ledgerPath, 'utf-8').trim().split('\n')).toHaveLength(2);
   });
@@ -165,6 +166,76 @@ describe('CodeLookupLedger', () => {
     expect(restored.hasSuccessfulCodeLookup()).toBe(false);
     expect(restored.remainingTokens()).toBe(100);
     expect(restored.toSnapshotSummary()).toEqual({
+      lookupCount: 1,
+      patchCount: 0,
+      referencedCodebaseIds: ['cb_old'],
+      usedCodebaseIds: ['cb_old'],
+    });
+  });
+
+  it('keeps attempted codebases separate from actually returned references', async () => {
+    const ledgerPath = path.join(tmpDir, 'used-ledger.jsonl');
+    const ledger = new CodeLookupLedger('session-used', 100, 1, ledgerPath);
+    ledger.record({
+      turn: 1,
+      ts: 1714600000000,
+      toolName: 'search_codebase',
+      codebaseId: 'cb_attempted',
+      chunkIds: [],
+      returnedReferenceCount: 0,
+      consentApplied: true,
+      tokensSpent: 0,
+      outcome: 'success',
+      legacyPath: false,
+    });
+    ledger.record({
+      turn: 1,
+      ts: 1714600000001,
+      toolName: 'query_code_graph',
+      codebaseId: 'cb_graph',
+      chunkIds: [],
+      returnedReferenceCount: 2,
+      consentApplied: true,
+      tokensSpent: 4,
+      outcome: 'success',
+      legacyPath: false,
+    });
+    ledger.record({
+      turn: 1,
+      ts: 1714600000002,
+      toolName: 'lookup_app_source',
+      codebaseId: 'cb_indexed',
+      chunkIds: ['chunk-indexed'],
+      consentApplied: true,
+      tokensSpent: 4,
+      outcome: 'success',
+      legacyPath: false,
+    });
+    await ledger.flush();
+
+    expect(CodeLookupLedger.restore('session-used', 100, 1, ledgerPath).toSnapshotSummary()).toEqual({
+      lookupCount: 3,
+      patchCount: 0,
+      referencedCodebaseIds: ['cb_attempted', 'cb_graph', 'cb_indexed'],
+      usedCodebaseIds: ['cb_graph', 'cb_indexed'],
+    });
+  });
+
+  it('restores old ledger entries without returned reference counts', async () => {
+    const ledgerPath = path.join(tmpDir, 'old-ledger.jsonl');
+    fs.writeFileSync(ledgerPath, `${JSON.stringify({
+      turn: 1,
+      ts: 1714600000000,
+      toolName: 'search_codebase',
+      codebaseId: 'cb_old',
+      chunkIds: [],
+      consentApplied: true,
+      tokensSpent: 0,
+      outcome: 'success',
+      legacyPath: false,
+    })}\n`);
+
+    expect(CodeLookupLedger.restore('session-old', 100, 1, ledgerPath).toSnapshotSummary()).toEqual({
       lookupCount: 1,
       patchCount: 0,
       referencedCodebaseIds: ['cb_old'],
@@ -545,6 +616,58 @@ describe('tool result projection and session registry', () => {
     },
   );
 
+  it.each(['query_code_graph', 'inspect_code_symbol'])(
+    'projects %s graph references without persisting file paths',
+    toolName => {
+      const projected = projectToolResultForExternalSurface(toolName, {
+        success: true,
+        codebaseId: 'codebase-a',
+        references: [{
+          referenceId: 'graph-a1b2c3',
+          codebaseId: 'codebase-a',
+          filePath: 'app/src/main/java/demo/StartupHooks.kt',
+          lineRange: {start: 12, end: 20},
+          symbol: 'StartupHooks.installTracing',
+          kind: 'function',
+        }],
+        processes: [{name: '/Users/demo/app/src/main/java/demo/StartupHooks.kt'}],
+        graph: {engine: 'gitnexus', freshness: 'stale', verificationRequired: true},
+      });
+
+      expect(projected).toEqual(expect.objectContaining({
+        toolName,
+        outcome: 'success',
+        sourceRefs: [expect.objectContaining({
+          referenceId: 'graph-a1b2c3',
+          codebaseId: 'codebase-a',
+          lineRange: {start: 12, end: 20},
+          filePathHash: expect.any(String),
+          symbolHash: expect.any(String),
+          kindHash: expect.any(String),
+        })],
+      }));
+      expect(JSON.stringify(projected)).not.toContain('StartupHooks.kt');
+      expect(JSON.stringify(projected)).not.toContain('StartupHooks.installTracing');
+      expect(JSON.stringify(projected)).not.toContain('function');
+      expect(JSON.stringify(projected)).not.toContain('/Users/demo');
+    },
+  );
+
+  it('projects graph budget failures without changing the outcome to rejected', () => {
+    const projected = projectToolResultForExternalSurface('query_code_graph', {
+      success: false,
+      unsupportedReason: 'budget_exceeded',
+      references: [],
+      graph: {engine: 'gitnexus', freshness: 'unknown', verificationRequired: true},
+    });
+
+    expect(projected).toEqual(expect.objectContaining({
+      toolName: 'query_code_graph',
+      outcome: 'budget_exceeded',
+      sourceRefs: [],
+    }));
+  });
+
   it('keeps runtime tool results namespaced by session/run/runtime/invocation', () => {
     const registry = new SessionToolResultRegistry();
     const target = {sessionId: 's1', runId: 'r1', runtime: 'openai' as const, invocationId: 'tool-1'};
@@ -707,6 +830,7 @@ describe('code-aware streaming application boundary', () => {
         type: 'degraded',
         content: {
           fallback: 'verification_failed',
+          verificationIssueType: 'unresolved_hypothesis',
           message: 'PRIVATE_DEGRADED_MESSAGE_CANARY',
         },
         timestamp,
@@ -719,6 +843,7 @@ describe('code-aware streaming application boundary', () => {
     expect(projected.content).toMatchObject({
       sourceEventType: 'degraded',
       degradedFallback: 'verification_failed',
+      degradedIssueType: 'unresolved_hypothesis',
       privateModelTextSuppressed: true,
     });
     expect(JSON.stringify(projected)).not.toContain('PRIVATE_DEGRADED_MESSAGE_CANARY');
@@ -727,13 +852,17 @@ describe('code-aware streaming application boundary', () => {
       'session-stream',
       {
         type: 'degraded',
-        content: {fallback: 'PRIVATE_UNSAFE_FALLBACK_CANARY'},
+        content: {
+          fallback: 'PRIVATE_UNSAFE_FALLBACK_CANARY',
+          verificationIssueType: 'PRIVATE_UNSAFE_ISSUE_CANARY',
+        },
         timestamp,
       },
       true,
       'en',
     );
     expect(unsafe.content).not.toHaveProperty('degradedFallback');
+    expect(unsafe.content).not.toHaveProperty('degradedIssueType');
   });
 
   it('keeps ordinary sessions byte-preserving and sanitizes source-aware conclusions', () => {

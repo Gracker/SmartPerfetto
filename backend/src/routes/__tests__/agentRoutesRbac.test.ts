@@ -11,7 +11,11 @@ import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { EnhancedSessionContext, sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
-import { ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata } from '../../services/traceMetadataStore';
+import {
+  deleteTraceMetadata,
+  ENTERPRISE_DATA_DIR_ENV,
+  writeTraceMetadata,
+} from '../../services/traceMetadataStore';
 import {
   persistSerializedAgentEvent,
   resetAgentEventStoreForTests,
@@ -37,7 +41,8 @@ import type { AnalysisOptions, AnalysisResult } from '../../agent/core/orchestra
 import type { TracePairContext } from '../../agentv3/types';
 import * as defaultCodebaseServices from '../../services/codebase/defaultCodebaseServices';
 import * as externalKnowledgeServices from '../../services/externalKnowledgeSourceRegistry';
-import agentRoutes from '../agentRoutes';
+import {getProviderService, resetProviderService} from '../../services/providerManager';
+import agentRoutes, {resolveConclusionSceneIdHint} from '../agentRoutes';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
@@ -51,6 +56,7 @@ const originalCodeAware = process.env.SMARTPERFETTO_CODE_AWARE;
 const originalOutputLanguage = process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
 const originalBackendDataDir = process.env.SMARTPERFETTO_BACKEND_DATA_DIR;
 const originalBackendLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+const originalProviderDataDir = process.env.PROVIDER_DATA_DIR_OVERRIDE;
 
 type DeferredRuntime = {
   promise: Promise<unknown>;
@@ -96,6 +102,19 @@ function scopedAnalystHeaders(
     .set('X-SmartPerfetto-SSO-Workspace-Id', options.workspaceId)
     .set('X-SmartPerfetto-SSO-Roles', 'analyst')
     .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write,agent:run,report:read');
+}
+
+function scopedViewerHeaders(
+  req: request.Test,
+  options: { userId: string; workspaceId: string; email?: string },
+): request.Test {
+  return req
+    .set('X-SmartPerfetto-SSO-User-Id', options.userId)
+    .set('X-SmartPerfetto-SSO-Email', options.email ?? `${options.userId}@example.test`)
+    .set('X-SmartPerfetto-SSO-Tenant-Id', 'tenant-a')
+    .set('X-SmartPerfetto-SSO-Workspace-Id', options.workspaceId)
+    .set('X-SmartPerfetto-SSO-Roles', 'viewer')
+    .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,report:read');
 }
 
 function restoreEnvValue(key: string, value: string | undefined): void {
@@ -190,6 +209,7 @@ afterEach(async () => {
   resetAnalysisRunStoreForTests();
   clearRunManifestLifecyclesForTests();
   resetRunManifestStoreForTests();
+  resetProviderService();
   if (originalApiKey === undefined) {
     delete process.env.SMARTPERFETTO_API_KEY;
   } else {
@@ -206,10 +226,713 @@ afterEach(async () => {
   restoreEnvValue('SMARTPERFETTO_OUTPUT_LANGUAGE', originalOutputLanguage);
   restoreEnvValue('SMARTPERFETTO_BACKEND_DATA_DIR', originalBackendDataDir);
   restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalBackendLogDir);
+  restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalProviderDataDir);
   sessionContextManager.remove('session-resume-integration');
 });
 
 describe('agent route RBAC', () => {
+  it('prefers the executed analysis skill over ambiguous trace wording', () => {
+    expect(resolveConclusionSceneIdHint({
+      sessionId: 'scene-evidence-test',
+      query: '检查这个启动 Trace 是否包含 ANR',
+      findings: [],
+      intent: {
+        primaryGoal: '检查这个启动 Trace 是否包含 ANR',
+        aspects: ['startup'],
+        expectedOutputType: 'diagnosis',
+        complexity: 'moderate',
+        followUpType: 'initial',
+      },
+      dataEnvelopes: [{meta: {skillId: 'anr_analysis'}} as any],
+    })).toBe('anr');
+  });
+
+  it('runs a no-Trace conversation through the lightweight contract and streams the answer', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'zh-CN';
+    const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+      _query,
+      sessionId,
+      traceId,
+      options = {},
+    ) => ({
+      sessionId,
+      success: true,
+      findings: [],
+      hypotheses: [],
+      conclusion: '先确认目标。\n<!-- smartperfetto:conversation-control {"kind":"needs_user_input","question":"你更关注启动还是滑动？"} -->',
+      confidence: 0.8,
+      rounds: 1,
+      totalDurationMs: 5,
+    }));
+    const app = makeApp();
+
+    const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+      .send({query: '帮我分析性能需求'});
+
+    expect(started.status).toBe(202);
+    expect(started.body).toMatchObject({
+      success: true,
+      status: 'running',
+      traceContextAttached: false,
+    });
+    expect(analyze).toHaveBeenCalledWith(
+      expect.stringContaining('当前没有附加 Trace'),
+      expect.stringContaining(started.body.runId),
+      expect.stringContaining('conversation-no-trace:'),
+      expect.objectContaining({
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: false,
+      }),
+    );
+
+    const streamed = await analystHeaders(request(app).get(
+      `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+    ));
+    expect(streamed.status).toBe(200);
+    expect(streamed.text).toContain('event: run_completed');
+    expect(streamed.text).toContain('needs_user_input');
+    expect(streamed.text).not.toContain('smartperfetto:conversation-control');
+  });
+
+  it('forwards the latest normalized selection context on every conversation turn', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    const receivedOptions: AnalysisOptions[] = [];
+    jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+      _query,
+      sessionId,
+      _traceId,
+      options = {},
+    ) => {
+      receivedOptions.push(options);
+      return {
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: '回答',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      };
+    });
+    const app = makeApp();
+    const selectedSlice = {
+      kind: 'track_event',
+      source: 'track_event_selection',
+      trackUri: '/process_1/thread_2',
+      eventId: 42,
+      ts: 1000,
+      dur: 250,
+      name: 'monitor contention',
+      threadName: 'main',
+      processName: 'com.example.app',
+    };
+
+    const first = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+      .send({
+        query: '分析当前选择',
+        options: {selectionContext: selectedSlice},
+      });
+    expect(first.status).toBe(202);
+    await analystHeaders(request(app).get(
+      `/api/agent/v1/conversation/${first.body.sessionId}/stream?runId=${first.body.runId}`,
+    ));
+
+    const second = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+      .send({
+        sessionId: first.body.sessionId,
+        query: '现在不看选区了',
+      });
+    expect(second.status).toBe(202);
+    await analystHeaders(request(app).get(
+      `/api/agent/v1/conversation/${second.body.sessionId}/stream?runId=${second.body.runId}`,
+    ));
+
+    expect(receivedOptions[0].selectionContext).toEqual(selectedSlice);
+    expect(receivedOptions[1].selectionContext).toBeUndefined();
+  });
+
+  it('does not let a conversation bypass registered-source RBAC', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze');
+
+    const response = await viewerHeaders(request(makeApp()).post('/api/agent/v1/conversation'))
+      .send({
+        query: 'review this source',
+        options: {
+          codeAwareMode: 'metadata_only',
+          codebaseIds: ['private-app'],
+        },
+      });
+
+    expect(response.status).toBe(403);
+    expect(response.body.success).toBe(false);
+    expect(analyze).not.toHaveBeenCalled();
+  });
+
+  it('accounts for a conversation run and isolates its full-analysis handoff', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-accounting-'));
+    try {
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'enterprise-data');
+      jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+        _query,
+        sessionId,
+      ) => ({
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: [
+          '这个问题需要完整因果分析。',
+          '<!-- smartperfetto:conversation-control {"kind":"recommend_full","handoff":{"question":"为什么卡顿？","scope":"当前交互","assumptions":[],"evidence":[]}} -->',
+        ].join('\n'),
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      }));
+      const app = makeApp();
+      const owner = {userId: 'conversation-owner', workspaceId: 'workspace-a'};
+      const other = {userId: 'conversation-other', workspaceId: 'workspace-a'};
+
+      const started = await scopedAnalystHeaders(
+        request(app).post('/api/agent/v1/conversation'),
+        owner,
+      ).send({query: '给我完整根因'});
+      expect(started.status).toBe(202);
+      const streamed = await scopedAnalystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+      ), owner);
+      expect(streamed.text).toContain('recommend_full');
+
+      expect(getAnalysisRunLifecycle({
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: owner.userId,
+      }, started.body.runId)).toMatchObject({status: 'completed'});
+
+      const hidden = await scopedAnalystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/full-handoff`,
+      ), other);
+      expect(hidden.status).toBe(404);
+
+      const visible = await scopedAnalystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/full-handoff`,
+      ), owner);
+      expect(visible.status).toBe(200);
+      expect(visible.body.handoff).toMatchObject({
+        question: '为什么卡顿？',
+        scope: '当前交互',
+      });
+    } finally {
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
+  it('hides cancellation from non-owners and settles the owner run as cancelled', async () => {
+    let rejectRuntime: ((error: Error) => void) | undefined;
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(() => (
+      new Promise((_resolve, reject) => {
+        rejectRuntime = reject;
+      })
+    ));
+    jest.spyOn(ClaudeRuntime.prototype, 'abortSession').mockImplementation(async () => {
+      rejectRuntime?.(new Error('Analysis aborted'));
+    });
+    const app = makeApp();
+    const owner = {userId: 'cancel-owner', workspaceId: 'workspace-a'};
+    const other = {userId: 'cancel-other', workspaceId: 'workspace-a'};
+
+    const started = await scopedAnalystHeaders(
+      request(app).post('/api/agent/v1/conversation'),
+      owner,
+    ).send({query: '继续分析'});
+    expect(started.status).toBe(202);
+
+    const hidden = await scopedAnalystHeaders(request(app).post(
+      `/api/agent/v1/conversation/${started.body.sessionId}/cancel`,
+    ), other).send({runId: started.body.runId});
+    expect(hidden.status).toBe(404);
+
+    const cancelled = await scopedAnalystHeaders(request(app).post(
+      `/api/agent/v1/conversation/${started.body.sessionId}/cancel`,
+    ), owner).send({runId: started.body.runId});
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toMatchObject({success: true, status: 'cancelled'});
+  });
+
+  it('rechecks agent:run permission on every conversation endpoint', async () => {
+    let rejectRuntime: ((error: Error) => void) | undefined;
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(() => (
+      new Promise((_resolve, reject) => {
+        rejectRuntime = reject;
+      })
+    ));
+    const app = makeApp();
+    const owner = {userId: 'permission-owner', workspaceId: 'workspace-a'};
+    const started = await scopedAnalystHeaders(
+      request(app).post('/api/agent/v1/conversation'),
+      owner,
+    ).send({query: '继续分析'});
+    expect(started.status).toBe(202);
+
+    const streamDenied = await scopedViewerHeaders(request(app).get(
+      `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+    ), owner);
+    const cancelDenied = await scopedViewerHeaders(request(app).post(
+      `/api/agent/v1/conversation/${started.body.sessionId}/cancel`,
+    ), owner).send({runId: started.body.runId});
+    const handoffDenied = await scopedViewerHeaders(request(app).get(
+      `/api/agent/v1/conversation/${started.body.sessionId}/full-handoff`,
+    ), owner);
+
+    expect(streamDenied.status).toBe(403);
+    expect(cancelDenied.status).toBe(403);
+    expect(handoffDenied.status).toBe(403);
+    rejectRuntime?.(new Error('test cleanup'));
+  });
+
+  it('requires a fresh conversation after provider or language changes', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'zh-CN';
+    jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+      _query,
+      sessionId,
+    ) => ({
+      sessionId,
+      success: true,
+      findings: [],
+      hypotheses: [],
+      conclusion: '回答',
+      confidence: 0.8,
+      rounds: 1,
+      totalDurationMs: 5,
+    }));
+    const app = makeApp();
+    const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+      .send({query: '第一轮'});
+    expect(started.status).toBe(202);
+    await analystHeaders(request(app).get(
+      `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+    ));
+
+    const providerChanged = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+      .send({sessionId: started.body.sessionId, query: '第二轮', providerId: 'another-provider'});
+    expect(providerChanged.status).toBe(409);
+    expect(providerChanged.body.code).toBe('CONVERSATION_PROVIDER_CHANGED');
+
+    const languageChanged = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+      .send({
+        sessionId: started.body.sessionId,
+        query: 'second turn',
+        options: {outputLanguage: 'en'},
+      });
+    expect(languageChanged.status).toBe(409);
+    expect(languageChanged.body.code).toBe('CONVERSATION_LANGUAGE_CHANGED');
+  });
+
+  it('pins the implicit active provider and rejects active provider switches', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-provider-pin-'));
+    try {
+      process.env.PROVIDER_DATA_DIR_OVERRIDE = tmpDir;
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      resetProviderService();
+      const providerScope = {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      };
+      const providerService = getProviderService();
+      const createProvider = (name: string) => providerService.create({
+        name,
+        category: 'official',
+        type: 'deepseek',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          apiKey: `test-${name}`,
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+        },
+      }, providerScope);
+      const firstProvider = createProvider('conversation-provider-a');
+      const secondProvider = createProvider('conversation-provider-b');
+      providerService.activate(firstProvider.id, providerScope);
+      jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+        _query,
+        sessionId,
+      ) => ({
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: '回答',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      }));
+      const app = makeApp();
+      const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({query: '第一轮'});
+      expect(started.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+      ));
+
+      providerService.activate(secondProvider.id, providerScope);
+      const changed = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({sessionId: started.body.sessionId, query: '第二轮'});
+
+      expect(changed.status).toBe(409);
+      expect(changed.body.code).toBe('CONVERSATION_PROVIDER_CHANGED');
+    } finally {
+      resetProviderService();
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
+  it('rejects a same-provider runtime snapshot change between conversation turns', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-provider-snapshot-'));
+    try {
+      process.env.PROVIDER_DATA_DIR_OVERRIDE = tmpDir;
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      resetProviderService();
+      const providerScope = {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      };
+      const providerService = getProviderService();
+      const provider = providerService.create({
+        name: 'conversation-runtime-provider',
+        category: 'official',
+        type: 'deepseek',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          apiKey: 'test-runtime-provider',
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+        },
+      }, providerScope);
+      providerService.activate(provider.id, providerScope);
+      jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+        _query,
+        sessionId,
+      ) => ({
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: '回答',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      }));
+      const app = makeApp();
+      const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({query: '第一轮'});
+      expect(started.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+      ));
+
+      providerService.update(provider.id, {
+        connection: {agentRuntime: 'openai-agents-sdk'},
+      }, providerScope);
+      const changed = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({sessionId: started.body.sessionId, query: '第二轮'});
+
+      expect(changed.status).toBe(409);
+      expect(changed.body.code).toBe('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED');
+    } finally {
+      resetProviderService();
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
+  it('keeps an explicitly selected non-active provider pinned when later turns omit providerId', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-explicit-provider-pin-'));
+    try {
+      process.env.PROVIDER_DATA_DIR_OVERRIDE = tmpDir;
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      resetProviderService();
+      const providerScope = {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      };
+      const providerService = getProviderService();
+      const createProvider = (name: string) => providerService.create({
+        name,
+        category: 'official',
+        type: 'deepseek',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          apiKey: `test-${name}`,
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+        },
+      }, providerScope);
+      const explicitProvider = createProvider('conversation-explicit-provider');
+      const activeProvider = createProvider('conversation-active-provider');
+      providerService.activate(activeProvider.id, providerScope);
+      const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+        _query,
+        sessionId,
+      ) => ({
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: '回答',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      }));
+      const app = makeApp();
+      const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({query: '第一轮', providerId: explicitProvider.id});
+      expect(started.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+      ));
+
+      const continued = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({sessionId: started.body.sessionId, query: '第二轮'});
+      expect(continued.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${continued.body.sessionId}/stream?runId=${continued.body.runId}`,
+      ));
+
+      expect(analyze).toHaveBeenCalledTimes(2);
+      expect(analyze).toHaveBeenNthCalledWith(
+        2,
+        expect.any(String),
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({providerId: explicitProvider.id}),
+      );
+    } finally {
+      resetProviderService();
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
+  it('rechecks the active provider after an awaited Trace load before starting the next turn', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-provider-toc-'));
+    const traceId = 'conversation-provider-toc-trace';
+    let releaseSecondLoad: (() => void) | undefined;
+    try {
+      process.env.PROVIDER_DATA_DIR_OVERRIDE = path.join(tmpDir, 'providers');
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      resetProviderService();
+      const providerScope = {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      };
+      const providerService = getProviderService();
+      const createProvider = (name: string) => providerService.create({
+        name,
+        category: 'official',
+        type: 'deepseek',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          apiKey: `test-${name}`,
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://api.deepseek.com/anthropic',
+          openaiBaseUrl: 'https://api.deepseek.com/v1',
+        },
+      }, providerScope);
+      const firstProvider = createProvider('conversation-toc-provider-a');
+      const secondProvider = createProvider('conversation-toc-provider-b');
+      providerService.activate(firstProvider.id, providerScope);
+
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+      await writeTraceMetadata({
+        id: traceId,
+        filename: `${traceId}.trace`,
+        size: 11,
+        uploadedAt: new Date().toISOString(),
+        status: 'ready',
+        path: tracePath,
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'analyst-user',
+      });
+      let loadCount = 0;
+      let markSecondLoadStarted!: () => void;
+      const secondLoadStarted = new Promise<void>((resolve) => {
+        markSecondLoadStarted = resolve;
+      });
+      const secondLoadRelease = new Promise<void>((resolve) => {
+        releaseSecondLoad = resolve;
+      });
+      const getOrLoadTrace = jest.fn(async () => {
+        loadCount += 1;
+        if (loadCount === 2) {
+          markSecondLoadStarted();
+          await secondLoadRelease;
+        }
+        return {
+          id: traceId,
+          filename: `${traceId}.trace`,
+          size: 11,
+          filePath: tracePath,
+          uploadTime: new Date(),
+          status: 'ready',
+        };
+      });
+      setTraceProcessorServiceForTests({getOrLoadTrace} as any);
+      const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+        _query,
+        sessionId,
+      ) => ({
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: '回答',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      }));
+      const app = makeApp();
+      const started = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({query: '第一轮', traceId});
+      expect(started.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${started.body.sessionId}/stream?runId=${started.body.runId}`,
+      ));
+
+      const pendingSecondResponse = analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({sessionId: started.body.sessionId, query: '第二轮'})
+        .then(response => response);
+      await secondLoadStarted;
+      providerService.activate(secondProvider.id, providerScope);
+      releaseSecondLoad?.();
+      const changed = await pendingSecondResponse;
+
+      expect(changed.status).toBe(409);
+      expect(changed.body.code).toBe('CONVERSATION_PROVIDER_CHANGED');
+      expect(analyze).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseSecondLoad?.();
+      await deleteTraceMetadata(traceId);
+      resetProviderService();
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
+  it('requires a fresh conversation when Trace identity changes and revalidates retained Trace access', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'conversation-trace-boundary-'));
+    try {
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+      const tracePaths = new Map<string, string>();
+      for (const traceId of ['conversation-trace-a', 'conversation-trace-b']) {
+        const tracePath = path.join(tmpDir, `${traceId}.trace`);
+        tracePaths.set(traceId, tracePath);
+        await fs.writeFile(tracePath, 'trace bytes');
+        await writeTraceMetadata({
+          id: traceId,
+          filename: `${traceId}.trace`,
+          size: 11,
+          uploadedAt: new Date().toISOString(),
+          status: 'ready',
+          path: tracePath,
+          tenantId: 'tenant-a',
+          workspaceId: 'workspace-a',
+          userId: 'analyst-user',
+        });
+      }
+      const getOrLoadTrace = jest.fn(async (traceId: string) => ({
+        id: traceId,
+        filename: `${traceId}.trace`,
+        size: 11,
+        filePath: tracePaths.get(traceId),
+        uploadTime: new Date(),
+        status: 'ready',
+      }));
+      setTraceProcessorServiceForTests({getOrLoadTrace} as any);
+      jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
+        _query,
+        sessionId,
+      ) => ({
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: '回答',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 5,
+      }));
+      const app = makeApp();
+
+      const noTrace = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({query: '先讨论问题'});
+      expect(noTrace.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${noTrace.body.sessionId}/stream?runId=${noTrace.body.runId}`,
+      ));
+      const attachedLater = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({
+          sessionId: noTrace.body.sessionId,
+          traceId: 'conversation-trace-a',
+          query: '现在看 Trace',
+        });
+      expect(attachedLater.status).toBe(409);
+      expect(attachedLater.body.code).toBe('CONVERSATION_TRACE_CHANGED');
+
+      const attached = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({traceId: 'conversation-trace-a', query: '分析 Trace A'});
+      expect(attached.status).toBe(202);
+      await analystHeaders(request(app).get(
+        `/api/agent/v1/conversation/${attached.body.sessionId}/stream?runId=${attached.body.runId}`,
+      ));
+      const changed = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({
+          sessionId: attached.body.sessionId,
+          traceId: 'conversation-trace-b',
+          query: '切换到 Trace B',
+        });
+      expect(changed.status).toBe(409);
+      expect(changed.body.code).toBe('CONVERSATION_TRACE_CHANGED');
+
+      await deleteTraceMetadata('conversation-trace-a');
+      const retainedButDeleted = await analystHeaders(request(app).post('/api/agent/v1/conversation'))
+        .send({sessionId: attached.body.sessionId, query: '继续分析'});
+      expect(retainedButDeleted.status).toBe(404);
+      expect(retainedButDeleted.body.code).toBe('TRACE_NOT_UPLOADED');
+      expect(getOrLoadTrace).toHaveBeenCalledTimes(1);
+    } finally {
+      await fs.rm(tmpDir, {recursive: true, force: true});
+    }
+  });
+
   it('allows a selected codebase without an index when its registered root is available', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-route-on-demand-source-'));
     const root = path.join(tmpDir, 'app');

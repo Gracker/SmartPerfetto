@@ -72,7 +72,8 @@ The script:
 Public releases should normally use the three-platform
 [Portable Packaging](portable-packaging.en.md) flow and the
 [Release Runbook](release.en.md). `release:windows-exe` is a compatibility
-entry point for re-publishing only the Windows x64 asset.
+entry point for producing or uploading a Windows x64 **draft candidate**.
+Public releases cannot re-publish or replace only the Windows asset.
 
 Before publishing a normal release, synchronize and commit the version:
 
@@ -104,12 +105,11 @@ The script:
 7. Uploads a versioned asset name such as `smartperfetto-v<version>-windows-x64.zip`,
    so users can distinguish offline packages from different releases.
 
-By default, the script creates a draft release. After a real Windows smoke test,
-publish it in the GitHub UI. To publish immediately:
-
-```bash
-npm run release:windows-exe -- <version> --no-draft
-```
+The script creates a draft release by default. Do not publish a single-platform
+draft in the GitHub UI and do not use `release:windows-exe --no-draft`. Current
+promotion requires immutable Windows, macOS, and Linux final assets, all with
+exact-archive smoke evidence, followed by the Release Runbook's
+`release:portable --skip-build --no-draft` promotion.
 
 Uploading a release package requires a clean git worktree by default, so the
 release tag does not point at source with a different version from the zip. Add
@@ -125,9 +125,14 @@ npm run version:sync -- --check
 
 ## User Run Flow
 
+Download verification, complete extraction, Provider setup, updates, migration,
+and troubleshooting are canonical in the
+[Windows Setup And Run Guide](../getting-started/windows.en.md). This section keeps
+only the launcher contract summary.
+
 1. Extract `smartperfetto-v<version>-windows-x64.zip` to a normal local path such as `C:\SmartPerfetto`.
 2. Double-click `SmartPerfetto.exe`.
-3. The browser usually opens automatically. If it does not, open the launcher's printed [http://127.0.0.1:10000](http://127.0.0.1:10000) URL (the launcher selects another port when the default is occupied).
+3. The browser usually opens automatically. If it does not, open the launcher's printed `Frontend: http://127.0.0.1:<port>` URL (the launcher selects another port when the default is occupied).
 4. AI analysis needs a Provider profile in the UI. For env credentials, write the provider configuration to `%LOCALAPPDATA%\SmartPerfetto\env` and restart `SmartPerfetto.exe`. Do not store durable credentials in the extracted package directory.
 5. Keep the launcher window open while using SmartPerfetto. Press `Ctrl+C` to stop the backend, frontend, and trace processor child processes.
 
@@ -135,7 +140,8 @@ npm run version:sync -- --check
 
 A non-Windows build host can verify package structure, backend type/build
 health, and dependency presence, but it cannot execute the Windows native smoke.
-Before public release, run this on a real Windows x64 machine:
+Regular Windows CI runs portable-launcher Go test/build and the DPAPI SecretStore
+test. Public release also requires the final-archive smoke on a Windows x64 runner:
 
 ```powershell
 Expand-Archive .\smartperfetto-v<version>-windows-x64.zip -DestinationPath C:\SmartPerfettoSmoke
@@ -160,4 +166,7 @@ configured ports fail fast when unavailable.
 
 - The current package target is Windows x64 only.
 - This is an extract-and-run directory, not a single-file portable executable; do not distribute only `SmartPerfetto.exe`.
-- The script does not code-sign the launcher. Add signing after zip generation if a public release needs lower Windows SmartScreen friction.
+- The script does not Authenticode-sign the launcher. The only valid integration
+  order is sign and timestamp → create the final zip → exact-archive smoke those
+  final bytes → publish. Changing an EXE after zip creation or smoke invalidates
+  the digest and acceptance evidence.

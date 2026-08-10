@@ -240,7 +240,7 @@ steps:
       LIMIT 20
     optional: true
 
-  # ========== 输入管线完整生命周期（stdlib _android_input_lifecycle_by_slice_id）==========
+  # ========== 输入管线完整生命周期（android_input_events + 当前 stdlib 阶段表）==========
   - id: input_pipeline_lifecycle
     type: atomic
     name: "输入管线生命周期"
@@ -309,37 +309,48 @@ steps:
           label: "推测帧"
           type: boolean
     sql: |
-      -- 从 deliverInputEvent slice 反向追踪完整输入管线
-      -- 注意：时间窗口匹配在事件密集场景下可能绑错事件，click 场景通常事件稀疏
-      WITH deliver_slice AS (
-        SELECT s.id
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE s.name GLOB 'deliverInputEvent src=*'
-          AND p.name GLOB '${process_name}*'
-          AND s.ts >= ${event_ts} - 10000000
-          AND s.ts <= ${event_end_ts} + 10000000
-        ORDER BY s.ts
+      -- 父 Skill 直接传入 android_input_events 的精确事件边界；不猜测相邻事件。
+      -- Frame 阶段自 Perfetto 7b573c1 起由 _android_input_frames 扩展提供。
+      WITH target_event AS (
+        SELECT *
+        FROM android_input_events
+        WHERE process_name = '${process_name}'
+          AND dispatch_ts = ${event_ts}
+          AND receive_ts + receive_dur = ${event_end_ts}
+        ORDER BY input_event_id, event_channel
         LIMIT 1
       )
       SELECT
-        input_id,
-        channel,
-        ROUND(total_latency / 1e6, 2) as total_latency_ms,
-        printf('%d', ts_reader) as reader_ts,
-        ROUND(dur_reader / 1e6, 2) as reader_ms,
-        printf('%d', ts_dispatch) as dispatch_ts,
-        ROUND(dur_dispatch / 1e6, 2) as dispatch_ms,
-        printf('%d', ts_receive) as receive_ts,
-        ROUND(dur_receive / 1e6, 2) as receive_ms,
-        printf('%d', ts_consume) as consume_ts,
-        ROUND(dur_consume / 1e6, 2) as consume_ms,
-        printf('%d', ts_frame) as frame_ts,
-        ROUND(dur_frame / 1e6, 2) as frame_ms,
-        is_speculative_frame
-      FROM _android_input_lifecycle_by_slice_id((SELECT id FROM deliver_slice))
+        e.input_event_id as input_id,
+        e.event_channel as channel,
+        ROUND(e.end_to_end_latency_dur / 1e6, 2) as total_latency_ms,
+        CASE WHEN e.read_time IS NOT NULL THEN printf('%d', e.read_time) END as reader_ts,
+        ROUND(s_read.dur / 1e6, 2) as reader_ms,
+        CASE WHEN e.dispatch_ts IS NOT NULL THEN printf('%d', e.dispatch_ts) END as dispatch_ts,
+        ROUND(s_dispatch.dur / 1e6, 2) as dispatch_ms,
+        CASE WHEN e.receive_ts IS NOT NULL THEN printf('%d', e.receive_ts) END as receive_ts,
+        ROUND(s_receive.dur / 1e6, 2) as receive_ms,
+        CASE WHEN s_consume.ts IS NOT NULL THEN printf('%d', s_consume.ts) END as consume_ts,
+        ROUND(s_consume.dur / 1e6, 2) as consume_ms,
+        CASE WHEN frames.ts_do_frame IS NOT NULL THEN printf('%d', frames.ts_do_frame) END as frame_ts,
+        ROUND(frames.dur_do_frame / 1e6, 2) as frame_ms,
+        e.is_speculative_frame
+      FROM target_event e
+      LEFT JOIN slice s_read
+        ON s_read.ts = e.read_time
+        AND s_read.track_id != 0
+        AND s_read.name GLOB 'UnwantedInteractionBlocker::notifyMotion*'
+      LEFT JOIN slice s_dispatch
+        ON s_dispatch.ts = e.dispatch_ts
+        AND s_dispatch.track_id = e.dispatch_track_id
+      LEFT JOIN slice s_receive
+        ON s_receive.ts = e.receive_ts
+        AND s_receive.track_id = e.receive_track_id
+      LEFT JOIN _input_consumers_lookup s_consume
+        ON s_consume.cookie = e.event_seq
+      LEFT JOIN _android_input_frames frames
+        ON frames.frame_id = e.frame_id
+        AND frames.upid = e.upid
     save_as: input_lifecycle
 
   # ========== 大小核占比分析 ==========

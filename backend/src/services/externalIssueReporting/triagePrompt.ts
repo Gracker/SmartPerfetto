@@ -16,6 +16,7 @@ const TEMPLATE_NAME = 'external-issue-triage';
 export function buildExternalIssueTriagePrompt(input: {
   opportunity: ExternalIssueOpportunityV1;
   manifest: RunManifestV1;
+  validationErrors?: string[];
 }): string {
   const template = loadPromptTemplate(TEMPLATE_NAME);
   if (!template) {
@@ -49,6 +50,7 @@ export function buildExternalIssueTriagePrompt(input: {
       parseOutputLanguage(input.manifest.outputLanguage),
     ),
     opportunity_json: JSON.stringify(providerSafeInput, null, 2),
+    validation_errors: JSON.stringify(input.validationErrors ?? []),
   });
 }
 

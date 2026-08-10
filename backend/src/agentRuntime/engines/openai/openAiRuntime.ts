@@ -68,6 +68,7 @@ import { expectedToolNames } from '../../../agentv3/types';
 import {
   formatPlanEvidenceGap,
   recordPlanOrPrePlanToolCall,
+  resetPrePlanToolCallsForNewRun,
   type PlanEvidenceGap,
 } from '../../../agentv3/planToolCallRecorder';
 import {
@@ -119,6 +120,7 @@ import { createOpenAIToolsFromMcpDefinitions } from './openAiToolAdapter';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import {
   assessFinalResultComparisonIdentity,
+  assessFinalResultQuality,
   applyFinalResultQualityGate,
   hasDeliverableFinalReportHeading,
   looksLikePhaseSummaryFallback,
@@ -1623,6 +1625,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 fallback: 'verification_failed',
                 partial: true,
                 terminationReason: result.terminationReason,
+                verificationIssueType: verificationIssue.type,
                 message: verificationIssue.message,
               },
               timestamp: Date.now(),
@@ -1950,6 +1953,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     }
     const previousPlan = analysisPlan.current ?? undefined;
     analysisPlan.current = null;
+    resetPrePlanToolCallsForNewRun(analysisPlan);
 
     if (!this.sessionHypotheses.has(sessionId)) {
       this.sessionHypotheses.set(sessionId, []);
@@ -2002,7 +2006,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : quickTraceFactPreEvidence
         && !quickProcessIdentityPreEvidence
         && shouldSkipFocusDetectionForQuickTraceFactEvidence(query);
-    const focusResult = skipFocusDetectionForQuickTraceFact
+    const skipFocusDetection =
+      skipQuickTracePreflight || skipFocusDetectionForQuickTraceFact;
+    const focusResult = skipFocusDetection
       ? { apps: [], primaryApp: undefined, method: 'none' as const }
       : await detectFocusApps(this.traceProcessorService, traceId, {
           timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
@@ -2026,7 +2032,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const quickProcessIdentityExecutor = quickProcessIdentityPreEvidence
       ? createQuickProcessIdentitySkillExecutor(this.traceProcessorService)
       : undefined;
-    const focusEvidencePayload = lightweight && !skipFocusDetectionForQuickTraceFact
+    const focusEvidencePayload = lightweight && !skipFocusDetection
       ? buildFocusAppEvidencePayload(focusResult, traceId, 'current', config.outputLanguage)
       : undefined;
     if (focusEvidencePayload?.envelope) {
@@ -2252,6 +2258,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
       const skillNotesBudget = createRuntimeSkillNotesBudget(lightweight);
       const mcp = createClaudeMcpServer({
+        conversationTraceAttached: options.assistantSurface === 'conversation'
+          ? options.conversationTraceAttached === true
+          : undefined,
         runManifestAttributionSink: options.runManifestAttributionSink,
         sessionId,
         traceId,
@@ -2483,6 +2492,19 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     analysisSignal?: AbortSignal,
   ): Promise<OpenAIModeClassification> {
     const explicitMode = options.analysisMode;
+    if (options.assistantSurface === 'conversation') {
+      return {
+        quickMode: true,
+        source: 'user_explicit',
+        reason: 'conversation surface uses on-demand evidence',
+        skipQuickTracePreflightDetection: true,
+        quickAcknowledgementDirectAnswer: false,
+        quickFocusAppPreEvidence: false,
+        quickProcessIdentityPreEvidence: false,
+        quickTraceFactPreEvidence: false,
+        quickScrollingTriagePreEvidence: false,
+      };
+    }
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
     const classifierInput: ComplexityClassifierInput = buildComplexityClassifierInput({
@@ -2677,7 +2699,22 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     }
     if (assessFinalResultComparisonIdentity(conclusion, input.comparisonIdentity)) return true;
     if (input.sessionId && this.finalReportMissingCodeReference(input.sessionId, conclusion)) return true;
-    return looksLikeProcessNarrationParagraph(conclusion.split(/\n{2,}/)[0] || '');
+    if (looksLikeProcessNarrationParagraph(conclusion.split(/\n{2,}/)[0] || '')) return true;
+    return Boolean(assessFinalResultQuality({
+      result: {
+        sessionId: input.sessionId || 'openai-final-report-quality-check',
+        success: true,
+        findings: extractFindingsFromText(conclusion),
+        hypotheses: [],
+        conclusion,
+        confidence: 1,
+        rounds: 1,
+        totalDurationMs: 0,
+      },
+      query: input.query,
+      sceneType: input.sceneType,
+      comparisonIdentity: input.comparisonIdentity,
+    }));
   }
 
   private finalReportMissingCodeReference(sessionId: string, conclusion: string): boolean {

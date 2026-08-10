@@ -245,6 +245,7 @@ import {
 import { ArtifactStore } from '../artifactStore';
 import { createArchitectureDetector } from '../../agent/detectors/architectureDetector';
 import { createSkillAnalysisAdapter } from '../../services/skillEngine/skillAnalysisAdapter';
+import {skillRegistry} from '../../services/skillEngine/skillLoader';
 import { getWorkspaceSkillRegistry } from '../../services/skillPacks/workspaceSkillRegistryProvider';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
@@ -255,6 +256,10 @@ import {RagStore} from '../../services/ragStore';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
+import type {
+  CodeGraphNavigationResult,
+  CodeGraphNavigator,
+} from '../../services/codebase/gitNexusCodeGraphNavigator';
 import {makeSparkProvenance} from '../../types/sparkContracts';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {
@@ -266,18 +271,20 @@ import {
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-type ToolDef = { name: string; schema?: Record<string, any>; handler: (...args: any[]) => any };
+type ToolDef = { name: string; description?: string; schema?: Record<string, any>; handler: (...args: any[]) => any };
 
 function createTestServer(options: {
   referenceTraceId?: string;
   sceneType?: any;
   lightweight?: boolean;
+  conversationTraceAttached?: boolean;
   userQuery?: string;
   cachedArchitecture?: any;
   codeAwareMode?: any;
   codebaseIds?: string[];
   codebaseRegistry?: any;
   codeLookupLedger?: CodeLookupLedger;
+  codeGraphNavigator?: CodeGraphNavigator;
   caseLibrary?: any;
   ragStore?: any;
   androidInternalsPackStore?: any;
@@ -349,6 +356,7 @@ function createTestServer(options: {
     codebaseIds: options.codebaseIds,
     codebaseRegistry: options.codebaseRegistry,
     codeLookupLedger: options.codeLookupLedger,
+    codeGraphNavigator: options.codeGraphNavigator,
     caseLibrary: options.caseLibrary,
     ragStore: options.ragStore,
     androidInternalsPackStore: options.androidInternalsPackStore ?? null,
@@ -357,6 +365,7 @@ function createTestServer(options: {
     analysisResultSnapshotRepository: options.analysisResultSnapshotRepository,
     knowledgeScope: options.knowledgeScope,
     outputLanguage: options.outputLanguage,
+    conversationTraceAttached: options.conversationTraceAttached,
     ...(options.lightweight ? { lightweight: true } : { analysisPlan }),
     ...(options.referenceTraceId ? {
       referenceTraceId: options.referenceTraceId,
@@ -425,9 +434,18 @@ function horizontalTracePairContext(): TracePairContext {
 }
 
 async function callTool(tools: Map<string, ToolDef>, name: string, params: Record<string, any> = {}): Promise<any> {
+  return callToolWithExtra(tools, name, params);
+}
+
+async function callToolWithExtra(
+  tools: Map<string, ToolDef>,
+  name: string,
+  params: Record<string, any> = {},
+  extra?: Record<string, any>,
+): Promise<any> {
   const tool = tools.get(name);
   if (!tool) throw new Error(`Tool ${name} not found. Available: ${[...tools.keys()].join(', ')}`);
-  const rawResult = await tool.handler(params);
+  const rawResult = await tool.handler(params, extra);
   // MCP tool handlers return { content: [{ type: 'text', text: JSON.stringify(...) }] }
   if (rawResult && typeof rawResult === 'object' && Array.isArray(rawResult.content)) {
     const textEntry = rawResult.content.find((c: any) => c.type === 'text');
@@ -828,6 +846,41 @@ describe('createClaudeMcpServer', () => {
       expect(tools.has('submit_plan')).toBe(false);
     });
 
+    it('exposes no Trace tools for a no-Trace conversation', () => {
+      const {tools} = createTestServer({
+        lightweight: true,
+        conversationTraceAttached: false,
+      });
+
+      expect([...tools.keys()]).toEqual([]);
+    });
+
+    it('keeps authorized source tools but no Trace tools in a no-Trace conversation', () => {
+      const {tools} = createTestServer({
+        lightweight: true,
+        conversationTraceAttached: false,
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase'],
+      });
+
+      expect(tools.has('search_codebase')).toBe(true);
+      expect(tools.has('read_codebase_file')).toBe(true);
+      expect(tools.has('execute_sql')).toBe(false);
+      expect(tools.has('invoke_skill')).toBe(false);
+      expect(tools.has('submit_plan')).toBe(false);
+    });
+
+    it('keeps lightweight Trace tools when conversation context is attached', () => {
+      const {tools} = createTestServer({
+        lightweight: true,
+        conversationTraceAttached: true,
+      });
+
+      expect(tools.has('execute_sql')).toBe(true);
+      expect(tools.has('invoke_skill')).toBe(true);
+      expect(tools.has('submit_plan')).toBe(false);
+    });
+
     it('compacts registered tool descriptions before exposing runtime definitions', () => {
       const { tools, toolDefinitions } = createTestServer({
         referenceTraceId: 'reference-trace-456',
@@ -859,6 +912,8 @@ describe('createClaudeMcpServer', () => {
       }
       expect(descriptionByName.get('execute_sql')).toContain('batch_frame_root_cause');
       expect(descriptionByName.get('execute_sql')).toContain('use fetch_artifact');
+      expect(descriptionByName.get('resolve_hypothesis')).toContain('exact immutable statement');
+      expect(descriptionByName.get('resolve_hypothesis')).toContain('submit a new hypothesis');
     });
 
     it('keeps critical tool families available under the broadest scoped request', () => {
@@ -881,6 +936,8 @@ describe('createClaudeMcpServer', () => {
         'list_codebases',
         'search_codebase',
         'read_codebase_file',
+        'query_code_graph',
+        'inspect_code_symbol',
         'lookup_app_source',
         'lookup_kernel_source',
         'resolve_symbol',
@@ -899,25 +956,25 @@ describe('createClaudeMcpServer', () => {
         label: 'full default',
         options: {},
         present: ['fetch_artifact', 'submit_plan', 'update_plan_phase', 'revise_plan'],
-        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source'],
+        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source'],
       },
       {
         label: 'full with code-aware disabled',
         options: { codeAwareMode: 'off', codebaseIds: ['app-codebase'] },
         present: ['fetch_artifact', 'submit_plan', 'update_plan_phase', 'revise_plan'],
-        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
+        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
       },
       {
         label: 'full with code-aware metadata',
         options: { codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'] },
-        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
+        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
         absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context'],
       },
       {
         label: 'full comparison',
         options: { referenceTraceId: 'reference-trace-456' },
         present: ['fetch_artifact', 'submit_plan', 'compare_skill', 'execute_sql_on', 'get_comparison_context'],
-        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source', 'lookup_kernel_source'],
+        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source'],
       },
       {
         label: 'lightweight broad request',
@@ -928,7 +985,7 @@ describe('createClaudeMcpServer', () => {
           codebaseIds: ['app-codebase'],
         },
         present: ['execute_sql', 'invoke_skill', 'lookup_sql_schema', 'fetch_artifact'],
-        absent: ['submit_plan', 'update_plan_phase', 'compare_skill', 'execute_sql_on', 'list_codebases', 'search_codebase', 'read_codebase_file', 'lookup_app_source'],
+        absent: ['submit_plan', 'update_plan_phase', 'compare_skill', 'execute_sql_on', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source'],
       },
     ])('keeps scoped registry expectations stable for $label', ({ options, present, absent }) => {
       const { tools, allowedTools, toolDefinitions } = createTestServer(options as any);
@@ -1855,6 +1912,34 @@ describe('createClaudeMcpServer', () => {
       expect(result.tracePairContext).toEqual(tracePairContext);
     });
 
+    it('fails an unavailable compare_skill before either trace starts execution', async () => {
+      const {tools, mockSkillExecutor} = createTestServer({referenceTraceId: 'ref-trace-456'});
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Compare an unexpected branch',
+          goal: 'Use a registered comparison-capable analysis skill',
+          expectedTools: ['compare_skill'],
+        }],
+        successCriteria: 'Unknown skills never execute on either trace',
+      });
+      (skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>)
+        .mockImplementationOnce(() => undefined);
+
+      const result = await callTool(tools, 'compare_skill', {
+        skillId: 'surfaceflinger_display_pipeline',
+        params: {},
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        partial: false,
+        unavailable: true,
+        skillId: 'surfaceflinger_display_pipeline',
+      });
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
     it('normalizes zero-argument expectedCall shorthand for comparison context evidence', async () => {
       const { tools, analysisPlan } = createTestServer({
         referenceTraceId: 'ref-trace-456',
@@ -2188,6 +2273,315 @@ describe('createClaudeMcpServer', () => {
       expect(envelope?.meta?.planPhaseId).toBe('p3');
       expect(envelope?.meta?.planPhaseAttribution).toBe('active');
       expect(envelope?.meta?.planPhaseWarning).toBeUndefined();
+    });
+
+    it('resolves a frame_id-only drill-down to a complete frame interval before invoking the skill', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({ lightweight: true });
+      mockTpService.query.mockResolvedValueOnce({
+        columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+        rows: [[59665234, '1000000000', '1062730000', 'com.example', 'App Deadline Missed']],
+        rowCount: 1,
+        durationMs: 5,
+      } as any);
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'jank_frame_detail',
+        params: { frame_id: 59665234, process_name: 'com.example' },
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockTpService.query).toHaveBeenCalled();
+      expect(mockTpService.query.mock.calls[0]?.[0]).toBe('test-trace-123');
+      expect(mockTpService.query.mock.calls[0]?.[1]).toContain('59665234');
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'jank_frame_detail',
+        'test-trace-123',
+        expect.objectContaining({
+          frame_id: '59665234',
+          process_name: 'com.example',
+          start_ts: '1000000000',
+          end_ts: '1062730000',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('uses the normalized registry frame ID for both interval lookup and skill execution', async () => {
+      const {tools, mockTpService, mockSkillExecutor} = createTestServer({lightweight: true});
+      (mockTpService.query as any).mockResolvedValueOnce({
+        columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+        rows: [[59665234, '1000000000', '1062730000', 'com.example', 'App Deadline Missed']],
+        rowCount: 1,
+        durationMs: 5,
+      });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'jank_frame_detail',
+        params: {frame_id: '59,665,234', process_name: 'com.example'},
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockTpService.query.mock.calls[0]?.[1]).toContain('59665234');
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'jank_frame_detail',
+        'test-trace-123',
+        expect.objectContaining({
+          frame_id: '59665234',
+          start_ts: '1000000000',
+          end_ts: '1062730000',
+        }),
+        expect.any(Object),
+      );
+      expect(result.drillDownResolution).toMatchObject({
+        requestedEntityId: '59665234',
+        resolvedEntityId: '59665234',
+        resolveSource: 'registry',
+      });
+    });
+
+    it('resolves frame-scoped range skills from frame_id and removes the transient entity parameter', async () => {
+      for (const skillId of ['frame_blocking_calls', 'blocking_chain_analysis']) {
+        const {tools, mockTpService, mockSkillExecutor} = createTestServer({lightweight: true});
+        (mockTpService.query as any).mockResolvedValueOnce({
+          columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+          rows: [[59665234, '1000000000', '1062730000', 'com.example', 'App Deadline Missed']],
+          rowCount: 1,
+          durationMs: 5,
+        });
+
+        const result = await callTool(tools, 'invoke_skill', {
+          skillId,
+          params: {frame_id: '59665234', process_name: 'com.example'},
+        });
+
+        expect(result.success).toBe(true);
+        expect(result.drillDownResolution).toMatchObject({
+          entityType: 'frame',
+          requestedEntityId: '59665234',
+          resolvedEntityId: '59665234',
+        });
+        expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+          skillId,
+          'test-trace-123',
+          expect.objectContaining({
+            process_name: 'com.example',
+            start_ts: '1000000000',
+            end_ts: '1062730000',
+          }),
+          expect.any(Object),
+        );
+        expect(mockSkillExecutor.execute.mock.calls[0]?.[2]).not.toHaveProperty('frame_id');
+      }
+    });
+
+    it('uses the canonical frame ID from a doFrame alias while preserving the requested ID for audit', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({lightweight: true});
+      (mockTpService.query as any)
+        .mockResolvedValueOnce({columns: [], rows: [], rowCount: 0, durationMs: 5})
+        .mockResolvedValueOnce({columns: [], rows: [], rowCount: 0, durationMs: 5})
+        .mockResolvedValueOnce({
+          columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+          rows: [[59665240, '1000000000', '1062730000', 'com.example', 'App Deadline Missed']],
+          rowCount: 1,
+          durationMs: 5,
+        });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'jank_frame_detail',
+        params: {frameId: 59665234, process_name: 'com.example'},
+      });
+
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'jank_frame_detail',
+        'test-trace-123',
+        expect.objectContaining({
+          frame_id: '59665240',
+          start_ts: '1000000000',
+          end_ts: '1062730000',
+        }),
+        expect.any(Object),
+      );
+      expect(mockSkillExecutor.execute.mock.calls[0]?.[2]).not.toHaveProperty('frameId');
+      expect(result.drillDownResolution).toEqual({
+        entityType: 'frame',
+        requestedEntityId: '59665234',
+        resolvedEntityId: '59665240',
+        resolveSource: 'doframe_alias',
+      });
+    });
+
+    it('falls back to legacy frame enrichment when the primary schema is unavailable', async () => {
+      const {tools, mockTpService, mockSkillExecutor} = createTestServer({lightweight: true});
+      (mockTpService.query as any)
+        .mockRejectedValueOnce(new Error('no such table: actual_frame_timeline_slice'))
+        .mockResolvedValueOnce({
+          columns: ['frame_id', 'start_ts', 'end_ts', 'process_name'],
+          rows: [[59665234, '1000000000', '1062730000', 'com.example']],
+          rowCount: 1,
+          durationMs: 5,
+        });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'jank_frame_detail',
+        params: {frame_id: 59665234, process_name: 'com.example'},
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.drillDownResolution?.resolveSource).toBe('legacy_android_frames');
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'jank_frame_detail',
+        'test-trace-123',
+        expect.objectContaining({start_ts: '1000000000', end_ts: '1062730000'}),
+        expect.any(Object),
+      );
+    });
+
+    it('resolves a session_id-only scrolling drill-down through the shared registry', async () => {
+      const {tools, mockTpService, mockSkillExecutor} = createTestServer({lightweight: true});
+      (mockTpService.query as any).mockResolvedValueOnce({
+        columns: ['session_id', 'start_ts', 'end_ts', 'process_name'],
+        rows: [[7, '3000', '3500', 'com.example']],
+        rowCount: 1,
+        durationMs: 5,
+      });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'scrolling_analysis',
+        params: {session_id: 7, process_name: 'com.example'},
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.drillDownResolution).toMatchObject({
+        entityType: 'session',
+        requestedEntityId: '7',
+        resolvedEntityId: '7',
+      });
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'scrolling_analysis',
+        'test-trace-123',
+        expect.objectContaining({session_id: '7', start_ts: '3000', end_ts: '3500'}),
+        expect.any(Object),
+      );
+    });
+
+    it('resolves a startup_id-only startup drill-down through the shared registry', async () => {
+      const {tools, mockTpService, mockSkillExecutor} = createTestServer({lightweight: true});
+      (mockTpService.query as any).mockResolvedValueOnce({
+        columns: ['startup_id', 'start_ts', 'end_ts', 'process_name', 'startup_type'],
+        rows: [[12, '4000', '4800', 'com.example', 'cold']],
+        rowCount: 1,
+        durationMs: 5,
+      });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'startup_detail',
+        params: {startup_id: 12, process_name: 'com.example'},
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.drillDownResolution).toMatchObject({
+        entityType: 'startup',
+        requestedEntityId: '12',
+        resolvedEntityId: '12',
+      });
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'startup_detail',
+        'test-trace-123',
+        expect.objectContaining({startup_id: '12', start_ts: '4000', end_ts: '4800'}),
+        expect.any(Object),
+      );
+    });
+
+    it('does not query or overwrite an explicit drill-down interval', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({ lightweight: true });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'jank_frame_detail',
+        params: {
+          frame_id: '59,665,234',
+          process_name: 'com.example',
+          start_ts: '2000000000',
+          end_ts: '2062730000',
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockTpService.query).not.toHaveBeenCalled();
+      expect(mockSkillExecutor.execute).toHaveBeenCalledWith(
+        'jank_frame_detail',
+        'test-trace-123',
+        expect.objectContaining({
+          frame_id: '59665234',
+          start_ts: '2000000000',
+          end_ts: '2062730000',
+        }),
+        expect.any(Object),
+      );
+    });
+
+    it('removes a transient frame_id when a range skill already has an explicit interval', async () => {
+      const {tools, mockTpService, mockSkillExecutor} = createTestServer({lightweight: true});
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'blocking_chain_analysis',
+        params: {
+          frame_id: '59,665,234',
+          process_name: 'com.example',
+          start_ts: '2000000000',
+          end_ts: '2062730000',
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockTpService.query).not.toHaveBeenCalled();
+      expect(mockSkillExecutor.execute.mock.calls[0]?.[2]).toMatchObject({
+        process_name: 'com.example',
+        start_ts: '2000000000',
+        end_ts: '2062730000',
+      });
+      expect(mockSkillExecutor.execute.mock.calls[0]?.[2]).not.toHaveProperty('frame_id');
+    });
+
+    it('fails closed when a frame_id-only drill-down cannot resolve a complete interval', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({ lightweight: true });
+      mockTpService.query.mockResolvedValue({
+        columns: [],
+        rows: [],
+        rowCount: 0,
+        durationMs: 5,
+      });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'jank_frame_detail',
+        params: { frame_id: 59665234, process_name: 'com.example' },
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('59665234');
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it('passes the runtime AbortSignal to frame interval resolution and rethrows cancellation', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({ lightweight: true });
+      const controller = new AbortController();
+      mockTpService.query.mockImplementationOnce(async (...args: any[]) => {
+        expect(args[2]?.signal).toBe(controller.signal);
+        controller.abort(new Error('drill-down query cancelled'));
+        const error = new Error('drill-down query cancelled');
+        error.name = 'AbortError';
+        throw error;
+      });
+
+      await expect(callToolWithExtra(
+        tools,
+        'invoke_skill',
+        {
+          skillId: 'jank_frame_detail',
+          params: { frame_id: 59665234, process_name: 'com.example' },
+        },
+        {signal: controller.signal},
+      )).rejects.toThrow('drill-down query cancelled');
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
     });
 
     it('switches from a broad active overview phase to a stronger pending drill phase', async () => {
@@ -3161,7 +3555,7 @@ describe('createClaudeMcpServer', () => {
         {
           process_name: 'com.example.current',
           package: 'com.example.current',
-          startup_id: 7,
+          startup_id: '7',
           start_ts: 100,
           end_ts: 240,
         },
@@ -3174,7 +3568,7 @@ describe('createClaudeMcpServer', () => {
         {
           process_name: 'com.example.reference',
           package: 'com.example.reference',
-          startup_id: 3,
+          startup_id: '3',
           start_ts: 500,
           end_ts: 650,
         },
@@ -3183,6 +3577,223 @@ describe('createClaudeMcpServer', () => {
       expect(result.parameterMapping.referenceIdentityRemapped).toBe(true);
       expect(result.current.effectiveParams.process_name).toBe('com.example.current');
       expect(result.reference.effectiveParams.process_name).toBe('com.example.reference');
+    });
+
+    it('compare_skill resolves frame_id-only params independently on both traces before either skill runs', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({
+        referenceTraceId: 'ref-trace-456',
+        packageName: 'com.example.current',
+        referencePackageName: 'com.example.reference',
+      });
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Compare frame details',
+          goal: 'Resolve and compare one frame on each trace',
+          expectedTools: ['compare_skill'],
+          expectedCalls: [{tool: 'compare_skill', skillId: 'jank_frame_detail'}],
+        }],
+        successCriteria: 'Both sides use complete trace-local frame intervals',
+      });
+      (mockTpService.query as any).mockImplementation(async (targetTraceId: string, sql: string) => {
+        if (!sql.includes('WITH target_slice')) {
+          return {columns: [], rows: [], rowCount: 0, durationMs: 5};
+        }
+        return targetTraceId === 'test-trace-123'
+          ? {
+              columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+              rows: [[111, '1000', '1100', 'com.example.current', 'App Deadline Missed']],
+              rowCount: 1,
+              durationMs: 5,
+            }
+          : {
+              columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+              rows: [[222, '2000', '2200', 'com.example.reference', 'App Deadline Missed']],
+              rowCount: 1,
+              durationMs: 5,
+            };
+      });
+
+      const result = await callTool(tools, 'compare_skill', {
+        skillId: 'jank_frame_detail',
+        currentParams: {frameId: 11},
+        referenceParams: {frame_id: 22},
+      });
+
+      expect(mockTpService.query).toHaveBeenCalledTimes(6);
+      expect(mockTpService.query.mock.calls).toEqual(expect.arrayContaining([
+        expect.arrayContaining(['test-trace-123', expect.stringContaining('= 11')]),
+        expect.arrayContaining(['ref-trace-456', expect.stringContaining('= 22')]),
+      ]));
+      expect(mockSkillExecutor.execute).toHaveBeenNthCalledWith(
+        1,
+        'jank_frame_detail',
+        'test-trace-123',
+        expect.objectContaining({
+          frame_id: '111',
+          process_name: 'com.example.current',
+          start_ts: '1000',
+          end_ts: '1100',
+        }),
+        expect.objectContaining({__traceSide: 'current'}),
+      );
+      expect(mockSkillExecutor.execute).toHaveBeenNthCalledWith(
+        2,
+        'jank_frame_detail',
+        'ref-trace-456',
+        expect.objectContaining({
+          frame_id: '222',
+          process_name: 'com.example.reference',
+          start_ts: '2000',
+          end_ts: '2200',
+        }),
+        expect.objectContaining({__traceSide: 'reference'}),
+      );
+      expect(result).toMatchObject({
+        success: true,
+        current: {
+          effectiveParams: {frame_id: '111', start_ts: '1000', end_ts: '1100'},
+          drillDownResolution: {
+            requestedEntityId: '11',
+            resolvedEntityId: '111',
+            resolveSource: 'doframe_alias',
+          },
+        },
+        reference: {
+          effectiveParams: {frame_id: '222', start_ts: '2000', end_ts: '2200'},
+          drillDownResolution: {
+            requestedEntityId: '22',
+            resolvedEntityId: '222',
+            resolveSource: 'doframe_alias',
+          },
+        },
+        parameterMapping: {
+          referenceIdentityRemapped: true,
+          currentOverrideKeys: ['frameId'],
+          referenceOverrideKeys: ['frame_id'],
+        },
+      });
+      expect(result.current.effectiveParams).not.toHaveProperty('frameId');
+    });
+
+    it('compare_skill fails closed before either skill runs when one frame interval cannot be resolved', async () => {
+      const { tools, emittedUpdates, mockTpService, mockSkillExecutor } = createTestServer({
+        referenceTraceId: 'ref-trace-456',
+        packageName: 'com.example.current',
+        referencePackageName: 'com.example.reference',
+      });
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Compare frame details',
+          goal: 'Resolve and compare one frame on each trace',
+          expectedTools: ['compare_skill'],
+          expectedCalls: [{tool: 'compare_skill', skillId: 'jank_frame_detail'}],
+        }],
+        successCriteria: 'No partial comparison evidence is emitted',
+      });
+      (mockTpService.query as any).mockImplementation(async (targetTraceId: string) => targetTraceId === 'test-trace-123'
+        ? {
+            columns: ['frame_id', 'start_ts', 'end_ts', 'process_name'],
+            rows: [[11, '1000', '1100', 'com.example.current']],
+            rowCount: 1,
+            durationMs: 5,
+          }
+        : {columns: [], rows: [], rowCount: 0, durationMs: 5});
+
+      const result = await callTool(tools, 'compare_skill', {
+        skillId: 'jank_frame_detail',
+        currentParams: {frame_id: 11},
+        referenceParams: {frame_id: 22},
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        partial: false,
+        failedSides: ['reference'],
+        sideErrors: {reference: expect.stringContaining('22')},
+      });
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+      expect(emittedUpdates.some((update: any) => update.type === 'data')).toBe(false);
+    });
+
+    it('compare_skill rejects a partial explicit interval that conflicts with resolved trace evidence', async () => {
+      const {tools, mockTpService, mockSkillExecutor} = createTestServer({
+        referenceTraceId: 'ref-trace-456',
+      });
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Compare frame details',
+          goal: 'Resolve and compare one frame on each trace',
+          expectedTools: ['compare_skill'],
+          expectedCalls: [{tool: 'compare_skill', skillId: 'jank_frame_detail'}],
+        }],
+        successCriteria: 'Explicit and resolved intervals cannot be mixed',
+      });
+      (mockTpService.query as any).mockImplementation(async (targetTraceId: string) => targetTraceId === 'test-trace-123'
+        ? {
+            columns: ['frame_id', 'start_ts', 'end_ts', 'process_name'],
+            rows: [[11, '1000', '1100', 'com.example']],
+            rowCount: 1,
+            durationMs: 5,
+          }
+        : {
+            columns: ['frame_id', 'start_ts', 'end_ts', 'process_name'],
+            rows: [[22, '2000', '2200', 'com.example']],
+            rowCount: 1,
+            durationMs: 5,
+          });
+
+      const result = await callTool(tools, 'compare_skill', {
+        skillId: 'jank_frame_detail',
+        currentParams: {frame_id: 11, start_ts: '999'},
+        referenceParams: {frame_id: 22, start_ts: '2000', end_ts: '2200'},
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        partial: false,
+        failedSides: ['current'],
+        sideErrors: {current: expect.stringContaining('conflicts')},
+      });
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it('compare_skill passes one AbortSignal to both interval queries and rethrows cancellation', async () => {
+      const { tools, mockTpService, mockSkillExecutor } = createTestServer({
+        referenceTraceId: 'ref-trace-456',
+      });
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Compare frame details',
+          goal: 'Resolve and compare one frame on each trace',
+          expectedTools: ['compare_skill'],
+          expectedCalls: [{tool: 'compare_skill', skillId: 'jank_frame_detail'}],
+        }],
+        successCriteria: 'Cancellation stops both sides before skill execution',
+      });
+      const controller = new AbortController();
+      (mockTpService.query as any).mockImplementation(async (...args: any[]) => {
+        expect(args[2]?.signal).toBe(controller.signal);
+        controller.abort(new Error('comparison drill-down cancelled'));
+        const error = new Error('comparison drill-down cancelled');
+        error.name = 'AbortError';
+        throw error;
+      });
+
+      await expect(callToolWithExtra(
+        tools,
+        'compare_skill',
+        {
+          skillId: 'jank_frame_detail',
+          currentParams: {frame_id: 11},
+          referenceParams: {frame_id: 22},
+        },
+        {signal: controller.signal},
+      )).rejects.toThrow('comparison drill-down cancelled');
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
     });
 
     it('compare_skill fails the aggregate result when either trace-side execution fails', async () => {
@@ -3362,7 +3973,10 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('accepts compare_skill expectedCalls whose skillId is nested in params', async () => {
-      const { tools, analysisPlan } = createTestServer({ sceneType: 'startup' });
+      const { tools, analysisPlan } = createTestServer({
+        sceneType: 'startup',
+        referenceTraceId: 'ref-trace-456',
+      });
 
       const result = await callTool(tools, 'submit_plan', {
         phases: [
@@ -3464,6 +4078,311 @@ describe('createClaudeMcpServer', () => {
       }
     });
 
+    it('rejects skill-scoped expectedCalls for tools that cannot report a skill identity', async () => {
+      const invalidExpectedCalls = [
+        'fetch_artifact(startup_detail)',
+        { tool: 'fetch_artifact', skillId: 'startup_detail' },
+        { tool: 'fetch_artifact', skillId: '', skill_id: 'startup_detail' },
+        { tool: 'fetch_artifact', params: { skillId: null, skill_id: 'startup_detail' } },
+        { tool: 'fetch_artifact', params: '{"skillId":"startup_detail"}' },
+        { tool: 'fetch_artifact', arguments: '{skill_id:"startup_detail"}' },
+      ];
+
+      for (const expectedCall of invalidExpectedCalls) {
+        const { tools, analysisPlan } = createTestServer();
+        const result = await callTool(tools, 'submit_plan', {
+          phases: [{
+            id: 'p1',
+            name: 'Collect startup detail',
+            goal: 'Fetch startup detail artifacts',
+            expectedCalls: [expectedCall],
+          }],
+          successCriteria: 'Use only satisfiable expected-call constraints',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.action_required).toBe('submit_plan');
+        expect(result.invalidExpectedCalls).toEqual([
+          'p1.expectedCalls[0] cannot scope tool "fetch_artifact" by skillId; only invoke_skill and compare_skill support skill-scoped expectedCalls',
+        ]);
+        expect(analysisPlan.current).toBeNull();
+      }
+    });
+
+    it('rejects core-tool aliases as compare_skill identities', async () => {
+      for (const expectedCall of [
+        'compare_skill(fetch_artifact)',
+        { tool: 'compare_skill', skillId: 'fetch_artifact' },
+      ]) {
+        const { tools, analysisPlan } = createTestServer();
+        const result = await callTool(tools, 'submit_plan', {
+          phases: [{
+            id: 'p1',
+            name: 'Compare startup details',
+            goal: 'Compare startup detail artifacts',
+            expectedCalls: [expectedCall],
+          }],
+          successCriteria: 'Use a registered analysis skill for comparison',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.action_required).toBe('submit_plan');
+        expect(result.invalidExpectedCalls).toEqual([
+          'p1.expectedCalls[0] cannot use core tool "fetch_artifact" as compare_skill skillId; compare_skill requires a registered analysis skill',
+        ]);
+        expect(analysisPlan.current).toBeNull();
+      }
+    });
+
+    it('rejects expectedCalls that reference an unavailable analysis skill', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      (skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>)
+        .mockImplementationOnce(() => undefined);
+
+      const result = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'SurfaceFlinger display pipeline',
+          goal: 'Inspect the display pipeline',
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{tool: 'invoke_skill', skillId: 'surfaceflinger_display_pipeline'}],
+        }],
+        successCriteria: 'Only executable registered skills can become plan requirements',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.action_required).toBe('submit_plan');
+      expect(result.unavailableExpectedSkills).toEqual([
+        'p1.expectedCalls[0] references unavailable analysis skill "surfaceflinger_display_pipeline"',
+      ]);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('rejects unavailable MCP tools in expectedTools and unscoped expectedCalls', async () => {
+      for (const phaseRequirement of [
+        {expectedTools: ['surfaceflinger_display_pipeline']},
+        {expectedCalls: [{tool: 'surfaceflinger_display_pipeline'}]},
+        {expectedCalls: ['surfaceflinger_display_pipeline()']},
+      ]) {
+        const {tools, analysisPlan} = createTestServer();
+        const result = await callTool(tools, 'submit_plan', {
+          phases: [{
+            id: 'p1',
+            name: 'SurfaceFlinger display pipeline',
+            goal: 'Inspect the display pipeline',
+            ...phaseRequirement,
+          }],
+          successCriteria: 'Only available MCP tools can become plan requirements',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.action_required).toBe('submit_plan');
+        expect(result.unavailableExpectedSkills).toEqual([
+          expect.stringContaining('references unavailable MCP tool "surfaceflinger_display_pipeline"'),
+        ]);
+        expect(analysisPlan.current).toBeNull();
+      }
+    });
+
+    it('rejects metadata-only registry entries as executable expectedCalls', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      (skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>)
+        .mockImplementationOnce(() => ({
+          name: 'rendering_pipeline_detection',
+          type: 'pipeline_definition',
+        } as any));
+
+      const result = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Rendering pipeline metadata',
+          goal: 'Inspect the pipeline definition',
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{tool: 'invoke_skill', skillId: 'rendering_pipeline_detection'}],
+        }],
+        successCriteria: 'Metadata entries cannot become executable requirements',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.unavailableExpectedSkills).toEqual([
+        'p1.expectedCalls[0] references non-executable metadata skill "rendering_pipeline_detection"',
+      ]);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('fails an ad-hoc unavailable invoke_skill before starting the executor', async () => {
+      const {tools, mockSkillExecutor} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Explore an unexpected branch',
+          goal: 'Use a registered analysis skill if the trace reveals one',
+          expectedTools: ['invoke_skill'],
+        }],
+        successCriteria: 'Unknown skills never reach execution',
+      });
+      (skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>)
+        .mockImplementationOnce(() => undefined);
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'surfaceflinger_display_pipeline',
+        params: {},
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        unavailable: true,
+        skillId: 'surfaceflinger_display_pipeline',
+      });
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects an unparseable serialized nested skill scope', async () => {
+      const { tools, analysisPlan } = createTestServer();
+      const result = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Collect startup detail',
+          goal: 'Fetch startup detail artifacts',
+          expectedCalls: [{
+            tool: 'fetch_artifact',
+            params: '{"skillId":"startup_detail"',
+          }],
+        }],
+        successCriteria: 'Do not silently weaken malformed nested constraints',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.action_required).toBe('submit_plan');
+      expect(result.invalidExpectedCalls).toEqual([
+        'p1.expectedCalls[0] nested params contains a skill scope but is not a valid object',
+      ]);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('does not let an empty camelCase phase alias mask snake_case expectedCalls', async () => {
+      const { tools, analysisPlan } = createTestServer();
+      const result = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Collect startup detail',
+          goal: 'Fetch startup detail artifacts',
+          expectedCalls: null,
+          expected_calls: [{ tool: 'fetch_artifact', skillId: 'startup_detail' }],
+        }],
+        successCriteria: 'Reject the effective snake_case constraint',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.invalidExpectedCalls).toEqual([
+        'p1.expectedCalls[0] cannot scope tool "fetch_artifact" by skillId; only invoke_skill and compare_skill support skill-scoped expectedCalls',
+      ]);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('rejects conflicting expected-call aliases while accepting equivalent duplicates', async () => {
+      const conflict = createTestServer();
+      const rejected = await callTool(conflict.tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Collect',
+          goal: 'Collect evidence',
+          expectedCalls: [{ tool: 'execute_sql' }],
+          expected_calls: [{ tool: 'fetch_artifact' }],
+        }],
+        successCriteria: 'Reject ambiguous evidence requirements',
+      });
+
+      expect(rejected.success).toBe(false);
+      expect(rejected.invalidExpectedCalls).toEqual([
+        'p1.expectedCalls and expected_calls must not contain conflicting values',
+      ]);
+      expect(conflict.analysisPlan.current).toBeNull();
+
+      const duplicate = createTestServer();
+      const accepted = await callTool(duplicate.tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Analyze startup',
+          goal: 'Collect startup evidence',
+          expectedCalls: [{
+            tool: 'invoke_skill',
+            skillId: 'startup_analysis',
+            params: { skill_id: 'startup_analysis' },
+          }, { tool: 'fetch_artifact' }],
+          expected_calls: 'fetch_artifact, invoke_skill(startup_analysis)',
+        }],
+        successCriteria: 'Equivalent aliases describe one requirement',
+      });
+
+      expect(accepted.success).toBe(true);
+      expect(duplicate.analysisPlan.current?.phases[0].expectedCalls).toEqual([
+        { tool: 'invoke_skill', skillId: 'startup_analysis' },
+        { tool: 'fetch_artifact' },
+      ]);
+    });
+
+    it('rejects conflicting skill aliases within an expectedCall', async () => {
+      const { tools, analysisPlan } = createTestServer();
+      const result = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Analyze startup',
+          goal: 'Collect startup evidence',
+          expectedCalls: [{
+            tool: 'invoke_skill',
+            skillId: 'startup_analysis',
+            params: { skill_id: 'startup_detail' },
+          }],
+        }],
+        successCriteria: 'Reject ambiguous skill requirements',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.invalidExpectedCalls).toEqual([
+        'p1.expectedCalls[0] contains conflicting skill aliases: startup_analysis, startup_detail',
+      ]);
+      expect(analysisPlan.current).toBeNull();
+    });
+
+    it('rejects non-scalar skill aliases and non-object nested params', async () => {
+      const invalidCalls = [
+        {
+          call: { tool: 'fetch_artifact', skillId: { bad: true } },
+          error: 'p1.expectedCalls[0] contains non-scalar skill alias "skillId"',
+        },
+        {
+          call: { tool: 'fetch_artifact', params: { skill_id: ['startup_detail'] } },
+          error: 'p1.expectedCalls[0] contains non-scalar nested skill alias "skill_id"',
+        },
+        {
+          call: { tool: 'fetch_artifact', params: [{ skillId: 'startup_detail' }] },
+          error: 'p1.expectedCalls[0] nested params must be an object or serialized object',
+        },
+        {
+          call: { tool: 'compare_skill', params: 'startup_analysis' },
+          error: 'p1.expectedCalls[0] nested params must be an object or serialized object',
+        },
+      ];
+
+      for (const { call, error } of invalidCalls) {
+        const { tools, analysisPlan } = createTestServer();
+        const result = await callTool(tools, 'submit_plan', {
+          phases: [{
+            id: 'p1',
+            name: 'Collect startup detail',
+            goal: 'Fetch startup detail artifacts',
+            expectedCalls: [call],
+          }],
+          successCriteria: 'Do not silently weaken non-scalar constraints',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.invalidExpectedCalls).toEqual([error]);
+        expect(analysisPlan.current).toBeNull();
+      }
+    });
+
     it('treats null-like waiver strings as empty waivers from OpenAI-compatible callers', async () => {
       const { tools, analysisPlan } = createTestServer();
       const result = await callTool(tools, 'submit_plan', {
@@ -3516,22 +4435,33 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('normalizes core tools that OpenAI-compatible callers put under invoke_skill expectedCalls', async () => {
-      const { tools, analysisPlan } = createTestServer();
+      const coreTools = [
+        'detect_architecture',
+        'execute_sql',
+        'execute_sql_on',
+        'fetch_artifact',
+        'lookup_sql_schema',
+        'lookup_knowledge',
+        'submit_hypothesis',
+        'resolve_hypothesis',
+        'flag_uncertainty',
+      ];
+      const { tools, analysisPlan } = createTestServer({referenceTraceId: 'ref-trace-456'});
       const result = await callTool(tools, 'submit_plan', {
         phases: [{
           id: 'p1',
-          name: '架构检测',
-          goal: '检测渲染架构',
-          expectedTools: ['invoke_skill', 'detect_architecture'],
-          expectedCalls: [{ tool: 'invoke_skill', skillId: 'detect_architecture' }],
+          name: '核心工具证据收集',
+          goal: '保留兼容调用者提交的核心工具约束',
+          expectedTools: coreTools,
+          expectedCalls: coreTools.map(skillId => ({ tool: 'invoke_skill', skillId })),
         }],
         successCriteria: 'Core tool expectedCalls should match the actual core tool',
       });
 
       expect(result.success).toBe(true);
-      expect(analysisPlan.current?.phases[0].expectedCalls).toEqual([
-        { tool: 'detect_architecture' },
-      ]);
+      expect(analysisPlan.current?.phases[0].expectedCalls).toEqual(
+        coreTools.map(tool => ({ tool })),
+      );
     });
 
     it('rejects informational tools in submitted expected calls', async () => {
@@ -3622,8 +4552,8 @@ describe('createClaudeMcpServer', () => {
           id: 'p1',
           name: '冷启动慢原因交叉验证',
           goal: '冷启动时运行 startup_slow_reasons 排除替代解释',
-          expectedTools: ['compare_skill'],
-          expectedCalls: [{ tool: 'compare_skill', skillId: 'startup_slow_reasons' }],
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{ tool: 'invoke_skill', skillId: 'startup_slow_reasons' }],
         }],
         successCriteria: 'Do not stop at the first plausible root cause',
       });
@@ -3637,7 +4567,7 @@ describe('createClaudeMcpServer', () => {
       expect(result.success).toBe(false);
       expect(result.action_required).toBe('run_expected_calls_or_explain_unavailability');
       expect(result.missingExpectedCalls).toEqual([
-        { tool: 'compare_skill', skillId: 'startup_slow_reasons' },
+        { tool: 'invoke_skill', skillId: 'startup_slow_reasons' },
       ]);
       expect(analysisPlan.current?.phases[0].status).toBe('pending');
     });
@@ -3649,8 +4579,8 @@ describe('createClaudeMcpServer', () => {
           id: 'p1',
           name: '冷启动慢原因交叉验证',
           goal: '运行 startup_slow_reasons 排除替代解释',
-          expectedTools: ['compare_skill'],
-          expectedCalls: [{ tool: 'compare_skill', skillId: 'startup_slow_reasons' }],
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{ tool: 'invoke_skill', skillId: 'startup_slow_reasons' }],
         }],
         successCriteria: 'Required evidence cannot be waived by conclusion relevance',
       });
@@ -3741,7 +4671,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('does not reject overview summaries just because they cite detailed evidence', async () => {
-      const { tools, analysisPlan } = createTestServer();
+      const { tools, analysisPlan } = createTestServer({referenceTraceId: 'ref-trace-456'});
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: '获取启动概览', goal: '获取启动事件和数据质量概览', expectedTools: ['invoke_skill'] },
@@ -3761,7 +4691,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('accepts a root-cause distribution summary without confusing it with representative-frame drill-down', async () => {
-      const { tools, analysisPlan } = createTestServer();
+      const { tools, analysisPlan } = createTestServer({referenceTraceId: 'ref-trace-456'});
       await callTool(tools, 'submit_plan', {
         phases: [
           {
@@ -3963,6 +4893,97 @@ describe('createClaudeMcpServer', () => {
       expect(hypotheses[1].id).toBe('h8');
     });
 
+    it('rejects conflicting hypothesis aliases instead of silently choosing one', async () => {
+      const {tools, hypotheses} = createTestServer();
+      const conflictingStatement = await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'Measure/layout causes the long frame',
+        title: 'Animation causes the long frame',
+      });
+      expect(conflictingStatement).toMatchObject({
+        success: false,
+        action_required: 'retry_submit_hypothesis_with_matching_aliases',
+      });
+      expect(hypotheses).toHaveLength(0);
+
+      const conflictingBasis = await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'Measure/layout causes the long frame',
+        basis: 'Frame overview',
+        reasoning: 'Animation drill-down',
+      });
+      expect(conflictingBasis).toMatchObject({
+        success: false,
+        action_required: 'retry_submit_hypothesis_with_matching_aliases',
+      });
+      expect(hypotheses).toHaveLength(0);
+
+      await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'Measure/layout causes the long frame',
+      });
+      const conflictingId = await callTool(tools, 'resolve_hypothesis', {
+        hypothesisId: 'h1',
+        id: 'h2',
+        status: 'rejected',
+        evidence: 'Animation dominates the frame.',
+      });
+      expect(conflictingId).toMatchObject({
+        success: false,
+        action_required: 'retry_resolve_hypothesis_with_matching_aliases',
+      });
+      const conflictingStatus = await callTool(tools, 'resolve_hypothesis', {
+        hypothesisId: 'h1',
+        status: 'confirmed',
+        verdict: 'rejected',
+        evidence: 'Animation dominates the frame.',
+      });
+      expect(conflictingStatus).toMatchObject({
+        success: false,
+        action_required: 'retry_resolve_hypothesis_with_matching_aliases',
+      });
+      expect(hypotheses[0].status).toBe('formed');
+    });
+
+    it('keeps a caller-provided hypothesis ID bound to its original statement', async () => {
+      const {tools, hypotheses} = createTestServer();
+      await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'View measure/layout traversal causes the long frame',
+        basis: 'Initial frame overview',
+      });
+
+      const reused = await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'View measure/layout traversal causes the long frame',
+        basis: 'A retry must not rewrite the original ledger entry',
+      });
+      expect(reused).toMatchObject({
+        success: true,
+        reused: true,
+        hypothesisId: 'h1',
+        statement: 'View measure/layout traversal causes the long frame',
+      });
+      expect(hypotheses[0]).toMatchObject({
+        statement: 'View measure/layout traversal causes the long frame',
+        basis: 'Initial frame overview',
+        status: 'formed',
+      });
+
+      const conflicting = await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'Animation callback work causes the long frame',
+      });
+      expect(conflicting).toMatchObject({
+        success: false,
+        hypothesisId: 'h1',
+        statement: 'View measure/layout traversal causes the long frame',
+        action_required: 'submit_new_hypothesis_id_for_replacement_statement',
+      });
+      expect(hypotheses).toHaveLength(1);
+      expect(hypotheses[0].statement).toBe('View measure/layout traversal causes the long frame');
+    });
+
     it('should resolve a hypothesis as confirmed', async () => {
       const { tools, hypotheses } = createTestServer();
       await callTool(tools, 'submit_hypothesis', { statement: 'Test hypothesis' });
@@ -3974,6 +4995,7 @@ describe('createClaudeMcpServer', () => {
         evidence: 'Binder latency confirmed at 45ms',
       });
       expect(result.success).toBe(true);
+      expect(result.statement).toBe('Test hypothesis');
       expect(hypotheses[0].status).toBe('confirmed');
     });
 
@@ -4006,24 +5028,61 @@ describe('createClaudeMcpServer', () => {
       expect(hypotheses[0].status).toBe('rejected');
     });
 
-    it('backfills a missing hypothesis resolution instead of failing the run', async () => {
+    it('rejects a resolution for an unknown hypothesis ID', async () => {
       const { tools, hypotheses } = createTestServer();
       const result = await callTool(tools, 'resolve_hypothesis', {
         hypothesisId: 'h3',
         status: 'confirmed',
         evidence: 'Startup phase evidence already confirms the root cause',
       });
-      expect(result.success).toBe(true);
-      expect(result.backfilled).toBe(true);
-      expect(hypotheses).toHaveLength(1);
-      expect(hypotheses[0]).toMatchObject({
-        id: 'h3',
-        status: 'confirmed',
-        evidence: 'Startup phase evidence already confirms the root cause',
+      expect(result).toMatchObject({
+        success: false,
+        hypothesisId: 'h3',
+        action_required: 'submit_hypothesis_before_resolving',
+      });
+      expect(hypotheses).toHaveLength(0);
+    });
+
+    it('rejects the original hypothesis before confirming a replacement cause', async () => {
+      const {tools, hypotheses} = createTestServer();
+      await callTool(tools, 'submit_hypothesis', {
+        id: 'h1',
+        statement: 'Choreographer#doFrame is slow because measure/layout traversal is excessive, not GPU or Binder blocking',
       });
 
-      await callTool(tools, 'submit_hypothesis', { statement: 'Follow-up hypothesis' });
-      expect(hypotheses[1].id).toBe('h4');
+      const rejected = await callTool(tools, 'resolve_hypothesis', {
+        hypothesisId: 'h1',
+        status: 'rejected',
+        evidence: 'Frame #2 animation=59.31ms while traversal=1.49ms and layout=0.55ms; the frame is animation-dominated, not measure/layout-dominated.',
+      });
+      expect(rejected).toMatchObject({
+        success: true,
+        hypothesisId: 'h1',
+        statement: 'Choreographer#doFrame is slow because measure/layout traversal is excessive, not GPU or Binder blocking',
+        status: 'rejected',
+      });
+
+      await callTool(tools, 'submit_hypothesis', {
+        id: 'h2',
+        statement: 'Animation callback work dominates the long frame',
+        basis: 'Frame #2 animation=59.31ms',
+      });
+      const confirmed = await callTool(tools, 'resolve_hypothesis', {
+        hypothesisId: 'h2',
+        status: 'confirmed',
+        evidence: 'Animation occupies 59.31ms while traversal and layout together stay below 2.1ms.',
+      });
+      expect(confirmed).toMatchObject({
+        success: true,
+        hypothesisId: 'h2',
+        statement: 'Animation callback work dominates the long frame',
+        status: 'confirmed',
+      });
+      expect(hypotheses).toEqual(expect.arrayContaining([
+        expect.objectContaining({id: 'h1', status: 'rejected'}),
+        expect.objectContaining({id: 'h2', status: 'confirmed'}),
+      ]));
+
     });
   });
 
@@ -4120,8 +5179,76 @@ describe('createClaudeMcpServer', () => {
       expect(analysisPlan.current?.revisionHistory).toHaveLength(1);
     });
 
+    it('rejects a revision that adds an unavailable analysis skill requirement', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          {id: 'p1', name: 'Overview', goal: 'Collect overview data', expectedTools: ['execute_sql']},
+        ],
+        successCriteria: 'Keep every revised requirement executable',
+      });
+      (skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>)
+        .mockImplementationOnce(() => undefined);
+
+      const result = await callTool(tools, 'revise_plan', {
+        updatedPhases: [
+          {id: 'p1', name: 'Overview', goal: 'Collect overview data', expectedTools: ['execute_sql']},
+          {
+            id: 'p2',
+            name: 'SurfaceFlinger display pipeline',
+            goal: 'Inspect the display pipeline',
+            expectedTools: ['invoke_skill'],
+            expectedCalls: [{tool: 'invoke_skill', skillId: 'surfaceflinger_display_pipeline'}],
+          },
+        ],
+        reason: 'A SurfaceFlinger branch appeared in the trace',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.action_required).toBe('revise_plan');
+      expect(result.unavailableExpectedSkills).toEqual([
+        'p2.expectedCalls[0] references unavailable analysis skill "surfaceflinger_display_pipeline"',
+      ]);
+      expect(analysisPlan.current?.phases).toHaveLength(1);
+    });
+
+    it('rejects a revision that adds unavailable MCP tool requirements', async () => {
+      for (const phaseRequirement of [
+        {expectedTools: ['surfaceflinger_display_pipeline']},
+        {expectedCalls: ['surfaceflinger_display_pipeline()']},
+      ]) {
+        const {tools, analysisPlan} = createTestServer();
+        await callTool(tools, 'submit_plan', {
+          phases: [
+            {id: 'p1', name: 'Overview', goal: 'Collect overview data', expectedTools: ['execute_sql']},
+          ],
+          successCriteria: 'Keep every revised requirement executable',
+        });
+
+        const result = await callTool(tools, 'revise_plan', {
+          updatedPhases: [
+            {id: 'p1', name: 'Overview', goal: 'Collect overview data', expectedTools: ['execute_sql']},
+            {
+              id: 'p2',
+              name: 'SurfaceFlinger display pipeline',
+              goal: 'Inspect the display pipeline',
+              ...phaseRequirement,
+            },
+          ],
+          reason: 'A SurfaceFlinger branch appeared in the trace',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.action_required).toBe('revise_plan');
+        expect(result.unavailableExpectedSkills).toEqual([
+          expect.stringContaining('references unavailable MCP tool "surfaceflinger_display_pipeline"'),
+        ]);
+        expect(analysisPlan.current?.phases).toHaveLength(1);
+      }
+    });
+
     it('rejects using revise_plan to complete a phase that was not already closed', async () => {
-      const { tools, analysisPlan } = createTestServer();
+      const { tools, analysisPlan } = createTestServer({referenceTraceId: 'ref-trace-456'});
       await callTool(tools, 'submit_plan', {
         phases: [{
           id: 'p1',
@@ -4151,7 +5278,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('rejects weakening an unfinished phase by removing declared expectedCalls', async () => {
-      const { tools, analysisPlan } = createTestServer();
+      const { tools, analysisPlan } = createTestServer({referenceTraceId: 'ref-trace-456'});
       await callTool(tools, 'submit_plan', {
         phases: [{
           id: 'p1',
@@ -4327,6 +5454,105 @@ describe('createClaudeMcpServer', () => {
           name: 'Phase 1',
           expectedTools: ['execute_sql'],
         });
+        expect(analysisPlan.current?.revisionHistory).toBeUndefined();
+      }
+    });
+
+    it('rejects revisions with unsatisfiable skill-scoped expectedCalls', async () => {
+      const invalidExpectedCalls = [
+        {
+          expectedCall: { tool: 'fetch_artifact', params: '{"skillId":"startup_detail"}' },
+          error: 'p1.expectedCalls[0] cannot scope tool "fetch_artifact" by skillId; only invoke_skill and compare_skill support skill-scoped expectedCalls',
+        },
+        {
+          expectedCall: { tool: 'compare_skill', skillId: 'fetch_artifact' },
+          error: 'p1.expectedCalls[0] cannot use core tool "fetch_artifact" as compare_skill skillId; compare_skill requires a registered analysis skill',
+        },
+      ];
+
+      for (const { expectedCall, error } of invalidExpectedCalls) {
+        const { tools, analysisPlan } = createTestServer();
+        await callTool(tools, 'submit_plan', {
+          phases: [
+            { id: 'p1', name: 'Phase 1', goal: 'Collect startup evidence', expectedTools: ['fetch_artifact'] },
+          ],
+          successCriteria: 'Initial success criteria',
+        });
+
+        const result = await callTool(tools, 'revise_plan', {
+          updatedPhases: [{
+            id: 'p1',
+            name: 'Phase 1 revised',
+            goal: 'Fetch startup detail artifacts',
+            expectedCalls: [expectedCall],
+          }],
+          reason: 'Require one startup detail artifact',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.action_required).toBe('revise_plan');
+        expect(result.invalidExpectedCalls).toEqual([error]);
+        expect(analysisPlan.current?.phases[0]).toMatchObject({
+          id: 'p1',
+          name: 'Phase 1',
+          expectedTools: ['fetch_artifact'],
+        });
+        expect(analysisPlan.current?.revisionHistory).toBeUndefined();
+      }
+    });
+
+    it('rejects masked or conflicting aliases in revised expectedCalls', async () => {
+      const invalidRevisions = [
+        {
+          phase: {
+            expectedCalls: null,
+            expected_calls: [{ tool: 'fetch_artifact', skillId: 'startup_detail' }],
+          },
+          error: 'p1.expectedCalls[0] cannot scope tool "fetch_artifact" by skillId; only invoke_skill and compare_skill support skill-scoped expectedCalls',
+        },
+        {
+          phase: {
+            expectedCalls: [{ tool: 'execute_sql' }],
+            expected_calls: [{ tool: 'fetch_artifact' }],
+          },
+          error: 'p1.expectedCalls and expected_calls must not contain conflicting values',
+        },
+        {
+          phase: {
+            expectedCalls: [],
+            expected_calls: [{ tool: 'fetch_artifact', skillId: { bad: true } }],
+          },
+          error: 'p1.expectedCalls[0] contains non-scalar skill alias "skillId"',
+        },
+        {
+          phase: {
+            expectedCalls: [{ tool: 'compare_skill', params: 'not-an-object' }],
+          },
+          error: 'p1.expectedCalls[0] nested params must be an object or serialized object',
+        },
+      ];
+
+      for (const { phase, error } of invalidRevisions) {
+        const { tools, analysisPlan } = createTestServer();
+        await callTool(tools, 'submit_plan', {
+          phases: [{ id: 'p1', name: 'Phase 1', goal: 'Collect evidence', expectedTools: ['execute_sql'] }],
+          successCriteria: 'Initial success criteria',
+        });
+
+        const result = await callTool(tools, 'revise_plan', {
+          updatedPhases: [{
+            id: 'p1',
+            name: 'Phase 1 revised',
+            goal: 'Collect revised evidence',
+            ...phase,
+          }],
+          reason: 'Revise evidence requirements',
+        });
+
+        expect(result.success).toBe(false);
+        expect(result.action_required).toBe('revise_plan');
+        expect(result.invalidExpectedCalls).toEqual([error]);
+        expect(analysisPlan.current?.phases[0].name).toBe('Phase 1');
         expect(analysisPlan.current?.revisionHistory).toBeUndefined();
       }
     });
@@ -4927,8 +6153,222 @@ describe('createClaudeMcpServer', () => {
         }));
         expect(JSON.stringify({search, read})).not.toContain(root);
         expect(ledger.getEntries()).toEqual([
-          expect.objectContaining({toolName: 'search_codebase', chunkIds: [], outcome: 'success'}),
-          expect.objectContaining({toolName: 'read_codebase_file', chunkIds: [], outcome: 'success'}),
+          expect.objectContaining({
+            toolName: 'search_codebase',
+            chunkIds: [],
+            outcome: 'success',
+            returnedReferenceCount: 1,
+          }),
+          expect.objectContaining({
+            toolName: 'read_codebase_file',
+            chunkIds: [],
+            outcome: 'success',
+            returnedReferenceCount: 1,
+          }),
+        ]);
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('requires explicit codebase_id for graph tools across two roots while search remains available without an index', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-code-graph-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const rootA = path.join(tmpDir, 'app-a');
+        const rootB = path.join(tmpDir, 'app-b');
+        fs.mkdirSync(path.join(rootA, 'src'), {recursive: true});
+        fs.mkdirSync(path.join(rootB, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(rootA, 'src', 'StartupHooks.kt'), 'class StartupHooks\n');
+        fs.writeFileSync(path.join(rootB, 'src', 'StartupHooks.kt'), 'class StartupHooks\n');
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const refA = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App A',
+          rootPath: rootA,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const refB = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App B',
+          rootPath: rootB,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const graphResult = (codebaseId: string): CodeGraphNavigationResult => ({
+          success: true,
+          codebaseId,
+          references: [{
+            referenceId: `graph-${codebaseId}`,
+            codebaseId,
+            filePath: 'src/StartupHooks.kt',
+            lineRange: {start: 1, end: 1},
+            symbol: 'StartupHooks',
+            kind: 'class',
+          }],
+          processes: [{name: 'StartupFlow'}],
+          graph: {engine: 'gitnexus', freshness: 'stale', verificationRequired: true},
+          truncated: false,
+        });
+        const codeGraphNavigator: CodeGraphNavigator = {
+          query: jest.fn<CodeGraphNavigator['query']>(async input => graphResult(input.codebaseId)),
+          inspectSymbol: jest.fn<CodeGraphNavigator['inspectSymbol']>(async input => graphResult(input.codebaseId)),
+        };
+        const ledger = new CodeLookupLedger(
+          'graph-test',
+          12_000,
+          2,
+          path.join(tmpDir, 'ledger.jsonl'),
+        );
+        const {tools} = createTestServer({
+          codeAwareMode: 'metadata_only',
+          codebaseIds: [refA.codebaseId, refB.codebaseId],
+          codebaseRegistry,
+          codeGraphNavigator,
+          codeLookupLedger: ledger,
+          knowledgeScope: scope,
+        });
+
+        expect(tools.has('search_codebase')).toBe(true);
+        expect(tools.has('read_codebase_file')).toBe(true);
+        expect(JSON.stringify(tools.get('query_code_graph')?.schema)).toContain('max_results');
+        expect(JSON.stringify(tools.get('inspect_code_symbol')?.schema)).toContain('max_relations');
+        expect(await callTool(tools, 'search_codebase', {
+          codebase_id: refA.codebaseId,
+          query: 'StartupHooks',
+        })).toEqual(expect.objectContaining({
+          success: true,
+          matches: [expect.objectContaining({filePath: 'src/StartupHooks.kt'})],
+        }));
+        expect(await callTool(tools, 'query_code_graph', {
+          query: 'StartupHooks',
+        })).toEqual(expect.objectContaining({
+          success: false,
+          unsupportedReason: 'whitelisted_codebase_id_required',
+        }));
+
+        const query = await callTool(tools, 'query_code_graph', {
+          codebase_id: refB.codebaseId,
+          query: 'StartupHooks',
+          max_results: 4,
+        });
+        const inspect = await callTool(tools, 'inspect_code_symbol', {
+          codebase_id: refB.codebaseId,
+          symbol: 'StartupHooks',
+          file_path: 'src/StartupHooks.kt',
+          max_relations: 3,
+        });
+
+        expect(codeGraphNavigator.query).toHaveBeenCalledWith(expect.objectContaining({
+          codebaseId: refB.codebaseId,
+          limit: 4,
+        }));
+        expect(codeGraphNavigator.inspectSymbol).toHaveBeenCalledWith(expect.objectContaining({
+          codebaseId: refB.codebaseId,
+          filePath: 'src/StartupHooks.kt',
+          limit: 3,
+        }));
+        expect(query).toEqual(expect.objectContaining({
+          success: true,
+          dataTrust: 'untrusted_retrieved_data',
+          references: [expect.objectContaining({
+            codebaseId: refB.codebaseId,
+            filePath: 'src/StartupHooks.kt',
+          })],
+          graph: {engine: 'gitnexus', freshness: 'stale', verificationRequired: true},
+        }));
+        expect(inspect.references[0].referenceId).toBe(`graph-${refB.codebaseId}`);
+        expect(ledger.getEntries()).toEqual(expect.arrayContaining([
+          expect.objectContaining({
+            toolName: 'search_codebase',
+            outcome: 'success',
+            returnedReferenceCount: 1,
+          }),
+          expect.objectContaining({
+            toolName: 'query_code_graph',
+            codebaseId: refB.codebaseId,
+            outcome: 'success',
+            returnedReferenceCount: 1,
+          }),
+          expect.objectContaining({
+            toolName: 'inspect_code_symbol',
+            codebaseId: refB.codebaseId,
+            outcome: 'success',
+            returnedReferenceCount: 1,
+          }),
+        ]));
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('honors the remaining metadata token budget for graph navigation', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-code-graph-budget-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const codeGraphNavigator: CodeGraphNavigator = {
+          query: jest.fn<CodeGraphNavigator['query']>(async () => ({
+            success: true,
+            codebaseId: ref.codebaseId,
+            references: [{
+              referenceId: 'graph-big',
+              codebaseId: ref.codebaseId,
+              filePath: 'src/StartupHooks.kt',
+              symbol: 'StartupHooks'.repeat(30),
+            }],
+            processes: [{name: 'StartupFlow'.repeat(30)}],
+            graph: {engine: 'gitnexus', freshness: 'current', verificationRequired: true},
+            truncated: false,
+          })),
+          inspectSymbol: jest.fn<CodeGraphNavigator['inspectSymbol']>(async () => {
+            throw new Error('not used');
+          }),
+        };
+        const ledger = new CodeLookupLedger(
+          'graph-budget-test',
+          1,
+          2,
+          path.join(tmpDir, 'ledger.jsonl'),
+        );
+        const {tools} = createTestServer({
+          codeAwareMode: 'metadata_only',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          codeGraphNavigator,
+          codeLookupLedger: ledger,
+          knowledgeScope: scope,
+        });
+
+        await expect(callTool(tools, 'query_code_graph', {
+          query: 'StartupHooks',
+        })).resolves.toEqual(expect.objectContaining({
+          success: false,
+          unsupportedReason: 'budget_exceeded',
+          references: [],
+        }));
+        expect(ledger.getEntries()).toEqual([
+          expect.objectContaining({
+            toolName: 'query_code_graph',
+            outcome: 'budget_exceeded',
+            returnedReferenceCount: 0,
+          }),
         ]);
       } finally {
         fs.rmSync(tmpDir, {recursive: true, force: true});

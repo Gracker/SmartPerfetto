@@ -42,6 +42,9 @@ export interface ProjectedPayload {
     referenceId: string;
     codebaseId: string;
     lineRange?: {start: number; end: number};
+    filePathHash?: string;
+    symbolHash?: string;
+    kindHash?: string;
     snippetHash?: string;
     snippetLength?: number;
     redactedCount?: number;
@@ -59,11 +62,18 @@ const SENSITIVE_RAG_TOOL_NAMES = new Set([
   'lookup_oem_sdk',
   'search_codebase',
   'read_codebase_file',
+  'query_code_graph',
+  'inspect_code_symbol',
 ]);
 
 const ON_DEMAND_SOURCE_TOOL_NAMES = new Set([
   'search_codebase',
   'read_codebase_file',
+]);
+
+const CODE_GRAPH_TOOL_NAMES = new Set([
+  'query_code_graph',
+  'inspect_code_symbol',
 ]);
 
 export function isSensitiveRagToolName(toolName: string): boolean {
@@ -82,11 +92,14 @@ function projectOnDemandSourceResult(
   toolName: string,
   raw: unknown,
 ): ProjectedPayload | undefined {
-  if (!ON_DEMAND_SOURCE_TOOL_NAMES.has(toolName)) return undefined;
+  const isGraphTool = CODE_GRAPH_TOOL_NAMES.has(toolName);
+  if (!ON_DEMAND_SOURCE_TOOL_NAMES.has(toolName) && !isGraphTool) return undefined;
   const payload = unwrapMcpPayload(raw);
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
   const candidate = ((payload as {result?: unknown}).result ?? payload) as Record<string, unknown>;
-  const rawReferences = toolName === 'search_codebase'
+  const rawReferences = isGraphTool
+    ? candidate.references
+    : toolName === 'search_codebase'
     ? candidate.matches
     : candidate.reference === undefined ? [] : [candidate.reference];
   if (!Array.isArray(rawReferences)) return undefined;
@@ -105,10 +118,16 @@ function projectOnDemandSourceResult(
       ? {start: Number(lineRange.start), end: Number(lineRange.end)}
       : undefined;
     const text = typeof reference.text === 'string' ? reference.text : undefined;
+    const filePath = typeof reference.filePath === 'string' ? reference.filePath : undefined;
+    const symbol = typeof reference.symbol === 'string' ? reference.symbol : undefined;
+    const kind = typeof reference.kind === 'string' ? reference.kind : undefined;
     return [{
       referenceId: reference.referenceId,
       codebaseId: reference.codebaseId,
       ...(validLineRange ? {lineRange: validLineRange} : {}),
+      ...(filePath ? {filePathHash: hashSnippet(filePath)} : {}),
+      ...(symbol ? {symbolHash: hashSnippet(symbol)} : {}),
+      ...(kind ? {kindHash: hashSnippet(kind)} : {}),
       ...(text ? {snippetHash: hashSnippet(text), snippetLength: text.length} : {}),
       ...(Number.isInteger(reference.redactedCount)
         ? {redactedCount: Number(reference.redactedCount)}
@@ -120,6 +139,7 @@ function projectOnDemandSourceResult(
     : undefined;
   const outcome: CodeLookupOutcome = unsupportedReason?.includes('consent')
     ? 'consent_blocked'
+    : unsupportedReason === 'budget_exceeded' ? 'budget_exceeded'
     : candidate.success === false ? 'rejected' : 'success';
   return {
     toolName,

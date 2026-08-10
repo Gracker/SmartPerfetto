@@ -80,4 +80,27 @@ describe('AssistantApplicationService cleanup', () => {
     expect(removed).toEqual([managed.sessionId]);
     expect(service.getSession(managed.sessionId)).toBeUndefined();
   });
+
+  it('treats awaiting_user sessions without SSE clients as abandoned non-terminal', () => {
+    const service = new AssistantApplicationService<ManagedAssistantSession>();
+    const managed = session({
+      status: 'awaiting_user',
+      lastActivityAt: 1_777_000_000_000,
+    });
+    service.setSession(managed.sessionId, managed);
+
+    const removed = service.cleanupIdleSessions({
+      now: 1_777_000_010_000,
+      terminalMaxIdleMs: 60_000,
+      nonTerminalMaxIdleMs: 1_000,
+      shouldCleanup: (_sessionId, _session, context) => {
+        expect(context.isTerminal).toBe(false);
+        expect(context.isAbandonedNonTerminal).toBe(true);
+        return true;
+      },
+    });
+
+    expect(removed).toEqual([managed.sessionId]);
+    expect(service.getSession(managed.sessionId)).toBeUndefined();
+  });
 });

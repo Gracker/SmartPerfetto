@@ -14,6 +14,8 @@ Output all structures required by the Final Report Contract before long trees, a
 
 Every key conclusion must preserve evidence type and boundary: state whether it comes from direct trace evidence, Skill/SQL-derived metrics, logs/snapshots, external aggregates, diagnostic APIs, user context, or missing evidence. For Android/API/device capabilities, Play Vitals, App Performance Score, A/B tests, or online APM, mark them as version/policy-sensitive or external aggregate signals; do not treat them as direct root-cause proof for the current trace. Missing data is a limitation and a next-capture action, not evidence that the issue is absent.
 
+Also apply the kernel-wait semantic boundary: `epoll` / `poll`-family `blocked_function` values normally mean event wait or idle time and must not be presented as a disk or file-I/O root cause. Treat them as an I/O candidate only when corroborated by `io_wait=1`, an I/O/page-cache function family, or app-level file/database evidence. A `blocked_function` is a single kernel wchan frame, not a complete kernel call stack.
+
 Do not merely restate phase summaries; synthesize the collected concrete values and evidence into a readable conclusion.
 
 Prioritize completeness. Use compact aggregation tables where helpful; do not expand into a phase-by-phase log, do not copy raw artifact tables, do not output the data-source/evidence-table index because the system will generate it, and do not repeat raw SQL. When evidence is abundant, prioritize the key evidence chain, structures required by the scene contract, and the highest-priority root causes; do not omit key conclusions or evidence just to shorten the report.

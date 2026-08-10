@@ -136,6 +136,15 @@ jobs:
           GO111MODULE: "off"
         run: go test ./scripts/portable-health-probe
 
+      - name: Test and build the Windows portable launcher
+        if: ${{ matrix.os == 'windows-latest' }}
+        shell: pwsh
+        env:
+          GO111MODULE: "off"
+        run: |
+          go test ./scripts/portable-launcher
+          go build -trimpath -o "$env:RUNNER_TEMP/SmartPerfetto.exe" ./scripts/portable-launcher
+
       - name: Build the fixed Windows gate helper
         if: ${{ matrix.os == 'windows-latest' }}
         shell: pwsh
@@ -156,6 +165,12 @@ jobs:
         env:
           SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH: ${{ runner.temp }}/smartperfetto-windows-gate-helper.exe
         run: npm run test:governance && npm --prefix backend run typecheck
+
+      - name: Test Windows Provider secret storage
+        if: ${{ matrix.os == 'windows-latest' }}
+        run: >-
+          npm --prefix backend test -- --runInBand
+          src/services/providerManager/__tests__/localSecretStore.test.ts
 
   trace-corpus:
     runs-on: ubuntu-24.04

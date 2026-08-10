@@ -112,6 +112,7 @@ SMARTPERFETTO_OUTPUT_LANGUAGE=en
 
 - 分析 Android Perfetto trace 中的滑动卡顿、启动、ANR、交互延迟、内存、游戏和渲染管线问题。
 - 保留 Perfetto 的时间线和 SQL 能力，并在 Perfetto UI 里增加 AI Assistant 面板。
+- 分析结果操作可以聚焦时间点、重新打开证据表，或把证据快照收藏到当前会话并通过 `/pins` 查看；收藏不会固定时间线泳道，也不会自动加入后续 AI 上下文。
 - 智能模式会先还原混合 trace 的场景时间线，再让用户选择全部场景，或只深钻启动、滑动、点击、导航、设备状态、ANR 等范围。
 - 支持跨多个 Trace、多个窗口或同一 workspace 用户的已完成分析结果对比，不要求另一个 Perfetto UI 窗口持续打开。
 - 随产品分发签名 Android Internals Knowledge Pack，用于预算受控的背景检索；私有源码/知识仍需显式授权，并与 trace 证据分离。
@@ -174,7 +175,15 @@ npm CLI 提供相同状态：`smp update check [--format text|json]`。交互式
 - 免安装包：下载匹配当前平台的产物；GitHub 提供 SHA256 时按界面值校验。
 - 源码 checkout：先检查链接的 commit 或 release，再按自己的 Git 工作流更新。
 
-### Docker 运行（推荐）
+### Windows x64 免安装包（Windows 桌面用户推荐）
+
+从[官方 Latest Release](https://github.com/Gracker/SmartPerfetto/releases/latest)
+下载 `smartperfetto-v<version>-windows-x64.zip`，校验 SHA256，使用“全部解压”，
+再运行 `SmartPerfetto.exe`。包内已包含 Node.js 和原生运行时。Provider 配置、
+SmartScreen 边界、数据目录、更新迁移、QA 和排障统一见
+[Windows 配置与运行指南](docs/getting-started/windows.md)。
+
+### Docker 运行（容器部署推荐）
 
 只想把 SmartPerfetto 跑起来时，推荐使用这个方式。你只需要 Docker Desktop/Engine；AI provider 可以启动后在 UI Provider Manager 里配置，只有脚本化部署时才需要使用仓库根目录 `.env`。不需要安装 Node.js，不需要 C++ 工具链，也不需要初始化 `perfetto/` submodule。稳定版会发布不可变 SemVer tag 和 `latest`；`main` 的开发构建仅发布需要主动选择的 `nightly` tag。镜像内已经包含后端、预构建 Perfetto UI 和固定版本的 `trace_processor_shell`，也能避开本地首次启动时访问 Google artifact bucket 失败的问题。
 
@@ -230,9 +239,9 @@ Windows 用户使用 Docker Desktop，并启用 WSL2 backend。发布的是 Linu
   Linux 发行版；该归档不支持 Alpine Linux 等基于 musl 的发行版。解压后运行
   `./SmartPerfetto`。
 
-启动器会拉起后端和预构建 Perfetto UI，并打开 [http://127.0.0.1:10000](http://127.0.0.1:10000)。端口可用 `SMARTPERFETTO_BACKEND_PORT` 和 `SMARTPERFETTO_FRONTEND_PORT` 覆盖。AI 分析需要在 UI 里配置 Provider profile，或在对应平台的用户数据 env 文件中配置凭证。
+启动器会拉起后端和预构建 Perfetto UI；默认优先使用 `10000` 端口，并在终端打印实际的 `Open:` 地址后用浏览器打开。端口可用 `SMARTPERFETTO_BACKEND_PORT` 和 `SMARTPERFETTO_FRONTEND_PORT` 覆盖。AI 分析需要在 UI 里配置 Provider profile，或在对应平台的用户数据 env 文件中配置凭证。
 
-Windows 的持久数据默认保存在 `%LOCALAPPDATA%\SmartPerfetto`。新免安装包首次启动时会安全复制符合条件的旧包内 `data/` 目录，并保留旧包不动；自动发现无法确定来源时，可运行 `SmartPerfetto.exe --migrate-from <旧包或数据目录>`。只有明确希望把数据放在可执行文件旁边时，才设置 `SMARTPERFETTO_PORTABLE_MODE=1`。
+Windows 的持久数据默认保存在 `%LOCALAPPDATA%\SmartPerfetto`。新免安装包首次启动时会安全复制符合条件的旧包内 `data/` 目录，并保留旧包不动；自动发现无法确定来源时，应在第一次标准启动前运行 `SmartPerfetto.exe --migrate-from <旧包或数据目录>`。目标目录已经存在时，显式迁移会报错且不会合并或覆盖，移动任何一份数据前先看 [Windows 指南](docs/getting-started/windows.md)。只有明确希望把数据放在可执行文件旁边时，才设置 `SMARTPERFETTO_PORTABLE_MODE=1`。
 
 #### macOS 启动失败排查
 
