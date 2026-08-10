@@ -414,7 +414,11 @@ test('Windows DPAPI package probe uses the packaged Node and SecretStore module'
   });
   assert.equal(invocations.length, 1);
   assert.equal(invocations[0][0], 'C:\\package\\runtime\\node\\node.exe');
-  assert.equal(invocations[0][3].env.NODE_ENV, 'production');
+  assert.deepEqual(invocations[0][3], {
+    env: {SYSTEMROOT: 'C:\\Windows', NODE_ENV: 'production'},
+    killSignal: 'SIGKILL',
+    timeout: 75_000,
+  });
 });
 
 test('portable smoke parser rejects incomplete option values', () => {

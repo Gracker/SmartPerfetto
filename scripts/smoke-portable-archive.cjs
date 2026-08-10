@@ -53,6 +53,8 @@ const HEALTH_PROBE_ERROR_LIMIT_BYTES = 32 * 1024;
 const HEALTH_PROBE_TERMINATION_GRACE_MS = 250;
 const DIRECT_LOOPBACK_HTTP_AGENT = new http.Agent({proxyEnv: {}});
 const HEALTH_PROBE_TERMINATION_SETTLEMENT_MS = 2_000;
+const ARCHIVE_RUNTIME_TIMEOUT_MS = 30_000;
+const WINDOWS_DPAPI_PROBE_TIMEOUT_MS = 75_000;
 const WINDOWS_GATE_HELPER_ENV = 'SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH';
 const WINDOWS_PROCESS_SNAPSHOT_LIMIT_BYTES = 8 * 1024 * 1024;
 const WINDOWS_PROCESS_SNAPSHOT_ERROR_LIMIT_BYTES = 32 * 1024;
@@ -237,11 +239,18 @@ function runChecked(command, args, label, options = {}) {
   };
 }
 
-function runArchiveBinary(command, args, label, env, runner = runChecked) {
+function runArchiveBinary(
+  command,
+  args,
+  label,
+  env,
+  runner = runChecked,
+  timeoutMs = ARCHIVE_RUNTIME_TIMEOUT_MS,
+) {
   return runner(command, args, label, {
     env,
     killSignal: 'SIGKILL',
-    timeout: 30_000,
+    timeout: timeoutMs,
   });
 }
 
@@ -297,6 +306,7 @@ function probeWindowsDpapiSecretStore(paths, dataDir, env, runner = runChecked) 
     'Windows packaged DPAPI SecretStore',
     {...env, NODE_ENV: 'production'},
     runner,
+    WINDOWS_DPAPI_PROBE_TIMEOUT_MS,
   );
   return JSON.parse(result.stdout);
 }
