@@ -97,7 +97,7 @@ test('expands metadata-only documentation with sorted absolute SQL inputs and cl
         assert.deepEqual(inputs, [...inputs].sort());
         assert.ok(inputs.every(input => path.isAbsolute(input)));
         assert.deepEqual(
-          inputs.map(input => path.relative(stdlibRoot, input)),
+          inputs.map(input => path.relative(stdlibRoot, input).split(path.sep).join('/')),
           ['alpha/one.sql', 'zeta/two.sql'],
         );
         writeJson(outputPath, fullDocs);
