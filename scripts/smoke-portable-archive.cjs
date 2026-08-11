@@ -54,7 +54,9 @@ const HEALTH_PROBE_TERMINATION_GRACE_MS = 250;
 const DIRECT_LOOPBACK_HTTP_AGENT = new http.Agent({proxyEnv: {}});
 const HEALTH_PROBE_TERMINATION_SETTLEMENT_MS = 2_000;
 const ARCHIVE_RUNTIME_TIMEOUT_MS = 30_000;
-const WINDOWS_DPAPI_PROBE_TIMEOUT_MS = 75_000;
+// The packaged probe performs one protect and one unprotect operation. Keep
+// enough bounded headroom for two 60-second Windows DPAPI cold starts.
+const WINDOWS_DPAPI_PROBE_TIMEOUT_MS = 135_000;
 const WINDOWS_GATE_HELPER_ENV = 'SMARTPERFETTO_WINDOWS_GATE_HELPER_PATH';
 const WINDOWS_PROCESS_SNAPSHOT_LIMIT_BYTES = 8 * 1024 * 1024;
 const WINDOWS_PROCESS_SNAPSHOT_ERROR_LIMIT_BYTES = 32 * 1024;

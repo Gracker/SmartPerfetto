@@ -417,7 +417,7 @@ test('Windows DPAPI package probe uses the packaged Node and SecretStore module'
   assert.deepEqual(invocations[0][3], {
     env: {SYSTEMROOT: 'C:\\Windows', NODE_ENV: 'production'},
     killSignal: 'SIGKILL',
-    timeout: 75_000,
+    timeout: 135_000,
   });
 });
 

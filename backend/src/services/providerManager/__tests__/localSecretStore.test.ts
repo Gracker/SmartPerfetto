@@ -172,7 +172,7 @@ describe('LocalEncryptedSecretStore', () => {
     await expect(fs.access(path.join(secretDir, '.master-key'))).rejects.toBeTruthy();
   });
 
-  it('allows a bounded 30-second Windows DPAPI cold start without weakening the invocation contract', () => {
+  it('allows a bounded 60-second Windows DPAPI cold start without weakening the invocation contract', () => {
     const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform');
     const originalSystemRoot = process.env.SystemRoot;
     const secretDir = path.join(tmpDir, 'windows-dpapi-timeout-contract');
@@ -234,7 +234,7 @@ describe('LocalEncryptedSecretStore', () => {
           encoding: 'utf-8',
           maxBuffer: 64 * 1024,
           stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 30_000,
+          timeout: 60_000,
           windowsHide: true,
         });
         expect(Buffer.from(options.input, 'base64').toString('base64')).toBe(options.input);
