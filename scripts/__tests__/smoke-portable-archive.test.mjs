@@ -39,6 +39,7 @@ const {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
+  windowsDpapiProbeEnv,
   windowsDescendantPids,
   windowsGoHealthProbe,
   windowsSystemBinary,
@@ -419,6 +420,38 @@ test('Windows DPAPI package probe uses the packaged Node and SecretStore module'
     killSignal: 'SIGKILL',
     timeout: 135_000,
   });
+});
+
+test('Windows DPAPI probe preserves the host profile without leaking credentials', () => {
+  const env = windowsDpapiProbeEnv({
+    SystemRoot: 'C:\\Windows',
+    HOME: 'C:\\Users\\runneradmin',
+    USERPROFILE: 'C:\\Users\\runneradmin',
+    APPDATA: 'C:\\Users\\runneradmin\\AppData\\Roaming',
+    LOCALAPPDATA: 'C:\\Users\\runneradmin\\AppData\\Local',
+    HOMEDRIVE: 'C:',
+    HOMEPATH: '\\Users\\runneradmin',
+    GH_TOKEN: 'must-not-leak',
+    SMARTPERFETTO_SECRET_STORE_MASTER_KEY: 'must-not-leak',
+  }, {
+    SYSTEMROOT: 'C:\\Windows',
+    HOME: 'D:\\evidence\\home',
+    USERPROFILE: 'D:\\evidence\\home',
+    APPDATA: 'D:\\evidence\\home\\AppData\\Roaming',
+    LOCALAPPDATA: 'D:\\evidence\\home\\AppData\\Local',
+  });
+
+  assert.deepEqual(env, {
+    SYSTEMROOT: 'C:\\Windows',
+    HOME: 'C:\\Users\\runneradmin',
+    USERPROFILE: 'C:\\Users\\runneradmin',
+    APPDATA: 'C:\\Users\\runneradmin\\AppData\\Roaming',
+    LOCALAPPDATA: 'C:\\Users\\runneradmin\\AppData\\Local',
+    HOMEDRIVE: 'C:',
+    HOMEPATH: '\\Users\\runneradmin',
+  });
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.SMARTPERFETTO_SECRET_STORE_MASTER_KEY, undefined);
 });
 
 test('portable smoke parser rejects incomplete option values', () => {

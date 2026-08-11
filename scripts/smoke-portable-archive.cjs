@@ -222,6 +222,22 @@ function isolatedSmokeEnv(source, homeDir) {
   };
 }
 
+function windowsDpapiProbeEnv(source, isolatedEnv) {
+  const env = {...isolatedEnv};
+  for (const key of [
+    'HOME',
+    'USERPROFILE',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'HOMEDRIVE',
+    'HOMEPATH',
+  ]) {
+    const value = envValue(source, key);
+    if (typeof value === 'string' && value.trim()) env[key] = value;
+  }
+  return env;
+}
+
 function runChecked(command, args, label, options = {}) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
@@ -1492,7 +1508,7 @@ async function smoke(options) {
       runtimeEvidence.dpapiSecretStore = probeWindowsDpapiSecretStore(
         paths,
         dataDir,
-        runtimeEnv,
+        windowsDpapiProbeEnv(process.env, runtimeEnv),
       );
     }
     if (target === 'linux-x64') {
@@ -1747,6 +1763,7 @@ module.exports = {
   versionAtLeast,
   waitForHealth,
   waitForReadiness,
+  windowsDpapiProbeEnv,
   windowsGoHealthProbe,
   windowsDescendantPids,
   parseWindowsProcessSnapshot,
