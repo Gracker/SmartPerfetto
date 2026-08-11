@@ -231,6 +231,11 @@ function windowsDpapiProbeEnv(source, isolatedEnv) {
     'LOCALAPPDATA',
     'HOMEDRIVE',
     'HOMEPATH',
+    'PSMODULEPATH',
+    'PROGRAMFILES',
+    'PROGRAMFILES(X86)',
+    'PROGRAMW6432',
+    'SYSTEMDRIVE',
   ]) {
     const value = envValue(source, key);
     if (typeof value === 'string' && value.trim()) env[key] = value;

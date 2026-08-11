@@ -431,6 +431,11 @@ test('Windows DPAPI probe preserves the host profile without leaking credentials
     LOCALAPPDATA: 'C:\\Users\\runneradmin\\AppData\\Local',
     HOMEDRIVE: 'C:',
     HOMEPATH: '\\Users\\runneradmin',
+    PSMODULEPATH: 'C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules',
+    PROGRAMFILES: 'C:\\Program Files',
+    'PROGRAMFILES(X86)': 'C:\\Program Files (x86)',
+    PROGRAMW6432: 'C:\\Program Files',
+    SYSTEMDRIVE: 'C:',
     GH_TOKEN: 'must-not-leak',
     SMARTPERFETTO_SECRET_STORE_MASTER_KEY: 'must-not-leak',
   }, {
@@ -449,6 +454,11 @@ test('Windows DPAPI probe preserves the host profile without leaking credentials
     LOCALAPPDATA: 'C:\\Users\\runneradmin\\AppData\\Local',
     HOMEDRIVE: 'C:',
     HOMEPATH: '\\Users\\runneradmin',
+    PSMODULEPATH: 'C:\\Program Files\\WindowsPowerShell\\Modules;C:\\Windows\\system32\\WindowsPowerShell\\v1.0\\Modules',
+    PROGRAMFILES: 'C:\\Program Files',
+    'PROGRAMFILES(X86)': 'C:\\Program Files (x86)',
+    PROGRAMW6432: 'C:\\Program Files',
+    SYSTEMDRIVE: 'C:',
   });
   assert.equal(env.GH_TOKEN, undefined);
   assert.equal(env.SMARTPERFETTO_SECRET_STORE_MASTER_KEY, undefined);
