@@ -13,6 +13,7 @@ import {
 import { verifyHeuristic } from '../engines/claude/claudeVerifier';
 import type { AnalysisPlanV3, Hypothesis, PlanPhase } from '../../agentv3/types';
 import { assessFinalReportContractCompleteness } from '../../services/finalReportContractGate';
+import { resolveRuntimeFinalReportSceneType } from '../finalReportSceneResolution';
 
 function makePlan(): AnalysisPlanV3 {
   const phases: PlanPhase[] = [
@@ -64,6 +65,64 @@ function makeHypotheses(): Hypothesis[] {
 }
 
 describe('runtime final report truncation recovery', () => {
+  it('uses successful executed skills to resolve the final report scene', () => {
+    const analysisPlan = makePlan();
+    analysisPlan.toolCallLog = [
+      {
+        toolName: 'invoke_skill',
+        skillId: 'anr_analysis',
+        success: true,
+        timestamp: 1,
+      },
+      {
+        toolName: 'invoke_skill',
+        skillId: 'startup_analysis',
+        success: true,
+        timestamp: 2,
+      },
+    ];
+    const query = '请调用 anr_analysis 检查这个启动 Trace 是否包含 ANR。';
+
+    expect(resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: 'anr',
+      plan: analysisPlan,
+    })).toBe('startup');
+
+    analysisPlan.toolCallLog[1].success = false;
+    expect(resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: 'anr',
+      plan: analysisPlan,
+    })).toBe('anr');
+
+    analysisPlan.toolCallLog[1] = {
+      toolName: 'lookup_knowledge',
+      skillId: 'startup_analysis',
+      success: true,
+      timestamp: 3,
+    };
+    expect(resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: 'anr',
+      plan: analysisPlan,
+    })).toBe('anr');
+
+    analysisPlan.toolCallLog[1].toolName = 'mcp__smartperfetto__invoke_skill';
+    expect(resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: 'anr',
+      plan: analysisPlan,
+    })).toBe('startup');
+
+    analysisPlan.toolCallLog[1].toolName = 'compare_skill';
+    expect(resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: 'anr',
+      plan: analysisPlan,
+    })).toBe('startup');
+  });
+
   it('requires an existing streamed conclusion before interruption recovery', () => {
     expect(recoverInterruptedFinalReport({
       partialConclusion: '',

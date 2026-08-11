@@ -36,7 +36,10 @@ export function reconcileDeliveredFinalReportPhase(
   }
 
   const [phase] = status.pendingPhases;
-  if (phase.status !== 'in_progress' || !isConclusionLikePlanPhase(phase)) return undefined;
+  if (
+    (phase.status !== 'pending' && phase.status !== 'in_progress') ||
+    !isConclusionLikePlanPhase(phase)
+  ) return undefined;
   if (findMissingExpectedCallsForPhase(phase, plan.toolCallLog ?? []).length > 0) return undefined;
 
   const conclusion = input.conclusion.trim();

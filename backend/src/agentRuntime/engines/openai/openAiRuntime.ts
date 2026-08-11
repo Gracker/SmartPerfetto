@@ -43,7 +43,7 @@ import {
   buildQuickSystemPrompt,
   buildSystemPrompt,
 } from '../../../agentv3/claudeSystemPrompt';
-import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
+import { loadPromptTemplate, renderTemplate } from '../../../agentv3/strategyLoader';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
 import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
 import { classifyScene, type SceneType } from '../../../agentv3/sceneClassifier';
@@ -126,8 +126,14 @@ import {
   looksLikePhaseSummaryFallback,
   type FinalResultComparisonIdentity,
 } from '../../../services/finalResultQualityGate';
-import { verifyConclusion } from '../claude/claudeVerifier';
-import { assessFinalReportContractCompleteness } from '../../../services/finalReportContractGate';
+import {
+  findCriticalFindingsWithoutEvidence,
+  verifyConclusion,
+} from '../claude/claudeVerifier';
+import {
+  assessFinalReportContractCompleteness,
+  type FinalReportContractCompletenessResult,
+} from '../../../services/finalReportContractGate';
 import {
   SDK_SESSION_FRESHNESS_MS,
   buildQuickRunReceipt,
@@ -155,6 +161,7 @@ import {
   type AnalysisRunSpec,
 } from '../../analysisRunSpec';
 import type { RuntimeSelection } from '../../runtimeSelection';
+import { resolveRuntimeFinalReportSceneType } from '../../finalReportSceneResolution';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
 import { buildFocusAppEvidencePayload } from '../../focusAppEvidence';
 import {
@@ -1020,6 +1027,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         quickTraceFactPreEvidence: modeClassification.quickTraceFactPreEvidence,
       });
       analysisAbortScope.throwIfAborted();
+      const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
+        query,
+        initialSceneType: sceneType,
+        plan: this.sessionPlans.get(sessionId)?.current,
+      });
 
       const directQuickAnswer = context.directProcessIdentityAnswer ?? context.directTraceFactAnswer;
       if (quickMode && quickBudget && directQuickAnswer) {
@@ -1311,6 +1323,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           analysisAbortScope.throwIfAborted();
           rounds += runTurns || stream.currentTurn || 0;
           let planStatus = this.getPlanCompletionStatus(sessionId, quickMode);
+          const finalReportSceneType = resolveFinalReportSceneType();
           const completedStreamFinalOutput = readCompletedStreamFinalOutput(stream, {
             streamCompleted,
             completedByPlanIdle,
@@ -1331,7 +1344,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             quickMode,
             conclusion: reconciliationCandidate,
             query,
-            sceneType,
+            sceneType: finalReportSceneType,
             comparisonIdentity: context.comparisonIdentity,
           })) {
             planStatus = this.getPlanCompletionStatus(sessionId, quickMode);
@@ -1386,7 +1399,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               timedOut,
               finalReportContinuations,
               query,
-              sceneType,
+              sceneType: finalReportSceneType,
               comparisonIdentity: context.comparisonIdentity,
             }) && streamHistory.length > 0) {
               finalReportContinuations++;
@@ -1402,10 +1415,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 ...streamHistory,
                 {
                   role: 'user',
-                  content: this.buildFinalReportAfterPlanCompletePrompt(
-                    config.outputLanguage,
-                    this.finalReportMissingCodeReference(sessionId, conclusion),
-                  ),
+                  content: this.buildFinalReportAfterPlanCompletePrompt({
+                    outputLanguage: config.outputLanguage,
+                    missingSections: assessFinalReportContractCompleteness({
+                      conclusion,
+                      query,
+                      sceneType: finalReportSceneType,
+                    })?.missingSections,
+                    requireCodeReference: this.finalReportMissingCodeReference(sessionId, conclusion),
+                  }),
                 } as AgentInputItem,
               ];
               currentPreviousResponseId = undefined;
@@ -1461,6 +1479,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           conclusion,
           outputLanguage: config.outputLanguage,
         });
+        const finalReportSceneType = resolveFinalReportSceneType();
         const finalFallbackConclusion = this.buildCompletedPlanFallbackConclusion(sessionId, quickMode, config.outputLanguage);
         if (
           finalFallbackConclusion &&
@@ -1545,7 +1564,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               enableLLM: false,
               plan: this.sessionPlans.get(sessionId)?.current ?? null,
               hypotheses: context.hypotheses,
-              sceneType,
+              sceneType: finalReportSceneType,
               outputLanguage: config.outputLanguage,
               query,
               emitIssueProgress: false,
@@ -1561,7 +1580,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           const contractIssue = assessFinalReportContractCompleteness({
             conclusion: result.conclusion,
             query,
-            sceneType,
+            sceneType: finalReportSceneType,
             caseRecommendations: result.conclusionContract?.caseRecommendations,
           });
           const truncationIssue = findTruncationVerificationIssue([
@@ -1636,7 +1655,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const gateIssue = applyFinalResultQualityGate({
           result,
           query,
-          sceneType,
+          sceneType: finalReportSceneType,
           comparisonIdentity: context.comparisonIdentity,
         });
         if (gateIssue) {
@@ -2700,6 +2719,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     if (assessFinalResultComparisonIdentity(conclusion, input.comparisonIdentity)) return true;
     if (input.sessionId && this.finalReportMissingCodeReference(input.sessionId, conclusion)) return true;
     if (looksLikeProcessNarrationParagraph(conclusion.split(/\n{2,}/)[0] || '')) return true;
+    if (findCriticalFindingsWithoutEvidence(extractFindingsFromText(conclusion)).length > 0) return true;
     return Boolean(assessFinalResultQuality({
       result: {
         sessionId: input.sessionId || 'openai-final-report-quality-check',
@@ -2724,20 +2744,38 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     });
   }
 
-  private buildFinalReportAfterPlanCompletePrompt(
-    outputLanguage: OutputLanguage,
-    requireCodeReference = false,
-  ): string {
-    const templateName = outputLanguage === 'en'
+  private buildFinalReportAfterPlanCompletePrompt(input: {
+    outputLanguage: OutputLanguage;
+    missingSections?: FinalReportContractCompletenessResult['missingSections'];
+    requireCodeReference?: boolean;
+  }): string {
+    const templateName = input.outputLanguage === 'en'
       ? 'prompt-openai-final-report-continuation-en'
       : 'prompt-openai-final-report-continuation-zh';
     const template = loadPromptTemplate(templateName);
     if (!template) {
       throw new Error(`Missing OpenAI final-report continuation prompt template: ${templateName}`);
     }
-    return requireCodeReference
-      ? `${template}\n\n${loadCodeReferenceContractPrompt(outputLanguage)}`
-      : template;
+    let prompt = template;
+
+    if (input.missingSections?.length) {
+      const missingSectionsTemplateName = input.outputLanguage === 'en'
+        ? 'prompt-final-report-missing-sections-en'
+        : 'prompt-final-report-missing-sections-zh';
+      const missingSectionsTemplate = loadPromptTemplate(missingSectionsTemplateName);
+      if (!missingSectionsTemplate) {
+        throw new Error(`Missing final-report missing-sections prompt template: ${missingSectionsTemplateName}`);
+      }
+      prompt += `\n\n${renderTemplate(missingSectionsTemplate, {
+        missing_sections: input.missingSections
+          .map(section => `- ${section.label}${section.description ? `: ${section.description}` : ''}`)
+          .join('\n'),
+      })}`;
+    }
+
+    return input.requireCodeReference
+      ? `${prompt}\n\n${loadCodeReferenceContractPrompt(input.outputLanguage)}`
+      : prompt;
   }
 
   private formatPlanCompleteReportContinuationMessage(outputLanguage: OutputLanguage): string {

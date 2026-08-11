@@ -2610,8 +2610,8 @@ describe('createClaudeMcpServer', () => {
       expect(envelope?.meta?.planPhaseAttribution).toBe('active');
       expect(envelope?.meta?.planPhaseWarning).toBeUndefined();
       const p1 = analysisPlan.current?.phases.find(p => p.id === 'p1');
-      expect(p1?.status).toBe('completed');
-      expect(p1?.summary).toContain('自动完成阶段');
+      expect(p1?.status).toBe('pending');
+      expect(p1?.summary).toBeUndefined();
       expect(analysisPlan.current?.phases.find(p => p.id === 'p3')?.status).toBe('in_progress');
     });
 
@@ -2861,13 +2861,20 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('binds late root-cause SQL to the semantic phase even when the plan did not declare raw SQL', async () => {
-      const { tools, emittedUpdates } = createTestServer();
+      const { tools, emittedUpdates, analysisPlan } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: '概览采集', goal: '获取帧统计和掉帧分布', expectedTools: ['invoke_skill'] },
           { id: 'p2', name: '根因深钻', goal: '对代表帧做机制级证据深钻，检查主线程阻塞和热点 slice', expectedTools: ['invoke_skill'] },
         ],
         successCriteria: 'Late ad-hoc SQL tables remain tied to the root-cause phase',
+      });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'invoke_skill',
+        skillId: 'jank_frame_detail',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p2',
       });
       await callTool(tools, 'update_plan_phase', {
         phaseId: 'p2',
@@ -2895,7 +2902,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('keeps active-phase SQL active when the phase omitted execute_sql but the SQL matches its goal', async () => {
-      const { tools, emittedUpdates } = createTestServer();
+      const { tools, emittedUpdates, analysisPlan } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: '启动概览', goal: '获取启动事件和概览', expectedTools: ['invoke_skill'] },
@@ -3113,13 +3120,19 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('binds late evidence to a recently completed matching phase instead of dropping phase context', async () => {
-      const { tools, emittedUpdates } = createTestServer();
+      const { tools, emittedUpdates, analysisPlan } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: 'WebView启动分析', goal: 'WebView架构特有分析：Chromium初始化、V8引擎、页面渲染', expectedTools: ['execute_sql'] },
           { id: 'p2', name: '综合结论', goal: '输出最终报告', expectedTools: [] },
         ],
         successCriteria: 'Late SQL remains tied to the phase it is verifying',
+      });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
       });
       await callTool(tools, 'update_plan_phase', {
         phaseId: 'p1',
@@ -3203,10 +3216,10 @@ describe('createClaudeMcpServer', () => {
         .find((env: any) => env.display?.format === 'table');
 
       expect(analysisPlan.current?.phases.map(p => [p.id, p.status])).toEqual([
-        ['p1', 'completed'],
+        ['p1', 'pending'],
         ['p2', 'in_progress'],
       ]);
-      expect(analysisPlan.current?.phases.find(p => p.id === 'p1')?.summary).toContain('自动完成阶段');
+      expect(analysisPlan.current?.phases.find(p => p.id === 'p1')?.summary).toBeUndefined();
       expect(result.planPhaseId).toBe('p2');
       expect(envelope?.meta?.planPhaseId).toBe('p2');
       expect(envelope?.meta?.planPhaseAttribution).toBe('active');
@@ -3223,6 +3236,13 @@ describe('createClaudeMcpServer', () => {
       });
       await callTool(tools, 'update_plan_phase', { phaseId: 'p1', status: 'in_progress' });
       await callTool(tools, 'invoke_skill', { skillId: 'scrolling_analysis', params: { process_name: 'com.example' } });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'invoke_skill',
+        skillId: 'scrolling_analysis',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
+      });
       await callTool(tools, 'update_plan_phase', { phaseId: 'p2', status: 'in_progress' });
 
       const p1 = analysisPlan.current?.phases.find(p => p.id === 'p1');
@@ -4503,6 +4523,150 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('update_plan_phase', () => {
+    it('accepts phaseStatus as an alias and emits the canonical status', async () => {
+      const {tools, analysisPlan, emittedUpdates} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          {id: 'p1', name: 'Conclusion', goal: 'Deliver the final answer', expectedTools: []},
+        ],
+        successCriteria: 'Identify jank root cause',
+      });
+      expect(tools.get('update_plan_phase')?.schema?.phaseStatus?.safeParse('completed').success)
+        .toBe(true);
+
+      const result = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        phaseStatus: 'completed',
+        summary: '已完成证据收集，获得 5 条可复核的帧数据记录。',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.allPhasesComplete).toBe(true);
+      expect(analysisPlan.current?.phases[0].status).toBe('completed');
+      expect(emittedUpdates.find((u: any) => u.type === 'plan_phase_updated')?.content.status)
+        .toBe('completed');
+    });
+
+    it('rejects completing a mixed verification phase before any generic expected tool is executed', async () => {
+      const {tools, analysisPlan, emittedUpdates} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: '补充验证与结论',
+          goal: '交叉验证关键发现，补充缺失证据，输出综合分析结论',
+          expectedTools: ['execute_sql', 'fetch_artifact', 'lookup_knowledge'],
+        }],
+        successCriteria: '完成补充验证后才输出结论',
+      });
+      await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        status: 'in_progress',
+      });
+
+      const result = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        status: 'completed',
+        summary: '综合结论已整理完成，准备直接输出最终报告。',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.action_required).toBe('run_expected_tools_before_completing_phase');
+      expect(result.expectedTools).toEqual([
+        'execute_sql',
+        'fetch_artifact',
+        'lookup_knowledge',
+      ]);
+      expect(analysisPlan.current?.phases[0].status).toBe('in_progress');
+      expect(emittedUpdates.filter((update: any) =>
+        update.type === 'plan_phase_updated' && update.content.status === 'completed',
+      )).toHaveLength(0);
+    });
+
+    it('applies the existing evidence gate when completion uses phaseStatus', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: '滑动概览',
+          goal: '获取帧统计',
+          expectedTools: ['invoke_skill'],
+          expectedCalls: [{tool: 'invoke_skill', skillId: 'scrolling_analysis'}],
+        }],
+        successCriteria: 'Done',
+      });
+
+      const result = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        phaseStatus: 'completed',
+        summary: '已完成概览阶段，准备输出后续结论和优化建议。',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.action_required).toBe('run_expected_calls_before_completing_phase');
+      expect(analysisPlan.current?.phases[0].status).toBe('pending');
+    });
+
+    it('accepts equivalent status aliases after canonicalization', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          {id: 'p1', name: 'Collect', goal: 'Get frame data', expectedTools: ['execute_sql']},
+        ],
+        successCriteria: 'Identify jank root cause',
+      });
+
+      const result = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        status: 'active',
+        phaseStatus: 'in_progress',
+      });
+
+      expect(result.success).toBe(true);
+      expect(analysisPlan.current?.phases[0].status).toBe('in_progress');
+    });
+
+    it('rejects conflicting status aliases without mutating the plan', async () => {
+      const {tools, analysisPlan, emittedUpdates} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          {id: 'p1', name: 'Collect', goal: 'Get frame data', expectedTools: ['execute_sql']},
+        ],
+        successCriteria: 'Identify jank root cause',
+      });
+
+      const result = await callTool(tools, 'update_plan_phase', {
+        phaseId: 'p1',
+        status: 'completed',
+        phaseStatus: 'skipped',
+        summary: '这段摘要足够长，但两个状态字段互相冲突。',
+      });
+
+      expect(result.success).toBe(false);
+      expect(analysisPlan.current?.phases[0].status).toBe('pending');
+      expect(emittedUpdates.some((u: any) => u.type === 'plan_phase_updated')).toBe(false);
+    });
+
+    it('rejects missing or invalid status aliases without mutating the plan', async () => {
+      for (const params of [
+        {phaseId: 'p1'},
+        {phaseId: 'p1', phaseStatus: 'done'},
+      ]) {
+        const {tools, analysisPlan, emittedUpdates} = createTestServer();
+        await callTool(tools, 'submit_plan', {
+          phases: [
+            {id: 'p1', name: 'Collect', goal: 'Get frame data', expectedTools: ['execute_sql']},
+          ],
+          successCriteria: 'Identify jank root cause',
+        });
+
+        const result = await callTool(tools, 'update_plan_phase', params);
+
+        expect(result.success).toBe(false);
+        expect(analysisPlan.current?.phases[0].status).toBe('pending');
+        expect(emittedUpdates.some((u: any) => u.type === 'plan_phase_updated')).toBe(false);
+      }
+    });
+
     it('accepts active as an alias for in_progress', async () => {
       const { tools, analysisPlan } = createTestServer();
       await callTool(tools, 'submit_plan', {
@@ -4679,6 +4843,13 @@ describe('createClaudeMcpServer', () => {
         ],
         successCriteria: 'Overview completion can cite headline detail metrics',
       });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'invoke_skill',
+        skillId: 'startup_analysis',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
+      });
 
       const result = await callTool(tools, 'update_plan_phase', {
         phaseId: 'p1',
@@ -4787,6 +4958,12 @@ describe('createClaudeMcpServer', () => {
       });
 
       await callTool(tools, 'update_plan_phase', { phaseId: 'p1', status: 'in_progress' });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
+      });
       const p2Started = await callTool(tools, 'update_plan_phase', { phaseId: 'p2', status: 'in_progress' });
       const p2Completed = await callTool(tools, 'update_plan_phase', {
         phaseId: 'p2',
@@ -4801,14 +4978,40 @@ describe('createClaudeMcpServer', () => {
       expect(p2Completed.allPhasesComplete).toBe(true);
     });
 
+    it('keeps a superseded expectedTools-only phase pending until evidence is recorded', async () => {
+      const {tools, analysisPlan} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [
+          {id: 'p1', name: 'Validate', goal: 'Cross-check findings', expectedTools: ['execute_sql']},
+          {id: 'p2', name: 'Conclude', goal: 'Write final answer', expectedTools: []},
+        ],
+        successCriteria: 'Do not auto-close unverified work',
+      });
+
+      await callTool(tools, 'update_plan_phase', {phaseId: 'p1', status: 'in_progress'});
+      await callTool(tools, 'update_plan_phase', {phaseId: 'p2', status: 'in_progress'});
+
+      expect(analysisPlan.current?.phases.map(phase => [phase.id, phase.status])).toEqual([
+        ['p1', 'pending'],
+        ['p2', 'in_progress'],
+      ]);
+      expect(analysisPlan.current?.phases[0].summary).toBeUndefined();
+    });
+
     it('does not report all phases complete while the final phase is still in progress', async () => {
-      const { tools } = createTestServer();
+      const { tools, analysisPlan } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: 'Collect', goal: 'Get frame data', expectedTools: ['execute_sql'] },
           { id: 'p2', name: 'Conclude', goal: 'Write final answer', expectedTools: ['fetch_artifact'] },
         ],
         successCriteria: 'Identify jank root cause',
+      });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
       });
       await callTool(tools, 'update_plan_phase', {
         phaseId: 'p1',
@@ -5158,6 +5361,12 @@ describe('createClaudeMcpServer', () => {
           { id: 'p1', name: 'Phase 1', goal: 'G1', expectedTools: ['execute_sql'] },
         ],
         successCriteria: 'Done',
+      });
+      analysisPlan.current?.toolCallLog.push({
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
       });
       // Mark phase 1 as completed
       await callTool(tools, 'update_plan_phase', {

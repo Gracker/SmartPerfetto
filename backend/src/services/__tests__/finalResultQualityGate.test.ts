@@ -1818,6 +1818,11 @@ describe('final result quality gate', () => {
       '内核等待语义边界：epoll/poll 类 blocked_function 通常表示等待事件或空闲，只有 io_wait=1 或有明确文件/数据库证据时才可列为 IO 候选 — 当前二者均不具备；blocked_function 是 kernel wchan 单帧，非完整内核调用栈。',
       'thread_state.blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待。当前 trace 缺失此数据源，470ms Sleeping 无法归因到具体原因。',
       'blocked_function 能力边界内，blocked_functions 列为 `-`，Sleeping 状态的具体阻塞原因（epoll/poll/futex 等）无法确认。',
+      'Q4b=470ms 因 `blocked_function` 缺失而无法追踪——可能是模拟 `Thread.sleep`、`epoll`/`poll` 事件等待或模拟 I/O 完成等待。**缺少证据不能将其定性为任何具体阻塞根因。**',
+      'blocked_function 缺失；独立 SQLite file I/O slice=200ms 证明磁盘 IO 是根因；因此无法追踪 poll 阻塞源，可能为 epoll 事件等待。',
+      'blocked_function is missing, and epoll_wait may indicate disk I/O only as a candidate; it is therefore unable to trace and may be an epoll event wait.',
+      'blocked_function 缺失且无法追踪；epoll_wait 表明磁盘 IO 仅为候选根因，可能是 epoll 事件等待。当前没有 io_wait=1，也没有文件或数据库 I/O 证据。',
+      'Sleeping 由 ChaosTask 系列切片中的主动 Thread.sleep 导致。blocked_functions 全为 null 进一步印证这是应用层主动等待（非系统 Binder/IO/epoll 阻塞）。TTID 滞后说明合成负载期间无新帧提交，SurfaceFlinger 未收到内容更新。',
     ]) {
       const issue = assessFinalResultQuality({
         result: result({
@@ -1828,6 +1833,16 @@ describe('final result quality gate', () => {
 
       expect(issue).toBeUndefined();
     }
+  });
+
+  it('accepts an explicit Sleeping/poll ambiguity boundary', () => {
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: `${result({}).conclusion}\n\nSleeping 状态不等于 I/O——当前无法区分 epoll 类事件等待、Thread.sleep 还是其他同步原语。`,
+        partial: true,
+      }),
+      query: '分析内核等待证据边界',
+    })).toBeUndefined();
   });
 
   it('still rejects poll root-cause claims when unrelated evidence is absent', () => {
@@ -1868,6 +1883,23 @@ describe('final result quality gate', () => {
       'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，由此证明磁盘 IO 是根因。',
       'epoll usually represents an event wait, and proves disk I/O was the root cause.',
       'epoll usually represents an event wait, thereby proves disk I/O was the root cause.',
+      'Q4b=470ms 因 `blocked_function` 缺失而无法追踪——可能是模拟 `Thread.sleep`、`epoll`/`poll` 事件等待或模拟 I/O 完成等待，但 `epoll_wait` 仍证明磁盘 IO 是根因。',
+      'blocked_function 缺失，但 epoll_wait 仍证明磁盘 IO 是根因；因此无法追踪，可能为 epoll 事件等待。',
+      'blocked_function 缺失且无法追踪；epoll_wait 表明磁盘 IO 是根因，可能是 epoll 事件等待。',
+      'blocked_function is missing, but epoll_wait proves disk I/O was the root cause; it is therefore unable to trace and may be an epoll event wait.',
+      'blocked_function 缺失，但 epoll_wait 仍说明磁盘 IO 是根因；因此无法追踪，可能为 epoll 事件等待。',
+      'blocked_function 缺失，但 epoll_wait 仍是磁盘 IO 根因；因此无法追踪，可能为 epoll 事件等待。',
+      'blocked_function is missing, but epoll_wait is still the disk I/O root cause; it is therefore unable to trace and may be an epoll event wait.',
+      'blocked_function 缺失，epoll_wait 证明磁盘 IO 是根因但仍需补证；因此无法追踪，可能为 epoll 事件等待。',
+      'blocked_function is missing, but epoll_wait proves disk I/O was the root cause but needs more evidence; it is therefore unable to trace and may be an epoll event wait.',
+      'blocked_function 缺失，CPU 候选仍需补证但 epoll_wait 证明磁盘 IO 是根因；因此无法追踪，可能为 epoll 事件等待。',
+      'blocked_function is missing and unable to trace; epoll_wait may indicate disk I/O only as a candidate but epoll_wait proves disk I/O was the root cause and may be an epoll event wait.',
+      'blocked_function is missing and unable to trace; epoll_wait does not prove disk I/O was the root cause but epoll_wait proves disk I/O was the root cause and may be an epoll event wait.',
+      'Sleeping 状态不等于 I/O——当前无法区分 epoll 类事件等待，但 epoll_wait 仍证明磁盘 IO 是根因。',
+      'Sleeping 状态不等于 I/O 却由 epoll_wait 证明磁盘 IO 是根因，当前无法区分 epoll 类事件等待。',
+      'Sleeping 状态并非不等于 I/O——当前无法区分 epoll 类事件等待。',
+      'blocked_functions 全为 null 进一步印证这是应用层主动等待（非系统 Binder/IO/epoll 阻塞），但 epoll_wait 仍证明磁盘 IO 是根因。',
+      '并非 blocked_functions 全为 null 进一步印证这是应用层主动等待（非系统 Binder/IO/epoll 阻塞）。',
     ]) {
       const issue = assessFinalResultQuality({
         result: result({conclusion, partial: true}),
@@ -1931,6 +1963,18 @@ describe('final result quality gate', () => {
       '| D 状态 → 磁盘 IO 根因 | **无法确认** | blocked_function 与 io_wait 均缺失；D 状态 22.98ms (1.7%) 仅表明存在不可中断等待，不能直接归因为磁盘 IO |',
       '| **D 状态根因** | 22.98ms (1.7%)，因 io_wait 和 blocked_function 均缺失，不能归因为磁盘 IO |',
       '| 主线程 IO 根因 | **无法确认** — D 状态 22.98ms (1.7%)，`blocked_function` 未采集 | 需 `sched_blocked_reason` |',
+      '| StartupHooks.kt 磁盘 I/O | **trace 未证明** — 源码描述合成磁盘读，但 trace D 状态仅 22.98ms(1.7%)。源码提供候选机制，trace 证据才是判据 | `[PRIVATE_QUERY_REFERENCE]` + art-30 |',
+      '| 磁盘 I/O（Q4a） | 无法归因 | D-state 仅 23ms(1.7%)；无 io_wait/IO 阻塞函数绑定（能力边界 + missing_evidence） |',
+      '| D-state (Q4a) 归因 | 低 | 缺少 io_wait 和 IO 阻塞函数绑定，不可归因 I/O（能力边界） |',
+      '| D-state (Q4a) 归因 | 低 | 缺少 io_wait 和 IO 阻塞函数绑定，不可归因 I/O；独立 SQLite file I/O slice=200ms 支持磁盘 IO 根因 |',
+      '| 磁盘 I/O 根因 | D-state 23ms；缺 `io_wait`、page-cache wchan 绑定 | `missing_evidence` |',
+      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 为空 | `trace_direct` + `derived_metric` |',
+      '| IO/磁盘阻塞 | 0 D-state + blocked_function = null | `trace_direct` |',
+      '| IO/磁盘阻塞 | 0 D-state + blocked_function is null | `trace_direct` |',
+      '| IO / page-cache | io_blocking 0 行，D/DK=0ms | 高 | trace_direct |',
+      '| IO / page-cache 等待 | ✗ 排除 | 主线程无 D/DK 状态、无 io_wait、blocked_function 为空 |',
+      '| **Q4a** | Uninterruptible Sleep (D) | 22.98 | 1.7% | ✅ 占比低，不足以标定 I/O 根因（缺 `io_wait`/page-cache 证据） |',
+      '| D 状态 I/O 归因 | 不可用 | `io_wait` + `blocked_function` 信号均缺失，22.98ms D 状态只能标为"不可中断等待" |',
       '内核等待语义自检：`blocked_function` 字段全部 null，无法判定是 Binder 等待、epoll 空闲还是其它类型阻塞，不能将其归为 IO 根因。',
       '| **D/IO 阻塞** | Q4a（D 状态）仅 22.98ms / 1.7%，未达 >10% 干预阈值 |',
       '所有依赖 ANR 窗口的后续分析步骤（CPU 健康、内存压力、I/O D-state、futex 锁等待、系统冻结检测、Top CPU 进程、根因诊断）均因无 ANR 窗口而返回空结果。',
@@ -1946,17 +1990,81 @@ describe('final result quality gate', () => {
       'D 状态并不证明磁盘 IO 是根因，因此无法认定为磁盘 IO 根因。',
       'D 状态不是磁盘 IO 根因，无法归因为磁盘 IO。',
       'D-state 的 blocked_function 记录了具体阻塞根因。',
+      'Q4a / D 状态自检: D=22.98ms (1.7%)，startup_slow_reasons 的 IO 检查未触发，blocking_chain_analysis 的 waker_chain 和 blocked_function_summary 均返回 0 行（trace 未记录 blocked_function 字段）。缺少 io_wait=1 或 IO/page-cache blocked_function 证据——D 状态在本报告中统一称为「不可中断等待」，无法归因 I/O。',
       '本次 trace 中 **未检测到任何 ANR 事件**。`anr_analysis` Skill 已完整执行了 ANR 检测、ANR 上下文提取、系统 CPU 健康度、内存压力（LMK）、I/O D-state 阻塞、futex 锁等待探针以及系统冻结检测共七个步骤，`android_anrs` 表查询返回 `total_anr_count=0`，所有依赖 ANR 窗口的后续分析均因无窗口而无数据。',
       '| I/O D-state 阻塞 | rowCount=0 | 无 ANR 窗口，跳过 |',
       'blocked_function is not a full call stack.',
       'blocked_function 不是完整调用栈。',
       'blocked_function 不是完整调用栈，但仍需 perf sample 才能证明完整调用栈。',
+      '文件 IO：blocked_functions 不含 IO/page-cache 函数族，当前侧 D-state 仅 22ms（1.7%）不足以构成根因。参考侧 D-state <1ms。',
     ]) {
       expect(assessFinalResultQuality({
         result: result({conclusion, partial: true}),
         query: '分析内核等待证据边界',
       })).toBeUndefined();
     }
+  });
+
+  it('accepts D-state taxonomy labels in an ANR diagnostic inventory', () => {
+    const baseReport = result({}).conclusion;
+    for (const boundary of [
+      'anr_analysis Skill 已完成全流水线执行——ANR 检测、ANR 上下文提取、系统 CPU 健康评估、内存压力检测、I/O D-state 不可中断等待分析、Futex 锁等待探针、系统冻结检测、Top CPU 进程排名及综合诊断——所有步骤均确认目标进程在 Trace 窗口内无 ANR。但需特别说明：Trace 采集配置中 android.anrs 表不存在，因此只能确认 Trace 未记录 ANR 事件，不能断言系统确实未发生 ANR。',
+      'I/O D-state 不可中断等待分析、Binder 阻塞分析。',
+      'I/O D-state 不可中断等待分析，Binder 阻塞分析。',
+      'The ANR diagnostic inventory completed CPU, memory, I/O D-state uninterruptible sleep analysis, futex lock-wait probing, and freeze detection. No ANR window was recorded, so no disk I/O attribution is available.',
+      'I/O D-state uninterruptible sleep analysis was skipped because no ANR window exists.',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({
+          conclusion: `${baseReport}\n\n${boundary}`,
+          partial: true,
+        }),
+        query: '分析 ANR 根因证据边界',
+      })).toBeUndefined();
+    }
+  });
+
+  it('still rejects positive IO attribution after a D-state taxonomy label', () => {
+    for (const conclusion of [
+      'I/O D-state 不可中断等待分析已执行，但 D-state 仍证明磁盘 IO 是根因。',
+      'I/O D-state uninterruptible sleep analysis completed, but D-state still proves disk I/O was the root cause.',
+      '不可中断睡眠证明磁盘 IO 是根因。',
+      'D-state、磁盘 IO 阻塞仍是根因。',
+    ]) {
+      expect(assessFinalResultQuality({
+        result: result({conclusion, partial: true}),
+        query: '分析 ANR 根因证据边界',
+      })?.code).toBe('kernel_blocking_claim_boundary');
+    }
+  });
+
+  it('evaluates fenced diagnostic trees line by line', () => {
+    const safeTree = [
+      '```text',
+      '左侧启动贡献：',
+      '├─ 业务 DB I/O ─ 14ms',
+      '│  └─ SqliteLoad',
+      '└─ D-state（不可中断等待）── 23ms (1.7%)',
+      '   └─ 无法归因 I/O（缺 io_wait / wchan 数据）',
+      '```',
+    ].join('\n');
+    expect(assessFinalResultQuality({
+      result: result({conclusion: `${result({}).conclusion}\n\n${safeTree}`, partial: true}),
+      query: '分析内核等待证据边界',
+    })).toBeUndefined();
+
+    const unsafeTree = [
+      '```text',
+      '左侧启动贡献：',
+      '├─ 业务 DB I/O ─ 14ms',
+      '│  └─ SqliteLoad',
+      '└─ D-state（不可中断等待）── 23ms (1.7%)，证明磁盘 IO 是根因',
+      '```',
+    ].join('\n');
+    expect(assessFinalResultQuality({
+      result: result({conclusion: `${result({}).conclusion}\n\n${unsafeTree}`, partial: true}),
+      query: '分析内核等待证据边界',
+    })?.code).toBe('kernel_blocking_claim_boundary');
   });
 
   it('rejects positive kernel claims after an unrelated negative boundary', () => {
@@ -1970,7 +2078,38 @@ describe('final result quality gate', () => {
       'D 状态不能不认定磁盘 IO 是根因。',
       '| D 状态 → 磁盘 IO 根因 | 无法确认，但仍证明磁盘 IO 是根因 |',
       '| 主线程 IO 根因 | **无法确认** — D 状态仍证明磁盘 IO 是根因，22.98ms (1.7%) | 需 `sched_blocked_reason` |',
+      '| StartupHooks.kt 磁盘 I/O | **trace 未证明** — 源码描述合成磁盘读，但 trace D 状态仍证明磁盘 IO 是根因 | `[PRIVATE_QUERY_REFERENCE]` + art-30 |',
+      '| StartupHooks.kt 磁盘 I/O | **并非 trace 未证明** — trace D 状态仅 22.98ms(1.7%) | art-30 |',
       '| 主线程 IO 根因 | **无法确认** — 但仍证明磁盘 IO 是根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
+      '| 磁盘 I/O（Q4a） | 无法归因 | D-state 仅 23ms；无 io_wait/IO 阻塞函数绑定，但 D-state 仍证明磁盘 IO 是根因 |',
+      '| D-state (Q4a) 归因 | 低 | 缺少 io_wait 和 IO 阻塞函数绑定，不可归因 I/O，但它仍证明磁盘 IO 是根因 |',
+      '| D-state (Q4a) 归因 | 低 | D-state 先证明磁盘 IO 是根因，后写缺少 io_wait 和 blocked_function，无法归因 I/O |',
+      '| 磁盘 I/O 根因 | D-state 23ms，仍证明磁盘 IO 是根因；缺 `io_wait`、page-cache wchan 绑定 | `missing_evidence` |',
+      '| 磁盘 I/O 根因 | D-state 23ms；缺 `io_wait`、page-cache wchan 绑定 | `confirmed` |',
+      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 为空，但 D-state 仍证明磁盘 IO 是根因 | `trace_direct` |',
+      '| IO / page-cache | io_blocking 0 行，D/DK=0ms，但仍证明磁盘 IO 是根因 | 高 | trace_direct |',
+      '| IO / page-cache 等待 | ✗ 排除 | D 状态仍证明磁盘 IO 是根因 |',
+      '| IO / page-cache 等待 | 已确认 | ✗ 排除 | 主线程 D/DK=22ms |',
+      '| D 状态 I/O 归因 | confirmed | ✗ 排除 |',
+      '| IO / page-cache | io_blocking 0.5 行，D/DK=0ms | 高 | trace_direct |',
+      '| IO / page-cache | io_blocking 0 行，D/DK=0.5ms | 高 | trace_direct |',
+      '| IO/磁盘阻塞 | D/DK 状态 22ms + blocked_function 为空 | `trace_direct` |',
+      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 不为空 | `trace_direct` |',
+      '| IO/磁盘阻塞 | 并非零 D/DK 状态 + blocked_function 为空 | `trace_direct` |',
+      '| IO/磁盘阻塞 | 预计零 D/DK 状态 + blocked_function 为空 | `trace_direct` |',
+      '| IO/磁盘阻塞 | 可能为零 D/DK 状态 + blocked_function 为空 | `trace_direct` |',
+      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 并非 null | `trace_direct` |',
+      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 不为 null | `trace_direct` |',
+      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function != null | `trace_direct` |',
+      '| IO/磁盘阻塞 | 零 D-state + blocked_function is not null | `trace_direct` |',
+      '| IO/磁盘阻塞 | 零 D-state + blocked_function <> null | `trace_direct` |',
+      '| **Q4a** | Uninterruptible Sleep (D) | 22.98 | 1.7% | 占比低，并非不足以标定 I/O 根因（缺 `io_wait`/page-cache 证据） |',
+      '| **Q4a** | Uninterruptible Sleep (D) | 22.98 | 1.7% | 占比低，不足以标定 I/O 根因，但 D-state 仍证明磁盘 IO 是根因 |',
+      '| Q4a I/O 根因 | 已确认 | D 22.98，1.7%，占比低，不足以标定 I/O 根因（缺 io_wait/page-cache） |',
+      '| Q4a I/O 根因 | confirmed | D 22.98，1.7%，占比低，不足以标定 I/O 根因（缺 io_wait/page-cache） |',
+      '| D 状态 I/O 归因 | 不可用 | D 状态仍证明磁盘 IO 是根因，尽管 `io_wait` + `blocked_function` 信号均缺失 |',
+      '| D 状态 I/O 根因 | 已确认 | 不可用 |',
+      '| 磁盘 I/O（Q4a） | 并非无法归因 | D-state 仅 23ms；无 io_wait/IO 阻塞函数绑定 |',
       '内核等待语义自检：`blocked_function` 字段全部 null，无法判定是 Binder 等待、epoll 空闲还是其它类型阻塞，不能将其归为 IO 根因，但仍证明磁盘 IO 是根因。',
       '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，但 epoll_wait 仍证明磁盘 IO 是根因，不过不能将其归为 IO 根因。',
       '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，不能不将其归为 IO 根因。',
@@ -1990,6 +2129,9 @@ describe('final result quality gate', () => {
       'D 状态不能证明磁盘 IO 是根因但仍证明磁盘 IO 是根因因此不能归因为磁盘 IO。',
       '| I/O D-state 阻塞 | rowCount=0 | 但仍证明磁盘 IO 是根因 |',
       'D 状态证明磁盘 IO 是根因；另一检查 rowCount=0。',
+      'Q4a / D 状态自检: D=22.98ms (1.7%)，startup_slow_reasons 的 IO 检查未触发，但 D 状态仍证明磁盘 IO 是根因。',
+      'Q4a / D 状态自检: 预计 IO 检查未触发，blocking_chain_analysis 返回0行。',
+      'Q4a / D 状态自检: IO 检查未触发并不成立，blocking_chain_analysis 返回0行。',
       '| I/O D-state 阻塞 | rowCount!=0 |',
       '| I/O D-state 阻塞 | 预计 rowCount=0 |',
       '| I/O D-state 阻塞 | 并非无 ANR 窗口 |',
@@ -2001,6 +2143,8 @@ describe('final result quality gate', () => {
       'D 状态并非 **不能归因** 为磁盘 IO 根因。',
       'D 状态只是不可中断等待，仍需 IO 证据，但仍证明磁盘 IO 是根因。',
       'Q4a（D 状态）为 22.98ms，印证 IO 阻塞显著，是启动慢的根因。',
+      '文件 IO：blocked_functions 不含 IO/page-cache 函数族，但 D-state 仍证明磁盘 IO 是根因；当前侧 D-state 仅 22ms（1.7%）不足以构成根因。',
+      '并非 blocked_functions 不含 IO/page-cache 函数族，当前侧 D-state 仅 22ms（1.7%）不足以构成根因。',
       'Q4a (D-state) is 22.98ms, confirming significant I/O blocking as the startup root cause.',
       'Q4a（D 状态）仅 22.98ms，IO 阻塞并非不显著，是启动慢的根因。',
       'D 状态证明磁盘 IO 是根因；也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。',
@@ -2022,10 +2166,16 @@ describe('final result quality gate', () => {
       'blocked_function is not a full call stack, yet still is a full kernel call stack.',
       'blocked_function 不是完整内核调用栈，但仍是完整内核调用栈。',
     ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析内核等待证据边界',
-      })?.code).toBe('kernel_blocking_claim_boundary');
+      expect({
+        conclusion,
+        code: assessFinalResultQuality({
+          result: result({conclusion, partial: true}),
+          query: '分析内核等待证据边界',
+        })?.code,
+      }).toEqual({
+        conclusion,
+        code: 'kernel_blocking_claim_boundary',
+      });
     }
   });
 

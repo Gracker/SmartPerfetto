@@ -1469,10 +1469,10 @@ strategies:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/prompt-output-format.template.md
-  backend/strategies/prompt-pi-plan-completion-continuation-en.template.md:
+  backend/strategies/prompt-plan-completion-continuation-en.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime plan-completion orchestration
-  backend/strategies/prompt-pi-plan-completion-continuation-zh.template.md:
+  backend/strategies/prompt-plan-completion-continuation-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime plan-completion orchestration
   backend/strategies/prompt-quick.template.md:

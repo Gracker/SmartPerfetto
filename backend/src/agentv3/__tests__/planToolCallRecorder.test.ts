@@ -10,6 +10,7 @@ import {
   recordPlanOrPrePlanToolCall,
   replayPrePlanToolCalls,
 } from '../planToolCallRecorder';
+import {getAnalysisPlanCompletionStatus} from '../planCompletionStatus';
 import {verifyPlanAdherence} from '../../agentRuntime/engines/claude/claudeVerifier';
 import {getSourceLookupCodeReferences} from '../../services/codebase/sourceLookupTools';
 
@@ -684,5 +685,134 @@ describe('recordPlanToolCall', () => {
         missingExpectedCalls: [{ tool: 'lookup_strategy_detail' }],
       }),
     ]);
+  });
+
+  it.each([
+    {
+      name: 'no call',
+      toolCallLog: [],
+    },
+    {
+      name: 'a failed expected call',
+      toolCallLog: [{
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: false,
+        matchedPhaseId: 'p1',
+      }],
+    },
+    {
+      name: 'a wrong call attributed to the phase',
+      toolCallLog: [{
+        toolName: 'get_comparison_context',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
+      }],
+    },
+    {
+      name: 'an unmatched expected call',
+      toolCallLog: [{
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+      }],
+    },
+  ])('keeps an expectedTools-only completed phase open after $name', ({toolCallLog}) => {
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '补充验证与结论',
+        goal: '交叉验证关键发现，补充缺失证据，输出综合分析结论',
+        expectedTools: ['execute_sql', 'fetch_artifact', 'lookup_knowledge'],
+        expectedCalls: [],
+        status: 'completed',
+        completedAt: 100,
+        summary: '综合结论已经整理完成，并准备输出最终报告和证据索引。',
+      }],
+      successCriteria: '补充验证后输出综合结论',
+      submittedAt: 1,
+      toolCallLog,
+    };
+
+    const gaps = findCompletedPhaseEvidenceGaps(plan);
+    expect(gaps).toEqual([
+      expect.objectContaining({
+        phase: plan.phases[0],
+        matchedCalls: [],
+        missingExpectedCalls: [],
+        missingGenericToolEvidence: true,
+      }),
+    ]);
+    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+      complete: false,
+      pendingPhases: [plan.phases[0]],
+    });
+  });
+
+  it('accepts one valid matching generic tool call for an expectedTools-only phase', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [{
+        id: 'p1',
+        name: '补充验证与结论',
+        goal: '交叉验证关键发现，补充缺失证据，输出综合分析结论',
+        expectedTools: ['execute_sql', 'fetch_artifact', 'lookup_knowledge'],
+        expectedCalls: [],
+        status: 'completed',
+        completedAt: 100,
+        summary: '已通过 SQL 交叉验证关键发现，并输出综合分析结论和证据索引。',
+      }],
+      successCriteria: '补充验证后输出综合结论',
+      submittedAt: 1,
+      toolCallLog: [{
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
+      }],
+    };
+
+    expect(findCompletedPhaseEvidenceGaps(plan)).toEqual([]);
+    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10}).complete).toBe(true);
+  });
+
+  it('lets a pure conclusion phase reuse valid evidence from a non-conclusion phase only', () => {
+    const createConclusionPlan = (toolCallLog: AnalysisPlanV3['toolCallLog']): AnalysisPlanV3 => ({
+      phases: [
+        {
+          id: 'p1',
+          name: '证据采集',
+          goal: '查询关键帧数据',
+          expectedTools: ['execute_sql'],
+          status: 'completed',
+          completedAt: 50,
+          summary: '已查询关键帧耗时并保存可复核证据。',
+        },
+        {
+          id: 'p2',
+          name: '综合结论',
+          goal: '输出最终报告',
+          expectedTools: ['fetch_artifact'],
+          status: 'completed',
+          completedAt: 100,
+          summary: '已依据前序证据输出最终报告和证据索引。',
+        },
+      ],
+      successCriteria: '输出有证据支持的最终报告',
+      submittedAt: 1,
+      toolCallLog,
+    });
+
+    const withoutPriorEvidence = createConclusionPlan([]);
+    expect(findCompletedPhaseEvidenceGaps(withoutPriorEvidence).map(gap => gap.phase.id))
+      .toEqual(['p1', 'p2']);
+
+    const withPriorEvidence = createConclusionPlan([{
+      toolName: 'execute_sql',
+      timestamp: 10,
+      success: true,
+      matchedPhaseId: 'p1',
+    }]);
+    expect(findCompletedPhaseEvidenceGaps(withPriorEvidence)).toEqual([]);
   });
 });

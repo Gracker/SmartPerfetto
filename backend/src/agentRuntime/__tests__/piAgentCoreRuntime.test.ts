@@ -1731,6 +1731,69 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(report).not.toContain('Key findings:');
   });
 
+  it('ignores Final Report Contract prose and starts at the actual Markdown report heading', () => {
+    const report = sanitizePiAgentCoreConclusionText(
+      'The system is asking me to output the final report. Let me check what I need to include based on the Final Report Contract:\n\n' +
+      '1. 启动类型与 TTID/TTFD\n' +
+      '2. 阶段耗时分解\n\n' +
+      'Let me now write the final report with all required elements.\n' +
+      '## 综合结论\n\n' +
+      '左侧冷启动 1338.65ms，右侧 301.84ms。[Evidence:data:skill:startup_analysis:test]',
+    );
+
+    expect(report.startsWith('## 综合结论')).toBe(true);
+    expect(report).toContain('1338.65ms');
+    expect(report).not.toContain('The system is asking me');
+    expect(report).not.toContain('Final Report Contract');
+  });
+
+  it('does not treat a Final Report Contract heading as the delivered report', () => {
+    const report = sanitizePiAgentCoreConclusionText(
+      'Let me verify the remaining contract.\n' +
+      '## Final Report Contract：综合结论、证据链必须完整\n\n' +
+      'The contract is now checked.\n' +
+      '## 综合结论\n\n' +
+      '冷启动耗时 1338.65ms。[Evidence:data:skill:startup_analysis:test]',
+    );
+
+    expect(report.startsWith('## 综合结论')).toBe(true);
+    expect(report).not.toContain('Final Report Contract');
+  });
+
+  it('preserves a bare Chinese analysis-report title as the report boundary', () => {
+    const report = sanitizePiAgentCoreConclusionText(
+      'Let me now write the report.\n\n' +
+      '启动性能分析报告\n\n' +
+      '综合结论：冷启动耗时 1338.65ms。[Evidence:data:skill:startup_analysis:test]',
+    );
+
+    expect(report.startsWith('启动性能分析报告')).toBe(true);
+    expect(report).not.toContain('Let me now write');
+  });
+
+  it('does not treat a Chinese report-writing instruction as the report boundary', () => {
+    const report = sanitizePiAgentCoreConclusionText(
+      'Let me prepare the report.\n' +
+      '请输出启动性能分析报告\n\n' +
+      '## 1. 综合结论\n\n' +
+      '冷启动耗时 1338.65ms。[Evidence:data:skill:startup_analysis:test]',
+    );
+
+    expect(report.startsWith('## 1. 综合结论')).toBe(true);
+    expect(report).not.toContain('请输出');
+  });
+
+  it('preserves a descriptive English Markdown report heading', () => {
+    const report = sanitizePiAgentCoreConclusionText(
+      'Let me now write the report.\n\n' +
+      '# Final Report for Startup\n\n' +
+      'Cold startup took 1338.65ms. [Evidence:data:skill:startup_analysis:test]',
+    );
+
+    expect(report.startsWith('# Final Report for Startup')).toBe(true);
+    expect(report).not.toContain('Let me now write');
+  });
+
   it('auto-closes the final Pi report phase when the complete report is delivered', () => {
     const plan = {
       phases: [
@@ -1753,7 +1816,12 @@ describe('experimental Pi agent-core runtime contract', () => {
       ],
       successCriteria: '输出完整结构化报告',
       submittedAt: 1,
-      toolCallLog: [],
+      toolCallLog: [{
+        toolName: 'invoke_skill',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'p1',
+      }],
     } as any;
 
     const closed = completePiAgentCoreFinalReportPhaseIfDelivered(

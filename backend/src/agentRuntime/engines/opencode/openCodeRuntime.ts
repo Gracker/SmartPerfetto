@@ -123,6 +123,8 @@ import {
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
+import {resolveRuntimeFinalReportSceneType} from '../../finalReportSceneResolution';
+import {loadRuntimePlanCompletionContinuationPrompt} from '../../planCompletionContinuation';
 import {
   buildRuntimeQuickEvidenceDirectAnswer,
   type RuntimeQuickEvidenceCounts,
@@ -174,6 +176,8 @@ const DEFAULT_PROMPT_TIMEOUT_MS = 20 * 60_000;
 const PROMPT_POLL_INTERVAL_MS = 1_000;
 const DEFAULT_MCP_TIMEOUT_MS = 5_000;
 const STANDALONE_MCP_NAME = 'smartperfetto';
+const OPENCODE_MAX_PLAN_COMPLETION_CONTINUATIONS = 2;
+const OPENCODE_MAX_HYPOTHESIS_RESOLUTION_CONTINUATIONS = 1;
 
 const STANDALONE_MCP_PUBLIC_TOOLS = [
   'lookup_blog_knowledge',
@@ -2235,6 +2239,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       options,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
     );
+    const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: prep.sceneType,
+      plan: prep.analysisPlan.current,
+    });
     const abortController = new AbortController();
     const bridge = await startOpenCodeMcpBridge(
       prep.toolDefinitions,
@@ -2256,6 +2265,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     let promptResponse: unknown;
     let messagesResponse: unknown;
     let conclusion = '';
+    let planCompletionContinuations = 0;
+    let hypothesisResolutionContinuations = 0;
+    let planCompletionContinuationFailed = false;
+    let planCompletionFailureMessage: string | undefined;
+    let requireFreshFinalReport = false;
     let finalReportContinuationAttempted = false;
     let finalReportContinuationQualified = false;
     let finalReportContinuationFailureMessage: string | undefined;
@@ -2309,7 +2323,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         totalDurationMs: 0,
       },
       query,
-      sceneType: prep.sceneType,
+      sceneType: resolveFinalReportSceneType(),
       comparisonIdentity: prep.comparisonIdentity,
     });
     try {
@@ -2388,16 +2402,90 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       conclusion = projectAssistantConclusion(messagesResponse, promptResponse);
       reconcileFinalReportPhase(conclusion);
 
+      while (!prep.quickMode) {
+        const planStatus = getOpenCodePlanCompletionStatus(prep.analysisPlan.current);
+        const unresolvedHypotheses = prep.hypotheses.filter(
+          hypothesis => hypothesis.status === 'formed',
+        );
+        const continuePlan = !planStatus.complete &&
+          planCompletionContinuations < OPENCODE_MAX_PLAN_COMPLETION_CONTINUATIONS;
+        const resolveHypotheses = planStatus.complete &&
+          unresolvedHypotheses.length > 0 &&
+          hypothesisResolutionContinuations < OPENCODE_MAX_HYPOTHESIS_RESOLUTION_CONTINUATIONS;
+        if (!continuePlan && !resolveHypotheses) break;
+
+        if (continuePlan) planCompletionContinuations++;
+        else hypothesisResolutionContinuations++;
+        this.emitUpdate({
+          type: 'progress',
+          content: {
+            module: 'opencode',
+            phase: 'concluding',
+            message: localize(
+              prep.analysisRunSpec.outputLanguage,
+              continuePlan
+                ? '分析 plan 尚未闭合，正在继续补齐未完成阶段和必需证据。'
+                : '分析 plan 已闭合，正在用已有证据处理尚未判定的假设。',
+              continuePlan
+                ? 'The analysis plan is still open; continuing the pending phases and required evidence.'
+                : 'The analysis plan is complete; resolving the remaining hypotheses against existing evidence.',
+            ),
+          },
+          timestamp: Date.now(),
+        });
+        try {
+          const continuationResult = await runAnalysisPrompt(
+            loadRuntimePlanCompletionContinuationPrompt({
+              planStatus,
+              unresolvedHypotheses,
+              outputLanguage: prep.analysisRunSpec.outputLanguage,
+            }),
+          );
+          const continuationConclusion = projectAssistantConclusion(
+            continuationResult.messagesResponse,
+            continuationResult.promptResponse,
+          );
+          const deliveredFreshReport = Boolean(
+            continuationConclusion && hasDeliverableFinalReportHeading(continuationConclusion),
+          );
+          requireFreshFinalReport = !deliveredFreshReport;
+          if (deliveredFreshReport) {
+            promptResponse = continuationResult.promptResponse;
+            messagesResponse = continuationResult.messagesResponse;
+            conclusion = continuationConclusion;
+            reconcileFinalReportPhase(conclusion);
+          }
+        } catch (error) {
+          const aborted = promptSession.aborted || abortController.signal.aborted ||
+            isTraceProcessorQueryCancelledError(error) ||
+            /OpenCode prompt aborted/i.test(String((error as Error)?.message || error));
+          if (aborted) throw error;
+          planCompletionContinuationFailed = true;
+          planCompletionFailureMessage = localize(
+            prep.analysisRunSpec.outputLanguage,
+            'OpenCode 计划补全失败；保留已有报告并按不完整结果返回。',
+            'The OpenCode plan-completion continuation failed; the existing report is retained as an incomplete result.',
+          );
+          break;
+        }
+      }
+
       const initialPlanStatus = getOpenCodePlanCompletionStatus(prep.analysisPlan.current);
+      const unresolvedHypotheses = prep.hypotheses.filter(
+        hypothesis => hypothesis.status === 'formed',
+      );
       let initialContractIssue = assessFinalReportContractCompleteness({
         conclusion,
         query,
-        sceneType: prep.sceneType,
+        sceneType: resolveFinalReportSceneType(),
       });
       let initialQualityIssue = assessCandidateQuality(conclusion);
       if (
         !prep.quickMode &&
         initialPlanStatus.complete &&
+        unresolvedHypotheses.length === 0 &&
+        !planCompletionContinuationFailed &&
+        !requireFreshFinalReport &&
         (initialContractIssue?.missingSections.length || initialQualityIssue)
       ) {
         const completedPhaseConclusion = getCompletedOpenCodeFinalReportPhaseSummary(
@@ -2409,7 +2497,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           const completedPhaseContractIssue = assessFinalReportContractCompleteness({
             conclusion: projectedPhaseConclusion,
             query,
-            sceneType: prep.sceneType,
+            sceneType: resolveFinalReportSceneType(),
           });
           const completedPhaseQualityIssue = assessCandidateQuality(projectedPhaseConclusion);
           if (!completedPhaseContractIssue && !completedPhaseQualityIssue) {
@@ -2422,7 +2510,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       if (
         !prep.quickMode &&
         initialPlanStatus.complete &&
-        (initialContractIssue?.missingSections.length || initialQualityIssue)
+        unresolvedHypotheses.length === 0 &&
+        !planCompletionContinuationFailed &&
+        (requireFreshFinalReport || initialContractIssue?.missingSections.length || initialQualityIssue)
       ) {
         finalReportContinuationAttempted = true;
         this.emitUpdate({
@@ -2454,7 +2544,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
             ? assessFinalReportContractCompleteness({
                 conclusion: continuationConclusion,
                 query,
-                sceneType: prep.sceneType,
+                sceneType: resolveFinalReportSceneType(),
               })
             : undefined;
           const continuationQualityIssue = continuationConclusion
@@ -2508,6 +2598,9 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
 
     const planStatus = getOpenCodePlanCompletionStatus(prep.analysisPlan.current);
+    const unresolvedHypotheses = prep.hypotheses.filter(
+      hypothesis => hypothesis.status === 'formed',
+    );
     let partial = false;
     let terminationReason: AnalysisResult['terminationReason'];
     let terminationMessage: string | undefined;
@@ -2518,6 +2611,20 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         planStatus,
         prep.analysisRunSpec.outputLanguage,
       );
+    }
+    if (!prep.quickMode && unresolvedHypotheses.length > 0) {
+      partial = true;
+      terminationReason = 'plan_incomplete';
+      terminationMessage = localize(
+        prep.analysisRunSpec.outputLanguage,
+        `OpenCode 分析仍有未判定假设：${unresolvedHypotheses.map(h => h.id).join(', ')}`,
+        `OpenCode analysis still has unresolved hypotheses: ${unresolvedHypotheses.map(h => h.id).join(', ')}`,
+      );
+    }
+    if (planCompletionContinuationFailed) {
+      partial = true;
+      terminationReason = 'plan_incomplete';
+      terminationMessage = planCompletionFailureMessage;
     }
     if (finalReportContinuationAttempted && !finalReportContinuationQualified) {
       partial = true;
@@ -2537,7 +2644,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       hypotheses: prep.hypotheses.map(h => toRuntimeProtocolHypothesis(h, 'opencode')),
       conclusion,
       confidence: estimateConfidence(findings, partial),
-      rounds: finalReportContinuationAttempted ? 2 : 1,
+      rounds: 1 + planCompletionContinuations + hypothesisResolutionContinuations +
+        (finalReportContinuationAttempted ? 1 : 0),
       totalDurationMs: Date.now() - startedAt,
       partial: partial || undefined,
       terminationReason,
@@ -2582,6 +2690,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     };
 
     if (!prep.quickMode) {
+      const finalReportSceneType = resolveFinalReportSceneType();
       const verifyCurrentConclusion = async () => {
         result.conclusion = completeFinalReportCodeReferences({
           plan: prep.analysisPlan.current,
@@ -2594,7 +2703,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           enableLLM: false,
           plan: prep.analysisPlan.current,
           hypotheses: prep.hypotheses,
-          sceneType: prep.sceneType,
+          sceneType: finalReportSceneType,
           outputLanguage: prep.analysisRunSpec.outputLanguage,
           query,
           emitIssueProgress: false,
@@ -2609,7 +2718,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       const contractIssue = assessFinalReportContractCompleteness({
         conclusion: result.conclusion,
         query,
-        sceneType: prep.sceneType,
+        sceneType: finalReportSceneType,
         caseRecommendations: result.conclusionContract?.caseRecommendations,
       });
       const truncationIssue = findTruncationVerificationIssue([
@@ -2684,7 +2793,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const gateIssue = applyFinalResultQualityGate({
       result,
       query,
-      sceneType: prep.sceneType,
+      sceneType: resolveFinalReportSceneType(),
       comparisonIdentity: prep.comparisonIdentity,
     });
     if (gateIssue && !wasPartialBeforeQualityGate) {

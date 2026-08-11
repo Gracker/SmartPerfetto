@@ -96,6 +96,7 @@ import {
   findCompletedPhaseEvidenceGaps,
   findMissingExpectedCallsForPhase,
   formatPlanEvidenceGap,
+  getPhaseToolEvidenceStatus,
   replayPrePlanToolCalls,
 } from './planToolCallRecorder';
 import { isConclusionLikePlanPhase } from './planPhaseSemantics';
@@ -811,6 +812,25 @@ function normalizePlanPhaseStatus(input: unknown): PlanPhase['status'] | undefin
     return status;
   }
   return undefined;
+}
+
+type PlanPhaseUpdateStatus = Exclude<PlanPhase['status'], 'pending'>;
+
+function resolvePlanPhaseUpdateStatus(
+  status: unknown,
+  phaseStatus: unknown,
+): {status: PlanPhaseUpdateStatus} | {error: 'missing' | 'invalid' | 'conflict'} {
+  const supplied = [status, phaseStatus].filter(value => value !== undefined);
+  if (supplied.length === 0) return {error: 'missing'};
+
+  const normalized = supplied.map((value): PlanPhaseUpdateStatus | undefined => {
+    if (value === 'active') return 'in_progress';
+    if (value === 'in_progress' || value === 'completed' || value === 'skipped') return value;
+    return undefined;
+  });
+  if (normalized.some(value => value === undefined)) return {error: 'invalid'};
+  if (new Set(normalized).size > 1) return {error: 'conflict'};
+  return {status: normalized[0]!};
 }
 
 function collectPlanPhaseShapeErrors(phases: Pick<PlanPhase, 'id' | 'name' | 'goal'>[]): string[] {
@@ -2258,7 +2278,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       ...toolCallLog,
       toolInputToPlanCallRecord(toolName, input, phase.id),
     ];
-    return findMissingExpectedCallsForPhase(phase, records).length === 0;
+    return getPhaseToolEvidenceStatus(plan, phase, records).satisfied;
   }
 
   function phaseSemanticScore(
@@ -2490,8 +2510,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const otherIndex = plan.phases.findIndex(p => p.id === other.id);
       if (otherIndex >= 0 && nextIndex >= 0 && otherIndex < nextIndex) {
         const toolCallLog = Array.isArray(plan.toolCallLog) ? plan.toolCallLog : [];
-        const missingExpectedCalls = findMissingExpectedCallsForPhase(other, toolCallLog);
-        if (missingExpectedCalls.length > 0) {
+        const evidenceStatus = getPhaseToolEvidenceStatus(plan, other, toolCallLog);
+        if (!evidenceStatus.satisfied) {
           other.status = 'pending';
           other.completedAt = undefined;
           other.summary = undefined;
@@ -5853,10 +5873,31 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'When skipping, explain why (e.g. "trace 中无启动数据，跳过启动分析").',
     {
       phaseId: z.string().describe('Phase ID to update (e.g. "p1")'),
-      status: z.enum(['in_progress', 'completed', 'skipped', 'active']).describe('New phase status. "active" is accepted as an alias for "in_progress".'),
+      status: z.enum(['in_progress', 'completed', 'skipped', 'active']).optional().describe('New phase status. "active" is accepted as an alias for "in_progress".'),
+      phaseStatus: z.enum(['in_progress', 'completed', 'skipped', 'active']).optional().describe('Compatibility alias for status. If both are present, they must resolve to the same status.'),
       summary: z.string().optional().describe('REQUIRED for completed/skipped: key evidence or reason. Must include specific data (numbers, names, findings).'),
     },
-    async ({ phaseId, status, summary }) => {
+    async ({ phaseId, status, phaseStatus, summary }) => {
+      const statusResolution = resolvePlanPhaseUpdateStatus(status, phaseStatus);
+      if ('error' in statusResolution) {
+        const error = statusResolution.error === 'missing'
+          ? localize(outputLanguage, '必须提供 status 或 phaseStatus。', 'Provide status or phaseStatus.')
+          : statusResolution.error === 'conflict'
+            ? localize(outputLanguage, 'status 与 phaseStatus 冲突。', 'status and phaseStatus conflict.')
+            : localize(outputLanguage, 'status/phaseStatus 不是支持的阶段状态。', 'status/phaseStatus is not a supported phase status.');
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error,
+              action_required: 'retry_update_plan_phase_with_valid_status',
+            }),
+          }],
+          isError: true,
+        };
+      }
+      const normalizedStatus = statusResolution.status;
       const plan = analysisPlanRef.current;
       if (!plan) {
         return {
@@ -5886,7 +5927,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
 
       const trimmedSummary = summary?.trim();
-      const normalizedStatus: PlanPhase['status'] = status === 'active' ? 'in_progress' : status;
       if ((normalizedStatus === 'completed' || normalizedStatus === 'skipped') && pendingPlanRevisionGate) {
         return {
           content: [{
@@ -5962,7 +6002,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }
       }
 
-      if (normalizedStatus === 'completed' && (phase.expectedCalls ?? []).length > 0) {
+      const semanticMismatch = findPhaseSemanticMismatch(plan, phase, trimmedSummary);
+      if (normalizedStatus === 'completed' && !semanticMismatch) {
         const prospectivePlan: AnalysisPlanV3 = {
           ...plan,
           phases: plan.phases.map(p =>
@@ -5980,6 +6021,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           .find(gap => gap.phase.id === phase.id);
         if (evidenceGap) {
           const message = formatPlanEvidenceGap(evidenceGap, outputLanguage);
+          const missingGenericToolEvidence = Boolean(evidenceGap.missingGenericToolEvidence);
           return {
             content: [{
               type: 'text' as const,
@@ -5990,10 +6032,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                   `${message}。请先调用缺失的关键工具，或如果数据确实不可用则将阶段标记为 skipped 并说明原因。`,
                   `${message}. Call the missing required tool first, or mark the phase skipped with a concrete reason if the data is genuinely unavailable.`,
                 ),
-                action_required: 'run_expected_calls_before_completing_phase',
+                action_required: missingGenericToolEvidence
+                  ? 'run_expected_tools_before_completing_phase'
+                  : 'run_expected_calls_before_completing_phase',
                 currentPhaseId: phase.id,
                 currentPhaseName: phase.name,
                 missingExpectedCalls: evidenceGap.missingExpectedCalls,
+                ...(missingGenericToolEvidence
+                  ? {expectedTools: phase.expectedTools}
+                  : {}),
               }),
             }],
             isError: true,
@@ -6001,7 +6048,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }
       }
 
-      const semanticMismatch = findPhaseSemanticMismatch(plan, phase, trimmedSummary);
       if (semanticMismatch) {
         return {
           content: [{
@@ -6044,7 +6090,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       });
 
       // Report overall plan progress
-      const allPhasesClosed = plan.phases.every(p => p.status === 'completed' || p.status === 'skipped');
+      const allPhasesClosed =
+        plan.phases.every(p => p.status === 'completed' || p.status === 'skipped') &&
+        findCompletedPhaseEvidenceGaps(plan).length === 0;
       const nextPhase = plan.phases.find(p => p.status === 'pending');
 
       // Compact return: only include feedback when needed (normal path = minimal ACK)

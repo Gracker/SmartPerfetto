@@ -92,8 +92,24 @@ function normalizeTextForQualityCheck(text: string): string {
 function splitQualityStatements(text: string): string[] {
   const statements: string[] = [];
   let statementStart = 0;
+  let markdownCodeDelimiterLength = 0;
   for (let index = 0; index < text.length; index += 1) {
     const character = text[index];
+    if (character === '`') {
+      let delimiterEnd = index + 1;
+      while (text[delimiterEnd] === '`') delimiterEnd += 1;
+      const delimiterLength = delimiterEnd - index;
+      if (markdownCodeDelimiterLength === 0) {
+        markdownCodeDelimiterLength = delimiterLength;
+      } else if (markdownCodeDelimiterLength === delimiterLength) {
+        markdownCodeDelimiterLength = 0;
+      }
+      index = delimiterEnd - 1;
+      continue;
+    }
+    if (markdownCodeDelimiterLength > 0 && (
+      markdownCodeDelimiterLength < 3 || character !== '\n'
+    )) continue;
     const isDecimalPoint = character === '.' &&
       /\d/.test(text[index - 1] || '') &&
       /\d/.test(text[index + 1] || '');
@@ -375,6 +391,78 @@ function reversesPollIoQualifier(claim: string): boolean {
   return /(?:并非|不是)(?:不能|无法|不可)|(?:不能|无法|不可)不(?:将其|把它|把该信号)?/i.test(normalized);
 }
 
+function hasPositivePollIoAttribution(text: string): boolean {
+  let pollAntecedentAvailable = false;
+  return text.split(/[,，;；]/).some(clause => {
+    const pollMatches = Array.from(clause.matchAll(
+      /(?:do_epoll_wait|epoll_wait|ep_poll|__pollwait|epoll|poll)/gi,
+    ));
+    const strongClaims = Array.from(clause.matchAll(
+      /(?:证明|说明|表明|导致|构成|认定(?:为)?|归因(?:为)?|proves?|shows?|demonstrates?|indicates?|(?<!root[\s-])causes?|constitutes?|establishes?)[^。！？.!?\n]{0,60}?(?:磁盘\s*(?:io|i\/o)|存储\s*(?:io|i\/o)|disk\s*(?:io|i\/o)|storage\s*(?:io|i\/o)|io|i\/o|磁盘|存储|根因|卡顿|瓶颈|启动慢|disk|storage|root\s+cause|stall|slowdown|latency)|(?:仍|还是|依然)?\s*(?:是|属于)\s*[^。！？.!?\n]{0,40}?(?:io|i\/o|磁盘|存储)[^。！？.!?\n]{0,20}?根因|(?:is|are)(?!\s+not)\s+(?:still\s+)?(?:the\s+)?[^.!?\n]{0,40}?(?:io|i\/o|disk|storage)[^.!?\n]{0,20}?root\s+cause/gi,
+    ));
+    if (pollMatches.length > 0) {
+      pollAntecedentAvailable = true;
+    } else if (pollAntecedentAvailable) {
+      const firstStrongClaim = strongClaims[0];
+      const possibleSubject = firstStrongClaim?.index === undefined
+        ? clause
+        : clause.slice(0, firstStrongClaim.index);
+      const hasExplicitCoreference = /(?:它|这|该信号|这个信号|此信号|这个证据|该证据|此证据|\bit\b|\bthis(?:\s+(?:signal|evidence))?\b|\bthat\s+(?:signal|evidence)\b)/i.test(possibleSubject);
+      if (!hasExplicitCoreference && !hasOnlyDiscoursePrefix(possibleSubject)) {
+        pollAntecedentAvailable = false;
+      }
+    }
+    if (strongClaims.length === 0 || !pollAntecedentAvailable) {
+      return false;
+    }
+    return strongClaims.some(strongClaim => {
+      if (strongClaim.index === undefined) return false;
+      const precedingPolls = pollMatches.filter(
+        pollMatch => pollMatch.index !== undefined && pollMatch.index < strongClaim.index,
+      );
+      const nearestPoll = precedingPolls[precedingPolls.length - 1];
+      const predicateQualifierStart = nearestPoll?.index !== undefined
+        ? nearestPoll.index + nearestPoll[0].length
+        : Math.max(0, strongClaim.index - 24);
+      const predicateQualifier = clause.slice(
+        predicateQualifierStart,
+        strongClaim.index,
+      );
+      const claimObjectSuffix = clause.slice(
+        strongClaim.index + strongClaim[0].length,
+        strongClaim.index + strongClaim[0].length + 40,
+      );
+      const hasTentativePredicate = /(?:可能|或许|也许|may|might|could|possibly|potentially)\s*$/i.test(
+        predicateQualifier,
+      );
+      const hasCandidateObject = /^\s*(?:(?:only|merely)\s+)?(?:as\s+)?(?:a\s+)?candidate\b|^\s*(?:仅|只是|只)?(?:为|是)?\s*(?:候选|可能性)/i.test(
+        claimObjectSuffix,
+      );
+      if (hasTentativePredicate || hasCandidateObject) return false;
+
+      const predicatePrefix = clause.slice(0, strongClaim.index);
+      const compactPrefix = predicatePrefix
+        .toLowerCase()
+        .replace(/[\s`*_#()[\]{}:：|]+/g, '');
+      const doubleNegation = /(?:并非不|不是不|不能不|无法不|不可不)|\b(?:doesnot|isnot|cannot)not\b/i.test(compactPrefix);
+      const directlyNegated = !doubleNegation &&
+        /(?:不能|无法|不可|并非|不是|不)(?:直接|足以|明确|真正|conclusively|directly|necessarily)?$/i.test(compactPrefix);
+      if (directlyNegated) return false;
+
+      if (nearestPoll?.index !== undefined) {
+        if (doubleNegation) return true;
+        const subjectRemainder = predicatePrefix.slice(
+          nearestPoll.index + nearestPoll[0].length,
+        );
+        return hasOnlyDiscoursePrefix(subjectRemainder);
+      }
+
+      return hasExplicitKernelIoCoreferenceCausalLanguage(clause) ||
+        hasOnlyDiscoursePrefix(predicatePrefix);
+    });
+  });
+}
+
 function hasPriorPositivePollIoAttribution(claim: string): boolean {
   const qualifierMatches = Array.from(claim.matchAll(
     /(?<!并非)(?<!不是)(?:不能|无法|不可)(?!\s*不)/gi,
@@ -386,55 +474,7 @@ function hasPriorPositivePollIoAttribution(claim: string): boolean {
   });
   const qualifierMatch = qualifierMatches[qualifierMatches.length - 1];
   if (!qualifierMatch || qualifierMatch.index === undefined) return false;
-
-  const prefix = claim.slice(0, qualifierMatch.index);
-  let pollAntecedentAvailable = false;
-  return prefix.split(/[,，;；]/).some(clause => {
-    const pollMatches = Array.from(clause.matchAll(
-      /(?:do_epoll_wait|epoll_wait|ep_poll|__pollwait|epoll|poll)/gi,
-    ));
-    const strongClaim = clause.match(
-      /(?:证明|导致|构成|认定(?:为)?|归因(?:为)?|proves?|causes?|constitutes?|establishes?)[^。！？.!?\n]{0,60}?(?:io|i\/o|磁盘|存储|根因|卡顿|瓶颈|启动慢|disk|storage|root\s+cause|stall|slowdown|latency)/i,
-    );
-    if (pollMatches.length > 0) {
-      pollAntecedentAvailable = true;
-    } else if (pollAntecedentAvailable) {
-      const possibleSubject = strongClaim?.index === undefined
-        ? clause
-        : clause.slice(0, strongClaim.index);
-      const hasExplicitCoreference = /(?:它|这|该信号|这个信号|此信号|这个证据|该证据|此证据|\bit\b|\bthis(?:\s+(?:signal|evidence))?\b|\bthat\s+(?:signal|evidence)\b)/i.test(possibleSubject);
-      if (!hasExplicitCoreference && !hasOnlyDiscoursePrefix(possibleSubject)) {
-        pollAntecedentAvailable = false;
-      }
-    }
-    if (!strongClaim || strongClaim.index === undefined || !pollAntecedentAvailable) {
-      return false;
-    }
-
-    const predicatePrefix = clause.slice(0, strongClaim.index);
-    const compactPrefix = predicatePrefix
-      .toLowerCase()
-      .replace(/[\s`*_#()[\]{}:：|]+/g, '');
-    const doubleNegation = /(?:并非不|不是不|不能不|无法不|不可不)|\b(?:doesnot|isnot|cannot)not\b/i.test(compactPrefix);
-    const directlyNegated = !doubleNegation &&
-      /(?:不能|无法|不可|并非|不是|不)(?:直接|足以|明确|真正|conclusively|directly|necessarily)?$/i.test(compactPrefix);
-    if (directlyNegated) return false;
-
-    const lastPoll = pollMatches[pollMatches.length - 1];
-    if (
-      lastPoll?.index !== undefined &&
-      lastPoll.index < strongClaim.index
-    ) {
-      if (doubleNegation) return true;
-      const subjectRemainder = predicatePrefix.slice(
-        lastPoll.index + lastPoll[0].length,
-      );
-      return hasOnlyDiscoursePrefix(subjectRemainder);
-    }
-
-    return hasExplicitKernelIoCoreferenceCausalLanguage(clause) ||
-      hasOnlyDiscoursePrefix(predicatePrefix);
-  });
+  return hasPositivePollIoAttribution(claim.slice(0, qualifierMatch.index));
 }
 
 const QUALIFIED_KERNEL_IO_ANTECEDENT = '__qualified_kernel_io_antecedent__';
@@ -469,11 +509,40 @@ function removeExplicitPollEvidenceExclusions(statement: string): string {
 
 function removeQualifiedPollIoClaims(statement: string): string {
   let remaining = removeExplicitPollEvidenceExclusions(statement);
+  const appLevelBlockedFunctionExclusionPattern = /(?:(?:并非|不是)\s*)?(?:blocked_?functions?)[^。！？.!?\n]{0,40}?(?:全(?:部)?为|均为|=)\s*null[^。！？.!?\n]{0,120}?(?:应用层[^。！？.!?\n]{0,20})?(?:主动)?等待[^。！？.!?\n]{0,80}?(?:非|并非|不是)\s*系统[^。！？.!?\n]{0,60}?(?:epoll|poll)[^。！？.!?\n]{0,24}?阻塞/gi;
+  remaining = remaining.replace(appLevelBlockedFunctionExclusionPattern, claim => {
+    const reversedAbsence = /(?:并非|不是)[^。！？.!?\n]{0,24}(?:blocked_?functions?)?[^。！？.!?\n]{0,12}(?:全(?:部)?为|均为)\s*null|(?:blocked_?functions?)[^。！？.!?\n]{0,16}(?:并非|不是|不为)\s*null/i.test(claim);
+    if (reversedAbsence || hasPositivePollIoAttribution(claim)) {
+      return claim;
+    }
+    return ` ${QUALIFIED_KERNEL_IO_ANTECEDENT} `;
+  });
   const unavailablePollEvidencePattern = /(?:blocked_reason|blocked_function|wchan)[^。！？.!?\n]{0,80}?(?:null|缺失|未采集|不可用)[^。！？.!?\n]{0,120}?(?:无法|不能|不可)(?:判定|确认|区分)[^。！？.!?\n]{0,120}?(?:epoll|poll)[^。！？.!?\n]{0,120}?(?:不能|无法|不可)[^。！？.!?\n]{0,30}?(?:归为|归因(?:为)?|认定(?:为)?)[^。！？.!?\n]{0,20}?(?:io|i\/o)(?:\s*根因)?/gi;
   remaining = remaining.replace(unavailablePollEvidencePattern, claim => {
     if (
       reversesPollIoQualifier(claim) ||
       hasPriorPositivePollIoAttribution(claim)
+    ) {
+      return claim;
+    }
+    return ` ${QUALIFIED_KERNEL_IO_ANTECEDENT} `;
+  });
+  const unavailablePollCandidatePattern = /(?:blocked_reason|blocked_function|wchan)[^。！？!?\n]{0,80}?(?:null|缺失|未采集|不可用|missing|unavailable)[^。！？!?\n]{0,120}?(?:无法|不能|不可|unable|cannot)[^。！？!?\n]{0,60}?(?:追踪|判定|确认|区分|trace|determine|confirm|distinguish)[^。！？!?\n]{0,120}?(?:可能|候选|possible|may|might|candidate)[^。！？!?\n]{0,120}?(?:epoll|poll)[^。！？!?\n]{0,80}?(?:等待事件|事件等待|空闲|event\s+wait|idle)/gi;
+  remaining = remaining.replace(unavailablePollCandidatePattern, claim => {
+    if (
+      reversesPollIoQualifier(claim) ||
+      hasPriorPositivePollIoAttribution(claim) ||
+      hasPositivePollIoAttribution(claim)
+    ) {
+      return claim;
+    }
+    return ` ${QUALIFIED_KERNEL_IO_ANTECEDENT} `;
+  });
+  const sleepingPollAmbiguityPattern = /(?:Sleeping|睡眠)(?:\s*状态)?[^,，;；。！？.!?\n]{0,30}?(?:不等于|并非|不是)\s*(?:io|i\/o)[^,，;；。！？.!?\n]{0,40}?(?:无法|不能|不可)(?:确认|判定|区分)[^,，;；。！？.!?\n]{0,40}?(?:epoll|poll)[^,，;；。！？.!?\n]{0,30}?(?:等待事件|事件等待|空闲)/gi;
+  remaining = remaining.replace(sleepingPollAmbiguityPattern, claim => {
+    if (
+      /(?:并非|不是)\s*不等于/i.test(claim) ||
+      hasPositivePollIoAttribution(claim)
     ) {
       return claim;
     }
@@ -529,12 +598,93 @@ function hasKernelIoCoreferenceCausalLanguage(text: string): boolean {
   });
 }
 
-function hasDStateIoCausalLanguage(text: string): boolean {
-  return (
-    /(?:\bD-state\b|D\s*状态|D\/DK|不可中断睡眠|uninterruptible\s+sleep)/i.test(text) &&
-    hasIoDomainLanguage(text) &&
-    /(?:根因|证明|导致|阻塞|等待|瓶颈|卡顿|慢|root\s+cause|cause|proves?|blocking)/i.test(text)
+const D_STATE_LANGUAGE_PATTERN =
+  /(?:\bD-state\b|D\s*状态|D\/DK|不可中断睡眠|uninterruptible\s+sleep)/i;
+const D_STATE_STRONG_CAUSAL_LANGUAGE_PATTERN =
+  /(?:根因|证明|导致|阻塞|瓶颈|卡顿|慢|root\s+cause|\bcauses?\b|proves?|blocking)/i;
+
+function removeDStateTaxonomyLanguage(text: string): string {
+  return text.replace(
+    /(?:不可中断等待|不可中断睡眠|uninterruptible\s+(?:wait|sleep))/gi,
+    '',
   );
+}
+
+function commaStartsIndependentDStateCausalItem(text: string): boolean {
+  const causalText = removeDStateTaxonomyLanguage(text);
+  const strongClaim = causalText.match(D_STATE_STRONG_CAUSAL_LANGUAGE_PATTERN);
+  if (strongClaim?.index === undefined) return false;
+  const predicatePrefix = causalText.slice(0, strongClaim.index);
+  if (
+    D_STATE_LANGUAGE_PATTERN.test(predicatePrefix) ||
+    hasExplicitKernelIoCoreferenceCausalLanguage(causalText) ||
+    hasOnlyDiscoursePrefix(predicatePrefix)
+  ) {
+    return false;
+  }
+  const hasIndependentEvidenceSubject = /(?:独立|independent|sqlite|fsync|file|database|cpu|binder|futex|lock|unwinder|perf)/i.test(
+    predicatePrefix,
+  );
+  return hasIndependentEvidenceSubject || !hasIoDomainLanguage(predicatePrefix);
+}
+
+function splitDStateDiagnosticItems(text: string): string[] {
+  const separators = Array.from(text.matchAll(/[、,，]/g));
+  const items: string[] = [];
+  let itemStart = 0;
+  separators.forEach((separator, index) => {
+    if (separator.index === undefined) return;
+    const nextSeparatorIndex = separators[index + 1]?.index ?? text.length;
+    const followingItem = text.slice(separator.index + 1, nextSeparatorIndex);
+    const shouldSplit = separator[0] === '、' ||
+      commaStartsIndependentDStateCausalItem(followingItem);
+    if (!shouldSplit) return;
+    items.push(text.slice(itemStart, separator.index));
+    itemStart = separator.index + 1;
+  });
+  items.push(text.slice(itemStart));
+  return items;
+}
+
+function hasDStateIoCausalLanguage(text: string): boolean {
+  if (!D_STATE_LANGUAGE_PATTERN.test(text) || !hasIoDomainLanguage(text)) return false;
+
+  let dStateAntecedentAvailable = false;
+  return splitDStateDiagnosticItems(text).some(originalItem => {
+    const item = removeDStateTaxonomyLanguage(originalItem);
+    const hasDStateSubject = D_STATE_LANGUAGE_PATTERN.test(originalItem);
+    const hasIoSubject = hasIoDomainLanguage(originalItem);
+    const strongClaim = item.match(D_STATE_STRONG_CAUSAL_LANGUAGE_PATTERN);
+    const hasBoundWaitClaim = hasDStateSubject && hasIoSubject && /等待/i.test(item);
+
+    if (hasDStateSubject && hasIoSubject && (strongClaim || hasBoundWaitClaim)) {
+      return true;
+    }
+    if (
+      dStateAntecedentAvailable &&
+      hasIoSubject &&
+      strongClaim?.index !== undefined
+    ) {
+      const predicatePrefix = item.slice(0, strongClaim.index);
+      const prefixWithoutIoSubject = predicatePrefix.replace(
+        /(?:磁盘|存储)?\s*(?:io|i\/o)|(?:io|i\/o)\s*(?:磁盘|存储)?/gi,
+        '',
+      );
+      if (
+        hasOnlyDiscoursePrefix(prefixWithoutIoSubject) ||
+        hasExplicitKernelIoCoreferenceCausalLanguage(item)
+      ) {
+        return true;
+      }
+    }
+
+    if (hasDStateSubject) {
+      dStateAntecedentAvailable = true;
+    } else if (!hasOnlyDiscoursePrefix(item)) {
+      dStateAntecedentAvailable = false;
+    }
+    return false;
+  });
 }
 
 function normalizeDStateQualifierText(text: string): string {
@@ -545,7 +695,7 @@ function normalizeDStateQualifierText(text: string): string {
 
 function reversesDStateQualifier(claim: string): boolean {
   const normalized = normalizeDStateQualifierText(claim);
-  return /(?:并非|不是)(?:不能|无法|不可|证据不足|不足以|(?:因|由于)?无(?:anr)?窗口|无数据|rowcount=0|已?跳过|非(?:io|i\/o|磁盘|存储)|未达|低于|小于|不超过)|(?:不能|无法|不可)不|不(?:低于|小于)|rowcount!=0|(?:未|没有|不|无需)跳过|\b(?:cannot|can't)not\b|\bnot(?:skipped|rowcount=0|no(?:anr)?window|nodata)\b/i.test(normalized);
+  return /(?:并非|不是)(?:不能|无法|不可|证据不足|不足以|(?:因|由于)?无(?:anr)?窗口|无数据|rowcount=0|已?跳过|非(?:io|i\/o|磁盘|存储)|未达|低于|小于|不超过)|(?:并非|不是)(?:本次|当前)?trace(?:未|不能|无法)(?:直接)?证明|(?:不能|无法|不可)不|不(?:低于|小于)|rowcount!=0|(?:未|没有|不|无需)跳过|\b(?:cannot|can't)not\b|\bnot(?:skipped|rowcount=0|no(?:anr)?window|nodata)\b/i.test(normalized);
 }
 
 function projectsDStateQualifier(claim: string): boolean {
@@ -674,9 +824,163 @@ function hasExplicitDStateEvidenceBinding(text: string): boolean {
   return /(?:同一(?:等待)?窗口|同一(?:时间)?区间|在(?:同一)?窗口内|同时(?:命中|观测|观察|出现)|对应(?:的)?\s*D(?:-state|\s*状态)?|与(?:该|此)?\s*D(?:-state|\s*状态)?.{0,24}(?:重叠|一致|对应)|same\s+(?:wait\s+)?(?:window|interval)|overlap(?:s|ped|ping)?\s+with\s+(?:the\s+)?D-state|corresponding\s+D-state)/i.test(text);
 }
 
+function parseMarkdownTableCells(statement: string): string[] | undefined {
+  const trimmed = statement.trim();
+  if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) return undefined;
+
+  const cells = trimmed
+    .slice(1, -1)
+    .split('|')
+    .map(cell => cell.replace(/[`*]/g, '').trim());
+  return cells.length >= 3 ? cells : undefined;
+}
+
+function isConfirmedTableStatus(cell: string): boolean {
+  return /^(?:已确认|confirmed)$/i.test(cell);
+}
+
+function isExclusionTableStatus(cell: string): boolean {
+  return /^(?:(?:✗|×|❌)\s*)?(?:已)?排除$/i.test(cell);
+}
+
+function hasExplicitPositiveDStateIoTableStatus(statement: string): boolean {
+  const cells = parseMarkdownTableCells(statement);
+  if (!cells) return false;
+
+  const subjectCell = cells[0] ?? '';
+  const rowText = cells.join(' | ');
+  const hasConfirmedStatus = cells.some(isConfirmedTableStatus);
+  const hasConflictingStatus = hasConfirmedStatus && cells.some(isExclusionTableStatus);
+  return (
+    /(?:\bD-state\b|D\s*状态|D\/DK|不可中断睡眠|Q4a)/i.test(rowText) &&
+    hasIoDomainLanguage(rowText) &&
+    (
+      hasConflictingStatus ||
+      (
+        /(?:根因|root\s+cause)/i.test(subjectCell) &&
+        hasConfirmedStatus
+      )
+    )
+  );
+}
+
+function removeQualifiedDStateIoTableRow(statement: string): string {
+  const cells = parseMarkdownTableCells(statement);
+  if (!cells) return statement;
+
+  const rowText = cells.join(' | ');
+  const hasDStateSubject = /(?:\bD-state\b|D\s*状态|D\/DK|不可中断睡眠|Q4a)/i.test(rowText);
+  if (!hasDStateSubject || !hasIoDomainLanguage(rowText)) return statement;
+  if (hasExplicitPositiveDStateIoTableStatus(statement)) return statement;
+
+  const hasExclusionStatus = cells.some(isExclusionTableStatus);
+  const hasUnavailableStatus = /^不可用$/i.test(cells[1] ?? '');
+  const hasExplicitNonAttributionStatus = hasUnavailableStatus || hasExclusionStatus ||
+    cells.some(cell =>
+      /^(?:无法|不能|不可)(?:直接)?(?:确认|归因(?:为)?|认定(?:为)?)$/i.test(cell) ||
+      /^(?:未确认|证据不足)$/i.test(cell) ||
+      /^(?:(?:本次|当前)\s*)?trace\s*(?:未|不能|无法)(?:直接)?证明(?:\s|—|[-:：]|$)/i.test(cell) ||
+      /^(?:the\s+)?trace\s+(?:does\s+not|cannot|can't)\s+(?:directly\s+)?prove(?:s)?(?:\s|—|[-:：]|$)/i.test(cell),
+    );
+  const evidenceCells = cells.slice(1).join(' | ');
+  const explicitlyMissingIoSignals =
+    /(?:缺少|无|没有|未(?:采集|捕获|命中)?)[^|]{0,50}io_wait[^|]{0,40}(?:blocked_function|io\s*阻塞函数)/i.test(evidenceCells) ||
+    /(?:缺少|无|没有|未(?:采集|捕获|命中)?)[^|]{0,50}(?:blocked_function|io\s*阻塞函数)[^|]{0,40}io_wait/i.test(evidenceCells);
+  const hasLowStatusWithMissingBoundary = cells.some(cell => /^低$/i.test(cell)) &&
+    explicitlyMissingIoSignals &&
+    /(?:不能|无法|不可)(?:直接)?归因(?:为)?[^|]{0,20}(?:io|i\/o|磁盘|存储)/i.test(evidenceCells);
+  const hasExplicitLowNonAttribution = cells.some(cell =>
+    /(?:占比|比例)?(?:低|较低|很低|有限|可忽略)[^|]{0,24}(?:不足以|不能|无法|不可)[^|]{0,16}(?:标定|确认|归因|认定|证明)[^|]{0,24}(?:io|i\/o|磁盘|存储)(?:\s*根因)?/i.test(cell),
+  );
+  const hasMissingEvidenceStatus = cells.some(cell => /^missing_evidence$/i.test(cell));
+  const hasMissingEvidenceBoundary = hasMissingEvidenceStatus &&
+    /(?:缺少|缺|无|没有|未(?:采集|捕获|命中)?)[^|]{0,60}(?:io_wait|page[-\s]?cache\s+wchan|blocked_function|io\s*阻塞函数)/i.test(evidenceCells);
+  const zeroDStateMatch = /(?:(?:零|0(?:\.0+)?(?![\d.]))\s*(?:D\/DK|D-state|D\s*状态)|(?:D\/DK|D-state|D\s*状态)\s*(?:=|为|:|：)?\s*0(?:\.0+)?(?![\d.])\s*(?:ms|毫秒)?)/i.exec(evidenceCells);
+  const zeroDStatePrefix = zeroDStateMatch?.index === undefined
+    ? ''
+    : evidenceCells.slice(Math.max(0, zeroDStateMatch.index - 16), zeroDStateMatch.index);
+  const hasAffirmativeZeroDState = Boolean(zeroDStateMatch) &&
+    !/(?:并非|不是|不|预计|预期|目标|计划|可能)[^|]{0,8}$/i.test(zeroDStatePrefix);
+  const emptyBlockedFunctionMatch = /blocked_function\s*(?:为空|为\s*null|=\s*null|is\s+null|无数据|0\s*行)/i.exec(evidenceCells);
+  const emptyBlockedFunctionPrefix = emptyBlockedFunctionMatch?.index === undefined
+    ? ''
+    : evidenceCells.slice(
+      Math.max(0, emptyBlockedFunctionMatch.index - 16),
+      emptyBlockedFunctionMatch.index,
+    );
+  const hasAffirmativeEmptyBlockedFunction = Boolean(emptyBlockedFunctionMatch) &&
+    !/(?:预计|预期|目标|计划|可能)[^|]{0,8}$/i.test(emptyBlockedFunctionPrefix);
+  const emptyIoBlockingMatch = /\bio_blocking\b\s*(?:=|为|返回)?\s*0(?![\d.])\s*(?:行|条|rows?|slices?)?/i.exec(evidenceCells);
+  const emptyIoBlockingPrefix = emptyIoBlockingMatch?.index === undefined
+    ? ''
+    : evidenceCells.slice(
+      Math.max(0, emptyIoBlockingMatch.index - 16),
+      emptyIoBlockingMatch.index,
+    );
+  const hasAffirmativeEmptyIoBlocking = Boolean(emptyIoBlockingMatch) &&
+    !/(?:并非|不是|不|预计|预期|目标|计划|可能)[^|]{0,8}$/i.test(emptyIoBlockingPrefix);
+  const hasObservedNoDStateBoundary =
+    hasAffirmativeZeroDState &&
+    (hasAffirmativeEmptyBlockedFunction || hasAffirmativeEmptyIoBlocking);
+  if (
+    !hasExplicitNonAttributionStatus &&
+    !hasLowStatusWithMissingBoundary &&
+    !hasExplicitLowNonAttribution &&
+    !hasMissingEvidenceBoundary &&
+    !hasObservedNoDStateBoundary
+  ) return statement;
+
+  if (
+    reversesDStateQualifier(evidenceCells) ||
+    projectsDStateQualifier(evidenceCells) ||
+    hasPriorPositiveDStateAttribution(evidenceCells) ||
+    hasPositiveDStateAttribution(evidenceCells) ||
+    hasPositiveKernelIoClaimAfterDStateQualifier(evidenceCells) ||
+    hasPositiveAttributionInsideNegativeDStateIoClaim(evidenceCells)
+  ) {
+    return statement;
+  }
+  return ` ${QUALIFIED_KERNEL_IO_ANTECEDENT} `;
+}
+
 function removeQualifiedDStateIoClaims(statement: string): string {
-  let remaining = statement;
+  let remaining = removeQualifiedDStateIoTableRow(statement);
+  const dStateIoCheckNotTriggeredPattern = /(?:Q4a(?:(?:\.(?=\d))|[^。！？.!?\n]){0,40}?(?:D\s*状态)|\bD-state\b|D\s*状态|D\/DK|不可中断睡眠)(?:(?:\.(?=\d))|[^。！？.!?\n]){0,140}?(?:io|i\/o)\s*检查\s*(?:未触发|未命中)/gi;
+  remaining = remaining.replace(dStateIoCheckNotTriggeredPattern, (claim, offset: number) => {
+    const context = remaining.slice(
+      Math.max(0, offset - 24),
+      Math.min(remaining.length, offset + claim.length + 24),
+    );
+    const projectedCheckResult = /(?:预计|预期|目标|计划|可能|将|会)[^。！？.!?\n]{0,60}(?:io|i\/o)\s*检查\s*(?:未触发|未命中)/i.test(context);
+    const reversedCheckResult = /(?:未触发|未命中)\s*(?:并不成立|不成立|为假|并非事实)/i.test(context);
+    if (
+      projectedCheckResult ||
+      reversedCheckResult ||
+      hasPositiveDStateAttribution(context) ||
+      hasPositiveKernelIoClaimAfterDStateQualifier(context)
+    ) {
+      return claim;
+    }
+    return ` ${QUALIFIED_KERNEL_IO_ANTECEDENT} `;
+  });
+  const missingBlockedFunctionFamilyLowDStatePattern = /(?:(?:并非|不是)\s*)?(?:blocked_?functions?)[^。！？.!?\n]{0,30}?不含[^。！？.!?\n]{0,36}?(?:io|i\/o)[^。！？.!?\n]{0,12}?\/?\s*page[-\s]?cache[^。！？.!?\n]{0,24}?函数族[^。！？.!?\n]{0,80}?(?:\bD-state\b|D\s*状态)[^。！？.!?\n]{0,32}?(?:仅|只有|仅为|仅占)?\s*\d+(?:\.\d+)?\s*(?:ms|毫秒)[^。！？.!?\n]{0,28}?(?:\d+(?:\.\d+)?\s*%)?[^。！？.!?\n]{0,24}?不足以构成根因/gi;
+  remaining = remaining.replace(missingBlockedFunctionFamilyLowDStatePattern, claim => {
+    const reversedAbsence = /(?:并非|不是)[^。！？.!?\n]{0,24}(?:blocked_?functions?)?[^。！？.!?\n]{0,12}不含|(?:blocked_?functions?)[^。！？.!?\n]{0,16}(?:并非|不是)\s*不含/i.test(claim);
+    if (
+      reversedAbsence ||
+      reversesDStateQualifier(claim) ||
+      projectsDStateQualifier(claim) ||
+      hasPriorPositiveDStateAttribution(claim) ||
+      hasPositiveDStateAttribution(claim) ||
+      hasPositiveKernelIoClaimAfterDStateQualifier(claim) ||
+      hasPositiveAttributionInsideNegativeDStateIoClaim(claim)
+    ) {
+      return claim;
+    }
+    return ` ${QUALIFIED_KERNEL_IO_ANTECEDENT} `;
+  });
   const qualifiedClaimPatterns = [
+    /(?:(?:并非|不是)\s*)?(?:(?:本次|当前)\s*)?trace\s*(?:未|不能|无法)(?:直接)?证明(?:(?:\.(?=\d))|[^。！？.!?\n]){0,180}?(?:\bD-state\b|D\s*状态|D\/DK|不可中断睡眠)(?:(?:\.(?=\d))|[^。！？.!?\n]){0,60}?(?:仅|只有|仅为|仅占)?\s*\d+(?:\.\d+)?\s*(?:ms|毫秒)(?:(?:\.(?=\d))|[^。！？.!?\n]){0,30}?(?:\d+(?:\.\d+)?\s*%)?/gi,
     /\|[^|\n]{0,80}(?:io|i\/o|磁盘|存储)[^|\n]{0,30}根因[^|\n]*\|\s*(?:\*{1,2}\s*)?(?:无法确认|不能确认|未确认|证据不足|不能归因|无法归因)(?:\s*\*{1,2})?(?:(?:\.(?=\d))|[^|\n]){0,120}?(?:\bD-state\b|D\s*状态|D\/DK|不可中断睡眠)(?:(?:\.(?=\d))|[^|\n]){0,120}?\|/gi,
     /(?:i\/o\s*D-state|D-state[^。！？.!?\n]{0,24}?i\/o)[^。！？.!?\n]{0,180}?(?:因|由于)\s*无\s*(?:ANR\s*)?窗口[^。！？.!?\n]{0,30}?(?:返回)?(?:空结果|为空|无数据)/gi,
     /(?:i\/o\s*阻塞[^。！？.!?\n]{0,24}?D-state|D-state[^。！？.!?\n]{0,24}?i\/o\s*阻塞)[^。！？.!?\n]{0,80}?(?:未做|未执行|未统计|未分析|跳过)[^。！？.!?\n]{0,80}?(?:无|没有|缺少)[^。！？.!?\n]{0,60}?(?:数据|process_name|uninterruptible_wait_ms)/gi,
@@ -762,8 +1066,12 @@ function assessKernelBlockingClaimBoundary(conclusion: string): FinalResultQuali
   const statements = splitQualityStatements(conclusion);
   const unqualifiedDStateClaimIndexes = statements
     .map((statement, index) => ({statement, index}))
-    .filter(({statement}) => hasDStateIoCausalLanguage(statement))
+    .filter(({statement}) =>
+      hasDStateIoCausalLanguage(statement) ||
+      hasExplicitPositiveDStateIoTableStatus(statement)
+    )
     .filter(({statement, index}) => {
+      if (hasExplicitPositiveDStateIoTableStatus(statement)) return true;
       const remaining = removeQualifiedDStateIoClaims(statement);
       return hasDStateIoCausalLanguage(remaining) ||
         hasKernelIoCoreferenceCausalLanguage(remaining) ||

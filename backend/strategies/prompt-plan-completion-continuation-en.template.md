@@ -8,6 +8,7 @@ Continue only the unfinished phases; do not repeat completed work:
 - If no plan exists, call `submit_plan` first.
 - If a phase's required evidence is already present in this run's tool log, close it with `update_plan_phase` and a concrete summary.
 - If an expected call is listed as missing, call the corresponding tool for real evidence before closing the phase. Never fabricate tool output or a phase summary.
+- If a phase has `missingGenericToolEvidence=true`, run at least one of its declared expected tools and obtain real matching evidence before closing the phase.
 - If `unresolvedHypotheses` is non-empty, call `resolve_hypothesis` for each item using real evidence already gathered in this run, and explicitly confirm or reject it. Do not resolve a hypothesis only in report prose, and never fabricate evidence.
 - Do not declare the analysis complete until every phase is completed or skipped.
 - Do not declare the analysis complete until every hypothesis is confirmed or rejected.

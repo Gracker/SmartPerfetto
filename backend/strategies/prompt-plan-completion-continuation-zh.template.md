@@ -8,6 +8,7 @@
 - 如果还没有 plan，先调用 `submit_plan`。
 - 如果阶段所需证据已在本轮工具记录中，调用 `update_plan_phase` 用具体摘要闭合该阶段。
 - 如果列出了缺失的 expected call，先调用对应工具获得真实证据，再闭合阶段；不得伪造工具结果或摘要。
+- 如果阶段标记 `missingGenericToolEvidence=true`，至少执行该阶段声明的一个 expected tool，并获得真实匹配证据后再闭合阶段。
 - 如果 `unresolvedHypotheses` 非空，必须依据本轮已有的真实证据逐项调用 `resolve_hypothesis`，明确确认或否定；不得只在报告文本中口头判定，也不得伪造证据。
 - 所有阶段 completed/skipped 之前，不要宣布分析完成。
 - 所有假设 confirmed/rejected 之前，不要宣布分析完成。

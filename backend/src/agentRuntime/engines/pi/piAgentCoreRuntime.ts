@@ -102,7 +102,6 @@ import {
   buildRuntimeTracePairComparisonContext,
 } from '../../runtimePromptContext';
 import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
-import {renderRequiredLocalizedStrategyTemplate} from '../../../agentv3/localizedStrategyTemplate';
 import {
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
   PI_AGENT_CORE_RUNTIME_KIND,
@@ -124,7 +123,9 @@ import {
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { assessFinalReportContractCompleteness } from '../../../services/finalReportContractGate';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import {resolveRuntimeFinalReportSceneType} from '../../finalReportSceneResolution';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
+import {loadRuntimePlanCompletionContinuationPrompt} from '../../planCompletionContinuation';
 import {
   buildRuntimeQuickEvidenceDirectAnswer,
   type RuntimeQuickEvidenceCounts,
@@ -437,11 +438,64 @@ function looksLikeFinalReport(text: string): boolean {
   );
 }
 
-function findDeliverableReportHeadingIndex(text: string): number {
-  const match = text.match(
-    /(?:^|\n)\s{0,3}(?:#{1,3}\s*)?(?:(?:[^\n#]{0,40})?分析报告|综合结论|关键结论|最终结论|最终报告|根因分析|Final Conclusion|Final Report|Analysis Report|Root Cause)(?=\s|[：:。.!！?\n]|$)/i,
+function isDeliverableReportHeadingLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+
+  const markdownHeading = /^#{1,3}\s+(.+)$/.exec(trimmed);
+  let normalized = (markdownHeading?.[1] ?? trimmed).trim();
+  normalized = normalized.replace(/^\*\*(.+?)\*\*(.*)$/, '$1$2').trim();
+
+  if (/\bFinal Report Contract\b/i.test(normalized)) return false;
+  normalized = normalized.replace(/^\d+(?:\.\d+)*[.、)]?\s*/, '');
+
+  if (
+    /^(?:综合结论|关键结论|最终结论|最终报告|根因分析|Final Conclusion|Final Report|Analysis Report|Root Cause(?: Analysis)?)(?:\s*[：:—-]\s*.*)?$/i.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
+
+  const chineseProcessNarrationPrefix =
+    /^(?:需要|需|请|将|应该|开始|现在|让我|输出|撰写|生成|检查|合同|规范|要求)/;
+  const englishProcessNarrationPrefix =
+    /^(?:let me|I (?:will|need to|should)|we (?:will|need to|should)|please)\b/i;
+  if (
+    chineseProcessNarrationPrefix.test(normalized) ||
+    englishProcessNarrationPrefix.test(normalized)
+  ) {
+    return false;
+  }
+
+  if (markdownHeading) {
+    if (
+      /^(?:综合结论|关键结论|最终结论|最终报告|根因分析|Final Conclusion|Final Report|Analysis Report|Root Cause(?: Analysis)?)(?=$|\s|[：:—（(、，,；;及与-])/i.test(
+        normalized,
+      ) ||
+      /^(?:[^#\n：:。.!！？?]{1,40})?(?:分析报告|Analysis Report)(?=$|\s|[：:—（(、，,；;及与-])/i.test(
+        normalized,
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return /^(?:[^#\n：:。.!！？?]{1,40})?(?:分析报告|Analysis Report)(?:\s*[（(][^)）\n]{0,30}[)）])?\s*(?:[：:—-]\s*.*)?$/i.test(
+    normalized,
   );
-  return match?.index ?? -1;
+}
+
+function findDeliverableReportHeadingIndex(text: string): number {
+  let offset = 0;
+  for (const line of text.split('\n')) {
+    if (isDeliverableReportHeadingLine(line)) {
+      const firstNonWhitespace = line.search(/\S/);
+      return offset + Math.max(0, firstNonWhitespace);
+    }
+    offset += line.length + 1;
+  }
+  return -1;
 }
 
 export function sanitizePiAgentCoreConclusionText(text: string): string {
@@ -452,12 +506,13 @@ export function sanitizePiAgentCoreConclusionText(text: string): string {
   if (headingIndex <= 0) return trimmed;
 
   const reportText = trimmed.slice(headingIndex).trim();
-  if (!hasDeliverableFinalReportHeading(reportText)) return trimmed;
+  const firstReportLine = reportText.split('\n', 1)[0] ?? '';
+  if (!isDeliverableReportHeadingLine(firstReportLine)) return trimmed;
 
   const prefix = trimmed.slice(0, headingIndex).trim();
   const prefixLooksProcessNarration =
     looksLikeProcessNarrationConclusion(prefix) ||
-    /(?:I have all (?:the )?necessary|now let me|let me write|key findings?:|我(?:已|会|将)|现在.{0,40}(?:输出|撰写|生成)|开始撰写|完整结构化报告|update_plan_phase|submit_plan|resolve_hypothesis)/i.test(prefix);
+    /(?:the system (?:is )?asking me|I have all (?:the )?necessary|I (?:already have|should|need to)|now let me|let me(?: now)? (?:check|look|write)|key findings?:|我(?:已|会|将)|现在.{0,40}(?:输出|撰写|生成)|开始撰写|完整结构化报告|update_plan_phase|submit_plan|resolve_hypothesis)/i.test(prefix);
 
   return prefixLooksProcessNarration ? reportText : trimmed;
 }
@@ -588,40 +643,6 @@ function loadPiFinalReportContinuationPrompt(outputLanguage: OutputLanguage): st
     throw new Error(`Missing Pi final-report continuation prompt template: ${templateName}`);
   }
   return template;
-}
-
-function loadPiPlanCompletionContinuationPrompt(
-  planStatus: ReturnType<typeof getPiAgentCorePlanCompletionStatus>,
-  unresolvedHypotheses: Hypothesis[],
-  outputLanguage: OutputLanguage,
-): string {
-  const planStatusJson = JSON.stringify({
-    hasPlan: planStatus.hasPlan,
-    pendingPhases: planStatus.pendingPhases.map(phase => ({
-      id: phase.id,
-      name: phase.name,
-      goal: phase.goal,
-      status: phase.status,
-      expectedTools: phase.expectedTools ?? [],
-      expectedCalls: phase.expectedCalls ?? [],
-    })),
-    evidenceGaps: (planStatus.evidenceGaps ?? []).map(gap => ({
-      phaseId: gap.phase.id,
-      phaseName: gap.phase.name,
-      missingExpectedCalls: gap.missingExpectedCalls,
-    })),
-    unresolvedHypotheses: unresolvedHypotheses.map(hypothesis => ({
-      id: hypothesis.id,
-      statement: hypothesis.statement,
-      basis: hypothesis.basis,
-      status: hypothesis.status,
-    })),
-  }, null, 2);
-  return renderRequiredLocalizedStrategyTemplate(
-    'prompt-pi-plan-completion-continuation',
-    outputLanguage,
-    {plan_status_json: planStatusJson},
-  );
 }
 
 function loadPiFinalReportCorrectionSystemPrompt(outputLanguage: OutputLanguage): string {
@@ -1311,6 +1332,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       options,
       piModelIdentity(modelConfig.model),
     );
+    const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
+      query,
+      initialSceneType: prep.sceneType,
+      plan: prep.analysisPlan.current,
+    });
     const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
     if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
 
@@ -1465,11 +1491,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         });
         commitEvaluationSdkHandoffIfActive();
         lastPlanCompletionMessageBoundary = agent.state.messages?.length ?? 0;
-        await agent.prompt(loadPiPlanCompletionContinuationPrompt(
+        await agent.prompt(loadRuntimePlanCompletionContinuationPrompt({
           planStatus,
           unresolvedHypotheses,
-          prep.analysisRunSpec.outputLanguage,
-        ));
+          outputLanguage: prep.analysisRunSpec.outputLanguage,
+        }));
       }
       while (finalReportContinuations < PI_AGENT_CORE_MAX_FINAL_REPORT_CONTINUATIONS) {
         const latestAssistant = latestAssistantMessage(currentAnalysisMessages());
@@ -1492,7 +1518,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           finalReportContinuations,
           conclusion: candidateConclusion,
           query,
-          sceneType: prep.sceneType,
+          sceneType: resolveFinalReportSceneType(),
           comparisonIdentity: prep.comparisonIdentity,
         });
         if (!shouldContinueFinalReport) {
@@ -1558,7 +1584,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             conclusion: baseConclusion,
             plan: prep.analysisPlan.current,
             hypotheses: prep.hypotheses,
-            sceneType: prep.sceneType,
+            sceneType: resolveFinalReportSceneType(),
             outputLanguage: prep.analysisRunSpec.outputLanguage,
             query,
             allowPersistentLearning: !privateAnalysisContext,
@@ -1596,7 +1622,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
                 heuristicIssues,
                 baseConclusion,
                 prep.analysisRunSpec.outputLanguage,
-                prep.sceneType,
+                resolveFinalReportSceneType(),
               ));
 
               const correctionMessages = (agent.state.messages ?? [])
@@ -1621,7 +1647,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
                     conclusion: candidate,
                     plan: prep.analysisPlan.current,
                     hypotheses: prep.hypotheses,
-                    sceneType: prep.sceneType,
+                    sceneType: resolveFinalReportSceneType(),
                     outputLanguage: prep.analysisRunSpec.outputLanguage,
                     query,
                     allowPersistentLearning: !privateAnalysisContext,
@@ -1760,6 +1786,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     };
 
     if (!prep.quickMode) {
+      const finalReportSceneType = resolveFinalReportSceneType();
       const verifyCurrentConclusion = async () => {
         result.conclusion = completeFinalReportCodeReferences({
           plan: prep.analysisPlan.current,
@@ -1772,7 +1799,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           enableLLM: false,
           plan: prep.analysisPlan.current,
           hypotheses: prep.hypotheses,
-          sceneType: prep.sceneType,
+          sceneType: finalReportSceneType,
           outputLanguage: prep.analysisRunSpec.outputLanguage,
           query,
           emitIssueProgress: false,
@@ -1787,7 +1814,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       const contractIssue = assessFinalReportContractCompleteness({
         conclusion: result.conclusion,
         query,
-        sceneType: prep.sceneType,
+        sceneType: finalReportSceneType,
         caseRecommendations: result.conclusionContract?.caseRecommendations,
       });
       const truncationIssue = findTruncationVerificationIssue([
@@ -1861,7 +1888,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const gateIssue = applyFinalResultQualityGate({
       result,
       query,
-      sceneType: prep.sceneType,
+      sceneType: resolveFinalReportSceneType(),
       comparisonIdentity: prep.comparisonIdentity,
     });
     if (gateIssue && !wasPartialBeforeQualityGate) {
