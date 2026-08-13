@@ -836,7 +836,7 @@ async function createWasm() {
 
 
 
-  var ___heap_base = 203504;
+  var ___heap_base = 233104;
 
   var alignMemory = (size, alignment) => {
       return Math.ceil(size / alignment) * alignment;
@@ -983,7 +983,7 @@ async function createWasm() {
 
   /** @type {WebAssembly.Table} */
   var wasmTable = new WebAssembly.Table({
-    'initial': 223,
+    'initial': 368,
     'element': 'anyfunc'
   });
   ;
@@ -4095,11 +4095,11 @@ async function createWasm() {
 
   var ___memory_base = new WebAssembly.Global({'value': 'i32', 'mutable': false}, 1024);
 
-  var ___stack_high = 203504;
+  var ___stack_high = 233104;
 
-  var ___stack_low = 137968;
+  var ___stack_low = 167568;
 
-  var ___stack_pointer = new WebAssembly.Global({'value': 'i32', 'mutable': true}, 203504);
+  var ___stack_pointer = new WebAssembly.Global({'value': 'i32', 'mutable': true}, 233104);
 
 
 
@@ -4235,6 +4235,28 @@ async function createWasm() {
   }
   }
   ___syscall_newfstatat.sig = 'iippi';
+
+  var syscallGetVarargI = () => {
+      // the `+` prepended here is necessary to convince the JSCompiler that varargs is indeed a number.
+      var ret = HEAP32[((+SYSCALLS.varargs)>>2)];
+      SYSCALLS.varargs += 4;
+      return ret;
+    };
+
+  function ___syscall_openat(dirfd, path, flags, varargs) {
+  SYSCALLS.varargs = varargs;
+  try {
+
+      path = SYSCALLS.getStr(path);
+      path = SYSCALLS.calculateAt(dirfd, path);
+      var mode = varargs ? syscallGetVarargI() : 0;
+      return FS.open(path, flags, mode).fd;
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return -e.errno;
+  }
+  }
+  ___syscall_openat.sig = 'iipip';
 
   function ___syscall_stat64(path, buf) {
   try {
@@ -4399,6 +4421,38 @@ async function createWasm() {
   }
   }
   _fd_close.sig = 'ii';
+
+  /** @param {number=} offset */
+  var doReadv = (stream, iov, iovcnt, offset) => {
+      var ret = 0;
+      for (var i = 0; i < iovcnt; i++) {
+        var ptr = HEAPU32[((iov)>>2)];
+        var len = HEAPU32[(((iov)+(4))>>2)];
+        iov += 8;
+        var curr = FS.read(stream, HEAP8, ptr, len, offset);
+        if (curr < 0) return -1;
+        ret += curr;
+        if (curr < len) break; // nothing more to read
+        if (typeof offset != 'undefined') {
+          offset += curr;
+        }
+      }
+      return ret;
+    };
+
+  function _fd_read(fd, iov, iovcnt, pnum) {
+  try {
+
+      var stream = SYSCALLS.getStreamFromFD(fd);
+      var num = doReadv(stream, iov, iovcnt);
+      HEAPU32[((pnum)>>2)] = num;
+      return 0;
+    } catch (e) {
+    if (typeof FS == 'undefined' || !(e.name === 'ErrnoError')) throw e;
+    return e.errno;
+  }
+  }
+  _fd_read.sig = 'iippp';
 
 
   var INT53_MAX = 9007199254740992;
@@ -4668,6 +4722,8 @@ var wasmImports = {
   /** @export */
   __syscall_newfstatat: ___syscall_newfstatat,
   /** @export */
+  __syscall_openat: ___syscall_openat,
+  /** @export */
   __syscall_stat64: ___syscall_stat64,
   /** @export */
   __table_base: ___table_base,
@@ -4682,6 +4738,8 @@ var wasmImports = {
   /** @export */
   fd_close: _fd_close,
   /** @export */
+  fd_read: _fd_read,
+  /** @export */
   fd_seek: _fd_seek,
   /** @export */
   fd_write: _fd_write,
@@ -4693,28 +4751,26 @@ var wasmImports = {
 var wasmExports = await createWasm();
 var ___wasm_call_ctors = wasmExports['__wasm_call_ctors']
 var _wasm_alloc = Module['_wasm_alloc'] = wasmExports['wasm_alloc']
-var _wasm_ast_json = Module['_wasm_ast_json'] = wasmExports['wasm_ast_json']
 var _wasm_clear_all_cflags = Module['_wasm_clear_all_cflags'] = wasmExports['wasm_clear_all_cflags']
 var _wasm_clear_cflag = Module['_wasm_clear_cflag'] = wasmExports['wasm_clear_cflag']
 var _wasm_clear_dialect = Module['_wasm_clear_dialect'] = wasmExports['wasm_clear_dialect']
-var _wasm_clear_session_context = Module['_wasm_clear_session_context'] = wasmExports['wasm_clear_session_context']
-var _wasm_completions = Module['_wasm_completions'] = wasmExports['wasm_completions']
-var _wasm_diagnostics = Module['_wasm_diagnostics'] = wasmExports['wasm_diagnostics']
-var _wasm_extract = Module['_wasm_extract'] = wasmExports['wasm_extract']
-var _wasm_fmt = Module['_wasm_fmt'] = wasmExports['wasm_fmt']
+var _wasm_embedded_diagnostics = Module['_wasm_embedded_diagnostics'] = wasmExports['wasm_embedded_diagnostics']
+var _wasm_embedded_extract = Module['_wasm_embedded_extract'] = wasmExports['wasm_embedded_extract']
+var _wasm_embedded_semantic_tokens = Module['_wasm_embedded_semantic_tokens'] = wasmExports['wasm_embedded_semantic_tokens']
 var _wasm_free = Module['_wasm_free'] = wasmExports['wasm_free']
 var _wasm_get_cflag_list = Module['_wasm_get_cflag_list'] = wasmExports['wasm_get_cflag_list']
+var _wasm_lsp_message = Module['_wasm_lsp_message'] = wasmExports['wasm_lsp_message']
 var _wasm_result_free = Module['_wasm_result_free'] = wasmExports['wasm_result_free']
 var _wasm_result_len = Module['_wasm_result_len'] = wasmExports['wasm_result_len']
 var _wasm_result_ptr = Module['_wasm_result_ptr'] = wasmExports['wasm_result_ptr']
-var _wasm_semantic_tokens = Module['_wasm_semantic_tokens'] = wasmExports['wasm_semantic_tokens']
+var _wasm_rpc = Module['_wasm_rpc'] = wasmExports['wasm_rpc']
+var _wasm_session_free = Module['_wasm_session_free'] = wasmExports['wasm_session_free']
+var _wasm_session_new = Module['_wasm_session_new'] = wasmExports['wasm_session_new']
 var _wasm_set_cflag = Module['_wasm_set_cflag'] = wasmExports['wasm_set_cflag']
 var _wasm_set_dialect = Module['_wasm_set_dialect'] = wasmExports['wasm_set_dialect']
-var _wasm_set_language_mode = Module['_wasm_set_language_mode'] = wasmExports['wasm_set_language_mode']
-var _wasm_set_session_context = Module['_wasm_set_session_context'] = wasmExports['wasm_set_session_context']
-var _wasm_set_session_context_ddl = Module['_wasm_set_session_context_ddl'] = wasmExports['wasm_set_session_context_ddl']
 var _wasm_set_sqlite_version = Module['_wasm_set_sqlite_version'] = wasmExports['wasm_set_sqlite_version']
 var _main = Module['_main'] = wasmExports['main']
+var _syntaqlite_analyzer_analyze = Module['_syntaqlite_analyzer_analyze'] = wasmExports['syntaqlite_analyzer_analyze']
 var _syntaqlite_formatter_create_sqlite = Module['_syntaqlite_formatter_create_sqlite'] = wasmExports['syntaqlite_formatter_create_sqlite']
 var _syntaqlite_formatter_create_sqlite_with_config = Module['_syntaqlite_formatter_create_sqlite_with_config'] = wasmExports['syntaqlite_formatter_create_sqlite_with_config']
 var _syntaqlite_formatter_create_with_dialect = Module['_syntaqlite_formatter_create_with_dialect'] = wasmExports['syntaqlite_formatter_create_with_dialect']
@@ -4723,11 +4779,10 @@ var _syntaqlite_formatter_error_msg = Module['_syntaqlite_formatter_error_msg'] 
 var _syntaqlite_formatter_format = Module['_syntaqlite_formatter_format'] = wasmExports['syntaqlite_formatter_format']
 var _syntaqlite_formatter_output = Module['_syntaqlite_formatter_output'] = wasmExports['syntaqlite_formatter_output']
 var _syntaqlite_formatter_output_len = Module['_syntaqlite_formatter_output_len'] = wasmExports['syntaqlite_formatter_output_len']
-var _syntaqlite_analyzer_set_check_level = Module['_syntaqlite_analyzer_set_check_level'] = wasmExports['syntaqlite_analyzer_set_check_level']
-var _syntaqlite_analyzer_set_mode = Module['_syntaqlite_analyzer_set_mode'] = wasmExports['syntaqlite_analyzer_set_mode']
-var _syntaqlite_analyzer_set_module_resolver = Module['_syntaqlite_analyzer_set_module_resolver'] = wasmExports['syntaqlite_analyzer_set_module_resolver']
-var _syntaqlite_analyzer_set_strict_schema = Module['_syntaqlite_analyzer_set_strict_schema'] = wasmExports['syntaqlite_analyzer_set_strict_schema']
-var _syntaqlite_analyzer_set_suggestion_threshold = Module['_syntaqlite_analyzer_set_suggestion_threshold'] = wasmExports['syntaqlite_analyzer_set_suggestion_threshold']
+var _syntaqlite_rpc_call = Module['_syntaqlite_rpc_call'] = wasmExports['syntaqlite_rpc_call']
+var _syntaqlite_rpc_create_sqlite = Module['_syntaqlite_rpc_create_sqlite'] = wasmExports['syntaqlite_rpc_create_sqlite']
+var _syntaqlite_rpc_destroy = Module['_syntaqlite_rpc_destroy'] = wasmExports['syntaqlite_rpc_destroy']
+var _syntaqlite_rpc_free = Module['_syntaqlite_rpc_free'] = wasmExports['syntaqlite_rpc_free']
 var _syntaqlite_analyzer_statement_column_lineage = Module['_syntaqlite_analyzer_statement_column_lineage'] = wasmExports['syntaqlite_analyzer_statement_column_lineage']
 var _syntaqlite_analyzer_statement_column_lineage_count = Module['_syntaqlite_analyzer_statement_column_lineage_count'] = wasmExports['syntaqlite_analyzer_statement_column_lineage_count']
 var _syntaqlite_analyzer_statement_count = Module['_syntaqlite_analyzer_statement_count'] = wasmExports['syntaqlite_analyzer_statement_count']
@@ -4742,11 +4797,6 @@ var _syntaqlite_analyzer_statement_relations = Module['_syntaqlite_analyzer_stat
 var _syntaqlite_analyzer_statement_source = Module['_syntaqlite_analyzer_statement_source'] = wasmExports['syntaqlite_analyzer_statement_source']
 var _syntaqlite_analyzer_statement_unexpanded_view_count = Module['_syntaqlite_analyzer_statement_unexpanded_view_count'] = wasmExports['syntaqlite_analyzer_statement_unexpanded_view_count']
 var _syntaqlite_analyzer_statement_unexpanded_views = Module['_syntaqlite_analyzer_statement_unexpanded_views'] = wasmExports['syntaqlite_analyzer_statement_unexpanded_views']
-var _syntaqlite_analyzer_create_sqlite = Module['_syntaqlite_analyzer_create_sqlite'] = wasmExports['syntaqlite_analyzer_create_sqlite']
-var _syntaqlite_analyzer_create_with_dialect = Module['_syntaqlite_analyzer_create_with_dialect'] = wasmExports['syntaqlite_analyzer_create_with_dialect']
-var _syntaqlite_analyzer_destroy = Module['_syntaqlite_analyzer_destroy'] = wasmExports['syntaqlite_analyzer_destroy']
-var _syntaqlite_string_destroy = Module['_syntaqlite_string_destroy'] = wasmExports['syntaqlite_string_destroy']
-var _syntaqlite_analyzer_analyze = Module['_syntaqlite_analyzer_analyze'] = wasmExports['syntaqlite_analyzer_analyze']
 var _syntaqlite_analyzer_column_lineage = Module['_syntaqlite_analyzer_column_lineage'] = wasmExports['syntaqlite_analyzer_column_lineage']
 var _syntaqlite_analyzer_column_lineage_count = Module['_syntaqlite_analyzer_column_lineage_count'] = wasmExports['syntaqlite_analyzer_column_lineage_count']
 var _syntaqlite_analyzer_diagnostic_count = Module['_syntaqlite_analyzer_diagnostic_count'] = wasmExports['syntaqlite_analyzer_diagnostic_count']
@@ -4759,6 +4809,15 @@ var _syntaqlite_analyzer_relations = Module['_syntaqlite_analyzer_relations'] = 
 var _syntaqlite_analyzer_render_diagnostics = Module['_syntaqlite_analyzer_render_diagnostics'] = wasmExports['syntaqlite_analyzer_render_diagnostics']
 var _syntaqlite_analyzer_unexpanded_view_count = Module['_syntaqlite_analyzer_unexpanded_view_count'] = wasmExports['syntaqlite_analyzer_unexpanded_view_count']
 var _syntaqlite_analyzer_unexpanded_views = Module['_syntaqlite_analyzer_unexpanded_views'] = wasmExports['syntaqlite_analyzer_unexpanded_views']
+var _syntaqlite_analyzer_create_sqlite = Module['_syntaqlite_analyzer_create_sqlite'] = wasmExports['syntaqlite_analyzer_create_sqlite']
+var _syntaqlite_analyzer_create_with_dialect = Module['_syntaqlite_analyzer_create_with_dialect'] = wasmExports['syntaqlite_analyzer_create_with_dialect']
+var _syntaqlite_analyzer_destroy = Module['_syntaqlite_analyzer_destroy'] = wasmExports['syntaqlite_analyzer_destroy']
+var _syntaqlite_analyzer_set_check_level = Module['_syntaqlite_analyzer_set_check_level'] = wasmExports['syntaqlite_analyzer_set_check_level']
+var _syntaqlite_analyzer_set_mode = Module['_syntaqlite_analyzer_set_mode'] = wasmExports['syntaqlite_analyzer_set_mode']
+var _syntaqlite_analyzer_set_module_resolver = Module['_syntaqlite_analyzer_set_module_resolver'] = wasmExports['syntaqlite_analyzer_set_module_resolver']
+var _syntaqlite_analyzer_set_strict_schema = Module['_syntaqlite_analyzer_set_strict_schema'] = wasmExports['syntaqlite_analyzer_set_strict_schema']
+var _syntaqlite_analyzer_set_suggestion_threshold = Module['_syntaqlite_analyzer_set_suggestion_threshold'] = wasmExports['syntaqlite_analyzer_set_suggestion_threshold']
+var _syntaqlite_string_destroy = Module['_syntaqlite_string_destroy'] = wasmExports['syntaqlite_string_destroy']
 var _syntaqlite_analyzer_add_function_overload = Module['_syntaqlite_analyzer_add_function_overload'] = wasmExports['syntaqlite_analyzer_add_function_overload']
 var _syntaqlite_analyzer_add_table_function = Module['_syntaqlite_analyzer_add_table_function'] = wasmExports['syntaqlite_analyzer_add_table_function']
 var _syntaqlite_analyzer_add_tables = Module['_syntaqlite_analyzer_add_tables'] = wasmExports['syntaqlite_analyzer_add_tables']
@@ -4768,6 +4827,7 @@ var _syntaqlite_analyzer_reset_catalog = Module['_syntaqlite_analyzer_reset_cata
 var _malloc = wasmExports['malloc']
 var _synq_extent_on_shift = Module['_synq_extent_on_shift'] = wasmExports['synq_extent_on_shift']
 var _synq_extent_on_reduce = Module['_synq_extent_on_reduce'] = wasmExports['synq_extent_on_reduce']
+var _synq_extent_fold_below_into_top = Module['_synq_extent_fold_below_into_top'] = wasmExports['synq_extent_fold_below_into_top']
 var _calloc = wasmExports['calloc']
 var ___dl_seterr = wasmExports['__dl_seterr']
 var __emscripten_find_dylib = wasmExports['_emscripten_find_dylib']

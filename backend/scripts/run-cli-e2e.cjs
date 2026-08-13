@@ -556,7 +556,18 @@ function resolveTraceProcessorPath() {
     return path.resolve(process.env.TRACE_PROCESSOR_PATH);
   }
   const executableName = process.platform === 'win32' ? 'trace_processor_shell.exe' : 'trace_processor_shell';
+  const platformKey =
+    process.platform === 'linux' && process.arch === 'x64'
+      ? 'linux-x64'
+      : process.platform === 'darwin' && process.arch === 'arm64'
+        ? 'darwin-arm64'
+        : process.platform === 'win32' && process.arch === 'x64'
+          ? 'win32-x64'
+          : undefined;
   const candidates = [
+    ...(platformKey
+      ? [path.join(backendRoot, 'prebuilts', 'trace_processor', platformKey, executableName)]
+      : []),
     path.join(repoRoot, 'perfetto/out/ui', executableName),
     path.join(backendRoot, 'bin', executableName),
   ];
