@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import crypto from 'crypto';
+import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import { mergeIsolatedProviderEnv } from './envIsolation';
 import type { ProviderService } from './providerService';
 import type { AgentRuntimeKind, ProviderConfig, ProviderScope, ProviderTuning } from './types';
@@ -347,6 +348,12 @@ function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntime
         ? 'CLAUDE'
         : undefined;
   const nonSecretEnv = pickEnv(env, runtimeEnvironmentKeys(runtimeKind));
+  const secretEntries = runtimeSecretEnvKeys(runtimeKind).map(
+    (key) => [key, env[key]] as [string, string | undefined],
+  );
+  if (runtimeKind === 'pi-agent-core') {
+    secretEntries.push(...piRuntimeFingerprintInput(env).entries);
+  }
   return {
     version: 1,
     providerId: null,
@@ -363,7 +370,7 @@ function envRuntimeSnapshot(runtimeOverride?: AgentRuntimeKind): ProviderRuntime
     baseUrl: inferBaseUrl(runtimeKind, nonSecretEnv),
     openaiProtocol: runtimeKind === 'openai-agents-sdk' ? env.OPENAI_AGENTS_PROTOCOL : undefined,
     environment: nonSecretEnv,
-    secretVersion: hashSecretEntries(runtimeSecretEnvKeys(runtimeKind).map((key) => [key, env[key]])),
+    secretVersion: hashSecretEntries(secretEntries),
   };
 }
 
@@ -372,14 +379,16 @@ function providerSecretVersion(
   runtimeKind: AgentRuntimeKind,
   env: Record<string, string | undefined>,
 ): string {
-  return hashSecretEntries(
-    [
-      ...runtimeSensitiveConnectionFields(runtimeKind)
-        .map((field) => [field, provider.connection[field] as string | undefined] as [string, string | undefined]),
-      ...runtimeSecretEnvKeys(runtimeKind)
-        .map((key) => [`env:${key}`, env[key]] as [string, string | undefined]),
-    ],
-  );
+  const entries: Array<[string, string | undefined]> = [
+    ...runtimeSensitiveConnectionFields(runtimeKind)
+      .map((field) => [field, provider.connection[field] as string | undefined] as [string, string | undefined]),
+    ...runtimeSecretEnvKeys(runtimeKind)
+      .map((key) => [`env:${key}`, env[key]] as [string, string | undefined]),
+  ];
+  if (runtimeKind === 'pi-agent-core') {
+    entries.push(...piRuntimeFingerprintInput(env, provider.custom?.envOverrides).entries);
+  }
+  return hashSecretEntries(entries);
 }
 
 function providerRuntimeSnapshot(

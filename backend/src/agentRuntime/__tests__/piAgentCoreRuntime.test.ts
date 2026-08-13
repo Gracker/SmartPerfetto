@@ -25,6 +25,16 @@ import {
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import * as quickEvidenceDirectAnswer from '../quickEvidenceDirectAnswer';
 
+async function loadFakePiProviderRuntime(
+  config: {model: Record<string, unknown>},
+) {
+  return {
+    model: config.model as any,
+    models: {} as any,
+    streamFn: jest.fn() as any,
+  };
+}
+
 class FakePiAgent {
   static instances: FakePiAgent[] = [];
   static promptMessages: unknown[] | undefined;
@@ -125,7 +135,7 @@ function createFakeTraceProcessorService() {
 const PI_TEST_MODEL_JSON = JSON.stringify({
   id: 'pi-test-model',
   name: 'Pi Test Model',
-  api: 'smartperfetto-test',
+  api: 'openai-completions',
   provider: 'smartperfetto',
   baseUrl: '',
   reasoning: false,
@@ -669,6 +679,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_FAKE_STREAM_ENV]: '1' },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     const updates: StreamingUpdate[] = [];
@@ -704,6 +715,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_FAKE_STREAM_ENV]: '1' },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -717,12 +729,14 @@ describe('experimental Pi agent-core runtime contract', () => {
   });
 
   it('builds a real Pi analysis context from shared SmartPerfetto prompt and tools', async () => {
+    const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
       { kind: 'pi-agent-core', source: 'env' },
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader,
       },
     );
     runtime.restoreArchitectureCache('trace-pi', {
@@ -752,6 +766,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(agent.prompts[0]).toContain('分析启动性能');
     expect(JSON.stringify(agent.state.model)).not.toContain('sk-pi-test-secret');
     expect((agent.state.model as any).apiKey).toBeUndefined();
+    expect(typeof agent.options?.streamFn).toBe('function');
+    expect(agent.options?.getApiKey).toBeUndefined();
     expect(result).toMatchObject({
       sessionId: 'session-pi-real',
       success: true,
@@ -763,6 +779,28 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.identityResolutions).toBeUndefined();
     expect(updates.map((update) => update.type)).toContain('architecture_detected');
     expect(updates.map((update) => update.type)).not.toContain('answer_token');
+    expect(providerRuntimeLoader).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses one provider/Models runtime across turns and replaces it after reset', async () => {
+    const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader,
+      },
+    );
+
+    await runtime.analyze('first', 'session-provider-state', 'trace-pi', {analysisMode: 'fast'});
+    await runtime.analyze('second', 'session-provider-state', 'trace-pi', {analysisMode: 'fast'});
+    expect(providerRuntimeLoader).toHaveBeenCalledTimes(1);
+
+    runtime.reset();
+    await runtime.analyze('after reset', 'session-provider-state', 'trace-pi', {analysisMode: 'fast'});
+    expect(providerRuntimeLoader).toHaveBeenCalledTimes(2);
   });
 
   it('bounds the Pi architecture cache with shared LRU semantics', () => {
@@ -801,6 +839,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -856,6 +895,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -891,6 +931,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     secondRuntime.restoreFromSnapshot('session-pi-resume', 'trace-pi', snapshot);
@@ -928,6 +969,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
         moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     FakePiAgent.promptMessages = [{
@@ -960,6 +1002,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
         moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     FakePiAgent.promptMessages = [{
@@ -1023,6 +1066,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1073,6 +1117,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader,
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     const updates: StreamingUpdate[] = [];
@@ -1117,6 +1162,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader,
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     const updates: StreamingUpdate[] = [];
@@ -1156,6 +1202,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader,
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     runtime.restoreArchitectureCache('trace-pi-full-scroll', {
@@ -1197,6 +1244,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
     runtime.restoreArchitectureCache('trace-pi', {
@@ -1239,6 +1287,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1346,6 +1395,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
         moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1403,6 +1453,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
         moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1486,6 +1537,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
         moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1551,6 +1603,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
         moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1593,6 +1646,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 
@@ -1697,6 +1751,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       {
         env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
         moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
 

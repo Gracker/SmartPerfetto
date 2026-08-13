@@ -225,16 +225,37 @@ SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model
 ```
 
 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` 应是 `@earendil-works/pi-ai` 的 Model
-对象形状。`apiKey` / `apiKeyEnv` / `transport` / `thinkingLevel` /
+对象形状。SmartPerfetto 会为每个 runtime 实例创建私有的 Pi `Models` / provider /
+credential store，并把 `models.streamSimple.bind(models)` 显式传给 `Agent`，不会设置
+进程级默认 stream function。`apiKey` / `apiKeyEnv` / `credential` / `transport` / `thinkingLevel` /
 `thinkingBudgets` / `maxRetryDelayMs` 可以放在同一个 JSON 里作为 SmartPerfetto
-runtime 选项；`apiKey` 会在传给 Pi Agent Core 的 model state 前剥离，避免进入
-snapshot 或 report。真实模型路径会使用 SmartPerfetto 共享 prompt、SQL/Skill、
+runtime 选项；`apiKey` 和 `credential` 会在传给 Pi Agent Core 的 model state 前剥离，
+避免进入 snapshot 或 report。认证优先级为 JSON `credential` 或 `apiKey`、JSON
+`apiKeyEnv`、当前 Provider Manager runtime 的隔离环境、Pi provider 的常规环境变量。
+OAuth 使用 `credential:{"type":"oauth","refresh":"...","access":"...","expires":...}`，
+只对 Pi 内建且声明 OAuth 的 provider 生效；SmartPerfetto 不在分析请求中启动交互式登录，
+临近过期时由该 provider 的 Pi OAuth refresh 契约在实例私有 credential store 中串行刷新。
+真实模型路径会使用 SmartPerfetto 共享 prompt、SQL/Skill、
 plan/hypothesis 和 report/claim-verification 管线。`SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1`
 仅用于 smoke/test，不能代表真实分析效果。
 
 上面的 `openai-responses` 示例适合官方 OpenAI Responses API。接入只兼容
 chat/completions 的 OpenAI-compatible gateway 时，把 JSON 里的 `api` 改成
 `openai-completions`，并使用对应 gateway 的 `baseUrl`、model id 和 key。
+未知 `api` 会在创建 Agent 前失败；当前支持 Pi 的十种文本 API：
+`anthropic-messages`、`azure-openai-responses`、`bedrock-converse-stream`、
+`google-generative-ai`、`google-vertex`、`mistral-conversations`、
+`openai-codex-responses`、`openai-completions`、`openai-responses` 和
+`pi-messages`。
+使用受管 custom provider 时，应把 `DEEPSEEK_API_KEY`、`OPENROUTER_API_KEY`、
+`AWS_*`、`GOOGLE_*` 或 `AZURE_OPENAI_*` 等 provider 专用变量放在该 profile 的
+custom 环境覆盖中。SmartPerfetto 会在创建 runtime 前清除其他 profile 的凭证，并只把
+当前选中 runtime 的 provider-scoped 云环境传给 Pi。
+Bedrock 为避免 AWS SDK 的默认凭证链重新读取进程环境，只接受 runtime 内显式的
+`AWS_BEARER_TOKEN_BEDROCK`，或 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+（可带 `AWS_SESSION_TOKEN`）；`AWS_PROFILE`、ECS container credential、web identity
+和共享 config/credentials 文件模式会 fail closed。Vertex service-account 只检查当前
+profile 通过 `GOOGLE_APPLICATION_CREDENTIALS` 明确指定的精确文件，不探测用户目录 ADC。
 
 Provider Manager 里 Pi Agent Core 只对 custom provider 开放。删除 custom
 provider，或把 `SMARTPERFETTO_AGENT_RUNTIME` 切回 `claude-agent-sdk` /

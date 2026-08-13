@@ -238,11 +238,22 @@ SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON='{"id":"your-model-id","name":"Your Model
 ```
 
 `SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON` should use the
-`@earendil-works/pi-ai` Model object shape. `apiKey`, `apiKeyEnv`, `transport`,
+`@earendil-works/pi-ai` Model object shape. SmartPerfetto creates private Pi
+`Models`, provider, and credential-store state for each runtime instance and
+passes `models.streamSimple.bind(models)` explicitly to `Agent`; it does not set
+a process-global default stream function. `apiKey`, `apiKeyEnv`, `credential`, `transport`,
 `thinkingLevel`, `thinkingBudgets`, and `maxRetryDelayMs` may live in the same
-JSON as SmartPerfetto runtime options; `apiKey` is stripped before the model is
-passed into Pi Agent Core state so it does not enter snapshots or reports. The
-real model path uses SmartPerfetto's shared prompt, SQL/Skill,
+JSON as SmartPerfetto runtime options; `apiKey` and `credential` are stripped
+before the model is passed into Pi Agent Core state so they do not enter
+snapshots or reports. Authentication precedence is JSON `credential` or
+`apiKey`, JSON `apiKeyEnv`, the current Provider Manager runtime's isolated
+environment, then the Pi provider's conventional environment variables. OAuth
+uses `credential:{"type":"oauth","refresh":"...","access":"...","expires":...}`
+and is accepted only for a Pi built-in provider that declares OAuth support.
+SmartPerfetto does not start an interactive login during an analysis request;
+near-expiry credentials are refreshed serially through that provider's Pi OAuth
+contract in the instance-private credential store. The real model path uses
+SmartPerfetto's shared prompt, SQL/Skill,
 planning/hypothesis, and report/claim-verification pipeline.
 `SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM=1` is smoke/test-only and does not
 represent real analysis quality.
@@ -251,6 +262,23 @@ The `openai-responses` example above targets the official OpenAI Responses API.
 For OpenAI-compatible gateways that only expose chat/completions, set
 `"api":"openai-completions"` in the JSON and use that gateway's `baseUrl`, model
 id, and key.
+Unknown APIs fail before Agent construction. The supported Pi text APIs are
+`anthropic-messages`, `azure-openai-responses`, `bedrock-converse-stream`,
+`google-generative-ai`, `google-vertex`, `mistral-conversations`,
+`openai-codex-responses`, `openai-completions`, `openai-responses`, and
+`pi-messages`.
+For a managed custom provider, place provider-specific values such as
+`DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `AWS_*`, `GOOGLE_*`, or
+`AZURE_OPENAI_*` in that profile's custom environment overrides. SmartPerfetto
+clears credentials from other profiles before constructing the runtime and
+passes only the selected runtime's provider-scoped cloud environment to Pi.
+To prevent the AWS SDK default credential chain from re-reading process-wide
+state, Bedrock accepts only a runtime-scoped `AWS_BEARER_TOKEN_BEDROCK`, or
+explicit `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` credentials (optionally
+with `AWS_SESSION_TOKEN`). `AWS_PROFILE`, ECS container credentials, web
+identity, and shared config/credentials files fail closed. Vertex service
+accounts check only the exact file explicitly selected through
+`GOOGLE_APPLICATION_CREDENTIALS`; SmartPerfetto does not probe user-home ADC.
 
 Pi Agent Core is custom-only in Provider Manager. Removing the custom provider
 or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /

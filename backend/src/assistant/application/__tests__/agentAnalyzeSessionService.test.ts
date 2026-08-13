@@ -1069,6 +1069,89 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
   });
 
+  test('skips Pi opaque snapshot restore after a scoped API-key rotation', () => {
+    const provider = getProviderService().create({
+      name: 'Pi Provider',
+      category: 'custom',
+      type: 'custom',
+      models: {primary: 'pi-primary', light: 'pi-light'},
+      connection: {
+        agentRuntime: 'pi-agent-core',
+        piAgentCoreModelJson: JSON.stringify({
+          id: 'deepseek-chat',
+          provider: 'deepseek',
+          api: 'openai-completions',
+          baseUrl: 'https://api.deepseek.com',
+        }),
+      },
+      custom: {envOverrides: {DEEPSEEK_API_KEY: 'first-pi-secret'}},
+    });
+    const originalHash = providerSnapshotHash(provider.id);
+    getProviderService().update(provider.id, {
+      custom: {envOverrides: {DEEPSEEK_API_KEY: 'second-pi-secret'}},
+    });
+    const nextHash = providerSnapshotHash(provider.id);
+
+    sessionPersistenceService.getSession.mockReturnValue({
+      id: 'persisted-pi',
+      traceId: 'trace-pi',
+      question: 'old Pi question',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      metadata: {},
+      messages: [],
+    });
+    sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
+    sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
+      version: 1,
+      snapshotTimestamp: Date.now(),
+      sessionId: 'persisted-pi',
+      traceId: 'trace-pi',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      engineState: {
+        kind: 'pi-agent-core',
+        provider: {
+          providerId: provider.id,
+          providerSnapshotHash: originalHash,
+        },
+        pi: {
+          opaque: {
+            version: 1,
+            messages: [{role: 'assistant', content: [{type: 'text', text: 'old identity'}]}],
+            messageCount: 1,
+            byteSize: 96,
+          },
+        },
+      },
+      runSequence: 1,
+      conversationOrdinal: 1,
+    });
+
+    const prepared = service.prepareSession({
+      traceId: 'trace-pi',
+      query: 'follow-up',
+      requestedSessionId: 'persisted-pi',
+      options: {},
+    });
+
+    const restoredOrchestrator = mockCreateAgentOrchestrator.mock.results[0]?.value as any;
+    expect(nextHash).not.toBe(originalHash);
+    expect(prepared.session.providerSnapshotHash).toBe(nextHash);
+    expect(prepared.session.providerSnapshotChanged).toBe(true);
+    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
+    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+  });
+
   test('restores a persisted env-fallback session without reading the active provider', () => {
     const provider = getProviderService().create({
       name: 'OpenAI Provider',

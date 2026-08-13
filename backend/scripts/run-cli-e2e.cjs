@@ -7,6 +7,7 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const {pathToFileURL} = require('url');
 const { spawnSync } = require('child_process');
 
 const backendRoot = path.resolve(__dirname, '..');
@@ -423,6 +424,45 @@ function buildPackedCli() {
     cwd: backendRoot,
     env: process.env,
     timeoutMs: 180000,
+    expectExit: 0,
+  });
+
+  const installedPackageRoot = path.join(
+    installDir,
+    'node_modules/@gracker/smartperfetto',
+  );
+  const piRuntimePath = path.join(
+    installedPackageRoot,
+    'dist/agentRuntime/engines/pi/piAgentCoreRuntime.js',
+  );
+  assertFile(piRuntimePath, 'packed Pi runtime adapter');
+  const piRuntimeUrl = pathToFileURL(piRuntimePath).href;
+  runProcess('packed Pi runtime construction', process.execPath, [
+    '--input-type=module',
+    '--eval',
+    `const runtime = await import(${JSON.stringify(piRuntimeUrl)});
+const {Agent} = await runtime.loadPiAgentCoreModule();
+const provider = await runtime.createPiAgentCoreProviderRuntime({
+  model: {
+    id: 'packed-pi-model',
+    name: 'Packed Pi Model',
+    provider: 'packed-pi',
+    api: 'openai-completions',
+    baseUrl: 'https://example.invalid/v1',
+    reasoning: false,
+    input: ['text'],
+    cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0},
+    contextWindow: 8192,
+    maxTokens: 1024,
+  },
+  apiKey: 'packed-pi-secret',
+}, {});
+new Agent({initialState: {model: provider.model, tools: []}, streamFn: provider.streamFn});
+console.log('packed Pi runtime construction: PASS');`,
+  ], {
+    cwd: installDir,
+    env: process.env,
+    timeoutMs: 120000,
     expectExit: 0,
   });
 

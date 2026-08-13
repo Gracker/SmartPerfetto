@@ -308,6 +308,177 @@ describe('provider runtime snapshot hash', () => {
     expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash).not.toBe(beforeSystemPrompt);
   });
 
+  it('changes Pi snapshots when scoped credentials or cloud routing inputs change', () => {
+    const provider = svc.create({
+      name: 'Pi Provider Fingerprint',
+      category: 'custom',
+      type: 'custom',
+      models: { primary: 'pi-primary', light: 'pi-light' },
+      connection: {
+        agentRuntime: 'pi-agent-core',
+        piAgentCoreModelJson: JSON.stringify({
+          id: 'deepseek-chat',
+          provider: 'deepseek',
+          api: 'openai-completions',
+          baseUrl: 'https://api.deepseek.com',
+        }),
+      },
+      custom: {envOverrides: {DEEPSEEK_API_KEY: 'first-secret'}},
+    });
+
+    const first = resolveProviderRuntimeSnapshot(svc, provider.id);
+    svc.update(provider.id, {
+      custom: {envOverrides: {DEEPSEEK_API_KEY: 'second-secret'}},
+    });
+    const second = resolveProviderRuntimeSnapshot(svc, provider.id);
+    expect(second.snapshotHash).not.toBe(first.snapshotHash);
+    expect(JSON.stringify(first.snapshot)).not.toContain('first-secret');
+    expect(JSON.stringify(second.snapshot)).not.toContain('second-secret');
+
+    svc.update(provider.id, {
+      connection: {
+        piAgentCoreModelJson: JSON.stringify({
+          id: 'azure-test',
+          provider: 'azure-openai-responses',
+          api: 'azure-openai-responses',
+          baseUrl: 'https://models.inference.ai.azure.com',
+        }),
+      },
+      custom: {
+        envOverrides: {
+          AZURE_OPENAI_API_KEY: 'azure-secret',
+          AZURE_OPENAI_BASE_URL: 'https://first.azure.invalid',
+        },
+      },
+    });
+    const firstAzure = resolveProviderRuntimeSnapshot(svc, provider.id);
+    svc.update(provider.id, {
+      custom: {
+        envOverrides: {
+          AZURE_OPENAI_API_KEY: 'azure-secret',
+          AZURE_OPENAI_BASE_URL: 'https://second.azure.invalid',
+        },
+      },
+    });
+    const secondAzure = resolveProviderRuntimeSnapshot(svc, provider.id);
+    expect(secondAzure.snapshotHash).not.toBe(firstAzure.snapshotHash);
+    expect(JSON.stringify(secondAzure.snapshot)).not.toContain('azure-secret');
+  });
+
+  it.each([
+    {
+      name: 'Vertex service account',
+      model: {
+        id: 'vertex-test',
+        provider: 'google-vertex',
+        api: 'google-vertex',
+        baseUrl: 'https://aiplatform.googleapis.com',
+      },
+      firstEnv: {
+        GOOGLE_APPLICATION_CREDENTIALS: '/credentials/first.json',
+        GOOGLE_CLOUD_PROJECT: 'project-a',
+        GOOGLE_CLOUD_LOCATION: 'us-central1',
+      },
+      secondEnv: {
+        GOOGLE_APPLICATION_CREDENTIALS: '/credentials/second.json',
+        GOOGLE_CLOUD_PROJECT: 'project-b',
+        GOOGLE_CLOUD_LOCATION: 'europe-west1',
+      },
+    },
+    {
+      name: 'Bedrock access keys and region',
+      model: {
+        id: 'bedrock-test',
+        provider: 'amazon-bedrock',
+        api: 'bedrock-converse-stream',
+        baseUrl: 'https://bedrock-runtime.us-east-1.amazonaws.com',
+      },
+      firstEnv: {
+        AWS_ACCESS_KEY_ID: 'first-access-key',
+        AWS_SECRET_ACCESS_KEY: 'first-secret-key',
+        AWS_REGION: 'us-east-1',
+      },
+      secondEnv: {
+        AWS_ACCESS_KEY_ID: 'second-access-key',
+        AWS_SECRET_ACCESS_KEY: 'second-secret-key',
+        AWS_REGION: 'eu-west-1',
+      },
+    },
+  ] as Array<{
+    name: string;
+    model: Record<string, unknown>;
+    firstEnv: Record<string, string>;
+    secondEnv: Record<string, string>;
+  }>)('changes Pi snapshots when $name changes', ({model, firstEnv, secondEnv}) => {
+    const provider = svc.create({
+      name: 'Pi Cloud Provider',
+      category: 'custom',
+      type: 'custom',
+      models: {primary: 'pi-primary', light: 'pi-light'},
+      connection: {
+        agentRuntime: 'pi-agent-core',
+        piAgentCoreModelJson: JSON.stringify(model),
+      },
+      custom: {envOverrides: firstEnv},
+    });
+    const before = resolveProviderRuntimeSnapshot(svc, provider.id);
+
+    svc.update(provider.id, {custom: {envOverrides: secondEnv}});
+    const after = resolveProviderRuntimeSnapshot(svc, provider.id);
+
+    expect(after.snapshotHash).not.toBe(before.snapshotHash);
+    for (const secret of [...Object.values(firstEnv), ...Object.values(secondEnv)]) {
+      expect(JSON.stringify(before.snapshot)).not.toContain(secret);
+      expect(JSON.stringify(after.snapshot)).not.toContain(secret);
+    }
+  });
+
+  it('fingerprints env-mode Pi conventional and explicit API-key sources', () => {
+    const keys = [
+      'SMARTPERFETTO_AGENT_RUNTIME',
+      'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON',
+      'DEEPSEEK_API_KEY',
+      'SMARTPERFETTO_TEST_PI_API_KEY',
+    ] as const;
+    const original = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+    Object.assign(process.env, {
+      SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core',
+      SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: JSON.stringify({
+        id: 'deepseek-chat',
+        provider: 'deepseek',
+        api: 'openai-completions',
+        baseUrl: 'https://api.deepseek.com',
+      }),
+      DEEPSEEK_API_KEY: 'conventional-first',
+    });
+    try {
+      const conventionalFirst = resolveProviderRuntimeSnapshot(svc, null);
+      process.env.DEEPSEEK_API_KEY = 'conventional-second';
+      const conventionalSecond = resolveProviderRuntimeSnapshot(svc, null);
+      expect(conventionalSecond.snapshotHash).not.toBe(conventionalFirst.snapshotHash);
+
+      process.env.SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON = JSON.stringify({
+        id: 'deepseek-chat',
+        provider: 'deepseek',
+        api: 'openai-completions',
+        baseUrl: 'https://api.deepseek.com',
+        apiKeyEnv: 'SMARTPERFETTO_TEST_PI_API_KEY',
+      });
+      process.env.SMARTPERFETTO_TEST_PI_API_KEY = 'explicit-first';
+      const explicitFirst = resolveProviderRuntimeSnapshot(svc, null);
+      process.env.SMARTPERFETTO_TEST_PI_API_KEY = 'explicit-second';
+      const explicitSecond = resolveProviderRuntimeSnapshot(svc, null);
+      expect(explicitSecond.snapshotHash).not.toBe(explicitFirst.snapshotHash);
+      expect(JSON.stringify(explicitSecond.snapshot)).not.toContain('explicit-second');
+    } finally {
+      for (const key of keys) {
+        const value = original[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it('captures Qoder runtime inputs without retaining secret or ambient Qoder values', () => {
     const originalWorkerPath = process.env.QODER_WORKER_RUNTIME_PATH;
     process.env.QODER_WORKER_RUNTIME_PATH = '/ambient/qoder-worker.mjs';
