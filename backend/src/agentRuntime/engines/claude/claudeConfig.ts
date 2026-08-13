@@ -14,6 +14,28 @@ import { resolveAgentRuntimeBudgetConfig } from '../../../config';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
+export type ClaudeSdkPermissionOptions =
+  | {permissionMode: 'dontAsk'}
+  | {
+      permissionMode: 'bypassPermissions';
+      allowDangerouslySkipPermissions: true;
+    };
+
+export function resolveClaudeSdkPermissionOptions(
+  effectiveUid = typeof process.geteuid === 'function'
+    ? process.geteuid()
+    : typeof process.getuid === 'function'
+      ? process.getuid()
+      : undefined,
+): ClaudeSdkPermissionOptions {
+  return effectiveUid === 0
+    ? {permissionMode: 'dontAsk'}
+    : {
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+      };
+}
+
 export interface ClaudeAgentConfig {
   model: string;
   /** Lightweight model for auxiliary single-turn calls (verifier, classifier, summarizer).

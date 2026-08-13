@@ -13,6 +13,7 @@ import {
   ENTERPRISE_MIGRATION_PHASE_ENV,
 } from '../../services/enterpriseMigration';
 import { getProviderService, resetProviderService } from '../../services/providerManager';
+import {SECRET_STORE_MASTER_KEY_ENV} from '../../services/providerManager/localSecretStore';
 import { saveClaudeSessionMapToRuntimeSnapshots } from '../../services/runtimeSnapshotStore';
 import type { TraceProcessorService } from '../../services/traceProcessorService';
 import * as quickEvidenceDirectAnswer from '../../agentRuntime/quickEvidenceDirectAnswer';
@@ -39,6 +40,7 @@ const originalEnv = {
   migrationPhase: process.env[ENTERPRISE_MIGRATION_PHASE_ENV],
   cutoverConfirmed: process.env[ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV],
   providerDataDirOverride: process.env.PROVIDER_DATA_DIR_OVERRIDE,
+  secretStoreMasterKey: process.env[SECRET_STORE_MASTER_KEY_ENV],
   precompactThreshold: process.env.CLAUDE_PRECOMPACT_THRESHOLD,
   precompactWarnEnabled: process.env.CLAUDE_PRECOMPACT_WARN_ENABLED,
 };
@@ -74,6 +76,7 @@ beforeEach(async () => {
   process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'cutover';
   process.env[ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV] = 'true';
   process.env.PROVIDER_DATA_DIR_OVERRIDE = tmpDir;
+  process.env[SECRET_STORE_MASTER_KEY_ENV] = Buffer.alloc(32, 17).toString('base64');
   resetProviderService();
 });
 
@@ -92,6 +95,7 @@ afterEach(async () => {
   restoreEnvValue(ENTERPRISE_MIGRATION_PHASE_ENV, originalEnv.migrationPhase);
   restoreEnvValue(ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV, originalEnv.cutoverConfirmed);
   restoreEnvValue('PROVIDER_DATA_DIR_OVERRIDE', originalEnv.providerDataDirOverride);
+  restoreEnvValue(SECRET_STORE_MASTER_KEY_ENV, originalEnv.secretStoreMasterKey);
   restoreEnvValue('CLAUDE_PRECOMPACT_THRESHOLD', originalEnv.precompactThreshold);
   restoreEnvValue('CLAUDE_PRECOMPACT_WARN_ENABLED', originalEnv.precompactWarnEnabled);
   resetProviderService();
@@ -1003,6 +1007,57 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
 
     expect(traceProcessor.query).not.toHaveBeenCalled();
     expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+  });
+
+  it('enables and auto-allows the Agent tool only when sub-agents are defined', () => {
+    expect(__testing.buildClaudeSdkToolOptions(
+      ['mcp__smartperfetto__execute_sql'],
+      {'frame-expert': {}},
+    )).toEqual({
+      tools: ['Agent'],
+      allowedTools: ['mcp__smartperfetto__execute_sql', 'Agent'],
+    });
+    expect(__testing.buildClaudeSdkToolOptions(
+      ['mcp__smartperfetto__execute_sql'],
+    )).toEqual({
+      tools: [],
+      allowedTools: ['mcp__smartperfetto__execute_sql'],
+    });
+  });
+
+  it('keeps a terminal SDK success when iterator cleanup throws afterward', async () => {
+    const runtime = new ClaudeRuntime({
+      query: jest.fn(async () => {
+        throw new Error('no trace processor exists for conversation');
+      }),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-conversation-terminal-success',
+        num_turns: 1,
+        result: '对话模式可用。',
+      };
+      throw new Error('Not logged in · Please run /login');
+    });
+
+    const result = await runtime.analyze(
+      '只回复：对话模式可用。',
+      'session-conversation-terminal-success',
+      'conversation-no-trace:session-conversation-terminal-success',
+      {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: false,
+      },
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.conclusion).toContain('对话模式可用');
   });
 
   it('uses the request language throughout the quick path without mutating runtime defaults', async () => {
@@ -2166,6 +2221,8 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(call.options.effort).toBe('max');
     expect(call.options.env.ANTHROPIC_API_KEY).toBe('sk-provider-claude');
     expect(call.options.agents).toBeDefined();
+    expect(call.options.tools).toEqual(['Agent']);
+    expect(call.options.allowedTools).toContain('Agent');
     expect(JSON.stringify(call.options.agents)).toContain('provider-claude-subagent');
   });
 });

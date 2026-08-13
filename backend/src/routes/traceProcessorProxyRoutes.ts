@@ -243,6 +243,7 @@ function frontendHolderForContext(
     ...(frontendVisibility ? { frontendVisibility } : {}),
     metadata: {
       requestId: context.requestId,
+      userId: context.userId,
       proxy: 'trace_processor',
       ...metadata,
     },
