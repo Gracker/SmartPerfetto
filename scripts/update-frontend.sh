@@ -138,6 +138,23 @@ for BUNDLE in engine_bundle.js traceconv_bundle.js; do
     exit 1
   fi
 done
+SYNTAQLITE_ASSETS=(
+  syntaqlite-perfetto.wasm
+  syntaqlite-runtime.js
+  syntaqlite-runtime.wasm
+  syntaqlite-sqlite.wasm
+)
+SYNTAQLITE_SOURCE_PATHS=()
+for ASSET in "${SYNTAQLITE_ASSETS[@]}"; do
+  if [ -f "$VERSION_DIR/assets/$ASSET" ]; then
+    SYNTAQLITE_SOURCE_PATHS+=("$VERSION_DIR/assets/$ASSET")
+  elif [ -f "$VERSION_DIR/$ASSET" ]; then
+    SYNTAQLITE_SOURCE_PATHS+=("$VERSION_DIR/$ASSET")
+  else
+    echo "ERROR: Compiled frontend is missing Syntaqlite asset $ASSET" >&2
+    exit 1
+  fi
+done
 
 # Remember stale version directories. We remove them after restoring the JS
 # engine bundles because a --only-wasm-memory64 build may need to copy those
@@ -174,6 +191,17 @@ rsync -a --delete \
   --exclude="*.map" \
   "$VERSION_DIR/" \
   "$FRONTEND_DIR/$VERSION/"
+
+# Full upstream builds emit Syntaqlite assets inside the version directory,
+# while dev builds can also expose them under dist/assets/. Always derive the
+# public top-level copies from this exact versioned build so a refresh cannot
+# retain stale assets from an earlier Perfetto revision.
+mkdir -p "$FRONTEND_DIR/assets"
+for INDEX in "${!SYNTAQLITE_ASSETS[@]}"; do
+  cp \
+    "${SYNTAQLITE_SOURCE_PATHS[$INDEX]}" \
+    "$FRONTEND_DIR/assets/${SYNTAQLITE_ASSETS[$INDEX]}"
+done
 
 # Some upstream UI builds emit only the memory64 trace processor into
 # ui/dist/<version>/ while the classic wasm is left under the GN output wasm/

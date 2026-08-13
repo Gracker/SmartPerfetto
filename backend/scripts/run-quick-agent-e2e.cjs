@@ -212,8 +212,6 @@ function quickSuite(input) {
       input.query,
       '--timeout-ms',
       DEFAULT_TIMEOUT_MS,
-      '--max-rounds',
-      '1',
       '--output',
       input.output,
       '--require-quick-run',

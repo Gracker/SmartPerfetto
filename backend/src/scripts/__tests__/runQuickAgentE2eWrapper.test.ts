@@ -38,6 +38,7 @@ describe('run-quick-agent-e2e wrapper', () => {
     expect(result.stdout).toContain('--require-data-envelope');
     expect(result.stdout).toContain('--forbid-degraded-fallback quick_full_report_shape');
     expect(result.stdout).toContain('--max-analysis-completed-conclusion-chars 900');
+    expect(result.stdout).not.toContain('--max-rounds');
     expect(result.stdout).toContain('## 快速 Triage');
     expect(result.stdout).toContain('## 逐句数据引用（结构化来源）');
   });
