@@ -12,6 +12,10 @@ import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from '../../..
 import { formatToolCallNarration, type ToolNarrationOptions } from '../../../agentv3/toolNarration';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import type {CodeAwareStreamingTextProjection} from '../../../services/security/codeAwareOutputRegistry';
+import {
+  appendBoundedText,
+  summarizeExternalToolResult,
+} from '../../runtimeLimits';
 
 export type UpdateEmitter = (update: StreamingUpdate) => void;
 
@@ -50,6 +54,8 @@ export interface SseBridge {
    * message that would normally disambiguate and flush the final answer text.
    */
   flushPendingAnswer: () => void;
+  /** Release timers and per-stream lookup state without emitting buffered text. */
+  dispose: () => void;
 }
 
 /**
@@ -100,6 +106,8 @@ export function createSseBridge(
   /** Accumulated answer text from the final (non-tool) turn — used as fallback
    *  when SDK `result` message is empty (e.g. on timeout). */
   let accumulatedAnswerText = '';
+  let accumulatedAnswerTruncated = false;
+  let disposed = false;
   // Buffer window: trade-off between streaming responsiveness and classification
   // accuracy. Shorter = more responsive but higher risk of misclassifying thought
   // as answer_token when tool_use arrives with network jitter.
@@ -107,15 +115,36 @@ export function createSseBridge(
   // pre-tool reasoning as answer_token when tool_use arrives with network jitter.
   // 200ms is well below human perception threshold for streaming text.
   const BUFFER_DELAY_MS = 200;
+  const MAX_TRACKED_TASKS = 256;
+
+  function setBoundedTaskName(
+    target: Map<string, string>,
+    taskId: string,
+    name: string,
+  ): void {
+    if (!target.has(taskId) && target.size >= MAX_TRACKED_TASKS) {
+      const oldestTaskId = target.keys().next().value;
+      if (oldestTaskId) target.delete(oldestTaskId);
+    }
+    target.set(taskId, name);
+  }
 
   function projectCompleteText(text: string): string {
     return textProjection?.projectComplete(text) ?? text;
   }
 
   function emitAnswerChunk(text: string, timestamp: number): void {
-    if (!text) return;
-    accumulatedAnswerText += text;
-    const projected = textProjection?.write(text) ?? text;
+    if (!text || disposed) return;
+    const previousLength = accumulatedAnswerText.length;
+    const bounded = appendBoundedText({
+      current: accumulatedAnswerText,
+      chunk: text,
+      alreadyTruncated: accumulatedAnswerTruncated,
+    });
+    accumulatedAnswerText = bounded.text;
+    accumulatedAnswerTruncated = bounded.truncated;
+    const acceptedText = bounded.text.slice(previousLength);
+    const projected = textProjection?.write(acceptedText) ?? acceptedText;
     if (projected) emit({type: 'answer_token', content: {token: projected}, timestamp});
   }
 
@@ -153,6 +182,7 @@ export function createSseBridge(
   }
 
   function handleSdkMessage(msg: any): void {
+    if (disposed) return;
     const now = Date.now();
 
     if (msg.type === 'system' && msg.subtype === 'init') {
@@ -226,6 +256,7 @@ export function createSseBridge(
           // Answer text was misclassified as conclusion — it was actually
           // intermediate reasoning before tool calls. Clear accumulated text.
           accumulatedAnswerText = '';
+          accumulatedAnswerTruncated = false;
           const projectedTail = textProjection?.flush() ?? '';
           if (projectedTail) {
             emit({type: 'thought', content: {thought: projectedTail}, timestamp: now});
@@ -262,7 +293,7 @@ export function createSseBridge(
         if (block.type === 'tool_use') {
           lastToolUseId = block.id;
           if (typeof block.id === 'string' && typeof block.name === 'string') {
-            toolUseIdToName.set(block.id, block.name);
+            setBoundedTaskName(toolUseIdToName, block.id, block.name);
           }
           const friendlyMsg = formatToolCallNarration(block.name, block.input, language, narrationOptions);
           emit({
@@ -304,7 +335,7 @@ export function createSseBridge(
             type: 'agent_response',
             content: {
               taskId,
-              result: stringifySdkToolResult(projectToolResultForExternalSurface(
+              result: summarizeExternalToolResult(projectToolResultForExternalSurface(
                 toolName ?? 'unknown',
                 block.result,
               )),
@@ -320,7 +351,7 @@ export function createSseBridge(
           type: 'agent_response',
           content: {
             taskId,
-            result: stringifySdkToolResult(projectToolResultForExternalSurface(
+            result: summarizeExternalToolResult(projectToolResultForExternalSurface(
               toolName ?? 'unknown',
               msg.tool_use_result,
             )),
@@ -408,7 +439,7 @@ export function createSseBridge(
       const agentName = Object.keys(descriptions).find(name => description.includes(name)) || description;
       const desc = descriptions[agentName] || description;
       // Track task_id → agent name for use in task_notification (completion)
-      if (taskId) taskIdToAgentName.set(taskId, agentName);
+      if (taskId) setBoundedTaskName(taskIdToAgentName, taskId, agentName);
       emit({
         type: 'sub_agent_started',
         content: {
@@ -511,8 +542,18 @@ export function createSseBridge(
     handleMessage: handleSdkMessage,
     getAccumulatedAnswer: () => accumulatedAnswerText,
     flushPendingAnswer: () => {
+      if (disposed) return;
       flushBufferAsAnswer();
       flushProjectedAnswer();
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      cancelBufferTimer();
+      textBuffer = '';
+      toolUseIdToName.clear();
+      taskIdToAgentName.clear();
+      textProjection?.flush();
     },
   };
 }

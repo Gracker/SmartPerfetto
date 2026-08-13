@@ -211,6 +211,73 @@ describe('createSseBridge', () => {
     }));
   });
 
+  it('bounds externally projected tool results without changing the source payload', () => {
+    const updates: StreamingUpdate[] = [];
+    const bridge = createSseBridge((update) => updates.push(update));
+    const sourcePayload = {success: true, rows: ['x'.repeat(10_000)]};
+
+    bridge.handleMessage({
+      type: 'assistant',
+      message: {content: [{
+        type: 'tool_use',
+        id: 'large-result',
+        name: 'mcp__smartperfetto__fetch_artifact',
+        input: {artifactId: 'art-large'},
+      }]},
+    });
+    bridge.handleMessage({
+      type: 'user',
+      tool_use_result: sourcePayload,
+      message: {content: [{
+        type: 'tool_result',
+        tool_use_id: 'large-result',
+        content: sourcePayload,
+      }]},
+    });
+
+    const response = updates.find(update => update.type === 'agent_response');
+    const projected = String(response?.content?.result ?? '');
+    expect(projected.length).toBeLessThanOrEqual(2_000);
+    expect(projected).toContain('truncated');
+    expect(sourcePayload.rows[0]).toHaveLength(10_000);
+  });
+
+  it('bounds fallback answer accumulation and disposes pending timers', () => {
+    jest.useFakeTimers();
+    try {
+      const updates: StreamingUpdate[] = [];
+      const bridge = createSseBridge((update) => updates.push(update));
+      bridge.handleMessage({
+        type: 'assistant',
+        message: {content: [{type: 'text', text: 'a'.repeat(300_000)}]},
+      });
+
+      expect(bridge.getAccumulatedAnswer().length).toBeLessThanOrEqual(256 * 1024);
+      expect(bridge.getAccumulatedAnswer()).toContain('truncated');
+      expect(updates
+        .filter(update => update.type === 'answer_token')
+        .reduce((sum, update) => sum + String(update.content?.token ?? '').length, 0))
+        .toBeLessThanOrEqual(256 * 1024);
+
+      const pendingUpdates: StreamingUpdate[] = [];
+      const pendingBridge = createSseBridge((update) => pendingUpdates.push(update));
+      pendingBridge.handleMessage({
+        type: 'stream_event',
+        event: {
+          type: 'content_block_delta',
+          delta: {type: 'text_delta', text: 'must not flush after dispose'},
+        },
+      });
+      pendingBridge.dispose();
+      jest.advanceTimersByTime(250);
+
+      expect(pendingUpdates).toEqual([]);
+      expect(pendingBridge.getAccumulatedAnswer()).toBe('');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('projects private wiki tool results before emitting agent_response', () => {
     const updates: StreamingUpdate[] = [];
     const bridge = createSseBridge((update) => updates.push(update));
@@ -304,5 +371,17 @@ describe('createSseBridge', () => {
 
     expect(result).not.toContain('CLAUDE_PLAN_PRIVATE_WIKI_CANARY');
     expect(result).toContain('snippetHash');
+  });
+
+  it('bounds Claude plan evidence text without mutating the source result', () => {
+    const sourceResult = {success: true, rows: ['p'.repeat(10_000)]};
+    const result = claudeRuntimeTesting.projectClaudeToolResultForPlan(
+      'execute_sql',
+      sourceResult,
+    );
+
+    expect(result.length).toBeLessThanOrEqual(2_000);
+    expect(result).toContain('truncated');
+    expect(sourceResult.rows[0]).toHaveLength(10_000);
   });
 });

@@ -358,7 +358,7 @@ OPENAI_QUICK_MAX_TURNS=50  # 可选 OpenAI runtime 覆盖
 OPENAI_MAX_TURNS=100       # 可选 OpenAI runtime 覆盖
 ```
 
-如果使用较慢模型，或某些 trace 需要更多工具调用轮次，可以调高这些值。总 safety timeout 会随轮次预算放大：full 模式每轮使用 `CLAUDE_FULL_PER_TURN_MS` / `OPENAI_FULL_PER_TURN_MS`，fast 模式每轮使用 `CLAUDE_QUICK_PER_TURN_MS` / `OPENAI_QUICK_PER_TURN_MS`。修改 `.env` 后需要重启 backend。
+如果使用较慢模型，或某些 trace 需要更多工具调用轮次，可以调高这些值。full 模式仍按 `CLAUDE_FULL_PER_TURN_MS` / `OPENAI_FULL_PER_TURN_MS` 计算每轮预算，但请求默认受 `AGENT_FULL_REQUEST_TIMEOUT_MS` 的 20 分钟硬上限约束；provider 连续 5 分钟没有流事件时，`AGENT_STREAM_IDLE_TIMEOUT_MS` 会取消当前分析。fast 模式仍按 `CLAUDE_QUICK_PER_TURN_MS` / `OPENAI_QUICK_PER_TURN_MS` 计算每轮预算。runtime-specific 覆盖值见配置文档；修改 `.env` 后需要重启 backend。
 
 ## 基本用法
 

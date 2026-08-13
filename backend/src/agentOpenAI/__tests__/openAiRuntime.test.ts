@@ -227,6 +227,9 @@ function createOpenAiConfigForTest(): OpenAIAgentConfig {
     protocol: 'responses',
     cwd: process.cwd(),
     fullPathPerTurnMs: 60_000,
+    fullRequestTimeoutMs: 20 * 60_000,
+    streamIdleTimeoutMs: 5 * 60_000,
+    maxHistoryBytes: 4 * 1024 * 1024,
     quickPathPerTurnMs: 30_000,
     classifierTimeoutMs: 10_000,
     outputLanguage: 'zh-CN',
@@ -2439,6 +2442,77 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(prompt).not.toContain('{{missing_sections}}');
   });
 
+  it('returns a terminal partial result when the provider stalls before creating a stream', async () => {
+    const originalIdleTimeout = process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS;
+    const originalRequestTimeout = process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS;
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '15';
+    process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS = '1000';
+
+    const runtime = createOpenAiRuntimeForTest();
+    const updates: OpenAiStreamingUpdateForTest[] = [];
+    runtime.on('update', update => updates.push(update));
+    let providerSignal: AbortSignal | undefined;
+    jest.spyOn(Runner.prototype as any, 'run')
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[2] as {signal?: AbortSignal};
+        providerSignal = options.signal;
+        return await new Promise(() => undefined);
+      });
+    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    jest.spyOn(runtime, 'prepareAnalysisContext').mockResolvedValue({
+      tools: [],
+      allowedTools: [],
+      systemPrompt: 'test system prompt',
+      sessionContext: {
+        addTurn: jest.fn(),
+        updateWorkingMemoryFromConclusion: jest.fn(),
+      },
+      previousTurns: [],
+      architecture: {type: 'Standard', confidence: 1, evidence: []},
+      hypotheses: [],
+      sessionMapKey: 's-provider-create-idle-timeout',
+      effectivePackageName: 'com.example.demo',
+    } as any);
+    jest.spyOn(runtime, 'recordPatternMemory').mockImplementation(() => undefined);
+
+    try {
+      const result = await runtime.analyze(
+        '分析启动性能',
+        's-provider-create-idle-timeout',
+        'trace-provider-create-idle-timeout',
+        {analysisMode: 'full', providerId: null},
+      );
+
+      expect(providerSignal?.aborted).toBe(true);
+      expect(result).toMatchObject({
+        success: true,
+        partial: true,
+        terminationReason: 'timeout',
+      });
+      expect(updates).toContainEqual(expect.objectContaining({
+        type: 'degraded',
+        content: expect.objectContaining({
+          fallback: 'partial_result_after_timeout',
+          timeoutKind: 'stream_idle',
+        }),
+      }));
+    } finally {
+      if (originalIdleTimeout === undefined) delete process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS;
+      else process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = originalIdleTimeout;
+      if (originalRequestTimeout === undefined) delete process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS;
+      else process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS = originalRequestTimeout;
+    }
+  });
+
   it('recomputes contract gaps for the fresh continuation report and keeps only the second report', async () => {
     const runtime = createOpenAiRuntimeForTest();
     const slowReasonPhase = phase('p1', 'completed');
@@ -3088,6 +3162,26 @@ describe('OpenAIRuntime previous response recovery', () => {
     expect(resolved.input).toBe('continue');
     expect(resolved.previousResponseId).toBe('resp_fresh');
     expect(resolved.shouldPersistRemoteSession).toBe(true);
+  });
+
+  it('does not send oversized retained history into a full-mode continuation', () => {
+    const resolved = __testing.resolveOpenAIRunInput({
+      quickMode: false,
+      config: {
+        ...createOpenAiConfigForTest(),
+        protocol: 'chat_completions',
+        maxHistoryBytes: 256,
+      },
+      sessionEntry: {
+        history: [{role: 'user', content: 'x'.repeat(2_000)}],
+        updatedAt: Date.now(),
+      },
+      effectivePrompt: 'continue from bounded local context',
+      previousTurns: [],
+    });
+
+    expect(resolved.input).toBe('continue from bounded local context');
+    expect(JSON.stringify(resolved)).not.toContain('x'.repeat(256));
   });
 
   it('does not join or persist a remote response chain for private analyses', () => {

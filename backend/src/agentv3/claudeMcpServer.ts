@@ -1860,6 +1860,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     return p;
   }
 
+  function undeclaredModelSkillParams(
+    skill: {inputs?: Array<{name: string}>; identity?: {aliases?: string[]}},
+    params: Record<string, any> | undefined,
+  ): string[] {
+    if (!params || !skill.inputs?.length) return [];
+    const allowed = new Set(skill.inputs.map(input => input.name));
+    for (const alias of skill.identity?.aliases ?? []) allowed.add(alias);
+    if (allowed.has('process_name')) allowed.add('package');
+    if (allowed.has('package')) allowed.add('process_name');
+    return Object.keys(params).filter(key => !allowed.has(key)).sort();
+  }
+
   function referenceSharedParamsForComparison(
     params: Record<string, any> | undefined,
     currentDefaultPackage?: string,
@@ -3388,6 +3400,23 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           signal,
         });
         const effectiveParams = paramResolution.params;
+        const invalidParams = undeclaredModelSkillParams(skillDef, effectiveParams);
+        if (invalidParams.length > 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                success: false,
+                partial: false,
+                skillId,
+                invalidParams,
+                error: `Undeclared Skill parameters: ${invalidParams.join(', ')}`,
+                action_required: 'retry_invoke_skill_with_declared_params',
+              }),
+            }],
+            isError: true,
+          };
+        }
         const producer = createEvidenceProducerContext(
           'invoke_skill',
           {

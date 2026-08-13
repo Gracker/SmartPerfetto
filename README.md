@@ -407,7 +407,7 @@ OPENAI_QUICK_MAX_TURNS=50  # optional OpenAI runtime override
 OPENAI_MAX_TURNS=100       # optional OpenAI runtime override
 ```
 
-Raise these values for slower models or traces that need more tool iterations. The total safety timeout scales with the turn budget: full mode uses `CLAUDE_FULL_PER_TURN_MS` / `OPENAI_FULL_PER_TURN_MS` per turn, and fast mode uses `CLAUDE_QUICK_PER_TURN_MS` / `OPENAI_QUICK_PER_TURN_MS` per turn. Restart the backend after changing `.env`.
+Raise these values for slower models or traces that need more tool iterations. Full mode still uses `CLAUDE_FULL_PER_TURN_MS` / `OPENAI_FULL_PER_TURN_MS` per turn, but the request is capped at 20 minutes by default (`AGENT_FULL_REQUEST_TIMEOUT_MS`) and a provider stream with no events is cancelled after 5 minutes (`AGENT_STREAM_IDLE_TIMEOUT_MS`). Fast mode uses `CLAUDE_QUICK_PER_TURN_MS` / `OPENAI_QUICK_PER_TURN_MS` per turn. See the configuration guide for runtime-specific overrides, then restart the backend after changing `.env`.
 
 ## Basic Usage
 

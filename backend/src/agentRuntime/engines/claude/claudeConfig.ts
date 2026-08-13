@@ -11,6 +11,10 @@ import { mergeIsolatedProviderEnv } from '../../../services/providerManager/envI
 import type { ProviderScope } from '../../../services/providerManager';
 import { collectEnvCredentialSources, hasConcreteEnvValue, isEnabledEnvFlag, redactUrlForDiagnostics } from '../../envCredentialSources';
 import { resolveAgentRuntimeBudgetConfig } from '../../../config';
+import {
+  DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+  DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+} from '../../runtimeLimits';
 
 export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
 
@@ -60,6 +64,10 @@ export interface ClaudeAgentConfig {
   /** Per-turn timeout (ms) for the full analysis pipeline. Default: 60_000 (60s/turn).
    *  Raise via CLAUDE_FULL_PER_TURN_MS for slower LLMs (DeepSeek / Ollama / GLM). */
   fullPathPerTurnMs: number;
+  /** Absolute wall-clock cap for a full analysis request. */
+  fullRequestTimeoutMs: number;
+  /** Abort a provider stream when it emits no SDK events for this long. */
+  streamIdleTimeoutMs: number;
   /** Per-turn timeout (ms) for the quick analysis pipeline. Default: 40_000 (40s/turn).
    *  Override via CLAUDE_QUICK_PER_TURN_MS. */
   quickPathPerTurnMs: number;
@@ -114,6 +122,26 @@ function loadClaudeConfigFromEnv(
     subAgentModel: (env.CLAUDE_SUB_AGENT_MODEL as ClaudeAgentConfig['subAgentModel']) || undefined,
     fullPathPerTurnMs: overrides?.fullPathPerTurnMs
       ?? (env.CLAUDE_FULL_PER_TURN_MS ? parseInt(env.CLAUDE_FULL_PER_TURN_MS, 10) : 60_000),
+    fullRequestTimeoutMs: overrides?.fullRequestTimeoutMs
+      ?? parsePositiveIntEnvFrom(
+        env,
+        'CLAUDE_FULL_REQUEST_TIMEOUT_MS',
+        parsePositiveIntEnvFrom(
+          env,
+          'AGENT_FULL_REQUEST_TIMEOUT_MS',
+          DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+        ),
+      ),
+    streamIdleTimeoutMs: overrides?.streamIdleTimeoutMs
+      ?? parsePositiveIntEnvFrom(
+        env,
+        'CLAUDE_STREAM_IDLE_TIMEOUT_MS',
+        parsePositiveIntEnvFrom(
+          env,
+          'AGENT_STREAM_IDLE_TIMEOUT_MS',
+          DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+        ),
+      ),
     quickPathPerTurnMs: overrides?.quickPathPerTurnMs
       ?? (env.CLAUDE_QUICK_PER_TURN_MS ? parseInt(env.CLAUDE_QUICK_PER_TURN_MS, 10) : 40_000),
     verifierTimeoutMs: overrides?.verifierTimeoutMs
@@ -275,6 +303,7 @@ export function getClaudeRuntimeDiagnostics(
   const env = createSdkEnv(providerId, providerScope);
   const bedrock = detectBedrock(env);
   const vertex = detectVertex(env);
+  const runtimeConfig = loadClaudeConfigFromEnv(env);
   const credentialSources: string[] = [];
   if (hasConcreteEnvValue(env.ANTHROPIC_API_KEY)) credentialSources.push('anthropic_api_key');
   if (hasConcreteEnvValue(env.ANTHROPIC_AUTH_TOKEN)) credentialSources.push('anthropic_auth_token');
@@ -307,6 +336,8 @@ export function getClaudeRuntimeDiagnostics(
     configured: hasClaudeCredentials(env),
     credentialSources,
     baseUrlConfigured: hasConcreteEnvValue(env.ANTHROPIC_BASE_URL),
+    fullRequestTimeoutMs: runtimeConfig.fullRequestTimeoutMs,
+    streamIdleTimeoutMs: runtimeConfig.streamIdleTimeoutMs,
     bedrock: {
       enabled: bedrock.enabled,
       authMethod: bedrock.authMethod,
@@ -738,6 +769,12 @@ export function resolveRuntimeConfig(
     enableVerification: providerEnv.CLAUDE_ENABLE_VERIFICATION !== undefined ? loaded.enableVerification : baseConfig.enableVerification,
     subAgentTimeoutMs: providerEnv.CLAUDE_SUB_AGENT_TIMEOUT_MS ? loaded.subAgentTimeoutMs : baseConfig.subAgentTimeoutMs,
     fullPathPerTurnMs: providerEnv.CLAUDE_FULL_PER_TURN_MS ? loaded.fullPathPerTurnMs : baseConfig.fullPathPerTurnMs,
+    fullRequestTimeoutMs: providerEnv.CLAUDE_FULL_REQUEST_TIMEOUT_MS
+      ? loaded.fullRequestTimeoutMs
+      : baseConfig.fullRequestTimeoutMs,
+    streamIdleTimeoutMs: providerEnv.CLAUDE_STREAM_IDLE_TIMEOUT_MS
+      ? loaded.streamIdleTimeoutMs
+      : baseConfig.streamIdleTimeoutMs,
     quickPathPerTurnMs: providerEnv.CLAUDE_QUICK_PER_TURN_MS ? loaded.quickPathPerTurnMs : baseConfig.quickPathPerTurnMs,
     verifierTimeoutMs: providerEnv.CLAUDE_VERIFIER_TIMEOUT_MS ? loaded.verifierTimeoutMs : baseConfig.verifierTimeoutMs,
     classifierTimeoutMs: providerEnv.CLAUDE_CLASSIFIER_TIMEOUT_MS ? loaded.classifierTimeoutMs : baseConfig.classifierTimeoutMs,

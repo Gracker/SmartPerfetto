@@ -41,6 +41,10 @@ const ORIGINAL_CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = process.env.CLAUDE_COD
 const ORIGINAL_DISABLE_TELEMETRY = process.env.DISABLE_TELEMETRY;
 const ORIGINAL_CLAUDE_CODE_ENABLE_TELEMETRY = process.env.CLAUDE_CODE_ENABLE_TELEMETRY;
 const ORIGINAL_DISABLE_ERROR_REPORTING = process.env.DISABLE_ERROR_REPORTING;
+const ORIGINAL_CLAUDE_FULL_REQUEST_TIMEOUT_MS = process.env.CLAUDE_FULL_REQUEST_TIMEOUT_MS;
+const ORIGINAL_CLAUDE_STREAM_IDLE_TIMEOUT_MS = process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS;
+const ORIGINAL_AGENT_FULL_REQUEST_TIMEOUT_MS = process.env.AGENT_FULL_REQUEST_TIMEOUT_MS;
+const ORIGINAL_AGENT_STREAM_IDLE_TIMEOUT_MS = process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
 
 afterEach(() => {
   if (ORIGINAL_QUICK_MAX_TURNS === undefined) {
@@ -148,6 +152,54 @@ afterEach(() => {
   } else {
     process.env.DISABLE_ERROR_REPORTING = ORIGINAL_DISABLE_ERROR_REPORTING;
   }
+  if (ORIGINAL_CLAUDE_FULL_REQUEST_TIMEOUT_MS === undefined) {
+    delete process.env.CLAUDE_FULL_REQUEST_TIMEOUT_MS;
+  } else {
+    process.env.CLAUDE_FULL_REQUEST_TIMEOUT_MS = ORIGINAL_CLAUDE_FULL_REQUEST_TIMEOUT_MS;
+  }
+  if (ORIGINAL_CLAUDE_STREAM_IDLE_TIMEOUT_MS === undefined) {
+    delete process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS;
+  } else {
+    process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = ORIGINAL_CLAUDE_STREAM_IDLE_TIMEOUT_MS;
+  }
+  if (ORIGINAL_AGENT_FULL_REQUEST_TIMEOUT_MS === undefined) {
+    delete process.env.AGENT_FULL_REQUEST_TIMEOUT_MS;
+  } else {
+    process.env.AGENT_FULL_REQUEST_TIMEOUT_MS = ORIGINAL_AGENT_FULL_REQUEST_TIMEOUT_MS;
+  }
+  if (ORIGINAL_AGENT_STREAM_IDLE_TIMEOUT_MS === undefined) {
+    delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
+  } else {
+    process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = ORIGINAL_AGENT_STREAM_IDLE_TIMEOUT_MS;
+  }
+});
+
+describe('Claude runtime limits', () => {
+  it('applies bounded defaults and accepts explicit timeout overrides', () => {
+    delete process.env.CLAUDE_FULL_REQUEST_TIMEOUT_MS;
+    delete process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS;
+    delete process.env.AGENT_FULL_REQUEST_TIMEOUT_MS;
+    delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
+
+    expect(loadClaudeConfig()).toMatchObject({
+      fullRequestTimeoutMs: 20 * 60_000,
+      streamIdleTimeoutMs: 5 * 60_000,
+    });
+
+    process.env.AGENT_FULL_REQUEST_TIMEOUT_MS = '54321';
+    process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = '9876';
+    expect(loadClaudeConfig()).toMatchObject({
+      fullRequestTimeoutMs: 54_321,
+      streamIdleTimeoutMs: 9_876,
+    });
+
+    process.env.CLAUDE_FULL_REQUEST_TIMEOUT_MS = '12345';
+    process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS = '6789';
+    expect(loadClaudeConfig()).toMatchObject({
+      fullRequestTimeoutMs: 12_345,
+      streamIdleTimeoutMs: 6_789,
+    });
+  });
 });
 
 describe('createQuickConfig', () => {

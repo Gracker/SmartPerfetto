@@ -401,15 +401,35 @@ and LLM Skill steps. Blocked responses include `code: "AI_DISABLED"` and
 Slow or local models usually need longer per-turn timeouts:
 
 ```bash
+AGENT_FULL_REQUEST_TIMEOUT_MS=1200000
+AGENT_STREAM_IDLE_TIMEOUT_MS=300000
+AGENT_MAX_HISTORY_BYTES=4194304
+
 CLAUDE_FULL_PER_TURN_MS=60000
+CLAUDE_FULL_REQUEST_TIMEOUT_MS=1200000
+CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000
 CLAUDE_QUICK_PER_TURN_MS=40000
 CLAUDE_VERIFIER_TIMEOUT_MS=60000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 OPENAI_FULL_PER_TURN_MS=60000
+OPENAI_FULL_REQUEST_TIMEOUT_MS=1200000
+OPENAI_STREAM_IDLE_TIMEOUT_MS=300000
+OPENAI_MAX_HISTORY_BYTES=4194304
 OPENAI_QUICK_PER_TURN_MS=40000
 OPENAI_CLASSIFIER_TIMEOUT_MS=30000
 ```
+
+The shared `AGENT_*` safety limits apply to active Provider profiles;
+runtime-specific values can override them on direct environment-provider paths.
+`*_FULL_REQUEST_TIMEOUT_MS` is the absolute wall-clock cap for a full analysis
+(20 minutes by default), even when `maxTurns × per-turn timeout` is larger.
+`*_STREAM_IDLE_TIMEOUT_MS` limits how long a provider may emit no stream events
+(5 minutes by default); on expiry the backend cancels the SDK and active tool
+work, then completes the normal terminal event path with a `partial` result.
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound provider history
+retained across continuations or sessions. It does not truncate Artifacts,
+DataEnvelopes, reports, or evidence provenance.
 
 | Mode | Behavior | Use case |
 |---|---|---|

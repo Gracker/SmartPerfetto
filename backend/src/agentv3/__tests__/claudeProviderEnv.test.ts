@@ -42,6 +42,8 @@ describe('createSdkEnv provider isolation', () => {
     enableVerification: true,
     subAgentTimeoutMs: 120_000,
     fullPathPerTurnMs: 60_000,
+    fullRequestTimeoutMs: 20 * 60_000,
+    streamIdleTimeoutMs: 5 * 60_000,
     quickPathPerTurnMs: 40_000,
     verifierTimeoutMs: 60_000,
     classifierTimeoutMs: 30_000,

@@ -127,6 +127,12 @@ import {
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
+import {
+  createResettableRuntimeTimeout,
+  resolveFullRequestTimeoutMs,
+  summarizeExternalToolResult,
+  type RuntimeTimeoutKind,
+} from '../../runtimeLimits';
 import { buildFocusAppEvidencePayload } from '../../focusAppEvidence';
 import {
   buildRuntimeQuickEvidenceDirectAnswer,
@@ -693,7 +699,7 @@ function buildClaudeSdkSystemPrompt(
 }
 
 function projectClaudeToolResultForPlan(toolName: string, result: unknown): string {
-  return stringifySdkToolResult(projectToolResultForExternalSurface(toolName, result));
+  return summarizeExternalToolResult(projectToolResultForExternalSurface(toolName, result));
 }
 
 function buildClaudeSdkToolOptions(
@@ -1089,6 +1095,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       streamStarted: boolean;
       getAccumulatedAnswer: () => string;
       flushPendingAnswer: () => void;
+      dispose: () => void;
       getPlan: () => AnalysisPlanV3 | null;
     } | undefined;
 
@@ -1346,6 +1353,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         handleMessage: bridge,
         getAccumulatedAnswer,
         flushPendingAnswer,
+        dispose: disposeBridge,
       } = createSseBridge((update: StreamingUpdate) => {
         const normalizedUpdate = normalizeClaudeBridgeConclusionUpdate(
           update,
@@ -1377,6 +1385,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         streamStarted: false,
         getAccumulatedAnswer,
         flushPendingAnswer,
+        dispose: disposeBridge,
         getPlan: () => ctx.analysisPlan.current,
       };
 
@@ -1471,8 +1480,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // Per-turn budget is env-configurable (CLAUDE_FULL_PER_TURN_MS, default 60s) so slower
       // LLMs (DeepSeek / Ollama / GLM) have room per turn without false timeouts.
       // Scrolling deep-drill (hypothesis + SQL + knowledge + conclusion) still needs ~6-8 min.
-      const timeoutMs = (runtimeConfig.maxTurns || 15) * runtimeConfig.fullPathPerTurnMs;
+      const timeoutMs = resolveFullRequestTimeoutMs(
+        runtimeConfig.fullPathPerTurnMs,
+        runtimeConfig.maxTurns || 15,
+        runtimeConfig.fullRequestTimeoutMs,
+      );
       let timedOut = false;
+      const timeoutState: {kind: RuntimeTimeoutKind} = {kind: 'request'};
 
       // Sub-agent timeout tracking — stop tasks that exceed subAgentTimeoutMs
       const activeSubAgentTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
@@ -1488,6 +1502,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         startTime?: number;
         input?: unknown;
       }> = [];
+      const MAX_TOOL_CALL_HISTORY = 100;
       const WATCHDOG_WINDOW = 3; // consecutive same-tool failures to trigger warning
       const watchdogFiredTools = new Set<string>(); // tracks which tools have triggered warnings
 
@@ -1599,6 +1614,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const processStream = async () => {
         for await (const msg of stream) {
           if (timedOut) break; // P0-1: Actually cancel stream on timeout
+          providerIdleTimeout.reset();
           if (interruptionRecoveryState) interruptionRecoveryState.streamStarted = true;
 
           // Detect SDK auto-compact boundary — conversation history was summarized
@@ -1731,6 +1747,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   startTime: Date.now(),
                   input: block.input,
                 });
+                if (toolCallHistory.length > MAX_TOOL_CALL_HISTORY) {
+                  toolCallHistory.shift();
+                  if (Number.isFinite(lastCircuitBreakerFireIdx)) {
+                    lastCircuitBreakerFireIdx--;
+                  }
+                }
               }
             }
             currentTurnMetrics = {
@@ -1930,9 +1952,19 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       };
 
       let safetyTimer: ReturnType<typeof setTimeout> | undefined;
+      const providerIdleTimeout = createResettableRuntimeTimeout({
+        timeoutMs: runtimeConfig.streamIdleTimeoutMs,
+        message: `Claude provider stream idle timeout after ${runtimeConfig.streamIdleTimeoutMs}ms`,
+        onTimeout: () => {
+          timedOut = true;
+          timeoutState.kind = 'stream_idle';
+          closeSdk();
+        },
+      });
       const timeoutPromise = new Promise<void>((_, reject) => {
         safetyTimer = setTimeout(() => {
           timedOut = true;
+          timeoutState.kind = 'request';
           // Forcefully terminate the SDK subprocess — without this, queued
           // MCP tool calls (e.g. execute_sql) keep executing in the background
           // after the session logger has closed, producing orphan SQL errors.
@@ -1942,7 +1974,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
 
       try {
-        await Promise.race([processStream(), timeoutPromise]);
+        await Promise.race([processStream(), timeoutPromise, providerIdleTimeout.promise]);
       } catch (err) {
         if (timedOut) {
           console.error('[ClaudeRuntime] Analysis safety timeout reached — SDK subprocess has been closed');
@@ -1965,11 +1997,28 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
       } finally {
         if (safetyTimer) clearTimeout(safetyTimer);
+        providerIdleTimeout.clear();
         closeSdk();
         unregisterSdkAbortHandle();
       }
 
-      if (missingSdkConversationError && existingSdkSessionId) {
+      if (timedOut) {
+        terminationReason = 'timeout';
+        terminationMessage = timeoutState.kind === 'stream_idle'
+          ? localize(
+            outputLanguage,
+            `AI provider 连续 ${Math.round(runtimeConfig.streamIdleTimeoutMs / 1000)} 秒没有流事件，已取消并保留部分结果。`,
+            `The AI provider emitted no stream events for ${Math.round(runtimeConfig.streamIdleTimeoutMs / 1000)} seconds; the run was cancelled and partial results were preserved.`,
+          )
+          : localize(
+            outputLanguage,
+            `完整分析超过 ${Math.round(timeoutMs / 1000)} 秒硬上限，已取消并保留部分结果。`,
+            `Full analysis exceeded the ${Math.round(timeoutMs / 1000)} second hard limit; the run was cancelled and partial results were preserved.`,
+          );
+        flushPendingAnswer();
+      }
+
+      if (!timedOut && missingSdkConversationError && existingSdkSessionId) {
         delegatedRetry = true;
         return await this.retryWithoutSdkResume({
           query,
@@ -1982,7 +2031,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           outputLanguage,
         });
       }
-      if (sdkStreamErrorMessage) {
+      if (sdkStreamErrorMessage && !timedOut) {
         throw new Error(sdkStreamErrorMessage);
       }
 
@@ -2072,7 +2121,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // and conclusion-length checks must fire even when zero findings are extracted.
       console.log(`[ClaudeRuntime] Pre-verification: conclusionText=${conclusionText.length} chars, sdkSessionId=${sdkSessionId ? 'set' : 'MISSING'}, enableVerification=${runtimeConfig.enableVerification}`);
       let verificationDegradedMessage: string | undefined;
-      if (runtimeConfig.enableVerification || privateAnalysisContext) {
+      if (!timedOut && (runtimeConfig.enableVerification || privateAnalysisContext)) {
         const MAX_CORRECTION_ATTEMPTS = 2;
         let previousErrorSignatures = new Set<string>();
 
@@ -2245,12 +2294,13 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 // closed on every exit (success, break, throw). Idempotent.
                 closeCorrection();
                 unregisterCorrectionAbortHandle();
-              }
-              if (!correctionTimedOut) {
-                correctionAnswerBridge.flushPendingAnswer();
-              }
-              if (!correctedResult && !correctionTimedOut) {
-                correctedResult = correctionAnswerBridge.getAccumulatedAnswer();
+                if (!correctionTimedOut) {
+                  correctionAnswerBridge.flushPendingAnswer();
+                }
+                if (!correctedResult && !correctionTimedOut) {
+                  correctedResult = correctionAnswerBridge.getAccumulatedAnswer();
+                }
+                correctionAnswerBridge.dispose();
               }
               correctedResult = ensureClaudeFinalReportHeading(
                 correctedResult,
@@ -2325,7 +2375,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         runtimeConfig.outputLanguage,
       );
 
-      const isPartialResult = terminationReason === MAX_TURNS_TERMINATION_REASON;
+      const isPartialResult =
+        terminationReason === MAX_TURNS_TERMINATION_REASON || terminationReason === 'timeout';
       if (isPartialResult) {
         const recoveredConclusion = recoverClaudeInterruptedFinalReport({
           accumulatedAnswer: conclusionText,
@@ -2340,33 +2391,60 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             runtimeConfig.outputLanguage,
           );
         }
-        terminationMessage ||= buildMaxTurnsTerminationMessage({
-          mode: 'full',
-          turns: rounds,
-          maxTurns: runtimeConfig.maxTurns,
-          outputLanguage: runtimeConfig.outputLanguage,
-        });
+        if (terminationReason === MAX_TURNS_TERMINATION_REASON) {
+          terminationMessage ||= buildMaxTurnsTerminationMessage({
+            mode: 'full',
+            turns: rounds,
+            maxTurns: runtimeConfig.maxTurns,
+            outputLanguage: runtimeConfig.outputLanguage,
+          });
+        }
+        terminationMessage ||= localize(
+          runtimeConfig.outputLanguage,
+          '完整分析超时，以下仅保留超时前已收集的部分结果。',
+          'Full analysis timed out; only partial results collected before the timeout are retained below.',
+        );
         conclusionText = conclusionText.trim()
           ? prependPartialNotice(conclusionText, terminationMessage, runtimeConfig.outputLanguage)
-          : buildMaxTurnsFallbackConclusion({
-              mode: 'full',
-              turns: rounds,
-              maxTurns: runtimeConfig.maxTurns,
-              outputLanguage: runtimeConfig.outputLanguage,
-            });
+          : terminationReason === MAX_TURNS_TERMINATION_REASON
+            ? buildMaxTurnsFallbackConclusion({
+                mode: 'full',
+                turns: rounds,
+                maxTurns: runtimeConfig.maxTurns,
+                outputLanguage: runtimeConfig.outputLanguage,
+              })
+            : ensureClaudeFinalReportHeading(
+                localize(
+                  runtimeConfig.outputLanguage,
+                  `## 综合结论\n\n${terminationMessage}\n\n## 关键证据链\n\n- 超时前没有形成可安全交付的完整证据链。`,
+                  `## Overall Conclusion\n\n${terminationMessage}\n\n## Key Evidence Chain\n\n- No complete evidence chain was safe to deliver before the timeout.`,
+                ),
+                ctx.sceneType,
+                runtimeConfig.outputLanguage,
+              );
         allFindings.push(extractFindingsFromText(conclusionText));
         mergedFindings = mergeFindings(allFindings);
-        failedApproaches.push({
-          type: 'strategy_failure',
-          approach: `analysis reached ${runtimeConfig.maxTurns} full-mode turns`,
-          reason: 'SDK returned error_max_turns before a normal success result',
-        });
+        failedApproaches.push(terminationReason === MAX_TURNS_TERMINATION_REASON
+          ? {
+              type: 'strategy_failure',
+              approach: `analysis reached ${runtimeConfig.maxTurns} full-mode turns`,
+              reason: 'SDK returned error_max_turns before a normal success result',
+            }
+          : {
+              type: 'strategy_failure',
+              approach: `analysis exceeded ${timeoutState.kind === 'stream_idle' ? 'provider stream idle' : 'request'} timeout`,
+              reason: 'SDK stream was cancelled before a normal success result',
+            });
         this.emitUpdate({
           type: 'degraded',
           content: {
             module: 'claudeRuntime',
-            fallback: 'partial_result_after_max_turns',
-            error: SDK_MAX_TURNS_SUBTYPE,
+            fallback: terminationReason === MAX_TURNS_TERMINATION_REASON
+              ? 'partial_result_after_max_turns'
+              : 'partial_result_after_timeout',
+            ...(terminationReason === MAX_TURNS_TERMINATION_REASON
+              ? {error: SDK_MAX_TURNS_SUBTYPE}
+              : {timeoutKind: timeoutState.kind}),
             message: terminationMessage,
             partial: true,
             terminationReason,
@@ -2714,6 +2792,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationMessage: errMsg,
       };
     } finally {
+      interruptionRecoveryState?.dispose();
       this.activeAnalyses.delete(sessionId);
       runSnapshots.release(sessionId);
       // Notes persistence now handled by unified SessionStateSnapshot in the route layer.
@@ -3195,7 +3274,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
       const quickConversationContext = buildQuickConversationContext(previousTurns, outputLanguage);
 
-      const { handleMessage: bridge, getAccumulatedAnswer } = createSseBridge((update: StreamingUpdate) => {
+      const {
+        handleMessage: bridge,
+        getAccumulatedAnswer,
+        flushPendingAnswer,
+        dispose: disposeBridge,
+      } = createSseBridge((update: StreamingUpdate) => {
         this.emitUpdate(update);
       }, outputLanguage, {
         tracePairContext: options.tracePairContext,
@@ -3259,6 +3343,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       const unregisterSdkAbortHandle = this.registerAbortHandle(sessionId, { abort: closeSdk });
 
       let finalResult: string | undefined;
+      let accumulatedAnswerAfterStream = '';
       let quickRounds = 0;
       let terminationReason: AnalysisResult['terminationReason'];
       let terminationMessage: string | undefined;
@@ -3317,6 +3402,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         if (safetyTimer) clearTimeout(safetyTimer);
         closeSdk();
         unregisterSdkAbortHandle();
+        flushPendingAnswer();
+        accumulatedAnswerAfterStream = getAccumulatedAnswer();
+        disposeBridge();
       }
 
       if (timedOut) {
@@ -3328,7 +3416,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         );
       }
 
-      let conclusionText = finalResult || getAccumulatedAnswer() || '';
+      let conclusionText = finalResult || accumulatedAnswerAfterStream || '';
       let mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
       const isPartialResult = terminationReason === MAX_TURNS_TERMINATION_REASON || terminationReason === 'timeout';
       if (isPartialResult) {

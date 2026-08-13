@@ -7,6 +7,11 @@ import { getProviderService, type OpenAIProtocol, type ProviderScope } from '../
 import { mergeIsolatedProviderEnv } from '../../../services/providerManager/envIsolation';
 import { hasConcreteEnvValue, redactUrlForDiagnostics } from '../../envCredentialSources';
 import { resolveAgentRuntimeBudgetConfig } from '../../../config';
+import {
+  DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+  DEFAULT_OPENAI_HISTORY_MAX_BYTES,
+  DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+} from '../../runtimeLimits';
 
 export interface OpenAIAgentConfig {
   model: string;
@@ -20,6 +25,9 @@ export interface OpenAIAgentConfig {
   protocol: OpenAIProtocol;
   cwd: string;
   fullPathPerTurnMs: number;
+  fullRequestTimeoutMs: number;
+  streamIdleTimeoutMs: number;
+  maxHistoryBytes: number;
   quickPathPerTurnMs: number;
   classifierTimeoutMs: number;
   outputLanguage: OutputLanguage;
@@ -90,6 +98,25 @@ export function loadOpenAIConfig(providerId?: string | null, providerScope?: Pro
     cwd: env.OPENAI_CWD || env.CLAUDE_CWD || process.cwd(),
     fullPathPerTurnMs: parsePositiveIntEnv(env, 'OPENAI_FULL_PER_TURN_MS',
       parsePositiveIntEnv(env, 'CLAUDE_FULL_PER_TURN_MS', 60_000)),
+    fullRequestTimeoutMs: parsePositiveIntEnv(
+      env,
+      'OPENAI_FULL_REQUEST_TIMEOUT_MS',
+      parsePositiveIntEnv(env, 'AGENT_FULL_REQUEST_TIMEOUT_MS', DEFAULT_FULL_REQUEST_TIMEOUT_MS),
+    ),
+    streamIdleTimeoutMs: parsePositiveIntEnv(
+      env,
+      'OPENAI_STREAM_IDLE_TIMEOUT_MS',
+      parsePositiveIntEnv(
+        env,
+        'AGENT_STREAM_IDLE_TIMEOUT_MS',
+        DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+      ),
+    ),
+    maxHistoryBytes: parsePositiveIntEnv(
+      env,
+      'OPENAI_MAX_HISTORY_BYTES',
+      parsePositiveIntEnv(env, 'AGENT_MAX_HISTORY_BYTES', DEFAULT_OPENAI_HISTORY_MAX_BYTES),
+    ),
     quickPathPerTurnMs: parsePositiveIntEnv(env, 'OPENAI_QUICK_PER_TURN_MS',
       parsePositiveIntEnv(env, 'CLAUDE_QUICK_PER_TURN_MS', 40_000)),
     classifierTimeoutMs: parsePositiveIntEnv(env, 'OPENAI_CLASSIFIER_TIMEOUT_MS',
@@ -129,6 +156,9 @@ export function getOpenAIRuntimeDiagnostics(providerId?: string | null, provider
     configured: hasOpenAICredentials(providerId, providerScope),
     credentialSources,
     maxOutputTokens: config.maxOutputTokens,
+    fullRequestTimeoutMs: config.fullRequestTimeoutMs,
+    streamIdleTimeoutMs: config.streamIdleTimeoutMs,
+    maxHistoryBytes: config.maxHistoryBytes,
     outputLanguage: {
       value: config.outputLanguage,
       displayName: outputLanguageDisplayName(config.outputLanguage),

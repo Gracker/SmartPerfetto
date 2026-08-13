@@ -2153,6 +2153,81 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     sessionContextManager.remove('session-evaluation-usage');
   });
 
+  it('returns a terminal partial result after the full provider stream becomes idle', async () => {
+    const sessionId = 'session-full-stream-idle-timeout';
+    const traceId = 'trace-full-stream-idle-timeout';
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: ['cnt'], rows: [[0]]}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+      maxTurns: 1,
+      fullPathPerTurnMs: 100,
+      fullRequestTimeoutMs: 1_000,
+      streamIdleTimeoutMs: 15,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    const updates: Array<{type?: string; content?: Record<string, unknown>}> = [];
+    runtime.on('update', update => updates.push(update as any));
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'assistant',
+        session_id: 'sdk-full-stream-idle-timeout',
+        message: {content: [{
+          type: 'text',
+          text: [
+            '# 启动性能分析报告',
+            '',
+            '## 综合结论',
+            '',
+            '已收集到可交付的部分证据，art-1 显示主线程存在阻塞。',
+            '',
+            '## 关键证据链',
+            '',
+            '- art-1: 主线程阻塞 568.8ms。',
+            '',
+            '## 优化建议',
+            '',
+            '- 拆分同步初始化。',
+          ].join('\n'),
+        }]},
+      };
+      await new Promise<void>(() => undefined);
+    });
+
+    try {
+      const result = await runtime.analyze(
+        '分析启动性能',
+        sessionId,
+        traceId,
+        {analysisMode: 'full'},
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        partial: true,
+        terminationReason: 'timeout',
+      });
+      expect(result.conclusion).toContain('art-1');
+      expect(updates).toContainEqual(expect.objectContaining({
+        type: 'degraded',
+        content: expect.objectContaining({
+          fallback: 'partial_result_after_timeout',
+          partial: true,
+          terminationReason: 'timeout',
+          timeoutKind: 'stream_idle',
+        }),
+      }));
+    } finally {
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
   it('uses scoped Claude provider tuning when preparing full SDK options', async () => {
     const svc = getProviderService();
     const provider = svc.create({

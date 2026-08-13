@@ -376,15 +376,32 @@ SMARTPERFETTO_AI_ENABLED=false
 慢模型或本地模型通常需要更长的 per-turn timeout：
 
 ```bash
+AGENT_FULL_REQUEST_TIMEOUT_MS=1200000
+AGENT_STREAM_IDLE_TIMEOUT_MS=300000
+AGENT_MAX_HISTORY_BYTES=4194304
+
 CLAUDE_FULL_PER_TURN_MS=60000
+CLAUDE_FULL_REQUEST_TIMEOUT_MS=1200000
+CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000
 CLAUDE_QUICK_PER_TURN_MS=40000
 CLAUDE_VERIFIER_TIMEOUT_MS=60000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 OPENAI_FULL_PER_TURN_MS=60000
+OPENAI_FULL_REQUEST_TIMEOUT_MS=1200000
+OPENAI_STREAM_IDLE_TIMEOUT_MS=300000
+OPENAI_MAX_HISTORY_BYTES=4194304
 OPENAI_QUICK_PER_TURN_MS=40000
 OPENAI_CLASSIFIER_TIMEOUT_MS=30000
 ```
+
+共享的 `AGENT_*` 安全上限适用于激活的 Provider profile；runtime-specific 值可在
+直接 env provider 路径中覆盖。`*_FULL_REQUEST_TIMEOUT_MS` 是 full 分析的绝对墙钟上限，默认 20 分钟；即使
+`maxTurns × per-turn timeout` 更大也不会超过它。`*_STREAM_IDLE_TIMEOUT_MS`
+限制 provider 连续无流事件的时间，默认 5 分钟；触发时后端会取消 SDK 与当前
+工具调用，并把已收集证据作为 `partial` 结果正常走完终态事件。OpenAI 的
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制跨 continuation/session 持有的
+provider history；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
 
 分析模式由请求体 `options.analysisMode` 控制：
 

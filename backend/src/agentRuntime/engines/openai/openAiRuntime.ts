@@ -200,6 +200,13 @@ import {
   deriveRuntimeQuickPreEvidenceFlags,
 } from '../../quickModeResolution';
 import {buildRuntimeTracePairComparisonContext} from '../../runtimePromptContext';
+import {
+  createResettableRuntimeTimeout,
+  resolveFullRequestTimeoutMs,
+  serializedByteLength,
+  summarizeExternalToolResult,
+  type RuntimeTimeoutKind,
+} from '../../runtimeLimits';
 
 interface OpenAISessionEntry {
   history?: AgentInputItem[];
@@ -302,9 +309,7 @@ function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
 }
 
 function summarizeToolOutput(value: unknown): string {
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  if (!text) return '';
-  return text.length > 2000 ? `${text.slice(0, 2000)}...` : text;
+  return summarizeExternalToolResult(value);
 }
 
 function isAbortLikeError(error: unknown): boolean {
@@ -689,7 +694,10 @@ function resolveOpenAIRunInput(params: {
     };
   }
 
-  if (freshSessionEntry?.history) {
+  if (
+    freshSessionEntry?.history &&
+    serializedByteLength(freshSessionEntry.history) <= params.config.maxHistoryBytes
+  ) {
     return {
       input: [
         ...freshSessionEntry.history,
@@ -1138,14 +1146,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       });
 
       let activeController: AbortController | undefined;
-      const timeoutMs = (quickMode ? config.quickPathPerTurnMs : config.fullPathPerTurnMs)
-        * (quickMode ? config.quickMaxTurns : config.maxTurns);
-      const deadlineAt = Date.now() + timeoutMs;
+      const timeoutMs = quickMode
+        ? config.quickPathPerTurnMs * config.quickMaxTurns
+        : resolveFullRequestTimeoutMs(
+          config.fullPathPerTurnMs,
+          config.maxTurns,
+          config.fullRequestTimeoutMs,
+        );
       let timedOut = false;
-      const timeout = setTimeout(() => {
-        timedOut = true;
-        activeController?.abort();
-      }, timeoutMs);
+      let timeoutKind: RuntimeTimeoutKind = 'request';
 
       analysisAbortScope.throwIfAborted();
       this.emitUpdate({
@@ -1163,6 +1172,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         timestamp: Date.now(),
       });
 
+      const deadlineAt = Date.now() + timeoutMs;
+      const requestTimeout = createResettableRuntimeTimeout({
+        timeoutMs,
+        message: `OpenAI request timeout after ${timeoutMs}ms`,
+        onTimeout: () => {
+          timedOut = true;
+          timeoutKind = 'request';
+          activeController?.abort();
+        },
+      });
       let currentPreviousResponseId = runInput.previousResponseId;
       try {
         let currentInput: string | AgentInputItem[] = input;
@@ -1178,17 +1197,44 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const markTimeoutPartial = (planStatus: PlanCompletionStatus) => {
           partial = true;
           terminationReason = 'timeout';
-          terminationMessage = localize(
-            config.outputLanguage,
-            `OpenAI 分析超过 ${Math.round(timeoutMs / 1000)} 秒超时，结果可能不完整。`,
-            `OpenAI analysis timed out after ${Math.round(timeoutMs / 1000)} seconds; the result may be incomplete.`,
-          );
+          terminationMessage = timeoutKind === 'stream_idle'
+            ? localize(
+              config.outputLanguage,
+              `OpenAI provider 连续 ${Math.round(config.streamIdleTimeoutMs / 1000)} 秒没有流事件，结果可能不完整。`,
+              `The OpenAI provider emitted no stream events for ${Math.round(config.streamIdleTimeoutMs / 1000)} seconds; the result may be incomplete.`,
+            )
+            : localize(
+              config.outputLanguage,
+              `OpenAI 分析超过 ${Math.round(timeoutMs / 1000)} 秒超时，结果可能不完整。`,
+              `OpenAI analysis timed out after ${Math.round(timeoutMs / 1000)} seconds; the result may be incomplete.`,
+            );
           conclusion = this.withIncompletePlanWarning(conclusion, planStatus, config.outputLanguage);
           this.emitUpdate({
             type: 'degraded',
             content: {
               module: 'openAiRuntime',
               fallback: 'partial_result_after_timeout',
+              partial: true,
+              terminationReason,
+              timeoutKind,
+              message: terminationMessage,
+            },
+            timestamp: Date.now(),
+          });
+        };
+        const markHistoryLimitPartial = () => {
+          partial = true;
+          terminationReason = 'plan_incomplete';
+          terminationMessage = localize(
+            config.outputLanguage,
+            'OpenAI 分析历史达到内存上限，已基于现有证据结束分析。',
+            'OpenAI analysis history reached its memory limit; ending with the evidence collected so far.',
+          );
+          this.emitUpdate({
+            type: 'degraded',
+            content: {
+              module: 'openAiRuntime',
+              fallback: 'partial_result_after_history_limit',
               partial: true,
               terminationReason,
               message: terminationMessage,
@@ -1225,6 +1271,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               planCompleteIdleTimer = undefined;
             }
           };
+          const providerIdleTimeout = createResettableRuntimeTimeout({
+            timeoutMs: config.streamIdleTimeoutMs,
+            message: `OpenAI provider stream idle timeout after ${config.streamIdleTimeoutMs}ms`,
+            onTimeout: () => {
+              timedOut = true;
+              timeoutKind = 'stream_idle';
+              controller.abort();
+            },
+          });
+          void providerIdleTimeout.promise.catch(() => undefined);
           const schedulePlanCompleteIdleAbort = () => {
             clearPlanCompleteIdleTimer();
             if (!this.shouldFinalizeAfterPlanComplete(sessionId, quickMode, runAnswer, accumulatedAnswer)) {
@@ -1264,55 +1320,76 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
           let streamCompleted = false;
           try {
-            stream = await runStream();
-            analysisAbortScope.throwIfAborted();
             try {
-              for await (const event of stream) {
-                clearPlanCompleteIdleTimer();
-                runTurns = stream.currentTurn || runTurns;
-                const delta = this.handleStreamEvent(event, config.outputLanguage, {
-                  sessionId,
-                  quickMode,
-                  answerStreamFilter,
-                  answerTextProjection,
-                  toolInputsByTaskId,
-                  tracePairContext: options.tracePairContext,
-                  onToolCalled: () => {
-                    observedToolCalls++;
-                  },
-                  onSuppressedAnswerDelta: delta => {
-                    suppressedRunAnswer += delta;
-                  },
-                });
-                if (delta) {
-                  runAnswer += delta;
-                  accumulatedAnswer += delta;
+              stream = await Promise.race([
+                runStream(),
+                providerIdleTimeout.promise,
+                requestTimeout.promise,
+              ]);
+              analysisAbortScope.throwIfAborted();
+              const consumeStream = async () => {
+                try {
+                  for await (const event of stream) {
+                    providerIdleTimeout.reset();
+                    clearPlanCompleteIdleTimer();
+                    runTurns = stream.currentTurn || runTurns;
+                    const delta = this.handleStreamEvent(event, config.outputLanguage, {
+                      sessionId,
+                      quickMode,
+                      answerStreamFilter,
+                      answerTextProjection,
+                      toolInputsByTaskId,
+                      tracePairContext: options.tracePairContext,
+                      onToolCalled: () => {
+                        observedToolCalls++;
+                      },
+                      onSuppressedAnswerDelta: delta => {
+                        suppressedRunAnswer += delta;
+                      },
+                    });
+                    if (delta) {
+                      runAnswer += delta;
+                      accumulatedAnswer += delta;
+                    }
+                    schedulePlanCompleteIdleAbort();
+                  }
+                  clearPlanCompleteIdleTimer();
+                  await stream.completed;
+                  const evaluationUsage =
+                    (stream as any).runContext?.usage
+                    ?? (stream as any).context?.usage
+                    ?? (stream as any).state?.usage;
+                  recordEvaluationTokenDeltaIfPresent(evaluationUsage);
+                  streamCompleted = true;
+                } catch (error) {
+                  if (!(isAbortLikeError(error) && (completedByPlanIdle || timedOut))) {
+                    throw error;
+                  }
+                } finally {
+                  const projectedTail = answerTextProjection?.flush() ?? '';
+                  if (projectedTail) {
+                    this.emitUpdate({
+                      type: 'answer_token',
+                      content: {token: projectedTail},
+                      timestamp: Date.now(),
+                    });
+                  }
                 }
-                schedulePlanCompleteIdleAbort();
-              }
-              clearPlanCompleteIdleTimer();
-              await stream.completed;
-              const evaluationUsage =
-                (stream as any).runContext?.usage
-                ?? (stream as any).context?.usage
-                ?? (stream as any).state?.usage;
-              recordEvaluationTokenDeltaIfPresent(evaluationUsage);
-              streamCompleted = true;
+              };
+              await Promise.race([
+                consumeStream(),
+                providerIdleTimeout.promise,
+                requestTimeout.promise,
+              ]);
             } catch (error) {
-              if (!(isAbortLikeError(error) && (completedByPlanIdle || timedOut))) {
-                throw error;
+              if (timedOut) {
+                markTimeoutPartial(this.getPlanCompletionStatus(sessionId, quickMode));
+                break;
               }
-            } finally {
-              const projectedTail = answerTextProjection?.flush() ?? '';
-              if (projectedTail) {
-                this.emitUpdate({
-                  type: 'answer_token',
-                  content: {token: projectedTail},
-                  timestamp: Date.now(),
-                });
-              }
+              throw error;
             }
           } finally {
+            providerIdleTimeout.clear();
             clearPlanCompleteIdleTimer();
             if (activeController === controller) {
               activeController = undefined;
@@ -1376,7 +1453,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             fallbackConclusion,
           });
           if (streamCompleted) {
-            finalHistory = stream.history;
+            if (serializedByteLength(stream.history) <= config.maxHistoryBytes) {
+              finalHistory = stream.history;
+            } else {
+              finalHistory = undefined;
+              console.warn(
+                `[OpenAIRuntime] Session ${sessionId}: skipping oversized retained history ` +
+                `(limitBytes=${config.maxHistoryBytes})`,
+              );
+            }
             finalLastResponseId = stream.lastResponseId;
             finalRunState = this.safeSerializeRunState(stream.state);
           }
@@ -1389,7 +1474,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             const streamHistory = Array.isArray(stream.history)
               ? stream.history as AgentInputItem[]
               : [];
-            if (this.shouldRequestFinalReportAfterPlanComplete({
+            const streamHistoryWithinBudget =
+              serializedByteLength(streamHistory) <= config.maxHistoryBytes;
+            const shouldRequestFinalReport = this.shouldRequestFinalReportAfterPlanComplete({
               sessionId,
               quickMode,
               planStatus,
@@ -1401,7 +1488,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               query,
               sceneType: finalReportSceneType,
               comparisonIdentity: context.comparisonIdentity,
-            }) && streamHistory.length > 0) {
+            });
+            if (shouldRequestFinalReport && streamHistory.length > 0 && !streamHistoryWithinBudget) {
+              markHistoryLimitPartial();
+              break;
+            }
+            if (shouldRequestFinalReport && streamHistory.length > 0) {
               finalReportContinuations++;
               this.emitUpdate({
                 type: 'progress',
@@ -1459,6 +1551,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             },
             timestamp: Date.now(),
           });
+          if (serializedByteLength(stream.history) > config.maxHistoryBytes) {
+            markHistoryLimitPartial();
+            break;
+          }
           currentInput = [
             ...(stream.history as AgentInputItem[]),
             {
@@ -1470,7 +1566,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         }
 
         analysisAbortScope.throwIfAborted();
-        clearTimeout(timeout);
+        requestTimeout.clear();
         if (analysisContextUsesPrivateKnowledge(options)) {
           conclusion = sanitizeCodeAwareText(sessionId, conclusion);
         }
@@ -1718,7 +1814,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           },
         );
       } catch (error) {
-        clearTimeout(timeout);
+        requestTimeout.clear();
         await provider.close().catch(() => undefined);
         analysisAbortScope.throwIfAborted();
         if (currentPreviousResponseId && isMissingOpenAIPreviousResponseError(error, currentPreviousResponseId)) {
@@ -1940,11 +2036,19 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.architectureCache.set(traceId, snapshot.architecture);
     }
     const openAIEngineState = getOpenAISnapshotEngineState(snapshot);
-    if (openAIEngineState?.history || openAIEngineState?.lastResponseId || openAIEngineState?.runState) {
+    const restoredHistory = openAIEngineState?.history as AgentInputItem[] | undefined;
+    const maxRestoredHistoryBytes = loadOpenAIConfig(null).maxHistoryBytes;
+    const boundedRestoredHistory = restoredHistory &&
+      serializedByteLength(restoredHistory) <= maxRestoredHistoryBytes
+      ? restoredHistory
+      : undefined;
+    const restoredLastResponseId = openAIEngineState?.lastResponseId;
+    const restoredRunState = openAIEngineState?.runState;
+    if (boundedRestoredHistory || restoredLastResponseId || restoredRunState) {
       this.sessionMap.set(this.buildSessionMapKey(sessionId, snapshot.referenceTraceId), {
-        history: openAIEngineState.history as AgentInputItem[] | undefined,
-        lastResponseId: openAIEngineState.lastResponseId,
-        runState: openAIEngineState.runState,
+        history: boundedRestoredHistory,
+        lastResponseId: restoredLastResponseId,
+        runState: restoredRunState,
         updatedAt: snapshot.snapshotTimestamp || Date.now(),
       });
     }

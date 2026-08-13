@@ -220,4 +220,49 @@ describe('finalizeAgentDrivenSession completed-cache invalidation', () => {
       sceneType: 'anr',
     });
   });
+
+  it('finalizes and sends a timeout-partial result through the terminal SSE path', () => {
+    const session = createSession();
+    session.sseClients.push({id: 'client-a'});
+    const result: AgentRuntimeAnalysisResult = {
+      ...createResult(),
+      partial: true,
+      terminationReason: 'timeout',
+      terminationMessage: 'Provider stream idle timeout',
+    };
+    const deps = createFinalizeDeps();
+    deps.ensureCompletedAnalysisSseEvents = jest.fn((targetSession: TestSession) => {
+      const events = [
+        {eventType: 'analysis_completed'},
+        {eventType: 'end'},
+      ];
+      targetSession.completedAnalysisSseEvents = events;
+      return events;
+    });
+    deps.sendAgentDrivenResult = jest.fn((_client: unknown, targetSession: TestSession) => {
+      expect(targetSession.completedAnalysisSseEvents).toEqual([
+        {eventType: 'analysis_completed'},
+        {eventType: 'end'},
+      ]);
+    });
+
+    finalizeAgentDrivenSession({
+      sessionId: 'session-a',
+      query: '分析一下',
+      traceId: 'trace-a',
+      session,
+      result,
+      runId: 'run-current',
+      logComponent: 'test',
+    }, deps);
+
+    expect(session.status).toBe('completed');
+    expect(session.result).toMatchObject({partial: true, terminationReason: 'timeout'});
+    expect(deps.ensureCompletedAnalysisSseEvents).toHaveBeenCalledWith(session, 'run-current');
+    expect(deps.sendAgentDrivenResult).toHaveBeenCalledWith(
+      {id: 'client-a'},
+      session,
+      'run-current',
+    );
+  });
 });

@@ -61,6 +61,13 @@ jest.mock('../../services/skillEngine/skillLoader', () => ({
       type: 'atomic',
       name,
       meta: {display_name: name, description: ''},
+      ...(name === 'blocking_chain_analysis' ? {
+        inputs: [
+          {name: 'process_name', type: 'string', required: true},
+          {name: 'start_ts', type: 'timestamp', required: true},
+          {name: 'end_ts', type: 'timestamp', required: true},
+        ],
+      } : {}),
     })),
     getSkillOrigin: jest.fn((name: string) => ({
       origin: name.endsWith('_identity_skill') ? 'external_pack' : 'built_in',
@@ -1329,6 +1336,37 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('invoke_skill compatibility aliases', () => {
+    it('fails fast on undeclared model parameters before executing the skill', async () => {
+      const {tools, mockSkillExecutor} = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'p1',
+          name: 'Blocking chain',
+          goal: 'Run blocking chain analysis',
+          expectedTools: ['invoke_skill'],
+        }],
+        successCriteria: 'Only declared Skill parameters are accepted',
+      });
+
+      const result = await callTool(tools, 'invoke_skill', {
+        skillId: 'blocking_chain_analysis',
+        params: {
+          process_name: 'com.example',
+          start_ts: 100,
+          end_ts: 200,
+          thread_name: 'main',
+        },
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        skillId: 'blocking_chain_analysis',
+        invalidParams: ['thread_name'],
+        action_required: 'retry_invoke_skill_with_declared_params',
+      });
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
     it('normalizes simple timestamp arithmetic expressions in skill params', async () => {
       const { tools, mockSkillExecutor } = createTestServer();
       await callTool(tools, 'submit_plan', {

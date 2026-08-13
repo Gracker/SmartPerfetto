@@ -16,6 +16,12 @@ const ORIGINAL_ENV = {
   OPENAI_MAX_OUTPUT_TOKENS: process.env.OPENAI_MAX_OUTPUT_TOKENS,
   OPENAI_MAX_TURNS: process.env.OPENAI_MAX_TURNS,
   OPENAI_QUICK_MAX_TURNS: process.env.OPENAI_QUICK_MAX_TURNS,
+  OPENAI_FULL_REQUEST_TIMEOUT_MS: process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS,
+  OPENAI_STREAM_IDLE_TIMEOUT_MS: process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS,
+  OPENAI_MAX_HISTORY_BYTES: process.env.OPENAI_MAX_HISTORY_BYTES,
+  AGENT_FULL_REQUEST_TIMEOUT_MS: process.env.AGENT_FULL_REQUEST_TIMEOUT_MS,
+  AGENT_STREAM_IDLE_TIMEOUT_MS: process.env.AGENT_STREAM_IDLE_TIMEOUT_MS,
+  AGENT_MAX_HISTORY_BYTES: process.env.AGENT_MAX_HISTORY_BYTES,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
   CLAUDE_MAX_TURNS: process.env.CLAUDE_MAX_TURNS,
@@ -210,5 +216,38 @@ describe('createOpenAIEnv', () => {
     expect(config.maxTurns).toBe(90);
     expect(config.quickMaxTurns).toBe(12);
     expect(config.quickTargetTurns).toBe(4);
+  });
+
+  it('bounds full requests, provider-stream idle time, and retained history by default', () => {
+    delete process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS;
+    delete process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS;
+    delete process.env.OPENAI_MAX_HISTORY_BYTES;
+    delete process.env.AGENT_FULL_REQUEST_TIMEOUT_MS;
+    delete process.env.AGENT_STREAM_IDLE_TIMEOUT_MS;
+    delete process.env.AGENT_MAX_HISTORY_BYTES;
+
+    expect(loadOpenAIConfig(null)).toMatchObject({
+      fullRequestTimeoutMs: 20 * 60_000,
+      streamIdleTimeoutMs: 5 * 60_000,
+      maxHistoryBytes: 4 * 1024 * 1024,
+    });
+
+    process.env.AGENT_FULL_REQUEST_TIMEOUT_MS = '54321';
+    process.env.AGENT_STREAM_IDLE_TIMEOUT_MS = '9876';
+    process.env.AGENT_MAX_HISTORY_BYTES = '16384';
+    expect(loadOpenAIConfig(null)).toMatchObject({
+      fullRequestTimeoutMs: 54_321,
+      streamIdleTimeoutMs: 9_876,
+      maxHistoryBytes: 16_384,
+    });
+
+    process.env.OPENAI_FULL_REQUEST_TIMEOUT_MS = '12345';
+    process.env.OPENAI_STREAM_IDLE_TIMEOUT_MS = '6789';
+    process.env.OPENAI_MAX_HISTORY_BYTES = '8192';
+    expect(loadOpenAIConfig(null)).toMatchObject({
+      fullRequestTimeoutMs: 12_345,
+      streamIdleTimeoutMs: 6_789,
+      maxHistoryBytes: 8_192,
+    });
   });
 });
