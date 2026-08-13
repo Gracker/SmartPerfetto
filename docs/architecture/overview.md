@@ -99,6 +99,30 @@ SmartPerfetto AI 证据与自动化契约的权威执行面。两个 engine 可�
 能力，在 native pin 完成五平台预构建、回归与发布门禁前，不得被 Skills、Strategies、
 CLI 或 AI 报告宣称为可用。
 
+## Web Assistant 页面与身份生命周期
+
+Web UI 的两个 AI 入口共享同一鉴权边界，但不共享 trace 前置条件：
+
+- `/assistant` 的 `ConversationPage` 是 Conversation-first 入口；没有加载 Trace 时也能进行
+  普通多轮对话，附加 Trace 后才进入 trace-aware 对话。
+- 已加载 Trace 的 `AIPanel`、侧边栏和浮窗共享当前页面、当前 Trace 的
+  `AnalysisBackendConnection`。后台上传完成只产生连接候选；只有 scoped lease 对应的
+  native processor 状态为 ready，AI 分析才可使用该后端。
+- Viewer 始终继续使用浏览器内的 `trace_processor.wasm`。页面 lease 只管理 AI 后端的
+  授权、状态和生命周期；它不会设置全局 HTTP RPC target，也不会把 Viewer 切换为
+  native trace processor。`/api/workspaces/:workspaceId/traces/leases/:leaseId/connection`
+  只返回粗粒度状态，不返回端口、凭据、文件路径或其他租户信息。
+
+OIDC 模式下，session、trace、lease、connection、run/receipt 和临时连接状态都只存在于
+当前页面内存。可持久化消息先移除运行时绑定和私有原文，再写入 tenant/user/workspace
+隔离的命名空间；切换身份或 workspace 不会恢复另一个作用域的历史。logout、401、跨
+标签页 authority invalidation、身份/上下文切换和页面卸载都会 abort start/stream，递增
+运行代际并清空页面运行态，迟到结果不得写回新身份。
+
+local/API-key 模式保持既有浏览器请求和 resume 语义：共享 helper 不会无条件添加
+cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本次架构整合没有
+新增环境变量或配置项；provider、runtime 和 endpoint 仍来自现有配置源。
+
 ## 主分析数据流
 
 OIDC 模式下，静态入口先通过 `/api/auth/session` 完成门禁，未就绪时不加载 Perfetto

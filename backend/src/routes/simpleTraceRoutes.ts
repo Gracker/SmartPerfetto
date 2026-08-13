@@ -534,6 +534,19 @@ function leaseResponseFields(acquisition: TraceProcessorLeaseAcquisition | null 
   };
 }
 
+function leaseHasCurrentPageHolder(
+  lease: TraceProcessorLeaseRecord,
+  context: RequestContext,
+): boolean {
+  const windowId = context.windowId?.trim();
+  if (!windowId || !context.userId.trim()) return false;
+  return lease.holders.some(holder =>
+    holder.holderType === 'frontend_http_rpc'
+      && holder.windowId === windowId
+      && holder.metadata?.userId === context.userId,
+  );
+}
+
 function websocketCapabilityResponseFields(
   context: RequestContext,
   leaseId: string | undefined,
@@ -576,6 +589,7 @@ function acquireFrontendTraceLease(
       sessionId: options.sessionId,
       metadata: {
         requestId: context.requestId,
+        userId: context.userId,
         leaseModeReason: decision.reason,
         leaseModeSignals: decision.signals,
       },
@@ -1396,6 +1410,78 @@ router.post(
         details: error.message,
       });
     }
+  },
+);
+
+router.get(
+  '/leases/:leaseId/connection',
+  requireTracePermission('trace:read', 'Reading trace connection status requires trace:read permission'),
+  async (req, res) => {
+    const context = requireRequestContext(req);
+    const leaseId = Array.isArray(req.params.leaseId)
+      ? req.params.leaseId[0]
+      : req.params.leaseId;
+    const lease = getTraceProcessorLeaseStore().getLeaseById(
+      leaseScopeFromContext(context),
+      leaseId,
+    );
+    if (!lease || !leaseHasCurrentPageHolder(lease, context)) {
+      return res.json({success: true, leaseId, status: 'lease_expired'});
+    }
+
+    const metadata = await readTraceMetadataForContext(lease.traceId, context);
+    if (!metadata) {
+      return res.json({
+        success: true,
+        leaseId: lease.id,
+        traceId: lease.traceId,
+        status: 'trace_deleted',
+      });
+    }
+
+    if (lease.state === 'pending' || lease.state === 'starting' || lease.state === 'restarting') {
+      return res.json({
+        success: true,
+        leaseId: lease.id,
+        traceId: lease.traceId,
+        status: 'preparing',
+      });
+    }
+
+    if (
+      lease.state === 'draining'
+      || lease.state === 'released'
+      || lease.state === 'failed'
+      || !['ready', 'idle', 'active', 'crashed'].includes(lease.state)
+    ) {
+      return res.json({success: true, leaseId: lease.id, status: 'lease_expired'});
+    }
+
+    if (lease.state === 'crashed') {
+      return res.json({
+        success: true,
+        leaseId: lease.id,
+        traceId: lease.traceId,
+        status: 'backend_unavailable',
+      });
+    }
+
+    const processor = getTraceProcessorService().getLeaseProcessorSnapshot(
+      lease.traceId,
+      lease.id,
+      lease.mode,
+    );
+    const usableProcessor = Boolean(
+      processor
+      && (processor.status === 'ready' || processor.status === 'busy')
+      && processor.port,
+    );
+    return res.json({
+      success: true,
+      leaseId: lease.id,
+      traceId: lease.traceId,
+      status: usableProcessor ? 'ready' : 'backend_unavailable',
+    });
   },
 );
 

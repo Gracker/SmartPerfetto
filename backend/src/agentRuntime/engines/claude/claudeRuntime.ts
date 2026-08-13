@@ -59,6 +59,7 @@ import {
   hasConfiguredClaudeEffortOverride,
   isClaudeQuotaError,
   loadClaudeConfig,
+  resolveClaudeSdkPermissionOptions,
   resolveEffort,
   resolveRuntimeConfig,
   type ClaudeAgentConfig,
@@ -695,6 +696,22 @@ function projectClaudeToolResultForPlan(toolName: string, result: unknown): stri
   return stringifySdkToolResult(projectToolResultForExternalSurface(toolName, result));
 }
 
+function buildClaudeSdkToolOptions(
+  allowedTools: readonly string[],
+  agents?: Record<string, unknown>,
+): {tools: string[]; allowedTools: string[]} {
+  const hasSubAgents = agents !== undefined && Object.keys(agents).length > 0;
+  if (!hasSubAgents) {
+    return {tools: [], allowedTools: [...allowedTools]};
+  }
+  return {
+    tools: ['Agent'],
+    allowedTools: allowedTools.includes('Agent')
+      ? [...allowedTools]
+      : [...allowedTools, 'Agent'],
+  };
+}
+
 export const __testing = {
   getSdkResultErrorMessage,
   isMissingSdkConversationError,
@@ -713,6 +730,7 @@ export const __testing = {
   projectClaudeToolResultForPlan,
   recoverClaudeInterruptedFinalReport,
   isRecoverableClaudeStreamInterruption,
+  buildClaudeSdkToolOptions,
 };
 
 /** Sleep for the given milliseconds. */
@@ -786,6 +804,7 @@ function sdkQueryWithRetry(
     let lastErr: Error | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (closed) return;
+      let terminalResultObserved = false;
       try {
         if (currentEvaluationInjectionContract()) {
           commitEvaluationExposureSince(0, 'sdk_handoff_observed');
@@ -794,11 +813,22 @@ function sdkQueryWithRetry(
         // Yield all messages from the stream
         for await (const msg of currentQuery) {
           if (closed) return;
+          if ((msg as any)?.type === 'result') {
+            const subtype = (msg as any).subtype;
+            terminalResultObserved = subtype === 'success' || isSdkMaxTurnsSubtype(subtype);
+          }
           yield msg;
         }
         return; // Success — exit generator
       } catch (err) {
         lastErr = err as Error;
+        if (terminalResultObserved) {
+          console.warn(
+            '[ClaudeRuntime] Ignoring SDK iterator cleanup error after terminal result:',
+            diagnosticLogIdentity(lastErr.message),
+          );
+          return;
+        }
         // If the caller invoked close(), treat the resulting error as
         // intentional termination rather than a retryable failure.
         if (closed) return;
@@ -1411,12 +1441,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           mcpServers: { smartperfetto: ctx.mcpServer },
           includePartialMessages: true,
           settingSources: [],
-          tools: [],
-          permissionMode: 'bypassPermissions' as const,
-          allowDangerouslySkipPermissions: true,
+          ...buildClaudeSdkToolOptions(ctx.allowedTools, ctx.agents),
+          ...resolveClaudeSdkPermissionOptions(),
           cwd: runtimeConfig.cwd,
           effort: ctx.effectiveEffort,
-          allowedTools: ctx.allowedTools,
           env: sdkEnv,
           persistSession: !privateAnalysisContext,
           stderr: (data: string) => {
@@ -2159,8 +2187,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   includePartialMessages: true,
                   settingSources: [],
                   tools: [],
-                  permissionMode: 'bypassPermissions' as const,
-                  allowDangerouslySkipPermissions: true,
+                  ...resolveClaudeSdkPermissionOptions(),
                   cwd: runtimeConfig.cwd,
                   effort: ctx.effectiveEffort,
                   allowedTools: [],
@@ -3213,8 +3240,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           includePartialMessages: true,
           settingSources: [],
           tools: [],
-          permissionMode: 'bypassPermissions' as const,
-          allowDangerouslySkipPermissions: true,
+          ...resolveClaudeSdkPermissionOptions(),
           cwd: quickConfig.cwd,
           effort: quickConfig.effort,
           allowedTools,

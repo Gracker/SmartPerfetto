@@ -98,6 +98,11 @@ export interface TraceProcessorLeaseRestartPolicy {
   random?: () => number;
 }
 
+export interface TraceProcessorLeaseSnapshot {
+  status: TraceProcessor['status'];
+  port?: number;
+}
+
 const DEFAULT_LEASE_RESTART_BACKOFF_MS = [1000, 5000, 15000];
 const DEFAULT_LEASE_RESTART_JITTER_MS = 250;
 const LEASE_RESTART_CONFLICT_STATES = new Set<TraceProcessorLeaseState>(['draining', 'released', 'failed']);
@@ -682,6 +687,22 @@ export class TraceProcessorService extends EventEmitter {
       ...trace,
       port,
       processor: processor ? { status: processor.status } : undefined,
+    };
+  }
+
+  public getLeaseProcessorSnapshot(
+    traceId: string,
+    leaseId: string,
+    mode: TraceProcessorLeaseMode | string,
+  ): TraceProcessorLeaseSnapshot | undefined {
+    const processorKey = this.processorKeyForLease(traceId, leaseId, mode);
+    const processor = this.processors.get(processorKey) as WorkingTraceProcessor | undefined;
+    if (!processor) return undefined;
+    return {
+      status: processor.status,
+      ...(Number.isInteger(processor.httpPort) && processor.httpPort > 0
+        ? {port: processor.httpPort}
+        : {}),
     };
   }
 

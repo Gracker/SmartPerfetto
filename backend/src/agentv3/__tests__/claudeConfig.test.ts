@@ -17,6 +17,7 @@ import {
   isClaudeQuotaError,
   loadClaudeConfig,
   resetSdkBinaryOptionCache,
+  resolveClaudeSdkPermissionOptions,
 } from '../claudeConfig';
 
 const ORIGINAL_QUICK_MAX_TURNS = process.env.CLAUDE_QUICK_MAX_TURNS;
@@ -575,5 +576,20 @@ describe('getSdkBinaryOption — auto fallback', () => {
 
     expect(() => getSdkBinaryOption()).not.toThrow();
     expect(getSdkBinaryOption()).toEqual({});
+  });
+});
+
+describe('resolveClaudeSdkPermissionOptions', () => {
+  it('uses non-interactive deny-by-default permissions for an effective root process', () => {
+    expect(resolveClaudeSdkPermissionOptions(0)).toEqual({
+      permissionMode: 'dontAsk',
+    });
+  });
+
+  it('preserves explicit permission bypass for a non-root process', () => {
+    expect(resolveClaudeSdkPermissionOptions(1000)).toEqual({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    });
   });
 });

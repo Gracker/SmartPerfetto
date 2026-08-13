@@ -106,6 +106,40 @@ A table, module, input format, or SQL capability added to browser WASM must not
 be claimed by Skills, Strategies, the CLI, or AI reports until the native pin
 passes the five-platform prebuild, regression, and release gates.
 
+## Web Assistant Surfaces And Identity Lifecycle
+
+The two Web UI assistant surfaces share one authentication boundary but do not
+share a trace prerequisite:
+
+- `/assistant` hosts the Conversation-first `ConversationPage`. It supports
+  ordinary multi-turn conversation without a loaded trace and becomes
+  trace-aware only after the user attaches one.
+- With a loaded trace, `AIPanel`, the sidebar, and the floating window share the
+  page- and trace-scoped `AnalysisBackendConnection`. A completed background
+  upload creates only a connection candidate; AI analysis can use the backend
+  only after the scoped lease's native processor reports ready.
+- The Viewer always continues to use in-browser `trace_processor.wasm`. A page
+  lease governs only AI-backend authorization, status, and lifetime; it neither
+  installs a global HTTP RPC target nor converts the Viewer to a native trace
+  processor. `/api/workspaces/:workspaceId/traces/leases/:leaseId/connection`
+  returns coarse status only and never exposes ports, credentials, file paths,
+  or cross-tenant details.
+
+In OIDC mode, session, trace, lease, connection, run/receipt, and transient
+connection state remain in page memory only. Persisted messages first remove
+runtime bindings and private source text, then use a tenant/user/workspace-
+scoped namespace; changing identity or workspace cannot restore another
+scope's history. Logout, 401, cross-tab authority invalidation, identity/context
+changes, and page disposal abort start/stream work, advance the runtime
+generation, and clear page state so late results cannot write into a new
+identity.
+
+Local/API-key mode keeps its existing browser request and resume behavior: the
+shared helper does not add cookie credentials unconditionally, and a non-OIDC
+401 is not treated as OIDC authority loss. This integration adds no environment
+variables or configuration keys; providers, runtimes, and endpoints continue
+to come from the existing configuration sources.
+
 ## Main Analysis Data Flow
 
 In OIDC mode, the static entry point gates startup through `/api/auth/session`

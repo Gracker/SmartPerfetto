@@ -10,6 +10,11 @@ import path from 'path';
 import {Readable} from 'stream';
 import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
+import { authenticate } from '../../middleware/auth';
+import {
+  bindWorkspaceRouteContext,
+  requireWorkspaceRouteContext,
+} from '../../middleware/workspaceRouteContext';
 import { listEnterpriseAuditEvents } from '../../services/enterpriseAuditService';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
 import {
@@ -30,6 +35,13 @@ import traceRoutes from '../simpleTraceRoutes';
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
   trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
+  oidcIssuerUrl: process.env.SMARTPERFETTO_OIDC_ISSUER_URL,
+  oidcClientId: process.env.SMARTPERFETTO_OIDC_CLIENT_ID,
+  oidcClientSecret: process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET,
+  oidcRedirectUri: process.env.SMARTPERFETTO_OIDC_REDIRECT_URI,
+  oidcAllowInsecureHttp: process.env.SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP,
+  serverSecret: process.env.SMARTPERFETTO_SERVER_SECRET,
+  frontendUrl: process.env.FRONTEND_URL,
   enterpriseDbPath: process.env[ENTERPRISE_DB_PATH_ENV],
   enterpriseDataDir: process.env[ENTERPRISE_DATA_DIR_ENV],
   uploadDir: process.env.UPLOAD_DIR,
@@ -60,6 +72,7 @@ let fakeTraceProcessorService: {
   completeUpload: jest.Mock;
   getTraceWithPort: jest.Mock;
   getTraceWithLeasePort: jest.Mock;
+  getLeaseProcessorSnapshot: jest.Mock;
   registerStoredTrace: jest.Mock;
   ensureProcessorForLease: jest.Mock;
   cleanupLeaseProcessor: jest.Mock;
@@ -73,6 +86,19 @@ function makeApp(): express.Express {
   const app = express();
   app.use(express.json());
   app.use('/api/traces', traceRoutes);
+  return app;
+}
+
+function makeWorkspaceApp(): express.Express {
+  const app = express();
+  app.use(express.json());
+  app.use(
+    '/api/workspaces/:workspaceId/traces',
+    bindWorkspaceRouteContext,
+    authenticate,
+    requireWorkspaceRouteContext,
+    traceRoutes,
+  );
   return app;
 }
 
@@ -91,18 +117,22 @@ function scopedSsoHeaders(
     email?: string;
     tenantId?: string;
     workspaceId?: string;
+    windowId?: string;
     roles?: string;
     scopes?: string;
   } = {},
 ): request.Test {
   const userId = options.userId ?? 'user-a';
-  return req
+  const requestWithIdentity = req
     .set('X-SmartPerfetto-SSO-User-Id', userId)
     .set('X-SmartPerfetto-SSO-Email', options.email ?? `${userId}@example.test`)
     .set('X-SmartPerfetto-SSO-Tenant-Id', options.tenantId ?? 'tenant-a')
     .set('X-SmartPerfetto-SSO-Workspace-Id', options.workspaceId ?? 'workspace-a')
     .set('X-SmartPerfetto-SSO-Roles', options.roles ?? 'analyst')
     .set('X-SmartPerfetto-SSO-Scopes', options.scopes ?? 'trace:read,trace:write,trace:download');
+  return options.windowId
+    ? requestWithIdentity.set('X-Window-Id', options.windowId)
+    : requestWithIdentity;
 }
 
 function ssoHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
@@ -205,6 +235,75 @@ function readCount(table: 'trace_assets' | 'trace_processor_leases'): number {
   }
 }
 
+function setLeaseState(leaseId: string, state: string): void {
+  const db = openEnterpriseDb(dbPath);
+  try {
+    db.prepare(`
+      UPDATE trace_processor_leases
+      SET state = ?
+      WHERE id = ?
+    `).run(state, leaseId);
+  } finally {
+    db.close();
+  }
+}
+
+function expireTraceAsset(traceId: string): void {
+  const db = openEnterpriseDb(dbPath);
+  try {
+    db.prepare(`
+      UPDATE trace_assets
+      SET expires_at = ?
+      WHERE id = ?
+    `).run(Date.now() - 1, traceId);
+  } finally {
+    db.close();
+  }
+}
+
+async function createConnectionLease(input: {
+  traceId: string;
+  windowId?: string;
+  userId?: string;
+}): Promise<{
+  id: string;
+  mode: 'shared' | 'isolated';
+}> {
+  const userId = input.userId ?? 'user-a';
+  const windowId = input.windowId ?? 'window-a';
+  const scope = {
+    tenantId: 'tenant-a',
+    workspaceId: 'workspace-a',
+    userId,
+  };
+  await writeTraceMetadata({
+    id: input.traceId,
+    filename: `${input.traceId}.trace`,
+    size: 24,
+    uploadedAt: new Date().toISOString(),
+    status: 'ready',
+    path: path.join(
+      dataDir,
+      'tenant-a',
+      'workspace-a',
+      'traces',
+      `${input.traceId}.trace`,
+    ),
+    ...scope,
+  });
+  const lease = getTraceProcessorLeaseStore().acquireHolder(
+    scope,
+    input.traceId,
+    {
+      holderType: 'frontend_http_rpc',
+      holderRef: windowId,
+      windowId,
+      metadata: {userId},
+    },
+  );
+  return {id: lease.id, mode: lease.mode};
+}
+
 function writeWorkspacePolicies(input: {
   quotaPolicy?: Record<string, unknown>;
   retentionPolicy?: Record<string, unknown>;
@@ -258,6 +357,13 @@ beforeEach(async () => {
   uploadDir = path.join(tmpDir, 'uploads');
 
   process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+  delete process.env.SMARTPERFETTO_OIDC_ISSUER_URL;
+  delete process.env.SMARTPERFETTO_OIDC_CLIENT_ID;
+  delete process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET;
+  delete process.env.SMARTPERFETTO_OIDC_REDIRECT_URI;
+  delete process.env.SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP;
+  delete process.env.SMARTPERFETTO_SERVER_SECRET;
+  delete process.env.FRONTEND_URL;
   process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
   process.env[ENTERPRISE_DB_PATH_ENV] = dbPath;
   process.env[ENTERPRISE_DATA_DIR_ENV] = dataDir;
@@ -274,6 +380,7 @@ beforeEach(async () => {
     completeUpload: jest.fn(async () => undefined),
     getTraceWithPort: jest.fn(() => undefined),
     getTraceWithLeasePort: jest.fn(() => undefined),
+    getLeaseProcessorSnapshot: jest.fn(() => undefined),
     registerStoredTrace: jest.fn((input: any) => ({
       ...input,
       uploadTime: new Date(),
@@ -296,6 +403,16 @@ afterEach(async () => {
   setTraceProcessorLeaseStoreForTests(null);
   restoreEnvValue(ENTERPRISE_FEATURE_FLAG_ENV, originalEnv.enterprise);
   restoreEnvValue('SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalEnv.trustedHeaders);
+  restoreEnvValue('SMARTPERFETTO_OIDC_ISSUER_URL', originalEnv.oidcIssuerUrl);
+  restoreEnvValue('SMARTPERFETTO_OIDC_CLIENT_ID', originalEnv.oidcClientId);
+  restoreEnvValue('SMARTPERFETTO_OIDC_CLIENT_SECRET', originalEnv.oidcClientSecret);
+  restoreEnvValue('SMARTPERFETTO_OIDC_REDIRECT_URI', originalEnv.oidcRedirectUri);
+  restoreEnvValue(
+    'SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP',
+    originalEnv.oidcAllowInsecureHttp,
+  );
+  restoreEnvValue('SMARTPERFETTO_SERVER_SECRET', originalEnv.serverSecret);
+  restoreEnvValue('FRONTEND_URL', originalEnv.frontendUrl);
   restoreEnvValue(ENTERPRISE_DB_PATH_ENV, originalEnv.enterpriseDbPath);
   restoreEnvValue(ENTERPRISE_DATA_DIR_ENV, originalEnv.enterpriseDataDir);
   restoreEnvValue(ENTERPRISE_MIGRATION_PHASE_ENV, originalEnv.migrationPhase);
@@ -383,6 +500,249 @@ describe('enterprise trace metadata routes', () => {
       {roles: 'unprivileged', scopes: 'trace:write'},
     );
     expect(denied.status).toBe(403);
+  });
+
+  it('reports a ready page-scoped lease without refreshing its lifetime', async () => {
+    const app = makeWorkspaceApp();
+    const traceId = 'connection-ready-trace';
+    const leaseScope = {
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+    };
+    await writeTraceMetadata({
+      id: traceId,
+      filename: 'connection-ready.trace',
+      size: 24,
+      uploadedAt: new Date().toISOString(),
+      status: 'ready',
+      path: path.join(dataDir, 'tenant-a', 'workspace-a', 'traces', `${traceId}.trace`),
+      ...leaseScope,
+    });
+    const store = getTraceProcessorLeaseStore();
+    let lease = store.acquireHolder(
+      leaseScope,
+      traceId,
+      {
+        holderType: 'frontend_http_rpc',
+        holderRef: 'window-ready',
+        windowId: 'window-ready',
+        metadata: {userId: 'user-a'},
+      },
+      {now: 1_777_100_000_000},
+    );
+    lease = store.markStarting(leaseScope, lease.id);
+    lease = store.markReady(leaseScope, lease.id);
+    const before = store.getLeaseById(leaseScope, lease.id);
+    fakeTraceProcessorService.getLeaseProcessorSnapshot.mockReturnValue({
+      status: 'ready',
+      port: 9234,
+    });
+
+    const response = await scopedSsoHeaders(
+      request(app).get(
+        `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+      ),
+      {scopes: 'trace:read', windowId: 'window-ready'},
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      success: true,
+      leaseId: lease.id,
+      traceId,
+      status: 'ready',
+    });
+    expect(fakeTraceProcessorService.getLeaseProcessorSnapshot).toHaveBeenCalledWith(
+      traceId,
+      lease.id,
+      lease.mode,
+    );
+    expect(fakeTraceProcessorService.getTraceWithLeasePort).not.toHaveBeenCalled();
+    expect(fakeTraceProcessorService.ensureProcessorForLease).not.toHaveBeenCalled();
+    expect(store.getLeaseById(leaseScope, lease.id)).toEqual(before);
+  });
+
+  it.each(['pending', 'starting', 'restarting'])(
+    'maps %s lease state to preparing',
+    async (leaseState) => {
+      const app = makeWorkspaceApp();
+      const traceId = `connection-${leaseState}-trace`;
+      const lease = await createConnectionLease({traceId, windowId: 'window-state'});
+      setLeaseState(lease.id, leaseState);
+      fakeTraceProcessorService.getLeaseProcessorSnapshot.mockReturnValue(undefined);
+
+      const response = await scopedSsoHeaders(
+        request(app).get(
+          `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+        ),
+        {scopes: 'trace:read', windowId: 'window-state'},
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        success: true,
+        leaseId: lease.id,
+        traceId,
+        status: 'preparing',
+      });
+    },
+  );
+
+  it('maps a deleted trace to trace_deleted', async () => {
+    const app = makeWorkspaceApp();
+    const traceId = 'connection-deleted-trace';
+    const lease = await createConnectionLease({traceId, windowId: 'window-deleted'});
+    expireTraceAsset(traceId);
+
+    const response = await scopedSsoHeaders(
+      request(app).get(
+        `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+      ),
+      {scopes: 'trace:read', windowId: 'window-deleted'},
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      success: true,
+      leaseId: lease.id,
+      traceId,
+      status: 'trace_deleted',
+    });
+  });
+
+  it.each(['draining', 'released', 'failed', 'unexpected']) (
+    'maps %s lease state to non-enumerable lease_expired',
+    async (leaseState) => {
+      const app = makeWorkspaceApp();
+      const traceId = `connection-${leaseState}-trace`;
+      const lease = await createConnectionLease({traceId, windowId: 'window-terminal'});
+      setLeaseState(lease.id, leaseState);
+
+      const response = await scopedSsoHeaders(
+        request(app).get(
+          `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+        ),
+        {scopes: 'trace:read', windowId: 'window-terminal'},
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        success: true,
+        leaseId: lease.id,
+        status: 'lease_expired',
+      });
+    },
+  );
+
+  it.each([
+    ['crashed', undefined],
+    ['active', undefined],
+    ['active', {status: 'error'}],
+    ['active', {status: 'initializing'}],
+  ])(
+    'maps lease %s with processor %j to backend_unavailable',
+    async (leaseState, processor) => {
+      const app = makeWorkspaceApp();
+      const traceId = `connection-unavailable-${leaseState}-${processor?.status ?? 'missing'}`;
+      const lease = await createConnectionLease({traceId, windowId: 'window-unavailable'});
+      setLeaseState(lease.id, leaseState);
+      fakeTraceProcessorService.getLeaseProcessorSnapshot.mockReturnValue(processor);
+
+      const response = await scopedSsoHeaders(
+        request(app).get(
+          `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+        ),
+        {scopes: 'trace:read', windowId: 'window-unavailable'},
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        success: true,
+        leaseId: lease.id,
+        traceId,
+        status: 'backend_unavailable',
+      });
+    },
+  );
+
+  it('keeps a busy processor ready when it has a usable port', async () => {
+    const app = makeWorkspaceApp();
+    const traceId = 'connection-busy-trace';
+    const lease = await createConnectionLease({traceId, windowId: 'window-busy'});
+    setLeaseState(lease.id, 'active');
+    fakeTraceProcessorService.getLeaseProcessorSnapshot.mockReturnValue({
+      status: 'busy',
+      port: 9235,
+    });
+
+    const response = await scopedSsoHeaders(
+      request(app).get(
+        `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+      ),
+      {scopes: 'trace:read', windowId: 'window-busy'},
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.status).toBe('ready');
+  });
+
+  it('hides a lease from another user, window, workspace, and missing window context', async () => {
+    const app = makeWorkspaceApp();
+    const traceId = 'connection-scope-trace';
+    const lease = await createConnectionLease({traceId, windowId: 'window-owner'});
+    setLeaseState(lease.id, 'active');
+    fakeTraceProcessorService.getLeaseProcessorSnapshot.mockReturnValue({
+      status: 'ready',
+      port: 9236,
+    });
+    const path = `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`;
+
+    const responses = await Promise.all([
+      scopedSsoHeaders(request(app).get(path), {
+        userId: 'user-b',
+        scopes: 'trace:read',
+        windowId: 'window-owner',
+      }),
+      scopedSsoHeaders(request(app).get(path), {
+        scopes: 'trace:read',
+        windowId: 'window-other',
+      }),
+      scopedSsoHeaders(
+        request(app).get(
+          `/api/workspaces/workspace-b/traces/leases/${lease.id}/connection`,
+        ),
+        {workspaceId: 'workspace-b', scopes: 'trace:read', windowId: 'window-owner'},
+      ),
+      scopedSsoHeaders(request(app).get(path), {scopes: 'trace:read'}),
+    ]);
+
+    for (const response of responses) {
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({
+        success: true,
+        leaseId: lease.id,
+        status: 'lease_expired',
+      });
+    }
+  });
+
+  it('requires trace:read permission for connection status', async () => {
+    const app = makeWorkspaceApp();
+    const lease = await createConnectionLease({
+      traceId: 'connection-permission-trace',
+      windowId: 'window-permission',
+    });
+
+    const response = await scopedSsoHeaders(
+      request(app).get(
+        `/api/workspaces/workspace-a/traces/leases/${lease.id}/connection`,
+      ),
+      {roles: 'unprivileged', scopes: 'trace:write', windowId: 'window-permission'},
+    );
+
+    expect(response.status).toBe(403);
+    expect(fakeTraceProcessorService.getLeaseProcessorSnapshot).not.toHaveBeenCalled();
   });
 
   it('paginates scoped database metadata and reports its total without loading every row', async () => {
