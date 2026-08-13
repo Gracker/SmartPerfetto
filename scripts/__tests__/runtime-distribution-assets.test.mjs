@@ -54,7 +54,42 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
         `'${target}'[\\s\\S]*?required:[\\s\\S]*?node_modules\\/opencode-ai\\/bin\\/opencode\\.exe`,
       ),
     );
+    assert.match(
+      portableVerifier,
+      new RegExp(
+        `'${target}'[\\s\\S]*?required:[\\s\\S]*?node_modules\\/@earendil-works\\/pi-agent-core\\/dist\\/index\\.js[\\s\\S]*?node_modules\\/@earendil-works\\/pi-ai\\/dist\\/index\\.js`,
+      ),
+    );
   }
+});
+
+test('Pi provider-explicit runtime ships exact aligned optional dependencies and a real integration gate', () => {
+  const backendPackage = JSON.parse(readFileSync(join(root, 'backend/package.json'), 'utf8'));
+  assert.equal(
+    backendPackage.optionalDependencies['@earendil-works/pi-agent-core'],
+    '0.84.1',
+  );
+  assert.equal(
+    backendPackage.optionalDependencies['@earendil-works/pi-ai'],
+    '0.84.1',
+  );
+  assert.match(backendPackage.scripts['test:architecture'], /test:pi-provider-runtime/);
+
+  const integrationGate = readFileSync(
+    join(root, 'backend/scripts/check-pi-provider-runtime.cjs'),
+    'utf8',
+  );
+  assert.match(integrationGate, /loadPiAgentCoreModule/);
+  assert.match(integrationGate, /createPiAgentCoreProviderRuntime/);
+  assert.match(integrationGate, /fauxToolCall/);
+  assert.match(integrationGate, /abortAgent\.abort\(\)/);
+  assert.match(integrationGate, /first-secret/);
+  assert.match(integrationGate, /type: 'oauth'/);
+
+  const cliE2e = readFileSync(join(root, 'backend/scripts/run-cli-e2e.cjs'), 'utf8');
+  assert.match(cliE2e, /packed Pi runtime construction/);
+  assert.match(cliE2e, /loadPiAgentCoreModule/);
+  assert.match(cliE2e, /createPiAgentCoreProviderRuntime/);
 });
 
 test('macOS packaging preserves and verifies JIT runtime entitlements', () => {

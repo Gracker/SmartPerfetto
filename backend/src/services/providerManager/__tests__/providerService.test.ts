@@ -516,6 +516,7 @@ describe('ProviderService', () => {
       ['SMARTPERFETTO_AGENT_RUNTIME', 'claude-agent-sdk'],
       ['SMARTPERFETTO_OPENCODE_MCP_COMMAND_JSON', '["/bin/sh","-c","id"]'],
       ['SMARTPERFETTO_OPENCODE_SDK_MODULE_PATH', '/tmp/hostile-sdk.mjs'],
+      ['PI_NODE_OPTIONS', '--require=/tmp/hostile-pi.cjs'],
       ['NODE_OPTIONS', '--require=/tmp/hostile.cjs'],
     ])('rejects process-control custom env override %s', (key, value) => {
       expect(() => svc.create({
@@ -533,6 +534,83 @@ describe('ProviderService', () => {
           },
         },
       })).toThrow(`Custom provider env override is not allowed: ${key}`);
+    });
+
+    it('allows Pi provider-scoped credentials on a Pi custom provider', () => {
+      const provider = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          agentRuntime: 'pi-agent-core',
+          piAgentCoreModelJson: '{"id":"deepseek-chat","provider":"deepseek"}',
+        },
+        custom: {
+          envOverrides: {
+            DEEPSEEK_API_KEY: 'managed-deepseek-key',
+            GOOGLE_APPLICATION_CREDENTIALS: '/managed/google.json',
+          },
+        },
+      });
+
+      expect(svc.getEnvForProvider(provider.id)).toMatchObject({
+        DEEPSEEK_API_KEY: 'managed-deepseek-key',
+        GOOGLE_APPLICATION_CREDENTIALS: '/managed/google.json',
+      });
+    });
+
+    it('rejects Pi-only provider credentials for non-Pi custom runtimes', () => {
+      expect(() => svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'custom-openai-main', light: 'custom-openai-light'},
+        connection: {
+          agentRuntime: 'openai-agents-sdk',
+          openaiBaseUrl: 'https://gateway.example/v1',
+          openaiProtocol: 'chat_completions',
+        },
+        custom: {
+          envOverrides: {
+            GOOGLE_APPLICATION_CREDENTIALS: '/managed/google.json',
+          },
+        },
+      })).toThrow(
+        'Custom provider env override is not allowed: GOOGLE_APPLICATION_CREDENTIALS',
+      );
+    });
+
+    it('allows adding Pi-only provider credentials while updating a Pi runtime', () => {
+      const provider = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          agentRuntime: 'pi-agent-core',
+          piAgentCoreModelJson: '{"id":"deepseek-chat","provider":"deepseek"}',
+        },
+      });
+
+      expect(() => svc.update(provider.id, {
+        custom: {envOverrides: {DEEPSEEK_API_KEY: 'managed-deepseek-key'}},
+      })).not.toThrow();
+    });
+
+    it('rejects switching away from Pi while Pi-only provider credentials remain', () => {
+      const provider = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'deepseek-chat', light: 'deepseek-chat'},
+        connection: {
+          agentRuntime: 'pi-agent-core',
+          piAgentCoreModelJson: '{"id":"deepseek-chat","provider":"deepseek"}',
+        },
+        custom: {envOverrides: {DEEPSEEK_API_KEY: 'managed-deepseek-key'}},
+      });
+
+      expect(() => svc.switchAgentRuntime(provider.id, 'opencode')).toThrow(
+        'Custom provider env override is not allowed: DEEPSEEK_API_KEY',
+      );
+      expect(svc.getRawProvider(provider.id)?.connection.agentRuntime).toBe('pi-agent-core');
     });
   });
 

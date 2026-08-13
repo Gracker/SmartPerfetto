@@ -32,6 +32,7 @@ import type {
   ProviderMutationOwner,
   ProviderMutationScope,
 } from './providerMutationGeneration';
+import {isPiProviderEnvKey} from './envIsolation';
 
 const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'apiKey',
@@ -81,9 +82,13 @@ const ALLOWED_CUSTOM_ENV_OVERRIDES = new Set([
   'OPENAI_AGENTS_PROTOCOL',
 ]);
 
-function assertSafeCustomEnvOverrides(custom: ProviderConfig['custom']): void {
+function assertSafeCustomEnvOverrides(
+  custom: ProviderConfig['custom'],
+  runtime: AgentRuntimeKind,
+): void {
   for (const key of Object.keys(custom?.envOverrides ?? {})) {
-    if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key)) {
+    const piRuntimeOverride = runtime === 'pi-agent-core' && isPiProviderEnvKey(key);
+    if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key) && !piRuntimeOverride) {
       throw new Error(`Custom provider env override is not allowed: ${key}`);
     }
   }
@@ -219,7 +224,10 @@ export class ProviderService {
       throw new Error('models.primary and models.light are required');
     }
     this.assertRuntimeSupported(input.type, input.connection.agentRuntime);
-    assertSafeCustomEnvOverrides(input.custom);
+    assertSafeCustomEnvOverrides(
+      input.custom,
+      resolveProviderAgentRuntime({type: input.type, connection: input.connection}),
+    );
 
     const now = new Date().toISOString();
     const provider: ProviderConfig = {
@@ -274,9 +282,9 @@ export class ProviderService {
         }
         if (input.tuning !== undefined) updated.tuning = input.tuning ?? undefined;
         if (input.custom !== undefined) {
-          assertSafeCustomEnvOverrides(input.custom ?? undefined);
           updated.custom = input.custom ?? undefined;
         }
+        assertSafeCustomEnvOverrides(updated.custom, resolveProviderAgentRuntime(updated));
 
         this.store.set(updated, scope);
         return updated;

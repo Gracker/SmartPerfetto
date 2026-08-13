@@ -139,6 +139,20 @@ import {
   emitQuickDirectQualityGateIssue,
 } from '../../quickDirectResult';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
+import {
+  createPiAgentCoreProviderRuntime,
+  type PiAgentCoreProviderRuntimeLoader,
+} from './piAgentCoreProvider';
+import {
+  parsePiAgentCoreModelConfig,
+  type PiAgentCoreModelConfig,
+} from './piAgentCoreConfig';
+
+export {
+  createPiAgentCoreProviderRuntime,
+  type PiAgentCoreProviderRuntime,
+} from './piAgentCoreProvider';
+export type {PiAgentCoreModelConfig} from './piAgentCoreConfig';
 
 export type ExperimentalPiAgentCoreRuntimeKind = typeof EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND;
 export type PublicPiAgentCoreRuntimeKind = typeof PI_AGENT_CORE_RUNTIME_KIND;
@@ -152,6 +166,10 @@ export const PI_AGENT_CORE_MODULE_PATH_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODULE
 export const PI_AGENT_CORE_FAKE_STREAM_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM';
 export const PI_AGENT_CORE_MODEL_JSON_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON';
 export const PI_AGENT_CORE_SYSTEM_PROMPT_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT';
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
 
 const PI_AGENT_CORE_PREVIEW_CLAIM_VERIFICATION: ClaimVerificationResult = {
   schemaVersion: 'claim_verifier@1',
@@ -189,8 +207,12 @@ interface PiAgentCoreAgent {
   reset(): void;
 }
 
+export interface PiAgentCoreAgentOptions extends Record<string, unknown> {
+  streamFn: (...args: any[]) => unknown;
+}
+
 interface PiAgentCoreModule {
-  Agent: new (options?: Record<string, unknown>) => PiAgentCoreAgent;
+  Agent: new (options: PiAgentCoreAgentOptions) => PiAgentCoreAgent;
 }
 
 function sanitizeOpaqueJsonValue(value: unknown, key = ''): unknown {
@@ -318,16 +340,7 @@ export interface PiAgentCoreTool {
 export interface PiAgentCoreRuntimeOptions {
   env?: EnvLike;
   moduleLoader?: PiAgentCoreModuleLoader;
-}
-
-interface PiAgentCoreModelConfig {
-  model: Record<string, unknown>;
-  apiKey?: string;
-  apiKeyEnv?: string;
-  maxRetryDelayMs?: number;
-  transport?: string;
-  thinkingLevel?: string;
-  thinkingBudgets?: Record<string, number>;
+  providerRuntimeLoader?: PiAgentCoreProviderRuntimeLoader;
 }
 
 function piModelIdentity(model: Record<string, unknown>): string | undefined {
@@ -976,76 +989,11 @@ function createFakePiStream(finalText: string) {
   };
 }
 
-function normalizeOptionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function normalizeOptionalNumber(value: unknown): number | undefined {
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (typeof value === 'string' && value.trim()) {
-    const parsed = Number(value.trim());
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
-function normalizeThinkingBudgets(value: unknown): Record<string, number> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  const budgets = Object.fromEntries(
-    Object.entries(value)
-      .map(([key, nested]) => [key, normalizeOptionalNumber(nested)] as const)
-      .filter((entry): entry is readonly [string, number] => entry[1] !== undefined),
-  );
-  return Object.keys(budgets).length > 0 ? budgets : undefined;
-}
-
-function resolveProviderEnvApiKey(provider: unknown, env: EnvLike): string | undefined {
-  if (typeof provider !== 'string') return undefined;
-  const normalized = provider.toLowerCase().replace(/[^a-z0-9]+/g, '_');
-  const candidates = [
-    `${normalized.toUpperCase()}_API_KEY`,
-    provider === 'anthropic' ? 'ANTHROPIC_API_KEY' : undefined,
-    provider === 'openai' ? 'OPENAI_API_KEY' : undefined,
-    provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : undefined,
-    provider === 'google' ? 'GOOGLE_API_KEY' : undefined,
-    provider === 'openrouter' ? 'OPENROUTER_API_KEY' : undefined,
-    provider === 'groq' ? 'GROQ_API_KEY' : undefined,
-    provider === 'mistral' ? 'MISTRAL_API_KEY' : undefined,
-    provider === 'xai' ? 'XAI_API_KEY' : undefined,
-  ].filter((candidate): candidate is string => !!candidate);
-  for (const candidate of candidates) {
-    const value = env[candidate]?.trim();
-    if (value) return value;
-  }
-  return undefined;
-}
-
 function resolvePiAgentCoreModel(env: EnvLike, fakeStream: boolean): PiAgentCoreModelConfig {
   const rawModel = env[PI_AGENT_CORE_MODEL_JSON_ENV];
   if (rawModel) {
     try {
-      const parsed = JSON.parse(rawModel);
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('model JSON must be an object');
-      }
-      const {
-        apiKey,
-        apiKeyEnv,
-        maxRetryDelayMs,
-        transport,
-        thinkingLevel,
-        thinkingBudgets,
-        ...model
-      } = parsed as Record<string, unknown>;
-      return {
-        model,
-        apiKey: normalizeOptionalString(apiKey),
-        apiKeyEnv: normalizeOptionalString(apiKeyEnv),
-        maxRetryDelayMs: normalizeOptionalNumber(maxRetryDelayMs),
-        transport: normalizeOptionalString(transport),
-        thinkingLevel: normalizeOptionalString(thinkingLevel),
-        thinkingBudgets: normalizeThinkingBudgets(thinkingBudgets),
-      };
+      return parsePiAgentCoreModelConfig(rawModel);
     } catch (err) {
       throw new Error(`${PI_AGENT_CORE_MODEL_JSON_ENV} must be valid JSON: ${(err as Error).message}`);
     }
@@ -1075,6 +1023,8 @@ function resolvePiAgentCoreModel(env: EnvLike, fakeStream: boolean): PiAgentCore
 export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   private readonly env: EnvLike;
   private readonly moduleLoader: PiAgentCoreModuleLoader;
+  private readonly providerRuntimeLoader: PiAgentCoreProviderRuntimeLoader;
+  private providerRuntime: ReturnType<PiAgentCoreProviderRuntimeLoader> | undefined;
   private readonly activeAgents = new Map<string, PiAgentCoreAgent>();
   private readonly artifactStores = new Map<string, ArtifactStore>();
   private readonly sessionNotes = new Map<string, AnalysisNote[]>();
@@ -1090,8 +1040,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     options: PiAgentCoreRuntimeOptions = {},
   ) {
     super();
-    this.env = options.env ?? process.env;
+    this.env = {...(options.env ?? process.env)};
     this.moduleLoader = options.moduleLoader ?? loadPiAgentCoreModule;
+    this.providerRuntimeLoader = options.providerRuntimeLoader ?? createPiAgentCoreProviderRuntime;
   }
 
   async analyze(
@@ -1131,6 +1082,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
   private rememberOpaqueState(sessionId: string, agent: PiAgentCoreAgent): void {
     this.sessionOpaqueStates.set(sessionId, createPiOpaqueStateFromMessages(agent.state.messages));
+  }
+
+  private getProviderRuntime(modelConfig: PiAgentCoreModelConfig) {
+    this.providerRuntime ??= this.providerRuntimeLoader(modelConfig, this.env);
+    return this.providerRuntime;
   }
 
   private async analyzeFakeStream(
@@ -1324,7 +1280,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     }
 
     const modelConfig = resolvePiAgentCoreModel(this.env, false);
-    const { Agent } = await this.moduleLoader(this.env);
+    const [{Agent}, providerRuntime] = await Promise.all([
+      this.moduleLoader(this.env),
+      this.getProviderRuntime(modelConfig),
+    ]);
     const prep = await this.prepareAnalysis(
       query,
       sessionId,
@@ -1343,7 +1302,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const agent = new Agent({
       initialState: {
         systemPrompt: prep.systemPrompt,
-        model: modelConfig.model,
+        model: providerRuntime.model,
         tools: prep.tools,
         messages: privateAnalysisContext
           ? []
@@ -1351,15 +1310,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         thinkingLevel: modelConfig.thinkingLevel ?? 'off',
       },
       sessionId,
+      streamFn: providerRuntime.streamFn,
       toolExecution: 'sequential',
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
       thinkingBudgets: modelConfig.thinkingBudgets,
-      getApiKey: (provider: string) => (
-        modelConfig.apiKey ||
-        (modelConfig.apiKeyEnv ? this.env[modelConfig.apiKeyEnv]?.trim() : undefined) ||
-        resolveProviderEnvApiKey(provider, this.env)
-      ),
       beforeToolCall: async ({ toolCall }: any) => {
         if (!prep.allowedToolNames.has(toolCall?.name)) {
           return {
@@ -2490,6 +2445,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     this.activeAgents.clear();
     this.sessionOpaqueStates.clear();
     this.architectureCache.clear();
+    this.providerRuntime = undefined;
     this.removeAllListeners();
   }
 

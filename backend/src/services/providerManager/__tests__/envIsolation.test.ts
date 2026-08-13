@@ -60,4 +60,70 @@ describe('provider runtime environment isolation', () => {
       QODER_MODEL: 'managed-model',
     });
   });
+
+  it('does not let ambient Pi provider credentials leak into a managed provider env', () => {
+    expect(mergeIsolatedProviderEnv({
+      PATH: '/usr/bin',
+      DEEPSEEK_API_KEY: 'ambient-deepseek',
+      OPENROUTER_API_KEY: 'ambient-openrouter',
+      MISTRAL_API_KEY: 'ambient-mistral',
+      GEMINI_API_KEY: 'ambient-gemini',
+      GOOGLE_APPLICATION_CREDENTIALS: '/ambient/google.json',
+      AZURE_OPENAI_API_KEY: 'ambient-azure',
+      HF_TOKEN: 'ambient-hugging-face',
+    }, {
+      SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core',
+      SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: '{"id":"managed"}',
+      DEEPSEEK_API_KEY: 'managed-deepseek',
+    })).toEqual({
+      PATH: '/usr/bin',
+      SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core',
+      SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: '{"id":"managed"}',
+      DEEPSEEK_API_KEY: 'managed-deepseek',
+    });
+  });
+
+  it('preserves a Claude Vertex service-account file while clearing Pi-only credentials', () => {
+    expect(mergeIsolatedProviderEnv({
+      PATH: '/usr/bin',
+      GOOGLE_APPLICATION_CREDENTIALS: '/selected/vertex-service-account.json',
+      DEEPSEEK_API_KEY: 'ambient-pi-secret',
+      OPENROUTER_API_KEY: 'ambient-pi-secret',
+    }, {
+      SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
+      CLAUDE_CODE_USE_VERTEX: '1',
+      ANTHROPIC_VERTEX_PROJECT_ID: 'selected-project',
+      CLOUD_ML_REGION: 'us-central1',
+    })).toEqual({
+      PATH: '/usr/bin',
+      GOOGLE_APPLICATION_CREDENTIALS: '/selected/vertex-service-account.json',
+      SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
+      CLAUDE_CODE_USE_VERTEX: '1',
+      ANTHROPIC_VERTEX_PROJECT_ID: 'selected-project',
+      CLOUD_ML_REGION: 'us-central1',
+    });
+  });
+
+  it('keeps Pi and Claude Vertex switches isolated without dropping shared system auth', () => {
+    const baseEnv = {
+      PATH: '/usr/bin',
+      GOOGLE_APPLICATION_CREDENTIALS: '/selected/vertex-service-account.json',
+      DEEPSEEK_API_KEY: 'ambient-pi-secret',
+    };
+    const piEnv = mergeIsolatedProviderEnv(baseEnv, {
+      SMARTPERFETTO_AGENT_RUNTIME: 'pi-agent-core',
+      SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON: '{"id":"managed"}',
+      DEEPSEEK_API_KEY: 'selected-pi-secret',
+    });
+    expect(piEnv.GOOGLE_APPLICATION_CREDENTIALS).toBeUndefined();
+    expect(piEnv.DEEPSEEK_API_KEY).toBe('selected-pi-secret');
+
+    const vertexEnv = mergeIsolatedProviderEnv(baseEnv, {
+      SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
+      CLAUDE_CODE_USE_VERTEX: '1',
+    });
+    expect(vertexEnv.GOOGLE_APPLICATION_CREDENTIALS)
+      .toBe('/selected/vertex-service-account.json');
+    expect(vertexEnv.DEEPSEEK_API_KEY).toBeUndefined();
+  });
 });
