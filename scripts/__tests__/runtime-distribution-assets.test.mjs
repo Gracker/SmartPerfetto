@@ -225,7 +225,9 @@ test('frontend refresh rejects an incomplete build before modifying the committe
   assert.equal(existsSync(join(frontendDir, 'index.html')), false);
 });
 
-test('frontend refresh derives top-level Syntaqlite assets from the same versioned build', (t) => {
+test('frontend refresh derives top-level Syntaqlite assets from the same versioned build', {
+  skip: spawnSync('rsync', ['--version']).status === 0 ? false : 'frontend refresh requires rsync',
+}, (t) => {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'smartperfetto-frontend-assets-'));
   t.after(() => rmSync(fixtureRoot, {recursive: true, force: true}));
 
