@@ -27,6 +27,7 @@ import {
   shouldNormalizeConclusionOutput,
 } from '../agent/core/conclusionGenerator';
 import { buildEvidenceContract } from './evidence/evidenceContractBuilder';
+import { hasDeliverableFinalReportHeading } from './finalResultQualityGate';
 import { sanitizeNarrativeForClient } from '../routes/narrativeSanitizer';
 import type { AnalysisResult } from '../agent/core/orchestratorTypes';
 import type {
@@ -94,7 +95,10 @@ export function normalizeNarrativeForContract(narrative: string): string {
   const trimmed = raw.trim();
   if (!trimmed) return raw;
 
-  if (shouldNormalizeConclusionOutput(trimmed)) {
+  if (
+    !hasDeliverableFinalReportHeading(trimmed) &&
+    shouldNormalizeConclusionOutput(trimmed)
+  ) {
     try {
       return normalizeConclusionOutput(trimmed).trim() || raw;
     } catch {
