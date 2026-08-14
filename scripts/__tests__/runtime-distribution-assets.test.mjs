@@ -470,14 +470,21 @@ test('Windows cross-platform contracts build and inject the fixed Go gate helper
   assert.doesNotMatch(crossPlatform, /upload-artifact/);
 });
 
-test('manual Deepseek E2E can isolate the source and RAG context matrix', () => {
-  const workflow = readFileSync(
-    join(root, '.github/workflows/agent-deepseek-e2e.yml'),
+test('local Deepseek E2E owns the source and RAG context matrix', () => {
+  assert.equal(
+    existsSync(join(root, '.github/workflows/agent-deepseek-e2e.yml')),
+    false,
+  );
+  const runner = readFileSync(
+    join(root, 'backend/scripts/run-deepseek-agent-e2e.cjs'),
     'utf8',
   );
-  assert.match(workflow, /options:\s+[\s\S]*- context/);
-  assert.match(workflow, /context\)\s+npm run verify:e2e:deepseek-context/);
-  assert.match(workflow, /timeout-minutes:\s*180/);
+  assert.match(
+    runner,
+    /const CONTEXT_SUITE_NAMES = \['context-source', 'context-rag', 'context-combined'\]/,
+  );
+  assert.match(runner, /loadBackendEnv\(\)/);
+  assert.match(runner, /require\('dotenv'\)\.config\(\{ path: envPath, quiet: true \}\)/);
   const backendPackage = JSON.parse(
     readFileSync(join(root, 'backend/package.json'), 'utf8'),
   );
