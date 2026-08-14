@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -13,14 +14,74 @@ import (
 	"testing"
 )
 
+func TestResolveWindowsRuntimeDirsPrefersReadyDDrive(t *testing.T) {
+	fallback := filepath.Join("C:", "Users", "tester", "AppData", "Local", "SmartPerfetto")
+	preferred := filepath.Join("D:", "SmartPerfettoData")
+	dirs, err := resolveRuntimeDirsForOSWithWindowsPreference(
+		"windows",
+		filepath.Join("C:", "Apps", "SmartPerfetto"),
+		func(key string) string {
+			if key == "LOCALAPPDATA" {
+				return filepath.Dir(fallback)
+			}
+			return ""
+		},
+		"",
+		errors.New("no home"),
+		func(gotFallback string) string {
+			if gotFallback != fallback {
+				t.Fatalf("unexpected Windows fallback root: %q", gotFallback)
+			}
+			return preferred
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve preferred Windows runtime directories: %v", err)
+	}
+	if dirs.dataDir != preferred || dirs.logsDir != filepath.Join(preferred, "logs") {
+		t.Fatalf("unexpected preferred Windows runtime directories: %#v", dirs)
+	}
+}
+
+func TestResolveWindowsRuntimeDirsKeepsExplicitPortableDataOverride(t *testing.T) {
+	explicit := filepath.Join("E:", "UserSelectedData")
+	preferenceCalls := 0
+	dirs, err := resolveRuntimeDirsForOSWithWindowsPreference(
+		"windows",
+		filepath.Join("C:", "Apps", "SmartPerfetto"),
+		func(key string) string {
+			if key == "SMARTPERFETTO_PORTABLE_DATA_DIR" {
+				return explicit
+			}
+			return ""
+		},
+		"",
+		errors.New("no home"),
+		func(fallback string) string {
+			preferenceCalls++
+			return filepath.Join("D:", "SmartPerfettoData")
+		},
+	)
+	if err != nil {
+		t.Fatalf("resolve explicit Windows runtime directories: %v", err)
+	}
+	if preferenceCalls != 0 {
+		t.Fatalf("Windows default preference should not run for an explicit override: %d", preferenceCalls)
+	}
+	if dirs.dataDir != explicit || dirs.logsDir != filepath.Join(explicit, "logs") {
+		t.Fatalf("unexpected explicit Windows runtime directories: %#v", dirs)
+	}
+}
+
 func TestResolveWindowsRuntimeDirsUsesLocalAppData(t *testing.T) {
 	env := map[string]string{"LOCALAPPDATA": filepath.Join("C:", "Users", "tester", "AppData", "Local")}
-	dirs, err := resolveRuntimeDirsForOS(
+	dirs, err := resolveRuntimeDirsForOSWithWindowsPreference(
 		"windows",
 		filepath.Join("D:", "SmartPerfetto"),
 		func(key string) string { return env[key] },
 		"",
 		errors.New("no home"),
+		func(fallback string) string { return fallback },
 	)
 	if err != nil {
 		t.Fatalf("resolve runtime directories: %v", err)
@@ -51,6 +112,234 @@ func TestResolveTruePortableRuntimeDirsStaysInsidePackage(t *testing.T) {
 	if dirs.dataDir != filepath.Join(root, "data") ||
 		dirs.logsDir != filepath.Join(root, "logs") {
 		t.Fatalf("unexpected true-portable directories: %#v", dirs)
+	}
+}
+
+func TestPreparePreferredWindowsRuntimeDirsMigratesLocalAppDataToD(t *testing.T) {
+	t.Setenv("SMARTPERFETTO_PORTABLE_MODE", "")
+	t.Setenv("SMARTPERFETTO_PORTABLE_DATA_DIR", "")
+	root := t.TempDir()
+	fallback := filepath.Join(root, "LocalAppData", "SmartPerfetto")
+	preferred := filepath.Join(root, "D-drive", "SmartPerfettoData")
+	oldFile := filepath.Join(fallback, "providers", "profiles.json")
+	if err := os.MkdirAll(filepath.Dir(oldFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldFile, []byte("preserved-c-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dirs := runtimeDirs{dataDir: preferred, logsDir: filepath.Join(preferred, "logs")}
+
+	resolved, err := preparePreferredWindowsRuntimeDirs(
+		filepath.Join(root, "current-package"),
+		dirs,
+		fallback,
+		launchOptions{},
+		&bytes.Buffer{},
+	)
+	if err != nil {
+		t.Fatalf("prepare preferred Windows data root: %v", err)
+	}
+	if resolved != dirs {
+		t.Fatalf("unexpected resolved runtime directories: %#v", resolved)
+	}
+	copied, err := os.ReadFile(filepath.Join(preferred, "providers", "profiles.json"))
+	if err != nil || string(copied) != "preserved-c-data" {
+		t.Fatalf("copied C data mismatch: %q, %v", copied, err)
+	}
+	receipt, err := os.ReadFile(filepath.Join(preferred, ".migration-receipt.json"))
+	if err != nil || !strings.Contains(string(receipt), fallback) {
+		t.Fatalf("migration receipt does not bind the C source: %q, %v", receipt, err)
+	}
+	if _, err := os.Stat(oldFile); err != nil {
+		t.Fatalf("C source data was not preserved: %v", err)
+	}
+}
+
+func TestPreparePreferredWindowsRuntimeDirsMigratesIntoExistingEmptyDDirectory(t *testing.T) {
+	t.Setenv("SMARTPERFETTO_PORTABLE_MODE", "")
+	t.Setenv("SMARTPERFETTO_PORTABLE_DATA_DIR", "")
+	root := t.TempDir()
+	fallback := filepath.Join(root, "LocalAppData", "SmartPerfetto")
+	preferred := filepath.Join(root, "D-drive", "SmartPerfettoData")
+	if err := os.MkdirAll(fallback, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, "session.json"), []byte("c-session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(preferred, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dirs := runtimeDirs{dataDir: preferred, logsDir: filepath.Join(preferred, "logs")}
+
+	resolved, err := preparePreferredWindowsRuntimeDirs(
+		filepath.Join(root, "current-package"),
+		dirs,
+		fallback,
+		launchOptions{},
+		&bytes.Buffer{},
+	)
+	if err != nil {
+		t.Fatalf("prepare empty preferred Windows data root: %v", err)
+	}
+	if resolved != dirs {
+		t.Fatalf("unexpected resolved runtime directories: %#v", resolved)
+	}
+	content, err := os.ReadFile(filepath.Join(preferred, "session.json"))
+	if err != nil || string(content) != "c-session" {
+		t.Fatalf("empty D directory did not receive C data: %q, %v", content, err)
+	}
+}
+
+func TestPreparePreferredWindowsRuntimeDirsNeverMergesNonemptyDDirectory(t *testing.T) {
+	t.Setenv("SMARTPERFETTO_PORTABLE_MODE", "")
+	t.Setenv("SMARTPERFETTO_PORTABLE_DATA_DIR", "")
+	root := t.TempDir()
+	fallback := filepath.Join(root, "LocalAppData", "SmartPerfetto")
+	preferred := filepath.Join(root, "D-drive", "SmartPerfettoData")
+	if err := os.MkdirAll(fallback, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, "c-only.json"), []byte("c-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(preferred, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dMarker := filepath.Join(preferred, "d-only.json")
+	if err := os.WriteFile(dMarker, []byte("d-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	notices := &bytes.Buffer{}
+	dirs := runtimeDirs{dataDir: preferred, logsDir: filepath.Join(preferred, "logs")}
+
+	resolved, err := preparePreferredWindowsRuntimeDirs(
+		filepath.Join(root, "current-package"),
+		dirs,
+		fallback,
+		launchOptions{},
+		notices,
+	)
+	if err != nil {
+		t.Fatalf("preserve nonempty preferred Windows data root: %v", err)
+	}
+	if resolved != dirs {
+		t.Fatalf("unexpected resolved runtime directories: %#v", resolved)
+	}
+	if _, err := os.Stat(filepath.Join(preferred, "c-only.json")); !os.IsNotExist(err) {
+		t.Fatalf("C data must not be merged into nonempty D: %v", err)
+	}
+	content, err := os.ReadFile(dMarker)
+	if err != nil || string(content) != "d-data" {
+		t.Fatalf("existing D data changed: %q, %v", content, err)
+	}
+	if !strings.Contains(notices.String(), "not merged") {
+		t.Fatalf("missing non-merge notice: %q", notices.String())
+	}
+}
+
+func TestPreparePreferredWindowsRuntimeDirsFallsBackToCWhenAutomaticMigrationFails(t *testing.T) {
+	t.Setenv("SMARTPERFETTO_PORTABLE_MODE", "")
+	t.Setenv("SMARTPERFETTO_PORTABLE_DATA_DIR", "")
+	root := t.TempDir()
+	fallback := filepath.Join(root, "LocalAppData", "SmartPerfetto")
+	preferred := filepath.Join(root, "D-drive", "SmartPerfettoData")
+	if err := os.MkdirAll(fallback, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallback, "preserved.json"), []byte("c-data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "outside"), filepath.Join(fallback, "unsafe-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	notices := &bytes.Buffer{}
+	dirs := runtimeDirs{dataDir: preferred, logsDir: filepath.Join(preferred, "logs")}
+
+	resolved, err := preparePreferredWindowsRuntimeDirs(
+		filepath.Join(root, "current-package"),
+		dirs,
+		fallback,
+		launchOptions{},
+		notices,
+	)
+	if err != nil {
+		t.Fatalf("automatic D migration should fall back to C: %v", err)
+	}
+	want := runtimeDirs{dataDir: fallback, logsDir: filepath.Join(fallback, "logs")}
+	if resolved != want {
+		t.Fatalf("automatic migration did not fall back to C: got %#v, want %#v", resolved, want)
+	}
+	if !strings.Contains(notices.String(), "WARNING") || !strings.Contains(notices.String(), fallback) {
+		t.Fatalf("missing migration fallback warning: %q", notices.String())
+	}
+	if _, err := os.Stat(preferred); !os.IsNotExist(err) {
+		t.Fatalf("failed D migration should not activate a destination: %v", err)
+	}
+	stages, err := filepath.Glob(filepath.Join(filepath.Dir(preferred), ".SmartPerfetto-migration-*"))
+	if err != nil || len(stages) != 0 {
+		t.Fatalf("failed D migration left staging data: %v, %v", stages, err)
+	}
+}
+
+func TestPreparePreferredWindowsRuntimeDirsKeepsExplicitMigrationFailure(t *testing.T) {
+	t.Setenv("SMARTPERFETTO_PORTABLE_MODE", "")
+	t.Setenv("SMARTPERFETTO_PORTABLE_DATA_DIR", "")
+	root := t.TempDir()
+	fallback := filepath.Join(root, "LocalAppData", "SmartPerfetto")
+	preferred := filepath.Join(root, "D-drive", "SmartPerfettoData")
+	explicitSource := filepath.Join(root, "explicit-source")
+	if err := os.MkdirAll(explicitSource, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "outside"), filepath.Join(explicitSource, "unsafe-link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	dirs := runtimeDirs{dataDir: preferred, logsDir: filepath.Join(preferred, "logs")}
+
+	resolved, err := preparePreferredWindowsRuntimeDirs(
+		filepath.Join(root, "current-package"),
+		dirs,
+		fallback,
+		launchOptions{migrateFrom: explicitSource},
+		&bytes.Buffer{},
+	)
+	if err == nil {
+		t.Fatal("explicit migration failure must not be hidden by C fallback")
+	}
+	if resolved != dirs {
+		t.Fatalf("explicit migration failure unexpectedly changed directories: %#v", resolved)
+	}
+}
+
+func TestActivateMigrationDirectoryNeverReplacesConcurrentDestination(t *testing.T) {
+	root := t.TempDir()
+	stage := filepath.Join(root, "stage")
+	destination := filepath.Join(root, "destination")
+	if err := os.MkdirAll(stage, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stage, "migrated.json"), []byte("migrated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(destination, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(destination, "concurrent.json")
+	if err := os.WriteFile(marker, []byte("concurrent"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := activateMigrationDirectory(stage, destination); err == nil {
+		t.Fatal("activation should reject a destination created after the empty check")
+	}
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != "concurrent" {
+		t.Fatalf("concurrent destination was replaced: %q, %v", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(stage, "migrated.json")); err != nil {
+		t.Fatalf("failed activation should leave stage for caller cleanup: %v", err)
 	}
 }
 

@@ -1403,7 +1403,11 @@ function main() {
       `${packageName}/README-WINDOWS.zh-CN.txt`,
     );
     assert(
-      readme.includes('%LOCALAPPDATA%\\SmartPerfetto') &&
+      readme.includes('D:\\SmartPerfettoData') &&
+        readme.includes('%LOCALAPPDATA%\\SmartPerfetto') &&
+        readme.includes('SMARTPERFETTO_PORTABLE_DATA_DIR') &&
+        readme.includes('fixed local drive') &&
+        readme.includes('never merges into or') &&
         readme.includes('--migrate-from') &&
         readme.includes('SMARTPERFETTO_PORTABLE_MODE=1') &&
         readme.includes('Get-FileHash') &&
@@ -1413,7 +1417,11 @@ function main() {
     );
     assert(
       readmeZh.includes(`版本：${version}`) &&
+        readmeZh.includes('D:\\SmartPerfettoData') &&
         readmeZh.includes('%LOCALAPPDATA%\\SmartPerfetto') &&
+        readmeZh.includes('SMARTPERFETTO_PORTABLE_DATA_DIR') &&
+        readmeZh.includes('本地固定磁盘') &&
+        readmeZh.includes('绝不合并或覆盖') &&
         readmeZh.includes('Get-FileHash') &&
         readmeZh.includes('Ctrl+C') &&
         readmeZh.includes('docs/getting-started/windows.md'),

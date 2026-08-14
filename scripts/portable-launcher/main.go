@@ -236,7 +236,8 @@ func runLauncher(options launchOptions) (runErr error) {
 	if err != nil {
 		return err
 	}
-	if err := migrateLegacyWindowsData(layout.packageRoot, dirs.dataDir, options); err != nil {
+	dirs, err = migrateLegacyWindowsData(layout.packageRoot, dirs, options)
+	if err != nil {
 		return err
 	}
 	for _, dir := range []string{

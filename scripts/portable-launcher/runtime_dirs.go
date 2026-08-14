@@ -23,6 +23,24 @@ func resolveRuntimeDirsForOS(
 	home string,
 	homeErr error,
 ) (runtimeDirs, error) {
+	return resolveRuntimeDirsForOSWithWindowsPreference(
+		goos,
+		packageRoot,
+		getenv,
+		home,
+		homeErr,
+		resolvePreferredWindowsDataRoot,
+	)
+}
+
+func resolveRuntimeDirsForOSWithWindowsPreference(
+	goos string,
+	packageRoot string,
+	getenv func(string) string,
+	home string,
+	homeErr error,
+	resolveWindowsDefault func(string) string,
+) (runtimeDirs, error) {
 	if data := getenv("SMARTPERFETTO_PORTABLE_DATA_DIR"); data != "" {
 		logs := getenv("SMARTPERFETTO_PORTABLE_LOG_DIR")
 		if logs == "" {
@@ -42,14 +60,14 @@ func resolveRuntimeDirsForOS(
 
 	switch goos {
 	case "windows":
-		localAppData := getenv("LOCALAPPDATA")
-		if localAppData == "" {
-			if homeErr != nil || home == "" {
-				return runtimeDirs{}, fmt.Errorf("LOCALAPPDATA and the user home directory are unavailable")
-			}
-			localAppData = filepath.Join(home, "AppData", "Local")
+		fallback, err := resolveWindowsFallbackDataRoot(getenv, home, homeErr)
+		if err != nil {
+			return runtimeDirs{}, err
 		}
-		data := filepath.Join(localAppData, "SmartPerfetto")
+		data := resolveWindowsDefault(fallback)
+		if data == "" {
+			data = fallback
+		}
 		return runtimeDirs{dataDir: data, logsDir: filepath.Join(data, "logs")}, nil
 	case "darwin":
 		return runtimeDirs{
@@ -70,4 +88,19 @@ func resolveRuntimeDirsForOS(
 			logsDir: filepath.Join(stateHome, "smartperfetto", "logs"),
 		}, nil
 	}
+}
+
+func resolveWindowsFallbackDataRoot(
+	getenv func(string) string,
+	home string,
+	homeErr error,
+) (string, error) {
+	localAppData := getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		if homeErr != nil || home == "" {
+			return "", fmt.Errorf("LOCALAPPDATA and the user home directory are unavailable")
+		}
+		localAppData = filepath.Join(home, "AppData", "Local")
+	}
+	return filepath.Join(localAppData, "SmartPerfetto"), nil
 }

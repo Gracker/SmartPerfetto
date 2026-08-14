@@ -676,28 +676,37 @@ Run:
   6. Press Ctrl+C in the launcher window to stop SmartPerfetto cleanly.
 
 User data and logs:
-  %LOCALAPPDATA%\\SmartPerfetto
-  %LOCALAPPDATA%\\SmartPerfetto\\providers
-  %LOCALAPPDATA%\\SmartPerfetto\\logs
+  Preferred default: D:\\SmartPerfettoData
+  Fallback: %LOCALAPPDATA%\\SmartPerfetto
 
-On first launch, SmartPerfetto migrates data from an older package's data
-directory when it is in the current package or an older sibling package. To
-choose the old package explicitly, run this before the first standard launch:
+The launcher uses D:\\SmartPerfettoData only when D: is a fixed local drive and
+the target is writable. Otherwise it keeps the LOCALAPPDATA fallback. The
+printed Data directory is authoritative; providers, uploads, backend state,
+user state, logs, and env all live below that root.
+
+When the D: default is selected and the LOCALAPPDATA fallback already contains
+data, SmartPerfetto atomically copies it to an absent or empty D: target, writes
+a migration receipt, and preserves the C: copy. It never merges into or
+overwrites a nonempty D: target. Older package-local data uses the same safe
+migration path. To choose an old package explicitly, run this before the first
+standard launch:
   SmartPerfetto.exe --migrate-from "C:\\path\\to\\old-package"
 
-The old data is preserved. If %LOCALAPPDATA%\\SmartPerfetto already exists,
+The old data is preserved. If the selected destination already exists,
 explicit migration stops without overwriting it. Back up and move the existing
-destination before retrying. To keep data beside the executable instead, set
-SMARTPERFETTO_PORTABLE_MODE=1 before launching; automatic and explicit migration
-are disabled while that mode is active.
+destination before retrying. Set SMARTPERFETTO_PORTABLE_DATA_DIR before launch
+to choose another full data root; do not put that setting in the data-root env
+file because the launcher resolves the root before loading provider env values.
+To keep data beside the executable instead, set SMARTPERFETTO_PORTABLE_MODE=1.
+Both overrides disable automatic and explicit migration.
 
 AI analysis needs either a Provider profile configured in the UI or env credentials.
-To use env credentials, create %LOCALAPPDATA%\\SmartPerfetto\\env with provider
-settings, then restart SmartPerfetto.exe.
+To use env credentials, create <printed Data directory>\\env with provider settings,
+then restart SmartPerfetto.exe.
 
 Logs:
-  %LOCALAPPDATA%\\SmartPerfetto\\logs\\backend.log
-  %LOCALAPPDATA%\\SmartPerfetto\\logs\\frontend.log
+  <printed Data directory>\\logs\\backend.log
+  <printed Data directory>\\logs\\frontend.log
 README
       cat > "$package_dir/README-WINDOWS.zh-CN.txt" <<README
 SmartPerfetto Windows x64 免安装包
@@ -728,20 +737,29 @@ Unknown Publisher 或 SmartScreen 提示。不要关闭 Microsoft Defender。
   6. 使用完毕后在启动器窗口按 Ctrl+C 正常停止。
 
 用户数据与日志：
-  %LOCALAPPDATA%\\SmartPerfetto
-  %LOCALAPPDATA%\\SmartPerfetto\\providers
-  %LOCALAPPDATA%\\SmartPerfetto\\logs
+  优先默认目录：D:\\SmartPerfettoData
+  回退目录：%LOCALAPPDATA%\\SmartPerfetto
+
+只有 D: 是本地固定磁盘且目标可写时，启动器才使用 D:\\SmartPerfettoData；
+否则继续使用 LOCALAPPDATA 回退目录。以启动器打印的 Data directory 为准；
+Provider、上传 trace、后端状态、用户状态、日志和 env 都位于该根目录下。
+
+选择 D: 默认目录且 LOCALAPPDATA 回退目录已有数据时，SmartPerfetto 只会向
+不存在或为空的 D: 目标做原子复制，写入迁移回执，并保留 C: 原数据；非空 D:
+目标绝不合并或覆盖。旧包内数据使用同一安全迁移链路。
 
 首次标准启动前需要指定旧数据时运行：
   SmartPerfetto.exe --migrate-from "C:\\path\\to\\old-package"
 
-旧数据不会被删除。如果 %LOCALAPPDATA%\\SmartPerfetto 已存在，显式迁移会
-停止且不会覆盖；请先备份并移动现有目标目录。设置
-SMARTPERFETTO_PORTABLE_MODE=1 后，数据保存在程序旁边，自动和显式迁移都会禁用。
+旧数据不会被删除。如果当前选中的目标已存在，显式迁移会停止且不会覆盖；
+请先备份并移动现有目标目录。需要自定义完整数据根目录时，在启动前设置
+SMARTPERFETTO_PORTABLE_DATA_DIR；不要把它写进数据根目录里的 env，因为启动器
+会先确定根目录、再加载 Provider env。设置 SMARTPERFETTO_PORTABLE_MODE=1 后，
+数据保存在程序旁边；两种覆盖方式都会禁用自动和显式迁移。
 
 需要查看错误时，可在 PowerShell 中运行 .\SmartPerfetto.exe。日志位于：
-  %LOCALAPPDATA%\\SmartPerfetto\\logs\\backend.log
-  %LOCALAPPDATA%\\SmartPerfetto\\logs\\frontend.log
+  <启动器打印的 Data directory>\\logs\\backend.log
+  <启动器打印的 Data directory>\\logs\\frontend.log
 README
       ;;
     macos-arm64)

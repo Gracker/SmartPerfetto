@@ -176,6 +176,9 @@ test('portable packaging has one launcher implementation and one target-native s
   assert.match(portableScript, /sourceSha256: traceProcessorSourceSha256/);
   assert.match(portableScript, /WINDOWS_MINIMUM_SYSTEM_VERSION="10\.0"/);
   assert.match(portableScript, /node-runtime-pin\.env/);
+  assert.ok(portableScript.includes('D:\\\\SmartPerfettoData'));
+  assert.ok(portableScript.includes('%LOCALAPPDATA%\\\\SmartPerfetto'));
+  assert.match(portableScript, /SMARTPERFETTO_PORTABLE_DATA_DIR/);
   assert.match(
     portableScript,
     /write_readme[\s\\]*"\$package_dir"[\s\\]*"\$target"[\s\\]*"\$PACKAGE_VERSION"[\s\\]*"\$notarized"[\s\\]*"\$macos_minimum_system_version"/,
@@ -214,6 +217,8 @@ test('portable packaging has one launcher implementation and one target-native s
   assert.match(windowsContainment, /jobObjectLimitKillOnJobClose/);
   assert.match(windowsContainment, /assignProcessToJobObject/);
   assert.match(portableVerifier, /Windows portable manifest must require Windows 10/);
+  assert.ok(portableVerifier.includes('D:\\\\SmartPerfettoData'));
+  assert.match(portableVerifier, /SMARTPERFETTO_PORTABLE_DATA_DIR/);
   assert.match(
     portableVerifier,
     /README-MACOS\.txt minimum system version does not match the package manifest/,

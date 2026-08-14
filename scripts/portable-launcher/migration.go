@@ -29,19 +29,51 @@ type migrationReceipt struct {
 
 func migrateLegacyWindowsData(
 	packageRoot string,
-	destination string,
+	dirs runtimeDirs,
 	options launchOptions,
-) error {
+) (runtimeDirs, error) {
 	if runtime.GOOS != "windows" {
-		return nil
+		return dirs, nil
 	}
-	return migrateLegacyData(packageRoot, destination, options)
+	if os.Getenv("SMARTPERFETTO_PORTABLE_MODE") == "1" ||
+		os.Getenv("SMARTPERFETTO_PORTABLE_DATA_DIR") != "" {
+		return dirs, migrateLegacyData(packageRoot, dirs.dataDir, options)
+	}
+	home, homeErr := os.UserHomeDir()
+	fallback, err := resolveWindowsFallbackDataRoot(os.Getenv, home, homeErr)
+	if err != nil {
+		return dirs, err
+	}
+	if strings.EqualFold(filepath.Clean(dirs.dataDir), filepath.Clean(fallback)) {
+		return dirs, migrateLegacyData(packageRoot, dirs.dataDir, options)
+	}
+	return preparePreferredWindowsRuntimeDirs(
+		packageRoot,
+		dirs,
+		fallback,
+		options,
+		os.Stderr,
+	)
 }
 
 func migrateLegacyData(
 	packageRoot string,
 	destination string,
 	options launchOptions,
+) error {
+	return migrateLegacyDataWithAutomaticSource(
+		packageRoot,
+		destination,
+		options,
+		"",
+	)
+}
+
+func migrateLegacyDataWithAutomaticSource(
+	packageRoot string,
+	destination string,
+	options launchOptions,
+	automaticSource string,
 ) error {
 	if os.Getenv("SMARTPERFETTO_PORTABLE_MODE") == "1" ||
 		os.Getenv("SMARTPERFETTO_PORTABLE_DATA_DIR") != "" {
@@ -67,9 +99,14 @@ func migrateLegacyData(
 		return fmt.Errorf("inspect data destination %s: %w", destination, err)
 	}
 
-	source, explicit, err := findMigrationSource(packageRoot, options.migrateFrom)
-	if err != nil {
-		return err
+	source := automaticSource
+	explicit := false
+	if source == "" {
+		var err error
+		source, explicit, err = findMigrationSource(packageRoot, options.migrateFrom)
+		if err != nil {
+			return err
+		}
 	}
 	if source == "" {
 		return nil
@@ -124,7 +161,7 @@ func migrateLegacyData(
 		_ = os.RemoveAll(stage)
 		return fmt.Errorf("write migration receipt: %w", err)
 	}
-	if err := os.Rename(stage, destination); err != nil {
+	if err := activateMigrationDirectory(stage, destination); err != nil {
 		_ = os.RemoveAll(stage)
 		return fmt.Errorf(
 			"activate migrated data at %s: %w; the old data was preserved",
@@ -134,6 +171,103 @@ func migrateLegacyData(
 	}
 	fmt.Printf("Migrated legacy SmartPerfetto data from %s to %s. The old copy was preserved.\n", source, destination)
 	return nil
+}
+
+func preparePreferredWindowsRuntimeDirs(
+	packageRoot string,
+	dirs runtimeDirs,
+	fallbackDataDir string,
+	options launchOptions,
+	notices io.Writer,
+) (runtimeDirs, error) {
+	if options.migrateFrom != "" {
+		return dirs, migrateLegacyData(packageRoot, dirs.dataDir, options)
+	}
+
+	destinationExists, destinationEmpty, destinationErr := inspectMigrationDirectory(dirs.dataDir)
+	if destinationErr == nil && destinationExists && !destinationEmpty {
+		fmt.Fprintf(
+			notices,
+			"NOTICE: Preferred Windows data directory %s already contains data; automatic sources were not merged or overwritten.\n",
+			dirs.dataDir,
+		)
+		return dirs, nil
+	}
+	if destinationErr == nil && destinationExists && destinationEmpty {
+		if err := os.Remove(dirs.dataDir); err != nil {
+			destinationErr = fmt.Errorf("remove empty preferred data directory %s: %w", dirs.dataDir, err)
+		}
+	}
+
+	automaticSource := ""
+	if destinationErr == nil {
+		fallbackExists, fallbackEmpty, err := inspectMigrationDirectory(fallbackDataDir)
+		if err != nil {
+			destinationErr = fmt.Errorf("inspect fallback Windows data directory %s: %w", fallbackDataDir, err)
+		} else if fallbackExists && !fallbackEmpty {
+			automaticSource = fallbackDataDir
+		}
+	}
+
+	migrationErr := destinationErr
+	if migrationErr == nil {
+		migrationErr = migrateLegacyDataWithAutomaticSource(
+			packageRoot,
+			dirs.dataDir,
+			options,
+			automaticSource,
+		)
+	}
+	if migrationErr == nil {
+		return dirs, nil
+	}
+
+	fallbackDirs := runtimeDirs{
+		dataDir: fallbackDataDir,
+		logsDir: filepath.Join(fallbackDataDir, "logs"),
+	}
+	fmt.Fprintf(
+		notices,
+		"WARNING: Could not prepare preferred Windows data directory %s: %v. Continuing with fallback data directory %s; existing C data was preserved.\n",
+		dirs.dataDir,
+		migrationErr,
+		fallbackDataDir,
+	)
+	if err := migrateLegacyData(packageRoot, fallbackDataDir, launchOptions{}); err != nil {
+		return dirs, fmt.Errorf(
+			"prepare preferred Windows data directory: %v; prepare fallback data directory: %w",
+			migrationErr,
+			err,
+		)
+	}
+	return fallbackDirs, nil
+}
+
+func inspectMigrationDirectory(root string) (exists bool, empty bool, err error) {
+	info, err := os.Lstat(root)
+	if os.IsNotExist(err) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || isReparsePoint(info) {
+		return true, false, fmt.Errorf("path is a symlink, reparse point, or non-directory")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return true, false, err
+	}
+	return true, len(entries) == 0, nil
+}
+
+func activateMigrationDirectory(stage string, destination string) error {
+	if _, err := os.Lstat(destination); err == nil {
+		return fmt.Errorf("migration destination appeared before activation: %s", destination)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect migration destination before activation: %w", err)
+	}
+	return os.Rename(stage, destination)
 }
 
 func findMigrationSource(packageRoot string, configured string) (string, bool, error) {
