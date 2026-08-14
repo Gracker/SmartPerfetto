@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.6.0] - 2026-08-14
+
+### Added
+- Page-scoped OIDC analysis connections now preserve explicit Trace, provider,
+  and session isolation across navigation and reload. Thanks to @cipherTing
+  for the original contribution in #239.
+- The Pi runtime now uses provider-explicit `pi-agent-core` and `pi-ai`
+  integration with aligned dependencies and a dedicated runtime gate.
+- Windows portable installs can select a fixed, writable `D:` drive for user
+  data and conservatively migrate an existing default `C:` data directory
+  without merging, overwriting, or deleting the source.
+
+### Changed
+- Claude-compatible and OpenAI runtimes now apply configurable full-request
+  and provider-idle deadlines, bounded external tool projections, answer
+  fallbacks, and retained continuation history.
+- The setup, update, Windows, portable packaging, troubleshooting, and platform
+  compatibility guides now use a shorter quick-start path with dedicated
+  bilingual application-update guidance.
+- Runtime and development dependencies were refreshed while preserving the
+  committed frontend, Node.js 24, and provider-pinning contracts.
+
+### Fixed
+- Timed-out or history-limited analysis retains genuine partial conclusions,
+  evidence, reports, snapshots, and provenance while still finalizing terminal
+  `analysis_completed` and `end` events.
+- Claude stream cleanup and OpenAI provider close no longer leave completed or
+  partial sessions waiting indefinitely after a terminal result.
+- Windows DPAPI portable smoke preserves PowerShell paths and the host provider
+  profile, and frontend refresh tests now honor required local build tools.
+
 ## [1.5.0] - 2026-08-10
 
 ### Added
