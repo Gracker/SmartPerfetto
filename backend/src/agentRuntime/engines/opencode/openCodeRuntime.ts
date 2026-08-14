@@ -1889,11 +1889,11 @@ function loadOpenCodeFinalReportContinuationPrompt(
   if (!qualityIssueMessage) return prompt;
 
   const qualityTemplateName = outputLanguage === 'en'
-    ? 'prompt-opencode-final-report-quality-issue-en'
-    : 'prompt-opencode-final-report-quality-issue-zh';
+    ? 'prompt-final-report-quality-issue-en'
+    : 'prompt-final-report-quality-issue-zh';
   const qualityTemplate = loadPromptTemplate(qualityTemplateName);
   if (!qualityTemplate) {
-    throw new Error(`Missing OpenCode final-report quality prompt template: ${qualityTemplateName}`);
+    throw new Error(`Missing final-report quality prompt template: ${qualityTemplateName}`);
   }
   return `${prompt}\n\n${renderTemplate(qualityTemplate, {
     quality_issue: qualityIssueMessage,

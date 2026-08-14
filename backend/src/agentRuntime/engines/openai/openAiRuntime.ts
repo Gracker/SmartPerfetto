@@ -125,6 +125,7 @@ import {
   hasDeliverableFinalReportHeading,
   looksLikePhaseSummaryFallback,
   type FinalResultComparisonIdentity,
+  type FinalResultQualityIssue,
 } from '../../../services/finalResultQualityGate';
 import {
   findCriticalFindingsWithoutEvidence,
@@ -1476,6 +1477,13 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               : [];
             const streamHistoryWithinBudget =
               serializedByteLength(streamHistory) <= config.maxHistoryBytes;
+            const finalReportQualityIssue = this.assessFinalReportQualityIssue({
+              sessionId,
+              conclusion,
+              query,
+              sceneType: finalReportSceneType,
+              comparisonIdentity: context.comparisonIdentity,
+            });
             const shouldRequestFinalReport = this.shouldRequestFinalReportAfterPlanComplete({
               sessionId,
               quickMode,
@@ -1488,6 +1496,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               query,
               sceneType: finalReportSceneType,
               comparisonIdentity: context.comparisonIdentity,
+              qualityIssue: finalReportQualityIssue,
             });
             if (shouldRequestFinalReport && streamHistory.length > 0 && !streamHistoryWithinBudget) {
               markHistoryLimitPartial();
@@ -1514,6 +1523,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                       query,
                       sceneType: finalReportSceneType,
                     })?.missingSections,
+                    qualityIssueMessage: finalReportQualityIssue?.message,
                     requireCodeReference: this.finalReportMissingCodeReference(sessionId, conclusion),
                   }),
                 } as AgentInputItem,
@@ -2796,6 +2806,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     query?: string;
     sceneType?: SceneType;
     comparisonIdentity?: FinalResultComparisonIdentity;
+    qualityIssue?: FinalResultQualityIssue;
   }): boolean {
     if (
       input.quickMode ||
@@ -2824,13 +2835,29 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     if (input.sessionId && this.finalReportMissingCodeReference(input.sessionId, conclusion)) return true;
     if (looksLikeProcessNarrationParagraph(conclusion.split(/\n{2,}/)[0] || '')) return true;
     if (findCriticalFindingsWithoutEvidence(extractFindingsFromText(conclusion)).length > 0) return true;
-    return Boolean(assessFinalResultQuality({
+    return Boolean(input.qualityIssue ?? this.assessFinalReportQualityIssue({
+      sessionId: input.sessionId,
+      conclusion,
+      query: input.query,
+      sceneType: input.sceneType,
+      comparisonIdentity: input.comparisonIdentity,
+    }));
+  }
+
+  private assessFinalReportQualityIssue(input: {
+    sessionId?: string;
+    conclusion: string;
+    query?: string;
+    sceneType?: SceneType;
+    comparisonIdentity?: FinalResultComparisonIdentity;
+  }): FinalResultQualityIssue | undefined {
+    return assessFinalResultQuality({
       result: {
         sessionId: input.sessionId || 'openai-final-report-quality-check',
         success: true,
-        findings: extractFindingsFromText(conclusion),
+        findings: extractFindingsFromText(input.conclusion),
         hypotheses: [],
-        conclusion,
+        conclusion: input.conclusion,
         confidence: 1,
         rounds: 1,
         totalDurationMs: 0,
@@ -2838,7 +2865,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       query: input.query,
       sceneType: input.sceneType,
       comparisonIdentity: input.comparisonIdentity,
-    }));
+    });
   }
 
   private finalReportMissingCodeReference(sessionId: string, conclusion: string): boolean {
@@ -2851,6 +2878,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private buildFinalReportAfterPlanCompletePrompt(input: {
     outputLanguage: OutputLanguage;
     missingSections?: FinalReportContractCompletenessResult['missingSections'];
+    qualityIssueMessage?: string;
     requireCodeReference?: boolean;
   }): string {
     const templateName = input.outputLanguage === 'en'
@@ -2874,6 +2902,19 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         missing_sections: input.missingSections
           .map(section => `- ${section.label}${section.description ? `: ${section.description}` : ''}`)
           .join('\n'),
+      })}`;
+    }
+
+    if (input.qualityIssueMessage) {
+      const qualityTemplateName = input.outputLanguage === 'en'
+        ? 'prompt-final-report-quality-issue-en'
+        : 'prompt-final-report-quality-issue-zh';
+      const qualityTemplate = loadPromptTemplate(qualityTemplateName);
+      if (!qualityTemplate) {
+        throw new Error(`Missing final-report quality prompt template: ${qualityTemplateName}`);
+      }
+      prompt += `\n\n${renderTemplate(qualityTemplate, {
+        quality_issue: input.qualityIssueMessage,
       })}`;
     }
 
