@@ -7022,6 +7022,10 @@ kbd.pf-keycap.pf-spacing-large {
     grid-template-columns: 1fr;
   }
 }
+.ai-page-auth-ready {
+  display: contents;
+}
+
 .ai-panel {
   display: flex;
   flex-direction: column;
@@ -8017,6 +8021,7 @@ kbd.pf-keycap.pf-spacing-large {
 }
 .ai-messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 12px 8px;
