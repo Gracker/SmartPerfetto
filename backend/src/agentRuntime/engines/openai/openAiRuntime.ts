@@ -124,6 +124,7 @@ import {
   applyFinalResultQualityGate,
   hasDeliverableFinalReportHeading,
   looksLikePhaseSummaryFallback,
+  serializeFinalResultQualityIssueContext,
   type FinalResultComparisonIdentity,
   type FinalResultQualityIssue,
 } from '../../../services/finalResultQualityGate';
@@ -1523,7 +1524,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                       query,
                       sceneType: finalReportSceneType,
                     })?.missingSections,
-                    qualityIssueMessage: finalReportQualityIssue?.message,
+                    qualityIssue: finalReportQualityIssue,
                     requireCodeReference: this.finalReportMissingCodeReference(sessionId, conclusion),
                   }),
                 } as AgentInputItem,
@@ -2878,7 +2879,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private buildFinalReportAfterPlanCompletePrompt(input: {
     outputLanguage: OutputLanguage;
     missingSections?: FinalReportContractCompletenessResult['missingSections'];
-    qualityIssueMessage?: string;
+    qualityIssue?: FinalResultQualityIssue;
     requireCodeReference?: boolean;
   }): string {
     const templateName = input.outputLanguage === 'en'
@@ -2905,7 +2906,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       })}`;
     }
 
-    if (input.qualityIssueMessage) {
+    if (input.qualityIssue) {
       const qualityTemplateName = input.outputLanguage === 'en'
         ? 'prompt-final-report-quality-issue-en'
         : 'prompt-final-report-quality-issue-zh';
@@ -2914,7 +2915,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         throw new Error(`Missing final-report quality prompt template: ${qualityTemplateName}`);
       }
       prompt += `\n\n${renderTemplate(qualityTemplate, {
-        quality_issue: input.qualityIssueMessage,
+        quality_issue_context: serializeFinalResultQualityIssueContext(input.qualityIssue),
       })}`;
     }
 

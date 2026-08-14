@@ -2327,7 +2327,11 @@ describe('OpenAIRuntime plan completion guard', () => {
     const zhPrompt = runtime.buildFinalReportAfterPlanCompletePrompt({
       outputLanguage: 'zh-CN',
       requireCodeReference: true,
-      qualityIssueMessage: 'D/DK 只能说明不可中断等待；没有同窗口 I/O 证据时不能归因为磁盘 I/O。',
+      qualityIssue: {
+        code: 'kernel_blocking_claim_boundary',
+        message: 'D/DK 只能说明不可中断等待；没有同窗口 I/O 证据时不能归因为磁盘 I/O。',
+        offendingStatement: 'D 状态证明磁盘 IO 是根因。',
+      },
     });
     expect(zhPrompt).toContain('继续遵守本轮场景策略');
     expect(zhPrompt).toContain('Final Report Contract');
@@ -2349,13 +2353,18 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(zhPrompt).toContain('不能只把它降为 `[HIGH]`');
     expect(zhPrompt).toContain('本次补写还必须修正以下质量门禁问题');
     expect(zhPrompt).toContain('D/DK 只能说明不可中断等待；没有同窗口 I/O 证据时不能归因为磁盘 I/O。');
+    expect(zhPrompt).toContain('D 状态证明磁盘 IO 是根因。');
     expect(zhPrompt).not.toContain('{{quality_issue}}');
     expect(zhPrompt).not.toContain('2500-3500');
     expect(zhPrompt).not.toContain('最多 1200');
 
     const enPrompt = runtime.buildFinalReportAfterPlanCompletePrompt({
       outputLanguage: 'en',
-      qualityIssueMessage: 'D/DK only proves uninterruptible wait; do not attribute disk I/O without same-window I/O evidence.',
+      qualityIssue: {
+        code: 'kernel_blocking_claim_boundary',
+        message: 'D/DK only proves uninterruptible wait; do not attribute disk I/O without same-window I/O evidence.',
+        offendingStatement: 'D-state proves disk I/O was the root cause.',
+      },
     });
     expect(enPrompt).toContain('scene strategy');
     expect(enPrompt).toContain('Final Report Contract');
@@ -2376,6 +2385,7 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(enPrompt).toContain('Do not evade this by relabeling it as `[HIGH]`');
     expect(enPrompt).toContain('correct the quality-gate issue below');
     expect(enPrompt).toContain('D/DK only proves uninterruptible wait; do not attribute disk I/O without same-window I/O evidence.');
+    expect(enPrompt).toContain('D-state proves disk I/O was the root cause.');
     expect(enPrompt).not.toContain('{{quality_issue}}');
     expect(enPrompt).not.toContain('1,200-1,800');
     expect(enPrompt).not.toContain('at most 700');

@@ -2215,6 +2215,22 @@ describe('final result quality gate', () => {
     }
   });
 
+  it('returns the exact offending statement for targeted provider correction', () => {
+    const unsafeClaim = 'D 状态证明磁盘 IO 是根因';
+    const issue = assessFinalResultQuality({
+      result: result({
+        conclusion: `## 综合结论\n\n${unsafeClaim}。\n\n## 优化建议\n\n继续采集同窗口证据。`,
+        partial: true,
+      }),
+      query: '分析内核等待证据边界',
+    });
+
+    expect(issue).toEqual(expect.objectContaining({
+      code: 'kernel_blocking_claim_boundary',
+      offendingStatement: unsafeClaim,
+    }));
+  });
+
   it('flags reports that turn D-state-only evidence into disk IO root cause', () => {
     const misleadingDStateReport = [
       '# I/O 分析报告',

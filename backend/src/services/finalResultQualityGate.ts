@@ -25,6 +25,7 @@ export type FinalResultQualityIssueCode =
 export interface FinalResultQualityIssue {
   code: FinalResultQualityIssueCode;
   message: string;
+  offendingStatement?: string;
 }
 
 export interface FinalResultComparisonIdentity {
@@ -67,6 +68,13 @@ export function completeFinalResultComparisonIdentity(input: {
 
 const FINAL_RESULT_QUALITY_GATE_MESSAGE =
   '最终结果质量闸门发现 provider 没有产出可独立交付的完整结论；本次结果已标记为 partial，避免把降级文本当作正常完成。';
+const FINAL_RESULT_OFFENDING_STATEMENT_MAX_CHARS = 1200;
+
+export function serializeFinalResultQualityIssueContext(issue: FinalResultQualityIssue): string {
+  return issue.offendingStatement
+    ? `${issue.message}\n\n${JSON.stringify(issue.offendingStatement)}`
+    : issue.message;
+}
 
 const ANALYSIS_QUERY_MARKERS = [
   '分析',
@@ -155,6 +163,14 @@ function splitQualityStatements(text: string): string[] {
   const remaining = text.slice(statementStart).trim();
   if (remaining) statements.push(remaining);
   return statements;
+}
+
+function boundedOffendingStatement(statement: string): string | undefined {
+  const normalized = statement.trim().replace(/\s+/g, ' ');
+  if (!normalized) return undefined;
+  return normalized.length <= FINAL_RESULT_OFFENDING_STATEMENT_MAX_CHARS
+    ? normalized
+    : `${normalized.slice(0, FINAL_RESULT_OFFENDING_STATEMENT_MAX_CHARS - 1)}…`;
 }
 
 function countMatches(text: string, pattern: RegExp): number {
@@ -1126,35 +1142,40 @@ function assessKernelBlockingClaimBoundary(conclusion: string): FinalResultQuali
     return {
       code: 'kernel_blocking_claim_boundary',
       message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} D/DK 只能说明不可中断等待；没有 io_wait=1、IO/page-cache blocked_function 或 app-level 文件/数据库证据时，不能直接写成磁盘 IO 根因。`,
+      offendingStatement: boundedOffendingStatement(
+        statements[unqualifiedDStateClaimIndexes[0]] || '',
+      ),
     };
   }
 
   const pollIoClaimStatements = splitQualityStatements(conclusion)
     .map(statement => statement.trim())
     .filter(hasPollIoCausalLanguage);
-  const hasUnqualifiedPollIoClaim = pollIoClaimStatements.some(statement => {
+  const unqualifiedPollIoClaim = pollIoClaimStatements.find(statement => {
     const remaining = removeQualifiedPollIoClaims(statement);
     return hasPollIoCausalLanguage(remaining) ||
       hasKernelIoCoreferenceCausalLanguage(remaining);
   });
-  if (hasUnqualifiedPollIoClaim) {
+  if (unqualifiedPollIoClaim) {
     return {
       code: 'kernel_blocking_claim_boundary',
       message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} epoll/poll 类 blocked_function 通常表示等待事件或空闲，不能直接写成 IO 根因；需要 io_wait=1、IO/page-cache 函数族或 app-level 文件/数据库证据补强。`,
+      offendingStatement: boundedOffendingStatement(unqualifiedPollIoClaim),
     };
   }
 
-  const hasUnqualifiedBlockedFunctionStackClaim = splitQualityStatements(conclusion)
+  const unqualifiedBlockedFunctionStackClaim = splitQualityStatements(conclusion)
     .filter(hasBlockedFunctionFullStackClaim)
-    .some(statement => {
+    .find(statement => {
       const remaining = removeQualifiedBlockedFunctionClaims(statement);
       return hasBlockedFunctionFullStackClaim(remaining) ||
         hasImplicitSubjectFullStackClaim(remaining);
     });
-  if (hasUnqualifiedBlockedFunctionStackClaim) {
+  if (unqualifiedBlockedFunctionStackClaim) {
     return {
       code: 'kernel_blocking_claim_boundary',
       message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} blocked_function 来自 sched_blocked_reason 的 kernel wchan 单帧，不是完整内核调用栈；完整 off-CPU 栈需要 linux.perf / sched_switch 事件采样。`,
+      offendingStatement: boundedOffendingStatement(unqualifiedBlockedFunctionStackClaim),
     };
   }
 

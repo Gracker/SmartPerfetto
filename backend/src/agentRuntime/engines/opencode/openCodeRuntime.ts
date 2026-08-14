@@ -82,8 +82,10 @@ import {
   assessFinalResultQuality,
   applyFinalResultQualityGate,
   hasDeliverableFinalReportHeading,
+  serializeFinalResultQualityIssueContext,
   stripLeadingProcessNarrationFromFinalReport,
   type FinalResultComparisonIdentity,
+  type FinalResultQualityIssue,
 } from '../../../services/finalResultQualityGate';
 import {resolveEffectiveAnalysisMode} from '../../../services/effectiveAnalysisMode';
 import {analysisContextUsesPrivateKnowledge} from '../../../services/resolvedAnalysisContext';
@@ -1860,7 +1862,7 @@ function formatIncompletePlanMessage(
 function loadOpenCodeFinalReportContinuationPrompt(
   outputLanguage: OutputLanguage,
   missingContractSections: FinalReportContractCompletenessResult['missingSections'] = [],
-  qualityIssueMessage?: string,
+  qualityIssue?: FinalResultQualityIssue,
 ): string {
   const templateName = outputLanguage === 'en'
     ? 'prompt-openai-final-report-continuation-en'
@@ -1886,7 +1888,7 @@ function loadOpenCodeFinalReportContinuationPrompt(
     })}`;
   }
 
-  if (!qualityIssueMessage) return prompt;
+  if (!qualityIssue) return prompt;
 
   const qualityTemplateName = outputLanguage === 'en'
     ? 'prompt-final-report-quality-issue-en'
@@ -1896,7 +1898,7 @@ function loadOpenCodeFinalReportContinuationPrompt(
     throw new Error(`Missing final-report quality prompt template: ${qualityTemplateName}`);
   }
   return `${prompt}\n\n${renderTemplate(qualityTemplate, {
-    quality_issue: qualityIssueMessage,
+    quality_issue_context: serializeFinalResultQualityIssueContext(qualityIssue),
   })}`;
 }
 
@@ -2533,7 +2535,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
             loadOpenCodeFinalReportContinuationPrompt(
               prep.analysisRunSpec.outputLanguage,
               initialContractIssue?.missingSections,
-              initialQualityIssue?.message,
+              initialQualityIssue,
             ),
           );
           const continuationConclusion = projectAssistantConclusion(

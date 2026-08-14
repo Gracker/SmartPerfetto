@@ -1459,10 +1459,10 @@ strategies:
   backend/strategies/prompt-openai-final-report-continuation-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
-  backend/strategies/prompt-opencode-final-report-quality-issue-en.template.md:
+  backend/strategies/prompt-final-report-quality-issue-en.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
-  backend/strategies/prompt-opencode-final-report-quality-issue-zh.template.md:
+  backend/strategies/prompt-final-report-quality-issue-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
   backend/strategies/prompt-output-format.template.md:

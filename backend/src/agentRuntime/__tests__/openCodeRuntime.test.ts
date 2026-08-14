@@ -1443,6 +1443,9 @@ describe('experimental OpenCode runtime contract', () => {
     expect((promptInputs[1] as any).body.parts[0].text).toContain(
       'D/DK 只能说明不可中断等待',
     );
+    expect((promptInputs[1] as any).body.parts[0].text).toContain(
+      'D 状态证明磁盘 IO 是根因',
+    );
     expect(result.conclusion).toContain('不把它列为磁盘 IO 根因');
     expect(result.conclusion).not.toContain('D 状态证明磁盘 IO 是根因');
     expect(result.partial).not.toBe(true);
