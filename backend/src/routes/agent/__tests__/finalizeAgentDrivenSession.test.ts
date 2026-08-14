@@ -221,6 +221,42 @@ describe('finalizeAgentDrivenSession completed-cache invalidation', () => {
     });
   });
 
+  it('completes deterministic comparison identity before final quality gating', () => {
+    const session = createSession();
+    const result = createResult();
+    result.conclusion = '# 双 Trace 对比分析报告\n\n## 综合结论\n\n左侧明显慢于右侧。';
+    const deps = createFinalizeDeps();
+    deps.applyFinalResultQualityGate = jest.fn(() => null);
+
+    finalizeAgentDrivenSession({
+      sessionId: 'session-a',
+      query: '对比两个 trace',
+      traceId: 'trace-a',
+      session,
+      result,
+      runId: 'run-current',
+      logComponent: 'test',
+      outputLanguage: 'zh-CN',
+      comparisonIdentity: {
+        currentPackageName: 'com.example.heavy',
+        referencePackageName: 'com.example.demo',
+      },
+    }, deps);
+
+    expect(result.conclusion).toContain('`com.example.heavy`');
+    expect(result.conclusion).toContain('`com.example.demo`');
+    expect(deps.applyFinalResultQualityGate).toHaveBeenCalledWith({
+      result,
+      query: '对比两个 trace',
+      sceneType: undefined,
+      comparisonIdentity: {
+        currentPackageName: 'com.example.heavy',
+        referencePackageName: 'com.example.demo',
+      },
+    });
+    expect(session.conclusionHistory[0]?.conclusion).toBe(result.conclusion);
+  });
+
   it('finalizes and sends a timeout-partial result through the terminal SSE path', () => {
     const session = createSession();
     session.sseClients.push({id: 'client-a'});

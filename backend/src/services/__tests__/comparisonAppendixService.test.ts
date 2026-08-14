@@ -2,7 +2,10 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { buildComparisonAppendix } from '../comparisonAppendixService';
+import {
+  buildComparisonAppendix,
+  comparisonIdentityFromReportSection,
+} from '../comparisonAppendixService';
 import type { QueryResult } from '../traceProcessorService';
 
 function result(columns: string[], rows: unknown[][]): QueryResult {
@@ -52,5 +55,49 @@ describe('comparisonAppendixService', () => {
     expect(appendix.limitations.join('\n')).toContain('Perfetto startup_type');
     expect(appendix.markdown).toContain('| dur_ms | 1339 | 302 | +1037 |');
     expect(new Set(calls.map(call => call.traceId))).toEqual(new Set(['trace-current', 'trace-reference']));
+  });
+
+  test('extracts a complete, safe identity from a deterministic comparison report section', () => {
+    expect(comparisonIdentityFromReportSection({
+      source: 'raw_trace_pair',
+      title: 'Comparison',
+      markdown: '',
+      html: '',
+      evidencePack: {
+        metrics: {
+          currentPackage: 'com.example.heavy',
+          referencePackage: 'com.example.demo',
+        },
+      },
+    })).toEqual({
+      currentPackageName: 'com.example.heavy',
+      referencePackageName: 'com.example.demo',
+    });
+  });
+
+  test('rejects incomplete or unsafe comparison identities', () => {
+    expect(comparisonIdentityFromReportSection({
+      source: 'raw_trace_pair',
+      title: 'Comparison',
+      markdown: '',
+      html: '',
+      evidencePack: {
+        metrics: {
+          currentPackage: 'com.example.heavy',
+        },
+      },
+    })).toBeUndefined();
+    expect(comparisonIdentityFromReportSection({
+      source: 'raw_trace_pair',
+      title: 'Comparison',
+      markdown: '',
+      html: '',
+      evidencePack: {
+        metrics: {
+          currentPackage: 'com.example.heavy',
+          referencePackage: 'com.example.demo\n## injected',
+        },
+      },
+    })).toBeUndefined();
   });
 });

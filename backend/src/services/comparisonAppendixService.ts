@@ -7,6 +7,7 @@ import type {
   ComparisonReportSection,
   ComparisonSourceKind,
 } from '../agentv3/sessionStateSnapshot';
+import type {FinalResultComparisonIdentity} from './finalResultQualityGate';
 
 export interface ComparisonAppendixQueryService {
   queryTrace(traceId: string, sql: string): Promise<QueryResult>;
@@ -57,6 +58,32 @@ export interface SideData {
   topSlices: Array<Record<string, unknown>>;
   threadStates: Array<Record<string, unknown>>;
   errors: string[];
+}
+
+function safeReportPackageName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 200 || /[\u0000-\u001f\u007f`]/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+export function comparisonIdentityFromReportSection(
+  section: ComparisonReportSection | undefined,
+): FinalResultComparisonIdentity | undefined {
+  if (section?.source !== 'raw_trace_pair') return undefined;
+  const evidencePack = section.evidencePack;
+  if (!evidencePack || typeof evidencePack !== 'object' || Array.isArray(evidencePack)) {
+    return undefined;
+  }
+  const metrics = (evidencePack as {metrics?: unknown}).metrics;
+  if (!metrics || typeof metrics !== 'object' || Array.isArray(metrics)) return undefined;
+  const metricRecord = metrics as Record<string, unknown>;
+  const currentPackageName = safeReportPackageName(metricRecord.currentPackage);
+  const referencePackageName = safeReportPackageName(metricRecord.referencePackage);
+  if (!currentPackageName || !referencePackageName) return undefined;
+  return {currentPackageName, referencePackageName};
 }
 
 export async function buildComparisonAppendix(

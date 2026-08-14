@@ -6,6 +6,7 @@ import { describe, expect, it } from '@jest/globals';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
 import {
   applyFinalResultQualityGate,
+  completeFinalResultComparisonIdentity,
   assessFinalResultQuality,
   hasDeliverableFinalReportHeading,
   looksLikePhaseSummaryFallback,
@@ -2587,5 +2588,41 @@ describe('final result quality gate', () => {
         referencePackageName: 'com.example.demo',
       },
     })).toBeUndefined();
+  });
+
+  it('appends deterministic dual-trace identities when the provider omits them', () => {
+    const conclusion = completeFinalResultComparisonIdentity({
+      conclusion: '# 双 Trace 对比分析报告\n\n## 综合结论\n\n左侧明显慢于右侧。',
+      identity: {
+        currentPackageName: 'com.example.heavy',
+        referencePackageName: 'com.example.demo',
+      },
+      outputLanguage: 'zh-CN',
+    });
+
+    expect(conclusion).toContain('## 对比对象');
+    expect(conclusion).toContain('`com.example.heavy`');
+    expect(conclusion).toContain('`com.example.demo`');
+    expect(assessFinalResultQuality({
+      result: result({ conclusion }),
+      query: '对比两个 trace 的性能差异',
+      comparisonIdentity: {
+        currentPackageName: 'com.example.heavy',
+        referencePackageName: 'com.example.demo',
+      },
+    })).toBeUndefined();
+  });
+
+  it('leaves a complete dual-trace conclusion unchanged', () => {
+    const conclusion = '# Report\n\ncom.example.heavy vs com.example.demo';
+
+    expect(completeFinalResultComparisonIdentity({
+      conclusion,
+      identity: {
+        currentPackageName: 'com.example.heavy',
+        referencePackageName: 'com.example.demo',
+      },
+      outputLanguage: 'en',
+    })).toBe(conclusion);
   });
 });

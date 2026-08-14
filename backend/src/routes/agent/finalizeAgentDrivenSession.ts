@@ -7,6 +7,11 @@ import type {
   Hypothesis,
   StreamingUpdate,
 } from '../../agent';
+import type {OutputLanguage} from '../../agentv3/outputLanguage';
+import {
+  completeFinalResultComparisonIdentity,
+  type FinalResultComparisonIdentity,
+} from '../../services/finalResultQualityGate';
 
 type SessionStatus = 'pending' | 'running' | 'awaiting_user' | 'completed' | 'failed' | 'cancelled' | 'quota_exceeded';
 
@@ -37,6 +42,7 @@ export interface FinalizeAgentDrivenSessionDeps<TSession extends FinalizeSession
     result: AgentRuntimeAnalysisResult;
     query: string;
     sceneType?: string;
+    comparisonIdentity?: FinalResultComparisonIdentity;
   }): { code: string; message: string } | null | undefined;
   isRunCurrent(session: TSession, runId?: string): boolean;
   broadcast(sessionId: string, update: StreamingUpdate, runId?: string): void;
@@ -79,8 +85,19 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
   result: AgentRuntimeAnalysisResult;
   runId?: string;
   logComponent: string;
+  outputLanguage?: OutputLanguage;
+  comparisonIdentity?: FinalResultComparisonIdentity;
 }, deps: FinalizeAgentDrivenSessionDeps<TSession>): void {
-  const { sessionId, query, traceId, sceneType, session, result, runId } = input;
+  const {
+    sessionId,
+    query,
+    traceId,
+    sceneType,
+    session,
+    result,
+    runId,
+    comparisonIdentity,
+  } = input;
   const { logger } = session;
   const completedRunId = getCompletedResultRunId(session, runId);
   if (!deps.isRunCurrent(session, runId)) {
@@ -91,6 +108,11 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
     return;
   }
 
+  result.conclusion = completeFinalResultComparisonIdentity({
+    conclusion: result.conclusion,
+    identity: comparisonIdentity,
+    outputLanguage: input.outputLanguage ?? 'zh-CN',
+  });
   session.result = result;
   if (completedRunId) {
     delete session.completedAnalysisFinalArtifactsByRunId?.[completedRunId];
@@ -104,6 +126,7 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
     result,
     query,
     sceneType: sceneType ?? result.conclusionContract?.metadata?.sceneId,
+    ...(comparisonIdentity ? {comparisonIdentity} : {}),
   });
   if (finalQualityIssue) {
     const update: StreamingUpdate = {

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { AgentRuntimeAnalysisResult } from '../agent/core/orchestratorTypes';
+import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
 import {
   QUICK_TRIAGE_MAX_CHINESE_CHARS,
   QUICK_TRIAGE_MAX_CLAIMS,
@@ -29,6 +30,39 @@ export interface FinalResultQualityIssue {
 export interface FinalResultComparisonIdentity {
   currentPackageName?: string;
   referencePackageName?: string;
+}
+
+function safeComparisonPackageName(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized || normalized.length > 200 || /[\u0000-\u001f\u007f`]/.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+export function completeFinalResultComparisonIdentity(input: {
+  conclusion: string;
+  identity?: FinalResultComparisonIdentity;
+  outputLanguage: OutputLanguage;
+}): string {
+  const currentPackageName = safeComparisonPackageName(input.identity?.currentPackageName);
+  const referencePackageName = safeComparisonPackageName(input.identity?.referencePackageName);
+  if (!currentPackageName || !referencePackageName) return input.conclusion;
+  if (
+    input.conclusion.includes(currentPackageName) &&
+    input.conclusion.includes(referencePackageName)
+  ) {
+    return input.conclusion;
+  }
+
+  const identitySection = [
+    `## ${localize(input.outputLanguage, '对比对象', 'Comparison targets')}`,
+    '',
+    `- ${localize(input.outputLanguage, '当前侧包名', 'Current package')}: \`${currentPackageName}\``,
+    `- ${localize(input.outputLanguage, '参考侧包名', 'Reference package')}: \`${referencePackageName}\``,
+  ].join('\n');
+  const conclusion = input.conclusion.trim();
+  return conclusion ? `${conclusion}\n\n${identitySection}` : identitySection;
 }
 
 const FINAL_RESULT_QUALITY_GATE_MESSAGE =

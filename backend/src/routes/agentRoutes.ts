@@ -27,8 +27,14 @@ import {
   type BuildAnalysisReceiptInput,
 } from '../services/analysisReceiptBuilder';
 import { deriveUiActionProposals } from '../services/uiActionProposalDeriver';
-import { buildRawTraceComparisonReportSection } from '../services/comparisonAppendixService';
-import { applyFinalResultQualityGate } from '../services/finalResultQualityGate';
+import {
+  buildRawTraceComparisonReportSection,
+  comparisonIdentityFromReportSection,
+} from '../services/comparisonAppendixService';
+import {
+  applyFinalResultQualityGate,
+  completeFinalResultComparisonIdentity,
+} from '../services/finalResultQualityGate';
 import {
   deriveEvidenceBackedConclusionContractForNarrative,
   normalizeNarrativeForClient as sharedNormalizeNarrative,
@@ -4630,7 +4636,13 @@ function completeAgentDrivenSessionWithResult(input: {
     });
     return;
   }
-  finalizeAgentDrivenSession(input, {
+  finalizeAgentDrivenSession({
+    ...input,
+    outputLanguage: sessionOutputLanguage(input.session),
+    comparisonIdentity: comparisonIdentityFromReportSection(
+      input.session.comparisonReportSection,
+    ),
+  }, {
     applyFinalResultQualityGate,
     isRunCurrent: (session, runId) => !runId || isCurrentRunOwner(session as AnalysisSession, runId),
     broadcast: broadcastToAgentDrivenClients,
@@ -5767,6 +5779,11 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     }
 
     if (runIsInactive()) return;
+    result.conclusion = completeFinalResultComparisonIdentity({
+      conclusion: result.conclusion,
+      identity: comparisonIdentityFromReportSection(session.comparisonReportSection),
+      outputLanguage,
+    });
     let sceneIdHint: string | undefined;
     if (result.success || result.partial === true) {
       // Read the case-evolution config ONCE per request so the attach-flag
