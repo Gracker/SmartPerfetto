@@ -15,6 +15,7 @@
 - [功能总览](getting-started/features.md)
 - [基本使用](getting-started/usage.md)
 - [配置指南](getting-started/configuration.md)
+- [应用更新](getting-started/application-updates.md)
 - [Agent 辅助 GitHub 反馈](getting-started/agent-assisted-feedback.md)
 - [Self-Evolution 使用与验收](getting-started/self-evolution.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.md)
@@ -32,8 +33,6 @@
 - [发布流程](reference/release.md)
 - [免安装包](reference/portable-packaging.md)
 - [Windows 启动器](reference/windows-exe.md)
-- 应用更新：[产品提示与更新动作](../README.zh-CN.md#应用更新)、
-  [CLI](reference/cli.md#应用更新)、[API](reference/api.md#应用更新)
 
 ## 核心架构
 

@@ -335,7 +335,7 @@ See [Platform Compatibility And Verification Boundaries](../reference/platform-c
 for the distinction between host OS, actual target, static validation,
 target-native smoke, and published acceptance. UI and CLI application-update
 checks only report the version and matching action; they do not replace the
-running directory. See [Application Updates](../../README.md#application-updates).
+running directory. See [Application Updates](application-updates.en.md).
 
 ## Which Feature Should I Use?
 

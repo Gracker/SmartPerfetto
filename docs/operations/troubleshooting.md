@@ -11,8 +11,9 @@ Windows 用户先看完整的 [Windows 配置与运行指南](../getting-started
 查看日志：
 
 ```powershell
-Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\backend.log" -Tail 200
-Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\frontend.log" -Tail 200
+$dataDir = "D:\SmartPerfettoData" # 替换为启动器实际打印的 Data directory
+Get-Content "$dataDir\logs\backend.log" -Tail 200
+Get-Content "$dataDir\logs\frontend.log" -Tail 200
 ```
 
 当前 Windows 包未做 Authenticode 签名；SmartScreen/Defender 拦截时先核对官方

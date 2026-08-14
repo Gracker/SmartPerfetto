@@ -17,6 +17,7 @@ and agent evidence are not maintained as permanent documentation.
 - [Feature Overview](getting-started/features.en.md)
 - [Basic Usage](getting-started/usage.en.md)
 - [Configuration](getting-started/configuration.en.md)
+- [Application Updates](getting-started/application-updates.en.md)
 - [Agent-Assisted GitHub Feedback](getting-started/agent-assisted-feedback.en.md)
 - [Self-Evolution Usage And Acceptance](getting-started/self-evolution.en.md)
 - [Code-Aware Analysis](getting-started/code-aware-analysis.en.md)
@@ -34,8 +35,6 @@ and agent evidence are not maintained as permanent documentation.
 - [Release](reference/release.en.md)
 - [Portable Packaging](reference/portable-packaging.en.md)
 - [Windows Launcher](reference/windows-exe.en.md)
-- Application updates: [product notice and update actions](../README.md#application-updates),
-  [CLI](reference/cli.en.md#application-updates), [API](reference/api.en.md#application-updates)
 
 ## Core Architecture
 

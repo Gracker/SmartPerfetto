@@ -119,8 +119,9 @@ npm run version:sync -- --check
 1. 解压 `smartperfetto-v<version>-windows-x64.zip` 到普通本地目录，例如 `C:\SmartPerfetto`。
 2. 双击 `SmartPerfetto.exe`。
 3. 浏览器通常会自动打开；如果没有，按启动器打印的 `Frontend: http://127.0.0.1:<port>` 地址打开（默认端口被占用时，启动器会选择其他端口）。
-4. AI 分析需要在 UI 里配置 Provider profile；如需 env 凭证，在 `%LOCALAPPDATA%\SmartPerfetto\env` 写入 provider 配置，然后重启 `SmartPerfetto.exe`。不要把持久凭证写入解压目录。
-5. 使用时保持启动器窗口打开；按 `Ctrl+C` 会停止后端、前端和 trace processor 子进程。
+4. 启动器仅在 D: 是本地固定磁盘且可写时优先使用 `D:\SmartPerfettoData`，否则回退 `%LOCALAPPDATA%\SmartPerfetto`；以打印的 `Data directory` 为准。
+5. AI 分析需要在 UI 里配置 Provider profile；如需 env 凭证，在 `<Data directory>\env` 写入 provider 配置，然后重启 `SmartPerfetto.exe`。不要把持久凭证写入解压目录，也不要尝试在该文件里配置数据根目录。
+6. 使用时保持启动器窗口打开；按 `Ctrl+C` 会停止后端、前端和 trace processor 子进程。
 
 ## 验证
 

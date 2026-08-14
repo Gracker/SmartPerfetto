@@ -65,11 +65,14 @@ Microsoft 的说明见
 
 启动器会打印：
 
+    Data directory: D:\SmartPerfettoData
+    Logs directory: D:\SmartPerfettoData\logs
     SmartPerfetto is running.
     Open: http://127.0.0.1:实际端口
 
-保持启动器窗口打开，并使用实际 Open: 地址。默认前端端口是 10000，但被占用时会自动
-选择其他端口。浏览器没有自动打开也不表示启动失败，可以手动复制地址。服务只绑定
+上述 D 盘路径只是满足默认条件时的示例；保持启动器窗口打开，并以实际打印的
+`Data directory`、`Logs directory` 和 `Open:` 为准。默认前端端口是 10000，但被占用时
+会自动选择其他端口。浏览器没有自动打开也不表示启动失败，可以手动复制地址。服务只绑定
 127.0.0.1，默认不会监听局域网地址。
 
 ## 5. 配置并激活 Provider
@@ -85,9 +88,9 @@ Microsoft 的说明见
 5. 运行连接测试；失败时先核对 Base URL、模型 ID、协议、代理和系统时间。
 6. 激活 Provider。只保存但不激活时，仍会使用之前的 active provider 或 env fallback。
 
-普通免安装包的本地 Provider profile 保存在
-**%LOCALAPPDATA%\SmartPerfetto\providers**；本轮没有把这个默认存储改成 DPAPI。
-请保护 Windows 登录账号和数据目录，不要公开上传该目录。Windows enterprise 数据库
+普通免安装包的本地 Provider profile 保存在启动器打印的
+**Data directory\providers**；普通 Provider 存储不使用 DPAPI。
+请保护 Windows 登录账号和数据根目录，不要公开上传该目录。Windows enterprise 数据库
 模式使用本地加密 SecretStore 时，master key 由当前用户的 DPAPI 保护；运维显式配置
 master/server secret 时，以部署配置为准。
 
@@ -105,9 +108,11 @@ master/server secret 时，以部署配置为准。
 
 ## 7. 数据、凭证与日志
 
-标准模式把可变数据放在解压目录之外：
+标准模式把可变数据放在解压目录之外。`D:` 是本地固定磁盘且目标可写时，优先根目录是
+`D:\SmartPerfettoData`；否则回退到 `%LOCALAPPDATA%\SmartPerfetto`。最终位置始终以
+启动器打印的 `Data directory` 为准：
 
-    %LOCALAPPDATA%\SmartPerfetto\
+    <Data directory>\
       backend\
       providers\
       uploads\
@@ -120,6 +125,14 @@ master/server secret 时，以部署配置为准。
 - user：升级后仍应保留的用户状态。
 - logs\backend.log、logs\frontend.log：排障日志。
 - env：可选的脚本化 Provider 环境变量文件。
+
+需要自定义完整根目录时，在启动前设置，例如：
+
+    $env:SMARTPERFETTO_PORTABLE_DATA_DIR = "E:\SmartPerfettoData"
+    .\SmartPerfetto.exe
+
+不要把 `SMARTPERFETTO_PORTABLE_DATA_DIR` 写进上述 `env` 文件：启动器先确定数据根目录，
+之后才加载该文件中的 Provider 配置。显式根目录覆盖会禁用自动和显式迁移。
 
 设置 SMARTPERFETTO_PORTABLE_MODE=1 后，数据和日志改放在程序旁边；升级、权限和备份
 由用户负责，而且自动与显式迁移都会禁用。
@@ -136,33 +149,39 @@ master/server secret 时，以部署配置为准。
 
 ## 9. 更新、备份与迁移
 
-把新 zip 解压到新目录，不要覆盖旧版本目录。标准模式的数据位于 LOCALAPPDATA，所以
-删除旧程序目录不会自动删除用户数据。
+把新 zip 解压到新目录，不要覆盖旧版本目录。标准模式的数据位于启动器打印的数据根目录，
+因此删除旧程序目录不会自动删除用户数据。
 
 更新前停止 SmartPerfetto，再备份：
 
-    $source = "$env:LOCALAPPDATA\SmartPerfetto"
-    $backup = "$env:LOCALAPPDATA\SmartPerfetto.backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
-    Copy-Item $source $backup -Recurse
+    $dataDir = "D:\SmartPerfettoData" # 替换为启动器实际打印的 Data directory
+    $backup = "$dataDir.backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
+    Copy-Item -LiteralPath $dataDir -Destination $backup -Recurse
 
-旧版本曾把数据放在包内 data 目录时，新版第一次标准启动会从当前包或严格更旧的 sibling
-包中复制，并保留旧数据。需要指定来源时，必须在第一次标准启动、目标目录尚不存在前运行：
+新版选择 D 盘默认目录时，如果 `%LOCALAPPDATA%\SmartPerfetto` 非空且 D 盘目标不存在或
+为空，启动器会原子复制整套数据、写迁移回执并保留 C 盘原目录；D 盘目标非空时不合并、
+不覆盖。自动复制失败时会清理临时副本、打印警告并继续使用安全的 C 盘原目录。
+
+旧版本曾把数据放在包内 data 目录时，新版第一次标准启动也会从当前包或严格更旧的
+sibling 包中复制并保留旧数据。需要指定来源时，必须在第一次标准启动、当前选中的目标
+目录尚不存在前运行：
 
     .\SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 
-如果 **%LOCALAPPDATA%\SmartPerfetto** 已存在，显式迁移会报错并保持来源和目标不变；
-不会合并或覆盖。先备份并确认应该保留哪一份，再移动现有目标后重试。回滚旧版时不会从
-更高版本 sibling 自动倒灌数据，但旧版仍可能不认识新数据 schema。
+如果当前选中的目标已经存在，显式迁移会报错并保持来源和目标不变；不会合并或覆盖。
+先备份并确认应该保留哪一份，再移动现有目标后重试。回滚旧版时不会从更高版本 sibling
+自动倒灌数据，但旧版仍可能不认识新数据 schema。
 
 ## 10. 卸载与彻底清理
 
-只删除程序目录会卸载程序，但保留 LOCALAPPDATA 中的数据。彻底清理时：
+只删除程序目录会卸载程序，但保留数据根目录和迁移时保留的 C 盘副本。彻底清理时：
 
 1. 按 Ctrl+C 停止并关闭所有 SmartPerfetto 窗口。
 2. 备份需要保留的 trace、Provider 配置和报告。
 3. 删除程序目录。
-4. 只有确认不再需要任何数据时，才删除
-   **%LOCALAPPDATA%\SmartPerfetto**；此操作不能由 SmartPerfetto 恢复。
+4. 只有确认不再需要任何数据时，才删除启动器打印的 **Data directory**；如果曾从
+   `%LOCALAPPDATA%\SmartPerfetto` 自动迁移到 D 盘，再单独确认是否删除保留的 C 盘副本。
+   此操作不能由 SmartPerfetto 恢复。
 
 ## Windows 排障
 
@@ -175,8 +194,9 @@ master/server secret 时，以部署配置为准。
 
 查看最近日志：
 
-    Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\backend.log" -Tail 200
-    Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\frontend.log" -Tail 200
+    $dataDir = "D:\SmartPerfettoData" # 替换为启动器实际打印的 Data directory
+    Get-Content "$dataDir\logs\backend.log" -Tail 200
+    Get-Content "$dataDir\logs\frontend.log" -Tail 200
 
 提示包内文件缺失时，删除当前解压目录，从已校验的 zip 重新“全部解压”。不要跨版本复制
 node.exe、.node 或 trace_processor_shell.exe 混用。
@@ -194,8 +214,8 @@ Connection 中的 backend auth token 不能代替 Provider API key。公司代�
 
 ### 迁移命令报目标已存在
 
-这是防覆盖行为。不要直接删除目标。先停止程序并备份 LOCALAPPDATA，确认旧来源与当前
-目标，再移动目标后重试。启用 SMARTPERFETTO_PORTABLE_MODE 或
+这是防覆盖行为。不要直接删除目标。先停止程序并备份启动器打印的 Data directory，
+确认旧来源与当前目标，再移动目标后重试。启用 SMARTPERFETTO_PORTABLE_MODE 或
 SMARTPERFETTO_PORTABLE_DATA_DIR 时不能使用 --migrate-from。
 
 ### 企业 SecretStore 或 DPAPI 失败
@@ -236,8 +256,8 @@ trace_processor_shell，因此不需要另装这些运行时。
 
 ### 删除程序目录会删除数据吗
 
-标准模式不会；数据在 LOCALAPPDATA。true portable 模式把数据放在程序旁边，删除前
-必须自行备份。
+标准模式不会；数据保留在启动器打印的数据根目录。true portable 模式把数据放在程序
+旁边，删除前必须自行备份。
 
 ### 能不能关闭 Defender
 
@@ -251,5 +271,5 @@ Authenticode 和时间戳，才能改善身份与信誉验证。
 保存/测试/激活哪一步失败。
 
 提交前删除 API key、Authorization header、cookie、企业域名、用户名、trace 内容和
-个人路径。默认不要上传 trace、providers.json、env、.master-key.dpapi 或整个
-LOCALAPPDATA 数据目录。
+个人路径。默认不要上传 trace、providers.json、env、.master-key.dpapi 或启动器打印的
+整个数据目录。

@@ -12,8 +12,9 @@ always use the actual `Open:` URL printed by the launcher.
 Read the logs with:
 
 ```powershell
-Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\backend.log" -Tail 200
-Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\frontend.log" -Tail 200
+$dataDir = "D:\SmartPerfettoData" # Replace with the printed Data directory
+Get-Content "$dataDir\logs\backend.log" -Tail 200
+Get-Content "$dataDir\logs\frontend.log" -Tail 200
 ```
 
 The current Windows archive is not Authenticode-signed. Verify the official Release and

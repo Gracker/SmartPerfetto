@@ -52,7 +52,7 @@ publish host 控制，默认仍只发布到宿主 `127.0.0.1`。
 - portable target、数据目录和迁移：[免安装包](portable-packaging.md)
 - 发布顺序和 published-surface 验收：[发布流程](release.md)
 - Agent/维护者验证门禁：[测试规则](../../.claude/rules/testing.md)
-- UI/CLI 更新提示和各分发更新动作：[应用更新](../../README.zh-CN.md#应用更新)
+- UI/CLI 更新提示和各分发更新动作：[应用更新](../getting-started/application-updates.md)
 
 应用更新检查只报告可用版本和推荐动作，不会替换正在运行的源码、npm 包、Docker
 container 或 portable 目录。

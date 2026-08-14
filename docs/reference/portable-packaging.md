@@ -164,8 +164,10 @@ profile 后会通过 `xcrun notarytool submit --wait` 提交，并对 `.app` sta
 Windows 用户操作以 [Windows 配置与运行指南](../getting-started/windows.md) 为准；
 本节只定义打包与运维路径契约。
 
-- Windows：`%LOCALAPPDATA%\SmartPerfetto` 是 data root，直接包含 `backend/`、
-  `providers/`、`uploads/`、`user/`、`logs/` 和 `env`，没有额外的 `data/` 层。
+- Windows：仅当 `D:` 是本地固定磁盘且 `D:\SmartPerfettoData` 可写时，启动器才把它
+  作为首选 data root；否则回退到 `%LOCALAPPDATA%\SmartPerfetto`。启动器打印的
+  `Data directory` 是最终结果。该 root 直接包含 `backend/`、`providers/`、`uploads/`、
+  `user/`、`logs/` 和 `env`，没有额外的 `data/` 层。
 - macOS：`~/Library/Application Support/SmartPerfetto` 和 `~/Library/Logs/SmartPerfetto`。
 - Linux：`${XDG_DATA_HOME:-~/.local/share}/smartperfetto` 和
   `${XDG_STATE_HOME:-~/.local/state}/smartperfetto/logs`。
@@ -173,16 +175,19 @@ Windows 用户操作以 [Windows 配置与运行指南](../getting-started/windo
 AI 分析推荐在 UI 里配置 Provider profile。需要 env 凭证时，在对应用户数据目录
 创建 `env` 文件后重启启动器。
 
-Windows 新包首次启动时，会自动发现符合版本目录命名的旧包，安全复制旧包的
-package-local `data/` 到 `%LOCALAPPDATA%\SmartPerfetto`，写入迁移回执后原子切换；
-旧目录保持不变。复制过程拒绝 symlink、reparse point 和非普通文件。无法自动
-发现时使用：
+Windows 新包选择 D 盘默认目录时，如果 `%LOCALAPPDATA%\SmartPerfetto` 非空而 D 盘
+目标不存在或为空，会把 C 盘数据安全复制到 staging，写入迁移回执后原子切换；C 盘
+原目录保持不变。D 盘目标非空时不合并、不覆盖。复制或激活失败会清理 staging、打印
+警告并继续使用安全的 C 盘目录。
+
+启动器还会自动发现符合版本目录命名的旧包，并用同一链路安全复制 package-local
+`data/`。复制过程拒绝 symlink、reparse point 和非普通文件。无法自动发现时使用：
 
 ```powershell
 SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 ```
 
-显式迁移应在第一次标准启动、目标目录不存在时运行。目标已存在时命令会报错，
+显式迁移应在第一次标准启动、当前选中的目标目录不存在时运行。目标已存在时命令会报错，
 不会合并或覆盖，来源和目标均保留。自动 sibling 发现只选择严格低于当前包版本的
 最高版本；无法解析当前包版本时保守跳过。
 
@@ -190,7 +195,8 @@ SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 使用包内 `data/` / `logs/` 并禁用自动和显式迁移。需要测试或运维覆盖整个 portable
 data root 时使用 `SMARTPERFETTO_PORTABLE_DATA_DIR`；它同样禁用迁移。Launcher 会从
 该 root 派生 backend、Provider、uploads 和 user 路径；不要用
-`SMARTPERFETTO_BACKEND_DATA_DIR` 代替 portable root。
+`SMARTPERFETTO_BACKEND_DATA_DIR` 代替 portable root。该覆盖必须在启动 launcher 前
+进入进程环境；data root 内的 `env` 文件在路径确定后才加载，不能用来选择 root。
 
 ## 验证
 

@@ -62,7 +62,7 @@ the compose publish host controls host exposure and defaults to host
 - Portable targets, data directories, and migration: [Portable Packaging](portable-packaging.en.md)
 - Release order and published-surface acceptance: [Release](release.en.md)
 - Agent/maintainer verification gates: [Testing Rules](../../.claude/rules/testing.md)
-- UI/CLI update notices and distribution-specific actions: [Application Updates](../../README.md#application-updates)
+- UI/CLI update notices and distribution-specific actions: [Application Updates](../getting-started/application-updates.en.md)
 
 Application update checks report an available version and the recommended
 action. They do not replace a running source checkout, npm package, Docker

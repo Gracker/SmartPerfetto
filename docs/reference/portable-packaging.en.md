@@ -187,9 +187,11 @@ Windows user operations are authoritative in the
 [Windows Setup And Run Guide](../getting-started/windows.en.md). This section defines the
 packaging and operations path contract only.
 
-- Windows: `%LOCALAPPDATA%\SmartPerfetto` is the data root. It directly contains
-  `backend/`, `providers/`, `uploads/`, `user/`, `logs/`, and `env`; there is no extra
-  `data/` layer.
+- Windows: the launcher prefers `D:\SmartPerfettoData` only when `D:` is a fixed local
+  drive and that target is writable; otherwise it falls back to
+  `%LOCALAPPDATA%\SmartPerfetto`. The printed `Data directory` is authoritative. That root
+  directly contains `backend/`, `providers/`, `uploads/`, `user/`, `logs/`, and `env`;
+  there is no extra `data/` layer.
 - macOS: `~/Library/Application Support/SmartPerfetto` and `~/Library/Logs/SmartPerfetto`.
 - Linux: `${XDG_DATA_HOME:-~/.local/share}/smartperfetto` and
   `${XDG_STATE_HOME:-~/.local/state}/smartperfetto/logs`.
@@ -198,18 +200,22 @@ AI analysis should normally use Provider profiles configured in the UI. For env
 credentials, create an `env` file in the platform user data directory and
 restart the launcher.
 
-On the first launch of a new Windows package, the launcher can discover an
-older versioned package and safely copy its package-local `data/` into
-`%LOCALAPPDATA%\SmartPerfetto`. It writes a migration receipt and atomically
-switches the staged copy into place; the old directory remains untouched.
-Symlinks, reparse points, and non-regular files are rejected. If automatic
-discovery cannot identify the source, use:
+When a new Windows package selects the D-drive default and non-empty
+`%LOCALAPPDATA%\SmartPerfetto` data exists, the launcher safely copies it into staging for
+an absent or empty D target, writes a migration receipt, and atomically activates it. The C
+directory remains untouched. A non-empty D target is never merged or overwritten. Copy or
+activation failure cleans staging, prints a warning, and continues with the safe C root.
+
+The launcher can also discover an older versioned package and migrate its package-local
+`data/` through the same path. Symlinks, reparse points, and non-regular files are rejected.
+If automatic discovery cannot identify the source, use:
 
 ```powershell
 SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 ```
 
-Run explicit migration before the first standard start and before the destination exists.
+Run explicit migration before the first standard start and before the currently selected
+destination exists.
 An existing destination makes the command fail without merging or overwriting; source and
 destination are preserved. Automatic sibling discovery selects only the newest version that
 is strictly older than the current package. It skips conservatively when the current package
@@ -220,7 +226,9 @@ beside the package. That mode keeps package-local `data/` and `logs/` and
 disables automatic and explicit migration. Use `SMARTPERFETTO_PORTABLE_DATA_DIR` to override
 the full portable data root for tests or operations; it also disables migration. The launcher
 derives backend, Provider, uploads, and user paths from that root. Do not use
-`SMARTPERFETTO_BACKEND_DATA_DIR` as a portable-root override.
+`SMARTPERFETTO_BACKEND_DATA_DIR` as a portable-root override. The override must be present in
+the launcher process environment before startup. The `env` file inside the data root loads
+after path resolution and cannot select that root.
 
 The bundled launcher prefers backend `3000` and frontend `10000`. If a preferred
 default port is already occupied, the launcher automatically selects the next

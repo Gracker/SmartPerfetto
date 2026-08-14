@@ -84,8 +84,8 @@ cd backend
 
 # Required when changes touch mcp / memory / report / agent runtime; also
 # included in `npm run verify:pr`. Contract-only and CRUD-only changes can run
-# narrower tiers (`npx tsc --noEmit` + relevant unit tests). See README.md
-# "Required checks" for the full tier table.
+# narrower tiers (`npx tsc --noEmit` + relevant unit tests). See
+# .claude/rules/testing.md for the full tier table.
 npm run test:scene-trace-regression
 
 # Validate skill YAML syntax and contracts

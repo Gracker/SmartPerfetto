@@ -309,7 +309,7 @@ SmartPerfetto 支持多种运行方式：
 宿主系统、实际 target 和“静态验证 / target-native smoke / 已发布验收”的区别见
 [平台兼容与验证边界](../reference/platform-compatibility.md)。UI 与 CLI 的应用更新
 检查只提示版本和对应动作，不会自动替换当前运行目录；见
-[应用更新](../../README.zh-CN.md#应用更新)。
+[应用更新](application-updates.md)。
 
 ## 功能选择建议
 

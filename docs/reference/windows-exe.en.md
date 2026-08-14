@@ -133,8 +133,9 @@ only the launcher contract summary.
 1. Extract `smartperfetto-v<version>-windows-x64.zip` to a normal local path such as `C:\SmartPerfetto`.
 2. Double-click `SmartPerfetto.exe`.
 3. The browser usually opens automatically. If it does not, open the launcher's printed `Frontend: http://127.0.0.1:<port>` URL (the launcher selects another port when the default is occupied).
-4. AI analysis needs a Provider profile in the UI. For env credentials, write the provider configuration to `%LOCALAPPDATA%\SmartPerfetto\env` and restart `SmartPerfetto.exe`. Do not store durable credentials in the extracted package directory.
-5. Keep the launcher window open while using SmartPerfetto. Press `Ctrl+C` to stop the backend, frontend, and trace processor child processes.
+4. The launcher prefers `D:\SmartPerfettoData` only when D: is a fixed local drive and the target is writable; otherwise it falls back to `%LOCALAPPDATA%\SmartPerfetto`. Use the printed `Data directory`.
+5. AI analysis needs a Provider profile in the UI. For env credentials, write the provider configuration to `<Data directory>\env` and restart `SmartPerfetto.exe`. Do not store durable credentials in the extracted package directory or try to select the data root from that file.
+6. Keep the launcher window open while using SmartPerfetto. Press `Ctrl+C` to stop the backend, frontend, and trace processor child processes.
 
 ## Verification
 

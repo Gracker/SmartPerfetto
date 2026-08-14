@@ -72,13 +72,16 @@ PowerShell in that directory:
 
 The launcher prints:
 
+    Data directory: D:\SmartPerfettoData
+    Logs directory: D:\SmartPerfettoData\logs
     SmartPerfetto is running.
     Open: http://127.0.0.1:ACTUAL_PORT
 
-Keep the launcher window open and use the actual Open: URL. The default frontend port is
-10000, but the launcher selects another free port when it is occupied. A browser-open
-failure does not mean startup failed; copy the URL manually. Services bind to 127.0.0.1
-and do not listen on the LAN by default.
+The D-drive paths above are examples when the default eligibility checks pass. Keep the
+launcher window open and use the actual printed `Data directory`, `Logs directory`, and
+`Open:` URL. The default frontend port is 10000, but the launcher selects another free port
+when it is occupied. A browser-open failure does not mean startup failed; copy the URL
+manually. Services bind to 127.0.0.1 and do not listen on the LAN by default.
 
 ## 5. Configure And Activate A Provider
 
@@ -96,9 +99,9 @@ Open **AI Assistant Settings → Providers**:
 6. Activate the Provider. Saving without activating keeps the previous active provider or
    the env fallback in effect.
 
-Ordinary portable profiles are stored under
-**%LOCALAPPDATA%\SmartPerfetto\providers**. This change does not move that default store to
-DPAPI. Protect the Windows account and data directory, and do not upload that directory
+Ordinary portable profiles are stored under the launcher's printed
+**Data directory\providers**. Ordinary Provider storage does not use DPAPI. Protect the
+Windows account and data root, and do not upload that directory
 publicly. When Windows enterprise database mode uses the local encrypted SecretStore, its
 master key is protected with current-user DPAPI; an operator-configured master/server secret
 still follows deployment configuration.
@@ -118,9 +121,12 @@ trace.
 
 ## 7. Data, Credentials, And Logs
 
-Standard mode keeps mutable data outside the extracted application directory:
+Standard mode keeps mutable data outside the extracted application directory. It prefers
+`D:\SmartPerfettoData` when `D:` is a fixed local drive and the target is writable, and
+otherwise falls back to `%LOCALAPPDATA%\SmartPerfetto`. The launcher's printed
+`Data directory` is authoritative:
 
-    %LOCALAPPDATA%\SmartPerfetto\
+    <Data directory>\
       backend\
       providers\
       uploads\
@@ -133,6 +139,15 @@ Standard mode keeps mutable data outside the extracted application directory:
 - user: upgrade-surviving user state.
 - logs\backend.log and logs\frontend.log: troubleshooting logs.
 - env: optional scripted Provider environment variables.
+
+To choose another complete data root, set it before startup, for example:
+
+    $env:SMARTPERFETTO_PORTABLE_DATA_DIR = "E:\SmartPerfettoData"
+    .\SmartPerfetto.exe
+
+Do not put `SMARTPERFETTO_PORTABLE_DATA_DIR` in the `env` file above. The launcher resolves
+the data root before loading that file's Provider configuration. An explicit root override
+disables automatic and explicit migration.
 
 SMARTPERFETTO_PORTABLE_MODE=1 moves data and logs beside the executable. The user then owns
 permissions, backup, and upgrades, and both automatic and explicit migration are disabled.
@@ -150,37 +165,44 @@ permissions, backup, and upgrades, and both automatic and explicit migration are
 ## 9. Update, Back Up, And Migrate
 
 Extract a new zip into a new directory. Do not overwrite the old application directory.
-Standard-mode data lives under LOCALAPPDATA, so removing an old program directory does not
-remove user data.
+Standard-mode data lives under the launcher's printed data root, so removing an old program
+directory does not remove user data.
 
 Stop SmartPerfetto and create a backup before updating:
 
-    $source = "$env:LOCALAPPDATA\SmartPerfetto"
-    $backup = "$env:LOCALAPPDATA\SmartPerfetto.backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
-    Copy-Item $source $backup -Recurse
+    $dataDir = "D:\SmartPerfettoData" # Replace with the printed Data directory
+    $backup = "$dataDir.backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
+    Copy-Item -LiteralPath $dataDir -Destination $backup -Recurse
 
-Older releases could store data in a package-local data directory. On the first standard
-start, the launcher copies from the current package or the newest strictly older sibling
-and preserves the source. To select a source, run this before the first standard start and
-before the destination exists:
+When the new launcher selects the D-drive default and `%LOCALAPPDATA%\SmartPerfetto` is
+non-empty, it atomically copies the complete data root to an absent or empty D target, writes
+a migration receipt, and preserves the C directory. A non-empty D target is never merged or
+overwritten. If automatic copying fails, the launcher cleans the staging copy, prints a
+warning, and continues with the safe C source.
+
+Older releases could also store data in a package-local data directory. On the first
+standard start, the launcher copies from the current package or newest strictly older
+sibling and preserves the source. To select a source, run this before the first standard
+start and before the currently selected destination exists:
 
     .\SmartPerfetto.exe --migrate-from "C:\path\to\old-package"
 
-If **%LOCALAPPDATA%\SmartPerfetto** already exists, explicit migration fails while preserving
-both source and destination. It never merges or overwrites. Back up and decide which copy is
+If the selected destination already exists, explicit migration fails while preserving both
+source and destination. It never merges or overwrites. Back up and decide which copy is
 authoritative before moving the destination and retrying. A rollback does not auto-import
 from a newer sibling, but an older binary may still not understand a newer data schema.
 
 ## 10. Uninstall And Remove All Data
 
-Deleting only the extracted application directory uninstalls the program and keeps
-LOCALAPPDATA. For a complete removal:
+Deleting only the extracted application directory uninstalls the program and keeps the data
+root plus any preserved C-drive migration source. For a complete removal:
 
 1. Stop with Ctrl+C and close every SmartPerfetto window.
 2. Back up traces, Provider configuration, and reports that must be retained.
 3. Delete the application directory.
-4. Delete **%LOCALAPPDATA%\SmartPerfetto** only after confirming no data is needed. This
-   cannot be recovered by SmartPerfetto.
+4. Delete the launcher's printed **Data directory** only after confirming no data is needed.
+   If data was automatically migrated from `%LOCALAPPDATA%\SmartPerfetto` to D, separately
+   decide whether to delete the preserved C copy. SmartPerfetto cannot recover either deletion.
 
 ## Windows Troubleshooting
 
@@ -194,8 +216,9 @@ the error.
 
 Read the latest logs:
 
-    Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\backend.log" -Tail 200
-    Get-Content "$env:LOCALAPPDATA\SmartPerfetto\logs\frontend.log" -Tail 200
+    $dataDir = "D:\SmartPerfettoData" # Replace with the printed Data directory
+    Get-Content "$dataDir\logs\backend.log" -Tail 200
+    Get-Content "$dataDir\logs\frontend.log" -Tail 200
 
 When a bundled file is missing, remove the extracted directory and use Extract All on the
 verified zip again. Do not mix node.exe, .node files, or trace_processor_shell.exe from
@@ -216,7 +239,7 @@ approved continue path. Do not modify the registry, disable Defender, or bypass 
 ### Migration Says The Destination Already Exists
 
 This is overwrite protection. Do not delete the destination immediately. Stop the app, back
-up LOCALAPPDATA, compare the old source and current destination, then move the destination
+up the printed Data directory, compare the old source and current destination, then move it
 before retrying. --migrate-from is unavailable while SMARTPERFETTO_PORTABLE_MODE or
 SMARTPERFETTO_PORTABLE_DATA_DIR is active.
 
@@ -259,8 +282,8 @@ The launcher selects another port when the default is busy. Always use the print
 
 ### Does Deleting The Program Directory Delete Data
 
-Not in standard mode; data stays under LOCALAPPDATA. True portable mode keeps data beside the
-program, so back it up before deleting that directory.
+Not in standard mode; data stays under the launcher's printed data root. True portable mode
+keeps data beside the program, so back it up before deleting that directory.
 
 ### May I Disable Defender
 
@@ -275,4 +298,4 @@ and which Provider save/test/activate step failed.
 
 Remove API keys, Authorization headers, cookies, corporate domains, usernames, trace content,
 and personal path components. Do not upload traces, providers.json, env, .master-key.dpapi, or
-the entire LOCALAPPDATA directory by default.
+the entire printed data directory by default.
