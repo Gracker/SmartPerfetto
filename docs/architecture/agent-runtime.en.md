@@ -163,9 +163,21 @@ switching the custom provider or `SMARTPERFETTO_AGENT_RUNTIME` back to
 
 The Qoder path is custom-only in Provider Manager and also supports an explicit
 env selection. The SDK is not installed by default; users must review its terms
-and opt in. Public sessions may resume by Qoder SDK session id. A run authorized
-for private codebase or external knowledge never resumes or stores that opaque
-provider session, and its intermediate state is excluded from durable snapshots.
+and opt in through `qoder:install -- --accept-terms` or an explicit module path.
+The `resolveModel` BYOK policy combines `QODER_BYOK_API_KEY`,
+`QODER_BYOK_PROVIDER`, `QODER_MODEL`, and optional base URL, style, and light
+model values; partial configuration fails closed. BYOK changes the model
+provider only and never replaces Qoder PAT or local `qodercli` authentication.
+Provider Manager accepts the four BYOK values only through a Qoder custom
+profile's `custom.envOverrides`; it cannot override the CLI, SDK module, or
+worker path. The BYOK key reaches only the SDK `resolveModel` callback, not the
+SDK subprocess environment, diagnostics, or plaintext snapshots. Provider,
+base URL, and style remain non-secret snapshot inputs, while key changes update
+the secret fingerprint used by provider pinning, resume, external issue, and
+Self-Evolution proof boundaries. Public sessions may resume by Qoder SDK session
+id. A run authorized for private codebase or external knowledge never resumes
+or stores that opaque provider session, and its intermediate state is excluded
+from durable snapshots.
 
 ## Analysis Modes
 

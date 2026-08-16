@@ -495,6 +495,14 @@ describe('provider runtime snapshot hash', () => {
           qoderModel: 'qoder-connection-model',
           qoderSystemPrompt: 'secret qoder system prompt',
         },
+        custom: {
+          envOverrides: {
+            QODER_BYOK_API_KEY: 'qoder-byok-secret-v1',
+            QODER_BYOK_PROVIDER: 'deepseek',
+            QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+            QODER_BYOK_STYLE: 'openai',
+          },
+        },
         tuning: {
           fullPerTurnMs: 90000,
           quickPerTurnMs: 45000,
@@ -520,18 +528,39 @@ describe('provider runtime snapshot hash', () => {
         QODER_LIGHT_MODEL: 'qoder-light',
         QODER_FULL_PER_TURN_MS: '90000',
         QODER_QUICK_PER_TURN_MS: '45000',
+        QODER_BYOK_PROVIDER: 'deepseek',
+        QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+        QODER_BYOK_STYLE: 'openai',
       });
       expect(before.snapshot.environment.QODER_WORKER_RUNTIME_PATH).toBeUndefined();
       expect(before.snapshot.environment.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
       expect(before.snapshot.environment.SMARTPERFETTO_QODER_SYSTEM_PROMPT).toBeUndefined();
+      expect(before.snapshot.environment.QODER_BYOK_API_KEY).toBeUndefined();
       expect(JSON.stringify(before.snapshot)).not.toContain('qoder-secret-token');
       expect(JSON.stringify(before.snapshot)).not.toContain('secret qoder system prompt');
+      expect(JSON.stringify(before.snapshot)).not.toContain('qoder-byok-secret-v1');
 
       svc.update(provider.id, {
         connection: {qoderSystemPrompt: 'changed secret qoder system prompt'},
       });
       expect(resolveProviderRuntimeSnapshot(svc, provider.id).snapshotHash)
         .not.toBe(before.snapshotHash);
+
+      const beforeByokSecret = resolveProviderRuntimeSnapshot(svc, provider.id);
+      svc.update(provider.id, {
+        custom: {
+          envOverrides: {
+            QODER_BYOK_API_KEY: 'qoder-byok-secret-v2',
+            QODER_BYOK_PROVIDER: 'deepseek',
+            QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+            QODER_BYOK_STYLE: 'openai',
+          },
+        },
+      });
+      const afterByokSecret = resolveProviderRuntimeSnapshot(svc, provider.id);
+      expect(afterByokSecret.snapshotHash).not.toBe(beforeByokSecret.snapshotHash);
+      expect(afterByokSecret.snapshot.secretVersion).not.toBe(beforeByokSecret.snapshot.secretVersion);
+      expect(JSON.stringify(afterByokSecret.snapshot)).not.toContain('qoder-byok-secret-v2');
     } finally {
       if (originalWorkerPath === undefined) delete process.env.QODER_WORKER_RUNTIME_PATH;
       else process.env.QODER_WORKER_RUNTIME_PATH = originalWorkerPath;
@@ -542,6 +571,7 @@ describe('provider runtime snapshot hash', () => {
     const keys = [
       'SMARTPERFETTO_AGENT_RUNTIME',
       'QODER_PERSONAL_ACCESS_TOKEN',
+      'QODER_BYOK_BASE_URL',
       'QODERCLI_PATH',
       'QODER_MODEL',
       'QODER_LIGHT_MODEL',
@@ -553,6 +583,7 @@ describe('provider runtime snapshot hash', () => {
     Object.assign(process.env, {
       SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
       QODER_PERSONAL_ACCESS_TOKEN: 'ambient-qoder-secret',
+      QODER_BYOK_BASE_URL: 'https://user:password@api.deepseek.com/v1?api_key=first#secret',
       QODERCLI_PATH: '/usr/local/bin/qodercli',
       QODER_MODEL: 'qoder-env-primary',
       QODER_LIGHT_MODEL: 'qoder-env-light',
@@ -575,8 +606,22 @@ describe('provider runtime snapshot hash', () => {
       });
       expect(result.snapshot.resolvedTimeouts.classifierTimeoutMs).toBeUndefined();
       expect(result.snapshot.environment.QODER_PERSONAL_ACCESS_TOKEN).toBeUndefined();
+      expect(result.snapshot.environment.QODER_BYOK_BASE_URL)
+        .toBe('https://api.deepseek.com/v1');
+      expect(result.snapshot.baseUrl).toBe('https://api.deepseek.com/v1');
       expect(result.snapshot.secretVersion).toMatch(/^sha256:/);
       expect(JSON.stringify(result.snapshot)).not.toContain('ambient-qoder-secret');
+      expect(JSON.stringify(result.snapshot)).not.toContain('user:password');
+      expect(JSON.stringify(result.snapshot)).not.toContain('api_key=first');
+
+      process.env.QODER_BYOK_BASE_URL =
+        'https://user:password@api.deepseek.com/v1?api_key=second#secret';
+      const changedSecret = resolveProviderRuntimeSnapshot(svc, null);
+      expect(changedSecret.snapshot.environment.QODER_BYOK_BASE_URL)
+        .toBe(result.snapshot.environment.QODER_BYOK_BASE_URL);
+      expect(changedSecret.snapshot.secretVersion).not.toBe(result.snapshot.secretVersion);
+      expect(changedSecret.snapshotHash).not.toBe(result.snapshotHash);
+      expect(JSON.stringify(changedSecret.snapshot)).not.toContain('api_key=second');
     } finally {
       for (const key of keys) {
         const value = original[key];

@@ -369,6 +369,19 @@ cd backend
 OPENAI_API_KEY=... npm run verify:e2e:deepseek-startup
 ```
 
+Qoder DeepSeek BYOK startup gate (requires both the DeepSeek provider key and
+Qoder PAT or local `qodercli` login; BYOK does not replace Qoder auth):
+
+```bash
+cd backend
+npm run qoder:install -- --accept-terms
+DEEPSEEK_API_KEY=... QODER_PERSONAL_ACCESS_TOKEN=... \
+  npm run verify:e2e:qoder-deepseek-startup
+```
+
+When Qoder auth is unavailable, record this real-provider gate as unavailable;
+do not treat unit/type/build/PR checks as an authenticated Qoder E2E result.
+
 Agent SSE E2E runs that exercise the OpenAI runtime should use Deepseek by
 default, not GLM. The canonical wrapper is
 `backend/scripts/run-deepseek-agent-e2e.cjs`; it loads `backend/.env`, prefers

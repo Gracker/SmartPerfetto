@@ -81,7 +81,8 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
 Web UI 启动后，打开 **AI Assistant 设置 → Providers**，添加一个 Provider，依次保存、
 测试并激活。本地源码运行也可以直接复用同一终端中已有的 Claude Code 登录态。
 第一次启动不需要配置所有 Runtime；只选一条 Provider 路径，按
-[配置指南](docs/getting-started/configuration.md)操作即可。
+[配置指南](docs/getting-started/configuration.md)操作即可。Qoder 高级用户也可以按文档
+配置 BYOK 模型路由；Qoder PAT 或 `qodercli` 认证仍是独立且必需的。
 
 ### 3. 完成第一次分析
 

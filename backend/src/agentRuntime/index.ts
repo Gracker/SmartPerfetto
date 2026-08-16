@@ -71,15 +71,21 @@ export {
 } from './engines/opencode';
 export {
   QODER_AGENT_RUNTIME_KIND,
+  QODER_BYOK_API_KEY_ENV,
+  QODER_BYOK_BASE_URL_ENV,
+  QODER_BYOK_PROVIDER_ENV,
+  QODER_BYOK_STYLE_ENV,
   QODER_PERSONAL_ACCESS_TOKEN_ENV,
   QODER_CLI_PATH_ENV,
   QODER_MODEL_ENV,
+  QODER_SDK_MODULE_PATH_ENV,
   QODER_SYSTEM_PROMPT_ENV,
   QoderRuntime,
   createQoderRuntimeDefinition,
   getQoderEngineCapabilities,
   getQoderRuntimeDiagnostics,
   resolveQoderRuntimeConfig,
+  type QoderByokConfig,
   type QoderRuntimeConfig,
   type QoderRuntimeKind,
 } from './engines/qoder';

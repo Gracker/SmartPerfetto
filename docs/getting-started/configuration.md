@@ -303,12 +303,22 @@ Qoder Agent SDK：
 ```bash
 # 显式安装前先审阅并接受 Qoder SDK/CLI 条款。
 # 使用预装兼容 CLI 时，可先设置 QODER_SKIP_DOWNLOAD=1。
-npm --prefix backend install --no-save @qoder-ai/qoder-agent-sdk
+npm --prefix backend run qoder:install -- --accept-terms
 SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk
 # 可选 PAT；不设置时使用本机 qodercli 登录态。
 # QODER_PERSONAL_ACCESS_TOKEN=your_qoder_pat
 # 可选预装 executable 路径。
 # QODERCLI_PATH=/absolute/path/to/qodercli
+# 可选：从绝对路径加载兼容 SDK entry。
+# SMARTPERFETTO_QODER_SDK_MODULE_PATH=/absolute/path/to/qoder-sdk/dist/index.js
+# 可选 BYOK：三项必须一起配置；base URL、style 和 light model 可省略。
+# BYOK 只配置模型 provider，不替代上面的 Qoder PAT/qodercli 认证。
+# QODER_MODEL=deepseek-chat
+# QODER_LIGHT_MODEL=deepseek-chat
+# QODER_BYOK_API_KEY=your_model_provider_api_key
+# QODER_BYOK_PROVIDER=deepseek
+# QODER_BYOK_BASE_URL=https://api.deepseek.com/v1
+# QODER_BYOK_STYLE=openai
 ```
 
 全局 npm CLI 需要把 peer 与 SmartPerfetto 一起安装：
@@ -317,7 +327,10 @@ SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk
 默认 Docker 和 portable 产物不会安装 Qoder SDK。若要在这些部署形态中
 使用，需要在接受条款后构建显式安装 optional peer 的自定义产物。Provider
 Manager 只允许 custom profile 选择 Qoder，并要求 `qoderAccessToken` 或
-`qoderCliPath`；env 模式可以回退到本机 `qodercli` 登录态。
+`qoderCliPath`；env 模式可以回退到本机 `qodercli` 登录态。custom Qoder
+profile 还可以通过 `custom.envOverrides` 设置 `QODER_BYOK_API_KEY`、
+`QODER_BYOK_PROVIDER`、`QODER_BYOK_BASE_URL` 和 `QODER_BYOK_STYLE`；这些键
+不会被其他 runtime 接受，CLI/module/worker path 也不能经此入口覆盖。
 
 接入 Gemini 等 provider 时，如果账号只提供 OpenAI-compatible API，可以直接使用 `openai-agents-sdk`；如果该接口的 streaming tool call 不稳定，再让代理层暴露 Anthropic Messages 兼容接口，然后配置：
 

@@ -12,8 +12,6 @@ const backendRoot = path.resolve(__dirname, '..');
 const verifierPath = path.join(backendRoot, 'src/scripts/verifyAgentSseScrolling.ts');
 const tsxCliPath = path.join(backendRoot, 'node_modules/tsx/dist/cli.mjs');
 
-loadBackendEnv();
-
 const DEFAULT_RUNTIME = 'openai-agents-sdk';
 const DEFAULT_TIMEOUT_MS = 20 * 60_000;
 const DEEPSEEK_RUNTIME_KINDS = [
@@ -222,9 +220,10 @@ const suites = {
   },
 };
 
-main();
+if (require.main === module) main();
 
 function main() {
+  loadBackendEnv();
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
     printUsage();
@@ -277,7 +276,7 @@ function parseArgs(argv) {
     if (arg === '--runtime') {
       const value = argv[i + 1];
       if (!value) {
-        throw new Error('--runtime requires a value: openai-agents-sdk, pi-agent-core, opencode, or all-deepseek');
+        throw new Error('--runtime requires a value: openai-agents-sdk, pi-agent-core, opencode, qoder-agent-sdk, or all-deepseek');
       }
       runtime = parseRuntime(value);
       i += 1;
@@ -315,12 +314,14 @@ function parseRuntime(value) {
     value === 'openai-agents-sdk' ||
     value === 'pi' ||
     value === 'pi-agent-core' ||
-    value === 'opencode'
+    value === 'opencode' ||
+    value === 'qoder' ||
+    value === 'qoder-agent-sdk'
   ) {
     return value;
   }
   throw new Error(
-    `Invalid runtime: ${value}. Expected openai-agents-sdk, pi-agent-core, opencode, or all-deepseek.`,
+    `Invalid runtime: ${value}. Expected openai-agents-sdk, pi-agent-core, opencode, qoder-agent-sdk, or all-deepseek.`,
   );
 }
 
@@ -328,16 +329,19 @@ function resolveRuntimeKinds(value) {
   if (value === 'all' || value === 'all-deepseek') return DEEPSEEK_RUNTIME_KINDS;
   if (value === 'openai') return ['openai-agents-sdk'];
   if (value === 'pi') return ['pi-agent-core'];
+  if (value === 'qoder') return ['qoder-agent-sdk'];
   return [value];
 }
 
 function printUsage() {
-  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|all-deepseek] [--timeout-ms <number>]');
+  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|qoder-agent-sdk|all-deepseek] [--timeout-ms <number>]');
   console.log('');
   console.log('Runs SmartPerfetto Agent SSE E2E with Deepseek-backed SmartPerfetto runtimes.');
   console.log('');
   console.log('Credential precedence: DEEPSEEK_API_KEY, then OPENAI_API_KEY.');
   console.log('OpenAI receives OPENAI_* pins; Pi/OpenCode receive generated Deepseek model JSON unless env already overrides it.');
+  console.log('Qoder receives DeepSeek through resolveModel BYOK and still requires QODER_PERSONAL_ACCESS_TOKEN or qodercli login.');
+  console.log('BYOK does not replace Qoder authentication.');
   console.log(`Each real SSE scenario has a ${DEFAULT_TIMEOUT_MS}ms default timeout; use --timeout-ms to override it.`);
 }
 
@@ -461,6 +465,19 @@ function buildChildEnv(apiKey, runtimeKind, isolatedRoot) {
     };
   }
 
+  if (runtimeKind === 'qoder-agent-sdk') {
+    return {
+      ...baseEnv,
+      SMARTPERFETTO_AGENT_RUNTIME: 'qoder-agent-sdk',
+      QODER_MODEL: deepseekModel,
+      QODER_LIGHT_MODEL: deepseekLightModel,
+      QODER_BYOK_API_KEY: apiKey,
+      QODER_BYOK_PROVIDER: 'deepseek',
+      QODER_BYOK_BASE_URL: deepseekBaseUrl,
+      QODER_BYOK_STYLE: 'openai',
+    };
+  }
+
   throw new Error(`Unsupported runtime: ${runtimeKind}`);
 }
 
@@ -486,3 +503,7 @@ function assertFile(filePath, label) {
     throw new Error(`${label} not found: ${filePath}`);
   }
 }
+
+module.exports = {
+  buildChildEnv,
+};

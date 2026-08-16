@@ -536,6 +536,97 @@ describe('ProviderService', () => {
       })).toThrow(`Custom provider env override is not allowed: ${key}`);
     });
 
+    it('allows only scoped Qoder BYOK overrides on a Qoder custom provider', () => {
+      const provider = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'deepseek-main', light: 'deepseek-light'},
+        connection: {agentRuntime: 'qoder-agent-sdk'},
+        custom: {
+          envOverrides: {
+            QODER_BYOK_API_KEY: 'managed-deepseek-key',
+            QODER_BYOK_PROVIDER: 'deepseek',
+            QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+            QODER_BYOK_STYLE: 'openai',
+          },
+        },
+      });
+
+      expect(svc.getEnvForProvider(provider.id)).toMatchObject({
+        QODER_BYOK_API_KEY: 'managed-deepseek-key',
+        QODER_BYOK_PROVIDER: 'deepseek',
+        QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+        QODER_BYOK_STYLE: 'openai',
+      });
+      expect(svc.get(provider.id)?.custom?.envOverrides?.QODER_BYOK_API_KEY)
+        .toMatch(/^\*{4}/);
+    });
+
+    it.each([
+      'https://user:password@api.deepseek.com/v1',
+      'https://api.deepseek.com/v1?api_key=secret',
+      'https://api.deepseek.com/v1#secret',
+      'ftp://api.deepseek.com/v1',
+      'not-a-url',
+    ])('rejects unsafe Qoder BYOK base URL %s', (baseUrl) => {
+      expect(() => svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'deepseek-main', light: 'deepseek-light'},
+        connection: {agentRuntime: 'qoder-agent-sdk'},
+        custom: {envOverrides: {QODER_BYOK_BASE_URL: baseUrl}},
+      })).toThrow('QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment');
+    });
+
+    it.each([
+      ['QODER_BYOK_API_KEY', 'managed-deepseek-key'],
+      ['QODER_BYOK_PROVIDER', 'deepseek'],
+      ['QODER_BYOK_BASE_URL', 'https://api.deepseek.com/v1'],
+      ['QODER_BYOK_STYLE', 'openai'],
+    ])('rejects Qoder BYOK override %s for a non-Qoder runtime', (key, value) => {
+      expect(() => svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'custom-openai-main', light: 'custom-openai-light'},
+        connection: {agentRuntime: 'openai-agents-sdk'},
+        custom: {envOverrides: {[key]: value}},
+      })).toThrow(`Custom provider env override is not allowed: ${key}`);
+    });
+
+    it('rejects switching away from Qoder while Qoder BYOK overrides remain', () => {
+      const provider = svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'deepseek-main', light: 'deepseek-light'},
+        connection: {agentRuntime: 'qoder-agent-sdk'},
+        custom: {
+          envOverrides: {
+            QODER_BYOK_API_KEY: 'managed-deepseek-key',
+            QODER_BYOK_PROVIDER: 'deepseek',
+          },
+        },
+      });
+
+      expect(() => svc.switchAgentRuntime(provider.id, 'opencode')).toThrow(
+        'Custom provider env override is not allowed: QODER_BYOK_API_KEY',
+      );
+      expect(svc.getRawProvider(provider.id)?.connection.agentRuntime).toBe('qoder-agent-sdk');
+    });
+
+    it.each([
+      ['QODERCLI_PATH', '/tmp/hostile-qodercli'],
+      ['SMARTPERFETTO_QODER_SDK_MODULE_PATH', '/tmp/hostile-sdk.mjs'],
+      ['QODER_WORKER_RUNTIME_PATH', '/tmp/hostile-worker.mjs'],
+    ])('rejects Qoder process-control override %s even for Qoder providers', (key, value) => {
+      expect(() => svc.create({
+        ...validInput,
+        type: 'custom',
+        models: {primary: 'qoder-main', light: 'qoder-light'},
+        connection: {agentRuntime: 'qoder-agent-sdk'},
+        custom: {envOverrides: {[key]: value}},
+      })).toThrow(`Custom provider env override is not allowed: ${key}`);
+    });
+
     it('allows Pi provider-scoped credentials on a Pi custom provider', () => {
       const provider = svc.create({
         ...validInput,
