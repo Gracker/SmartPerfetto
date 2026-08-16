@@ -48,4 +48,23 @@ describe('env credential source detection', () => {
       'google_vertex_region',
     ]);
   });
+
+  it('reports Qoder BYOK credential source names without returning their values', () => {
+    const sources = collectEnvCredentialSources({
+      QODER_BYOK_API_KEY: 'deepseek-provider-secret',
+      QODER_BYOK_PROVIDER: 'deepseek',
+      QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+      QODER_BYOK_STYLE: 'openai',
+      SMARTPERFETTO_QODER_SDK_MODULE_PATH: '/opt/qoder-sdk/index.js',
+    }, 'env');
+
+    expect(sources).toEqual([
+      'QODER_BYOK_API_KEY',
+      'QODER_BYOK_PROVIDER',
+      'QODER_BYOK_BASE_URL',
+      'QODER_BYOK_STYLE',
+      'SMARTPERFETTO_QODER_SDK_MODULE_PATH',
+    ]);
+    expect(JSON.stringify(sources)).not.toContain('deepseek-provider-secret');
+  });
 });

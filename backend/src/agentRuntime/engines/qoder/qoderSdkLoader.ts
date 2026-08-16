@@ -2,7 +2,14 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { EnvLike } from './qoderConfig';
+import path from 'path';
+import { pathToFileURL } from 'url';
+
+import {
+  getLocalQoderSdkModulePath,
+  QODER_SDK_MODULE_PATH_ENV,
+  type EnvLike,
+} from './qoderConfig';
 
 export interface QoderSdkModule {
   query(params: { prompt: string; options?: unknown }): unknown;
@@ -21,14 +28,31 @@ const importEsmModule = new Function(
 export async function loadQoderSdkModule(
   env: EnvLike = process.env,
 ): Promise<QoderSdkModule> {
-  const specifier = '@qoder-ai/qoder-agent-sdk';
-  let module: Partial<QoderSdkModule>;
-  try {
-    module = await importEsmModule(specifier) as Partial<QoderSdkModule>;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+  const configuredPath = env[QODER_SDK_MODULE_PATH_ENV]?.trim();
+  const specifiers = configuredPath
+    ? [path.isAbsolute(configuredPath) ? pathToFileURL(configuredPath).href : configuredPath]
+    : [
+        '@qoder-ai/qoder-agent-sdk',
+        pathToFileURL(getLocalQoderSdkModulePath()).href,
+      ];
+
+  let module: Partial<QoderSdkModule> | undefined;
+  let lastError: unknown;
+  for (const specifier of [...new Set(specifiers)]) {
+    try {
+      module = await importEsmModule(specifier) as Partial<QoderSdkModule>;
+      break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!module) {
+    const detail = lastError instanceof Error ? lastError.message : String(lastError);
     throw new Error(
-      `Qoder Agent SDK is not installed. Review its terms, then explicitly install ${specifier}. ${detail}`,
+      'Qoder Agent SDK is not installed. Review its terms, then run '
+      + '`npm --prefix backend run qoder:install -- --accept-terms` or configure '
+      + `${QODER_SDK_MODULE_PATH_ENV}. ${detail}`,
     );
   }
   if (typeof module.query !== 'function') {

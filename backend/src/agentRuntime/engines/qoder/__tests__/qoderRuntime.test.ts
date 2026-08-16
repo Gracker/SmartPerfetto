@@ -187,6 +187,8 @@ describe('QoderRuntime', () => {
         DATABASE_URL: 'postgres://secret',
         QODER_PERSONAL_ACCESS_TOKEN: 'test-token',
         QODER_MODEL: 'test-model',
+        QODER_BYOK_API_KEY: 'deepseek-secret',
+        QODER_BYOK_PROVIDER: 'deepseek',
       });
       await runtime.analyze('test', 'session-1', 'trace-1');
 
@@ -197,6 +199,52 @@ describe('QoderRuntime', () => {
       expect(sdkEnv.DATABASE_URL).toBeUndefined();
       expect(sdkEnv.QODER_PERSONAL_ACCESS_TOKEN).toBe('test-token');
       expect(sdkEnv.QODER_MODEL).toBe('test-model');
+      expect(sdkEnv.QODER_BYOK_API_KEY).toBeUndefined();
+      expect(sdkEnv.QODER_BYOK_PROVIDER).toBeUndefined();
+    });
+
+    it('routes Qoder model calls through a complete BYOK model policy', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\ndone' },
+      ]));
+
+      const runtime = createRuntime({
+        QODER_MODEL: 'deepseek-main',
+        QODER_LIGHT_MODEL: 'deepseek-light',
+        QODER_BYOK_API_KEY: 'deepseek-secret',
+        QODER_BYOK_PROVIDER: 'deepseek',
+        QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
+        QODER_BYOK_STYLE: 'openai',
+      });
+      await runtime.analyze('test', 'session-1', 'trace-1');
+
+      const callArgs = mockQuery.mock.calls[0][0] as any;
+      expect(callArgs.options.model).toBe('deepseek-main');
+      expect(callArgs.options.resolveModel({ purpose: 'main' })).toEqual({
+        model: {
+          provider: 'deepseek',
+          api_key: 'deepseek-secret',
+          model: 'deepseek-main',
+          url: 'https://api.deepseek.com/v1',
+          style: 'openai',
+        },
+      });
+      expect(callArgs.options.resolveModel({ purpose: 'title' })).toEqual({
+        model: expect.objectContaining({ model: 'deepseek-light' }),
+      });
+    });
+
+    it('fails closed before query when Qoder BYOK configuration is incomplete', async () => {
+      const result = await createRuntime({
+        QODER_BYOK_API_KEY: 'deepseek-secret',
+        QODER_MODEL: undefined,
+      }).analyze('test', 'session-1', 'trace-1');
+
+      expect(result.success).toBe(false);
+      expect(result.terminationMessage).toContain('QODER_BYOK_PROVIDER');
+      expect(result.terminationMessage).toContain('QODER_MODEL');
+      expect(result.terminationMessage).not.toContain('deepseek-secret');
+      expect(mockQuery).not.toHaveBeenCalled();
     });
 
     it('does not use repo root as cwd', async () => {
@@ -405,6 +453,25 @@ describe('QoderRuntime', () => {
   });
 
   describe('result handling', () => {
+    it('explains that BYOK does not replace Qoder authentication', async () => {
+      const error = new Error('Qoder CLI process exited with code 41') as Error & { exitCode: number };
+      error.exitCode = 41;
+      mockQuery.mockImplementationOnce(() => {
+        throw error;
+      });
+
+      const result = await createRuntime({
+        QODER_MODEL: 'deepseek-main',
+        QODER_BYOK_API_KEY: 'deepseek-secret',
+        QODER_BYOK_PROVIDER: 'deepseek',
+      }).analyze('test', 'session-1', 'trace-1');
+
+      expect(result.success).toBe(false);
+      expect(result.terminationMessage).toContain('Qoder authentication failed');
+      expect(result.terminationMessage).toContain('does not replace Qoder authentication');
+      expect(result.terminationMessage).not.toContain('deepseek-secret');
+    });
+
     it('uses the shared localized trace-context formatter for the user prompt', async () => {
       mockFormatTraceContext.mockReturnValueOnce('localized trace context');
       mockQuery.mockReturnValue(createMockSdkStream([

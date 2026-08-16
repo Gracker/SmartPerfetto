@@ -4,11 +4,24 @@
 
 import {
   clearProviderRuntimeEnv,
+  isQoderByokEnvKey,
   mergeIsolatedProviderEnv,
   providerSubprocessEnv,
 } from '../envIsolation';
 
 describe('provider runtime environment isolation', () => {
+  it('recognizes only the supported Qoder BYOK values as provider-scoped overrides', () => {
+    expect([
+      'QODER_BYOK_API_KEY',
+      'QODER_BYOK_PROVIDER',
+      'QODER_BYOK_BASE_URL',
+      'QODER_BYOK_STYLE',
+    ].every(isQoderByokEnvKey)).toBe(true);
+    expect(isQoderByokEnvKey('QODERCLI_PATH')).toBe(false);
+    expect(isQoderByokEnvKey('SMARTPERFETTO_QODER_SDK_MODULE_PATH')).toBe(false);
+    expect(isQoderByokEnvKey('QODER_WORKER_RUNTIME_PATH')).toBe(false);
+  });
+
   it('clears every runtime family, including Qoder, without touching system env', () => {
     const env: Record<string, string | undefined> = {
       PATH: '/usr/bin',
@@ -34,12 +47,15 @@ describe('provider runtime environment isolation', () => {
     expect(providerSubprocessEnv({
       PATH: '/usr/bin',
       QODER_MODEL: 'qoder-model',
+      QODER_BYOK_API_KEY: 'qoder-byok-secret',
+      QODER_BYOK_PROVIDER: 'deepseek',
       QODERCLI_PATH: '/qodercli',
       SMARTPERFETTO_QODER_SYSTEM_PROMPT: 'qoder prompt',
       UNRELATED_APPLICATION_VALUE: 'exclude',
     })).toEqual({
       PATH: '/usr/bin',
       QODER_MODEL: 'qoder-model',
+      QODER_BYOK_PROVIDER: 'deepseek',
       QODERCLI_PATH: '/qodercli',
       SMARTPERFETTO_QODER_SYSTEM_PROMPT: 'qoder prompt',
     });

@@ -86,7 +86,9 @@ After the Web UI starts, open **AI Assistant Settings → Providers**, add one
 provider, save it, test it, and activate it. Local source runs may instead use
 an existing Claude Code login from the same terminal. Do not configure every
 runtime for the first launch; choose one provider path and follow the
-[Configuration Guide](docs/getting-started/configuration.en.md).
+[Configuration Guide](docs/getting-started/configuration.en.md). Advanced
+Qoder users can also route models through the documented BYOK policy while
+keeping Qoder PAT or `qodercli` authentication separate.
 
 ### 3. Run Your First Analysis
 

@@ -21,6 +21,7 @@
     "public/**/*",
     "sql/smartperfetto/**/*",
     "prebuilts/**/*",
+    "scripts/install-qoder-sdk.cjs",
     ".env.example",
     "LICENSE",
     "package.json"
@@ -122,7 +123,9 @@
     "verify:e2e:deepseek-external-issue": "node scripts/run-deepseek-agent-e2e.cjs --suite external-issue --runtime all-deepseek",
     "verify:e2e:deepseek-dual-trace": "node scripts/run-deepseek-agent-e2e.cjs --suite dual-trace --runtime all-deepseek",
     "verify:e2e:deepseek-context": "node scripts/run-deepseek-agent-e2e.cjs --suite context --runtime all-deepseek",
+    "verify:e2e:qoder-deepseek-startup": "node scripts/run-deepseek-agent-e2e.cjs --suite startup --runtime qoder-agent-sdk",
     "verify:e2e:openai-startup": "node scripts/run-deepseek-agent-e2e.cjs --suite startup --runtime openai-agents-sdk",
+    "qoder:install": "node scripts/install-qoder-sdk.cjs",
     "generate:frontend-types": "tsx scripts/generateFrontendTypes.ts",
     "check:types": "tsx scripts/checkTypesSync.ts",
     "types": "npm run generate:frontend-types",

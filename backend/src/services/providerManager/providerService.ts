@@ -32,7 +32,7 @@ import type {
   ProviderMutationOwner,
   ProviderMutationScope,
 } from './providerMutationGeneration';
-import {isPiProviderEnvKey} from './envIsolation';
+import {isPiProviderEnvKey, isQoderByokEnvKey} from './envIsolation';
 
 const SENSITIVE_FIELDS: (keyof ProviderConfig['connection'])[] = [
   'apiKey',
@@ -86,10 +86,32 @@ function assertSafeCustomEnvOverrides(
   custom: ProviderConfig['custom'],
   runtime: AgentRuntimeKind,
 ): void {
-  for (const key of Object.keys(custom?.envOverrides ?? {})) {
+  for (const [key, value] of Object.entries(custom?.envOverrides ?? {})) {
     const piRuntimeOverride = runtime === 'pi-agent-core' && isPiProviderEnvKey(key);
-    if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key) && !piRuntimeOverride) {
+    const qoderByokOverride = runtime === 'qoder-agent-sdk' && isQoderByokEnvKey(key);
+    if (!ALLOWED_CUSTOM_ENV_OVERRIDES.has(key) && !piRuntimeOverride && !qoderByokOverride) {
       throw new Error(`Custom provider env override is not allowed: ${key}`);
+    }
+    if (qoderByokOverride && key === 'QODER_BYOK_BASE_URL') {
+      let url: URL;
+      try {
+        url = new URL(value);
+      } catch {
+        throw new Error(
+          'QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment',
+        );
+      }
+      if (
+        (url.protocol !== 'http:' && url.protocol !== 'https:')
+        || url.username
+        || url.password
+        || url.search
+        || url.hash
+      ) {
+        throw new Error(
+          'QODER_BYOK_BASE_URL must be an HTTP(S) URL without credentials, query, or fragment',
+        );
+      }
     }
   }
 }

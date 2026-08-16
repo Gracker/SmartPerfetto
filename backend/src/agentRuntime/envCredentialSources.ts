@@ -93,6 +93,25 @@ export function collectEnvCredentialSources(
   if (hasConcreteEnvValue(env.QODER_MODEL)) {
     sources.push(label(style, 'QODER_MODEL', 'qoder_model'));
   }
+  if (hasConcreteEnvValue(env.QODER_BYOK_API_KEY)) {
+    sources.push(label(style, 'QODER_BYOK_API_KEY', 'qoder_byok_api_key'));
+  }
+  if (hasConcreteEnvValue(env.QODER_BYOK_PROVIDER)) {
+    sources.push(label(style, 'QODER_BYOK_PROVIDER', 'qoder_byok_provider'));
+  }
+  if (hasConcreteEnvValue(env.QODER_BYOK_BASE_URL)) {
+    sources.push(label(style, 'QODER_BYOK_BASE_URL', 'qoder_byok_base_url'));
+  }
+  if (hasConcreteEnvValue(env.QODER_BYOK_STYLE)) {
+    sources.push(label(style, 'QODER_BYOK_STYLE', 'qoder_byok_style'));
+  }
+  if (hasConcreteEnvValue(env.SMARTPERFETTO_QODER_SDK_MODULE_PATH)) {
+    sources.push(label(
+      style,
+      'SMARTPERFETTO_QODER_SDK_MODULE_PATH',
+      'qoder_sdk_module_path',
+    ));
+  }
 
   if (isEnabledEnvFlag(env.CLAUDE_CODE_USE_BEDROCK)) {
     if (hasConcreteEnvValue(env.AWS_BEARER_TOKEN_BEDROCK)) {

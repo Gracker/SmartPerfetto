@@ -326,12 +326,22 @@ Qoder Agent SDK:
 ```bash
 # Review and accept the Qoder SDK/CLI terms before this opt-in install.
 # Set QODER_SKIP_DOWNLOAD=1 first when using a pre-installed compatible CLI.
-npm --prefix backend install --no-save @qoder-ai/qoder-agent-sdk
+npm --prefix backend run qoder:install -- --accept-terms
 SMARTPERFETTO_AGENT_RUNTIME=qoder-agent-sdk
 # Optional PAT; omit it to use the local qodercli login.
 # QODER_PERSONAL_ACCESS_TOKEN=your_qoder_pat
 # Optional pre-installed executable override.
 # QODERCLI_PATH=/absolute/path/to/qodercli
+# Optional compatible SDK entry loaded from an absolute path.
+# SMARTPERFETTO_QODER_SDK_MODULE_PATH=/absolute/path/to/qoder-sdk/dist/index.js
+# Optional BYOK: set all three required values together; base URL, style, and
+# light model are optional. BYOK does not replace Qoder PAT/qodercli auth.
+# QODER_MODEL=deepseek-chat
+# QODER_LIGHT_MODEL=deepseek-chat
+# QODER_BYOK_API_KEY=your_model_provider_api_key
+# QODER_BYOK_PROVIDER=deepseek
+# QODER_BYOK_BASE_URL=https://api.deepseek.com/v1
+# QODER_BYOK_STYLE=openai
 ```
 
 For the global npm CLI, install the peer beside SmartPerfetto with
@@ -341,7 +351,10 @@ The default Docker and portable artifacts do not install the Qoder SDK. To use
 this runtime there, build a deployment that explicitly installs the optional
 peer after accepting its terms. Provider Manager restricts Qoder to custom
 profiles and requires either `qoderAccessToken` or `qoderCliPath`; env mode can
-fall back to the local `qodercli` login.
+fall back to the local `qodercli` login. A custom Qoder profile may also set
+`QODER_BYOK_API_KEY`, `QODER_BYOK_PROVIDER`, `QODER_BYOK_BASE_URL`, and
+`QODER_BYOK_STYLE` through `custom.envOverrides`. Other runtimes reject these
+keys, and that entry point cannot override the CLI, SDK module, or worker path.
 
 Restart the backend after changing `.env`. Saving or activating a Provider Manager profile in the UI usually does not require a backend restart, but existing analysis sessions keep the provider source they were created with. Verify explicit env/proxy credentials with:
 
