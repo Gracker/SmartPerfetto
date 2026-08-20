@@ -24,14 +24,14 @@
     "compatibility": {"min_api": 35, "max_api": 35}
   },
   "source": {
-    "origin": "Legacy SmartPerfetto test-traces fixture; original capture provenance was not recorded",
+    "origin": "SmartPerfetto maintainer-owned or authorized test capture; public distribution approved 2026-08-21",
     "captured_at": null,
     "imported_at": "2026-07-13T00:00:00.000Z",
-    "license": null,
-    "consent": null,
-    "privacy_review": "pending",
-    "sanitization_review": "pending",
-    "publication": "legacy-tracked"
+    "license": "AGPL-3.0-or-later",
+    "consent": "owner-approved",
+    "privacy_review": "approved",
+    "sanitization_review": "approved",
+    "publication": "public"
   },
   "analysis": {
     "results": ["analysis/Scroll-Flutter-327-TextureView.pftrace.fps_report.txt"],

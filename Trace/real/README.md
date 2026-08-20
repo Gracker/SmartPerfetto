@@ -5,9 +5,9 @@ New captures are first imported under ignored `.private/` staging and require ex
 
 | Case | Scene | Android | Publication | Analysis |
 | --- | --- | --- | --- | --- |
-| [Android 16 customer scroll](./android-scroll-customer/) | scrolling | Android 16 / API 36 | legacy-tracked | 1 file(s) |
-| [Android 15 standard AOSP scroll](./android-scroll-standard/) | scrolling | Android 15 / API 35 | legacy-tracked | 1 file(s) |
-| [Android 16 heavy startup](./android-startup-heavy/) | startup | Android 16 / API 36 | legacy-tracked | 1 file(s) |
-| [Android 16 light startup](./android-startup-light/) | startup | Android 16 / API 36 | legacy-tracked | 1 file(s) |
-| [Android 15 Flutter SurfaceView scroll](./flutter-scroll-surface-view/) | scrolling | Android 15 / API 35 | legacy-tracked | 1 file(s) |
-| [Android 15 Flutter TextureView scroll](./flutter-scroll-texture-view/) | scrolling | Android 15 / API 35 | legacy-tracked | 1 file(s) |
+| [Android 16 customer scroll](./android-scroll-customer/) | scrolling | Android 16 / API 36 | public | 1 file(s) |
+| [Android 15 standard AOSP scroll](./android-scroll-standard/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
+| [Android 16 heavy startup](./android-startup-heavy/) | startup | Android 16 / API 36 | public | 1 file(s) |
+| [Android 16 light startup](./android-startup-light/) | startup | Android 16 / API 36 | public | 1 file(s) |
+| [Android 15 Flutter SurfaceView scroll](./flutter-scroll-surface-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
+| [Android 15 Flutter TextureView scroll](./flutter-scroll-texture-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) |

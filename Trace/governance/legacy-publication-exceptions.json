@@ -1,47 +1,4 @@
 {
   "schema_version": 1,
-  "exceptions": [
-    {
-      "case_id": "android-scroll-customer",
-      "owner": "SmartPerfetto maintainers",
-      "reason": "Pre-existing repository fixture whose license, consent, privacy, and sanitization evidence has not yet been documented.",
-      "review_by": "2026-08-15",
-      "disposition": "quarantine"
-    },
-    {
-      "case_id": "android-scroll-standard",
-      "owner": "SmartPerfetto maintainers",
-      "reason": "Pre-existing repository fixture whose license, consent, privacy, and sanitization evidence has not yet been documented.",
-      "review_by": "2026-08-15",
-      "disposition": "quarantine"
-    },
-    {
-      "case_id": "android-startup-heavy",
-      "owner": "SmartPerfetto maintainers",
-      "reason": "Pre-existing repository fixture whose license, consent, privacy, and sanitization evidence has not yet been documented.",
-      "review_by": "2026-08-15",
-      "disposition": "quarantine"
-    },
-    {
-      "case_id": "android-startup-light",
-      "owner": "SmartPerfetto maintainers",
-      "reason": "Pre-existing repository fixture whose license, consent, privacy, and sanitization evidence has not yet been documented.",
-      "review_by": "2026-08-15",
-      "disposition": "quarantine"
-    },
-    {
-      "case_id": "flutter-scroll-surface-view",
-      "owner": "SmartPerfetto maintainers",
-      "reason": "Pre-existing repository fixture whose license, consent, privacy, and sanitization evidence has not yet been documented.",
-      "review_by": "2026-08-15",
-      "disposition": "quarantine"
-    },
-    {
-      "case_id": "flutter-scroll-texture-view",
-      "owner": "SmartPerfetto maintainers",
-      "reason": "Pre-existing repository fixture whose license, consent, privacy, and sanitization evidence has not yet been documented.",
-      "review_by": "2026-08-15",
-      "disposition": "quarantine"
-    }
-  ]
+  "exceptions": []
 }
