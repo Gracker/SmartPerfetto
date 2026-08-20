@@ -81,6 +81,7 @@ import {
   applyFinalResultQualityGate,
   hasDeliverableFinalReportHeading,
   looksLikeProcessNarrationConclusion,
+  serializeFinalResultQualityIssueContext,
   type FinalResultComparisonIdentity,
 } from '../../../services/finalResultQualityGate';
 import {
@@ -707,6 +708,31 @@ export async function verifyPiAgentCoreConclusionForCorrection(input: {
       severity: 'error',
       message: comparisonIdentityIssue.message,
     });
+  }
+  const finalQualityIssue = assessFinalResultQuality({
+    result: {
+      sessionId: 'pi-agent-core-final-report-quality-check',
+      success: true,
+      findings: extractFindingsFromText(input.conclusion),
+      hypotheses: [],
+      conclusion: input.conclusion,
+      confidence: 1,
+      rounds: 1,
+      totalDurationMs: 0,
+    },
+    query: input.query,
+    sceneType: input.sceneType,
+    comparisonIdentity: input.comparisonIdentity,
+  });
+  if (finalQualityIssue) {
+    const message = serializeFinalResultQualityIssueContext(finalQualityIssue);
+    if (!issues.some(issue => issue.severity === 'error' && issue.message === message)) {
+      issues.push({
+        type: 'missing_check',
+        severity: 'error',
+        message,
+      });
+    }
   }
   return issues;
 }

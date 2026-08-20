@@ -20,6 +20,8 @@ type RequestSummary = {
 const CHAT_COMPLETIONS_PATH = /\/chat\/completions(?:[?#]|$)/;
 const MIMO_BASE_URL_PATTERN = /xiaomimimo\.com/i;
 const MIMO_MODEL_PATTERN = /\bmimo-v/i;
+const DEEPSEEK_BASE_URL_PATTERN = /api\.deepseek\.com/i;
+const DEEPSEEK_MODEL_PATTERN = /\bdeepseek-/i;
 
 function isRecord(value: unknown): value is JsonRecord {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -120,7 +122,10 @@ export function shouldUseMimoReasoningContentCompat(
   if (config.protocol !== 'chat_completions') return false;
   const baseURL = config.baseURL || '';
   const models = `${config.model || ''} ${config.lightModel || ''}`;
-  return MIMO_BASE_URL_PATTERN.test(baseURL) || MIMO_MODEL_PATTERN.test(models);
+  return MIMO_BASE_URL_PATTERN.test(baseURL)
+    || MIMO_MODEL_PATTERN.test(models)
+    || DEEPSEEK_BASE_URL_PATTERN.test(baseURL)
+    || DEEPSEEK_MODEL_PATTERN.test(models);
 }
 
 export function normalizeMimoChatRequestPayload(payload: unknown): boolean {
@@ -378,7 +383,7 @@ export function createMimoReasoningContentFetch(baseFetch: FetchLike = fetch): F
       } catch {
         responsePreview = undefined;
       }
-      console.warn('[MiMoCompat] Chat completions request failed', {
+      console.warn('[ReasoningContentCompat] Chat completions request failed', {
         status: response.status,
         statusText: response.statusText,
         request: normalizedRequest.summary,

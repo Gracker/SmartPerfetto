@@ -1701,6 +1701,30 @@ describe('experimental Pi agent-core runtime contract', () => {
     ]));
   });
 
+  it('includes final quality-gate semantic issues in Pi correction verification', async () => {
+    const issues = await verifyPiAgentCoreConclusionForCorrection({
+      conclusion: [
+        buildScrollingPiReport(true),
+        '',
+        '## 已排除因素',
+        '主线程 D/DK 只有 1.7%，因此轻度磁盘 IO 阻塞不是本次掉帧根因。',
+      ].join('\n'),
+      plan: null,
+      hypotheses: [],
+      sceneType: 'scrolling',
+      outputLanguage: 'zh-CN',
+      query: '分析滑动性能',
+      allowPersistentLearning: false,
+    });
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'error',
+        message: expect.stringContaining('D/DK 只能说明不可中断等待'),
+      }),
+    ]));
+  });
+
   it('includes missing dual-trace package identities in Pi correction verification', async () => {
     const issues = await verifyPiAgentCoreConclusionForCorrection({
       conclusion: [
@@ -1728,6 +1752,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         message: expect.stringContaining('com.example.demo'),
       }),
     ]));
+    expect(issues.filter(issue => issue.message.includes('com.example.demo'))).toHaveLength(1);
   });
 
   it('falls back to the original Pi report when text-only correction fails', async () => {

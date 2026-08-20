@@ -11,8 +11,8 @@ import {
   shouldUseMimoReasoningContentCompat,
 } from '../mimoReasoningCompat';
 
-describe('MiMo reasoning_content compatibility', () => {
-  it('enables only for MiMo chat-completions providers', () => {
+describe('reasoning_content compatibility', () => {
+  it('enables only for supported chat-completions providers', () => {
     expect(shouldUseMimoReasoningContentCompat({
       protocol: 'chat_completions',
       baseURL: 'https://token-plan-sgp.xiaomimimo.com/v1',
@@ -25,6 +25,13 @@ describe('MiMo reasoning_content compatibility', () => {
       baseURL: 'https://compatible.example/v1',
       model: 'mimo-v2.5',
       lightModel: 'mimo-v2.5',
+    })).toBe(true);
+
+    expect(shouldUseMimoReasoningContentCompat({
+      protocol: 'chat_completions',
+      baseURL: 'https://api.deepseek.com/v1',
+      model: 'deepseek-v4-pro',
+      lightModel: 'deepseek-v4-flash',
     })).toBe(true);
 
     expect(shouldUseMimoReasoningContentCompat({
