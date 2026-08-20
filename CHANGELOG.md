@@ -11,6 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.7.0] - 2026-08-21
+
+### Added
+- Qoder runtime integration now supports bring-your-own-key provider and model
+  routing while preserving Provider Manager pinning and runtime boundaries.
+
+### Changed
+- The six maintained real-trace fixtures now carry explicit
+  `AGPL-3.0-or-later` licensing, owner-approved publication consent, and
+  completed privacy and sanitization reviews.
+
+### Fixed
+- DeepSeek reasoning-model tool continuations now retain the required
+  `reasoning_content` across OpenAI-compatible multi-turn requests.
+- Pi final correction now receives semantic final-result quality failures,
+  including comparison-identity defects, before producing its terminal report.
+
 ## [1.6.0] - 2026-08-14
 
 ### Added
