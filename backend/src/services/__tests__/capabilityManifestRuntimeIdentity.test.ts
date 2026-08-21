@@ -12,7 +12,6 @@ import {
   resolveCapabilityTraceIdentity,
   resolveCapabilityTraceProcessorIdentity,
   type CapabilityRuntimeIdentityDependencies,
-  type CapabilityRuntimeIdentityVersionRunner,
 } from '../capabilityManifestRuntimeIdentity';
 
 const TRACE_SHA =
@@ -71,12 +70,6 @@ async function writeStdlibAsset(root: string, revision = GIT_B): Promise<string>
   return assetPath;
 }
 
-function safeVersionRunner(
-  stdout = 'trace_processor_shell v50.1\n',
-): CapabilityRuntimeIdentityVersionRunner {
-  return async () => ({stdout});
-}
-
 function localDependencies(
   overrides: Partial<CapabilityRuntimeIdentityDependencies> = {},
 ): CapabilityRuntimeIdentityDependencies {
@@ -86,7 +79,6 @@ function localDependencies(
     canonicalSlotResolver: () => ({}),
     pinCandidates: [],
     stdlibAssetPath: path.join(os.tmpdir(), 'missing-stdlib-asset.json'),
-    versionRunner: safeVersionRunner(),
     ...overrides,
   };
 }
@@ -318,7 +310,6 @@ describe('CapabilityManifest trace processor runtime identity', () => {
       }))).resolves.toEqual({
         source: 'bundled',
         gitRevision: GIT_A,
-        reportedVersion: 'trace_processor_shell v50.1',
       });
     },
   );
@@ -380,23 +371,21 @@ describe('CapabilityManifest trace processor runtime identity', () => {
   it('returns closed unknown reasons for external RPC and a missing binary', async () => {
     const root = await makeTempRoot();
     const pinPath = await writePin(root);
-    const versionRunner = jest.fn<ReturnType<CapabilityRuntimeIdentityVersionRunner>, Parameters<CapabilityRuntimeIdentityVersionRunner>>();
 
     await expect(resolveCapabilityTraceProcessorIdentity(
       {source: 'external_rpc'},
-      localDependencies({versionRunner}),
+      localDependencies(),
     )).resolves.toEqual({
       source: 'unknown',
       unavailableReason: 'external_rpc_binary_unavailable',
     });
     await expect(resolveLocalBinary(
       path.join(root, 'missing-trace-processor'),
-      localDependencies({pinCandidates: [pinPath], versionRunner}),
+      localDependencies({pinCandidates: [pinPath]}),
     )).resolves.toEqual({
       source: 'unknown',
       unavailableReason: 'trace_processor_binary_unavailable',
     });
-    expect(versionRunner).not.toHaveBeenCalled();
   });
 
   it('returns platform/pin reasons only when no readable binary exists', async () => {
@@ -420,80 +409,35 @@ describe('CapabilityManifest trace processor runtime identity', () => {
     }))).resolves.toMatchObject({source: 'custom', binarySha256: BINARY_SHA});
   });
 
-  it('accepts one trimmed printable version line and uses hardened runner options', async () => {
+  it('never executes the selected pathname or reports a local binary version', async () => {
     const root = await makeTempRoot();
     const binaryPath = path.join(root, 'trace_processor_shell');
     await writeFile(binaryPath, 'prebuilt binary');
-    const versionRunner: CapabilityRuntimeIdentityVersionRunner = jest.fn(
-      async () => ({stdout: '\n  trace_processor_shell v50.1  \n'}),
-    );
-
-    const result = await resolveLocalBinary(binaryPath, localDependencies({
-      versionRunner,
+    const pinPath = await writePin(root);
+    const versionRunner = jest.fn(async () => ({
+      stdout: `trace_processor ${binaryPath}`,
     }));
-    expect(result).toMatchObject({reportedVersion: 'trace_processor_shell v50.1'});
-    expect(versionRunner).toHaveBeenCalledWith(
-      binaryPath,
-      ['--version'],
-      expect.objectContaining({
-        shell: false,
-        timeout: expect.any(Number),
-        killSignal: 'SIGKILL',
-        maxBuffer: expect.any(Number),
+    const hostileDependencies = {
+      ...localDependencies({
+        canonicalSlotResolver: () => ({prebuiltPath: binaryPath}),
+        pinCandidates: [pinPath],
       }),
+      versionRunner,
+    } as CapabilityRuntimeIdentityDependencies;
+
+    const bundled = await resolveLocalBinary(binaryPath, hostileDependencies);
+    const custom = await resolveLocalBinary(
+      binaryPath,
+      hostileDependencies,
+      'explicit',
     );
-    const options = (versionRunner as jest.Mock).mock.calls[0][2] as {
-      env: Record<string, string>;
-      maxBuffer: number;
-      timeout: number;
-    };
-    expect(options.timeout).toBeLessThanOrEqual(2_000);
-    expect(options.maxBuffer).toBeLessThanOrEqual(8_192);
-    expect(Object.keys(options.env).sort()).toEqual(
-      expect.arrayContaining(process.platform === 'win32' ? ['PATH', 'SystemRoot'] : ['PATH']),
-    );
-    expect(options.env).not.toHaveProperty('OPENAI_API_KEY');
+
+    expect(versionRunner).not.toHaveBeenCalled();
+    expect(bundled).toEqual({source: 'bundled', gitRevision: GIT_A});
+    expect(custom).toEqual({source: 'custom', binarySha256: BINARY_SHA});
+    expect(bundled).not.toHaveProperty('reportedVersion');
+    expect(custom).not.toHaveProperty('reportedVersion');
   });
-
-  it.each([
-    ['POSIX path', '/Users/private/bin/trace_processor_shell'],
-    ['embedded POSIX path', 'trace_processor path=/private/tmp/build'],
-    ['Windows path', 'C:\\private\\trace_processor_shell.exe'],
-    ['embedded Windows path', 'trace_processor path=C:\\private\\build'],
-    ['UNC path', '\\\\server\\private\\trace_processor_shell.exe'],
-    ['control character', 'trace_processor\tv50'],
-    ['multiple lines', 'trace_processor v50\nextra detail'],
-    ['overlong line', `trace_processor ${'v'.repeat(500)}`],
-    ['output overflow', 'x'.repeat(20_000)],
-  ])('omits unsafe version output containing %s', async (_name, stdout) => {
-    const root = await makeTempRoot();
-    const binaryPath = path.join(root, 'trace_processor_shell');
-    await writeFile(binaryPath, 'prebuilt binary');
-
-    const result = await resolveLocalBinary(binaryPath, localDependencies({
-      versionRunner: safeVersionRunner(stdout),
-    }));
-    expect(result).not.toHaveProperty('reportedVersion');
-    expect(JSON.stringify(result)).not.toContain(root);
-  });
-
-  it.each(['timeout', 'runner error', 'maxBuffer overflow']) (
-    'omits version when the runner reports %s',
-    async failure => {
-      const root = await makeTempRoot();
-      const binaryPath = path.join(root, 'trace_processor_shell');
-      await writeFile(binaryPath, 'prebuilt binary');
-      const error = Object.assign(new Error(`${failure}: ${binaryPath}`), {
-        code: failure === 'timeout' ? 'ETIMEDOUT' : 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
-      });
-
-      const result = await resolveLocalBinary(binaryPath, localDependencies({
-        versionRunner: async () => Promise.reject(error),
-      }));
-      expect(result).not.toHaveProperty('reportedVersion');
-      expect(JSON.stringify(result)).not.toContain(root);
-    },
-  );
 
   it('adds only a valid stdlib asset revision', async () => {
     const root = await makeTempRoot();
@@ -656,7 +600,6 @@ describe('CapabilityManifest trace processor runtime identity', () => {
       canonicalSlotResolver: () => ({prebuiltPath: binaryPath}),
       pinCandidates: [pinPath],
       stdlibAssetPath,
-      versionRunner: async () => Promise.reject(new Error(binaryPath)),
     }));
     const output = JSON.stringify(result);
     expect(output).not.toContain(root);

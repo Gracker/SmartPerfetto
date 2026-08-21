@@ -2,7 +2,6 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {execFile} from 'child_process';
 import {createHash} from 'crypto';
 import * as fs from 'fs';
 import path from 'path';
@@ -23,9 +22,6 @@ const NODE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const FILE_READ_BUFFER_BYTES = 64 * 1024;
 const PIN_MAX_BYTES = 64 * 1024;
 const STDLIB_ASSET_MAX_BYTES = 256 * 1024;
-const VERSION_TIMEOUT_MS = 1_500;
-const VERSION_MAX_BUFFER_BYTES = 4 * 1024;
-const VERSION_MAX_LINE_LENGTH = 256;
 
 const PLATFORM_SHA_KEYS = new Map<string, string>([
   ['linux/x64', 'PERFETTO_SHELL_SHA256_LINUX_AMD64'],
@@ -80,21 +76,6 @@ export type CapabilityTraceIdentityResolution =
       detail?: string;
     };
 
-export interface CapabilityRuntimeIdentityVersionOptions {
-  shell: false;
-  timeout: number;
-  killSignal: 'SIGKILL';
-  maxBuffer: number;
-  env: Readonly<Record<string, string>>;
-  windowsHide: true;
-}
-
-export type CapabilityRuntimeIdentityVersionRunner = (
-  binaryPath: string,
-  args: readonly ['--version'],
-  options: CapabilityRuntimeIdentityVersionOptions,
-) => Promise<{stdout: string}>;
-
 interface FileIdentity {
   dev: bigint;
   ino: bigint;
@@ -131,7 +112,6 @@ export interface CapabilityRuntimeIdentityDependencies {
   pinCandidates?: readonly string[];
   stdlibAssetPath?: string;
   secureFileReader?: CapabilityRuntimeIdentitySecureFileReader;
-  versionRunner?: CapabilityRuntimeIdentityVersionRunner;
 }
 
 interface DigestCacheEntry {
@@ -145,7 +125,6 @@ interface ResolvedPin {
 }
 
 const fileDigestCache = new Map<string, DigestCacheEntry>();
-const versionCache = new Map<string, string | undefined>();
 
 function nodeErrorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error)) {
@@ -335,87 +314,6 @@ function defaultCanonicalSlotResolver(): {
     prebuiltPath: getPrebuiltTraceProcessorPath(),
     bundledPath: getBundledTraceProcessorPath(),
   };
-}
-
-function defaultVersionRunner(
-  binaryPath: string,
-  args: readonly ['--version'],
-  options: CapabilityRuntimeIdentityVersionOptions,
-): Promise<{stdout: string}> {
-  return new Promise((resolve, reject) => {
-    execFile(binaryPath, [...args], {
-      encoding: 'utf8',
-      env: {...options.env},
-      killSignal: options.killSignal,
-      maxBuffer: options.maxBuffer,
-      shell: options.shell,
-      timeout: options.timeout,
-      windowsHide: options.windowsHide,
-    }, (error, stdout) => {
-      if (error) reject(error);
-      else resolve({stdout});
-    });
-  });
-}
-
-function minimalVersionEnvironment(): Readonly<Record<string, string>> {
-  const environment: Record<string, string> = {
-    PATH: process.env.PATH ?? '',
-  };
-  if (process.platform === 'win32' && process.env.SystemRoot) {
-    environment.SystemRoot = process.env.SystemRoot;
-  }
-  return environment;
-}
-
-function parseReportedVersion(stdout: string): string | undefined {
-  if (Buffer.byteLength(stdout, 'utf8') > VERSION_MAX_BUFFER_BYTES) {
-    return undefined;
-  }
-  const meaningfulLines = stdout
-    .split(/\r?\n/)
-    .map(line => line.trim())
-    .filter(Boolean);
-  if (meaningfulLines.length !== 1) return undefined;
-  const line = meaningfulLines[0];
-  if (
-    line.length > VERSION_MAX_LINE_LENGTH ||
-    !/^[\x20-\x7e]+$/.test(line)
-  ) {
-    return undefined;
-  }
-  if (
-    /(?:^|[\s"'(:=])\/(?:\S|$)/.test(line) ||
-    /(?:^|[\s"'(:=])(?:[A-Za-z]:[\\/]|\\\\)/.test(line)
-  ) {
-    return undefined;
-  }
-  return line;
-}
-
-async function resolveReportedVersion(
-  binaryPath: string,
-  binarySha256: string,
-  runner: CapabilityRuntimeIdentityVersionRunner,
-): Promise<string | undefined> {
-  const cacheKey = `${path.resolve(binaryPath)}\0${binarySha256}`;
-  if (versionCache.has(cacheKey)) return versionCache.get(cacheKey);
-  let reportedVersion: string | undefined;
-  try {
-    const result = await runner(binaryPath, ['--version'], {
-      shell: false,
-      timeout: VERSION_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: VERSION_MAX_BUFFER_BYTES,
-      env: minimalVersionEnvironment(),
-      windowsHide: true,
-    });
-    reportedVersion = parseReportedVersion(result.stdout);
-  } catch {
-    reportedVersion = undefined;
-  }
-  versionCache.set(cacheKey, reportedVersion);
-  return reportedVersion;
 }
 
 function parsePinContents(
@@ -628,19 +526,11 @@ export async function resolveCapabilityTraceProcessorIdentity(
     pin !== undefined &&
     pin.sha256 === binaryResult.sha256;
 
-  const [reportedVersion, stdlibRevision] = await Promise.all([
-    resolveReportedVersion(
-      selectedPath,
-      binaryResult.sha256,
-      dependencies.versionRunner ?? defaultVersionRunner,
-    ),
-    resolveStdlibRevision(
-      dependencies.stdlibAssetPath ?? getPerfettoStdlibSymbolAssetPath(),
-      reader,
-    ),
-  ]);
+  const stdlibRevision = await resolveStdlibRevision(
+    dependencies.stdlibAssetPath ?? getPerfettoStdlibSymbolAssetPath(),
+    reader,
+  );
   const shared = {
-    ...(reportedVersion === undefined ? {} : {reportedVersion}),
     ...(stdlibRevision === undefined ? {} : {stdlibRevision}),
   };
   return bundled
@@ -654,5 +544,4 @@ export async function resolveCapabilityTraceProcessorIdentity(
 
 export function clearCapabilityRuntimeIdentityCaches(): void {
   fileDigestCache.clear();
-  versionCache.clear();
 }
