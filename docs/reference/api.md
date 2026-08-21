@@ -19,7 +19,12 @@ API key。
 | `GET` | `/api/auth/oidc/login` | 创建签名 state、nonce 和 PKCE，跳转到 OIDC Provider |
 | `GET` | `/api/auth/oidc/callback` | 校验回调、建立 HttpOnly Session Cookie，并跳回前端 |
 | `GET` | `/api/auth/session` | 返回登录状态、只读 user/tenant/workspace、roles/scopes、过期时间和 CSRF Token |
+| `POST` | `/api/auth/onboarding/workspace` | 在 OIDC onboarding 中选择允许的 workspace；需要 Cookie mutation protection |
 | `POST` | `/api/auth/logout` | 校验 Cookie Session 的 CSRF Token，撤销 Session 并清除 Cookie |
+| `GET` | `/api/auth/api-keys` | 按当前 tenant/workspace scope 列出 API keys；需要 API-key 读取权限 |
+| `POST` | `/api/auth/api-keys` | 创建 scoped API key；明文 token 只在创建响应中返回 |
+| `POST` | `/api/auth/api-keys/:id/revoke` | 撤销 API key |
+| `DELETE` | `/api/auth/api-keys/:id` | 撤销 API key 的兼容入口 |
 
 OIDC Session 是请求身份的唯一来源。浏览器请求必须使用
 `credentials: include`，写请求还必须携带 `X-CSRF-Token`。浏览器提供的
@@ -75,6 +80,7 @@ registry 或 Docker Hub 的固定 HTTPS endpoint，不接受客户端 URL。设�
 |---|---|---|
 | `GET` | `/api/traces/health` | trace 服务健康状态 |
 | `POST` | `/api/traces/upload` | 上传 trace 文件，字段名 `file` |
+| `POST` | `/api/traces/upload-url` | 由后端从经过公网 URL 安全校验的 HTTP(S) 地址拉取 trace |
 | `GET` | `/api/traces` | 列出已知 trace |
 | `GET` | `/api/traces/stats` | trace 统计 |
 | `POST` | `/api/traces/cleanup` | 清理 trace |
@@ -82,6 +88,8 @@ registry 或 Docker Hub 的固定 HTTPS endpoint，不接受客户端 URL。设�
 | `GET` | `/api/traces/:id` | trace 信息 |
 | `DELETE` | `/api/traces/:id` | 删除 trace |
 | `GET` | `/api/traces/:id/file` | 下载 trace 文件 |
+| `POST` | `/api/traces/:id/viewer` | 为当前页面创建隔离的 trace-processor viewer lease |
+| `GET` | `/api/traces/leases/:leaseId/connection` | 读取当前页面持有 lease 的安全连接状态 |
 
 上传示例：
 
@@ -603,15 +611,18 @@ trace 的诊断证据或 root-cause 证明。接口复用当前 workspace scope�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/api/reports/:reportId` | 获取报告 |
+| `GET` | `/api/reports/:reportId/export` | 下载持久化的 HTML 报告 artifact |
 | `DELETE` | `/api/reports/:reportId` | 删除报告 |
 | `POST` | `/api/export/result` | 导出单个结果 |
 | `POST` | `/api/export/session` | 导出 session |
 | `POST` | `/api/export/analysis` | 导出分析 |
 | `GET` | `/api/export/formats` | 支持格式 |
+| `GET` | `/api/export/tenant` | 导出不含 trace 文件正文或 secret 的 tenant compliance bundle |
 
 ## Legacy 与兼容接口
 
-以下接口仍存在，但新集成应优先使用 `/api/agent/v1/*`：
+以下全局接口仍存在；新的 workspace 产品集成应优先使用上文
+`/api/workspaces/:workspaceId/*` 路径：
 
 - `/api/traces/*`，优先迁移到 `/api/workspaces/:workspaceId/traces/*`
 - `/api/reports/*`，优先迁移到 `/api/workspaces/:workspaceId/reports/*`

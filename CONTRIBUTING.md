@@ -12,14 +12,19 @@ Thanks for your interest in contributing! This guide covers development setup, t
   - macOS: `xcode-select --install`
   - Linux: `sudo apt-get install build-essential python3`
 - **Git** with submodule support
-- **macOS or Linux** (Windows users: use Docker — see README)
+- **macOS or Linux** for native UI development. Windows users should use the
+  portable package for normal use or WSL2 for source development; Docker is
+  also supported. See the Windows guide.
 
 ## Development Setup
 
 ```bash
-# 1. Clone with submodules
-git clone --recursive https://github.com/Gracker/SmartPerfetto.git
+# 1. Clone the repository
+git clone https://github.com/Gracker/SmartPerfetto.git
 cd SmartPerfetto
+
+# Required only for Perfetto UI / AI Assistant plugin development
+git submodule update --init --recursive
 
 # Optional but recommended if you use nvm/fnm.
 nvm install
@@ -27,7 +32,8 @@ nvm use
 
 # 2. Configure environment
 cp backend/.env.example backend/.env
-# Edit backend/.env — minimum: set ANTHROPIC_API_KEY
+# Optional env-provider path: edit backend/.env with one supported provider.
+# For first-time setup, starting the app and using Provider Manager is clearer.
 
 # 3. Start everything (builds trace_processor_shell on first run, ~3-5 min)
 ./scripts/start-dev.sh
@@ -52,7 +58,8 @@ You only need to restart if you change `.env` or run `npm install`:
 
 ```
 backend/
-├── src/agentv3/          # AI runtime (Claude Agent SDK)
+├── src/agentRuntime/     # Claude/OpenAI/Pi/OpenCode/Qoder runtime adapters
+├── src/agentv3/          # Shared MCP, Strategy, planning, evidence, verifier
 ├── src/services/         # Core services (trace processor, skill engine)
 ├── skills/               # YAML analysis skills (atomic/composite/pipeline/deep)
 ├── strategies/           # Scene strategies + prompt templates (.md)

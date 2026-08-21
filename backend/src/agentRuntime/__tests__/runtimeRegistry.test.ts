@@ -53,6 +53,7 @@ describe('runtime registry', () => {
       'openai-agents-sdk',
       'pi-agent-core',
       'opencode',
+      'qoder-agent-sdk',
     ];
 
     expect(descriptorKinds).toEqual(expectedKinds);
@@ -61,6 +62,7 @@ describe('runtime registry', () => {
     expect(isProductionAgentRuntimeKind('openai-agents-sdk')).toBe(true);
     expect(isProductionAgentRuntimeKind('pi-agent-core')).toBe(true);
     expect(isProductionAgentRuntimeKind('opencode')).toBe(true);
+    expect(isProductionAgentRuntimeKind('qoder-agent-sdk')).toBe(true);
     expect(isProductionAgentRuntimeKind('fake-third-party-runtime')).toBe(false);
   });
 
@@ -69,11 +71,13 @@ describe('runtime registry', () => {
     const openai = getProductionEngineCapabilities('openai-agents-sdk');
     const pi = getProductionEngineCapabilities('pi-agent-core');
     const opencode = getProductionEngineCapabilities('opencode');
+    const qoder = getProductionEngineCapabilities('qoder-agent-sdk');
 
     expect(claude).toBe(getProductionEngineCapabilities('claude-agent-sdk'));
     expect(openai).toBe(getProductionEngineCapabilities('openai-agents-sdk'));
     expect(pi).toBe(getProductionEngineCapabilities('pi-agent-core'));
     expect(opencode).toBe(getProductionEngineCapabilities('opencode'));
+    expect(qoder).toBe(getProductionEngineCapabilities('qoder-agent-sdk'));
     expect(claude).toEqual({
       kind: 'claude-agent-sdk',
       displayName: 'Claude Agent SDK',
@@ -102,7 +106,14 @@ describe('runtime registry', () => {
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
     });
-    for (const capabilities of [claude, openai, pi, opencode]) {
+    expect(qoder).toEqual({
+      kind: 'qoder-agent-sdk',
+      displayName: 'Qoder Agent SDK',
+      production: true,
+      publicRuntime: true,
+      promptCache: { systemPromptDynamicBoundary: false },
+    });
+    for (const capabilities of [claude, openai, pi, opencode, qoder]) {
       expect(capabilities).not.toHaveProperty('toolTransport');
       expect(capabilities).not.toHaveProperty('continuationPolicy');
       expect(capabilities).not.toHaveProperty('snapshotState');

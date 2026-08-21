@@ -119,7 +119,9 @@ full-path 验证通过且没有负向状态时，才能创建新的长期 patter
 
 反馈写入按 `(tenantId, workspaceId)` 单写者分配 sequence，先 fsync append-only
 JSONL，再推进 `effective_feedback` 与 dirty-target revision。崩溃不会回滚事实日志；
-下一次 append 或离线 `npm run self-evolution:feedback-migrate -- --rebuild` 会幂等补投影。
+下一次 append 或离线
+`npm --prefix backend run self-evolution:feedback-migrate -- --rebuild`
+会幂等补投影。
 旧 pattern 的当前状态一次性冻结为 `intrinsicStatus`，旧反馈不可撤销。旧
 `candidate_feedback` 表现在只作历史审计源，不再写入；迁移仅把该表中旧流程
 已接受的 `short` 行规范化追加到事实日志，旧 JSONL 中的 mis-tap、重复或写库失败

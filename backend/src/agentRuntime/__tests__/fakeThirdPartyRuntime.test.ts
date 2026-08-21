@@ -39,13 +39,17 @@ describe('fake third-party runtime contract', () => {
 
   it('keeps fake third-party runtime out of the public Provider Manager runtime kind', () => {
     const publicRuntimeKindStillExact:
-      IsExact<AgentRuntimeKind, 'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core' | 'opencode'> = true;
+      IsExact<
+        AgentRuntimeKind,
+        'claude-agent-sdk' | 'openai-agents-sdk' | 'pi-agent-core' | 'opencode' | 'qoder-agent-sdk'
+      > = true;
 
     expect(publicRuntimeKindStillExact).toBe(true);
     expect(isAgentRuntimeKind('claude-agent-sdk')).toBe(true);
     expect(isAgentRuntimeKind('openai-agents-sdk')).toBe(true);
     expect(isAgentRuntimeKind('pi-agent-core')).toBe(true);
     expect(isAgentRuntimeKind('opencode')).toBe(true);
+    expect(isAgentRuntimeKind('qoder-agent-sdk')).toBe(true);
     expect(isAgentRuntimeKind(fakeKind)).toBe(false);
   });
 
@@ -81,13 +85,13 @@ describe('fake third-party runtime contract', () => {
     });
   });
 
-  it('keeps custom test registries compatible with slim EngineCapabilities', () => {
+  it('rejects a test-only runtime when sealing a production analysis run spec', () => {
     const selection: RuntimeSelection<typeof fakeKind> = {
       kind: fakeKind,
       source: 'default',
     };
 
-    const spec = createAnalysisRunSpec({
+    expect(() => createAnalysisRunSpec({
       query: 'analyze startup',
       sessionId: 'session-fake',
       traceId: 'trace-fake',
@@ -96,11 +100,7 @@ describe('fake third-party runtime contract', () => {
       sceneType: 'startup',
       outputLanguage: 'en',
       resolvedMode: 'full',
-    });
-
-    expect(spec.runtime.kind).toBe(fakeKind);
-    expect(spec.runtime.capabilities).toBe(fakeCapabilities);
-    expect(spec.mode).not.toHaveProperty('classifierPolicy');
-    expect(spec).not.toHaveProperty('continuationPolicy');
+    }))
+      .toThrow(`Unsupported production analysis runtime: ${fakeKind}`);
   });
 });

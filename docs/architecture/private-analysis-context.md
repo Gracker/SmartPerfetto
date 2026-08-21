@@ -16,8 +16,10 @@ SmartPerfetto 把 trace 证据、用户源码和外部知识视为三个独立�
 | 无 | 有 | 使用精确 `knowledgeSourceIds` 和对应 active generation；外部知识仅作背景，不冒充当前 trace 证据 |
 | 有 | 有 | 两套 allowlist 同时生效，分别校验后进入同一私有投影和报告边界 |
 
-源码、外部 RAG 或 reference trace 任一被选择时，轻量 runtime 不具备所需工具，
-`fast` / `auto` 会解析为 `full`。Smart Profile 的 preview 只生成场景盘点；从 preview
+除轻量 Conversation surface 外，源码、外部 RAG 或 reference trace 任一被选择时，
+轻量 runtime 不具备所需工具，`fast` / `auto` 会解析为 `full`。Conversation
+固定使用 fast executor 并只返回受限引用；需要源码/RAG 深证据时必须 handoff 到新的
+完整分析。Smart Profile 的 preview 只生成场景盘点；从 preview
 进入深度分析时，源码模式、`codebaseIds`、`knowledgeSourceIds`、输出语言和 preview
 身份必须原样传给实际 run，不能依赖 UI 的隐式全局状态。
 

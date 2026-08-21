@@ -14,5 +14,6 @@ inside each bundled version.
 Do not edit generated Pack files manually. Update the lock and assets with:
 
 ```bash
+cd backend
 npm run knowledge-pack:fetch
 ```

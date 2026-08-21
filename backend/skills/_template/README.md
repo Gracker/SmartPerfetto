@@ -12,10 +12,10 @@ S/A/B 三档 skill 模板 + vendor override 模板。配套
 
 | 文件 | 用途 | tier | 依据 |
 |------|------|------|------|
-| `composite_S_template.skill.yaml` | 跨 stdlib 多阶段编排，对标 `composite/cpu_analysis` | S | 34 个 flagship skill |
-| `atomic_S_template.skill.yaml` | atomic 目录 + type=composite 模式（如 `startup_slow_reasons`） | S | 同上特殊变体 |
-| `atomic_A_template.skill.yaml` | atomic 单职责但 SQL 实质（≥3 步或 ≥200 行） | A | 15 个 analysis-step skill |
-| `atomic_B_template.skill.yaml` | atomic 单事实数据提供者 | B | 72 个 data-provider skill |
+| `composite_S_template.skill.yaml` | 跨 stdlib 多阶段编排，对标 `composite/cpu_analysis` | S | flagship 复合分析 |
+| `atomic_S_template.skill.yaml` | atomic 目录 + type=composite 模式（如 `startup_slow_reasons`） | S | 特殊复合变体 |
+| `atomic_A_template.skill.yaml` | atomic 单职责但 SQL 实质（≥3 步或 ≥200 行） | A | analysis-step skill |
+| `atomic_B_template.skill.yaml` | atomic 单事实数据提供者 | B | data-provider skill |
 | `vendor_override_template.yaml` | OEM 平台特化（hint-based） | n/a | M2-M5 核心 4 领域 vendor 扩展 |
 
 ## 复制流程
@@ -24,9 +24,9 @@ S/A/B 三档 skill 模板 + vendor override 模板。配套
 2. 重命名（`<your_skill_id>.skill.yaml`，snake_case，全 registry 内唯一）
 3. 替换全部 `{{...}}` 占位符
 4. 删除模板内的注释块和示例占位
-5. 跑 `npm run validate:skills` —— 任何 lint rule 失败必须 fix（参见 `docs/reference/skill-system.md`）
+5. 在 `backend/` 跑 `npm run validate:skills` —— 任何 lint rule 失败必须 fix（参见 `docs/reference/skill-system.md`）
 6. 加 trace fixture 测试到 `tests/skill-eval/`
-7. 跑 `npm run test:scene-trace-regression` 6/6 PASS
+7. 在 `backend/` 跑 `npm run test:scene-trace-regression`，要求全部 canonical scene 通过
 
 ## tier 字段
 

@@ -14,8 +14,9 @@ Key files:
 - `ai_panel.ts`: main AI assistant panel.
 - `ai_sidebar_panel.ts`: sidebar integration.
 - `ai_floating_window.ts`, `ai_floating_state.ts`: floating assistant window.
-- `ai_service.ts`: backend communication.
-- `assistant_api_v1.ts`: Agent API v1 client.
+- `assistant_api_v1.ts`: backend Agent API URL boundary.
+- `agent_sse_transport.ts`: authenticated Agent SSE URL/header/replay cursor.
+- `conversation_client.ts`: lightweight conversation API and stream client.
 - `sse_event_handlers.ts`: SSE event handling.
 - `session_manager.ts`: localStorage session persistence.
 - `assistant_command_bus.ts`: cross-component command bus.

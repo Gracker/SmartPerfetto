@@ -110,7 +110,8 @@ Skill 时，`display.layer`、`display.level`、列 schema、执行状态和 syn
 
 ## Analysis Receipt
 
-`AnalysisReceiptV1` 在分析完成边界生成，绑定 `runId`、`sessionId`、`traceId`、请求/解析后
+`AnalysisReceiptV2` 在分析完成边界生成，绑定 `runManifestId`、`runId`、`sessionId`、
+`traceId`、请求/解析后
 模式、runtime 和 provider。它分别统计 trace evidence、非证据上下文、claim audit 和
 final-report/claim/identity 三类质量门禁，并指向实际生成的 report、snapshot 或 CLI turn。
 

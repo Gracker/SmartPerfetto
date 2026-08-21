@@ -6,7 +6,7 @@
 skills/
 ├── atomic/                  # 原子能力 Skills (单一 SQL 查询)
 │   ├── cpu_topology_detection.skill.yaml # CPU 拓扑检测
-│   ├── rendering_arch_detection.skill.yaml # 渲染架构检测
+│   ├── rendering_pipeline_detection.skill.yaml # 渲染管线检测
 │   ├── vrr_detection.skill.yaml   # VRR/LTPO 检测
 │   ├── game_fps_analysis.skill.yaml # 游戏帧率分析
 │   ├── gpu_metrics.skill.yaml     # GPU 指标分析
@@ -81,7 +81,7 @@ rg --files backend/skills | rg '\.skill\.yaml$' | wc -l
 | Skill ID | 名称 | 类型 | 描述 |
 |----------|------|------|------|
 | `cpu_topology_detection` | CPU 拓扑检测 | atomic | 动态识别 Prime/Big/Mid/Little 核心 |
-| `rendering_arch_detection` | 渲染架构检测 | atomic | 识别 Flutter/Unity/WebView/HWUI |
+| `rendering_pipeline_detection` | 渲染管线检测 | atomic | 识别 View/Compose/Flutter/WebView/游戏等管线 |
 | `vrr_detection` | VRR 检测 | atomic | 可变刷新率 (LTPO) 使用情况分析 |
 | `game_fps_analysis` | 游戏帧率分析 | atomic | 30/45/60/90/120fps 游戏稳定性 |
 | `gpu_metrics` | GPU 指标分析 | atomic | GPU 频率、利用率、渲染耗时 |
@@ -277,23 +277,22 @@ steps:
 ### 列出所有 Skills
 
 ```bash
-npm run skill:list
+cd backend
+npx tsx src/cli/index.ts list
 ```
 
-输出示例：
+输出示例（仅展示片段；实际数量和版本以命令输出为准）：
 ```
 SmartPerfetto Skills
 
-Found 8 skills
-
 IPC:
   binder_analysis
-    Binder 分析 v1.0.0
+    Binder 分析
     分析 Binder IPC 调用延迟和跨进程通信性能
 
 RENDERING:
   scrolling_analysis
-    滑动卡顿分析 v1.0.0
+    滑动卡顿分析
     分析应用滑动流畅度、帧率、Jank 原因
     [sop]
 ...
@@ -302,11 +301,14 @@ RENDERING:
 ### 验证 Skill 语法
 
 ```bash
+# 先进入 backend
+cd backend
+
 # 验证指定 Skill
-npm run skill:validate startup_analysis
+npx tsx src/cli/index.ts validate startup_analysis
 
 # 验证所有 Skills
-npm run skill:validate
+npm run validate:skills
 ```
 
 验证内容：
@@ -319,14 +321,16 @@ npm run skill:validate
 ### 测试 Skill 执行
 
 ```bash
+# 先进入 backend
+cd backend
+
 # 测试指定 Skill
-npm run skill:test startup_analysis -- --trace /path/to/trace.perfetto
+npx tsx src/cli/index.ts test startup_analysis --trace /path/to/trace.perfetto
 
 # 指定包名
-npm run skill:test startup_analysis -- --trace /path/to/trace.perfetto --package com.example.app
+npx tsx src/cli/index.ts test startup_analysis --trace /path/to/trace.perfetto --package com.example.app
 
-# 指定厂商
-npm run skill:test startup_analysis -- --trace /path/to/trace.perfetto --vendor oppo
+# Vendor override 由 trace/runtime 上下文选择；当前 test 子命令没有 --vendor 参数
 ```
 
 ## API 端点
@@ -392,9 +396,8 @@ curl -X POST http://localhost:3000/api/skills/analyze \
 
 ### 1. 创建新 Skill
 
-每个 Skill 由两个文件组成：
-- `xxx.skill.yaml` - 机器可执行的配置
-- `xxx.sop.md` - 人类可读的 SOP 文档 (可选)
+每个 Skill 必须有一个 `xxx.skill.yaml` 机器可执行配置。只有确实需要
+运行时教学或维护说明时，才增加可选 SOP；多数 atomic Skill 不需要一对一 SOP。
 
 ### 2. Skill YAML 格式
 
@@ -690,5 +693,5 @@ const url = `...?ts=${ts_str}&dur=${dur_str}&visStart=${startNs}&visEnd=${endNs}
    - 深度分析 → `skills/deep/`
    - 模块专家 → `skills/modules/{layer}/`
 3. 添加对应的 SOP 文档到 `skills/docs/`
-4. 运行 `npm run skill:validate` 验证
+4. 在 `backend/` 运行 `npm run validate:skills` 验证
 5. 提交 Pull Request

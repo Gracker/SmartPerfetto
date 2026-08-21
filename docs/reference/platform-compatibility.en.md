@@ -34,7 +34,7 @@ A Windows/Linux cross-build is not a Windows/Linux runtime smoke, and the
 Docker host OS is not the container target.
 
 The [Windows guide](../getting-started/windows.en.md) is authoritative for user operations.
-The current public v1.4.0 Windows x64 final archive ran on a Windows Server 2025 runner and
+The current public v1.7.0 Windows x64 final archive ran on a Windows Server 2025 runner and
 proved bundled runtimes, health, a minimal trace-processor query, shutdown, and port release.
 That is not manual acceptance of Windows 10/11 desktop behavior, SmartScreen, or Provider UI.
 Future archive gates also require real SQLite/sodium loading, a local Provider lifecycle, and

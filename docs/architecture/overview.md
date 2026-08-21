@@ -169,7 +169,7 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 
 6. 结束与报告
    conclusion -> analysis_completed -> sanitized CodeRef/patch metadata
-      -> AnalysisReceiptV1
+      -> AnalysisReceiptV2（包含 runManifestId）
       -> HTML report + CLI artifacts + analysis-result snapshot
       -> /api/reports/:id
 ```

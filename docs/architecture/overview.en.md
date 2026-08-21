@@ -188,7 +188,7 @@ metadata-only visibility.
 
 6. Finish and report
    conclusion -> analysis_completed -> sanitized CodeRef/patch metadata
-      -> AnalysisReceiptV1
+      -> AnalysisReceiptV2 (including runManifestId)
       -> HTML report + CLI artifacts + analysis-result snapshot
       -> /api/reports/:id
 ```

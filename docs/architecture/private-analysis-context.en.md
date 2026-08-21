@@ -18,8 +18,11 @@ sessions, and cross-session learning must not add either domain implicitly.
 | None | Present | Exact `knowledgeSourceIds` and active generations; external prose is background, never current-trace evidence |
 | Present | Present | Both allowlists apply and validate independently, then share the private projection and report boundary |
 
-Selecting source, external RAG, or a reference trace requires tools unavailable
-in the lightweight runtime, so `fast` / `auto` resolves to `full`. Smart Profile
+Except for the lightweight Conversation surface, selecting source, external
+RAG, or a reference trace requires tools unavailable in the lightweight
+runtime, so `fast` / `auto` resolves to `full`. Conversation keeps the fast
+executor and returns only bounded references; source/RAG deep evidence requires
+a handoff to a new full analysis. Smart Profile
 preview only inventories scenes. A deep dive must pass the source mode,
 `codebaseIds`, `knowledgeSourceIds`, output language, and preview identity into
 the real run unchanged instead of relying on implicit UI-global state.

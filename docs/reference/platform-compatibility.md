@@ -28,7 +28,7 @@ SmartPerfetto 有四种分发 / runtime 家族；产品内部仍有更多具体�
 任一层缺少证据时，只报告已完成的层级；Windows/Linux 交叉构建不能写成 Windows/Linux
 runtime smoke，Docker host 的操作系统也不能写成 container target。
 
-Windows 用户操作以 [Windows 指南](../getting-started/windows.md) 为准。当前公开 v1.4.0
+Windows 用户操作以 [Windows 指南](../getting-started/windows.md) 为准。当前公开 v1.7.0
 的 Windows x64 最终归档已在 Windows Server 2025 runner 验证包内 runtime、health、
 最小 trace processor 查询、退出和端口释放；这不等于 Windows 10/11 桌面、SmartScreen
 或 Provider UI 已人工验收。后续归档门禁还要求实际加载 SQLite/sodium、运行本地 Provider

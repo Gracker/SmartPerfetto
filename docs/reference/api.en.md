@@ -20,7 +20,12 @@ users should use durable API keys with explicit roles and scopes.
 | `GET` | `/api/auth/oidc/login` | Create signed state, nonce, and PKCE values, then redirect to the OIDC provider |
 | `GET` | `/api/auth/oidc/callback` | Validate the callback, establish the HttpOnly session cookie, and redirect to the frontend |
 | `GET` | `/api/auth/session` | Return login state, read-only user/tenant/workspace, roles/scopes, expiry, and the CSRF token |
+| `POST` | `/api/auth/onboarding/workspace` | Select an allowed workspace during OIDC onboarding; requires cookie mutation protection |
 | `POST` | `/api/auth/logout` | Validate CSRF for the cookie session, revoke it, and clear the cookie |
+| `GET` | `/api/auth/api-keys` | List API keys in the current tenant/workspace scope; requires API-key read permission |
+| `POST` | `/api/auth/api-keys` | Create a scoped API key; the plaintext token is returned only in the creation response |
+| `POST` | `/api/auth/api-keys/:id/revoke` | Revoke an API key |
+| `DELETE` | `/api/auth/api-keys/:id` | Compatibility route for revoking an API key |
 
 The OIDC session is the sole identity authority. Browser requests must use
 `credentials: include`, and mutations also require `X-CSRF-Token`. Browser
@@ -81,6 +86,7 @@ npm registry, or Docker Hub; clients cannot supply a URL. With
 |---|---|---|
 | `GET` | `/api/traces/health` | Trace service health |
 | `POST` | `/api/traces/upload` | Upload a trace file with field name `file` |
+| `POST` | `/api/traces/upload-url` | Fetch a trace server-side from an HTTP(S) URL after public-network URL validation |
 | `GET` | `/api/traces` | List known traces |
 | `GET` | `/api/traces/stats` | Trace statistics |
 | `POST` | `/api/traces/cleanup` | Cleanup trace data |
@@ -88,6 +94,8 @@ npm registry, or Docker Hub; clients cannot supply a URL. With
 | `GET` | `/api/traces/:id` | Trace metadata |
 | `DELETE` | `/api/traces/:id` | Delete a trace |
 | `GET` | `/api/traces/:id/file` | Download a trace file |
+| `POST` | `/api/traces/:id/viewer` | Create an isolated trace-processor viewer lease for the current page |
+| `GET` | `/api/traces/leases/:leaseId/connection` | Read the safe connection state for a lease held by the current page |
 
 Upload example:
 
@@ -630,15 +638,18 @@ repository readability rules.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/api/reports/:reportId` | Fetch report |
+| `GET` | `/api/reports/:reportId/export` | Download the persisted HTML report artifact |
 | `DELETE` | `/api/reports/:reportId` | Delete report |
 | `POST` | `/api/export/result` | Export one result |
 | `POST` | `/api/export/session` | Export session |
 | `POST` | `/api/export/analysis` | Export analysis |
 | `GET` | `/api/export/formats` | Supported formats |
+| `GET` | `/api/export/tenant` | Export a tenant compliance bundle without trace file bodies or secrets |
 
 ## Legacy and Compatibility APIs
 
-The following APIs still exist, but new integrations should prefer `/api/agent/v1/*`:
+The following global APIs still exist. New workspace product integrations
+should prefer the `/api/workspaces/:workspaceId/*` paths above:
 
 - `/api/traces/*`; prefer `/api/workspaces/:workspaceId/traces/*`
 - `/api/reports/*`; prefer `/api/workspaces/:workspaceId/reports/*`

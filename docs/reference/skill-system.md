@@ -20,7 +20,7 @@
 10. [Synthesize 数据摘要](#10-synthesize-数据摘要)
 11. [Pipeline Skills](#11-pipeline-skills)
 12. [开发工作流](#12-开发工作流)
-13. [与 Claude 标准 Skill 的区别](#13-与-claude-标准-skill-的区别)
+13. [与标准 Agent Skill 的关系](#13-与标准-agent-skill-的关系)
 14. [Skill tier 与校验规则](#14-skill-tier-与校验规则)
 15. [本地 Skill Pack](#15-本地-skill-pack)
 

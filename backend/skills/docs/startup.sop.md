@@ -1,6 +1,7 @@
 # 应用启动分析 SOP (Standard Operating Procedure)
 
-> 版本: 1.0.0 | 最后更新: 2024-12 | 作者: SmartPerfetto Team
+> 维护边界：runtime-read SOP。当前 Skill、Trace catalog 和固定 trace processor
+> 是可执行真相；本文的阈值和示例不得替代当前 trace 证据。
 
 ## 1. 概述
 
@@ -11,18 +12,6 @@
 - 冷启动 (Cold Start): 应用进程不存在，需要完整启动
 - 温启动 (Warm Start): 进程存在但 Activity 被销毁
 - 热启动 (Hot Start): 进程和 Activity 都存在，只需恢复
-
-### 1.4 启动类型判定规则 (Perfetto 信号)
-
-Perfetto `android_startups` 表的 `startup_type` 可能不准确，需基于 trace slice 信号重分类：
-
-| 类型 | 判定信号 | Android 框架路径 |
-|------|---------|-----------------|
-| 冷启动 (cold) | `bindApplication` slice 存在 | Zygote fork → handleBindApplication() |
-| 温启动 (warm) | `performCreate:*` 存在且**无** `bindApplication` | Activity.onCreate()（跳过 App 初始化）|
-| 热启动 (hot) | 两者均不存在 → 保留 Perfetto 原始分类 | Activity.onRestart() → onResume() |
-
-**⚠️ LMK 误分类：** 进程被 LMK 回收后重启，Perfetto 可能报 warm（ActivityManager 仍持有 Activity 记录），但 `bindApplication` 存在说明进程经历了完整初始化，实为 cold start。`startup_events_in_range` skill 的 SQL 层已实现此重分类逻辑。
 
 ### 1.3 启动阶段概览
 
@@ -42,6 +31,18 @@ Perfetto `android_startups` 表的 `startup_type` 可能不准确，需基于 tr
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+### 1.4 启动类型判定规则 (Perfetto 信号)
+
+Perfetto `android_startups` 表的 `startup_type` 可能不准确，需基于 trace slice 信号重分类：
+
+| 类型 | 判定信号 | Android 框架路径 |
+|------|---------|-----------------|
+| 冷启动 (cold) | `bindApplication` slice 存在 | Zygote fork → handleBindApplication() |
+| 温启动 (warm) | `performCreate:*` 存在且**无** `bindApplication` | Activity.onCreate()（跳过 App 初始化）|
+| 热启动 (hot) | 两者均不存在 → 保留 Perfetto 原始分类 | Activity.onRestart() → onResume() |
+
+**⚠️ LMK 误分类：** 进程被 LMK 回收后重启，Perfetto 可能报 warm（ActivityManager 仍持有 Activity 记录），但 `bindApplication` 存在说明进程经历了完整初始化，实为 cold start。`startup_events_in_range` skill 的 SQL 层已实现此重分类逻辑。
 
 ---
 
@@ -107,7 +108,7 @@ JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
 JOIN process p ON t.upid = p.upid
 WHERE p.name GLOB '${package}*'
-  AND t.name = 'main'
+  AND t.tid = p.pid
   AND s.ts >= ${startup.ts} AND s.ts <= ${startup.ts_end}
   AND (s.name GLOB '*bindApplication*'
        OR s.name GLOB '*Application.onCreate*'
@@ -125,18 +126,16 @@ ORDER BY s.ts ASC
 **目的**: 了解主线程在启动期间的状态分布
 
 **线程状态说明**:
-| 状态 | 含义 | 正常占比 |
+| 状态 | 含义 | 筛查解释 |
 |------|------|---------|
-| Running | CPU 上执行 | 越高越好 |
-| Runnable (R/R+) | 等待 CPU 调度 | <10% |
-| Sleeping (S) | 主动睡眠 | 越低越好 |
-| Uninterruptible Sleep (D/DK) | 不可中断等待；IO 归因需 `io_wait=1` 或 IO/page-cache `blocked_function` | 应该 <5% |
+| Running | CPU 上执行 | 与阶段工作量、频率和 runnable delay 一起解释 |
+| Runnable (R/R+) | 等待 CPU 调度 | 占比或连续区间偏高时检查 CPU 竞争和调度延迟 |
+| Sleeping (S) | 主动睡眠 | 结合 `blocked_function` 判断等待对象，不以占比单独归因 |
+| Uninterruptible Sleep (D/DK) | 不可中断等待；IO 归因需 `io_wait=1` 或 IO/page-cache `blocked_function` | 出现长区间时优先核对 IO/page-cache 证据 |
 
-**理想分布**:
-- Running: >80%
-- Runnable: <10%
-- Sleeping: <10%
-- Uninterruptible Sleep: <5%，超过阈值时先查 `io_wait` / `blocked_function`
+不同启动类型、设备和 workload 没有统一的“理想状态占比”。应先报告 trace 内的
+绝对时长和连续区间，再把 runnable delay、`io_wait`、`blocked_function`、CPU 频率及
+阶段证据合并为结论。
 
 **SQL 查询**:
 ```sql
@@ -158,20 +157,21 @@ ORDER BY total_dur_ms DESC
 **目的**: 检查主线程是否在大核上运行
 
 **核心类型**:
-- **大核 (Big Core)**: 通常是 CPU 4-7，性能更强
-- **小核 (Little Core)**: 通常是 CPU 0-3，功耗更低
+- 先调用 `cpu_topology_detection` / `cpu_topology_view`，按当前 trace 的
+  capacity、cluster 和频率证据识别 Prime/Big/Mid/Little。
+- 不得把 CPU 0–3/4–7 当作通用拓扑；CPU 编号、核心类型和最大频率都随 SoC 变化。
 
 **为什么重要**:
-- 启动期间应尽量在大核运行，提升启动速度
-- 如果主要在小核运行，可能是系统调度问题
+- placement 只是线索，必须结合 runnable delay、uclamp、实际频率、thermal/power
+  状态和 workload demand 解释。
+- 主要运行在低容量核心不单独证明调度错误，也不能据此直接给出 App 优化建议。
 
 **判断标准**:
 | 大核占比 | 评价 | 可能原因 |
 |----------|------|---------|
-| >70% | 优秀 | 系统调度正常 |
-| 50-70% | 良好 | 可接受 |
-| 30-50% | 需关注 | 可能有调度问题 |
-| <30% | 严重 | 功耗策略或调度异常 |
+| 高容量核心占比较高 | 候选正向信号 | 仍需核对 runnable delay 与实际频率 |
+| 高低容量核心混合 | 中性 | 结合任务阶段、cluster migration 和负载需求 |
+| 低容量核心占比较高 | 待解释 | 不能脱离 uclamp、thermal、power policy 和 demand 归因 |
 
 **SQL 查询**:
 ```sql

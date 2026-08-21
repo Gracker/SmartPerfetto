@@ -123,8 +123,9 @@ private-analysis projections apply the shared redaction boundary.
 
 ## Analysis Receipt
 
-`AnalysisReceiptV1` is built at the analysis-completion boundary. It binds the
-run, session, trace, requested/resolved mode, runtime, and provider; separately
+`AnalysisReceiptV2` is built at the analysis-completion boundary. It binds the
+`runManifestId`, run, session, trace, requested/resolved mode, runtime, and
+provider; separately
 counts trace evidence and non-evidence context; summarizes claim audit and the
 final-report, claim-verification, and identity-resolution gates; and links the
 report, snapshot, or CLI turn that was actually produced.

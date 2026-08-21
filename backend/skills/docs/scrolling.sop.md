@@ -1,6 +1,7 @@
 # 滑动卡顿分析 SOP
 
-> 版本: 1.0.0 | 最后更新: 2024-12
+> 维护边界：runtime-read SOP。优先使用 FrameTimeline、动态刷新率和当前 Skill
+> 证据；固定 60Hz 数值只用于明确标注的 fallback 示例。
 
 ## 1. 概述
 
@@ -12,7 +13,7 @@
 | 指标 | 说明 | 理想值 |
 |------|------|--------|
 | 帧率 (FPS) | 每秒渲染帧数 | 60fps / 90fps / 120fps |
-| 帧时间 | 单帧渲染时间 | < 16.67ms (60Hz) |
+| 帧时间 | 单帧渲染时间 | 小于当前 frame deadline / 刷新周期 |
 | Jank 率 | 丢帧占比 | < 5% |
 | 严重 Jank | 丢 2 帧以上 | < 1% |
 
@@ -106,7 +107,9 @@ SELECT
 FROM slice s
 JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
-WHERE t.name = 'main'
+JOIN process p ON t.upid = p.upid
+WHERE p.name GLOB '${package}*'
+  AND t.tid = p.pid
   AND s.name GLOB '*Choreographer#doFrame*'
 ORDER BY s.ts ASC
 ```
@@ -114,10 +117,10 @@ ORDER BY s.ts ASC
 **判断标准：**
 | 帧时间 | 状态 | 说明 |
 |--------|------|------|
-| < 16.67ms | 正常 | 60fps |
-| 16.67 - 33.33ms | Jank | 丢 1 帧 |
-| 33.33 - 50ms | 严重 Jank | 丢 2 帧 |
-| > 50ms | 非常严重 | 丢 3+ 帧 |
+| ≤ 1 × 当前周期 | deadline 内 | 不能仅凭时长判断用户可见结果 |
+| 1–2 × 当前周期 | 候选 Jank | 用 FrameTimeline / present 证据确认 |
+| 2–3 × 当前周期 | 候选严重 Jank | 核对 App、SF、GPU 和 display 阶段 |
+| > 3 × 当前周期 | 长帧候选 | 同时检查空闲、低帧率内容、VRR/ARR 与采集缺口 |
 
 ---
 
@@ -134,8 +137,8 @@ JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
 JOIN process p ON t.upid = p.upid
 WHERE p.name GLOB '${package}*'
-  AND t.name = 'main'
-  AND s.dur > 16000000  -- > 16ms
+  AND t.tid = p.pid
+  AND s.dur > ${vsync_period_ns}
   AND s.name NOT GLOB '*Choreographer*'
 ORDER BY s.dur DESC
 ```
@@ -159,7 +162,9 @@ SELECT
 FROM slice s
 JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
-WHERE t.name = 'RenderThread'
+JOIN process p ON t.upid = p.upid
+WHERE p.name GLOB '${package}*'
+  AND t.name = 'RenderThread'
 GROUP BY s.name
 ORDER BY avg_dur_ms DESC
 ```
