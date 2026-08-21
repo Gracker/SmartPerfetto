@@ -291,50 +291,107 @@ class PipelineSkillLoaderClass {
   private validateDetection(pipeline: PipelineDefinition, file: string): void {
     const pipelineId = pipeline?.meta?.pipeline_id || 'UNKNOWN';
     const detection = pipeline.detection;
-    if (!detection) return;
+    if (!detection) {
+      throw new Error(`invalid detection config: ${file} (${pipelineId}): detection is missing`);
+    }
 
     const selectorKeys = ['thread', 'thread_pattern', 'slice', 'slice_pattern'] as const;
     const countSelectors = (obj: Record<string, unknown>): string[] =>
       selectorKeys.filter((k) => obj[k] !== undefined && obj[k] !== null);
+    const isPositiveInteger = (value: unknown): boolean =>
+      value === undefined ||
+      (typeof value === 'number' && Number.isInteger(value) && value > 0);
+    const isNonEmptyString = (value: unknown): value is string =>
+      typeof value === 'string' && value.trim().length > 0;
+    const errors: string[] = [];
+    const requiredSignals = Array.isArray(detection.required_signals)
+      ? detection.required_signals
+      : [];
+    const excludedSignals = Array.isArray(detection.exclude_if)
+      ? detection.exclude_if
+      : [];
+    const scoringSignals = Array.isArray(detection.scoring_signals)
+      ? detection.scoring_signals
+      : [];
 
-    const validateMinCount = (v: unknown): boolean => {
-      if (v === undefined || v === null) return true;
-      const n = typeof v === 'number' ? v : parseInt(String(v), 10);
-      return Number.isFinite(n) && n > 0;
+    const validateSelectors = (kind: string, item: Record<string, unknown>) => {
+      const keys = countSelectors(item);
+      if (keys.length !== 1) {
+        errors.push(`${kind} entry must have exactly one selector, got [${keys.join(', ')}]`);
+      }
+      for (const key of keys) {
+        if (!isNonEmptyString(item[key])) {
+          errors.push(`${kind} entry selector '${key}' must be a non-empty string`);
+        }
+      }
     };
 
-    const warn = (msg: string) => {
-      console.warn(`[PipelineSkillLoader] Validation warning in ${file} (${pipelineId}): ${msg}`);
-    };
-
-    for (const [kind, items] of [
-      ['required_signals', detection.required_signals || []],
-      ['exclude_if', detection.exclude_if || []],
-    ] as const) {
-      for (const item of items) {
-        const keys = countSelectors(item as any);
-        if (keys.length !== 1) warn(`${kind} entry must have exactly one selector, got [${keys.join(', ')}]`);
-        if (!validateMinCount((item as any).min_count)) warn(`${kind} entry has invalid min_count: ${(item as any).min_count}`);
+    if (detection.required_signals !== undefined && !Array.isArray(detection.required_signals)) {
+      errors.push('detection.required_signals must be an array');
+    }
+    for (const item of requiredSignals) {
+      const entry = item as Record<string, unknown>;
+      validateSelectors('required_signals', entry);
+      if (!isPositiveInteger(entry.min_count)) {
+        errors.push(`required_signals entry has invalid min_count: ${entry.min_count}`);
       }
     }
 
-    for (const item of detection.scoring_signals || []) {
-      const keys = countSelectors(item as any);
-      if (keys.length !== 1) warn(`scoring_signals '${(item as any).signal}' must have exactly one selector, got [${keys.join(', ')}]`);
-
-      const signal = (item as any).signal;
-      if (!signal || typeof signal !== 'string') warn(`scoring_signals entry missing 'signal' name`);
-
-      const weight = (item as any).weight;
-      if (typeof weight !== 'number' || !Number.isFinite(weight) || weight < 0) {
-        warn(`scoring_signals '${signal || 'UNKNOWN'}' has invalid weight: ${weight}`);
+    if (detection.exclude_if !== undefined && !Array.isArray(detection.exclude_if)) {
+      errors.push('detection.exclude_if must be an array');
+    }
+    for (const item of excludedSignals) {
+      const entry = item as Record<string, unknown>;
+      validateSelectors('exclude_if', entry);
+      if (Object.prototype.hasOwnProperty.call(entry, 'min_count')) {
+        errors.push('exclude_if entry must not define min_count');
       }
-
-      if (!validateMinCount((item as any).min_count)) warn(`scoring_signals '${signal || 'UNKNOWN'}' has invalid min_count: ${(item as any).min_count}`);
     }
 
-    if (!Array.isArray(detection.scoring_signals) || detection.scoring_signals.length === 0) {
-      warn('detection.scoring_signals is empty; pipeline will never be selected by scoring');
+    if (detection.scoring_signals === undefined) {
+      errors.push('detection.scoring_signals is missing');
+    } else if (!Array.isArray(detection.scoring_signals)) {
+      errors.push('detection.scoring_signals must be an array');
+    } else if (detection.scoring_signals.length === 0) {
+      errors.push('detection.scoring_signals is empty; pipeline will never be selected by scoring');
+    }
+
+    let hasPositiveWeight = false;
+    for (const item of scoringSignals) {
+      const entry = item as Record<string, unknown>;
+      const signal = entry.signal;
+      const signalName = isNonEmptyString(signal) ? signal : 'UNKNOWN';
+      const keys = countSelectors(entry);
+      if (keys.length !== 1) {
+        errors.push(`scoring_signals '${signalName}' must have exactly one selector, got [${keys.join(', ')}]`);
+      }
+      for (const key of keys) {
+        if (!isNonEmptyString(entry[key])) {
+          errors.push(`scoring_signals '${signalName}' selector '${key}' must be a non-empty string`);
+        }
+      }
+      if (!isNonEmptyString(signal)) {
+        errors.push("scoring_signals entry missing 'signal' name");
+      }
+
+      const weight = entry.weight;
+      if (typeof weight !== 'number' || !Number.isInteger(weight) || weight < 0) {
+        errors.push(`scoring_signals '${signalName}' has invalid weight: ${weight}`);
+      } else if (weight > 0) {
+        hasPositiveWeight = true;
+      }
+
+      if (!isPositiveInteger(entry.min_count)) {
+        errors.push(`scoring_signals '${signalName}' has invalid min_count: ${entry.min_count}`);
+      }
+    }
+
+    if (scoringSignals.length > 0 && !hasPositiveWeight) {
+      errors.push('detection.scoring_signals must include a positive integer weight');
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`invalid detection config: ${file} (${pipelineId}): ${errors.join('; ')}`);
     }
   }
 
