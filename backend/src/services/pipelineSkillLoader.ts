@@ -303,6 +303,8 @@ class PipelineSkillLoaderClass {
       (typeof value === 'number' && Number.isInteger(value) && value > 0);
     const isNonEmptyString = (value: unknown): value is string =>
       typeof value === 'string' && value.trim().length > 0;
+    const isDetectionEntry = (value: unknown): value is Record<string, unknown> =>
+      typeof value === 'object' && value !== null && !Array.isArray(value);
     const errors: string[] = [];
     const requiredSignals = Array.isArray(detection.required_signals)
       ? detection.required_signals
@@ -330,6 +332,10 @@ class PipelineSkillLoaderClass {
       errors.push('detection.required_signals must be an array');
     }
     for (const item of requiredSignals) {
+      if (!isDetectionEntry(item)) {
+        errors.push('required_signals entry must be an object');
+        continue;
+      }
       const entry = item as Record<string, unknown>;
       validateSelectors('required_signals', entry);
       if (!isPositiveInteger(entry.min_count)) {
@@ -341,6 +347,10 @@ class PipelineSkillLoaderClass {
       errors.push('detection.exclude_if must be an array');
     }
     for (const item of excludedSignals) {
+      if (!isDetectionEntry(item)) {
+        errors.push('exclude_if entry must be an object');
+        continue;
+      }
       const entry = item as Record<string, unknown>;
       validateSelectors('exclude_if', entry);
       if (Object.prototype.hasOwnProperty.call(entry, 'min_count')) {
@@ -358,6 +368,10 @@ class PipelineSkillLoaderClass {
 
     let hasPositiveWeight = false;
     for (const item of scoringSignals) {
+      if (!isDetectionEntry(item)) {
+        errors.push('scoring_signals entry must be an object');
+        continue;
+      }
       const entry = item as Record<string, unknown>;
       const signal = entry.signal;
       const signalName = isNonEmptyString(signal) ? signal : 'UNKNOWN';

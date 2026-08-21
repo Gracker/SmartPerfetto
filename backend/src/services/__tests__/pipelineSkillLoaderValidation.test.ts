@@ -105,6 +105,33 @@ describe('PipelineSkillLoader detection validation', () => {
     })).toThrow('invalid detection config');
   });
 
+  it.each([
+    [
+      'required_signals',
+      {
+        required_signals: [null],
+        scoring_signals: [{ signal: 'valid', slice: 'A', weight: 1 }],
+      },
+    ],
+    [
+      'exclude_if',
+      {
+        exclude_if: [null],
+        scoring_signals: [{ signal: 'valid', slice: 'A', weight: 1 }],
+      },
+    ],
+    [
+      'scoring_signals',
+      {
+        scoring_signals: [null, { signal: 'valid', slice: 'A', weight: 1 }],
+      },
+    ],
+  ])('fails closed for a non-object %s entry', (kind, detection) => {
+    expect(() => validateDetection(detection)).toThrow(
+      `invalid detection config: test_pipeline.skill.yaml (TEST_PIPELINE): ${kind} entry must be an object`,
+    );
+  });
+
   it('includes the source file and pipeline ID in a detection error', () => {
     expect(() => validateDetection({ scoring_signals: [] })).toThrow(
       'invalid detection config: test_pipeline.skill.yaml (TEST_PIPELINE)',
