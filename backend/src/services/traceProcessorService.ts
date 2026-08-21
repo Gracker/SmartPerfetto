@@ -26,6 +26,7 @@ import {
 } from './traceProcessorCancellation';
 import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
 import {splitSqlStatements} from './sqlStdlibDependencyAnalyzer';
+import type {ResolveCapabilityTraceProcessorIdentityInput} from './capabilityManifestRuntimeIdentity';
 
 export interface TraceInfo {
   id: string;
@@ -121,6 +122,7 @@ function recordRunManifestSqlStatements(sql: string, success: boolean): void {
  */
 export class TraceProcessorService extends EventEmitter {
   private traces: Map<string, TraceInfo> = new Map();
+  private traceSources = new WeakMap<TraceInfo, 'local_file' | 'external_rpc'>();
   private processors: Map<string, TraceProcessor> = new Map();
   private uploads: Map<string, any> = new Map();
   private uploadDir: string;
@@ -144,6 +146,14 @@ export class TraceProcessorService extends EventEmitter {
     if (!fs.existsSync(this.uploadDir)) {
       fs.mkdirSync(this.uploadDir, { recursive: true });
     }
+  }
+
+  private storeTraceInfo(
+    traceInfo: TraceInfo,
+    source: 'local_file' | 'external_rpc',
+  ): void {
+    this.traces.set(traceInfo.id, traceInfo);
+    this.traceSources.set(traceInfo, source);
   }
 
   private processorKeyForLease(
@@ -207,7 +217,7 @@ export class TraceProcessorService extends EventEmitter {
       status: 'uploading',
     };
 
-    this.traces.set(traceId, traceInfo);
+    this.storeTraceInfo(traceInfo, 'local_file');
     this.emit('trace-initialized', traceInfo);
 
     return traceId;
@@ -232,7 +242,7 @@ export class TraceProcessorService extends EventEmitter {
       status: 'uploading',
     };
 
-    this.traces.set(traceId, traceInfo);
+    this.storeTraceInfo(traceInfo, 'local_file');
     this.emit('trace-initialized', traceInfo);
   }
 
@@ -271,7 +281,7 @@ export class TraceProcessorService extends EventEmitter {
       uploadTime: new Date(input.uploadedAt ?? stats.mtime),
       status: 'ready',
     };
-    this.traces.set(input.id, traceInfo);
+    this.storeTraceInfo(traceInfo, 'local_file');
     this.emit('trace-initialized', traceInfo);
     return traceInfo;
   }
@@ -627,6 +637,30 @@ export class TraceProcessorService extends EventEmitter {
     return this.traces.get(traceId);
   }
 
+  public getTraceSourceKind(
+    traceId: string,
+  ): 'local_file' | 'external_rpc' | undefined {
+    const traceInfo = this.traces.get(traceId);
+    return traceInfo ? this.traceSources.get(traceInfo) : undefined;
+  }
+
+  public getRunningCapabilityTraceProcessorInput(
+    traceId: string,
+    options: TraceProcessorServiceQueryOptions = {},
+  ): ResolveCapabilityTraceProcessorIdentityInput | undefined {
+    const leaseContext = this.resolveLeaseQueryContext(traceId, options);
+    const processorKey = this.processorKeyForLease(
+      traceId,
+      leaseContext?.leaseId,
+      leaseContext?.mode,
+    );
+    const processor = this.processors.get(processorKey);
+    if (!processor) return undefined;
+    return processor instanceof WorkingTraceProcessor
+      ? processor.getRuntimeBinarySelection()
+      : {source: 'external_rpc'};
+  }
+
   /**
    * Get the HTTP port of the trace processor for a given trace
    * This port can be used by the frontend to connect via HTTP RPC mode
@@ -727,7 +761,7 @@ export class TraceProcessorService extends EventEmitter {
       status: 'ready', // Assume it's ready since frontend is already connected
     };
 
-    this.traces.set(traceId, traceInfo);
+    this.storeTraceInfo(traceInfo, 'external_rpc');
 
     // Create a proxy processor that uses the existing HTTP RPC connection
     const processor = await TraceProcessorFactory.createFromExternalRpc(traceId, port);
@@ -799,7 +833,7 @@ export class TraceProcessorService extends EventEmitter {
       }
 
       // Register in memory
-      this.traces.set(traceId, traceInfo);
+      this.storeTraceInfo(traceInfo, 'local_file');
 
       // Create processor
       const processor = await this.createProcessor(traceId);
@@ -1081,7 +1115,7 @@ export class TraceProcessorService extends EventEmitter {
       status: 'processing',
     };
 
-    this.traces.set(traceId, traceInfo);
+    this.storeTraceInfo(traceInfo, 'local_file');
     this.emit('trace-initialized', traceInfo);
 
     // Copy file to upload directory

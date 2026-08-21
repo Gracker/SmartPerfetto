@@ -566,6 +566,11 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
   private readonly processorKey: string;
   private readonly leaseId?: string;
   private readonly leaseMode: 'shared' | 'isolated' | string;
+  private runtimeBinarySelection?: Readonly<{
+    source: 'local_binary';
+    selectedPath: string;
+    selectionOrigin: 'default' | 'env_override';
+  }>;
   private _httpPort: number;
 
   /** Get the HTTP port this processor is listening on */
@@ -590,6 +595,17 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
   /** Number of in-flight queries. Factory uses this to avoid evicting busy processors. */
   public get activeQueries(): number {
     return this._activeQueries;
+  }
+
+  public getRuntimeBinarySelection(): {
+    source: 'local_binary';
+    selectedPath: string;
+    selectionOrigin: 'default' | 'env_override';
+  } {
+    if (!this.runtimeBinarySelection) {
+      throw new Error('Trace processor binary selection is unavailable before initialization');
+    }
+    return {...this.runtimeBinarySelection};
   }
 
   public getRuntimeStats(): TraceProcessorRuntimeStats {
@@ -662,6 +678,15 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
     // Check if trace_processor_shell exists
     const traceProcessorPath = getTraceProcessorPath();
+    const envOverridePath = resolveEnvTraceProcessorPath();
+    const binarySelection = Object.freeze({
+      source: 'local_binary' as const,
+      selectedPath: traceProcessorPath,
+      selectionOrigin: envOverridePath === traceProcessorPath
+        ? 'env_override' as const
+        : 'default' as const,
+    });
+    this.runtimeBinarySelection = binarySelection;
     if (!fs.existsSync(traceProcessorPath)) {
       throw new Error(`trace_processor_shell not found at: ${traceProcessorPath}`);
     }
@@ -672,7 +697,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
 
     // Start trace_processor_shell in HTTP mode
     try {
-      await this.startHttpServer();
+      await this.startHttpServer(binarySelection);
 
       // Verify server is working with a test query
       console.log(`[TraceProcessor] Verifying server with test query...`);
@@ -707,7 +732,11 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
   /**
    * Start trace_processor_shell HTTP server
    */
-  private async startHttpServer(): Promise<void> {
+  private async startHttpServer(binarySelection: Readonly<{
+    source: 'local_binary';
+    selectedPath: string;
+    selectionOrigin: 'default' | 'env_override';
+  }>): Promise<void> {
     return new Promise((resolve, reject) => {
       // Build CORS origins string from config
       const corsOrigins = `${traceProcessorConfig.perfettoUiOrigin},${traceProcessorConfig.perfettoUiOrigin.replace('localhost', '127.0.0.1')}`;
@@ -716,11 +745,11 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
         '--http-port', String(this.httpPort),
         // Only pass --http-additional-cors-origins when supported (added after v47);
         // older binaries (≤v47) don't enforce CORS and exit with code 1 on unknown flags.
-        ...(supportsTraceProcessorCorsOriginsFlag() ? ['--http-additional-cors-origins', corsOrigins] : []),
+        ...(supportsTraceProcessorCorsOriginsFlag(binarySelection.selectedPath) ? ['--http-additional-cors-origins', corsOrigins] : []),
         this.tracePath
       ];
 
-      const traceProcessorPath = getTraceProcessorPath();
+      const traceProcessorPath = binarySelection.selectedPath;
       console.log(`[TraceProcessor] Starting: ${traceProcessorPath} ${args.join(' ')}`);
 
       this.process = spawn(traceProcessorPath, args, {
