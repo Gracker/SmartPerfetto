@@ -77,6 +77,7 @@ function baseInput(): BuildCapabilityManifestInput {
     },
     trace: {
       fingerprintSha256: SHA_A,
+      fingerprintKind: 'trace_bytes_sha256',
       traceSide: 'current',
       androidApiLevel: 35,
       machineId: 'device-1',
@@ -203,6 +204,17 @@ describe('CapabilityManifest contract', () => {
     expect(manifest).not.toHaveProperty('schemaVersion');
   });
 
+  it('binds trace fingerprint kind into the content projection and hash', () => {
+    const manifest = buildCapabilityManifest(baseInput());
+    const withoutKind = JSON.parse(JSON.stringify(manifest.content)) as {
+      trace: Record<string, unknown>;
+    };
+    delete withoutKind.trace.fingerprintKind;
+
+    expect(manifest.content.trace.fingerprintKind).toBe('trace_bytes_sha256');
+    expect(canonicalContentHash(withoutKind)).not.toBe(manifest.contentHash);
+  });
+
   it.each([
     ['duplicate definition ID', (input: BuildCapabilityManifestInput) => {
       input.definitions.push({...input.definitions[0]});
@@ -303,6 +315,8 @@ describe('CapabilityManifest contract', () => {
     ['empty RPC API version', {source: 'unknown', rpcApiVersion: ''}, 'capability_manifest_invalid_tp_rpc_api_version'],
     ['malformed stdlib revision', {source: 'unknown', stdlibRevision: SHA_A}, 'capability_manifest_invalid_tp_stdlib_revision'],
     ['empty unavailable reason', {source: 'unknown', unavailableReason: ''}, 'capability_manifest_invalid_tp_unavailable_reason'],
+    ['missing unavailable reason', {source: 'unknown'}, 'capability_manifest_invalid_tp_unavailable_reason'],
+    ['unknown unavailable reason', {source: 'unknown', unavailableReason: 'binary_missing_somewhere'}, 'capability_manifest_invalid_tp_unavailable_reason'],
   ])('rejects malformed trace processor identity: %s', (_name, identity, code) => {
     const input = baseInput();
     input.traceProcessor = identity as CapabilityManifestTraceProcessorIdentityV1;
@@ -311,6 +325,10 @@ describe('CapabilityManifest contract', () => {
 
   it.each([
     ['fingerprint', (input: BuildCapabilityManifestInput) => { input.trace.fingerprintSha256 = GIT_A; }, 'capability_manifest_invalid_trace_fingerprint'],
+    ['fingerprint kind', (input: BuildCapabilityManifestInput) => {
+      (input.trace as unknown as Record<string, unknown>).fingerprintKind =
+        'trace_id_sha256';
+    }, 'capability_manifest_invalid_trace_fingerprint_kind'],
     ['trace side', (input: BuildCapabilityManifestInput) => { (input.trace as {traceSide: string}).traceSide = 'baseline'; }, 'capability_manifest_invalid_trace_side'],
     ['zero API', (input: BuildCapabilityManifestInput) => { input.trace.androidApiLevel = 0; }, 'capability_manifest_invalid_android_api_level'],
     ['fractional API', (input: BuildCapabilityManifestInput) => { input.trace.androidApiLevel = 34.5; }, 'capability_manifest_invalid_android_api_level'],

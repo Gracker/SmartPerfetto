@@ -51,6 +51,13 @@ export interface CapabilityManifestLegacyProbeInput {
   diagnosedAt: number;
 }
 
+export type CapabilityManifestTraceProcessorUnavailableReason =
+  | 'external_rpc_binary_unavailable'
+  | 'trace_processor_binary_unavailable'
+  | 'unsupported_platform'
+  | 'trace_processor_pin_unavailable'
+  | 'identity_resolution_failed';
+
 export type CapabilityManifestTraceProcessorIdentityV1 =
   | {
       source: 'bundled';
@@ -71,7 +78,7 @@ export type CapabilityManifestTraceProcessorIdentityV1 =
       reportedVersion?: string;
       rpcApiVersion?: string;
       stdlibRevision?: string;
-      unavailableReason?: string;
+      unavailableReason: CapabilityManifestTraceProcessorUnavailableReason;
     };
 
 export interface CapabilityManifestEntryV1 {
@@ -87,6 +94,7 @@ export interface CapabilityManifestEntryV1 {
 
 export interface CapabilityManifestTraceContentIdentityV1 {
   fingerprintSha256: string;
+  fingerprintKind: 'trace_bytes_sha256';
   traceSide: 'current' | 'reference';
   androidApiLevel?: number;
   machineId?: string;

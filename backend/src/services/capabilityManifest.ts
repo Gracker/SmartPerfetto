@@ -20,6 +20,13 @@ import {
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const GIT_REVISION_PATTERN = /^[0-9a-f]{40}$/;
 const CLOCK_VALUE_PATTERN = /^(?:0|[1-9][0-9]*)$/;
+const TRACE_PROCESSOR_UNAVAILABLE_REASONS = new Set([
+  'external_rpc_binary_unavailable',
+  'trace_processor_binary_unavailable',
+  'unsupported_platform',
+  'trace_processor_pin_unavailable',
+  'identity_resolution_failed',
+]);
 
 type LegacyBucketName =
   | 'available'
@@ -224,10 +231,14 @@ function validateTraceProcessor(
         'capability_manifest_tp_cross_kind_field:binarySha256',
       );
     }
-    validateOptionalString(
-      traceProcessor.unavailableReason,
-      'capability_manifest_invalid_tp_unavailable_reason',
-    );
+    if (
+      typeof traceProcessor.unavailableReason !== 'string' ||
+      !TRACE_PROCESSOR_UNAVAILABLE_REASONS.has(
+        traceProcessor.unavailableReason,
+      )
+    ) {
+      throw new Error('capability_manifest_invalid_tp_unavailable_reason');
+    }
     return;
   }
 
@@ -265,9 +276,7 @@ function projectTraceProcessor(
   return {
     source: 'unknown',
     ...common,
-    ...(traceProcessor.unavailableReason === undefined
-      ? {}
-      : {unavailableReason: traceProcessor.unavailableReason}),
+    unavailableReason: traceProcessor.unavailableReason,
   };
 }
 
@@ -277,6 +286,9 @@ function validateTrace(input: BuildCapabilityManifestInput): void {
     !SHA256_PATTERN.test(input.trace.fingerprintSha256)
   ) {
     throw new Error('capability_manifest_invalid_trace_fingerprint');
+  }
+  if (input.trace.fingerprintKind !== 'trace_bytes_sha256') {
+    throw new Error('capability_manifest_invalid_trace_fingerprint_kind');
   }
   if (
     input.trace.traceSide !== 'current' &&
@@ -531,6 +543,7 @@ export function capabilityManifestContentProjection(
   const traceProcessor = projectTraceProcessor(input.traceProcessor);
   const trace = {
     fingerprintSha256: input.trace.fingerprintSha256,
+    fingerprintKind: input.trace.fingerprintKind,
     traceSide: input.trace.traceSide,
     ...(input.trace.androidApiLevel === undefined
       ? {}
