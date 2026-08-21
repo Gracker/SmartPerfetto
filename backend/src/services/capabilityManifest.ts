@@ -32,6 +32,49 @@ interface IndexedLegacyResult {
   result: CapabilityManifestLegacyProbeResult;
 }
 
+const LEGACY_BUCKET_NAMES: readonly LegacyBucketName[] = [
+  'available',
+  'missingConfig',
+  'insufficient',
+  'notApplicable',
+];
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function validateInputEnvelope(
+  input: unknown,
+): asserts input is BuildCapabilityManifestInput {
+  if (!isPlainObject(input)) {
+    throw new Error('capability_manifest_invalid_input');
+  }
+  if (!Array.isArray(input.definitions)) {
+    throw new Error('capability_manifest_invalid_definitions');
+  }
+  if (!isPlainObject(input.legacyProbe)) {
+    throw new Error('capability_manifest_invalid_legacy_probe');
+  }
+  if (!isPlainObject(input.traceProcessor)) {
+    throw new Error('capability_manifest_invalid_trace_processor');
+  }
+  if (!isPlainObject(input.trace)) {
+    throw new Error('capability_manifest_invalid_trace');
+  }
+  if (!isPlainObject(input.provenance)) {
+    throw new Error('capability_manifest_invalid_provenance');
+  }
+  for (const bucket of LEGACY_BUCKET_NAMES) {
+    if (!Array.isArray(input.legacyProbe[bucket])) {
+      throw new Error(`capability_manifest_invalid_bucket:${bucket}`);
+    }
+  }
+}
+
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
@@ -40,8 +83,16 @@ function validateDefinitions(
   definitions: CapabilityManifestCapabilityDefinition[],
 ): Map<string, CapabilityManifestCapabilityDefinition> {
   const byId = new Map<string, CapabilityManifestCapabilityDefinition>();
-  for (const [index, definition] of definitions.entries()) {
-    if (!isNonEmptyString(definition.id)) {
+  for (const [index, candidate] of definitions.entries()) {
+    if (!isPlainObject(candidate)) {
+      throw new Error(`capability_manifest_invalid_definition:${index}`);
+    }
+    const definition =
+      candidate as unknown as CapabilityManifestCapabilityDefinition;
+    if (typeof definition.id !== 'string') {
+      throw new Error(`capability_manifest_invalid_definition_id:${index}`);
+    }
+    if (definition.id.trim().length === 0) {
       throw new Error(`capability_manifest_empty_definition_id:${index}`);
     }
     if (byId.has(definition.id)) {
@@ -49,16 +100,39 @@ function validateDefinitions(
         `capability_manifest_duplicate_definition_id:${definition.id}`,
       );
     }
-    if (!isNonEmptyString(definition.primaryTable)) {
+    if (!isNonEmptyString(definition.displayName)) {
+      throw new Error(
+        `capability_manifest_invalid_definition_display_name:${definition.id}`,
+      );
+    }
+    if (typeof definition.primaryTable !== 'string') {
+      throw new Error(
+        `capability_manifest_invalid_definition_primary_table:${definition.id}`,
+      );
+    }
+    if (definition.primaryTable.trim().length === 0) {
       throw new Error(
         `capability_manifest_empty_primary_table:${definition.id}`,
       );
     }
 
+    if (
+      definition.requiredModules !== undefined &&
+      !Array.isArray(definition.requiredModules)
+    ) {
+      throw new Error(
+        `capability_manifest_invalid_required_modules:${definition.id}`,
+      );
+    }
     const requiredModules = definition.requiredModules ?? [];
     const seenModules = new Set<string>();
-    for (const moduleName of requiredModules) {
-      if (!isNonEmptyString(moduleName)) {
+    for (const [moduleIndex, moduleName] of requiredModules.entries()) {
+      if (typeof moduleName !== 'string') {
+        throw new Error(
+          `capability_manifest_invalid_required_module:${definition.id}:${moduleIndex}`,
+        );
+      }
+      if (moduleName.trim().length === 0) {
         throw new Error(
           `capability_manifest_empty_required_module:${definition.id}`,
         );
@@ -114,7 +188,10 @@ function validateTraceProcessor(
         'capability_manifest_tp_cross_kind_field:unavailableReason',
       );
     }
-    if (!GIT_REVISION_PATTERN.test(traceProcessor.gitRevision)) {
+    if (
+      typeof traceProcessor.gitRevision !== 'string' ||
+      !GIT_REVISION_PATTERN.test(traceProcessor.gitRevision)
+    ) {
       throw new Error('capability_manifest_invalid_tp_git_revision');
     }
     return;
@@ -129,7 +206,10 @@ function validateTraceProcessor(
         'capability_manifest_tp_cross_kind_field:unavailableReason',
       );
     }
-    if (!SHA256_PATTERN.test(traceProcessor.binarySha256)) {
+    if (
+      typeof traceProcessor.binarySha256 !== 'string' ||
+      !SHA256_PATTERN.test(traceProcessor.binarySha256)
+    ) {
       throw new Error('capability_manifest_invalid_tp_binary_sha256');
     }
     return;
@@ -192,7 +272,10 @@ function projectTraceProcessor(
 }
 
 function validateTrace(input: BuildCapabilityManifestInput): void {
-  if (!SHA256_PATTERN.test(input.trace.fingerprintSha256)) {
+  if (
+    typeof input.trace.fingerprintSha256 !== 'string' ||
+    !SHA256_PATTERN.test(input.trace.fingerprintSha256)
+  ) {
     throw new Error('capability_manifest_invalid_trace_fingerprint');
   }
   if (
@@ -219,10 +302,19 @@ function validateTrace(input: BuildCapabilityManifestInput): void {
   if (clockRange === undefined) {
     return;
   }
-  if (!CLOCK_VALUE_PATTERN.test(clockRange.startNs)) {
+  if (!isPlainObject(clockRange)) {
+    throw new Error('capability_manifest_invalid_clock_range');
+  }
+  if (
+    typeof clockRange.startNs !== 'string' ||
+    !CLOCK_VALUE_PATTERN.test(clockRange.startNs)
+  ) {
     throw new Error('capability_manifest_invalid_clock_value:startNs');
   }
-  if (!CLOCK_VALUE_PATTERN.test(clockRange.endNs)) {
+  if (
+    typeof clockRange.endNs !== 'string' ||
+    !CLOCK_VALUE_PATTERN.test(clockRange.endNs)
+  ) {
     throw new Error('capability_manifest_invalid_clock_value:endNs');
   }
   if (BigInt(clockRange.startNs) > BigInt(clockRange.endNs)) {
@@ -300,6 +392,39 @@ function validateBucketResult(
   }
 }
 
+function validateLegacyResultShape(
+  bucket: LegacyBucketName,
+  index: number,
+  candidate: unknown,
+): asserts candidate is CapabilityManifestLegacyProbeResult {
+  if (!isPlainObject(candidate)) {
+    throw new Error(`capability_manifest_invalid_result:${bucket}:${index}`);
+  }
+  if (!isNonEmptyString(candidate.id)) {
+    throw new Error(
+      `capability_manifest_invalid_result_id:${bucket}:${index}`,
+    );
+  }
+  if (!isNonEmptyString(candidate.displayName)) {
+    throw new Error(
+      `capability_manifest_invalid_result_display_name:${bucket}:${index}`,
+    );
+  }
+  if (typeof candidate.primaryTable !== 'string') {
+    throw new Error(
+      `capability_manifest_invalid_result_primary_table:${bucket}:${index}`,
+    );
+  }
+  if (
+    candidate.reason !== undefined &&
+    !isNonEmptyString(candidate.reason)
+  ) {
+    throw new Error(
+      `capability_manifest_invalid_result_reason:${bucket}:${candidate.id}`,
+    );
+  }
+}
+
 function indexLegacyResults(
   input: BuildCapabilityManifestInput,
   definitionsById: Map<string, CapabilityManifestCapabilityDefinition>,
@@ -316,7 +441,9 @@ function indexLegacyResults(
   ];
 
   for (const [bucket, results] of buckets) {
-    for (const result of results) {
+    for (const [resultIndex, candidate] of results.entries()) {
+      validateLegacyResultShape(bucket, resultIndex, candidate);
+      const result = candidate;
       if (indexed.has(result.id)) {
         throw new Error(`capability_manifest_duplicate_result_id:${result.id}`);
       }
@@ -387,6 +514,7 @@ function mapEntry(
 export function capabilityManifestContentProjection(
   input: BuildCapabilityManifestInput,
 ): CapabilityManifestContentV1 {
+  validateInputEnvelope(input);
   const definitionsById = validateDefinitions(input.definitions);
   validateTraceProcessor(input.traceProcessor);
   validateTrace(input);

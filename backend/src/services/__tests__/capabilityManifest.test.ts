@@ -339,6 +339,219 @@ describe('CapabilityManifest contract', () => {
     expectErrorCode(input, code);
   });
 
+  describe('hostile runtime inputs', () => {
+    type HostileMutation = (input: BuildCapabilityManifestInput) => void;
+
+    function expectHostileError(value: unknown, code: string): void {
+      expect(() => buildCapabilityManifest(
+        value as BuildCapabilityManifestInput,
+      )).toThrow(code);
+    }
+
+    it.each([
+      ['null', null],
+      ['array', []],
+      ['non-plain object', new Date(0)],
+    ])('rejects a %s top-level input deterministically', (_name, value) => {
+      expectHostileError(value, 'capability_manifest_invalid_input');
+    });
+
+    it.each([
+      ['definitions', null, 'capability_manifest_invalid_definitions'],
+      ['definitions', {}, 'capability_manifest_invalid_definitions'],
+      ['legacyProbe', null, 'capability_manifest_invalid_legacy_probe'],
+      ['legacyProbe', [], 'capability_manifest_invalid_legacy_probe'],
+      ['legacyProbe', new Date(0), 'capability_manifest_invalid_legacy_probe'],
+      ['traceProcessor', null, 'capability_manifest_invalid_trace_processor'],
+      ['traceProcessor', [], 'capability_manifest_invalid_trace_processor'],
+      ['traceProcessor', new Date(0), 'capability_manifest_invalid_trace_processor'],
+      ['trace', null, 'capability_manifest_invalid_trace'],
+      ['trace', [], 'capability_manifest_invalid_trace'],
+      ['trace', new Date(0), 'capability_manifest_invalid_trace'],
+      ['provenance', null, 'capability_manifest_invalid_provenance'],
+      ['provenance', [], 'capability_manifest_invalid_provenance'],
+      ['provenance', new Date(0), 'capability_manifest_invalid_provenance'],
+    ])('rejects hostile %s shape', (field, value, code) => {
+      const input = baseInput() as unknown as Record<string, unknown>;
+      input[field] = value;
+      expectHostileError(input, code);
+    });
+
+    it.each([
+      'available',
+      'missingConfig',
+      'insufficient',
+      'notApplicable',
+    ] as const)('rejects a non-array %s bucket', bucket => {
+      const input = baseInput();
+      (input.legacyProbe as unknown as Record<string, unknown>)[bucket] = {};
+      expectHostileError(
+        input,
+        `capability_manifest_invalid_bucket:${bucket}`,
+      );
+    });
+
+    it.each([
+      ['null definition', (input: BuildCapabilityManifestInput) => {
+        (input.definitions as unknown[])[0] = null;
+      }, 'capability_manifest_invalid_definition:0'],
+      ['array definition', (input: BuildCapabilityManifestInput) => {
+        (input.definitions as unknown[])[0] = [];
+      }, 'capability_manifest_invalid_definition:0'],
+      ['null result', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig as unknown[])[0] = null;
+      }, 'capability_manifest_invalid_result:missingConfig:0'],
+      ['array result', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig as unknown[])[0] = [];
+      }, 'capability_manifest_invalid_result:missingConfig:0'],
+    ] satisfies Array<[string, HostileMutation, string]>)('%s fails closed', (
+      _name,
+      mutate,
+      code,
+    ) => {
+      const input = baseInput();
+      mutate(input);
+      expectHostileError(input, code);
+    });
+
+    it.each([
+      ['definition ID', (input: BuildCapabilityManifestInput) => {
+        (input.definitions[0] as unknown as Record<string, unknown>).id = 7;
+      }, 'capability_manifest_invalid_definition_id:0'],
+      ['definition display name', (input: BuildCapabilityManifestInput) => {
+        (input.definitions[0] as unknown as Record<string, unknown>).displayName = [];
+      }, 'capability_manifest_invalid_definition_display_name:frame_rendering'],
+      ['empty definition display name', (input: BuildCapabilityManifestInput) => {
+        input.definitions[0].displayName = '';
+      }, 'capability_manifest_invalid_definition_display_name:frame_rendering'],
+      ['definition primary table', (input: BuildCapabilityManifestInput) => {
+        (input.definitions[0] as unknown as Record<string, unknown>).primaryTable = 7;
+      }, 'capability_manifest_invalid_definition_primary_table:frame_rendering'],
+      ['requiredModules string', (input: BuildCapabilityManifestInput) => {
+        (input.definitions[0] as unknown as Record<string, unknown>).requiredModules = 'android.frames';
+      }, 'capability_manifest_invalid_required_modules:frame_rendering'],
+      ['requiredModules non-string entry', (input: BuildCapabilityManifestInput) => {
+        (input.definitions[0] as unknown as Record<string, unknown>).requiredModules = [7];
+      }, 'capability_manifest_invalid_required_module:frame_rendering:0'],
+      ['result ID', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig[0] as unknown as Record<string, unknown>).id = [];
+      }, 'capability_manifest_invalid_result_id:missingConfig:0'],
+      ['result display name', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig[0] as unknown as Record<string, unknown>).displayName = 7;
+      }, 'capability_manifest_invalid_result_display_name:missingConfig:0'],
+      ['empty result display name', (input: BuildCapabilityManifestInput) => {
+        input.legacyProbe.missingConfig[0].displayName = '';
+      }, 'capability_manifest_invalid_result_display_name:missingConfig:0'],
+      ['result primary table', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig[0] as unknown as Record<string, unknown>).primaryTable = [];
+      }, 'capability_manifest_invalid_result_primary_table:missingConfig:0'],
+      ['result status', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig[0] as unknown as Record<string, unknown>).status = 7;
+      }, 'capability_manifest_bucket_status_mismatch:missingConfig:frame_rendering'],
+      ['result reason', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig[0] as unknown as Record<string, unknown>).reason = [];
+      }, 'capability_manifest_invalid_result_reason:missingConfig:frame_rendering'],
+      ['empty result reason', (input: BuildCapabilityManifestInput) => {
+        input.legacyProbe.missingConfig[0].reason = '';
+      }, 'capability_manifest_invalid_result_reason:missingConfig:frame_rendering'],
+      ['result row estimate', (input: BuildCapabilityManifestInput) => {
+        (input.legacyProbe.missingConfig[0] as unknown as Record<string, unknown>).rowEstimate = '0';
+      }, 'capability_manifest_invalid_row_estimate:missingConfig:frame_rendering'],
+    ] satisfies Array<[string, HostileMutation, string]>)('rejects wrong %s type', (
+      _name,
+      mutate,
+      code,
+    ) => {
+      const input = baseInput();
+      mutate(input);
+      expectHostileError(input, code);
+    });
+
+    it.each([
+      ['bundled Git revision array', (input: BuildCapabilityManifestInput) => {
+        (input.traceProcessor as unknown as Record<string, unknown>).gitRevision = [GIT_A];
+      }, 'capability_manifest_invalid_tp_git_revision'],
+      ['bundled Git revision number', (input: BuildCapabilityManifestInput) => {
+        (input.traceProcessor as unknown as Record<string, unknown>).gitRevision = 7;
+      }, 'capability_manifest_invalid_tp_git_revision'],
+      ['custom binary hash array', (input: BuildCapabilityManifestInput) => {
+        input.traceProcessor = {
+          source: 'custom',
+          binarySha256: [SHA_A],
+        } as unknown as CapabilityManifestTraceProcessorIdentityV1;
+      }, 'capability_manifest_invalid_tp_binary_sha256'],
+      ['trace fingerprint array', (input: BuildCapabilityManifestInput) => {
+        (input.trace as unknown as Record<string, unknown>).fingerprintSha256 = [SHA_A];
+      }, 'capability_manifest_invalid_trace_fingerprint'],
+      ['trace fingerprint number', (input: BuildCapabilityManifestInput) => {
+        (input.trace as unknown as Record<string, unknown>).fingerprintSha256 = 7;
+      }, 'capability_manifest_invalid_trace_fingerprint'],
+    ] satisfies Array<[string, HostileMutation, string]>)('rejects %s without coercion', (
+      _name,
+      mutate,
+      code,
+    ) => {
+      const input = baseInput();
+      mutate(input);
+      expectHostileError(input, code);
+    });
+
+    it.each([
+      ['clockRange null', null, 'capability_manifest_invalid_clock_range'],
+      ['clockRange array', [], 'capability_manifest_invalid_clock_range'],
+      ['clock start number', {startNs: 0, endNs: '1'}, 'capability_manifest_invalid_clock_value:startNs'],
+      ['clock start array', {startNs: ['0'], endNs: '1'}, 'capability_manifest_invalid_clock_value:startNs'],
+      ['clock end number', {startNs: '0', endNs: 1}, 'capability_manifest_invalid_clock_value:endNs'],
+      ['clock end array', {startNs: '0', endNs: ['1']}, 'capability_manifest_invalid_clock_value:endNs'],
+    ])('rejects hostile %s', (_name, clockRangeNs, code) => {
+      const input = baseInput();
+      (input.trace as unknown as Record<string, unknown>).clockRangeNs =
+        clockRangeNs;
+      expectHostileError(input, code);
+    });
+
+    it.each([
+      ['TP reportedVersion', (input: BuildCapabilityManifestInput) => {
+        (input.traceProcessor as unknown as Record<string, unknown>).reportedVersion = [];
+      }, 'capability_manifest_invalid_tp_reported_version'],
+      ['TP rpcApiVersion', (input: BuildCapabilityManifestInput) => {
+        (input.traceProcessor as unknown as Record<string, unknown>).rpcApiVersion = 7;
+      }, 'capability_manifest_invalid_tp_rpc_api_version'],
+      ['TP stdlibRevision', (input: BuildCapabilityManifestInput) => {
+        (input.traceProcessor as unknown as Record<string, unknown>).stdlibRevision = [GIT_A];
+      }, 'capability_manifest_invalid_tp_stdlib_revision'],
+      ['TP unavailableReason', (input: BuildCapabilityManifestInput) => {
+        input.traceProcessor = {
+          source: 'unknown',
+          unavailableReason: [],
+        } as unknown as CapabilityManifestTraceProcessorIdentityV1;
+      }, 'capability_manifest_invalid_tp_unavailable_reason'],
+      ['trace machineId', (input: BuildCapabilityManifestInput) => {
+        (input.trace as unknown as Record<string, unknown>).machineId = [];
+      }, 'capability_manifest_invalid_machine_id'],
+      ['provenance traceId', (input: BuildCapabilityManifestInput) => {
+        (input.provenance as unknown as Record<string, unknown>).traceId = [];
+      }, 'capability_manifest_invalid_provenance_trace_id'],
+      ['provenance processorKey', (input: BuildCapabilityManifestInput) => {
+        (input.provenance as unknown as Record<string, unknown>).processorKey = 7;
+      }, 'capability_manifest_invalid_provenance_processor_key'],
+      ['provenance leaseId', (input: BuildCapabilityManifestInput) => {
+        (input.provenance as unknown as Record<string, unknown>).leaseId = [];
+      }, 'capability_manifest_invalid_provenance_lease_id'],
+      ['provenance rpcEndpoint', (input: BuildCapabilityManifestInput) => {
+        (input.provenance as unknown as Record<string, unknown>).rpcEndpoint = {};
+      }, 'capability_manifest_invalid_provenance_rpc_endpoint'],
+    ] satisfies Array<[string, HostileMutation, string]>)('rejects non-string %s', (
+      _name,
+      mutate,
+      code,
+    ) => {
+      const input = baseInput();
+      mutate(input);
+      expectHostileError(input, code);
+    });
+  });
+
   it('returns a snapshot isolated from later input mutation', () => {
     const input = baseInput();
     const manifest = buildCapabilityManifest(input);
