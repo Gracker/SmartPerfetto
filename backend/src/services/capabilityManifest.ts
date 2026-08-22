@@ -35,6 +35,18 @@ const TRACE_PROCESSOR_UNAVAILABLE_REASONS = new Set([
   'trace_processor_pin_unavailable',
   'identity_resolution_failed',
 ]);
+const ATTRIBUTION_UNAVAILABLE_REASONS = new Set([
+  'external_rpc_trace_fingerprint_unavailable',
+  'trace_source_unavailable',
+  'trace_file_unavailable',
+  'trace_hash_failed',
+  'identity_resolution_failed',
+]);
+const ATTRIBUTION_DETAIL_CODES = new Set([
+  'file_identity_changed',
+  'file_too_large',
+  'non_regular_file',
+]);
 
 type LegacyBucketName =
   | 'available'
@@ -92,6 +104,10 @@ function validateInputEnvelope(
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNonNegativeSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function validateDefinitions(
@@ -698,4 +714,144 @@ export function projectCapabilityManifestAttribution(
       bypasses: probeCache.outcome === 'bypass' ? 1 : 0,
     },
   });
+}
+
+function sanitizeStoredTraceProcessorIdentity(
+  value: unknown,
+): CapabilityManifestTraceProcessorIdentityV1 | undefined {
+  if (!isPlainObject(value)) return undefined;
+  if (value.source === 'bundled') {
+    if (
+      typeof value.gitRevision !== 'string' ||
+      !GIT_REVISION_PATTERN.test(value.gitRevision)
+    ) {
+      return undefined;
+    }
+    return {
+      source: 'bundled',
+      gitRevision: value.gitRevision,
+    };
+  }
+  if (value.source === 'custom') {
+    if (
+      typeof value.binarySha256 !== 'string' ||
+      !SHA256_PATTERN.test(value.binarySha256)
+    ) {
+      return undefined;
+    }
+    return {
+      source: 'custom',
+      binarySha256: value.binarySha256,
+    };
+  }
+  if (
+    value.source !== 'unknown' ||
+    typeof value.unavailableReason !== 'string' ||
+    !TRACE_PROCESSOR_UNAVAILABLE_REASONS.has(value.unavailableReason)
+  ) {
+    return undefined;
+  }
+  return {
+    source: 'unknown',
+    unavailableReason:
+      value.unavailableReason as Extract<
+        CapabilityManifestTraceProcessorIdentityV1,
+        {source: 'unknown'}
+      >['unavailableReason'],
+  };
+}
+
+function sanitizeStoredAttributionResolution(
+  value: unknown,
+): CapabilityManifestAttributionResolutionV1 | undefined {
+  if (!isPlainObject(value)) return undefined;
+  if (value.status === 'ready') {
+    if (
+      typeof value.contentHash !== 'string' ||
+      !SHA256_PATTERN.test(value.contentHash) ||
+      value.manifestId !== `capability_manifest:${value.contentHash}` ||
+      value.manifestSchemaVersion !== CAPABILITY_MANIFEST_SCHEMA_VERSION ||
+      typeof value.traceFingerprintSha256 !== 'string' ||
+      !SHA256_PATTERN.test(value.traceFingerprintSha256)
+    ) {
+      return undefined;
+    }
+    const traceProcessor = sanitizeStoredTraceProcessorIdentity(
+      value.traceProcessor,
+    );
+    if (!traceProcessor) return undefined;
+    return {
+      status: 'ready',
+      manifestId: value.manifestId,
+      contentHash: value.contentHash,
+      manifestSchemaVersion: CAPABILITY_MANIFEST_SCHEMA_VERSION,
+      traceFingerprintSha256: value.traceFingerprintSha256,
+      traceProcessor,
+    };
+  }
+  if (value.status === 'unavailable') {
+    if (
+      typeof value.reason !== 'string' ||
+      !ATTRIBUTION_UNAVAILABLE_REASONS.has(value.reason)
+    ) {
+      return undefined;
+    }
+    return {
+      status: 'unavailable',
+      reason: value.reason as Extract<
+        CapabilityManifestAttributionResolutionV1,
+        {status: 'unavailable'}
+      >['reason'],
+      ...(typeof value.detailCode === 'string' &&
+      ATTRIBUTION_DETAIL_CODES.has(value.detailCode)
+        ? {detailCode: value.detailCode}
+        : {}),
+    };
+  }
+  return value.status === 'failed' &&
+    value.reason === 'capability_manifest_build_failed'
+    ? {status: 'failed', reason: 'capability_manifest_build_failed'}
+    : undefined;
+}
+
+/**
+ * Rebuild attribution loaded from any durable or cross-surface boundary.
+ * Unknown fields are deliberately omitted and invalid known fields fail closed.
+ */
+export function sanitizeStoredCapabilityManifestAttribution(
+  value: unknown,
+): CapabilityManifestAttributionV1 | undefined {
+  try {
+    if (
+      !isPlainObject(value) ||
+      value.schemaVersion !== CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION ||
+      !isPlainObject(value.probeCache)
+    ) {
+      return undefined;
+    }
+    const resolution = sanitizeStoredAttributionResolution(value.resolution);
+    if (!resolution) return undefined;
+    const {hits, misses, bypasses, keyHash} = value.probeCache;
+    if (
+      !isNonNegativeSafeInteger(hits) ||
+      !isNonNegativeSafeInteger(misses) ||
+      !isNonNegativeSafeInteger(bypasses) ||
+      (keyHash !== undefined &&
+        (typeof keyHash !== 'string' || !SHA256_PATTERN.test(keyHash)))
+    ) {
+      return undefined;
+    }
+    return immutableCanonicalSnapshot({
+      schemaVersion: CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION,
+      resolution,
+      probeCache: {
+        ...(typeof keyHash === 'string' ? {keyHash} : {}),
+        hits,
+        misses,
+        bypasses,
+      },
+    });
+  } catch {
+    return undefined;
+  }
 }

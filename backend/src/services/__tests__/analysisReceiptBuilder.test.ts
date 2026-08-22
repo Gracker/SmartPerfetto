@@ -11,6 +11,23 @@ import type { QuickRunReceipt } from '../../agent/core/orchestratorTypes';
 import type { ClaimVerificationResult } from '../../types/claimVerification';
 import type { ClaimSupportV1 } from '../../types/evidenceContract';
 import type { DataEnvelope } from '../../types/dataContract';
+import type { CapabilityManifestAttributionV1 } from '../../types/capabilityManifest';
+
+const capabilityManifest: CapabilityManifestAttributionV1 = {
+  schemaVersion: 'capability_manifest_attribution@1',
+  resolution: {
+    status: 'ready',
+    manifestId: `capability_manifest:${'a'.repeat(64)}`,
+    contentHash: 'a'.repeat(64),
+    manifestSchemaVersion: 'capability_manifest@1',
+    traceFingerprintSha256: 'b'.repeat(64),
+    traceProcessor: {
+      source: 'bundled',
+      gitRevision: 'd'.repeat(40),
+    },
+  },
+  probeCache: {hits: 1, misses: 1, bypasses: 0, keyHash: 'c'.repeat(64)},
+};
 
 const quickRun: QuickRunReceipt = {
   requestedMode: 'fast',
@@ -147,6 +164,51 @@ const verification: ClaimVerificationResult = {
 };
 
 describe('buildAnalysisReceipt', () => {
+  it('stores only sanitized capability manifest attribution without changing legacy fields', () => {
+    const canary = '/private/RECEIPT_CAPABILITY_CANARY';
+    const receipt = buildAnalysisReceipt({
+      runManifestId: 'manifest-receipt-capability',
+      capabilityManifest: {
+        ...capabilityManifest,
+        localPath: canary,
+        resolution: {
+          ...capabilityManifest.resolution,
+          localPath: canary,
+          traceProcessor: {
+            ...(capabilityManifest.resolution.status === 'ready'
+              ? capabilityManifest.resolution.traceProcessor
+              : {}),
+            localPath: canary,
+          },
+        },
+      } as any,
+      session: {
+        sessionId: 'session-capability',
+        traceId: 'trace-capability',
+      },
+      result: {
+        sessionId: 'session-capability',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'ok',
+        confidence: 1,
+        rounds: 1,
+        totalDurationMs: 1,
+      },
+      generatedAt: 123,
+    });
+
+    expect(receipt.capabilityManifest).toEqual(capabilityManifest);
+    expect(JSON.stringify(receipt)).not.toContain(canary);
+    expect(receipt).toEqual(expect.objectContaining({
+      schemaVersion: 2,
+      runManifestId: 'manifest-receipt-capability',
+      traceId: 'trace-capability',
+      generatedAt: 123,
+    }));
+  });
+
   it('separates trace evidence counts from injected non-evidence context', () => {
     const receipt = buildAnalysisReceipt({
       runManifestId: 'manifest-receipt-1',

@@ -14,6 +14,7 @@ import type {IdentityResolutionV1} from '../../types/identityContract';
 import {sanitizeCodeAwareText} from './codeAwareOutputRegistry';
 import type {CodeLookupSummary} from '../codebase/codeLookupLedger';
 import {isCodebaseKind} from '../codebase/codebaseRegistry';
+import {sanitizeStoredCapabilityManifestAttribution} from '../capabilityManifest';
 
 type PrivateFinding = AnalysisResult['findings'][number];
 type PrivateHypothesis = AnalysisResult['hypotheses'][number];
@@ -194,8 +195,16 @@ export function projectPrivateAnalysisReceipt(
   receipt: AnalysisReceipt | undefined,
 ): AnalysisReceipt | undefined {
   if (!receipt) return undefined;
+  const {
+    capabilityManifest: storedCapabilityManifest,
+    ...receiptWithoutCapabilityManifest
+  } = receipt;
+  const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
+    storedCapabilityManifest,
+  );
   return {
-    ...receipt,
+    ...receiptWithoutCapabilityManifest,
+    ...(capabilityManifest ? {capabilityManifest} : {}),
     outputs: {
       ...(receipt.outputs.reportId ? {reportId: receipt.outputs.reportId} : {}),
       ...(receipt.outputs.reportUrl ? {reportUrl: receipt.outputs.reportUrl} : {}),

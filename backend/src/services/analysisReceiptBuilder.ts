@@ -6,6 +6,8 @@ import type { AgentRuntimeAnalysisResult, QuickRunReceipt } from '../agent/core/
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { ClaimSupportV1, EvidenceSupportLevel } from '../types/evidenceContract';
 import type { IdentityResolutionV1 } from '../types/identityContract';
+import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
+import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
 import type {
   AnalysisReceipt,
   AnalysisReceiptRuntime,
@@ -60,6 +62,7 @@ export interface BuildAnalysisReceiptInput {
   sceneType?: FinalReportContractCompletenessInput['sceneType'];
   generatedAt?: number;
   cliTurnPath?: string;
+  capabilityManifest?: CapabilityManifestAttributionV1;
 }
 
 export function buildAnalysisReceipt(input: BuildAnalysisReceiptInput): AnalysisReceiptV2 {
@@ -111,6 +114,9 @@ function buildAnalysisReceiptBody(
   const claimAudit = buildClaimAudit(claimSupport, claimVerificationResult);
   const requestedMode = input.requestedMode ?? session.analysisMode ?? quickRun?.requestedMode ?? 'auto';
   const resolvedMode = input.resolvedMode ?? quickRun?.resolvedMode ?? 'full';
+  const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
+    input.capabilityManifest,
+  );
 
   return {
     runId: input.runId || result.sessionId || session.sessionId,
@@ -121,6 +127,7 @@ function buildAnalysisReceiptBody(
     ...(input.runtime ? { runtime: input.runtime } : {}),
     providerId: input.providerId !== undefined ? input.providerId : session.providerId ?? null,
     generatedAt: input.generatedAt ?? finalArtifacts.generatedAt ?? Date.now(),
+    ...(capabilityManifest ? {capabilityManifest} : {}),
     traceEvidence: {
       sqlCount: countSqlEvidence(dataEnvelopes),
       skillCount: countSkillEvidence(dataEnvelopes),

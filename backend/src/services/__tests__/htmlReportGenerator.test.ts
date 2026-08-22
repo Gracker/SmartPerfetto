@@ -234,6 +234,21 @@ describe('HTMLReportGenerator', () => {
             reportId: 'report-receipt',
             resultSnapshotId: 'snapshot-receipt',
           },
+          capabilityManifest: {
+            schemaVersion: 'capability_manifest_attribution@1',
+            resolution: {
+              status: 'ready',
+              manifestId: 'manifest&lt;unsafe',
+              contentHash: 'hash\"unsafe',
+              manifestSchemaVersion: 'capability_manifest@1',
+              traceFingerprintSha256: 'trace>unsafe',
+              traceProcessor: {
+                source: 'custom',
+                binarySha256: 'processor<script>alert(1)</script>',
+              },
+            },
+            probeCache: {hits: 3, misses: 1, bypasses: 2, keyHash: 'must-not-render'},
+          },
         },
         uiActionProposals: [
           {
@@ -272,11 +287,70 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('Evidence refs');
     expect(html).toContain('report-receipt');
     expect(html).toContain('snapshot-receipt');
+    expect(html).toContain('Capability Manifest');
+    expect(html).toContain('manifest&amp;lt;unsafe');
+    expect(html).toContain('hash&quot;unsafe');
+    expect(html).toContain('trace&gt;unsafe');
+    expect(html).toContain('processor&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(html).toContain('Hits');
+    expect(html).not.toContain('must-not-render');
+    expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('UI 动作提案');
     expect(html).toContain('收藏证据');
     expect(html).toContain('打开启动证据表');
     expect(html).toContain('artifact-startup');
     expect(html).not.toContain('SELECT ');
+  });
+
+  test.each([
+    ['Unavailable', 'unavailable', 'identity_resolution_failed'],
+    ['Failed', 'failed', 'capability_manifest_build_failed'],
+  ] as const)('renders fixed capability %s reason without detail codes', (_label, status, reason) => {
+    const generator = new HTMLReportGenerator();
+    const html = generator.generateAgentDrivenHTML({
+      traceId: 'trace-capability-status',
+      query: 'analyze',
+      timestamp: 1,
+      hypotheses: [],
+      dialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      result: {
+        sessionId: 'session-capability-status',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'ok',
+        confidence: 1,
+        rounds: 1,
+        totalDurationMs: 1,
+        analysisReceipt: {
+          schemaVersion: 1,
+          runId: 'run-capability-status',
+          sessionId: 'session-capability-status',
+          traceId: 'trace-capability-status',
+          mode: 'full',
+          resolvedMode: 'full',
+          providerId: null,
+          generatedAt: 1,
+          traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
+          nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
+          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+          qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
+          outputs: {},
+          capabilityManifest: {
+            schemaVersion: 'capability_manifest_attribution@1',
+            resolution: status === 'unavailable'
+              ? {status, reason, detailCode: 'must_not_render'}
+              : {status, reason},
+            probeCache: {hits: 0, misses: 0, bypasses: 1},
+          },
+        },
+      },
+    });
+
+    expect(html).toContain(reason);
+    expect(html).not.toContain('must_not_render');
   });
 
   test('formats layered duration-like keys in ms only', () => {

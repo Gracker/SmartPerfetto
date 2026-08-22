@@ -253,9 +253,11 @@ import {
 import type {
   AppendFeedbackEventInput,
   RunManifestAttributionSink,
+  RunManifestV1,
   RunManifestScope,
 } from '../types/selfEvolution';
 import type {AnalysisReceipt} from '../types/dataContract';
+import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -7916,8 +7918,18 @@ function finalizeQuickRunReceipt(
 
 interface RunManifestReceiptReference {
   runManifestId?: string;
+  capabilityManifest?: CapabilityManifestAttributionV1;
   existingReceipt?: AnalysisReceipt;
   legacyRecovery?: true;
+}
+
+function runManifestReceiptReference(
+  manifest: Pick<RunManifestV1, 'runManifestId' | 'capabilityManifest'>,
+): RunManifestReceiptReference {
+  return {
+    runManifestId: manifest.runManifestId,
+    capabilityManifest: manifest.capabilityManifest,
+  };
 }
 
 function resolveRunManifestReceiptReference(
@@ -7954,12 +7966,12 @@ function resolveRunManifestReceiptReference(
         });
       }
     }
-    return {runManifestId: manifest.runManifestId};
+    return runManifestReceiptReference(manifest);
   }
 
   const persistedManifest = getRunManifestStore().getByRunId(scope, runId);
   if (persistedManifest) {
-    return {runManifestId: persistedManifest.runManifestId};
+    return runManifestReceiptReference(persistedManifest);
   }
 
   const receipt = result.analysisReceipt;
@@ -7974,7 +7986,7 @@ function resolveRunManifestReceiptReference(
     receipt.runManifestId,
   );
   return receiptManifest
-    ? {runManifestId: receipt.runManifestId}
+    ? runManifestReceiptReference(receiptManifest)
     : {existingReceipt: receipt};
 }
 
@@ -7986,6 +7998,7 @@ function buildAnalysisReceiptForReference(
     return buildAnalysisReceipt({
       ...input,
       runManifestId: reference.runManifestId,
+      capabilityManifest: reference.capabilityManifest,
     });
   }
   if (reference.existingReceipt) return reference.existingReceipt;
@@ -8786,6 +8799,11 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   buildConclusionEvidenceIndex,
   appendEvidenceIndexIfMissing,
   privateFeedbackResponse,
+};
+
+export const agentRoutesReceiptTestSeam = {
+  runManifestReceiptReference,
+  buildAnalysisReceiptForReference,
 };
 
 export const agentRoutesSmartPreviewSelectionTestSeam = {

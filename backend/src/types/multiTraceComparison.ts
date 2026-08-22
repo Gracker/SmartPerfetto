@@ -247,6 +247,7 @@ export interface AnalysisResultSnapshot {
   claimSupport?: import('./evidenceContract').ClaimSupportV1[];
   claimVerificationResult?: import('./claimVerification').ClaimVerificationResult;
   identityResolutions?: import('./identityContract').IdentityResolutionV1[];
+  capabilityManifest?: import('./capabilityManifest').CapabilityManifestAttributionV1;
   metrics: NormalizedMetricValue[];
   evidenceRefs: EvidenceRef[];
   status: AnalysisResultSnapshotStatus;

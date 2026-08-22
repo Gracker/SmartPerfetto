@@ -7,7 +7,10 @@ import {EventEmitter} from 'events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import {agentRoutesPrivacyProjectionTestSeam} from '../agentRoutes';
+import {
+  agentRoutesPrivacyProjectionTestSeam,
+  agentRoutesReceiptTestSeam,
+} from '../agentRoutes';
 import {
   clearCodeAwareOutputGuards,
   registerCodeAwareCanary,
@@ -23,6 +26,103 @@ const sessionId = 'private-route-projection';
 afterEach(() => clearCodeAwareOutputGuards(sessionId));
 
 describe('agent route private projections', () => {
+  it('whitelists stored capability attribution in private persisted SSE projection', () => {
+    const canary = '/private/SSE_CAPABILITY_CANARY';
+    const hash = 'a'.repeat(64);
+    const session = {
+      sessionId,
+      query: 'private analysis',
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['cb-private'],
+    } as any;
+    const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
+      session,
+      {
+        eventType: 'analysis_completed',
+        eventData: JSON.stringify({data: {
+          success: true,
+          conclusion: 'safe conclusion',
+          analysisReceipt: {
+            schemaVersion: 2,
+            runManifestId: 'run-manifest-safe',
+            runId: 'run-safe',
+            sessionId,
+            traceId: 'trace-safe',
+            mode: 'full',
+            resolvedMode: 'full',
+            providerId: null,
+            generatedAt: 1,
+            traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
+            nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
+            claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+            qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
+            outputs: {reportError: canary, cliTurnPath: canary},
+            capabilityManifest: {
+              schemaVersion: 'capability_manifest_attribution@1',
+              resolution: {
+                status: 'ready',
+                manifestId: `capability_manifest:${hash}`,
+                contentHash: hash,
+                manifestSchemaVersion: 'capability_manifest@1',
+                traceFingerprintSha256: 'b'.repeat(64),
+                traceProcessor: {source: 'bundled', gitRevision: 'c'.repeat(40), localPath: canary},
+                rpcEndpoint: canary,
+              },
+              probeCache: {hits: 1, misses: 0, bypasses: 0, localPath: canary},
+              localPath: canary,
+            },
+          },
+        }}),
+      } as any,
+    );
+
+    const projectedData = JSON.parse(projected.eventData).data;
+    expect(JSON.stringify(projectedData)).not.toContain(canary);
+    expect(projectedData.analysisReceipt.capabilityManifest).toEqual(expect.objectContaining({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: expect.objectContaining({
+        manifestId: `capability_manifest:${hash}`,
+      }),
+    }));
+    expect(projectedData.analysisReceipt.outputs).toEqual({});
+  });
+
+  it('carries sealed RunManifest capability attribution into the HTTP receipt', () => {
+    const capabilityManifest = {
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'unavailable',
+        reason: 'identity_resolution_failed',
+        detailCode: 'file_identity_changed',
+      },
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    } as const;
+    const reference = agentRoutesReceiptTestSeam.runManifestReceiptReference({
+      runManifestId: 'manifest-http-capability',
+      capabilityManifest,
+    });
+    const receipt = agentRoutesReceiptTestSeam.buildAnalysisReceiptForReference(reference, {
+      session: {sessionId: 'session-http-capability', traceId: 'trace-http-capability'},
+      result: {
+        sessionId: 'session-http-capability',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'ok',
+        confidence: 1,
+        rounds: 1,
+        totalDurationMs: 1,
+      },
+      generatedAt: 1,
+    });
+
+    expect(receipt).toEqual(expect.objectContaining({
+      schemaVersion: 2,
+      runManifestId: 'manifest-http-capability',
+      capabilityManifest,
+    }));
+  });
+
   it('reports private feedback as locally stored without public projection', () => {
     expect(agentRoutesPrivacyProjectionTestSeam.privateFeedbackResponse({
       durable: true,

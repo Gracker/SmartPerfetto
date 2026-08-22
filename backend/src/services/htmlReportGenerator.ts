@@ -4884,6 +4884,35 @@ export class HTMLReportGenerator {
       receipt.outputs.cliTurnPath ? ['CLI', receipt.outputs.cliTurnPath] : undefined,
       receipt.outputs.reportError ? [localize(outputLanguage, '报告错误', 'Report error'), receipt.outputs.reportError] : undefined,
     ].filter((row): row is string[] => Boolean(row));
+    const capabilityManifest = receipt.capabilityManifest;
+    const capabilityResolution = capabilityManifest?.resolution;
+    const processorIdentity = capabilityResolution?.status === 'ready'
+      ? capabilityResolution.traceProcessor.source === 'bundled'
+        ? `bundled:${capabilityResolution.traceProcessor.gitRevision}`
+        : capabilityResolution.traceProcessor.source === 'custom'
+          ? `custom:${capabilityResolution.traceProcessor.binarySha256}`
+          : `unknown:${capabilityResolution.traceProcessor.unavailableReason}`
+      : undefined;
+    const capabilityRows = capabilityManifest
+      ? [
+          [localize(outputLanguage, '状态', 'Status'), capabilityManifest.resolution.status],
+          ...(capabilityResolution?.status === 'unavailable' ||
+            capabilityResolution?.status === 'failed'
+            ? [[localize(outputLanguage, '原因', 'Reason'), capabilityResolution.reason]]
+            : []),
+          ...(capabilityResolution?.status === 'ready'
+            ? [
+                ['Manifest ID', capabilityResolution.manifestId],
+                ['Content hash', capabilityResolution.contentHash],
+                ['Trace fingerprint', capabilityResolution.traceFingerprintSha256],
+                ['Trace processor', processorIdentity!],
+              ]
+            : []),
+          ['Hits', String(capabilityManifest.probeCache.hits)],
+          ['Misses', String(capabilityManifest.probeCache.misses)],
+          ['Bypasses', String(capabilityManifest.probeCache.bypasses)],
+        ]
+      : [];
     return `
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '分析回执', 'Analysis Receipt')}</h2>
@@ -4920,6 +4949,12 @@ export class HTMLReportGenerator {
         <div class="receipt-card">
           <div class="receipt-card-title">${localize(outputLanguage, '输出', 'Outputs')}</div>
           ${outputRows.map(([label, value]) => `
+          <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${this.escapeHtml(value)}</span></div>`).join('')}
+        </div>` : ''}
+        ${capabilityRows.length > 0 ? `
+        <div class="receipt-card">
+          <div class="receipt-card-title">Capability Manifest</div>
+          ${capabilityRows.map(([label, value]) => `
           <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${this.escapeHtml(value)}</span></div>`).join('')}
         </div>` : ''}
       </div>

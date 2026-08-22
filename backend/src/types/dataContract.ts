@@ -20,6 +20,7 @@
 
 import { sanitizeQueryReview, type QueryReviewV1 } from './queryReviewContract';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 
 // =============================================================================
 // Column Definition System (Phase 0 - DataEnvelope Refactoring)
@@ -1058,6 +1059,7 @@ export interface AnalysisReceiptBase {
     cliTurnPath?: string;
     reportError?: string;
   };
+  capabilityManifest?: CapabilityManifestAttributionV1;
 }
 
 export interface AnalysisReceiptV1 extends AnalysisReceiptBase {

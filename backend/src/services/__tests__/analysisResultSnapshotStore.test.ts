@@ -9,6 +9,20 @@ import {
 } from '../../types/multiTraceComparison';
 import { createAnalysisResultSnapshotRepository } from '../analysisResultSnapshotStore';
 import { applyEnterpriseMinimalSchema } from '../enterpriseSchema';
+import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
+
+const capabilityManifest: CapabilityManifestAttributionV1 = {
+  schemaVersion: 'capability_manifest_attribution@1',
+  resolution: {
+    status: 'ready',
+    manifestId: `capability_manifest:${'a'.repeat(64)}`,
+    contentHash: 'a'.repeat(64),
+    manifestSchemaVersion: 'capability_manifest@1',
+    traceFingerprintSha256: 'b'.repeat(64),
+    traceProcessor: {source: 'custom', binarySha256: 'c'.repeat(64)},
+  },
+  probeCache: {hits: 4, misses: 1, bypasses: 0},
+};
 
 function seedGraph(db: Database.Database): void {
   const now = 1_700_000_000_000;
@@ -206,6 +220,40 @@ describe('AnalysisResultSnapshotRepository', () => {
       'analysis_result.created',
       'analysis_result.read',
     ]);
+  });
+
+  test('round-trips capability attribution in its own nullable column', () => {
+    const repo = createAnalysisResultSnapshotRepository(db!);
+    repo.createSnapshot(snapshot({id: 'snapshot-capability', capabilityManifest}));
+
+    const raw = db!.prepare<[], {capability_manifest_json: string | null}>(`
+      SELECT capability_manifest_json FROM analysis_result_snapshots
+      WHERE id = 'snapshot-capability'
+    `).get();
+    const loaded = repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-capability',
+    );
+
+    expect(JSON.parse(raw?.capability_manifest_json || 'null')).toEqual(capabilityManifest);
+    expect(loaded?.capabilityManifest).toEqual(capabilityManifest);
+    expect(repo.listSnapshots(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+    )[0]?.capabilityManifest).toEqual(capabilityManifest);
+    expect(repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-a',
+    )).toBeNull();
+  });
+
+  test('keeps snapshots without capability attribution readable', () => {
+    const repo = createAnalysisResultSnapshotRepository(db!);
+    repo.createSnapshot(snapshot({id: 'snapshot-legacy'}));
+
+    expect(repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-legacy',
+    )).not.toHaveProperty('capabilityManifest');
   });
 
   test('scopes evidence storage rows by snapshot so stable evidence ids can repeat across runs', () => {

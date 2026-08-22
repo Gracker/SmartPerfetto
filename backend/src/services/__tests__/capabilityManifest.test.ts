@@ -5,6 +5,7 @@
 import {
   buildCapabilityManifest,
   capabilityManifestContentProjection,
+  sanitizeStoredCapabilityManifestAttribution,
 } from '../capabilityManifest';
 import {canonicalContentHash} from '../selfEvolution/canonicalJson';
 import {
@@ -18,6 +19,150 @@ const SHA_A = 'a'.repeat(64);
 const SHA_B = 'b'.repeat(64);
 const GIT_A = 'a'.repeat(40);
 const GIT_B = 'b'.repeat(40);
+
+function storedAttribution(canary?: string): Record<string, unknown> {
+  return {
+    schemaVersion: 'capability_manifest_attribution@1',
+    resolution: {
+      status: 'ready',
+      manifestId: `capability_manifest:${SHA_A}`,
+      contentHash: SHA_A,
+      manifestSchemaVersion: 'capability_manifest@1',
+      traceFingerprintSha256: SHA_B,
+      traceProcessor: {
+        source: 'bundled',
+        gitRevision: GIT_A,
+        reportedVersion: canary,
+        rpcApiVersion: 'rpc-v1',
+        stdlibRevision: GIT_B,
+        localPath: canary ? `/private/${canary}` : undefined,
+      },
+      rpcEndpoint: canary ? `/private/${canary}` : undefined,
+    },
+    probeCache: {
+      keyHash: SHA_B,
+      hits: 2,
+      misses: 1,
+      bypasses: 0,
+      cachePath: canary ? `/private/${canary}` : undefined,
+    },
+    localPath: canary ? `/private/${canary}` : undefined,
+  };
+}
+
+describe('sanitizeStoredCapabilityManifestAttribution', () => {
+  it('rebuilds the fixed ready projection and drops hostile extra fields', () => {
+    const canary = 'CAPABILITY_STORED_NO_PATH_CANARY';
+    const projected = sanitizeStoredCapabilityManifestAttribution(storedAttribution(canary));
+
+    expect(projected).toEqual({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'ready',
+        manifestId: `capability_manifest:${SHA_A}`,
+        contentHash: SHA_A,
+        manifestSchemaVersion: 'capability_manifest@1',
+        traceFingerprintSha256: SHA_B,
+        traceProcessor: {
+          source: 'bundled',
+          gitRevision: GIT_A,
+        },
+      },
+      probeCache: {keyHash: SHA_B, hits: 2, misses: 1, bypasses: 0},
+    });
+    expect(JSON.stringify(projected)).not.toContain(canary);
+  });
+
+  it('rebuilds fixed unavailable and failed resolutions without extra content', () => {
+    expect(sanitizeStoredCapabilityManifestAttribution({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'unavailable',
+        reason: 'identity_resolution_failed',
+        detailCode: 'PRIVATE_DETAIL_NO_PATH_CANARY',
+        path: '/private/canary',
+      },
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    })).toEqual({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'unavailable',
+        reason: 'identity_resolution_failed',
+      },
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    });
+    expect(sanitizeStoredCapabilityManifestAttribution({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'unavailable',
+        reason: 'trace_hash_failed',
+        detailCode: 'file_identity_changed',
+      },
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    })?.resolution).toEqual({
+      status: 'unavailable',
+      reason: 'trace_hash_failed',
+      detailCode: 'file_identity_changed',
+    });
+    expect(sanitizeStoredCapabilityManifestAttribution({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'failed',
+        reason: 'capability_manifest_build_failed',
+        error: '/private/canary',
+      },
+      probeCache: {hits: 0, misses: 1, bypasses: 0},
+    })?.resolution).toEqual({
+      status: 'failed',
+      reason: 'capability_manifest_build_failed',
+    });
+  });
+
+  it.each([
+    ['schema version', {...storedAttribution(), schemaVersion: 'capability_manifest_attribution@2'}],
+    ['manifest id', {
+      ...storedAttribution(),
+      resolution: {...(storedAttribution().resolution as object), manifestId: 'capability_manifest:wrong'},
+    }],
+    ['trace processor identity', {
+      ...storedAttribution(),
+      resolution: {
+        ...(storedAttribution().resolution as object),
+        traceProcessor: {source: 'bundled', gitRevision: SHA_A},
+      },
+    }],
+    ['negative counter', {
+      ...storedAttribution(),
+      probeCache: {hits: -1, misses: 0, bypasses: 0},
+    }],
+    ['unsafe counter', {
+      ...storedAttribution(),
+      probeCache: {hits: Number.MAX_SAFE_INTEGER + 1, misses: 0, bypasses: 0},
+    }],
+    ['cache key', {
+      ...storedAttribution(),
+      probeCache: {keyHash: '/private/hash', hits: 0, misses: 0, bypasses: 1},
+    }],
+    ['unavailable reason', {
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {status: 'unavailable', reason: '/private/reason'},
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    }],
+  ])('returns undefined for invalid stored %s', (_name, value) => {
+    expect(sanitizeStoredCapabilityManifestAttribution(value)).toBeUndefined();
+  });
+
+  it('fails closed without surfacing hostile getter errors', () => {
+    const hostile = new Proxy(storedAttribution(), {
+      get(_target, property) {
+        if (property === 'schemaVersion') throw new Error('/private/hostile getter');
+        return undefined;
+      },
+    });
+    expect(() => sanitizeStoredCapabilityManifestAttribution(hostile)).not.toThrow();
+    expect(sanitizeStoredCapabilityManifestAttribution(hostile)).toBeUndefined();
+  });
+});
 
 function legacyResult(
   id: string,

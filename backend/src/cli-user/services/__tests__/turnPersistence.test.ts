@@ -79,6 +79,11 @@ describe('commitTurnOutputs', () => {
           outputs: {
             cliTurnPath: path.join(sp.turnsDir, '001.md'),
           },
+          capabilityManifest: {
+            schemaVersion: 'capability_manifest_attribution@1',
+            resolution: {status: 'failed', reason: 'capability_manifest_build_failed'},
+            probeCache: {hits: 0, misses: 0, bypasses: 1},
+          },
         },
         uiActionProposals: [{
           schemaVersion: 1,
@@ -131,6 +136,8 @@ describe('commitTurnOutputs', () => {
       expect(latest.outputs.cliTurnPath).toBe(path.join(sp.turnsDir, '001.md'));
       expect(turn.outputs.cliTurnPath).toBe(path.join(sp.turnsDir, '001.md'));
       expect(result.result.analysisReceipt?.outputs.cliTurnPath).toBe(path.join(sp.turnsDir, '001.md'));
+      expect(latest.capabilityManifest).toEqual(result.result.analysisReceipt?.capabilityManifest);
+      expect(turn.capabilityManifest).toEqual(result.result.analysisReceipt?.capabilityManifest);
       expect(latestActions).toEqual([expect.objectContaining({ id: 'ui-pin_evidence-1' })]);
       expect(turnActions).toEqual([expect.objectContaining({ kind: 'pin_evidence' })]);
     } finally {
@@ -168,6 +175,36 @@ describe('commitTurnOutputs', () => {
         rounds: 1,
         totalDurationMs: 20,
         terminationMessage: canary,
+        analysisReceipt: {
+          schemaVersion: 2,
+          runManifestId: 'manifest-private-cli',
+          runId: 'run-private-cli',
+          sessionId,
+          traceId: 'trace-private',
+          mode: 'full',
+          resolvedMode: 'full',
+          providerId: null,
+          generatedAt: 1,
+          traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
+          nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
+          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+          qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
+          outputs: {reportError: canary, cliTurnPath: canary},
+          capabilityManifest: {
+            schemaVersion: 'capability_manifest_attribution@1',
+            resolution: {
+              status: 'ready',
+              manifestId: `capability_manifest:${'a'.repeat(64)}`,
+              contentHash: 'a'.repeat(64),
+              manifestSchemaVersion: 'capability_manifest@1',
+              traceFingerprintSha256: 'b'.repeat(64),
+              traceProcessor: {source: 'custom', binarySha256: 'c'.repeat(64), localPath: canary},
+              rpcEndpoint: canary,
+            },
+            probeCache: {hits: 1, misses: 0, bypasses: 0, localPath: canary},
+            localPath: canary,
+          } as any,
+        },
         uiActionProposals: [{title: canary}] as any,
       },
     };
@@ -211,6 +248,16 @@ describe('commitTurnOutputs', () => {
       ].join('\n');
       expect(persistedText).not.toContain(canary);
       expect(persistedText).toMatch(/原始内容未持久化|original content not persisted/);
+      const privateReceipt = JSON.parse(
+        fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'),
+      );
+      expect(privateReceipt.capabilityManifest).toEqual(expect.objectContaining({
+        schemaVersion: 'capability_manifest_attribution@1',
+        resolution: expect.objectContaining({
+          manifestId: `capability_manifest:${'a'.repeat(64)}`,
+        }),
+      }));
+      expect(privateReceipt.outputs).toEqual({});
     } finally {
       clearCodeAwareOutputGuards(sessionId);
       fs.rmSync(home, {recursive: true, force: true});

@@ -45,6 +45,7 @@ interface SnapshotRow {
   claim_support_json: string | null;
   claim_verification_json: string | null;
   identity_resolutions_json: string | null;
+  capability_manifest_json: string | null;
   status: AnalysisResultSnapshotStatus;
   schema_version: AnalysisResultSnapshot['schemaVersion'];
   created_at: number;
@@ -130,6 +131,7 @@ function snapshotSelectColumns(alias = 's', includeConclusionContract = true): s
     claimSupportColumn,
     claimVerificationColumn,
     identityResolutionsColumn,
+    `${alias}.capability_manifest_json`,
     `${alias}.status`,
     `${alias}.schema_version`,
     `${alias}.created_at`,
@@ -218,6 +220,9 @@ function mapSnapshot(row: SnapshotRow, metrics: NormalizedMetricValue[], evidenc
     ...(row.identity_resolutions_json
       ? { identityResolutions: parseJson<AnalysisResultSnapshot['identityResolutions']>(row.identity_resolutions_json, undefined) }
       : {}),
+    ...(row.capability_manifest_json
+      ? {capabilityManifest: parseJson<AnalysisResultSnapshot['capabilityManifest']>(row.capability_manifest_json, undefined)}
+      : {}),
     metrics,
     evidenceRefs,
     status: row.status,
@@ -274,12 +279,12 @@ export class AnalysisResultSnapshotRepository {
           (id, tenant_id, workspace_id, trace_id, session_id, run_id, report_id, created_by,
            visibility, scene_type, title, user_query, trace_label, trace_metadata_json,
            summary_json, conclusion_contract_json, claim_support_json, claim_verification_json,
-           identity_resolutions_json, status, schema_version, created_at, expires_at)
+           identity_resolutions_json, capability_manifest_json, status, schema_version, created_at, expires_at)
         VALUES
           (@id, @tenantId, @workspaceId, @traceId, @sessionId, @runId, @reportId, @createdBy,
            @visibility, @sceneType, @title, @userQuery, @traceLabel, @traceMetadataJson,
            @summaryJson, @conclusionContractJson, @claimSupportJson, @claimVerificationJson,
-           @identityResolutionsJson, @status, @schemaVersion, @createdAt, @expiresAt)
+           @identityResolutionsJson, @capabilityManifestJson, @status, @schemaVersion, @createdAt, @expiresAt)
       `).run({
         id: snapshot.id,
         tenantId: snapshot.tenantId,
@@ -308,6 +313,9 @@ export class AnalysisResultSnapshotRepository {
         identityResolutionsJson: snapshot.identityResolutions === undefined
           ? null
           : stringifyJson(snapshot.identityResolutions),
+        capabilityManifestJson: snapshot.capabilityManifest === undefined
+          ? null
+          : stringifyJson(snapshot.capabilityManifest),
         status: snapshot.status,
         schemaVersion: snapshot.schemaVersion,
         createdAt: snapshot.createdAt,

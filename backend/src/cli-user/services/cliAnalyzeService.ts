@@ -544,6 +544,7 @@ export class CliAnalyzeService {
         result.analysisReceipt = buildAnalysisReceipt({
           runManifestId: runManifest.runManifestId,
           runId: runManifest.runId,
+          capabilityManifest: runManifest.capabilityManifest,
           session,
           result,
           qualityArtifacts,

@@ -13,6 +13,7 @@ import {
 } from '../analysisResultSnapshotPipeline';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../enterpriseDb';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/codeAwareOutputRegistry';
+import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const tmpDirs: string[] = [];
@@ -55,6 +56,19 @@ function envelope(): DataEnvelope {
   };
 }
 
+const receiptCapabilityManifest: CapabilityManifestAttributionV1 = {
+  schemaVersion: 'capability_manifest_attribution@1',
+  resolution: {
+    status: 'ready',
+    manifestId: `capability_manifest:${'a'.repeat(64)}`,
+    contentHash: 'a'.repeat(64),
+    manifestSchemaVersion: 'capability_manifest@1',
+    traceFingerprintSha256: 'b'.repeat(64),
+    traceProcessor: {source: 'bundled', gitRevision: 'c'.repeat(40)},
+  },
+  probeCache: {hits: 2, misses: 1, bypasses: 0},
+};
+
 describe('analysis result snapshot pipeline', () => {
   test('resolves a canonical scene before private query projection', () => {
     expect(resolveAnalysisResultSceneType('分析点击响应性能')).toBe('interaction');
@@ -64,6 +78,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('builds a partial snapshot from completed run metadata', () => {
+    const capabilityCanary = '/private/SNAPSHOT_RECEIPT_CAPABILITY_CANARY';
     const snapshot = buildCompletedAnalysisResultSnapshot({
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -129,6 +144,14 @@ describe('analysis result snapshot pipeline', () => {
         outputs: {
           reportId: 'report-a',
         },
+        capabilityManifest: {
+          ...receiptCapabilityManifest,
+          localPath: capabilityCanary,
+          resolution: {
+            ...receiptCapabilityManifest.resolution,
+            localPath: capabilityCanary,
+          },
+        } as any,
       },
       createdAt: 1234,
     });
@@ -163,11 +186,53 @@ describe('analysis result snapshot pipeline', () => {
     expect(snapshot?.conclusionContract).toEqual(expect.objectContaining({
       claims: [expect.objectContaining({ id: 'Q1' })],
     }));
+    expect(snapshot?.capabilityManifest).toEqual(receiptCapabilityManifest);
+    expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(
+      receiptCapabilityManifest,
+    );
+    expect(JSON.stringify(snapshot)).not.toContain(capabilityCanary);
     expect(snapshot?.metrics).toEqual([]);
     expect(snapshot?.evidenceRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'report:report-a', type: 'report' }),
       expect.objectContaining({ type: 'data_envelope', label: 'Startup summary' }),
     ]));
+  });
+
+  test('prefers explicit capability attribution over receipt attribution', () => {
+    const explicit: CapabilityManifestAttributionV1 = {
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {status: 'failed', reason: 'capability_manifest_build_failed'},
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    };
+    const snapshot = buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      traceId: 'trace-a',
+      sessionId: 'session-a',
+      runId: 'run-a',
+      query: 'analyze',
+      capabilityManifest: explicit,
+      analysisReceipt: {
+        schemaVersion: 2,
+        runManifestId: 'manifest-run',
+        runId: 'run-a',
+        sessionId: 'session-a',
+        traceId: 'trace-a',
+        mode: 'auto',
+        resolvedMode: 'full',
+        providerId: null,
+        generatedAt: 1,
+        traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
+        nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
+        claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+        qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
+        outputs: {},
+        capabilityManifest: receiptCapabilityManifest,
+      },
+      createdAt: 1234,
+    });
+
+    expect(snapshot?.capabilityManifest).toEqual(explicit);
   });
 
   test('returns null when tenant, workspace, or run metadata is missing', () => {
@@ -663,6 +728,21 @@ describe('analysis result snapshot pipeline', () => {
           claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
           qualityGates: {finalReportContract: 'passed', claimVerification: 'passed', identityResolution: 'passed'},
           outputs: {reportError: canary, cliTurnPath: `/tmp/${canary}`},
+          capabilityManifest: {
+            ...receiptCapabilityManifest,
+            localPath: canary,
+            resolution: {
+              ...receiptCapabilityManifest.resolution,
+              localPath: canary,
+              traceProcessor: {
+                ...(receiptCapabilityManifest.resolution.status === 'ready'
+                  ? receiptCapabilityManifest.resolution.traceProcessor
+                  : {}),
+                localPath: canary,
+              },
+            },
+            probeCache: {...receiptCapabilityManifest.probeCache, cachePath: canary},
+          } as any,
         },
         uiActionProposals: [{title: canary}] as any,
         privateKnowledge: true,
@@ -677,12 +757,16 @@ describe('analysis result snapshot pipeline', () => {
       );
       expect(snapshot?.traceLabel).toBe('trace-private');
       expect(snapshot?.sceneType).toBe('startup');
+      expect(snapshot?.capabilityManifest).toEqual(receiptCapabilityManifest);
+      expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(receiptCapabilityManifest);
+      expect(snapshot?.summary.analysisReceipt?.outputs).toEqual({});
 
       const db = openEnterpriseDb();
       try {
         const rows = db.prepare(`
           SELECT user_query, trace_label, summary_json, conclusion_contract_json,
-                 claim_support_json, claim_verification_json, identity_resolutions_json
+                 claim_support_json, claim_verification_json, identity_resolutions_json,
+                 capability_manifest_json
           FROM analysis_result_snapshots
           WHERE session_id = ?
         `).all(sessionId);
@@ -693,6 +777,7 @@ describe('analysis result snapshot pipeline', () => {
         expect((rows[0] as any).claim_support_json).not.toBeNull();
         expect((rows[0] as any).claim_verification_json).not.toBeNull();
         expect((rows[0] as any).identity_resolutions_json).not.toBeNull();
+        expect(JSON.parse((rows[0] as any).capability_manifest_json)).toEqual(receiptCapabilityManifest);
       } finally {
         db.close();
       }

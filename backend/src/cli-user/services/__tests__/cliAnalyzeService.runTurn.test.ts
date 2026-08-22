@@ -35,6 +35,18 @@ const mockCodebaseGet = jest.fn();
 const mockKnowledgeSourceGet = jest.fn();
 const mockPrepareSession = jest.fn();
 const mockRunManifestLifecycles: any[] = [];
+const capabilityManifest = {
+  schemaVersion: 'capability_manifest_attribution@1',
+  resolution: {
+    status: 'ready',
+    manifestId: `capability_manifest:${'a'.repeat(64)}`,
+    contentHash: 'a'.repeat(64),
+    manifestSchemaVersion: 'capability_manifest@1',
+    traceFingerprintSha256: 'b'.repeat(64),
+    traceProcessor: {source: 'bundled', gitRevision: 'd'.repeat(40)},
+  },
+  probeCache: {hits: 1, misses: 1, bypasses: 0},
+} as const;
 
 let mockPreparedSession: any;
 
@@ -149,6 +161,7 @@ jest.mock('../../../services/selfEvolution/runManifestLifecycle', () => ({
         return {
           runManifestId: 'manifest-cli-test',
           runId: input.runId,
+          capabilityManifest,
         };
       }),
       dispose: jest.fn(() => {
@@ -440,6 +453,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(output.result.analysisReceipt).toEqual(expect.objectContaining({
       schemaVersion: 2,
       runManifestId: 'manifest-cli-test',
+      capabilityManifest,
       outputs: expect.objectContaining({
         cliTurnPath: '/tmp/turns/001.md',
       }),

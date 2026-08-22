@@ -1171,6 +1171,21 @@ const MIGRATIONS: MigrationStep[] = [
       `);
     },
   },
+  {
+    version: 17,
+    up: (db) => {
+      // Some focused stores intentionally apply only the RAG subset while
+      // sharing the enterprise migration ledger. Do not fabricate snapshot
+      // tables in those stores; full enterprise databases have migration 7.
+      if (!tableHasColumn(db, 'analysis_result_snapshots', 'id')) return;
+      addColumnIfMissing(
+        db,
+        'analysis_result_snapshots',
+        'capability_manifest_json',
+        'TEXT',
+      );
+    },
+  },
 ];
 
 export function applyEnterpriseMinimalSchema(db: Database.Database): void {

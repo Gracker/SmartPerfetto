@@ -254,6 +254,7 @@ describe('enterprise core schema', () => {
       'claim_support_json',
       'claim_verification_json',
       'identity_resolutions_json',
+      'capability_manifest_json',
       'status',
       'schema_version',
       'created_at',
@@ -822,7 +823,42 @@ describe('enterprise core schema', () => {
       { version: 14 },
       { version: 15 },
       { version: 16 },
+      { version: 17 },
     ]);
+  });
+
+  test('adds capability attribution storage to an existing schema-v16 snapshot table', () => {
+    db!.exec(`
+      CREATE TABLE enterprise_schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      CREATE TABLE analysis_result_snapshots (
+        id TEXT PRIMARY KEY,
+        summary_json TEXT NOT NULL
+      );
+      INSERT INTO analysis_result_snapshots(id, summary_json)
+      VALUES ('legacy-snapshot', '{"headline":"legacy"}');
+    `);
+    const markMigration = db!.prepare(`
+      INSERT INTO enterprise_schema_migrations(version, applied_at) VALUES (?, 1)
+    `);
+    for (let version = 1; version <= 16; version += 1) markMigration.run(version);
+
+    applyEnterpriseMinimalSchema(db!);
+
+    expect(columnNames(db!, 'analysis_result_snapshots').has('capability_manifest_json')).toBe(true);
+    expect(db!.prepare(`
+      SELECT id, summary_json, capability_manifest_json
+      FROM analysis_result_snapshots
+    `).get()).toEqual({
+      id: 'legacy-snapshot',
+      summary_json: '{"headline":"legacy"}',
+      capability_manifest_json: null,
+    });
+    expect(db!.prepare<[], {count: number}>(`
+      SELECT COUNT(*) AS count FROM enterprise_schema_migrations WHERE version = 17
+    `).get()?.count).toBe(1);
   });
 
   test('enforces the full tenant workspace session run event chain', () => {
