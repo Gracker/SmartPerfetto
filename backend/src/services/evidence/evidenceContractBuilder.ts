@@ -501,7 +501,7 @@ function rowHasValue(row: Record<string, unknown>, key: string): boolean {
 }
 
 function hasPreciseTimeAlias(row: Record<string, unknown>): boolean {
-  return ['ts_str', 'start_ts_str', 'end_ts_str', 'dur_str', 'dur_ms']
+  return ['event_ts', 'event_end_ts', 'ts_str', 'start_ts_str', 'end_ts_str', 'dur_str', 'dur_ms']
     .some(key => rowHasValue(row, key));
 }
 
@@ -519,19 +519,26 @@ export function deriveExactEvidenceTimeRangeNs(
   const usesCanonicalNs = usesPreciseAlias ||
     ['ts', 'start_ts', 'end_ts', 'dur', 'duration_ns', 'durationNs'].some(present);
   if (!usesCanonicalNs) return undefined;
+  const hasEventTs = present('event_ts');
+  const hasEventEndTs = present('event_end_ts');
+  if (hasEventTs !== hasEventEndTs) return undefined;
 
-  const startRaw = present('ts_str')
-    ? row.ts_str
-    : present('start_ts_str')
-      ? row.start_ts_str
-      : present('start_ts')
-        ? row.start_ts
-        : row.ts;
+  const startRaw = hasEventTs
+    ? row.event_ts
+    : present('ts_str')
+      ? row.ts_str
+      : present('start_ts_str')
+        ? row.start_ts_str
+        : present('start_ts')
+          ? row.start_ts
+          : row.ts;
   const start = exactCanonicalNs(startRaw);
   if (start === undefined) return undefined;
 
   let end: bigint | undefined;
-  if (present('end_ts_str')) {
+  if (hasEventEndTs) {
+    end = exactCanonicalNs(row.event_end_ts);
+  } else if (present('end_ts_str')) {
     end = exactCanonicalNs(row.end_ts_str);
   } else if (present('end_ts')) {
     end = exactCanonicalNs(row.end_ts);

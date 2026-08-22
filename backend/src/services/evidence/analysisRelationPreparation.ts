@@ -10,6 +10,7 @@ import {
   type ClaimVerificationRunnerInput,
   type ClaimVerificationRunnerResult,
 } from '../verifier/claimVerificationRunner';
+import {produceInputRelationCandidates} from './inputRelationCandidateProducer';
 import {bindRelationCandidatesToClaims} from './relationCandidateClaimBinder';
 import {produceScrollingRelationCandidates} from './scrollingRelationCandidateProducer';
 import {produceStartupRelationCandidates} from './startupRelationCandidateProducer';
@@ -32,6 +33,7 @@ export function prepareAnalysisRelations(
   const relationCandidates = [
     ...produceStartupRelationCandidates(dataEnvelopes),
     ...produceScrollingRelationCandidates(dataEnvelopes),
+    ...produceInputRelationCandidates(dataEnvelopes),
   ];
   if (relationCandidates.length === 0) {
     return {conclusionContract: input.conclusionContract};

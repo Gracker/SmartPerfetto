@@ -91,8 +91,46 @@ function scrollingContract(): ConclusionContract {
   };
 }
 
+function inputEvidence() {
+  return createDataEnvelope({
+    columns: ['frame_id', 'event_ts', 'event_end_ts', 'main_bottleneck', 'severity', 'total_ms'],
+    rows: [
+      ['301', '1000', '2000', '应用处理', 'critical', 250],
+      ['302', '3000', '4000', 'unknown', 'warning', 150],
+    ],
+  }, {
+    type: 'skill_result', source: 'click_response_analysis', title: 'slow input events',
+    skillId: 'click_response_analysis', stepId: 'slow_input_events', executionStatus: 'observed',
+    evidenceRefId: 'data:input', sourceToolCallId: 'invoke_skill:input',
+    traceId: 'trace-a', traceSide: 'current',
+  });
+}
+
+function inputContract(): ConclusionContract {
+  const reference = (column: string, value: string | number, overrides: Record<string, unknown> = {}) => ({
+    evidenceRefId: 'data:input', sourceToolCallId: 'invoke_skill:input',
+    rowIndex: 0, column, value, ...overrides,
+  });
+  return {
+    schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
+    claims: [
+      {id: 'bottleneck', kind: 'causal', text: 'application handling caused the delay', references: [reference('main_bottleneck', '应用处理')]},
+      {id: 'latency', kind: 'causal', text: 'latency proves the cause', references: [reference('total_ms', 250)]},
+      {id: 'severity', kind: 'causal', text: 'severity proves the cause', references: [reference('severity', 'critical')]},
+      {id: 'frame-and-latency', kind: 'causal', text: 'frame and latency', references: [
+        reference('frame_id', '301'), reference('total_ms', 250),
+      ]},
+      {id: 'frame-only', kind: 'causal', text: 'frame exists', references: [reference('frame_id', '301')]},
+      {id: 'different-row', kind: 'causal', text: 'other row', references: [reference('total_ms', 150, {rowIndex: 1})]},
+      {id: 'wrong-tool', kind: 'causal', text: 'wrong tool', references: [reference('main_bottleneck', '应用处理', {sourceToolCallId: 'invoke_skill:wrong'})]},
+      {id: 'wrong-envelope', kind: 'causal', text: 'wrong envelope', references: [reference('main_bottleneck', '应用处理', {evidenceRefId: 'data:wrong'})]},
+    ],
+    uncertainties: [], nextSteps: [],
+  };
+}
+
 describe('analysisRelationPreparation', () => {
-  it('combines scrolling derived candidates with startup candidates', () => {
+  it('combines input and scrolling derived candidates with startup candidates', () => {
     const scrolling = createDataEnvelope({
       columns: ['frame_id', 'start_ts', 'dur', 'dur_ms', 'reason_code'],
       rows: [['9007199254740993', '200', '1500000', '1.5', 'workload_heavy']],
@@ -103,12 +141,60 @@ describe('analysisRelationPreparation', () => {
       sourceToolCallId: 'invoke_skill:scrolling', traceId: 'trace-a', traceSide: 'current',
     });
 
-    const prepared = prepareAnalysisRelations({dataEnvelopes: [...evidence(), scrolling]});
+    const prepared = prepareAnalysisRelations({dataEnvelopes: [...evidence(), scrolling, inputEvidence()]});
 
     expect(prepared.relationCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({kind: 'overlap'}),
-      expect.objectContaining({kind: 'derived'}),
+      expect.objectContaining({kind: 'derived', object: expect.objectContaining({column: 'reason_code'})}),
+      expect.objectContaining({kind: 'derived', object: expect.objectContaining({column: 'main_bottleneck'})}),
     ]));
+  });
+
+  it('binds same-row input causal claims except frame-only and mismatched references', () => {
+    const prepared = prepareAnalysisRelations({
+      conclusionContract: inputContract(), dataEnvelopes: [inputEvidence()],
+    });
+
+    expect(prepared.relationCandidates).toHaveLength(1);
+    expect(prepared.relationActivationClaimIds).toEqual([
+      'bottleneck', 'latency', 'severity', 'frame-and-latency',
+    ]);
+    for (const index of [0, 1, 2, 3]) {
+      expect(prepared.conclusionContract?.claims?.[index].relationRefs).toHaveLength(1);
+    }
+    for (const index of [4, 5, 6, 7]) {
+      expect(prepared.conclusionContract?.claims?.[index].relationRefs).toBeUndefined();
+    }
+  });
+
+  it('keeps synthetic input bottleneck causality at inference and blocked by the final quality gate', () => {
+    const bottleneckOnly = inputContract();
+    bottleneckOnly.claims = bottleneckOnly.claims?.slice(0, 1);
+    const prepared = prepareAnalysisRelations({
+      conclusionContract: bottleneckOnly, dataEnvelopes: [inputEvidence()],
+    });
+    const result = runPreparedAnalysisClaimVerification({
+      conclusionContract: bottleneckOnly, dataEnvelopes: [inputEvidence()], policy: 'record_only',
+    });
+
+    expect(result.claimSupport.find(item => item.claimId === 'bottleneck')).toEqual(expect.objectContaining({
+      relationEvaluation: 'candidate', supportLevel: 'inference',
+      relationAnchors: expect.arrayContaining([
+        expect.objectContaining({timeRange: {startTs: '1000', endTs: '2000', unit: 'ns', source: 'row'}}),
+      ]),
+    }));
+    expect(result.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({claimId: 'bottleneck', code: 'causal_relation_candidate'}),
+    ]));
+    expect(assessFinalResultQuality({
+      result: {
+        sessionId: 'session', success: true, findings: [], hypotheses: [],
+        conclusion: 'Frame 301 is classified with application handling as its main bottleneck.', confidence: 0.5,
+        rounds: 1, totalDurationMs: 1, conclusionContract: prepared.conclusionContract || undefined,
+        claimSupport: result.claimSupport, claimVerificationResult: result.claimVerificationResult,
+      },
+      query: 'analyze why this input event is slow',
+    })).toBeDefined();
   });
 
   it('binds heuristic causal claims at row level except subject-only and mismatched references', () => {

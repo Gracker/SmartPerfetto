@@ -68,6 +68,48 @@ describe('evidenceContractBuilder', () => {
     }));
   });
 
+  it('derives strict event_ts/event_end_ts ranges without falling back around malformed aliases', () => {
+    const envelope = createDataEnvelope({
+      columns: ['frame_id', 'main_bottleneck', 'event_ts', 'event_end_ts', 'start_ts', 'end_ts'],
+      rows: [
+        ['1', 'ACK', '100', '200', null, null],
+        ['2', 'ACK', '0100', '200', '10', '20'],
+        ['3', 'ACK', '100', '9223372036854775808', '10', '20'],
+        ['4', 'ACK', null, null, '10', '20'],
+        ['5', 'ACK', '100', null, '10', '20'],
+        ['6', 'ACK', '200', '100', null, null],
+      ],
+    }, {
+      type: 'skill_result', source: 'click_response_analysis', title: 'slow input events',
+      skillId: 'click_response_analysis', stepId: 'slow_input_events', executionStatus: 'observed',
+      evidenceRefId: 'data:event-ranges', sourceToolCallId: 'invoke_skill:event-ranges',
+      traceId: 'trace-a', traceSide: 'current',
+    });
+    const relation = (rowIndex: number) => ({
+      schemaVersion: 'evidence_relation_candidate@1' as const,
+      id: `relation:event-range:${rowIndex}`,
+      kind: 'derived' as const,
+      direction: 'subject_to_object' as const,
+      subject: {evidenceRefId: 'data:event-ranges', rowIndex, column: 'frame_id'},
+      object: {evidenceRefId: 'data:event-ranges', rowIndex, column: 'main_bottleneck'},
+    });
+
+    const built = buildEvidenceContract({
+      dataEnvelopes: [envelope],
+      relationCandidates: [0, 1, 2, 3, 4, 5].map(relation),
+    });
+    const subjectRanges = new Map(built.anchors
+      .filter(anchor => anchor.cells?.[0]?.column === 'frame_id')
+      .map(anchor => [anchor.cells?.[0]?.actualValue, anchor.timeRange]));
+
+    expect(subjectRanges.get('1')).toEqual({startTs: '100', endTs: '200', unit: 'ns', source: 'row'});
+    expect(subjectRanges.get('2')).toBeUndefined();
+    expect(subjectRanges.get('3')).toBeUndefined();
+    expect(subjectRanges.get('4')).toEqual({startTs: '10', endTs: '20', unit: 'ns', source: 'row'});
+    expect(subjectRanges.get('5')).toBeUndefined();
+    expect(subjectRanges.get('6')).toBeUndefined();
+  });
+
   it('builds and deduplicates producer-authored overlap relation anchors', () => {
     const envelope = createDataEnvelope(
       {
