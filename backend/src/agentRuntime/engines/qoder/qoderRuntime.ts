@@ -415,7 +415,11 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     let traceCompleteness: Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
     if (!deferTracePreflightToModel) {
       try {
-        traceCompleteness = await probeTraceCompleteness(traceProcessorService, traceId);
+        traceCompleteness = await probeTraceCompleteness(
+          traceProcessorService,
+          traceId,
+          architecture?.type,
+        );
       } catch {
         // Non-fatal
       }

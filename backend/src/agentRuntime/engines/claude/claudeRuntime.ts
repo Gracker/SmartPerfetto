@@ -79,7 +79,7 @@ import {
   analysisContextMemoryPartitionKey,
   analysisContextUsesPrivateKnowledge,
 } from '../../../services/resolvedAnalysisContext';
-import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, ComplexityClassifierInput, FailedApproach, Hypothesis, QueryComplexity, TraceCompleteness, UncertaintyFlag, VerificationIssue } from '../../../agentv3/types';
+import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, ComplexityClassifierInput, FailedApproach, Hypothesis, QueryComplexity, UncertaintyFlag, VerificationIssue } from '../../../agentv3/types';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {
   recordPlanOrPrePlanToolCall,
@@ -892,8 +892,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   private architectureCache: Map<string, ArchitectureInfo> = new Map();
   /** Cache vendor detection results per traceId (deterministic per trace). */
   private vendorCache: Map<string, string> = new Map();
-  /** Cache trace completeness probe results per traceId (deterministic per trace). */
-  private completenessCache: Map<string, TraceCompleteness> = new Map();
   /** Per-session artifact stores — persist across turns within a session. */
   private artifactStores: Map<string, ArtifactStore> = new Map();
   /** Per-session analysis notes — persist across turns within a session. */
@@ -3836,7 +3834,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.abortAllSessions();
     this.architectureCache.clear();
     this.vendorCache.clear();
-    this.completenessCache.clear();
     // Also clear all session-scoped stores to prevent unbounded growth
     this.artifactStores.clear();
     this.sessionNotes.clear();
@@ -4023,19 +4020,17 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         `capDiff=${comparisonContext?.capabilityDiff ? `cur=${comparisonContext.capabilityDiff.currentOnly.length}/ref=${comparisonContext.capabilityDiff.referenceOnly.length}` : 'none'}`);
     }
 
-    // Phase 2.9: Trace data completeness probe (cached per traceId, ~50ms first run)
-    let traceCompleteness = getLruCacheEntry(this.completenessCache, traceId);
-    if (!traceCompleteness) {
-      try {
-        traceCompleteness = await probeTraceCompleteness(
-          this.traceProcessorService,
-          traceId,
-          architecture?.type,
-        );
-        setLruCacheEntry(this.completenessCache, traceId, traceCompleteness);
-      } catch (err) {
-        console.warn('[ClaudeRuntime] Trace completeness probe failed (non-fatal):', diagnosticLogIdentity((err as Error).message));
-      }
+    // Phase 2.9: Trace data completeness probe (identity-safe shared cache)
+    let traceCompleteness:
+      Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
+    try {
+      traceCompleteness = await probeTraceCompleteness(
+        this.traceProcessorService,
+        traceId,
+        architecture?.type,
+      );
+    } catch (err) {
+      console.warn('[ClaudeRuntime] Trace completeness probe failed (non-fatal):', diagnosticLogIdentity((err as Error).message));
     }
 
     // Phase 3: Session context + conversation history (reuse precomputed if available)

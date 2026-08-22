@@ -352,6 +352,9 @@ describe('QoderRuntime', () => {
       mockQuery.mockReturnValue(createMockSdkStream([
         { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
       ]));
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({
+        detect: jest.fn<any>().mockResolvedValue({type: 'COMPOSE'}),
+      } as any);
       try {
         const result = await createRuntime().analyze(
           'summarize top-5 longest process slices',
@@ -363,6 +366,7 @@ describe('QoderRuntime', () => {
         expect(probeTraceCompleteness).toHaveBeenCalledWith(
           expect.objectContaining({query: expect.any(Function)}),
           'trace-1',
+          'COMPOSE',
         );
         expect(createSkillExecutor).toHaveBeenCalled();
         expect(mockCreateClaudeMcpServer).toHaveBeenCalled();

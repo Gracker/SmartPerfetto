@@ -2,10 +2,24 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it, jest } from '@jest/globals';
+import {afterEach, describe, expect, it, jest} from '@jest/globals';
+import {mkdtemp, rm, writeFile} from 'fs/promises';
+import os from 'os';
+import path from 'path';
 import type { CapabilityManifestV1 } from '../../types/capabilityManifest';
+import {projectCapabilityManifestAttribution} from '../../services/capabilityManifest';
+import {clearCapabilityRuntimeIdentityCaches} from '../../services/capabilityManifestRuntimeIdentity';
+import {
+  RunManifestLifecycle,
+  withRunManifestLifecycle,
+} from '../../services/selfEvolution/runManifestLifecycle';
+import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import type { TraceCompleteness } from '../types';
-import { CAPABILITY_REGISTRY, probeTraceCompleteness } from '../traceCompletenessProber';
+import {
+  CAPABILITY_REGISTRY,
+  clearTraceCompletenessProbeCache,
+  probeTraceCompleteness,
+} from '../traceCompletenessProber';
 
 const TRACE_SHA256 = 'a'.repeat(64);
 const TP_GIT_REVISION = 'b'.repeat(40);
@@ -21,7 +35,19 @@ type ManifestDependencies = {
   resolveTraceIdentity?: (...args: any[]) => Promise<any>;
   resolveTraceProcessorIdentity?: (...args: any[]) => Promise<any>;
   buildManifest?: (...args: any[]) => CapabilityManifestV1;
+  projectAttribution?: (...args: any[]) => any;
+  attributionSink?: any;
 };
+
+const tempRoots: string[] = [];
+
+afterEach(async () => {
+  clearTraceCompletenessProbeCache();
+  clearCapabilityRuntimeIdentityCaches();
+  jest.restoreAllMocks();
+  await Promise.all(tempRoots.splice(0).map(root =>
+    rm(root, {recursive: true, force: true})));
+});
 
 async function probeWithManifestDependencies(
   tps: any,
@@ -161,7 +187,323 @@ function readyDependencies(
   };
 }
 
+async function makeProductionCacheFixture(
+  traceBytes = 'trace-cache-bytes',
+  processorBytes = 'trace-processor-cache-bytes',
+) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'trace-completeness-cache-'));
+  tempRoots.push(root);
+  const tracePath = path.join(root, 'trace.pftrace');
+  const processorPath = path.join(root, 'trace_processor_shell');
+  await Promise.all([
+    writeFile(tracePath, traceBytes),
+    writeFile(processorPath, processorBytes),
+  ]);
+  const tps = makeTraceProcessorMock(allCapabilityTables(3));
+  tps.getTrace.mockReturnValue({filePath: tracePath});
+  tps.getRunningCapabilityTraceProcessorInput.mockReturnValue({
+    source: 'local_binary',
+    selectedPath: processorPath,
+    selectionOrigin: 'explicit',
+  });
+  return {tps, tracePath, processorPath};
+}
+
+function schemaProbeCount(tps: any): number {
+  return tps.query.mock.calls.filter(
+    (call: unknown[]) => String(call[1]).includes('sqlite_master'),
+  ).length;
+}
+
+function createRunManifestLifecycle(): RunManifestLifecycle {
+  return new RunManifestLifecycle({
+    runId: 'run-cache',
+    sessionId: 'session-cache',
+    scope: {tenantId: 'tenant-cache', workspaceId: 'workspace-cache'},
+    runtime: 'claude-agent-sdk',
+    providerId: null,
+    outputLanguage: 'en',
+    analysisMode: 'full',
+    skillRegistry: {registryFingerprint: 'registry-cache', skills: []},
+  });
+}
+
+function readyProjectionResolution(): any {
+  const content = {
+    schemaVersion: 'capability_manifest@1' as const,
+    traceProcessor: {
+      source: 'custom' as const,
+      binarySha256: 'b'.repeat(64),
+    },
+    trace: {
+      fingerprintSha256: TRACE_SHA256,
+      fingerprintKind: 'trace_bytes_sha256' as const,
+      traceSide: 'current' as const,
+    },
+    capabilities: [],
+  };
+  const contentHash = canonicalContentHash(content);
+  return {
+    status: 'ready',
+    manifest: {
+      content,
+      provenance: {
+        traceId: 'trace-1',
+        processorKey: '/private/processor-key',
+        leaseId: '/private/lease',
+        rpcEndpoint: 'http://127.0.0.1:9001',
+        diagnosedAt: 1_000,
+        generatedAt: 2_000,
+      },
+      manifestId: `capability_manifest:${contentHash}`,
+      contentHash,
+    },
+  };
+}
+
 describe('probeTraceCompleteness', () => {
+  it('projects path-free versioned attribution with one deterministic cache observation', () => {
+    const readyResolution = readyProjectionResolution();
+    const attribution = projectCapabilityManifestAttribution(
+      readyResolution,
+      {outcome: 'miss', keyHash: 'd'.repeat(64)},
+    );
+
+    expect(attribution).toEqual({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {
+        status: 'ready',
+        manifestId: readyResolution.manifest.manifestId,
+        contentHash: readyResolution.manifest.contentHash,
+        manifestSchemaVersion: 'capability_manifest@1',
+        traceFingerprintSha256: TRACE_SHA256,
+        traceProcessor: {
+          source: 'custom',
+          binarySha256: 'b'.repeat(64),
+        },
+      },
+      probeCache: {
+        keyHash: 'd'.repeat(64),
+        hits: 0,
+        misses: 1,
+        bypasses: 0,
+      },
+    });
+    expect(JSON.stringify(attribution)).not.toContain('/private/');
+    expect(Object.isFrozen(attribution)).toBe(true);
+
+    expect(projectCapabilityManifestAttribution(
+      {
+        status: 'unavailable',
+        reason: 'trace_hash_failed',
+        detailCode: '/private/unsafe-detail',
+      },
+      {outcome: 'bypass'},
+    )).toEqual({
+      schemaVersion: 'capability_manifest_attribution@1',
+      resolution: {status: 'unavailable', reason: 'trace_hash_failed'},
+      probeCache: {hits: 0, misses: 0, bypasses: 1},
+    });
+    expect(projectCapabilityManifestAttribution(
+      {status: 'failed', reason: 'capability_manifest_build_failed'},
+      {outcome: 'bypass'},
+    ).resolution).toEqual({
+      status: 'failed',
+      reason: 'capability_manifest_build_failed',
+    });
+  });
+
+  it('rejects a ready attribution whose content no longer matches its hash', () => {
+    const resolution = readyProjectionResolution();
+    resolution.manifest.content.capabilities.push({
+      id: 'tampered',
+      displayName: 'tampered',
+      primaryTable: 'slice',
+      status: 'available',
+      sourceState: 'present_with_data',
+    });
+
+    expect(() => projectCapabilityManifestAttribution(
+      resolution,
+      {outcome: 'miss', keyHash: 'd'.repeat(64)},
+    )).toThrow('capability_manifest_attribution_invalid_ready_resolution');
+  });
+
+  it('rejects an unknown cache outcome instead of recording zero counters', () => {
+    expect(() => projectCapabilityManifestAttribution(
+      {status: 'failed', reason: 'capability_manifest_build_failed'},
+      {outcome: 'stale' as 'hit'},
+    )).toThrow('capability_manifest_attribution_invalid_cache_outcome');
+  });
+
+  it('rekeys the production cache when trace bytes change', async () => {
+    const {tps, tracePath} = await makeProductionCacheFixture();
+
+    const first = await probeTraceCompleteness(tps, 'trace-bytes-key', 'STANDARD');
+    await writeFile(tracePath, 'trace-cache-bytes-changed-and-longer');
+    const second = await probeTraceCompleteness(tps, 'trace-bytes-key', 'STANDARD');
+
+    expect(schemaProbeCount(tps)).toBe(2);
+    expect((first.capabilityManifestResolution as any).manifest.contentHash)
+      .not.toBe((second.capabilityManifestResolution as any).manifest.contentHash);
+  });
+
+  it('rekeys the production cache when the running processor bytes change', async () => {
+    const {tps, processorPath} = await makeProductionCacheFixture();
+
+    const first = await probeTraceCompleteness(tps, 'processor-key', 'STANDARD');
+    await writeFile(processorPath, 'trace-processor-cache-bytes-changed-and-longer');
+    const second = await probeTraceCompleteness(tps, 'processor-key', 'STANDARD');
+
+    expect(schemaProbeCount(tps)).toBe(2);
+    expect((first.capabilityManifestResolution as any).manifest.content.traceProcessor)
+      .not.toEqual((second.capabilityManifestResolution as any).manifest.content.traceProcessor);
+  });
+
+  it('keys production cache entries by architecture and reuses each exact identity', async () => {
+    const {tps} = await makeProductionCacheFixture();
+
+    await probeTraceCompleteness(tps, 'architecture-key', 'STANDARD');
+    await probeTraceCompleteness(tps, 'architecture-key', 'FLUTTER');
+    await probeTraceCompleteness(tps, 'architecture-key', 'STANDARD');
+
+    expect(schemaProbeCount(tps)).toBe(2);
+  });
+
+  it('deduplicates concurrent production probes and materializes fresh timestamps', async () => {
+    const {tps} = await makeProductionCacheFixture();
+    const originalQuery = tps.query.getMockImplementation();
+    let releaseSchema!: () => void;
+    const schemaGate = new Promise<void>(resolve => {
+      releaseSchema = resolve;
+    });
+    tps.query.mockImplementation(async (traceId: string, sql: string) => {
+      if (sql.includes('sqlite_master')) await schemaGate;
+      return originalQuery!(traceId, sql);
+    });
+    let tick = 10_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => ++tick);
+
+    const firstPromise = probeTraceCompleteness(tps, 'concurrent-key', 'STANDARD');
+    const secondPromise = probeTraceCompleteness(tps, 'concurrent-key', 'STANDARD');
+    await new Promise(resolve => setImmediate(resolve));
+    releaseSchema();
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+    expect(schemaProbeCount(tps)).toBe(1);
+    expect(first.available).toEqual(second.available);
+    expect(first.diagnosedAt).not.toBe(second.diagnosedAt);
+    expect((first.capabilityManifestResolution as any).manifest.provenance.diagnosedAt)
+      .toBe(first.diagnosedAt);
+    expect((second.capabilityManifestResolution as any).manifest.provenance.diagnosedAt)
+      .toBe(second.diagnosedAt);
+    expect((first.capabilityManifestResolution as any).manifest.provenance.generatedAt)
+      .not.toBe((second.capabilityManifestResolution as any).manifest.provenance.generatedAt);
+  });
+
+  it('evicts a rejected in-flight production probe', async () => {
+    const {tps} = await makeProductionCacheFixture();
+    jest.spyOn(console, 'log')
+      .mockImplementationOnce(() => {
+        throw new Error('first probe rejected');
+      })
+      .mockImplementation(() => undefined);
+
+    await expect(probeTraceCompleteness(tps, 'rejection-key', 'STANDARD'))
+      .rejects.toThrow('first probe rejected');
+    await expect(probeTraceCompleteness(tps, 'rejection-key', 'STANDARD'))
+      .resolves.toMatchObject({available: expect.any(Array)});
+
+    expect(schemaProbeCount(tps)).toBe(2);
+  });
+
+  it('bounds completed and in-flight production entries to the 32 most recent keys', async () => {
+    const {tps} = await makeProductionCacheFixture();
+
+    for (let index = 0; index < 33; index++) {
+      await probeTraceCompleteness(tps, `lru-key-${index}`, 'STANDARD');
+    }
+    await probeTraceCompleteness(tps, 'lru-key-0', 'STANDARD');
+
+    expect(schemaProbeCount(tps)).toBe(34);
+  });
+
+  it('records one miss and one hit on the current RunManifest attribution sink', async () => {
+    const {tps} = await makeProductionCacheFixture();
+    const lifecycle = createRunManifestLifecycle();
+
+    await withRunManifestLifecycle(lifecycle, async () => {
+      await probeTraceCompleteness(tps, 'manifest-counters', 'STANDARD');
+      await probeTraceCompleteness(tps, 'manifest-counters', 'STANDARD');
+    });
+
+    const attribution = lifecycle.builder.seal().capabilityManifest;
+    expect(attribution?.probeCache).toEqual({
+      keyHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hits: 1,
+      misses: 1,
+      bypasses: 0,
+    });
+    expect(JSON.stringify(attribution)).not.toContain(tempRoots[0]);
+  });
+
+  it('bypasses the shared cache for external, injected, and unresolved identity', async () => {
+    const external = makeTraceProcessorMock(allCapabilityTables(3));
+    external.getTraceSourceKind.mockReturnValue('external_rpc');
+    await probeTraceCompleteness(external, 'external-bypass', 'STANDARD');
+    await probeTraceCompleteness(external, 'external-bypass', 'STANDARD');
+    expect(schemaProbeCount(external)).toBe(2);
+
+    const injected = makeTraceProcessorMock(allCapabilityTables(3));
+    const dependencies = readyDependencies();
+    await probeWithManifestDependencies(injected, 'injected-bypass', dependencies);
+    await probeWithManifestDependencies(injected, 'injected-bypass', dependencies);
+    expect(schemaProbeCount(injected)).toBe(2);
+
+    const unresolved = makeTraceProcessorMock(allCapabilityTables(3));
+    unresolved.getRunningCapabilityTraceProcessorInput.mockReturnValue(undefined);
+    await probeTraceCompleteness(unresolved, 'unresolved-bypass', 'STANDARD');
+    await probeTraceCompleteness(unresolved, 'unresolved-bypass', 'STANDARD');
+    expect(schemaProbeCount(unresolved)).toBe(2);
+  });
+
+  it.each([
+    {
+      name: 'projector',
+      dependencies: () => readyDependencies({
+        projectAttribution: jest.fn(() => {
+          throw new Error('/private/projector-error');
+        }),
+      }),
+      diagnostic: 'capability_manifest_attribution_projection_failed',
+    },
+    {
+      name: 'sink',
+      dependencies: () => readyDependencies({
+        attributionSink: {
+          recordCapabilityManifest: () => {
+            throw new Error('/private/sink-error');
+          },
+        },
+      }),
+      diagnostic: 'capability_manifest_attribution_sink_failed',
+    },
+  ])('isolates $name failures behind a fixed diagnostic code', async ({dependencies, diagnostic}) => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const result = await probeWithManifestDependencies(
+      makeTraceProcessorMock(allCapabilityTables(3)),
+      'attribution-isolation',
+      dependencies(),
+    );
+
+    expect(legacySnapshot(result)).toEqual(
+      expectedAllAvailableLegacy(result.diagnosedAt),
+    );
+    expect(result.capabilityManifestResolution).toMatchObject({status: 'ready'});
+    expect(warn).toHaveBeenCalledWith(`[TraceCompleteness] ${diagnostic}`);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('/private/');
+  });
+
   it('loads power prerequisite modules before probing M2.0 capabilities', async () => {
     const tps = makeTraceProcessorMock({
       android_power_rails_counters: 3,

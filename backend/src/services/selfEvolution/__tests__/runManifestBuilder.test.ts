@@ -7,6 +7,10 @@ import {describe, expect, it, jest} from '@jest/globals';
 import {canonicalContentHash} from '../canonicalJson';
 import {RunManifestBuilder} from '../runManifestBuilder';
 
+const TRACE_SHA = 'a'.repeat(64);
+const CONTENT_SHA = 'b'.repeat(64);
+const CACHE_KEY_SHA = 'c'.repeat(64);
+
 function createBuilder(now = jest.fn(() => 1_010)) {
   return new RunManifestBuilder({
     runManifestId: 'manifest-1',
@@ -23,7 +27,76 @@ function createBuilder(now = jest.fn(() => 1_010)) {
   });
 }
 
+function recordEmptyRegistry(builder: RunManifestBuilder): void {
+  builder.recordSkillRegistry({registryFingerprint: 'registry-a', skills: []});
+}
+
+function capabilityAttribution(
+  outcome: 'hit' | 'miss' | 'bypass',
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    schemaVersion: 'capability_manifest_attribution@1' as const,
+    resolution: {
+      status: 'ready' as const,
+      manifestId: `capability_manifest:${CONTENT_SHA}`,
+      contentHash: CONTENT_SHA,
+      manifestSchemaVersion: 'capability_manifest@1' as const,
+      traceFingerprintSha256: TRACE_SHA,
+      traceProcessor: {
+        source: 'bundled' as const,
+        gitRevision: 'd'.repeat(40),
+      },
+      ...overrides,
+    },
+    probeCache: {
+      ...(outcome === 'bypass' ? {} : {keyHash: CACHE_KEY_SHA}),
+      hits: outcome === 'hit' ? 1 : 0,
+      misses: outcome === 'miss' ? 1 : 0,
+      bypasses: outcome === 'bypass' ? 1 : 0,
+    },
+  };
+}
+
 describe('RunManifestBuilder', () => {
+  it('merges matching capability manifest miss and hit counters into the sealed run', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+
+    builder.recordCapabilityManifest(capabilityAttribution('miss'));
+    builder.recordCapabilityManifest(capabilityAttribution('hit'));
+
+    expect(builder.seal().capabilityManifest).toEqual({
+      ...capabilityAttribution('miss'),
+      probeCache: {
+        keyHash: CACHE_KEY_SHA,
+        hits: 1,
+        misses: 1,
+        bypasses: 0,
+      },
+    });
+  });
+
+  it('fails closed when capability manifest identity or cache key conflicts', () => {
+    const identityConflict = createBuilder();
+    recordEmptyRegistry(identityConflict);
+    identityConflict.recordCapabilityManifest(capabilityAttribution('miss'));
+    expect(() => identityConflict.recordCapabilityManifest(
+      capabilityAttribution('hit', {
+        contentHash: 'e'.repeat(64),
+        manifestId: `capability_manifest:${'e'.repeat(64)}`,
+      }),
+    )).toThrow('run_manifest_capability_manifest_identity_mismatch');
+
+    const keyConflict = createBuilder();
+    recordEmptyRegistry(keyConflict);
+    keyConflict.recordCapabilityManifest(capabilityAttribution('miss'));
+    const conflictingKey = capabilityAttribution('hit');
+    conflictingKey.probeCache.keyHash = 'f'.repeat(64);
+    expect(() => keyConflict.recordCapabilityManifest(conflictingKey))
+      .toThrow('run_manifest_capability_manifest_identity_mismatch');
+  });
+
   it('seals one immutable canonical manifest with actual invocation outcomes', () => {
     const builder = createBuilder();
     builder.recordSkillRegistry({

@@ -770,7 +770,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private readonly traceProcessorService: TraceProcessorService;
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
   private readonly vendorCache = new Map<string, string>();
-  private readonly completenessCache = new Map<string, TraceCompleteness>();
   private readonly artifactStores = new Map<string, ArtifactStore>();
   private readonly sessionNotes = new Map<string, AnalysisNote[]>();
   private readonly sessionSqlErrors = new Map<string, Array<{ errorSql: string; errorMessage: string; timestamp: number; fixedSql?: string }>>();
@@ -1914,7 +1913,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     this.abortAllSessions();
     this.architectureCache.clear();
     this.vendorCache.clear();
-    this.completenessCache.clear();
     this.artifactStores.clear();
     this.sessionNotes.clear();
     this.sessionSqlErrors.clear();
@@ -2594,16 +2592,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     architecture?: ArchitectureInfo,
   ): Promise<TraceCompleteness | undefined> {
-    const cached = getLruCacheEntry(this.completenessCache, traceId);
-    if (cached) return cached;
     try {
-      const completeness = await probeTraceCompleteness(
+      return await probeTraceCompleteness(
         this.traceProcessorService,
         traceId,
         architecture?.type,
       );
-      setLruCacheEntry(this.completenessCache, traceId, completeness);
-      return completeness;
     } catch (error) {
       console.warn('[OpenAIRuntime] Trace completeness probe failed:', (error as Error).message);
       return undefined;

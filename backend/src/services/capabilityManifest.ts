@@ -8,10 +8,17 @@ import type {
   CapabilityManifestContentV1,
   CapabilityManifestEntryV1,
   CapabilityManifestLegacyProbeResult,
+  CapabilityManifestAttributionResolutionV1,
+  CapabilityManifestAttributionV1,
+  CapabilityManifestProbeCacheObservationV1,
+  CapabilityManifestResolutionV1,
   CapabilityManifestTraceProcessorIdentityV1,
   CapabilityManifestV1,
 } from '../types/capabilityManifest';
-import {CAPABILITY_MANIFEST_SCHEMA_VERSION} from '../types/capabilityManifest';
+import {
+  CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION,
+  CAPABILITY_MANIFEST_SCHEMA_VERSION,
+} from '../types/capabilityManifest';
 import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
@@ -20,6 +27,7 @@ import {
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const GIT_REVISION_PATTERN = /^[0-9a-f]{40}$/;
 const CLOCK_VALUE_PATTERN = /^(?:0|[1-9][0-9]*)$/;
+const SAFE_DETAIL_CODE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const TRACE_PROCESSOR_UNAVAILABLE_REASONS = new Set([
   'external_rpc_binary_unavailable',
   'trace_processor_binary_unavailable',
@@ -587,5 +595,107 @@ export function buildCapabilityManifest(
     provenance,
     manifestId: `capability_manifest:${contentHash}`,
     contentHash,
+  });
+}
+
+function projectAttributionTraceProcessor(
+  traceProcessor: CapabilityManifestTraceProcessorIdentityV1,
+): CapabilityManifestTraceProcessorIdentityV1 {
+  if (traceProcessor.source === 'bundled') {
+    if (!GIT_REVISION_PATTERN.test(traceProcessor.gitRevision)) {
+      throw new Error('capability_manifest_attribution_invalid_processor');
+    }
+    return {source: 'bundled', gitRevision: traceProcessor.gitRevision};
+  }
+  if (traceProcessor.source === 'custom') {
+    if (!SHA256_PATTERN.test(traceProcessor.binarySha256)) {
+      throw new Error('capability_manifest_attribution_invalid_processor');
+    }
+    return {source: 'custom', binarySha256: traceProcessor.binarySha256};
+  }
+  if (!TRACE_PROCESSOR_UNAVAILABLE_REASONS.has(
+    traceProcessor.unavailableReason,
+  )) {
+    throw new Error('capability_manifest_attribution_invalid_processor');
+  }
+  return {
+    source: 'unknown',
+    unavailableReason: traceProcessor.unavailableReason,
+  };
+}
+
+function projectAttributionResolution(
+  resolution: CapabilityManifestResolutionV1,
+): CapabilityManifestAttributionResolutionV1 {
+  if (resolution.status === 'unavailable') {
+    return {
+      status: 'unavailable',
+      reason: resolution.reason,
+      ...(resolution.detailCode !== undefined &&
+      SAFE_DETAIL_CODE.test(resolution.detailCode)
+        ? {detailCode: resolution.detailCode}
+        : {}),
+    };
+  }
+  if (resolution.status === 'failed') {
+    return {status: 'failed', reason: resolution.reason};
+  }
+
+  const {manifest} = resolution;
+  let projectedContentHash: string;
+  try {
+    projectedContentHash = canonicalContentHash(manifest.content);
+  } catch {
+    throw new Error('capability_manifest_attribution_invalid_ready_resolution');
+  }
+  if (
+    manifest.content.schemaVersion !== CAPABILITY_MANIFEST_SCHEMA_VERSION ||
+    !SHA256_PATTERN.test(manifest.contentHash) ||
+    projectedContentHash !== manifest.contentHash ||
+    manifest.manifestId !== `capability_manifest:${manifest.contentHash}` ||
+    !SHA256_PATTERN.test(manifest.content.trace.fingerprintSha256)
+  ) {
+    throw new Error('capability_manifest_attribution_invalid_ready_resolution');
+  }
+  return {
+    status: 'ready',
+    manifestId: manifest.manifestId,
+    contentHash: manifest.contentHash,
+    manifestSchemaVersion: manifest.content.schemaVersion,
+    traceFingerprintSha256: manifest.content.trace.fingerprintSha256,
+    traceProcessor: projectAttributionTraceProcessor(
+      manifest.content.traceProcessor,
+    ),
+  };
+}
+
+export function projectCapabilityManifestAttribution(
+  resolution: CapabilityManifestResolutionV1,
+  probeCache: CapabilityManifestProbeCacheObservationV1,
+): CapabilityManifestAttributionV1 {
+  if (
+    probeCache.outcome !== 'hit' &&
+    probeCache.outcome !== 'miss' &&
+    probeCache.outcome !== 'bypass'
+  ) {
+    throw new Error('capability_manifest_attribution_invalid_cache_outcome');
+  }
+  if (
+    probeCache.keyHash !== undefined &&
+    !SHA256_PATTERN.test(probeCache.keyHash)
+  ) {
+    throw new Error('capability_manifest_attribution_invalid_cache_key');
+  }
+  return immutableCanonicalSnapshot({
+    schemaVersion: CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION,
+    resolution: projectAttributionResolution(resolution),
+    probeCache: {
+      ...(probeCache.keyHash === undefined
+        ? {}
+        : {keyHash: probeCache.keyHash}),
+      hits: probeCache.outcome === 'hit' ? 1 : 0,
+      misses: probeCache.outcome === 'miss' ? 1 : 0,
+      bypasses: probeCache.outcome === 'bypass' ? 1 : 0,
+    },
   });
 }

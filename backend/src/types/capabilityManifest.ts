@@ -4,6 +4,8 @@
 
 export const CAPABILITY_MANIFEST_SCHEMA_VERSION =
   'capability_manifest@1' as const;
+export const CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION =
+  'capability_manifest_attribution@1' as const;
 
 export type CapabilityManifestStatus =
   | 'available'
@@ -140,6 +142,38 @@ export type CapabilityManifestResolutionV1 =
       detailCode?: string;
     }
   | {status: 'failed'; reason: 'capability_manifest_build_failed'};
+
+export type CapabilityManifestProbeCacheOutcome = 'hit' | 'miss' | 'bypass';
+
+export interface CapabilityManifestProbeCacheObservationV1 {
+  outcome: CapabilityManifestProbeCacheOutcome;
+  keyHash?: string;
+}
+
+export interface CapabilityManifestProbeCacheCountersV1 {
+  keyHash?: string;
+  hits: number;
+  misses: number;
+  bypasses: number;
+}
+
+export type CapabilityManifestAttributionResolutionV1 =
+  | {
+      status: 'ready';
+      manifestId: string;
+      contentHash: string;
+      manifestSchemaVersion: typeof CAPABILITY_MANIFEST_SCHEMA_VERSION;
+      traceFingerprintSha256: string;
+      traceProcessor: CapabilityManifestTraceProcessorIdentityV1;
+    }
+  | Extract<CapabilityManifestResolutionV1, {status: 'unavailable'}>
+  | Extract<CapabilityManifestResolutionV1, {status: 'failed'}>;
+
+export interface CapabilityManifestAttributionV1 {
+  schemaVersion: typeof CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION;
+  resolution: CapabilityManifestAttributionResolutionV1;
+  probeCache: CapabilityManifestProbeCacheCountersV1;
+}
 
 export interface BuildCapabilityManifestInput {
   definitions: CapabilityManifestCapabilityDefinition[];

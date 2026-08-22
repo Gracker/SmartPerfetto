@@ -5,6 +5,7 @@
 import {randomUUID} from 'crypto';
 
 import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
 import type {
   RunInjectionAttribution,
   RunInjectionCategory,
@@ -88,6 +89,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
   private analysisMode: RunManifestV1['analysisMode'];
   private resolvedMode: RunManifestV1['resolvedMode'];
   private capabilityFlags = new Set<string>();
+  private capabilityManifest: CapabilityManifestAttributionV1 | undefined;
   private toolAllowlistHash = canonicalContentHash([]);
   private registryFingerprint: string | undefined;
   private evolutionOverlayGeneration: string | undefined;
@@ -176,6 +178,56 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     for (const flag of input.capabilityFlags ?? []) {
       if (flag) this.capabilityFlags.add(flag);
     }
+  }
+
+  recordCapabilityManifest(input: CapabilityManifestAttributionV1): void {
+    this.assertCollecting('record_capability_manifest');
+    const counters = input.probeCache;
+    for (const [name, value] of Object.entries({
+      hits: counters.hits,
+      misses: counters.misses,
+      bypasses: counters.bypasses,
+    })) {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`run_manifest_invalid_capability_manifest_counter:${name}`);
+      }
+    }
+
+    if (!this.capabilityManifest) {
+      this.capabilityManifest = immutableCanonicalSnapshot(input);
+      return;
+    }
+
+    const identity = (attribution: CapabilityManifestAttributionV1) =>
+      canonicalContentHash({
+        schemaVersion: attribution.schemaVersion,
+        resolution: attribution.resolution,
+        ...(attribution.probeCache.keyHash === undefined
+          ? {}
+          : {keyHash: attribution.probeCache.keyHash}),
+      });
+    if (identity(this.capabilityManifest) !== identity(input)) {
+      throw new Error('run_manifest_capability_manifest_identity_mismatch');
+    }
+
+    const merged = {
+      ...this.capabilityManifest,
+      probeCache: {
+        ...this.capabilityManifest.probeCache,
+        hits: this.capabilityManifest.probeCache.hits + counters.hits,
+        misses: this.capabilityManifest.probeCache.misses + counters.misses,
+        bypasses:
+          this.capabilityManifest.probeCache.bypasses + counters.bypasses,
+      },
+    };
+    if (
+      !Number.isSafeInteger(merged.probeCache.hits) ||
+      !Number.isSafeInteger(merged.probeCache.misses) ||
+      !Number.isSafeInteger(merged.probeCache.bypasses)
+    ) {
+      throw new Error('run_manifest_capability_manifest_counter_overflow');
+    }
+    this.capabilityManifest = immutableCanonicalSnapshot(merged);
   }
 
   recordSkillRegistry(input: RunSkillRegistryAttribution): void {
@@ -389,6 +441,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       analysisMode: this.analysisMode,
       resolvedMode: this.resolvedMode,
       capabilityFlags: [...this.capabilityFlags].sort(),
+      ...(this.capabilityManifest
+        ? {capabilityManifest: this.capabilityManifest}
+        : {}),
       ...(this.referenceTraceId ? {referenceTraceId: this.referenceTraceId} : {}),
       ...(this.comparisonIdentity
         ? {comparisonIdentity: this.comparisonIdentity}

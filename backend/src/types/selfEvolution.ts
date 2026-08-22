@@ -4,6 +4,7 @@
 
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 import type {
   PhaseHint,
   StrategyRegistryContribution,
@@ -243,6 +244,7 @@ export interface RunManifestV1 {
   analysisMode: 'fast' | 'full' | 'auto';
   resolvedMode: 'quick' | 'full';
   capabilityFlags: string[];
+  capabilityManifest?: CapabilityManifestAttributionV1;
 
   referenceTraceId?: string;
   comparisonIdentity?: string;
@@ -1159,6 +1161,7 @@ export interface RunManifestAttributionSink {
     resolved?: RunManifestV1['resolvedMode'];
     capabilityFlags?: readonly string[];
   }): void;
+  recordCapabilityManifest(input: CapabilityManifestAttributionV1): void;
   recordSkillRegistry(input: RunSkillRegistryAttribution): void;
   startSkillInvocation(input: RunSkillInvocationStart): string;
   finishSkillInvocation(
