@@ -354,35 +354,55 @@ function looksLikeAnalysisQuery(query: string | undefined): boolean {
   return ANALYSIS_QUERY_MARKERS.some(marker => normalized.includes(marker));
 }
 
+function strictUnverifiedCausalClaimIds(result: AgentRuntimeAnalysisResult): Set<string> {
+  return new Set(
+    (result.claimSupport || [])
+      .filter(claim => claim.kind === 'causal' &&
+        claim.relationEvaluation !== undefined &&
+        claim.relationEvaluation !== 'verified' &&
+        claim.relationEvaluation !== 'not_configured')
+      .map(claim => claim.claimId),
+  );
+}
+
 function hasSupportedClaimVerification(result: AgentRuntimeAnalysisResult): boolean {
   const status = result.claimVerificationResult?.status;
-  if (status === 'passed') return true;
-  if (status !== 'partial') return false;
+  if (status !== 'passed' && status !== 'partial') return false;
+  const blockedCausalClaimIds = strictUnverifiedCausalClaimIds(result);
+  if (blockedCausalClaimIds.size === 0 && status === 'passed') return true;
   return result.claimVerificationResult?.claimResults?.some(claim =>
-    claim.status === 'verified' || claim.status === 'partial' || claim.status === 'inference'
+    !blockedCausalClaimIds.has(claim.claimId) &&
+    (claim.status === 'verified' || claim.status === 'partial' || claim.status === 'inference')
   ) === true;
 }
 
 function conclusionContractHasEvidence(result: AgentRuntimeAnalysisResult): boolean {
   const contract = result.conclusionContract;
   if (!contract) return false;
+  const blockedCausalClaimIds = strictUnverifiedCausalClaimIds(result);
+  if (blockedCausalClaimIds.size > 0) return false;
   if (Array.isArray(contract.evidenceChain) && contract.evidenceChain.length > 0) return true;
   return Array.isArray(contract.claims) &&
-    contract.claims.some(claim =>
-      (Array.isArray(claim.references) && claim.references.length > 0) ||
-      (Array.isArray(claim.artifactRefs) && claim.artifactRefs.length > 0) ||
-      (Array.isArray(claim.relationRefs) && claim.relationRefs.length > 0)
-    );
+    contract.claims.some((claim) => {
+      return (Array.isArray(claim.references) && claim.references.length > 0) ||
+        (Array.isArray(claim.artifactRefs) && claim.artifactRefs.length > 0);
+    });
+}
+
+function claimSupportCountsAsEvidence(claim: NonNullable<AgentRuntimeAnalysisResult['claimSupport']>[number]): boolean {
+  if (claim.kind === 'causal' && claim.relationEvaluation !== undefined &&
+    claim.relationEvaluation !== 'verified' && claim.relationEvaluation !== 'not_configured') {
+    return false;
+  }
+  return claim.supportLevel === 'verified' ||
+    claim.supportLevel === 'partial' ||
+    claim.supportLevel === 'inference';
 }
 
 function hasEvidenceBackedArtifacts(result: AgentRuntimeAnalysisResult): boolean {
   return Boolean(
     conclusionContractHasEvidence(result) ||
-    (Array.isArray(result.claimSupport) && result.claimSupport.some(claim =>
-      claim.supportLevel === 'verified' ||
-      claim.supportLevel === 'partial' ||
-      claim.supportLevel === 'inference'
-    )) ||
+    (Array.isArray(result.claimSupport) && result.claimSupport.some(claimSupportCountsAsEvidence)) ||
     hasSupportedClaimVerification(result),
   );
 }

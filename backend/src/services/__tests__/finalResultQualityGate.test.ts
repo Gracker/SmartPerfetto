@@ -510,6 +510,136 @@ describe('final result quality gate', () => {
       result: result({
         conclusion: 'TTID=1912ms，主要是主线程模拟负载。',
         findings: [],
+        conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1',
+          mode: 'focused_answer',
+          conclusions: [],
+          clusters: [],
+          evidenceChain: [{
+            conclusionId: 'claim-strict-evidence-chain',
+            text: '模型声称存在关系证据',
+          }],
+          claims: [{
+            id: 'claim-strict-evidence-chain',
+            kind: 'causal',
+            text: '主线程模拟负载导致 TTID 变慢',
+            references: [],
+            relationRefs: ['missing-relation'],
+          }],
+          uncertainties: [],
+          nextSteps: [],
+        },
+        claimSupport: [{
+          claimId: 'claim-strict-evidence-chain',
+          kind: 'causal',
+          text: '主线程模拟负载导致 TTID 变慢',
+          anchors: [],
+          relations: [],
+          relationEvaluation: 'missing',
+          supportLevel: 'inference',
+        } as any],
+      }),
+      query: '分析这个启动 trace',
+    })?.code).toBe('sparse_unverified_conclusion');
+
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: 'TTID=1912ms，主要是主线程模拟负载。',
+        findings: [],
+        conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1',
+          mode: 'focused_answer',
+          conclusions: [],
+          clusters: [],
+          evidenceChain: [],
+          claims: [{
+            id: 'claim-invented-relation',
+            kind: 'causal',
+            text: '主线程模拟负载导致 TTID 变慢',
+            references: [],
+            relationRefs: ['model-invented-relation'],
+          }],
+          uncertainties: [],
+          nextSteps: [],
+        },
+      }),
+      query: '分析这个启动 trace',
+    })?.code).toBe('sparse_unverified_conclusion');
+
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: 'TTID=1912ms，主要是主线程模拟负载。',
+        findings: [],
+        conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1',
+          mode: 'focused_answer',
+          conclusions: [],
+          clusters: [],
+          evidenceChain: [],
+          claims: [{
+            id: 'claim-strict-direct-ref',
+            kind: 'causal',
+            text: '主线程模拟负载导致 TTID 变慢',
+            references: [{evidenceRefId: 'data:direct', column: 'ttid_ms', value: 1912}],
+            relationRefs: ['missing-relation'],
+          }],
+          uncertainties: [],
+          nextSteps: [],
+        },
+        claimSupport: [{
+          claimId: 'claim-strict-direct-ref',
+          kind: 'causal',
+          text: '主线程模拟负载导致 TTID 变慢',
+          anchors: [],
+          relations: [],
+          relationEvaluation: 'rejected',
+          supportLevel: 'unsupported',
+        } as any],
+        claimVerificationResult: {
+          schemaVersion: 'claim_verifier@1',
+          status: 'passed',
+          policy: 'record_only',
+          passed: true,
+          checkedClaimCount: 1,
+          unsupportedClaimCount: 0,
+          claimResults: [{claimId: 'claim-strict-direct-ref', status: 'verified'}],
+          issues: [],
+        },
+      }),
+      query: '分析这个启动 trace',
+    })?.code).toBe('sparse_unverified_conclusion');
+
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: 'TTID=1912ms，主要是主线程模拟负载。',
+        findings: [],
+        claimSupport: [{
+          claimId: 'claim-strict-causal',
+          kind: 'causal',
+          text: '主线程模拟负载导致 TTID 变慢',
+          anchors: [],
+          relations: [],
+          relationEvaluation: 'missing',
+          supportLevel: 'inference',
+        } as any],
+        claimVerificationResult: {
+          schemaVersion: 'claim_verifier@1',
+          status: 'partial',
+          policy: 'record_only',
+          passed: false,
+          checkedClaimCount: 1,
+          unsupportedClaimCount: 0,
+          claimResults: [{claimId: 'claim-strict-causal', status: 'inference'}],
+          issues: [],
+        },
+      }),
+      query: '分析这个启动 trace',
+    })?.code).toBe('sparse_unverified_conclusion');
+
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: 'TTID=1912ms，主要是主线程模拟负载。',
+        findings: [],
         conclusionContract: undefined,
       }),
       query: '分析这个启动 trace',

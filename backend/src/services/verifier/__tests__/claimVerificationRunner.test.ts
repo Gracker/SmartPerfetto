@@ -39,6 +39,188 @@ function contractWithoutKind(value: number): ConclusionContract {
 }
 
 describe('runClaimVerification', () => {
+  it('treats an explicit empty relation candidate list as strict missing causal support', () => {
+    const causal = contract(120);
+    causal.claims![0].kind = 'causal';
+    causal.claims![0].relationRefs = ['model-invented-relation'];
+    const envelope = createDataEnvelope({
+      columns: ['blocked_ms'],
+      rows: [[120]],
+    }, {
+      type: 'skill_result',
+      source: 'startup_main_thread_blocking',
+      title: 'Main thread blocking',
+      evidenceRefId: 'data:skill:test',
+      sourceToolCallId: 'invoke_skill:test',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    });
+
+    const verified = runClaimVerification({
+      conclusionContract: causal,
+      dataEnvelopes: [envelope],
+      relationCandidates: [],
+    } as any);
+
+    expect(verified.claimSupport[0]).toEqual(expect.objectContaining({
+      relationEvaluation: 'missing',
+      relations: [],
+    }));
+    expect(verified.claimSupport[0].supportLevel).not.toBe('verified');
+    expect(verified.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'causal_relation_missing'}),
+    ]));
+  });
+
+  it('moves causal claims through verified, candidate, and rejected relation states', () => {
+    const relationContract = (relationId: string): ConclusionContract => ({
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{
+        id: 'claim-causal-relation',
+        kind: 'causal',
+        text: 'subject overlaps object and causes blocking',
+        references: [{
+          evidenceRefId: 'data:relation-transition',
+          rowSelector: {name: 'subject'},
+          column: 'blocked_ms',
+          value: 120,
+        }],
+        relationRefs: [relationId],
+      }],
+      uncertainties: [],
+      nextSteps: [],
+    });
+    const envelope = createDataEnvelope({
+      columns: ['name', 'ts', 'dur', 'blocked_ms'],
+      rows: [
+        ['subject', 100, 50, 120],
+        ['verified', 125, 20, 0],
+        ['candidate', 125, null, 0],
+        ['rejected', 300, 20, 0],
+      ],
+    }, {
+      type: 'sql_result',
+      source: 'execute_sql',
+      title: 'Relation transitions',
+      evidenceRefId: 'data:relation-transition',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    });
+    const relation = (id: string, objectName: string) => ({
+      schemaVersion: 'evidence_relation_candidate@1',
+      id,
+      kind: 'overlap',
+      direction: 'symmetric',
+      subject: {evidenceRefId: 'data:relation-transition', rowSelector: {name: 'subject'}},
+      object: {evidenceRefId: 'data:relation-transition', rowSelector: {name: objectName}},
+    });
+
+    const verified = runClaimVerification({
+      conclusionContract: relationContract('relation:verified'),
+      dataEnvelopes: [envelope],
+      relationCandidates: [relation('relation:verified', 'verified')],
+    } as any);
+    const candidate = runClaimVerification({
+      conclusionContract: relationContract('relation:candidate'),
+      dataEnvelopes: [envelope],
+      relationCandidates: [relation('relation:candidate', 'candidate')],
+    } as any);
+    const rejected = runClaimVerification({
+      conclusionContract: relationContract('relation:rejected'),
+      dataEnvelopes: [envelope],
+      relationCandidates: [relation('relation:rejected', 'rejected')],
+    } as any);
+
+    expect(verified.claimSupport[0]).toEqual(expect.objectContaining({
+      relationEvaluation: 'verified',
+      supportLevel: 'verified',
+    }));
+    expect(verified.claimVerificationResult.status).toBe('passed');
+    expect(verified.claimVerificationResult.claimResults[0].status).toBe('verified');
+    expect(candidate.claimSupport[0]).toEqual(expect.objectContaining({
+      relationEvaluation: 'candidate',
+      supportLevel: 'inference',
+    }));
+    expect(candidate.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'causal_relation_candidate', severity: 'warning'}),
+    ]));
+    expect(rejected.claimSupport[0]).toEqual(expect.objectContaining({
+      relationEvaluation: 'rejected',
+      supportLevel: 'unsupported',
+    }));
+    expect(rejected.claimVerificationResult.status).toBe('failed');
+    expect(rejected.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'causal_relation_rejected', severity: 'error'}),
+    ]));
+  });
+
+  it('allows the model to select only producer-authored relation ids', () => {
+    const causal = contract(120);
+    causal.claims![0].kind = 'causal';
+    causal.claims![0].relationRefs = ['model-invented-relation'];
+    const envelope = createDataEnvelope({
+      columns: ['blocked_ms', 'ts', 'dur'],
+      rows: [[120, 100, 50], [0, 125, 20]],
+    }, {
+      type: 'sql_result',
+      source: 'execute_sql',
+      title: 'Producer relation',
+      evidenceRefId: 'data:skill:test',
+      sourceToolCallId: 'invoke_skill:test',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    });
+    const verified = runClaimVerification({
+      conclusionContract: causal,
+      dataEnvelopes: [envelope],
+      relationCandidates: [{
+        schemaVersion: 'evidence_relation_candidate@1',
+        id: 'producer-relation',
+        kind: 'overlap',
+        direction: 'symmetric',
+        subject: {evidenceRefId: 'data:skill:test', rowIndex: 0},
+        object: {evidenceRefId: 'data:skill:test', rowIndex: 1},
+      }],
+    } as any);
+
+    expect(verified.evidenceContract.relations).toHaveLength(1);
+    expect(verified.claimSupport[0]).toEqual(expect.objectContaining({
+      relations: [],
+      relationEvaluation: 'missing',
+    }));
+    expect(verified.claimSupport[0].supportLevel).not.toBe('verified');
+  });
+
+  it('keeps legacy no-candidate causal behavior explicit without changing non-causal claim shape', () => {
+    const causal = contract(120);
+    causal.claims![0].kind = 'causal';
+    const numeric = contract(120);
+    const envelope = createDataEnvelope({columns: ['blocked_ms'], rows: [[120]]}, {
+      type: 'skill_result',
+      source: 'startup_main_thread_blocking',
+      title: 'Main thread blocking',
+      evidenceRefId: 'data:skill:test',
+      sourceToolCallId: 'invoke_skill:test',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    });
+
+    const legacy = runClaimVerification({conclusionContract: causal, dataEnvelopes: [envelope]});
+    const unchanged = runClaimVerification({conclusionContract: numeric, dataEnvelopes: [envelope]});
+
+    expect(legacy.claimSupport[0]).toEqual(expect.objectContaining({
+      relationEvaluation: 'not_configured',
+      supportLevel: 'inference',
+    }));
+    expect(unchanged.claimSupport[0]).not.toHaveProperty('relationEvaluation');
+    expect(unchanged.claimSupport[0]).not.toHaveProperty('relations');
+    expect(unchanged.claimVerificationResult.status).toBe('passed');
+  });
+
   it('builds claim support and passes deterministic verifier for matching cells', () => {
     const identityResolution: IdentityResolutionV1 = {
       version: 'identity_contract@1',

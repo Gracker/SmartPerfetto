@@ -9,8 +9,12 @@ import type {
   ClaimVerificationPolicy,
   ClaimVerificationResult,
 } from '../../types/claimVerification';
-import type { DataEnvelope } from '../../types/dataContract';
-import type { ClaimSupportV1, EvidenceContractV1 } from '../../types/evidenceContract';
+import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
+import type {
+  ClaimSupportV1,
+  EvidenceContractV1,
+  EvidenceRelationCandidateV1,
+} from '../../types/evidenceContract';
 import type { IdentityResolutionV1 } from '../../types/identityContract';
 import { buildEvidenceContract } from '../evidence/evidenceContractBuilder';
 import { runDeterministicClaimVerifier } from './deterministicClaimVerifier';
@@ -19,6 +23,7 @@ export interface ClaimVerificationRunnerInput {
   conclusionContract?: ConclusionContract | null;
   dataEnvelopes?: DataEnvelope[];
   comparisonReportSection?: ComparisonReportSection;
+  relationCandidates?: EvidenceRelationCandidateV1[];
   policy?: ClaimVerificationPolicy;
 }
 
@@ -106,6 +111,7 @@ export function runClaimVerification(input: ClaimVerificationRunnerInput): Claim
     conclusionContract: input.conclusionContract,
     dataEnvelopes: input.dataEnvelopes,
     comparisonReportSection: input.comparisonReportSection,
+    relationCandidates: input.relationCandidates,
   });
   const claimVerificationResult = runDeterministicClaimVerifier({
     claimSupport: evidenceContract.claimSupport,
@@ -117,6 +123,8 @@ export function runClaimVerification(input: ClaimVerificationRunnerInput): Claim
     evidenceContract,
     claimSupport,
     claimVerificationResult,
-    identityResolutions: collectIdentityResolutions(input.dataEnvelopes),
+    identityResolutions: collectIdentityResolutions(
+      (input.dataEnvelopes || []).filter(envelope => validateDataEnvelope(envelope).length === 0),
+    ),
   };
 }

@@ -27,6 +27,40 @@ export type EvidenceIdentityRole =
   | 'unknown';
 
 export type EvidenceSupportLevel = 'verified' | 'partial' | 'inference' | 'unsupported';
+export type EvidenceRelationSchemaVersion = 'evidence_relation@1';
+export type EvidenceRelationCandidateSchemaVersion = 'evidence_relation_candidate@1';
+export type EvidenceRelationKindV1 =
+  | 'overlap'
+  | 'wakeup'
+  | 'blocking_state'
+  | 'binder_peer'
+  | 'lock_owner'
+  | 'comparison_delta'
+  | 'derived';
+export type EvidenceRelationDirectionV1 = 'subject_to_object' | 'object_to_subject' | 'symmetric';
+export type EvidenceRelationVerificationStatusV1 = 'verified' | 'candidate' | 'rejected';
+export type EvidenceRelationEvaluationV1 = 'not_configured' | 'verified' | 'candidate' | 'rejected' | 'missing';
+export type EvidenceRelationReasonCodeV1 =
+  | 'relation_anchor_missing'
+  | 'relation_endpoint_value_mismatch'
+  | 'trace_context_missing'
+  | 'trace_context_mismatch'
+  | 'identity_conflict'
+  | 'identity_evidence_missing'
+  | 'proof_anchor_missing'
+  | 'proof_binding_missing'
+  | 'proof_binding_mismatch'
+  | 'binary_proof_verified'
+  | 'overlap_range_missing'
+  | 'overlap_range_invalid'
+  | 'overlap_disjoint'
+  | 'overlap_verified'
+  | 'comparison_side_mismatch'
+  | 'comparison_metric_missing'
+  | 'comparison_metric_invalid'
+  | 'comparison_delta_mismatch'
+  | 'comparison_delta_verified'
+  | 'derived_not_verified';
 
 export type ClaimKindV1 =
   | 'numeric'
@@ -107,23 +141,61 @@ export interface EvidenceAnchorV1 {
   missingReason?: string;
 }
 
-export interface EvidenceRelationV1 {
+export interface EvidenceRelationEndpointV1 {
+  evidenceRefId?: string;
+  sourceToolCallId?: string;
+  sourceRef?: string;
+  artifactId?: string;
+  sourceArtifactId?: string;
+  rowIndex?: number;
+  rowSelector?: Record<string, string | number | boolean>;
+  column?: string;
+  value?: string | number | boolean;
+}
+
+export interface EvidenceRelationProofBindingV1 {
+  endpointColumn: string;
+  proofColumn: string;
+}
+
+export interface EvidenceRelationProofBindingsV1 {
+  subject: EvidenceRelationProofBindingV1;
+  object: EvidenceRelationProofBindingV1;
+}
+
+export interface EvidenceRelationCandidateV1 {
+  schemaVersion: EvidenceRelationCandidateSchemaVersion;
   id: string;
-  kind:
-    | 'overlap'
-    | 'wakeup'
-    | 'blocking_state'
-    | 'binder_peer'
-    | 'lock_owner'
-    | 'comparison_delta'
-    | 'derived';
+  kind: EvidenceRelationKindV1;
+  direction: EvidenceRelationDirectionV1;
+  subject: EvidenceRelationEndpointV1;
+  object?: EvidenceRelationEndpointV1;
+  proof?: EvidenceRelationEndpointV1;
+  proofBindings?: EvidenceRelationProofBindingsV1;
+  metricColumn?: string;
+  value?: string | number | boolean;
+  unit?: string;
+  deltaDirection?: 'current_minus_reference';
+}
+
+export interface EvidenceRelationV1 {
+  schemaVersion: EvidenceRelationSchemaVersion;
+  id: string;
+  kind: EvidenceRelationKindV1;
+  direction: EvidenceRelationDirectionV1;
+  verificationStatus: EvidenceRelationVerificationStatusV1;
+  reasonCode: EvidenceRelationReasonCodeV1;
   subjectAnchorId: string;
   objectAnchorId?: string;
+  proofAnchorId?: string;
   relationAnchorId?: string;
+  directEvidenceAnchorIds: string[];
+  proofBindings?: EvidenceRelationProofBindingsV1;
   metricColumn?: string;
   value?: string | number | boolean;
   isSqlNull?: boolean;
   unit?: string;
+  deltaDirection?: 'current_minus_reference';
   supportLevel: EvidenceSupportLevel;
   reason?: string;
 }
@@ -133,7 +205,9 @@ export interface ClaimSupportV1 {
   kind: ClaimKindV1;
   text: string;
   anchors: EvidenceAnchorV1[];
+  relationAnchors?: EvidenceAnchorV1[];
   relations?: EvidenceRelationV1[];
+  relationEvaluation?: EvidenceRelationEvaluationV1;
   supportLevel: EvidenceSupportLevel;
   inferenceReason?: string;
 }

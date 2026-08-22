@@ -10,6 +10,9 @@ import {
 import { createAnalysisResultSnapshotRepository } from '../analysisResultSnapshotStore';
 import { applyEnterpriseMinimalSchema } from '../enterpriseSchema';
 import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
+import {createDataEnvelope} from '../../types/dataContract';
+import {buildEvidenceContract} from '../evidence/evidenceContractBuilder';
+import {runDeterministicClaimVerifier} from '../verifier/deterministicClaimVerifier';
 
 const capabilityManifest: CapabilityManifestAttributionV1 = {
   schemaVersion: 'capability_manifest_attribution@1',
@@ -244,6 +247,86 @@ describe('AnalysisResultSnapshotRepository', () => {
       {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
       'snapshot-a',
     )).toBeNull();
+  });
+
+  test('round-trips binary relation anchors and rebuilds deterministic evidence', () => {
+    const envelope = createDataEnvelope({
+      columns: ['row_kind', 'utid', 'client_utid', 'server_utid'],
+      rows: [
+        ['client', 11, null, null],
+        ['server', 22, null, null],
+        ['proof', null, 11, 22],
+      ],
+    }, {
+      type: 'sql_result',
+      source: 'execute_sql',
+      title: 'Binder proof',
+      evidenceRefId: 'data:binder-proof',
+      traceId: 'trace-a',
+      traceSide: 'current',
+      identityRefId: 'identity:binder',
+      identityStatus: 'verified',
+    });
+    const endpoint = (row_kind: string) => ({
+      evidenceRefId: 'data:binder-proof',
+      rowSelector: {row_kind},
+    });
+    const evidence = buildEvidenceContract({
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [],
+        clusters: [],
+        evidenceChain: [],
+        claims: [{
+          id: 'claim-binder-relation',
+          kind: 'causal',
+          text: 'client binder call targets server',
+          references: [],
+          relationRefs: ['relation:binder-peer'],
+        }],
+        uncertainties: [],
+        nextSteps: [],
+      },
+      dataEnvelopes: [envelope],
+      relationCandidates: [{
+        schemaVersion: 'evidence_relation_candidate@1',
+        id: 'relation:binder-peer',
+        kind: 'binder_peer',
+        direction: 'subject_to_object',
+        subject: endpoint('client'),
+        object: endpoint('server'),
+        proof: endpoint('proof'),
+        proofBindings: {
+          subject: {endpointColumn: 'utid', proofColumn: 'client_utid'},
+          object: {endpointColumn: 'utid', proofColumn: 'server_utid'},
+        },
+      }],
+    });
+    const verification = runDeterministicClaimVerifier({claimSupport: evidence.claimSupport});
+    const repo = createAnalysisResultSnapshotRepository(db!);
+    repo.createSnapshot(snapshot({
+      id: 'snapshot-relation-graph',
+      claimSupport: evidence.claimSupport,
+      claimVerificationResult: verification,
+    }));
+
+    const loaded = repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-relation-graph',
+    );
+    expect(loaded?.claimSupport).toEqual(evidence.claimSupport);
+    const support = loaded!.claimSupport![0];
+    const relation = support.relations![0];
+    const rebuiltAnchors = new Map((support.relationAnchors || []).map(anchor => [anchor.anchorId, anchor]));
+    expect(relation.directEvidenceAnchorIds.every(anchorId => rebuiltAnchors.has(anchorId))).toBe(true);
+    expect(rebuiltAnchors.get(relation.proofAnchorId!)?.cells).toEqual([
+      expect.objectContaining({column: 'client_utid', value: 11, actualValue: 11}),
+      expect.objectContaining({column: 'server_utid', value: 22, actualValue: 22}),
+    ]);
+    expect(runDeterministicClaimVerifier({claimSupport: loaded?.claimSupport})).toEqual(
+      expect.objectContaining({status: 'passed', passed: true}),
+    );
   });
 
   test('keeps snapshots without capability attribution readable', () => {

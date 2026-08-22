@@ -90,13 +90,31 @@ function verifyClaim(claim: ClaimSupportV1): { result: ClaimVerificationClaimRes
     .map(ref => issueForReference(claim.claimId, ref))
     .filter((issue): issue is ClaimVerificationIssue => Boolean(issue));
 
-  if (claim.kind === 'causal' && (!claim.relations || claim.relations.length === 0)) {
-    issues.push({
-      claimId: claim.claimId,
-      severity: 'warning',
-      code: 'causal_relation_missing',
-      message: 'causal claim has no explicit EvidenceRelationV1 relation support',
-    });
+  if (claim.kind === 'causal') {
+    const relationEvaluation = claim.relationEvaluation || 'not_configured';
+    if (relationEvaluation === 'rejected') {
+      issues.push({
+        claimId: claim.claimId,
+        severity: 'error',
+        code: 'causal_relation_rejected',
+        message: 'causal claim references a deterministically rejected EvidenceRelationV1 relation',
+      });
+    } else if (relationEvaluation === 'candidate') {
+      issues.push({
+        claimId: claim.claimId,
+        severity: 'warning',
+        code: 'causal_relation_candidate',
+        message: 'causal claim relation support remains an unverified deterministic candidate',
+      });
+    } else if (relationEvaluation === 'missing' ||
+      (relationEvaluation === 'not_configured' && (!claim.relations || claim.relations.length === 0))) {
+      issues.push({
+        claimId: claim.claimId,
+        severity: 'warning',
+        code: 'causal_relation_missing',
+        message: 'causal claim has no explicit EvidenceRelationV1 relation support',
+      });
+    }
   }
 
   if (claim.kind === 'identity') {
@@ -126,13 +144,19 @@ function verifyClaim(claim: ClaimSupportV1): { result: ClaimVerificationClaimRes
     ref.status === 'missing' || ref.status === 'value_mismatch');
   const hasUncheckedReferences = referenceResults.some(ref => ref.status === 'not_checked');
   const hasMatchedReferences = referenceResults.some(ref => ref.status === 'matched');
-  const status: ClaimVerificationClaimResult['status'] = hasReferenceErrors || claim.supportLevel === 'unsupported'
+  const relationEvaluation = claim.kind === 'causal'
+    ? claim.relationEvaluation || 'not_configured'
+    : undefined;
+  const relationVerified = relationEvaluation === 'verified';
+  const relationRejected = relationEvaluation === 'rejected';
+  const status: ClaimVerificationClaimResult['status'] = hasReferenceErrors || relationRejected ||
+    (claim.supportLevel === 'unsupported' && !relationVerified)
     ? 'unsupported'
     : hasUncheckedReferences && !hasMatchedReferences
       ? 'not_checked'
       : hasUncheckedReferences
         ? 'partial'
-        : claim.supportLevel === 'inference'
+        : claim.supportLevel === 'inference' && !relationVerified
       ? 'inference'
       : issues.length > 0 || claim.supportLevel === 'partial'
         ? 'partial'
