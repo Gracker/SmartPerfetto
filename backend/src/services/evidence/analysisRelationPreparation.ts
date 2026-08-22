@@ -11,6 +11,7 @@ import {
   type ClaimVerificationRunnerResult,
 } from '../verifier/claimVerificationRunner';
 import {bindRelationCandidatesToClaims} from './relationCandidateClaimBinder';
+import {produceScrollingRelationCandidates} from './scrollingRelationCandidateProducer';
 import {produceStartupRelationCandidates} from './startupRelationCandidateProducer';
 
 export interface AnalysisRelationPreparationInput {
@@ -27,7 +28,11 @@ export interface AnalysisRelationPreparationResult {
 export function prepareAnalysisRelations(
   input: AnalysisRelationPreparationInput,
 ): AnalysisRelationPreparationResult {
-  const relationCandidates = produceStartupRelationCandidates(input.dataEnvelopes || []);
+  const dataEnvelopes = input.dataEnvelopes || [];
+  const relationCandidates = [
+    ...produceStartupRelationCandidates(dataEnvelopes),
+    ...produceScrollingRelationCandidates(dataEnvelopes),
+  ];
   if (relationCandidates.length === 0) {
     return {conclusionContract: input.conclusionContract};
   }

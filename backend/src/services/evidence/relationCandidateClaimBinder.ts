@@ -60,6 +60,15 @@ function rowMatches(
   return false;
 }
 
+function pointsAtSubjectCell(
+  reference: ConclusionContractClaimReference,
+  candidate: EvidenceRelationCandidateV1,
+): boolean {
+  return Boolean(candidate.subject.column &&
+    reference.column === candidate.subject.column &&
+    rowMatches(reference, candidate.subject));
+}
+
 export function bindRelationCandidatesToClaims(
   conclusionContract: ConclusionContract,
   relationCandidates: EvidenceRelationCandidateV1[],
@@ -71,7 +80,8 @@ export function bindRelationCandidatesToClaims(
     if (claim.kind !== 'causal') continue;
     const matchingIds = Array.from(new Set(relationCandidates
       .filter(candidate => candidate.object &&
-        (claim.references || []).some(reference => rowMatches(reference, candidate.object!)))
+        (claim.references || []).some(reference =>
+          rowMatches(reference, candidate.object!) && !pointsAtSubjectCell(reference, candidate)))
       .map(candidate => candidate.id)))
       .sort();
     if (matchingIds.length === 0) continue;
