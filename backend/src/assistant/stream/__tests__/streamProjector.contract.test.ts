@@ -83,6 +83,124 @@ describe('StreamProjector SSE Contract', () => {
     expect(parsed[0].data.runSequence).toBe(1);
   });
 
+  it('rejects an invalid data envelope even when it contains data', () => {
+    const projector = new StreamProjector();
+    const res = new MockSseResponse();
+    const admitted: unknown[][] = [];
+    const warnings: unknown[] = [];
+    const invalidEnvelope = {
+      meta: {
+        type: 'skill_result',
+        version: '1.0.0',
+        timestamp: Date.now(),
+      },
+      display: {
+        title: 'invalid_data',
+        layer: 'list',
+        format: 'table',
+      },
+      data: {columns: ['metric'], rows: [[123]]},
+    };
+
+    projector.broadcastStreamingUpdate(
+      'session-invalid',
+      [res as unknown as express.Response],
+      {
+        type: 'data',
+        content: invalidEnvelope,
+        timestamp: Date.now(),
+      } as any,
+      {
+        onValidDataEnvelopes: (envelopes) => admitted.push(envelopes),
+        onDataEnvelopeValidationWarning: (warning) => warnings.push(warning),
+      }
+    );
+
+    expect(admitted).toEqual([]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toEqual(expect.objectContaining({
+      sessionId: 'session-invalid',
+      envelopeIndex: 0,
+      envelope: {
+        metaType: 'skill_result',
+        metaSource: undefined,
+        displayLayer: 'list',
+        displayFormat: 'table',
+      },
+    }));
+    const parsed = parseSsePayload(res.writes.join(''));
+    expect(parsed[0].data.envelope).toEqual([]);
+  });
+
+  it('admits only valid envelopes from a mixed batch and preserves array shape', () => {
+    const projector = new StreamProjector();
+    const res = new MockSseResponse();
+    const admitted: unknown[][] = [];
+    const warnings: unknown[] = [];
+    const validEnvelope = createDataEnvelope(
+      {columns: ['metric'], rows: [[456]]},
+      {
+        type: 'skill_result',
+        source: 'test.stream_projector',
+        title: 'valid_data',
+        skillId: 'test_skill',
+        stepId: 'step_valid',
+        layer: 'list',
+        format: 'table',
+      }
+    );
+    const invalidEnvelope = {
+      ...validEnvelope,
+      display: {...validEnvelope.display, layer: 'invalid_layer'},
+    };
+
+    projector.broadcastStreamingUpdate(
+      'session-mixed',
+      [res as unknown as express.Response],
+      {
+        type: 'data',
+        content: [invalidEnvelope, validEnvelope],
+        timestamp: Date.now(),
+      } as any,
+      {
+        onValidDataEnvelopes: (envelopes) => admitted.push(envelopes),
+        onDataEnvelopeValidationWarning: (warning) => warnings.push(warning),
+      }
+    );
+
+    expect(admitted).toEqual([[validEnvelope]]);
+    expect(warnings).toHaveLength(1);
+    const parsed = parseSsePayload(res.writes.join(''));
+    expect(Array.isArray(parsed[0].data.envelope)).toBe(true);
+    expect(parsed[0].data.envelope).toEqual([validEnvelope]);
+  });
+
+  it('emits an empty envelope array when every batch item is invalid', () => {
+    const projector = new StreamProjector();
+    const res = new MockSseResponse();
+    const admitted: unknown[][] = [];
+
+    projector.broadcastStreamingUpdate(
+      'session-all-invalid',
+      [res as unknown as express.Response],
+      {
+        type: 'data',
+        content: [
+          {data: {columns: ['a'], rows: [[1]]}},
+          {meta: {}, display: {}, data: {columns: ['b'], rows: [[2]]}},
+        ],
+        timestamp: Date.now(),
+      } as any,
+      {
+        onValidDataEnvelopes: (envelopes) => admitted.push(envelopes),
+      }
+    );
+
+    expect(admitted).toEqual([]);
+    const parsed = parseSsePayload(res.writes.join(''));
+    expect(parsed[0].data.envelope).toEqual([]);
+  });
+
   it('emits conversation_step event contract with generic data payload', () => {
     const projector = new StreamProjector();
     const res = new MockSseResponse();

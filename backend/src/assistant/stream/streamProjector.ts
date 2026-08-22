@@ -136,14 +136,17 @@ export class StreamProjector {
 
     if (isDataEvent(eventType)) {
       const envelopes = Array.isArray(update.content) ? update.content : [update.content];
-      for (let i = 0; i < envelopes.length; i++) {
-        const envelope = envelopes[i];
-        const validationErrors = validateDataEnvelope(envelope);
-        if (validationErrors.length > 0) {
+      const validationResults = envelopes.map((envelope) => ({
+        envelope,
+        errors: validateDataEnvelope(envelope),
+      }));
+      for (let i = 0; i < validationResults.length; i++) {
+        const {envelope, errors} = validationResults[i];
+        if (errors.length > 0) {
           options.onDataEnvelopeValidationWarning?.({
             sessionId,
             envelopeIndex: i,
-            errors: validationErrors,
+            errors,
             envelope: {
               metaType: envelope?.meta?.type,
               metaSource: envelope?.meta?.source,
@@ -154,17 +157,21 @@ export class StreamProjector {
         }
       }
 
-      const validEnvelopes = envelopes.filter(
-        (envelope): envelope is DataEnvelope => !!envelope && !!envelope.data
-      );
+      const validEnvelopes = validationResults
+        .filter(({errors}) => errors.length === 0)
+        .map(({envelope}) => envelope as DataEnvelope);
       if (validEnvelopes.length > 0) {
         options.onValidDataEnvelopes?.(validEnvelopes);
       }
 
+      const projectedEnvelope = Array.isArray(update.content)
+        ? validEnvelopes
+        : validEnvelopes[0] ?? [];
+
       eventData = JSON.stringify(this.withObservability({
         type: 'data',
         id: update.id || generateEventId('sse', sessionId),
-        envelope: update.content,
+        envelope: projectedEnvelope,
         timestamp: update.timestamp,
       }, options.observability));
     } else if (isLegacySkillEvent(eventType)) {

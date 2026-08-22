@@ -201,3 +201,119 @@ describe('dataContract column inference', () => {
     );
   });
 });
+
+describe('dataContract envelope validation', () => {
+  const makeValidEnvelope = () => createDataEnvelope(
+    {columns: ['value'], rows: [[1]]},
+    {
+      type: 'skill_result',
+      source: 'test:validation',
+      title: 'Validation rows',
+    },
+  );
+
+  it.each([null, undefined, false, true, 42, 'envelope', []])(
+    'rejects non-object envelope input %# without throwing',
+    (value) => {
+      expect(validateDataEnvelope(value)).toEqual([
+        expect.objectContaining({path: ''}),
+      ]);
+    },
+  );
+
+  it.each([
+    ['meta', null],
+    ['meta', []],
+    ['meta', 'metadata'],
+    ['meta', 1],
+    ['meta', true],
+    ['display', null],
+    ['display', []],
+    ['display', 'display'],
+    ['display', 1],
+    ['display', true],
+  ])('rejects non-object %s containers', (field, value) => {
+    const envelope = makeValidEnvelope() as any;
+    envelope[field] = value;
+
+    expect(validateDataEnvelope(envelope)).toEqual(
+      expect.arrayContaining([expect.objectContaining({path: field})]),
+    );
+  });
+
+  it.each(['skill_result', 'sql_result', 'ai_response', 'diagnostic', 'chart'])(
+    'accepts the supported meta.type value %s',
+    (type) => {
+      const envelope = makeValidEnvelope() as any;
+      envelope.meta.type = type;
+
+      expect(validateDataEnvelope(envelope)).toEqual([]);
+    },
+  );
+
+  it.each(['unknown_result', '', 1, null])(
+    'rejects meta.type value outside the DataEnvelope union: %p',
+    (type) => {
+      const envelope = makeValidEnvelope() as any;
+      envelope.meta.type = type;
+
+      expect(validateDataEnvelope(envelope)).toEqual(
+        expect.arrayContaining([expect.objectContaining({path: 'meta.type'})]),
+      );
+    },
+  );
+
+  it.each([
+    ['meta.source', 'source', ''],
+    ['meta.source', 'source', '   '],
+    ['meta.source', 'source', 7],
+    ['meta.source', 'source', null],
+    ['meta.version', 'version', ''],
+    ['meta.version', 'version', '   '],
+    ['meta.version', 'version', 2],
+    ['meta.version', 'version', null],
+    ['display.title', 'title', ''],
+    ['display.title', 'title', '   '],
+    ['display.title', 'title', 9],
+    ['display.title', 'title', null],
+  ])('rejects non-string or blank %s', (pathName, field, value) => {
+    const envelope = makeValidEnvelope() as any;
+    const container = pathName.startsWith('meta.') ? envelope.meta : envelope.display;
+    container[field] = value;
+
+    expect(validateDataEnvelope(envelope)).toEqual(
+      expect.arrayContaining([expect.objectContaining({path: pathName})]),
+    );
+  });
+
+  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, '0', null, undefined])(
+    'rejects invalid meta.timestamp value %p',
+    (timestamp) => {
+      const envelope = makeValidEnvelope() as any;
+      envelope.meta.timestamp = timestamp;
+
+      expect(validateDataEnvelope(envelope)).toEqual(
+        expect.arrayContaining([expect.objectContaining({path: 'meta.timestamp'})]),
+      );
+    },
+  );
+
+  it('accepts zero as a valid meta.timestamp', () => {
+    const envelope = makeValidEnvelope();
+    envelope.meta.timestamp = 0;
+
+    expect(validateDataEnvelope(envelope)).toEqual([]);
+  });
+
+  it.each([null, undefined, [], 'payload', 1, true])(
+    'rejects non-object data payload %p',
+    (data) => {
+      const envelope = makeValidEnvelope() as any;
+      envelope.data = data;
+
+      expect(validateDataEnvelope(envelope)).toEqual(
+        expect.arrayContaining([expect.objectContaining({path: 'data'})]),
+      );
+    },
+  );
+});
