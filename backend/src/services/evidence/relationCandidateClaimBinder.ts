@@ -16,6 +16,10 @@ export interface BoundRelationCandidateClaims {
   relationActivationClaimIds: string[];
 }
 
+export interface RelationCandidateClaimBindingOptions {
+  objectCellOnlyCandidateIds?: ReadonlySet<string>;
+}
+
 function canonicalRecord(value: Record<string, unknown>): string {
   return JSON.stringify(Object.keys(value).sort().map(key => [key, value[key]]));
 }
@@ -69,9 +73,21 @@ function pointsAtSubjectCell(
     rowMatches(reference, candidate.subject));
 }
 
+function matchesCandidateObject(
+  reference: ConclusionContractClaimReference,
+  candidate: EvidenceRelationCandidateV1,
+  options: RelationCandidateClaimBindingOptions,
+): boolean {
+  if (!candidate.object || !rowMatches(reference, candidate.object)) return false;
+  if (pointsAtSubjectCell(reference, candidate)) return false;
+  if (!options.objectCellOnlyCandidateIds?.has(candidate.id)) return true;
+  return Boolean(candidate.object.column && reference.column === candidate.object.column);
+}
+
 export function bindRelationCandidatesToClaims(
   conclusionContract: ConclusionContract,
   relationCandidates: EvidenceRelationCandidateV1[],
+  options: RelationCandidateClaimBindingOptions = {},
 ): BoundRelationCandidateClaims {
   const conclusionContractClone = structuredClone(conclusionContract);
   const relationActivationClaimIds: string[] = [];
@@ -79,9 +95,8 @@ export function bindRelationCandidatesToClaims(
   for (const [index, claim] of (conclusionContractClone.claims || []).entries()) {
     if (claim.kind !== 'causal') continue;
     const matchingIds = Array.from(new Set(relationCandidates
-      .filter(candidate => candidate.object &&
-        (claim.references || []).some(reference =>
-          rowMatches(reference, candidate.object!) && !pointsAtSubjectCell(reference, candidate)))
+      .filter(candidate => (claim.references || []).some(reference =>
+        matchesCandidateObject(reference, candidate, options)))
       .map(candidate => candidate.id)))
       .sort();
     if (matchingIds.length === 0) continue;

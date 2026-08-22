@@ -129,8 +129,46 @@ function inputContract(): ConclusionContract {
   };
 }
 
+function anrEvidence() {
+  return createDataEnvelope({
+    columns: ['error_id', 'trigger_type', 'perfetto_start', 'anr_ts', 'root_cause_pattern_hints', 'subject_preview'],
+    rows: [
+      ['smartperfetto-synthetic-anr', 'input_dispatching_timeout', '100', '200', 'deadlock,memory', 'blocked prose'],
+      ['anr-2', '输入超时', '300', '400', 'io', 'other prose'],
+    ],
+  }, {
+    type: 'skill_result', source: 'anr_analysis', title: 'ANR events',
+    skillId: 'anr_analysis', stepId: 'get_anr_events', executionStatus: 'observed',
+    evidenceRefId: 'data:anr', sourceToolCallId: 'invoke_skill:anr',
+    traceId: 'trace-a', traceSide: 'current',
+  });
+}
+
+function anrContract(): ConclusionContract {
+  const reference = (column: string, value: string | number, overrides: Record<string, unknown> = {}) => ({
+    evidenceRefId: 'data:anr', sourceToolCallId: 'invoke_skill:anr',
+    rowIndex: 0, column, value, ...overrides,
+  });
+  return {
+    schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
+    claims: [
+      {id: 'trigger', kind: 'causal', text: 'input dispatching timeout caused the ANR', references: [reference('trigger_type', 'input_dispatching_timeout')]},
+      {id: 'hint', kind: 'causal', text: 'root cause hint proves deadlock', references: [reference('root_cause_pattern_hints', 'deadlock,memory')]},
+      {id: 'subject', kind: 'causal', text: 'subject prose proves blocking', references: [reference('subject_preview', 'blocked prose')]},
+      {id: 'error-and-hint', kind: 'causal', text: 'error and hint', references: [
+        reference('error_id', 'smartperfetto-synthetic-anr'), reference('root_cause_pattern_hints', 'deadlock,memory'),
+      ]},
+      {id: 'error-only', kind: 'causal', text: 'error exists', references: [reference('error_id', 'smartperfetto-synthetic-anr')]},
+      {id: 'different-row', kind: 'causal', text: 'other ANR', references: [reference('trigger_type', 'broadcast_timeout', {rowIndex: 1})]},
+      {id: 'wrong-tool', kind: 'causal', text: 'wrong tool', references: [reference('trigger_type', 'input_dispatching_timeout', {sourceToolCallId: 'invoke_skill:wrong'})]},
+      {id: 'wrong-envelope', kind: 'causal', text: 'wrong envelope', references: [reference('trigger_type', 'input_dispatching_timeout', {evidenceRefId: 'data:wrong'})]},
+    ],
+    uncertainties: [], nextSteps: [],
+  };
+}
+
 describe('analysisRelationPreparation', () => {
-  it('combines input and scrolling derived candidates with startup candidates', () => {
+  it('combines input, scrolling, and ANR derived candidates with startup candidates', () => {
     const scrolling = createDataEnvelope({
       columns: ['frame_id', 'start_ts', 'dur', 'dur_ms', 'reason_code'],
       rows: [['9007199254740993', '200', '1500000', '1.5', 'workload_heavy']],
@@ -141,13 +179,57 @@ describe('analysisRelationPreparation', () => {
       sourceToolCallId: 'invoke_skill:scrolling', traceId: 'trace-a', traceSide: 'current',
     });
 
-    const prepared = prepareAnalysisRelations({dataEnvelopes: [...evidence(), scrolling, inputEvidence()]});
+    const prepared = prepareAnalysisRelations({dataEnvelopes: [...evidence(), scrolling, inputEvidence(), anrEvidence()]});
 
     expect(prepared.relationCandidates).toEqual(expect.arrayContaining([
       expect.objectContaining({kind: 'overlap'}),
       expect.objectContaining({kind: 'derived', object: expect.objectContaining({column: 'reason_code'})}),
       expect.objectContaining({kind: 'derived', object: expect.objectContaining({column: 'main_bottleneck'})}),
+      expect.objectContaining({kind: 'derived', object: expect.objectContaining({column: 'trigger_type'})}),
     ]));
+  });
+
+  it('binds only the ANR trigger object cell and ignores same-row hints or prose', () => {
+    const prepared = prepareAnalysisRelations({
+      conclusionContract: anrContract(), dataEnvelopes: [anrEvidence()],
+    });
+
+    expect(prepared.relationCandidates).toHaveLength(1);
+    expect(prepared.relationActivationClaimIds).toEqual(['trigger']);
+    expect(prepared.conclusionContract?.claims?.[0].relationRefs).toHaveLength(1);
+    for (const index of [1, 2, 3, 4, 5, 6, 7]) {
+      expect(prepared.conclusionContract?.claims?.[index].relationRefs).toBeUndefined();
+    }
+  });
+
+  it('keeps ANR trigger causality at inference and blocked by the final quality gate', () => {
+    const triggerOnly = anrContract();
+    triggerOnly.claims = triggerOnly.claims?.slice(0, 1);
+    const prepared = prepareAnalysisRelations({
+      conclusionContract: triggerOnly, dataEnvelopes: [anrEvidence()],
+    });
+    const result = runPreparedAnalysisClaimVerification({
+      conclusionContract: triggerOnly, dataEnvelopes: [anrEvidence()], policy: 'record_only',
+    });
+
+    expect(result.claimSupport.find(item => item.claimId === 'trigger')).toEqual(expect.objectContaining({
+      relationEvaluation: 'candidate', supportLevel: 'inference',
+      relationAnchors: expect.arrayContaining([
+        expect.objectContaining({timeRange: {startTs: '100', endTs: '200', unit: 'ns', source: 'row'}}),
+      ]),
+    }));
+    expect(result.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({claimId: 'trigger', code: 'causal_relation_candidate'}),
+    ]));
+    expect(assessFinalResultQuality({
+      result: {
+        sessionId: 'session', success: true, findings: [], hypotheses: [],
+        conclusion: 'The ANR event is classified as input_dispatching_timeout.', confidence: 0.5,
+        rounds: 1, totalDurationMs: 1, conclusionContract: prepared.conclusionContract || undefined,
+        claimSupport: result.claimSupport, claimVerificationResult: result.claimVerificationResult,
+      },
+      query: 'analyze why this ANR happened',
+    })).toBeDefined();
   });
 
   it('binds same-row input causal claims except frame-only and mismatched references', () => {

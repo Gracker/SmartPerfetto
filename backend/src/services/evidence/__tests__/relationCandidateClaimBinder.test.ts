@@ -104,4 +104,30 @@ describe('relationCandidateClaimBinder', () => {
     expect(bound.relationActivationClaimIds).toEqual([]);
     expect(bound.conclusionContract.claims?.[0].relationRefs).toEqual(['model-invented-relation']);
   });
+
+  it('can require selected candidates to bind only their object cell', () => {
+    const original = contract();
+    original.claims![0].references = [
+      {evidenceRefId: 'data:binder', rowIndex: 3, column: 'dur_str'},
+    ];
+
+    const broad = bindRelationCandidatesToClaims(original, [candidate()]);
+    const strict = bindRelationCandidatesToClaims(original, [candidate()], {
+      objectCellOnlyCandidateIds: new Set([candidate().id]),
+    });
+
+    expect(broad.relationActivationClaimIds).toEqual(['object-row']);
+    expect(strict.relationActivationClaimIds).toEqual([]);
+    expect(strict.conclusionContract.claims?.[0].relationRefs).toEqual(['model-invented-relation']);
+
+    original.claims![0].references = [
+      {evidenceRefId: 'data:binder', rowIndex: 3, column: 'server_process'},
+    ];
+    const objectCell = bindRelationCandidatesToClaims(original, [{
+      ...candidate(), object: {...candidate().object!, column: 'server_process'},
+    }], {
+      objectCellOnlyCandidateIds: new Set([candidate().id]),
+    });
+    expect(objectCell.relationActivationClaimIds).toEqual(['object-row']);
+  });
 });

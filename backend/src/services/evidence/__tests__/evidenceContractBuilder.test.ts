@@ -110,6 +110,50 @@ describe('evidenceContractBuilder', () => {
     expect(subjectRanges.get('6')).toBeUndefined();
   });
 
+  it('derives strict perfetto_start/anr_ts ranges without falling back around malformed aliases', () => {
+    const envelope = createDataEnvelope({
+      columns: ['error_id', 'trigger_type', 'perfetto_start', 'anr_ts', 'start_ts', 'end_ts'],
+      rows: [
+        ['anr-1', 'input_dispatching_timeout', '100', '200', null, null],
+        ['anr-2', 'input_dispatching_timeout', '0100', '200', '10', '20'],
+        ['anr-3', 'input_dispatching_timeout', '100', '9223372036854775808', '10', '20'],
+        ['anr-4', 'input_dispatching_timeout', null, null, '10', '20'],
+        ['anr-5', 'input_dispatching_timeout', '100', null, '10', '20'],
+        ['anr-6', 'input_dispatching_timeout', null, '200', '10', '20'],
+        ['anr-7', 'input_dispatching_timeout', '200', '100', null, null],
+      ],
+    }, {
+      type: 'skill_result', source: 'anr_analysis', title: 'ANR events',
+      skillId: 'anr_analysis', stepId: 'get_anr_events', executionStatus: 'observed',
+      evidenceRefId: 'data:anr-ranges', sourceToolCallId: 'invoke_skill:anr-ranges',
+      traceId: 'trace-a', traceSide: 'current',
+    });
+    const relation = (rowIndex: number) => ({
+      schemaVersion: 'evidence_relation_candidate@1' as const,
+      id: `relation:anr-range:${rowIndex}`,
+      kind: 'derived' as const,
+      direction: 'subject_to_object' as const,
+      subject: {evidenceRefId: 'data:anr-ranges', rowIndex, column: 'error_id'},
+      object: {evidenceRefId: 'data:anr-ranges', rowIndex, column: 'trigger_type'},
+    });
+
+    const built = buildEvidenceContract({
+      dataEnvelopes: [envelope],
+      relationCandidates: [0, 1, 2, 3, 4, 5, 6].map(relation),
+    });
+    const subjectRanges = new Map(built.anchors
+      .filter(anchor => anchor.cells?.[0]?.column === 'error_id')
+      .map(anchor => [anchor.cells?.[0]?.actualValue, anchor.timeRange]));
+
+    expect(subjectRanges.get('anr-1')).toEqual({startTs: '100', endTs: '200', unit: 'ns', source: 'row'});
+    expect(subjectRanges.get('anr-2')).toBeUndefined();
+    expect(subjectRanges.get('anr-3')).toBeUndefined();
+    expect(subjectRanges.get('anr-4')).toEqual({startTs: '10', endTs: '20', unit: 'ns', source: 'row'});
+    expect(subjectRanges.get('anr-5')).toBeUndefined();
+    expect(subjectRanges.get('anr-6')).toBeUndefined();
+    expect(subjectRanges.get('anr-7')).toBeUndefined();
+  });
+
   it('builds and deduplicates producer-authored overlap relation anchors', () => {
     const envelope = createDataEnvelope(
       {

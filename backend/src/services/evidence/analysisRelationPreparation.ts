@@ -10,6 +10,7 @@ import {
   type ClaimVerificationRunnerInput,
   type ClaimVerificationRunnerResult,
 } from '../verifier/claimVerificationRunner';
+import {produceAnrRelationCandidates} from './anrRelationCandidateProducer';
 import {produceInputRelationCandidates} from './inputRelationCandidateProducer';
 import {bindRelationCandidatesToClaims} from './relationCandidateClaimBinder';
 import {produceScrollingRelationCandidates} from './scrollingRelationCandidateProducer';
@@ -30,10 +31,12 @@ export function prepareAnalysisRelations(
   input: AnalysisRelationPreparationInput,
 ): AnalysisRelationPreparationResult {
   const dataEnvelopes = input.dataEnvelopes || [];
+  const anrCandidates = produceAnrRelationCandidates(dataEnvelopes);
   const relationCandidates = [
     ...produceStartupRelationCandidates(dataEnvelopes),
     ...produceScrollingRelationCandidates(dataEnvelopes),
     ...produceInputRelationCandidates(dataEnvelopes),
+    ...anrCandidates,
   ];
   if (relationCandidates.length === 0) {
     return {conclusionContract: input.conclusionContract};
@@ -46,7 +49,9 @@ export function prepareAnalysisRelations(
     };
   }
   return {
-    ...bindRelationCandidatesToClaims(input.conclusionContract, relationCandidates),
+    ...bindRelationCandidatesToClaims(input.conclusionContract, relationCandidates, {
+      objectCellOnlyCandidateIds: new Set(anrCandidates.map(candidate => candidate.id)),
+    }),
     relationCandidates,
   };
 }
