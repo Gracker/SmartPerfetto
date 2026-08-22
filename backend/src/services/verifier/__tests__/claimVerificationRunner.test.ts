@@ -40,6 +40,50 @@ function contractWithoutKind(value: number): ConclusionContract {
 }
 
 describe('runClaimVerification', () => {
+  it('strictly evaluates only explicitly activated causal claims', () => {
+    const activated = contract(120);
+    activated.claims![0].id = 'activated';
+    activated.claims![0].kind = 'causal';
+    activated.claims![0].relationRefs = ['model-invented-relation'];
+    activated.claims!.push({
+      id: 'unmatched',
+      kind: 'causal',
+      text: 'unmatched causal claim',
+      references: [{
+        evidenceRefId: 'data:skill:test',
+        rowIndex: 0,
+        column: 'blocked_ms',
+        value: 120,
+      }],
+      relationRefs: ['model-invented-relation'],
+    });
+    const envelope = createDataEnvelope({columns: ['blocked_ms', 'ts', 'dur'], rows: [[120, 100, 50]]}, {
+      type: 'skill_result',
+      source: 'startup_analysis',
+      title: 'Binder row',
+      evidenceRefId: 'data:skill:test',
+      sourceToolCallId: 'invoke_skill:test',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    });
+
+    const checked = runClaimVerification({
+      conclusionContract: activated,
+      dataEnvelopes: [envelope],
+      relationCandidates: [],
+      relationActivationClaimIds: ['activated'],
+    });
+
+    expect(checked.claimSupport.find(item => item.claimId === 'activated')?.relationEvaluation).toBe('missing');
+    expect(checked.claimSupport.find(item => item.claimId === 'unmatched')?.relationEvaluation).toBe('not_configured');
+    expect(checked.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({claimId: 'activated', code: 'causal_relation_missing'}),
+    ]));
+    expect(checked.claimVerificationResult.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({claimId: 'unmatched', code: 'causal_relation_missing'}),
+    ]));
+  });
+
   it('treats an explicit empty relation candidate list as strict missing causal support', () => {
     const causal = contract(120);
     causal.claims![0].kind = 'causal';

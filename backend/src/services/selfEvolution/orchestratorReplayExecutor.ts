@@ -16,7 +16,7 @@ import type {ProviderService} from '../providerManager/providerService';
 import type {ProviderScope} from '../providerManager/types';
 import type {TraceProcessorService} from '../traceProcessorService';
 import {TraceProcessorFactory} from '../workingTraceProcessor';
-import {runClaimVerification} from '../verifier/claimVerificationRunner';
+import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {
   validateDataEnvelope,
   type DataEnvelope,
@@ -727,7 +727,7 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
             input.stopCpuSampler();
             checkEvaluationBudgets();
             const verification = result.claimVerificationResult
-              ?? runClaimVerification({
+              ?? runPreparedAnalysisClaimVerification({
                 conclusionContract: result.conclusionContract,
                 dataEnvelopes,
                 policy: 'record_only',

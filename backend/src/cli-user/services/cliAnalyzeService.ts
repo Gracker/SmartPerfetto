@@ -39,7 +39,7 @@ import { buildAnalysisReceipt } from '../../services/analysisReceiptBuilder';
 import { deriveUiActionProposals } from '../../services/uiActionProposalDeriver';
 import { persistAgentTurn } from '../../services/persistAgentSession';
 import { applyFinalResultQualityGate } from '../../services/finalResultQualityGate';
-import { runClaimVerification } from '../../services/verifier/claimVerificationRunner';
+import {runPreparedAnalysisClaimVerification} from '../../services/evidence/analysisRelationPreparation';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import { backendLogPath } from '../../runtimePaths';
 import { RagStore } from '../../services/ragStore';
@@ -500,7 +500,7 @@ export class CliAnalyzeService {
         if (normalized.conclusionContract) {
           result.conclusionContract = normalized.conclusionContract;
         }
-        const qualityArtifacts = runClaimVerification({
+        const qualityArtifacts = runPreparedAnalysisClaimVerification({
           conclusionContract: normalized.conclusionContract,
           dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
           comparisonReportSection: session.comparisonReportSection,

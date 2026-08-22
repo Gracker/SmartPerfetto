@@ -148,7 +148,7 @@ import {
   persistCompletedAnalysisResultSnapshot,
   resolveAnalysisResultSceneType,
 } from '../services/analysisResultSnapshotPipeline';
-import { runClaimVerification } from '../services/verifier/claimVerificationRunner';
+import {runPreparedAnalysisClaimVerification} from '../services/evidence/analysisRelationPreparation';
 import {
   getDefaultAndroidInternalsPackResolver,
 } from '../services/androidInternalsPack/androidInternalsPackResolver';
@@ -7794,7 +7794,7 @@ function ensureAnalysisQualityArtifacts(
     };
   }
 
-  const artifacts = runClaimVerification({
+  const artifacts = runPreparedAnalysisClaimVerification({
     conclusionContract,
     dataEnvelopes: session.dataEnvelopes || [],
     comparisonReportSection: session.comparisonReportSection,

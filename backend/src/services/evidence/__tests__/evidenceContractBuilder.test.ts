@@ -28,6 +28,46 @@ const queryReview: QueryReviewV1 = {
 };
 
 describe('evidenceContractBuilder', () => {
+  it('preserves canonical legacy ns ranges while precise aliases remain strict', () => {
+    const envelope = createDataEnvelope({
+      columns: ['start_ts', 'ts', 'end_ts', 'dur', 'ts_str', 'dur_str'],
+      rows: [
+        ['10', null, null, '20', null, null],
+        [null, '15', '20', null, null, null],
+        [null, '15', null, '5', 'bad', '5'],
+      ],
+    }, {
+      type: 'sql_result', source: 'execute_sql', title: 'Legacy exact ranges',
+      evidenceRefId: 'data:legacy-ranges', traceId: 'trace-a', traceSide: 'current',
+    });
+    const relation = (id: string, subjectRow: number, objectRow: number) => ({
+      schemaVersion: 'evidence_relation_candidate@1' as const,
+      id,
+      kind: 'overlap' as const,
+      direction: 'symmetric' as const,
+      subject: {evidenceRefId: 'data:legacy-ranges', rowIndex: subjectRow},
+      object: {evidenceRefId: 'data:legacy-ranges', rowIndex: objectRow},
+    });
+
+    const built = buildEvidenceContract({
+      dataEnvelopes: [envelope],
+      relationCandidates: [
+        relation('relation:legacy-exact', 0, 1),
+        relation('relation:malformed-precise', 0, 2),
+      ],
+    });
+
+    expect(built.relations.find(item => item.id === 'relation:legacy-exact')).toEqual(expect.objectContaining({
+      verificationStatus: 'verified', reasonCode: 'overlap_verified',
+    }));
+    expect(built.anchors.find(anchor => anchor.timeRange?.startTs === '10')?.timeRange).toEqual({
+      startTs: '10', endTs: '30', unit: 'ns', source: 'row',
+    });
+    expect(built.relations.find(item => item.id === 'relation:malformed-precise')).toEqual(expect.objectContaining({
+      verificationStatus: 'candidate', reasonCode: 'overlap_range_missing',
+    }));
+  });
+
   it('builds and deduplicates producer-authored overlap relation anchors', () => {
     const envelope = createDataEnvelope(
       {

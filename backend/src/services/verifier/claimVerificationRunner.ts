@@ -24,6 +24,7 @@ export interface ClaimVerificationRunnerInput {
   dataEnvelopes?: DataEnvelope[];
   comparisonReportSection?: ComparisonReportSection;
   relationCandidates?: EvidenceRelationCandidateV1[];
+  relationActivationClaimIds?: string[];
   policy?: ClaimVerificationPolicy;
 }
 
@@ -112,6 +113,7 @@ export function runClaimVerification(input: ClaimVerificationRunnerInput): Claim
     dataEnvelopes: input.dataEnvelopes,
     comparisonReportSection: input.comparisonReportSection,
     relationCandidates: input.relationCandidates,
+    relationActivationClaimIds: input.relationActivationClaimIds,
   });
   const claimVerificationResult = runDeterministicClaimVerifier({
     claimSupport: evidenceContract.claimSupport,

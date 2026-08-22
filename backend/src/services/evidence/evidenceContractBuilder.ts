@@ -41,6 +41,7 @@ export interface BuildEvidenceContractInput {
   dataEnvelopes?: DataEnvelope[];
   comparisonReportSection?: ComparisonReportSection;
   relationCandidates?: EvidenceRelationCandidateV1[];
+  relationActivationClaimIds?: string[];
 }
 
 interface EnvelopeMatch {
@@ -73,6 +74,7 @@ const RELATION_KINDS = new Set([
 const RELATION_DIRECTIONS = new Set(['subject_to_object', 'object_to_subject', 'symmetric']);
 const BINARY_RELATION_KINDS = new Set(['wakeup', 'blocking_state', 'binder_peer', 'lock_owner']);
 const RELATION_WARNING_LIMIT = 32;
+const MAX_TRACE_TIMESTAMP_NS = (1n << 63n) - 1n;
 
 function stableHash(value: unknown): string {
   return crypto
@@ -459,8 +461,114 @@ function toTimestamp(value: unknown): TraceTimestampNs | undefined {
   return s ? s : undefined;
 }
 
+function exactCanonicalNs(value: unknown): bigint | undefined {
+  const serialized = typeof value === 'number' && Number.isSafeInteger(value)
+    ? String(value)
+    : typeof value === 'string'
+      ? value
+      : undefined;
+  if (serialized === undefined || !/^(?:0|[1-9]\d*)$/.test(serialized)) return undefined;
+  try {
+    const parsed = BigInt(serialized);
+    return parsed <= MAX_TRACE_TIMESTAMP_NS ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function exactDecimalMillisecondsToNs(value: unknown): bigint | undefined {
+  if (typeof value !== 'string' && (typeof value !== 'number' || !Number.isFinite(value))) return undefined;
+  const serialized = String(value);
+  const match = /^(0|[1-9]\d*)(?:\.(\d{1,6}))?$/.exec(serialized);
+  if (!match) return undefined;
+  try {
+    const wholeNs = BigInt(match[1]) * 1_000_000n;
+    const fractionalNs = BigInt((match[2] || '').padEnd(6, '0') || '0');
+    const duration = wholeNs + fractionalNs;
+    return duration <= MAX_TRACE_TIMESTAMP_NS ? duration : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export interface ExactEvidenceTimeRangeNs {
+  start: bigint;
+  end: bigint;
+}
+
+function rowHasValue(row: Record<string, unknown>, key: string): boolean {
+  return row[key] !== undefined && row[key] !== null;
+}
+
+function hasPreciseTimeAlias(row: Record<string, unknown>): boolean {
+  return ['ts_str', 'start_ts_str', 'end_ts_str', 'dur_str', 'dur_ms']
+    .some(key => rowHasValue(row, key));
+}
+
+/**
+ * Extract exact trace-nanosecond intervals from producer-owned row fields.
+ * Invalid explicit precise fields fail closed instead of falling through to
+ * lossy Number arithmetic.
+ */
+export function deriveExactEvidenceTimeRangeNs(
+  row: Record<string, unknown> | undefined,
+): ExactEvidenceTimeRangeNs | undefined {
+  if (!row) return undefined;
+  const present = (key: string): boolean => rowHasValue(row, key);
+  const usesPreciseAlias = hasPreciseTimeAlias(row);
+  const usesCanonicalNs = usesPreciseAlias ||
+    ['ts', 'start_ts', 'end_ts', 'dur', 'duration_ns', 'durationNs'].some(present);
+  if (!usesCanonicalNs) return undefined;
+
+  const startRaw = present('ts_str')
+    ? row.ts_str
+    : present('start_ts_str')
+      ? row.start_ts_str
+      : present('start_ts')
+        ? row.start_ts
+        : row.ts;
+  const start = exactCanonicalNs(startRaw);
+  if (start === undefined) return undefined;
+
+  let end: bigint | undefined;
+  if (present('end_ts_str')) {
+    end = exactCanonicalNs(row.end_ts_str);
+  } else if (present('end_ts')) {
+    end = exactCanonicalNs(row.end_ts);
+  } else if (present('dur_str')) {
+    const duration = exactCanonicalNs(row.dur_str);
+    end = duration !== undefined && duration <= MAX_TRACE_TIMESTAMP_NS - start
+      ? start + duration
+      : undefined;
+  } else if (present('dur_ms')) {
+    const duration = exactDecimalMillisecondsToNs(row.dur_ms);
+    end = duration !== undefined && duration <= MAX_TRACE_TIMESTAMP_NS - start
+      ? start + duration
+      : undefined;
+  } else {
+    const durationRaw = present('dur')
+      ? row.dur
+      : present('duration_ns')
+        ? row.duration_ns
+        : row.durationNs;
+    const duration = exactCanonicalNs(durationRaw);
+    end = duration !== undefined && duration <= MAX_TRACE_TIMESTAMP_NS - start
+      ? start + duration
+      : undefined;
+  }
+  if (end === undefined || end < start || end > MAX_TRACE_TIMESTAMP_NS) return undefined;
+  return {start, end};
+}
+
 function deriveTimeRange(row: Record<string, unknown> | undefined): EvidenceTimeRangeV1 | undefined {
   if (!row) return undefined;
+  const exact = deriveExactEvidenceTimeRangeNs(row);
+  if (exact) {
+    return {startTs: exact.start.toString(), endTs: exact.end.toString(), unit: 'ns', source: 'row'};
+  }
+  if (hasPreciseTimeAlias(row)) {
+    return undefined;
+  }
   const start = toTimestamp(row.ts ?? row.start_ts ?? row.startTs);
   const end = toTimestamp(row.end_ts ?? row.endTs);
   const dur = toTimestamp(row.dur ?? row.duration_ns ?? row.durationNs);
@@ -639,6 +747,9 @@ function canonicalBigInt(value: unknown): bigint | undefined {
 function canonicalBigIntRange(match: EnvelopeMatch | undefined): {start: bigint; end: bigint} | undefined {
   const row = match?.row;
   if (!row) return undefined;
+  const exact = deriveExactEvidenceTimeRangeNs(row);
+  if (exact) return exact;
+  if (hasPreciseTimeAlias(row)) return undefined;
   const start = canonicalBigInt(row.ts ?? row.start_ts ?? row.startTs);
   if (start === undefined) return undefined;
   const end = canonicalBigInt(row.end_ts ?? row.endTs);
@@ -1072,10 +1183,14 @@ export function buildEvidenceContract(input: BuildEvidenceContractInput): Eviden
   const builtRelations = buildRelations(input.relationCandidates, envelopes);
   const relationsById = new Map(builtRelations.relations.map(relation => [relation.id, relation]));
   const relationAnchorsById = new Map(builtRelations.anchors.map(anchor => [anchor.anchorId, anchor]));
+  const relationActivationClaimIds = input.relationActivationClaimIds === undefined
+    ? undefined
+    : new Set(input.relationActivationClaimIds);
   const claimSupport = claims.map((claim, index) => attachClaimRelations(
     claim,
     buildClaimSupport(claim, index, envelopes),
-    input.relationCandidates !== undefined,
+    input.relationCandidates !== undefined &&
+      (relationActivationClaimIds === undefined || relationActivationClaimIds.has(claim.id || `claim-${index + 1}`)),
     relationsById,
     relationAnchorsById,
   ));
