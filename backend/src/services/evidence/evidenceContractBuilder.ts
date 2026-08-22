@@ -1041,9 +1041,10 @@ function attachClaimRelations(
     ? 'rejected'
     : hasMissing
       ? 'missing'
-      : relations.some(relation => relation.verificationStatus === 'candidate')
+      : relations.some(relation =>
+        relation.verificationStatus !== 'verified' || !BINARY_RELATION_KINDS.has(relation.kind))
         ? 'candidate'
-        : relations.some(relation => relation.verificationStatus === 'verified')
+        : relations.length > 0
           ? 'verified'
           : 'missing';
   const relationAnchors = Array.from(new Set(relations.flatMap(relation => relation.directEvidenceAnchorIds)))

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { runClaimVerification } from '../claimVerificationRunner';
+import { runDeterministicClaimVerifier } from '../deterministicClaimVerifier';
 import { createDataEnvelope } from '../../../types/dataContract';
 import type { ConclusionContract } from '../../../agent/core/conclusionContract';
 import type { IdentityResolutionV1 } from '../../../types/identityContract';
@@ -72,8 +73,8 @@ describe('runClaimVerification', () => {
     ]));
   });
 
-  it('moves causal claims through verified, candidate, and rejected relation states', () => {
-    const relationContract = (relationId: string): ConclusionContract => ({
+  it('only promotes verified mechanism relations and keeps verified overlap at inference', () => {
+    const relationContract = (relationRefs: string[]): ConclusionContract => ({
       schemaVersion: 'conclusion_contract_v1',
       mode: 'focused_answer',
       conclusions: [],
@@ -89,18 +90,19 @@ describe('runClaimVerification', () => {
           column: 'blocked_ms',
           value: 120,
         }],
-        relationRefs: [relationId],
+        relationRefs,
       }],
       uncertainties: [],
       nextSteps: [],
     });
     const envelope = createDataEnvelope({
-      columns: ['name', 'ts', 'dur', 'blocked_ms'],
+      columns: ['name', 'ts', 'dur', 'blocked_ms', 'utid', 'subject_utid', 'object_utid'],
       rows: [
-        ['subject', 100, 50, 120],
-        ['verified', 125, 20, 0],
-        ['candidate', 125, null, 0],
-        ['rejected', 300, 20, 0],
+        ['subject', 100, 50, 120, 11, null, null],
+        ['verified', 125, 20, 0, 22, null, null],
+        ['candidate', 125, null, 0, null, null, null],
+        ['rejected', 300, 20, 0, null, null, null],
+        ['proof', null, null, 0, null, 11, 22],
       ],
     }, {
       type: 'sql_result',
@@ -109,6 +111,8 @@ describe('runClaimVerification', () => {
       evidenceRefId: 'data:relation-transition',
       traceId: 'trace-a',
       traceSide: 'current',
+      identityRefId: 'identity:relation-transition',
+      identityStatus: 'verified',
     });
     const relation = (id: string, objectName: string) => ({
       schemaVersion: 'evidence_relation_candidate@1',
@@ -119,18 +123,36 @@ describe('runClaimVerification', () => {
       object: {evidenceRefId: 'data:relation-transition', rowSelector: {name: objectName}},
     });
 
+    const mechanism = {
+      schemaVersion: 'evidence_relation_candidate@1',
+      id: 'relation:mechanism',
+      kind: 'blocking_state',
+      direction: 'subject_to_object',
+      subject: {evidenceRefId: 'data:relation-transition', rowSelector: {name: 'subject'}},
+      object: {evidenceRefId: 'data:relation-transition', rowSelector: {name: 'verified'}},
+      proof: {evidenceRefId: 'data:relation-transition', rowSelector: {name: 'proof'}},
+      proofBindings: {
+        subject: {endpointColumn: 'utid', proofColumn: 'subject_utid'},
+        object: {endpointColumn: 'utid', proofColumn: 'object_utid'},
+      },
+    };
     const verified = runClaimVerification({
-      conclusionContract: relationContract('relation:verified'),
+      conclusionContract: relationContract(['relation:mechanism']),
       dataEnvelopes: [envelope],
-      relationCandidates: [relation('relation:verified', 'verified')],
+      relationCandidates: [mechanism],
+    } as any);
+    const overlap = runClaimVerification({
+      conclusionContract: relationContract(['relation:overlap']),
+      dataEnvelopes: [envelope],
+      relationCandidates: [relation('relation:overlap', 'verified')],
     } as any);
     const candidate = runClaimVerification({
-      conclusionContract: relationContract('relation:candidate'),
+      conclusionContract: relationContract(['relation:candidate']),
       dataEnvelopes: [envelope],
       relationCandidates: [relation('relation:candidate', 'candidate')],
     } as any);
     const rejected = runClaimVerification({
-      conclusionContract: relationContract('relation:rejected'),
+      conclusionContract: relationContract(['relation:rejected']),
       dataEnvelopes: [envelope],
       relationCandidates: [relation('relation:rejected', 'rejected')],
     } as any);
@@ -141,6 +163,13 @@ describe('runClaimVerification', () => {
     }));
     expect(verified.claimVerificationResult.status).toBe('passed');
     expect(verified.claimVerificationResult.claimResults[0].status).toBe('verified');
+    expect(overlap.evidenceContract.relations[0].verificationStatus).toBe('verified');
+    expect(overlap.claimSupport[0]).toEqual(expect.objectContaining({
+      relationEvaluation: 'candidate',
+      supportLevel: 'inference',
+    }));
+    expect(overlap.claimVerificationResult.status).toBe('partial');
+    expect(overlap.claimVerificationResult.claimResults[0].status).toBe('inference');
     expect(candidate.claimSupport[0]).toEqual(expect.objectContaining({
       relationEvaluation: 'candidate',
       supportLevel: 'inference',
@@ -156,6 +185,103 @@ describe('runClaimVerification', () => {
     expect(rejected.claimVerificationResult.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({code: 'causal_relation_rejected', severity: 'error'}),
     ]));
+
+    const mixed = runClaimVerification({
+      conclusionContract: relationContract(['relation:mechanism', 'relation:overlap']),
+      dataEnvelopes: [envelope],
+      relationCandidates: [mechanism, relation('relation:overlap', 'verified')],
+    } as any);
+    expect(mixed.claimSupport[0].relationEvaluation).toBe('candidate');
+    const mixedRejected = runClaimVerification({
+      conclusionContract: relationContract(['relation:mechanism', 'relation:rejected']),
+      dataEnvelopes: [envelope],
+      relationCandidates: [mechanism, relation('relation:rejected', 'rejected')],
+    } as any);
+    expect(mixedRejected.claimSupport[0].relationEvaluation).toBe('rejected');
+    const derived = runClaimVerification({
+      conclusionContract: relationContract(['relation:derived']),
+      dataEnvelopes: [envelope],
+      relationCandidates: [{
+        schemaVersion: 'evidence_relation_candidate@1',
+        id: 'relation:derived',
+        kind: 'derived',
+        direction: 'subject_to_object',
+        subject: {evidenceRefId: 'data:relation-transition', rowSelector: {name: 'subject'}},
+      }],
+    } as any);
+    expect(derived.claimSupport[0].relationEvaluation).toBe('candidate');
+
+    const forged = {
+      ...overlap.evidenceContract.claimSupport[0],
+      relationEvaluation: 'verified',
+    } as any;
+    const defensive = runDeterministicClaimVerifier({claimSupport: [forged]});
+    expect(defensive.status).toBe('partial');
+    expect(defensive.claimResults[0].status).toBe('inference');
+    expect(defensive.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'causal_relation_candidate'}),
+    ]));
+  });
+
+  it('keeps a verified comparison delta at candidate causal support', () => {
+    const current = createDataEnvelope({columns: ['blocked_ms'], rows: [[150]]}, {
+      type: 'sql_result',
+      source: 'execute_sql_on',
+      title: 'Current metric',
+      evidenceRefId: 'data:current-metric',
+      traceId: 'trace-current',
+      traceSide: 'current',
+    });
+    const reference = createDataEnvelope({columns: ['blocked_ms'], rows: [[100]]}, {
+      type: 'sql_result',
+      source: 'execute_sql_on',
+      title: 'Reference metric',
+      evidenceRefId: 'data:reference-metric',
+      traceId: 'trace-reference',
+      traceSide: 'reference',
+    });
+    const causal: ConclusionContract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{
+        id: 'claim-delta-is-cause',
+        kind: 'causal',
+        text: 'the delta causes the regression',
+        references: [{
+          evidenceRefId: 'data:current-metric',
+          rowIndex: 0,
+          column: 'blocked_ms',
+          value: 150,
+        }],
+        relationRefs: ['relation:verified-delta'],
+      }],
+      uncertainties: [],
+      nextSteps: [],
+    };
+
+    const checked = runClaimVerification({
+      conclusionContract: causal,
+      dataEnvelopes: [current, reference],
+      relationCandidates: [{
+        schemaVersion: 'evidence_relation_candidate@1',
+        id: 'relation:verified-delta',
+        kind: 'comparison_delta',
+        direction: 'subject_to_object',
+        deltaDirection: 'current_minus_reference',
+        subject: {evidenceRefId: 'data:current-metric', rowIndex: 0, column: 'blocked_ms'},
+        object: {evidenceRefId: 'data:reference-metric', rowIndex: 0, column: 'blocked_ms'},
+        metricColumn: 'blocked_ms',
+        value: 50,
+        unit: 'ms',
+      }],
+    });
+
+    expect(checked.evidenceContract.relations[0].verificationStatus).toBe('verified');
+    expect(checked.claimSupport[0].relationEvaluation).toBe('candidate');
+    expect(checked.claimVerificationResult.claimResults[0].status).toBe('inference');
   });
 
   it('allows the model to select only producer-authored relation ids', () => {

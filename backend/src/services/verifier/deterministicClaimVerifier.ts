@@ -17,6 +17,23 @@ export interface DeterministicClaimVerifierInput {
   policy?: ClaimVerificationPolicy;
 }
 
+const VERIFIED_CAUSAL_MECHANISM_KINDS = new Set([
+  'wakeup',
+  'blocking_state',
+  'binder_peer',
+  'lock_owner',
+]);
+
+function effectiveCausalRelationEvaluation(claim: ClaimSupportV1): NonNullable<ClaimSupportV1['relationEvaluation']> {
+  const declared = claim.relationEvaluation || 'not_configured';
+  if (declared !== 'verified') return declared;
+  const relations = claim.relations || [];
+  return relations.length > 0 && relations.every(relation =>
+    relation.verificationStatus === 'verified' && VERIFIED_CAUSAL_MECHANISM_KINDS.has(relation.kind))
+    ? 'verified'
+    : 'candidate';
+}
+
 function valuesMatch(expected: unknown, actual: unknown): boolean {
   return evidenceValuesMatch(expected, actual);
 }
@@ -91,7 +108,7 @@ function verifyClaim(claim: ClaimSupportV1): { result: ClaimVerificationClaimRes
     .filter((issue): issue is ClaimVerificationIssue => Boolean(issue));
 
   if (claim.kind === 'causal') {
-    const relationEvaluation = claim.relationEvaluation || 'not_configured';
+    const relationEvaluation = effectiveCausalRelationEvaluation(claim);
     if (relationEvaluation === 'rejected') {
       issues.push({
         claimId: claim.claimId,
@@ -145,7 +162,7 @@ function verifyClaim(claim: ClaimSupportV1): { result: ClaimVerificationClaimRes
   const hasUncheckedReferences = referenceResults.some(ref => ref.status === 'not_checked');
   const hasMatchedReferences = referenceResults.some(ref => ref.status === 'matched');
   const relationEvaluation = claim.kind === 'causal'
-    ? claim.relationEvaluation || 'not_configured'
+    ? effectiveCausalRelationEvaluation(claim)
     : undefined;
   const relationVerified = relationEvaluation === 'verified';
   const relationRejected = relationEvaluation === 'rejected';

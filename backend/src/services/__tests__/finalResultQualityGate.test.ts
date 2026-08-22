@@ -4,6 +4,8 @@
 
 import { describe, expect, it } from '@jest/globals';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
+import { createDataEnvelope } from '../../types/dataContract';
+import { runClaimVerification } from '../verifier/claimVerificationRunner';
 import {
   applyFinalResultQualityGate,
   completeFinalResultComparisonIdentity,
@@ -733,6 +735,67 @@ describe('final result quality gate', () => {
           uncertainties: [],
           nextSteps: [],
         },
+      }),
+      query: '分析这个启动 trace',
+    })?.code).toBe('sparse_unverified_conclusion');
+  });
+
+  it('does not count a deterministically verified overlap as causal evidence', () => {
+    const conclusionContract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{
+        id: 'claim-overlap-is-cause',
+        kind: 'causal',
+        text: 'overlap causes the startup delay',
+        references: [{
+          evidenceRefId: 'data:overlap-only',
+          rowIndex: 0,
+          column: 'blocked_ms',
+          value: 120,
+        }],
+        relationRefs: ['relation:overlap-only'],
+      }],
+      uncertainties: [],
+      nextSteps: [],
+    } as any;
+    const envelope = createDataEnvelope({
+      columns: ['ts', 'dur', 'blocked_ms'],
+      rows: [[100, 50, 120], [125, 20, 0]],
+    }, {
+      type: 'sql_result',
+      source: 'execute_sql',
+      title: 'Overlap-only evidence',
+      evidenceRefId: 'data:overlap-only',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    });
+    const verified = runClaimVerification({
+      conclusionContract,
+      dataEnvelopes: [envelope],
+      relationCandidates: [{
+        schemaVersion: 'evidence_relation_candidate@1',
+        id: 'relation:overlap-only',
+        kind: 'overlap',
+        direction: 'symmetric',
+        subject: {evidenceRefId: 'data:overlap-only', rowIndex: 0},
+        object: {evidenceRefId: 'data:overlap-only', rowIndex: 1},
+      }],
+    });
+
+    expect(verified.evidenceContract.relations[0].verificationStatus).toBe('verified');
+    expect(verified.claimSupport[0].relationEvaluation).toBe('candidate');
+    expect(verified.claimVerificationResult.claimResults[0].status).toBe('inference');
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: 'Main-thread work overlaps the slow startup window.',
+        findings: [],
+        conclusionContract,
+        claimSupport: verified.claimSupport,
+        claimVerificationResult: verified.claimVerificationResult,
       }),
       query: '分析这个启动 trace',
     })?.code).toBe('sparse_unverified_conclusion');
