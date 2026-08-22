@@ -15,6 +15,7 @@ import type {
 import {
   resolveCapabilityTraceIdentity,
   resolveCapabilityTraceProcessorIdentity,
+  type ResolveCapabilityTraceProcessorIdentityInput,
 } from './capabilityManifestRuntimeIdentity';
 import {
   getCoreTraceSummarySpecV1,
@@ -77,7 +78,10 @@ export type TraceSummaryExecutionV1 =
       spec: TraceSummarySpecIdentityV1;
       reason:
         | 'trace_identity_unavailable'
-        | 'trace_processor_identity_unavailable';
+        | 'trace_processor_identity_unavailable'
+        | 'trace_processor_session_unavailable'
+        | 'trace_source_unavailable'
+        | 'external_rpc_unsupported';
     }
   | {
       schemaVersion: typeof TRACE_SUMMARY_EXECUTION_SCHEMA_VERSION;
@@ -99,10 +103,12 @@ export interface ExecuteTraceSummaryInput {
   timeoutMs?: number;
   stdoutLimitBytes?: number;
   stderrLimitBytes?: number;
+  remotePort?: number;
 }
 
 export interface ExecuteTraceSummaryDependencies {
   binaryPath?: string;
+  binarySelection?: Extract<ResolveCapabilityTraceProcessorIdentityInput, {source: 'local_binary'}>;
   commandRunner?: TraceSummaryCommandRunner;
   removeTemporaryRoot?: (temporaryRoot: string) => Promise<void>;
 }
@@ -293,6 +299,17 @@ function executionError(
   };
 }
 
+export function unavailableTraceSummaryV1(
+  reason: Extract<TraceSummaryExecutionV1, {status: 'unavailable'}>['reason'],
+): TraceSummaryExecutionV1 {
+  return {
+    schemaVersion: TRACE_SUMMARY_EXECUTION_SCHEMA_VERSION,
+    status: 'unavailable',
+    spec: getCoreTraceSummarySpecV1(),
+    reason,
+  };
+}
+
 function selectionOrigin(binaryPath: string, explicit: boolean): 'default' | 'env_override' | 'explicit' {
   if (explicit) return 'explicit';
   const configured = process.env.TRACE_PROCESSOR_PATH?.trim();
@@ -307,7 +324,19 @@ export async function executeTraceSummaryV1(
 ): Promise<TraceSummaryExecutionV1> {
   const startedAt = Date.now();
   const spec = getCoreTraceSummarySpecV1();
-  const binaryPath = dependencies.binaryPath ?? getTraceProcessorPath();
+  if (input.remotePort !== undefined &&
+    (!Number.isInteger(input.remotePort) || input.remotePort < 1 || input.remotePort > 65535)) {
+    return unavailableTraceSummaryV1('trace_processor_session_unavailable');
+  }
+  const binarySelection = dependencies.binarySelection ?? {
+    source: 'local_binary' as const,
+    selectedPath: dependencies.binaryPath ?? getTraceProcessorPath(),
+    selectionOrigin: selectionOrigin(
+      dependencies.binaryPath ?? getTraceProcessorPath(),
+      dependencies.binaryPath !== undefined,
+    ),
+  };
+  const binaryPath = binarySelection.selectedPath;
   const traceResolution = await resolveCapabilityTraceIdentity({
     source: 'local_file', filePath: input.tracePath, traceSide: input.traceSide,
   });
@@ -317,10 +346,7 @@ export async function executeTraceSummaryV1(
       status: 'unavailable', spec, reason: 'trace_identity_unavailable',
     };
   }
-  const traceProcessor = await resolveCapabilityTraceProcessorIdentity({
-    source: 'local_binary', selectedPath: binaryPath,
-    selectionOrigin: selectionOrigin(binaryPath, dependencies.binaryPath !== undefined),
-  });
+  const traceProcessor = await resolveCapabilityTraceProcessorIdentity(binarySelection);
   if (traceProcessor.source === 'unknown') {
     return {
       schemaVersion: TRACE_SUMMARY_EXECUTION_SCHEMA_VERSION,
@@ -336,10 +362,15 @@ export async function executeTraceSummaryV1(
     await fs.promises.writeFile(specPath, renderTraceSummarySpecV1(), {encoding: 'utf8', mode: 0o600});
     const command = await (dependencies.commandRunner ?? defaultCommandRunner)({
       binaryPath,
-      args: [
-        'summarize', '--format', 'text', '--metrics-v2', spec.metricIds.join(','),
-        input.tracePath, specPath,
-      ],
+      args: input.remotePort === undefined
+        ? [
+            'summarize', '--format', 'text', '--metrics-v2', spec.metricIds.join(','),
+            input.tracePath, specPath,
+          ]
+        : [
+            'summarize', '--remote', `127.0.0.1:${input.remotePort}`,
+            '--format', 'text', '--metrics-v2', spec.metricIds.join(','), specPath,
+          ],
       timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       stdoutLimitBytes: input.stdoutLimitBytes ?? DEFAULT_STDOUT_LIMIT_BYTES,
       stderrLimitBytes: input.stderrLimitBytes ?? DEFAULT_STDERR_LIMIT_BYTES,

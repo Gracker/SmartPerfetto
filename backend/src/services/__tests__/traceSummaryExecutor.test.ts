@@ -111,6 +111,41 @@ describe('traceSummaryExecutor command', () => {
     }
   });
 
+  it('uses the loopback-only warm session and omits trace bytes from remote argv', async () => {
+    let observedArgs: string[] = [];
+    const result = await executeTraceSummaryV1({
+      tracePath, traceSide: 'current', remotePort: 9123,
+    }, {
+      binaryPath,
+      commandRunner: async input => {
+        observedArgs = [...input.args];
+        expect(fs.readFileSync(input.args[input.args.length - 1], 'utf8')).toContain('metric_spec');
+        return {exitCode: 0, stdout: VALID_TEXT, stderr: ''};
+      },
+    });
+
+    expect(result.status).toBe('ready');
+    expect(observedArgs.slice(0, 7)).toEqual([
+      'summarize', '--remote', '127.0.0.1:9123', '--format', 'text', '--metrics-v2',
+      'smartperfetto_trace_duration_ns,smartperfetto_frame_timeline_total_count,smartperfetto_frame_timeline_jank_count',
+    ]);
+    expect(observedArgs).not.toContain(tracePath);
+    expect(observedArgs).toHaveLength(8);
+  });
+
+  it.each([0, -1, 65536, 1.5, Number.NaN])('rejects invalid managed ports before spawning: %s', async remotePort => {
+    const runner = jest.fn(async (_input: Parameters<TraceSummaryCommandRunner>[0]) => ({
+      exitCode: 0, stdout: VALID_TEXT, stderr: '',
+    }));
+    const result = await executeTraceSummaryV1({tracePath, traceSide: 'current', remotePort}, {
+      binaryPath, commandRunner: runner,
+    });
+    expect(result).toEqual(expect.objectContaining({
+      status: 'unavailable', reason: 'trace_processor_session_unavailable',
+    }));
+    expect(runner).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['timeout', {exitCode: null, stdout: '', stderr: '', timedOut: true}, 'timeout'],
     ['stdout limit', {exitCode: null, stdout: '', stderr: '', outputLimitExceeded: 'stdout' as const}, 'output_limit'],

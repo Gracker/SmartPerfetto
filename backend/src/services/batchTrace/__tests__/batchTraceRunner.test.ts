@@ -9,6 +9,13 @@ import type { SkillExecutionResult } from '../../skillEngine/types';
 import type { TraceProcessorService } from '../../traceProcessorService';
 import type { TraceProcessorLeaseStore } from '../../traceProcessorLeaseStore';
 import { runBatchSkill } from '../batchTraceRunner';
+import type {
+  TraceSummaryExecutionV1,
+  TraceSummaryMetricResultV1,
+} from '../../traceSummaryExecutor';
+import {unavailableTraceSummaryV1} from '../../traceSummaryExecutor';
+import type {ManagedTraceSummaryRunner} from '../../managedTraceSummary';
+import type {TraceSummaryMetricDefinitionV1} from '../../traceSummarySpecRegistry';
 
 let executeMock: jest.MockedFunction<(skillId: string, traceId: string, params: Record<string, unknown>) => Promise<SkillExecutionResult>>;
 let toDataEnvelopesMock: jest.MockedFunction<(result: SkillExecutionResult) => DataEnvelope[]>;
@@ -124,10 +131,50 @@ beforeEach(() => {
 });
 
 describe('runBatchSkill', () => {
+  it('adds canonical summary metrics and aggregates missing rows without zero filling', async () => {
+    const summaries = new Map<string, TraceSummaryExecutionV1>([
+      ['trace-a.pftrace', readySummary(697, 21)],
+      ['trace-b.pftrace', readySummary(undefined, undefined)],
+    ]);
+    const run = await runBatchSkill({
+      surface: 'cli', skillId: 'startup_analysis',
+      traceInputs: [
+        {ordinal: 0, source: 'local_path', tracePath: 'a.pftrace'},
+        {ordinal: 1, source: 'local_path', tracePath: 'b.pftrace'},
+      ],
+    }, {
+      traceProcessor: traceProcessor(), registry: registry(),
+      traceSummaryRunner: async (_service, traceId) => summaries.get(traceId)!,
+    });
+
+    expect(run.perTrace[0].traceSummary).toEqual(expect.objectContaining({status: 'ready'}));
+    expect(run.perTrace[0].metrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({key: 'smartperfetto_frame_timeline_jank_count', numericValue: 21}),
+    ]));
+    expect(run.perTrace[1].metrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'smartperfetto_frame_timeline_jank_count', value: null,
+        missingReason: 'trace_summary:no_rows',
+      }),
+    ]));
+    expect(run.aggregate?.metrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'smartperfetto_frame_timeline_jank_count', count: 1, missingCount: 1,
+        min: 21, max: 21,
+      }),
+    ]));
+  });
+
   it('runs every trace through a batch lease and records per-trace metrics', async () => {
     const tp = traceProcessor();
     const leases = leaseStore();
     const seen: number[] = [];
+    const traceSummaryRunner: ManagedTraceSummaryRunner = jest.fn(async (_service, _traceId, _side, options) => {
+      expect(options).toEqual(expect.objectContaining({
+        leaseId: 'lease-1', leaseMode: 'shared',
+      }));
+      return unavailableTraceSummaryV1('trace_processor_session_unavailable');
+    });
 
     const run = await runBatchSkill({
       scope: { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
@@ -142,6 +189,7 @@ describe('runBatchSkill', () => {
       traceProcessor: tp,
       registry: registry(),
       leaseStore: leases,
+      traceSummaryRunner,
     });
 
     expect(run.status).toBe('completed');
@@ -158,6 +206,7 @@ describe('runBatchSkill', () => {
       'trace-a.pftrace',
       'trace-b.pftrace',
     ]));
+    expect(traceSummaryRunner).toHaveBeenCalledTimes(2);
   });
 
   it('rejects comparison skills before loading traces', async () => {
@@ -236,3 +285,33 @@ describe('runBatchSkill', () => {
     expect(ordinaryRun.domainAnalysis).toBeUndefined();
   });
 });
+
+function readySummary(total: number | undefined, jank: number | undefined): TraceSummaryExecutionV1 {
+  const definitions: TraceSummaryMetricDefinitionV1[] = [
+    {id: 'smartperfetto_trace_duration_ns', dimensions: [], valueColumn: 'duration_ns', unit: 'TIME_NANOS',
+      polarity: 'NOT_APPLICABLE', dimensionUniqueness: 'UNIQUE'},
+    {id: 'smartperfetto_frame_timeline_total_count', dimensions: [], valueColumn: 'total_count', unit: 'COUNT',
+      polarity: 'NOT_APPLICABLE', dimensionUniqueness: 'UNIQUE'},
+    {id: 'smartperfetto_frame_timeline_jank_count', dimensions: [], valueColumn: 'jank_count', unit: 'COUNT',
+      polarity: 'LOWER_IS_BETTER', dimensionUniqueness: 'UNIQUE'},
+  ];
+  const values = new Map<string, number | undefined>([
+    ['smartperfetto_trace_duration_ns', 100],
+    ['smartperfetto_frame_timeline_total_count', total],
+    ['smartperfetto_frame_timeline_jank_count', jank],
+  ]);
+  const metrics: TraceSummaryMetricResultV1[] = definitions.map(definition => {
+    const value = values.get(definition.id);
+    return value === undefined
+      ? {...definition, status: 'missing', missingReason: 'no_rows'}
+      : {...definition, status: 'available', value};
+  });
+  return {
+    schemaVersion: 'trace_summary_execution@1', status: 'ready',
+    spec: {schemaVersion: 'trace_summary_spec@1', id: 'smartperfetto.core.v1', digestSha256: 'a'.repeat(64),
+      metricIds: definitions.map(item => item.id), metrics: definitions},
+    trace: {fingerprintSha256: 'b'.repeat(64), fingerprintKind: 'trace_bytes_sha256', traceSide: 'current'},
+    traceProcessor: {source: 'custom', binarySha256: 'c'.repeat(64)},
+    resultDigestSha256: 'd'.repeat(64), metrics, durationMs: 1,
+  };
+}

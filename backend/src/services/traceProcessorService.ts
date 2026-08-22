@@ -57,6 +57,15 @@ export interface QueryResult {
   error?: string;
 }
 
+export type RunningTraceSummaryInput =
+  | {
+      source: 'local_file';
+      tracePath: string;
+      port: number;
+      binarySelection: Extract<ResolveCapabilityTraceProcessorIdentityInput, {source: 'local_binary'}>;
+    }
+  | {source: 'external_rpc'};
+
 export interface TraceProcessor {
   id: string;
   traceId: string;
@@ -659,6 +668,33 @@ export class TraceProcessorService extends EventEmitter {
     return processor instanceof WorkingTraceProcessor
       ? processor.getRuntimeBinarySelection()
       : {source: 'external_rpc'};
+  }
+
+  public getRunningTraceSummaryInput(
+    traceId: string,
+    options: TraceProcessorServiceQueryOptions = {},
+  ): RunningTraceSummaryInput | undefined {
+    if (this.getTraceSourceKind(traceId) === 'external_rpc') {
+      return {source: 'external_rpc'};
+    }
+    const tracePath = this.getTraceFilePath(traceId);
+    if (!fs.existsSync(tracePath)) return undefined;
+    const leaseContext = this.resolveLeaseQueryContext(traceId, options);
+    const processorKey = this.processorKeyForLease(
+      traceId,
+      leaseContext?.leaseId,
+      leaseContext?.mode,
+    );
+    const processor = this.processors.get(processorKey);
+    if (!(processor instanceof WorkingTraceProcessor) || processor.status !== 'ready') {
+      return undefined;
+    }
+    return {
+      source: 'local_file',
+      tracePath,
+      port: processor.httpPort,
+      binarySelection: processor.getRuntimeBinarySelection(),
+    };
   }
 
   /**

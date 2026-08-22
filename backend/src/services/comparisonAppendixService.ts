@@ -8,9 +8,24 @@ import type {
   ComparisonSourceKind,
 } from '../agentv3/sessionStateSnapshot';
 import type {FinalResultComparisonIdentity} from './finalResultQualityGate';
+import {
+  compareTraceSummariesV1,
+  runManagedTraceSummaryV1,
+  type ManagedTraceSummaryRunner,
+  type ManagedTraceSummarySource,
+  type TraceSummaryComparisonV1,
+} from './managedTraceSummary';
+import {
+  unavailableTraceSummaryV1,
+  type TraceSummaryExecutionV1,
+} from './traceSummaryExecutor';
 
-export interface ComparisonAppendixQueryService {
+export interface ComparisonAppendixQueryService extends ManagedTraceSummarySource {
   queryTrace(traceId: string, sql: string): Promise<QueryResult>;
+}
+
+export interface ComparisonAppendixDependencies {
+  traceSummaryRunner?: ManagedTraceSummaryRunner;
 }
 
 export interface ComparisonAppendixInput {
@@ -43,6 +58,11 @@ export interface ComparisonEvidencePack {
     durationDeltaMs?: number | null;
   };
   limitations: string[];
+  traceSummaries?: {
+    current: TraceSummaryExecutionV1;
+    reference: TraceSummaryExecutionV1;
+  };
+  traceSummaryComparison?: TraceSummaryComparisonV1;
 }
 
 export interface StartupRow {
@@ -89,14 +109,21 @@ export function comparisonIdentityFromReportSection(
 export async function buildComparisonAppendix(
   service: ComparisonAppendixQueryService,
   input: ComparisonAppendixInput,
+  dependencies: ComparisonAppendixDependencies = {},
 ): Promise<ComparisonAppendix> {
   const [current, reference] = await Promise.all([
     collectSideData(service, 'current', input.currentTraceId),
     collectSideData(service, 'reference', input.referenceTraceId),
   ]);
+  const summaryRunner = dependencies.traceSummaryRunner ?? runManagedTraceSummaryV1;
+  const [currentSummary, referenceSummary] = await Promise.all([
+    safeTraceSummary(summaryRunner, service, input.currentTraceId, 'current'),
+    safeTraceSummary(summaryRunner, service, input.referenceTraceId, 'reference'),
+  ]);
+  const traceSummaryComparison = compareTraceSummariesV1(currentSummary, referenceSummary);
 
   const title = input.title || 'SmartPerfetto 确定性对比附录';
-  const limitations = collectLimitations(current, reference);
+  const limitations = collectLimitations(current, reference, traceSummaryComparison);
   const evidencePack: ComparisonEvidencePack = {
     source: 'raw_trace_pair',
     currentTraceId: input.currentTraceId,
@@ -105,14 +132,29 @@ export async function buildComparisonAppendix(
     reference,
     metrics: buildMetrics(current, reference),
     limitations,
+    traceSummaries: {current: currentSummary, reference: referenceSummary},
+    traceSummaryComparison,
   };
-  const markdown = renderMarkdown(current, reference, title, limitations);
+  const markdown = renderMarkdown(current, reference, title, limitations, traceSummaryComparison);
   return {
     markdown,
     html: renderHtml(markdown, title, input.description),
     limitations,
     evidencePack,
   };
+}
+
+async function safeTraceSummary(
+  runner: ManagedTraceSummaryRunner,
+  service: ComparisonAppendixQueryService,
+  traceId: string,
+  traceSide: 'current' | 'reference',
+): Promise<TraceSummaryExecutionV1> {
+  try {
+    return await runner(service, traceId, traceSide);
+  } catch {
+    return unavailableTraceSummaryV1('trace_processor_session_unavailable');
+  }
 }
 
 export async function buildRawTraceComparisonReportSection(
@@ -236,6 +278,7 @@ function renderMarkdown(
   reference: SideData,
   title: string,
   limitations: string[],
+  traceSummaryComparison: TraceSummaryComparisonV1,
 ): string {
   const cur = current.startup;
   const ref = reference.startup;
@@ -256,6 +299,10 @@ function renderMarkdown(
         ['dur_ms', formatNumber(cur?.dur_ms), formatNumber(ref?.dur_ms), formatSigned(delta)],
       ],
     ),
+    '',
+    '### Canonical Trace Summary',
+    '',
+    renderTraceSummaryComparison(traceSummaryComparison),
     '',
     '### Current 启动窗口 Top Slices',
     '',
@@ -283,6 +330,23 @@ function renderMarkdown(
   return lines.join('\n');
 }
 
+function renderTraceSummaryComparison(comparison: TraceSummaryComparisonV1): string {
+  if (comparison.status !== 'compatible') {
+    return `Trace Summary unavailable for deterministic delta: ${comparison.reason}`;
+  }
+  return markdownTable(
+    ['metric_id', 'current', 'reference', 'delta', 'unit', 'polarity'],
+    comparison.metrics.map(metric => [
+      metric.id,
+      formatNumber(metric.currentValue),
+      formatNumber(metric.referenceValue),
+      formatSigned(metric.delta ?? null),
+      metric.unit,
+      metric.polarity,
+    ]),
+  );
+}
+
 function renderHtml(markdown: string, title: string, description?: string): string {
   const body = markdown
     .split('\n')
@@ -300,13 +364,27 @@ function renderHtml(markdown: string, title: string, description?: string): stri
   ].join('\n');
 }
 
-function collectLimitations(current: SideData, reference: SideData): string[] {
+function collectLimitations(
+  current: SideData,
+  reference: SideData,
+  traceSummaryComparison: TraceSummaryComparisonV1,
+): string[] {
   const errors = [
     ...current.errors.map((e) => `- current: ${e}`),
     ...reference.errors.map((e) => `- reference: ${e}`),
   ];
   const limits = errors.length ? errors : ['- 固定 SQL 附录生成未记录失败。'];
   limits.push('- `Perfetto startup_type` 直接来自 `android_startups.startup_type`，不是 SmartPerfetto 二次判定；如与用户指定 cold/warm 口径或 bindApplication/activityStart 信号冲突，需要在正文中单独列为证据限制。');
+  if (traceSummaryComparison.status !== 'compatible') {
+    limits.push(`- Canonical Trace Summary delta unavailable: ${traceSummaryComparison.reason}.`);
+  } else {
+    const missing = traceSummaryComparison.metrics
+      .filter(metric => metric.currentStatus !== 'available' || metric.referenceStatus !== 'available')
+      .map(metric => metric.id);
+    if (missing.length > 0) {
+      limits.push(`- Canonical Trace Summary metrics missing on at least one side: ${missing.join(', ')}.`);
+    }
+  }
   return limits;
 }
 

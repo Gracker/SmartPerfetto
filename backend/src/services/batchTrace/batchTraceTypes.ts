@@ -8,6 +8,7 @@ import type {
   NormalizedMetricValue,
 } from '../../types/multiTraceComparison';
 import type { HeapPathClusterAnalysisV1 } from '../../types/heapPathCluster';
+import type {TraceSummaryExecutionV1} from '../traceSummaryExecutor';
 
 export const BATCH_TRACE_RUN_SCHEMA_VERSION = 'batch_trace_run@1' as const;
 export const BATCH_TRACE_DOMAIN_ANALYSIS_SCHEMA_VERSION = 'batch_trace_domain_analysis@1' as const;
@@ -65,6 +66,7 @@ export interface BatchTraceResultV1 {
   executionTimeMs: number;
   error?: string;
   promotedSnapshotId?: string;
+  traceSummary?: TraceSummaryExecutionV1;
 }
 
 export interface BatchTraceAggregateMetricV1 {
@@ -128,6 +130,7 @@ export interface BatchTraceRunV1 {
     traceInputs: BatchTraceInputV1[];
     maxConcurrency: number;
     traceLimit: number;
+    includeTraceSummary?: boolean;
   };
   perTrace: BatchTraceResultV1[];
   aggregate?: {
@@ -156,6 +159,7 @@ export interface RunBatchSkillInput {
   traceInputs: BatchTraceInputV1[];
   maxConcurrency?: number;
   traceLimit?: number;
+  includeTraceSummary?: boolean;
   onTraceResult?: (result: BatchTraceResultV1) => void;
 }
 

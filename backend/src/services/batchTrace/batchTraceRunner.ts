@@ -17,6 +17,14 @@ import {
 } from '../traceProcessorLeaseStore';
 import type { EnterpriseRepositoryScope } from '../enterpriseRepository';
 import {
+  runManagedTraceSummaryV1,
+  type ManagedTraceSummaryRunner,
+} from '../managedTraceSummary';
+import {
+  unavailableTraceSummaryV1,
+  type TraceSummaryExecutionV1,
+} from '../traceSummaryExecutor';
+import {
   assertBatchTraceCount,
   resolveBatchTraceConcurrency,
   resolveBatchTraceLimits,
@@ -38,6 +46,34 @@ export interface BatchTraceRunnerDeps {
   registry?: SkillRegistry;
   leaseStore?: TraceProcessorLeaseStore;
   limits?: BatchTraceLimits;
+  traceSummaryRunner?: ManagedTraceSummaryRunner;
+}
+
+function traceSummaryMetrics(summary: TraceSummaryExecutionV1): BatchTraceResultV1['metrics'] {
+  const missingReason = summary.status === 'ready'
+    ? undefined
+    : `trace_summary:${summary.status}:${summary.reason}`;
+  const byId = summary.status === 'ready'
+    ? new Map(summary.metrics.map(metric => [metric.id, metric]))
+    : new Map();
+  return summary.spec.metrics.map(definition => {
+    const metric = byId.get(definition.id);
+    const available = metric?.status === 'available';
+    const unit = definition.unit === 'TIME_NANOS' ? 'ns' : 'count';
+    return {
+      key: definition.id,
+      label: definition.id,
+      value: available ? metric.value! : null,
+      ...(available ? {numericValue: metric.value!} : {}),
+      unit,
+      source: {skillId: `trace_summary:${summary.spec.id}`},
+      ...(!available ? {
+        missingReason: metric?.status === 'missing'
+          ? `trace_summary:${metric.missingReason}`
+          : missingReason ?? 'trace_summary:unavailable',
+      } : {}),
+    };
+  });
 }
 
 function inputLabel(input: BatchTraceInputV1): string {
@@ -199,6 +235,21 @@ export async function runBatchSkill(
           : undefined,
         () => executor.execute(input.skillId, resolvedTraceId, input.params ?? {}),
       );
+      let traceSummary: TraceSummaryExecutionV1 | undefined;
+      if (input.includeTraceSummary !== false) {
+        try {
+          traceSummary = await (deps.traceSummaryRunner ?? runManagedTraceSummaryV1)(
+            traceProcessor,
+            resolvedTraceId,
+            'current',
+            lease && scope
+              ? {leaseId: lease.id, leaseMode: lease.mode, leaseScope: scope}
+              : {},
+          );
+        } catch {
+          traceSummary = unavailableTraceSummaryV1('trace_processor_session_unavailable');
+        }
+      }
       const envelopes = SkillExecutor.toDataEnvelopes(skillResult, undefined, { traceId: resolvedTraceId });
       if (skill.batch_analysis) {
         const sourceEnvelope = envelopes.find(envelope => envelope.meta.stepId === skill.batch_analysis?.source_step);
@@ -215,6 +266,7 @@ export async function runBatchSkill(
         result: skillResult,
         dataEnvelopes: envelopes,
       });
+      if (traceSummary) metrics.push(...traceSummaryMetrics(traceSummary));
       recordResult({
         ordinal: traceInput.ordinal,
         input: { ...traceInput, label: inputLabel(traceInput) },
@@ -226,6 +278,7 @@ export async function runBatchSkill(
           .filter((id): id is string => typeof id === 'string' && id.length > 0),
         diagnostics: skillResult.diagnostics.map(diagnosticMessage),
         executionTimeMs: skillResult.executionTimeMs || Date.now() - start,
+        ...(traceSummary ? {traceSummary} : {}),
         ...(skillResult.error ? { error: skillResult.error } : {}),
       });
     } catch (error) {
@@ -285,6 +338,7 @@ export async function runBatchSkill(
       traceInputs: input.traceInputs,
       maxConcurrency,
       traceLimit,
+      includeTraceSummary: input.includeTraceSummary !== false,
     },
     perTrace,
     aggregate: aggregateBatchTraceResults(perTrace),
