@@ -160,6 +160,8 @@ metadata-only visibility.
    UI -> POST /api/agent/v1/analyze
       -> AgentAnalyzeSessionService.prepareSession()
       -> selected runtime analyze()
+      -> shared TraceCompleteness probe
+         -> shadow capability_manifest@1 probe-time snapshot
 
 3. Agent gathers evidence
    Runtime -> MCP tools
@@ -192,6 +194,16 @@ metadata-only visibility.
       -> HTML report + CLI artifacts + analysis-result snapshot
       -> /api/reports/:id
 ```
+
+`capability_manifest@1` sits between shared completeness probing and Agent
+evidence collection. It binds the trace bytes, the identity of the trace
+processor that is actually running, and the capability states. The current
+system prompt and visible chat intentionally ignore this shadow snapshot.
+Before activation, Claude/OpenAI caches keyed only by `traceId` must be re-keyed
+or invalidated by trace + running-processor identity so they cannot reuse
+capabilities from an older processor. HTML-report, analysis-result-snapshot,
+and CLI persistence are wired in the next task; this step does not change those
+output contracts.
 
 CLI `smp run` / `smp ask` / `smp compare` reuse the same session, runtime,
 Skill, report, and trace-processor path. The difference is local storage under

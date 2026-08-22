@@ -5,7 +5,8 @@
 本文描述当前已实现的数据合约，不是迁移计划。TypeScript 权威源是
 [`backend/src/types/dataContract.ts`](../src/types/dataContract.ts)；前端文件
 `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/generated/data_contract.types.ts`
-由生成器产生，禁止手工修改。
+由生成器产生，禁止手工修改。CapabilityManifest 的权威类型位于
+[`backend/src/types/capabilityManifest.ts`](../src/types/capabilityManifest.ts)。
 
 ## 合约目标
 
@@ -50,6 +51,24 @@ interface DataEnvelope<T = DataPayload> {
 `traceSide`、pane、trace id、query hash 和 evidence ref。进程/线程相关数据可以携带
 identity sidecar；计划执行可以携带 phase attribution；这些字段必须跨报告、
 snapshot 和 verifier 保持一致。
+
+## CapabilityManifest
+
+共享 Trace 完整度探测器会在旧 `TraceCompleteness` 五字段完成后，额外解析一个
+`capability_manifest@1` probe-time snapshot。`CapabilityManifestV1.content` 只包含会影响
+能力判断的稳定输入：实际运行的 trace processor 身份、trace bytes SHA-256 与时钟范围，
+以及每项能力的状态。`contentHash` 是该 content 的规范哈希，`manifestId` 由它派生；
+`provenance` 单独保留 `traceId`、`diagnosedAt` 和 `generatedAt`，不混入 content hash。
+
+Manifest 明确区分“表存在但为空”和“schema 缺失”。旧探测结果中的 present-empty 仍保留
+原来的 `missing_config_suspected` 兼容语义，但在 manifest 内映射为
+`status: insufficient`、`sourceState: present_empty`；真正缺表才映射为
+`status: missing`、`sourceState: schema_missing`。两者不得再次折叠。
+
+`CapabilityManifestResolutionV1` 只有三类结果：`ready` 携带完整 manifest；
+`unavailable` 携带固定 reason/detail code，表示 trace 或身份材料不可安全取得；`failed`
+只表示 manifest build 失败。resolution 不携带原始异常、二进制路径或 trace 路径。
+当前 prompt/chat 不消费这一 shadow 字段；报告、snapshot 和 CLI 的持久化属于后续激活步骤。
 
 ## 显示层与详细度
 

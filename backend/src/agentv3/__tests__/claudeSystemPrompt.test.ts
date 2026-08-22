@@ -666,6 +666,68 @@ describe('buildSystemPrompt', () => {
    * (when SDK adds support) can route through it.
    */
   describe('buildSystemPromptParts (Phase 1.2 structured API)', () => {
+    it('ignores shadow capability manifest resolution in prompt parts and text', () => {
+      const legacyTraceCompleteness = {
+        available: [],
+        missingConfig: [{
+          id: 'startup',
+          displayName: '启动性能分析',
+          status: 'missing_config_suspected' as const,
+          primaryTable: 'android_startups',
+          reason: '表不存在',
+        }],
+        notApplicable: [],
+        insufficient: [],
+        diagnosedAt: 1_000,
+      };
+      const readyContext = makeContext({
+        sceneType: 'startup',
+        traceCompleteness: {
+          ...legacyTraceCompleteness,
+          capabilityManifestResolution: {
+            status: 'ready',
+            manifest: {
+              content: {
+                schemaVersion: 'capability_manifest@1',
+                traceProcessor: {source: 'bundled', gitRevision: 'b'.repeat(40)},
+                trace: {
+                  fingerprintSha256: 'a'.repeat(64),
+                  fingerprintKind: 'trace_bytes_sha256',
+                  traceSide: 'current',
+                },
+                capabilities: [],
+              },
+              provenance: {traceId: 'trace-1', diagnosedAt: 1_000, generatedAt: 2_000},
+              manifestId: `capability_manifest:${'c'.repeat(64)}`,
+              contentHash: 'c'.repeat(64),
+            },
+          },
+        } as any,
+      });
+      const unavailableContext = makeContext({
+        sceneType: 'startup',
+        traceCompleteness: {
+          ...legacyTraceCompleteness,
+          capabilityManifestResolution: {
+            status: 'unavailable',
+            reason: 'identity_resolution_failed',
+          },
+        } as any,
+      });
+
+      const readyParts = buildSystemPromptParts(readyContext);
+      const unavailableParts = buildSystemPromptParts(unavailableContext);
+      const readyPrompt = buildSystemPrompt(readyContext);
+      const unavailablePrompt = buildSystemPrompt(unavailableContext);
+
+      expect(readyParts).toEqual(unavailableParts);
+      expect(readyPrompt).toBe(unavailablePrompt);
+      expect(readyPrompt).not.toContain('capability_manifest:');
+      expect(readyPrompt).not.toContain('a'.repeat(64));
+      expect(readyPrompt).not.toContain('c'.repeat(64));
+      expect(readyPrompt).not.toContain('identity_resolution_failed');
+    });
+
     it('full output is byte-equal to buildSystemPrompt', () => {
       const ctx = makeContext({
         sceneType: 'scrolling',

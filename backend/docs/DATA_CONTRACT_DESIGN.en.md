@@ -6,7 +6,9 @@ This document describes the implemented contract, not a migration plan. The
 TypeScript source of truth is
 [`backend/src/types/dataContract.ts`](../src/types/dataContract.ts).
 `perfetto/ui/src/plugins/com.smartperfetto.AIAssistant/generated/data_contract.types.ts`
-is generated and must not be edited manually.
+is generated and must not be edited manually. The CapabilityManifest source of
+truth is
+[`backend/src/types/capabilityManifest.ts`](../src/types/capabilityManifest.ts).
 
 ## Contract Goal
 
@@ -55,6 +57,32 @@ envelopes also preserve `traceSide`, pane, trace id, query hash, and evidence
 references. Process/thread evidence may carry an identity sidecar, and
 plan-driven evidence may carry phase attribution. Those fields must remain
 consistent across reports, snapshots, and verifier paths.
+
+## CapabilityManifest
+
+After the legacy five `TraceCompleteness` fields are complete, the shared trace
+probe also resolves a `capability_manifest@1` probe-time snapshot.
+`CapabilityManifestV1.content` contains only stable capability inputs: the
+identity of the trace processor that is actually running, the trace-bytes
+SHA-256 and clock range, and each capability status. `contentHash` is the
+canonical hash of that content and `manifestId` derives from it. `provenance`
+keeps `traceId`, `diagnosedAt`, and `generatedAt` separately and is not mixed
+into the content hash.
+
+The manifest distinguishes a present-but-empty table from a missing schema.
+The legacy result retains its compatible `missing_config_suspected` result for
+present-empty data, while the manifest maps it to `status: insufficient` and
+`sourceState: present_empty`. Only a genuinely missing table maps to
+`status: missing` and `sourceState: schema_missing`. Consumers must not collapse
+those states again.
+
+`CapabilityManifestResolutionV1` has three outcomes: `ready` carries the
+manifest; `unavailable` carries a fixed reason/detail code when trace or
+identity material cannot be obtained safely; and `failed` means only that
+manifest construction failed. A resolution never exposes raw errors, binary
+paths, or trace paths. The current prompt/chat projection ignores this shadow
+field; report, snapshot, and CLI persistence is part of the next activation
+step.
 
 ## Display Layers And Detail
 

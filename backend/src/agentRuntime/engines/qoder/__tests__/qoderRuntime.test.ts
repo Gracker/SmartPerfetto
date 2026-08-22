@@ -360,6 +360,10 @@ describe('QoderRuntime', () => {
         );
 
         expect(createArchitectureDetector).toHaveBeenCalled();
+        expect(probeTraceCompleteness).toHaveBeenCalledWith(
+          expect.objectContaining({query: expect.any(Function)}),
+          'trace-1',
+        );
         expect(createSkillExecutor).toHaveBeenCalled();
         expect(mockCreateClaudeMcpServer).toHaveBeenCalled();
         expect(mockQuery).toHaveBeenCalledTimes(1);

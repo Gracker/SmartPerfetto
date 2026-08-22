@@ -8,6 +8,7 @@ import type { DetectedFocusApp } from './focusAppDetector';
 import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
+import type {CapabilityManifestResolutionV1} from '../types/capabilityManifest';
 
 // =============================================================================
 // Query Complexity Classification
@@ -220,6 +221,8 @@ export interface TraceCompleteness {
   insufficient: CapabilityProbeResult[];
   /** Timestamp of diagnosis */
   diagnosedAt: number;
+  /** Probe-time shadow snapshot; current prompt/chat consumers intentionally ignore it. */
+  capabilityManifestResolution?: CapabilityManifestResolutionV1;
 }
 
 // =============================================================================

@@ -22,6 +22,9 @@ const NODE_ERROR_CODE_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 const FILE_READ_BUFFER_BYTES = 64 * 1024;
 const PIN_MAX_BYTES = 64 * 1024;
 const STDLIB_ASSET_MAX_BYTES = 256 * 1024;
+const REPORTED_VERSION_MAX_LENGTH = 256;
+const REPORTED_VERSION_PATH_PATTERN =
+  /(?:^|[\s"'\[\](){}<>,;:=])(?:\/|[A-Za-z]:[\\/]|\\\\)/;
 
 const PLATFORM_SHA_KEYS = new Map<string, string>([
   ['linux/x64', 'PERFETTO_SHELL_SHA256_LINUX_AMD64'],
@@ -125,6 +128,22 @@ interface ResolvedPin {
 }
 
 const fileDigestCache = new Map<string, DigestCacheEntry>();
+
+export function sanitizeCapabilityTraceProcessorReportedVersion(
+  value: unknown,
+): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  if (!/^[\x20-\x7e]+$/.test(value)) return undefined;
+  const trimmed = value.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed.length > REPORTED_VERSION_MAX_LENGTH ||
+    REPORTED_VERSION_PATH_PATTERN.test(trimmed)
+  ) {
+    return undefined;
+  }
+  return trimmed;
+}
 
 function nodeErrorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error)) {

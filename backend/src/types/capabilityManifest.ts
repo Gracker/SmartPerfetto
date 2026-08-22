@@ -127,6 +127,20 @@ export interface CapabilityManifestV1 {
   contentHash: string;
 }
 
+export type CapabilityManifestResolutionV1 =
+  | {status: 'ready'; manifest: CapabilityManifestV1}
+  | {
+      status: 'unavailable';
+      reason:
+        | 'external_rpc_trace_fingerprint_unavailable'
+        | 'trace_source_unavailable'
+        | 'trace_file_unavailable'
+        | 'trace_hash_failed'
+        | 'identity_resolution_failed';
+      detailCode?: string;
+    }
+  | {status: 'failed'; reason: 'capability_manifest_build_failed'};
+
 export interface BuildCapabilityManifestInput {
   definitions: CapabilityManifestCapabilityDefinition[];
   legacyProbe: CapabilityManifestLegacyProbeInput;

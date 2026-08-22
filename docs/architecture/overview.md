@@ -141,6 +141,8 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> AgentAnalyzeSessionService.prepareSession()
       -> createAgentOrchestrator()
       -> selected runtime analyze()
+      -> shared TraceCompleteness probe
+         -> shadow capability_manifest@1 probe-time snapshot
 
 3. Agent 获取证据
    Runtime -> MCP tools
@@ -173,6 +175,13 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> HTML report + CLI artifacts + analysis-result snapshot
       -> /api/reports/:id
 ```
+
+`capability_manifest@1` 位于共享完整度探测与 Agent 证据采集之间。它绑定 trace bytes、
+实际运行的 trace processor 身份和能力状态；当前 system prompt 与 visible chat 明确忽略
+这个 shadow snapshot。启用消费前，Claude/OpenAI 以 `traceId` 为键的缓存必须按
+trace + running-processor identity 重新键控或失效，避免复用旧 processor 的能力结果。
+HTML report、analysis-result snapshot 和 CLI 的持久化在下一任务接入，本阶段不改变这些
+输出合约。
 
 CLI `smp run` / `smp ask` / `smp compare` 复用同一 session、runtime、Skill、report
 和 trace_processor 路径；区别只是本地存储在 `~/.smartperfetto/`，输出可以是

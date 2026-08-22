@@ -11,6 +11,7 @@ import {
   clearCapabilityRuntimeIdentityCaches,
   resolveCapabilityTraceIdentity,
   resolveCapabilityTraceProcessorIdentity,
+  sanitizeCapabilityTraceProcessorReportedVersion,
   type CapabilityRuntimeIdentityDependencies,
 } from '../capabilityManifestRuntimeIdentity';
 
@@ -100,6 +101,36 @@ afterEach(async () => {
   const roots = tempRoots;
   tempRoots = [];
   await Promise.all(roots.map(root => rm(root, {recursive: true, force: true})));
+});
+
+describe('CapabilityManifest reported trace processor version sanitizer', () => {
+  it.each([
+    ['trace_processor v50.1', 'trace_processor v50.1'],
+    ['  Perfetto 50.1 (stable)  ', 'Perfetto 50.1 (stable)'],
+    ['version: v50.1', 'version: v50.1'],
+  ])('accepts a bounded printable single-line value: %p', (value, expected) => {
+    expect(sanitizeCapabilityTraceProcessorReportedVersion(value)).toBe(expected);
+  });
+
+  it.each([
+    ['non-string', 50],
+    ['empty', '   '],
+    ['line feed', 'v50\n/private/path'],
+    ['carriage return', 'v50\r/private/path'],
+    ['leading line feed', '\nv50'],
+    ['trailing carriage return', 'v50\r'],
+    ['control byte', 'v50\u0000'],
+    ['overlong', 'v'.repeat(257)],
+    ['POSIX path at start', '/Users/private/trace_processor_shell'],
+    ['POSIX path after equals', 'path=/private/trace_processor_shell'],
+    ['Windows drive path', 'C:\\private\\trace_processor_shell.exe'],
+    ['Windows path after semicolon', 'version;C:\\private\\trace_processor_shell.exe'],
+    ['UNC path', '\\\\server\\share'],
+    ['quoted POSIX path', 'version "/opt/private/trace_processor_shell"'],
+    ['parenthesized Windows path', 'version (D:\\private\\trace_processor_shell.exe)'],
+  ])('rejects %s without returning a modified unsafe substring', (_name, value) => {
+    expect(sanitizeCapabilityTraceProcessorReportedVersion(value)).toBeUndefined();
+  });
 });
 
 describe('CapabilityManifest trace runtime identity', () => {
