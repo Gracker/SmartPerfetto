@@ -45,6 +45,7 @@ import {
 import {
   getSessionBackgroundKnowledgeReferences,
 } from './androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 
 const MAX_SQL_RESULTS_PER_MESSAGE = 5;
 const MAX_SQL_RESULT_ENTRY_BYTES = 100 * 1024;
@@ -245,7 +246,7 @@ function buildAssistantSqlResult(envelopes: unknown): SqlResultMessageBundle | u
   };
 }
 
-export function persistAgentTurn(input: PersistAgentTurnInput): void {
+function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boolean): void {
   const { session, sessionId, traceId, query, result, logger } = input;
   const privateKnowledge = sessionUsesPrivateKnowledge(session);
   const outputLanguage = session.outputLanguage
@@ -255,6 +256,7 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
   const durableDataEnvelopes = privateKnowledge
     ? projectPrivateDataEnvelopes(sessionId, (session.dataEnvelopes || []) as DataEnvelope[])
     : (session.dataEnvelopes || []) as DataEnvelope[];
+  const traceSummary = sanitizeStoredTraceSummaryAttribution(session.traceSummary);
 
   try {
     const sessionContext = sessionContextManager.get(sessionId, traceId);
@@ -265,6 +267,10 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
           referenceTraceId: session.referenceTraceId,
           comparisonSource: session.comparisonSource,
           comparisonReportSection: session.comparisonReportSection,
+          ...(session.result?.analysisReceipt
+            ? {analysisReceipt: session.result.analysisReceipt}
+            : {}),
+          ...(traceSummary ? {traceSummary} : {}),
           conversationSteps: session.conversationSteps || [],
           queryHistory: session.queryHistory || [],
           conclusionHistory: session.conclusionHistory || [],
@@ -274,7 +280,6 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
           claimSupport: session.result?.claimSupport || (session as any).claimSupport,
           claimVerificationResult: session.result?.claimVerificationResult || (session as any).claimVerificationResult,
           identityResolutions: session.result?.identityResolutions || (session as any).identityResolutions,
-          analysisReceipt: session.result?.analysisReceipt,
           hypotheses: session.hypotheses || [],
             agentRuntimeProviderId: session.providerId,
             agentRuntimeProviderSnapshotHash: session.providerSnapshotHash,
@@ -408,7 +413,7 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
 
     // Messages table is a separate SQLite table, always needed for the
     // web UI's history view — persist regardless of which branch above ran.
-    if (sessionContext) {
+    if (appendTurnMessages && sessionContext) {
       try {
         const turnIndex = session.runSequence || 1;
         const sessionEnvelopes = durableDataEnvelopes;
@@ -471,4 +476,12 @@ export function persistAgentTurn(input: PersistAgentTurnInput): void {
       console.warn(`[AgentPersistence] Failed to persist session ${sessionId} to SQLite: ${message}`);
     }
   }
+}
+
+export function persistAgentTurn(input: PersistAgentTurnInput): void {
+  persistAgentState(input, true);
+}
+
+export function refreshPersistedAgentSnapshot(input: PersistAgentTurnInput): void {
+  persistAgentState(input, false);
 }

@@ -65,6 +65,20 @@ export interface FinalizeAgentDrivenSessionDeps<TSession extends FinalizeSession
     logger: TSession['logger'];
     logComponent: string;
   }): void;
+  refreshPersistedAgentSnapshot(input: {
+    session: any;
+    sessionId: string;
+    traceId: string;
+    query: string;
+    result: {
+      conclusion: string;
+      totalDurationMs: number;
+      partial?: boolean;
+      terminationMessage?: string;
+    };
+    logger: TSession['logger'];
+    logComponent: string;
+  }): void;
   ensureCompletedAnalysisSseEvents(session: TSession, runId?: string): unknown[];
   sendAgentDrivenResult(client: any, session: TSession, runId?: string): void;
 }
@@ -192,7 +206,7 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
     runSequence: session.activeRun?.sequence || session.lastRun?.sequence,
   });
 
-  deps.persistAgentTurn({
+  const persistenceInput = {
     session,
     sessionId,
     traceId,
@@ -205,9 +219,11 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
     },
     logger,
     logComponent: input.logComponent,
-  });
+  };
+  deps.persistAgentTurn(persistenceInput);
 
   deps.ensureCompletedAnalysisSseEvents(session, completedRunId);
+  deps.refreshPersistedAgentSnapshot(persistenceInput);
   const clientCount = session.sseClients.length;
   session.sseClients.forEach((client, index) => {
     try {

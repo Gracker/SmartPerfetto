@@ -454,6 +454,11 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       schemaVersion: 2,
       runManifestId: 'manifest-cli-test',
       capabilityManifest,
+      traceSummary: expect.objectContaining({
+        schemaVersion: 'trace_summary_attribution@1',
+        status: 'unavailable',
+        reason: 'trace_source_unavailable',
+      }),
       outputs: expect.objectContaining({
         cliTurnPath: '/tmp/turns/001.md',
       }),
@@ -461,6 +466,9 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(output.result.confidence).toBe(0.55);
     expect(output.result.terminationMessage).toContain('最终结果质量闸门');
     expect(mockPreparedSession.result).toBe(output.result);
+    expect(mockPreparedSession.traceSummary).toEqual(expect.objectContaining({
+      status: 'unavailable', reason: 'trace_source_unavailable',
+    }));
     expect(mockPersistAgentTurn).toHaveBeenCalledWith(expect.objectContaining({
       result: expect.objectContaining({
         conclusion: expect.stringContaining('分阶段证据摘要'),

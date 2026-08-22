@@ -18,6 +18,7 @@ import {
 import { openEnterpriseDb } from './enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from './analysisResultSnapshotStore';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
+import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {
@@ -56,6 +57,7 @@ export interface CompletedAnalysisSnapshotInput {
   dataEnvelopes?: DataEnvelope[];
   analysisReceipt?: import('../types/dataContract').AnalysisReceipt;
   capabilityManifest?: import('../types/capabilityManifest').CapabilityManifestAttributionV1;
+  traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   uiActionProposals?: import('../types/dataContract').UiActionProposalV1[];
   createdAt?: number;
   /** Apply the non-resumable private-source persistence projection. */
@@ -459,19 +461,29 @@ export function buildCompletedAnalysisResultSnapshot(
   if (storedAnalysisReceipt) {
     const {
       capabilityManifest: _storedCapabilityManifest,
-      ...receiptWithoutCapabilityManifest
+      traceSummary: _storedTraceSummary,
+      ...receiptWithoutAttribution
     } = storedAnalysisReceipt;
+    const receiptTraceSummary = sanitizeStoredTraceSummaryAttribution(
+      storedAnalysisReceipt.traceSummary,
+    );
     analysisReceipt = {
-      ...receiptWithoutCapabilityManifest,
+      ...receiptWithoutAttribution,
       ...(storedReceiptCapabilityManifest
         ? {capabilityManifest: storedReceiptCapabilityManifest}
         : {}),
+      ...(receiptTraceSummary ? {traceSummary: receiptTraceSummary} : {}),
     } as AnalysisReceipt;
   }
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
     input.capabilityManifest !== undefined
       ? input.capabilityManifest
       : storedAnalysisReceipt?.capabilityManifest,
+  );
+  const traceSummary = sanitizeStoredTraceSummaryAttribution(
+    input.traceSummary !== undefined
+      ? input.traceSummary
+      : storedAnalysisReceipt?.traceSummary,
   );
 
   return {
@@ -494,6 +506,7 @@ export function buildCompletedAnalysisResultSnapshot(
       ...(input.confidence !== undefined ? { confidence: input.confidence } : {}),
       ...(partialReasons.length > 0 ? { partialReasons } : {}),
       ...(analysisReceipt ? { analysisReceipt } : {}),
+      ...(traceSummary ? {traceSummary} : {}),
       ...(input.uiActionProposals && input.uiActionProposals.length > 0 ? { uiActionProposals: input.uiActionProposals } : {}),
     },
     ...(input.conclusionContract ? { conclusionContract: input.conclusionContract } : {}),

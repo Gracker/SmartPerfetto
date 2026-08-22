@@ -116,6 +116,7 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   comparisonSource?: ComparisonSourceKind;
   /** Shared deterministic comparison section for report generation. */
   comparisonReportSection?: ComparisonReportSection;
+  traceSummary?: import('../../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   logger: SessionLogger;
   result?: AgentRuntimeAnalysisResult;
   hypotheses: Hypothesis[];

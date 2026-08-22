@@ -1068,6 +1068,7 @@ export interface AnalysisReceiptBase {
     reportError?: string;
   };
   capabilityManifest?: CapabilityManifestAttributionV1;
+  traceSummary?: import('./traceSummaryAttribution').TraceSummaryAttributionV1;
 }
 
 export interface AnalysisReceiptV1 extends AnalysisReceiptBase {

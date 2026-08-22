@@ -113,12 +113,35 @@ function createFinalizeDeps(
       targetSession.status = status === 'quota_exceeded' ? 'quota_exceeded' : 'completed';
     },
     persistAgentTurn: () => undefined,
+    refreshPersistedAgentSnapshot: () => undefined,
     ensureCompletedAnalysisSseEvents,
     sendAgentDrivenResult: () => undefined,
   };
 }
 
 describe('finalizeAgentDrivenSession completed-cache invalidation', () => {
+  it('persists once before artifact generation and refreshes the snapshot afterward', () => {
+    const session = createSession();
+    const order: string[] = [];
+    const deps = createFinalizeDeps(jest.fn(() => {
+      order.push('artifacts');
+      session.result!.analysisReceipt = {schemaVersion: 2, runManifestId: 'manifest-final'} as any;
+      return [];
+    }));
+    deps.persistAgentTurn = jest.fn(() => order.push('initial-persist'));
+    deps.refreshPersistedAgentSnapshot = jest.fn(() => order.push('snapshot-refresh'));
+
+    finalizeAgentDrivenSession({
+      sessionId: 'session-a', query: 'analyze', traceId: 'trace-a', session,
+      result: createResult(), runId: 'run-current', logComponent: 'test',
+    }, deps);
+
+    expect(order).toEqual(['initial-persist', 'artifacts', 'snapshot-refresh']);
+    expect(deps.persistAgentTurn).toHaveBeenCalledTimes(1);
+    expect(deps.refreshPersistedAgentSnapshot).toHaveBeenCalledTimes(1);
+    expect(session.result?.analysisReceipt).toEqual(expect.objectContaining({runManifestId: 'manifest-final'}));
+  });
+
   it('clears stale global completed caches when a run-scoped result finalizes', () => {
     const session = createSession();
     const ensureCompletedAnalysisSseEvents = createEnsureCompletedAnalysisSseEventsMock();

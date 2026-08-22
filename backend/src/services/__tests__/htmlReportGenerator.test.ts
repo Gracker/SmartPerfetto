@@ -249,6 +249,17 @@ describe('HTMLReportGenerator', () => {
             },
             probeCache: {hits: 3, misses: 1, bypasses: 2, keyHash: 'must-not-render'},
           },
+          traceSummary: {
+            schemaVersion: 'trace_summary_attribution@1',
+            status: 'ready',
+            specId: 'smartperfetto.core.v1<script>alert(2)</script>',
+            specDigestSha256: '1'.repeat(64),
+            traceFingerprintSha256: '2'.repeat(64),
+            traceProcessor: {source: 'custom', binarySha256: '3'.repeat(64)},
+            resultDigestSha256: '4'.repeat(64),
+            availableMetricIds: ['metric_a'],
+            missingMetricIds: ['metric_b'],
+          },
         },
         uiActionProposals: [
           {
@@ -295,6 +306,11 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('Hits');
     expect(html).not.toContain('must-not-render');
     expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('Trace Summary');
+    expect(html).toContain('smartperfetto.core.v1&lt;script&gt;alert(2)&lt;/script&gt;');
+    expect(html).toContain('metric_a');
+    expect(html).toContain('metric_b');
+    expect(html).not.toContain('<script>alert(2)</script>');
     expect(html).toContain('UI 动作提案');
     expect(html).toContain('收藏证据');
     expect(html).toContain('打开启动证据表');

@@ -5,7 +5,7 @@
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { EnhancedSessionContext, sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import { SessionPersistenceService } from '../sessionPersistenceService';
-import { persistAgentTurn } from '../persistAgentSession';
+import { persistAgentTurn, refreshPersistedAgentSnapshot } from '../persistAgentSession';
 import { createDataEnvelope } from '../../types/dataContract';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/codeAwareOutputRegistry';
 
@@ -17,6 +17,7 @@ describe('persistAgentTurn', () => {
     sessionContextManager.remove('session-frontend-trace-context-message');
     sessionContextManager.remove('session-sql-result-truncated');
     sessionContextManager.remove('session-continuity-breaks');
+    sessionContextManager.remove('session-trace-summary-refresh');
     sessionContextManager.remove('session-private-durable');
     clearCodeAwareOutputGuards('session-private-durable');
   });
@@ -393,6 +394,53 @@ describe('persistAgentTurn', () => {
     expect(savedCall[0]).toBe(sessionId);
     expect(savedCall[1]).toEqual(expect.objectContaining({ continuityBreaks }));
     expect(savedCall[2]).toEqual(expect.any(Object));
+  });
+
+  it('refreshes the final receipt and trace summary snapshot without appending duplicate messages', () => {
+    const appendMessages = jest.fn();
+    const saveSessionStateSnapshot = jest.fn(() => true);
+    jest.spyOn(SessionPersistenceService, 'getInstance').mockReturnValue({
+      saveSessionStateSnapshot,
+      appendMessages,
+    } as any);
+    const sessionId = 'session-trace-summary-refresh';
+    const traceId = 'trace-summary-refresh';
+    sessionContextManager.set(sessionId, traceId, new EnhancedSessionContext(sessionId, traceId));
+    const takeSnapshot = jest.fn((_sessionId: string, _traceId: string, fields: any) => ({
+      version: 1, snapshotTimestamp: 1, sessionId, traceId, ...fields,
+      analysisNotes: [], analysisPlan: null, planHistory: [], uncertaintyFlags: [],
+    }));
+    const traceSummary = {
+      schemaVersion: 'trace_summary_attribution@1', status: 'ready',
+      specId: 'smartperfetto.core.v1', specDigestSha256: 'a'.repeat(64),
+      traceFingerprintSha256: 'b'.repeat(64),
+      traceProcessor: {source: 'custom', binarySha256: 'c'.repeat(64)},
+      resultDigestSha256: 'd'.repeat(64),
+      availableMetricIds: ['metric_a'], missingMetricIds: [],
+      localPath: '/private/summary',
+    } as any;
+    const session = {
+      createdAt: 1, orchestrator: {takeSnapshot}, traceSummary,
+      result: {success: true},
+    } as any;
+    const input = {
+      sessionId, traceId, query: 'summary',
+      result: {conclusion: 'done', totalDurationMs: 1}, session,
+    };
+
+    persistAgentTurn(input);
+    session.result.analysisReceipt = {schemaVersion: 2, runManifestId: 'manifest-final'};
+    refreshPersistedAgentSnapshot(input);
+
+    expect(saveSessionStateSnapshot).toHaveBeenCalledTimes(2);
+    expect(appendMessages).toHaveBeenCalledTimes(1);
+    const first = (saveSessionStateSnapshot.mock.calls[0] as unknown[])[1] as any;
+    const second = (saveSessionStateSnapshot.mock.calls[1] as unknown[])[1] as any;
+    expect(first.traceSummary).toEqual(expect.objectContaining({status: 'ready'}));
+    expect(first).not.toHaveProperty('analysisReceipt');
+    expect(second.analysisReceipt).toEqual(expect.objectContaining({runManifestId: 'manifest-final'}));
+    expect(second.traceSummary).toEqual(expect.objectContaining({resultDigestSha256: 'd'.repeat(64)}));
+    expect(JSON.stringify(second)).not.toContain('/private/summary');
   });
 
   it('persists a private-safe snapshot and messages while retaining deterministic envelopes', () => {

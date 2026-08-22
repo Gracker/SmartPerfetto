@@ -26,6 +26,14 @@ const capabilityManifest: CapabilityManifestAttributionV1 = {
   },
   probeCache: {hits: 4, misses: 1, bypasses: 0},
 };
+const traceSummary = {
+  schemaVersion: 'trace_summary_attribution@1' as const, status: 'ready' as const,
+  specId: 'smartperfetto.core.v1', specDigestSha256: '1'.repeat(64),
+  traceFingerprintSha256: '2'.repeat(64),
+  traceProcessor: {source: 'custom' as const, binarySha256: '3'.repeat(64)},
+  resultDigestSha256: '4'.repeat(64),
+  availableMetricIds: ['metric_a'], missingMetricIds: [],
+};
 
 function seedGraph(db: Database.Database): void {
   const now = 1_700_000_000_000;
@@ -223,6 +231,20 @@ describe('AnalysisResultSnapshotRepository', () => {
       'analysis_result.created',
       'analysis_result.read',
     ]);
+  });
+
+  test('round-trips Trace Summary attribution inside the existing summary JSON', () => {
+    const repo = createAnalysisResultSnapshotRepository(db!);
+    repo.createSnapshot(snapshot({
+      id: 'snapshot-trace-summary',
+      summary: {headline: 'summary', traceSummary},
+    }));
+
+    const loaded = repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-trace-summary',
+    );
+    expect(loaded?.summary.traceSummary).toEqual(traceSummary);
   });
 
   test('round-trips capability attribution in its own nullable column', () => {

@@ -29,6 +29,18 @@ const capabilityManifest: CapabilityManifestAttributionV1 = {
   probeCache: {hits: 1, misses: 1, bypasses: 0, keyHash: 'c'.repeat(64)},
 };
 
+const traceSummary = {
+  schemaVersion: 'trace_summary_attribution@1' as const,
+  status: 'ready' as const,
+  specId: 'smartperfetto.core.v1',
+  specDigestSha256: '1'.repeat(64),
+  traceFingerprintSha256: '2'.repeat(64),
+  traceProcessor: {source: 'custom' as const, binarySha256: '3'.repeat(64)},
+  resultDigestSha256: '4'.repeat(64),
+  availableMetricIds: ['metric_a'],
+  missingMetricIds: ['metric_b'],
+};
+
 const quickRun: QuickRunReceipt = {
   requestedMode: 'fast',
   resolvedMode: 'quick',
@@ -185,6 +197,11 @@ describe('buildAnalysisReceipt', () => {
       session: {
         sessionId: 'session-capability',
         traceId: 'trace-capability',
+        traceSummary: {
+          ...traceSummary,
+          localPath: canary,
+          traceProcessor: {...traceSummary.traceProcessor, localPath: canary},
+        } as any,
       },
       result: {
         sessionId: 'session-capability',
@@ -200,6 +217,7 @@ describe('buildAnalysisReceipt', () => {
     });
 
     expect(receipt.capabilityManifest).toEqual(capabilityManifest);
+    expect(receipt.traceSummary).toEqual(traceSummary);
     expect(JSON.stringify(receipt)).not.toContain(canary);
     expect(receipt).toEqual(expect.objectContaining({
       schemaVersion: 2,

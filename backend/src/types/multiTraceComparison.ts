@@ -132,6 +132,7 @@ export interface AnalysisSummary {
   partialReasons?: string[];
   analysisReceipt?: import('./dataContract').AnalysisReceipt;
   uiActionProposals?: import('./dataContract').UiActionProposalV1[];
+  traceSummary?: import('./traceSummaryAttribution').TraceSummaryAttributionV1;
 }
 
 export interface NormalizedMetricSource {

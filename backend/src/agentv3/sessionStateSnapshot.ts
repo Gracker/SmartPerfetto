@@ -514,6 +514,10 @@ export interface SessionStateSnapshot {
   comparisonSource?: ComparisonSourceKind;
   /** Shared deterministic comparison section used by CLI and HTML reports. */
   comparisonReportSection?: ComparisonReportSection;
+  /** Final receipt, added explicitly after report/snapshot artifacts settle. */
+  analysisReceipt?: import('../types/dataContract').AnalysisReceipt;
+  /** Path-free deterministic Trace Summary attribution for this trace/run. */
+  traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
 
   // --- Timeline & History ---
   conversationSteps: ConversationStep[];
@@ -646,6 +650,8 @@ export interface SessionFieldsForSnapshot {
   comparisonSource?: ComparisonSourceKind;
   /** Shared deterministic comparison report section, when available. */
   comparisonReportSection?: ComparisonReportSection;
+  analysisReceipt?: SessionStateSnapshot['analysisReceipt'];
+  traceSummary?: SessionStateSnapshot['traceSummary'];
   conversationSteps: ConversationStep[];
   queryHistory: QueryHistoryEntry[];
   conclusionHistory: ConclusionHistoryEntry[];

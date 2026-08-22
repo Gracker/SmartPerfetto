@@ -8,6 +8,7 @@ import type { ClaimSupportV1, EvidenceSupportLevel } from '../types/evidenceCont
 import type { IdentityResolutionV1 } from '../types/identityContract';
 import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
+import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import type {
   AnalysisReceipt,
   AnalysisReceiptRuntime,
@@ -33,6 +34,7 @@ export interface AnalysisSessionReceiptSource {
   dataEnvelopes?: DataEnvelope[];
   agentResponses?: Array<{ response?: unknown }>;
   conversationSteps?: unknown[];
+  traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
 }
 
 export interface AnalysisReceiptFinalArtifacts {
@@ -63,6 +65,7 @@ export interface BuildAnalysisReceiptInput {
   generatedAt?: number;
   cliTurnPath?: string;
   capabilityManifest?: CapabilityManifestAttributionV1;
+  traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
 }
 
 export function buildAnalysisReceipt(input: BuildAnalysisReceiptInput): AnalysisReceiptV2 {
@@ -117,6 +120,9 @@ function buildAnalysisReceiptBody(
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
     input.capabilityManifest,
   );
+  const traceSummary = sanitizeStoredTraceSummaryAttribution(
+    input.traceSummary ?? session.traceSummary,
+  );
 
   return {
     runId: input.runId || result.sessionId || session.sessionId,
@@ -128,6 +134,7 @@ function buildAnalysisReceiptBody(
     providerId: input.providerId !== undefined ? input.providerId : session.providerId ?? null,
     generatedAt: input.generatedAt ?? finalArtifacts.generatedAt ?? Date.now(),
     ...(capabilityManifest ? {capabilityManifest} : {}),
+    ...(traceSummary ? {traceSummary} : {}),
     traceEvidence: {
       sqlCount: countSqlEvidence(dataEnvelopes),
       skillCount: countSkillEvidence(dataEnvelopes),

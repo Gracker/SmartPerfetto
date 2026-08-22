@@ -32,6 +32,15 @@ function snapshot(): SessionStateSnapshot {
     uncertaintyFlags: [],
     codebaseIds: ['codebase-a', '/Users/chris/Code/App'],
     knowledgeSourceIds: ['knowledge-a', '../knowledge-root'],
+    traceSummary: {
+      schemaVersion: 'trace_summary_attribution@1', status: 'ready',
+      specId: 'smartperfetto.core.v1', specDigestSha256: 'a'.repeat(64),
+      traceFingerprintSha256: 'b'.repeat(64),
+      traceProcessor: {source: 'custom', binarySha256: 'c'.repeat(64), localPath: '/private/tp'},
+      resultDigestSha256: 'd'.repeat(64),
+      availableMetricIds: ['metric_a'], missingMetricIds: [],
+      localPath: '/private/trace',
+    } as any,
     codeLookupSummary: {
       lookupCount: 3,
       patchCount: 0,
@@ -88,5 +97,9 @@ describe('private session snapshot provenance', () => {
     expect(JSON.stringify(projected)).not.toContain('/Users/chris/Code/App');
     expect(JSON.stringify(projected)).not.toContain('/private/var/App');
     expect(projected.conversationSteps).toEqual([]);
+    expect(projected.traceSummary).toEqual(expect.objectContaining({
+      status: 'ready', resultDigestSha256: 'd'.repeat(64),
+    }));
+    expect(JSON.stringify(projected.traceSummary)).not.toContain('/private/');
   });
 });

@@ -4913,6 +4913,33 @@ export class HTMLReportGenerator {
           ['Bypasses', String(capabilityManifest.probeCache.bypasses)],
         ]
       : [];
+    const traceSummary = receipt.traceSummary;
+    const traceSummaryProcessor = traceSummary?.traceProcessor?.source === 'bundled'
+      ? `bundled:${traceSummary.traceProcessor.gitRevision}`
+      : traceSummary?.traceProcessor?.source === 'custom'
+        ? `custom:${traceSummary.traceProcessor.binarySha256}`
+        : traceSummary?.traceProcessor?.source === 'unknown'
+          ? `unknown:${traceSummary.traceProcessor.unavailableReason}`
+          : undefined;
+    const traceSummaryRows = traceSummary
+      ? [
+          [localize(outputLanguage, '状态', 'Status'), traceSummary.status],
+          ['Spec', traceSummary.specId],
+          ['Spec digest', traceSummary.specDigestSha256],
+          ...(traceSummary.traceFingerprintSha256
+            ? [['Trace fingerprint', traceSummary.traceFingerprintSha256]]
+            : []),
+          ...(traceSummaryProcessor ? [['Trace processor', traceSummaryProcessor]] : []),
+          ...(traceSummary.resultDigestSha256
+            ? [['Result digest', traceSummary.resultDigestSha256]]
+            : []),
+          ['Available metrics', traceSummary.availableMetricIds.join(', ') || '-'],
+          ['Missing metrics', traceSummary.missingMetricIds.join(', ') || '-'],
+          ...(traceSummary.reason
+            ? [[localize(outputLanguage, '原因', 'Reason'), traceSummary.reason]]
+            : []),
+        ]
+      : [];
     return `
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '分析回执', 'Analysis Receipt')}</h2>
@@ -4955,6 +4982,12 @@ export class HTMLReportGenerator {
         <div class="receipt-card">
           <div class="receipt-card-title">Capability Manifest</div>
           ${capabilityRows.map(([label, value]) => `
+          <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${this.escapeHtml(value)}</span></div>`).join('')}
+        </div>` : ''}
+        ${traceSummaryRows.length > 0 ? `
+        <div class="receipt-card">
+          <div class="receipt-card-title">Trace Summary</div>
+          ${traceSummaryRows.map(([label, value]) => `
           <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${this.escapeHtml(value)}</span></div>`).join('')}
         </div>` : ''}
       </div>

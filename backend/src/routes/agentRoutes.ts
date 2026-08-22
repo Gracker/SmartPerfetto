@@ -20,7 +20,10 @@ import {
 import { createSessionLogger, SessionLogger } from '../services/sessionLogger';
 import { getHTMLReportGenerator } from '../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../services/agentReportData';
-import { persistAgentTurn } from '../services/persistAgentSession';
+import {
+  persistAgentTurn,
+  refreshPersistedAgentSnapshot,
+} from '../services/persistAgentSession';
 import {
   buildAnalysisReceipt,
   buildLegacyAnalysisReceipt,
@@ -114,6 +117,9 @@ import {
   type AnalyzeMode,
 } from './agent/normalizeAnalyzeOptions';
 import { finalizeAgentDrivenSession } from './agent/finalizeAgentDrivenSession';
+import {executeManagedTraceSummaryV1} from '../services/managedTraceSummary';
+import {buildTraceSummaryAttributionV1} from '../services/traceSummaryAttribution';
+import {unavailableTraceSummaryV1} from '../services/traceSummaryExecutor';
 import { projectStateTimelineRunResult } from './agent/stateTimelineRunProjection';
 import { AssistantApplicationService } from '../assistant/application/assistantApplicationService';
 import { StreamProjector, SSE_RING_BUFFER_SIZE, type BufferedSseEvent } from '../assistant/stream/streamProjector';
@@ -1032,6 +1038,7 @@ interface AnalysisSession {
   referenceTraceId?: string;
   comparisonSource?: 'raw_trace_pair' | 'analysis_result_snapshots';
   comparisonReportSection?: import('../agentv3/sessionStateSnapshot').ComparisonReportSection;
+  traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   query: string;
   createdAt: number;
   lastActivityAt: number;
@@ -4668,6 +4675,7 @@ function completeAgentDrivenSessionWithResult(input: {
     terminalRunStatusForResult,
     markSessionRunStatus,
     persistAgentTurn,
+    refreshPersistedAgentSnapshot,
     ensureCompletedAnalysisSseEvents,
     sendAgentDrivenResult,
   });
@@ -5778,6 +5786,19 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       }
       session.comparisonSource = 'raw_trace_pair';
       session.comparisonReportSection = comparisonReportSection;
+    }
+
+    try {
+      const traceSummaryExecution = await runWithTraceProcessorLease(() =>
+        executeManagedTraceSummaryV1(options.traceProcessorService, traceId, 'current'),
+      );
+      if (runIsInactive()) return;
+      session.traceSummary = buildTraceSummaryAttributionV1(traceSummaryExecution);
+    } catch {
+      if (runIsInactive()) return;
+      session.traceSummary = buildTraceSummaryAttributionV1(
+        unavailableTraceSummaryV1('trace_processor_session_unavailable'),
+      );
     }
 
     if (runIsInactive()) return;
@@ -8249,6 +8270,7 @@ function ensureCompletedAnalysisFinalArtifacts(
         analysisReceipt: privateKnowledge
           ? projectPrivateAnalysisReceipt(snapshotReceipt)
           : snapshotReceipt,
+        traceSummary: session.traceSummary,
         uiActionProposals: durableResultForClient.uiActionProposals,
         privateKnowledge,
         outputLanguage,

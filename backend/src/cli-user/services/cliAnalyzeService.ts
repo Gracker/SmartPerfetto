@@ -40,6 +40,9 @@ import { deriveUiActionProposals } from '../../services/uiActionProposalDeriver'
 import { persistAgentTurn } from '../../services/persistAgentSession';
 import { applyFinalResultQualityGate } from '../../services/finalResultQualityGate';
 import {runPreparedAnalysisClaimVerification} from '../../services/evidence/analysisRelationPreparation';
+import {executeManagedTraceSummaryV1} from '../../services/managedTraceSummary';
+import {buildTraceSummaryAttributionV1} from '../../services/traceSummaryAttribution';
+import {unavailableTraceSummaryV1} from '../../services/traceSummaryExecutor';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import { backendLogPath } from '../../runtimePaths';
 import { RagStore } from '../../services/ragStore';
@@ -535,6 +538,19 @@ export class CliAnalyzeService {
           currentTraceId: traceId,
           existingProposals: result.uiActionProposals,
         });
+        try {
+          session.traceSummary = buildTraceSummaryAttributionV1(
+            await executeManagedTraceSummaryV1(
+              getTraceProcessorService(),
+              traceId,
+              'current',
+            ),
+          );
+        } catch {
+          session.traceSummary = buildTraceSummaryAttributionV1(
+            unavailableTraceSummaryV1('trace_processor_session_unavailable'),
+          );
+        }
         const runManifest = runManifestLifecycle.sealOnceAndPersist({
           turnCount:
             Number.isSafeInteger(result.rounds) && result.rounds >= 0

@@ -15,6 +15,7 @@ import {sanitizeCodeAwareText} from './codeAwareOutputRegistry';
 import type {CodeLookupSummary} from '../codebase/codeLookupLedger';
 import {isCodebaseKind} from '../codebase/codebaseRegistry';
 import {sanitizeStoredCapabilityManifestAttribution} from '../capabilityManifest';
+import {sanitizeStoredTraceSummaryAttribution} from '../traceSummaryAttribution';
 
 type PrivateFinding = AnalysisResult['findings'][number];
 type PrivateHypothesis = AnalysisResult['hypotheses'][number];
@@ -197,14 +198,17 @@ export function projectPrivateAnalysisReceipt(
   if (!receipt) return undefined;
   const {
     capabilityManifest: storedCapabilityManifest,
-    ...receiptWithoutCapabilityManifest
+    traceSummary: storedTraceSummary,
+    ...receiptWithoutAttribution
   } = receipt;
   const capabilityManifest = sanitizeStoredCapabilityManifestAttribution(
     storedCapabilityManifest,
   );
+  const traceSummary = sanitizeStoredTraceSummaryAttribution(storedTraceSummary);
   return {
-    ...receiptWithoutCapabilityManifest,
+    ...receiptWithoutAttribution,
     ...(capabilityManifest ? {capabilityManifest} : {}),
+    ...(traceSummary ? {traceSummary} : {}),
     outputs: {
       ...(receipt.outputs.reportId ? {reportId: receipt.outputs.reportId} : {}),
       ...(receipt.outputs.reportUrl ? {reportUrl: receipt.outputs.reportUrl} : {}),
@@ -416,6 +420,8 @@ export function projectPrivateSessionStateSnapshot(
   const codebaseSnapshot = projectPrivateCodebaseSnapshot(snapshot.codebaseSnapshot);
   const codebaseIds = projectPrivateIdList(snapshot.codebaseIds);
   const knowledgeSourceIds = projectPrivateIdList(snapshot.knowledgeSourceIds);
+  const analysisReceipt = projectPrivateAnalysisReceipt(snapshot.analysisReceipt);
+  const traceSummary = sanitizeStoredTraceSummaryAttribution(snapshot.traceSummary);
   return {
     version: snapshot.version,
     snapshotTimestamp: snapshot.snapshotTimestamp,
@@ -424,6 +430,8 @@ export function projectPrivateSessionStateSnapshot(
     ...(snapshot.outputLanguage ? {outputLanguage: snapshot.outputLanguage} : {}),
     ...(snapshot.referenceTraceId ? {referenceTraceId: snapshot.referenceTraceId} : {}),
     ...(snapshot.comparisonSource ? {comparisonSource: snapshot.comparisonSource} : {}),
+    ...(analysisReceipt ? {analysisReceipt} : {}),
+    ...(traceSummary ? {traceSummary} : {}),
     conversationSteps: [],
     queryHistory: [],
     conclusionHistory: [],

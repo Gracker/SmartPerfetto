@@ -79,6 +79,15 @@ describe('analysis result snapshot pipeline', () => {
 
   test('builds a partial snapshot from completed run metadata', () => {
     const capabilityCanary = '/private/SNAPSHOT_RECEIPT_CAPABILITY_CANARY';
+    const traceSummaryCanary = '/private/SNAPSHOT_TRACE_SUMMARY_CANARY';
+    const traceSummary = {
+      schemaVersion: 'trace_summary_attribution@1' as const, status: 'ready' as const,
+      specId: 'smartperfetto.core.v1', specDigestSha256: '1'.repeat(64),
+      traceFingerprintSha256: '2'.repeat(64),
+      traceProcessor: {source: 'custom' as const, binarySha256: '3'.repeat(64)},
+      resultDigestSha256: '4'.repeat(64),
+      availableMetricIds: ['metric_a'], missingMetricIds: [],
+    };
     const snapshot = buildCompletedAnalysisResultSnapshot({
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -152,6 +161,11 @@ describe('analysis result snapshot pipeline', () => {
             localPath: capabilityCanary,
           },
         } as any,
+        traceSummary: {
+          ...traceSummary,
+          localPath: traceSummaryCanary,
+          traceProcessor: {...traceSummary.traceProcessor, localPath: traceSummaryCanary},
+        } as any,
       },
       createdAt: 1234,
     });
@@ -190,7 +204,10 @@ describe('analysis result snapshot pipeline', () => {
     expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(
       receiptCapabilityManifest,
     );
+    expect(snapshot?.summary.traceSummary).toEqual(traceSummary);
+    expect(snapshot?.summary.analysisReceipt?.traceSummary).toEqual(traceSummary);
     expect(JSON.stringify(snapshot)).not.toContain(capabilityCanary);
+    expect(JSON.stringify(snapshot)).not.toContain(traceSummaryCanary);
     expect(snapshot?.metrics).toEqual([]);
     expect(snapshot?.evidenceRefs).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'report:report-a', type: 'report' }),
