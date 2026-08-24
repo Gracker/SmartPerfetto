@@ -53,6 +53,14 @@ export interface EvaluationUsageReceiptV1 {
     reserved: number;
     guarantee: EvaluationBudgetGuarantee;
     capability: EvaluationTokenCapability;
+    breakdown?: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+      reasoning: number;
+      unclassified: number;
+    };
   };
   toolCalls: {
     used: number;
@@ -78,7 +86,24 @@ export interface EvaluationUsageReceiptV1 {
     | 'wallclock'
     | 'trace_processor_cpu'
     | null;
+  firstOutput?: {
+    usedMs?: number;
+    guarantee: 'observed' | 'unavailable' | 'not_applicable';
+  };
+  termination?: {
+    reason: string;
+    guarantee: 'observed';
+  };
   contentHash: string;
+}
+
+export interface EvaluationObservedUsageSample {
+  total: number;
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoning?: number;
 }
 
 export interface EvaluationUsageReceiptCarrier {
@@ -101,6 +126,14 @@ interface EvaluationTelemetryState {
   reportedTokenTotal: number;
   tokenObservationCount: number;
   tokensReserved: number;
+  tokenBreakdown: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    reasoning: number;
+    unclassified: number;
+  };
   toolCalls: number;
   traceProcessorCpuMs: number;
   traceProcessorCpuObservationCount: number;
@@ -109,6 +142,9 @@ interface EvaluationTelemetryState {
     'usedMs' | 'guarantee' | 'capability'
   >;
   exceeded: EvaluationUsageReceiptV1['exceeded'];
+  firstOutputMs?: number;
+  firstOutputNotApplicable?: boolean;
+  terminationReason?: string;
 }
 
 const telemetryContext = new AsyncLocalStorage<EvaluationTelemetryState>();
@@ -231,10 +267,12 @@ export function settleEvaluationTokens(input: {
     'evaluation_token_reservation_invalid',
   );
   state.tokensReserved = Math.max(0, state.tokensReserved - reserved);
-  state.tokensUsed += nonnegativeFinite(
+  const used = nonnegativeFinite(
     input.used,
     'evaluation_token_usage_invalid',
   );
+  state.tokensUsed += used;
+  state.tokenBreakdown.unclassified += used;
   failIfExceeded(state);
 }
 
@@ -247,22 +285,84 @@ export function recordEvaluationObservedTokenTotal(total: number): void {
   if (normalized < state.reportedTokenTotal) {
     throw new Error('evaluation_token_usage_not_monotonic');
   }
-  state.tokensUsed += normalized - state.reportedTokenTotal;
+  const delta = normalized - state.reportedTokenTotal;
+  state.tokensUsed += delta;
+  state.tokenBreakdown.unclassified += delta;
   state.reportedTokenTotal = normalized;
   state.tokenObservationCount += 1;
   failIfExceeded(state);
 }
 
 export function recordEvaluationObservedTokenDelta(tokens: number): void {
+  recordEvaluationObservedUsageDelta({total: tokens});
+}
+
+export function recordEvaluationObservedUsageDelta(
+  sample: EvaluationObservedUsageSample,
+): void {
   const state = requireState();
-  const normalized = nonnegativeFinite(
-    tokens,
+  const total = nonnegativeFinite(
+    sample.total,
     'evaluation_token_usage_invalid',
   );
-  state.tokensUsed += normalized;
+  const input = nonnegativeFinite(
+    sample.input ?? 0,
+    'evaluation_token_usage_invalid',
+  );
+  const output = nonnegativeFinite(
+    sample.output ?? 0,
+    'evaluation_token_usage_invalid',
+  );
+  const cacheRead = nonnegativeFinite(
+    sample.cacheRead ?? 0,
+    'evaluation_token_usage_invalid',
+  );
+  const cacheWrite = nonnegativeFinite(
+    sample.cacheWrite ?? 0,
+    'evaluation_token_usage_invalid',
+  );
+  const reasoning = nonnegativeFinite(
+    sample.reasoning ?? 0,
+    'evaluation_token_usage_invalid',
+  );
+  const classified = input + output + cacheRead + cacheWrite;
+  if (classified > total) {
+    throw new Error('evaluation_token_breakdown_exceeds_total');
+  }
+  state.tokensUsed += total;
   state.reportedTokenTotal = state.tokensUsed;
   state.tokenObservationCount += 1;
+  state.tokenBreakdown.input += input;
+  state.tokenBreakdown.output += output;
+  state.tokenBreakdown.cacheRead += cacheRead;
+  state.tokenBreakdown.cacheWrite += cacheWrite;
+  state.tokenBreakdown.reasoning += reasoning;
+  state.tokenBreakdown.unclassified += total - classified;
   failIfExceeded(state);
+}
+
+export function recordEvaluationFirstOutput(): void {
+  const state = requireState();
+  if (state.firstOutputMs === undefined) {
+    state.firstOutputMs = Math.max(0, state.now() - state.startedAt);
+  }
+  failIfExceeded(state);
+}
+
+export function recordEvaluationFirstOutputNotApplicable(): void {
+  const state = requireState();
+  if (state.firstOutputMs === undefined) {
+    state.firstOutputNotApplicable = true;
+  }
+}
+
+export function recordEvaluationTermination(reason: string): void {
+  const state = requireState();
+  if (!reason.trim()) throw new Error('evaluation_termination_reason_invalid');
+  if (state.terminationReason && state.terminationReason !== reason) {
+    throw new Error('evaluation_termination_reason_conflict');
+  }
+  state.terminationReason = reason;
 }
 
 export function recordEvaluationToolCall(): void {
@@ -353,6 +453,7 @@ function snapshotState(
         state.tokenObservationCount,
       ),
       capability: state.capabilities.tokens,
+      breakdown: {...state.tokenBreakdown},
     },
     toolCalls: {
       used: state.toolCalls,
@@ -387,6 +488,21 @@ function snapshotState(
           }),
     },
     exceeded: state.exceeded,
+    firstOutput: state.firstOutputMs === undefined
+      ? {
+          guarantee: state.firstOutputNotApplicable
+            ? 'not_applicable'
+            : 'unavailable',
+        }
+      : {usedMs: state.firstOutputMs, guarantee: 'observed'},
+    ...(state.terminationReason
+      ? {
+          termination: {
+            reason: state.terminationReason,
+            guarantee: 'observed',
+          },
+        }
+      : {}),
   };
   return immutableCanonicalSnapshot({
     ...withoutHash,
@@ -418,6 +534,14 @@ export async function withEvaluationTelemetry<T>(input: {
     reportedTokenTotal: 0,
     tokenObservationCount: 0,
     tokensReserved: 0,
+    tokenBreakdown: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      reasoning: 0,
+      unclassified: 0,
+    },
     toolCalls: 0,
     traceProcessorCpuMs: 0,
     traceProcessorCpuObservationCount: 0,

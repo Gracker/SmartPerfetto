@@ -1599,9 +1599,9 @@ strategies:
   backend/strategies/selfevolve-proposal.template.md:
     disposition: product-only
     reason: SmartPerfetto self-evolution proposal generation, persistence, and gated overlay lifecycle
-  backend/strategies/selfevolve-synthetic-eval-seeds.registry.yaml:
+  backend/strategies/golden-trace-eval.registry.json:
     disposition: product-only
-    reason: SmartPerfetto self-evolution evaluation corpus and gated overlay lifecycle
+    reason: SmartPerfetto golden trace evaluation corpus and gated overlay lifecycle
   backend/strategies/selection-area.template.md:
     workflow: trace-overview
     disposition: exported

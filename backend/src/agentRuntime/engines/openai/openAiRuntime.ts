@@ -162,6 +162,7 @@ import {
   createAnalysisRunSpec,
   type AnalysisRunSpec,
 } from '../../analysisRunSpec';
+import {buildAdaptiveRoutingForModeDecision} from '../../adaptiveRoutingProjection';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import { resolveRuntimeFinalReportSceneType } from '../../finalReportSceneResolution';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
@@ -945,6 +946,20 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           quickPathPerTurnMs: config.quickPathPerTurnMs,
           classifierTimeoutMs: config.classifierTimeoutMs,
         },
+        adaptiveRouting: buildAdaptiveRoutingForModeDecision({
+          options,
+          resolvedMode: quickMode ? 'quick' : 'full',
+          classifierSource: modeClassification.source,
+          quickAcknowledgementDirectAnswer:
+            modeClassification.quickAcknowledgementDirectAnswer,
+          directEvidenceAvailable: Boolean(
+            modeClassification.quickFocusAppPreEvidence
+            || modeClassification.quickProcessIdentityPreEvidence
+            || modeClassification.quickTraceFactPreEvidence
+            || modeClassification.quickScrollingTriagePreEvidence
+          ),
+          outputCap: config.maxOutputTokens,
+        }),
       });
       const quickBudget = quickMode
         ? resolveQuickTurnBudget({
@@ -1654,6 +1669,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                     caseBackgroundCases: 0,
                   }),
                 },
+                adaptiveRouting: analysisRunSpec.mode.adaptiveRouting,
               })
             : undefined,
         };

@@ -1033,6 +1033,7 @@ export interface AnalysisReceiptBase {
   traceId: string;
   mode: 'fast' | 'full' | 'auto';
   resolvedMode: 'quick' | 'full';
+  adaptiveRouting?: import('./adaptiveRouting').AdaptiveRoutingReceiptV1;
   runtime?: AnalysisReceiptRuntime;
   providerId: string | null;
   generatedAt: number;

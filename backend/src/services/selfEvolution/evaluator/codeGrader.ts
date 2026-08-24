@@ -31,13 +31,32 @@ export class CodeGrader implements Grader {
   async grade(response: AgentResponse, scenario: TestScenario): Promise<GradeResult> {
     const expectations = scenario.expectations.code;
 
+    if (expectations?.customAssertions?.length) {
+      return this.aggregateChecks(expectations.customAssertions.map(assertion =>
+        this.checkCustomAssertion(response, assertion)));
+    }
+
+    if (!scenario.expectations.groundTruth) {
+      return {
+        graderName: this.name,
+        graderType: this.type,
+        score: 0,
+        passed: false,
+        feedback: [
+          'Ground truth is required; legacy code-only checks cannot establish analysis accuracy.',
+        ],
+        errors: ['ground_truth_missing'],
+      };
+    }
+
     if (!expectations) {
       return {
         graderName: this.name,
         graderType: this.type,
-        score: 1.0,
-        passed: true,
-        feedback: ['No code expectations defined, skipping code grading'],
+        score: 0,
+        passed: false,
+        feedback: ['Code expectations are required for deterministic grading.'],
+        errors: ['code_expectations_missing'],
       };
     }
 
@@ -76,17 +95,8 @@ export class CodeGrader implements Grader {
       checks.push(this.checkCategories(response, expectations.expectedCategories));
     }
 
-    // 8. Custom assertions
-    if (expectations.customAssertions && expectations.customAssertions.length > 0) {
-      for (const assertion of expectations.customAssertions) {
-        checks.push(this.checkCustomAssertion(response, assertion));
-      }
-    }
-
-    // 9. Ground truth check (deterministic)
-    if (scenario.expectations.groundTruth) {
-      checks.push(this.checkGroundTruth(response, scenario.expectations.groundTruth));
-    }
+    // 8. Ground truth check (deterministic)
+    checks.push(this.checkGroundTruth(response, scenario.expectations.groundTruth));
 
     // Aggregate results
     return this.aggregateChecks(checks);
@@ -294,7 +304,7 @@ export class CodeGrader implements Grader {
       passed,
       score,
       message: `Ground truth check ${passed ? 'passed' : 'failed'} (${summaryMessage}; ${factsMessage}; ${numericMessage})`,
-      severity: 'high',
+      severity: 'critical',
     };
   }
 

@@ -5,6 +5,7 @@
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
+import type {AdaptiveRoutingReceiptV1} from './adaptiveRouting';
 import type {
   PhaseHint,
   StrategyRegistryContribution,
@@ -243,6 +244,7 @@ export interface RunManifestV1 {
 
   analysisMode: 'fast' | 'full' | 'auto';
   resolvedMode: 'quick' | 'full';
+  adaptiveRouting?: AdaptiveRoutingReceiptV1;
   capabilityFlags: string[];
   capabilityManifest?: CapabilityManifestAttributionV1;
 
@@ -289,6 +291,83 @@ export type FeedbackDimension =
   | FeedbackNegativeDimension
   | FeedbackPositiveDimension;
 
+export type EvalScalar = string | number | boolean | null;
+
+export interface EvalRequiredFactV1 {
+  id: string;
+  statement: string;
+  evaluation: 'deterministic' | 'semantic';
+  observationKey?: string;
+  expected?: EvalScalar;
+}
+
+export interface EvalNumericExpectationV1 {
+  id: string;
+  observationKey: string;
+  expected: number;
+  unit: string;
+  absoluteTolerance?: number;
+  relativeTolerance?: number;
+}
+
+export interface EvalRequiredEvidenceV1 {
+  id: string;
+  kind:
+    | 'coverage_expectation'
+    | 'evidence_ref'
+    | 'skill'
+    | 'sql'
+    | 'relation';
+  locator: string;
+}
+
+export interface EvalForbiddenClaimV1 {
+  id: string;
+  contains: string[];
+  reason: string;
+}
+
+export interface EvalAllowedGapV1 {
+  id: string;
+  code: string;
+  requiresMissingEvidence: string[];
+}
+
+export interface EvalIdentityExpectationV1 {
+  id: string;
+  observationKey: string;
+  expected: EvalScalar;
+}
+
+export interface EvalCausalEdgeExpectationV1 {
+  id: string;
+  subject: string;
+  relation: string;
+  object: string;
+  minimumLevel: 'correlation' | 'mechanism';
+}
+
+export interface EvalGroundTruthV1 {
+  schemaVersion: 1;
+  requiredFacts: EvalRequiredFactV1[];
+  numericExpectations: EvalNumericExpectationV1[];
+  requiredEvidence: EvalRequiredEvidenceV1[];
+  forbiddenClaims: EvalForbiddenClaimV1[];
+  allowedGaps: EvalAllowedGapV1[];
+  identityExpectations: EvalIdentityExpectationV1[];
+  causalEdges: EvalCausalEdgeExpectationV1[];
+}
+
+export interface EvalGoldenScoreV1 {
+  passed: boolean;
+  assertionCount: number;
+  passedAssertions: number;
+  failedAssertions: number;
+  notEvaluableAssertions: number;
+  blockers: string[];
+  contentHash: string;
+}
+
 export interface EvalCaseV1 {
   schemaVersion: 1;
   caseId: string;
@@ -310,6 +389,7 @@ export interface EvalCaseV1 {
     dimensions: FeedbackDimension[];
   };
   goldenPoints?: string[];
+  groundTruth?: EvalGroundTruthV1;
   expectedRubricVersion?: string;
   split: 'train' | 'validation' | 'holdout';
   createdAt: string;
@@ -337,6 +417,7 @@ export interface EvalScoreV1 {
   scope: RunManifestScope;
   pinned: EvalPinnedEnvironmentV1;
   availability: 'available' | 'unavailable';
+  golden?: EvalGoldenScoreV1;
   l0: {
     runOk: boolean;
     sqlErrorFree: boolean;
@@ -1161,6 +1242,7 @@ export interface RunManifestAttributionSink {
     resolved?: RunManifestV1['resolvedMode'];
     capabilityFlags?: readonly string[];
   }): void;
+  recordAdaptiveRouting?(input: AdaptiveRoutingReceiptV1): void;
   recordCapabilityManifest(input: CapabilityManifestAttributionV1): void;
   recordSkillRegistry(input: RunSkillRegistryAttribution): void;
   startSkillInvocation(input: RunSkillInvocationStart): string;

@@ -110,4 +110,31 @@ describe('shared self-evolution evaluator', () => {
     expect(load).toHaveBeenCalledWith('session-a');
     expect(result.passed).toBe(true);
   });
+
+  it('fails closed when the evidence stream contains no tool call', async () => {
+    const provider: ProcessEvidenceProvider = {
+      load: async () => ({
+        conversationSteps: [{
+          eventId: 'event-1',
+          ordinal: 1,
+          phase: 'result',
+          role: 'agent',
+          text: 'A conclusion without trace evidence.',
+          timestamp: 1,
+        }],
+        plan: {phases: [{id: 'p1'}]},
+        planHistory: [],
+        hypotheses: [],
+        notes: [],
+        uncertaintyFlags: [],
+        errorCount: 0,
+        toolCallCount: 0,
+      }),
+    };
+    const result = await new ProcessGrader({evidenceProvider: provider})
+      .grade(response(), scenario());
+
+    expect(result).toMatchObject({passed: false});
+    expect(result.errors?.join('\n')).toContain('No tool calls found');
+  });
 });

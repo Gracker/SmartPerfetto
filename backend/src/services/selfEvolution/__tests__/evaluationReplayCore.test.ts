@@ -70,7 +70,7 @@ const treatmentRef = {
   contentHash: 'a'.repeat(64),
 };
 
-function evalCase(): EvalCaseV1 {
+function evalCase(overrides: Partial<EvalCaseV1> = {}): EvalCaseV1 {
   return {
     schemaVersion: 1,
     caseId: 'case-a',
@@ -86,6 +86,7 @@ function evalCase(): EvalCaseV1 {
     analysisMode: 'full',
     split: 'validation',
     createdAt: '2026-07-29T00:00:00.000Z',
+    ...overrides,
   };
 }
 
@@ -345,6 +346,76 @@ describe('evaluation replay core', () => {
       evidenceAnchors: 1,
     });
     expect(first.score).not.toHaveProperty('l2');
+  });
+
+  it('makes golden replay inconclusive without an observation and persists a passing score when present', async () => {
+    const goldenCase = evalCase({
+      groundTruth: {
+        schemaVersion: 1,
+        requiredFacts: [{
+          id: 'fact-a',
+          statement: 'The startup signal exists.',
+          evaluation: 'deterministic',
+          observationKey: 'signal.0.type',
+          expected: 'startup',
+        }],
+        numericExpectations: [],
+        requiredEvidence: [],
+        forbiddenClaims: [],
+        allowedGaps: [],
+        identityExpectations: [],
+        causalEdges: [],
+      },
+    });
+    const common = {
+      schemaVersion: 1 as const,
+      evalCase: goldenCase,
+      runManifest: manifest('candidate'),
+      pinned,
+      role: 'candidate' as const,
+      attempt: 1,
+      candidateId: 'candidate-a',
+      runOk: true,
+      reportContractPass: true,
+      claimVerificationResult: verification(),
+      usageReceipt: await usageReceipt(),
+    };
+    expect(scoreFrozenEvaluationArtifacts(
+      freezeEvaluationArtifacts(common),
+    )).toMatchObject({
+      status: 'inconclusive',
+      reason: 'golden_trace_observation_missing',
+    });
+
+    const scored = scoreFrozenEvaluationArtifacts(freezeEvaluationArtifacts({
+      ...common,
+      goldenTraceObservation: {
+        schemaVersion: 1,
+        facts: {
+          'signal.0.type': {
+            value: 'startup',
+            evidenceIds: ['data:startup'],
+          },
+        },
+        evidence: [],
+        claims: [],
+        gaps: [],
+        identities: {},
+        causalEdges: [],
+      },
+    }));
+    expect(scored).toMatchObject({
+      status: 'scored',
+      score: {
+        golden: {
+          passed: true,
+          assertionCount: 1,
+          passedAssertions: 1,
+          failedAssertions: 0,
+          notEvaluableAssertions: 0,
+        },
+      },
+    });
   });
 
   it('returns inconclusive for hash-valid malformed nested artifacts', async () => {

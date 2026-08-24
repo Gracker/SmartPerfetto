@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "evalSetId": "smartperfetto-constructed-v1",
+  "cases": [
+    {
+      "caseId": "synthetic-binder-io-blocking-v1",
+      "catalogAlias": "binder-io-blocking",
+      "query": "Analyze the trace for binder-related I/O blocking and explain the evidence-backed root cause.",
+      "analysisMode": "full",
+      "expectedScene": "io",
+      "goldenPoints": [
+        "Identify the binder path and the blocking I/O interval from trace evidence.",
+        "Separate the observed wait from unsupported causal speculation."
+      ],
+      "split": "train",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-framework-pipelines-v1",
+      "catalogAlias": "framework-pipelines",
+      "query": "Analyze the framework pipeline execution and identify the stage that dominates latency.",
+      "analysisMode": "full",
+      "expectedScene": "pipeline",
+      "goldenPoints": [
+        "Reconstruct the pipeline stage order from trace evidence.",
+        "Attribute the dominant delay to a concrete stage and time range."
+      ],
+      "split": "validation",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-general-runtime-contracts-v1",
+      "catalogAlias": "general-runtime-contracts",
+      "query": "Produce a general performance diagnosis while preserving evidence and identity contracts.",
+      "analysisMode": "full",
+      "expectedScene": "general",
+      "goldenPoints": [
+        "State only conclusions supported by trace evidence.",
+        "Preserve process and thread identity when describing findings."
+      ],
+      "split": "train",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-gpu-workload-v1",
+      "catalogAlias": "gpu-workload",
+      "query": "Analyze GPU workload timing and determine whether GPU execution is the primary bottleneck.",
+      "analysisMode": "full",
+      "expectedScene": "gpu",
+      "goldenPoints": [
+        "Quantify relevant GPU work intervals.",
+        "Distinguish GPU saturation from CPU-side submission delay."
+      ],
+      "split": "validation",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-input-interaction-latency-v1",
+      "catalogAlias": "input-interaction-latency",
+      "query": "Trace the input interaction path and explain the main contributor to end-to-end latency.",
+      "analysisMode": "full",
+      "expectedScene": "interaction",
+      "goldenPoints": [
+        "Anchor the interaction start and visible response in the trace.",
+        "Identify the largest latency segment without conflating adjacent work."
+      ],
+      "split": "holdout",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-linux-system-state-v1",
+      "catalogAlias": "linux-system-state",
+      "query": "Analyze Linux system state and explain the most important scheduling or resource constraint.",
+      "analysisMode": "full",
+      "expectedScene": "linux",
+      "goldenPoints": [
+        "Use system-state evidence to identify the constrained resource.",
+        "Relate scheduling state to the affected workload with correct identities."
+      ],
+      "split": "train",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-media-network-camera-v1",
+      "catalogAlias": "media-network-camera",
+      "query": "Analyze the media, network, and camera pipeline and identify the evidence-backed bottleneck.",
+      "analysisMode": "full",
+      "expectedScene": "media",
+      "goldenPoints": [
+        "Reconstruct the relevant cross-component media path.",
+        "Attribute delay to a measured component rather than temporal proximity alone."
+      ],
+      "split": "holdout",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-memory-gc-pressure-v1",
+      "catalogAlias": "memory-gc-pressure",
+      "query": "Analyze memory and garbage-collection pressure and explain its performance impact.",
+      "analysisMode": "full",
+      "expectedScene": "memory",
+      "goldenPoints": [
+        "Quantify garbage-collection or allocation pressure from trace evidence.",
+        "Connect pauses to workload impact without overstating causality."
+      ],
+      "split": "validation",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-power-thermal-v1",
+      "catalogAlias": "power-thermal",
+      "query": "Analyze power and thermal behavior and determine whether throttling affects the workload.",
+      "analysisMode": "full",
+      "expectedScene": "power",
+      "goldenPoints": [
+        "Identify thermal or frequency changes in the relevant time window.",
+        "Distinguish correlation from evidence of throttling impact."
+      ],
+      "split": "holdout",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-rendering-jank-v1",
+      "catalogAlias": "rendering-jank",
+      "query": "Analyze rendering jank and identify the dominant cause of missed frames.",
+      "analysisMode": "full",
+      "expectedScene": "scrolling",
+      "goldenPoints": [
+        "Quantify missed or delayed frames in the interaction window.",
+        "Attribute jank to a concrete CPU, GPU, or scheduling interval."
+      ],
+      "split": "train",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-scheduler-cpu-contention-v1",
+      "catalogAlias": "scheduler-cpu-contention",
+      "query": "Analyze scheduler and CPU contention and identify the workload most responsible for delay.",
+      "analysisMode": "full",
+      "expectedScene": "cpu",
+      "goldenPoints": [
+        "Quantify runnable or blocked time for the affected thread.",
+        "Resolve the competing process or thread identity from evidence."
+      ],
+      "split": "train",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-startup-lifecycle-v1",
+      "catalogAlias": "startup-lifecycle",
+      "query": "Analyze application startup and explain the dominant lifecycle bottleneck.",
+      "analysisMode": "full",
+      "expectedScene": "startup",
+      "goldenPoints": [
+        "Bound the startup interval with trace evidence.",
+        "Identify the lifecycle stage that contributes the largest measured delay."
+      ],
+      "split": "train",
+      "createdAt": "2026-07-29T00:00:00.000Z"
+    }
+  ]
+}

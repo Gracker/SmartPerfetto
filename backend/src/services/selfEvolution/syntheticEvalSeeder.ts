@@ -4,21 +4,23 @@
 
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
 
 import type {
   EvalCaseV1,
+  EvalGroundTruthV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
 import type {EvalCaseStore} from './evalCaseStore';
 import {immutableCanonicalSnapshot} from './canonicalJson';
 import {parseEvalCase} from './evalContracts';
+import {loadGoldenTraceRegistry} from './goldenTraceRegistry';
+import {parseEvalGroundTruth} from './goldenTraceScorer';
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const CATALOG_ALIAS_PATTERN = /^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$/;
 const DEFAULT_REGISTRY_PATH = path.resolve(
   __dirname,
-  '../../../strategies/selfevolve-synthetic-eval-seeds.registry.yaml',
+  '../../../strategies/golden-trace-eval.registry.json',
 );
 const DEFAULT_CONSTRUCTED_TRACE_ROOT = path.resolve(
   __dirname,
@@ -33,6 +35,7 @@ export interface SyntheticEvalSeedV1 {
   analysisMode: 'fast' | 'full';
   expectedScene: string;
   goldenPoints: string[];
+  groundTruth?: EvalGroundTruthV1;
   expectedRubricVersion?: string;
   split: 'train' | 'validation' | 'holdout';
   createdAt: string;
@@ -100,6 +103,7 @@ function parseSeed(value: unknown): SyntheticEvalSeedV1 {
     'analysisMode',
     'expectedScene',
     'goldenPoints',
+    'groundTruth',
     'expectedRubricVersion',
     'split',
     'createdAt',
@@ -139,6 +143,9 @@ function parseSeed(value: unknown): SyntheticEvalSeedV1 {
     ),
     goldenPoints: seed.goldenPoints.map(point =>
       nonempty(point, 'synthetic_eval_seed_golden_point_invalid')),
+    ...(seed.groundTruth === undefined
+      ? {}
+      : {groundTruth: parseEvalGroundTruth(seed.groundTruth)}),
     ...(seed.expectedRubricVersion === undefined
       ? {}
       : {
@@ -188,7 +195,35 @@ export function loadSyntheticEvalSeedRegistry(
   registryPath = DEFAULT_REGISTRY_PATH,
 ): SyntheticEvalSeedRegistryV1 {
   const content = fs.readFileSync(registryPath, 'utf8');
-  return parseSyntheticEvalSeedRegistry(yaml.load(content));
+  const raw = JSON.parse(content) as unknown;
+  if (
+    raw
+    && typeof raw === 'object'
+    && !Array.isArray(raw)
+    && Array.isArray((raw as {cases?: unknown}).cases)
+  ) {
+    const registry = loadGoldenTraceRegistry(registryPath);
+    return immutableCanonicalSnapshot({
+      schemaVersion: 1,
+      evalSetId: registry.evalSetId,
+      seeds: registry.cases.map(evalCase => ({
+        caseId: evalCase.caseId,
+        catalogAlias: evalCase.catalogAlias,
+        contentHash: evalCase.traces[0].contentHash,
+        query: evalCase.query,
+        analysisMode: evalCase.analysisMode,
+        expectedScene: evalCase.expectedScene!,
+        goldenPoints: evalCase.goldenPoints!,
+        groundTruth: evalCase.groundTruth,
+        ...(evalCase.expectedRubricVersion
+          ? {expectedRubricVersion: evalCase.expectedRubricVersion}
+          : {}),
+        split: evalCase.split,
+        createdAt: evalCase.createdAt,
+      })),
+    });
+  }
+  return parseSyntheticEvalSeedRegistry(raw);
 }
 
 function resolveSeedTracePath(
@@ -266,6 +301,7 @@ export function seedSyntheticEvalCases(
         analysisMode: seed.analysisMode,
         expectedScene: seed.expectedScene,
         goldenPoints: seed.goldenPoints,
+        ...(seed.groundTruth ? {groundTruth: seed.groundTruth} : {}),
         ...(seed.expectedRubricVersion
           ? {expectedRubricVersion: seed.expectedRubricVersion}
           : {}),

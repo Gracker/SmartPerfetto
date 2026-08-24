@@ -25,6 +25,8 @@ import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
 } from './canonicalJson';
+import {parseAdaptiveRoutingReceipt} from '../../agentRuntime/adaptiveEvidenceRouter';
+import type {AdaptiveRoutingReceiptV1} from '../../types/adaptiveRouting';
 
 export interface CreateRunManifestBuilderInput {
   runManifestId?: string;
@@ -90,6 +92,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
   private resolvedMode: RunManifestV1['resolvedMode'];
   private capabilityFlags = new Set<string>();
   private capabilityManifest: CapabilityManifestAttributionV1 | undefined;
+  private adaptiveRouting: AdaptiveRoutingReceiptV1 | undefined;
   private toolAllowlistHash = canonicalContentHash([]);
   private registryFingerprint: string | undefined;
   private evolutionOverlayGeneration: string | undefined;
@@ -145,6 +148,10 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     return this.pendingInvocations.size;
   }
 
+  get currentAdaptiveRouting(): AdaptiveRoutingReceiptV1 | undefined {
+    return this.adaptiveRouting;
+  }
+
   recordScene(input: RunManifestSceneAttribution): void {
     this.assertCollecting('record_scene');
     this.scene = {
@@ -178,6 +185,38 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     for (const flag of input.capabilityFlags ?? []) {
       if (flag) this.capabilityFlags.add(flag);
     }
+  }
+
+  recordAdaptiveRouting(input: AdaptiveRoutingReceiptV1): void {
+    this.assertCollecting('record_adaptive_routing');
+    const parsed = parseAdaptiveRoutingReceipt(input);
+    if (
+      parsed.requestedMode !== this.analysisMode
+      || parsed.resolvedMode !== this.resolvedMode
+    ) {
+      throw new Error('run_manifest_adaptive_routing_mode_mismatch');
+    }
+    if (
+      this.adaptiveRouting
+      && this.adaptiveRouting.contentHash === parsed.contentHash
+    ) {
+      return;
+    }
+    if (
+      this.adaptiveRouting
+      && (
+        this.adaptiveRouting.stage === 'post_evidence'
+        || parsed.stage === 'preflight'
+        || this.adaptiveRouting.currentTier !== parsed.currentTier
+        || this.adaptiveRouting.classifierSource !== parsed.classifierSource
+        || this.adaptiveRouting.outputCap !== parsed.outputCap
+        || this.adaptiveRouting.obligations.some(obligation =>
+          !parsed.obligations.includes(obligation))
+      )
+    ) {
+      throw new Error('run_manifest_adaptive_routing_transition_invalid');
+    }
+    this.adaptiveRouting = parsed;
   }
 
   recordCapabilityManifest(input: CapabilityManifestAttributionV1): void {
@@ -440,6 +479,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       featureFlagSnapshot: this.featureFlagSnapshot,
       analysisMode: this.analysisMode,
       resolvedMode: this.resolvedMode,
+      ...(this.adaptiveRouting
+        ? {adaptiveRouting: this.adaptiveRouting}
+        : {}),
       capabilityFlags: [...this.capabilityFlags].sort(),
       ...(this.capabilityManifest
         ? {capabilityManifest: this.capabilityManifest}

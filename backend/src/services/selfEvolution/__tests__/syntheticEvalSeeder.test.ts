@@ -99,7 +99,8 @@ describe('synthetic EvalCase seeder', () => {
       });
     }
     expect(__testing.DEFAULT_REGISTRY_PATH)
-      .toMatch(/backend\/strategies\/selfevolve-synthetic-eval-seeds\.registry\.yaml$/);
+      .toMatch(/backend\/strategies\/golden-trace-eval\.registry\.json$/);
+    expect(registry.seeds.every(seed => seed.groundTruth !== undefined)).toBe(true);
   });
 
   it('strictly rejects unknown fields and duplicate source aliases', () => {

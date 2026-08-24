@@ -13,6 +13,7 @@ import type {
   QuickRunTurnBudget,
 } from '../agent/core/orchestratorTypes';
 import type { QuickDirectAnswerBase } from './quickDirectAnswerContract';
+import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
 import { buildQuickRunReceipt } from './quickBudget';
 
 export interface QuickAcknowledgementDirectAnswer extends QuickDirectAnswerBase {}
@@ -39,6 +40,7 @@ export function buildQuickAcknowledgementAnalysisResult(input: {
   elapsedMs: number;
   frontendPrequeryInjected: number;
   conversationTurns: number;
+  adaptiveRouting?: AdaptiveRoutingReceiptV1;
 }): AnalysisResult {
   const directAnswer = buildQuickAcknowledgementDirectAnswer({
     outputLanguage: input.outputLanguage,
@@ -64,6 +66,7 @@ export function buildQuickAcknowledgementAnalysisResult(input: {
       contextInjected: {
         conversationTurns: input.conversationTurns,
       },
+      adaptiveRouting: input.adaptiveRouting,
     }),
   };
 }

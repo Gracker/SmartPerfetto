@@ -102,7 +102,8 @@ export function normalizeEvalReplayTolerancePreset(
 }
 
 function l0Passed(score: EvalScoreV1): boolean {
-  return Object.values(score.l0).every(Boolean);
+  return Object.values(score.l0).every(Boolean)
+    && (score.golden?.passed ?? true);
 }
 
 function compareHigher(
@@ -150,6 +151,9 @@ export function paretoCompareEvalScores(input: {
       !== canonicalJsonString(input.candidate.pinned)
   ) {
     return {status: 'inconclusive', reason: 'score_case_mismatch'};
+  }
+  if ((input.baseline.golden === undefined) !== (input.candidate.golden === undefined)) {
+    return {status: 'inconclusive', reason: 'golden_score_mismatch'};
   }
   const baselineL0 = l0Passed(input.baseline);
   const candidateL0 = l0Passed(input.candidate);

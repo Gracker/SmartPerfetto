@@ -16,6 +16,11 @@ import {
 } from './canonicalJson';
 import {parseEvalCase} from './evalContracts';
 import type {EvaluationUsageReceiptV1} from './evaluationTelemetry';
+import {
+  scoreGoldenTraceObservation,
+  type GoldenTraceObservationV1,
+  type GoldenTraceScoreResult,
+} from './goldenTraceScorer';
 
 export interface FrozenEvaluationArtifactsV1 {
   schemaVersion: 1;
@@ -28,6 +33,7 @@ export interface FrozenEvaluationArtifactsV1 {
   runOk: boolean;
   reportContractPass: boolean;
   claimVerificationResult: ClaimVerificationResult;
+  goldenTraceObservation?: GoldenTraceObservationV1;
   usageReceipt: EvaluationUsageReceiptV1;
   contentHash: string;
 }
@@ -439,6 +445,29 @@ export function scoreFrozenEvaluationArtifacts(
   try {
     artifacts = assertFrozenArtifacts(artifactsValue);
     const evalCase = parseEvalCase(artifacts.evalCase);
+    let goldenResult: Extract<GoldenTraceScoreResult, {status: 'scored'}>
+      | undefined;
+    if (evalCase.groundTruth) {
+      if (!artifacts.goldenTraceObservation) {
+        return {
+          status: 'inconclusive',
+          reason: 'golden_trace_observation_missing',
+          frozenArtifactsHash: artifacts.contentHash,
+        };
+      }
+      const result = scoreGoldenTraceObservation(
+        evalCase.groundTruth,
+        artifacts.goldenTraceObservation,
+      );
+      if (result.status !== 'scored') {
+        return {
+          status: 'inconclusive',
+          reason: result.reason,
+          frozenArtifactsHash: artifacts.contentHash,
+        };
+      }
+      goldenResult = result;
+    }
     const manifest = artifacts.runManifest;
     const manifestPinned: EvalPinnedEnvironmentV1 = {
       runtime: manifest.runtime,
@@ -496,6 +525,19 @@ export function scoreFrozenEvaluationArtifacts(
       scope: evalCase.scope,
       pinned: artifacts.pinned,
       availability: 'available',
+      ...(goldenResult
+        ? {
+            golden: {
+              passed: goldenResult.passed,
+              assertionCount: goldenResult.assertions.length,
+              passedAssertions: goldenResult.summary.passed,
+              failedAssertions: goldenResult.summary.failed,
+              notEvaluableAssertions: goldenResult.summary.notEvaluable,
+              blockers: goldenResult.blockers,
+              contentHash: goldenResult.contentHash,
+            },
+          }
+        : {}),
       l0: {
         runOk: artifacts.runOk,
         sqlErrorFree: manifest.sqlErrorCount === 0,

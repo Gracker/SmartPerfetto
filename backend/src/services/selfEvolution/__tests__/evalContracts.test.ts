@@ -140,6 +140,23 @@ describe('EvalCase and EvalScore contracts', () => {
         dimensions: ['missed_root_cause'],
       },
     }))).not.toBe(semanticEvalCaseFingerprint(first));
+
+    expect(semanticEvalCaseFingerprint(evalCase({
+      groundTruth: {
+        schemaVersion: 1,
+        requiredFacts: [{
+          id: 'fact-a',
+          statement: 'The startup slice exists.',
+          evaluation: 'semantic',
+        }],
+        numericExpectations: [],
+        requiredEvidence: [],
+        forbiddenClaims: [],
+        allowedGaps: [],
+        identityExpectations: [],
+        causalEdges: [],
+      },
+    }))).not.toBe(semanticEvalCaseFingerprint(first));
   });
 
   it('strictly validates score metrics and produces deterministic keys', () => {

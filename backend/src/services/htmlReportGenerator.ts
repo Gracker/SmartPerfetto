@@ -4940,6 +4940,21 @@ export class HTMLReportGenerator {
             : []),
         ]
       : [];
+    const routing = receipt.adaptiveRouting;
+    const routingRows = routing
+      ? [
+          [localize(outputLanguage, '模式', 'Mode'), `${routing.requestedMode} → ${routing.resolvedMode}`],
+          [localize(outputLanguage, '证据等级', 'Evidence tier'), `${routing.currentTier} → ${routing.recommendedTier}`],
+          [localize(outputLanguage, '决策', 'Decision'), `${routing.decision} (shadow)`],
+          [localize(outputLanguage, '原因', 'Reasons'), routing.reasons.join(', ') || '-'],
+          [localize(outputLanguage, '义务', 'Obligations'), routing.obligations.join(', ') || '-'],
+          [localize(outputLanguage, '证据', 'Evidence'), `${routing.evidence.observed}/${routing.evidence.required} observed; ${routing.evidence.missing} missing`],
+          [localize(outputLanguage, '预算', 'Budget'), routing.budget.dispatchUtilization],
+          ...(routing.outputCap === undefined
+            ? []
+            : [[localize(outputLanguage, '输出上限', 'Output cap'), String(routing.outputCap)]]),
+        ]
+      : [];
     return `
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '分析回执', 'Analysis Receipt')}</h2>
@@ -4988,6 +5003,12 @@ export class HTMLReportGenerator {
         <div class="receipt-card">
           <div class="receipt-card-title">Trace Summary</div>
           ${traceSummaryRows.map(([label, value]) => `
+          <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${this.escapeHtml(value)}</span></div>`).join('')}
+        </div>` : ''}
+        ${routingRows.length > 0 ? `
+        <div class="receipt-card">
+          <div class="receipt-card-title">${localize(outputLanguage, '自适应路由', 'Adaptive Routing')}</div>
+          ${routingRows.map(([label, value]) => `
           <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${this.escapeHtml(value)}</span></div>`).join('')}
         </div>` : ''}
       </div>

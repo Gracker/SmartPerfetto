@@ -8,8 +8,9 @@ import {
 } from './evaluationInjectionContext';
 import {
   currentEvaluationTelemetryActive,
-  recordEvaluationObservedTokenDelta,
+  recordEvaluationObservedUsageDelta,
   recordEvaluationObservedTokenTotal,
+  type EvaluationObservedUsageSample,
 } from './evaluationTelemetry';
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -32,13 +33,22 @@ function numberField(
 }
 
 export function extractObservedTokenCount(value: unknown): number | undefined {
+  return extractObservedTokenUsage(value)?.total;
+}
+
+export function extractObservedTokenUsage(
+  value: unknown,
+): EvaluationObservedUsageSample | undefined {
   const root = record(value);
   if (!root) return undefined;
   const directTotal = numberField(root, [
     'totalTokens',
     'total_tokens',
   ]);
-  if (directTotal !== undefined) return directTotal;
+  const reasoning = numberField(root, [
+    'reasoningTokens',
+    'reasoning_tokens',
+  ]);
   const input = numberField(root, [
     'inputTokens',
     'input_tokens',
@@ -52,7 +62,6 @@ export function extractObservedTokenCount(value: unknown): number | undefined {
     'output',
     'completionTokens',
     'completion_tokens',
-    'reasoning',
   ]);
   const cacheRead = numberField(root, [
     'cacheReadTokens',
@@ -72,13 +81,26 @@ export function extractObservedTokenCount(value: unknown): number | undefined {
     || cacheRead !== undefined
     || cacheWrite !== undefined
   ) {
-    return (input ?? 0)
+    const classified = (input ?? 0)
       + (output ?? 0)
       + (cacheRead ?? 0)
       + (cacheWrite ?? 0);
+    const total = directTotal ?? classified;
+    return {
+      total,
+      ...(classified > total ? {} : {
+        ...(input === undefined ? {} : {input}),
+        ...(output === undefined ? {} : {output}),
+        ...(cacheRead === undefined ? {} : {cacheRead}),
+        ...(cacheWrite === undefined ? {} : {cacheWrite}),
+      }),
+      ...(reasoning === undefined ? {} : {reasoning}),
+    };
   }
+  if (directTotal !== undefined) return {total: directTotal};
+  if (reasoning !== undefined) return {total: reasoning, reasoning};
   for (const key of ['usage', 'tokens', 'message', 'result', 'info']) {
-    const nested = extractObservedTokenCount(root[key]);
+    const nested = extractObservedTokenUsage(root[key]);
     if (nested !== undefined) return nested;
   }
   return undefined;
@@ -91,8 +113,8 @@ export function commitEvaluationSdkHandoffIfActive(): void {
 
 export function recordEvaluationTokenDeltaIfPresent(value: unknown): void {
   if (!currentEvaluationTelemetryActive()) return;
-  const tokens = extractObservedTokenCount(value);
-  if (tokens !== undefined) recordEvaluationObservedTokenDelta(tokens);
+  const usage = extractObservedTokenUsage(value);
+  if (usage !== undefined) recordEvaluationObservedUsageDelta(usage);
 }
 
 export function recordEvaluationTokenTotalIfPresent(value: unknown): void {

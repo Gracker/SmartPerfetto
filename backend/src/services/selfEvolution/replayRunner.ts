@@ -517,7 +517,8 @@ export class ReplayRunner {
       }
       const score = scoreMap.get(`${baseline.caseId}\0baseline`);
       const l0Passed = score?.availability === 'available'
-        && Object.values(score.l0).every(Boolean);
+        && Object.values(score.l0).every(Boolean)
+        && (score.golden?.passed ?? true);
       const runnable = baseline.state === 'completed'
         && l0Passed
         && baseline.absoluteDeadlineAt > this.now();

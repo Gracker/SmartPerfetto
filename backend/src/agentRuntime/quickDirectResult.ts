@@ -25,8 +25,30 @@ import {
   buildQuickRunReceipt,
   shouldMarkQuickRunTriage,
 } from './quickBudget';
+import {
+  currentRunManifestAttributionSink,
+  resolveRunManifestAttributionSink,
+} from '../services/selfEvolution/runManifestLifecycle';
 
 type EmitUpdate = (update: StreamingUpdate) => void;
+
+function recordDirectRuntimeModel(input: {
+  options: AnalysisOptions;
+  analysisRunSpec: AnalysisRunSpec;
+  model: 'runtime-pre-evidence' | 'runtime-acknowledgement';
+}): void {
+  const sink = resolveRunManifestAttributionSink(
+    input.options.runManifestAttributionSink,
+    currentRunManifestAttributionSink(),
+  );
+  sink?.recordRuntime({
+    runtime: input.analysisRunSpec.runtime.kind,
+    providerId: input.analysisRunSpec.scopes.providerId ?? null,
+    model: input.model,
+    outputLanguage: input.analysisRunSpec.outputLanguage,
+  });
+  input.analysisRunSpec.runtime.actualModel = input.model;
+}
 
 export function countCompletedQuickConversationTurns(
   turns: ReadonlyArray<Pick<ConversationTurn, 'completed'>>,
@@ -47,6 +69,11 @@ export function buildQuickDirectEvidenceAnalysisResult(input: {
   hypotheses?: AnalysisResult['hypotheses'];
   contextInjected?: Partial<Omit<QuickRunContextInjectedCounts, 'conversationTurns'>>;
 }): AnalysisResult {
+  recordDirectRuntimeModel({
+    options: input.options,
+    analysisRunSpec: input.analysisRunSpec,
+    model: 'runtime-pre-evidence',
+  });
   const elapsedMs = Date.now() - input.startedAt;
   return {
     sessionId: input.sessionId,
@@ -74,6 +101,7 @@ export function buildQuickDirectEvidenceAnalysisResult(input: {
         conversationTurns: countCompletedQuickConversationTurns(input.previousTurns),
         ...(input.contextInjected ?? {}),
       },
+      adaptiveRouting: input.analysisRunSpec.mode.adaptiveRouting,
     }),
   };
 }
@@ -87,6 +115,11 @@ export function buildQuickDirectAcknowledgementAnalysisResult(input: {
   budget: QuickRunTurnBudget;
   previousTurns: ReadonlyArray<Pick<ConversationTurn, 'completed'>>;
 }): AnalysisResult {
+  recordDirectRuntimeModel({
+    options: input.options,
+    analysisRunSpec: input.analysisRunSpec,
+    model: 'runtime-acknowledgement',
+  });
   return buildQuickAcknowledgementAnalysisResult({
     sessionId: input.sessionId,
     outputLanguage: input.outputLanguage,
@@ -95,6 +128,7 @@ export function buildQuickDirectAcknowledgementAnalysisResult(input: {
     elapsedMs: Date.now() - input.startedAt,
     frontendPrequeryInjected: input.analysisRunSpec.traceContext.datasetCount,
     conversationTurns: countCompletedQuickConversationTurns(input.previousTurns),
+    adaptiveRouting: input.analysisRunSpec.mode.adaptiveRouting,
   });
 }
 

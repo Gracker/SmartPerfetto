@@ -37,6 +37,8 @@ import {
   currentRunManifestAttributionSink,
   resolveRunManifestAttributionSink,
 } from '../services/selfEvolution/runManifestLifecycle';
+import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
+import {parseAdaptiveRoutingReceipt} from './adaptiveEvidenceRouter';
 
 export interface RuntimeBudgetInputs {
   model?: string;
@@ -66,6 +68,7 @@ export interface AnalysisRunSpec {
     kind: AgentRuntimeKind;
     selection: RuntimeSelection<string>;
     capabilities: EngineCapabilities;
+    actualModel?: string;
   };
   scopes: {
     provider?: ProviderScope;
@@ -80,6 +83,7 @@ export interface AnalysisRunSpec {
     requested: NonNullable<AnalysisOptions['analysisMode']>;
     resolved?: QueryComplexity;
     classifierInput: ComplexityClassifierInput;
+    adaptiveRouting?: AdaptiveRoutingReceiptV1;
   };
   traceContext: {
     datasetCount: number;
@@ -114,6 +118,7 @@ export interface CreateAnalysisRunSpecInput {
   previousTurns?: ConversationTurn[];
   resolvedMode?: QueryComplexity;
   budget?: RuntimeBudgetInputs;
+  adaptiveRouting?: AdaptiveRoutingReceiptV1;
 }
 
 function compactAuthorizationIds(ids: string[] | undefined, label: string, maxItems: number): string[] {
@@ -171,6 +176,9 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   });
   const traceContextPrompt = formatTraceContext(options.traceContext, input.outputLanguage);
   const runtimeKind = canonicalRuntimeKind(input.runtimeSelection.kind);
+  const actualModel = input.resolvedMode === 'quick'
+    ? input.budget?.lightModel ?? input.budget?.model
+    : input.budget?.model;
   const sink = resolveRunManifestAttributionSink(
     options.runManifestAttributionSink,
     currentRunManifestAttributionSink(),
@@ -179,7 +187,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
   sink?.recordRuntime({
     runtime: runtimeKind,
     providerId: options.providerId ?? null,
-    ...(input.budget?.model ? {model: input.budget.model} : {}),
+    ...(actualModel ? {model: actualModel} : {}),
     outputLanguage: input.outputLanguage,
   });
   sink?.recordMode({
@@ -193,6 +201,19 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
         : []),
     ],
   });
+  const adaptiveRouting = input.adaptiveRouting === undefined
+    ? undefined
+    : parseAdaptiveRoutingReceipt(input.adaptiveRouting);
+  if (
+    adaptiveRouting
+    && (
+      adaptiveRouting.requestedMode !== (options.analysisMode ?? 'auto')
+      || adaptiveRouting.resolvedMode !== input.resolvedMode
+    )
+  ) {
+    throw new Error('analysis_run_spec_adaptive_routing_mode_mismatch');
+  }
+  if (adaptiveRouting) sink?.recordAdaptiveRouting?.(adaptiveRouting);
 
   return {
     identity: {
@@ -208,6 +229,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
       kind: runtimeKind,
       selection: input.runtimeSelection,
       capabilities: engineCapabilities,
+      ...(actualModel ? {actualModel} : {}),
     },
     scopes: {
       provider: providerScope,
@@ -222,6 +244,7 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
       requested: options.analysisMode ?? 'auto',
       resolved: input.resolvedMode,
       classifierInput,
+      ...(adaptiveRouting ? {adaptiveRouting} : {}),
     },
     traceContext: {
       datasetCount: options.traceContext?.length ?? 0,

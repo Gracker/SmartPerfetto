@@ -14,9 +14,8 @@ import {
   currentEvaluationInjectionContract,
 } from '../../../services/selfEvolution/evaluationInjectionContext';
 import {
-  currentEvaluationTelemetryActive,
-  recordEvaluationObservedTokenDelta,
-} from '../../../services/selfEvolution/evaluationTelemetry';
+  recordEvaluationTokenDeltaIfPresent,
+} from '../../../services/selfEvolution/evaluationRuntimeHooks';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
@@ -518,6 +517,7 @@ import {
   createAnalysisRunSpec,
   type AnalysisRunSpec,
 } from '../../analysisRunSpec';
+import {buildAdaptiveRoutingForModeDecision} from '../../adaptiveRoutingProjection';
 import type { RuntimeSelection } from '../../runtimeSelection';
 
 const SESSION_MAP_FILE = backendLogPath('claude_session_map.json');
@@ -1247,6 +1247,18 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           classifierTimeoutMs: runtimeConfig.classifierTimeoutMs,
           verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
         },
+        adaptiveRouting: buildAdaptiveRoutingForModeDecision({
+          options,
+          resolvedMode: queryComplexity,
+          classifierSource,
+          quickAcknowledgementDirectAnswer,
+          directEvidenceAvailable: Boolean(
+            quickFocusAppPreEvidence
+            || quickProcessIdentityPreEvidence
+            || quickTraceFactPreEvidence
+            || quickScrollingTriagePreEvidence
+          ),
+        }),
       });
 
       const displayMode: 'fast' | 'full' | 'auto' = explicitMode ?? 'auto';
@@ -1543,22 +1555,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       function recordAuthoritativeEvaluationUsage(
         usage: Record<string, unknown> | undefined,
       ): void {
-        if (!currentEvaluationTelemetryActive() || !usage) return;
-        const tokenFields = [
-          'input_tokens',
-          'output_tokens',
-          'cache_read_input_tokens',
-          'cache_creation_input_tokens',
-        ] as const;
-        const total = tokenFields.reduce((sum, field) => {
-          const value = usage[field];
-          return sum + (
-            typeof value === 'number' && Number.isFinite(value) && value >= 0
-              ? value
-              : 0
-          );
-        }, 0);
-        recordEvaluationObservedTokenDelta(total);
+        if (usage) recordEvaluationTokenDeltaIfPresent(usage);
       }
 
       // Phase 3-3 of v2.1 (monitor-only): track when the running conversation
@@ -3501,6 +3498,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             conversationTurns: quickConversationTurns,
             ...(quickMemoryPayload?.counts ?? {}),
           },
+          adaptiveRouting: analysisRunSpec.mode.adaptiveRouting,
         }),
       };
       const quickGateIssue = applyFinalResultQualityGate({ result: quickResult, query, sceneType });

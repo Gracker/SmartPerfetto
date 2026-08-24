@@ -11,6 +11,7 @@ import { commitTurnOutputs } from '../turnPersistence';
 import type { Renderer } from '../../repl/renderer';
 import type { RunTurnOutput } from '../cliAnalyzeService';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../../../services/security/codeAwareOutputRegistry';
+import {routeAdaptiveEvidencePreflight} from '../../../agentRuntime/adaptiveEvidenceRouter';
 
 function rendererStub(): Renderer {
   return {
@@ -50,6 +51,13 @@ describe('commitTurnOutputs', () => {
           traceId: 'trace-receipt',
           mode: 'auto',
           resolvedMode: 'full',
+          adaptiveRouting: routeAdaptiveEvidencePreflight({
+            requestedMode: 'auto',
+            resolvedMode: 'full',
+            classifierIntent: 'semantic_full',
+            classifierSource: 'runtime',
+            hardObligations: [],
+          }),
           providerId: null,
           generatedAt: 1,
           traceEvidence: {
@@ -138,6 +146,8 @@ describe('commitTurnOutputs', () => {
       expect(result.result.analysisReceipt?.outputs.cliTurnPath).toBe(path.join(sp.turnsDir, '001.md'));
       expect(latest.capabilityManifest).toEqual(result.result.analysisReceipt?.capabilityManifest);
       expect(turn.capabilityManifest).toEqual(result.result.analysisReceipt?.capabilityManifest);
+      expect(latest.adaptiveRouting).toEqual(result.result.analysisReceipt?.adaptiveRouting);
+      expect(turn.adaptiveRouting).toEqual(result.result.analysisReceipt?.adaptiveRouting);
       expect(latestActions).toEqual([expect.objectContaining({ id: 'ui-pin_evidence-1' })]);
       expect(turnActions).toEqual([expect.objectContaining({ kind: 'pin_evidence' })]);
     } finally {

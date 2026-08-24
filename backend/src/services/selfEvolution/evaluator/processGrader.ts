@@ -259,7 +259,7 @@ export class ProcessGrader implements Grader {
       message: hasToolCalls
         ? `Agent made ${toolSteps.length} tool calls`
         : 'No tool calls found — agent may not have analyzed the trace',
-      severity: 'high',
+      severity: 'critical',
     };
   }
 

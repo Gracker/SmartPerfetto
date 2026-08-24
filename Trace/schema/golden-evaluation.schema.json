@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://smartperfetto.dev/schemas/golden-evaluation.schema.json",
+  "title": "SmartPerfetto Golden Evaluation Registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "evalSetId", "cases"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "evalSetId": {"type": "string", "minLength": 1},
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/case"}
+    }
+  },
+  "$defs": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caseId",
+        "catalogAlias",
+        "query",
+        "analysisMode",
+        "expectedScene",
+        "goldenPoints",
+        "split",
+        "createdAt"
+      ],
+      "properties": {
+        "caseId": {"type": "string", "minLength": 1},
+        "catalogAlias": {
+          "type": "string",
+          "pattern": "^[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?$"
+        },
+        "query": {"type": "string", "minLength": 1},
+        "analysisMode": {"enum": ["fast", "full"]},
+        "expectedScene": {"type": "string", "minLength": 1},
+        "goldenPoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "split": {"enum": ["train", "validation", "holdout"]},
+        "createdAt": {"type": "string", "format": "date-time"},
+        "forbiddenClaims": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/forbiddenClaim"}
+        },
+        "allowedGaps": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/allowedGap"}
+        },
+        "causalEdges": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/causalEdge"}
+        }
+      }
+    },
+    "forbiddenClaim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "contains", "reason"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "contains": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "allowedGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "code", "requiresMissingEvidence"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "code": {"type": "string", "minLength": 1},
+        "requiresMissingEvidence": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "causalEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "subject", "relation", "object", "minimumLevel"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "subject": {"type": "string", "minLength": 1},
+        "relation": {"type": "string", "minLength": 1},
+        "object": {"type": "string", "minLength": 1},
+        "minimumLevel": {"enum": ["correlation", "mechanism"]}
+      }
+    }
+  }
+}

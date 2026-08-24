@@ -18,6 +18,7 @@ import {
   canonicalContentHash,
   immutableCanonicalSnapshot,
 } from './canonicalJson';
+import {parseEvalGroundTruth} from './goldenTraceScorer';
 
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const FEEDBACK_DIMENSIONS = new Set<FeedbackDimension>([
@@ -203,6 +204,7 @@ export function parseEvalCase(value: unknown): EvalCaseV1 {
     'expectedScene',
     'label',
     'goldenPoints',
+    'groundTruth',
     'expectedRubricVersion',
     'split',
     'createdAt',
@@ -284,6 +286,9 @@ export function parseEvalCase(value: unknown): EvalCaseV1 {
         }),
     ...(label ? {label} : {}),
     ...(goldenPoints ? {goldenPoints} : {}),
+    ...(candidate.groundTruth === undefined
+      ? {}
+      : {groundTruth: parseEvalGroundTruth(candidate.groundTruth)}),
     ...(candidate.expectedRubricVersion === undefined
       ? {}
       : {
@@ -311,6 +316,7 @@ export function parseEvalScore(value: unknown): EvalScoreV1 {
     'scope',
     'pinned',
     'availability',
+    'golden',
     'l0',
     'l1',
     'l2',
@@ -375,6 +381,68 @@ export function parseEvalScore(value: unknown): EvalScoreV1 {
     };
   }
 
+  let golden: EvalScoreV1['golden'];
+  if (score.golden !== undefined) {
+    const rawGolden = record(score.golden, 'eval_score_golden_invalid');
+    exactKeys(rawGolden, [
+      'passed',
+      'assertionCount',
+      'passedAssertions',
+      'failedAssertions',
+      'notEvaluableAssertions',
+      'blockers',
+      'contentHash',
+    ], 'eval_score_golden_unknown_field');
+    if (!Array.isArray(rawGolden.blockers)) {
+      throw new Error('eval_score_golden_blockers_invalid');
+    }
+    const assertionCount = nonnegativeInteger(
+      rawGolden.assertionCount,
+      'eval_score_golden_assertion_count_invalid',
+    );
+    const passedAssertions = nonnegativeInteger(
+      rawGolden.passedAssertions,
+      'eval_score_golden_passed_assertions_invalid',
+    );
+    const failedAssertions = nonnegativeInteger(
+      rawGolden.failedAssertions,
+      'eval_score_golden_failed_assertions_invalid',
+    );
+    const notEvaluableAssertions = nonnegativeInteger(
+      rawGolden.notEvaluableAssertions,
+      'eval_score_golden_not_evaluable_assertions_invalid',
+    );
+    const blockers = rawGolden.blockers.map(item =>
+      nonemptyString(item, 'eval_score_golden_blocker_invalid'));
+    const contentHash = nonemptyString(
+      rawGolden.contentHash,
+      'eval_score_golden_content_hash_invalid',
+    );
+    const passed = booleanValue(
+      rawGolden.passed,
+      'eval_score_golden_passed_invalid',
+    );
+    if (
+      !SHA256_PATTERN.test(contentHash)
+      || assertionCount
+        !== passedAssertions + failedAssertions + notEvaluableAssertions
+      || passed !== (failedAssertions === 0 && notEvaluableAssertions === 0)
+      || (passed && blockers.length > 0)
+      || new Set(blockers).size !== blockers.length
+    ) {
+      throw new Error('eval_score_golden_invariant_invalid');
+    }
+    golden = {
+      passed,
+      assertionCount,
+      passedAssertions,
+      failedAssertions,
+      notEvaluableAssertions,
+      blockers,
+      contentHash,
+    };
+  }
+
   return immutableCanonicalSnapshot({
     schemaVersion: 1,
     caseId: nonemptyString(score.caseId, 'eval_score_case_id_invalid'),
@@ -397,6 +465,7 @@ export function parseEvalScore(value: unknown): EvalScoreV1 {
     scope: parseScope(score.scope),
     pinned: parsePinned(score.pinned),
     availability: score.availability,
+    ...(golden ? {golden} : {}),
     l0: {
       runOk: booleanValue(l0.runOk, 'eval_score_l0_run_ok_invalid'),
       sqlErrorFree: booleanValue(
@@ -468,6 +537,7 @@ export function semanticEvalCaseFingerprint(value: EvalCaseV1): string {
     expectedScene: evalCase.expectedScene ?? null,
     label: evalCase.label ?? null,
     goldenPoints: evalCase.goldenPoints ?? null,
+    groundTruth: evalCase.groundTruth ?? null,
     expectedRubricVersion: evalCase.expectedRubricVersion ?? null,
     split: evalCase.split,
   });

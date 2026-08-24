@@ -16,7 +16,7 @@ scenarios:
     priority: critical
 
     input:
-      traceFile: app_aosp_scrolling_heavy_jank.pftrace
+      traceFile: rendering-jank
       query: "分析这个 trace 的滑动性能"
       mode: agent
       maxIterations: 5
@@ -65,7 +65,7 @@ scenarios:
     priority: high
 
     input:
-      traceFile: app_aosp_scrolling_heavy_jank.pftrace
+      traceFile: rendering-jank
       query: "这个 trace 中有多少次滑动？每次滑动的表现如何？"
       mode: agent
       maxIterations: 5
@@ -127,7 +127,7 @@ scenarios:
     priority: high
 
     input:
-      traceFile: app_aosp_scrolling_heavy_jank.pftrace
+      traceFile: rendering-jank
       query: "为什么这个 trace 会掉帧？请分析根本原因并给出优化建议"
       mode: agent
       maxIterations: 7
@@ -201,7 +201,7 @@ scenarios:
     priority: medium
 
     input:
-      traceFile: app_aosp_scrolling_heavy_jank.pftrace
+      traceFile: rendering-jank
       query: "scrolling_analysis"
       mode: skill
 
@@ -237,7 +237,7 @@ scenarios:
     priority: medium
 
     input:
-      traceFile: app_aosp_scrolling_light.pftrace
+      traceFile: android-scroll-standard
       query: "分析滑动性能，有掉帧吗？"
       mode: agent
       maxIterations: 3
@@ -265,7 +265,7 @@ scenarios:
     priority: low
 
     input:
-      traceFile: api34_startup_cold.perfetto-trace
+      traceFile: startup-lifecycle
       query: "分析滑动性能"
       mode: agent
       maxIterations: 3

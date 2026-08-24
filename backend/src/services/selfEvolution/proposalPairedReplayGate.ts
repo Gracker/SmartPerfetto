@@ -578,7 +578,8 @@ function summarizeScorePairs(
 }
 
 function l0Passed(score: EvalScoreV1): boolean {
-  return Object.values(score.l0).every(Boolean);
+  return Object.values(score.l0).every(Boolean)
+    && (score.golden?.passed ?? true);
 }
 
 function mean(values: readonly number[]): number {

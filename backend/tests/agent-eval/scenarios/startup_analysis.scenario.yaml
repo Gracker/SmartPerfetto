@@ -14,7 +14,7 @@ scenarios:
     priority: critical
 
     input:
-      traceFile: api34_startup_cold.perfetto-trace
+      traceFile: startup-lifecycle
       query: "分析这个应用的冷启动性能"
       mode: agent
       maxIterations: 5
@@ -47,7 +47,7 @@ scenarios:
     priority: high
 
     input:
-      traceFile: api34_startup_cold.perfetto-trace
+      traceFile: startup-lifecycle
       query: "启动各阶段耗时是多少？哪个阶段最慢？"
       mode: agent
       maxIterations: 5
@@ -97,7 +97,7 @@ scenarios:
     priority: medium
 
     input:
-      traceFile: api34_startup_warm.perfetto-trace
+      traceFile: android-startup-light
       query: "这是热启动还是冷启动？分析启动性能"
       mode: agent
       maxIterations: 4
@@ -127,7 +127,7 @@ scenarios:
     priority: medium
 
     input:
-      traceFile: api34_startup_cold.perfetto-trace
+      traceFile: startup-lifecycle
       query: "startup_analysis"
       mode: skill
 

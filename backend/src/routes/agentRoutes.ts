@@ -168,6 +168,7 @@ import {
   type DataEnvelope,
 } from '../types/dataContract';
 import { buildTraceContextDataEnvelopes, decorateTraceContextDatasets } from '../agentRuntime/traceContextEvidence';
+import {recordAdaptiveRoutingPostEvidenceBestEffort} from '../agentRuntime/adaptiveRoutingProjection';
 import type { ConclusionContract } from '../agent/core/conclusionContract';
 import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
@@ -1171,6 +1172,17 @@ function sealHttpRunManifest(
     (run?.status === 'completed' || run?.status === 'quota_exceeded')
       ? session.result.rounds
       : 0;
+  if (session.result) {
+    recordAdaptiveRoutingPostEvidenceBestEffort({
+      builder: lifecycle.builder,
+      result: session.result,
+      dataEnvelopes: session.dataEnvelopes,
+      onDiagnostic: code => lifecycle.diagnostics.push({
+        code,
+        recordedAt: Date.now(),
+      }),
+    });
+  }
   lifecycle.sealOnceAndPersist({
     scene: {
       sceneType: resolveAnalysisResultSceneType(
@@ -7940,16 +7952,23 @@ function finalizeQuickRunReceipt(
 interface RunManifestReceiptReference {
   runManifestId?: string;
   capabilityManifest?: CapabilityManifestAttributionV1;
+  adaptiveRouting?: RunManifestV1['adaptiveRouting'];
   existingReceipt?: AnalysisReceipt;
   legacyRecovery?: true;
 }
 
 function runManifestReceiptReference(
-  manifest: Pick<RunManifestV1, 'runManifestId' | 'capabilityManifest'>,
+  manifest: Pick<
+    RunManifestV1,
+    'runManifestId' | 'capabilityManifest' | 'adaptiveRouting'
+  >,
 ): RunManifestReceiptReference {
   return {
     runManifestId: manifest.runManifestId,
     capabilityManifest: manifest.capabilityManifest,
+    ...(manifest.adaptiveRouting
+      ? {adaptiveRouting: manifest.adaptiveRouting}
+      : {}),
   };
 }
 
@@ -8020,6 +8039,7 @@ function buildAnalysisReceiptForReference(
       ...input,
       runManifestId: reference.runManifestId,
       capabilityManifest: reference.capabilityManifest,
+      adaptiveRouting: reference.adaptiveRouting,
     });
   }
   if (reference.existingReceipt) return reference.existingReceipt;

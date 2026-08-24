@@ -4,6 +4,7 @@
 
 import {
   extractObservedTokenCount,
+  extractObservedTokenUsage,
 } from '../evaluationRuntimeHooks';
 
 describe('evaluation runtime hooks', () => {
@@ -25,5 +26,30 @@ describe('evaluation runtime hooks', () => {
     expect(extractObservedTokenCount({
       tokens: {totalTokens: 19, input: 100, output: 100},
     })).toBe(19);
+  });
+
+  it('preserves additive token components without double-counting reasoning', () => {
+    expect(extractObservedTokenUsage({
+      usage: {
+        total_tokens: 22,
+        input_tokens: 10,
+        output_tokens: 3,
+        cache_read_input_tokens: 7,
+        cache_creation_input_tokens: 2,
+        reasoning_tokens: 2,
+      },
+    })).toEqual({
+      total: 22,
+      input: 10,
+      output: 3,
+      cacheRead: 7,
+      cacheWrite: 2,
+      reasoning: 2,
+    });
+    expect(extractObservedTokenUsage({
+      totalTokens: 19,
+      input: 100,
+      output: 100,
+    })).toEqual({total: 19});
   });
 });

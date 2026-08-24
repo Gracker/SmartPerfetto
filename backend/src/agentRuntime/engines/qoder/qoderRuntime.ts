@@ -81,6 +81,7 @@ import {
 } from '../../runtimePromptContext';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import {buildAdaptiveRoutingForQuickResolution} from '../../adaptiveRoutingProjection';
 import {resetPrePlanToolCallsForNewRun} from '../../../agentv3/planToolCallRecorder';
 import {
   buildRuntimeQuickEvidenceDirectAnswer,
@@ -361,6 +362,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         previousTurns,
         resolvedMode: 'quick',
         budget: { model: 'runtime-pre-evidence' },
+        adaptiveRouting: buildAdaptiveRoutingForQuickResolution({
+          options: directOptions,
+          resolution: quickModeResolution,
+        }),
       });
       return this.buildDirectQuickEvidenceResult({
         query,
@@ -443,6 +448,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         fullPathPerTurnMs: this.config.fullPerTurnMs,
         quickPathPerTurnMs: this.config.quickPerTurnMs,
       },
+      adaptiveRouting: buildAdaptiveRoutingForQuickResolution({
+        options: normalizedOptions,
+        resolution: quickModeResolution,
+      }),
     });
 
     // Build comparison context before assembling the shared system prompt so

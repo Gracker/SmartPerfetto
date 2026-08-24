@@ -17,6 +17,8 @@ import type {
   QuickRunTurnBudget,
   QuickRunVerifierStatus,
 } from '../agent/core/orchestratorTypes';
+import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
+import {parseAdaptiveRoutingReceipt} from './adaptiveEvidenceRouter';
 
 function parsePositiveIntEnv(
   env: Record<string, string | undefined>,
@@ -87,6 +89,7 @@ export function buildQuickRunReceipt(input: {
   evidence?: Partial<QuickRunEvidenceCounts>;
   contextInjected?: Partial<QuickRunContextInjectedCounts>;
   verifierStatus?: QuickRunVerifierStatus;
+  adaptiveRouting?: AdaptiveRoutingReceiptV1;
 }): QuickRunReceipt {
   const actualTurns = Number.isFinite(input.actualTurns)
     ? Math.max(0, Math.floor(input.actualTurns))
@@ -111,6 +114,9 @@ export function buildQuickRunReceipt(input: {
       ...(input.contextInjected ?? {}),
     },
     verifierStatus: input.verifierStatus ?? 'not_checked',
+    ...(input.adaptiveRouting
+      ? {adaptiveRouting: parseAdaptiveRoutingReceipt(input.adaptiveRouting)}
+      : {}),
   };
 }
 

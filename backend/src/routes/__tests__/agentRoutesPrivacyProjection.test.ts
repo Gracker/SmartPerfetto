@@ -20,6 +20,7 @@ import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_DB_PATH_ENV, openEnterpriseDb} from '../../services/enterpriseDb';
 import {resetAnalysisRunStoreForTests} from '../../services/analysisRunStore';
 import {resetAgentEventStoreForTests} from '../../services/agentEventStore';
+import {routeAdaptiveEvidencePreflight} from '../../agentRuntime/adaptiveEvidenceRouter';
 
 const sessionId = 'private-route-projection';
 
@@ -97,9 +98,17 @@ describe('agent route private projections', () => {
       },
       probeCache: {hits: 0, misses: 0, bypasses: 1},
     } as const;
+    const adaptiveRouting = routeAdaptiveEvidencePreflight({
+      requestedMode: 'auto',
+      resolvedMode: 'quick',
+      classifierIntent: 'deterministic_direct_evidence',
+      classifierSource: 'hard_rule',
+      hardObligations: [],
+    });
     const reference = agentRoutesReceiptTestSeam.runManifestReceiptReference({
       runManifestId: 'manifest-http-capability',
       capabilityManifest,
+      adaptiveRouting,
     });
     const receipt = agentRoutesReceiptTestSeam.buildAnalysisReceiptForReference(reference, {
       session: {sessionId: 'session-http-capability', traceId: 'trace-http-capability'},
@@ -120,6 +129,7 @@ describe('agent route private projections', () => {
       schemaVersion: 2,
       runManifestId: 'manifest-http-capability',
       capabilityManifest,
+      adaptiveRouting,
     }));
   });
 

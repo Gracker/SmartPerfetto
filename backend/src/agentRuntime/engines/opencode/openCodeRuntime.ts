@@ -124,6 +124,7 @@ import {
 } from '../../runtimeCommon';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import {buildAdaptiveRoutingForQuickResolution} from '../../adaptiveRoutingProjection';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
 import {resolveRuntimeFinalReportSceneType} from '../../finalReportSceneResolution';
 import {loadRuntimePlanCompletionContinuationPrompt} from '../../planCompletionContinuation';
@@ -2170,6 +2171,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         outputLanguage,
         resolvedMode: 'quick',
         budget: {model: 'runtime-acknowledgement'},
+        adaptiveRouting: buildAdaptiveRoutingForQuickResolution({
+          options,
+          resolution: quickResolution,
+        }),
       });
       return this.buildDirectQuickAcknowledgementResult({
         query,
@@ -2216,6 +2221,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         outputLanguage,
         resolvedMode: 'quick',
         budget: {model: 'runtime-pre-evidence'},
+        adaptiveRouting: buildAdaptiveRoutingForQuickResolution({
+          options,
+          resolution: quickResolution,
+        }),
       });
       return this.buildDirectQuickEvidenceResult({
         query,
@@ -2686,6 +2695,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
                   caseBackgroundCases: 0,
                 }),
               },
+              adaptiveRouting: prep.analysisRunSpec.mode.adaptiveRouting,
             });
           })()
         : undefined,
@@ -3005,6 +3015,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage,
       resolvedMode: quickMode ? 'quick' : 'full',
       budget: {model},
+      adaptiveRouting: buildAdaptiveRoutingForQuickResolution({
+        options,
+        resolution: quickResolution,
+      }),
     });
 
     await ensureSkillRegistryInitialized();

@@ -5,6 +5,7 @@
 import { HTMLReportGenerator } from '../htmlReportGenerator';
 import {createDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import {QUERY_REVIEW_SCHEMA_VERSION, type QueryReviewV1} from '../../types/queryReviewContract';
+import {routeAdaptiveEvidencePreflight} from '../../agentRuntime/adaptiveEvidenceRouter';
 
 const originalOutputLanguage = process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
 
@@ -204,6 +205,14 @@ describe('HTMLReportGenerator', () => {
           traceId: 'trace-receipt',
           mode: 'fast',
           resolvedMode: 'quick',
+          adaptiveRouting: routeAdaptiveEvidencePreflight({
+            requestedMode: 'fast',
+            resolvedMode: 'quick',
+            classifierIntent: 'deterministic_direct_evidence',
+            classifierSource: 'hard_rule',
+            hardObligations: [],
+            outputCap: 2_048,
+          }),
           providerId: null,
           generatedAt: 1,
           traceEvidence: {
@@ -307,6 +316,10 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('must-not-render');
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).toContain('Trace Summary');
+    expect(html).toContain('自适应路由');
+    expect(html).toContain('L0 → L0');
+    expect(html).toContain('deterministic_direct_evidence');
+    expect(html).toContain('2048');
     expect(html).toContain('smartperfetto.core.v1&lt;script&gt;alert(2)&lt;/script&gt;');
     expect(html).toContain('metric_a');
     expect(html).toContain('metric_b');

@@ -431,6 +431,7 @@ export interface QuickRunReceipt {
   evidence: QuickRunEvidenceCounts;
   contextInjected: QuickRunContextInjectedCounts;
   verifierStatus: QuickRunVerifierStatus;
+  adaptiveRouting?: import('../../types/adaptiveRouting').AdaptiveRoutingReceiptV1;
 }
 
 // =============================================================================

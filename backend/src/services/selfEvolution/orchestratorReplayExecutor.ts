@@ -57,6 +57,9 @@ import {
   checkEvaluationBudgets,
   normalizeEvaluationBudgetLimits,
   preflightEvaluationBudgets,
+  recordEvaluationFirstOutput,
+  recordEvaluationFirstOutputNotApplicable,
+  recordEvaluationTermination,
   recordTraceProcessorCpuSample,
   snapshotEvaluationUsageReceipt,
   withEvaluationTelemetry,
@@ -81,6 +84,12 @@ import {
 import {
   freezeEvaluationArtifacts,
 } from './evalScorer';
+import {
+  buildGoldenTraceObservationFromAnalysis,
+} from './goldenTraceObservationBuilder';
+import {
+  recordAdaptiveRoutingPostEvidenceBestEffort,
+} from '../../agentRuntime/adaptiveRoutingProjection';
 import type {
   ReplayExecutor,
   ReplayExecutorInput,
@@ -692,6 +701,9 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
             const dataEnvelopes: DataEnvelope[] = [];
             let invalidDataEnvelopeCount = 0;
             const updateHandler = (update: StreamingUpdate) => {
+              if (update.type === 'thought' || update.type === 'answer_token') {
+                recordEvaluationFirstOutput();
+              }
               const projected = dataEnvelopesFromUpdate(update);
               dataEnvelopes.push(...projected.valid);
               invalidDataEnvelopeCount += projected.invalid;
@@ -726,12 +738,15 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
             }
             input.stopCpuSampler();
             checkEvaluationBudgets();
-            const verification = result.claimVerificationResult
-              ?? runPreparedAnalysisClaimVerification({
+            const preparedVerification = runPreparedAnalysisClaimVerification({
                 conclusionContract: result.conclusionContract,
                 dataEnvelopes,
                 policy: 'record_only',
-              }).claimVerificationResult;
+              });
+            const verification = result.claimVerificationResult
+              ?? preparedVerification.claimVerificationResult;
+            const claimSupport = result.claimSupport
+              ?? preparedVerification.claimSupport;
             const reportContractPass =
               invalidDataEnvelopeCount === 0
               && !assessFinalReportContractCompleteness({
@@ -739,7 +754,19 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
                 query: replay.evalCase.query,
               });
             const exposureReceipt = sealEvaluationExposureReceipt();
+            if (result.success && result.rounds === 0) {
+              recordEvaluationFirstOutputNotApplicable();
+            }
+            recordEvaluationTermination(
+              result.terminationReason
+                ?? (result.success ? 'completed' : 'execution_error'),
+            );
             const usageReceipt = snapshotEvaluationUsageReceipt();
+            recordAdaptiveRoutingPostEvidenceBestEffort({
+              builder: lifecycle.builder,
+              result,
+              dataEnvelopes,
+            });
             const manifest = lifecycle.sealOnceAndPersist({
               turnCount:
                 Number.isSafeInteger(result.rounds) && result.rounds >= 0
@@ -747,6 +774,12 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
                   : 0,
               closePendingSkillInvocationsAsErrors: true,
             });
+            const goldenTraceObservation =
+              buildGoldenTraceObservationFromAnalysis({
+                evalCase: replay.evalCase,
+                runManifest: manifest,
+                claimSupport,
+              });
             const environmentProof = finalizeEvaluationEnvironmentProof({
               providerService: this.options.providerService,
               providerScope: input.providerScope,
@@ -801,6 +834,9 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
                 runOk: result.success && !replay.signal.aborted,
                 reportContractPass,
                 claimVerificationResult: verification,
+                ...(goldenTraceObservation
+                  ? {goldenTraceObservation}
+                  : {}),
                 usageReceipt,
               }),
               environmentProof,

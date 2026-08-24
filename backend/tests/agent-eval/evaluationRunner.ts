@@ -1,5 +1,5 @@
 /**
- * Evaluation Runner
+ * Legacy, non-gating Evaluation Runner.
  *
  * Orchestrates the execution of test scenarios and grading:
  * 1. Load test scenarios from YAML files
@@ -7,7 +7,8 @@
  * 3. Run graders (code-based and model-based)
  * 4. Aggregate and report results
  *
- * Can run against a live backend or in a simulated environment.
+ * Can run against a live backend or in a simulated environment. Accuracy gates
+ * use the immutable golden-trace contracts in `src/services/selfEvolution`.
  */
 
 import * as fs from 'fs';
@@ -31,6 +32,13 @@ import { resolveTraceCase } from '../../src/utils/traceCorpus';
 
 // Sentinel for catalog-backed default fixture resolution.
 const DEFAULT_TRACE_DIR = path.resolve(__dirname, '../../..');
+
+function responseRecord(value: unknown, error: string): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(error);
+  }
+  return value as Record<string, any>;
+}
 
 export interface RunnerOptions {
   /** Backend base URL */
@@ -303,13 +311,19 @@ export class EvaluationRunner {
       throw new Error(`Failed to upload trace: ${response.status} - ${text}`);
     }
 
-    const data = await response.json();
-    const traceId = data?.trace?.id || data?.traceId;
+    const data = responseRecord(
+      await response.json(),
+      'Upload returned an invalid response',
+    );
+    const trace = data.trace && typeof data.trace === 'object'
+      ? data.trace as Record<string, unknown>
+      : {};
+    const traceId = trace.id || data.traceId;
     if (!data.success || !traceId) {
       throw new Error(`Upload failed: ${data.error || 'Unknown error'}`);
     }
 
-    return traceId;
+    return String(traceId);
   }
 
   /**
@@ -346,12 +360,19 @@ export class EvaluationRunner {
       throw new Error(`Failed to start analysis: ${response.status} - ${text}`);
     }
 
-    const data = await response.json();
+    const data = responseRecord(
+      await response.json(),
+      'Analysis start returned an invalid response',
+    );
     if (!data.success) {
       throw new Error(`Analysis start failed: ${data.error || 'Unknown error'}`);
     }
 
-    return data.sessionId || data.analysisId;
+    const sessionId = data.sessionId || data.analysisId;
+    if (!sessionId) {
+      throw new Error('Analysis start returned no session identifier');
+    }
+    return String(sessionId);
   }
 
   /**
@@ -370,7 +391,10 @@ export class EvaluationRunner {
         throw new Error(`Failed to get status: ${response.status}`);
       }
 
-      const data = await response.json();
+      const data = responseRecord(
+        await response.json(),
+        'Analysis status returned an invalid response',
+      );
 
       if (data.status === 'completed') {
         return this.extractAgentResponse(sessionId, data);
@@ -457,7 +481,7 @@ export class EvaluationRunner {
    */
   private aggregateGrades(grades: GradeResult[]): { score: number; passed: boolean } {
     if (grades.length === 0) {
-      return { score: 1.0, passed: true };
+      return { score: 0, passed: false };
     }
 
     // Default weights by grader type

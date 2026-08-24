@@ -36,6 +36,7 @@ import { getHTMLReportGenerator } from '../../services/htmlReportGenerator';
 import { buildAgentDrivenReportData } from '../../services/agentReportData';
 import { normalizeResultForReport } from '../../services/agentResultNormalizer';
 import { buildAnalysisReceipt } from '../../services/analysisReceiptBuilder';
+import {recordAdaptiveRoutingPostEvidenceBestEffort} from '../../agentRuntime/adaptiveRoutingProjection';
 import { deriveUiActionProposals } from '../../services/uiActionProposalDeriver';
 import { persistAgentTurn } from '../../services/persistAgentSession';
 import { applyFinalResultQualityGate } from '../../services/finalResultQualityGate';
@@ -551,6 +552,11 @@ export class CliAnalyzeService {
             unavailableTraceSummaryV1('trace_processor_session_unavailable'),
           );
         }
+        recordAdaptiveRoutingPostEvidenceBestEffort({
+          builder: runManifestLifecycle.builder,
+          result,
+          dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
+        });
         const runManifest = runManifestLifecycle.sealOnceAndPersist({
           turnCount:
             Number.isSafeInteger(result.rounds) && result.rounds >= 0
@@ -561,6 +567,9 @@ export class CliAnalyzeService {
           runManifestId: runManifest.runManifestId,
           runId: runManifest.runId,
           capabilityManifest: runManifest.capabilityManifest,
+          ...(runManifest.adaptiveRouting
+            ? {adaptiveRouting: runManifest.adaptiveRouting}
+            : {}),
           session,
           result,
           qualityArtifacts,
