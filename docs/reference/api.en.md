@@ -391,6 +391,33 @@ in the current UI conversation for `/pins`; it does not pin a timeline track or
 automatically add the result to later AI context. Clients must execute actions
 only after an explicit user click; they are not automatic commands.
 
+Supported `selectionContext` values contain identity and time bounds only:
+
+```json
+{
+  "selectionContext": {
+    "kind": "area",
+    "startNs": 1000000000,
+    "endNs": 2000000000
+  }
+}
+```
+
+```json
+{
+  "selectionContext": {
+    "kind": "track_event",
+    "trackUri": "/process_1/actual_frames",
+    "eventId": 123,
+    "ts": 1000000000
+  }
+}
+```
+
+Names, thread/process labels, depth, or child counts sent by older clients are
+stripped during request normalization and do not enter runtime prompts or
+evidence state.
+
 Dual-trace comparison requires `referenceTraceId`, and it must be different from `traceId`.
 
 Smart analysis uses the same `/analyze` endpoint. The first request should usually run only the scene inventory:

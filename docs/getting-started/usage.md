@@ -131,7 +131,7 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 
 ## 选区与追问
 
-前端会把 area selection 或 track event selection 作为 `selectionContext` 传给后端。适合这样问：
+前端会把 area selection 或 track event selection 作为 `selectionContext` 传给后端，其中只包含 Event/Track 身份与时间边界。卡片展示查询不会作为隐藏证据发送；后端会重新查询名称、线程、进程与异常状态。适合这样问：
 
 ```text
 只看我选中的这段时间，为什么 UI thread 变慢？
@@ -139,6 +139,8 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 ```
 
 多轮追问会复用 session。切换 conversation/fast/full/auto 模式会开启新的 SDK session，避免轻量上下文和完整上下文混用。
+
+`/anr` 和 `/jank` 使用与普通分析相同的后端证据、claim verification 和报告链路；AI 被策略禁用时，这两个命令也会被阻止。
 
 ## 源码与 Android Internals 背景
 

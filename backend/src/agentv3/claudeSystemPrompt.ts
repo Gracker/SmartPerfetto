@@ -172,33 +172,25 @@ export function buildSelectionContextSection(sel: SelectionContext): string {
     const template = loadSelectionTemplate('area');
     if (!template) return '';
 
-    // Build track summary from structured data
+    // Track tags are selection identity only. Descriptive facts must come from
+    // backend-owned trace queries before they are used as evidence.
     let trackSummary = '';
     if (sel.tracks && sel.tracks.length > 0) {
-      const meaningful = sel.tracks.filter(
-        (t: SelectionTrackInfo) => t.threadName || t.processName || t.cpu !== undefined,
-      );
-      if (meaningful.length > 0) {
-        const byProcess = new Map<string, string[]>();
-        const cpuTracks: number[] = [];
-        for (const t of meaningful) {
-          if (t.cpu !== undefined) { cpuTracks.push(t.cpu); continue; }
-          const procKey = t.processName
-            ? `${t.processName}(pid=${t.pid ?? '?'})`
-            : '(unknown process)';
-          const threadLabel = t.threadName ? `${t.threadName}(tid=${t.tid ?? '?'})` : null;
-          if (!byProcess.has(procKey)) byProcess.set(procKey, []);
-          if (threadLabel) byProcess.get(procKey)!.push(threadLabel);
-        }
-        const lines: string[] = [];
-        for (const [proc, threads] of byProcess) {
-          lines.push(threads.length > 0 ? `  - ${proc}: ${threads.join(', ')}` : `  - ${proc}`);
-        }
-        if (cpuTracks.length > 0) {
-          lines.push(`  - CPU cores: ${cpuTracks.sort((a, b) => a - b).join(', ')}`);
-        }
-        trackSummary = `\n选中的 Track:\n${lines.join('\n')}`;
+      const maxTrackIdentities = 16;
+      const lines = sel.tracks
+        .slice(0, maxTrackIdentities)
+        .map((track: SelectionTrackInfo) => {
+          const tags = [
+            ...(track.utid !== undefined ? [`utid=${track.utid}`] : []),
+            ...(track.upid !== undefined ? [`upid=${track.upid}`] : []),
+            ...(track.cpu !== undefined ? [`cpu=${track.cpu}`] : []),
+          ];
+          return tags.length > 0 ? tags.join(',') : `uri=${track.uri}`;
+        });
+      if (sel.tracks.length > maxTrackIdentities) {
+        lines.push(`+${sel.tracks.length - maxTrackIdentities} omitted`);
       }
+      trackSummary = `\nTrack scope IDs: ${lines.join('; ')}`;
     }
 
     return renderTemplate(template, {
@@ -217,14 +209,10 @@ export function buildSelectionContextSection(sel: SelectionContext): string {
 
     return renderTemplate(template, {
       eventId: sel.eventId,
+      trackUri: sel.trackUri ?? '未知',
       ts: sel.ts,
       durationStr: sel.dur !== undefined ? `${(sel.dur / 1e6).toFixed(2)} ms` : '未知',
       sliceEnd: sel.dur !== undefined ? `${sel.ts}+${sel.dur}` : `${sel.ts}`,
-      name: sel.name ?? '(查询中...)',
-      threadName: sel.threadName ?? '未知',
-      processName: sel.processName ?? '未知',
-      depth: sel.depth ?? '未知',
-      childCount: sel.childCount ?? '未知',
     });
   }
 

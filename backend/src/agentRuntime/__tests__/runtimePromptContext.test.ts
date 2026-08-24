@@ -5,7 +5,24 @@
 import {afterEach, describe, expect, it, jest} from '@jest/globals';
 import * as focusAppDetector from '../../agentv3/focusAppDetector';
 import * as architectureDetector from '../../agent/detectors/architectureDetector';
-import {buildRuntimeTracePairComparisonContext} from '../runtimePromptContext';
+import {
+  buildRuntimeTracePairComparisonContext,
+  formatTraceContext,
+} from '../runtimePromptContext';
+
+describe('formatTraceContext', () => {
+  it('labels explicit compatibility datasets without implying automatic UI pre-query', () => {
+    const rendered = formatTraceContext([{
+      label: 'Explicit dataset',
+      columns: ['value'],
+      rows: [[1]],
+      evidenceRefId: 'data:frontend_prequery:legacy',
+    }], 'en');
+
+    expect(rendered).toContain('Request-provided Trace Data');
+    expect(rendered).not.toContain('Frontend Pre-queried');
+  });
+});
 
 afterEach(() => {
   jest.restoreAllMocks();

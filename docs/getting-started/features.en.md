@@ -81,7 +81,7 @@ Output:
 
 ## 3. Selection-Aware Follow-Up
 
-SmartPerfetto sends Perfetto area selections and track-event selections to AI Assistant. Select a time range or event first, then ask:
+SmartPerfetto sends Perfetto area selections and track-event selections to AI Assistant. The frontend sends only event/track identity and time bounds; card display queries are not analysis evidence, and the backend re-queries names, thread/process identity, and anomaly status. Select a time range or event first, then ask:
 
 ```text
 Only inspect my selected time range. Why did the UI thread slow down?
@@ -98,6 +98,7 @@ Output:
 - The AI focuses on the selected context first.
 - Useful for reducing a large trace to one tap, one scroll, one frame, or one suspicious slice.
 - Follow-up questions reuse the current session so you can narrow the root cause step by step.
+- The `/anr` and `/jank` shortcuts use the backend evidence pipeline and do not fall back to local threshold guesses when AI is disabled by policy.
 
 ## 4. Evidence Tables, Skill Results, And Traceable Conclusions
 

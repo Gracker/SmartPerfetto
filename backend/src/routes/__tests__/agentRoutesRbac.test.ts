@@ -352,7 +352,14 @@ describe('agent route RBAC', () => {
       `/api/agent/v1/conversation/${second.body.sessionId}/stream?runId=${second.body.runId}`,
     ));
 
-    expect(receivedOptions[0].selectionContext).toEqual(selectedSlice);
+    expect(receivedOptions[0].selectionContext).toEqual({
+      kind: 'track_event',
+      source: 'track_event_selection',
+      trackUri: '/process_1/thread_2',
+      eventId: 42,
+      ts: 1000,
+      dur: 250,
+    });
     expect(receivedOptions[1].selectionContext).toBeUndefined();
   });
 

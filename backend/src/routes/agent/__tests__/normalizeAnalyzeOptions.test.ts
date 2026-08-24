@@ -32,6 +32,92 @@ describe('normalizeAnalyzeOptions', () => {
     )).toThrow(expect.objectContaining({code: 'INVALID_SELECTION_CONTEXT'}));
   });
 
+  it('admits only bounded track identities for an area selection', () => {
+    expect(normalizeAnalyzeOptions(
+      {
+        selectionContext: {
+          kind: 'area',
+          source: 'area_selection',
+          startNs: 100,
+          endNs: 200,
+          tracks: [
+            {
+              uri: '/process_1/thread_2',
+              utid: 2,
+              upid: 1,
+              cpu: 6,
+              kind: 'thread_slice',
+              threadName: 'untrusted-main',
+              processName: 'untrusted-app',
+              tid: 2002,
+              pid: 1001,
+            },
+          ],
+        },
+      },
+      {endpoint: '/analyze', hasReferenceTraceId: false},
+    ).selectionContext).toEqual({
+      kind: 'area',
+      source: 'area_selection',
+      startNs: 100,
+      endNs: 200,
+      tracks: [{
+        uri: '/process_1/thread_2',
+        utid: 2,
+        upid: 1,
+        cpu: 6,
+        kind: 'thread_slice',
+      }],
+    });
+  });
+
+  it.each([
+    ['missing uri', {utid: 1}],
+    ['empty uri', {uri: ' '}],
+    ['non-integer utid', {uri: '/thread', utid: '1'}],
+    ['negative cpu', {uri: '/cpu', cpu: -1}],
+  ])('rejects invalid area track identity: %s', (_label, track) => {
+    expect(() => normalizeAnalyzeOptions(
+      {
+        selectionContext: {
+          kind: 'area',
+          startNs: 100,
+          endNs: 200,
+          tracks: [track],
+        },
+      },
+      {endpoint: '/analyze', hasReferenceTraceId: false},
+    )).toThrow(expect.objectContaining({code: 'INVALID_SELECTION_CONTEXT'}));
+  });
+
+  it('strips legacy frontend-resolved slice metadata before runtime admission', () => {
+    expect(normalizeAnalyzeOptions(
+      {
+        selectionContext: {
+          kind: 'track_event',
+          source: 'track_event_selection',
+          trackUri: '/process_1/thread_2',
+          eventId: 42,
+          ts: 1000,
+          dur: 250,
+          name: 'untrusted-name',
+          threadName: 'untrusted-main',
+          processName: 'untrusted-app',
+          depth: 3,
+          childCount: 4,
+        },
+      },
+      {endpoint: '/analyze', hasReferenceTraceId: false},
+    ).selectionContext).toEqual({
+      kind: 'track_event',
+      source: 'track_event_selection',
+      trackUri: '/process_1/thread_2',
+      eventId: 42,
+      ts: 1000,
+      dur: 250,
+    });
+  });
+
   it('accepts only canonical request output languages', () => {
     expect(normalizeAnalyzeOptions(
       {outputLanguage: 'en'},

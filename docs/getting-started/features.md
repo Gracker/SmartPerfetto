@@ -76,7 +76,7 @@ SmartPerfetto 内置 Android 性能分析场景，适合从 trace 中快速定�
 
 ## 3. 选区和上下文追问
 
-SmartPerfetto 会把 Perfetto UI 中的 area selection 或 track event selection 传给 AI Assistant。你可以先在时间线上选中一段，再问：
+SmartPerfetto 会把 Perfetto UI 中的 area selection 或 track event selection 传给 AI Assistant。前端只传 Event/Track 身份和时间边界，不把卡片展示查询当作分析证据；名称、线程、进程和异常状态由后端工具重新查询并验证。你可以先在时间线上选中一段，再问：
 
 ```text
 只看我选中的这段时间，为什么 UI thread 变慢？
@@ -93,6 +93,7 @@ SmartPerfetto 会把 Perfetto UI 中的 area selection 或 track event selection
 - AI 会优先围绕选区分析。
 - 适合把大 trace 缩小到一次点击、一次滑动、一帧或一个可疑 slice。
 - 多轮追问会复用当前 session，适合逐步收敛根因。
+- `/anr` 和 `/jank` 快捷命令也走后端证据管线；AI 被策略禁用时不会退回本地阈值猜测。
 
 ## 4. 证据表格、Skill 结果和可追溯结论
 

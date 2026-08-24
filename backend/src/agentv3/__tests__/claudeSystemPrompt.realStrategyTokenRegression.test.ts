@@ -10,6 +10,7 @@ import type {
   TraceCompleteness,
 } from '../types';
 import {
+  buildSelectionContextSection,
   buildSystemPromptParts,
   estimatePromptTokens,
   MAX_PROMPT_TOKENS,
@@ -46,6 +47,39 @@ function makeArchitecture(): ArchitectureInfo {
     },
   };
 }
+
+describe('selection strategy evidence ownership', () => {
+  it('requires backend evidence queries for selected-event descriptive facts', () => {
+    const section = buildSelectionContextSection({
+      kind: 'track_event',
+      source: 'track_event_selection',
+      trackUri: '/process_1/actual_frames',
+      eventId: 42,
+      ts: 1_500_000_000,
+      dur: 16_000_000,
+    });
+
+    expect(section).toContain('/process_1/actual_frames');
+    expect(section).toContain('先查询');
+    expect(section).not.toContain('已由前端预查询');
+    expect(section).not.toContain('前端预查询 Trace 数据');
+  });
+
+  it('does not instruct area analysis to reuse hidden frontend datasets', () => {
+    const section = buildSelectionContextSection({
+      kind: 'area',
+      source: 'area_selection',
+      startNs: 100,
+      endNs: 200,
+      durationNs: 100,
+      tracks: [{uri: '/cpu_6', cpu: 6, kind: 'cpu_slice'}],
+    });
+
+    expect(section).toContain('cpu=6');
+    expect(section).not.toContain('traceContext');
+    expect(section).not.toContain('预取');
+  });
+});
 
 function makeTraceCompleteness(): TraceCompleteness {
   return {
@@ -157,9 +191,9 @@ function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysi
       durationNs: 3_500_000_000,
       trackCount: 4,
       tracks: [
-        { uri: 'track://main', processName: 'com.example.smartperfetto.demo', threadName: 'main', pid: 100, tid: 101 },
-        { uri: 'track://rt', processName: 'com.example.smartperfetto.demo', threadName: 'RenderThread', pid: 100, tid: 102 },
-        { uri: 'track://raster', processName: 'com.example.smartperfetto.demo', threadName: '1.raster', pid: 100, tid: 103 },
+        { uri: 'track://main', upid: 100, utid: 101, kind: 'thread_slice' },
+        { uri: 'track://rt', upid: 100, utid: 102, kind: 'thread_slice' },
+        { uri: 'track://raster', upid: 100, utid: 103, kind: 'thread_slice' },
         { uri: 'track://cpu0', cpu: 0 },
       ],
     },

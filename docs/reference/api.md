@@ -359,6 +359,8 @@ DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转
 
 支持的 `selectionContext`：
 
+该对象只接受身份和时间边界。旧客户端附带的名称、线程、进程、深度或子项数量会在请求归一化时被丢弃，不会进入 runtime prompt 或证据状态。
+
 ```json
 {
   "selectionContext": {

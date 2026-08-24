@@ -56,7 +56,7 @@ describe('runtimeCommon', () => {
     expect(isFreshRuntimeEntry(undefined, 100, now)).toBe(false);
   });
 
-  it('formats frontend trace datasets once for both runtimes', () => {
+  it('formats explicit request trace datasets once for both runtimes', () => {
     const datasets = decorateTraceContextDatasets([{
       label: 'Frame stats',
       columns: ['name', 'dur_ms'],
@@ -71,7 +71,7 @@ describe('runtimeCommon', () => {
     const markdown = formatTraceContext(datasets, 'en');
     const envelopes = buildTraceContextDataEnvelopes(datasets, 'trace-a');
 
-    expect(markdown).toContain('## Frontend Pre-queried Trace Data');
+    expect(markdown).toContain('## Request-provided Trace Data');
     expect(markdown).toContain('### Frame stats');
     expect(markdown).toContain('evidence_ref_id: `data:frontend_prequery:reference:');
     expect(markdown).toContain('source_tool_call_id: `frontend-prequery:');

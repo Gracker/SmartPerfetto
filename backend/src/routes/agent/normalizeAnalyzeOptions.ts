@@ -9,6 +9,7 @@ import {
 } from '../../services/codebase/codeAwareFeature';
 import type {
   SelectionContext,
+  SelectionTrackInfo,
   TracePairContext,
   TracePairLayout,
   TracePaneSide,
@@ -357,6 +358,63 @@ function safeNonNegativeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
+function normalizeSelectionTrackInfo(
+  value: unknown,
+  index: number,
+): SelectionTrackInfo {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new AnalyzeOptionsError(
+      'area selectionContext tracks must contain objects',
+      'INVALID_SELECTION_CONTEXT',
+      400,
+      {index},
+    );
+  }
+  const raw = value as Record<string, unknown>;
+  if (
+    typeof raw.uri !== 'string' ||
+    raw.uri.trim().length === 0 ||
+    raw.uri.trim().length > 512
+  ) {
+    throw new AnalyzeOptionsError(
+      'area selectionContext track uri must be a non-empty bounded string',
+      'INVALID_SELECTION_CONTEXT',
+      400,
+      {index},
+    );
+  }
+  for (const key of ['utid', 'upid', 'cpu'] as const) {
+    if (raw[key] !== undefined && !safeNonNegativeInteger(raw[key])) {
+      throw new AnalyzeOptionsError(
+        `area selectionContext track ${key} must be a non-negative safe integer`,
+        'INVALID_SELECTION_CONTEXT',
+        400,
+        {index},
+      );
+    }
+  }
+  if (
+    raw.kind !== undefined &&
+    (typeof raw.kind !== 'string' ||
+      raw.kind.trim().length === 0 ||
+      raw.kind.trim().length > 128)
+  ) {
+    throw new AnalyzeOptionsError(
+      'area selectionContext track kind must be a non-empty bounded string',
+      'INVALID_SELECTION_CONTEXT',
+      400,
+      {index},
+    );
+  }
+  return {
+    uri: raw.uri.trim(),
+    ...(safeNonNegativeInteger(raw.utid) ? {utid: raw.utid} : {}),
+    ...(safeNonNegativeInteger(raw.upid) ? {upid: raw.upid} : {}),
+    ...(safeNonNegativeInteger(raw.cpu) ? {cpu: raw.cpu} : {}),
+    ...(typeof raw.kind === 'string' ? {kind: raw.kind.trim()} : {}),
+  };
+}
+
 /** Strict shared parser for every HTTP surface that accepts a UI selection. */
 export function normalizeSelectionContext(value: unknown): SelectionContext | undefined {
   if (value === undefined || value === null) return undefined;
@@ -409,7 +467,9 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
       startNs: raw.startNs,
       endNs: raw.endNs,
       ...(raw.durationNs !== undefined ? {durationNs: raw.durationNs as number} : {}),
-      ...(Array.isArray(raw.tracks) ? {tracks: raw.tracks as never} : {}),
+      ...(Array.isArray(raw.tracks)
+        ? {tracks: raw.tracks.map(normalizeSelectionTrackInfo)}
+        : {}),
       ...(safeNonNegativeInteger(raw.trackCount) ? {trackCount: raw.trackCount} : {}),
     };
   }
@@ -432,20 +492,14 @@ export function normalizeSelectionContext(value: unknown): SelectionContext | un
         'INVALID_SELECTION_CONTEXT',
       );
     }
-    const optionalText = (key: 'trackUri' | 'name' | 'threadName' | 'processName') =>
-      normalizeOptionalString(raw[key], 512);
+    const trackUri = normalizeOptionalString(raw.trackUri, 512);
     return {
       kind: 'track_event',
       ...(raw.source ? {source: 'track_event_selection' as const} : {}),
       eventId: raw.eventId,
       ts: raw.ts,
       ...(raw.dur !== undefined ? {dur: raw.dur as number} : {}),
-      ...(optionalText('trackUri') ? {trackUri: optionalText('trackUri')} : {}),
-      ...(optionalText('name') ? {name: optionalText('name')} : {}),
-      ...(optionalText('threadName') ? {threadName: optionalText('threadName')} : {}),
-      ...(optionalText('processName') ? {processName: optionalText('processName')} : {}),
-      ...(safeNonNegativeInteger(raw.depth) ? {depth: raw.depth} : {}),
-      ...(safeNonNegativeInteger(raw.childCount) ? {childCount: raw.childCount} : {}),
+      ...(trackUri ? {trackUri} : {}),
     };
   }
   throw new AnalyzeOptionsError(

@@ -65,7 +65,7 @@ jest.mock('../strategyLoader', () => ({
   }),
   loadSelectionTemplate: jest.fn((kind: string) => {
     if (kind === 'area') return '## 用户选区\n\n时间范围: {{startNs}} - {{endNs}} ({{durationMs}}ms)\nTrack 数: {{trackCount}}{{trackSummary}}';
-    if (kind === 'slice') return '## 用户选区\n\n选中 Slice: eventId={{eventId}}, ts={{ts}}, dur={{durationStr}}';
+    if (kind === 'slice') return '## 用户选区\n\n选中 Slice 身份: trackUri={{trackUri}}, eventId={{eventId}}, ts={{ts}}, dur={{durationStr}}';
     return null;
   }),
   renderTemplate: jest.fn((template: string, vars: Record<string, any>) => {
@@ -402,6 +402,32 @@ describe('buildSystemPrompt', () => {
       expect(prompt).toContain('1000.00'); // durationMs
     });
 
+    it('formats bounded area track identities without trusting client names', () => {
+      const prompt = buildSystemPrompt(makeContext({
+        selectionContext: {
+          kind: 'area',
+          startNs: 100,
+          endNs: 200,
+          tracks: [{
+            uri: '/process_1/thread_2',
+            utid: 2,
+            upid: 1,
+            cpu: 6,
+            kind: 'thread_slice',
+            threadName: 'untrusted-main',
+            processName: 'untrusted-app',
+          } as any, {uri: '/custom_track'}],
+        },
+      }));
+
+      expect(prompt).toContain('uri=/custom_track');
+      expect(prompt).toContain('utid=2');
+      expect(prompt).toContain('upid=1');
+      expect(prompt).toContain('cpu=6');
+      expect(prompt).not.toContain('untrusted-main');
+      expect(prompt).not.toContain('untrusted-app');
+    });
+
     it('should format track_event selection', () => {
       const prompt = buildSystemPrompt(makeContext({
         selectionContext: {
@@ -413,6 +439,26 @@ describe('buildSystemPrompt', () => {
       }));
       expect(prompt).toContain('Slice');
       expect(prompt).toContain('42');
+    });
+
+    it('formats a selected event from identity without frontend-resolved facts', () => {
+      const prompt = buildSystemPrompt(makeContext({
+        selectionContext: {
+          kind: 'track_event',
+          trackUri: '/process_1/actual_frames',
+          eventId: 42,
+          ts: 1500000000,
+          dur: 16000000,
+          name: 'untrusted-name',
+          threadName: 'untrusted-main',
+          processName: 'untrusted-app',
+        } as any,
+      }));
+
+      expect(prompt).toContain('trackUri=/process_1/actual_frames');
+      expect(prompt).not.toContain('untrusted-name');
+      expect(prompt).not.toContain('untrusted-main');
+      expect(prompt).not.toContain('untrusted-app');
     });
   });
 

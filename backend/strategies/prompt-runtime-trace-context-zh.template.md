@@ -1,5 +1,5 @@
-## 前端预查询 Trace 数据
+## 请求显式提供的 Trace 数据
 
-以下数据已由前端查询完毕，直接使用，无需重复 SQL 查询。回答中引用这些数据时使用对应的 evidence_ref_id（例如 data:frontend_prequery:*）：
+以下 dataset 来自显式兼容客户端或内部确定性 producer。只使用带有效 evidence_ref_id 的数据，不重复等价 SQL。历史 evidence namespace 仍为 `data:frontend_prequery:*`；当前 UI 不会自动附加选区卡片查询：
 
 {{datasets}}

@@ -146,7 +146,7 @@ complex investigations should use full mode.
 
 ## Selection and Follow-Up
 
-The frontend sends area selections or track-event selections to the backend as `selectionContext`. Good prompts include:
+The frontend sends area selections or track-event selections to the backend as `selectionContext`, containing only event/track identity and time bounds. Card display queries are not attached as hidden evidence; the backend re-queries names, thread/process identity, and anomaly status. Good prompts include:
 
 ```text
 Only inspect my selected time range. Why did the UI thread slow down?
@@ -154,6 +154,8 @@ Is there a Binder or scheduling problem around this slice?
 ```
 
 Follow-up questions reuse the current session. Switching between conversation, fast, full, and auto starts a new SDK session so lightweight and full contexts do not mix.
+
+`/anr` and `/jank` use the same backend evidence, claim-verification, and report path as ordinary analysis. They are blocked when backend policy disables AI.
 
 ## Source And Android Internals Background
 

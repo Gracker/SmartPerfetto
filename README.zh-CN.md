@@ -42,6 +42,8 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
 - 保留 Perfetto 时间线和 SQL 工作流，并通过 AI Assistant 提供证据化结论、连续追问、
   对比和报告。
 - 使用确定性的 YAML Skill 与 Markdown 策略，将事实证据、模型解释和报告来源分开。
+- UI 选区只传身份与时间边界；名称等描述性事实由后端重新查询，`/anr` 与 `/jank`
+  也进入同一套证据和验证管线。
 - 支持浏览器 UI、`smp` CLI 和 HTTP/SSE 接入；完整范围见
   [功能总览](docs/getting-started/features.md)。
 

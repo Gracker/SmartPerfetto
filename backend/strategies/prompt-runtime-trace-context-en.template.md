@@ -1,5 +1,5 @@
-## Frontend Pre-queried Trace Data
+## Request-provided Trace Data
 
-The frontend has already queried the following data. Use it directly; do not repeat the same SQL query. When citing these data, use the corresponding evidence_ref_id (for example data:frontend_prequery:*).
+An explicit compatibility client or an internal deterministic producer supplied the following datasets. Use only datasets carrying a valid evidence_ref_id, and do not repeat an equivalent SQL query. The legacy evidence namespace remains `data:frontend_prequery:*`; the current UI does not attach selection-card queries automatically.
 
 {{datasets}}

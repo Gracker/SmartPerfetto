@@ -250,26 +250,16 @@ export interface TrackEventSelectionContext {
   eventId: number;
   ts: number;
   dur?: number;
-  // Pre-queried metadata from frontend (avoids first SQL turn)
-  name?: string;
-  threadName?: string;
-  processName?: string;
-  depth?: number;
-  childCount?: number;
 }
 
 /** Discriminated union: either an area or a single-slice selection from Perfetto UI. */
 export type SelectionContext = AreaSelectionContext | TrackEventSelectionContext;
 
-/** Human-readable metadata for a track in an area selection. */
+/** Stable Perfetto track identity supplied by the UI. */
 export interface SelectionTrackInfo {
   uri: string;
   utid?: number;
   upid?: number;
-  threadName?: string;
-  processName?: string;
-  tid?: number;
-  pid?: number;
   cpu?: number;
   kind?: string;
 }
