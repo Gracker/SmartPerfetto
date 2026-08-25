@@ -439,6 +439,10 @@ test('Windows cross-platform contracts build and inject the fixed Go gate helper
 
   assert.match(
     crossPlatform,
+    /- name: Checkout\s+uses: actions\/checkout@v7\s+with:\s+submodules: recursive/,
+  );
+  assert.match(
+    crossPlatform,
     /actions\/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7/,
   );
   assert.match(crossPlatform, /go-version: "1\.25\.0"/);
