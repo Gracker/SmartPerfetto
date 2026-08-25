@@ -110,6 +110,17 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Fetch Perfetto source identity history
+        shell: bash
+        run: |
+          if [ "$(git -C perfetto rev-parse --is-shallow-repository)" = "true" ]; then
+            git -C perfetto fetch --unshallow --tags origin
+          else
+            git -C perfetto fetch --tags origin
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v7

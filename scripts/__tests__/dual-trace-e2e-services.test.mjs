@@ -83,3 +83,41 @@ test('dual-trace diagnostics reject unauthenticated or forbidden responses', asy
     /Authenticated runtime health returned HTTP 403/,
   );
 });
+
+test('dual-trace diagnostics retry a cold runtime-health timeout', async () => {
+  let attempts = 0;
+  const diagnostics = {
+    status: 'OK',
+    environment: 'test',
+    aiEngine: {
+      runtime: 'openai-agents-sdk',
+      source: 'env',
+      providerMode: 'openai_chat_completions_compatible',
+      configured: true,
+      aiEnabled: true,
+      authRequired: true,
+    },
+  };
+
+  const result = await fetchBackendDiagnostics(
+    'http://127.0.0.1:3000',
+    'test-key',
+    async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const timeout = new Error('cold runtime health');
+        timeout.name = 'TimeoutError';
+        throw timeout;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => diagnostics,
+      };
+    },
+    {attempts: 3, retryDelayMs: 0},
+  );
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(result, diagnostics);
+});

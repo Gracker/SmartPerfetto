@@ -11,6 +11,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.8.0] - 2026-08-25
+
+### Added
+- The AI Assistant can open a dual-Trace workspace before any Trace is loaded,
+  upload or replace baseline and comparison files independently, hand the pair
+  into the main Viewer, and restore the pair and layout after page reload.
+- Analysis receipts and reports now carry versioned trace-processor capability
+  attribution, canonical trace summaries, deterministic evidence-relation
+  checks, and shared selection evidence across comparison consumers.
+- Offline golden evaluation and production shadow-routing foundations now record
+  accuracy experiments and escalation recommendations without silently changing
+  the public `fast`, `full`, or `auto` provider budget.
+
+### Changed
+- Live raw-Trace comparison now supports any two distinct workspace traces,
+  stable baseline/comparison roles, explicit swapping, pane-local upload state,
+  and persisted local/API-key workspaces while retaining OIDC page-local Trace
+  isolation.
+- The bundled Perfetto UI, trace processor, SQL documentation/indexes, and
+  global trace sanity contracts are synchronized to Perfetto v58.2.
+
+### Fixed
+- Invalid DataEnvelope, pipeline-detection, capability-manifest, and evidence
+  inputs now fail closed, while correlation evidence remains explicitly below
+  causal claims.
+- Dual-Trace browser diagnostics now tolerate bounded cold-backend readiness
+  delays without hiding authentication failures, and stale pane uploads cannot
+  overwrite a reset workspace lifecycle.
+
 ## [1.7.0] - 2026-08-21
 
 ### Added

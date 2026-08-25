@@ -381,7 +381,7 @@ DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转
 }
 ```
 
-双 trace 对比需要传 `referenceTraceId`，且不能与 `traceId` 相同。
+双 trace 对比需要传 `referenceTraceId`，且不能与 `traceId` 相同。`traceId` 表示基线，`referenceTraceId` 表示对比；两者都可以来自 workspace 历史 Trace。
 
 智能分析通过同一个 `/analyze` 入口启动。第一次请求建议只做场景盘点：
 

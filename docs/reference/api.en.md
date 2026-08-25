@@ -418,7 +418,7 @@ Names, thread/process labels, depth, or child counts sent by older clients are
 stripped during request normalization and do not enter runtime prompts or
 evidence state.
 
-Dual-trace comparison requires `referenceTraceId`, and it must be different from `traceId`.
+Dual-trace comparison requires `referenceTraceId`, and it must be different from `traceId`. `traceId` is the baseline and `referenceTraceId` is the comparison; either may be a workspace-history trace.
 
 Smart analysis uses the same `/analyze` endpoint. The first request should usually run only the scene inventory:
 

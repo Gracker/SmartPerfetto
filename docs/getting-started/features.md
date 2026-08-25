@@ -126,26 +126,29 @@ AI 分析完成后，后端会生成 HTML report。
 
 ## 6. Trace 实时对比
 
-Trace 实时对比用于在同一个 AI 对话中，把当前页面的 current Trace 与一条 workspace 历史 reference Trace 放进可自由换位的双窗，让 AI 同时查询两条 Trace。
+Trace 实时对比用于在同一个 AI 对话中，从当前 workspace 任意选择两条 Trace 放进基线/对比双窗，让 AI 同时查询两侧数据。
 
 入口：
 
 - 在 AI Assistant 顶部点击 `compare_arrows`。
-- `打开双窗` 会立即打开 current + 空 reference 的双窗壳，不需要先经过历史 Trace picker。
-- 两个窗口都有 selector。任一窗口都可选择 current 或历史 Trace；如果在 current 所在窗口选择历史 Trace，current 会原子移动到另一个窗口。
+- 没有当前 Trace 时，在无 Trace AI Assistant 页面点击 `双 Trace`，直接打开左右都为空的双窗。
+- `打开双窗` 会立即把当前页面 Trace 作为默认基线，并打开一个空的对比窗，不需要先经过历史 Trace picker。
+- 两个窗口都有 selector。左/上固定为基线，右/下固定为对比；两侧都可以选择当前 workspace 的任意 Trace。
+- 空 pane 提供“上传 Trace”，已有内容提供“替换文件”；上传走 workspace backend 并自动选择新 `traceId`，两侧可并行上传。
 - 历史选项以 Trace filename 为主；只有同名 Trace 需要区分时才追加上传时间和文件大小，不再把内部 id 当作主名称。
-- 选择历史 Trace 后，它成为唯一 reference。仍然只支持“当前页面的 current parent + 一个历史 reference”，不支持任意两个历史 Trace 互相对比。
+- 当前页面 Trace 只负责提供初始默认值，不强制留在 pair 中；支持“历史 A + 历史 B”。选择另一侧已有 Trace 或点击“交换”会原子交换基线/对比。
 - 可以切换横向/纵向、拖动分隔条、最大化/最小化任意一边，或把某一边在新标签页打开。
 - 双窗工具栏常驻明确的“AI 助手”按钮，用于收起或恢复对话面板；操作不会关闭双窗，也不会重新加载任一 Trace。
 - 布局切换、最大化/最小化以及 AI Panel 的隐藏/再次显示不会重新加载双窗 iframe。只有显式退出双窗、当前 Trace unload 或 workspace 切换才销毁它们。
-- `退出双窗` 会释放视觉窗口，但可以继续保留双 Trace AI 上下文；`退出对比` 会清空 reference Trace。
-- 继续提问，例如 `对比当前 trace 和参考 trace 的滑动差异`、`左边启动为什么慢`、`上面的 trace 和下面的 trace 频率差异是什么`。
+- 最近 pair 与布局按 workspace 本地保存；Trace、完成分析、snapshot 和报告继续使用后端现有持久化。重启后的未完成 run 明确标记中断，不冒充完成。
+- `退出双窗` 会释放视觉窗口，但可以继续保留双 Trace AI 上下文；`退出对比` 会清空 pair。
+- 继续提问，例如 `对比基线和对比 Trace 的滑动差异`、`左边启动为什么慢`、`上面的 trace 和下面的 trace 频率差异是什么`。
 
 效果：
 
-- AI 可以在同一次分析中访问 current/reference 两条 raw trace。
-- AI Panel 会把 current/reference、left/right、top/bottom、当前激活侧、双窗是否打开、分隔比例、最大化/最小化状态一起传给后端。
-- 用户说“左边、右边、上面、下面、current、reference”时，AI 会按当前实际窗口映射解析到对应 Trace；双窗退出后仍可继续用 current/reference 提问。
+- AI 可以在同一次分析中访问基线/对比两条 raw trace。
+- AI Panel 会把基线/对比、left/right、top/bottom、当前激活侧、双窗是否打开、分隔比例、最大化/最小化状态一起传给后端；兼容字段仍为 `current/reference`。
+- 用户说“左边、右边、上面、下面、基线、对比”时，AI 会按当前实际窗口映射解析到对应 Trace；双窗退出后仍可继续用基线/对比提问。
 - 适合临时对比两条已加载或可访问的 Trace。
 - 这个模式偏实时分析，不是跨窗口、跨用户的持久结果对比。
 

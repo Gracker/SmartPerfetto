@@ -875,8 +875,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     const agent = FakePiAgent.instances[0];
     expect(agent.state.systemPrompt).toContain('## 对比模式');
     expect(agent.state.systemPrompt).toContain('### 窗口映射');
-    expect(agent.state.systemPrompt).toContain('左侧/当前 Trace');
-    expect(agent.state.systemPrompt).toContain('右侧/参考 Trace');
+    expect(agent.state.systemPrompt).toContain('左侧/基线 Trace');
+    expect(agent.state.systemPrompt).toContain('右侧/对比 Trace');
     expect(agent.state.systemPrompt).toContain('共有表/视图**: 0 个，不可直接对比');
     expect(agent.state.systemPrompt).toContain('android_current_only');
     expect(agent.state.systemPrompt).toContain('android_reference_only');

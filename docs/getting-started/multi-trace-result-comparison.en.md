@@ -8,7 +8,7 @@ Multi-trace analysis result comparison compares completed AI analysis results. I
 
 ## What It Solves
 
-The older dual-trace comparison flow is a live "current trace + reference trace" mode: the AI queries two raw traces during one conversation. The new result comparison flow reuses completed analysis outputs. After each AI analysis finishes, SmartPerfetto stores comparable metrics, evidence references, and report links as an analysis result snapshot. Later, you can select 2 or more snapshots and compare them side by side.
+Dual-trace comparison is a live mode: choose any baseline/comparison pair from the same workspace and the AI queries both raw traces during one conversation. Result comparison instead reuses completed analysis outputs. After each AI analysis finishes, SmartPerfetto stores comparable metrics, evidence references, and report links as an analysis result snapshot. Later, you can select 2 or more snapshots and compare them side by side.
 
 This means:
 
@@ -118,7 +118,7 @@ Usually the current workspace has no completed AI analysis yet, or other users' 
 
 ### How is this different from the old trace comparison mode?
 
-The old `compare_arrows` entry is live trace comparison. It lets the AI query the current trace and a temporary reference trace in one conversation.
+The `compare_arrows` entry is live trace comparison. It lets the AI query any baseline/comparison trace pair from the same workspace in one conversation.
 
 The new `fact_check` entry is analysis result comparison. It is designed for multiple windows, multiple users, and completed analysis results. It relies on backend-persisted snapshots and does not require another Perfetto UI window to stay alive.
 

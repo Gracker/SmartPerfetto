@@ -249,8 +249,8 @@ See [Code-Aware Analysis](../getting-started/code-aware-analysis.en.md).
 ## Trace Comparison
 
 ```bash
-smp compare current.perfetto-trace reference.perfetto-trace --query "Compare startup differences"
-smp compare current.perfetto-trace reference.perfetto-trace --query "Compare jank root causes" --format ndjson
+smp compare baseline.perfetto-trace comparison.perfetto-trace --query "Compare startup differences"
+smp compare baseline.perfetto-trace comparison.perfetto-trace --query "Compare jank root causes" --format ndjson
 ```
 
 `compare` passes the second trace as the reference trace and enables dual-trace

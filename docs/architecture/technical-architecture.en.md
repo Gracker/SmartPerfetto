@@ -207,15 +207,16 @@ from chat must not remove provenance from reports, snapshots, or CLI artifacts.
 
 SmartPerfetto maintains two distinct comparison products:
 
-1. **Raw trace comparison** queries current + reference traces in one AI
-   session. CLI `smp compare` and the dual-view UI share backend comparison
-   context, Skills, and report sections.
+1. **Raw trace comparison** queries any baseline + comparison pair from the
+   same workspace in one AI session. CLI `smp compare` and the dual-view UI
+   share backend comparison context, Skills, and report sections; API
+   compatibility roles remain current + reference.
 2. **Analysis-result comparison** compares persisted snapshots across windows
    or traces and follows workspace/RBAC/share rules.
 
 They may reuse standard metrics and report sections, but raw comparison must
 not become a private UI/CLI prompt, and snapshot comparison must not be
-described as arbitrary history-versus-history raw dual view.
+confused with the live arbitrary raw-trace dual view.
 
 ## 9. Source And Knowledge Context
 

@@ -158,8 +158,8 @@ describe('buildSystemPrompt', () => {
       expect(parts.fullPrompt).toContain('TEMPLATE 对比模式');
       expect(parts.fullPrompt).toContain('### 窗口映射');
       expect(parts.fullPrompt).toContain('- 布局: 上下');
-      expect(parts.fullPrompt).toContain('- 上方: 当前 Trace (before.trace)，当前焦点，可视窗口');
-      expect(parts.fullPrompt).toContain('- 下方: 参考 Trace (after.trace)，可视窗口');
+      expect(parts.fullPrompt).toContain('- 上方: 基线 Trace (before.trace)，当前焦点，可视窗口');
+      expect(parts.fullPrompt).toContain('- 下方: 对比 Trace (after.trace)，可视窗口');
       expect(parts.fullPrompt).toContain('共有表/视图');
       expect(parts.fullPrompt).toContain('TEMPLATE 对比分析方法论');
       expect(parts.fullPrompt).toContain('compare_skill');
