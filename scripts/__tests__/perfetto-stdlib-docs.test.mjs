@@ -214,14 +214,16 @@ test('runtime asset generation requires an exact immutable revision', () => {
 });
 
 test('public export Perfetto identities match the runtime pin and release artifact', () => {
-  const pinText = fs.readFileSync(
+  const normalizeNewlines = (value) => value.replace(/\r\n/g, '\n');
+  assert.equal(normalizeNewlines('a\r\nb\r\n'), 'a\nb\n');
+  const pinText = normalizeNewlines(fs.readFileSync(
     path.join(projectRoot, 'scripts/trace-processor-pin.env'),
     'utf8',
-  );
-  const policyText = fs.readFileSync(
+  ));
+  const policyText = normalizeNewlines(fs.readFileSync(
     path.join(projectRoot, 'backend/skills/public-export.yaml'),
     'utf8',
-  );
+  ));
   const pinValue = (key) => pinText.match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1];
   const blockValue = (block, key) => policyText
     .match(new RegExp(`${block}:\\n([\\s\\S]*?)(?=\\n\\S|$)`))?.[1]
