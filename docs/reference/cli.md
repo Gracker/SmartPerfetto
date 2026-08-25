@@ -234,8 +234,8 @@ smp run trace.perfetto-trace \
 ## 双 Trace 对比
 
 ```bash
-smp compare current.perfetto-trace reference.perfetto-trace --query "对比启动阶段差异"
-smp compare current.perfetto-trace reference.perfetto-trace --query "对比卡顿根因" --format ndjson
+smp compare baseline.perfetto-trace comparison.perfetto-trace --query "对比启动阶段差异"
+smp compare baseline.perfetto-trace comparison.perfetto-trace --query "对比卡顿根因" --format ndjson
 ```
 
 `compare` 会把第二个 trace 作为 reference trace 传给 AI runtime，启用双 trace

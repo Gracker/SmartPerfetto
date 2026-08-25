@@ -260,8 +260,8 @@ function comparisonTraceDisplayLabel(
 ): string {
   const pane = ctx.tracePairContext?.panes.find(item => item.traceSide === traceSide);
   const role = traceSide === 'current'
-    ? localize(outputLanguage, '当前 Trace', 'Current trace')
-    : localize(outputLanguage, '参考 Trace', 'Reference trace');
+    ? localize(outputLanguage, '基线 Trace', 'Baseline trace')
+    : localize(outputLanguage, '对比 Trace', 'Comparison trace');
   return pane ? `${tracePaneSideLabel(pane.side, outputLanguage)}/${role}` : role;
 }
 
@@ -289,29 +289,29 @@ function buildTracePairMappingSection(
   if (pair.splitPercent !== undefined) {
     lines.push(localize(
       outputLanguage,
-      `- 分割比例: 主窗口 ${pair.splitPercent}%`,
-      `- Split ratio: primary pane ${pair.splitPercent}%`,
+      `- 分割比例: 基线窗口 ${pair.splitPercent}%`,
+      `- Split ratio: baseline pane ${pair.splitPercent}%`,
     ));
   }
   if (pair.maximizedTraceSide) {
     lines.push(localize(
       outputLanguage,
-      `- 最大化: ${pair.maximizedTraceSide === 'current' ? '当前 Trace' : '参考 Trace'}`,
-      `- Maximized: ${pair.maximizedTraceSide === 'current' ? 'current trace' : 'reference trace'}`,
+      `- 最大化: ${pair.maximizedTraceSide === 'current' ? '基线 Trace' : '对比 Trace'}`,
+      `- Maximized: ${pair.maximizedTraceSide === 'current' ? 'baseline trace' : 'comparison trace'}`,
     ));
   }
   if (pair.minimizedTraceSides && pair.minimizedTraceSides.length > 0) {
     const minimized = pair.minimizedTraceSides
       .map(traceSide => traceSide === 'current'
-        ? localize(outputLanguage, '当前 Trace', 'current trace')
-        : localize(outputLanguage, '参考 Trace', 'reference trace'))
+        ? localize(outputLanguage, '基线 Trace', 'baseline trace')
+        : localize(outputLanguage, '对比 Trace', 'comparison trace'))
       .join(localize(outputLanguage, '、', ', '));
     lines.push(localize(outputLanguage, `- 最小化: ${minimized}`, `- Minimized: ${minimized}`));
   }
   for (const pane of pair.panes) {
     const role = pane.traceSide === 'current'
-      ? localize(outputLanguage, '当前 Trace', 'Current trace')
-      : localize(outputLanguage, '参考 Trace', 'Reference trace');
+      ? localize(outputLanguage, '基线 Trace', 'Baseline trace')
+      : localize(outputLanguage, '对比 Trace', 'Comparison trace');
     const active = pane.active ? localize(outputLanguage, '，当前焦点', ', active') : '';
     const visualState = pane.visualState === 'context_only'
       ? localize(outputLanguage, '，后端上下文', ', backend context')
@@ -330,8 +330,8 @@ function buildTracePairMappingSection(
     if (currentAliases.length > 0 || referenceAliases.length > 0) {
       lines.push(localize(
         outputLanguage,
-        `- 指代别名: 当前 Trace=${currentAliases.join('/') || '无'}；参考 Trace=${referenceAliases.join('/') || '无'}`,
-        `- Trace aliases: current=${currentAliases.join('/') || 'none'}; reference=${referenceAliases.join('/') || 'none'}`,
+        `- 指代别名: 基线 Trace=${currentAliases.join('/') || '无'}；对比 Trace=${referenceAliases.join('/') || '无'}`,
+        `- Trace aliases: baseline=${currentAliases.join('/') || 'none'}; comparison=${referenceAliases.join('/') || 'none'}`,
       ));
     }
   }

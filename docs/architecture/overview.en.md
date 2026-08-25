@@ -296,7 +296,7 @@ reports or snapshots.
 
 | Mode | Entry | Data source | Contract |
 |---|---|---|---|
-| Raw Trace Compare | frontend reference trace, CLI `smp compare` | live current trace + reference trace queries | shared comparison identity, evidence pack, session snapshot, and report section |
+| Raw Trace Compare | frontend baseline/comparison traces, CLI `smp compare` | live queries over any two raw traces in the same workspace | shared comparison identity, evidence pack, session snapshot, and report section; API compatibility roles remain current/reference |
 | Analysis Result Compare | frontend multi-result comparison API | persisted completed-analysis snapshots | keeps workspace/RBAC/matrix behavior and reuses the shared report section |
 
 For the Web UI dual trace workspace state machine, see

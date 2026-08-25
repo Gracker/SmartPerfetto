@@ -125,7 +125,7 @@ GitNexus is an independent optional third-party tool. Its [official project](htt
 
 | Tool | Purpose |
 |---|---|
-| `execute_sql_on` | Run SQL on the current or reference trace |
+| `execute_sql_on` | Run SQL on the baseline or comparison trace; compatibility values remain current/reference |
 | `compare_skill` | Run a Skill on both traces and compare results |
 | `get_comparison_context` | Fetch trace-pair metadata, left/right or top/bottom pane mapping, and comparison context |
 

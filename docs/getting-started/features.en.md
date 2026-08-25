@@ -131,26 +131,29 @@ Output:
 
 ## 6. Live Trace Comparison
 
-Live trace comparison places the current page's current trace and one workspace-history reference trace in a repositionable dual view, so the AI can query both traces in one conversation.
+Live trace comparison lets the user choose any two traces from the current workspace for a baseline/comparison dual view, so the AI can query both traces in one conversation.
 
 Entry points:
 
 - Click `compare_arrows` in the AI Assistant header.
-- `Open Dual View` immediately opens a current-plus-empty-reference shell; no separate history picker is required first.
-- Both panes have a selector. Either pane can show current or history. Selecting history in the pane that holds current atomically moves current to the other pane.
+- With no current trace, click `Dual Trace` on the trace-free AI Assistant page to open two empty panes.
+- `Open Dual View` immediately uses the current page trace as the initial baseline and opens an empty comparison pane; no separate history picker is required first.
+- Both panes have a selector. Left/top is always the baseline and right/bottom is always the comparison; either selector can choose any trace in the current workspace.
+- Empty panes expose `Upload trace`; occupied panes expose `Replace file`. Uploads use the workspace backend, select the returned `traceId`, and may run independently on both sides.
 - History options lead with the trace filename. Upload time/file size are appended only when same-name records need disambiguation; internal ids are never the main label.
-- Once selected, history is the sole reference. The supported pair remains the current page's current parent plus one historical reference; arbitrary history-versus-history pairs are not supported.
+- The current page trace is only an initial default. It is not required to remain in the pair, so history A can be compared directly with history B. Choosing the trace already shown on the other side or clicking `Swap` atomically reverses baseline/comparison.
 - You can switch horizontal/vertical layout, drag the splitter, maximize/minimize either side, or open either side in a new tab.
 - The dual-view toolbar keeps an explicit `AI Assistant` button visible. It collapses or restores the conversation panel without closing or reloading either trace pane.
 - Layout changes, maximize/minimize, and AI Panel hide/show do not reload dual-view iframes. Only explicit dual-view exit, current-trace unload, or workspace switch destroys them.
-- `Exit Dual View` releases the visual workspace while its two-trace AI context may remain; `Exit Comparison` clears the reference trace.
-- Ask a comparison question, for example `Compare scrolling behavior between this trace and the reference trace`, `Why is the left trace slower to start`, or `What frequency difference exists between the top and bottom traces`.
+- The latest pair and layout are stored per workspace. Trace assets, completed analyses, snapshots, and reports use existing backend persistence; interrupted runs remain explicitly interrupted after restart.
+- `Exit Dual View` releases the visual workspace while its two-trace AI context may remain; `Exit Comparison` clears the pair.
+- Ask a comparison question, for example `Compare scrolling behavior between the baseline and comparison traces`, `Why is the left trace slower to start`, or `What frequency difference exists between the top and bottom traces`.
 
 Output:
 
-- The AI can access both current/reference raw traces in one analysis.
-- The AI Panel sends current/reference, left/right, top/bottom, active side, dual-view open state, split ratio, and maximized/minimized state to the backend.
-- When the user says "left", "right", "top", "bottom", "current", or "reference", the AI resolves that wording against the actual pane mapping; after dual-view exit, current/reference wording still works.
+- The AI can access both baseline/comparison raw traces in one analysis.
+- The AI Panel sends baseline/comparison, left/right, top/bottom, active side, dual-view open state, split ratio, and maximized/minimized state to the backend; compatibility fields remain `current/reference`.
+- When the user says "left", "right", "top", "bottom", "baseline", or "comparison", the AI resolves that wording against the actual pane mapping; after dual-view exit, baseline/comparison wording still works.
 - Useful for temporary two-trace comparison.
 - This mode is live analysis, not cross-window or cross-user persistent result comparison.
 

@@ -190,13 +190,13 @@ CLI artifact 中用于复核的 provenance。
 
 SmartPerfetto 维护两类不同对比：
 
-1. **Raw trace comparison**：current + reference trace 在同一 AI session 中实时查询。
+1. **Raw trace comparison**：同一 workspace 任意选择基线 + 对比 trace，在同一 AI session 中实时查询；API 兼容角色仍为 current + reference。
    CLI `smp compare` 与双窗 UI 复用后端 comparison context、Skill 和报告 section。
 2. **Analysis-result comparison**：比较已持久化 snapshot，可跨窗口、跨 trace，
    并受 workspace/RBAC/share 规则约束。
 
 两者可以共享标准指标和报告 section，但不能把 raw trace 对比实现成 UI/CLI 私有 prompt，
-也不能把 snapshot comparison 误写成任意两个历史 raw trace 的双窗。
+也不能把 snapshot comparison 与任意两条 raw trace 的实时双窗混为一谈。
 
 ## 9. 源码与知识上下文
 

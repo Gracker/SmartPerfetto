@@ -206,23 +206,46 @@ async function fetchBackendDiagnostics(
   backendUrl,
   apiKey,
   fetchImpl = globalThis.fetch,
+  options = {},
 ) {
-  const response = await fetchImpl(
-    `${backendUrl.replace(/\/+$/, "")}/api/runtime-health`,
-    {
-      headers: {
-        "x-api-key": apiKey,
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: AbortSignal.timeout(1_500),
-    },
-  );
-  if (!response.ok) {
-    throw new Error(
-      `Authenticated runtime health returned HTTP ${response.status}`,
-    );
+  const attempts = Number.isInteger(options.attempts) && options.attempts > 0
+    ? options.attempts
+    : 4;
+  const requestTimeoutMs = Number.isFinite(options.requestTimeoutMs)
+    ? Math.max(1, options.requestTimeoutMs)
+    : 5_000;
+  const retryDelayMs = Number.isFinite(options.retryDelayMs)
+    ? Math.max(0, options.retryDelayMs)
+    : 250;
+  const url = `${backendUrl.replace(/\/+$/, "")}/api/runtime-health`;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      const response = await fetchImpl(url, {
+        headers: {
+          "x-api-key": apiKey,
+          Authorization: `Bearer ${apiKey}`,
+        },
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+      if (!response.ok) {
+        throw new Error(
+          `Authenticated runtime health returned HTTP ${response.status}`,
+        );
+      }
+      return await response.json();
+    } catch (error) {
+      const retryable =
+        error?.name === "TimeoutError" ||
+        error?.name === "AbortError" ||
+        error instanceof TypeError;
+      if (!retryable || attempt === attempts) throw error;
+      if (retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+    }
   }
-  return await response.json();
+  throw new Error("Runtime health diagnostics exhausted all attempts");
 }
 
 function validateBackendHealth(health) {

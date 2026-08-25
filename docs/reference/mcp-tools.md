@@ -126,8 +126,8 @@ GitNexus 是独立的第三方可选工具，其[官方项目](https://github.co
 
 | Tool | 作用 |
 |---|---|
-| `execute_sql_on` | 在 current 或 reference trace 上执行 SQL |
-| `compare_skill` | 对 current/reference 并行执行同一 Skill 并对比结果 |
+| `execute_sql_on` | 在基线或对比 trace 上执行 SQL；兼容参数值为 current/reference |
+| `compare_skill` | 对基线/对比并行执行同一 Skill；兼容角色为 current/reference |
 | `get_comparison_context` | 获取 trace pair 元数据、左右/上下窗格映射和 comparison context |
 
 Comparison 工具只在请求包含 `referenceTraceId` 且 comparison context 可用时注册。Raw trace comparison 和 analysis-result comparison 都应复用共享 evidence/report contract，避免 CLI-only 或 frontend-only 的私有输出。

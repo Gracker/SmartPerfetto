@@ -69,8 +69,8 @@ function tracePaneLabel(side: TracePaneSide, language: OutputLanguage): string {
 
 function traceRoleLabel(traceSide: TraceSource, language: OutputLanguage): string {
   return traceSide === 'reference'
-    ? localize(language, '参考 Trace', 'reference trace')
-    : localize(language, '当前 Trace', 'current trace');
+    ? localize(language, '对比 Trace', 'comparison trace')
+    : localize(language, '基线 Trace', 'baseline trace');
 }
 
 function comparisonTraceLabel(
@@ -375,7 +375,7 @@ export function formatToolCallNarration(
     case 'get_comparison_context':
       return localize(
         language,
-        '读取对比上下文：确认当前 Trace 和参考 Trace 的应用、设备和能力是否可比',
+        '读取对比上下文：确认基线 Trace 和对比 Trace 的应用、设备和能力是否可比',
         'Read comparison context: check app, device, and capability alignment for both traces',
       );
     case 'resolve_hypothesis': {

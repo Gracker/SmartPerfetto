@@ -86,7 +86,7 @@ describe('toolNarration', () => {
     });
 
     expect(text).toContain('执行对比 SQL');
-    expect(text).toContain('参考 Trace');
+    expect(text).toContain('对比 Trace');
     expect(text).toContain('实际帧时间线');
   });
 
@@ -120,8 +120,8 @@ describe('toolNarration', () => {
       {tracePairContext},
     );
 
-    expect(sqlText).toContain('右侧/参考 Trace');
-    expect(skillText).toContain('左侧/当前 Trace 和 右侧/参考 Trace');
+    expect(sqlText).toContain('右侧/对比 Trace');
+    expect(skillText).toContain('左侧/基线 Trace 和 右侧/对比 Trace');
   });
 
   it('describes comparison tools with English pane labels when requested', () => {
@@ -154,9 +154,9 @@ describe('toolNarration', () => {
       {tracePairContext},
     );
 
-    expect(sqlText).toContain('bottom pane/reference trace');
+    expect(sqlText).toContain('bottom pane/comparison trace');
     expect(sqlText).toContain('actual frame timeline');
-    expect(skillText).toContain('top pane/current trace and bottom pane/reference trace');
+    expect(skillText).toContain('top pane/baseline trace and bottom pane/comparison trace');
     expect(skillText).toContain('params: process_name=com.example');
   });
 
@@ -182,8 +182,8 @@ describe('toolNarration', () => {
     });
 
     expect(text).toContain('对比 Skill scrolling_analysis');
-    expect(text).toContain('当前 Trace');
-    expect(text).toContain('参考 Trace');
+    expect(text).toContain('基线 Trace');
+    expect(text).toContain('对比 Trace');
     expect(text).toContain('统计滑动会话');
     expect(text).toContain('process_name=com.example');
   });

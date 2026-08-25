@@ -8,7 +8,7 @@
 
 ## 它解决什么问题
 
-过去的双 Trace 对比偏向“当前窗口 + reference Trace”的实时分析：AI 在一次对话里同时查询两条 raw trace。新的分析结果对比偏向“结果复用”：每次 AI 分析完成后，SmartPerfetto 会把可对比的关键指标、证据引用、报告入口保存成 analysis result snapshot。之后你可以选择 2 个或更多 snapshot 做横向对比。
+双 Trace 对比偏向实时分析：用户在同一 workspace 任意选择基线/对比两条 raw trace，AI 在一次对话里同时查询两侧。分析结果对比则偏向“结果复用”：每次 AI 分析完成后，SmartPerfetto 会把可对比的关键指标、证据引用、报告入口保存成 analysis result snapshot。之后你可以选择 2 个或更多 snapshot 做横向对比。
 
 这意味着：
 
@@ -27,7 +27,7 @@
 - 同一个 Trace 先后用不同问题分析，想比较输出的标准指标和证据。
 - 团队成员已经分析过一个 Trace，你想把当前结果和他的结果放在一起看。
 
-如果你只是想在当前 AI 对话里临时选择一条 reference Trace，让 AI 同时查两边 raw data，仍然可以使用工具栏里的 `compare_arrows` 旧入口。新的结果对比入口是 `fact_check` 图标。
+如果你只是想在当前 AI 对话里临时选择两条 raw trace，让 AI 同时查两边数据，仍然可以使用工具栏里的 `compare_arrows` 实时对比入口。分析结果对比入口是 `fact_check` 图标。
 
 ## 前置条件
 
@@ -117,7 +117,7 @@ AI 分析完成后，AI Assistant 顶部会显示 `Ready result` 或 `Partial re
 
 ### 它和旧的 Trace 对比有什么区别？
 
-旧入口 `compare_arrows` 是 Trace 实时对比，适合当前窗口临时选择 reference Trace，让 AI 在一次对话里同时查询两条 raw trace。
+入口 `compare_arrows` 是 Trace 实时对比，适合从当前 workspace 任意选择基线/对比 Trace，让 AI 在一次对话里同时查询两条 raw trace。
 
 新入口 `fact_check` 是分析结果对比，适合多个窗口、多用户、已经完成的分析结果。它依赖后端持久化 snapshot，不依赖另一个 Perfetto UI 窗口继续存活。
 
