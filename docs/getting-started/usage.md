@@ -85,7 +85,7 @@ apply/revert 还要求部署者启用专用开关和包外持久化目录。完�
 帮我看看这个 ANR
 这个 trace 的应用包名和主要进程是什么？
 这段选区里主线程为什么卡住？
-对比当前 trace 和参考 trace 的滑动差异
+对比基线 trace 和对比 trace 的滑动差异
 对比一下另外一份
 对比 AR-1234abcd
 ```
@@ -93,15 +93,26 @@ apply/revert 还要求部署者启用专用开关和包外持久化目录。完�
 ## Raw Trace 实时对比
 
 如果要在同一个对话里直接查询两条 raw trace，点击 AI Assistant 顶部的
-`compare_arrows`，打开 current + reference 双窗并选择一条 workspace 历史 Trace。
-之后可以说“对比当前 trace 和参考 trace”或按当前布局说“左边/右边、上面/下面”。
+`compare_arrows` 打开双窗。左/上是基线，右/下是对比；两个 selector 都可以从
+当前 workspace 任意选择 Trace，也可以使用工具栏的“交换”反转比较方向。
+之后可以说“对比基线和对比 Trace”或按当前布局说“左边/右边、上面/下面”。
 
-双窗只支持当前页面 current trace 加一条历史 reference，不支持任意两个历史 Trace。
-退出视觉双窗后可以保留 current/reference AI 上下文；“退出对比”才会清空 reference。
+如果当前还没有打开 Trace，也可以先进入 AI Assistant 的无 Trace 页面，点击
+`双 Trace` 打开左右都为空的双窗。每一侧都能直接“上传 Trace”；上传成功后文件
+保留在当前 workspace，并自动加载到对应 pane。已有 Trace 的 pane 可用“替换文件”。
+两侧上传互相独立，分析运行期间会锁定上传和替换。
+
+当前页面 Trace 只是首次打开双窗时的默认基线，不再强制留在 pair 中；两份历史
+Trace 也可以直接互相对比。退出视觉双窗后可以保留双 Trace AI 上下文；
+“退出对比”才会清空 pair。
+
+最近一次 pair、布局和已完成分析会按 workspace 保存。刷新浏览器或正常重启后，
+只要对应 Trace 仍在 workspace，就可以恢复双窗和已有分析/报告；未完成运行会标记为
+中断，需要重新发起。
 CLI 的等价入口是：
 
 ```bash
-smp compare current.pftrace reference.pftrace \
+smp compare baseline.pftrace comparison.pftrace \
   --query "对比启动和滑动差异" --mode full
 ```
 

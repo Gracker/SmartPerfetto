@@ -257,7 +257,7 @@ SmartPerfetto 的最终回答不是单一 Markdown 字符串，而是一组共�
 
 | 模式 | 入口 | 数据来源 | 合约 |
 |---|---|---|---|
-| Raw Trace Compare | 前端 reference trace、CLI `smp compare` | current trace + reference trace 实时查询 | 共享 comparison identity、evidence pack、session snapshot 和 report section |
+| Raw Trace Compare | 前端基线/对比 Trace、CLI `smp compare` | 同一 workspace 任意两条 raw trace 实时查询 | 共享 comparison identity、evidence pack、session snapshot 和 report section；API 兼容角色仍为 current/reference |
 | Analysis Result Compare | 前端多结果对比 API | 已完成分析结果 snapshot | 保留 workspace/RBAC/matrix 能力，并复用共享 report section |
 
 Web UI 的双 Trace 工作区操作状态机见

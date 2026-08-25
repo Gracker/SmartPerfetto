@@ -2085,7 +2085,7 @@ describe('createClaudeMcpServer', () => {
           intent: 'ad_hoc_sql_summary',
         },
       });
-      expect(envelope?.meta?.producerReason).toContain('参考 Trace');
+      expect(envelope?.meta?.producerReason).toContain('对比 Trace');
       expect(envelope?.data?.summary?.metrics).toEqual(expect.arrayContaining([
         expect.objectContaining({ label: 'total_rows' }),
       ]));
@@ -2199,11 +2199,11 @@ describe('createClaudeMcpServer', () => {
       const phaseUpdate = emittedUpdates.find((u: any) => u.type === 'plan_phase_updated');
 
       expect(result.success).toBe(true);
-      expect(result.trace).toBe('[右侧/参考 Trace]');
-      expect(phaseUpdate?.content?.summary).toContain('右侧/参考 Trace');
+      expect(result.trace).toBe('[右侧/对比 Trace]');
+      expect(phaseUpdate?.content?.summary).toContain('右侧/对比 Trace');
       expect(envelope?.meta?.paneSide).toBe('right');
-      expect(envelope?.meta?.producerReason).toContain('右侧/参考 Trace');
-      expect(envelope?.meta?.toolNarration).toContain('右侧/参考 Trace');
+      expect(envelope?.meta?.producerReason).toContain('右侧/对比 Trace');
+      expect(envelope?.meta?.toolNarration).toContain('右侧/对比 Trace');
     });
 
     it('labels execute_sql_on English output with pane-aware trace locations', async () => {
@@ -2229,11 +2229,11 @@ describe('createClaudeMcpServer', () => {
       const phaseUpdate = emittedUpdates.find((u: any) => u.type === 'plan_phase_updated');
 
       expect(result.success).toBe(true);
-      expect(result.trace).toBe('[right pane/reference trace]');
-      expect(phaseUpdate?.content?.summary).toContain('right pane/reference trace');
+      expect(result.trace).toBe('[right pane/comparison trace]');
+      expect(phaseUpdate?.content?.summary).toContain('right pane/comparison trace');
       expect(envelope?.meta?.paneSide).toBe('right');
-      expect(envelope?.meta?.producerReason).toContain('right pane/reference trace');
-      expect(envelope?.meta?.toolNarration).toContain('right pane/reference trace');
+      expect(envelope?.meta?.producerReason).toContain('right pane/comparison trace');
+      expect(envelope?.meta?.toolNarration).toContain('right pane/comparison trace');
     });
 
     it('leaves evidence unbound when multiple pending phases match the same tool', async () => {
@@ -3499,8 +3499,8 @@ describe('createClaudeMcpServer', () => {
             traceSide: 'current',
             paneSide: 'top',
             traceId: 'test-trace-123',
-            producerReason: expect.stringContaining('上方/当前 Trace'),
-            toolNarration: expect.stringContaining('上方/当前 Trace'),
+            producerReason: expect.stringContaining('上方/基线 Trace'),
+            toolNarration: expect.stringContaining('上方/基线 Trace'),
           }),
         }),
         expect.objectContaining({
@@ -3511,8 +3511,8 @@ describe('createClaudeMcpServer', () => {
             traceSide: 'reference',
             paneSide: 'bottom',
             traceId: 'ref-trace-456',
-            producerReason: expect.stringContaining('下方/参考 Trace'),
-            toolNarration: expect.stringContaining('下方/参考 Trace'),
+            producerReason: expect.stringContaining('下方/对比 Trace'),
+            toolNarration: expect.stringContaining('下方/对比 Trace'),
           }),
         }),
       ]));
@@ -3567,16 +3567,16 @@ describe('createClaudeMcpServer', () => {
           traceSide: 'current',
           paneSide: 'top',
           meta: expect.objectContaining({
-            producerReason: expect.stringContaining('top pane/current trace'),
-            toolNarration: expect.stringContaining('top pane/current trace'),
+            producerReason: expect.stringContaining('top pane/baseline trace'),
+            toolNarration: expect.stringContaining('top pane/baseline trace'),
           }),
         }),
         expect.objectContaining({
           traceSide: 'reference',
           paneSide: 'bottom',
           meta: expect.objectContaining({
-            producerReason: expect.stringContaining('bottom pane/reference trace'),
-            toolNarration: expect.stringContaining('bottom pane/reference trace'),
+            producerReason: expect.stringContaining('bottom pane/comparison trace'),
+            toolNarration: expect.stringContaining('bottom pane/comparison trace'),
           }),
         }),
       ]));

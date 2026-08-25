@@ -1605,8 +1605,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   function traceRoleDisplayLabel(traceSide: TraceProcessorTraceSide): string {
     return traceSide === 'reference'
-      ? localize(outputLanguage, '参考 Trace', 'reference trace')
-      : localize(outputLanguage, '当前 Trace', 'current trace');
+      ? localize(outputLanguage, '对比 Trace', 'comparison trace')
+      : localize(outputLanguage, '基线 Trace', 'baseline trace');
   }
 
   function traceLocationDisplayLabel(traceSide: TraceProcessorTraceSide): string {
@@ -7435,10 +7435,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const incompatibleSteps = [
           ...[...currentStepIds]
             .filter(id => !refStepIds.has(id))
-            .map(id => `${id} ${localize(outputLanguage, '(仅当前 Trace)', '(current trace only)')}`),
+            .map(id => `${id} ${localize(outputLanguage, '(仅基线 Trace)', '(baseline trace only)')}`),
           ...[...refStepIds]
             .filter(id => !currentStepIds.has(id))
-            .map(id => `${id} ${localize(outputLanguage, '(仅参考 Trace)', '(reference trace only)')}`),
+            .map(id => `${id} ${localize(outputLanguage, '(仅对比 Trace)', '(comparison trace only)')}`),
         ];
 
         // Emit data envelopes for both sides (labeled)
