@@ -2174,8 +2174,8 @@ describe('experimental OpenCode runtime contract', () => {
     const promptInput = record.promptInput as { body?: { system?: string } } | undefined;
     expect(promptInput?.body?.system).toContain('## 对比模式');
     expect(promptInput?.body?.system).toContain('### 窗口映射');
-    expect(promptInput?.body?.system).toContain('左侧/当前 Trace');
-    expect(promptInput?.body?.system).toContain('右侧/参考 Trace');
+    expect(promptInput?.body?.system).toContain('左侧/基线 Trace');
+    expect(promptInput?.body?.system).toContain('右侧/对比 Trace');
     expect(promptInput?.body?.system).toContain('共有表/视图**: 0 个，不可直接对比');
     expect(promptInput?.body?.system).toContain('android_current_only');
     expect(promptInput?.body?.system).toContain('android_reference_only');
