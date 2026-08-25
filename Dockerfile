@@ -71,7 +71,8 @@ RUN . /tmp/pin.env && \
       *) echo "Unsupported architecture: $ARCH" && exit 1 ;; \
     esac && \
     URL_BASE="${TRACE_PROCESSOR_DOWNLOAD_BASE:-$PERFETTO_LUCI_URL_BASE}" && \
-    URL="${TRACE_PROCESSOR_DOWNLOAD_URL:-${URL_BASE%/}/${PERFETTO_VERSION}/${PLAT}/trace_processor_shell}" && \
+    ARTIFACT_VERSION="${PERFETTO_ARTIFACT_VERSION:-$PERFETTO_VERSION}" && \
+    URL="${TRACE_PROCESSOR_DOWNLOAD_URL:-${URL_BASE%/}/${ARTIFACT_VERSION}/${PLAT}/trace_processor_shell}" && \
     curl -fL --max-time 120 -o /tmp/trace_processor_shell \
       "$URL" && \
     echo "${SHA}  /tmp/trace_processor_shell" | sha256sum -c - && \

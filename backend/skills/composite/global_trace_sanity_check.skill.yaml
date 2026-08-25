@@ -10,14 +10,14 @@ tier: S
 
 meta:
   display_name: "全局 Trace Sanity 检查"
-  description: "在目标时间窗内快速枚举最长 slice、D 状态、Runnable 等待、Runqueue 压力和 CPU 热点进程"
+  description: "在目标时间窗内检查 Trace Doctor 诊断，并快速枚举最长 slice、D 状态、Runnable 等待、Runqueue 压力和 CPU 热点进程"
   icon: "fact_check"
-  tags: [system, sanity, trace, scheduler, cpu, global]
+  tags: [system, sanity, trace, trace-doctor, diagnostics, scheduler, cpu, global]
 
 triggers:
   keywords:
-    zh: [全局检查, trace sanity, 系统级瓶颈, 全局瓶颈, 最长slice, D状态, runnable等待]
-    en: [global sanity, trace sanity, system stall, longest slices, d-state, runnable wait]
+    zh: [全局检查, trace sanity, trace doctor, trace诊断, 系统级瓶颈, 全局瓶颈, 最长slice, D状态, runnable等待]
+    en: [global sanity, trace sanity, trace doctor, trace diagnostics, system stall, longest slices, d-state, runnable wait]
   patterns:
     - ".*(global|trace).*sanity.*"
     - ".*(全局|系统).*瓶颈.*"
@@ -105,6 +105,63 @@ steps:
         max_rows
       FROM input
     save_as: trace_window
+
+  - id: trace_diagnostics
+    type: atomic
+    name: "Trace Doctor 诊断"
+    synthesize:
+      role: list
+      fields:
+        - key: title
+          label: 问题
+        - key: confidence
+          label: 置信度
+        - key: remediation
+          label: 修复建议
+        - key: trace_id
+          label: Trace ID
+    display:
+      level: summary
+      layer: list
+      title: "Trace Doctor 诊断"
+      columns:
+        - name: key
+          label: "诊断标识"
+          type: string
+          hidden: true
+        - name: title
+          label: "问题"
+          type: string
+        - name: description
+          label: "说明"
+          type: string
+          format: truncate
+        - name: remediation
+          label: "修复建议"
+          type: string
+          format: truncate
+        - name: confidence
+          label: "置信度"
+          type: number
+        - name: trace_id
+          label: "Trace ID"
+          type: number
+          hidden: true
+    sql: |
+      WITH input AS (
+        SELECT MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 100) AS max_rows
+      )
+      SELECT
+        d.key,
+        d.title,
+        d.description,
+        d.remediation,
+        ROUND(d.confidence, 3) AS confidence,
+        d.trace_id
+      FROM __intrinsic_trace_diagnostics d
+      ORDER BY d.confidence DESC, d.key, d.trace_id
+      LIMIT (SELECT max_rows FROM input)
+    save_as: trace_diagnostics
 
   - id: top_long_slices
     type: skill

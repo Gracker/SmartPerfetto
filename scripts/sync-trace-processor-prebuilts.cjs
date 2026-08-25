@@ -101,9 +101,10 @@ function formatBytes(bytes) {
 
 async function syncTarget(values, target) {
   const version = required(values, 'PERFETTO_VERSION');
+  const artifactVersion = values.PERFETTO_ARTIFACT_VERSION || version;
   const urlBase = process.env.TRACE_PROCESSOR_DOWNLOAD_BASE || required(values, 'PERFETTO_LUCI_URL_BASE');
   const expectedSha = required(values, target.shaKey);
-  const url = `${urlBase.replace(/\/+$/, '')}/${version}/${target.perfettoPlatform}/${target.executableName}`;
+  const url = `${urlBase.replace(/\/+$/, '')}/${artifactVersion}/${target.perfettoPlatform}/${target.executableName}`;
   const destination = path.join(prebuiltRoot, target.key, target.executableName);
 
   if (fs.existsSync(destination)) {

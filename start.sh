@@ -254,11 +254,12 @@ verify_pinned_trace_processor() {
 
 download_trace_processor_prebuilt() {
   local dest="$1"
-  local url_base url tmp actual_sha
+  local artifact_version url_base url tmp actual_sha
 
   resolve_trace_processor_pin
   url_base="${TRACE_PROCESSOR_DOWNLOAD_BASE:-${PERFETTO_LUCI_URL_BASE:-https://commondatastorage.googleapis.com/perfetto-luci-artifacts}}"
-  url="${TRACE_PROCESSOR_DOWNLOAD_URL:-${url_base%/}/${PERFETTO_VERSION}/${TRACE_PROCESSOR_PLATFORM}/trace_processor_shell}"
+  artifact_version="${PERFETTO_ARTIFACT_VERSION:-$PERFETTO_VERSION}"
+  url="${TRACE_PROCESSOR_DOWNLOAD_URL:-${url_base%/}/${artifact_version}/${TRACE_PROCESSOR_PLATFORM}/trace_processor_shell}"
   tmp=$(mktemp -t trace_processor_shell.XXXXXX)
 
   echo "trace_processor_shell not found. Downloading pinned prebuilt..."

@@ -10,18 +10,18 @@ excluded_runtime_paths:
 fixture_manifest_source: backend/skills/public-fixtures.yaml
 official_perfetto:
   repository: https://github.com/google/perfetto
-  tag: v57.2
-  commit: da1d152cff27890903d158fe96751de3aab883cc
+  tag: v58.2
+  commit: add693d8b338ba9599dbcbc3e300b1ab8c000897
   rpc_api_version: 14
-  stdlib_tree: 7f0459ca3eed8372a8762ae052ed7fdb48eb3d88
+  stdlib_tree: 54fc9f0b5c8dedb8772283b6786753fbb918da0d
   official_skill_reference: ai/skills/perfetto/SKILL-template.md
   official_skill_role: gap_check_only
 runtime_perfetto:
   repository: https://github.com/google/perfetto
-  reported_version: v57.2
-  revision: 7b573c1c00f5d5890f496a87b4876a995b6a1c66
+  reported_version: v58.2
+  revision: add693d8b338ba9599dbcbc3e300b1ab8c000897
   rpc_api_version: 14
-  stdlib_tree: 0f6529d3ecf91c15c1572044c60512dcf14593d5
+  stdlib_tree: 54fc9f0b5c8dedb8772283b6786753fbb918da0d
 sql_fragments:
   backend/skills/fragments/target_threads.sql:
     disposition: exported

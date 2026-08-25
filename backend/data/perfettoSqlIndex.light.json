@@ -1,7 +1,7 @@
 {
   "version": "2.0",
-  "generatedAt": "2026-08-10T20:36:29.525460",
-  "generatedFrom": "7b573c1c00f5d5890f496a87b4876a995b6a1c66",
+  "generatedAt": "2026-08-25T13:54:06.577759",
+  "generatedFrom": "add693d8b338ba9599dbcbc3e300b1ab8c000897",
   "source": "perfetto/src/trace_processor/perfetto_sql/stdlib",
   "templates": [
     {
@@ -1881,6 +1881,13 @@
       "category": "android",
       "type": "table",
       "description": "Similar to `_android_jank_cuj_frame` computes overall SF frame boundaries. The computation is somewhat simpler as most of SF work happens within the duration of the commit/composite slices on the main thread."
+    },
+    {
+      "id": "stdlib.android.android_jank_cuj_slice_summary",
+      "name": "android_jank_cuj_slice_summary",
+      "category": "android",
+      "type": "table",
+      "description": "Per-CUJ summary used to pin jank CUJs as a track. Contains one row per CUJ slice (including canceled and unknown-state CUJs, unlike `android_jank_cuj`), with aggregated frame stats, resolved layer name and boundary-aware timestamps. This bundles everything needed to display jank CUJs so that consumers (e.g. the UI) can query it directly without additional logic."
     },
     {
       "id": "stdlib.android._vsync_from_name",
@@ -20340,8 +20347,8 @@
       "id": "stdlib.wattson._system_state_cpu0_mw",
       "name": "_system_state_cpu0_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu0_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu0_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20353,8 +20360,8 @@
       "id": "stdlib.wattson._system_state_cpu1_mw",
       "name": "_system_state_cpu1_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu1_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu1_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20366,8 +20373,8 @@
       "id": "stdlib.wattson._system_state_cpu2_mw",
       "name": "_system_state_cpu2_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu2_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu2_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20379,8 +20386,8 @@
       "id": "stdlib.wattson._system_state_cpu3_mw",
       "name": "_system_state_cpu3_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu3_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu3_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20392,8 +20399,8 @@
       "id": "stdlib.wattson._system_state_cpu4_mw",
       "name": "_system_state_cpu4_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu4_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu4_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20405,8 +20412,8 @@
       "id": "stdlib.wattson._system_state_cpu5_mw",
       "name": "_system_state_cpu5_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu5_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu5_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20418,8 +20425,8 @@
       "id": "stdlib.wattson._system_state_cpu6_mw",
       "name": "_system_state_cpu6_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu6_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu6_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20431,8 +20438,8 @@
       "id": "stdlib.wattson._system_state_cpu7_mw",
       "name": "_system_state_cpu7_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_cpu7_mw",
+      "type": "view",
+      "description": "View: _system_state_cpu7_mw",
       "columns": [
         {
           "name": "cpu",
@@ -20444,24 +20451,24 @@
       "id": "stdlib.wattson._system_state_dsu_scu_mw",
       "name": "_system_state_dsu_scu_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_dsu_scu_mw",
+      "type": "view",
+      "description": "View: _system_state_dsu_scu_mw",
       "columns": []
     },
     {
       "id": "stdlib.wattson._system_state_gpu_mw",
       "name": "_system_state_gpu_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_gpu_mw",
+      "type": "view",
+      "description": "View: _system_state_gpu_mw",
       "columns": []
     },
     {
       "id": "stdlib.wattson._system_state_tpu_mw",
       "name": "_system_state_tpu_mw",
       "category": "wattson",
-      "type": "table",
-      "description": "Table: _system_state_tpu_mw",
+      "type": "view",
+      "description": "View: _system_state_tpu_mw",
       "columns": []
     },
     {

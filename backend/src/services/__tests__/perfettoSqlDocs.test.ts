@@ -22,10 +22,10 @@ describe('perfettoSqlDocs', () => {
     expect(asset?.stats?.moduleCount).toBeGreaterThan(200);
     expect(asset?.stats?.entryCount).toBeGreaterThan(350);
     expect(asset?.generatedFrom).toBe(
-      '7b573c1c00f5d5890f496a87b4876a995b6a1c66',
+      'add693d8b338ba9599dbcbc3e300b1ab8c000897',
     );
     expect(asset?.sourceDocs).toBe(
-      'git:7b573c1c00f5d5890f496a87b4876a995b6a1c66:' +
+      'git:add693d8b338ba9599dbcbc3e300b1ab8c000897:' +
         'src/trace_processor/perfetto_sql/stdlib',
     );
     expect(asset?.sourceDocsMode).toBe('runtime-revision-source-generator');

@@ -380,6 +380,16 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     expect(blockedReasonKnowledge).toContain('filemap_read');
   });
 
+  it('loads v58 stdlib discovery and case-insensitive regexp guidance', () => {
+    const methodology = loadPromptTemplate('prompt-methodology');
+
+    expect(methodology).toContain('__intrinsic_stdlib_objects');
+    expect(methodology).toContain('读取候选对象的 `__intrinsic_stdlib_objects.summary` 和实际 schema');
+    expect(methodology).toContain("regexp(pattern, input, 'i')");
+    expect(methodology).toContain('精确匹配继续使用 `=`');
+    expect(methodology).toContain('通配匹配继续使用 `GLOB`');
+  });
+
   it('keeps the quick prompt wired for machine-parseable claim provenance', () => {
     const content = loadPromptTemplate('prompt-quick');
     expect(content).toContain('## 逐句数据引用（结构化来源）');

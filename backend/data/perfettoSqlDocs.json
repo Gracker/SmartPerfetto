@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-10T12:36:29.098Z",
-  "generatedFrom": "7b573c1c00f5d5890f496a87b4876a995b6a1c66",
-  "sourceDocs": "git:7b573c1c00f5d5890f496a87b4876a995b6a1c66:src/trace_processor/perfetto_sql/stdlib",
+  "generatedAt": "2026-08-25T05:54:06.134Z",
+  "generatedFrom": "add693d8b338ba9599dbcbc3e300b1ab8c000897",
+  "sourceDocs": "git:add693d8b338ba9599dbcbc3e300b1ab8c000897:src/trace_processor/perfetto_sql/stdlib",
   "sourceDocsMode": "runtime-revision-source-generator",
   "pfsqlLineage": {
     "status": "unavailable"
   },
   "stats": {
     "moduleCount": 257,
-    "entryCount": 457,
+    "entryCount": 458,
     "byType": {
       "function": 72,
-      "table": 191,
+      "table": 192,
       "table_function": 30,
       "view": 143,
       "macro": 21
@@ -471,7 +471,9 @@
       "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/frames.sql",
       "missingIncludes": [],
       "errors": [],
-      "symbols": [],
+      "symbols": [
+        "android_jank_cuj_slice_summary"
+      ],
       "transitiveIncludes": [
         "android.cujs.base",
         "android.cujs.boundaries",
@@ -11259,6 +11261,108 @@
       ],
       "transitiveIncludes": [
         "android.cujs.base",
+        "android.frames.timeline",
+        "android.frames.timeline_maxsdk28",
+        "android.surfaceflinger",
+        "slices.with_context",
+        "std.thread.with_context"
+      ]
+    },
+    {
+      "id": "stdlib.android.cujs.frames.android_jank_cuj_slice_summary",
+      "name": "android_jank_cuj_slice_summary",
+      "type": "table",
+      "category": "android",
+      "subcategory": "cujs.frames",
+      "module": "android.cujs.frames",
+      "package": "android",
+      "description": "Per-CUJ summary used to pin jank CUJs as a track",
+      "fullDescription": "Per-CUJ summary used to pin jank CUJs as a track. Contains one row per CUJ slice (including canceled and unknown-state CUJs, unlike `android_jank_cuj`), with aggregated frame stats, resolved layer name and boundary-aware timestamps. This bundles everything needed to display jank CUJs so that consumers (e.g. the UI) can query it directly without additional logic.",
+      "visibility": "public",
+      "tags": [],
+      "include": "INCLUDE PERFETTO MODULE android.cujs.frames;",
+      "moduleIncludes": [
+        "android.cujs.base",
+        "android.cujs.boundaries",
+        "android.cujs.relevant_slices",
+        "android.cujs.threads",
+        "android.frames.jank_type",
+        "android.frames.timeline",
+        "android.surfaceflinger"
+      ],
+      "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/cujs/frames.sql",
+      "columns": [
+        {
+          "name": "cuj_id",
+          "type": "LONG",
+          "description": "CUJ id."
+        },
+        {
+          "name": "name",
+          "type": "STRING",
+          "description": "Name of the CUJ slice (e.g. 'J<CUJ_NAME>')."
+        },
+        {
+          "name": "process_name",
+          "type": "STRING",
+          "description": "Name of the process the CUJ belongs to."
+        },
+        {
+          "name": "state",
+          "type": "STRING",
+          "description": "State of the CUJ. One of 'completed', 'canceled' or NULL."
+        },
+        {
+          "name": "total_frames",
+          "type": "LONG",
+          "description": "Total number of frames in the CUJ."
+        },
+        {
+          "name": "missed_app_frames",
+          "type": "LONG",
+          "description": "Number of frames where the app missed the deadline."
+        },
+        {
+          "name": "missed_sf_frames",
+          "type": "LONG",
+          "description": "Number of frames where SurfaceFlinger missed the deadline."
+        },
+        {
+          "name": "layer_name",
+          "type": "STRING",
+          "description": "Layer name of the CUJ."
+        },
+        {
+          "name": "ts",
+          "type": "TIMESTAMP",
+          "description": "Start timestamp of the CUJ. The main thread boundary start if available, otherwise the CUJ slice ts (e.g. for canceled CUJs)."
+        },
+        {
+          "name": "dur",
+          "type": "DURATION",
+          "description": "Duration of the CUJ. The main thread boundary duration if available, otherwise the CUJ slice dur (e.g. for canceled CUJs)."
+        },
+        {
+          "name": "track_id",
+          "type": "JOINID(track.id)",
+          "description": "Track id of the CUJ slice.",
+          "table": "track",
+          "column": "id"
+        },
+        {
+          "name": "slice_id",
+          "type": "JOINID(slice.id)",
+          "description": "Slice id of the CUJ slice.",
+          "table": "slice",
+          "column": "id"
+        }
+      ],
+      "transitiveIncludes": [
+        "android.cujs.base",
+        "android.cujs.boundaries",
+        "android.cujs.relevant_slices",
+        "android.cujs.threads",
+        "android.frames.jank_type",
         "android.frames.timeline",
         "android.frames.timeline_maxsdk28",
         "android.surfaceflinger",
@@ -35589,6 +35693,7 @@
     "android_jank_cuj_app_thread": "android.cujs.threads",
     "android_jank_cuj_layer_name": "android.cujs.base",
     "android_jank_cuj_render_thread": "android.cujs.threads",
+    "android_jank_cuj_slice_summary": "android.cujs.frames",
     "android_jank_latency_cujs": "android.cujs.sysui_cujs",
     "android_job_scheduler_events": "android.job_scheduler",
     "android_job_scheduler_states": "android.job_scheduler_states",

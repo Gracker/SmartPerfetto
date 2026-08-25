@@ -45,6 +45,8 @@ Full 模式先 `submit_plan`，再执行 `invoke_skill` / `execute_sql` / `fetch
 - `ts` / `dur` 是纳秒；不要用 ms/s 直接过滤。
 - JOIN 后不要裸写 `name` / `ts` / `dur`；用别名或 `thread_slice`。
 - 不确定表/列/stdlib 时先 `lookup_sql_schema` / `list_stdlib_modules`。
+- v58+ 需要跨模块发现 stdlib 对象时，先查 `__intrinsic_stdlib_objects`；命中后读取候选对象的 `__intrinsic_stdlib_objects.summary` 和实际 schema，再写自定义 SQL。
+- 字符串匹配：精确匹配继续使用 `=`；通配匹配继续使用 `GLOB`；仅在确需大小写不敏感的部分匹配时使用 `regexp(pattern, input, 'i')`，不要为了改写而批量替换已有查询。
 - `thread_slice` 已含 thread/process；排他耗时用 `JOIN slice_self_dur USING(id)`。
 - Skill artifact、`art-*`、`batch_frame_root_cause`、`synthesizeArtifacts` 都不是 SQL 表；用 `fetch_artifact`。
 - SQL 报错后按错误调用 `lookup_sql_schema` / `query_perfetto_source` 修正；多次失败说明边界。

@@ -10,8 +10,8 @@
     "skillCount": 235,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1225,
-    "explicitColumnCount": 3478
+    "stepCount": 1226,
+    "explicitColumnCount": 3484
   },
   "skills": {
     "ams_module": {
@@ -13637,7 +13637,7 @@
         "en": "Global Trace Sanity Check"
       },
       "description": {
-        "zh-CN": "在目标时间窗内快速枚举最长 slice、D 状态、Runnable 等待、Runqueue 压力和 CPU 热点进程",
+        "zh-CN": "在目标时间窗内检查 Trace Doctor 诊断，并快速枚举最长 slice、D 状态、Runnable 等待、Runqueue 压力和 CPU 热点进程",
         "en": "Analyzes Global Trace Sanity Check using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -14047,6 +14047,68 @@
             "field:max_runnable_wait_ms": {
               "zh-CN": "最长单次等待",
               "en": "Max Runnable Wait ms"
+            }
+          }
+        },
+        "trace_diagnostics": {
+          "title": {
+            "zh-CN": "Trace Doctor 诊断",
+            "en": "Trace Diagnostics"
+          },
+          "columns": {
+            "key": {
+              "label": {
+                "zh-CN": "诊断标识",
+                "en": "Key"
+              }
+            },
+            "title": {
+              "label": {
+                "zh-CN": "问题",
+                "en": "Title"
+              }
+            },
+            "description": {
+              "label": {
+                "zh-CN": "说明",
+                "en": "Description"
+              }
+            },
+            "remediation": {
+              "label": {
+                "zh-CN": "修复建议",
+                "en": "Remediation"
+              }
+            },
+            "confidence": {
+              "label": {
+                "zh-CN": "置信度",
+                "en": "Confidence"
+              }
+            },
+            "trace_id": {
+              "label": {
+                "zh-CN": "TraceId",
+                "en": "Trace ID"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:title": {
+              "zh-CN": "问题",
+              "en": "Title"
+            },
+            "field:confidence": {
+              "zh-CN": "置信度",
+              "en": "Confidence"
+            },
+            "field:remediation": {
+              "zh-CN": "修复建议",
+              "en": "Remediation"
+            },
+            "field:trace_id": {
+              "zh-CN": "TraceId",
+              "en": "Trace ID"
             }
           }
         },

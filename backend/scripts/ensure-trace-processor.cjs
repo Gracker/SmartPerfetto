@@ -165,6 +165,7 @@ function runVersionSmoke(filePath) {
 
 function resolveDownloadUrl(pins, platform, env = process.env) {
   const version = pins.PERFETTO_VERSION;
+  const artifactVersion = pins.PERFETTO_ARTIFACT_VERSION || version;
   const defaultUrlBase = pins.PERFETTO_LUCI_URL_BASE;
   if (!version || !defaultUrlBase) {
     throw new Error(`Missing PERFETTO_VERSION or PERFETTO_LUCI_URL_BASE in ${pinFile}`);
@@ -177,7 +178,7 @@ function resolveDownloadUrl(pins, platform, env = process.env) {
 
   const urlBase = env.TRACE_PROCESSOR_DOWNLOAD_BASE || defaultUrlBase;
   const executableName = platform.startsWith('windows-') ? 'trace_processor_shell.exe' : 'trace_processor_shell';
-  return { version, url: `${urlBase.replace(/\/+$/, '')}/${version}/${platform}/${executableName}` };
+  return { version, url: `${urlBase.replace(/\/+$/, '')}/${artifactVersion}/${platform}/${executableName}` };
 }
 
 function formatDownloadHelp(url) {

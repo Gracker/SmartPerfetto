@@ -13,7 +13,7 @@ import test from 'node:test';
 const repoRoot = path.resolve(import.meta.dirname, '../..');
 const backendRoot = path.join(repoRoot, 'backend');
 const require = createRequire(import.meta.url);
-const {main} = require('../../backend/scripts/ensure-trace-processor.cjs');
+const {main, resolveDownloadUrl} = require('../../backend/scripts/ensure-trace-processor.cjs');
 const isWindows = process.platform === 'win32';
 
 function sha256(filePath) {
@@ -26,6 +26,34 @@ function createCustomTraceProcessor(tempDir, mode = 0o755) {
   fs.writeFileSync(filePath, '#!/bin/sh\necho "custom trace processor 1.0"\n', {mode});
   return filePath;
 }
+
+test('download URLs separate the immutable source revision from the artifact version', () => {
+  const sourceRevision = 'a'.repeat(40);
+  const pins = {
+    PERFETTO_VERSION: sourceRevision,
+    PERFETTO_ARTIFACT_VERSION: 'v58.2',
+    PERFETTO_LUCI_URL_BASE: 'https://storage.example/perfetto',
+  };
+
+  assert.deepEqual(
+    resolveDownloadUrl(pins, 'mac-arm64', {}),
+    {
+      version: sourceRevision,
+      url: 'https://storage.example/perfetto/v58.2/mac-arm64/trace_processor_shell',
+    },
+  );
+  assert.equal(
+    resolveDownloadUrl(
+      {
+        PERFETTO_VERSION: sourceRevision,
+        PERFETTO_LUCI_URL_BASE: 'https://storage.example/perfetto',
+      },
+      'windows-amd64',
+      {},
+    ).url,
+    `https://storage.example/perfetto/${sourceRevision}/windows-amd64/trace_processor_shell.exe`,
+  );
+});
 
 test('explicit TRACE_PROCESSOR_PATH is smoke-tested without content or mode mutation', async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-custom-tp-'));

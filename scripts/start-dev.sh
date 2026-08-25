@@ -402,11 +402,12 @@ ensure_cpp_toolchain() (
 # Returns 0 on success, non-zero on any failure (caller falls back to source build).
 download_trace_processor_prebuilt() {
   local dest="$1"
-  local url tmp actual_sha rc
+  local artifact_version url tmp actual_sha rc
   resolve_trace_processor_pin || return 1
 
   local url_base="${TRACE_PROCESSOR_DOWNLOAD_BASE:-${PERFETTO_LUCI_URL_BASE}}"
-  url="${TRACE_PROCESSOR_DOWNLOAD_URL:-${url_base%/}/${PERFETTO_VERSION}/${TRACE_PROCESSOR_PLATFORM}/trace_processor_shell}"
+  artifact_version="${PERFETTO_ARTIFACT_VERSION:-$PERFETTO_VERSION}"
+  url="${TRACE_PROCESSOR_DOWNLOAD_URL:-${url_base%/}/${artifact_version}/${TRACE_PROCESSOR_PLATFORM}/trace_processor_shell}"
   tmp=$(mktemp -t trace_processor_shell.XXXXXX) || return 1
 
   echo "Prebuilt: downloading ${TRACE_PROCESSOR_PLATFORM} ${PERFETTO_VERSION}..."

@@ -9,8 +9,9 @@ import * as https from 'https';
 import * as os from 'os';
 import * as path from 'path';
 
-interface PinConfig {
+export interface PinConfig {
   version: string;
+  artifactVersion?: string;
   urlBase: string;
   sha256ByPlatform: Record<string, string>;
 }
@@ -70,6 +71,7 @@ function loadPinConfig(): PinConfig {
 
   return {
     version,
+    artifactVersion: values.PERFETTO_ARTIFACT_VERSION || version,
     urlBase,
     sha256ByPlatform: {
       'linux-amd64': requirePinValue(values, 'PERFETTO_SHELL_SHA256_LINUX_AMD64', pinPath),
@@ -115,13 +117,18 @@ function requirePinValue(values: Record<string, string>, key: string, filePath: 
   return value;
 }
 
-function resolveDownloadUrl(pin: PinConfig, platform: string): string {
-  const exactUrl = process.env.TRACE_PROCESSOR_DOWNLOAD_URL;
+export function resolveDownloadUrl(
+  pin: PinConfig,
+  platform: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const exactUrl = env.TRACE_PROCESSOR_DOWNLOAD_URL;
   if (exactUrl) return exactUrl;
 
-  const urlBase = process.env.TRACE_PROCESSOR_DOWNLOAD_BASE || pin.urlBase;
+  const urlBase = env.TRACE_PROCESSOR_DOWNLOAD_BASE || pin.urlBase;
+  const artifactVersion = pin.artifactVersion || pin.version;
   const executableName = platform.startsWith('windows-') ? 'trace_processor_shell.exe' : 'trace_processor_shell';
-  return `${urlBase.replace(/\/+$/, '')}/${pin.version}/${platform}/${executableName}`;
+  return `${urlBase.replace(/\/+$/, '')}/${artifactVersion}/${platform}/${executableName}`;
 }
 
 function formatDownloadHelp(url: string): string {

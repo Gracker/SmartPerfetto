@@ -18154,6 +18154,57 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
   color: var(--pf-color-text-muted);
   max-width: 420px;
   line-height: 1.5;
+}.pf-memscope-preview-banner__body {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px 16px;
+  width: 100%;
+}
+
+.pf-memscope-preview-banner__message {
+  flex: 1;
+  min-width: 280px;
+}
+
+.pf-memscope-preview-banner__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}.pf-memscope-callout {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--pf-color-background-secondary);
+  border: solid 1px color-mix(in srgb, currentColor, transparent 50%);
+  border-radius: 8px;
+  font-size: var(--pf-font-size-s);
+}
+.pf-memscope-callout > .pf-left-icon {
+  flex-shrink: 0;
+  align-self: center;
+}
+.pf-memscope-callout__content {
+  flex: 1;
+}
+.pf-memscope-callout.pf-intent-primary {
+  color: var(--pf-color-primary);
+  background: color-mix(in srgb, var(--pf-color-primary) 15%, transparent);
+}
+.pf-memscope-callout.pf-intent-danger {
+  color: var(--pf-color-danger);
+  background: color-mix(in srgb, var(--pf-color-danger) 15%, transparent);
+}
+.pf-memscope-callout.pf-intent-success {
+  color: var(--pf-color-success);
+  background: color-mix(in srgb, var(--pf-color-success) 15%, transparent);
+}
+.pf-memscope-callout.pf-intent-warning {
+  color: var(--pf-color-warning);
+  background: color-mix(in srgb, var(--pf-color-warning) 15%, transparent);
 }.pf-memscope-title-bar__left {
   display: flex;
   align-items: baseline;
@@ -18584,38 +18635,6 @@ body.pf-fonts-loading .pf-port--with-context-menu::after {
   color: var(--pf-chart-color-on);
   background: var(--_mixed);
   border-color: var(--_mixed);
-}.pf-memscope-callout {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
-  background: var(--pf-color-background-secondary);
-  border: solid 1px color-mix(in srgb, currentColor, transparent 50%);
-  border-radius: 8px;
-  font-size: var(--pf-font-size-s);
-}
-.pf-memscope-callout > .pf-left-icon {
-  flex-shrink: 0;
-  align-self: center;
-}
-.pf-memscope-callout__content {
-  flex: 1;
-}
-.pf-memscope-callout.pf-intent-primary {
-  color: var(--pf-color-primary);
-  background: color-mix(in srgb, var(--pf-color-primary) 15%, transparent);
-}
-.pf-memscope-callout.pf-intent-danger {
-  color: var(--pf-color-danger);
-  background: color-mix(in srgb, var(--pf-color-danger) 15%, transparent);
-}
-.pf-memscope-callout.pf-intent-success {
-  color: var(--pf-color-success);
-  background: color-mix(in srgb, var(--pf-color-success) 15%, transparent);
-}
-.pf-memscope-callout.pf-intent-warning {
-  color: var(--pf-color-warning);
-  background: color-mix(in srgb, var(--pf-color-warning) 15%, transparent);
 }
 .pf-memscope-capture {
   display: flex;
@@ -21563,6 +21582,21 @@ li.pf-sidebar__item.pf-active a {
 .pf-sidebar__button-icon {
   font-size: 18px;
   flex-shrink: 0;
+}
+
+.pf-sidebar__badge {
+  font-size: var(--pf-font-size-xs);
+  font-family: var(--pf-font-compact);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 2px;
+  background: var(--pf-sidebar-surface-secondary);
+  color: var(--pf-sidebar-on-surface-muted);
+  border: 1px solid var(--pf-sidebar-border);
+  user-select: none;
 }
 
 .pf-sidebar__external-link-icon {

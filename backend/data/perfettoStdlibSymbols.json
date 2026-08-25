@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "generatedAt": "2026-08-10T12:36:29.153Z",
-  "generatedFrom": "7b573c1c00f5d5890f496a87b4876a995b6a1c66",
+  "generatedAt": "2026-08-25T05:54:06.193Z",
+  "generatedFrom": "add693d8b338ba9599dbcbc3e300b1ab8c000897",
   "sourcePath": "perfetto/src/trace_processor/perfetto_sql/stdlib",
   "moduleCount": 239,
-  "symbolCount": 346,
+  "symbolCount": 347,
   "builtinCount": 110,
   "modules": [
     "android.aflags",
@@ -329,6 +329,7 @@
     "android_jank_cuj_app_thread": "android.cujs.threads",
     "android_jank_cuj_layer_name": "android.cujs.base",
     "android_jank_cuj_render_thread": "android.cujs.threads",
+    "android_jank_cuj_slice_summary": "android.cujs.frames",
     "android_jank_latency_cujs": "android.cujs.sysui_cujs",
     "android_job_scheduler_events": "android.job_scheduler",
     "android_job_scheduler_states": "android.job_scheduler_states",

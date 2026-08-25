@@ -3,9 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
+import {execFileSync} from 'node:child_process';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
+const projectRoot = path.resolve(import.meta.dirname, '../..');
 const {
   generateFullStdlibDocs,
   loadFullStdlibDocs,
@@ -209,6 +211,40 @@ test('runtime asset generation requires an exact immutable revision', () => {
       /40-character lowercase commit/,
     );
   }
+});
+
+test('public export Perfetto identities match the runtime pin and release artifact', () => {
+  const pinText = fs.readFileSync(
+    path.join(projectRoot, 'scripts/trace-processor-pin.env'),
+    'utf8',
+  );
+  const policyText = fs.readFileSync(
+    path.join(projectRoot, 'backend/skills/public-export.yaml'),
+    'utf8',
+  );
+  const pinValue = (key) => pinText.match(new RegExp(`^${key}=(.+)$`, 'm'))?.[1];
+  const blockValue = (block, key) => policyText
+    .match(new RegExp(`${block}:\\n([\\s\\S]*?)(?=\\n\\S|$)`))?.[1]
+    ?.match(new RegExp(`^  ${key}: (.+)$`, 'm'))?.[1];
+  const git = (...args) => execFileSync('git', ['-C', 'perfetto', ...args], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  }).trim();
+
+  const revision = pinValue('PERFETTO_VERSION');
+  const release = pinValue('PERFETTO_ARTIFACT_VERSION');
+  assert.equal(blockValue('runtime_perfetto', 'revision'), revision);
+  assert.equal(blockValue('runtime_perfetto', 'reported_version'), release);
+  assert.equal(
+    blockValue('runtime_perfetto', 'stdlib_tree'),
+    git('rev-parse', `${revision}:src/trace_processor/perfetto_sql/stdlib`),
+  );
+  assert.equal(blockValue('official_perfetto', 'tag'), release);
+  assert.equal(blockValue('official_perfetto', 'commit'), git('rev-parse', `${release}^{}`));
+  assert.equal(
+    blockValue('official_perfetto', 'stdlib_tree'),
+    git('rev-parse', `${release}:src/trace_processor/perfetto_sql/stdlib`),
+  );
 });
 
 test('runtime asset generation binds every child to one temporary revision checkout', () => {

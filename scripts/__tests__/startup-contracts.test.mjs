@@ -71,6 +71,33 @@ test('dev launcher uses canonical dependencies and a complete UI/WASM build', ()
   assert.doesNotMatch(script, /^\s*npm run generate:frontend-types/m);
 });
 
+test('trace processor downloaders separate source identity from artifact addressing', () => {
+  const sourceFiles = execFileSync('git', ['ls-files'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  }).split('\n').filter((relativePath) =>
+    relativePath &&
+    !relativePath.includes('__tests__') &&
+    !relativePath.startsWith('frontend/') &&
+    !relativePath.startsWith('perfetto/') &&
+    (relativePath === 'Dockerfile' || /\.(?:cjs|env|mjs|sh|ts)$/.test(relativePath)),
+  );
+  const downloaders = sourceFiles.filter((relativePath) => {
+    const contents = read(relativePath);
+    return contents.includes('PERFETTO_LUCI_URL_BASE') && contents.includes('trace_processor_shell');
+  });
+
+  assert.ok(downloaders.length > 0, 'expected to discover trace processor download surfaces');
+  for (const scriptPath of downloaders) {
+    const script = read(scriptPath);
+    assert.match(
+      script,
+      /PERFETTO_ARTIFACT_VERSION/,
+      `${scriptPath} must use the artifact locator without weakening PERFETTO_VERSION`,
+    );
+  }
+});
+
 test('Docker image and both compose paths require backend and frontend health', () => {
   for (const file of ['Dockerfile', 'docker-compose.yml', 'docker-compose.hub.yml']) {
     const contents = read(file);

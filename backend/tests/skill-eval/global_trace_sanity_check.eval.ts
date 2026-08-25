@@ -25,6 +25,7 @@ const TRACE_FILES = [
 ] as const;
 const REQUIRED_STEPS = [
   'trace_window',
+  'trace_diagnostics',
   'top_long_slices',
   'top_d_state_threads',
   'top_runnable_waits',
@@ -83,6 +84,12 @@ describeWithTrace('global_trace_sanity_check skill', TRACE_FILE, () => {
     expect(findStepInLayers(result.layers, 'top_long_slices')?.data?.length).toBeGreaterThan(0);
     expect(findStepInLayers(result.layers, 'runqueue_pressure')?.data).toHaveLength(1);
     expect(findStepInLayers(result.layers, 'top_cpu_processes')?.data?.length).toBeGreaterThan(0);
+    expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'key');
+    expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'title');
+    expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'description');
+    expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'remediation');
+    expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'confidence');
+    expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'trace_id');
     expectColumnWhenRows(findStepInLayers(result.layers, 'runqueue_pressure'), 'cpu_count');
     expectColumnWhenRows(findStepInLayers(result.layers, 'runqueue_pressure'), 'runnable_wait_ge4_ms');
     expectColumnWhenRows(findStepInLayers(result.layers, 'runqueue_pressure'), 'over_cpu_capacity_ms');
@@ -231,6 +238,9 @@ describeWithTrace('global_trace_sanity_check skill', TRACE_FILE, () => {
         }
 
         expect(findStepInLayers(result.layers, 'runqueue_pressure')?.data).toHaveLength(1);
+        expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'key');
+        expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'confidence');
+        expectColumnWhenRows(findStepInLayers(result.layers, 'trace_diagnostics'), 'trace_id');
         expectColumnWhenRows(findStepInLayers(result.layers, 'runqueue_pressure'), 'cpu_count');
         expectColumnWhenRows(findStepInLayers(result.layers, 'runqueue_pressure'), 'over_cpu_capacity_ms');
         expectColumnWhenRows(findStepInLayers(result.layers, 'top_d_state_threads'), 'utid');
