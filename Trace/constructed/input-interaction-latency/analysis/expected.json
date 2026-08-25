@@ -7,7 +7,7 @@
       "id": "execute-app_lifecycle_in_range",
       "type": "skill",
       "target": "app_lifecycle_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/app_lifecycle_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -20,14 +20,23 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "ts",
+        "slice_name",
+        "lifecycle_phase",
+        "component_type",
+        "process_name",
+        "dur_ms",
+        "dur_ns",
+        "status"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-battery_doze_state_timeline",
       "type": "skill",
       "target": "battery_doze_state_timeline",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/battery_doze_state_timeline.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -42,13 +51,17 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "deep_idle_intervals",
+      "required_columns": [
+        "ts",
+        "dur_sec"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-click_response_analysis",
       "type": "skill",
       "target": "click_response_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/click_response_analysis.skill.yaml",
       "parameters": {
         "slow_event_threshold_ms": 100,
@@ -98,17 +111,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "check_input_data",
+      "required_columns": [
+        "event_count",
+        "status"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-click_response_detail",
       "type": "skill",
       "target": "click_response_detail",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/click_response_detail.skill.yaml",
       "parameters": {
-        "event_ts": "${trace_start}",
-        "event_end_ts": "${trace_end}",
+        "event_ts": "${fixture_start}",
+        "event_end_ts": "${fixture_end}",
         "total_ms": 1,
         "process_name": "com.smartperfetto.fixture"
       },
@@ -131,13 +148,27 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "event_info",
+      "required_columns": [
+        "event_type",
+        "event_action",
+        "process_name",
+        "total_ms",
+        "dispatch_ms",
+        "handling_ms",
+        "event_ts",
+        "event_end_ts",
+        "perfetto_start",
+        "perfetto_end",
+        "main_bottleneck",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-device_state_timeline",
       "type": "skill",
       "target": "device_state_timeline",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/device_state_timeline.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -156,13 +187,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "cpu_freq_transitions",
+      "required_columns": [
+        "ts",
+        "cpu",
+        "freq_mhz",
+        "prev_freq_mhz",
+        "delta_mhz",
+        "transition_type"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-input_events_in_range",
       "type": "skill",
       "target": "input_events_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/input_events_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -175,14 +214,26 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "event_ts",
+        "event_type",
+        "event_action",
+        "dispatch_latency_ms",
+        "handling_latency_ms",
+        "ack_latency_ms",
+        "total_latency_ms",
+        "e2e_latency_ms",
+        "process_name",
+        "normalized_channel",
+        "dispatch_status"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-input_module",
       "type": "skill",
       "target": "input_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/framework/input_module.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -199,18 +250,24 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "click_response_overview",
+      "required_columns": [
+        "total_clicks",
+        "avg_latency_ms",
+        "max_latency_ms",
+        "slow_clicks"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-main_thread_handler_callback_slices",
       "type": "skill",
       "target": "main_thread_handler_callback_slices",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/main_thread_handler_callback_slices.skill.yaml",
       "parameters": {
         "package": "",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}",
         "min_dur_ns": 100000,
         "top_k": 20
       },
@@ -224,13 +281,26 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "callback_slices",
+      "required_columns": [
+        "raw_slice_name",
+        "standardized_slice_name",
+        "process_name",
+        "thread_name",
+        "callback_count",
+        "total_ms",
+        "avg_ms",
+        "max_ms",
+        "first_ts",
+        "last_ts",
+        "evidence_scope"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-navigation_analysis",
       "type": "skill",
       "target": "navigation_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/navigation_analysis.skill.yaml",
       "parameters": {
         "slow_navigation_ms": 400,
@@ -287,13 +357,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "navigation_overview",
+      "required_columns": [
+        "total_navigations",
+        "avg_nav_dur_ms",
+        "max_nav_dur_ms",
+        "total_lifecycle_events",
+        "slow_navigations",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-scene_reconstruction",
       "type": "skill",
       "target": "scene_reconstruction",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/scene_reconstruction.skill.yaml",
       "parameters": {
         "trace_id": 1
@@ -392,13 +470,18 @@
         }
       ],
       "semantic_step": "trace_time_range",
+      "required_columns": [
+        "start_ts_str",
+        "end_ts_str",
+        "duration_sec"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-state_timeline",
       "type": "skill",
       "target": "state_timeline",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/state_timeline.skill.yaml",
       "parameters": {
         "trace_id": 1
@@ -440,13 +523,23 @@
         }
       ],
       "semantic_step": "device_state_lane",
+      "required_columns": [
+        "lane",
+        "state",
+        "state_label",
+        "start_ts",
+        "end_ts",
+        "dur_ns",
+        "dur_ms",
+        "source_status"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {
       "id": "execute-touch_to_display_latency",
       "type": "skill",
       "target": "touch_to_display_latency",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/touch_to_display_latency.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -459,7 +552,20 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "input_ts",
+        "process_name",
+        "event_type",
+        "event_action",
+        "dispatch_latency_ms",
+        "handling_latency_ms",
+        "ack_latency_ms",
+        "total_latency_ms",
+        "e2e_latency_ms",
+        "normalized_channel",
+        "is_speculative_frame",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::input-interaction-latency"
     },
     {

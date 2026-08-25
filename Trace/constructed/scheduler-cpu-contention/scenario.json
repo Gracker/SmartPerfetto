@@ -135,6 +135,37 @@
     },
     {
       "type": "cpu-frequency",
+      "at_ns": "15000000",
+      "cpu_id": 0,
+      "value": 1200000,
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "20000000",
+      "duration_ns": "80000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-counter",
+      "at_ns": "30000000",
+      "process": "app",
+      "thread": "main",
+      "name": "L3 cache misses",
+      "value": 100000
+    },
+    {
+      "type": "atrace-counter",
+      "at_ns": "80000000",
+      "process": "app",
+      "thread": "main",
+      "name": "L3 cache misses",
+      "value": 350000
+    },
+    {
+      "type": "cpu-frequency",
       "at_ns": "520000000",
       "cpu_id": 0,
       "value": 1800000,

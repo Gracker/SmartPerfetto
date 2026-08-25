@@ -25,7 +25,22 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'sched-running', 'process-stats', 'battery-counters', 'power-rail',
   'gpu-work-period', 'gpu-compute-kernel', 'gpu-frequency', 'gpu-power-state',
   'cpu-frequency', 'cpu-idle', 'irq-span', 'frame-timeline', 'lmk-kill',
-  'managed-heap-graph', 'anr-event', 'perf-sample',
+  'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
+]);
+const ANDROID_LOG_IDS = new Map([
+  ['MAIN', 'LID_MAIN'],
+  ['RADIO', 'LID_RADIO'],
+  ['EVENTS', 'LID_EVENTS'],
+  ['SYSTEM', 'LID_SYSTEM'],
+  ['CRASH', 'LID_CRASH'],
+]);
+const ANDROID_LOG_PRIORITIES = new Map([
+  ['VERBOSE', 'PRIO_VERBOSE'],
+  ['DEBUG', 'PRIO_DEBUG'],
+  ['INFO', 'PRIO_INFO'],
+  ['WARN', 'PRIO_WARN'],
+  ['ERROR', 'PRIO_ERROR'],
+  ['FATAL', 'PRIO_FATAL'],
 ]);
 const HEAP_ROOT_TYPES = new Set([
   'ROOT_UNKNOWN',
@@ -437,6 +452,10 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     ? resolveTracePacketFieldName(repoRoot, FRAME_TIMELINE_TRACE_PACKET_FIELD_NUMBER)
     : null;
   const anchorNs = decimalString(options?.anchorNs, 'options.anchorNs');
+  const realtimeAnchorNs = decimalString(
+    options?.realtimeAnchorNs ?? anchorNs,
+    'options.realtimeAnchorNs',
+  );
   if (!Number.isInteger(options?.sequenceId) || options.sequenceId <= 0) {
     throw new Error('options.sequenceId must be a positive integer');
   }
@@ -578,6 +597,32 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
           },
         });
       }
+    } else if (signal.type === 'android-log') {
+      const {process, thread} = actorForSignal(signal, identities);
+      const logId = ANDROID_LOG_IDS.get(signal.log_id);
+      const priority = ANDROID_LOG_PRIORITIES.get(signal.priority);
+      if (!logId) throw new Error(`unsupported android-log log_id: ${signal.log_id}`);
+      if (!priority) throw new Error(`unsupported android-log priority: ${signal.priority}`);
+      const logTimestamp = absoluteTimestamp(
+        realtimeAnchorNs,
+        signal.at_ns,
+        `scenario.signals[${index}].at_ns`,
+      );
+      dataPackets.push({
+        timestamp,
+        androidLog: {
+          events: [{
+            logId,
+            pid: process.pid,
+            tid: thread.tid,
+            uid: process.uid ?? 10999,
+            timestamp: logTimestamp,
+            tag: nonEmptyString(signal.tag, 'android-log tag'),
+            prio: priority,
+            message: nonEmptyString(signal.message, 'android-log message'),
+          }],
+        },
+      });
     } else if (signal.type === 'battery-counters') {
       const battery = {};
       if (signal.capacity_percent !== undefined) battery.capacityPercent = finiteNumber(signal.capacity_percent, 'battery capacity_percent');
@@ -749,6 +794,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       trustedPacketSequenceId: options.sequenceId,
       clockSnapshot: {
         clocks: [
+          {clockId: 1, timestamp: realtimeAnchorNs},
           {clockId: 5, timestamp: anchorNs},
           {clockId: 6, timestamp: anchorNs},
           {clockId: 11, timestamp: anchorNs},
@@ -780,6 +826,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     identities: {processes: identities.processes, threads: identities.threads},
     provenance: {
       anchor_ns: anchorNs,
+      realtime_anchor_ns: realtimeAnchorNs,
       sequence_id: options.sequenceId,
       overlay_sha256: sha256Buffer(buffer),
     },
@@ -841,6 +888,14 @@ function probeTrace(repoRoot, tracePath) {
     SELECT 'pid', CAST(pid AS TEXT), '' FROM process WHERE pid IS NOT NULL
     UNION ALL
     SELECT 'cpu', CAST(cpu AS TEXT), '' FROM (SELECT DISTINCT cpu FROM sched)
+    UNION ALL
+    SELECT 'realtime_offset', printf('%d', COALESCE((
+      SELECT clock_value - ts
+      FROM clock_snapshot
+      WHERE clock_id = 1
+      ORDER BY snapshot_id
+      LIMIT 1
+    ), 0)), ''
     ORDER BY kind, value_1
   `;
   const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
@@ -860,6 +915,7 @@ function probeTrace(repoRoot, tracePath) {
   return {
     start_ns: bounds[1],
     end_ns: bounds[2],
+    realtime_offset_ns: rows.find(([kind]) => kind === 'realtime_offset')?.[1] ?? '0',
     used_pids: new Set(
       rows
         .filter(([kind]) => kind === 'pid')
@@ -935,6 +991,7 @@ function buildConstructedTrace(repoRoot, options) {
   const isolated = isolateScenarioCpus(scenario, new Set(probe.used_cpus));
   const overlay = encodeScenarioOverlay(repoRoot, isolated.scenario, {
     anchorNs,
+    realtimeAnchorNs: (BigInt(anchorNs) + BigInt(probe.realtime_offset_ns)).toString(),
     usedPids: probe.used_pids,
     sequenceId,
   });

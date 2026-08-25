@@ -52,19 +52,49 @@ describe('Trace corpus regression runner', () => {
     )).toThrow('no single result row satisfies');
   });
 
+  it('requires every declared source-level result column to be present', () => {
+    expect(() => assertExpectationRows(
+      [{frame_id: 1, dur_ns: 20_000_000}],
+      {
+        target: 'smartperfetto.scrolling.jank_frames',
+        semantic_step: 'canonical_view',
+        required_columns: ['frame_id', 'dur_ns'],
+      },
+    )).not.toThrow();
+    expect(() => assertExpectationRows(
+      [{frame_id: 1}],
+      {
+        target: 'smartperfetto.scrolling.jank_frames',
+        semantic_step: 'canonical_view',
+        required_columns: ['frame_id', 'dur_ns'],
+      },
+    )).toThrow('missing required columns');
+  });
+
   it('resolves trace and fixture identity tokens without changing literals', () => {
     expect(resolveParameterTokens(
       {
         start_ts: '${trace_start}',
         end_ts: '${trace_end}',
+        fixture_start: '${fixture_start}',
+        fixture_end: '${fixture_end}',
         upid: '${fixture_upid}',
         utid: '${fixture_utid}',
         package: 'com.smartperfetto.fixture',
       },
-      {trace_start: '10', trace_end: '20', fixture_upid: 30, fixture_utid: 40},
+      {
+        trace_start: '10',
+        trace_end: '20',
+        fixture_start: '12',
+        fixture_end: '18',
+        fixture_upid: 30,
+        fixture_utid: 40,
+      },
     )).toEqual({
       start_ts: '10',
       end_ts: '20',
+      fixture_start: '12',
+      fixture_end: '18',
       upid: 30,
       utid: 40,
       package: 'com.smartperfetto.fixture',
@@ -93,5 +123,21 @@ describe('Trace corpus regression runner', () => {
       'startup-lifecycle:skill:startup_analysis',
       'startup-lifecycle:strategy:startup',
     ]));
+  }, 120_000);
+
+  it('executes the exact canonical SQL source against a real trace', async () => {
+    const result = await runCorpusRegression(repoRoot, {
+      caseIds: ['android-scroll-customer'],
+      targetIds: ['smartperfetto.scrolling.jank_frames'],
+      writeEvidence: false,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.executed).toContain(
+      'android-scroll-customer:sql:smartperfetto.scrolling.jank_frames',
+    );
+    expect(result.correctness.positive).toContain(
+      'android-scroll-customer:sql:smartperfetto.scrolling.jank_frames',
+    );
   }, 120_000);
 });

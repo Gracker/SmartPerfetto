@@ -150,6 +150,14 @@
       "end_state": "D"
     },
     {
+      "type": "sched-running",
+      "at_ns": "50000000",
+      "duration_ns": "100000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "D"
+    },
+    {
       "type": "anr-event",
       "at_ns": "800000000",
       "process": "system",

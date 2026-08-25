@@ -28,13 +28,15 @@ function androidLabel(entry) {
 function markdownTable(cases, kind, directoryPrefix = '') {
   if (cases.length === 0) return '_No cases yet._';
   const header = kind === 'real'
-    ? '| Case | Scene | Android | Publication | Analysis |\n| --- | --- | --- | --- | --- |'
+    ? '| Case | Scene | Android | Publication | Analysis | Canonical SQL |\n| --- | --- | --- | --- | --- | --- |'
     : '| Case | Scene | Android | Base | Coverage |\n| --- | --- | --- | --- | --- | --- |';
   const rows = cases.map((entry) => {
     const link = `./${directoryPrefix}${entry.id}/`;
     if (kind === 'real') {
       const analysisCount = (entry.analysis?.results?.length ?? 0) + (entry.analysis?.logs?.length ?? 0);
-      return `| [${entry.title}](${link}) | ${entry.scene} | ${androidLabel(entry)} | ${entry.source?.publication ?? 'unknown'} | ${analysisCount} file(s) |`;
+      const sqlExpectations = (entry.coverage?.expectations ?? []).filter((item) => item.type === 'sql');
+      const sqlSummary = sqlExpectations.map((item) => `${item.mode}:${item.target}`).join('<br>') || '-';
+      return `| [${entry.title}](${link}) | ${entry.scene} | ${androidLabel(entry)} | ${entry.source?.publication ?? 'unknown'} | ${analysisCount} file(s) | ${sqlSummary} |`;
     }
     const coverageCount = (entry.coverage?.skills?.length ?? 0) + (entry.coverage?.strategies?.length ?? 0);
     return `| [${entry.title}](${link}) | ${entry.scene} | ${androidLabel(entry)} | ${entry.construction?.base_case_id ?? '-'} | ${coverageCount} target(s) |`;
@@ -42,7 +44,7 @@ function markdownTable(cases, kind, directoryPrefix = '') {
   return [header, ...rows].join('\n');
 }
 
-function renderRootReadme(catalog) {
+function renderRootReadme(catalog, coverage) {
   const real = catalog.cases.filter((entry) => entry.kind === 'real');
   const constructed = catalog.cases.filter((entry) => entry.kind === 'constructed');
   const modes = constructed
@@ -52,6 +54,10 @@ function renderRootReadme(catalog) {
       counts[expectation.mode] = (counts[expectation.mode] ?? 0) + 1;
       return counts;
     }, {});
+  const tierCounts = Object.fromEntries(
+    Object.entries(coverage.evidence_tiers ?? {}).map(([tier, ids]) => [tier, ids.length]),
+  );
+  const sqlSources = coverage.sql_sources ?? {skills: [], portable: []};
   return `${GENERATED_BANNER}
 # SmartPerfetto Trace Corpus
 
@@ -62,17 +68,21 @@ This directory is the source-controlled trace test and reference corpus.
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Skill execution quality: ${modes.semantic ?? 0} assertion-backed semantic, ${modes.execution ?? 0} execution-only, ${modes.graceful_empty ?? 0} explicit graceful-empty, ${modes.unavailable ?? 0} explicit unavailable prerequisite, ${modes.definition ?? 0} definition-only.
+Evidence tiers: R1=${tierCounts.R1 ?? 0}, R2=${tierCounts.R2 ?? 0}, R3=${tierCounts.R3 ?? 0}.
+
+Pinned Perfetto SQL source: \`${sqlSources.runtime_revision ?? 'unavailable'}\`. The generated coverage ledger contains ${sqlSources.skills?.length ?? 0} Skill SQL source contracts and ${sqlSources.portable?.length ?? 0} canonical portable SQL source checks with exact source hashes and upstream module paths.
+
+Skill execution quality: ${modes.semantic ?? 0} source-column-backed semantic, ${modes.execution ?? 0} execution-only composition, ${modes.negative ?? 0} expected-empty negative, ${modes.deferred ?? 0} explicit deferred prerequisite, ${modes.definition ?? 0} definition-only.
 
 ## Commands
 
-\`npm run trace:validate\` checks manifests, hashes, generated indexes, publication gates, legacy path coupling, and exact current Skill/Strategy inventory coverage.
+\`npm run trace:validate\` checks manifests, hashes, evidence tiers, pinned Perfetto SQL source lineage, canonical SQL package sources, generated indexes, publication gates, legacy path coupling, and exact current Skill/Strategy inventory coverage.
 
 \`npm run trace:build\` deterministically materializes every base-plus-overlay case under ignored \`Trace/.generated/\` and reparses it with the pinned trace processor.
 
-\`npm run trace:sql-regression\` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, and executes every discovered Skill SQL contract. Production execution, explicit read-only/context probes, and isolated state-changing branch probes are reported separately; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
+\`npm run trace:sql-regression\` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, and source-provenance results stay separate; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
 
-\`npm run trace:regression\` validates, builds, and executes the complete deterministic corpus. Per-case evidence is written below \`Trace/.generated/constructed/<case-id>/\`.
+\`npm run trace:regression\` validates, builds, and executes the complete corpus. Per-case evidence is written below \`Trace/.generated/<real|constructed>/<case-id>/\`.
 
 ## Add a real case
 
@@ -121,7 +131,7 @@ function generatedFiles(repoRoot) {
     cases: catalog.cases.map((entry) => relativeCase(repoRoot, entry)),
   };
   return new Map([
-    [path.join(repoRoot, 'Trace/README.md'), renderRootReadme(catalog)],
+    [path.join(repoRoot, 'Trace/README.md'), renderRootReadme(catalog, validation.coverage)],
     [path.join(repoRoot, 'Trace/real/README.md'), renderKindReadme(catalog, 'real')],
     [path.join(repoRoot, 'Trace/constructed/README.md'), renderKindReadme(catalog, 'constructed')],
     [path.join(repoRoot, 'Trace/catalog.json'), `${JSON.stringify(serializableCatalog, null, 2)}\n`],

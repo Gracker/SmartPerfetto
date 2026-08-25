@@ -62,7 +62,7 @@
               "sched-running", "process-stats", "battery-counters", "power-rail",
               "gpu-work-period", "gpu-frequency", "gpu-power-state", "cpu-frequency", "cpu-idle",
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
-              "gpu-compute-kernel", "anr-event", "perf-sample"
+              "gpu-compute-kernel", "anr-event", "perf-sample", "android-log"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -75,6 +75,10 @@
           "subject": {"type": "string", "minLength": 1},
           "function_name": {"type": "string", "minLength": 1},
           "module_name": {"type": "string", "minLength": 1},
+          "log_id": {"enum": ["MAIN", "RADIO", "EVENTS", "SYSTEM", "CRASH"]},
+          "priority": {"enum": ["VERBOSE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"]},
+          "tag": {"type": "string", "minLength": 1},
+          "message": {"type": "string", "minLength": 1},
           "sample_count": {"type": "integer", "minimum": 1, "maximum": 1000},
           "sample_interval_ns": {"type": "string", "pattern": "^[1-9][0-9]*$"},
           "track_name": {"type": "string"},
@@ -207,6 +211,14 @@
               "required": [
                 "process", "thread", "function_name", "module_name",
                 "sample_count", "sample_interval_ns"
+              ]
+            }
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-log"}}},
+            "then": {
+              "required": [
+                "process", "thread", "log_id", "priority", "tag", "message"
               ]
             }
           }

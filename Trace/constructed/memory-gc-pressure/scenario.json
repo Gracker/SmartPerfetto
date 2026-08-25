@@ -138,6 +138,38 @@
       "oom_score_adj": 200
     },
     {
+      "type": "atrace-counter",
+      "at_ns": "500000000",
+      "process": "app",
+      "thread": "main",
+      "name": "Heap size (KB)",
+      "value": 196608
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "510000000",
+      "duration_ns": "80000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "520000000",
+      "duration_ns": "40000000",
+      "process": "app",
+      "thread": "main",
+      "name": "Background concurrent copying GC"
+    },
+    {
+      "type": "atrace-counter",
+      "at_ns": "590000000",
+      "process": "app",
+      "thread": "main",
+      "name": "Heap size (KB)",
+      "value": 131072
+    },
+    {
       "type": "process-stats",
       "at_ns": "600000000",
       "process": "app",
@@ -148,6 +180,16 @@
       "vm_swap_kb": 4096,
       "vm_hwm_kb": 184320,
       "oom_score_adj": 900
+    },
+    {
+      "type": "android-log",
+      "at_ns": "610000000",
+      "process": "app",
+      "thread": "main",
+      "log_id": "MAIN",
+      "priority": "WARN",
+      "tag": "ActivityManager",
+      "message": "ANR in com.smartperfetto.fixture: input dispatching timed out after GC pressure"
     },
     {
       "type": "atrace-slice",

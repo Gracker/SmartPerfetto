@@ -201,8 +201,8 @@ describe('current real trace catalog qualification boundary', () => {
     const audit = auditCurrentRealTraceCatalog(catalog);
     expect(audit).toHaveLength(6);
     expect(audit.every(item => item.status === 'not_evaluable')).toBe(true);
+    expect(audit.every(item => item.reasons.includes('ground_truth_missing'))).toBe(true);
     expect(audit.every(item =>
-      item.reasons.includes('ground_truth_missing')
-      && item.reasons.includes('coverage_expectations_missing'))).toBe(true);
+      !item.reasons.includes('coverage_expectations_missing'))).toBe(true);
   });
 });

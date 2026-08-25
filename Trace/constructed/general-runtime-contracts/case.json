@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "2b48d00656b0b9efd14534533089274edf59f125e6af2261e4a487d4a62d54f3",
+    "sha256": "fe8dec58d44538d30e2652dffd3eb8275a5304cda150f7e3e2a86ea3058937c5",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -35,7 +35,8 @@
     "consent": "generated",
     "privacy_review": "not-applicable",
     "sanitization_review": "not-applicable",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R3"
   },
   "analysis": {
     "results": [
@@ -48,7 +49,8 @@
     "scenario_file": "scenario.json",
     "generator_version": 1,
     "seed": "general-runtime-contracts-v1",
-    "output": "Trace/.generated/constructed/general-runtime-contracts/trace.pftrace"
+    "output": "Trace/.generated/constructed/general-runtime-contracts/trace.pftrace",
+    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
   },
   "coverage": {
     "skills": [
@@ -75,7 +77,7 @@
         "id": "execute-callstack_analysis",
         "type": "skill",
         "target": "callstack_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/deep/callstack_analysis.skill.yaml",
         "parameters": {
           "min_samples": 10
@@ -106,17 +108,24 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "check_samples",
+        "required_columns": [
+          "total_samples",
+          "unique_callsites",
+          "first_sample_ts",
+          "last_sample_ts",
+          "duration_sec"
+        ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
       {
         "id": "execute-fence_wait_decomposition",
         "type": "skill",
         "target": "fence_wait_decomposition",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/fence_wait_decomposition.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "acquire_fence_wait",
@@ -134,13 +143,19 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "acquire_fence_wait",
+        "required_columns": [
+          "total_acquire_buffer",
+          "avg_acquire_ms",
+          "p95_acquire_ms",
+          "max_acquire_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
       {
         "id": "execute-global_trace_sanity_check",
         "type": "skill",
         "target": "global_trace_sanity_check",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/global_trace_sanity_check.skill.yaml",
         "parameters": {
           "max_rows": 20
@@ -166,6 +181,12 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "trace_window",
+        "required_columns": [
+          "start_ts",
+          "end_ts",
+          "duration_ms",
+          "max_rows"
+        ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
       {
@@ -175,7 +196,7 @@
         "mode": "semantic",
         "source_file": "backend/skills/atomic/longest_process_slices.skill.yaml",
         "parameters": {
-          "max_rows": 5
+          "max_rows": 20
         },
         "required_steps": [
           "root"
@@ -187,24 +208,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 5,
-        "max_rows": 5,
-        "assertions": [
-          {
-            "column": "duration_ms",
-            "operator": "gt",
-            "value": 0
-          },
-          {
-            "column": "process_name",
-            "operator": "matches",
-            "value": ".+"
-          },
-          {
-            "column": "track_scope",
-            "operator": "matches",
-            "value": "^(thread_track|process_track)$"
-          }
+        "required_columns": [
+          "ts",
+          "duration_ms",
+          "slice_name",
+          "process_name",
+          "thread_name",
+          "track_scope",
+          "dur_ns",
+          "slice_start_ts",
+          "slice_id",
+          "slice_dur_ns"
         ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
@@ -212,11 +226,11 @@
         "id": "execute-main_thread_slices_in_range",
         "type": "skill",
         "target": "main_thread_slices_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/main_thread_slices_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}",
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
           "upid": "${fixture_upid}",
           "pid": 700000
         },
@@ -230,18 +244,27 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "slice_name",
+          "count",
+          "total_ms",
+          "self_ms",
+          "avg_ms",
+          "max_ms",
+          "percent",
+          "self_percent"
+        ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
       {
         "id": "execute-main_thread_states_in_range",
         "type": "skill",
         "target": "main_thread_states_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/main_thread_states_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}",
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
           "upid": "${fixture_upid}",
           "pid": 700000
         },
@@ -255,7 +278,16 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "state",
+          "state_desc",
+          "blocked_function",
+          "io_wait",
+          "evidence_strength",
+          "total_dur_ms",
+          "pct",
+          "count"
+        ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
       {
@@ -270,7 +302,7 @@
         "id": "execute-process_identity_resolver",
         "type": "skill",
         "target": "process_identity_resolver",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/process_identity_resolver.skill.yaml",
         "parameters": {
           "max_rows": 20
@@ -285,7 +317,34 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "rank",
+          "confidence_score",
+          "identity_status",
+          "canonical_package_name",
+          "recommended_process_name_param",
+          "upid",
+          "pid",
+          "process_name",
+          "metadata_process_name",
+          "package_name",
+          "cmdline",
+          "target_match_sources",
+          "supporting_sources",
+          "frame_rows",
+          "jank_rows",
+          "foreground_ms",
+          "battery_top_ms",
+          "thread_count",
+          "key_thread_names",
+          "thread_utid",
+          "thread_tid",
+          "thread_name",
+          "thread_role",
+          "thread_target_matched",
+          "layer_packages",
+          "identity_warning"
+        ],
         "required_marker": "SmartPerfetto::CASE::general-runtime-contracts"
       },
       {

@@ -227,6 +227,36 @@ test('materializes ANR and perf callstack evidence for conditional SQL branches'
   fs.rmSync(tempDir, {recursive: true, force: true});
 });
 
+test('materializes source-level Android log events for logcat SQL', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-android-log-'));
+  const outputPath = path.join(tempDir, 'combined.pftrace');
+  const scenario = fixtureScenario();
+  scenario.signals.push({
+    type: 'android-log',
+    at_ns: '120000000',
+    process: 'app',
+    thread: 'main',
+    log_id: 'MAIN',
+    priority: 'WARN',
+    tag: 'ActivityManager',
+    message: 'ANR in com.smartperfetto.fixture: input dispatching timed out',
+  });
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 454545,
+  });
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    SELECT COUNT(*), MIN(tag), MIN(prio)
+    FROM android_logs
+    WHERE tag = 'ActivityManager'
+      AND msg GLOB '*com.smartperfetto.fixture*'`);
+  assert.match(output, /\n1,"ActivityManager",5\s*$/);
+  fs.rmSync(tempDir, {recursive: true, force: true});
+});
+
 test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async evidence', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-signals-'));
   const outputPath = path.join(tempDir, 'combined.pftrace');
@@ -615,7 +645,18 @@ test('probes a real base and builds a combined trace inside its bounds', () => {
   const scenarioPath = path.join(tempDir, 'scenario.json');
   const overlayPath = path.join(tempDir, 'trace.overlay.pftrace');
   const outputPath = path.join(tempDir, 'trace.pftrace');
-  fs.writeFileSync(scenarioPath, `${JSON.stringify(fixtureScenario(), null, 2)}\n`);
+  const scenario = fixtureScenario();
+  scenario.signals.push({
+    type: 'android-log',
+    at_ns: '120000000',
+    process: 'app',
+    thread: 'main',
+    log_id: 'MAIN',
+    priority: 'WARN',
+    tag: 'ActivityManager',
+    message: 'ANR in com.smartperfetto.fixture',
+  });
+  fs.writeFileSync(scenarioPath, `${JSON.stringify(scenario, null, 2)}\n`);
 
   const probe = probeTrace(repoRoot, basePath);
   assert.ok(BigInt(probe.end_ns) > BigInt(probe.start_ns));
@@ -638,9 +679,10 @@ test('probes a real base and builds a combined trace inside its bounds', () => {
     outputPath,
     `SELECT
        (SELECT COUNT(*) FROM slice WHERE name = 'SmartPerfetto::CPU_CONTENTION') AS markers,
+       (SELECT COUNT(*) FROM android_logs WHERE tag = 'ActivityManager') AS logs,
        COALESCE((SELECT value FROM stats WHERE name = 'mismatched_sched_switch_tids'), 0) AS sched_mismatches`,
   );
-  assert.match(output, /\n1,0\s*$/);
+  assert.match(output, /\n1,1,0\s*$/);
   assert.ok(Object.values(build.provenance.cpu_map).every((cpu) => Number(cpu) > 0));
 });
 

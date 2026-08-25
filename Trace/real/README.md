@@ -3,11 +3,11 @@
 
 New captures are first imported under ignored `.private/` staging and require explicit review before promotion.
 
-| Case | Scene | Android | Publication | Analysis |
-| --- | --- | --- | --- | --- |
-| [Android 16 customer scroll](./android-scroll-customer/) | scrolling | Android 16 / API 36 | public | 1 file(s) |
-| [Android 15 standard AOSP scroll](./android-scroll-standard/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
-| [Android 16 heavy startup](./android-startup-heavy/) | startup | Android 16 / API 36 | public | 1 file(s) |
-| [Android 16 light startup](./android-startup-light/) | startup | Android 16 / API 36 | public | 1 file(s) |
-| [Android 15 Flutter SurfaceView scroll](./flutter-scroll-surface-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
-| [Android 15 Flutter TextureView scroll](./flutter-scroll-texture-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
+| Case | Scene | Android | Publication | Analysis | Canonical SQL |
+| --- | --- | --- | --- | --- | --- |
+| [Android 16 customer scroll](./android-scroll-customer/) | scrolling | Android 16 / API 36 | public | 1 file(s) | semantic:smartperfetto.scrolling.jank_frames |
+| [Android 15 standard AOSP scroll](./android-scroll-standard/) | scrolling | Android 15 / API 35 | public | 1 file(s) | negative:smartperfetto.scrolling.jank_frames |
+| [Android 16 heavy startup](./android-startup-heavy/) | startup | Android 16 / API 36 | public | 1 file(s) | semantic:smartperfetto.binder.victim_to_server |
+| [Android 16 light startup](./android-startup-light/) | startup | Android 16 / API 36 | public | 1 file(s) | semantic:smartperfetto.binder.victim_to_server |
+| [Android 15 Flutter SurfaceView scroll](./flutter-scroll-surface-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) | negative:smartperfetto.scrolling.jank_frames |
+| [Android 15 Flutter TextureView scroll](./flutter-scroll-texture-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) | semantic:smartperfetto.scrolling.jank_frames |

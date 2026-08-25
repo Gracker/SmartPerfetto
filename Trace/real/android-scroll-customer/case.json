@@ -28,11 +28,31 @@
     "consent": "owner-approved",
     "privacy_review": "approved",
     "sanitization_review": "approved",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R1"
   },
   "analysis": {
     "results": ["analysis/scroll-demo-customer-scroll.pftrace.fps_report.txt"],
     "logs": []
   },
-  "coverage": {"skills": [], "strategies": [], "expectations": []}
+  "coverage": {
+    "skills": [],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "sql-smartperfetto-scrolling-jank-frames-positive",
+        "type": "sql",
+        "target": "smartperfetto.scrolling.jank_frames",
+        "mode": "semantic",
+        "source_file": "backend/sql/smartperfetto/scrolling/jank_frames.sql",
+        "source_sha256": "43a79e80f2e720e272bed117549b0aa89e10c8d2bc1dc2f73f04c22ce72cf72d",
+        "query": "SELECT frame_id, start_ts, dur_ns, jank_type, process_name, is_jank FROM smartperfetto_scrolling_jank_frames ORDER BY dur_ns DESC LIMIT 100",
+        "required_columns": ["frame_id", "start_ts", "dur_ns", "jank_type", "process_name", "is_jank"],
+        "assertions": [
+          {"column": "dur_ns", "operator": "gt", "value": 0},
+          {"column": "is_jank", "operator": "eq", "value": 1}
+        ]
+      }
+    ]
+  }
 }

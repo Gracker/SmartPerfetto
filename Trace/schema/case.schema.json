@@ -59,7 +59,7 @@
     },
     "source": {
       "type": "object",
-      "required": ["origin", "captured_at", "imported_at", "license", "consent", "privacy_review", "sanitization_review", "publication"],
+      "required": ["origin", "captured_at", "imported_at", "license", "consent", "privacy_review", "sanitization_review", "publication", "evidence_tier"],
       "properties": {
         "origin": {"type": "string", "minLength": 1},
         "captured_at": {"type": ["string", "null"]},
@@ -68,7 +68,8 @@
         "consent": {"type": ["string", "null"]},
         "privacy_review": {"enum": ["approved", "not-applicable", "pending", null]},
         "sanitization_review": {"enum": ["approved", "not-applicable", "pending", null]},
-        "publication": {"enum": ["public", "private", "legacy-tracked"]}
+        "publication": {"enum": ["public", "private", "legacy-tracked"]},
+        "evidence_tier": {"enum": ["R1", "R2", "R3"]}
       }
     },
     "analysis": {
@@ -91,13 +92,14 @@
     },
     "construction": {
       "type": "object",
-      "required": ["base_case_id", "scenario_file", "generator_version", "seed", "output"],
+      "required": ["base_case_id", "scenario_file", "generator_version", "seed", "output", "runtime_revision"],
       "properties": {
         "base_case_id": {"type": "string"},
         "scenario_file": {"type": "string"},
         "generator_version": {"type": "integer", "minimum": 1},
         "seed": {"type": "string", "minLength": 1},
-        "output": {"type": "string", "minLength": 1}
+        "output": {"type": "string", "minLength": 1},
+        "runtime_revision": {"type": "string", "minLength": 1}
       }
     },
     "coverage": {
@@ -115,7 +117,7 @@
               "id": {"type": "string", "minLength": 1},
               "type": {"enum": ["skill", "strategy", "sql"]},
               "target": {"type": "string", "minLength": 1},
-              "mode": {"enum": ["semantic", "execution", "graceful_empty", "unavailable", "definition"]},
+              "mode": {"enum": ["semantic", "execution", "negative", "deferred", "graceful_empty", "unavailable", "definition"]},
               "semantic_step": {"type": ["string", "null"]},
               "required_steps": {
                 "type": "array",
@@ -175,11 +177,18 @@
               },
               "parameters": {"type": "object"},
               "source_file": {"type": "string", "minLength": 1},
+              "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "required_marker": {"type": "string", "minLength": 1},
               "query": {"type": "string"},
               "expected_strategy": {"type": "string"},
               "min_rows": {"type": "integer", "minimum": 0},
               "max_rows": {"type": "integer", "minimum": 0},
+              "required_columns": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+                "uniqueItems": true
+              },
               "assertions": {
                 "type": "array",
                 "minItems": 1,
@@ -195,6 +204,7 @@
                 }
               },
               "limitation_reason": {"type": "string", "minLength": 1},
+              "expected_empty_reason": {"type": "string", "minLength": 1},
               "expected_error": {"type": "string", "minLength": 1}
             },
             "allOf": [
@@ -206,7 +216,27 @@
                   },
                   "required": ["type", "mode"]
                 },
-                "then": {"required": ["assertions"]}
+                "then": {"required": ["required_columns"]}
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {"const": "sql"},
+                    "mode": {"const": "semantic"}
+                  },
+                  "required": ["type", "mode"]
+                },
+                "then": {"required": ["source_file", "source_sha256", "query", "required_columns", "assertions"]}
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {"const": "sql"},
+                    "mode": {"const": "negative"}
+                  },
+                  "required": ["type", "mode"]
+                },
+                "then": {"required": ["source_file", "source_sha256", "query", "expected_empty_reason"]}
               }
             ]
           }

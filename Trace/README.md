@@ -8,17 +8,21 @@ This directory is the source-controlled trace test and reference corpus.
 - [Machine-readable catalog](./catalog.json)
 - [Skill and Strategy coverage](./coverage.json)
 
-Skill execution quality: 4 assertion-backed semantic, 191 execution-only, 8 explicit graceful-empty, 0 explicit unavailable prerequisite, 32 definition-only.
+Evidence tiers: R1=6, R2=0, R3=12.
+
+Pinned Perfetto SQL source: `add693d8b338ba9599dbcbc3e300b1ab8c000897`. The generated coverage ledger contains 235 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
+
+Skill execution quality: 188 source-column-backed semantic, 4 execution-only composition, 0 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
 ## Commands
 
-`npm run trace:validate` checks manifests, hashes, generated indexes, publication gates, legacy path coupling, and exact current Skill/Strategy inventory coverage.
+`npm run trace:validate` checks manifests, hashes, evidence tiers, pinned Perfetto SQL source lineage, canonical SQL package sources, generated indexes, publication gates, legacy path coupling, and exact current Skill/Strategy inventory coverage.
 
 `npm run trace:build` deterministically materializes every base-plus-overlay case under ignored `Trace/.generated/` and reparses it with the pinned trace processor.
 
-`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, and executes every discovered Skill SQL contract. Production execution, explicit read-only/context probes, and isolated state-changing branch probes are reported separately; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
+`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, and source-provenance results stay separate; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
 
-`npm run trace:regression` validates, builds, and executes the complete deterministic corpus. Per-case evidence is written below `Trace/.generated/constructed/<case-id>/`.
+`npm run trace:regression` validates, builds, and executes the complete corpus. Per-case evidence is written below `Trace/.generated/<real|constructed>/<case-id>/`.
 
 ## Add a real case
 
@@ -36,14 +40,14 @@ Constructed cases keep source scenarios and overlay protobufs in Git; combined t
 
 ## Real cases
 
-| Case | Scene | Android | Publication | Analysis |
-| --- | --- | --- | --- | --- |
-| [Android 16 customer scroll](./real/android-scroll-customer/) | scrolling | Android 16 / API 36 | public | 1 file(s) |
-| [Android 15 standard AOSP scroll](./real/android-scroll-standard/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
-| [Android 16 heavy startup](./real/android-startup-heavy/) | startup | Android 16 / API 36 | public | 1 file(s) |
-| [Android 16 light startup](./real/android-startup-light/) | startup | Android 16 / API 36 | public | 1 file(s) |
-| [Android 15 Flutter SurfaceView scroll](./real/flutter-scroll-surface-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
-| [Android 15 Flutter TextureView scroll](./real/flutter-scroll-texture-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) |
+| Case | Scene | Android | Publication | Analysis | Canonical SQL |
+| --- | --- | --- | --- | --- | --- |
+| [Android 16 customer scroll](./real/android-scroll-customer/) | scrolling | Android 16 / API 36 | public | 1 file(s) | semantic:smartperfetto.scrolling.jank_frames |
+| [Android 15 standard AOSP scroll](./real/android-scroll-standard/) | scrolling | Android 15 / API 35 | public | 1 file(s) | negative:smartperfetto.scrolling.jank_frames |
+| [Android 16 heavy startup](./real/android-startup-heavy/) | startup | Android 16 / API 36 | public | 1 file(s) | semantic:smartperfetto.binder.victim_to_server |
+| [Android 16 light startup](./real/android-startup-light/) | startup | Android 16 / API 36 | public | 1 file(s) | semantic:smartperfetto.binder.victim_to_server |
+| [Android 15 Flutter SurfaceView scroll](./real/flutter-scroll-surface-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) | negative:smartperfetto.scrolling.jank_frames |
+| [Android 15 Flutter TextureView scroll](./real/flutter-scroll-texture-view/) | scrolling | Android 15 / API 35 | public | 1 file(s) | semantic:smartperfetto.scrolling.jank_frames |
 
 ## Constructed cases
 

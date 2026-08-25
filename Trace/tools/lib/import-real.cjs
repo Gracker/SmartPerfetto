@@ -85,6 +85,7 @@ function importRealCase(repoRoot, options) {
         privacy_review: 'pending',
         sanitization_review: 'pending',
         publication: 'private',
+        evidence_tier: 'R1',
       },
       analysis: {results, logs},
       trace_probe: {

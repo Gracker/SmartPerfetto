@@ -28,11 +28,27 @@
     "consent": "owner-approved",
     "privacy_review": "approved",
     "sanitization_review": "approved",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R1"
   },
   "analysis": {
     "results": ["analysis/Scroll-Flutter-SurfaceView-Wechat-Wenyiwen.pftrace.fps_report.txt"],
     "logs": []
   },
-  "coverage": {"skills": [], "strategies": [], "expectations": []}
+  "coverage": {
+    "skills": [],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "sql-smartperfetto-scrolling-jank-frames-negative",
+        "type": "sql",
+        "target": "smartperfetto.scrolling.jank_frames",
+        "mode": "negative",
+        "source_file": "backend/sql/smartperfetto/scrolling/jank_frames.sql",
+        "source_sha256": "43a79e80f2e720e272bed117549b0aa89e10c8d2bc1dc2f73f04c22ce72cf72d",
+        "query": "SELECT frame_id, start_ts, dur_ns, jank_type, process_name, is_jank FROM smartperfetto_scrolling_jank_frames ORDER BY dur_ns DESC LIMIT 100",
+        "expected_empty_reason": "This real Flutter SurfaceView capture does not expose janky actual FrameTimeline rows through the pinned android.frames.timeline module."
+      }
+    ]
+  }
 }

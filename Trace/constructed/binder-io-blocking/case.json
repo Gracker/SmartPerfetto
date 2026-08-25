@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "6faf2433ca7d89a7d89011be2f97c4bc4ef8616ef6b03b25934af4176cfa868d",
+    "sha256": "f006bba790f92c90747d2a127abcea89d163eaf3ffa85574def1525add5d4689",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -35,7 +35,8 @@
     "consent": "generated",
     "privacy_review": "not-applicable",
     "sanitization_review": "not-applicable",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R3"
   },
   "analysis": {
     "results": [
@@ -48,7 +49,8 @@
     "scenario_file": "scenario.json",
     "generator_version": 1,
     "seed": "binder-io-blocking-v1",
-    "output": "Trace/.generated/constructed/binder-io-blocking/trace.pftrace"
+    "output": "Trace/.generated/constructed/binder-io-blocking/trace.pftrace",
+    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
   },
   "coverage": {
     "skills": [
@@ -85,7 +87,7 @@
         "id": "execute-android_kernel_wakelock_summary",
         "type": "skill",
         "target": "android_kernel_wakelock_summary",
-        "mode": "graceful_empty",
+        "mode": "deferred",
         "source_file": "backend/skills/atomic/android_kernel_wakelock_summary.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -105,7 +107,7 @@
         "id": "execute-anr_analysis",
         "type": "skill",
         "target": "anr_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/anr_analysis.skill.yaml",
         "parameters": {
           "multi_anr_threshold": 3,
@@ -155,13 +157,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "anr_detection",
+        "required_columns": [
+          "total_anr_count",
+          "affected_process_count",
+          "first_anr_ts",
+          "last_anr_ts",
+          "anr_span_seconds"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-anr_context_in_range",
         "type": "skill",
         "target": "anr_context_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/anr_context_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -174,14 +183,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "anr_ts",
+          "timeout_ns",
+          "timeout_ms",
+          "timeout_source",
+          "process_name",
+          "upid",
+          "anr_type"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-anr_detail",
         "type": "skill",
         "target": "anr_detail",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/anr_detail.skill.yaml",
         "parameters": {
           "anr_ts": 1,
@@ -240,13 +257,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "anr_info",
+        "required_columns": [
+          "process_name",
+          "pid",
+          "upid",
+          "anr_type",
+          "error_id",
+          "anr_dur_ms",
+          "timeout_ms",
+          "anr_ts",
+          "perfetto_start",
+          "perfetto_end",
+          "type_display"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-anr_main_thread_blocking",
         "type": "skill",
         "target": "anr_main_thread_blocking",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/anr_main_thread_blocking.skill.yaml",
         "parameters": {
           "process_name": "com.smartperfetto.fixture"
@@ -269,13 +299,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "main_thread_state",
+        "required_columns": [
+          "state",
+          "state_display",
+          "total_dur_ms",
+          "count",
+          "pct",
+          "avg_dur_ms",
+          "max_dur_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-binder_analysis",
         "type": "skill",
         "target": "binder_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/binder_analysis.skill.yaml",
         "parameters": {
           "slow_binder_critical_ms": 50,
@@ -318,13 +357,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "check_binder",
+        "required_columns": [
+          "txn_count",
+          "status"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-binder_blocking_in_range",
         "type": "skill",
         "target": "binder_blocking_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/binder_blocking_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -337,18 +380,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "server_process",
+          "interface",
+          "call_count",
+          "total_block_ms",
+          "server_exec_ms",
+          "max_block_ms",
+          "is_main_blocked"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-binder_detail",
         "type": "skill",
         "target": "binder_detail",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/binder_detail.skill.yaml",
         "parameters": {
           "binder_ts": 1,
-          "binder_end_ts": "${trace_end}",
+          "binder_end_ts": "${fixture_end}",
           "dur_ms": 1,
           "server_process": "",
           "process_name": "com.smartperfetto.fixture"
@@ -370,13 +421,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "binder_info",
+        "required_columns": [
+          "server_process",
+          "aidl_name",
+          "client_process",
+          "dur_ms",
+          "binder_ts",
+          "binder_end_ts",
+          "rating"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-binder_in_range",
         "type": "skill",
         "target": "binder_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/binder_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -389,14 +449,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "client_process",
+          "server_process",
+          "call_count",
+          "total_client_ms",
+          "max_delay_ms",
+          "avg_delay_ms",
+          "slow_calls"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-binder_module",
         "type": "skill",
         "target": "binder_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/kernel/binder_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -413,18 +481,28 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "binder_summary",
+        "required_columns": [
+          "caller_process",
+          "server_process",
+          "interface",
+          "call_count",
+          "total_ms",
+          "avg_ms",
+          "max_ms",
+          "sync_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-binder_root_cause",
         "type": "skill",
         "target": "binder_root_cause",
-        "mode": "graceful_empty",
+        "mode": "deferred",
         "source_file": "backend/skills/atomic/binder_root_cause.skill.yaml",
         "parameters": {
           "process_name": "com.smartperfetto.fixture",
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "slow_binder_breakdown",
@@ -445,7 +523,7 @@
         "id": "execute-binder_storm_detection",
         "type": "skill",
         "target": "binder_storm_detection",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/binder_storm_detection.skill.yaml",
         "parameters": {
           "threshold": 50
@@ -466,13 +544,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "binder_density",
+        "required_columns": [
+          "window_ts",
+          "process_name",
+          "txn_count",
+          "total_dur_ms",
+          "avg_dur_ms",
+          "status"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-block_io_analysis",
         "type": "skill",
         "target": "block_io_analysis",
-        "mode": "graceful_empty",
+        "mode": "deferred",
         "source_file": "backend/skills/composite/block_io_analysis.skill.yaml",
         "parameters": {
           "min_queue_depth": 5
@@ -516,12 +602,12 @@
         "id": "execute-blocking_chain_analysis",
         "type": "skill",
         "target": "blocking_chain_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/blocking_chain_analysis.skill.yaml",
         "parameters": {
           "process_name": "com.smartperfetto.fixture",
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "thread_state_distribution",
@@ -537,13 +623,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "thread_state_distribution",
+        "required_columns": [
+          "state",
+          "state_display",
+          "total_dur_ms",
+          "count",
+          "pct",
+          "blocked_function"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-filesystem_module",
         "type": "skill",
         "target": "filesystem_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/kernel/filesystem_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -566,13 +660,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "io_overview",
+        "required_columns": [
+          "io_type",
+          "operation_count",
+          "total_ms",
+          "avg_ms",
+          "max_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-io_pressure",
         "type": "skill",
         "target": "io_pressure",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/io_pressure.skill.yaml",
         "parameters": {
           "min_duration_ms": 1,
@@ -610,6 +711,14 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "io_wait_overview",
+        "required_columns": [
+          "io_wait_events",
+          "total_io_wait_ms",
+          "avg_io_wait_ms",
+          "max_io_wait_ms",
+          "affected_threads",
+          "severity"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
@@ -620,8 +729,8 @@
         "source_file": "backend/skills/composite/lock_binder_wait.skill.yaml",
         "parameters": {
           "process_name": "com.smartperfetto.fixture",
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "main_thread_blocking_chain",
@@ -639,7 +748,7 @@
         "id": "execute-lock_contention_analysis",
         "type": "skill",
         "target": "lock_contention_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/lock_contention_analysis.skill.yaml",
         "parameters": {
           "min_duration_ms": 10
@@ -684,17 +793,30 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "owner_contention_events",
+        "required_columns": [
+          "source",
+          "process_name",
+          "lock_name",
+          "lock_type",
+          "blocked_thread_name",
+          "blocking_thread_name",
+          "owner_tid",
+          "owner_thread_state",
+          "owner_blocked_function",
+          "wait_ms",
+          "owner_state_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-lock_contention_in_range",
         "type": "skill",
         "target": "lock_contention_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/lock_contention_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "monitor_contentions",
@@ -712,13 +834,23 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "monitor_contentions",
+        "required_columns": [
+          "blocking_method",
+          "blocking_thread_name",
+          "blocked_method",
+          "blocked_thread_name",
+          "main_blocked",
+          "wait_ms",
+          "waiter_count",
+          "lock_type"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-lock_contention_module",
         "type": "skill",
         "target": "lock_contention_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/kernel/lock_contention_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -743,17 +875,24 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "lock_contention_overview",
+        "required_columns": [
+          "lock_event",
+          "event_count",
+          "total_wait_ms",
+          "avg_wait_ms",
+          "max_wait_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-main_thread_file_io_in_range",
         "type": "skill",
         "target": "main_thread_file_io_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/main_thread_file_io_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "root"
@@ -765,14 +904,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "io_slice",
+          "count",
+          "total_ms",
+          "avg_ms",
+          "max_ms",
+          "percent"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-page_fault_in_range",
         "type": "skill",
         "target": "page_fault_in_range",
-        "mode": "execution",
+        "mode": "deferred",
         "source_file": "backend/skills/atomic/page_fault_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -785,14 +931,14 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "limitation_reason": "The pinned trace schema requires sched_blocked_reason plus resolvable kernel symbols to populate thread_state.blocked_function for page-fault attribution.",
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {
         "id": "execute-wakelock_tracking",
         "type": "skill",
         "target": "wakelock_tracking",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/wakelock_tracking.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -811,6 +957,15 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "wakelock_events",
+        "required_columns": [
+          "wakelock_name",
+          "process_name",
+          "count",
+          "total_dur_ms",
+          "avg_dur_ms",
+          "max_dur_ms",
+          "rating"
+        ],
         "required_marker": "SmartPerfetto::CASE::binder-io-blocking"
       },
       {

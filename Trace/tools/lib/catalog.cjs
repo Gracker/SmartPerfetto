@@ -89,6 +89,98 @@ function discoverSkillContracts(repoRoot) {
   return contracts;
 }
 
+function runtimePerfettoRevision(repoRoot) {
+  const pinPath = path.join(repoRoot, 'scripts/trace-processor-pin.env');
+  if (!fs.existsSync(pinPath)) return null;
+  return fs.readFileSync(pinPath, 'utf8').match(/^PERFETTO_VERSION=([^\s#]+)$/m)?.[1] ?? null;
+}
+
+function loadSqlSourceTruth(repoRoot, issues) {
+  const docsPath = path.join(repoRoot, 'backend/data/perfettoSqlDocs.json');
+  const runtimeRevision = runtimePerfettoRevision(repoRoot);
+  let docs = null;
+  try {
+    docs = JSON.parse(fs.readFileSync(docsPath, 'utf8'));
+  } catch (error) {
+    issues.push(issue('perfetto-sql-source-index-invalid', docsPath, error.message));
+  }
+  if (!runtimeRevision) {
+    issues.push(issue(
+      'perfetto-runtime-pin-missing',
+      path.join(repoRoot, 'scripts/trace-processor-pin.env'),
+      'PERFETTO_VERSION is required for SQL source provenance',
+    ));
+  }
+  if (docs?.generatedFrom !== runtimeRevision) {
+    issues.push(issue(
+      'perfetto-sql-source-revision-mismatch',
+      docsPath,
+      `Perfetto SQL docs revision ${docs?.generatedFrom ?? '(missing)'} does not match runtime ${runtimeRevision ?? '(missing)'}`,
+    ));
+  }
+  const modules = new Map();
+  for (const moduleDoc of Array.isArray(docs?.modules) ? docs.modules : []) {
+    if (typeof moduleDoc?.module !== 'string') continue;
+    modules.set(moduleDoc.module, moduleDoc);
+  }
+  return {runtimeRevision, docsPath, modules};
+}
+
+function resolveModuleSources(moduleNames, sourceTruth, sourceFile, issues) {
+  return moduleNames.map((moduleName) => {
+    const moduleDoc = sourceTruth.modules.get(moduleName);
+    if (!moduleDoc || typeof moduleDoc.sourcePath !== 'string' || moduleDoc.sourcePath.trim() === '') {
+      issues.push(issue(
+        'unknown-perfetto-sql-module-source',
+        sourceFile,
+        `Perfetto SQL module ${moduleName} has no source path at runtime revision ${sourceTruth.runtimeRevision ?? '(missing)'}`,
+      ));
+      return {name: moduleName, source_path: null};
+    }
+    return {name: moduleName, source_path: moduleDoc.sourcePath};
+  });
+}
+
+function discoverPortableSqlContracts(repoRoot, sourceTruth, issues) {
+  const packageRoot = path.join(repoRoot, 'backend/sql/smartperfetto');
+  const manifestPath = path.join(packageRoot, 'PACKAGE.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    issues.push(issue('portable-sql-package-invalid', manifestPath, error.message));
+    return new Map();
+  }
+  const contracts = new Map();
+  for (const symbol of Array.isArray(manifest?.symbols) ? manifest.symbols : []) {
+    const sourcePath = path.resolve(packageRoot, String(symbol.module ?? ''));
+    const packagePrefix = `${path.resolve(packageRoot)}${path.sep}`;
+    if (!sourcePath.startsWith(packagePrefix) || !fs.existsSync(sourcePath)) {
+      issues.push(issue(
+        'portable-sql-source-missing',
+        manifestPath,
+        `Portable SQL ${symbol.name ?? '(unnamed)'} has invalid module ${symbol.module ?? '(missing)'}`,
+      ));
+      continue;
+    }
+    const sourceFile = path.relative(repoRoot, sourcePath).split(path.sep).join('/');
+    const modules = resolveModuleSources(
+      Array.isArray(symbol.dependencies) ? symbol.dependencies : [],
+      sourceTruth,
+      sourceFile,
+      issues,
+    );
+    contracts.set(symbol.name, {
+      target: symbol.name,
+      source_file: sourceFile,
+      sql_name: symbol.sqlName ?? String(symbol.name).replace(/\./g, '_'),
+      source_sha256: sha256File(sourcePath),
+      modules,
+    });
+  }
+  return contracts;
+}
+
 function sameStringSet(actual, expected) {
   if (!Array.isArray(actual)) return false;
   return JSON.stringify([...new Set(actual)].sort()) === JSON.stringify([...new Set(expected)].sort());
@@ -316,6 +408,8 @@ function validateCatalog(repoRoot) {
   const targets = discoverCoverageTargets(repoRoot);
   const skillContracts = discoverSkillContracts(repoRoot);
   const issues = [];
+  const sourceTruth = loadSqlSourceTruth(repoRoot, issues);
+  const portableSqlContracts = discoverPortableSqlContracts(repoRoot, sourceTruth, issues);
   const ids = new Map();
   const baseIds = new Set(catalog.cases.filter((entry) => entry.kind === 'real').map((entry) => entry.id));
   const covered = {skills: new Set(), strategies: new Set()};
@@ -324,7 +418,29 @@ function validateCatalog(repoRoot) {
     execution: new Set(),
     graceful_empty: new Set(),
     unavailable: new Set(),
+    negative: new Set(),
+    deferred: new Set(),
     definition: new Set(),
+  };
+  const evidenceTiers = {R1: new Set(), R2: new Set(), R3: new Set()};
+  const sqlSourceCoverage = {
+    runtime_revision: sourceTruth.runtimeRevision,
+    skills: [...skillContracts.entries()].map(([target, contract]) => ({
+      target,
+      source_file: contract.source_file,
+      modules: resolveModuleSources(
+        contract.declaredModules,
+        sourceTruth,
+        contract.source_file,
+        issues,
+      ),
+      steps: contract.sqlSourceSteps.map((step) => ({
+        id: step.id,
+        sha256: step.sha256,
+        required_columns: step.requiredColumns,
+      })),
+    })),
+    portable: [...portableSqlContracts.values()],
   };
   const ajv = new Ajv2020({allErrors: true, strict: false, validateFormats: false});
   const caseSchema = JSON.parse(fs.readFileSync(path.join(repoRoot, 'Trace/schema/case.schema.json'), 'utf8'));
@@ -383,6 +499,17 @@ function validateCatalog(repoRoot) {
     validateRequiredShape(entry, issues);
     validatePathsAndHashes(entry, issues);
     validatePublication(entry, publicationLedger.exceptions, issues);
+    const evidenceTier = entry.source?.evidence_tier;
+    const allowedEvidenceTiers = entry.kind === 'constructed' ? ['R3'] : ['R1', 'R2'];
+    if (!allowedEvidenceTiers.includes(evidenceTier)) {
+      issues.push(issue(
+        'case-evidence-tier-mismatch',
+        entry.manifest_path,
+        `${entry.kind} case ${entry.id} requires evidence tier ${allowedEvidenceTiers.join(' or ')}, got ${evidenceTier ?? '(missing)'}`,
+      ));
+    } else {
+      evidenceTiers[evidenceTier].add(entry.id);
+    }
     if (entry.source?.publication === 'legacy-tracked' && publicationLedger.exceptions.has(entry.id)) {
       usedPublicationExceptions.add(entry.id);
     }
@@ -394,9 +521,84 @@ function validateCatalog(repoRoot) {
     if (entry.kind === 'constructed' && entry.construction && !baseIds.has(entry.construction.base_case_id)) {
       issues.push(issue('missing-base-case', entry.manifest_path, `unknown base case ${entry.construction.base_case_id}`));
     }
+    if (
+      entry.kind === 'constructed'
+      && entry.construction?.runtime_revision !== sourceTruth.runtimeRevision
+    ) {
+      issues.push(issue(
+        'constructed-runtime-revision-mismatch',
+        entry.manifest_path,
+        `constructed case ${entry.id} runtime ${entry.construction?.runtime_revision ?? '(missing)'} does not match ${sourceTruth.runtimeRevision ?? '(missing)'}`,
+      ));
+    }
 
     const expectationTargets = new Set((entry.coverage?.expectations ?? []).map((item) => `${item.type}:${item.target}`));
     for (const expectation of entry.coverage?.expectations ?? []) {
+      if (expectation.type === 'sql') {
+        const portableContract = portableSqlContracts.get(expectation.target);
+        if (!portableContract) {
+          issues.push(issue(
+            'unknown-portable-sql-target',
+            entry.manifest_path,
+            `SQL expectation ${expectation.target} is not declared in backend/sql/smartperfetto/PACKAGE.json`,
+          ));
+          continue;
+        }
+        if (
+          expectation.source_file !== portableContract.source_file
+          || expectation.source_sha256 !== portableContract.source_sha256
+        ) {
+          issues.push(issue(
+            'portable-sql-source-mismatch',
+            entry.manifest_path,
+            `SQL expectation ${expectation.target} must use ${portableContract.source_file}@${portableContract.source_sha256}`,
+          ));
+        }
+        if (typeof expectation.query !== 'string' || expectation.query.trim() === '') {
+          issues.push(issue(
+            'portable-sql-query-missing',
+            entry.manifest_path,
+            `SQL expectation ${expectation.target} requires a result query`,
+          ));
+        } else if (!new RegExp(`\\b${portableContract.sql_name}\\b`).test(expectation.query)) {
+          issues.push(issue(
+            'portable-sql-query-target-mismatch',
+            entry.manifest_path,
+            `SQL expectation ${expectation.target} query must read ${portableContract.sql_name}`,
+          ));
+        }
+        if (expectation.mode === 'semantic') {
+          if (!Array.isArray(expectation.required_columns) || expectation.required_columns.length === 0) {
+            issues.push(issue(
+              'semantic-expectation-without-columns',
+              entry.manifest_path,
+              `SQL ${expectation.target} requires source-level result columns`,
+            ));
+          }
+          if (!Array.isArray(expectation.assertions) || expectation.assertions.length === 0) {
+            issues.push(issue(
+              'semantic-expectation-without-assertions',
+              entry.manifest_path,
+              `SQL ${expectation.target} requires at least one value assertion`,
+            ));
+          }
+        } else if (expectation.mode === 'negative') {
+          if (typeof expectation.expected_empty_reason !== 'string' || expectation.expected_empty_reason.trim() === '') {
+            issues.push(issue(
+              'negative-expectation-without-reason',
+              entry.manifest_path,
+              `SQL ${expectation.target} requires expected_empty_reason`,
+            ));
+          }
+        } else {
+          issues.push(issue(
+            'invalid-portable-sql-expectation-mode',
+            entry.manifest_path,
+            `SQL ${expectation.target} must use semantic or negative mode`,
+          ));
+        }
+        continue;
+      }
       if (expectation.type !== 'skill') continue;
       const mode = expectation.mode;
       if (!Object.hasOwn(quality, mode)) {
@@ -404,6 +606,17 @@ function validateCatalog(repoRoot) {
         continue;
       }
       quality[mode].add(expectation.target);
+      if (
+        (mode === 'semantic' || mode === 'execution')
+        && expectation.min_rows !== undefined
+        && expectation.min_rows < 1
+      ) {
+        issues.push(issue(
+          'positive-expectation-allows-empty',
+          entry.manifest_path,
+          `Skill ${expectation.target} positive coverage cannot allow ${expectation.min_rows} rows`,
+        ));
+      }
       if (mode !== 'definition') {
         if (!Array.isArray(expectation.required_steps) || expectation.required_steps.length === 0 || !expectation.semantic_step) {
           issues.push(issue('incomplete-execution-expectation', entry.manifest_path, `Skill ${expectation.target} requires steps and semantic_step`));
@@ -506,16 +719,39 @@ function validateCatalog(repoRoot) {
               `Skill ${expectation.target} declares unknown unavailable SQL: ${unknownUnavailable.join(', ')}`,
             ));
           }
+          if (mode === 'semantic') {
+            const sourceStep = contract.sqlSourceSteps.find((step) => step.id === expectation.semantic_step);
+            if (
+              sourceStep?.requiredColumns.length > 0
+              && !sameStringSet(expectation.required_columns, sourceStep.requiredColumns)
+            ) {
+              issues.push(issue(
+                'semantic-column-source-mismatch',
+                entry.manifest_path,
+                `Skill ${expectation.target} columns must match ${expectation.semantic_step}: ${sourceStep.requiredColumns.join(', ')}`,
+              ));
+            }
+          }
         }
       }
-      if (mode === 'semantic' && (!Array.isArray(expectation.assertions) || expectation.assertions.length === 0)) {
+      if (mode === 'semantic' && (!Array.isArray(expectation.required_columns) || expectation.required_columns.length === 0)) {
         issues.push(issue(
-          'semantic-expectation-without-assertions',
+          'semantic-expectation-without-columns',
           entry.manifest_path,
-          `Skill ${expectation.target} requires at least one value assertion for semantic coverage`,
+          `Skill ${expectation.target} requires source-level result columns for semantic coverage`,
         ));
       }
-      if (mode === 'graceful_empty' || mode === 'unavailable') {
+      if (mode === 'negative' && (
+        typeof expectation.expected_empty_reason !== 'string'
+        || expectation.expected_empty_reason.trim() === ''
+      )) {
+        issues.push(issue(
+          'negative-expectation-without-reason',
+          entry.manifest_path,
+          `Skill ${expectation.target} requires expected_empty_reason`,
+        ));
+      }
+      if (mode === 'graceful_empty' || mode === 'unavailable' || mode === 'deferred') {
         if (typeof expectation.limitation_reason !== 'string' || expectation.limitation_reason.trim() === '') {
           issues.push(issue('missing-limitation-reason', entry.manifest_path, `Skill ${expectation.target} requires limitation_reason`));
         }
@@ -548,6 +784,17 @@ function validateCatalog(repoRoot) {
   }
   validateNoLegacyTraceReferences(repoRoot, issues);
 
+  for (const [skillId, contract] of skillContracts) {
+    if (contract.sqlIds.length === 0) continue;
+    if (!quality.semantic.has(skillId) && !quality.deferred.has(skillId)) {
+      issues.push(issue(
+        'sql-skill-without-positive-or-deferred-coverage',
+        contract.source_file,
+        `SQL Skill ${skillId} must have source-column-backed semantic coverage or an explicit deferred contract`,
+      ));
+    }
+  }
+
   const coverage = {
     missing: {
       skills: targets.skills.filter((id) => !covered.skills.has(id)),
@@ -564,6 +811,19 @@ function validateCatalog(repoRoot) {
     quality: Object.fromEntries(
       Object.entries(quality).map(([mode, ids]) => [mode, [...ids].filter((id) => targets.skills.includes(id)).sort()]),
     ),
+    positive: {
+      sql_skills: targets.skills.filter((id) =>
+        (skillContracts.get(id)?.sqlIds.length ?? 0) > 0 && quality.semantic.has(id)),
+      composition_skills: targets.skills.filter((id) =>
+        (skillContracts.get(id)?.sqlIds.length ?? 0) === 0 && quality.execution.has(id)),
+    },
+    deferred: {
+      skills: targets.skills.filter((id) => quality.deferred.has(id) && !quality.semantic.has(id)),
+    },
+    evidence_tiers: Object.fromEntries(
+      Object.entries(evidenceTiers).map(([tier, ids]) => [tier, [...ids].sort()]),
+    ),
+    sql_sources: sqlSourceCoverage,
   };
   for (const category of ['skills', 'strategies']) {
     for (const id of coverage.missing[category]) {
