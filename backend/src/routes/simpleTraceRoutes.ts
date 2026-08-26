@@ -84,6 +84,26 @@ const MAX_TRACE_LIST_LIMIT = 200;
 // 2x covers the in-flight upload plus the .uploading temp file written alongside the final trace.
 const DISK_SAFETY_MULTIPLIER = 2;
 
+/**
+ * Multer/Busboy decodes multipart filename parameters as Latin-1 by default,
+ * while browsers send the filename bytes as UTF-8. Recover the original name
+ * only when the Latin-1 code units form a lossless UTF-8 byte sequence.
+ */
+function normalizeUtf8Filename(filename: string): string {
+  if ([...filename].some(character => (character.codePointAt(0) ?? 0) > 0xff)) {
+    return filename;
+  }
+  const decoded = Buffer.from(filename, 'latin1').toString('utf8');
+  return Buffer.from(decoded, 'utf8').toString('latin1') === filename
+    ? decoded
+    : filename;
+}
+
+function normalizeTraceCatalogFilename(metadata: TraceMetadata): TraceMetadata {
+  const filename = normalizeUtf8Filename(metadata.filename);
+  return filename === metadata.filename ? metadata : {...metadata, filename};
+}
+
 class TraceUploadTooLargeError extends Error {
   constructor(readonly maxBytes: number) {
     super(`Trace file too large. Maximum allowed size is ${maxBytes} bytes`);
@@ -848,6 +868,7 @@ router.post(
       }
 
       const file = req.file;
+      const filename = normalizeUtf8Filename(file.originalname);
       const tenantDecision = evaluateTenantMutationPolicy(context);
       if (!tenantDecision.allowed) {
         await cleanupFile(file.path);
@@ -867,10 +888,10 @@ router.post(
       const finalPath = path.join(tracesDir, `${traceId}.trace`);
       await renameTraceAtomically(file.path, finalPath);
 
-      console.log(`File uploaded successfully: ${file.originalname} -> ${traceId}`);
+      console.log(`File uploaded successfully: ${filename} -> ${traceId}`);
 
       // Get trace status and processor port from service
-      const traceInfo = await finalizeTraceUpload(traceId, file.originalname, file.size, finalPath, context, 'local');
+      const traceInfo = await finalizeTraceUpload(traceId, filename, file.size, finalPath, context, 'local');
       if (!traceUploadHasRpcTarget(traceInfo)) {
         sendTraceProcessorUnavailable(res, traceInfo);
         return;
@@ -880,7 +901,7 @@ router.post(
         success: true,
         trace: {
           id: traceId,
-          filename: file.originalname,
+          filename,
           size: file.size,
           uploadedAt: traceInfo?.uploadTime || new Date().toISOString(),
           status: traceInfo?.status || 'ready',
@@ -1039,7 +1060,10 @@ router.get('/', async (req, res) => {
       return sendForbidden(res, 'Listing traces requires trace:read permission');
     }
     const page = await listTraceMetadataPageForContext(context, traceListOptions(req));
-    res.json(page);
+    res.json({
+      ...page,
+      traces: page.traces.map(normalizeTraceCatalogFilename),
+    });
   } catch (error: any) {
     if (error instanceof InvalidTraceMetadataCursorError || error instanceof RangeError) {
       return res.status(400).json({
