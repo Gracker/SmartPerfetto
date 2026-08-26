@@ -45,26 +45,16 @@ git commit -m "chore: release v<version>"
 git push origin main
 ```
 
-发布 npm CLI：
+在公开 release 前预检 npm CLI；这里不接触发布凭证：
 
 ```bash
-npm whoami
 npm --prefix backend run cli:pack-check
-cd backend
-npm publish --access public
-cd ..
-npm view @gracker/smartperfetto version --json
+npm --prefix backend run cli:e2e
 ```
 
-npm 发布成功后，在空目录做真实安装 smoke：
-
-```bash
-npm install @gracker/smartperfetto@<version>
-./node_modules/.bin/smp --version
-./node_modules/.bin/smartperfetto --help
-./node_modules/.bin/smp doctor --format json
-./node_modules/.bin/smp knowledge-pack status --format json
-```
+正常 npm 发布由 `.github/workflows/npm-publish.yml` 的 OIDC Trusted Publisher
+完成，不使用 `NPM_TOKEN`。workflow 会从精确 release tag 重跑版本、pack 和 CLI
+门禁，在无 OIDC 的 job 中构建 tarball，再由独立发布 job 只消费哈希绑定的 tarball。
 
 发布 GitHub 免安装包：
 
@@ -91,6 +81,34 @@ npm run release:portable -- <version> --skip-build --no-draft \
   --smoke-run-id <run-id>
 gh release view v<version> --json tagName,isDraft,assets
 ```
+
+GitHub Release 公开后会自动触发 npm Trusted Publishing。等待 workflow 并验证
+registry；如果 release event 未送达，可从默认分支按同一公开 release ID 幂等恢复：
+
+```bash
+gh run list --workflow npm-publish.yml --limit 5
+gh run watch <run-id> --exit-status
+# recovery only
+gh workflow run npm-publish.yml --ref main -f release_id=<numeric-release-id>
+npm view @gracker/smartperfetto@<version> version dist.integrity --json
+```
+
+workflow 只接受 public、非 prerelease、完整 target SHA 的稳定 SemVer release；tag、
+target、四个版本字段和 `main` 祖先关系必须一致。已有版本只有 registry
+`dist.integrity` 与本次 tarball 完全一致时才会幂等跳过。最后在空目录、Node.js 24
+下做无凭证真实安装 smoke：
+
+```bash
+npm install @gracker/smartperfetto@<version>
+./node_modules/.bin/smp --version
+./node_modules/.bin/smartperfetto --help
+./node_modules/.bin/smp doctor --format json
+./node_modules/.bin/smp knowledge-pack status --format json
+```
+
+本地 `npm publish` 只作应急回退；它会要求 WebAuthn。必须从 `backend/` 执行
+`npm publish --access public`，不能从根目录通过 `--prefix` 形式调用 publish，
+否则可能误命中 private 根包。
 
 免安装包必须 build once：测试并上传同一份最终归档字节，通过 smoke 后不得重新构建。
 交叉编译、manifest/结构检查和静态签名校验不等于目标系统真实启动。Windows、macOS
@@ -128,6 +146,11 @@ git status --short --branch
 
 - 根目录 `package.json` 是版本源；`npm run version:set -- <version>` 必须同步四个版本文件。
 - npm 包名是 `@gracker/smartperfetto`，必须同时提供 `smp` 和 `smartperfetto` 两个 bin。
+- npmjs.com 的 Trusted Publisher 必须精确绑定 `Gracker/SmartPerfetto` 和
+  `npm-publish.yml`；只有 publish job 拥有 `id-token: write`，且该 job 不 checkout
+  或执行 release 源码。
+- `workflow_dispatch` 仅用于默认分支恢复，输入 numeric public release ID；公开版本
+  的幂等 skip 必须校验 registry `dist.integrity`，不能只比较版本号。
 - npm 已发布版本不可变；如果发现包内容或运行时 bug，修复后发布下一个 patch 版本。
 - 公开 portable release 不允许 `--allow-dirty`。
 - `--skip-build` 只能用于刚刚在同一版本、同一 commit 上构建出的包。

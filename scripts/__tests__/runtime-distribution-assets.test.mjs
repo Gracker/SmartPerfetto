@@ -416,6 +416,70 @@ test('Docker publishing keeps stable and nightly tags separate', () => {
   );
 });
 
+test('npm trusted publishing isolates release packaging from the OIDC publish credential', () => {
+  const workflowPath = join(root, '.github/workflows/npm-publish.yml');
+  assert.equal(
+    existsSync(workflowPath),
+    true,
+    'the npm trusted publishing workflow must exist',
+  );
+
+  const workflow = readFileSync(workflowPath, 'utf8');
+  const packageStart = workflow.indexOf('  package:');
+  const publishStart = workflow.indexOf('  publish:');
+  const smokeStart = workflow.indexOf('  smoke:');
+  assert.ok(packageStart >= 0 && publishStart > packageStart && smokeStart > publishStart);
+
+  const packageJob = workflow.slice(packageStart, publishStart);
+  const publishJob = workflow.slice(publishStart, smokeStart);
+  const smokeJob = workflow.slice(smokeStart);
+
+  assert.match(workflow, /release:\s+types:\s+\[published\]/);
+  assert.match(workflow, /workflow_dispatch:[\s\S]*?release_id:/);
+  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(packageJob, /refs\/heads\/\$\{DEFAULT_BRANCH\}/);
+  assert.match(packageJob, /merge-base --is-ancestor "\$\{RELEASE_SHA\}" origin\/main/);
+  assert.ok(packageJob.includes('/^[0-9a-f]{40}$/.test(release.target_commitish'));
+  assert.ok(packageJob.includes('/^v[0-9]+\\.[0-9]+\\.[0-9]+$/.test(release.tag_name'));
+  assert.match(packageJob, /npm run version:sync -- --check/);
+  assert.match(packageJob, /npm run cli:pack-check/);
+  assert.match(packageJob, /npm run cli:e2e/);
+  assert.match(packageJob, /npm pack --silent --pack-destination/);
+  assert.match(packageJob, /readdirSync/);
+  assert.match(packageJob, /files\.length !== 1/);
+  assert.doesNotMatch(packageJob, /PACKAGE_FILE="\$\(npm pack/);
+  assert.match(packageJob, /createHash\('sha512'\)/);
+  assert.match(packageJob, /actions\/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a/);
+  assert.doesNotMatch(packageJob, /id-token:\s*write/);
+
+  assert.equal((workflow.match(/id-token:\s*write/g) || []).length, 1);
+  assert.match(publishJob, /id-token:\s*write/);
+  assert.match(
+    publishJob,
+    /actions\/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c/,
+  );
+  assert.match(publishJob, /dist\.integrity/);
+  assert.match(publishJob, /REGISTRY_INTEGRITY/);
+  assert.match(publishJob, /PACKAGE_INTEGRITY/);
+  assert.match(publishJob, /npm publish "\$\{PACKAGE_PATH\}" --access public/);
+  assert.doesNotMatch(publishJob, /actions\/checkout|npm ci|npm run|scripts\//);
+
+  assert.match(smokeJob, /NPM_CONFIG_USERCONFIG:\s*\/dev\/null/);
+  assert.match(smokeJob, /npm install --no-audit --no-fund "@gracker\/smartperfetto@\$\{VERSION\}"/);
+  assert.match(smokeJob, /packageJson\.bin\[binName\]/);
+  assert.match(smokeJob, /spawnSync\(\s+process\.execPath/);
+  assert.ok(smokeJob.includes("['smp', ['--version']]"));
+  assert.ok(smokeJob.includes("['smartperfetto', ['--help']]"));
+  assert.ok(smokeJob.includes("['smp', ['doctor', '--format', 'json']]"));
+  assert.doesNotMatch(smokeJob, /node_modules\/\.bin/);
+  assert.doesNotMatch(smokeJob, /id-token:\s*write/);
+
+  assert.doesNotMatch(
+    workflow,
+    /NPM_TOKEN|NODE_AUTH_TOKEN|_authToken|secrets\.|npm --prefix backend publish/,
+  );
+});
+
 test('backend gate installs every dependency tree consumed by verify:pr', () => {
   const workflow = readFileSync(
     join(root, '.github/workflows/backend-agent-regression-gate.yml'),
