@@ -403,8 +403,26 @@ describe('OnDemandSourceAccessService', () => {
       );
     }
     const ref = register();
+    let ripgrepPath = 'rg';
+    if (process.platform !== 'win32') {
+      const fakeRipgrep = path.join(tmpDir, 'fake-common-query-rg');
+      const output = Array.from({length: 12}, (_, index) => JSON.stringify({
+        type: 'match',
+        data: {
+          path: {text: `app/src/Common${index}.kt`},
+          line_number: 1,
+        },
+      })).join('\n') + '\n';
+      fs.writeFileSync(fakeRipgrep, [
+        '#!/usr/bin/env node',
+        `process.stdout.write(${JSON.stringify(output)});`,
+        '',
+      ].join('\n'));
+      fs.chmodSync(fakeRipgrep, 0o700);
+      ripgrepPath = fakeRipgrep;
+    }
 
-    const search = await service().search({
+    const search = await service(ripgrepPath).search({
       codebaseId: ref.codebaseId,
       scope,
       query: 'commonNeedle',
