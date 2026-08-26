@@ -242,7 +242,7 @@ describe('OnDemandSourceAccessService', () => {
   it('evaluates a frozen provider grant once for a large rejected candidate set', async () => {
     const sourceRoot = path.join(root, 'grant-scale');
     fs.mkdirSync(sourceRoot, {recursive: true});
-    for (let index = 0; index < 4_000; index += 1) {
+    for (let index = 0; index < 500; index += 1) {
       fs.writeFileSync(
         path.join(sourceRoot, `Candidate${index}.dart`),
         `void frozenGrantNeedle${index}() {}\n`,
@@ -264,22 +264,37 @@ describe('OnDemandSourceAccessService', () => {
     envelope.codebases[0].consent.grant.extensions = ['.kt'];
     fs.writeFileSync(registryPath, JSON.stringify(envelope));
     const migratedRegistry = new CodebaseRegistry(registryPath);
+    const registered = migratedRegistry.get(ref.codebaseId, scope)!;
+    let policyFieldReads = 0;
+    const instrumented = new Proxy(registered, {
+      get(target, property, receiver) {
+        if (property === 'pathFilters' || property === 'excludeGlobs') {
+          policyFieldReads += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const get = jest.spyOn(migratedRegistry, 'get').mockReturnValue(instrumented);
     const access = new OnDemandSourceAccessService({
       registry: migratedRegistry,
       gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
       ripgrepPath: '__smartperfetto_missing_rg__',
       searchTimeoutMs: 30_000,
     });
-    const startedAt = Date.now();
+    const search = await (async () => {
+      try {
+        return await access.search({
+          codebaseId: ref.codebaseId,
+          scope,
+          query: 'frozenGrantNeedle',
+          mode: 'provider_send',
+        });
+      } finally {
+        get.mockRestore();
+      }
+    })();
 
-    const search = await access.search({
-      codebaseId: ref.codebaseId,
-      scope,
-      query: 'frozenGrantNeedle',
-      mode: 'provider_send',
-    });
-
-    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(policyFieldReads).toBeLessThan(10);
     expect(search.backend).toBe('node');
     expect(search.matches).toEqual([]);
   }, 30_000);

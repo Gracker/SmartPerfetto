@@ -302,9 +302,14 @@ describe('SourceEnumerator', () => {
         enumerationComplete: false,
         incompleteReason: 'time_budget',
       }));
-      releaseOpen(handle);
-      await expect(Promise.race([closed, guardFailure])).resolves.toBeUndefined();
-      expect(stat).not.toHaveBeenCalled();
+      const afterDeadline = jest.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER);
+      try {
+        releaseOpen(handle);
+        await expect(Promise.race([closed, guardFailure])).resolves.toBeUndefined();
+        expect(stat).not.toHaveBeenCalled();
+      } finally {
+        afterDeadline.mockRestore();
+      }
     } finally {
       if (guard) clearTimeout(guard);
       releaseOpen(handle);

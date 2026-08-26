@@ -165,9 +165,14 @@ describe('AOSP manifest scope discovery', () => {
         readAospManifestProjects(root, fs.realpathSync(root), 20),
         guardFailure,
       ])).rejects.toThrow('source_metadata_time_budget');
-      releaseOpen(handle);
-      await expect(Promise.race([closed, guardFailure])).resolves.toBeUndefined();
-      expect(stat).not.toHaveBeenCalled();
+      const afterDeadline = jest.spyOn(Date, 'now').mockReturnValue(Number.MAX_SAFE_INTEGER);
+      try {
+        releaseOpen(handle);
+        await expect(Promise.race([closed, guardFailure])).resolves.toBeUndefined();
+        expect(stat).not.toHaveBeenCalled();
+      } finally {
+        afterDeadline.mockRestore();
+      }
     } finally {
       if (timeoutGuard) clearTimeout(timeoutGuard);
       releaseOpen(handle);
