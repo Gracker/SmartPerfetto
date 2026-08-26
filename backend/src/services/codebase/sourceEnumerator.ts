@@ -187,7 +187,9 @@ export class SourceEnumerator {
     const submodules = await this.readGitSubmodulePaths(root, policy, startedAt + timeoutMs);
     const paths = [...rootPaths.paths];
     let complete = rootPaths.complete && submodules.complete;
-    let reason = rootPaths.reason ?? submodules.reason;
+    let reason = rootPaths.reason ??
+      submodules.reason ??
+      (submodules.complete ? undefined : 'traversal_error');
     let stderrObserved = rootPaths.stderrObserved;
     for (const submodulePath of submodules.paths) {
       if (paths.length > this.maxVisitedEntries) {

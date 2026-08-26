@@ -322,6 +322,33 @@ describe('SourceEnumerator', () => {
     }
   });
 
+  it('reports traversal failure for an unsafe .gitmodules path', async () => {
+    const root = path.join(tmpDir, 'gitmodules-unsafe-path');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    fs.writeFileSync(path.join(root, '.gitmodules'), [
+      '[submodule "outside"]',
+      '  path = ../outside',
+      '  url = https://example.com/outside.git',
+      '',
+    ].join('\n'));
+    execFileSync('git', ['init', '-q'], {cwd: root});
+    execFileSync('git', ['add', 'Main.kt', '.gitmodules'], {cwd: root});
+
+    const result = await new SourceEnumerator({ripgrepPath: '__missing_rg__'}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      backend: 'git',
+      enumerationComplete: false,
+      deterministic: false,
+      incompleteReason: 'traversal_error',
+    }));
+  });
+
   it('enumerates initialized git submodules in a second bounded pass', async () => {
     const child = path.join(tmpDir, 'child');
     fs.mkdirSync(child, {recursive: true});
