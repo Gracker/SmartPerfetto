@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.8.2] - 2026-08-26
+
+### Fixed
+- Source enumeration now preserves `time_budget` when a bounded `.gitmodules`
+  metadata read reaches its real wall-clock deadline, while unsafe or malformed
+  submodule declarations continue to report `traversal_error`.
+
 ## [1.8.1] - 2026-08-26
 
 ### Added
