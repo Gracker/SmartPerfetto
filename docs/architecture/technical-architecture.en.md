@@ -340,7 +340,7 @@ npm run validate:strategies
 npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
-npm run verify:codebase-aware
+npm --prefix backend run verify:codebase-aware
 ```
 
 Additionally:

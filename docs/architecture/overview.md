@@ -221,6 +221,10 @@ feedback/proposal/overlay。private/code-aware 结果禁用公开草稿，安全
 private advisory。详见
 [Agent 辅助 GitHub 反馈](../getting-started/agent-assisted-feedback.md)。
 
+## Codebase Import 四层边界
+
+源码导入分为四个不可折叠的层次：`PathSecurityGate` 负责 root/文件身份与有界安全读取；`SourceSelectionPolicy` 用 canonical IR 统一路径范围、扩展名与排除规则；`SourceEnumerator` 按 `ripgrep > git > node-walk` 生成不可信候选并报告 coverage；`sourceDisclosure` 在正文出口计算 selection policy 与冻结 consent grant 的交集。按需读取与索引 lookup 必须经过同一 disclosure 谓词，索引 active/pending generation 与 live root 可用性保持正交。
+
 ## Runtime 与 Provider 边界
 
 | Runtime | Provider | 关键边界 |

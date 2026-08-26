@@ -254,6 +254,10 @@ code-aware results cannot create public drafts, and security reports use a
 private advisory. See
 [Agent-Assisted GitHub Feedback](../getting-started/agent-assisted-feedback.en.md).
 
+## Four-Layer Codebase Import Boundary
+
+Codebase import has four boundaries that must not collapse: `PathSecurityGate` owns root/file identity and bounded safe reads; `SourceSelectionPolicy` provides one canonical IR for path scope, extensions, and exclusions; `SourceEnumerator` produces untrusted candidates through `ripgrep > git > node-walk` and reports coverage; `sourceDisclosure` intersects the live selection policy with the frozen consent grant at every source-text exit. On-demand reads and indexed lookups share that disclosure predicate, while active/pending index generations remain orthogonal to live-root availability.
+
 ## Runtime And Provider Boundaries
 
 | Runtime | Providers | Key boundary |

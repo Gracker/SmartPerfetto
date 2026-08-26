@@ -43,6 +43,23 @@ const DEFAULT_EXTENSIONS = new Set([
   '.aidl',
   '.proto',
   '.xml',
+  '.dart',
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.cs',
+  '.m',
+  '.mm',
+  '.swift',
+  '.sh',
+  '.cmake',
+  '.S',
+  '.s',
+  '.hh',
+  '.inc',
+  '.dts',
+  '.dtsi',
 ]);
 
 export interface PathSecurityGateOptions {
@@ -75,6 +92,8 @@ export interface PathPreviewResult {
   skippedFileCount: number;
   blocked: boolean;
   blockedReason?: string;
+  complete?: boolean;
+  truncationReason?: string;
 }
 
 export interface PathPreviewOptions {
@@ -85,6 +104,8 @@ export interface PathPreviewOptions {
    * allowlist.
    */
   additionalAllowlistRoots?: readonly string[];
+  /** Keep the default hard budget failure unless a codebase caller opts in. */
+  budgetPolicy?: 'block' | 'truncate';
 }
 
 function parsePathList(value: string | undefined): string[] {
@@ -438,15 +459,18 @@ export class PathSecurityGate {
         skippedFiles.push({relativePath, reason});
       }
     };
-    const blockedResult = (blockedReason: string): PathPreviewResult => ({
-      rootPath,
-      rootRealpath,
-      acceptedFiles: [...acceptedFiles].sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
-      skippedFiles: [...skippedFiles].sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
-      skippedFileCount,
-      blocked: true,
-      blockedReason,
-    });
+    const budgetResult = (reason: string): PathPreviewResult => {
+      const common = {
+        rootPath,
+        rootRealpath,
+        acceptedFiles: [...acceptedFiles].sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
+        skippedFiles: [...skippedFiles].sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
+        skippedFileCount,
+      };
+      return options.budgetPolicy === 'truncate'
+        ? {...common, blocked: false, complete: false, truncationReason: reason}
+        : {...common, blocked: true, blockedReason: reason, complete: false};
+    };
 
     while (stack.length > 0) {
       const current = stack.pop()!;
@@ -454,7 +478,7 @@ export class PathSecurityGate {
       for await (const entry of directory) {
         visitedEntries += 1;
         if (visitedEntries > this.maxVisitedEntries) {
-          return blockedResult('too_many_paths');
+          return budgetResult('too_many_paths');
         }
         const fullPath = path.join(current, entry.name);
         const realPath = await safeRealpathAsync(fullPath);
@@ -477,7 +501,7 @@ export class PathSecurityGate {
         if (entry.isDirectory()) {
           visitedDirectories += 1;
           if (visitedDirectories > this.maxDirectories) {
-            return blockedResult('too_many_paths');
+            return budgetResult('too_many_paths');
           }
           stack.push(realPath);
           continue;
@@ -496,14 +520,14 @@ export class PathSecurityGate {
           recordSkipped(relativePath, 'file_too_large');
           continue;
         }
+        if (acceptedFiles.length >= this.maxFiles) {
+          return budgetResult('too_many_files');
+        }
+        if (acceptedBytes + stat.size > this.maxTotalBytes) {
+          return budgetResult('total_bytes_exceeded');
+        }
         acceptedFiles.push({relativePath, sizeBytes: stat.size});
         acceptedBytes += stat.size;
-        if (acceptedFiles.length > this.maxFiles) {
-          return blockedResult('too_many_files');
-        }
-        if (acceptedBytes > this.maxTotalBytes) {
-          return blockedResult('total_bytes_exceeded');
-        }
       }
     }
 
@@ -516,6 +540,7 @@ export class PathSecurityGate {
       skippedFiles,
       skippedFileCount,
       blocked: false,
+      complete: true,
     };
   }
 }

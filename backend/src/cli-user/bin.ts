@@ -438,10 +438,20 @@ function main(): void {
   codebaseCmd
     .command('preview <rootPath>')
     .description('preview files accepted by the path security gate')
-    .action(async (rootPath: string) => {
+    .option('--kind <kind>', 'codebase kind: app_source, aosp, kernel_source, oem_sdk', 'app_source')
+    .option('--path-filter <prefix>', 'relative path prefix; repeatable', collectCodebaseId, [])
+    .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectCodebaseId, [])
+    .action(async (rootPath: string, opts: {
+      kind?: string;
+      pathFilter?: string[];
+      excludeGlob?: string[];
+    }) => {
       const g = globals();
       await runAndExit(() => runCodebasePreviewCommand({
         rootPath,
+        kind: parseCodebaseKind(opts.kind),
+        pathFilters: opts.pathFilter,
+        excludeGlobs: opts.excludeGlob,
         envFile: g.envFile,
         sessionDir: g.sessionDir,
       }));
@@ -454,6 +464,7 @@ function main(): void {
     .option('--name <name>', 'display name')
     .option('--send-to-provider', 'allow snippets to be sent when the session also uses provider_send mode', false)
     .option('--path-filter <prefix>', 'relative path prefix to ingest; repeatable', collectCodebaseId, [])
+    .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectCodebaseId, [])
     .option('--vendor <vendor>', 'vendor id for kernel/OEM codebases')
     .option('--build-id <id>', 'build id for source/symbol matching')
     .option('--commit <hash>', 'commit hash pinned to the registered source tree')
@@ -464,6 +475,7 @@ function main(): void {
       name?: string;
       sendToProvider?: boolean;
       pathFilter?: string[];
+      excludeGlob?: string[];
       vendor?: string;
       buildId?: string;
       commit?: string;
@@ -478,6 +490,7 @@ function main(): void {
         name: opts.name,
         sendToProvider: opts.sendToProvider,
         pathFilters: opts.pathFilter,
+        excludeGlobs: opts.excludeGlob,
         vendor: opts.vendor,
         buildId: opts.buildId,
         commitHash: opts.commit,

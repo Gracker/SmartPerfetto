@@ -115,6 +115,29 @@ describe('PathSecurityGate', () => {
     expect(preview.skippedFileCount).toBeGreaterThan(preview.skippedFiles.length);
   });
 
+  it('keeps block as the default budget policy and supports explicit truncation', async () => {
+    const root = path.join(tmpDir, 'budget-policy');
+    fs.mkdirSync(root);
+    for (let index = 0; index < 6; index += 1) {
+      fs.writeFileSync(path.join(root, `Source${index}.kt`), 'class Source\n');
+    }
+    const gate = new PathSecurityGate({allowlistRoots: [tmpDir], maxFiles: 2});
+
+    const blocked = await gate.preview(root);
+    const truncated = await gate.preview(root, {budgetPolicy: 'truncate'});
+
+    expect(blocked).toEqual(expect.objectContaining({
+      blocked: true,
+      blockedReason: 'too_many_files',
+    }));
+    expect(truncated).toEqual(expect.objectContaining({
+      blocked: false,
+      complete: false,
+      truncationReason: 'too_many_files',
+    }));
+    expect(truncated.acceptedFiles).toHaveLength(2);
+  });
+
   it('bounds directory traversal independently of accepted file count', async () => {
     const root = path.join(tmpDir, 'directory-flood');
     fs.mkdirSync(root);

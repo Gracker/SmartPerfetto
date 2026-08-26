@@ -585,7 +585,7 @@ Base path: `/api/rag`
 | `GET` | `/codebases` | List registered codebases |
 | `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
 | `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization |
-| `POST` | `/codebases/preview` | Preview files accepted by the path security gate |
+| `POST` | `/codebases/preview` | Preview source files and enumeration coverage with the same selection policy used by indexing |
 | `POST` | `/codebases/register` | Register a local codebase |
 | `GET` | `/codebases/:id` | Codebase detail |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
@@ -593,7 +593,31 @@ Base path: `/api/rag`
 | `POST` | `/codebases/:id/reindex` | Reindex |
 | `GET` | `/codebases/:id/audit` | Index audit |
 | `PATCH` | `/codebases/:id/consent` | Explicitly grant or revoke provider-send consent |
+| `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs, immediately revoke the old active generation, and require reindexing |
+| `POST` | `/codebases/:id/pending/accept` | Explicitly accept a truncated candidate generation with policy/grant revision CAS |
+| `POST` | `/codebases/:id/pending/reject` | Reject a candidate generation and remove its staged chunks |
 | `DELETE` | `/codebases/:id` | Retire the registration and remove every staged, active, and superseded generation in the current scope |
+
+Preview, registration, and reindexing share one source-selection policy. Their
+responses report `enumerationBackend`, `backendFidelity`,
+`enumerationComplete`, `deterministic`, enumerated/selected file and byte
+counts, and an explicit truncation reason. Git ignore rules participate in
+candidate discovery only; they never expand provider authorization. Source
+text can leave the backend only when both the current selection policy and the
+consent grant admit its relative path. Extensions added by a later version are
+reported as `availableNotConsentedExtensions` until the consent endpoint is
+called explicitly with `authorizeAvailableExtensions: true`. That operation
+requires existing provider-send consent and never turns source-text sending on
+for the user.
+
+Incomplete or nondeterministic enumeration cannot activate an index. A
+deterministic file/byte-budget truncation is staged as `pendingGeneration` when
+a complete active generation already exists. Acceptance must echo the current
+`selectionPolicyRevision` and `grantRevision` from list/detail. Candidates are
+retained for seven days and lazily expired with their staged chunks during
+list reads. When there is no older active generation, a truncated index may be
+used only as an explicitly degraded result with
+`activeIndexCoverage.complete=false`.
 
 Codebase deletion is a retryable two-phase lifecycle. Under the ingest lease,
 the backend first marks the registration `deleting`, revokes provider consent,

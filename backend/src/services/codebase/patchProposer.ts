@@ -8,6 +8,8 @@ import {randomUUID} from 'crypto';
 import type {RagStore} from '../ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
 import {activeCodebaseGeneration, type CodebaseRegistry} from './codebaseRegistry';
+import {sourcePathAllowedForProvider} from './sourceDisclosure';
+import {hardenedGitEnvironment, hardenedGitPrefixArguments} from './subprocessHardening';
 import type {CodeLookupLedger} from './codeLookupLedger';
 import type {KnowledgeScope} from '../scopedKnowledgeStore';
 
@@ -109,6 +111,12 @@ export class PatchProposer {
     if (!ref.consent.sendToProvider) {
       return rejected('no_send_to_provider_consent', 'Patch proposal requires source-send consent for the target codebase.');
     }
+    if (chunks.some(chunk => !sourcePathAllowedForProvider(ref, chunk.filePath!))) {
+      return rejected(
+        'source_path_outside_provider_grant',
+        'Patch proposal context falls outside the current source selection and consent grant.',
+      );
+    }
     if (this.ledger && this.ledger.remainingPatches() <= 0) {
       return rejected('budget_exceeded', 'Patch proposal budget is exhausted for this session.');
     }
@@ -151,12 +159,17 @@ export class PatchProposer {
       };
     }
 
-    const apply = spawnSync('git', ['apply', '--check', '-'], {
-      cwd: ref.rootRealpath,
+    const apply = spawnSync('git', [
+      ...hardenedGitPrefixArguments(ref.rootRealpath),
+      'apply',
+      '--check',
+      '-',
+    ], {
       input: input.proposedDiff,
       encoding: 'utf-8',
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
+      env: hardenedGitEnvironment(),
     });
     if (apply.status !== 0) {
       this.record(input.turn ?? 0, input.contextChunkIds, 'patch_sketch');

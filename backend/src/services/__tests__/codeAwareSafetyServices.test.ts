@@ -89,10 +89,17 @@ function makeRegistry(sendToProvider: boolean): {
     sendToProvider,
     ...CODEBASE_SCOPE,
   });
+  const sourceGeneration = 'codebase_2_test';
+  registry.activateIndexGeneration(ref.codebaseId, CODEBASE_SCOPE, ref.indexGeneration, {
+    lastIngestStatus: 'ok',
+    activeGeneration: sourceGeneration,
+    contentFingerprint: 'content-fingerprint',
+    chunkCount: 1,
+  });
   return {
     registry,
     codebaseId: ref.codebaseId,
-    sourceGeneration: `codebase_${ref.indexGeneration}`,
+    sourceGeneration,
   };
 }
 
@@ -310,6 +317,32 @@ describe('filterRagLookup', () => {
     expect(result.hits[0]?.snippet).toBeUndefined();
     expect(result.hits[0]?.unsupportedReason).toBe('no_send_to_provider_consent');
     expect(ledger.getEntries()[0]?.outcome).toBe('consent_blocked');
+  });
+
+  it('drops indexed chunks that fall outside the current selection and consent grant', async () => {
+    const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].pathFilters = ['src'];
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    envelope.codebases[0].consent.grant.includePrefixes = ['src'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+    const result = await filterRagLookup(
+      makeRawResult(makeChunk({
+        codebaseId,
+        sourceGeneration,
+        filePath: 'src/new_language.dart',
+        snippet: 'void privateDartSource() {}',
+      })),
+      {
+        toolName: 'lookup_app_source',
+        turn: 1,
+        codebaseRegistry: new CodebaseRegistry(registryPath),
+        knowledgeScope: CODEBASE_SCOPE,
+      },
+    );
+
+    expect(result.hits).toEqual([]);
   });
 
   it('keeps legacy knowledge snippets on the legacy path', async () => {

@@ -72,6 +72,26 @@ describe('RagStore — basic CRUD', () => {
   });
 });
 
+describe('RagStore — codebase generation cleanup', () => {
+  it('preserves both active and pending generations while removing superseded chunks', () => {
+    const store = new RagStore(storagePath);
+    store.addChunks(['active', 'pending', 'old'].map(generation => makeChunk({
+      chunkId: `chunk-${generation}`,
+      kind: 'app_source',
+      uri: `codebase://cb-1/${generation}`,
+      codebaseId: 'cb-1',
+      registryOrigin: 'codebase_registry',
+      sourceGeneration: generation,
+    })), PRIVATE_SCOPE);
+
+    store.removeCodebaseChunksExceptGeneration('cb-1', ['active', 'pending'], PRIVATE_SCOPE);
+
+    expect(store.getChunk('chunk-active', PRIVATE_SCOPE)).toBeDefined();
+    expect(store.getChunk('chunk-pending', PRIVATE_SCOPE)).toBeDefined();
+    expect(store.getChunk('chunk-old', PRIVATE_SCOPE)).toBeUndefined();
+  });
+});
+
 describe('RagStore — license gate', () => {
   it('rejects aosp chunks without a license', () => {
     const store = new RagStore(storagePath);

@@ -228,10 +228,10 @@ export class SymbolResolver {
     const refs = codebaseId
       ? [this.codebaseRegistry.get(codebaseId, this.scope)].filter(Boolean)
       : this.codebaseRegistry.list(this.scope);
-    return Object.fromEntries(refs.map(ref => [
-      ref!.codebaseId,
-      activeCodebaseGeneration(ref!),
-    ]));
+    return Object.fromEntries(refs.flatMap(ref => {
+      const generation = activeCodebaseGeneration(ref!);
+      return generation ? [[ref!.codebaseId, generation]] : [];
+    }));
   }
 }
 

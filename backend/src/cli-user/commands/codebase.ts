@@ -8,10 +8,13 @@ import {bootstrap} from '../bootstrap';
 import {backendLogPath} from '../../runtimePaths';
 import {RagStore} from '../../services/ragStore';
 import {
+  codebaseRegistrationRequirements,
   CodebaseRegistry,
   resolveCodebaseScope,
 } from '../../services/codebase/codebaseRegistry';
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
+import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
+import {buildSourceSelectionIR} from '../../services/codebase/sourceSelectionPolicy';
 import {AppSourceIngester} from '../../services/rag/appSourceIngester';
 import {AospSourceIngester} from '../../services/rag/aospSourceIngester';
 import {KernelSourceIngester} from '../../services/rag/kernelSourceIngester';
@@ -40,19 +43,37 @@ export async function runCodebaseListCommand(args: CodebaseCommandBaseArgs): Pro
   return 0;
 }
 
-export async function runCodebasePreviewCommand(args: CodebaseCommandBaseArgs & {rootPath: string}): Promise<number> {
+export async function runCodebasePreviewCommand(args: CodebaseCommandBaseArgs & {
+  rootPath: string;
+  kind?: CodebaseKind;
+  pathFilters?: string[];
+  excludeGlobs?: string[];
+}): Promise<number> {
   const rootPath = path.resolve(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
+  const kind = args.kind ?? 'app_source';
   const gate = new PathSecurityGate({allowlistRoots: [rootPath]});
-  const preview = await gate.preview(rootPath);
+  const result = await new SourceEnumerator().enumerate({
+    rootRealpath: rootPath,
+    policy: buildSourceSelectionIR({
+      kind,
+      includePrefixes: args.pathFilters,
+      excludeGlobs: args.excludeGlobs,
+    }),
+    gate,
+  });
   console.log(JSON.stringify({
-    blocked: preview.blocked,
-    blockedReason: preview.blockedReason,
-    acceptedFileCount: preview.acceptedFiles.length,
-    skippedFileCount: preview.skippedFileCount,
-    acceptedFiles: preview.acceptedFiles.slice(0, 50),
+    blocked: false,
+    complete: result.enumerationComplete,
+    incompleteReason: result.incompleteReason,
+    enumerationBackend: result.backend,
+    backendFidelity: result.fidelity,
+    deterministic: result.deterministic,
+    acceptedFileCount: result.files.length,
+    skippedFileCount: result.skippedCount,
+    acceptedFiles: result.files.slice(0, 50),
   }, null, 2));
-  return preview.blocked ? 1 : 0;
+  return 0;
 }
 
 export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs & {
@@ -61,6 +82,7 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
   name?: string;
   sendToProvider?: boolean;
   pathFilters?: string[];
+  excludeGlobs?: string[];
   vendor?: string;
   buildId?: string;
   commitHash?: string;
@@ -69,30 +91,61 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
 }): Promise<number> {
   const rootPath = path.resolve(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
+  const kind = args.kind ?? 'app_source';
+  const requirements = codebaseRegistrationRequirements(kind);
+  if (requirements.vendor && !args.vendor) {
+    console.error('`vendor` is required for kernel_source and oem_sdk codebases');
+    return 1;
+  }
+  if (requirements.licenseTag && !args.licenseTag) {
+    console.error('`licenseTag` is required for aosp and oem_sdk codebases');
+    return 1;
+  }
+  if (requirements.pathFilters && !args.pathFilters?.length) {
+    console.error('`pathFilters` is required for kernel_source codebases');
+    return 1;
+  }
   const gate = new PathSecurityGate({allowlistRoots: [rootPath]});
-  const preview = await gate.preview(rootPath);
-  if (preview.blocked) {
-    console.error(`blocked: ${preview.blockedReason ?? 'path security gate rejected root'}`);
+  const rootRealpath = await gate.validateRoot(rootPath);
+  const result = await new SourceEnumerator().enumerate({
+    rootRealpath,
+    policy: buildSourceSelectionIR({
+      kind,
+      includePrefixes: args.pathFilters,
+      excludeGlobs: args.excludeGlobs,
+    }),
+    gate,
+  });
+  if (result.enumerationComplete && result.files.length === 0) {
+    console.error('blocked: effective_source_selection_empty');
     return 1;
   }
   if (args.dryRun) {
     console.log(JSON.stringify({
+      blocked: false,
       kind: args.kind ?? 'app_source',
       displayName: args.name ?? path.basename(rootPath),
       rootPath,
-      acceptedFileCount: preview.acceptedFiles.length,
-      skippedFileCount: preview.skippedFileCount,
+      pathFilters: args.pathFilters ?? [],
+      excludeGlobs: args.excludeGlobs ?? [],
+      acceptedFileCount: result.files.length,
+      skippedFileCount: result.skippedCount,
+      enumerationBackend: result.backend,
+      backendFidelity: result.fidelity,
+      complete: result.enumerationComplete,
+      incompleteReason: result.incompleteReason,
     }, null, 2));
     return 0;
   }
   const registry = new CodebaseRegistry(registryPath());
   const ref = registry.register({
-    kind: args.kind ?? 'app_source',
+    kind,
     displayName: args.name ?? path.basename(rootPath),
     rootPath,
-    rootRealpath: preview.rootRealpath,
+    rootRealpath,
     sendToProvider: Boolean(args.sendToProvider),
     pathFilters: args.pathFilters,
+    excludeGlobs: args.excludeGlobs,
     ...(args.vendor ? {vendor: args.vendor} : {}),
     ...(args.buildId ? {buildId: args.buildId} : {}),
     ...(args.commitHash ? {commitHash: args.commitHash} : {}),

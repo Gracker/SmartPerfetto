@@ -50,11 +50,16 @@ import {
   codebaseRegistrationRequirements,
   codebaseRootAvailable,
   CodebaseRegistry,
+  PENDING_GENERATION_TTL_MS,
   type CodebaseRef,
   isCodebaseKind,
 } from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {PathSecurityGate, type PathPreviewResult} from '../services/codebase/pathSecurityGate';
+import {SourceEnumerator, type EnumerationResult} from '../services/codebase/sourceEnumerator';
+import {buildSourceSelectionIR} from '../services/codebase/sourceSelectionPolicy';
+import {availableNotConsentedExtensions} from '../services/codebase/sourceDisclosure';
+import {readAospManifestProjects} from '../services/codebase/aospManifest';
 import {
   isLocalDirectoryPickerRequest,
   NativeDirectoryPicker,
@@ -86,6 +91,7 @@ import {
 export interface RagAdminRouteServices {
   registry?: CodebaseRegistry;
   gate?: PathSecurityGate;
+  sourceEnumerator?: SourceEnumerator;
   appSourceIngester?: AppSourceIngester;
   aospSourceIngester?: AospSourceIngester;
   kernelSourceIngester?: KernelSourceIngester;
@@ -159,7 +165,9 @@ function sanitizeCodebase(ref: CodebaseRef) {
       consentedAt: consent.consentedAt,
       consentedBy: consent.consentedBy,
       consentHash: consent.consentHash,
+      grantRevision: consent.grant?.revision ?? 1,
     },
+    availableNotConsentedExtensions: availableNotConsentedExtensions(ref),
   };
 }
 
@@ -208,6 +216,32 @@ function sanitizePreview(preview: PathPreviewResult) {
   };
 }
 
+function sanitizeEnumeration(result: EnumerationResult) {
+  const subtreeCounts = new Map<string, number>();
+  for (const file of result.files) {
+    const parts = file.relativePath.split('/');
+    const prefix = parts.slice(0, Math.min(2, Math.max(1, parts.length - 1))).join('/');
+    subtreeCounts.set(prefix, (subtreeCounts.get(prefix) ?? 0) + 1);
+  }
+  return {
+    blocked: false,
+    complete: result.enumerationComplete,
+    ...(result.incompleteReason ? {truncationReason: result.incompleteReason} : {}),
+    acceptedFileCount: result.files.length,
+    skippedFileCount: result.skippedCount,
+    acceptedFiles: result.files.slice(0, 200),
+    skippedFiles: result.skipped.slice(0, 200),
+    enumerationBackend: result.backend,
+    backendFidelity: result.fidelity,
+    deterministic: result.deterministic,
+    recommendedAction: result.incompleteReason === 'time_budget' ? 'narrow_scope' : undefined,
+    scopeSuggestions: [...subtreeCounts.entries()]
+      .map(([prefix, fileCount]) => ({prefix, fileCount}))
+      .sort((left, right) => right.fileCount - left.fileCount || left.prefix.localeCompare(right.prefix))
+      .slice(0, 12),
+  };
+}
+
 function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
   const {rootRealpath: _rootRealpath, scope: _scope, ...safeSource} = source;
   return safeSource;
@@ -222,6 +256,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   const s = store ?? getDefaultRagStore();
   const registry = services.registry ?? getDefaultCodebaseRegistry();
   const gate = services.gate ?? new PathSecurityGate();
+  const sourceEnumerator = services.sourceEnumerator ?? new SourceEnumerator();
   const appSourceIngester = services.appSourceIngester ?? new AppSourceIngester(s, registry, gate);
   const aospSourceIngester = services.aospSourceIngester ?? new AospSourceIngester(s, registry, gate);
   const kernelSourceIngester = services.kernelSourceIngester ?? new KernelSourceIngester(s, registry, gate);
@@ -317,10 +352,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         ...(topK !== undefined ? {topK} : {}),
         ...(authorizedCodebaseIds ? {codebaseIds: authorizedCodebaseIds} : {}),
         ...(authorizedCodebaseIds ? {
-          activeCodebaseGenerations: Object.fromEntries(authorizedCodebaseIds.map((codebaseId, index) => [
-            codebaseId,
-            activeCodebaseGeneration(authorizedCodebases![index]!),
-          ])),
+          activeCodebaseGenerations: Object.fromEntries(authorizedCodebaseIds.flatMap((codebaseId, index) => {
+            const generation = activeCodebaseGeneration(authorizedCodebases![index]!);
+            return generation ? [[codebaseId, generation]] : [];
+          })),
         } : {}),
         ...(vendor ? {vendor} : {}),
         ...(buildId ? {buildId} : {}),
@@ -607,6 +642,14 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
 
   router.get('/codebases', requireCodebaseScope('codebase:read'), (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    const now = Date.now();
+    for (const summary of registry.list(scope)) {
+      const pending = summary.pendingGeneration;
+      if (!pending || now - pending.createdAt < PENDING_GENERATION_TTL_MS) continue;
+      const expired = registry.expirePendingGeneration(summary.codebaseId, scope, now);
+      const active = activeCodebaseGeneration(expired);
+      s.removeCodebaseChunksExceptGeneration(expired.codebaseId, active ? [active] : [], scope);
+    }
     res.json({
       success: true,
       featureEnabled: codeAwareFeatureEnabled(),
@@ -663,12 +706,13 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   );
 
   router.post('/codebases/preview', requireCodebaseScope('codebase:manage'), async (req, res) => {
-    const {rootPath, directorySelectionId} = (req.body ?? {}) as {
-      rootPath?: string;
-      directorySelectionId?: string;
-    };
+    const {rootPath, directorySelectionId, kind = 'app_source', pathFilters, excludeGlobs} =
+      (req.body ?? {}) as Record<string, unknown>;
     if (!rootPath || typeof rootPath !== 'string') {
       return res.status(400).json({success: false, error: '`rootPath` is required'});
+    }
+    if (!isCodebaseKind(kind)) {
+      return res.status(400).json({success: false, error: '`kind` is invalid'});
     }
     if (
       directorySelectionId !== undefined &&
@@ -695,16 +739,46 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const selectedRoot = directorySelectionId
         ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
         : undefined;
-      const preview = await gate.preview(
-        rootPath,
-        selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
-      );
-      return res.json({success: true, preview: sanitizePreview(preview)});
+      const result = await sourceEnumerator.enumerate({
+        rootRealpath: rootPath,
+        policy: buildSourceSelectionIR({
+          kind,
+          includePrefixes: resolveSourcePathPatterns(pathFilters, 'pathFilters'),
+          excludeGlobs: resolveSourcePathPatterns(excludeGlobs, 'excludeGlobs'),
+        }),
+        gate,
+        ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
+      });
+      const manifestProjects = kind === 'aosp' || kind === 'oem_sdk'
+        ? await readAospManifestProjects(rootPath)
+        : [];
+      const manifestGroups = [...new Set(manifestProjects.flatMap(project => project.groups))].sort();
+      return res.json({
+        success: true,
+        preview: {
+          ...sanitizeEnumeration(result),
+          ...(manifestProjects.length > 0 ? {manifestProjects, manifestGroups} : {}),
+        },
+      });
     } catch (error) {
       if (error instanceof NativeDirectoryPickerError) {
         return sendDirectoryPickerError(res, error);
       }
-      throw error;
+      const reason = error instanceof Error ? error.message : String(error);
+      if (reason === 'root_not_found' || reason === 'root_outside_allowlist') {
+        return res.json({
+          success: true,
+          preview: {
+            blocked: true,
+            blockedReason: reason,
+            acceptedFileCount: 0,
+            skippedFileCount: 0,
+            acceptedFiles: [],
+            skippedFiles: [],
+          },
+        });
+      }
+      return res.status(400).json({success: false, error: reason});
     }
   });
 
@@ -812,25 +886,35 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     } catch (error) {
       return sendDirectoryPickerError(res, error);
     }
-    const preview = await gate.preview(
-      rootPath,
-      selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
-    );
-    if (preview.blocked) {
-      return res.status(400).json({
-        success: false,
-        error: preview.blockedReason ?? 'root blocked by path security gate',
-        preview: sanitizePreview(preview),
-      });
-    }
     try {
+      const rootRealpath = await gate.validateRoot(
+        rootPath,
+        selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
+      );
+      const enumeration = await sourceEnumerator.enumerate({
+        rootRealpath,
+        policy: buildSourceSelectionIR({
+          kind,
+          includePrefixes: normalizedPathFilters,
+          excludeGlobs: normalizedExcludeGlobs,
+        }),
+        gate,
+        ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
+      });
+      if (enumeration.enumerationComplete && enumeration.files.length === 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'effective_source_selection_empty',
+          preview: sanitizeEnumeration(enumeration),
+        });
+      }
       const register = () => registry.register({
         kind,
         displayName: normalizedDisplayName ||
-          path.basename(preview.rootRealpath) ||
+          path.basename(rootRealpath) ||
           'Source code',
         rootPath,
-        rootRealpath: preview.rootRealpath,
+        rootRealpath,
         ...(directorySelectionId ? {rootAuthorization: 'native_picker'} : {}),
         ...(normalizedCommitHash ? {commitHash: normalizedCommitHash} : {}),
         ...(normalizedVendor ? {vendor: normalizedVendor} : {}),
@@ -852,7 +936,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
             register,
           )
         : register();
-      res.json({success: true, codebase: sanitizeCodebase(ref), preview: sanitizePreview(preview)});
+      res.json({success: true, codebase: sanitizeCodebase(ref), preview: sanitizeEnumeration(enumeration)});
     } catch (error) {
       if (error instanceof NativeDirectoryPickerError) {
         return sendDirectoryPickerError(res, error);
@@ -996,6 +1080,13 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         rootAuthorization: ref.rootAuthorization ?? 'configured_allowlist',
         indexGeneration: ref.indexGeneration,
         activeGeneration: activeCodebaseGeneration(ref),
+        activeIndexState: ref.activeIndexState ?? 'none',
+        selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
+        grantRevision: ref.consent.grant?.revision ?? 1,
+        activeIndexCoverage: ref.activeIndexCoverage,
+        pendingGeneration: ref.pendingGeneration,
+        maintenanceWarning: ref.maintenanceWarning,
+        reindexRequired: ref.reindexRequired,
         contentFingerprint: ref.contentFingerprint,
         indexedRevision: ref.indexedRevision,
         indexedDirty: ref.indexedDirty,
@@ -1011,7 +1102,19 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   });
 
   router.patch('/codebases/:id/consent', requireCodebaseScope('codebase:manage'), (req, res) => {
-    if (typeof req.body?.sendToProvider !== 'boolean') {
+    if (
+      req.body?.authorizeAvailableExtensions === true &&
+      typeof req.body?.sendToProvider === 'boolean'
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: '`authorizeAvailableExtensions` and `sendToProvider` are mutually exclusive',
+      });
+    }
+    if (
+      req.body?.authorizeAvailableExtensions !== true &&
+      typeof req.body?.sendToProvider !== 'boolean'
+    ) {
       return res.status(400).json({
         success: false,
         error: '`sendToProvider` must be an explicit boolean',
@@ -1020,18 +1123,83 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const context = requireRequestContext(req);
     const scope = knowledgeScopeFromRequestContext(context);
     try {
-      const codebase = registry.setProviderConsent(
-        routeParam(req.params.id),
-        scope,
-        req.body.sendToProvider,
-        context.userId,
-      );
+      const codebase = req.body?.authorizeAvailableExtensions === true
+        ? registry.authorizeAvailableExtensions(routeParam(req.params.id), scope, context.userId)
+        : registry.setProviderConsent(
+            routeParam(req.params.id),
+            scope,
+            req.body.sendToProvider,
+            context.userId,
+          );
+      const active = activeCodebaseGeneration(codebase);
+      s.removeCodebaseChunksExceptGeneration(codebase.codebaseId, active ? [active] : [], scope);
       return res.json({success: true, codebase: sanitizeCodebase(codebase)});
     } catch (error) {
-      return res.status(404).json({
+      const message = error instanceof Error ? error.message : String(error);
+      return res.status(message.includes('not found') ? 404 : 409).json({
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
+    }
+  });
+
+  router.patch('/codebases/:id/selection', requireCodebaseScope('codebase:manage'), (req, res) => {
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    try {
+      const pathFilters = resolveSourcePathPatterns(req.body?.pathFilters, 'pathFilters');
+      const excludeGlobs = resolveSourcePathPatterns(req.body?.excludeGlobs, 'excludeGlobs');
+      buildSourceSelectionIR({
+        kind: registry.get(routeParam(req.params.id), scope)?.kind ?? 'app_source',
+        includePrefixes: pathFilters,
+        excludeGlobs,
+      });
+      const codebase = registry.updateSelectionPolicy(routeParam(req.params.id), scope, {
+        pathFilters,
+        excludeGlobs,
+      });
+      s.removeCodebaseChunks(codebase.codebaseId, scope);
+      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+    } catch (error) {
+      return res.status(400).json({success: false, error: error instanceof Error ? error.message : String(error)});
+    }
+  });
+
+  router.post('/codebases/:id/pending/accept', requireCodebaseScope('codebase:manage'), (req, res) => {
+    const selectionPolicyRevision = Number(req.body?.selectionPolicyRevision);
+    const grantRevision = Number(req.body?.grantRevision);
+    if (!Number.isInteger(selectionPolicyRevision) || !Number.isInteger(grantRevision)) {
+      return res.status(400).json({
+        success: false,
+        error: '`selectionPolicyRevision` and `grantRevision` must be integers',
+      });
+    }
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    try {
+      const codebase = registry.acceptPendingGeneration(
+        routeParam(req.params.id),
+        scope,
+        selectionPolicyRevision,
+        grantRevision,
+      );
+      const active = activeCodebaseGeneration(codebase);
+      if (active) s.removeCodebaseChunksExceptGeneration(codebase.codebaseId, active, scope);
+      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+    } catch (error) {
+      return res.status(409).json({success: false, error: error instanceof Error ? error.message : String(error)});
+    }
+  });
+
+  router.post('/codebases/:id/pending/reject', requireCodebaseScope('codebase:manage'), (req, res) => {
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    try {
+      const before = registry.get(routeParam(req.params.id), scope);
+      if (!before) return res.status(404).json({success: false, error: 'codebase_not_found'});
+      const codebase = registry.rejectPendingGeneration(before.codebaseId, scope);
+      const active = activeCodebaseGeneration(codebase);
+      s.removeCodebaseChunksExceptGeneration(codebase.codebaseId, active ? [active] : [], scope);
+      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+    } catch (error) {
+      return res.status(409).json({success: false, error: error instanceof Error ? error.message : String(error)});
     }
   });
 

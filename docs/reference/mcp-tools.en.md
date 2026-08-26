@@ -117,6 +117,13 @@ All four index-free/graph-navigation tools require codebase permission and use c
 
 A registered root that is still reachable immediately enables `search_codebase` / `read_codebase_file`; no active SmartPerfetto generation is required. `query_code_graph` / `inspect_code_symbol` only attempt to use a local GitNexus installation and index that the user already created. SmartPerfetto does not bundle, redistribute, install, require, or automatically index GitNexus. Missing, incompatible, timed-out, or failed graph access returns a structured unavailable result (`success=false` plus `unsupportedReason`); a stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues by calling the existing index-free search/read tools instead of blocking analysis.
 
+Index-free `search_codebase` / `read_codebase_file` and indexed lookup use the
+same disclosure predicate: a relative path must be admitted by both the current
+selection policy and the registration's consent grant. `.gitignore` controls
+candidate discovery only; it is not authorization. Extensions introduced by a
+later release require explicit renewed authorization and are never inherited
+silently from an older consent.
+
 Graph tools return only `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. Registrations with `pathFilters` or `excludeGlobs` omit whole-repository process summaries whose path scope cannot be proven, while retaining authorized relative `CodeRef` values. Code-graph metadata is neither current-trace evidence nor verified source truth. Any relationship that affects a conclusion must be checked with bounded `read_codebase_file`; if the current permission mode blocks source reading, it must remain unverified. Absolute roots stay inside the backend trust boundary. When code-aware output reaches reports, exports, or snapshots, only safe names/IDs and relative `CodeRef` values may remain, never raw source. Do not validate only the live chat view.
 
 GitNexus is an independent optional third-party tool. Its [official project](https://github.com/abhigyanpatwari/GitNexus) and [npm package](https://www.npmjs.com/package/gitnexus) currently declare the [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE) license. Users must review the upstream terms before use. This is not legal advice.

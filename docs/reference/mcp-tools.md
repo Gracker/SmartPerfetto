@@ -118,6 +118,11 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。
 
+按需 `search_codebase` / `read_codebase_file` 与 indexed lookup 使用同一条披露谓词：
+相对路径必须同时满足当前 selection policy 和注册时 consent grant。`.gitignore` 只决定
+候选召回；它不是授权。新版本新增的扩展名必须由用户再次授权，不能由旧 consent
+静默继承。
+
 图工具输出只包含 `codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 和 `graph.verificationRequired`。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，会省略无法证明路径范围的全仓 process 摘要，并保留已授权的相对 `CodeRef`。代码图元数据既不是当前 trace 证据，也不是已经核对的源码事实；任何影响结论的关系都必须再用有界 `read_codebase_file` 验证，当前权限不允许读取时必须保持未验证状态。绝对 root 始终留在后端信任边界内。Code-aware 输出会进入 report/export/snapshot 时，只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
 
 GitNexus 是独立的第三方可选工具，其[官方项目](https://github.com/abhigyanpatwari/GitNexus)和 [npm 包](https://www.npmjs.com/package/gitnexus)目前声明使用 [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE)。使用前必须自行审阅上游条款；这不是法律建议。

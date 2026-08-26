@@ -149,6 +149,35 @@ describe('effective analysis mode', () => {
     )).toThrow(AnalysisContextAuthorizationChangedError);
   });
 
+  it('includes the source selection-policy revision in the authorization fingerprint', () => {
+    let selectionPolicyRevision = 1;
+    const codebaseRegistry = {
+      get: () => ({
+        codebaseId: 'app',
+        indexGeneration: 1,
+        activeIndexState: 'none',
+        selectionPolicyRevision,
+        consent: {
+          consentHash: 'metadata-consent',
+          sendToProvider: false,
+          grant: {revision: 1},
+        },
+      }),
+    } as any;
+    const selection = {codeAwareMode: 'metadata_only' as const, codebaseIds: ['app']};
+    const scope = {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user'};
+    const expected = buildAnalysisContextAuthorizationFingerprint(selection, scope, {codebaseRegistry});
+
+    selectionPolicyRevision = 2;
+
+    expect(() => assertCurrentAnalysisContextAuthorization(
+      selection,
+      scope,
+      expected,
+      {codebaseRegistry},
+    )).toThrow(AnalysisContextAuthorizationChangedError);
+  });
+
   it('fails the final run boundary when a knowledge generation loses its active chunks', () => {
     let indexedChunkCount = 3;
     const knowledgeRegistry = {

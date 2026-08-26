@@ -58,4 +58,34 @@ describe('AospSourceIngester', () => {
     expect(active.lastIngestStatus).toBe('ok');
     expect(activeCodebaseGeneration(active)).toBe(active.activeGeneration);
   });
+
+  it('does not traverse the AOSP .repo object store during reindex', async () => {
+    const root = path.join(tmpDir, 'large-aosp');
+    const sourcePath = path.join(root, 'frameworks', 'base');
+    const objectPath = path.join(root, '.repo', 'projects', 'frameworks', 'base.git', 'objects');
+    fs.mkdirSync(sourcePath, {recursive: true});
+    fs.mkdirSync(objectPath, {recursive: true});
+    fs.writeFileSync(path.join(sourcePath, 'Main.java'), 'class Main {}\n');
+    for (let index = 0; index < 12; index += 1) {
+      fs.writeFileSync(path.join(objectPath, `object-${index}.java`), 'class Secret {}\n');
+    }
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'large-registry.json'));
+    const ref = registry.register({
+      kind: 'aosp',
+      displayName: 'Large AOSP',
+      rootPath: root,
+      pathFilters: ['frameworks/base'],
+      licenseTag: 'Apache-2.0',
+    });
+
+    const result = await new AospSourceIngester(
+      new RagStore(path.join(tmpDir, 'large-rag.json')),
+      registry,
+      new PathSecurityGate({allowlistRoots: [root], maxVisitedEntries: 4}),
+    ).ingest(ref.codebaseId);
+
+    expect(result.errors).toEqual([]);
+    expect(result.filesProcessed).toBe(1);
+    expect(registry.get(ref.codebaseId)?.lastIngestStatus).toBe('ok');
+  });
 });

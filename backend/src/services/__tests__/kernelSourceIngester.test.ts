@@ -62,7 +62,7 @@ describe('KernelSourceIngester', () => {
       vendor: 'mtk',
       pathPrefix: 'drivers/android',
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!),
+        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!)!,
       },
       scope: ref,
     });
@@ -148,7 +148,7 @@ describe('AospSourceIngester', () => {
       codebaseIds: [ref.codebaseId],
       buildId: 'build-aosp',
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!),
+        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!)!,
       },
       scope: ref,
     }).results[0].chunk;

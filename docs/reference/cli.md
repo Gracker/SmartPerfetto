@@ -208,9 +208,9 @@ workspace Batch Trace API 的显式 snapshot promotion / comparison bridge。
 先注册并索引本机代码库，再在分析 session 中显式选择 code-aware 模式：
 
 ```bash
-smp codebase preview /path/to/app
-smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --dry-run
-smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/
+smp codebase preview /path/to/app --kind app_source --path-filter app/src/main/ --exclude-glob '**/generated/**'
+smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**' --dry-run
+smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**'
 smp codebase list
 smp codebase reindex cb_xxx
 smp codebase symbols MainActivity --codebase-id cb_xxx
@@ -229,6 +229,9 @@ smp run trace.perfetto-trace \
 `--knowledge-source-id <id>` 可单独启用已授权的私有外部 RAG，也可与 codebase
 叠加。源码、私有 RAG 或 reference trace 会把显式 `fast` 解析为 `full`，避免
 轻量 runtime 静默丢失能力。
+`preview` 和 `register --dry-run` 会输出实际使用的 `ripgrep → git → node-walk`
+枚举后端、fidelity、完整性和截断原因；截断只表示有界预览，不再用非零退出码冒充
+命令失败。portable 包不内置 ripgrep，缺失时按上述顺序安全降级。
 完整说明见 [Code-Aware Analysis](../getting-started/code-aware-analysis.md)。
 
 ## 双 Trace 对比

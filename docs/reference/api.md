@@ -542,7 +542,7 @@ Base path: `/api/rag`
 | `GET` | `/codebases` | 列出已注册 codebase |
 | `GET` | `/codebases/directory-picker` | 返回当前后端是否支持本机系统文件夹选择 |
 | `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权 |
-| `POST` | `/codebases/preview` | 预览 path security gate 接受的文件 |
+| `POST` | `/codebases/preview` | 用与索引相同的 selection policy 预览源码文件与枚举覆盖率 |
 | `POST` | `/codebases/register` | 注册本机代码库 |
 | `GET` | `/codebases/:id` | codebase 详情 |
 | `GET` | `/codebases/:id/symbols` | 符号解析 |
@@ -550,7 +550,24 @@ Base path: `/api/rag`
 | `POST` | `/codebases/:id/reindex` | 重新索引 |
 | `GET` | `/codebases/:id/audit` | 索引审计 |
 | `PATCH` | `/codebases/:id/consent` | 显式授予或撤销 provider-send 同意 |
+| `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；立即撤销旧 active generation 并要求重建 |
+| `POST` | `/codebases/:id/pending/accept` | 用 policy/grant revision CAS 显式接受被截断的候选 generation |
+| `POST` | `/codebases/:id/pending/reject` | 拒绝候选 generation 并清理 staged chunks |
 | `DELETE` | `/codebases/:id` | 退役注册项并删除当前 scope 内的全部 staged/active/superseded generation |
+
+preview、register 和 reindex 共用同一份源码选择策略；响应会报告
+`enumerationBackend`、`backendFidelity`、`enumerationComplete`、`deterministic`、
+已枚举/已选择文件与字节数，以及明确的截断原因。Git ignore 只参与候选召回，
+不会扩大 provider 授权；最终源码正文必须同时满足当前 selection policy 与 consent grant。
+新版本增加的语言扩展默认显示为 `availableNotConsentedExtensions`，只有显式调用
+consent 接口并传 `authorizeAvailableExtensions: true` 才加入授权；该操作要求注册项已
+开启 provider-send，绝不会替用户开启正文发送权限。
+
+不完整或非确定性的枚举不会激活索引。确定性但被 file/byte budget 截断的重建在已有
+完整 active generation 时只写入 `pendingGeneration`；接受时必须回传列表/详情中的
+`selectionPolicyRevision` 和 `grantRevision`。候选保留 7 天，列表读取会惰性过期并
+清理 staged chunks。没有旧 active generation 时，截断索引可作为明确标有
+`activeIndexCoverage.complete=false` 的可用降级结果。
 
 删除 codebase 使用可重试的两阶段生命周期：先在 ingest lease 内把注册项标记为
 `deleting`、撤销 provider 同意并切断 active generation，然后清理所有索引分片并删除

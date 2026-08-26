@@ -559,23 +559,17 @@ export class RagStore {
 
   removeCodebaseChunksExceptGeneration(
     codebaseId: string,
-    activeGeneration: string,
+    preservedGenerations: string | readonly string[],
     scope?: KnowledgeScope,
   ): number {
-    const enterpriseRemoved = enterpriseKnowledgeDbWritesEnabled()
-      ? removeScopedRagRecords(scope, {
-          codebaseId,
-          excludeSourceGeneration: activeGeneration,
-          scopeFingerprint: privateKnowledgeScopeFingerprint(scope),
-        })
-      : 0;
-    const legacyRemoved = this.removeCodebaseChunksMatching(
+    const preserved = new Set(
+      typeof preservedGenerations === 'string' ? [preservedGenerations] : preservedGenerations,
+    );
+    return this.removeCodebaseChunksMatching(
       codebaseId,
       scope,
-      chunk => chunk.sourceGeneration !== activeGeneration,
-      true,
+      chunk => !chunk.sourceGeneration || !preserved.has(chunk.sourceGeneration),
     );
-    return Math.max(enterpriseRemoved, legacyRemoved);
   }
 
   /** Keep only the chunks staged by the lease that just became active. */

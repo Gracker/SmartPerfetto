@@ -7,7 +7,12 @@ import {createHash} from 'crypto';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
 
-import type {CodebaseRef} from '../codebase/codebaseRegistry';
+import type {CodebaseRef, IndexCoverage} from '../codebase/codebaseRegistry';
+import {
+  sourceSelectionAdmits,
+  sourceSelectionForRef,
+} from '../codebase/sourceSelectionPolicy';
+import {SourceEnumerator, type EnumerationResult} from '../codebase/sourceEnumerator';
 import {
   hardenedGitEnvironment,
   hardenedGitPrefixArguments,
@@ -63,6 +68,69 @@ export function previewRegisteredCodebaseRoot(
       ? {additionalAllowlistRoots: [ref.rootRealpath]}
       : undefined,
   );
+}
+
+export async function enumerateRegisteredCodebaseRoot(
+  gate: PathSecurityGate,
+  ref: CodebaseRef,
+  enumerator = new SourceEnumerator(),
+): Promise<EnumerationResult> {
+  const result = await enumerator.enumerate({
+    rootRealpath: ref.rootRealpath,
+    policy: sourceSelectionForRef(ref, gate.getSourceReadLimits().maxFileBytes),
+    gate,
+    expectedRootRealpath: ref.rootRealpath,
+    ...(ref.rootAuthorization === 'native_picker'
+      ? {additionalAllowlistRoots: [ref.rootRealpath]}
+      : {}),
+  });
+  return result;
+}
+
+export function selectEnumeratedSourceFiles(
+  enumeration: EnumerationResult,
+  ref: CodebaseRef,
+  pathPrefix: string | undefined,
+  maxFiles: number,
+  maxBytes: number,
+): {files: PathPreviewFile[]; coverage: IndexCoverage} {
+  const candidates = enumeration.files
+    .filter(file => codebaseSourcePathMatches(ref, file.relativePath, pathPrefix))
+    .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+  const files: PathPreviewFile[] = [];
+  let bytesSelected = 0;
+  let truncationReason: IndexCoverage['truncationReason'];
+  for (const file of candidates) {
+    if (files.length >= maxFiles) {
+      truncationReason = 'file_budget';
+      break;
+    }
+    if (bytesSelected + file.sizeBytes > maxBytes) {
+      truncationReason = 'byte_budget';
+      break;
+    }
+    files.push(file);
+    bytesSelected += file.sizeBytes;
+  }
+  const truncated = truncationReason !== undefined;
+  const complete = enumeration.enumerationComplete && !truncated;
+  return {
+    files,
+    coverage: {
+      selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
+      enumerationBackend: enumeration.backend,
+      backendFidelity: enumeration.fidelity,
+      enumerationComplete: enumeration.enumerationComplete,
+      deterministic: enumeration.deterministic,
+      filesEnumerated: enumeration.files.length,
+      filesSelected: files.length,
+      bytesSelected,
+      chunksIndexed: 0,
+      truncated,
+      complete,
+      ...(truncationReason ? {truncationReason} : {}),
+    },
+  };
 }
 
 export function resolveMaxChunkChars(value: unknown, fallback: number): number {
@@ -166,30 +234,19 @@ function pathMatchesPrefix(relativePath: string, prefix: string, caseInsensitive
 }
 
 export function codebaseSourcePathMatches(
-  ref: Pick<CodebaseRef, 'pathFilters' | 'excludeGlobs'>,
+  ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs'>,
   relativePath: string,
   pathPrefix?: string,
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   const caseInsensitive = platform === 'win32';
   const normalizedPath = normalizeSourceRelativePath(relativePath);
-  const registeredPrefixes = (ref.pathFilters ?? [])
-    .filter(Boolean)
-    .map(normalizeSourceRelativePath);
   const requestedPrefix = pathPrefix ? normalizeSourceRelativePath(pathPrefix) : undefined;
-  const excludePatterns = (ref.excludeGlobs ?? [])
-    .filter(Boolean)
-    .map(pattern => globToRegExp(pattern, caseInsensitive));
-  if (
-    registeredPrefixes.length > 0 &&
-    !registeredPrefixes.some(prefix => pathMatchesPrefix(normalizedPath, prefix, caseInsensitive))
-  ) {
-    return false;
-  }
+  if (!sourceSelectionAdmits(sourceSelectionForRef(ref), normalizedPath, platform)) return false;
   if (requestedPrefix && !pathMatchesPrefix(normalizedPath, requestedPrefix, caseInsensitive)) {
     return false;
   }
-  return !excludePatterns.some(pattern => pattern.test(normalizedPath));
+  return true;
 }
 
 export function selectCodebasePreviewFiles(

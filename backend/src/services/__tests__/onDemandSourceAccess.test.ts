@@ -140,9 +140,13 @@ describe('OnDemandSourceAccessService', () => {
     expect(search.matches[0]).not.toHaveProperty('text');
     expect(search.backend).toBe('node');
     expect(read).toEqual(expect.objectContaining({
-      success: false,
-      unsupportedReason: 'provider_send_disabled_for_session',
+      success: true,
+      reference: expect.objectContaining({
+        filePath: 'app/src/MainActivity.kt',
+        lineRange: {start: 1, end: 7},
+      }),
     }));
+    expect(read.reference).not.toHaveProperty('text');
     expect(JSON.stringify(read)).not.toContain('class MainActivity');
   });
 
@@ -159,6 +163,45 @@ describe('OnDemandSourceAccessService', () => {
       unsupportedReason: 'no_send_to_provider_consent',
       matches: [],
     }));
+  });
+
+  it('keeps newly available languages metadata-only until the frozen grant opts in', async () => {
+    fs.writeFileSync(path.join(root, 'app', 'src', 'main.dart'), 'void consentNeedle() {}\n');
+    const ref = register();
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+    const migratedRegistry = new CodebaseRegistry(registryPath);
+    const access = new OnDemandSourceAccessService({
+      registry: migratedRegistry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+    });
+
+    const metadata = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'consentNeedle',
+      mode: 'metadata_only',
+    });
+    const provider = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'consentNeedle',
+      mode: 'provider_send',
+    });
+
+    expect(metadata.matches).toEqual([
+      expect.objectContaining({filePath: 'app/src/main.dart'}),
+    ]);
+    expect(metadata.matches[0]).not.toHaveProperty('text');
+    expect(provider.matches).toEqual([]);
+    await expect(access.read({
+      codebaseId: ref.codebaseId,
+      scope,
+      filePath: 'app/src/main.dart',
+      mode: 'provider_send',
+    })).rejects.toThrow('source_path_outside_provider_grant');
   });
 
   it('returns a successful empty search with or without the optional ripgrep backend', async () => {

@@ -23,6 +23,11 @@ import {
   hardenedRipgrepEnvironment,
   hardenedRipgrepPrefixArguments,
 } from './subprocessHardening';
+import {sourcePathAllowedForProvider} from './sourceDisclosure';
+import {
+  sourceSelectionForRef,
+  sourceSelectionRipgrepArguments,
+} from './sourceSelectionPolicy';
 import {redactSecrets} from '../security/secretPatterns';
 import {
   assertCodebaseRootIdentity,
@@ -276,32 +281,28 @@ export class OnDemandSourceAccessService {
     ref: RegisteredCodebase,
     effectivePrefixes: readonly string[],
   ): string[] {
-    const policy = this.gate.getSourceSearchPolicy();
-    const option = policy.caseInsensitive ? '--iglob' : '--glob';
-    const includeGlobs = policy.allowedExtensions.flatMap(extension => {
+    const caseInsensitive = process.platform === 'win32';
+    const policy = sourceSelectionForRef(ref, this.gate.getSourceReadLimits().maxFileBytes);
+    const option = caseInsensitive ? '--iglob' : '--glob';
+    const includeGlobs = [...policy.extensions].flatMap(extension => {
       if (effectivePrefixes.length === 0) return [`*${escapeLiteralGlob(extension)}`];
       return effectivePrefixes.map(prefix =>
         `${escapeLiteralGlob(prefix)}/**/*${escapeLiteralGlob(extension)}`);
     });
-    const allowedExtensions = new Set(policy.allowedExtensions);
+    const allowedExtensions = new Set(policy.extensions);
     const exactPrefixGlobs = effectivePrefixes
       .filter(prefix => {
         const rawExtension = path.posix.extname(prefix);
-        const extension = policy.caseInsensitive
+        const extension = caseInsensitive
           ? rawExtension.toLocaleLowerCase('en-US')
           : rawExtension;
         return allowedExtensions.has(extension);
       })
       .map(escapeLiteralGlob);
-    const excludeGlobs = [
-      ...policy.excludeNames.map(name => `!**/${escapeLiteralGlob(name)}/**`),
-      '!**/.env*',
-      '!**/*.log',
-      '!**/*.bak',
-      ...(ref.excludeGlobs ?? []).map(pattern => `!${pattern}`),
+    return [
+      ...[...exactPrefixGlobs, ...includeGlobs].flatMap(glob => [option, glob]),
+      ...sourceSelectionRipgrepArguments(policy),
     ];
-    return [...exactPrefixGlobs, ...includeGlobs, ...excludeGlobs]
-      .flatMap(glob => [option, glob]);
   }
 
   async search(input: {
@@ -424,27 +425,32 @@ export class OnDemandSourceAccessService {
     mode: CodeAwareMode;
   }): Promise<OnDemandSourceReadResult> {
     const ref = this.resolveRef(input.codebaseId, input.scope);
-    if (input.mode !== 'provider_send') {
+    if (input.mode === 'off') {
       return {
         success: false,
         codebaseId: input.codebaseId,
         truncated: false,
-        unsupportedReason: 'provider_send_disabled_for_session',
+        unsupportedReason: 'code_aware_disabled_for_session',
       };
     }
-    const consentFailure = this.consentFailure(ref, input.mode);
-    if (consentFailure) {
-      return {
-        success: false,
-        codebaseId: input.codebaseId,
-        truncated: false,
-        unsupportedReason: consentFailure,
-      };
+    if (input.mode === 'provider_send') {
+      const consentFailure = this.consentFailure(ref, input.mode);
+      if (consentFailure) {
+        return {
+          success: false,
+          codebaseId: input.codebaseId,
+          truncated: false,
+          unsupportedReason: consentFailure,
+        };
+      }
     }
     const root = await this.validateRoot(ref);
     const filePath = this.gate.validateRelativeSourcePath(input.filePath);
     if (!codebaseSourcePathMatches(ref, filePath)) {
       throw new Error('source_path_outside_registered_filters');
+    }
+    if (input.mode === 'provider_send' && !sourcePathAllowedForProvider(ref, filePath)) {
+      throw new Error('source_path_outside_provider_grant');
     }
     const startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
     const maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');
@@ -458,6 +464,14 @@ export class OnDemandSourceAccessService {
     const selected = lines.slice(startLine - 1, startLine - 1 + maxLines);
     const endLine = startLine + selected.length - 1;
     const projected = sourceTextForMode(selected.join('\n'), input.mode);
+    if (selected.length === 0) {
+      return {
+        success: false,
+        codebaseId: input.codebaseId,
+        truncated: false,
+        unsupportedReason: 'source_line_out_of_range',
+      };
+    }
     return {
       success: true,
       codebaseId: input.codebaseId,
@@ -545,6 +559,7 @@ export class OnDemandSourceAccessService {
           candidateObserved = true;
           const filePath = this.gate.validateRelativeSourcePath(rawPath);
           if (!codebaseSourcePathMatches(ref, filePath, pathPrefix)) return;
+          if (mode === 'provider_send' && !sourcePathAllowedForProvider(ref, filePath)) return;
           const content = readAcceptedTextFileSync(
             root,
             filePath,
@@ -691,6 +706,7 @@ export class OnDemandSourceAccessService {
             continue;
           }
           if (!codebaseSourcePathMatches(ref, acceptedPath, pathPrefix)) continue;
+          if (mode === 'provider_send' && !sourcePathAllowedForProvider(ref, acceptedPath)) continue;
           try {
             const content = readAcceptedTextFileSync(
               root,

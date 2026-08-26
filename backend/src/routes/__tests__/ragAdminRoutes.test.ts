@@ -13,7 +13,10 @@ import request from 'supertest';
 import {createRagAdminRoutes} from '../ragAdminRoutes';
 import {RagStore} from '../../services/ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
-import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
+import {
+  CodebaseRegistry,
+  PENDING_GENERATION_TTL_MS,
+} from '../../services/codebase/codebaseRegistry';
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {NativeDirectoryPicker} from '../../services/codebase/nativeDirectoryPicker';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
@@ -674,6 +677,80 @@ describe('codebase routes', () => {
       });
     expect(appSource.status).toBe(200);
     expect(appSource.body.codebase.displayName).toBe('metadata-validation-repo');
+  });
+
+  it('lazily expires pending generations and removes their staged chunks on list', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Expired Candidate',
+      rootPath: tmpDir,
+      ...DEFAULT_SCOPE,
+    });
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
+      candidateGenerationId: 'expired-generation',
+      coverage: {
+        selectionPolicyRevision: 1,
+        enumerationBackend: 'ripgrep',
+        backendFidelity: 'exact',
+        enumerationComplete: true,
+        deterministic: true,
+        filesEnumerated: 2,
+        filesSelected: 1,
+        bytesSelected: 10,
+        chunksIndexed: 1,
+        truncated: true,
+        complete: false,
+        truncationReason: 'file_budget',
+      },
+      contentFingerprint: 'expired-fingerprint',
+      chunkCount: 1,
+      createdAt: Date.now() - PENDING_GENERATION_TTL_MS - 1,
+    });
+    store.addChunk(makeChunk({
+      chunkId: 'expired-generation-chunk',
+      kind: 'app_source',
+      uri: 'codebase://expired/Expired.kt',
+      codebaseId: ref.codebaseId,
+      sourceGeneration: 'expired-generation',
+      registryOrigin: 'codebase_registry',
+      filePath: 'Expired.kt',
+      snippet: 'class Expired',
+    }), DEFAULT_SCOPE);
+
+    const listed = await request(app).get('/api/rag/codebases');
+
+    expect(listed.status).toBe(200);
+    expect(listed.body.codebases[0]).toMatchObject({
+      codebaseId: ref.codebaseId,
+      maintenanceWarning: 'pending_generation_expired',
+    });
+    expect(listed.body.codebases[0].pendingGeneration).toBeUndefined();
+    expect(store.countCodebaseGenerationChunks(ref.codebaseId, 'expired-generation', DEFAULT_SCOPE)).toBe(0);
+  });
+
+  it('does not let new-language authorization create provider-send consent', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Metadata only',
+      rootPath: tmpDir,
+      sendToProvider: false,
+      ...DEFAULT_SCOPE,
+    });
+
+    const response = await request(app)
+      .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeAvailableExtensions: true});
+
+    expect(response.status).toBe(409);
+    expect(response.body.error).toBe('provider_send_consent_required');
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.consent.sendToProvider).toBe(false);
+
+    registry.setProviderConsent(ref.codebaseId, DEFAULT_SCOPE, true, DEFAULT_SCOPE.userId);
+    const ambiguous = await request(app)
+      .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeAvailableExtensions: true, sendToProvider: false});
+    expect(ambiguous.status).toBe(400);
+    expect(ambiguous.body.error).toContain('mutually exclusive');
   });
 
   it('rejects ambiguous provider consent and unsafe path filters', async () => {

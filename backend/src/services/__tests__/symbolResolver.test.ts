@@ -80,6 +80,13 @@ describe('SymbolResolver', () => {
       rootPath: tmpDir,
       sendToProvider: false,
     });
+    const appGeneration = 'codebase_2_app';
+    registry.activateIndexGeneration(appRef.codebaseId, scope, appRef.indexGeneration, {
+      lastIngestStatus: 'ok',
+      activeGeneration: appGeneration,
+      contentFingerprint: 'app-content',
+      chunkCount: 1,
+    });
     store.addChunk({
       chunkId: 'app-1',
       kind: 'app_source',
@@ -92,7 +99,7 @@ describe('SymbolResolver', () => {
       buildId: 'app-build',
       codebaseId: appRef.codebaseId,
       registryOrigin: 'codebase_registry',
-      sourceGeneration: `codebase_${appRef.indexGeneration}`,
+      sourceGeneration: appGeneration,
     }, scope);
 
     const result = new SymbolResolver(store, scope, registry).resolveApp({
@@ -122,6 +129,20 @@ describe('SymbolResolver', () => {
       sendToProvider: false,
       buildId: 'aosp-build',
     });
+    const kernelGeneration = 'codebase_2_kernel';
+    registry.activateIndexGeneration(kernelRef.codebaseId, scope, kernelRef.indexGeneration, {
+      lastIngestStatus: 'ok',
+      activeGeneration: kernelGeneration,
+      contentFingerprint: 'kernel-content',
+      chunkCount: 1,
+    });
+    const aospGeneration = 'codebase_2_aosp';
+    registry.activateIndexGeneration(aospRef.codebaseId, scope, aospRef.indexGeneration, {
+      lastIngestStatus: 'ok',
+      activeGeneration: aospGeneration,
+      contentFingerprint: 'aosp-content',
+      chunkCount: 1,
+    });
     store.addChunk({
       chunkId: 'kernel-1',
       kind: 'kernel_source',
@@ -135,7 +156,7 @@ describe('SymbolResolver', () => {
       vendor: 'mtk',
       codebaseId: kernelRef.codebaseId,
       registryOrigin: 'codebase_registry',
-      sourceGeneration: `codebase_${kernelRef.indexGeneration}`,
+      sourceGeneration: kernelGeneration,
     }, scope);
     store.addChunk({
       chunkId: 'aosp-1',
@@ -150,7 +171,7 @@ describe('SymbolResolver', () => {
       buildId: 'aosp-build',
       codebaseId: aospRef.codebaseId,
       registryOrigin: 'codebase_registry',
-      sourceGeneration: `codebase_${aospRef.indexGeneration}`,
+      sourceGeneration: aospGeneration,
     }, scope);
 
     const resolver = new SymbolResolver(store, scope, registry);

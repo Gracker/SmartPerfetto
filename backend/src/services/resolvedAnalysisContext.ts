@@ -82,6 +82,7 @@ export function buildAnalysisContextAuthorizationFingerprint(
         ? {
             codebaseId,
             lifecycleState: ref.lifecycleState ?? 'active',
+            selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
             indexGeneration: ref.indexGeneration,
             activeGeneration: activeCodebaseGeneration(ref),
             contentFingerprint: ref.contentFingerprint ?? null,
@@ -90,6 +91,7 @@ export function buildAnalysisContextAuthorizationFingerprint(
             commitProvenance: ref.commitProvenance ?? null,
             licenseTag: ref.licenseTag ?? null,
             consentHash: ref.consent.consentHash,
+            grantRevision: ref.consent.grant?.revision ?? 1,
             sendToProvider: ref.consent.sendToProvider,
           }
         : {codebaseId, unavailable: true};
