@@ -270,5 +270,5 @@ test('CLI parser preserves repeated evidence flags without treating values as po
   assert.deepEqual(parsed.values('--result'), ['one.json', 'two.json']);
   assert.deepEqual(parsed.values('--log'), ['run.log']);
   assert.deepEqual(parsed.positional, []);
-  assert.equal(parsed.repoRoot, '/tmp/trace-repo');
+  assert.equal(parsed.repoRoot, path.resolve('/tmp/trace-repo'));
 });
