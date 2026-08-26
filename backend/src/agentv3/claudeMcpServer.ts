@@ -4835,6 +4835,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             matches: [],
             truncated: false,
             backend: result.backend,
+            coverageComplete: result.coverageComplete,
+            ...(result.searchIncompleteReason
+              ? {searchIncompleteReason: result.searchIncompleteReason}
+              : {}),
+            enumerationBackend: result.enumerationBackend,
+            backendFidelity: result.backendFidelity,
             unsupportedReason: 'budget_exceeded',
           }))}],
         };

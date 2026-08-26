@@ -13,6 +13,7 @@
 3. 实现定位用 `search_codebase`，不要求预先建立索引；GitNexus 不可用或 `freshness="stale"` 时用 `search_codebase` / `read_codebase_file`。
 4. `provider_send` 可读有界源码；`metadata_only` 仅保留定位。已有索引可用 `resolve_symbol`、`lookup_app_source` / `lookup_aosp_source` / `lookup_kernel_source` / `lookup_oem_sdk`；多 vendor kernel 须指定 `vendor` 或 `codebase_id`。
 5. `propose_patch` 只接受已记录的 `chunkId`；`search_codebase` / `read_codebase_file` / `query_code_graph` / `inspect_code_symbol` 的 `referenceId` 不授予 patch 能力。
+6. `search_codebase.coverageComplete=false` 时，只能表述“在已覆盖范围内未找到”并保留 `searchIncompleteReason`；不得把不完整覆盖写成源码中不存在。
 
 ### 输出纪律
 

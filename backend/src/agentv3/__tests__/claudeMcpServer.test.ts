@@ -6384,6 +6384,9 @@ describe('createClaudeMcpServer', () => {
         expect(search).toEqual(expect.objectContaining({
           success: true,
           dataTrust: 'untrusted_retrieved_data',
+          coverageComplete: true,
+          enumerationBackend: 'ripgrep',
+          backendFidelity: 'exact',
           matches: [expect.objectContaining({
             filePath: 'src/StartupHooks.kt',
             lineRange: {start: 2, end: 2},

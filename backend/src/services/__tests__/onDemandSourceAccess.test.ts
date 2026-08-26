@@ -234,6 +234,182 @@ describe('OnDemandSourceAccessService', () => {
     ]);
   });
 
+  it('streams common-query output past the legacy one-megabyte child buffer', async () => {
+    for (let index = 0; index < 12; index += 1) {
+      fs.writeFileSync(
+        path.join(root, 'app', 'src', `Common${index}.kt`),
+        'val commonNeedle = Unit\n'.repeat(7_000),
+      );
+    }
+    const ref = register();
+
+    const search = await service().search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'commonNeedle',
+      mode: 'provider_send',
+      maxResults: 8,
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      truncated: true,
+      coverageComplete: false,
+      searchIncompleteReason: 'enumeration_budget',
+      enumerationBackend: 'ripgrep',
+      backendFidelity: 'exact',
+    }));
+    expect(search.matches).toHaveLength(8);
+  });
+
+  it('starts ripgrep with a fixed argument vector and sanitized config environment', async () => {
+    if (process.platform === 'win32') return;
+    const config = path.join(tmpDir, 'ripgreprc');
+    const environmentCapture = path.join(tmpDir, 'rg-env');
+    const argumentsCapture = path.join(tmpDir, 'rg-args');
+    const fakeRipgrep = path.join(tmpDir, 'fake-rg.sh');
+    fs.writeFileSync(config, '--pre=/tmp/hostile-preprocessor\n');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/bin/sh',
+      `printf '%s' "\${RIPGREP_CONFIG_PATH-<unset>}" > '${environmentCapture}'`,
+      `printf '%s\\n' "$@" > '${argumentsCapture}'`,
+      `printf '%s\\n' '{"type":"match","data":{"path":{"text":"app/src/MainActivity.kt"},"line_number":4,"lines":{"text":"  fun loadTimeline() = Unit\\n"}}}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const previousConfig = process.env.RIPGREP_CONFIG_PATH;
+    process.env.RIPGREP_CONFIG_PATH = config;
+    try {
+      const ref = register();
+      const search = await service(fakeRipgrep).search({
+        codebaseId: ref.codebaseId,
+        scope,
+        query: 'loadTimeline',
+        mode: 'provider_send',
+      });
+
+      expect(search.success).toBe(true);
+      expect(search.matches).toEqual([
+        expect.objectContaining({
+          filePath: 'app/src/MainActivity.kt',
+          text: '  fun loadTimeline() = Unit',
+        }),
+      ]);
+      expect(fs.readFileSync(environmentCapture, 'utf8')).toBe('');
+      const args = fs.readFileSync(argumentsCapture, 'utf8').split('\n').filter(Boolean);
+      expect(args).toContain('--no-config');
+      expect(args).not.toContain('-L');
+      expect(args).not.toContain('--follow');
+    } finally {
+      if (previousConfig === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+      else process.env.RIPGREP_CONFIG_PATH = previousConfig;
+    }
+  });
+
+  it('marks coverage incomplete when a ripgrep locator cannot be safely re-read', async () => {
+    if (process.platform === 'win32') return;
+    const fakeRipgrep = path.join(tmpDir, 'stale-rg.sh');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/bin/sh',
+      `printf '%s\\n' '{"type":"match","data":{"path":{"text":"app/src/Missing.kt"},"line_number":1,"lines":{"text":"loadTimeline\\n"}}}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const ref = register();
+
+    const search = await service(fakeRipgrep).search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'loadTimeline',
+      mode: 'provider_send',
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      matches: [],
+      coverageComplete: false,
+      searchIncompleteReason: 'traversal_error',
+    }));
+  });
+
+  it('bounds concurrent source searches without starting an extra subprocess', async () => {
+    if (process.platform === 'win32') return;
+    const fakeRipgrep = path.join(tmpDir, 'slow-rg.sh');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/bin/sh',
+      'sleep 0.2',
+      `printf '%s\\n' '{"type":"match","data":{"path":{"text":"app/src/MainActivity.kt"},"line_number":4,"lines":{"text":"  fun loadTimeline() = Unit\\n"}}}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const ref = register();
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: fakeRipgrep,
+      maxConcurrentSearches: 1,
+      concurrencyWaitTimeoutMs: 25,
+      searchTimeoutMs: 1_000,
+    });
+    const input = {
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'loadTimeline',
+      mode: 'provider_send' as const,
+    };
+
+    const first = access.search(input);
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+    const second = await access.search(input);
+
+    expect(second).toEqual(expect.objectContaining({
+      success: true,
+      matches: [],
+      coverageComplete: false,
+      searchIncompleteReason: 'time_budget',
+    }));
+    await expect(first).resolves.toEqual(expect.objectContaining({
+      matches: [expect.objectContaining({filePath: 'app/src/MainActivity.kt'})],
+    }));
+  });
+
+  it('returns bounded degraded coverage when ripgrep and full preview are unavailable', async () => {
+    for (let index = 0; index < 10; index += 1) {
+      fs.writeFileSync(
+        path.join(root, 'app', 'src', `Fallback${index}.kt`),
+        `val fallbackNeedle${index} = Unit\n`,
+      );
+    }
+    const ref = register();
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({
+        allowlistRoots: [tmpDir],
+        maxVisitedEntries: 4,
+        maxSkippedDiagnostics: 2,
+      }),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+    });
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'fallbackNeedle',
+      mode: 'provider_send',
+      maxResults: 3,
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      truncated: true,
+      coverageComplete: false,
+      searchIncompleteReason: 'backend_degraded',
+      enumerationBackend: 'node-walk',
+      backendFidelity: 'degraded',
+    }));
+    expect(search.matches).toHaveLength(3);
+  });
+
   it('preserves exact-file semantics for requested and registered path prefixes', async () => {
     const directoryFiltered = register();
     const requestedFile = await service().search({

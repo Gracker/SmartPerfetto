@@ -9,6 +9,10 @@ import {promisify} from 'util';
 
 import type {CodebaseRef} from '../codebase/codebaseRegistry';
 import {
+  hardenedGitEnvironment,
+  hardenedGitPrefixArguments,
+} from '../codebase/subprocessHardening';
+import {
   DEFAULT_SOURCE_MAX_TOTAL_BYTES,
   type PathSecurityGate,
   type PathPreviewFile,
@@ -231,17 +235,21 @@ export async function inspectSourceGeneration(
 
   let indexedRevision: string | undefined;
   let sourceDirty = false;
+  const gitPrefix = hardenedGitPrefixArguments(rootRealpath);
+  const gitEnvironment = hardenedGitEnvironment();
   try {
-    indexedRevision = (await execFileAsync('git', ['-C', rootRealpath, 'rev-parse', 'HEAD'], {
+    indexedRevision = (await execFileAsync('git', [...gitPrefix, 'rev-parse', 'HEAD'], {
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
+      env: gitEnvironment,
     })).stdout.trim() || undefined;
     sourceDirty = (await execFileAsync(
       'git',
-      ['-C', rootRealpath, 'status', '--porcelain=v1', '--untracked-files=all', '--', '.'],
+      [...gitPrefix, 'status', '--porcelain=v1', '--untracked-files=all', '--', '.'],
       {
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
+        env: gitEnvironment,
       },
     )).stdout.trim().length > 0;
   } catch {
