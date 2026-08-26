@@ -46,4 +46,36 @@ describe('source disclosure scope', () => {
     expect(sourcePathAllowedForProvider(ref, 'tools/Main.kt')).toBe(false);
     expect(availableNotConsentedExtensions(ref)).toEqual(expect.arrayContaining(['.dart', '.ts', '.tsx']));
   });
+
+  it('honors root-level glob exclusions and hard secret-directory exclusions', () => {
+    const unrestricted: CodebaseRef = {
+      ...ref,
+      pathFilters: undefined,
+      consent: {
+        ...ref.consent,
+        grant: {
+          ...ref.consent.grant!,
+          includePrefixes: [],
+        },
+      },
+    };
+    const explicitlySelectedSecrets: CodebaseRef = {
+      ...unrestricted,
+      pathFilters: ['secrets'],
+      consent: {
+        ...unrestricted.consent,
+        grant: {
+          ...unrestricted.consent.grant!,
+          includePrefixes: ['secrets'],
+        },
+      },
+    };
+
+    expect(sourcePathAllowedForProvider(unrestricted, 'generated/Main.kt')).toBe(false);
+    expect(sourcePathAllowedForProvider(unrestricted, 'src/generated/Main.kt')).toBe(false);
+    expect(sourcePathAllowedForProvider(
+      explicitlySelectedSecrets,
+      'secrets/credentials.properties',
+    )).toBe(false);
+  });
 });

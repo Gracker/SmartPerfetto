@@ -43,10 +43,24 @@ describe('SourceSelectionPolicy', () => {
       kind: 'app_source',
       includePrefixes: ['.repo/projects'],
     });
+    const explicitSecrets = buildSourceSelectionIR({
+      kind: 'app_source',
+      includePrefixes: ['secrets'],
+    });
+    const nestedNoise = buildSourceSelectionIR({
+      kind: 'app_source',
+      includePrefixes: ['packages/app/node_modules/lib'],
+    });
 
     expect(sourceSelectionAdmits(defaultPolicy, 'Pods/TracingKit/Hook.mm')).toBe(false);
     expect(sourceSelectionAdmits(explicitNoise, 'Pods/TracingKit/Hook.mm')).toBe(true);
     expect(sourceSelectionAdmits(explicitHard, '.repo/projects/Hook.mm')).toBe(false);
+    expect(sourceSelectionAdmits(explicitSecrets, 'secrets/credentials.properties')).toBe(false);
+    expect(sourceSelectionAdmits(nestedNoise, 'packages/app/node_modules/lib/index.ts')).toBe(true);
+    expect(sourceSelectionRipgrepArguments(nestedNoise)).not.toEqual(expect.arrayContaining([
+      '--glob',
+      '!**/node_modules/',
+    ]));
   });
 
   it('normalizes prefixes, restricts glob syntax, and projects one canonical IR', () => {
@@ -59,7 +73,13 @@ describe('SourceSelectionPolicy', () => {
     expect(policy.includePrefixes).toEqual(['frameworks/base']);
     expect(sourceSelectionAdmits(policy, 'frameworks/base/core/Foo.java')).toBe(true);
     expect(sourceSelectionAdmits(policy, 'frameworks/base/generated/Foo.java')).toBe(false);
+    expect(sourceSelectionAdmits(
+      buildSourceSelectionIR({kind: 'aosp', excludeGlobs: ['**/generated/**']}),
+      'generated/Foo.java',
+    )).toBe(false);
     expect(sourceSelectionGitPathspecs(policy)).toEqual([':(literal)frameworks/base']);
+    expect((sourceSelectionGitPathspecs as any)(policy, 'win32'))
+      .toEqual([':(icase,literal)frameworks/base']);
     expect(sourceSelectionRipgrepArguments(policy)).toEqual(expect.arrayContaining([
       '--glob',
       '!**/.repo/',
@@ -70,5 +90,26 @@ describe('SourceSelectionPolicy', () => {
       .toThrow('source_exclude_glob_invalid');
     expect(() => buildSourceSelectionIR({kind: 'aosp', excludeGlobs: ['[ab]/**']}))
       .toThrow('source_exclude_glob_invalid');
+  });
+
+  it('projects include-ignored discovery without changing the canonical predicate', () => {
+    const includeIgnored = buildSourceSelectionIR({
+      kind: 'app_source',
+      ignoreMode: 'include_ignored',
+    });
+
+    expect(sourceSelectionRipgrepArguments(includeIgnored)).toEqual(expect.arrayContaining([
+      '--no-ignore',
+    ]));
+    expect(sourceSelectionAdmits(includeIgnored, 'src/Main.kt')).toBe(true);
+  });
+
+  it('matches adversarial wildcard sequences without catastrophic backtracking', () => {
+    const policy = buildSourceSelectionIR({
+      kind: 'app_source',
+      excludeGlobs: [`${'*a'.repeat(24)}b.kt`],
+    });
+
+    expect(sourceSelectionAdmits(policy, `${'a'.repeat(80)}.kt`)).toBe(true);
   });
 });

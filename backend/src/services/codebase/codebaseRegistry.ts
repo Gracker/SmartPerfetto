@@ -23,7 +23,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from '../scopedKnowledgeStore';
 import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
-import {sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
 export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker';
@@ -36,6 +36,7 @@ const REGISTRY_ROW_SCOPE = 'codebase-registry-ref';
 const INGEST_LEASE_KNOWLEDGE_KIND = 'codebase_ingest_lease';
 const INGEST_LEASE_ROW_SCOPE = 'codebase-ingest-lease';
 const INGEST_LEASE_TTL_MS = 10 * 60 * 1000;
+const INGEST_LEASE_HEARTBEAT_MS = Math.max(1_000, Math.floor(INGEST_LEASE_TTL_MS / 3));
 export const PENDING_GENERATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface CodebaseRegistrationRequirements {
@@ -220,7 +221,7 @@ export interface CodebaseIngestLeaseGuard {
   /** Makes staged chunk ids unique even if a previous lease expired mid-run. */
   operationId: string;
   /** Renews the lease and fails before more source data is staged if ownership changed. */
-  assertHeld(): void;
+  assertHeld(forceDurableCheck?: boolean): void;
   /** Updates ingest metadata only while this operation still owns the lease. */
   updateIngestStatus(
     patch: Pick<CodebaseRef, 'lastIngestStatus'> & Partial<CodebaseRef>,
@@ -441,6 +442,17 @@ export class CodebaseRegistry {
     // Canonicalize even trusted preview input so consent and later drift checks
     // never inherit aliases such as macOS /var -> /private/var.
     const rootRealpath = fs.realpathSync(input.rootRealpath ?? input.rootPath);
+    const selection = buildSourceSelectionIR({
+      kind: input.kind,
+      includePrefixes: input.pathFilters,
+      excludeGlobs: input.excludeGlobs,
+    });
+    const pathFilters = selection.includePrefixes.length > 0
+      ? selection.includePrefixes
+      : undefined;
+    const excludeGlobs = selection.excludeGlobs.length > 0
+      ? selection.excludeGlobs
+      : undefined;
     const now = Date.now();
     const ref: CodebaseRef = {
       codebaseId: `cb_${randomUUID()}`,
@@ -455,8 +467,8 @@ export class CodebaseRegistry {
       ...(input.commitHash ? {commitHash: input.commitHash} : {}),
       ...(input.vendor ? {vendor: input.vendor} : {}),
       ...(input.buildId ? {buildId: input.buildId} : {}),
-      ...(input.pathFilters ? {pathFilters: input.pathFilters} : {}),
-      ...(input.excludeGlobs ? {excludeGlobs: input.excludeGlobs} : {}),
+      ...(pathFilters ? {pathFilters} : {}),
+      ...(excludeGlobs ? {excludeGlobs} : {}),
       selectionPolicyRevision: 1,
       ...(input.symbolMapPaths ? {symbolMapPaths: input.symbolMapPaths} : {}),
       ...(input.licenseTag ? {licenseTag: input.licenseTag} : {}),
@@ -476,8 +488,8 @@ export class CodebaseRegistry {
           grantedAt: now,
           grantedBy: input.consentedBy ?? input.userId ?? 'local-user',
           extensions: [...sourceExtensionsForKind(input.kind)],
-          includePrefixes: [...(input.pathFilters ?? [])],
-          excludeGlobs: [...(input.excludeGlobs ?? [])],
+          includePrefixes: [...selection.includePrefixes],
+          excludeGlobs: [...selection.excludeGlobs],
         },
       },
       indexGeneration: 1,
@@ -627,11 +639,42 @@ export class CodebaseRegistry {
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      const requestedPathFilters = patch.pathFilters === undefined
+        ? existing.pathFilters
+        : patch.pathFilters;
+      const requestedExcludeGlobs = patch.excludeGlobs === undefined
+        ? existing.excludeGlobs
+        : patch.excludeGlobs;
+      const selection = buildSourceSelectionIR({
+        kind: existing.kind,
+        includePrefixes: requestedPathFilters,
+        excludeGlobs: requestedExcludeGlobs,
+      });
+      const pathFilters = selection.includePrefixes.length > 0
+        ? selection.includePrefixes
+        : undefined;
+      const excludeGlobs = selection.excludeGlobs.length > 0
+        ? selection.excludeGlobs
+        : undefined;
+      if (existing.kind === 'kernel_source' && !pathFilters?.length) {
+        throw new Error('kernel_source requires pathFilters');
+      }
+      const listsEqual = (left?: readonly string[], right?: readonly string[]): boolean => {
+        const normalizedLeft = left ?? [];
+        const normalizedRight = right ?? [];
+        return normalizedLeft.length === normalizedRight.length &&
+          normalizedLeft.every((value, index) => value === normalizedRight[index]);
+      };
+      if (
+        listsEqual(existing.pathFilters, pathFilters) &&
+        listsEqual(existing.excludeGlobs, excludeGlobs)
+      ) return existing;
       return {
         ...existing,
-        pathFilters: patch.pathFilters,
-        excludeGlobs: patch.excludeGlobs,
+        pathFilters,
+        excludeGlobs,
         selectionPolicyRevision: (existing.selectionPolicyRevision ?? 1) + 1,
+        indexGeneration: existing.indexGeneration + 1,
         activeIndexState: 'none',
         activeGeneration: undefined,
         activeIndexCoverage: undefined,
@@ -708,15 +751,22 @@ export class CodebaseRegistry {
     scope: CodebaseScope,
     expectedSelectionPolicyRevision: number,
     expectedGrantRevision: number,
+    expectedCandidateGenerationId: string,
+    now = Date.now(),
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
       const pending = existing.pendingGeneration;
       if (!pending) throw new Error('pending_generation_not_found');
       if (
+        pending.candidateGenerationId !== expectedCandidateGenerationId ||
         (existing.selectionPolicyRevision ?? 1) !== expectedSelectionPolicyRevision ||
         effectiveConsentGrant(existing).revision !== expectedGrantRevision ||
         pending.coverage.selectionPolicyRevision !== expectedSelectionPolicyRevision
       ) throw new Error('pending_generation_stale');
+      if (now - pending.createdAt >= PENDING_GENERATION_TTL_MS) {
+        throw new Error('pending_generation_expired');
+      }
       return {
         ...existing,
         activeIndexState: 'active',
@@ -731,6 +781,27 @@ export class CodebaseRegistry {
         pendingGeneration: undefined,
         reindexRequired: undefined,
         lastIngestStatus: 'ok',
+        updatedAt: now,
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  rejectPendingGeneration(
+    codebaseId: string,
+    scope: CodebaseScope,
+    expectedCandidateGenerationId: string,
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (!existing.pendingGeneration) throw new Error('pending_generation_not_found');
+      if (existing.pendingGeneration.candidateGenerationId !== expectedCandidateGenerationId) {
+        throw new Error('pending_generation_stale');
+      }
+      return {
+        ...existing,
+        pendingGeneration: undefined,
         updatedAt: Date.now(),
       };
     });
@@ -738,24 +809,16 @@ export class CodebaseRegistry {
     return updated;
   }
 
-  rejectPendingGeneration(codebaseId: string, scope: CodebaseScope): CodebaseRef {
-    const updated = this.mutate(codebaseId, scope, existing => ({
-      ...existing,
-      pendingGeneration: undefined,
-      updatedAt: Date.now(),
-    }));
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
-    return updated;
-  }
-
   expirePendingGeneration(
     codebaseId: string,
     scope: CodebaseScope,
+    expectedCandidateGenerationId: string,
     now = Date.now(),
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (
         !existing.pendingGeneration ||
+        existing.pendingGeneration.candidateGenerationId !== expectedCandidateGenerationId ||
         now - existing.pendingGeneration.createdAt < PENDING_GENERATION_TTL_MS
       ) return existing;
       return {
@@ -814,9 +877,15 @@ export class CodebaseRegistry {
         leasePath,
         'codebase_reindex_in_progress',
         async filesystemLease => {
-          const assertHeld = (): void => {
+          let lastDurableCheckAt = 0;
+          const assertHeld = (forceDurableCheck = false): void => {
+            const now = Date.now();
+            if (!forceDurableCheck && now - lastDurableCheckAt < INGEST_LEASE_HEARTBEAT_MS) {
+              return;
+            }
             try {
               filesystemLease.assertHeld();
+              lastDurableCheckAt = now;
             } catch {
               throw new Error('codebase_reindex_lease_lost');
             }
@@ -825,14 +894,14 @@ export class CodebaseRegistry {
             operationId: ownerToken,
             assertHeld,
             updateIngestStatus: patch => {
-              assertHeld();
+              assertHeld(true);
               this.updateIngestStatus(codebaseId, patch, scope);
               const updated = this.get(codebaseId, scope);
               if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
               return updated;
             },
             activateIndexGeneration: (expectedCurrentGeneration, patch) => {
-              assertHeld();
+              assertHeld(true);
               return this.activateIndexGeneration(
                 codebaseId,
                 scope,
@@ -841,7 +910,7 @@ export class CodebaseRegistry {
               );
             },
             beginDeletion: actor => {
-              assertHeld();
+              assertHeld(true);
               return this.beginDeletionWithLease(
                 codebaseId,
                 scope,
@@ -851,7 +920,7 @@ export class CodebaseRegistry {
               );
             },
             deleteRegistration: () => {
-              assertHeld();
+              assertHeld(true);
               return this.deleteRegistrationWithLease(
                 codebaseId,
                 scope,
@@ -888,10 +957,16 @@ export class CodebaseRegistry {
       );
     }
 
+    let lastDurableCheckAt = 0;
     const lease: CodebaseIngestLeaseGuard = {
       operationId: ownerToken,
-      assertHeld: () => {
+      assertHeld: (forceDurableCheck = false) => {
         if (useDistributedLease) {
+          const startedAt = Date.now();
+          if (
+            !forceDurableCheck &&
+            startedAt - lastDurableCheckAt < INGEST_LEASE_HEARTBEAT_MS
+          ) return;
           mutateScopedKnowledgeRecord<CodebaseIngestLease>(
             INGEST_LEASE_KNOWLEDGE_KIND,
             codebaseId,
@@ -905,6 +980,7 @@ export class CodebaseRegistry {
             },
             {rowScope: INGEST_LEASE_ROW_SCOPE},
           );
+          lastDurableCheckAt = startedAt;
         }
       },
       updateIngestStatus: patch =>
@@ -1085,6 +1161,7 @@ export class CodebaseRegistry {
       lifecycleState: 'deleting',
       activeGeneration: `deleted_${ownerToken}`,
       activeIndexState: 'none',
+      pendingGeneration: undefined,
       contentFingerprint: undefined,
       chunkCount: 0,
       consent: {

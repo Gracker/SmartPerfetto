@@ -89,6 +89,15 @@ const KNOWLEDGE_KIND = 'rag_chunk';
 const RAG_ROW_SCOPE_PREFIX = 'rag:';
 export const DEFAULT_LOCAL_RAG_SEARCH_MAX_CHUNKS = 20_000;
 export const DEFAULT_LOCAL_RAG_SEARCH_MAX_BYTES = 64 * 1024 * 1024;
+/**
+ * Whole-store capacity is intentionally larger than one search selection.
+ * Two full default source generations can coexist during atomic replacement,
+ * with additional chunk and serialized-byte headroom. The byte ceiling stays
+ * far below V8's maximum string length because legacy persistence still reads,
+ * parses, and stringifies one JSON document synchronously.
+ */
+export const DEFAULT_LOCAL_RAG_STORAGE_MAX_CHUNKS = 50_000;
+export const DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES = 128 * 1024 * 1024;
 export const MAX_RAG_SEARCH_TOP_K = 100;
 export const MAX_RAG_SEARCH_QUERY_BYTES = 8 * 1024;
 export const MAX_RAG_SEARCH_FILTER_ITEMS = 100;
@@ -279,8 +288,10 @@ export class RagStore {
     this.storagePath = storagePath;
     this.localSearchMaxChunks = limits.localSearchMaxChunks ?? DEFAULT_LOCAL_RAG_SEARCH_MAX_CHUNKS;
     this.localSearchMaxBytes = limits.localSearchMaxBytes ?? DEFAULT_LOCAL_RAG_SEARCH_MAX_BYTES;
-    this.localStorageMaxChunks = limits.localStorageMaxChunks ?? this.localSearchMaxChunks;
-    this.localStorageMaxBytes = limits.localStorageMaxBytes ?? this.localSearchMaxBytes;
+    this.localStorageMaxChunks = limits.localStorageMaxChunks ??
+      DEFAULT_LOCAL_RAG_STORAGE_MAX_CHUNKS;
+    this.localStorageMaxBytes = limits.localStorageMaxBytes ??
+      DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES;
     for (const [name, value] of Object.entries({
       localSearchMaxChunks: this.localSearchMaxChunks,
       localSearchMaxBytes: this.localSearchMaxBytes,
@@ -379,6 +390,16 @@ export class RagStore {
 
   private serializeWithinStorageBudget(chunks: readonly RagChunk[]): string {
     this.assertChunkCountWithinBudget(chunks.length);
+    let chunkBytes = 0;
+    for (const chunk of chunks) {
+      chunkBytes += this.serializedChunkSize(chunk);
+    }
+    const accountedSerializedBytes = this.serializedEnvelopeSize(chunks.length, chunkBytes);
+    if (accountedSerializedBytes > this.localStorageMaxBytes) {
+      throw new LocalRagStorageBudgetError(
+        `serialized size ${accountedSerializedBytes} exceeds ${this.localStorageMaxBytes} bytes`,
+      );
+    }
     const serialized = JSON.stringify({schemaVersion: 2, chunks});
     const serializedBytes = Buffer.byteLength(serialized, 'utf8');
     if (serializedBytes > this.localStorageMaxBytes) {

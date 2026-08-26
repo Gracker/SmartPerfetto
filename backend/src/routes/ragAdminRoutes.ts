@@ -52,10 +52,11 @@ import {
   CodebaseRegistry,
   PENDING_GENERATION_TTL_MS,
   type CodebaseRef,
+  type CodebaseScope,
   isCodebaseKind,
 } from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
-import {PathSecurityGate, type PathPreviewResult} from '../services/codebase/pathSecurityGate';
+import {PathSecurityGate} from '../services/codebase/pathSecurityGate';
 import {SourceEnumerator, type EnumerationResult} from '../services/codebase/sourceEnumerator';
 import {buildSourceSelectionIR} from '../services/codebase/sourceSelectionPolicy';
 import {availableNotConsentedExtensions} from '../services/codebase/sourceDisclosure';
@@ -158,6 +159,7 @@ function sanitizeCodebase(ref: CodebaseRef) {
   } = ref;
   return {
     ...rest,
+    grantRevision: consent.grant?.revision ?? 1,
     rootAvailable: codebaseRootAvailable(ref),
     eligibleForSendToProvider: consent.sendToProvider,
     consent: {
@@ -205,17 +207,6 @@ function sendDirectoryPickerError(
   });
 }
 
-function sanitizePreview(preview: PathPreviewResult) {
-  return {
-    blocked: preview.blocked,
-    ...(preview.blockedReason ? {blockedReason: preview.blockedReason} : {}),
-    acceptedFileCount: preview.acceptedFiles.length,
-    skippedFileCount: preview.skippedFileCount,
-    acceptedFiles: preview.acceptedFiles.slice(0, 200),
-    skippedFiles: preview.skippedFiles.slice(0, 200),
-  };
-}
-
 function sanitizeEnumeration(result: EnumerationResult) {
   const subtreeCounts = new Map<string, number>();
   for (const file of result.files) {
@@ -226,8 +217,12 @@ function sanitizeEnumeration(result: EnumerationResult) {
   return {
     blocked: false,
     complete: result.enumerationComplete,
+    enumerationComplete: result.enumerationComplete,
     ...(result.incompleteReason ? {truncationReason: result.incompleteReason} : {}),
     acceptedFileCount: result.files.length,
+    filesEnumerated: result.files.length,
+    filesSelected: result.files.length,
+    bytesSelected: result.files.reduce((total, file) => total + file.sizeBytes, 0),
     skippedFileCount: result.skippedCount,
     acceptedFiles: result.files.slice(0, 200),
     skippedFiles: result.skipped.slice(0, 200),
@@ -251,15 +246,28 @@ function routeParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
+function pendingCandidateGenerationId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > 256 ||
+    value.includes('\0')
+  ) throw new Error('`candidateGenerationId` must be a non-empty string of at most 256 characters');
+  return value;
+}
+
 /** Test/factory hook. */
 export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteServices = {}): ExpressRouter {
   const s = store ?? getDefaultRagStore();
   const registry = services.registry ?? getDefaultCodebaseRegistry();
   const gate = services.gate ?? new PathSecurityGate();
   const sourceEnumerator = services.sourceEnumerator ?? new SourceEnumerator();
-  const appSourceIngester = services.appSourceIngester ?? new AppSourceIngester(s, registry, gate);
-  const aospSourceIngester = services.aospSourceIngester ?? new AospSourceIngester(s, registry, gate);
-  const kernelSourceIngester = services.kernelSourceIngester ?? new KernelSourceIngester(s, registry, gate);
+  const appSourceIngester = services.appSourceIngester ??
+    new AppSourceIngester(s, registry, gate, sourceEnumerator);
+  const aospSourceIngester = services.aospSourceIngester ??
+    new AospSourceIngester(s, registry, gate, sourceEnumerator);
+  const kernelSourceIngester = services.kernelSourceIngester ??
+    new KernelSourceIngester(s, registry, gate, sourceEnumerator);
   const directoryPicker = services.directoryPicker ?? new NativeDirectoryPicker();
   const externalKnowledgeRegistry = services.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
@@ -279,6 +287,47 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     capabilityMapPath: path.join(backendRoot, 'knowledge/android-internals-capability-map.yaml'),
     skillsPath: path.join(backendRoot, 'skills'),
     fixtureManifestPath: path.join(backendRoot, 'skills/public-fixtures.yaml'),
+  };
+  const cleanupInactiveCodebaseChunks = async (
+    codebaseId: string,
+    scope: CodebaseScope,
+  ): Promise<CodebaseRef | undefined> => {
+    if (!registry.get(codebaseId, scope)) return undefined;
+    try {
+      await registry.withIngestLease(codebaseId, scope, lease => {
+        lease.assertHeld(true);
+        const current = registry.get(codebaseId, scope);
+        if (!current) return;
+        const preserved = [
+          activeCodebaseGeneration(current),
+          current.pendingGeneration?.candidateGenerationId,
+        ].filter((generation): generation is string => Boolean(generation));
+        s.removeCodebaseChunksExceptGeneration(codebaseId, preserved, scope);
+        lease.assertHeld(true);
+        if (current.maintenanceWarning === 'inactive_chunk_cleanup_failed') {
+          lease.updateIngestStatus({
+            lastIngestStatus: current.lastIngestStatus ?? 'ok',
+            maintenanceWarning: undefined,
+            lastIngestError: current.lastIngestError?.startsWith('inactive_chunk_cleanup_failed:')
+              ? undefined
+              : current.lastIngestError,
+          });
+        }
+      });
+    } catch (error) {
+      try {
+        const current = registry.get(codebaseId, scope);
+        if (!current) return undefined;
+        registry.updateIngestStatus(codebaseId, {
+          lastIngestStatus: current.lastIngestStatus ?? 'ok',
+          maintenanceWarning: 'inactive_chunk_cleanup_failed',
+          lastIngestError: `inactive_chunk_cleanup_failed:${error instanceof Error ? error.message : String(error)}`,
+        }, scope);
+      } catch {
+        // Keep the original state readable even if warning persistence also fails.
+      }
+    }
+    return registry.get(codebaseId, scope);
   };
   const symbolResolverFor = (scope: KnowledgeScope) => new SymbolResolver(s, scope, registry);
   const router = Router();
@@ -640,15 +689,22 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     },
   );
 
-  router.get('/codebases', requireCodebaseScope('codebase:read'), (req, res) => {
+  router.get('/codebases', requireCodebaseScope('codebase:read'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     const now = Date.now();
     for (const summary of registry.list(scope)) {
+      if (summary.maintenanceWarning === 'inactive_chunk_cleanup_failed') {
+        await cleanupInactiveCodebaseChunks(summary.codebaseId, scope);
+      }
       const pending = summary.pendingGeneration;
       if (!pending || now - pending.createdAt < PENDING_GENERATION_TTL_MS) continue;
-      const expired = registry.expirePendingGeneration(summary.codebaseId, scope, now);
-      const active = activeCodebaseGeneration(expired);
-      s.removeCodebaseChunksExceptGeneration(expired.codebaseId, active ? [active] : [], scope);
+      registry.expirePendingGeneration(
+        summary.codebaseId,
+        scope,
+        pending.candidateGenerationId,
+        now,
+      );
+      await cleanupInactiveCodebaseChunks(summary.codebaseId, scope);
     }
     res.json({
       success: true,
@@ -739,18 +795,23 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const selectedRoot = directorySelectionId
         ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
         : undefined;
+      const rootRealpath = await gate.validateRoot(
+        rootPath,
+        selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
+      );
       const result = await sourceEnumerator.enumerate({
-        rootRealpath: rootPath,
+        rootRealpath,
         policy: buildSourceSelectionIR({
           kind,
           includePrefixes: resolveSourcePathPatterns(pathFilters, 'pathFilters'),
           excludeGlobs: resolveSourcePathPatterns(excludeGlobs, 'excludeGlobs'),
         }),
         gate,
+        expectedRootRealpath: rootRealpath,
         ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
       });
       const manifestProjects = kind === 'aosp' || kind === 'oem_sdk'
-        ? await readAospManifestProjects(rootPath)
+        ? await readAospManifestProjects(rootRealpath, rootRealpath)
         : [];
       const manifestGroups = [...new Set(manifestProjects.flatMap(project => project.groups))].sort();
       return res.json({
@@ -1056,6 +1117,12 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         : ref.kind === 'aosp' || ref.kind === 'oem_sdk'
           ? aospSourceIngester.ingest(codebaseId, {...(req.body ?? {}), scope})
           : appSourceIngester.ingest(codebaseId, {...(req.body ?? {}), scope}));
+      if (!result.activationDisposition || !result.coverage) {
+        return res.status(400).json({
+          success: false,
+          error: result.errors[0]?.reason ?? 'codebase_reindex_blocked_by_security',
+        });
+      }
       res.json({success: true, result});
     } catch (error) {
       res.status(400).json({
@@ -1101,7 +1168,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     });
   });
 
-  router.patch('/codebases/:id/consent', requireCodebaseScope('codebase:manage'), (req, res) => {
+  router.patch('/codebases/:id/consent', requireCodebaseScope('codebase:manage'), async (req, res) => {
     if (
       req.body?.authorizeAvailableExtensions === true &&
       typeof req.body?.sendToProvider === 'boolean'
@@ -1131,9 +1198,8 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
             req.body.sendToProvider,
             context.userId,
           );
-      const active = activeCodebaseGeneration(codebase);
-      s.removeCodebaseChunksExceptGeneration(codebase.codebaseId, active ? [active] : [], scope);
-      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
+      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return res.status(message.includes('not found') ? 404 : 409).json({
@@ -1143,30 +1209,64 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
   });
 
-  router.patch('/codebases/:id/selection', requireCodebaseScope('codebase:manage'), (req, res) => {
+  router.patch('/codebases/:id/selection', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     try {
-      const pathFilters = resolveSourcePathPatterns(req.body?.pathFilters, 'pathFilters');
-      const excludeGlobs = resolveSourcePathPatterns(req.body?.excludeGlobs, 'excludeGlobs');
-      buildSourceSelectionIR({
-        kind: registry.get(routeParam(req.params.id), scope)?.kind ?? 'app_source',
+      const body = req.body ?? {};
+      const hasPathFilters = Object.prototype.hasOwnProperty.call(body, 'pathFilters');
+      const hasExcludeGlobs = Object.prototype.hasOwnProperty.call(body, 'excludeGlobs');
+      if (!hasPathFilters && !hasExcludeGlobs) throw new Error('selection_patch_empty');
+      const codebaseId = routeParam(req.params.id);
+      const existing = registry.get(codebaseId, scope);
+      if (!existing) {
+        return res.status(404).json({success: false, error: `Codebase '${codebaseId}' not found`});
+      }
+      const pathFilters = hasPathFilters
+        ? resolveSourcePathPatterns(body.pathFilters, 'pathFilters')
+        : existing.pathFilters;
+      const excludeGlobs = hasExcludeGlobs
+        ? resolveSourcePathPatterns(body.excludeGlobs, 'excludeGlobs')
+        : existing.excludeGlobs;
+      const canonicalSelection = buildSourceSelectionIR({
+        kind: existing.kind,
         includePrefixes: pathFilters,
         excludeGlobs,
       });
-      const codebase = registry.updateSelectionPolicy(routeParam(req.params.id), scope, {
-        pathFilters,
-        excludeGlobs,
+      const canonicalPathFilters = canonicalSelection.includePrefixes.length > 0
+        ? canonicalSelection.includePrefixes
+        : undefined;
+      const canonicalExcludeGlobs = canonicalSelection.excludeGlobs.length > 0
+        ? canonicalSelection.excludeGlobs
+        : undefined;
+      if (
+        codebaseRegistrationRequirements(existing.kind).pathFilters &&
+        !canonicalPathFilters?.length
+      ) {
+        throw new Error('`pathFilters` is required for kernel_source codebases');
+      }
+      const codebase = registry.updateSelectionPolicy(codebaseId, scope, {
+        ...(hasPathFilters ? {pathFilters: canonicalPathFilters} : {}),
+        ...(hasExcludeGlobs ? {excludeGlobs: canonicalExcludeGlobs} : {}),
       });
-      s.removeCodebaseChunks(codebase.codebaseId, scope);
-      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+      if (codebase.selectionPolicyRevision === existing.selectionPolicyRevision) {
+        throw new Error('selection_policy_unchanged');
+      }
+      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
+      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
     } catch (error) {
       return res.status(400).json({success: false, error: error instanceof Error ? error.message : String(error)});
     }
   });
 
-  router.post('/codebases/:id/pending/accept', requireCodebaseScope('codebase:manage'), (req, res) => {
+  router.post('/codebases/:id/pending/accept', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const selectionPolicyRevision = Number(req.body?.selectionPolicyRevision);
     const grantRevision = Number(req.body?.grantRevision);
+    let candidateGenerationId: string;
+    try {
+      candidateGenerationId = pendingCandidateGenerationId(req.body?.candidateGenerationId);
+    } catch (error) {
+      return res.status(400).json({success: false, error: (error as Error).message});
+    }
     if (!Number.isInteger(selectionPolicyRevision) || !Number.isInteger(grantRevision)) {
       return res.status(400).json({
         success: false,
@@ -1180,24 +1280,39 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         scope,
         selectionPolicyRevision,
         grantRevision,
+        candidateGenerationId,
       );
-      const active = activeCodebaseGeneration(codebase);
-      if (active) s.removeCodebaseChunksExceptGeneration(codebase.codebaseId, active, scope);
-      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
+      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
     } catch (error) {
-      return res.status(409).json({success: false, error: error instanceof Error ? error.message : String(error)});
+      const message = error instanceof Error ? error.message : String(error);
+      if (message === 'pending_generation_expired') {
+        const codebaseId = routeParam(req.params.id);
+        registry.expirePendingGeneration(codebaseId, scope, candidateGenerationId, Date.now());
+        await cleanupInactiveCodebaseChunks(codebaseId, scope);
+      }
+      return res.status(409).json({success: false, error: message});
     }
   });
 
-  router.post('/codebases/:id/pending/reject', requireCodebaseScope('codebase:manage'), (req, res) => {
+  router.post('/codebases/:id/pending/reject', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    let candidateGenerationId: string;
+    try {
+      candidateGenerationId = pendingCandidateGenerationId(req.body?.candidateGenerationId);
+    } catch (error) {
+      return res.status(400).json({success: false, error: (error as Error).message});
+    }
     try {
       const before = registry.get(routeParam(req.params.id), scope);
       if (!before) return res.status(404).json({success: false, error: 'codebase_not_found'});
-      const codebase = registry.rejectPendingGeneration(before.codebaseId, scope);
-      const active = activeCodebaseGeneration(codebase);
-      s.removeCodebaseChunksExceptGeneration(codebase.codebaseId, active ? [active] : [], scope);
-      return res.json({success: true, codebase: sanitizeCodebase(codebase)});
+      const codebase = registry.rejectPendingGeneration(
+        before.codebaseId,
+        scope,
+        candidateGenerationId,
+      );
+      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
+      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
     } catch (error) {
       return res.status(409).json({success: false, error: error instanceof Error ? error.message : String(error)});
     }

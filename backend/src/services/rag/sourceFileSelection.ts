@@ -11,6 +11,7 @@ import type {CodebaseRef, IndexCoverage} from '../codebase/codebaseRegistry';
 import {
   sourceSelectionAdmits,
   sourceSelectionForRef,
+  type SourceSelectionIR,
 } from '../codebase/sourceSelectionPolicy';
 import {SourceEnumerator, type EnumerationResult} from '../codebase/sourceEnumerator';
 import {
@@ -26,6 +27,8 @@ import {
 
 export const MAX_SOURCE_CHUNKS_PER_GENERATION = 20_000;
 export const SOURCE_INGEST_WRITE_BATCH_SIZE = 500;
+const SOURCE_GIT_REVISION_TIMEOUT_MS = 2_000;
+const SOURCE_GIT_STATUS_TIMEOUT_MS = 8_000;
 const execFileAsync = promisify(execFile);
 
 export interface SourceGenerationProvenance {
@@ -58,18 +61,6 @@ export function assertCodebaseRootIdentity(
   }
 }
 
-export function previewRegisteredCodebaseRoot(
-  gate: PathSecurityGate,
-  ref: Pick<CodebaseRef, 'rootRealpath' | 'rootAuthorization'>,
-): Promise<PathPreviewResult> {
-  return gate.preview(
-    ref.rootRealpath,
-    ref.rootAuthorization === 'native_picker'
-      ? {additionalAllowlistRoots: [ref.rootRealpath]}
-      : undefined,
-  );
-}
-
 export async function enumerateRegisteredCodebaseRoot(
   gate: PathSecurityGate,
   ref: CodebaseRef,
@@ -94,8 +85,15 @@ export function selectEnumeratedSourceFiles(
   maxFiles: number,
   maxBytes: number,
 ): {files: PathPreviewFile[]; coverage: IndexCoverage} {
+  const policy = sourceSelectionForRef(ref);
   const candidates = enumeration.files
-    .filter(file => codebaseSourcePathMatches(ref, file.relativePath, pathPrefix))
+    .filter(file => codebaseSourcePathMatches(
+      ref,
+      file.relativePath,
+      pathPrefix,
+      process.platform,
+      policy,
+    ))
     .sort((left, right) => left.relativePath.localeCompare(right.relativePath));
   const files: PathPreviewFile[] = [];
   let bytesSelected = 0;
@@ -198,34 +196,6 @@ export function resolveSourcePathPatterns(
   });
 }
 
-function globToRegExp(glob: string, caseInsensitive: boolean): RegExp {
-  const normalized = normalizeSourceRelativePath(glob);
-  let pattern = '^';
-  for (let index = 0; index < normalized.length; index++) {
-    const character = normalized[index];
-    if (character === '*' && normalized[index + 1] === '*') {
-      index++;
-      if (normalized[index + 1] === '/') {
-        index++;
-        pattern += '(?:.*/)?';
-      } else {
-        pattern += '.*';
-      }
-      continue;
-    }
-    if (character === '*') {
-      pattern += '[^/]*';
-      continue;
-    }
-    if (character === '?') {
-      pattern += '[^/]';
-      continue;
-    }
-    pattern += character.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
-  }
-  return new RegExp(`${pattern}$`, caseInsensitive ? 'i' : undefined);
-}
-
 function pathMatchesPrefix(relativePath: string, prefix: string, caseInsensitive: boolean): boolean {
   const normalizedPrefix = normalizeSourceRelativePath(prefix).replace(/\/$/, '');
   const comparablePath = caseInsensitive ? relativePath.toLocaleLowerCase('en-US') : relativePath;
@@ -238,11 +208,12 @@ export function codebaseSourcePathMatches(
   relativePath: string,
   pathPrefix?: string,
   platform: NodeJS.Platform = process.platform,
+  policy: SourceSelectionIR = sourceSelectionForRef(ref),
 ): boolean {
   const caseInsensitive = platform === 'win32';
   const normalizedPath = normalizeSourceRelativePath(relativePath);
   const requestedPrefix = pathPrefix ? normalizeSourceRelativePath(pathPrefix) : undefined;
-  if (!sourceSelectionAdmits(sourceSelectionForRef(ref), normalizedPath, platform)) return false;
+  if (!sourceSelectionAdmits(policy, normalizedPath, platform)) return false;
   if (requestedPrefix && !pathMatchesPrefix(normalizedPath, requestedPrefix, caseInsensitive)) {
     return false;
   }
@@ -255,8 +226,9 @@ export function selectCodebasePreviewFiles(
   pathPrefix?: string,
   platform: NodeJS.Platform = process.platform,
 ): PathPreviewFile[] {
+  const policy = sourceSelectionForRef(ref);
   return preview.acceptedFiles.filter(file =>
-    codebaseSourcePathMatches(ref, file.relativePath, pathPrefix, platform));
+    codebaseSourcePathMatches(ref, file.relativePath, pathPrefix, platform, policy));
 }
 
 /**
@@ -298,6 +270,7 @@ export async function inspectSourceGeneration(
     indexedRevision = (await execFileAsync('git', [...gitPrefix, 'rev-parse', 'HEAD'], {
       encoding: 'utf8',
       maxBuffer: 1024 * 1024,
+      timeout: SOURCE_GIT_REVISION_TIMEOUT_MS,
       env: gitEnvironment,
     })).stdout.trim() || undefined;
     sourceDirty = (await execFileAsync(
@@ -306,6 +279,7 @@ export async function inspectSourceGeneration(
       {
         encoding: 'utf8',
         maxBuffer: 8 * 1024 * 1024,
+        timeout: SOURCE_GIT_STATUS_TIMEOUT_MS,
         env: gitEnvironment,
       },
     )).stdout.trim().length > 0;

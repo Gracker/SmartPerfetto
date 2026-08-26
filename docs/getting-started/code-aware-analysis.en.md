@@ -118,7 +118,6 @@ authorized through `SMARTPERFETTO_CODEBASE_ROOTS`.
 Common checks:
 
 ```bash
-cd backend
 npm --prefix backend run verify:codebase-aware
 ```
 

@@ -594,8 +594,8 @@ Base path: `/api/rag`
 | `GET` | `/codebases/:id/audit` | Index audit |
 | `PATCH` | `/codebases/:id/consent` | Explicitly grant or revoke provider-send consent |
 | `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs, immediately revoke the old active generation, and require reindexing |
-| `POST` | `/codebases/:id/pending/accept` | Explicitly accept a truncated candidate generation with policy/grant revision CAS |
-| `POST` | `/codebases/:id/pending/reject` | Reject a candidate generation and remove its staged chunks |
+| `POST` | `/codebases/:id/pending/accept` | Echo `candidateGenerationId`, `selectionPolicyRevision`, and `grantRevision` to explicitly accept a truncated candidate generation with CAS |
+| `POST` | `/codebases/:id/pending/reject` | Echo `candidateGenerationId` to reject a candidate generation with CAS and remove its staged chunks |
 | `DELETE` | `/codebases/:id` | Retire the registration and remove every staged, active, and superseded generation in the current scope |
 
 Preview, registration, and reindexing share one source-selection policy. Their
@@ -613,9 +613,13 @@ for the user.
 Incomplete or nondeterministic enumeration cannot activate an index. A
 deterministic file/byte-budget truncation is staged as `pendingGeneration` when
 a complete active generation already exists. Acceptance must echo the current
-`selectionPolicyRevision` and `grantRevision` from list/detail. Candidates are
-retained for seven days and lazily expired with their staged chunks during
-list reads. When there is no older active generation, a truncated index may be
+`candidateGenerationId`, `selectionPolicyRevision`, and `grantRevision` from
+list/detail; rejection must echo `candidateGenerationId`. The candidate ID is
+the compare-and-swap guard for concurrent replacement: an operation using a
+stale ID fails instead of acting on a newer candidate after replacement,
+acceptance, rejection, or expiry. Candidates are retained for seven days and
+lazily expired with their staged chunks during list reads. When there is no
+older active generation, a truncated index may be
 used only as an explicitly degraded result with
 `activeIndexCoverage.complete=false`.
 

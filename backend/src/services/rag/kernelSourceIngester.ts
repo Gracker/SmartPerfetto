@@ -8,6 +8,7 @@ import {
   codebaseScopeFromRef,
   codebaseHasActiveIndex,
   type CodebaseIngestLeaseGuard,
+  type IndexCoverage,
   type CodebaseRef,
   type CodebaseRegistry,
   type CodebaseScope,
@@ -59,6 +60,8 @@ export interface KernelSourceIngestResult {
   blockedFileCount: number;
   redactionHitCount: number;
   errors: KernelSourceIngestError[];
+  activationDisposition?: 'active' | 'pending';
+  coverage?: IndexCoverage;
 }
 
 function spdxLicense(content: string): string | undefined {
@@ -108,7 +111,7 @@ export class KernelSourceIngester {
     const stagedChunks: RagChunk[] = [];
     const flushStagedChunks = (): void => {
       if (stagedChunks.length === 0) return;
-      lease.assertHeld();
+      lease.assertHeld(true);
       const batch = stagedChunks.splice(0, SOURCE_INGEST_WRITE_BATCH_SIZE);
       this.store.addChunks(batch, effectiveScope);
     };
@@ -147,15 +150,6 @@ export class KernelSourceIngester {
       throw new Error(`codebase_reindex_incomplete:${reason}`);
     }
 
-    const result: KernelSourceIngestResult = {
-      codebaseId,
-      filesProcessed: 0,
-      chunksAdded: 0,
-      chunksSkipped: 0,
-      blockedFileCount: enumeration.skippedCount,
-      redactionHitCount: 0,
-      errors: [],
-    };
     const maxChars = resolveMaxChunkChars(opts.maxChunkChars, DEFAULT_MAX_CHUNK_CHARS);
     const maxChunks = resolveMaxSourceChunks(opts.maxChunks);
     const pathPrefix = resolveSourcePathPrefix(opts.pathPrefix);
@@ -164,10 +158,21 @@ export class KernelSourceIngester {
       enumeration,
       ref,
       pathPrefix,
-      maxChunks,
+      sourceReadLimits.maxFiles,
       sourceReadLimits.maxTotalBytes,
     );
     const selectedFiles = selection.files;
+    const result: KernelSourceIngestResult = {
+      codebaseId,
+      filesProcessed: 0,
+      chunksAdded: 0,
+      chunksSkipped: 0,
+      blockedFileCount: enumeration.skippedCount,
+      redactionHitCount: 0,
+      errors: [],
+      activationDisposition: 'active',
+      coverage: selection.coverage,
+    };
     let provenance: SourceGenerationProvenance;
     try {
       provenance = await inspectSourceGeneration(
@@ -207,6 +212,9 @@ export class KernelSourceIngester {
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
+        }
+        if (result.chunksAdded + chunks.length > maxChunks) {
+          throw new Error(`source_chunk_limit_exceeded:${maxChunks}`);
         }
         for (const chunk of chunks) {
           lease.assertHeld();
@@ -292,6 +300,7 @@ export class KernelSourceIngester {
       const keepExistingComplete = coverage.truncated && codebaseHasActiveIndex(ref) &&
         (ref.activeIndexCoverage?.complete ?? true);
       if (keepExistingComplete) {
+        result.activationDisposition = 'pending';
         this.registry.setPendingGeneration(codebaseId, effectiveScope, ref.indexGeneration, {
           candidateGenerationId: sourceGeneration,
           coverage,
@@ -319,6 +328,7 @@ export class KernelSourceIngester {
         commitProvenance: provenance.commitProvenance,
         });
       }
+      result.coverage = coverage;
     } catch (error) {
       this.store.removeCodebaseChunkIds(codebaseId, stagedChunkIds, effectiveScope);
       if (!isCodebaseIngestLeaseLost(error)) {

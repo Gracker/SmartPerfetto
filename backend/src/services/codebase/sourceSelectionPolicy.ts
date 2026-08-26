@@ -7,11 +7,11 @@ import * as path from 'path';
 import type {CodebaseKind, CodebaseRef} from './codebaseRegistry';
 import {DEFAULT_SOURCE_MAX_FILE_BYTES} from './pathSecurityGate';
 
-export const HARD_EXCLUDE_DIRS = ['.git', '.hg', '.svn', '.repo'] as const;
+export const HARD_EXCLUDE_DIRS = ['.git', '.hg', '.svn', '.repo', 'secrets'] as const;
 export const NOISE_EXCLUDE_DIRS = [
   'node_modules', 'build', 'Build', 'out', 'dist', 'target', '.gradle', '.idea',
   '.cxx', '.cache', 'coverage', '.venv', 'venv', '__pycache__', 'Pods',
-  '.dart_tool', '.next', '.worktrees', 'secrets', 'DerivedData',
+  '.dart_tool', '.next', '.worktrees', 'DerivedData',
 ] as const;
 
 const BASE_NATIVE = ['.c', '.cc', '.cpp', '.cxx', '.h', '.hh', '.hpp', '.inc', '.S', '.s'];
@@ -76,6 +76,9 @@ function normalizeRelative(value: string, errorCode: string): string {
 function normalizeExcludeGlob(value: string): string {
   const normalized = normalizeRelative(value, 'source_exclude_glob_invalid');
   if (/[!:\[\]{}]/.test(normalized)) throw new Error('source_exclude_glob_invalid');
+  if (normalized.split('/').some(segment => segment.includes('**') && segment !== '**')) {
+    throw new Error('source_exclude_glob_invalid');
+  }
   return normalized;
 }
 
@@ -83,24 +86,108 @@ function pathHasPrefix(prefix: string, candidate: string): boolean {
   return candidate === prefix || candidate.startsWith(`${prefix}/`);
 }
 
-function globRegExp(glob: string, caseInsensitive: boolean): RegExp {
-  let source = '';
-  for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index]!;
-    if (char === '*') {
-      if (glob[index + 1] === '*') {
-        source += '.*';
-        index += 1;
-      } else {
-        source += '[^/]*';
-      }
-    } else if (char === '?') {
-      source += '[^/]';
-    } else {
-      source += char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+function pathSegmentMatches(pattern: string, candidate: string): boolean {
+  let patternIndex = 0;
+  let candidateIndex = 0;
+  let starIndex = -1;
+  let starCandidateIndex = -1;
+  while (candidateIndex < candidate.length) {
+    if (
+      patternIndex < pattern.length &&
+      (pattern[patternIndex] === '?' || pattern[patternIndex] === candidate[candidateIndex])
+    ) {
+      patternIndex += 1;
+      candidateIndex += 1;
+      continue;
     }
+    if (pattern[patternIndex] === '*') {
+      starIndex = patternIndex;
+      starCandidateIndex = candidateIndex;
+      patternIndex += 1;
+      continue;
+    }
+    if (starIndex >= 0) {
+      patternIndex = starIndex + 1;
+      starCandidateIndex += 1;
+      candidateIndex = starCandidateIndex;
+      continue;
+    }
+    return false;
   }
-  return new RegExp(`^${source}$`, caseInsensitive ? 'i' : undefined);
+  while (pattern[patternIndex] === '*') patternIndex += 1;
+  return patternIndex === pattern.length;
+}
+
+function globMatches(globSegments: readonly string[], candidate: string): boolean {
+  const candidateSegments = candidate.split('/');
+  let globIndex = 0;
+  let candidateIndex = 0;
+  let globstarIndex = -1;
+  let globstarCandidateIndex = -1;
+  while (candidateIndex < candidateSegments.length) {
+    if (
+      globIndex < globSegments.length &&
+      globSegments[globIndex] !== '**' &&
+      pathSegmentMatches(globSegments[globIndex]!, candidateSegments[candidateIndex]!)
+    ) {
+      globIndex += 1;
+      candidateIndex += 1;
+      continue;
+    }
+    if (globSegments[globIndex] === '**') {
+      globstarIndex = globIndex;
+      globstarCandidateIndex = candidateIndex;
+      globIndex += 1;
+      continue;
+    }
+    if (globstarIndex >= 0) {
+      globIndex = globstarIndex + 1;
+      globstarCandidateIndex += 1;
+      candidateIndex = globstarCandidateIndex;
+      continue;
+    }
+    return false;
+  }
+  while (globSegments[globIndex] === '**') globIndex += 1;
+  return globIndex === globSegments.length;
+}
+
+interface CompiledSourceSelection {
+  comparable: (value: string) => string;
+  hardExcludes: ReadonlySet<string>;
+  noiseExcludes: ReadonlySet<string>;
+  extensions: ReadonlySet<string>;
+  includePrefixes: readonly string[];
+  excludeGlobs: readonly (readonly string[])[];
+}
+
+const compiledSelectionCache = new WeakMap<SourceSelectionIR, Map<NodeJS.Platform, CompiledSourceSelection>>();
+
+function compiledSelection(
+  policy: SourceSelectionIR,
+  platform: NodeJS.Platform,
+): CompiledSourceSelection {
+  let byPlatform = compiledSelectionCache.get(policy);
+  if (!byPlatform) {
+    byPlatform = new Map();
+    compiledSelectionCache.set(policy, byPlatform);
+  }
+  const cached = byPlatform.get(platform);
+  if (cached) return cached;
+  const caseInsensitive = platform === 'win32';
+  const comparable = (value: string): string => caseInsensitive
+    ? value.toLocaleLowerCase('en-US')
+    : value;
+  const compiled: CompiledSourceSelection = {
+    comparable,
+    hardExcludes: new Set(policy.hardExcludeDirs.map(comparable)),
+    noiseExcludes: new Set(policy.noiseExcludeDirs.map(comparable)),
+    extensions: new Set([...policy.extensions].map(comparable)),
+    includePrefixes: policy.includePrefixes.map(comparable),
+    excludeGlobs: policy.excludeGlobs.map(glob => comparable(glob).split('/')),
+  };
+  byPlatform.set(platform, compiled);
+  return compiled;
 }
 
 export function sourceExtensionsForKind(kind: CodebaseKind): readonly string[] {
@@ -147,40 +234,52 @@ export function sourceSelectionAdmits(
   } catch {
     return false;
   }
-  const caseInsensitive = platform === 'win32';
-  const comparable = (text: string): string => caseInsensitive ? text.toLocaleLowerCase('en-US') : text;
+  const compiled = compiledSelection(policy, platform);
+  const comparable = compiled.comparable;
   const segments = relativePath.split('/');
-  const hardExcludes = new Set(policy.hardExcludeDirs.map(comparable));
-  if (segments.some(segment => hardExcludes.has(comparable(segment)))) return false;
+  if (segments.some(segment => compiled.hardExcludes.has(comparable(segment)))) return false;
   const basename = segments[segments.length - 1]!;
   if (/^\.env/i.test(basename) || /\.(?:pem|p12|keystore|jks)$/i.test(basename)) return false;
   const extension = comparable(path.posix.extname(basename));
-  const extensions = new Set([...policy.extensions].map(comparable));
-  if (!extensions.has(extension)) return false;
+  if (!compiled.extensions.has(extension)) return false;
   if (
-    policy.includePrefixes.length > 0 &&
-    !policy.includePrefixes.some(prefix => pathHasPrefix(comparable(prefix), comparable(relativePath)))
+    compiled.includePrefixes.length > 0 &&
+    !compiled.includePrefixes.some(prefix => pathHasPrefix(prefix, comparable(relativePath)))
   ) return false;
   for (let index = 0; index < segments.length - 1; index += 1) {
-    if (!policy.noiseExcludeDirs.map(comparable).includes(comparable(segments[index]!))) continue;
-    const noisePath = segments.slice(0, index + 1).join('/');
-    const explicitlyIncluded = policy.includePrefixes.some(prefix =>
-      pathHasPrefix(comparable(noisePath), comparable(prefix)));
+    if (!compiled.noiseExcludes.has(comparable(segments[index]!))) continue;
+    const noisePath = comparable(segments.slice(0, index + 1).join('/'));
+    const explicitlyIncluded = compiled.includePrefixes.some(prefix =>
+      pathHasPrefix(noisePath, prefix));
     if (!explicitlyIncluded) return false;
   }
-  return !policy.excludeGlobs.some(glob => globRegExp(glob, caseInsensitive).test(relativePath));
+  const comparablePath = comparable(relativePath);
+  return !compiled.excludeGlobs.some(glob => globMatches(glob, comparablePath));
 }
 
-export function sourceSelectionGitPathspecs(policy: SourceSelectionIR): string[] {
+export function sourceSelectionGitPathspecs(
+  policy: SourceSelectionIR,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const magic = platform === 'win32' ? ':(icase,literal)' : ':(literal)';
   return policy.includePrefixes.length > 0
-    ? policy.includePrefixes.map(prefix => `:(literal)${prefix}`)
-    : [':(literal).'];
+    ? policy.includePrefixes.map(prefix => `${magic}${prefix}`)
+    : [`${magic}.`];
 }
 
-export function sourceSelectionRipgrepArguments(policy: SourceSelectionIR): string[] {
+export function sourceSelectionRipgrepArguments(
+  policy: SourceSelectionIR,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const comparable = (value: string): string => platform === 'win32'
+    ? value.toLocaleLowerCase('en-US')
+    : value;
   const overriddenNoise = new Set<string>();
   for (const noise of policy.noiseExcludeDirs) {
-    if (policy.includePrefixes.some(prefix => pathHasPrefix(noise, prefix))) overriddenNoise.add(noise);
+    if (policy.includePrefixes.some(prefix =>
+      prefix.split('/').map(comparable).includes(comparable(noise)))) {
+      overriddenNoise.add(noise);
+    }
   }
   const globs = [
     ...policy.hardExcludeDirs.map(directory => `!**/${directory}/`),
@@ -189,5 +288,9 @@ export function sourceSelectionRipgrepArguments(policy: SourceSelectionIR): stri
       .map(directory => `!**/${directory}/`),
     ...policy.excludeGlobs.map(glob => `!${glob}`),
   ];
-  return globs.flatMap(glob => ['--glob', glob]);
+  const globOption = platform === 'win32' ? '--iglob' : '--glob';
+  return [
+    ...(policy.ignoreMode === 'include_ignored' ? ['--no-ignore'] : []),
+    ...globs.flatMap(glob => [globOption, glob]),
+  ];
 }

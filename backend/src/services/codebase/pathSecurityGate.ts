@@ -316,9 +316,14 @@ export class PathSecurityGate {
     this.maxSkippedDiagnostics = options.maxSkippedDiagnostics ?? 1_000;
   }
 
-  getSourceReadLimits(): Readonly<{maxFileBytes: number; maxTotalBytes: number}> {
+  getSourceReadLimits(): Readonly<{
+    maxFileBytes: number;
+    maxFiles: number;
+    maxTotalBytes: number;
+  }> {
     return {
       maxFileBytes: this.maxFileBytes,
+      maxFiles: this.maxFiles,
       maxTotalBytes: this.maxTotalBytes,
     };
   }
@@ -353,7 +358,10 @@ export class PathSecurityGate {
     return rootRealpath;
   }
 
-  validateRelativeSourcePath(relativePath: string): string {
+  validateRelativeSourcePath(
+    relativePath: string,
+    options: {enforceConfiguredExcludes?: boolean} = {},
+  ): string {
     if (
       typeof relativePath !== 'string' ||
       !relativePath ||
@@ -372,7 +380,10 @@ export class PathSecurityGate {
       throw new Error('source_path_invalid');
     }
     const basename = segments[segments.length - 1]!;
-    if (shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')) {
+    if (
+      (options.enforceConfiguredExcludes ?? true) &&
+      shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')
+    ) {
       throw new Error('source_path_excluded');
     }
     const rawExtension = path.posix.extname(basename);
@@ -385,7 +396,10 @@ export class PathSecurityGate {
     return normalized;
   }
 
-  validateRelativeSourcePrefix(relativePath: string): string {
+  validateRelativeSourcePrefix(
+    relativePath: string,
+    options: {enforceConfiguredExcludes?: boolean} = {},
+  ): string {
     if (
       typeof relativePath !== 'string' ||
       !relativePath ||
@@ -404,7 +418,10 @@ export class PathSecurityGate {
       throw new Error('source_path_prefix_invalid');
     }
     const basename = segments[segments.length - 1]!;
-    if (shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')) {
+    if (
+      (options.enforceConfiguredExcludes ?? true) &&
+      shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')
+    ) {
       throw new Error('source_path_excluded');
     }
     return normalized;

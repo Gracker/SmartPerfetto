@@ -88,4 +88,29 @@ describe('AospSourceIngester', () => {
     expect(result.filesProcessed).toBe(1);
     expect(registry.get(ref.codebaseId)?.lastIngestStatus).toBe('ok');
   });
+
+  it('fails before staging a source file that exceeds the chunk budget', async () => {
+    const root = path.join(tmpDir, 'chunk-budget-aosp');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Many.java'), [
+      'class One { void a() {} }',
+      'class Two { void b() {} }',
+    ].join('\n'.repeat(300)));
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'chunk-budget-registry.json'));
+    const ref = registry.register({
+      kind: 'aosp',
+      displayName: 'AOSP',
+      rootPath: root,
+      licenseTag: 'Apache-2.0',
+    });
+    const store = new RagStore(path.join(tmpDir, 'chunk-budget-rag.json'));
+
+    await expect(new AospSourceIngester(
+      store,
+      registry,
+      new PathSecurityGate({allowlistRoots: [root]}),
+    ).ingest(ref.codebaseId, {maxChunkChars: 256, maxChunks: 1}))
+      .rejects.toThrow('source_chunk_limit_exceeded:1');
+    expect(store.listChunks({scope: ref})).toHaveLength(0);
+  });
 });

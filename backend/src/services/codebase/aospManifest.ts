@@ -5,6 +5,8 @@
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
+import {readBoundedMetadataFile} from './boundedMetadataFile';
+
 export interface AospManifestProject {
   name: string;
   path: string;
@@ -13,6 +15,7 @@ export interface AospManifestProject {
 
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024;
 const MAX_PROJECTS = 10_000;
+const MANIFEST_DISCOVERY_TIMEOUT_MS = 5_000;
 
 function decodeXml(value: string): string {
   return value
@@ -58,8 +61,18 @@ export function parseAospManifestProjects(xml: string): AospManifestProject[] {
   return projects.sort((left, right) => left.path.localeCompare(right.path));
 }
 
-export async function readAospManifestProjects(rootRealpath: string): Promise<AospManifestProject[]> {
+async function discoverAospManifestProjects(
+  rootRealpath: string,
+  expectedRootRealpath: string,
+  deadline: number,
+): Promise<AospManifestProject[]> {
+  const normalizeIdentity = (value: string): string => process.platform === 'win32'
+    ? path.resolve(value).toLocaleLowerCase('en-US')
+    : path.resolve(value);
   const repoRoot = await fsPromises.realpath(rootRealpath);
+  if (normalizeIdentity(repoRoot) !== normalizeIdentity(expectedRootRealpath)) {
+    throw new Error('codebase_root_realpath_drift');
+  }
   const manifestPath = path.join(repoRoot, '.repo', 'manifest.xml');
   let realManifest: string;
   try {
@@ -70,7 +83,43 @@ export async function readAospManifestProjects(rootRealpath: string): Promise<Ao
   const repoMetadataRoot = path.join(repoRoot, '.repo');
   const relative = path.relative(repoMetadataRoot, realManifest);
   if (relative.startsWith('..') || path.isAbsolute(relative)) throw new Error('aosp_manifest_outside_repo_metadata');
-  const stat = await fsPromises.stat(realManifest);
-  if (!stat.isFile() || stat.size > MAX_MANIFEST_BYTES) throw new Error('aosp_manifest_too_large');
-  return parseAospManifestProjects(await fsPromises.readFile(realManifest, 'utf8'));
+  const contents = await readBoundedMetadataFile({
+    filePath: realManifest,
+    expectedRealpath: realManifest,
+    maxBytes: MAX_MANIFEST_BYTES,
+    deadline,
+  });
+  const rootAfterRead = await fsPromises.realpath(rootRealpath);
+  if (normalizeIdentity(rootAfterRead) !== normalizeIdentity(expectedRootRealpath)) {
+    throw new Error('codebase_root_realpath_drift');
+  }
+  const manifestAfterRead = await fsPromises.realpath(manifestPath);
+  const afterRelative = path.relative(repoMetadataRoot, manifestAfterRead);
+  if (
+    normalizeIdentity(manifestAfterRead) !== normalizeIdentity(realManifest) ||
+    afterRelative.startsWith('..') ||
+    path.isAbsolute(afterRelative)
+  ) throw new Error('aosp_manifest_identity_changed');
+  return parseAospManifestProjects(contents);
+}
+
+export async function readAospManifestProjects(
+  rootRealpath: string,
+  expectedRootRealpath = rootRealpath,
+  timeoutMs = MANIFEST_DISCOVERY_TIMEOUT_MS,
+): Promise<AospManifestProject[]> {
+  const deadline = Date.now() + timeoutMs;
+  const discovery = discoverAospManifestProjects(rootRealpath, expectedRootRealpath, deadline);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      discovery,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('source_metadata_time_budget')), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    void discovery.catch(() => undefined);
+  }
 }

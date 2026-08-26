@@ -11,7 +11,13 @@ import {
   sourceExtensionsForKind,
   sourceSelectionAdmits,
   sourceSelectionForRef,
+  type SourceSelectionIR,
 } from './sourceSelectionPolicy';
+
+type SourceProviderRef = Pick<
+  CodebaseRef,
+  'kind' | 'pathFilters' | 'excludeGlobs' | 'consent'
+>;
 
 export function legacyConsentGrant(
   ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'consent'>,
@@ -28,26 +34,40 @@ export function legacyConsentGrant(
 }
 
 export function effectiveConsentGrant(
-  ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'consent'>,
+  ref: SourceProviderRef,
 ): CodebaseConsentGrant {
   return ref.consent.grant ?? legacyConsentGrant(ref);
 }
 
-export function sourcePathAllowedForProvider(
-  ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'consent'>,
-  relativePath: string,
-): boolean {
-  if (!ref.consent.sendToProvider) return false;
-  const selection = sourceSelectionForRef(ref);
-  if (!sourceSelectionAdmits(selection, relativePath)) return false;
+export function createSourceProviderPathPredicate(
+  ref: SourceProviderRef,
+  platform: NodeJS.Platform = process.platform,
+  selection: SourceSelectionIR = sourceSelectionForRef(ref),
+): (relativePath: string) => boolean {
+  if (!ref.consent.sendToProvider) return () => false;
   const grant = effectiveConsentGrant(ref);
   const grantPolicy = buildSourceSelectionIR({
     kind: ref.kind,
     includePrefixes: grant.includePrefixes,
     excludeGlobs: grant.excludeGlobs,
   });
-  const extension = path.posix.extname(relativePath.replace(/\\/g, '/'));
-  return grant.extensions.includes(extension) && sourceSelectionAdmits(grantPolicy, relativePath);
+  const comparable = (value: string): string => platform === 'win32'
+    ? value.toLocaleLowerCase('en-US')
+    : value;
+  const grantedExtensions = new Set(grant.extensions.map(comparable));
+  return relativePath => {
+    if (!sourceSelectionAdmits(selection, relativePath, platform)) return false;
+    const extension = comparable(path.posix.extname(relativePath.replace(/\\/g, '/')));
+    return grantedExtensions.has(extension) &&
+      sourceSelectionAdmits(grantPolicy, relativePath, platform);
+  };
+}
+
+export function sourcePathAllowedForProvider(
+  ref: SourceProviderRef,
+  relativePath: string,
+): boolean {
+  return createSourceProviderPathPredicate(ref)(relativePath);
 }
 
 export function availableNotConsentedExtensions(

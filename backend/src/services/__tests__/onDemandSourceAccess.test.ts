@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {
@@ -150,6 +150,41 @@ describe('OnDemandSourceAccessService', () => {
     expect(JSON.stringify(read)).not.toContain('class MainActivity');
   });
 
+  it('keeps win32 prefix pruning case-insensitive in the node fallback', async () => {
+    fs.mkdirSync(path.join(root, 'SourceCase'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'SourceCase', 'WindowsCase.kt'),
+      'val windowsPrefixNeedle = Unit\n',
+    );
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Windows casing',
+      rootPath: root,
+      pathFilters: ['sourcecase'],
+      ...scope,
+    });
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+      platform: 'win32',
+    } as any);
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'windowsPrefixNeedle',
+      mode: 'metadata_only',
+    });
+
+    expect(search.backend).toBe('node');
+    expect(search.coverageComplete).toBe(false);
+    expect(search.searchIncompleteReason).toBe('backend_degraded');
+    expect(search.matches).toEqual([
+      expect.objectContaining({filePath: 'SourceCase/WindowsCase.kt'}),
+    ]);
+  });
+
   it('requires provider consent before returning source text', async () => {
     const ref = register(false);
 
@@ -202,6 +237,89 @@ describe('OnDemandSourceAccessService', () => {
       filePath: 'app/src/main.dart',
       mode: 'provider_send',
     })).rejects.toThrow('source_path_outside_provider_grant');
+  });
+
+  it('evaluates a frozen provider grant once for a large rejected candidate set', async () => {
+    const sourceRoot = path.join(root, 'grant-scale');
+    fs.mkdirSync(sourceRoot, {recursive: true});
+    for (let index = 0; index < 4_000; index += 1) {
+      fs.writeFileSync(
+        path.join(sourceRoot, `Candidate${index}.dart`),
+        `void frozenGrantNeedle${index}() {}\n`,
+      );
+    }
+    const excludeGlobs = Array.from({length: 128}, (_, index) =>
+      `**/generated-${index}/**`);
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Frozen grant scale',
+      rootPath: root,
+      pathFilters: ['grant-scale'],
+      excludeGlobs,
+      sendToProvider: true,
+      ...scope,
+    });
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.extensions = ['.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+    const migratedRegistry = new CodebaseRegistry(registryPath);
+    const access = new OnDemandSourceAccessService({
+      registry: migratedRegistry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+      searchTimeoutMs: 30_000,
+    });
+    const startedAt = Date.now();
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'frozenGrantNeedle',
+      mode: 'provider_send',
+    });
+
+    expect(Date.now() - startedAt).toBeLessThan(250);
+    expect(search.backend).toBe('node');
+    expect(search.matches).toEqual([]);
+  }, 30_000);
+
+  it('searches and reads an explicitly selected noise directory', async () => {
+    fs.mkdirSync(path.join(root, 'node_modules', 'custom'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'node_modules', 'custom', 'Explicit.ts'),
+      'export const explicitNoiseNeedle = true;\n',
+    );
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Explicit dependency source',
+      rootPath: root,
+      pathFilters: ['node_modules/custom'],
+      sendToProvider: true,
+      ...scope,
+    });
+    const access = service('__smartperfetto_missing_rg__');
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'explicitNoiseNeedle',
+      mode: 'provider_send',
+    });
+    const read = await access.read({
+      codebaseId: ref.codebaseId,
+      scope,
+      filePath: 'node_modules/custom/Explicit.ts',
+      mode: 'provider_send',
+    });
+
+    expect(search.matches).toEqual([
+      expect.objectContaining({filePath: 'node_modules/custom/Explicit.ts'}),
+    ]);
+    expect(read.reference).toEqual(expect.objectContaining({
+      filePath: 'node_modules/custom/Explicit.ts',
+      text: expect.stringContaining('explicitNoiseNeedle'),
+    }));
   });
 
   it('returns a successful empty search with or without the optional ripgrep backend', async () => {
@@ -451,6 +569,41 @@ describe('OnDemandSourceAccessService', () => {
       backendFidelity: 'degraded',
     }));
     expect(search.matches).toHaveLength(3);
+  });
+
+  it('enforces the node fallback deadline inside a wide directory', async () => {
+    fs.writeFileSync(path.join(root, 'app', 'src', 'Second.kt'), 'val deadlineNeedle = Unit\n');
+    const ref = register();
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+      searchTimeoutMs: 1_000,
+    });
+    const now = jest.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(2_000);
+
+    try {
+      const result = await (access as any).searchWithNode(
+        ref,
+        fs.realpathSync(root),
+        'deadlineNeedle',
+        'provider_send',
+        undefined,
+        ['app/src'],
+        5,
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        coverageComplete: false,
+        truncated: true,
+        searchIncompleteReason: 'time_budget',
+      }));
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('preserves exact-file semantics for requested and registered path prefixes', async () => {

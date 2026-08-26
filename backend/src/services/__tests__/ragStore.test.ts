@@ -5,15 +5,30 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {constants as bufferConstants} from 'buffer';
 
 import {describe, it, expect, beforeEach, afterEach, jest} from '@jest/globals';
 
-import {RagStore, getDefaultRagStore, ragStoreRequiresLicense} from '../ragStore';
+import {
+  DEFAULT_LOCAL_RAG_SEARCH_MAX_BYTES,
+  DEFAULT_LOCAL_RAG_SEARCH_MAX_CHUNKS,
+  DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES,
+  DEFAULT_LOCAL_RAG_STORAGE_MAX_CHUNKS,
+  RagStore,
+  getDefaultRagStore,
+  privateKnowledgeScopeFingerprint,
+  ragStoreRequiresLicense,
+} from '../ragStore';
+import {
+  MAX_SOURCE_CHUNKS_PER_GENERATION,
+  SOURCE_INGEST_WRITE_BATCH_SIZE,
+} from '../rag/sourceFileSelection';
 import type {RagChunk} from '../../types/sparkContracts';
 
 let tmpDir: string;
 let storagePath: string;
 const PRIVATE_SCOPE = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+const EXPECTED_SAFE_LOCAL_RAG_STORAGE_MAX_BYTES = 128 * 1024 * 1024;
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-store-test-'));
@@ -35,6 +50,42 @@ function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
     indexedAt: 1714600000000,
     ...overrides,
   };
+}
+
+function makeCodebaseGenerationChunk(
+  generation: string,
+  index: number,
+  snippet = `${generation} generation source ${index}`,
+): RagChunk {
+  return makeChunk({
+    chunkId: `${generation}-${index}`,
+    kind: 'app_source',
+    uri: `codebase://capacity-codebase/src/${generation}/${index}.kt`,
+    snippet,
+    codebaseId: 'capacity-codebase',
+    registryOrigin: 'codebase_registry',
+    sourceGeneration: generation,
+    filePath: `src/${generation}/${index}.kt`,
+  });
+}
+
+function addCodebaseGeneration(
+  store: RagStore,
+  generation: string,
+  chunkCount: number,
+  snippetChars?: number,
+): void {
+  for (let start = 0; start < chunkCount; start += SOURCE_INGEST_WRITE_BATCH_SIZE) {
+    const batchSize = Math.min(SOURCE_INGEST_WRITE_BATCH_SIZE, chunkCount - start);
+    store.addChunks(Array.from({length: batchSize}, (_, offset) => {
+      const index = start + offset;
+      const prefix = `${generation} generation source ${index}`;
+      const snippet = snippetChars === undefined
+        ? prefix
+        : prefix.padEnd(snippetChars, 'x').slice(0, snippetChars);
+      return makeCodebaseGenerationChunk(generation, index, snippet);
+    }), PRIVATE_SCOPE);
+  }
 }
 
 describe('RagStore — basic CRUD', () => {
@@ -144,6 +195,97 @@ describe('RagStore — license gate', () => {
 });
 
 describe('RagStore — persistence', () => {
+  it('decouples the default whole-store capacity from the local search budget', () => {
+    expect(DEFAULT_LOCAL_RAG_SEARCH_MAX_CHUNKS).toBe(20_000);
+    expect(DEFAULT_LOCAL_RAG_SEARCH_MAX_BYTES).toBe(64 * 1024 * 1024);
+    expect(DEFAULT_LOCAL_RAG_STORAGE_MAX_CHUNKS).toBe(50_000);
+    expect(DEFAULT_LOCAL_RAG_STORAGE_MAX_CHUNKS)
+      .toBeGreaterThan(MAX_SOURCE_CHUNKS_PER_GENERATION * 2);
+    expect(DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES)
+      .toBe(EXPECTED_SAFE_LOCAL_RAG_STORAGE_MAX_BYTES);
+    expect(DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES * 3)
+      .toBeLessThan(bufferConstants.MAX_STRING_LENGTH);
+  });
+
+  it('keeps a max-size active generation while staging and persisting its replacement', () => {
+    const store = new RagStore(storagePath);
+    addCodebaseGeneration(store, 'active', MAX_SOURCE_CHUNKS_PER_GENERATION, 2_200);
+    store.flush();
+
+    addCodebaseGeneration(store, 'pending', MAX_SOURCE_CHUNKS_PER_GENERATION, 2_200);
+
+    expect(store.countCodebaseGenerationChunks(
+      'capacity-codebase',
+      'active',
+      PRIVATE_SCOPE,
+    )).toBe(MAX_SOURCE_CHUNKS_PER_GENERATION);
+    expect(store.countCodebaseGenerationChunks(
+      'capacity-codebase',
+      'pending',
+      PRIVATE_SCOPE,
+    )).toBe(MAX_SOURCE_CHUNKS_PER_GENERATION);
+    expect(store.search('active generation', {
+      kinds: ['app_source'],
+      codebaseIds: ['capacity-codebase'],
+      activeCodebaseGenerations: {'capacity-codebase': 'active'},
+      scope: PRIVATE_SCOPE,
+      topK: 1,
+    }).results).toHaveLength(1);
+
+    store.flush();
+    expect(fs.statSync(storagePath).size)
+      .toBeGreaterThan(DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES * 0.75);
+    expect(fs.statSync(storagePath).size)
+      .toBeLessThanOrEqual(DEFAULT_LOCAL_RAG_STORAGE_MAX_BYTES);
+    const reloaded = new RagStore(storagePath);
+    expect(reloaded.listChunks({scope: PRIVATE_SCOPE})).toHaveLength(
+      MAX_SOURCE_CHUNKS_PER_GENERATION * 2,
+    );
+
+    expect(reloaded.removeCodebaseChunksExceptGeneration(
+      'capacity-codebase',
+      'pending',
+      PRIVATE_SCOPE,
+    )).toBe(MAX_SOURCE_CHUNKS_PER_GENERATION);
+    expect(reloaded.countCodebaseGenerationChunks(
+      'capacity-codebase',
+      'pending',
+      PRIVATE_SCOPE,
+    )).toBe(MAX_SOURCE_CHUNKS_PER_GENERATION);
+  }, 60_000);
+
+  it('honors an exact low byte override while active and pending generations coexist', () => {
+    const active = makeCodebaseGenerationChunk('active-bytes', 0, 'a'.repeat(1024));
+    const pending = makeCodebaseGenerationChunk('pending-bytes', 0, 'b'.repeat(1024));
+    const third = makeCodebaseGenerationChunk('third-bytes', 0, 'c'.repeat(1024));
+    const sizingStore = new RagStore(path.join(tmpDir, 'sizing.json'));
+    sizingStore.addChunks([active, pending], PRIVATE_SCOPE);
+    const normalized = sizingStore.listChunks({scope: PRIVATE_SCOPE});
+    const exactTwoGenerationBytes = Buffer.byteLength(JSON.stringify({
+      schemaVersion: 2,
+      chunks: normalized,
+    }), 'utf8');
+    expect(normalized.every(chunk =>
+      chunk.knowledgeScopeFingerprint === privateKnowledgeScopeFingerprint(PRIVATE_SCOPE)))
+      .toBe(true);
+
+    const bounded = new RagStore(path.join(tmpDir, 'bounded-generations.json'), {
+      localStorageMaxChunks: 3,
+      localStorageMaxBytes: exactTwoGenerationBytes,
+    });
+    bounded.addChunk(active, PRIVATE_SCOPE);
+    bounded.flush();
+    bounded.addChunk(pending, PRIVATE_SCOPE);
+    bounded.flush();
+
+    expect(new RagStore(path.join(tmpDir, 'bounded-generations.json'), {
+      localStorageMaxChunks: 3,
+      localStorageMaxBytes: exactTwoGenerationBytes,
+    }).listChunks({scope: PRIVATE_SCOPE})).toHaveLength(2);
+    expect(() => bounded.addChunk(third, PRIVATE_SCOPE))
+      .toThrow('serialized size');
+  });
+
   it('persists across instances at the same path', () => {
     const store1 = new RagStore(storagePath);
     store1.addChunk(makeChunk({chunkId: 'a', snippet: 'persisted'}));
@@ -184,6 +326,39 @@ describe('RagStore — persistence', () => {
 
     expect(new RagStore(storagePath).listChunks().map(chunk => chunk.chunkId).sort())
       .toEqual(['first', 'second']);
+  });
+
+  it('rejects an oversized concurrent-writer merge before stringifying the full envelope', () => {
+    const firstChunk = makeChunk({chunkId: 'merge-first', snippet: 'a'.repeat(1024)});
+    const secondChunk = makeChunk({chunkId: 'merge-second', snippet: 'b'.repeat(1024)});
+    const sizingStore = new RagStore(path.join(tmpDir, 'merge-sizing.json'));
+    sizingStore.addChunks([firstChunk, secondChunk]);
+    const normalizedChunks = sizingStore.listChunks();
+    const singleChunkEnvelopeBytes = Math.max(...normalizedChunks.map(chunk =>
+      Buffer.byteLength(JSON.stringify({schemaVersion: 2, chunks: [chunk]}), 'utf8')));
+    const limits = {
+      localStorageMaxChunks: 10,
+      localStorageMaxBytes: singleChunkEnvelopeBytes,
+    };
+    const first = new RagStore(storagePath, limits);
+    const second = new RagStore(storagePath, limits);
+    first.addChunk(firstChunk);
+    second.addChunk(secondChunk);
+    first.flush();
+    const stringify = jest.spyOn(JSON, 'stringify');
+
+    try {
+      expect(() => second.flush()).toThrow('serialized size');
+      const mergedEnvelopeCalls = stringify.mock.calls.filter(([value]) => {
+        const envelope = value as {schemaVersion?: number; chunks?: unknown[]};
+        return envelope?.schemaVersion === 2 && envelope.chunks?.length === 2;
+      });
+      expect(mergedEnvelopeCalls).toHaveLength(0);
+    } finally {
+      stringify.mockRestore();
+    }
+    expect(new RagStore(storagePath, limits).listChunks().map(chunk => chunk.chunkId))
+      .toEqual(['merge-first']);
   });
 
   it('refreshes a warm reader after another instance adds and removes chunks', () => {
@@ -257,6 +432,20 @@ describe('RagStore — persistence', () => {
 
     expect(result.results).toEqual([]);
     expect(result.unsupportedReason).toContain('local_rag_storage_budget_exceeded');
+  });
+
+  it('enforces the safe default byte ceiling before parsing local JSON', () => {
+    fs.writeFileSync(storagePath, '');
+    fs.truncateSync(storagePath, EXPECTED_SAFE_LOCAL_RAG_STORAGE_MAX_BYTES + 1);
+    const store = new RagStore(storagePath);
+
+    const result = store.search('anything');
+
+    expect(result.results).toEqual([]);
+    expect(result.unsupportedReason).toContain('local_rag_storage_budget_exceeded');
+    expect(result.unsupportedReason).toContain(
+      `exceeds ${EXPECTED_SAFE_LOCAL_RAG_STORAGE_MAX_BYTES} bytes`,
+    );
   });
 
   it('rejects a local write that would exceed the complete store chunk cap', () => {

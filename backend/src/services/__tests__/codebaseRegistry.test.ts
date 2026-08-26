@@ -27,6 +27,25 @@ afterEach(() => {
 });
 
 describe('CodebaseRegistry', () => {
+  it('throttles hot lease assertions while retaining durable batch fences', async () => {
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'lease-heartbeat.json'));
+    const ref = registry.register({kind: 'app_source', displayName: 'Lease', rootPath: tmpDir});
+
+    await registry.withIngestLease(ref.codebaseId, {}, lease => {
+      lease.assertHeld();
+      const lockName = fs.readdirSync(tmpDir).find(name =>
+        name.startsWith('lease-heartbeat.json.ingest.') && name.endsWith('.lock'));
+      expect(lockName).toBeDefined();
+      const lockPath = path.join(tmpDir, lockName!);
+      const firstHeartbeat = fs.statSync(lockPath).mtimeMs;
+      for (let index = 0; index < 999; index += 1) lease.assertHeld();
+      expect(fs.statSync(lockPath).mtimeMs).toBe(firstHeartbeat);
+      fs.utimesSync(lockPath, new Date(1), new Date(1));
+      lease.assertHeld(true);
+      expect(fs.statSync(lockPath).mtimeMs).toBeGreaterThan(1);
+    });
+  });
+
   it('defines conditional registration requirements for every supported kind', () => {
     expect(isCodebaseKind('app_source')).toBe(true);
     expect(isCodebaseKind('unknown')).toBe(false);
@@ -217,7 +236,23 @@ describe('CodebaseRegistry', () => {
       createdAt: Date.now(),
     });
 
-    const accepted = registry.acceptPendingGeneration(ref.codebaseId, {}, 1, 1);
+    expect(() => registry.acceptPendingGeneration(
+      ref.codebaseId,
+      {},
+      1,
+      1,
+      'stale-candidate',
+    )).toThrow('pending_generation_stale');
+    expect(registry.get(ref.codebaseId)?.pendingGeneration?.candidateGenerationId)
+      .toBe('candidate-1');
+
+    const accepted = registry.acceptPendingGeneration(
+      ref.codebaseId,
+      {},
+      1,
+      1,
+      'candidate-1',
+    );
 
     expect(activeCodebaseGeneration(accepted)).toBe('candidate-1');
     expect(accepted.pendingGeneration).toBeUndefined();
@@ -230,12 +265,75 @@ describe('CodebaseRegistry', () => {
       chunkCount: 4,
       createdAt: Date.now(),
     });
-    expect(() => registry.acceptPendingGeneration(ref.codebaseId, {}, 1, 0))
+    expect(() => registry.acceptPendingGeneration(
+      ref.codebaseId,
+      {},
+      1,
+      0,
+      'candidate-2',
+    ))
       .toThrow('pending_generation_stale');
+    expect(() => registry.rejectPendingGeneration(ref.codebaseId, {}, 'stale-candidate'))
+      .toThrow('pending_generation_stale');
+    expect(registry.get(ref.codebaseId)?.pendingGeneration?.candidateGenerationId)
+      .toBe('candidate-2');
     registry.setProviderConsent(ref.codebaseId, {}, false, 'user');
 
-    expect(() => registry.acceptPendingGeneration(ref.codebaseId, {}, 1, 1))
+    expect(() => registry.acceptPendingGeneration(
+      ref.codebaseId,
+      {},
+      1,
+      1,
+      'candidate-2',
+    ))
       .toThrow('pending_generation_not_found');
+  });
+
+  it('clears and blocks pending actions when deletion begins', async () => {
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'deleting-pending.json'));
+    const ref = registry.register({kind: 'app_source', displayName: 'Deleting', rootPath: tmpDir});
+    registry.setPendingGeneration(ref.codebaseId, {}, ref.indexGeneration, {
+      candidateGenerationId: 'candidate-before-delete',
+      coverage: {
+        selectionPolicyRevision: 1,
+        enumerationBackend: 'ripgrep',
+        backendFidelity: 'exact',
+        enumerationComplete: true,
+        deterministic: true,
+        filesEnumerated: 2,
+        filesSelected: 1,
+        bytesSelected: 10,
+        chunksIndexed: 1,
+        truncated: true,
+        complete: false,
+        truncationReason: 'file_budget',
+      },
+      contentFingerprint: 'candidate',
+      chunkCount: 1,
+      createdAt: Date.now(),
+    });
+
+    const deleting = await registry.withIngestLease(
+      ref.codebaseId,
+      {},
+      lease => lease.beginDeletion('user'),
+      'delete',
+    );
+
+    expect(deleting.lifecycleState).toBe('deleting');
+    expect(deleting.pendingGeneration).toBeUndefined();
+    expect(() => registry.acceptPendingGeneration(
+      ref.codebaseId,
+      {},
+      1,
+      1,
+      'candidate-before-delete',
+    )).toThrow(/codebase_deleting|pending_generation_not_found/);
+    expect(() => registry.rejectPendingGeneration(
+      ref.codebaseId,
+      {},
+      'candidate-before-delete',
+    )).toThrow(/codebase_deleting|pending_generation_not_found/);
   });
 
   it('drops a previous pending candidate when a complete generation activates', () => {
@@ -297,11 +395,65 @@ describe('CodebaseRegistry', () => {
       createdAt: 1,
     });
 
-    const expired = registry.expirePendingGeneration(ref.codebaseId, {}, 1 + PENDING_GENERATION_TTL_MS);
+    const expired = registry.expirePendingGeneration(
+      ref.codebaseId,
+      {},
+      'expired-candidate',
+      1 + PENDING_GENERATION_TTL_MS,
+    );
 
     expect(activeCodebaseGeneration(expired)).toBeUndefined();
     expect(expired.pendingGeneration).toBeUndefined();
     expect(expired.maintenanceWarning).toBe('pending_generation_expired');
+  });
+
+  it('does not expire or accept a replaced or expired pending candidate', () => {
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'candidate-expiry-cas.json'));
+    const ref = registry.register({kind: 'app_source', displayName: 'Pending', rootPath: tmpDir});
+    const coverage = {
+      selectionPolicyRevision: 1,
+      enumerationBackend: 'ripgrep' as const,
+      backendFidelity: 'exact' as const,
+      enumerationComplete: true,
+      deterministic: true,
+      filesEnumerated: 2,
+      filesSelected: 1,
+      bytesSelected: 10,
+      chunksIndexed: 1,
+      truncated: true,
+      complete: false,
+      truncationReason: 'file_budget' as const,
+    };
+    registry.setPendingGeneration(ref.codebaseId, {}, ref.indexGeneration, {
+      candidateGenerationId: 'candidate-a',
+      coverage,
+      contentFingerprint: 'a',
+      chunkCount: 1,
+      createdAt: 1,
+    });
+    registry.setPendingGeneration(ref.codebaseId, {}, ref.indexGeneration, {
+      candidateGenerationId: 'candidate-b',
+      coverage,
+      contentFingerprint: 'b',
+      chunkCount: 1,
+      createdAt: 2,
+    });
+
+    const unchanged = registry.expirePendingGeneration(
+      ref.codebaseId,
+      {},
+      'candidate-a',
+      PENDING_GENERATION_TTL_MS + 10,
+    );
+    expect(unchanged.pendingGeneration?.candidateGenerationId).toBe('candidate-b');
+    expect(() => registry.acceptPendingGeneration(
+      ref.codebaseId,
+      {},
+      1,
+      1,
+      'candidate-b',
+      PENDING_GENERATION_TTL_MS + 10,
+    )).toThrow('pending_generation_expired');
   });
 
   it('fails closed and revokes the active generation when selection scope changes', () => {
@@ -321,8 +473,41 @@ describe('CodebaseRegistry', () => {
 
     expect(activeCodebaseGeneration(narrowed)).toBeUndefined();
     expect(narrowed.selectionPolicyRevision).toBe(2);
+    expect(narrowed.indexGeneration).toBe(active.indexGeneration + 1);
     expect(narrowed.reindexRequired).toBe('selection_scope_narrowed');
     expect(narrowed.consent.grant?.revision).toBe(active.consent.grant?.revision);
+    expect(() => registry.activateIndexGeneration(active.codebaseId, {}, active.indexGeneration, {
+      lastIngestStatus: 'ok',
+      activeGeneration: 'stale-old-policy',
+      contentFingerprint: 'stale',
+      chunkCount: 1,
+    })).toThrow('codebase_index_generation_changed');
+
+    const noOp = registry.updateSelectionPolicy(active.codebaseId, {}, {
+      pathFilters: ['src', 'src'],
+      excludeGlobs: ['**/generated/**', '**/generated/**'],
+    });
+    expect(noOp.selectionPolicyRevision).toBe(narrowed.selectionPolicyRevision);
+    expect(noOp.indexGeneration).toBe(narrowed.indexGeneration);
+  });
+
+  it('persists registration selection patterns in canonical order', () => {
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'canonical-registration.json'));
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Canonical',
+      rootPath: tmpDir,
+      pathFilters: ['z/src', 'a/src', 'z/src'],
+      excludeGlobs: ['**/z/**', '**/a/**', '**/z/**'],
+      sendToProvider: true,
+    });
+
+    expect(ref.pathFilters).toEqual(['a/src', 'z/src']);
+    expect(ref.excludeGlobs).toEqual(['**/a/**', '**/z/**']);
+    expect(ref.consent.grant).toMatchObject({
+      includePrefixes: ['a/src', 'z/src'],
+      excludeGlobs: ['**/a/**', '**/z/**'],
+    });
   });
 
   it('persists and summarizes native-picker root authorization without exposing paths', () => {

@@ -23,7 +23,9 @@ import {
   hardenedRipgrepEnvironment,
   hardenedRipgrepPrefixArguments,
 } from './subprocessHardening';
-import {sourcePathAllowedForProvider} from './sourceDisclosure';
+import {
+  createSourceProviderPathPredicate,
+} from './sourceDisclosure';
 import {
   sourceSelectionForRef,
   sourceSelectionRipgrepArguments,
@@ -91,6 +93,7 @@ export interface OnDemandSourceReadResult {
 export interface OnDemandSourceAccessServiceOptions {
   registry: CodebaseRegistry;
   gate?: PathSecurityGate;
+  platform?: NodeJS.Platform;
   ripgrepPath?: string;
   searchTimeoutMs?: number;
   maxSearchOutputBytes?: number;
@@ -145,22 +148,33 @@ function escapeLiteralGlob(value: string): string {
   return value.replace(/[\\*?\[\]{}!]/g, character => `\\${character}`);
 }
 
-function pathHasPrefix(parent: string, child: string): boolean {
-  return child === parent || child.startsWith(`${parent}/`);
+function pathHasPrefix(
+  parent: string,
+  child: string,
+  platform: NodeJS.Platform,
+): boolean {
+  const comparable = (value: string): string => platform === 'win32'
+    ? value.toLocaleLowerCase('en-US')
+    : value;
+  const comparableParent = comparable(parent);
+  const comparableChild = comparable(child);
+  return comparableChild === comparableParent || comparableChild.startsWith(`${comparableParent}/`);
 }
 
 function directoryCanContainPrefix(
   directory: string,
   prefixes: readonly string[],
+  platform: NodeJS.Platform,
 ): boolean {
   if (!directory || prefixes.length === 0) return true;
   return prefixes.some(prefix =>
-    pathHasPrefix(directory, prefix) || pathHasPrefix(prefix, directory));
+    pathHasPrefix(directory, prefix, platform) || pathHasPrefix(prefix, directory, platform));
 }
 
 export class OnDemandSourceAccessService {
   private readonly registry: CodebaseRegistry;
   private readonly gate: PathSecurityGate;
+  private readonly platform: NodeJS.Platform;
   private readonly ripgrepPath: string;
   private readonly searchTimeoutMs: number;
   private readonly maxSearchOutputBytes: number;
@@ -172,6 +186,7 @@ export class OnDemandSourceAccessService {
   constructor(options: OnDemandSourceAccessServiceOptions) {
     this.registry = options.registry;
     this.gate = options.gate ?? new PathSecurityGate();
+    this.platform = options.platform ?? process.platform;
     this.ripgrepPath = options.ripgrepPath ?? 'rg';
     this.searchTimeoutMs = boundedPositiveInteger(
       options.searchTimeoutMs,
@@ -240,7 +255,7 @@ export class OnDemandSourceAccessService {
         ? {additionalAllowlistRoots: [ref.rootRealpath]}
         : undefined,
     );
-    assertCodebaseRootIdentity(ref.rootRealpath, root);
+    assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
     return root;
   }
 
@@ -257,17 +272,17 @@ export class OnDemandSourceAccessService {
     requestedPrefix: string | undefined,
   ): {requestedPrefix?: string; effectivePrefixes: string[]; disjoint: boolean} {
     const registered = [...new Set((ref.pathFilters ?? []).map(prefix =>
-      this.gate.validateRelativeSourcePrefix(prefix)))];
+      this.gate.validateRelativeSourcePrefix(prefix, {enforceConfiguredExcludes: false})))];
     const requested = requestedPrefix
-      ? this.gate.validateRelativeSourcePrefix(requestedPrefix)
+      ? this.gate.validateRelativeSourcePrefix(requestedPrefix, {enforceConfiguredExcludes: false})
       : undefined;
     if (!requested) return {effectivePrefixes: registered, disjoint: false};
     if (registered.length === 0) {
       return {requestedPrefix: requested, effectivePrefixes: [requested], disjoint: false};
     }
     const effectivePrefixes = [...new Set(registered.flatMap(prefix => {
-      if (pathHasPrefix(prefix, requested)) return [requested];
-      if (pathHasPrefix(requested, prefix)) return [prefix];
+      if (pathHasPrefix(prefix, requested, this.platform)) return [requested];
+      if (pathHasPrefix(requested, prefix, this.platform)) return [prefix];
       return [];
     }))];
     return {
@@ -280,9 +295,9 @@ export class OnDemandSourceAccessService {
   private ripgrepGlobArguments(
     ref: RegisteredCodebase,
     effectivePrefixes: readonly string[],
+    policy = sourceSelectionForRef(ref, this.gate.getSourceReadLimits().maxFileBytes),
   ): string[] {
-    const caseInsensitive = process.platform === 'win32';
-    const policy = sourceSelectionForRef(ref, this.gate.getSourceReadLimits().maxFileBytes);
+    const caseInsensitive = this.platform === 'win32';
     const option = caseInsensitive ? '--iglob' : '--glob';
     const includeGlobs = [...policy.extensions].flatMap(extension => {
       if (effectivePrefixes.length === 0) return [`*${escapeLiteralGlob(extension)}`];
@@ -301,7 +316,7 @@ export class OnDemandSourceAccessService {
       .map(escapeLiteralGlob);
     return [
       ...[...exactPrefixGlobs, ...includeGlobs].flatMap(glob => [option, glob]),
-      ...sourceSelectionRipgrepArguments(policy),
+      ...sourceSelectionRipgrepArguments(policy, this.platform),
     ];
   }
 
@@ -445,11 +460,27 @@ export class OnDemandSourceAccessService {
       }
     }
     const root = await this.validateRoot(ref);
-    const filePath = this.gate.validateRelativeSourcePath(input.filePath);
-    if (!codebaseSourcePathMatches(ref, filePath)) {
+    const filePath = this.gate.validateRelativeSourcePath(
+      input.filePath,
+      {enforceConfiguredExcludes: false},
+    );
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    if (!codebaseSourcePathMatches(
+      ref,
+      filePath,
+      undefined,
+      this.platform,
+      selectionPolicy,
+    )) {
       throw new Error('source_path_outside_registered_filters');
     }
-    if (input.mode === 'provider_send' && !sourcePathAllowedForProvider(ref, filePath)) {
+    const providerPathAllowed = input.mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
+    if (providerPathAllowed && !providerPathAllowed(filePath)) {
       throw new Error('source_path_outside_provider_grant');
     }
     const startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
@@ -495,6 +526,13 @@ export class OnDemandSourceAccessService {
     effectivePrefixes: readonly string[],
     maxResults: number,
   ): Promise<SourceSearchBackendResult> {
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    const providerPathAllowed = mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
     return new Promise((resolve, reject) => {
       const child = spawn(
         this.ripgrepPath,
@@ -508,7 +546,7 @@ export class OnDemandSourceAccessService {
           '--color',
           'never',
           ...hardenedRipgrepPrefixArguments(this.gate.getSourceReadLimits().maxFileBytes),
-          ...this.ripgrepGlobArguments(ref, effectivePrefixes),
+          ...this.ripgrepGlobArguments(ref, effectivePrefixes, selectionPolicy),
           '--',
           query,
           '.',
@@ -557,9 +595,18 @@ export class OnDemandSourceAccessService {
           const lineNumber = event.data?.line_number;
           if (!rawPath || !Number.isInteger(lineNumber)) return;
           candidateObserved = true;
-          const filePath = this.gate.validateRelativeSourcePath(rawPath);
-          if (!codebaseSourcePathMatches(ref, filePath, pathPrefix)) return;
-          if (mode === 'provider_send' && !sourcePathAllowedForProvider(ref, filePath)) return;
+          const filePath = this.gate.validateRelativeSourcePath(
+            rawPath,
+            {enforceConfiguredExcludes: false},
+          );
+          if (!codebaseSourcePathMatches(
+            ref,
+            filePath,
+            pathPrefix,
+            this.platform,
+            selectionPolicy,
+          )) return;
+          if (providerPathAllowed && !providerPathAllowed(filePath)) return;
           const content = readAcceptedTextFileSync(
             root,
             filePath,
@@ -648,7 +695,14 @@ export class OnDemandSourceAccessService {
     effectivePrefixes: readonly string[],
     maxResults: number,
   ): Promise<SourceSearchBackendResult> {
-    assertCodebaseRootIdentity(ref.rootRealpath, root);
+    assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    const providerPathAllowed = mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
     const matches: OnDemandSourceReference[] = [];
     const stack = [''];
     const deadline = Date.now() + this.searchTimeoutMs;
@@ -680,6 +734,14 @@ export class OnDemandSourceAccessService {
       try {
         const handle = await fsPromises.opendir(absoluteDirectory);
         for await (const entry of handle) {
+          if (Date.now() >= deadline) {
+            return {
+              matches,
+              truncated: true,
+              coverageComplete: false,
+              searchIncompleteReason: 'time_budget',
+            };
+          }
           visitedEntries += 1;
           if (visitedEntries > NODE_WALK_MAX_VISITED_ENTRIES) {
             return {
@@ -692,8 +754,10 @@ export class OnDemandSourceAccessService {
           const relativePath = directory ? `${directory}/${entry.name}` : entry.name;
           if (entry.isDirectory()) {
             if (
-              HARD_SEARCH_EXCLUDE_DIRS.has(entry.name) ||
-              !directoryCanContainPrefix(relativePath, effectivePrefixes)
+              HARD_SEARCH_EXCLUDE_DIRS.has(this.platform === 'win32'
+                ? entry.name.toLocaleLowerCase('en-US')
+                : entry.name) ||
+              !directoryCanContainPrefix(relativePath, effectivePrefixes, this.platform)
             ) continue;
             stack.push(relativePath);
             continue;
@@ -701,12 +765,29 @@ export class OnDemandSourceAccessService {
           if (!entry.isFile()) continue;
           let acceptedPath: string;
           try {
-            acceptedPath = this.gate.validateRelativeSourcePath(relativePath);
+            acceptedPath = this.gate.validateRelativeSourcePath(
+              relativePath,
+              {enforceConfiguredExcludes: false},
+            );
           } catch {
             continue;
           }
-          if (!codebaseSourcePathMatches(ref, acceptedPath, pathPrefix)) continue;
-          if (mode === 'provider_send' && !sourcePathAllowedForProvider(ref, acceptedPath)) continue;
+          if (!codebaseSourcePathMatches(
+            ref,
+            acceptedPath,
+            pathPrefix,
+            this.platform,
+            selectionPolicy,
+          )) continue;
+          if (providerPathAllowed && !providerPathAllowed(acceptedPath)) continue;
+          if (Date.now() >= deadline) {
+            return {
+              matches,
+              truncated: true,
+              coverageComplete: false,
+              searchIncompleteReason: 'time_budget',
+            };
+          }
           try {
             const content = readAcceptedTextFileSync(
               root,

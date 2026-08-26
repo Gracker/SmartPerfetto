@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {describe, it, expect, beforeEach, afterEach} from '@jest/globals';
+import {describe, it, expect, beforeEach, afterEach, jest} from '@jest/globals';
 import express from 'express';
 import request from 'supertest';
 
@@ -19,6 +19,7 @@ import {
 } from '../../services/codebase/codebaseRegistry';
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {NativeDirectoryPicker} from '../../services/codebase/nativeDirectoryPicker';
+import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {AndroidInternalsWikiIngester} from '../../services/androidInternalsWiki/androidInternalsWikiIngester';
 
@@ -728,6 +729,279 @@ describe('codebase routes', () => {
     expect(store.countCodebaseGenerationChunks(ref.codebaseId, 'expired-generation', DEFAULT_SCOPE)).toBe(0);
   });
 
+  it('records and retries inactive chunk cleanup without failing list reads', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Cleanup retry',
+      rootPath: tmpDir,
+      ...DEFAULT_SCOPE,
+    });
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
+      candidateGenerationId: 'expired-cleanup-candidate',
+      coverage: {
+        selectionPolicyRevision: 1,
+        enumerationBackend: 'ripgrep',
+        backendFidelity: 'exact',
+        enumerationComplete: true,
+        deterministic: true,
+        filesEnumerated: 2,
+        filesSelected: 1,
+        bytesSelected: 10,
+        chunksIndexed: 1,
+        truncated: true,
+        complete: false,
+        truncationReason: 'file_budget',
+      },
+      contentFingerprint: 'expired-cleanup',
+      chunkCount: 1,
+      createdAt: Date.now() - PENDING_GENERATION_TTL_MS - 1,
+    });
+    store.addChunk(makeChunk({
+      chunkId: 'expired-cleanup-chunk',
+      kind: 'app_source',
+      uri: 'codebase://expired/Cleanup.kt',
+      codebaseId: ref.codebaseId,
+      sourceGeneration: 'expired-cleanup-candidate',
+      registryOrigin: 'codebase_registry',
+      filePath: 'Cleanup.kt',
+    }), DEFAULT_SCOPE);
+    const cleanup = jest.spyOn(store, 'removeCodebaseChunksExceptGeneration')
+      .mockImplementationOnce(() => {
+        throw new Error('simulated_cleanup_failure');
+      });
+
+    const first = await request(app).get('/api/rag/codebases');
+    expect(first.status).toBe(200);
+    expect(first.body.codebases.find((entry: any) => entry.codebaseId === ref.codebaseId))
+      .toMatchObject({maintenanceWarning: 'inactive_chunk_cleanup_failed'});
+    expect(store.getChunk('expired-cleanup-chunk', DEFAULT_SCOPE)).toBeDefined();
+
+    const second = await request(app).get('/api/rag/codebases');
+    expect(second.status).toBe(200);
+    expect(store.getChunk('expired-cleanup-chunk', DEFAULT_SCOPE)).toBeUndefined();
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.maintenanceWarning).toBeUndefined();
+    cleanup.mockRestore();
+  });
+
+  it('does not delete chunks staged by an in-flight reindex during cleanup', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Concurrent cleanup',
+      rootPath: tmpDir,
+      ...DEFAULT_SCOPE,
+    });
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'ok',
+      maintenanceWarning: 'inactive_chunk_cleanup_failed',
+    }, DEFAULT_SCOPE);
+    store.addChunk(makeChunk({
+      chunkId: 'in-flight-reindex-chunk',
+      kind: 'app_source',
+      uri: 'codebase://in-flight/Main.kt',
+      codebaseId: ref.codebaseId,
+      sourceGeneration: 'in-flight-reindex-generation',
+      registryOrigin: 'codebase_registry',
+      filePath: 'Main.kt',
+    }), DEFAULT_SCOPE);
+
+    let releaseLease!: () => void;
+    let markLeaseHeld!: () => void;
+    const leaseHeld = new Promise<void>(resolve => {
+      markLeaseHeld = resolve;
+    });
+    const release = new Promise<void>(resolve => {
+      releaseLease = resolve;
+    });
+    const inFlightReindex = registry.withIngestLease(
+      ref.codebaseId,
+      DEFAULT_SCOPE,
+      async () => {
+        markLeaseHeld();
+        await release;
+      },
+    );
+    await leaseHeld;
+
+    const response = await request(app).get('/api/rag/codebases');
+
+    expect(response.status).toBe(200);
+    expect(store.getChunk('in-flight-reindex-chunk', DEFAULT_SCOPE)).toBeDefined();
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.maintenanceWarning)
+      .toBe('inactive_chunk_cleanup_failed');
+    releaseLease();
+    await inFlightReindex;
+  });
+
+  it('preserves omitted selection fields and rejects empty, unchanged, or invalid final policies', async () => {
+    const appRef = registry.register({
+      kind: 'app_source',
+      displayName: 'Scoped App',
+      rootPath: tmpDir,
+      pathFilters: ['src'],
+      ...DEFAULT_SCOPE,
+    });
+    const updated = await request(app)
+      .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
+      .send({excludeGlobs: ['**/generated/**']});
+
+    expect(updated.status).toBe(200);
+    expect(updated.body.codebase).toMatchObject({
+      pathFilters: ['src'],
+      excludeGlobs: ['**/generated/**'],
+      selectionPolicyRevision: 2,
+      indexGeneration: appRef.indexGeneration + 1,
+    });
+
+    const empty = await request(app)
+      .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
+      .send({});
+    const unchanged = await request(app)
+      .patch(`/api/rag/codebases/${appRef.codebaseId}/selection`)
+      .send({excludeGlobs: ['**/generated/**', '**/generated/**']});
+    expect(empty.status).toBe(400);
+    expect(unchanged.status).toBe(400);
+    expect(registry.get(appRef.codebaseId, DEFAULT_SCOPE)).toMatchObject({
+      selectionPolicyRevision: 2,
+      indexGeneration: appRef.indexGeneration + 1,
+    });
+
+    const kernel = registry.register({
+      kind: 'kernel_source',
+      displayName: 'Kernel',
+      rootPath: tmpDir,
+      vendor: 'qualcomm',
+      pathFilters: ['drivers/android'],
+      ...DEFAULT_SCOPE,
+    });
+    const invalidKernel = await request(app)
+      .patch(`/api/rag/codebases/${kernel.codebaseId}/selection`)
+      .send({pathFilters: []});
+    expect(invalidKernel.status).toBe(400);
+    expect(registry.get(kernel.codebaseId, DEFAULT_SCOPE)?.pathFilters)
+      .toEqual(['drivers/android']);
+  });
+
+  it('returns top-level grant revision and supports pending accept and reject contracts', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Pending',
+      rootPath: tmpDir,
+      sendToProvider: true,
+      ...DEFAULT_SCOPE,
+    });
+    const coverage = {
+      selectionPolicyRevision: 1,
+      enumerationBackend: 'ripgrep' as const,
+      backendFidelity: 'exact' as const,
+      enumerationComplete: true,
+      deterministic: true,
+      filesEnumerated: 2,
+      filesSelected: 1,
+      bytesSelected: 10,
+      chunksIndexed: 1,
+      truncated: true,
+      complete: false,
+      truncationReason: 'file_budget' as const,
+    };
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
+      candidateGenerationId: 'candidate-accept',
+      coverage,
+      contentFingerprint: 'candidate-accept-fingerprint',
+      chunkCount: 1,
+      createdAt: Date.now(),
+    });
+    store.addChunk(makeChunk({
+      chunkId: 'candidate-accept-chunk',
+      kind: 'app_source',
+      uri: 'codebase://pending/Candidate.kt',
+      codebaseId: ref.codebaseId,
+      registryOrigin: 'codebase_registry',
+      sourceGeneration: 'candidate-accept',
+      filePath: 'Candidate.kt',
+    }), DEFAULT_SCOPE);
+
+    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.codebase.grantRevision).toBe(1);
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, ref.indexGeneration, {
+      candidateGenerationId: 'candidate-replacement',
+      coverage,
+      contentFingerprint: 'candidate-replacement-fingerprint',
+      chunkCount: 1,
+      createdAt: Date.now(),
+    });
+    store.addChunk(makeChunk({
+      chunkId: 'candidate-replacement-chunk',
+      kind: 'app_source',
+      uri: 'codebase://pending/Replacement.kt',
+      codebaseId: ref.codebaseId,
+      registryOrigin: 'codebase_registry',
+      sourceGeneration: 'candidate-replacement',
+      filePath: 'Replacement.kt',
+    }), DEFAULT_SCOPE);
+    const staleAccepted = await request(app)
+      .post(`/api/rag/codebases/${ref.codebaseId}/pending/accept`)
+      .send({
+        selectionPolicyRevision: 1,
+        grantRevision: 1,
+        candidateGenerationId: 'candidate-accept',
+      });
+    expect(staleAccepted.status).toBe(409);
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.pendingGeneration?.candidateGenerationId)
+      .toBe('candidate-replacement');
+    const accepted = await request(app)
+      .post(`/api/rag/codebases/${ref.codebaseId}/pending/accept`)
+      .send({
+        selectionPolicyRevision: 1,
+        grantRevision: 1,
+        candidateGenerationId: 'candidate-replacement',
+      });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.codebase).toMatchObject({
+      activeGeneration: 'candidate-replacement',
+      grantRevision: 1,
+    });
+
+    const afterAccept = registry.get(ref.codebaseId, DEFAULT_SCOPE)!;
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, afterAccept.indexGeneration, {
+      candidateGenerationId: 'candidate-reject-a',
+      coverage,
+      contentFingerprint: 'candidate-reject-fingerprint',
+      chunkCount: 1,
+      createdAt: Date.now(),
+    });
+    store.addChunk(makeChunk({
+      chunkId: 'candidate-reject-chunk',
+      kind: 'app_source',
+      uri: 'codebase://pending/Rejected.kt',
+      codebaseId: ref.codebaseId,
+      registryOrigin: 'codebase_registry',
+      sourceGeneration: 'candidate-reject-a',
+      filePath: 'Rejected.kt',
+    }), DEFAULT_SCOPE);
+    registry.setPendingGeneration(ref.codebaseId, DEFAULT_SCOPE, afterAccept.indexGeneration, {
+      candidateGenerationId: 'candidate-reject-b',
+      coverage,
+      contentFingerprint: 'candidate-reject-b-fingerprint',
+      chunkCount: 1,
+      createdAt: Date.now(),
+    });
+    const staleRejected = await request(app)
+      .post(`/api/rag/codebases/${ref.codebaseId}/pending/reject`)
+      .send({candidateGenerationId: 'candidate-reject-a'});
+    expect(staleRejected.status).toBe(409);
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.pendingGeneration?.candidateGenerationId)
+      .toBe('candidate-reject-b');
+    const rejected = await request(app)
+      .post(`/api/rag/codebases/${ref.codebaseId}/pending/reject`)
+      .send({candidateGenerationId: 'candidate-reject-b'});
+    expect(rejected.status).toBe(200);
+    expect(rejected.body.codebase.pendingGeneration).toBeUndefined();
+    expect(store.getChunk('candidate-reject-chunk', DEFAULT_SCOPE)).toBeUndefined();
+    expect(store.getChunk('candidate-accept-chunk', DEFAULT_SCOPE)).toBeUndefined();
+    expect(store.getChunk('candidate-replacement-chunk', DEFAULT_SCOPE)).toBeDefined();
+  });
+
   it('does not let new-language authorization create provider-send consent', async () => {
     const ref = registry.register({
       kind: 'app_source',
@@ -785,6 +1059,12 @@ describe('codebase routes', () => {
       .send({rootPath: root});
     expect(preview.status).toBe(200);
     expect(preview.body.preview.acceptedFileCount).toBe(1);
+    expect(preview.body.preview).toMatchObject({
+      enumerationComplete: true,
+      filesEnumerated: 1,
+      filesSelected: 1,
+      bytesSelected: expect.any(Number),
+    });
 
     const registered = await request(app)
       .post('/api/rag/codebases/register')
@@ -803,6 +1083,14 @@ describe('codebase routes', () => {
       .send({});
     expect(reindex.status).toBe(200);
     expect(reindex.body.result.chunksAdded).toBeGreaterThan(0);
+    expect(reindex.body.result).toMatchObject({
+      activationDisposition: 'active',
+      coverage: expect.objectContaining({
+        enumerationComplete: true,
+        complete: true,
+        chunksIndexed: expect.any(Number),
+      }),
+    });
 
     const symbols = await request(app)
       .get(`/api/rag/codebases/${codebaseId}/symbols`)
@@ -845,6 +1133,58 @@ describe('codebase routes', () => {
       .query({chunkId: 'stale-generation'});
     expect(staleExcerpt.status).toBe(404);
     expect(JSON.stringify(staleExcerpt.body)).not.toContain('STALE_GENERATION_PRIVATE_CANARY');
+  });
+
+  it('uses the injected source enumerator for registration and reindex', async () => {
+    const root = path.join(tmpDir, 'injected-enumerator');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class InjectedEnumerator\n');
+    const enumerator = new SourceEnumerator();
+    const enumerate = jest.spyOn(enumerator, 'enumerate');
+    const isolated = express();
+    isolated.use(express.json());
+    isolated.use('/api/rag', createRagAdminRoutes(store, {
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      sourceEnumerator: enumerator,
+      directoryPicker,
+      externalKnowledgeRegistry,
+    } as any));
+
+    const registered = await request(isolated)
+      .post('/api/rag/codebases/register')
+      .send({kind: 'app_source', rootPath: root, sendToProvider: false});
+    expect(registered.status).toBe(200);
+    const reindexed = await request(isolated)
+      .post(`/api/rag/codebases/${registered.body.codebase.codebaseId}/reindex`)
+      .send({});
+    expect(reindexed.status).toBe(200);
+    expect(enumerate).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns a structured failure when reindex is blocked by the path gate', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-reindex-outside-'));
+    fs.writeFileSync(path.join(outside, 'Main.kt'), 'class Outside\n');
+    try {
+      const ref = registry.register({
+        kind: 'app_source',
+        displayName: 'Outside',
+        rootPath: outside,
+        ...DEFAULT_SCOPE,
+      });
+
+      const response = await request(app)
+        .post(`/api/rag/codebases/${ref.codebaseId}/reindex`)
+        .send({});
+
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({
+        success: false,
+        error: expect.stringMatching(/root_outside_allowlist|blocked_by_security/),
+      });
+    } finally {
+      fs.rmSync(outside, {recursive: true, force: true});
+    }
   });
 
   it('deletes only the scoped codebase and every indexed generation', async () => {

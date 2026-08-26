@@ -11,6 +11,7 @@ import {
   codebaseScopeFromRef,
   codebaseHasActiveIndex,
   type CodebaseIngestLeaseGuard,
+  type IndexCoverage,
   type CodebaseRef,
   type CodebaseRegistry,
   type CodebaseScope,
@@ -60,6 +61,8 @@ export interface AppSourceIngestResult {
   blockedFileCount: number;
   redactionHitCount: number;
   errors: AppSourceIngestError[];
+  activationDisposition?: 'active' | 'pending';
+  coverage?: IndexCoverage;
 }
 
 function makeChunkId(
@@ -111,7 +114,7 @@ export class AppSourceIngester {
     const stagedChunks: RagChunk[] = [];
     const flushStagedChunks = (): void => {
       if (stagedChunks.length === 0) return;
-      lease.assertHeld();
+      lease.assertHeld(true);
       const batch = stagedChunks.splice(0, SOURCE_INGEST_WRITE_BATCH_SIZE);
       this.store.addChunks(batch, effectiveScope);
     };
@@ -158,7 +161,7 @@ export class AppSourceIngester {
       enumeration,
       ref,
       pathPrefix,
-      maxChunks,
+      sourceReadLimits.maxFiles,
       sourceReadLimits.maxTotalBytes,
     );
     const selectedFiles = selection.files;
@@ -192,6 +195,8 @@ export class AppSourceIngester {
       blockedFileCount: enumeration.skippedCount,
       redactionHitCount: 0,
       errors: [],
+      activationDisposition: 'active',
+      coverage: selection.coverage,
     };
 
     for (const file of selectedFiles) {
@@ -209,6 +214,9 @@ export class AppSourceIngester {
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
+        }
+        if (result.chunksAdded + chunks.length > maxChunks) {
+          throw new Error(`source_chunk_limit_exceeded:${maxChunks}`);
         }
         for (const chunk of chunks) {
           lease.assertHeld();
@@ -293,6 +301,7 @@ export class AppSourceIngester {
         codebaseHasActiveIndex(ref) &&
         (ref.activeIndexCoverage?.complete ?? true);
       if (keepExistingComplete) {
+        result.activationDisposition = 'pending';
         this.registry.setPendingGeneration(codebaseId, effectiveScope, ref.indexGeneration, {
           candidateGenerationId: sourceGeneration,
           coverage,
@@ -320,6 +329,7 @@ export class AppSourceIngester {
         commitProvenance: provenance.commitProvenance,
         });
       }
+      result.coverage = coverage;
     } catch (error) {
       this.store.removeCodebaseChunkIds(codebaseId, stagedChunkIds, effectiveScope);
       if (!isCodebaseIngestLeaseLost(error)) {

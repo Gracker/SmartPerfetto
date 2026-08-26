@@ -113,7 +113,6 @@ reindex，不会扩大进程全局 allowlist。注册项的 list/audit 元数据
 常用验证命令：
 
 ```bash
-cd backend
 npm --prefix backend run verify:codebase-aware
 ```
 

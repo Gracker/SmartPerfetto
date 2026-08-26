@@ -377,7 +377,7 @@ describe('AppSourceIngester', () => {
       .rejects.toThrow('maxChunkChars must be an integer between 256 and 65536');
   });
 
-  it('does not truncate inside a selected file by treating chunk count as a separate budget', async () => {
+  it('rejects a whole selected file before staging beyond the chunk budget', async () => {
     const root = path.join(tmpDir, 'chunk-budget');
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'Many.kt'), [
@@ -387,26 +387,28 @@ describe('AppSourceIngester', () => {
     const {store, ref, registry, ingester} = makeIngester(root);
     const generationBefore = registry.get(ref.codebaseId)!.indexGeneration;
 
-    const result = await ingester.ingest(ref.codebaseId, {maxChunkChars: 256, maxChunks: 1});
+    await expect(ingester.ingest(ref.codebaseId, {maxChunkChars: 256, maxChunks: 1}))
+      .rejects.toThrow('source_chunk_limit_exceeded:1');
 
-    expect(result.chunksAdded).toBe(2);
-    expect(registry.get(ref.codebaseId)).toMatchObject({
-      indexGeneration: generationBefore + 1,
-      lastIngestStatus: 'ok',
-    });
-    expect(store.listChunks({scope: ref})).toHaveLength(2);
+    expect(registry.get(ref.codebaseId)?.indexGeneration).toBe(generationBefore);
+    expect(store.listChunks({scope: ref})).toHaveLength(0);
   });
 
   it('keeps a complete active generation and stages deterministic truncation as pending', async () => {
     const root = path.join(tmpDir, 'pending-generation');
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'A.kt'), 'class CompleteActive\n');
-    const {store, ref, registry, ingester} = makeIngester(root);
+    const {store, ref, registry} = makeIngester(root);
+    const ingester = new AppSourceIngester(
+      store,
+      registry,
+      new PathSecurityGate({allowlistRoots: [root], maxFiles: 1}),
+    );
     await ingester.ingest(ref.codebaseId);
     const activeBefore = registry.get(ref.codebaseId)!;
     fs.writeFileSync(path.join(root, 'B.kt'), 'class PendingCandidate\n');
 
-    await ingester.ingest(ref.codebaseId, {maxChunks: 1});
+    await ingester.ingest(ref.codebaseId);
 
     const after = registry.get(ref.codebaseId)!;
     expect(activeCodebaseGeneration(after)).toBe(activeCodebaseGeneration(activeBefore));
@@ -479,6 +481,49 @@ describe('AppSourceIngester', () => {
       indexGeneration: ref.indexGeneration + 1,
       lastIngestStatus: 'ok',
     });
+  });
+
+  it('fences an in-flight reindex when the source selection changes', async () => {
+    const root = path.join(tmpDir, 'selection-race');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    const {store, ref, registry} = makeIngester(root);
+    const enumerator = new SourceEnumerator();
+    const originalEnumerate = enumerator.enumerate.bind(enumerator);
+    let releaseEnumeration!: () => void;
+    const paused = new Promise<void>(resolve => {
+      releaseEnumeration = resolve;
+    });
+    let enumerationStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      enumerationStarted = resolve;
+    });
+    jest.spyOn(enumerator, 'enumerate').mockImplementationOnce(async input => {
+      const result = await originalEnumerate(input);
+      enumerationStarted();
+      await paused;
+      return result;
+    });
+    const ingest = new AppSourceIngester(
+      store,
+      registry,
+      new PathSecurityGate({allowlistRoots: [root]}),
+      enumerator,
+    ).ingest(ref.codebaseId);
+
+    await started;
+    const narrowed = registry.updateSelectionPolicy(ref.codebaseId, {}, {
+      excludeGlobs: ['**/generated/**'],
+    });
+    releaseEnumeration();
+
+    await expect(ingest).rejects.toThrow('codebase_index_generation_changed');
+    expect(narrowed.selectionPolicyRevision).toBe(2);
+    expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({
+      activeIndexState: 'none',
+      reindexRequired: 'selection_scope_narrowed',
+    }));
+    expect(store.listChunks({scope: ref})).toHaveLength(0);
   });
 
   it('keeps the activated generation readable when stale cleanup fails', async () => {

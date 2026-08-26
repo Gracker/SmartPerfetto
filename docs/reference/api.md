@@ -551,8 +551,8 @@ Base path: `/api/rag`
 | `GET` | `/codebases/:id/audit` | 索引审计 |
 | `PATCH` | `/codebases/:id/consent` | 显式授予或撤销 provider-send 同意 |
 | `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；立即撤销旧 active generation 并要求重建 |
-| `POST` | `/codebases/:id/pending/accept` | 用 policy/grant revision CAS 显式接受被截断的候选 generation |
-| `POST` | `/codebases/:id/pending/reject` | 拒绝候选 generation 并清理 staged chunks |
+| `POST` | `/codebases/:id/pending/accept` | 回传 `candidateGenerationId`、`selectionPolicyRevision` 和 `grantRevision`，以 CAS 显式接受被截断的候选 generation |
+| `POST` | `/codebases/:id/pending/reject` | 回传 `candidateGenerationId`，以 CAS 拒绝候选 generation 并清理 staged chunks |
 | `DELETE` | `/codebases/:id` | 退役注册项并删除当前 scope 内的全部 staged/active/superseded generation |
 
 preview、register 和 reindex 共用同一份源码选择策略；响应会报告
@@ -565,8 +565,10 @@ consent 接口并传 `authorizeAvailableExtensions: true` 才加入授权；该�
 
 不完整或非确定性的枚举不会激活索引。确定性但被 file/byte budget 截断的重建在已有
 完整 active generation 时只写入 `pendingGeneration`；接受时必须回传列表/详情中的
-`selectionPolicyRevision` 和 `grantRevision`。候选保留 7 天，列表读取会惰性过期并
-清理 staged chunks。没有旧 active generation 时，截断索引可作为明确标有
+`candidateGenerationId`、`selectionPolicyRevision` 和 `grantRevision`，拒绝时必须回传
+`candidateGenerationId`。候选 ID 是并发 replacement 的 CAS：如果待处理候选已被更新、
+接受、拒绝或过期，旧 ID 的操作会失败，不会误操作新候选。候选保留 7 天，列表读取会
+惰性过期并清理 staged chunks。没有旧 active generation 时，截断索引可作为明确标有
 `activeIndexCoverage.complete=false` 的可用降级结果。
 
 删除 codebase 使用可重试的两阶段生命周期：先在 ingest lease 内把注册项标记为

@@ -17,6 +17,7 @@ import {
   resolveMaxSourceChunks,
   inspectSourceGeneration,
   selectCodebasePreviewFiles,
+  selectEnumeratedSourceFiles,
 } from '../rag/sourceFileSelection';
 
 const ref: CodebaseRef = {
@@ -88,6 +89,38 @@ describe('selectCodebasePreviewFiles', () => {
       .toThrow('maxChunks must be an integer');
   });
 
+  it('filters a max-size enumerated corpus without rebuilding selection policy per file', () => {
+    const largeRef: CodebaseRef = {
+      ...ref,
+      excludeGlobs: Array.from({length: 128}, (_, index) =>
+        `**/generated-${index}/**`),
+    };
+    const enumeration = {
+      backend: 'git' as const,
+      fidelity: 'exact' as const,
+      files: Array.from({length: 20_000}, (_, index) => ({
+        relativePath: `app/src/module-${index}/Main.kt`,
+        sizeBytes: 1,
+      })),
+      enumerationComplete: true,
+      deterministic: true,
+      skipped: [],
+      skippedCount: 0,
+    };
+    const startedAt = Date.now();
+
+    const selected = selectEnumeratedSourceFiles(
+      enumeration,
+      largeRef,
+      undefined,
+      20_000,
+      20_000,
+    );
+
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(selected.files).toHaveLength(20_000);
+  });
+
   it('does not execute repository-controlled core.fsmonitor while reading git provenance', async () => {
     if (process.platform === 'win32') return;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'source-generation-git-'));
@@ -119,6 +152,47 @@ describe('selectCodebasePreviewFiles', () => {
 
       expect(fs.existsSync(marker)).toBe(false);
     } finally {
+      fs.rmSync(root, {recursive: true, force: true});
+    }
+  });
+
+  it('degrades to content-only provenance when git status exceeds its deadline', async () => {
+    if (process.platform === 'win32') return;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'source-generation-slow-git-'));
+    const fakeBin = path.join(root, 'bin');
+    const git = path.join(fakeBin, 'git');
+    const previousPath = process.env.PATH;
+    try {
+      fs.mkdirSync(fakeBin);
+      fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+      fs.writeFileSync(git, [
+        '#!/bin/sh',
+        'case " $* " in',
+        "  *' rev-parse HEAD '*) printf '%s\\n' '0123456789abcdef0123456789abcdef01234567' ;;",
+        "  *' status --porcelain=v1 '*) exec /bin/sleep 12 ;;",
+        '  *) exit 2 ;;',
+        'esac',
+        '',
+      ].join('\n'));
+      fs.chmodSync(git, 0o700);
+      process.env.PATH = fakeBin + path.delimiter + (previousPath ?? '');
+      const startedAt = Date.now();
+      const provenance = await inspectSourceGeneration(
+        root,
+        [{relativePath: 'Main.kt', sizeBytes: 11}],
+        (_sourceRoot, relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8'),
+      );
+      const elapsedMs = Date.now() - startedAt;
+
+      expect(elapsedMs).toBeLessThan(10_000);
+      expect(provenance).toMatchObject({
+        sourceDirty: false,
+        commitProvenance: 'content_only',
+      });
+      expect(provenance.indexedRevision).toBeUndefined();
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
       fs.rmSync(root, {recursive: true, force: true});
     }
   });
