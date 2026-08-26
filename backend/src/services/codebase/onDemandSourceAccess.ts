@@ -3,8 +3,10 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'crypto';
-import {execFile} from 'child_process';
+import {spawn} from 'child_process';
+import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import {StringDecoder} from 'string_decoder';
 
 import type {CodeAwareMode} from './codeAwareFeature';
 import {
@@ -17,19 +19,46 @@ import {
   PathSecurityGate,
   readAcceptedTextFileSync,
 } from './pathSecurityGate';
+import {
+  hardenedRipgrepEnvironment,
+  hardenedRipgrepPrefixArguments,
+} from './subprocessHardening';
+import {
+  createSourceProviderPathPredicate,
+} from './sourceDisclosure';
+import {
+  sourceSelectionForRef,
+  sourceSelectionRipgrepArguments,
+} from './sourceSelectionPolicy';
 import {redactSecrets} from '../security/secretPatterns';
 import {
   assertCodebaseRootIdentity,
   codebaseSourcePathMatches,
-  previewRegisteredCodebaseRoot,
-  selectCodebasePreviewFiles,
 } from '../rag/sourceFileSelection';
 
 const DEFAULT_MAX_RESULTS = 8;
 const MAX_RESULTS = 20;
 const MAX_READ_LINES = 200;
 const RIPGREP_TIMEOUT_MS = 3_000;
-const RIPGREP_MAX_BUFFER_BYTES = 1024 * 1024;
+const RIPGREP_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const SUBPROCESS_TERMINATION_GRACE_MS = 250;
+const NODE_WALK_MAX_VISITED_ENTRIES = 20_000;
+const NODE_WALK_MAX_DIRECTORIES = 5_000;
+const HARD_SEARCH_EXCLUDE_DIRS = new Set(['.git', '.hg', '.svn', '.repo']);
+
+export type SourceSearchIncompleteReason =
+  | 'enumeration_budget'
+  | 'time_budget'
+  | 'output_budget'
+  | 'traversal_error'
+  | 'backend_degraded';
+
+interface SourceSearchBackendResult {
+  matches: OnDemandSourceReference[];
+  truncated: boolean;
+  coverageComplete: boolean;
+  searchIncompleteReason?: SourceSearchIncompleteReason;
+}
 
 export interface OnDemandSourceReference {
   referenceId: string;
@@ -46,6 +75,10 @@ export interface OnDemandSourceSearchResult {
   matches: OnDemandSourceReference[];
   truncated: boolean;
   backend: 'ripgrep' | 'node';
+  coverageComplete: boolean;
+  searchIncompleteReason?: SourceSearchIncompleteReason;
+  enumerationBackend: 'ripgrep' | 'git' | 'node-walk';
+  backendFidelity: 'exact' | 'degraded';
   unsupportedReason?: string;
 }
 
@@ -60,10 +93,16 @@ export interface OnDemandSourceReadResult {
 export interface OnDemandSourceAccessServiceOptions {
   registry: CodebaseRegistry;
   gate?: PathSecurityGate;
+  platform?: NodeJS.Platform;
   ripgrepPath?: string;
+  searchTimeoutMs?: number;
+  maxSearchOutputBytes?: number;
+  maxConcurrentSearches?: number;
+  concurrencyWaitTimeoutMs?: number;
 }
 
 type RegisteredCodebase = CodebaseRef & {lifecycleState?: 'active' | 'deleting'};
+type SearchWaiter = {grant: () => void; timeout?: NodeJS.Timeout};
 
 export function codebaseOnDemandAvailability(
   ref: Pick<CodebaseRef, 'lifecycleState' | 'rootRealpath'>,
@@ -109,19 +148,96 @@ function escapeLiteralGlob(value: string): string {
   return value.replace(/[\\*?\[\]{}!]/g, character => `\\${character}`);
 }
 
-function pathHasPrefix(parent: string, child: string): boolean {
-  return child === parent || child.startsWith(`${parent}/`);
+function pathHasPrefix(
+  parent: string,
+  child: string,
+  platform: NodeJS.Platform,
+): boolean {
+  const comparable = (value: string): string => platform === 'win32'
+    ? value.toLocaleLowerCase('en-US')
+    : value;
+  const comparableParent = comparable(parent);
+  const comparableChild = comparable(child);
+  return comparableChild === comparableParent || comparableChild.startsWith(`${comparableParent}/`);
+}
+
+function directoryCanContainPrefix(
+  directory: string,
+  prefixes: readonly string[],
+  platform: NodeJS.Platform,
+): boolean {
+  if (!directory || prefixes.length === 0) return true;
+  return prefixes.some(prefix =>
+    pathHasPrefix(directory, prefix, platform) || pathHasPrefix(prefix, directory, platform));
 }
 
 export class OnDemandSourceAccessService {
   private readonly registry: CodebaseRegistry;
   private readonly gate: PathSecurityGate;
+  private readonly platform: NodeJS.Platform;
   private readonly ripgrepPath: string;
+  private readonly searchTimeoutMs: number;
+  private readonly maxSearchOutputBytes: number;
+  private readonly maxConcurrentSearches: number;
+  private readonly concurrencyWaitTimeoutMs: number;
+  private activeSearches = 0;
+  private readonly searchWaiters: SearchWaiter[] = [];
 
   constructor(options: OnDemandSourceAccessServiceOptions) {
     this.registry = options.registry;
     this.gate = options.gate ?? new PathSecurityGate();
+    this.platform = options.platform ?? process.platform;
     this.ripgrepPath = options.ripgrepPath ?? 'rg';
+    this.searchTimeoutMs = boundedPositiveInteger(
+      options.searchTimeoutMs,
+      RIPGREP_TIMEOUT_MS,
+      60_000,
+      'search_timeout_ms',
+    );
+    this.maxSearchOutputBytes = boundedPositiveInteger(
+      options.maxSearchOutputBytes,
+      RIPGREP_MAX_OUTPUT_BYTES,
+      64 * 1024 * 1024,
+      'max_search_output_bytes',
+    );
+    this.maxConcurrentSearches = boundedPositiveInteger(
+      options.maxConcurrentSearches,
+      4,
+      32,
+      'max_concurrent_searches',
+    );
+    this.concurrencyWaitTimeoutMs = boundedPositiveInteger(
+      options.concurrencyWaitTimeoutMs,
+      this.searchTimeoutMs,
+      60_000,
+      'concurrency_wait_timeout_ms',
+    );
+  }
+
+  private acquireSearchSlot(): Promise<boolean> {
+    if (this.activeSearches < this.maxConcurrentSearches) {
+      this.activeSearches += 1;
+      return Promise.resolve(true);
+    }
+    return new Promise(resolve => {
+      const waiter: SearchWaiter = {grant: () => resolve(true)};
+      waiter.timeout = setTimeout(() => {
+        const index = this.searchWaiters.indexOf(waiter);
+        if (index >= 0) this.searchWaiters.splice(index, 1);
+        resolve(false);
+      }, this.concurrencyWaitTimeoutMs);
+      waiter.timeout.unref();
+      this.searchWaiters.push(waiter);
+    });
+  }
+
+  private releaseSearchSlot(): void {
+    this.activeSearches = Math.max(0, this.activeSearches - 1);
+    const waiter = this.searchWaiters.shift();
+    if (!waiter) return;
+    if (waiter.timeout) clearTimeout(waiter.timeout);
+    this.activeSearches += 1;
+    waiter.grant();
   }
 
   private resolveRef(codebaseId: string, scope: CodebaseScope): RegisteredCodebase {
@@ -139,7 +255,7 @@ export class OnDemandSourceAccessService {
         ? {additionalAllowlistRoots: [ref.rootRealpath]}
         : undefined,
     );
-    assertCodebaseRootIdentity(ref.rootRealpath, root);
+    assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
     return root;
   }
 
@@ -156,17 +272,17 @@ export class OnDemandSourceAccessService {
     requestedPrefix: string | undefined,
   ): {requestedPrefix?: string; effectivePrefixes: string[]; disjoint: boolean} {
     const registered = [...new Set((ref.pathFilters ?? []).map(prefix =>
-      this.gate.validateRelativeSourcePrefix(prefix)))];
+      this.gate.validateRelativeSourcePrefix(prefix, {enforceConfiguredExcludes: false})))];
     const requested = requestedPrefix
-      ? this.gate.validateRelativeSourcePrefix(requestedPrefix)
+      ? this.gate.validateRelativeSourcePrefix(requestedPrefix, {enforceConfiguredExcludes: false})
       : undefined;
     if (!requested) return {effectivePrefixes: registered, disjoint: false};
     if (registered.length === 0) {
       return {requestedPrefix: requested, effectivePrefixes: [requested], disjoint: false};
     }
     const effectivePrefixes = [...new Set(registered.flatMap(prefix => {
-      if (pathHasPrefix(prefix, requested)) return [requested];
-      if (pathHasPrefix(requested, prefix)) return [prefix];
+      if (pathHasPrefix(prefix, requested, this.platform)) return [requested];
+      if (pathHasPrefix(requested, prefix, this.platform)) return [prefix];
       return [];
     }))];
     return {
@@ -179,33 +295,29 @@ export class OnDemandSourceAccessService {
   private ripgrepGlobArguments(
     ref: RegisteredCodebase,
     effectivePrefixes: readonly string[],
+    policy = sourceSelectionForRef(ref, this.gate.getSourceReadLimits().maxFileBytes),
   ): string[] {
-    const policy = this.gate.getSourceSearchPolicy();
-    const option = policy.caseInsensitive ? '--iglob' : '--glob';
-    const includeGlobs = policy.allowedExtensions.flatMap(extension => {
+    const caseInsensitive = this.platform === 'win32';
+    const option = caseInsensitive ? '--iglob' : '--glob';
+    const includeGlobs = [...policy.extensions].flatMap(extension => {
       if (effectivePrefixes.length === 0) return [`*${escapeLiteralGlob(extension)}`];
       return effectivePrefixes.map(prefix =>
         `${escapeLiteralGlob(prefix)}/**/*${escapeLiteralGlob(extension)}`);
     });
-    const allowedExtensions = new Set(policy.allowedExtensions);
+    const allowedExtensions = new Set(policy.extensions);
     const exactPrefixGlobs = effectivePrefixes
       .filter(prefix => {
         const rawExtension = path.posix.extname(prefix);
-        const extension = policy.caseInsensitive
+        const extension = caseInsensitive
           ? rawExtension.toLocaleLowerCase('en-US')
           : rawExtension;
         return allowedExtensions.has(extension);
       })
       .map(escapeLiteralGlob);
-    const excludeGlobs = [
-      ...policy.excludeNames.map(name => `!**/${escapeLiteralGlob(name)}/**`),
-      '!**/.env*',
-      '!**/*.log',
-      '!**/*.bak',
-      ...(ref.excludeGlobs ?? []).map(pattern => `!${pattern}`),
+    return [
+      ...[...exactPrefixGlobs, ...includeGlobs].flatMap(glob => [option, glob]),
+      ...sourceSelectionRipgrepArguments(policy, this.platform),
     ];
-    return [...exactPrefixGlobs, ...includeGlobs, ...excludeGlobs]
-      .flatMap(glob => [option, glob]);
   }
 
   async search(input: {
@@ -234,6 +346,9 @@ export class OnDemandSourceAccessService {
         matches: [],
         truncated: false,
         backend: 'ripgrep',
+        coverageComplete: true,
+        enumerationBackend: 'ripgrep',
+        backendFidelity: 'exact',
         unsupportedReason: consentFailure,
       };
     }
@@ -246,42 +361,73 @@ export class OnDemandSourceAccessService {
         matches: [],
         truncated: false,
         backend: 'ripgrep',
+        coverageComplete: true,
+        enumerationBackend: 'ripgrep',
+        backendFidelity: 'exact',
+      };
+    }
+    if (!await this.acquireSearchSlot()) {
+      return {
+        success: true,
+        codebaseId: input.codebaseId,
+        matches: [],
+        truncated: true,
+        backend: 'ripgrep',
+        coverageComplete: false,
+        searchIncompleteReason: 'time_budget',
+        enumerationBackend: 'ripgrep',
+        backendFidelity: 'exact',
       };
     }
     try {
-      const matches = await this.searchWithRipgrep(
-        ref,
-        root,
-        input.query,
-        input.mode,
-        prefixes.requestedPrefix,
-        prefixes.effectivePrefixes,
-        maxResults,
-      );
-      return {
-        success: true,
-        codebaseId: input.codebaseId,
-        matches: matches.slice(0, maxResults),
-        truncated: matches.length > maxResults,
-        backend: 'ripgrep',
-      };
-    } catch (error) {
-      if (!this.shouldUseNodeFallback(error)) throw error;
-      const matches = await this.searchWithNode(
-        ref,
-        root,
-        input.query,
-        input.mode,
-        prefixes.requestedPrefix,
-        maxResults,
-      );
-      return {
-        success: true,
-        codebaseId: input.codebaseId,
-        matches,
-        truncated: matches.length >= maxResults,
-        backend: 'node',
-      };
+      try {
+        const result = await this.searchWithRipgrep(
+          ref,
+          root,
+          input.query,
+          input.mode,
+          prefixes.requestedPrefix,
+          prefixes.effectivePrefixes,
+          maxResults,
+        );
+        return {
+          success: true,
+          codebaseId: input.codebaseId,
+          matches: result.matches.slice(0, maxResults),
+          truncated: result.truncated,
+          backend: 'ripgrep',
+          coverageComplete: result.coverageComplete,
+          ...(result.searchIncompleteReason
+            ? {searchIncompleteReason: result.searchIncompleteReason}
+            : {}),
+          enumerationBackend: 'ripgrep',
+          backendFidelity: 'exact',
+        };
+      } catch (error) {
+        if (!this.shouldUseNodeFallback(error)) throw error;
+        const result = await this.searchWithNode(
+          ref,
+          root,
+          input.query,
+          input.mode,
+          prefixes.requestedPrefix,
+          prefixes.effectivePrefixes,
+          maxResults,
+        );
+        return {
+          success: true,
+          codebaseId: input.codebaseId,
+          matches: result.matches,
+          truncated: result.truncated,
+          backend: 'node',
+          coverageComplete: result.coverageComplete,
+          searchIncompleteReason: result.searchIncompleteReason ?? 'backend_degraded',
+          enumerationBackend: 'node-walk',
+          backendFidelity: 'degraded',
+        };
+      }
+    } finally {
+      this.releaseSearchSlot();
     }
   }
 
@@ -294,27 +440,48 @@ export class OnDemandSourceAccessService {
     mode: CodeAwareMode;
   }): Promise<OnDemandSourceReadResult> {
     const ref = this.resolveRef(input.codebaseId, input.scope);
-    if (input.mode !== 'provider_send') {
+    if (input.mode === 'off') {
       return {
         success: false,
         codebaseId: input.codebaseId,
         truncated: false,
-        unsupportedReason: 'provider_send_disabled_for_session',
+        unsupportedReason: 'code_aware_disabled_for_session',
       };
     }
-    const consentFailure = this.consentFailure(ref, input.mode);
-    if (consentFailure) {
-      return {
-        success: false,
-        codebaseId: input.codebaseId,
-        truncated: false,
-        unsupportedReason: consentFailure,
-      };
+    if (input.mode === 'provider_send') {
+      const consentFailure = this.consentFailure(ref, input.mode);
+      if (consentFailure) {
+        return {
+          success: false,
+          codebaseId: input.codebaseId,
+          truncated: false,
+          unsupportedReason: consentFailure,
+        };
+      }
     }
     const root = await this.validateRoot(ref);
-    const filePath = this.gate.validateRelativeSourcePath(input.filePath);
-    if (!codebaseSourcePathMatches(ref, filePath)) {
+    const filePath = this.gate.validateRelativeSourcePath(
+      input.filePath,
+      {enforceConfiguredExcludes: false},
+    );
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    if (!codebaseSourcePathMatches(
+      ref,
+      filePath,
+      undefined,
+      this.platform,
+      selectionPolicy,
+    )) {
       throw new Error('source_path_outside_registered_filters');
+    }
+    const providerPathAllowed = input.mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
+    if (providerPathAllowed && !providerPathAllowed(filePath)) {
+      throw new Error('source_path_outside_provider_grant');
     }
     const startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
     const maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');
@@ -328,6 +495,14 @@ export class OnDemandSourceAccessService {
     const selected = lines.slice(startLine - 1, startLine - 1 + maxLines);
     const endLine = startLine + selected.length - 1;
     const projected = sourceTextForMode(selected.join('\n'), input.mode);
+    if (selected.length === 0) {
+      return {
+        success: false,
+        codebaseId: input.codebaseId,
+        truncated: false,
+        unsupportedReason: 'source_line_out_of_range',
+      };
+    }
     return {
       success: true,
       codebaseId: input.codebaseId,
@@ -350,71 +525,159 @@ export class OnDemandSourceAccessService {
     pathPrefix: string | undefined,
     effectivePrefixes: readonly string[],
     maxResults: number,
-  ): Promise<OnDemandSourceReference[]> {
+  ): Promise<SourceSearchBackendResult> {
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    const providerPathAllowed = mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
     return new Promise((resolve, reject) => {
-      execFile(
+      const child = spawn(
         this.ripgrepPath,
         [
           '--json',
           '--fixed-strings',
           '--line-number',
+          '--max-count',
+          '1',
           '--no-heading',
           '--color',
           'never',
-          '--hidden',
-          '--max-filesize',
-          String(this.gate.getSourceReadLimits().maxFileBytes),
-          ...this.ripgrepGlobArguments(ref, effectivePrefixes),
+          ...hardenedRipgrepPrefixArguments(this.gate.getSourceReadLimits().maxFileBytes),
+          ...this.ripgrepGlobArguments(ref, effectivePrefixes, selectionPolicy),
           '--',
           query,
           '.',
         ],
         {
           cwd: root,
-          encoding: 'utf8',
-          timeout: RIPGREP_TIMEOUT_MS,
-          maxBuffer: RIPGREP_MAX_BUFFER_BYTES,
-        },
-        (error, stdout) => {
-          const exitCode = (error as {code?: string | number} | null)?.code;
-          if (error && exitCode !== 1 && exitCode !== '1') {
-            reject(error);
-            return;
-          }
-          const matches: OnDemandSourceReference[] = [];
-          for (const line of stdout.split('\n')) {
-            if (!line || matches.length > maxResults) break;
-            try {
-              const event = JSON.parse(line) as {
-                type?: string;
-                data?: {
-                  path?: {text?: string};
-                  line_number?: number;
-                  lines?: {text?: string};
-                };
-              };
-              if (event.type !== 'match') continue;
-              const rawPath = event.data?.path?.text;
-              const lineNumber = event.data?.line_number;
-              const rawText = event.data?.lines?.text;
-              if (!rawPath || !Number.isInteger(lineNumber) || typeof rawText !== 'string') continue;
-              const filePath = this.gate.validateRelativeSourcePath(rawPath);
-              if (!codebaseSourcePathMatches(ref, filePath, pathPrefix)) continue;
-              const text = rawText.replace(/\r?\n$/, '');
-              matches.push({
-                referenceId: referenceId(ref.codebaseId, filePath, lineNumber!),
-                codebaseId: ref.codebaseId,
-                filePath,
-                lineRange: {start: lineNumber!, end: lineNumber!},
-                ...sourceTextForMode(text, mode),
-              });
-            } catch {
-              continue;
-            }
-          }
-          resolve(matches);
+          env: hardenedRipgrepEnvironment(),
+          stdio: ['ignore', 'pipe', 'pipe'],
         },
       );
+      const matches: OnDemandSourceReference[] = [];
+      const decoder = new StringDecoder('utf8');
+      let stdoutBuffer = '';
+      let stdoutBytes = 0;
+      let stderrObserved = false;
+      let locatorReadError = false;
+      let settled = false;
+      let intentionalCancel = false;
+      let incompleteReason: SourceSearchIncompleteReason | undefined;
+      let killTimer: NodeJS.Timeout | undefined;
+
+      const terminate = (reason: SourceSearchIncompleteReason): void => {
+        if (intentionalCancel) return;
+        intentionalCancel = true;
+        incompleteReason = reason;
+        child.kill('SIGTERM');
+        killTimer = setTimeout(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+        }, SUBPROCESS_TERMINATION_GRACE_MS);
+        killTimer.unref();
+      };
+
+      const processLine = (line: string): void => {
+        if (!line || intentionalCancel) return;
+        let candidateObserved = false;
+        try {
+          const event = JSON.parse(line) as {
+            type?: string;
+            data?: {
+              path?: {text?: string};
+              line_number?: number;
+            };
+          };
+          if (event.type !== 'match') return;
+          const rawPath = event.data?.path?.text;
+          const lineNumber = event.data?.line_number;
+          if (!rawPath || !Number.isInteger(lineNumber)) return;
+          candidateObserved = true;
+          const filePath = this.gate.validateRelativeSourcePath(
+            rawPath,
+            {enforceConfiguredExcludes: false},
+          );
+          if (!codebaseSourcePathMatches(
+            ref,
+            filePath,
+            pathPrefix,
+            this.platform,
+            selectionPolicy,
+          )) return;
+          if (providerPathAllowed && !providerPathAllowed(filePath)) return;
+          const content = readAcceptedTextFileSync(
+            root,
+            filePath,
+            this.gate.getSourceReadLimits().maxFileBytes,
+          );
+          const text = content.split(/\r?\n/)[lineNumber! - 1];
+          if (text === undefined || !text.includes(query)) return;
+          matches.push({
+            referenceId: referenceId(ref.codebaseId, filePath, lineNumber!),
+            codebaseId: ref.codebaseId,
+            filePath,
+            lineRange: {start: lineNumber!, end: lineNumber!},
+            ...sourceTextForMode(text, mode),
+          });
+          if (matches.length > maxResults) terminate('enumeration_budget');
+        } catch {
+          // Ripgrep output is an untrusted locator. Invalid, stale, or unsafe
+          // candidates disappear rather than projecting subprocess text.
+          if (candidateObserved) locatorReadError = true;
+        }
+      };
+
+      child.stdout.on('data', (chunk: Buffer) => {
+        if (intentionalCancel) return;
+        stdoutBytes += chunk.length;
+        if (stdoutBytes > this.maxSearchOutputBytes) {
+          terminate('output_budget');
+          return;
+        }
+        stdoutBuffer += decoder.write(chunk);
+        let newline = stdoutBuffer.indexOf('\n');
+        while (newline >= 0 && !intentionalCancel) {
+          const line = stdoutBuffer.slice(0, newline).replace(/\r$/, '');
+          stdoutBuffer = stdoutBuffer.slice(newline + 1);
+          processLine(line);
+          newline = stdoutBuffer.indexOf('\n');
+        }
+      });
+      child.stderr.on('data', () => {
+        stderrObserved = true;
+      });
+      child.once('error', error => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (killTimer) clearTimeout(killTimer);
+        reject(error);
+      });
+      child.once('close', code => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (killTimer) clearTimeout(killTimer);
+        if (!intentionalCancel && code !== 0 && code !== 1) {
+          const error = new Error(`ripgrep_search_failed:${code ?? 'signal'}`) as NodeJS.ErrnoException;
+          error.code = String(code ?? 'signal');
+          reject(error);
+          return;
+        }
+        const reason = incompleteReason ?? (
+          stderrObserved || locatorReadError ? 'traversal_error' : undefined
+        );
+        resolve({
+          matches,
+          truncated: reason !== undefined,
+          coverageComplete: reason === undefined,
+          ...(reason ? {searchIncompleteReason: reason} : {}),
+        });
+      });
+      const timeout = setTimeout(() => terminate('time_budget'), this.searchTimeoutMs);
+      timeout.unref();
     });
   }
 
@@ -429,34 +692,142 @@ export class OnDemandSourceAccessService {
     query: string,
     mode: CodeAwareMode,
     pathPrefix: string | undefined,
+    effectivePrefixes: readonly string[],
     maxResults: number,
-  ): Promise<OnDemandSourceReference[]> {
-    const preview = await previewRegisteredCodebaseRoot(this.gate, ref);
-    if (preview.blocked) throw new Error(preview.blockedReason ?? 'source_root_unavailable');
-    assertCodebaseRootIdentity(root, preview.rootRealpath);
-    const files = selectCodebasePreviewFiles(preview, ref, pathPrefix);
+  ): Promise<SourceSearchBackendResult> {
+    assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    const providerPathAllowed = mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
     const matches: OnDemandSourceReference[] = [];
-    for (const file of files) {
-      const content = readAcceptedTextFileSync(
-        root,
-        file.relativePath,
-        this.gate.getSourceReadLimits().maxFileBytes,
-      );
-      const lines = content.split(/\r?\n/);
-      for (let index = 0; index < lines.length; index += 1) {
-        if (!lines[index]!.includes(query)) continue;
-        const lineNumber = index + 1;
-        matches.push({
-          referenceId: referenceId(ref.codebaseId, file.relativePath, lineNumber),
-          codebaseId: ref.codebaseId,
-          filePath: file.relativePath,
-          lineRange: {start: lineNumber, end: lineNumber},
-          ...sourceTextForMode(lines[index]!, mode),
-        });
-        if (matches.length >= maxResults) return matches;
+    const stack = [''];
+    const deadline = Date.now() + this.searchTimeoutMs;
+    let visitedEntries = 0;
+    let visitedDirectories = 0;
+    let traversalError = false;
+    while (stack.length > 0) {
+      if (Date.now() >= deadline) {
+        return {
+          matches,
+          truncated: true,
+          coverageComplete: false,
+          searchIncompleteReason: 'time_budget',
+        };
       }
-      await new Promise<void>(resolve => setImmediate(resolve));
+      const directory = stack.pop()!;
+      visitedDirectories += 1;
+      if (visitedDirectories > NODE_WALK_MAX_DIRECTORIES) {
+        return {
+          matches,
+          truncated: true,
+          coverageComplete: false,
+          searchIncompleteReason: 'enumeration_budget',
+        };
+      }
+      const absoluteDirectory = directory
+        ? path.join(root, ...directory.split('/'))
+        : root;
+      try {
+        const handle = await fsPromises.opendir(absoluteDirectory);
+        for await (const entry of handle) {
+          if (Date.now() >= deadline) {
+            return {
+              matches,
+              truncated: true,
+              coverageComplete: false,
+              searchIncompleteReason: 'time_budget',
+            };
+          }
+          visitedEntries += 1;
+          if (visitedEntries > NODE_WALK_MAX_VISITED_ENTRIES) {
+            return {
+              matches,
+              truncated: true,
+              coverageComplete: false,
+              searchIncompleteReason: 'enumeration_budget',
+            };
+          }
+          const relativePath = directory ? `${directory}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            if (
+              HARD_SEARCH_EXCLUDE_DIRS.has(this.platform === 'win32'
+                ? entry.name.toLocaleLowerCase('en-US')
+                : entry.name) ||
+              !directoryCanContainPrefix(relativePath, effectivePrefixes, this.platform)
+            ) continue;
+            stack.push(relativePath);
+            continue;
+          }
+          if (!entry.isFile()) continue;
+          let acceptedPath: string;
+          try {
+            acceptedPath = this.gate.validateRelativeSourcePath(
+              relativePath,
+              {enforceConfiguredExcludes: false},
+            );
+          } catch {
+            continue;
+          }
+          if (!codebaseSourcePathMatches(
+            ref,
+            acceptedPath,
+            pathPrefix,
+            this.platform,
+            selectionPolicy,
+          )) continue;
+          if (providerPathAllowed && !providerPathAllowed(acceptedPath)) continue;
+          if (Date.now() >= deadline) {
+            return {
+              matches,
+              truncated: true,
+              coverageComplete: false,
+              searchIncompleteReason: 'time_budget',
+            };
+          }
+          try {
+            const content = readAcceptedTextFileSync(
+              root,
+              acceptedPath,
+              this.gate.getSourceReadLimits().maxFileBytes,
+            );
+            const lines = content.split(/\r?\n/);
+            for (let index = 0; index < lines.length; index += 1) {
+              if (!lines[index]!.includes(query)) continue;
+              const lineNumber = index + 1;
+              matches.push({
+                referenceId: referenceId(ref.codebaseId, acceptedPath, lineNumber),
+                codebaseId: ref.codebaseId,
+                filePath: acceptedPath,
+                lineRange: {start: lineNumber, end: lineNumber},
+                ...sourceTextForMode(lines[index]!, mode),
+              });
+              if (matches.length >= maxResults) {
+                return {
+                  matches,
+                  truncated: true,
+                  coverageComplete: false,
+                  searchIncompleteReason: 'backend_degraded',
+                };
+              }
+            }
+          } catch {
+            traversalError = true;
+          }
+          await new Promise<void>(resolve => setImmediate(resolve));
+        }
+      } catch {
+        traversalError = true;
+      }
     }
-    return matches;
+    return {
+      matches,
+      truncated: false,
+      coverageComplete: false,
+      searchIncompleteReason: traversalError ? 'traversal_error' : 'backend_degraded',
+    };
   }
 }

@@ -6,12 +6,15 @@ import type {RagStore} from '../ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
 import {
   codebaseScopeFromRef,
+  codebaseHasActiveIndex,
   type CodebaseIngestLeaseGuard,
+  type IndexCoverage,
   type CodebaseRef,
   type CodebaseRegistry,
   type CodebaseScope,
 } from '../codebase/codebaseRegistry';
 import {PathSecurityGate, readAcceptedTextFileSync} from '../codebase/pathSecurityGate';
+import {SourceEnumerator} from '../codebase/sourceEnumerator';
 import {redactSecrets} from '../security/secretPatterns';
 import {
   chunkSourceBySymbols,
@@ -20,15 +23,15 @@ import {
   stableChunkId,
 } from './baseIngester';
 import {
-  assertCodebaseRootIdentity,
   assertSourceFileUnchanged,
+  enumerateRegisteredCodebaseRoot,
   inspectSourceGeneration,
   isCodebaseIngestLeaseLost,
   isSourceChunkLimitExceeded,
-  previewRegisteredCodebaseRoot,
   resolveMaxChunkChars,
   resolveMaxSourceChunks,
   resolveSourcePathPrefix,
+  selectEnumeratedSourceFiles,
   selectCodebasePreviewFiles,
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
@@ -57,6 +60,8 @@ export interface KernelSourceIngestResult {
   blockedFileCount: number;
   redactionHitCount: number;
   errors: KernelSourceIngestError[];
+  activationDisposition?: 'active' | 'pending';
+  coverage?: IndexCoverage;
 }
 
 function spdxLicense(content: string): string | undefined {
@@ -70,6 +75,7 @@ export class KernelSourceIngester {
     private readonly store: RagStore,
     private readonly registry: CodebaseRegistry,
     private readonly gate: PathSecurityGate = new PathSecurityGate(),
+    private readonly enumerator: SourceEnumerator = new SourceEnumerator(),
   ) {}
 
   async ingest(codebaseId: string, opts: KernelSourceIngestOptions = {}): Promise<KernelSourceIngestResult> {
@@ -105,56 +111,68 @@ export class KernelSourceIngester {
     const stagedChunks: RagChunk[] = [];
     const flushStagedChunks = (): void => {
       if (stagedChunks.length === 0) return;
-      lease.assertHeld();
+      lease.assertHeld(true);
       const batch = stagedChunks.splice(0, SOURCE_INGEST_WRITE_BATCH_SIZE);
       this.store.addChunks(batch, effectiveScope);
     };
 
-    const preview = await previewRegisteredCodebaseRoot(this.gate, ref);
-    lease.assertHeld();
-    if (preview.blocked) {
+    let enumeration;
+    try {
+      enumeration = await enumerateRegisteredCodebaseRoot(this.gate, ref, this.enumerator);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       lease.updateIngestStatus({
         lastIngestStatus: 'blocked_by_security',
         lastIngestAt: Date.now(),
-        lastIngestError: preview.blockedReason,
-        blockedFileCount: preview.skippedFileCount,
+        lastIngestError: reason,
+        blockedFileCount: 0,
       });
+      if (reason === 'codebase_root_realpath_drift') throw error;
       return {
         codebaseId,
         filesProcessed: 0,
         chunksAdded: 0,
         chunksSkipped: 0,
-        blockedFileCount: preview.skippedFileCount,
+        blockedFileCount: 0,
         redactionHitCount: 0,
-        errors: [{filePath: ref.displayName, reason: preview.blockedReason ?? 'blocked'}],
+        errors: [{filePath: ref.displayName, reason}],
       };
     }
-    try {
-      assertCodebaseRootIdentity(ref.rootRealpath, preview.rootRealpath);
-    } catch (error) {
+    lease.assertHeld();
+    if (!enumeration.enumerationComplete || !enumeration.deterministic) {
+      const reason = enumeration.incompleteReason ?? 'source_enumeration_incomplete';
       lease.updateIngestStatus({
-        lastIngestStatus: 'blocked_by_security',
+        lastIngestStatus: 'failed',
         lastIngestAt: Date.now(),
-        lastIngestError: 'codebase_root_realpath_drift',
-        blockedFileCount: preview.skippedFileCount,
+        lastIngestError: reason,
+        blockedFileCount: enumeration.skippedCount,
       });
-      throw error;
+      throw new Error(`codebase_reindex_incomplete:${reason}`);
     }
 
+    const maxChars = resolveMaxChunkChars(opts.maxChunkChars, DEFAULT_MAX_CHUNK_CHARS);
+    const maxChunks = resolveMaxSourceChunks(opts.maxChunks);
+    const pathPrefix = resolveSourcePathPrefix(opts.pathPrefix);
+    const sourceReadLimits = this.gate.getSourceReadLimits();
+    const selection = selectEnumeratedSourceFiles(
+      enumeration,
+      ref,
+      pathPrefix,
+      sourceReadLimits.maxFiles,
+      sourceReadLimits.maxTotalBytes,
+    );
+    const selectedFiles = selection.files;
     const result: KernelSourceIngestResult = {
       codebaseId,
       filesProcessed: 0,
       chunksAdded: 0,
       chunksSkipped: 0,
-      blockedFileCount: preview.skippedFileCount,
+      blockedFileCount: enumeration.skippedCount,
       redactionHitCount: 0,
       errors: [],
+      activationDisposition: 'active',
+      coverage: selection.coverage,
     };
-    const maxChars = resolveMaxChunkChars(opts.maxChunkChars, DEFAULT_MAX_CHUNK_CHARS);
-    const maxChunks = resolveMaxSourceChunks(opts.maxChunks);
-    const pathPrefix = resolveSourcePathPrefix(opts.pathPrefix);
-    const selectedFiles = selectCodebasePreviewFiles(preview, ref, pathPrefix);
-    const sourceReadLimits = this.gate.getSourceReadLimits();
     let provenance: SourceGenerationProvenance;
     try {
       provenance = await inspectSourceGeneration(
@@ -278,7 +296,23 @@ export class KernelSourceIngester {
       if (stagedCount !== result.chunksAdded) {
         throw new Error(`staged_chunk_count_mismatch:${stagedCount}:${result.chunksAdded}`);
       }
-      lease.activateIndexGeneration(ref.indexGeneration, {
+      const coverage = {...selection.coverage, chunksIndexed: result.chunksAdded};
+      const keepExistingComplete = coverage.truncated && codebaseHasActiveIndex(ref) &&
+        (ref.activeIndexCoverage?.complete ?? true);
+      if (keepExistingComplete) {
+        result.activationDisposition = 'pending';
+        this.registry.setPendingGeneration(codebaseId, effectiveScope, ref.indexGeneration, {
+          candidateGenerationId: sourceGeneration,
+          coverage,
+          contentFingerprint: provenance.contentFingerprint,
+          chunkCount: result.chunksAdded,
+          createdAt: Date.now(),
+          indexedRevision: provenance.indexedRevision,
+          indexedDirty: provenance.sourceDirty,
+          commitProvenance: provenance.commitProvenance,
+        });
+      } else {
+        lease.activateIndexGeneration(ref.indexGeneration, {
         lastIngestStatus: 'ok',
         lastIngestAt: Date.now(),
         lastIngestError: undefined,
@@ -286,11 +320,15 @@ export class KernelSourceIngester {
         blockedFileCount: result.blockedFileCount,
         redactionHitCount: result.redactionHitCount,
         activeGeneration: sourceGeneration,
+        activeIndexCoverage: coverage,
+        lastAttemptCoverage: coverage,
         contentFingerprint: provenance.contentFingerprint,
         indexedRevision: provenance.indexedRevision,
         indexedDirty: provenance.sourceDirty,
         commitProvenance: provenance.commitProvenance,
-      });
+        });
+      }
+      result.coverage = coverage;
     } catch (error) {
       this.store.removeCodebaseChunkIds(codebaseId, stagedChunkIds, effectiveScope);
       if (!isCodebaseIngestLeaseLost(error)) {
@@ -304,14 +342,18 @@ export class KernelSourceIngester {
     }
     try {
       lease.assertHeld();
-      this.store.removeCodebaseChunksExceptGeneration(codebaseId, sourceGeneration, effectiveScope);
+      const current = this.registry.get(codebaseId, effectiveScope);
+      const preserved = [current?.activeGeneration, current?.pendingGeneration?.candidateGenerationId]
+        .filter((generation): generation is string => Boolean(generation));
+      this.store.removeCodebaseChunksExceptGeneration(codebaseId, preserved, effectiveScope);
     } catch (error) {
       const reason = `inactive_chunk_cleanup_failed:${error instanceof Error ? error.message : String(error)}`;
       result.errors.push({filePath: ref.displayName, reason});
       lease.updateIngestStatus({
-        lastIngestStatus: 'partial',
+        lastIngestStatus: 'ok',
         lastIngestAt: Date.now(),
         lastIngestError: reason,
+        maintenanceWarning: 'inactive_chunk_cleanup_failed',
       });
     }
     return result;

@@ -22,6 +22,8 @@ import {
   removeScopedKnowledgeRecord,
   upsertScopedKnowledgeRecord,
 } from '../scopedKnowledgeStore';
+import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
+import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
 export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker';
@@ -34,6 +36,8 @@ const REGISTRY_ROW_SCOPE = 'codebase-registry-ref';
 const INGEST_LEASE_KNOWLEDGE_KIND = 'codebase_ingest_lease';
 const INGEST_LEASE_ROW_SCOPE = 'codebase-ingest-lease';
 const INGEST_LEASE_TTL_MS = 10 * 60 * 1000;
+const INGEST_LEASE_HEARTBEAT_MS = Math.max(1_000, Math.floor(INGEST_LEASE_TTL_MS / 3));
+export const PENDING_GENERATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface CodebaseRegistrationRequirements {
   vendor: boolean;
@@ -62,6 +66,41 @@ export interface CodebaseScope {
   userId?: string;
 }
 
+export interface CodebaseConsentGrant {
+  revision: number;
+  grantedAt: number;
+  grantedBy: string;
+  extensions: string[];
+  includePrefixes: string[];
+  excludeGlobs: string[];
+}
+
+export interface IndexCoverage {
+  selectionPolicyRevision: number;
+  enumerationBackend: 'ripgrep' | 'git' | 'node-walk';
+  backendFidelity: 'exact' | 'degraded';
+  enumerationComplete: boolean;
+  deterministic: boolean;
+  filesEnumerated: number;
+  filesSelected: number;
+  bytesSelected: number;
+  chunksIndexed: number;
+  truncated: boolean;
+  complete: boolean;
+  truncationReason?: 'file_budget' | 'byte_budget' | 'enumeration_budget' | 'time_budget';
+}
+
+export interface PendingCodebaseGeneration {
+  candidateGenerationId: string;
+  coverage: IndexCoverage;
+  contentFingerprint: string;
+  chunkCount: number;
+  createdAt: number;
+  indexedRevision?: string;
+  indexedDirty?: boolean;
+  commitProvenance?: CodebaseRef['commitProvenance'];
+}
+
 export interface CodebaseRef {
   codebaseId: string;
   lifecycleState?: 'active' | 'deleting';
@@ -79,6 +118,7 @@ export interface CodebaseRef {
   buildId?: string;
   pathFilters?: string[];
   excludeGlobs?: string[];
+  selectionPolicyRevision?: number;
   symbolMapPaths?: string[];
   licenseTag?: string;
   consent: {
@@ -86,12 +126,20 @@ export interface CodebaseRef {
     consentedAt: number;
     consentedBy: string;
     consentHash: string;
+    grant?: CodebaseConsentGrant;
   };
   indexGeneration: number;
   /** Immutable generation id currently authorized for retrieval. */
   activeGeneration?: string;
+  /** Explicit retrieval state; `none` never falls back to a synthetic id. */
+  activeIndexState?: 'active' | 'none';
   /** Hash of the exact selected file paths and bytes used by the active generation. */
   contentFingerprint?: string;
+  activeIndexCoverage?: IndexCoverage;
+  pendingGeneration?: PendingCodebaseGeneration;
+  lastAttemptCoverage?: IndexCoverage;
+  maintenanceWarning?: 'inactive_chunk_cleanup_failed' | 'pending_generation_expired';
+  reindexRequired?: 'selection_scope_narrowed';
   /** Git HEAD observed while the active generation was indexed, when available. */
   indexedRevision?: string;
   /** Whether the indexed checkout had uncommitted or untracked changes. */
@@ -123,6 +171,14 @@ export interface CodebaseRefSummary {
   buildId?: string;
   indexGeneration: number;
   activeGeneration?: string;
+  activeIndexState: 'active' | 'none';
+  selectionPolicyRevision: number;
+  grantRevision: number;
+  availableNotConsentedExtensions: string[];
+  activeIndexCoverage?: IndexCoverage;
+  pendingGeneration?: PendingCodebaseGeneration;
+  maintenanceWarning?: CodebaseRef['maintenanceWarning'];
+  reindexRequired?: CodebaseRef['reindexRequired'];
   contentFingerprint?: string;
   indexedRevision?: string;
   indexedDirty?: boolean;
@@ -165,7 +221,7 @@ export interface CodebaseIngestLeaseGuard {
   /** Makes staged chunk ids unique even if a previous lease expired mid-run. */
   operationId: string;
   /** Renews the lease and fails before more source data is staged if ownership changed. */
-  assertHeld(): void;
+  assertHeld(forceDurableCheck?: boolean): void;
   /** Updates ingest metadata only while this operation still owns the lease. */
   updateIngestStatus(
     patch: Pick<CodebaseRef, 'lastIngestStatus'> & Partial<CodebaseRef>,
@@ -182,8 +238,33 @@ export interface CodebaseIngestLeaseGuard {
 }
 
 interface RegistryEnvelope {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   codebases: CodebaseRef[];
+}
+
+function normalizeCodebaseRef(ref: CodebaseRef): CodebaseRef {
+  const legacyGeneration = ref.activeGeneration ?? (
+    ref.contentFingerprint && (ref.chunkCount ?? 0) > 0
+      ? `codebase_${ref.indexGeneration}`
+      : undefined
+  );
+  const legacyPartial = ref.lastIngestStatus === 'partial';
+  return {
+    ...ref,
+    activeIndexState: ref.activeIndexState ?? (legacyGeneration ? 'active' : 'none'),
+    ...(legacyGeneration ? {activeGeneration: legacyGeneration} : {}),
+    selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
+    consent: {
+      ...ref.consent,
+      grant: ref.consent.grant ?? legacyConsentGrant(ref),
+    },
+    ...(legacyPartial
+      ? {
+          lastIngestStatus: 'ok' as const,
+          maintenanceWarning: ref.maintenanceWarning ?? 'inactive_chunk_cleanup_failed' as const,
+        }
+      : {}),
+  };
 }
 
 function consentHash(input: Pick<CodebaseRef, 'kind' | 'rootRealpath' | 'commitHash' | 'buildId' | 'vendor'>): string {
@@ -219,6 +300,8 @@ function ingestLeaseKey(codebaseId: string, scope: CodebaseScope): string {
 }
 
 function toSummary(ref: CodebaseRef): CodebaseRefSummary {
+  const normalized = normalizeCodebaseRef(ref);
+  ref = normalized;
   return {
     codebaseId: ref.codebaseId,
     lifecycleState: ref.lifecycleState ?? 'active',
@@ -231,6 +314,15 @@ function toSummary(ref: CodebaseRef): CodebaseRefSummary {
     ...(ref.buildId ? {buildId: ref.buildId} : {}),
     indexGeneration: ref.indexGeneration,
     ...(ref.activeGeneration ? {activeGeneration: ref.activeGeneration} : {}),
+    activeIndexState: ref.activeIndexState ?? 'none',
+    selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
+    grantRevision: effectiveConsentGrant(ref).revision,
+    availableNotConsentedExtensions: sourceExtensionsForKind(ref.kind)
+      .filter(extension => !effectiveConsentGrant(ref).extensions.includes(extension)),
+    ...(ref.activeIndexCoverage ? {activeIndexCoverage: ref.activeIndexCoverage} : {}),
+    ...(ref.pendingGeneration ? {pendingGeneration: ref.pendingGeneration} : {}),
+    ...(ref.maintenanceWarning ? {maintenanceWarning: ref.maintenanceWarning} : {}),
+    ...(ref.reindexRequired ? {reindexRequired: ref.reindexRequired} : {}),
     ...(ref.contentFingerprint ? {contentFingerprint: ref.contentFingerprint} : {}),
     ...(ref.indexedRevision ? {indexedRevision: ref.indexedRevision} : {}),
     ...(ref.indexedDirty !== undefined ? {indexedDirty: ref.indexedDirty} : {}),
@@ -250,6 +342,8 @@ function mergeDualWriteCodebaseFailClosed(
   databaseRef: CodebaseRef | undefined,
   scope: CodebaseScope,
 ): CodebaseRef | undefined {
+  filesystemRef = filesystemRef ? normalizeCodebaseRef(filesystemRef) : undefined;
+  databaseRef = databaseRef ? normalizeCodebaseRef(databaseRef) : undefined;
   if (!filesystemRef || !sameScope(filesystemRef, scope)) return undefined;
   if (!databaseRef || !sameScope(databaseRef, scope)) return filesystemRef;
   if (databaseRef.lifecycleState === 'deleting') return databaseRef;
@@ -257,13 +351,27 @@ function mergeDualWriteCodebaseFailClosed(
   if (filesystemRef.consent.sendToProvider && !databaseRef.consent.sendToProvider) {
     effective = {...effective, consent: databaseRef.consent};
   }
+  const grantMismatch = JSON.stringify(effectiveConsentGrant(filesystemRef)) !==
+    JSON.stringify(effectiveConsentGrant(databaseRef));
+  if (grantMismatch) {
+    effective = {
+      ...effective,
+      consent: {
+        ...effective.consent,
+        sendToProvider: false,
+      },
+      pendingGeneration: undefined,
+    };
+  }
   if (
+    (filesystemRef.selectionPolicyRevision ?? 1) !== (databaseRef.selectionPolicyRevision ?? 1) ||
     filesystemRef.activeGeneration !== databaseRef.activeGeneration ||
     filesystemRef.contentFingerprint !== databaseRef.contentFingerprint
   ) {
     effective = {
       ...effective,
       activeGeneration: undefined,
+      activeIndexState: 'none',
       contentFingerprint: undefined,
       chunkCount: 0,
     };
@@ -271,14 +379,17 @@ function mergeDualWriteCodebaseFailClosed(
   return effective;
 }
 
-export function activeCodebaseGeneration(ref: Pick<CodebaseRef, 'indexGeneration' | 'activeGeneration'>): string {
-  return ref.activeGeneration ?? `codebase_${ref.indexGeneration}`;
+export function activeCodebaseGeneration(
+  ref: Pick<CodebaseRef, 'activeGeneration' | 'activeIndexState'>,
+): string | undefined {
+  return ref.activeIndexState === 'active' ? ref.activeGeneration : undefined;
 }
 
 export function codebaseHasActiveIndex(
-  ref: Pick<CodebaseRef, 'lifecycleState' | 'activeGeneration' | 'contentFingerprint' | 'chunkCount'>,
+  ref: Pick<CodebaseRef, 'lifecycleState' | 'activeGeneration' | 'activeIndexState' | 'contentFingerprint' | 'chunkCount'>,
 ): boolean {
   return (ref.lifecycleState ?? 'active') === 'active' &&
+    ref.activeIndexState === 'active' &&
     Boolean(ref.activeGeneration && ref.contentFingerprint && (ref.chunkCount ?? 0) > 0);
 }
 
@@ -313,9 +424,9 @@ export class CodebaseRegistry {
     if (!fs.existsSync(this.registryPath)) return;
     try {
       const parsed = JSON.parse(fs.readFileSync(this.registryPath, 'utf-8')) as RegistryEnvelope;
-      if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.codebases)) return;
+      if ((parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) || !Array.isArray(parsed.codebases)) return;
       for (const ref of parsed.codebases) {
-        this.codebases.set(ref.codebaseId, ref);
+        this.codebases.set(ref.codebaseId, normalizeCodebaseRef(ref));
       }
     } catch {
       // Preserve corrupt registry for operator inspection.
@@ -331,6 +442,17 @@ export class CodebaseRegistry {
     // Canonicalize even trusted preview input so consent and later drift checks
     // never inherit aliases such as macOS /var -> /private/var.
     const rootRealpath = fs.realpathSync(input.rootRealpath ?? input.rootPath);
+    const selection = buildSourceSelectionIR({
+      kind: input.kind,
+      includePrefixes: input.pathFilters,
+      excludeGlobs: input.excludeGlobs,
+    });
+    const pathFilters = selection.includePrefixes.length > 0
+      ? selection.includePrefixes
+      : undefined;
+    const excludeGlobs = selection.excludeGlobs.length > 0
+      ? selection.excludeGlobs
+      : undefined;
     const now = Date.now();
     const ref: CodebaseRef = {
       codebaseId: `cb_${randomUUID()}`,
@@ -345,8 +467,9 @@ export class CodebaseRegistry {
       ...(input.commitHash ? {commitHash: input.commitHash} : {}),
       ...(input.vendor ? {vendor: input.vendor} : {}),
       ...(input.buildId ? {buildId: input.buildId} : {}),
-      ...(input.pathFilters ? {pathFilters: input.pathFilters} : {}),
-      ...(input.excludeGlobs ? {excludeGlobs: input.excludeGlobs} : {}),
+      ...(pathFilters ? {pathFilters} : {}),
+      ...(excludeGlobs ? {excludeGlobs} : {}),
+      selectionPolicyRevision: 1,
       ...(input.symbolMapPaths ? {symbolMapPaths: input.symbolMapPaths} : {}),
       ...(input.licenseTag ? {licenseTag: input.licenseTag} : {}),
       consent: {
@@ -360,8 +483,17 @@ export class CodebaseRegistry {
           buildId: input.buildId,
           vendor: input.vendor,
         }),
+        grant: {
+          revision: 1,
+          grantedAt: now,
+          grantedBy: input.consentedBy ?? input.userId ?? 'local-user',
+          extensions: [...sourceExtensionsForKind(input.kind)],
+          includePrefixes: [...selection.includePrefixes],
+          excludeGlobs: [...selection.excludeGlobs],
+        },
       },
       indexGeneration: 1,
+      activeIndexState: 'none',
       ...resolveCodebaseScope(input),
       createdAt: now,
       updatedAt: now,
@@ -399,7 +531,7 @@ export class CodebaseRegistry {
           codebaseId,
           scope,
         )?.record;
-      return ref && sameScope(ref, scope) ? ref : undefined;
+      return ref && sameScope(ref, scope) ? normalizeCodebaseRef(ref) : undefined;
     }
     const filesystemRef = this.getFilesystemRef(codebaseId);
     const databaseRef = enterpriseKnowledgeDbWritesEnabled()
@@ -441,7 +573,7 @@ export class CodebaseRegistry {
         scope,
         {rowScope: REGISTRY_ROW_SCOPE},
       )) {
-        refsById.set(row.record.codebaseId, row.record);
+        refsById.set(row.record.codebaseId, normalizeCodebaseRef(row.record));
       }
     }
     return Array.from(refsById.values())
@@ -474,6 +606,7 @@ export class CodebaseRegistry {
         throw new Error('codebase_deleting');
       }
       const consentedAt = Date.now();
+      const previousGrant = effectiveConsentGrant(existing);
       return {
         ...existing,
         consent: {
@@ -484,8 +617,215 @@ export class CodebaseRegistry {
             .update(`${existing.consent.consentHash}\0${sendToProvider}\0${actor}\0${consentedAt}`)
             .digest('hex')
             .slice(0, 16),
+          grant: {
+            ...previousGrant,
+            revision: previousGrant.revision + 1,
+            grantedAt: consentedAt,
+            grantedBy: actor,
+          },
         },
+        pendingGeneration: undefined,
         updatedAt: consentedAt,
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  updateSelectionPolicy(
+    codebaseId: string,
+    scope: CodebaseScope,
+    patch: {pathFilters?: string[]; excludeGlobs?: string[]},
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      const requestedPathFilters = patch.pathFilters === undefined
+        ? existing.pathFilters
+        : patch.pathFilters;
+      const requestedExcludeGlobs = patch.excludeGlobs === undefined
+        ? existing.excludeGlobs
+        : patch.excludeGlobs;
+      const selection = buildSourceSelectionIR({
+        kind: existing.kind,
+        includePrefixes: requestedPathFilters,
+        excludeGlobs: requestedExcludeGlobs,
+      });
+      const pathFilters = selection.includePrefixes.length > 0
+        ? selection.includePrefixes
+        : undefined;
+      const excludeGlobs = selection.excludeGlobs.length > 0
+        ? selection.excludeGlobs
+        : undefined;
+      if (existing.kind === 'kernel_source' && !pathFilters?.length) {
+        throw new Error('kernel_source requires pathFilters');
+      }
+      const listsEqual = (left?: readonly string[], right?: readonly string[]): boolean => {
+        const normalizedLeft = left ?? [];
+        const normalizedRight = right ?? [];
+        return normalizedLeft.length === normalizedRight.length &&
+          normalizedLeft.every((value, index) => value === normalizedRight[index]);
+      };
+      if (
+        listsEqual(existing.pathFilters, pathFilters) &&
+        listsEqual(existing.excludeGlobs, excludeGlobs)
+      ) return existing;
+      return {
+        ...existing,
+        pathFilters,
+        excludeGlobs,
+        selectionPolicyRevision: (existing.selectionPolicyRevision ?? 1) + 1,
+        indexGeneration: existing.indexGeneration + 1,
+        activeIndexState: 'none',
+        activeGeneration: undefined,
+        activeIndexCoverage: undefined,
+        contentFingerprint: undefined,
+        chunkCount: 0,
+        pendingGeneration: undefined,
+        reindexRequired: 'selection_scope_narrowed',
+        updatedAt: Date.now(),
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  authorizeAvailableExtensions(
+    codebaseId: string,
+    scope: CodebaseScope,
+    actor: string,
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (!existing.consent.sendToProvider) throw new Error('provider_send_consent_required');
+      const now = Date.now();
+      const grant = effectiveConsentGrant(existing);
+      return {
+        ...existing,
+        consent: {
+          ...existing.consent,
+          consentedAt: now,
+          consentedBy: actor,
+          grant: {
+            ...grant,
+            revision: grant.revision + 1,
+            grantedAt: now,
+            grantedBy: actor,
+            extensions: [...sourceExtensionsForKind(existing.kind)],
+          },
+        },
+        pendingGeneration: undefined,
+        updatedAt: now,
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  setPendingGeneration(
+    codebaseId: string,
+    scope: CodebaseScope,
+    expectedCurrentGeneration: number,
+    pending: PendingCodebaseGeneration,
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (existing.indexGeneration !== expectedCurrentGeneration) {
+        throw new Error('codebase_index_generation_changed');
+      }
+      if (pending.coverage.selectionPolicyRevision !== (existing.selectionPolicyRevision ?? 1)) {
+        throw new Error('pending_generation_stale');
+      }
+      return {
+        ...existing,
+        pendingGeneration: pending,
+        lastAttemptCoverage: pending.coverage,
+        updatedAt: Date.now(),
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  acceptPendingGeneration(
+    codebaseId: string,
+    scope: CodebaseScope,
+    expectedSelectionPolicyRevision: number,
+    expectedGrantRevision: number,
+    expectedCandidateGenerationId: string,
+    now = Date.now(),
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      const pending = existing.pendingGeneration;
+      if (!pending) throw new Error('pending_generation_not_found');
+      if (
+        pending.candidateGenerationId !== expectedCandidateGenerationId ||
+        (existing.selectionPolicyRevision ?? 1) !== expectedSelectionPolicyRevision ||
+        effectiveConsentGrant(existing).revision !== expectedGrantRevision ||
+        pending.coverage.selectionPolicyRevision !== expectedSelectionPolicyRevision
+      ) throw new Error('pending_generation_stale');
+      if (now - pending.createdAt >= PENDING_GENERATION_TTL_MS) {
+        throw new Error('pending_generation_expired');
+      }
+      return {
+        ...existing,
+        activeIndexState: 'active',
+        activeGeneration: pending.candidateGenerationId,
+        activeIndexCoverage: pending.coverage,
+        contentFingerprint: pending.contentFingerprint,
+        chunkCount: pending.chunkCount,
+        indexedRevision: pending.indexedRevision,
+        indexedDirty: pending.indexedDirty,
+        commitProvenance: pending.commitProvenance,
+        indexGeneration: existing.indexGeneration + 1,
+        pendingGeneration: undefined,
+        reindexRequired: undefined,
+        lastIngestStatus: 'ok',
+        updatedAt: now,
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  rejectPendingGeneration(
+    codebaseId: string,
+    scope: CodebaseScope,
+    expectedCandidateGenerationId: string,
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (!existing.pendingGeneration) throw new Error('pending_generation_not_found');
+      if (existing.pendingGeneration.candidateGenerationId !== expectedCandidateGenerationId) {
+        throw new Error('pending_generation_stale');
+      }
+      return {
+        ...existing,
+        pendingGeneration: undefined,
+        updatedAt: Date.now(),
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  expirePendingGeneration(
+    codebaseId: string,
+    scope: CodebaseScope,
+    expectedCandidateGenerationId: string,
+    now = Date.now(),
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (
+        !existing.pendingGeneration ||
+        existing.pendingGeneration.candidateGenerationId !== expectedCandidateGenerationId ||
+        now - existing.pendingGeneration.createdAt < PENDING_GENERATION_TTL_MS
+      ) return existing;
+      return {
+        ...existing,
+        pendingGeneration: undefined,
+        maintenanceWarning: 'pending_generation_expired',
+        updatedAt: now,
       };
     });
     if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
@@ -508,6 +848,8 @@ export class CodebaseRegistry {
       return {
         ...existing,
         ...patch,
+        activeIndexState: patch.activeGeneration ? 'active' : existing.activeIndexState,
+        ...(patch.activeGeneration ? {pendingGeneration: undefined} : {}),
         indexGeneration: expectedCurrentGeneration + 1,
         updatedAt: Date.now(),
       };
@@ -535,9 +877,15 @@ export class CodebaseRegistry {
         leasePath,
         'codebase_reindex_in_progress',
         async filesystemLease => {
-          const assertHeld = (): void => {
+          let lastDurableCheckAt = 0;
+          const assertHeld = (forceDurableCheck = false): void => {
+            const now = Date.now();
+            if (!forceDurableCheck && now - lastDurableCheckAt < INGEST_LEASE_HEARTBEAT_MS) {
+              return;
+            }
             try {
               filesystemLease.assertHeld();
+              lastDurableCheckAt = now;
             } catch {
               throw new Error('codebase_reindex_lease_lost');
             }
@@ -546,14 +894,14 @@ export class CodebaseRegistry {
             operationId: ownerToken,
             assertHeld,
             updateIngestStatus: patch => {
-              assertHeld();
+              assertHeld(true);
               this.updateIngestStatus(codebaseId, patch, scope);
               const updated = this.get(codebaseId, scope);
               if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
               return updated;
             },
             activateIndexGeneration: (expectedCurrentGeneration, patch) => {
-              assertHeld();
+              assertHeld(true);
               return this.activateIndexGeneration(
                 codebaseId,
                 scope,
@@ -562,7 +910,7 @@ export class CodebaseRegistry {
               );
             },
             beginDeletion: actor => {
-              assertHeld();
+              assertHeld(true);
               return this.beginDeletionWithLease(
                 codebaseId,
                 scope,
@@ -572,7 +920,7 @@ export class CodebaseRegistry {
               );
             },
             deleteRegistration: () => {
-              assertHeld();
+              assertHeld(true);
               return this.deleteRegistrationWithLease(
                 codebaseId,
                 scope,
@@ -609,10 +957,16 @@ export class CodebaseRegistry {
       );
     }
 
+    let lastDurableCheckAt = 0;
     const lease: CodebaseIngestLeaseGuard = {
       operationId: ownerToken,
-      assertHeld: () => {
+      assertHeld: (forceDurableCheck = false) => {
         if (useDistributedLease) {
+          const startedAt = Date.now();
+          if (
+            !forceDurableCheck &&
+            startedAt - lastDurableCheckAt < INGEST_LEASE_HEARTBEAT_MS
+          ) return;
           mutateScopedKnowledgeRecord<CodebaseIngestLease>(
             INGEST_LEASE_KNOWLEDGE_KIND,
             codebaseId,
@@ -626,6 +980,7 @@ export class CodebaseRegistry {
             },
             {rowScope: INGEST_LEASE_ROW_SCOPE},
           );
+          lastDurableCheckAt = startedAt;
         }
       },
       updateIngestStatus: patch =>
@@ -773,6 +1128,8 @@ export class CodebaseRegistry {
             return {
               ...existing,
               ...patch,
+              activeIndexState: patch.activeGeneration ? 'active' : existing.activeIndexState,
+              ...(patch.activeGeneration ? {pendingGeneration: undefined} : {}),
               indexGeneration: expectedCurrentGeneration + 1,
               updatedAt: now,
             };
@@ -803,6 +1160,8 @@ export class CodebaseRegistry {
       ...existing,
       lifecycleState: 'deleting',
       activeGeneration: `deleted_${ownerToken}`,
+      activeIndexState: 'none',
+      pendingGeneration: undefined,
       contentFingerprint: undefined,
       chunkCount: 0,
       consent: {
@@ -944,14 +1303,14 @@ export class CodebaseRegistry {
           if (!existing || !sameScope(existing, scope)) {
             throw new Error(`Codebase '${codebaseId}' not found`);
           }
-          return mutate(existing);
+          return mutate(normalizeCodebaseRef(existing));
         },
         {rowScope: REGISTRY_ROW_SCOPE},
       );
     } else {
       const existing = this.get(codebaseId, scope);
       if (!existing) return undefined;
-      updated = mutate(existing);
+      updated = mutate(normalizeCodebaseRef(existing));
       if (enterpriseKnowledgeDbWritesEnabled()) {
         upsertScopedKnowledgeRecord(
           REGISTRY_KNOWLEDGE_KIND,
@@ -986,7 +1345,7 @@ export class CodebaseRegistry {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, {recursive: true});
     const tmp = `${this.registryPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;
     const envelope: RegistryEnvelope = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       codebases: Array.from(this.codebases.values()),
     };
     fs.writeFileSync(tmp, JSON.stringify(envelope, null, 2), 'utf-8');

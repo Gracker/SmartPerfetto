@@ -15,6 +15,7 @@ import {
   readAcceptedTextFileSync,
   readOpenedTextFileBoundedSync,
 } from '../codebase/pathSecurityGate';
+import {SourceEnumerator} from '../codebase/sourceEnumerator';
 import {AppSourceIngester} from '../rag/appSourceIngester';
 import {stableChunkId} from '../rag/baseIngester';
 import {inspectSourceGeneration} from '../rag/sourceFileSelection';
@@ -183,7 +184,7 @@ describe('AppSourceIngester', () => {
     const search = store.search('MainActivity', {
       kinds: ['app_source'] as Array<'app_source'>,
       codebaseIds: [ref.codebaseId],
-      activeCodebaseGenerations: {[ref.codebaseId]: activeCodebaseGeneration(activeRef)},
+      activeCodebaseGenerations: {[ref.codebaseId]: activeCodebaseGeneration(activeRef)!},
       scope: ref,
     });
     expect(search.results[0]?.chunk).toEqual(expect.objectContaining({
@@ -244,7 +245,7 @@ describe('AppSourceIngester', () => {
     const hit = store.search('DirtyWorktreeRevision', {
       kinds: ['app_source'],
       codebaseIds: [ref.codebaseId],
-      activeCodebaseGenerations: {[ref.codebaseId]: activeCodebaseGeneration(dirty)},
+      activeCodebaseGenerations: {[ref.codebaseId]: activeCodebaseGeneration(dirty)!},
       scope: dirty,
     }).results[0]?.chunk;
     expect(hit).toMatchObject({
@@ -273,7 +274,7 @@ describe('AppSourceIngester', () => {
 
     fs.writeFileSync(path.join(root, 'app', 'IgnoredInApp.kt'), 'class IgnoredInApp\n');
     await new AppSourceIngester(store, registry, new PathSecurityGate({allowlistRoots: [root]})).ingest(ref.codebaseId);
-    const active = activeCodebaseGeneration(registry.get(ref.codebaseId)!);
+    const active = activeCodebaseGeneration(registry.get(ref.codebaseId)!)!;
     const searchOptions: Parameters<RagStore['search']>[1] = {
       kinds: ['app_source'],
       codebaseIds: [ref.codebaseId],
@@ -332,7 +333,8 @@ describe('AppSourceIngester', () => {
     fs.writeFileSync(path.join(root, 'MainActivity.kt'), 'class MainActivity\n');
     const {store, ref, registry} = makeIngester(root);
     const gate = new PathSecurityGate({allowlistRoots: [root]});
-    const originalPreview = gate.preview.bind(gate);
+    const enumerator = new SourceEnumerator();
+    const originalEnumerate = enumerator.enumerate.bind(enumerator);
     let releaseFirst!: () => void;
     const held = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -341,12 +343,12 @@ describe('AppSourceIngester', () => {
     const entered = new Promise<void>((resolve) => {
       markEntered = resolve;
     });
-    jest.spyOn(gate, 'preview').mockImplementationOnce(async () => {
+    jest.spyOn(enumerator, 'enumerate').mockImplementationOnce(async input => {
       markEntered();
       await held;
-      return originalPreview(root);
+      return originalEnumerate(input);
     });
-    const ingester = new AppSourceIngester(store, registry, gate);
+    const ingester = new AppSourceIngester(store, registry, gate, enumerator);
     const first = ingester.ingest(ref.codebaseId);
     await entered;
 
@@ -359,7 +361,7 @@ describe('AppSourceIngester', () => {
       kinds: ['app_source'],
       codebaseIds: [ref.codebaseId],
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(activeRef),
+        [ref.codebaseId]: activeCodebaseGeneration(activeRef)!,
       },
       scope: activeRef,
     }).results).toHaveLength(1);
@@ -375,7 +377,7 @@ describe('AppSourceIngester', () => {
       .rejects.toThrow('maxChunkChars must be an integer between 256 and 65536');
   });
 
-  it('rolls back a generation that exceeds the source chunk budget', async () => {
+  it('rejects a whole selected file before staging beyond the chunk budget', async () => {
     const root = path.join(tmpDir, 'chunk-budget');
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'Many.kt'), [
@@ -388,11 +390,39 @@ describe('AppSourceIngester', () => {
     await expect(ingester.ingest(ref.codebaseId, {maxChunkChars: 256, maxChunks: 1}))
       .rejects.toThrow('source_chunk_limit_exceeded:1');
 
-    expect(registry.get(ref.codebaseId)).toMatchObject({
-      indexGeneration: generationBefore,
-      lastIngestStatus: 'failed',
-    });
-    expect(store.listChunks({scope: ref})).toEqual([]);
+    expect(registry.get(ref.codebaseId)?.indexGeneration).toBe(generationBefore);
+    expect(store.listChunks({scope: ref})).toHaveLength(0);
+  });
+
+  it('keeps a complete active generation and stages deterministic truncation as pending', async () => {
+    const root = path.join(tmpDir, 'pending-generation');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'A.kt'), 'class CompleteActive\n');
+    const {store, ref, registry} = makeIngester(root);
+    const ingester = new AppSourceIngester(
+      store,
+      registry,
+      new PathSecurityGate({allowlistRoots: [root], maxFiles: 1}),
+    );
+    await ingester.ingest(ref.codebaseId);
+    const activeBefore = registry.get(ref.codebaseId)!;
+    fs.writeFileSync(path.join(root, 'B.kt'), 'class PendingCandidate\n');
+
+    await ingester.ingest(ref.codebaseId);
+
+    const after = registry.get(ref.codebaseId)!;
+    expect(activeCodebaseGeneration(after)).toBe(activeCodebaseGeneration(activeBefore));
+    expect(after.pendingGeneration).toEqual(expect.objectContaining({
+      coverage: expect.objectContaining({
+        truncated: true,
+        truncationReason: 'file_budget',
+      }),
+    }));
+    expect(store.countCodebaseGenerationChunks(
+      ref.codebaseId,
+      after.pendingGeneration!.candidateGenerationId,
+      after,
+    )).toBeGreaterThan(0);
   });
 
   it('does not let a stale run overwrite a newer activated generation', async () => {
@@ -406,7 +436,8 @@ describe('AppSourceIngester', () => {
     const registryB = new CodebaseRegistry(registryPath);
     const storeB = new RagStore(storePath);
     const gateA = new PathSecurityGate({allowlistRoots: [root]});
-    const originalPreview = gateA.preview.bind(gateA);
+    const enumeratorA = new SourceEnumerator();
+    const originalEnumerate = enumeratorA.enumerate.bind(enumeratorA);
     const newerRun = new AppSourceIngester(
       storeB,
       registryB,
@@ -432,23 +463,67 @@ describe('AppSourceIngester', () => {
           throw new Error('stale deletion must not run');
         },
       }));
-    jest.spyOn(gateA, 'preview').mockImplementationOnce(async target => {
-      const preview = await originalPreview(target);
+    jest.spyOn(enumeratorA, 'enumerate').mockImplementationOnce(async input => {
+      const enumeration = await originalEnumerate(input);
       await newerRun.ingest(ref.codebaseId);
       leaseValid = false;
-      return preview;
+      return enumeration;
     });
 
     await expect(new AppSourceIngester(
       new RagStore(storePath),
       registryA,
       gateA,
+      enumeratorA,
     ).ingest(ref.codebaseId)).rejects.toThrow('codebase_reindex_lease_lost');
 
     expect(registryB.get(ref.codebaseId)).toMatchObject({
       indexGeneration: ref.indexGeneration + 1,
       lastIngestStatus: 'ok',
     });
+  });
+
+  it('fences an in-flight reindex when the source selection changes', async () => {
+    const root = path.join(tmpDir, 'selection-race');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    const {store, ref, registry} = makeIngester(root);
+    const enumerator = new SourceEnumerator();
+    const originalEnumerate = enumerator.enumerate.bind(enumerator);
+    let releaseEnumeration!: () => void;
+    const paused = new Promise<void>(resolve => {
+      releaseEnumeration = resolve;
+    });
+    let enumerationStarted!: () => void;
+    const started = new Promise<void>(resolve => {
+      enumerationStarted = resolve;
+    });
+    jest.spyOn(enumerator, 'enumerate').mockImplementationOnce(async input => {
+      const result = await originalEnumerate(input);
+      enumerationStarted();
+      await paused;
+      return result;
+    });
+    const ingest = new AppSourceIngester(
+      store,
+      registry,
+      new PathSecurityGate({allowlistRoots: [root]}),
+      enumerator,
+    ).ingest(ref.codebaseId);
+
+    await started;
+    const narrowed = registry.updateSelectionPolicy(ref.codebaseId, {}, {
+      excludeGlobs: ['**/generated/**'],
+    });
+    releaseEnumeration();
+
+    await expect(ingest).rejects.toThrow('codebase_index_generation_changed');
+    expect(narrowed.selectionPolicyRevision).toBe(2);
+    expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({
+      activeIndexState: 'none',
+      reindexRequired: 'selection_scope_narrowed',
+    }));
+    expect(store.listChunks({scope: ref})).toHaveLength(0);
   });
 
   it('keeps the activated generation readable when stale cleanup fails', async () => {
@@ -464,12 +539,13 @@ describe('AppSourceIngester', () => {
     const activeRef = registry.get(ref.codebaseId)!;
 
     expect(result.errors[0]?.reason).toContain('inactive_chunk_cleanup_failed');
-    expect(activeRef.lastIngestStatus).toBe('partial');
+    expect(activeRef.lastIngestStatus).toBe('ok');
+    expect(activeRef.maintenanceWarning).toBe('inactive_chunk_cleanup_failed');
     expect(store.search('MainActivity', {
       kinds: ['app_source'],
       codebaseIds: [ref.codebaseId],
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(activeRef),
+        [ref.codebaseId]: activeCodebaseGeneration(activeRef)!,
       },
       scope: activeRef,
     }).results).toHaveLength(1);
@@ -538,17 +614,18 @@ describe('AppSourceIngester', () => {
     fs.writeFileSync(stablePath, 'class StableGenerationOne\n');
     const {store, ref, registry} = makeIngester(root);
     const gate = new PathSecurityGate({allowlistRoots: [root]});
-    const ingester = new AppSourceIngester(store, registry, gate);
+    const enumerator = new SourceEnumerator();
+    const ingester = new AppSourceIngester(store, registry, gate, enumerator);
     await ingester.ingest(ref.codebaseId);
     const firstGeneration = registry.get(ref.codebaseId)!.indexGeneration;
 
     fs.writeFileSync(stablePath, 'class StableGenerationTwo\n');
     fs.writeFileSync(failingPath, 'class UnreadableGenerationTwo\n');
-    const originalPreview = gate.preview.bind(gate);
-    jest.spyOn(gate, 'preview').mockImplementationOnce(async target => {
-      const preview = await originalPreview(target);
+    const originalEnumerate = enumerator.enumerate.bind(enumerator);
+    jest.spyOn(enumerator, 'enumerate').mockImplementationOnce(async input => {
+      const enumeration = await originalEnumerate(input);
       fs.rmSync(failingPath);
-      return preview;
+      return enumeration;
     });
 
     await expect(ingester.ingest(ref.codebaseId)).rejects.toThrow(
@@ -559,7 +636,7 @@ describe('AppSourceIngester', () => {
       kinds: ['app_source'],
       codebaseIds: [ref.codebaseId],
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(activeRef),
+        [ref.codebaseId]: activeCodebaseGeneration(activeRef)!,
       },
       scope: activeRef,
     };
@@ -592,7 +669,7 @@ describe('AppSourceIngester', () => {
     expect(store.search('StableIndexedSource', {
       kinds: ['app_source'],
       codebaseIds: [ref.codebaseId],
-      activeCodebaseGenerations: {[ref.codebaseId]: activeCodebaseGeneration(activeAfter)},
+      activeCodebaseGenerations: {[ref.codebaseId]: activeCodebaseGeneration(activeAfter)!},
       scope: activeAfter,
     }).results).toHaveLength(1);
   });

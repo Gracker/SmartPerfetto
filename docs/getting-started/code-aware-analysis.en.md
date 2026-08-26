@@ -25,7 +25,8 @@ npm run cli:dev -- codebase register /path/to/app \
 npm run cli:dev -- codebase register /path/to/app \
   --name MyApp \
   --kind app_source \
-  --path-filter app/src/main/
+  --path-filter app/src/main/ \
+  --exclude-glob '**/generated/**'
 
 # Optional: build an index for semantic/symbol lookup and patch workflows
 npm run cli:dev -- codebase reindex cb_xxx
@@ -75,6 +76,14 @@ GitNexus is an independent optional third-party tool. Its [official project](htt
 | `kernel_source` | kernel binder/scheduler/mm/io causes | source folder, `vendor`, and `path-filter` (CLI reindex can use `pathPrefix`); optional license tag |
 | `oem_sdk` | OEM / chipset SDK material | source folder, `vendor`, and `licenseTag`; optional build ID and path scope |
 
+Source enumeration uses a `ripgrep > git > node-walk` capability ladder and reports the actual backend, fidelity, and coverage in preview, CLI, and index audit results. `.git`, `.hg`, `.svn`, `.repo`, and credential/key files are hard exclusions. Noise such as `node_modules`, `build`, and `Pods` is considered only when a path filter explicitly selects it. AOSP preview reads bounded `.repo/manifest.xml` metadata for project/group scope buttons, while the `.repo` object store itself is never traversed as source.
+
+`.gitignore`, `.ignore`, and `.rgignore` affect enumeration recall; they are not provider authorization boundaries. Authorization is a dynamic path scope and always intersects the current selection policy with the frozen consent grant. Languages added by upgrades—such as Dart, TypeScript, Swift, and Objective-C—can be located in `metadata_only`, but existing registrations must explicitly authorize the new languages before their text can be sent.
+
+Index coverage is modeled independently. Complete deterministic candidates can activate directly. When a complete index already exists, a deterministically truncated candidate becomes pending until the user accepts or rejects it, and the complete index remains active. Timed-out, traversal-error, or nondeterministic candidates never auto-activate. Indexing remains optional acceleration, so pending or failed indexing does not block bounded on-demand access to a live root.
+
+Docker images install `ripgrep` and `git`. Portable packages do not bundle ripgrep: they report capability and use bounded `node-walk` with `backendFidelity=degraded` when rg/git are unavailable. Incomplete coverage must never be stated as proof that source does not exist.
+
 Do not enter a commit manually. Each index generation reads Git `HEAD` from the
 actual checkout and records dirty/untracked state separately. Non-Git folders
 use a content fingerprint.
@@ -109,8 +118,7 @@ authorized through `SMARTPERFETTO_CODEBASE_ROOTS`.
 Common checks:
 
 ```bash
-cd backend
-npm run verify:codebase-aware
+npm --prefix backend run verify:codebase-aware
 ```
 
 The local full E2E uses:

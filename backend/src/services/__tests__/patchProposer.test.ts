@@ -38,6 +38,13 @@ beforeEach(() => {
     ...scope,
   });
   codebaseId = ref.codebaseId;
+  const sourceGeneration = 'codebase_2_patch';
+  registry.activateIndexGeneration(codebaseId, scope, ref.indexGeneration, {
+    lastIngestStatus: 'ok',
+    activeGeneration: sourceGeneration,
+    contentFingerprint: 'patch-content',
+    chunkCount: 1,
+  });
   store = new RagStore(path.join(tmpDir, 'rag.json'));
   store.addChunk({
     chunkId: 'chunk-main',
@@ -50,7 +57,7 @@ beforeEach(() => {
     symbol: 'slow',
     codebaseId,
     registryOrigin: 'codebase_registry',
-    sourceGeneration: `codebase_${ref.indexGeneration}`,
+    sourceGeneration,
   }, scope);
   ledger = new CodeLookupLedger('session-patch', 1000, 3, path.join(tmpDir, 'ledger.jsonl'));
   ledger.record({
@@ -128,6 +135,13 @@ describe('PatchProposer', () => {
       sendToProvider: true,
       ...scope,
     });
+    const otherGeneration = 'codebase_2_other';
+    registry.activateIndexGeneration(otherRef.codebaseId, scope, otherRef.indexGeneration, {
+      lastIngestStatus: 'ok',
+      activeGeneration: otherGeneration,
+      contentFingerprint: 'other-content',
+      chunkCount: 1,
+    });
     store.addChunk({
       chunkId: 'chunk-other',
       kind: 'app_source',
@@ -139,7 +153,7 @@ describe('PatchProposer', () => {
       symbol: 'other',
       codebaseId: otherRef.codebaseId,
       registryOrigin: 'codebase_registry',
-      sourceGeneration: `codebase_${otherRef.indexGeneration}`,
+      sourceGeneration: otherGeneration,
     }, scope);
     ledger.record({
       turn: 1,

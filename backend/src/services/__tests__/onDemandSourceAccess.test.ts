@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {
@@ -140,10 +140,49 @@ describe('OnDemandSourceAccessService', () => {
     expect(search.matches[0]).not.toHaveProperty('text');
     expect(search.backend).toBe('node');
     expect(read).toEqual(expect.objectContaining({
-      success: false,
-      unsupportedReason: 'provider_send_disabled_for_session',
+      success: true,
+      reference: expect.objectContaining({
+        filePath: 'app/src/MainActivity.kt',
+        lineRange: {start: 1, end: 7},
+      }),
     }));
+    expect(read.reference).not.toHaveProperty('text');
     expect(JSON.stringify(read)).not.toContain('class MainActivity');
+  });
+
+  it('keeps win32 prefix pruning case-insensitive in the node fallback', async () => {
+    fs.mkdirSync(path.join(root, 'SourceCase'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'SourceCase', 'WindowsCase.kt'),
+      'val windowsPrefixNeedle = Unit\n',
+    );
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Windows casing',
+      rootPath: root,
+      pathFilters: ['sourcecase'],
+      ...scope,
+    });
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+      platform: 'win32',
+    } as any);
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'windowsPrefixNeedle',
+      mode: 'metadata_only',
+    });
+
+    expect(search.backend).toBe('node');
+    expect(search.coverageComplete).toBe(false);
+    expect(search.searchIncompleteReason).toBe('backend_degraded');
+    expect(search.matches).toEqual([
+      expect.objectContaining({filePath: 'SourceCase/WindowsCase.kt'}),
+    ]);
   });
 
   it('requires provider consent before returning source text', async () => {
@@ -158,6 +197,143 @@ describe('OnDemandSourceAccessService', () => {
       success: false,
       unsupportedReason: 'no_send_to_provider_consent',
       matches: [],
+    }));
+  });
+
+  it('keeps newly available languages metadata-only until the frozen grant opts in', async () => {
+    fs.writeFileSync(path.join(root, 'app', 'src', 'main.dart'), 'void consentNeedle() {}\n');
+    const ref = register();
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+    const migratedRegistry = new CodebaseRegistry(registryPath);
+    const access = new OnDemandSourceAccessService({
+      registry: migratedRegistry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+    });
+
+    const metadata = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'consentNeedle',
+      mode: 'metadata_only',
+    });
+    const provider = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'consentNeedle',
+      mode: 'provider_send',
+    });
+
+    expect(metadata.matches).toEqual([
+      expect.objectContaining({filePath: 'app/src/main.dart'}),
+    ]);
+    expect(metadata.matches[0]).not.toHaveProperty('text');
+    expect(provider.matches).toEqual([]);
+    await expect(access.read({
+      codebaseId: ref.codebaseId,
+      scope,
+      filePath: 'app/src/main.dart',
+      mode: 'provider_send',
+    })).rejects.toThrow('source_path_outside_provider_grant');
+  });
+
+  it('evaluates a frozen provider grant once for a large rejected candidate set', async () => {
+    const sourceRoot = path.join(root, 'grant-scale');
+    fs.mkdirSync(sourceRoot, {recursive: true});
+    for (let index = 0; index < 500; index += 1) {
+      fs.writeFileSync(
+        path.join(sourceRoot, `Candidate${index}.dart`),
+        `void frozenGrantNeedle${index}() {}\n`,
+      );
+    }
+    const excludeGlobs = Array.from({length: 128}, (_, index) =>
+      `**/generated-${index}/**`);
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Frozen grant scale',
+      rootPath: root,
+      pathFilters: ['grant-scale'],
+      excludeGlobs,
+      sendToProvider: true,
+      ...scope,
+    });
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.extensions = ['.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+    const migratedRegistry = new CodebaseRegistry(registryPath);
+    const registered = migratedRegistry.get(ref.codebaseId, scope)!;
+    let policyFieldReads = 0;
+    const instrumented = new Proxy(registered, {
+      get(target, property, receiver) {
+        if (property === 'pathFilters' || property === 'excludeGlobs') {
+          policyFieldReads += 1;
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const get = jest.spyOn(migratedRegistry, 'get').mockReturnValue(instrumented);
+    const access = new OnDemandSourceAccessService({
+      registry: migratedRegistry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+      searchTimeoutMs: 30_000,
+    });
+    const search = await (async () => {
+      try {
+        return await access.search({
+          codebaseId: ref.codebaseId,
+          scope,
+          query: 'frozenGrantNeedle',
+          mode: 'provider_send',
+        });
+      } finally {
+        get.mockRestore();
+      }
+    })();
+
+    expect(policyFieldReads).toBeLessThan(10);
+    expect(search.backend).toBe('node');
+    expect(search.matches).toEqual([]);
+  }, 30_000);
+
+  it('searches and reads an explicitly selected noise directory', async () => {
+    fs.mkdirSync(path.join(root, 'node_modules', 'custom'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'node_modules', 'custom', 'Explicit.ts'),
+      'export const explicitNoiseNeedle = true;\n',
+    );
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Explicit dependency source',
+      rootPath: root,
+      pathFilters: ['node_modules/custom'],
+      sendToProvider: true,
+      ...scope,
+    });
+    const access = service('__smartperfetto_missing_rg__');
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'explicitNoiseNeedle',
+      mode: 'provider_send',
+    });
+    const read = await access.read({
+      codebaseId: ref.codebaseId,
+      scope,
+      filePath: 'node_modules/custom/Explicit.ts',
+      mode: 'provider_send',
+    });
+
+    expect(search.matches).toEqual([
+      expect.objectContaining({filePath: 'node_modules/custom/Explicit.ts'}),
+    ]);
+    expect(read.reference).toEqual(expect.objectContaining({
+      filePath: 'node_modules/custom/Explicit.ts',
+      text: expect.stringContaining('explicitNoiseNeedle'),
     }));
   });
 
@@ -232,6 +408,235 @@ describe('OnDemandSourceAccessService', () => {
     expect(search.matches).toEqual([
       expect.objectContaining({filePath: 'app/src/MainActivity.kt'}),
     ]);
+  });
+
+  it('streams common-query output past the legacy one-megabyte child buffer', async () => {
+    for (let index = 0; index < 12; index += 1) {
+      fs.writeFileSync(
+        path.join(root, 'app', 'src', `Common${index}.kt`),
+        'val commonNeedle = Unit\n'.repeat(7_000),
+      );
+    }
+    const ref = register();
+    let ripgrepPath = 'rg';
+    if (process.platform !== 'win32') {
+      const fakeRipgrep = path.join(tmpDir, 'fake-common-query-rg');
+      const output = Array.from({length: 12}, (_, index) => JSON.stringify({
+        type: 'match',
+        data: {
+          path: {text: `app/src/Common${index}.kt`},
+          line_number: 1,
+        },
+      })).join('\n') + '\n';
+      fs.writeFileSync(fakeRipgrep, [
+        '#!/usr/bin/env node',
+        `process.stdout.write(${JSON.stringify(output)});`,
+        '',
+      ].join('\n'));
+      fs.chmodSync(fakeRipgrep, 0o700);
+      ripgrepPath = fakeRipgrep;
+    }
+
+    const search = await service(ripgrepPath).search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'commonNeedle',
+      mode: 'provider_send',
+      maxResults: 8,
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      truncated: true,
+      coverageComplete: false,
+      searchIncompleteReason: 'enumeration_budget',
+      enumerationBackend: 'ripgrep',
+      backendFidelity: 'exact',
+    }));
+    expect(search.matches).toHaveLength(8);
+  });
+
+  it('starts ripgrep with a fixed argument vector and sanitized config environment', async () => {
+    if (process.platform === 'win32') return;
+    const config = path.join(tmpDir, 'ripgreprc');
+    const environmentCapture = path.join(tmpDir, 'rg-env');
+    const argumentsCapture = path.join(tmpDir, 'rg-args');
+    const fakeRipgrep = path.join(tmpDir, 'fake-rg.sh');
+    fs.writeFileSync(config, '--pre=/tmp/hostile-preprocessor\n');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/bin/sh',
+      `printf '%s' "\${RIPGREP_CONFIG_PATH-<unset>}" > '${environmentCapture}'`,
+      `printf '%s\\n' "$@" > '${argumentsCapture}'`,
+      `printf '%s\\n' '{"type":"match","data":{"path":{"text":"app/src/MainActivity.kt"},"line_number":4,"lines":{"text":"  fun loadTimeline() = Unit\\n"}}}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const previousConfig = process.env.RIPGREP_CONFIG_PATH;
+    process.env.RIPGREP_CONFIG_PATH = config;
+    try {
+      const ref = register();
+      const search = await service(fakeRipgrep).search({
+        codebaseId: ref.codebaseId,
+        scope,
+        query: 'loadTimeline',
+        mode: 'provider_send',
+      });
+
+      expect(search.success).toBe(true);
+      expect(search.matches).toEqual([
+        expect.objectContaining({
+          filePath: 'app/src/MainActivity.kt',
+          text: '  fun loadTimeline() = Unit',
+        }),
+      ]);
+      expect(fs.readFileSync(environmentCapture, 'utf8')).toBe('');
+      const args = fs.readFileSync(argumentsCapture, 'utf8').split('\n').filter(Boolean);
+      expect(args).toContain('--no-config');
+      expect(args).not.toContain('-L');
+      expect(args).not.toContain('--follow');
+    } finally {
+      if (previousConfig === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+      else process.env.RIPGREP_CONFIG_PATH = previousConfig;
+    }
+  });
+
+  it('marks coverage incomplete when a ripgrep locator cannot be safely re-read', async () => {
+    if (process.platform === 'win32') return;
+    const fakeRipgrep = path.join(tmpDir, 'stale-rg.sh');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/bin/sh',
+      `printf '%s\\n' '{"type":"match","data":{"path":{"text":"app/src/Missing.kt"},"line_number":1,"lines":{"text":"loadTimeline\\n"}}}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const ref = register();
+
+    const search = await service(fakeRipgrep).search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'loadTimeline',
+      mode: 'provider_send',
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      matches: [],
+      coverageComplete: false,
+      searchIncompleteReason: 'traversal_error',
+    }));
+  });
+
+  it('bounds concurrent source searches without starting an extra subprocess', async () => {
+    if (process.platform === 'win32') return;
+    const fakeRipgrep = path.join(tmpDir, 'slow-rg.sh');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/bin/sh',
+      'sleep 0.2',
+      `printf '%s\\n' '{"type":"match","data":{"path":{"text":"app/src/MainActivity.kt"},"line_number":4,"lines":{"text":"  fun loadTimeline() = Unit\\n"}}}'`,
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const ref = register();
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: fakeRipgrep,
+      maxConcurrentSearches: 1,
+      concurrencyWaitTimeoutMs: 25,
+      searchTimeoutMs: 1_000,
+    });
+    const input = {
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'loadTimeline',
+      mode: 'provider_send' as const,
+    };
+
+    const first = access.search(input);
+    await new Promise<void>(resolve => setTimeout(resolve, 10));
+    const second = await access.search(input);
+
+    expect(second).toEqual(expect.objectContaining({
+      success: true,
+      matches: [],
+      coverageComplete: false,
+      searchIncompleteReason: 'time_budget',
+    }));
+    await expect(first).resolves.toEqual(expect.objectContaining({
+      matches: [expect.objectContaining({filePath: 'app/src/MainActivity.kt'})],
+    }));
+  });
+
+  it('returns bounded degraded coverage when ripgrep and full preview are unavailable', async () => {
+    for (let index = 0; index < 10; index += 1) {
+      fs.writeFileSync(
+        path.join(root, 'app', 'src', `Fallback${index}.kt`),
+        `val fallbackNeedle${index} = Unit\n`,
+      );
+    }
+    const ref = register();
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({
+        allowlistRoots: [tmpDir],
+        maxVisitedEntries: 4,
+        maxSkippedDiagnostics: 2,
+      }),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+    });
+
+    const search = await access.search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'fallbackNeedle',
+      mode: 'provider_send',
+      maxResults: 3,
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      truncated: true,
+      coverageComplete: false,
+      searchIncompleteReason: 'backend_degraded',
+      enumerationBackend: 'node-walk',
+      backendFidelity: 'degraded',
+    }));
+    expect(search.matches).toHaveLength(3);
+  });
+
+  it('enforces the node fallback deadline inside a wide directory', async () => {
+    fs.writeFileSync(path.join(root, 'app', 'src', 'Second.kt'), 'val deadlineNeedle = Unit\n');
+    const ref = register();
+    const access = new OnDemandSourceAccessService({
+      registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      ripgrepPath: '__smartperfetto_missing_rg__',
+      searchTimeoutMs: 1_000,
+    });
+    const now = jest.spyOn(Date, 'now')
+      .mockReturnValueOnce(0)
+      .mockReturnValueOnce(0)
+      .mockReturnValue(2_000);
+
+    try {
+      const result = await (access as any).searchWithNode(
+        ref,
+        fs.realpathSync(root),
+        'deadlineNeedle',
+        'provider_send',
+        undefined,
+        ['app/src'],
+        5,
+      );
+
+      expect(result).toEqual(expect.objectContaining({
+        coverageComplete: false,
+        truncated: true,
+        searchIncompleteReason: 'time_budget',
+      }));
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('preserves exact-file semantics for requested and registered path prefixes', async () => {

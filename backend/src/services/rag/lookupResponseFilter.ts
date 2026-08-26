@@ -8,6 +8,7 @@ import type {
   RagSourceKind,
 } from '../../types/sparkContracts';
 import {activeCodebaseGeneration, type CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
 import type {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {redactSecrets} from '../security/secretPatterns';
 import {registerCodeAwareLookupForEcho} from '../security/codeAwareOutputRegistry';
@@ -382,6 +383,24 @@ export async function filterRagLookup(
         codebaseId: chunk.codebaseId,
         chunkIds: [],
         consentApplied: false,
+        tokensSpent: 0,
+        outcome: 'rejected',
+        legacyPath: false,
+      });
+      continue;
+    }
+
+    if (
+      ref.consent.sendToProvider &&
+      (!chunk.filePath || !sourcePathAllowedForProvider(ref, chunk.filePath))
+    ) {
+      ctx.ledger?.record({
+        turn: ctx.turn,
+        ts: Date.now(),
+        toolName: ctx.toolName,
+        codebaseId: chunk.codebaseId,
+        chunkIds: [],
+        consentApplied: true,
         tokensSpent: 0,
         outcome: 'rejected',
         legacyPath: false,

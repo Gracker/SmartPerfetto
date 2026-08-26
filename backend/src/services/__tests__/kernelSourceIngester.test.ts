@@ -62,7 +62,7 @@ describe('KernelSourceIngester', () => {
       vendor: 'mtk',
       pathPrefix: 'drivers/android',
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!),
+        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!)!,
       },
       scope: ref,
     });
@@ -96,6 +96,27 @@ describe('KernelSourceIngester', () => {
     });
     await expect(new KernelSourceIngester(store, registry, gate).ingest(noPathFilter.codebaseId))
       .rejects.toThrow(/requires pathFilters/);
+  });
+
+  it('fails before staging a source file that exceeds the chunk budget', async () => {
+    fs.mkdirSync(path.join(sourceRoot, 'drivers/android'), {recursive: true});
+    fs.writeFileSync(path.join(sourceRoot, 'drivers/android/many.c'), [
+      'int first_symbol(void) { return 1; }',
+      'int second_symbol(void) { return 2; }',
+    ].join('\n'.repeat(300)));
+    const ref = registry.register({
+      kind: 'kernel_source',
+      displayName: 'bounded-kernel',
+      rootPath: sourceRoot,
+      vendor: 'mtk',
+      pathFilters: ['drivers/android'],
+    });
+
+    await expect(new KernelSourceIngester(store, registry, gate).ingest(
+      ref.codebaseId,
+      {maxChunkChars: 256, maxChunks: 1},
+    )).rejects.toThrow('source_chunk_limit_exceeded:1');
+    expect(store.listChunks({scope: ref})).toHaveLength(0);
   });
 });
 
@@ -148,7 +169,7 @@ describe('AospSourceIngester', () => {
       codebaseIds: [ref.codebaseId],
       buildId: 'build-aosp',
       activeCodebaseGenerations: {
-        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!),
+        [ref.codebaseId]: activeCodebaseGeneration(registry.get(ref.codebaseId)!)!,
       },
       scope: ref,
     }).results[0].chunk;

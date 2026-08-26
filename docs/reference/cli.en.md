@@ -221,9 +221,9 @@ Register and index a local codebase first, then explicitly expose it to an
 analysis session:
 
 ```bash
-smp codebase preview /path/to/app
-smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --dry-run
-smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/
+smp codebase preview /path/to/app --kind app_source --path-filter app/src/main/ --exclude-glob '**/generated/**'
+smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**' --dry-run
+smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**'
 smp codebase list
 smp codebase reindex cb_xxx
 smp codebase symbols MainActivity --codebase-id cb_xxx
@@ -244,6 +244,11 @@ knowledge-source ID is selected. `--knowledge-source-id <id>` can enable an
 authorized private external RAG source alone or together with a codebase.
 Source, private RAG, and reference-trace selections resolve an explicit `fast`
 request to `full` so the lightweight runtime cannot silently drop capabilities.
+`preview` and `register --dry-run` report the actual `ripgrep → git → node-walk`
+enumeration backend, fidelity, completeness, and truncation reason. A bounded
+preview truncation remains a successful command rather than masquerading as a
+process failure. Portable packages do not bundle ripgrep and safely degrade in
+that order when it is unavailable.
 See [Code-Aware Analysis](../getting-started/code-aware-analysis.en.md).
 
 ## Trace Comparison

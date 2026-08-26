@@ -25,7 +25,8 @@ npm run cli:dev -- codebase register /path/to/app \
 npm run cli:dev -- codebase register /path/to/app \
   --name MyApp \
   --kind app_source \
-  --path-filter app/src/main/
+  --path-filter app/src/main/ \
+  --exclude-glob '**/generated/**'
 
 # 可选：构建索引以启用语义/符号检索与 patch
 npm run cli:dev -- codebase reindex cb_xxx
@@ -75,6 +76,14 @@ GitNexus 是独立的第三方可选工具。其[官方项目](https://github.co
 | `kernel_source` | binder/scheduler/mm/io 等 kernel 根因 | 源码文件夹、`vendor`、`path-filter`（CLI 重建也可传 `pathPrefix`）；license tag 可选 |
 | `oem_sdk` | OEM / chipset SDK 资料 | 源码文件夹、`vendor`、`licenseTag`；build ID 与路径范围可选 |
 
+源码枚举按 `ripgrep > git > node-walk` 的能力阶梯运行，并在 preview、CLI 与索引审计中返回实际 backend、fidelity 和 coverage。`.git`、`.hg`、`.svn`、`.repo` 与证书/密钥文件始终排除；`node_modules`、`build`、`Pods` 等噪声目录只有在 path filter 显式指向其中时才会进入候选集。AOSP preview 会读取有界的 `.repo/manifest.xml` 元数据，提供 project/group 范围按钮，但 `.repo` 对象库本身永不作为源码遍历。
+
+`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。授权是动态路径范围：当前 selection policy 与注册时冻结的 consent grant 永远取交集。产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言可以先用于 `metadata_only` 定位，但已有注册项必须显式点击“授权新语言”后才能发送正文。
+
+索引覆盖被拆成独立状态。完整、确定性的候选可直接激活；若已有完整索引，新的确定性截断结果会进入 pending，用户可接受或丢弃，旧完整索引保持服务。枚举超时、遍历错误或不确定结果永不自动激活。索引仍是可选加速，pending 或失败不会阻止 live root 的按需搜索。
+
+Docker 镜像内安装 `ripgrep` 和 `git`。portable 不额外打包 ripgrep：它会在结果中报告 capability，并在缺少 rg/git 时使用有界 `node-walk`，标记 `backendFidelity=degraded`；不得把不完整覆盖表述为“源码中不存在”。
+
 提交版本不需要手动填写。每次建立索引时，SmartPerfetto 会从实际 checkout 自动读取
 Git `HEAD`，并单独记录工作区是否包含未提交或未跟踪修改；非 Git 目录使用内容指纹。
 
@@ -104,8 +113,7 @@ reindex，不会扩大进程全局 allowlist。注册项的 list/audit 元数据
 常用验证命令：
 
 ```bash
-cd backend
-npm run verify:codebase-aware
+npm --prefix backend run verify:codebase-aware
 ```
 
 本机完整 E2E 会使用：

@@ -9,6 +9,7 @@ import * as path from 'path';
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {
+  runCodebasePreviewCommand,
   runCodebaseRegisterCommand,
   runCodebaseReindexCommand,
   runCodebaseSymbolsCommand,
@@ -40,18 +41,55 @@ afterEach(() => {
 });
 
 describe('smp codebase command handlers', () => {
+  it('previews through the source enumerator and reports backend coverage', async () => {
+    fs.writeFileSync(path.join(root, 'lib.dart'), 'void main() {}\n');
+
+    const code = await runCodebasePreviewCommand({
+      rootPath: root,
+      kind: 'app_source',
+      pathFilters: [],
+      excludeGlobs: [],
+      sessionDir,
+    });
+
+    expect(code).toBe(0);
+    expect(logSpy.mock.calls.join('\n')).toContain('"enumerationBackend":');
+    expect(logSpy.mock.calls.join('\n')).toContain('"backendFidelity":');
+  });
+
   it('supports dry-run registration without writing registry state', async () => {
     const code = await runCodebaseRegisterCommand({
       rootPath: root,
       kind: 'kernel_source',
       vendor: 'mtk',
       pathFilters: ['drivers/android'],
+      excludeGlobs: ['**/generated/**'],
       dryRun: true,
       sessionDir,
     });
 
     expect(code).toBe(0);
     expect(logSpy.mock.calls.join('\n')).toContain('"kind": "kernel_source"');
+    expect(logSpy.mock.calls.join('\n')).toContain('"excludeGlobs"');
+    expect(fs.existsSync(path.join(sessionDir, 'codebase_registry.json'))).toBe(false);
+  });
+
+  it.each([
+    ['kernel_source', {pathFilters: ['drivers/android'] as string[]}, 'vendor'],
+    ['kernel_source', {vendor: 'mtk'}, 'pathFilters'],
+    ['aosp', {}, 'licenseTag'],
+    ['oem_sdk', {vendor: 'vendor'}, 'licenseTag'],
+  ] as const)('enforces %s registration metadata before dry-run', async (kind, options, missing) => {
+    const code = await runCodebaseRegisterCommand({
+      rootPath: root,
+      kind,
+      dryRun: true,
+      sessionDir,
+      ...options,
+    });
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.join('\n')).toContain(`\`${missing}\` is required`);
     expect(fs.existsSync(path.join(sessionDir, 'codebase_registry.json'))).toBe(false);
   });
 
