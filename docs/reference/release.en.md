@@ -47,26 +47,19 @@ git commit -m "chore: release v<version>"
 git push origin main
 ```
 
-Publish the npm CLI:
+Preflight the npm CLI before the public release without exposing a publish
+credential:
 
 ```bash
-npm whoami
 npm --prefix backend run cli:pack-check
-cd backend
-npm publish --access public
-cd ..
-npm view @gracker/smartperfetto version --json
+npm --prefix backend run cli:e2e
 ```
 
-After npm publish succeeds, run a real install smoke from an empty directory:
-
-```bash
-npm install @gracker/smartperfetto@<version>
-./node_modules/.bin/smp --version
-./node_modules/.bin/smartperfetto --help
-./node_modules/.bin/smp doctor --format json
-./node_modules/.bin/smp knowledge-pack status --format json
-```
+Normal npm publication is handled by the OIDC Trusted Publisher workflow at
+`.github/workflows/npm-publish.yml`, without `NPM_TOKEN`. The workflow repeats
+the version, pack, and CLI gates at the exact release tag, builds the tarball in
+a job without OIDC, then gives a separate publish job only the hash-bound
+tarball.
 
 Publish the GitHub portable assets:
 
@@ -93,6 +86,37 @@ npm run release:portable -- <version> --skip-build --no-draft \
   --smoke-run-id <run-id>
 gh release view v<version> --json tagName,isDraft,assets
 ```
+
+Publishing the GitHub Release automatically triggers npm Trusted Publishing.
+Wait for the workflow and verify the registry. If the release event was not
+delivered, recover idempotently from the default branch with the same public
+release ID:
+
+```bash
+gh run list --workflow npm-publish.yml --limit 5
+gh run watch <run-id> --exit-status
+# recovery only
+gh workflow run npm-publish.yml --ref main -f release_id=<numeric-release-id>
+npm view @gracker/smartperfetto@<version> version dist.integrity --json
+```
+
+The workflow accepts only a public, non-prerelease stable SemVer release with a
+full target SHA. Its tag, target, all four version fields, and `main` ancestry
+must agree. An existing version is an idempotent skip only when registry
+`dist.integrity` exactly matches the generated tarball. Finally, run a
+credential-free install smoke in an empty directory under Node.js 24:
+
+```bash
+npm install @gracker/smartperfetto@<version>
+./node_modules/.bin/smp --version
+./node_modules/.bin/smartperfetto --help
+./node_modules/.bin/smp doctor --format json
+./node_modules/.bin/smp knowledge-pack status --format json
+```
+
+Local `npm publish` is an emergency fallback only and requires WebAuthn. Run
+`npm publish --access public` from `backend/`; do not invoke publish from the
+root through `--prefix`, which can target the private root package.
 
 Portable packages use a build-once rule: test and upload the same final archive
 bytes, and never rebuild after smoke. Cross-compilation, manifest/structure
@@ -141,6 +165,12 @@ git status --short --branch
 
 - Root `package.json` is the version source; `npm run version:set -- <version>` must synchronize all four version files.
 - The npm package name is `@gracker/smartperfetto`, and it must expose both `smp` and `smartperfetto`.
+- npmjs.com must bind the Trusted Publisher exactly to
+  `Gracker/SmartPerfetto` and `npm-publish.yml`. Only the publish job may have
+  `id-token: write`, and it must not check out or execute release source.
+- `workflow_dispatch` is default-branch recovery only and takes a numeric
+  public release ID. An immutable-version skip must compare registry
+  `dist.integrity`, not only the version string.
 - Published npm versions are immutable. If package contents or runtime behavior are wrong, fix and publish the next patch version.
 - Public portable releases must not use `--allow-dirty`.
 - `--skip-build` is only valid for packages just built from the same version and commit.

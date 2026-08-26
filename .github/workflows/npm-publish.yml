@@ -1,0 +1,328 @@
+name: npm Trusted Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Numeric public GitHub release ID to verify or publish
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.event.release.id || inputs.release_id }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build immutable npm package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      artifact_name: npm-package-${{ steps.release.outputs.release_id }}
+      package_file: ${{ steps.pack.outputs.package_file }}
+      package_integrity: ${{ steps.pack.outputs.package_integrity }}
+      package_sha256: ${{ steps.pack.outputs.package_sha256 }}
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Resolve the immutable public release
+        id: release
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DISPATCH_REF: ${{ github.ref }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_RELEASE_ID: ${{ github.event.release.id }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID_INPUT: ${{ inputs.release_id }}
+        run: |
+          node <<'NODE'
+          const {spawnSync} = require('node:child_process');
+          const {appendFileSync} = require('node:fs');
+
+          if (process.env.EVENT_NAME === 'workflow_dispatch') {
+            const expectedRef = `refs/heads/${process.env.DEFAULT_BRANCH}`;
+            if (process.env.DISPATCH_REF !== expectedRef) {
+              throw new Error(`workflow dispatch must use ${expectedRef}`);
+            }
+          }
+
+          const releaseId = process.env.EVENT_NAME === 'release'
+            ? process.env.EVENT_RELEASE_ID
+            : process.env.RELEASE_ID_INPUT;
+          if (!/^[1-9][0-9]*$/.test(releaseId || '')) {
+            throw new Error(`invalid numeric release ID: ${releaseId || '<missing>'}`);
+          }
+
+          const result = spawnSync(
+            'gh',
+            ['api', `repos/${process.env.GITHUB_REPOSITORY}/releases/${releaseId}`],
+            {encoding: 'utf8', env: process.env},
+          );
+          if (result.status !== 0) {
+            process.stderr.write(result.stderr);
+            process.exit(result.status || 1);
+          }
+
+          const release = JSON.parse(result.stdout);
+          if (release.draft || release.prerelease) {
+            throw new Error('npm publishing requires a public, non-prerelease release');
+          }
+          if (!/^v[0-9]+\.[0-9]+\.[0-9]+$/.test(release.tag_name || '')) {
+            throw new Error(`invalid stable release tag: ${release.tag_name || '<missing>'}`);
+          }
+          if (!/^[0-9a-f]{40}$/.test(release.target_commitish || '')) {
+            throw new Error('release target_commitish must be a full commit SHA');
+          }
+
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            [
+              `release_id=${releaseId}`,
+              `release_sha=${release.target_commitish}`,
+              `tag=${release.tag_name}`,
+              `version=${release.tag_name.slice(1)}`,
+              '',
+            ].join('\n'),
+          );
+          NODE
+
+      - name: Check out the exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind tag, release target, version, and main ancestry
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SHA: ${{ steps.release.outputs.release_sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          git fetch --no-tags origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/main"
+          test "$(git rev-parse HEAD)" = "${RELEASE_SHA}"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "${RELEASE_SHA}"
+          git merge-base --is-ancestor "${RELEASE_SHA}" origin/main
+          node <<'NODE'
+          const rootPackage = require('./package.json');
+          const backendPackage = require('./backend/package.json');
+          const expected = process.env.VERSION;
+          if (rootPackage.version !== expected || backendPackage.version !== expected) {
+            throw new Error(
+              `release ${expected} does not match package versions ` +
+                `${rootPackage.version}/${backendPackage.version}`,
+            );
+          }
+          NODE
+          test -z "$(git status --porcelain)"
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Pin the trusted-publishing npm CLI
+        run: npm install --global npm@11.12.1 && npm --version
+
+      - name: Verify synchronized release versions
+        run: npm run version:sync -- --check
+
+      - name: Install backend dependencies
+        working-directory: backend
+        run: npm ci
+
+      - name: Verify npm package contents
+        working-directory: backend
+        run: npm run cli:pack-check
+
+      - name: Verify installed CLI behavior
+        working-directory: backend
+        run: npm run cli:e2e
+
+      - name: Pack the immutable npm tarball
+        id: pack
+        working-directory: backend
+        run: |
+          mkdir -p "${RUNNER_TEMP}/npm-package"
+          npm pack --silent --pack-destination "${RUNNER_TEMP}/npm-package" > "${RUNNER_TEMP}/npm-pack.log"
+          if ! PACKAGE_PATH="$(node -e "const {readdirSync}=require('node:fs');const {join}=require('node:path');const dir=process.argv[1];const files=readdirSync(dir).filter((name)=>name.endsWith('.tgz'));if(files.length !== 1)throw new Error('expected exactly one npm tarball');process.stdout.write(join(dir,files[0]));" "${RUNNER_TEMP}/npm-package")"; then
+            cat "${RUNNER_TEMP}/npm-pack.log" >&2
+            exit 1
+          fi
+          PACKAGE_FILE="$(basename "${PACKAGE_PATH}")"
+          PACKAGE_SHA256="$(sha256sum "${PACKAGE_PATH}" | cut -d ' ' -f 1)"
+          PACKAGE_INTEGRITY="$(node -e "const {createHash}=require('node:crypto');const {readFileSync}=require('node:fs');process.stdout.write('sha512-'+createHash('sha512').update(readFileSync(process.argv[1])).digest('base64'))" "${PACKAGE_PATH}")"
+          {
+            echo "package_file=${PACKAGE_FILE}"
+            echo "package_sha256=${PACKAGE_SHA256}"
+            echo "package_integrity=${PACKAGE_INTEGRITY}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Preserve the exact npm tarball
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: npm-package-${{ steps.release.outputs.release_id }}
+          path: ${{ runner.temp }}/npm-package/${{ steps.pack.outputs.package_file }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    name: Publish through npm OIDC
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      PACKAGE_FILE: ${{ needs.package.outputs.package_file }}
+      PACKAGE_INTEGRITY: ${{ needs.package.outputs.package_integrity }}
+      PACKAGE_SHA256: ${{ needs.package.outputs.package_sha256 }}
+      VERSION: ${{ needs.package.outputs.version }}
+    steps:
+      - name: Set up Node.js 24 for npm OIDC
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Pin the trusted-publishing npm CLI
+        run: npm install --global npm@11.12.1 && npm --version
+
+      - name: Restore the exact npm tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.package.outputs.artifact_name }}
+          path: ${{ runner.temp }}/npm-package
+
+      - name: Verify the restored tarball
+        run: |
+          PACKAGE_PATH="${RUNNER_TEMP}/npm-package/${PACKAGE_FILE}"
+          test -f "${PACKAGE_PATH}"
+          test "$(sha256sum "${PACKAGE_PATH}" | cut -d ' ' -f 1)" = "${PACKAGE_SHA256}"
+          test "$(node -e "const {createHash}=require('node:crypto');const {readFileSync}=require('node:fs');process.stdout.write('sha512-'+createHash('sha512').update(readFileSync(process.argv[1])).digest('base64'))" "${PACKAGE_PATH}")" = "${PACKAGE_INTEGRITY}"
+          echo "PACKAGE_PATH=${PACKAGE_PATH}" >> "${GITHUB_ENV}"
+
+      - name: Check immutable registry state
+        id: registry
+        run: |
+          set +e
+          REGISTRY_RESULT="$(npm view "@gracker/smartperfetto@${VERSION}" dist.integrity --json 2>&1)"
+          REGISTRY_STATUS=$?
+          set -e
+          if [ "${REGISTRY_STATUS}" -eq 0 ]; then
+            REGISTRY_INTEGRITY="$(node -e "process.stdout.write(JSON.parse(process.argv[1]))" "${REGISTRY_RESULT}")"
+            if [ "${REGISTRY_INTEGRITY}" != "${PACKAGE_INTEGRITY}" ]; then
+              echo "Registry integrity mismatch for @gracker/smartperfetto@${VERSION}" >&2
+              exit 1
+            fi
+            echo "already_published=true" >> "${GITHUB_OUTPUT}"
+          elif printf '%s' "${REGISTRY_RESULT}" | grep -q 'E404'; then
+            echo "already_published=false" >> "${GITHUB_OUTPUT}"
+          else
+            printf '%s\n' "${REGISTRY_RESULT}" >&2
+            exit "${REGISTRY_STATUS}"
+          fi
+
+      - name: Publish the immutable tarball
+        if: ${{ steps.registry.outputs.already_published == 'false' }}
+        run: npm publish "${PACKAGE_PATH}" --access public
+
+      - name: Wait for matching registry integrity
+        run: |
+          for ATTEMPT in $(seq 1 12); do
+            REGISTRY_INTEGRITY="$(npm view "@gracker/smartperfetto@${VERSION}" dist.integrity --json 2>/dev/null | sed -e 's/^"//' -e 's/"$//' || true)"
+            if [ "${REGISTRY_INTEGRITY}" = "${PACKAGE_INTEGRITY}" ]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "npm registry did not expose the matching ${VERSION} integrity" >&2
+          exit 1
+
+  smoke:
+    name: Smoke the public npm package without credentials
+    needs:
+      - package
+      - publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      NPM_CONFIG_USERCONFIG: /dev/null
+      VERSION: ${{ needs.package.outputs.version }}
+    steps:
+      - name: Set up supported Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install and verify the public package
+        run: |
+          mkdir -p "${RUNNER_TEMP}/npm-smoke"
+          cd "${RUNNER_TEMP}/npm-smoke"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "@gracker/smartperfetto@${VERSION}"
+          node <<'NODE'
+          const {spawnSync} = require('node:child_process');
+          const {readFileSync} = require('node:fs');
+          const {join} = require('node:path');
+
+          const installRoot = join(process.env.RUNNER_TEMP, 'npm-smoke');
+          const packageRoot = join(
+            installRoot,
+            'node_modules',
+            '@gracker',
+            'smartperfetto',
+          );
+          const packageJson = JSON.parse(
+            readFileSync(join(packageRoot, 'package.json'), 'utf8'),
+          );
+          const commands = [
+            ['smp', ['--version']],
+            ['smartperfetto', ['--help']],
+            ['smp', ['doctor', '--format', 'json']],
+          ];
+          const outputs = new Map();
+          for (const [binName, args] of commands) {
+            const relativeBin = packageJson.bin[binName];
+            if (typeof relativeBin !== 'string') {
+              throw new Error(`public package is missing the ${binName} bin`);
+            }
+            const result = spawnSync(
+              process.execPath,
+              [join(packageRoot, relativeBin), ...args],
+              {cwd: installRoot, encoding: 'utf8', env: process.env},
+            );
+            if (result.status !== 0) {
+              process.stderr.write(result.stderr);
+              throw new Error(`${binName} ${args.join(' ')} failed`);
+            }
+            outputs.set(`${binName}:${args.join(' ')}`, result.stdout);
+          }
+
+          const version = outputs.get('smp:--version')?.trim();
+          if (version !== process.env.VERSION) {
+            throw new Error(`public CLI version mismatch: ${version}`);
+          }
+          const doctor = JSON.parse(outputs.get('smp:doctor --format json'));
+          if (!doctor.node?.ok) throw new Error('public CLI does not accept Node.js 24');
+          if (!doctor.traceProcessor?.exists || !doctor.traceProcessor?.executable) {
+            throw new Error('public CLI trace_processor_shell is unavailable');
+          }
+          if (doctor.knowledgePack?.availability !== 'available') {
+            throw new Error('public CLI Knowledge Pack is unavailable');
+          }
+          NODE

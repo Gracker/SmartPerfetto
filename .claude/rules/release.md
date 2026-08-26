@@ -52,30 +52,15 @@ should use WSL2; native Windows users should use the portable package.
    git commit -m "chore: release v<version>"
    git push origin main
    ```
-6. Publish the npm CLI:
+6. Preflight the npm CLI package without a publish credential:
    ```bash
-   npm whoami
    npm --prefix backend run cli:pack-check
-   cd backend
-   npm publish --access public
-   cd ..
-   npm view @gracker/smartperfetto version --json
+   npm --prefix backend run cli:e2e
    ```
-   For a new scope or org, verify scope permission first. Publishing can
-   return success before registry metadata is fully visible; wait and verify
-   both `npm view` and an isolated install before calling the npm release done.
-   Do not use `npm --prefix backend publish --access public`: npm can still
-   resolve the publish target as the repository root package, hit the root
-   `private` guard, and fail with `EPRIVATE` without publishing
-   `@gracker/smartperfetto`.
-7. Run isolated npm smoke in a temp directory:
-   ```bash
-   npm install @gracker/smartperfetto@<version>
-   ./node_modules/.bin/smp --version
-   ./node_modules/.bin/smartperfetto --help
-   ./node_modules/.bin/smp doctor --format json
-   ```
-8. Build portable GitHub assets from the exact clean release commit:
+   The normal npm publish path is the tokenless
+   `.github/workflows/npm-publish.yml` Trusted Publisher workflow. It repeats
+   these checks against the exact release tag before producing the tarball.
+7. Build portable GitHub assets from the exact clean release commit:
    ```bash
    npm run package:portable
    ```
@@ -117,7 +102,7 @@ should use WSL2; native Windows users should use the portable package.
    Hosted promotion also re-fetches repository metadata and rejects runs from
    any branch other than GitHub's current default branch. The run gate SHA must
    exactly equal the clean promotion checkout's `HEAD`.
-9. Publish those already-smoked portable assets:
+8. Publish those already-smoked portable assets:
    ```bash
    npm run release:portable -- <version> --skip-build --no-draft \
      --smoke-evidence-dir dist/portable/smoke-evidence
@@ -135,7 +120,39 @@ should use WSL2; native Windows users should use the portable package.
      --smoke-attestation <download-dir>/portable-smoke-attestation.json \
      --smoke-run-id <run-id>
    ```
-10. Re-check `git status --short --branch`. Generated `dist/portable/`,
+9. Wait for the public release's npm Trusted Publishing workflow, then verify
+   the registry:
+   ```bash
+   gh run list --workflow npm-publish.yml --limit 5
+   gh run watch <run-id> --exit-status
+   npm view @gracker/smartperfetto@<version> version dist.integrity --json
+   ```
+   The workflow accepts only a public, non-prerelease release with a full
+   target SHA that matches its tag, package versions, and a commit reachable
+   from `main`. It builds and tests without an OIDC credential, then gives
+   `id-token: write` only to a separate job that publishes the hash-bound
+   tarball. A rerun may skip an immutable version only when registry
+   `dist.integrity` exactly matches that tarball. If the release event was not
+   delivered, rerun the same path from the default branch by immutable public
+   release ID:
+   ```bash
+   gh workflow run npm-publish.yml --ref main -f release_id=<numeric-release-id>
+   ```
+   Interactive WebAuthn publishing is an emergency fallback only. When it is
+   required, publish from `backend/` with `npm publish --access public`; never
+   use `npm --prefix backend publish`, which can resolve the private root
+   package and fail with `EPRIVATE`.
+10. Run isolated npm smoke in a temp directory under supported Node.js 24:
+    ```bash
+    npm install @gracker/smartperfetto@<version>
+    ./node_modules/.bin/smp --version
+    ./node_modules/.bin/smartperfetto --help
+    ./node_modules/.bin/smp doctor --format json
+    ```
+    Publishing can return success before registry metadata is fully visible;
+    require both `npm view` and this isolated install before calling the npm
+    release done.
+11. Re-check `git status --short --branch`. Generated `dist/portable/`,
    `dist/windows-exe/`, and cache outputs must not be staged.
 
 ## npm CLI Invariants
@@ -144,12 +161,36 @@ should use WSL2; native Windows users should use the portable package.
 - The package must expose both `smp` and `smartperfetto` bins.
 - `npm --prefix backend run cli:pack-check` must verify package contents before
   publish.
-- Publish from the `backend/` working directory with `npm publish --access
-  public`; do not publish with `npm --prefix backend publish`.
+- Build the releasable package from `backend/`. Trusted Publishing publishes
+  the exact tarball produced by that package job. Interactive fallback must
+  run from the `backend/` working directory with `npm publish --access public`;
+  do not publish with `npm --prefix backend publish`.
 - The packed CLI must contain runtime assets needed by `doctor`, `query`,
   `skill`, `run`, `ask`, `repl`, `compare`, and `report export`.
 - Do not publish if dry-run or pack-check reports missing bin files,
   missing runtime assets, wrong version, or an unsupported Node engine.
+
+## npm Trusted Publishing Invariants
+
+- npmjs.com must bind `@gracker/smartperfetto` to repository
+  `Gracker/SmartPerfetto` and the exact workflow filename `npm-publish.yml`.
+- The workflow must use GitHub-hosted runners, Node.js 24, and an npm CLI that
+  supports Trusted Publishing. It must not contain `NPM_TOKEN`,
+  `NODE_AUTH_TOKEN`, registry auth material, or repository secrets.
+- Release packaging and tests run without `id-token: write`. Only the publish
+  job receives the OIDC permission, and that job must not check out or execute
+  release source; it may consume only the hash-bound tarball artifact.
+- Manual dispatch is recovery-only, takes a numeric public release ID, and
+  must fail when invoked from any ref other than the default branch.
+- Both event and recovery paths must reject drafts, prereleases, non-SemVer
+  tags, non-full target SHAs, tag/target/version mismatches, and release commits
+  that are not ancestors of `main`.
+- An already-published version is idempotent only when npm registry
+  `dist.integrity` exactly equals the generated tarball SRI. A mismatch is a
+  hard failure, never a skip.
+- Post-publish smoke must install the public exact version without user npm
+  credentials and verify the supported Node boundary, CLI bins, Knowledge
+  Pack, and packaged `trace_processor_shell`.
 
 ## Portable Release Invariants
 
@@ -248,8 +289,8 @@ complete unless the workflow or image tag is verified.
   files.
 - Do not echo tokens into logs, docs, commit messages, release notes, or final
   summaries.
-- Prefer environment variables or npm's normal auth store for one-off publish
-  work.
+- Prefer npm Trusted Publishing OIDC. Use environment variables or npm's
+  normal auth store only for explicitly accepted one-off fallback work.
 - If a token was pasted into a chat or terminal transcript, recommend rotation
   after the release is verified.
 
