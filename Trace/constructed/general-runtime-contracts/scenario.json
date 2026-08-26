@@ -126,6 +126,14 @@
       "end_state": "S"
     },
     {
+      "type": "sched-running",
+      "at_ns": "50000000",
+      "duration_ns": "100000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
       "type": "perf-sample",
       "at_ns": "700000000",
       "process": "app",

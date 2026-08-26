@@ -46,7 +46,11 @@ async function main(): Promise<void> {
     `Trace corpus regression passed: ${result.executed.length} expectation(s), `
     + `${executedSql} SQL contract(s) executed `
     + `(${result.sql.normal.length} production, ${result.sql.forced.length} forced read-only/context, `
-    + `${result.sql.isolated.length} isolated branch probe), 0 skipped, 0 unavailable`,
+    + `${result.sql.isolated.length} isolated branch probe), `
+    + `${result.correctness.positive.length} positive semantic, `
+    + `${result.correctness.execution_only.length} execution-only, `
+    + `${result.correctness.negative.length} negative, `
+    + `${result.correctness.deferred.length} deferred, 0 skipped, 0 unavailable`,
   );
 }
 

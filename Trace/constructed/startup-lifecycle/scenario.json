@@ -124,6 +124,30 @@
       "thread": "main",
       "cpu": 0,
       "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "90000000",
+      "duration_ns": "150000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "110000000",
+      "duration_ns": "25000000",
+      "process": "app",
+      "thread": "main",
+      "name": "Lcom/smartperfetto/fixture/HomeActivity;"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "145000000",
+      "duration_ns": "60000000",
+      "process": "app",
+      "thread": "main",
+      "name": "inflate com.smartperfetto.fixture.activity_main"
     }
   ]
 }

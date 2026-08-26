@@ -92,6 +92,13 @@ test('Pi provider-explicit runtime ships exact aligned optional dependencies and
   assert.match(cliE2e, /createPiAgentCoreProviderRuntime/);
 });
 
+test('CLI E2E resolves a governed catalog trace without submodule test data', () => {
+  const cliE2e = readFileSync(join(root, 'backend/scripts/run-cli-e2e.cjs'), 'utf8');
+  assert.match(cliE2e, /Trace[\/\\]catalog\.json/);
+  assert.match(cliE2e, /android-startup-heavy/);
+  assert.doesNotMatch(cliE2e, /perfetto[\/\\]test[\/\\]data/);
+});
+
 test('macOS packaging preserves and verifies JIT runtime entitlements', () => {
   const portableScript = readFileSync(join(root, 'scripts/package-portable.sh'), 'utf8');
   const portableVerifier = readFileSync(join(root, 'scripts/verify-portable-package.cjs'), 'utf8');

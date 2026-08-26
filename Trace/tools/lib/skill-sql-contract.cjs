@@ -1,6 +1,135 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
+const crypto = require('node:crypto');
+
+function sqlSha256(sql) {
+  return crypto.createHash('sha256').update(String(sql)).digest('hex');
+}
+
+function displayColumns(display) {
+  if (!display || display === false || !Array.isArray(display.columns)) return [];
+  return [...new Set(display.columns
+    .map((column) => column?.name)
+    .filter((name) => typeof name === 'string' && name.trim() !== ''))];
+}
+
+function maskSqlLiteralsAndComments(sql) {
+  let out = '';
+  let index = 0;
+  while (index < sql.length) {
+    const char = sql[index];
+    const next = sql[index + 1];
+    if (char === '-' && next === '-') {
+      while (index < sql.length && sql[index] !== '\n') {
+        out += ' ';
+        index += 1;
+      }
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      out += '  ';
+      index += 2;
+      while (index < sql.length && !(sql[index] === '*' && sql[index + 1] === '/')) {
+        out += sql[index] === '\n' ? '\n' : ' ';
+        index += 1;
+      }
+      if (index < sql.length) {
+        out += '  ';
+        index += 2;
+      }
+      continue;
+    }
+    if (char === "'" || char === '"' || char === '`') {
+      const quote = char;
+      out += ' ';
+      index += 1;
+      while (index < sql.length) {
+        if (sql[index] === quote) {
+          if (sql[index + 1] === quote) {
+            out += '  ';
+            index += 2;
+            continue;
+          }
+          out += ' ';
+          index += 1;
+          break;
+        }
+        out += sql[index] === '\n' ? '\n' : ' ';
+        index += 1;
+      }
+      continue;
+    }
+    out += char;
+    index += 1;
+  }
+  return out;
+}
+
+function projectedColumns(sql) {
+  const masked = maskSqlLiteralsAndComments(String(sql));
+  let depth = 0;
+  let selectEnd = -1;
+  let fromStart = -1;
+  for (let index = 0; index < masked.length;) {
+    const char = masked[index];
+    if (char === '(') {
+      depth += 1;
+      index += 1;
+      continue;
+    }
+    if (char === ')') {
+      depth = Math.max(0, depth - 1);
+      index += 1;
+      continue;
+    }
+    if (depth === 0 && /[A-Za-z_]/.test(char)) {
+      const match = masked.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/);
+      const word = match[0];
+      const upper = word.toUpperCase();
+      if (selectEnd < 0 && upper === 'SELECT') selectEnd = index + word.length;
+      else if (selectEnd >= 0 && upper === 'FROM') {
+        fromStart = index;
+        break;
+      }
+      index += word.length;
+      continue;
+    }
+    index += 1;
+  }
+  if (selectEnd < 0) return [];
+  const end = fromStart >= 0 ? fromStart : masked.length;
+  const projectionMasked = masked.slice(selectEnd, end);
+  const projectionSource = String(sql).slice(selectEnd, end);
+  const expressions = [];
+  let expressionStart = 0;
+  depth = 0;
+  for (let index = 0; index <= projectionMasked.length; index += 1) {
+    const char = projectionMasked[index];
+    if (char === '(') depth += 1;
+    else if (char === ')') depth = Math.max(0, depth - 1);
+    if ((char === ',' && depth === 0) || index === projectionMasked.length) {
+      expressions.push(projectionSource.slice(expressionStart, index).trim());
+      expressionStart = index + 1;
+    }
+  }
+  const reserved = new Set(['ASC', 'DESC', 'END', 'NULL', 'TRUE', 'FALSE']);
+  return [...new Set(expressions.map((expression) => {
+    const asAlias = expression.match(/\bAS\s+["`\[]?([A-Za-z_][A-Za-z0-9_$]*)["`\]]?\s*$/i);
+    if (asAlias) return asAlias[1];
+    const identifier = expression.match(/^(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_$]*)\s*$/);
+    if (identifier) return identifier[1];
+    const bareAlias = expression.match(/\s+([A-Za-z_][A-Za-z0-9_$]*)\s*$/);
+    if (bareAlias && !reserved.has(bareAlias[1].toUpperCase())) return bareAlias[1];
+    return null;
+  }).filter(Boolean))];
+}
+
+function resultColumns(sql, display) {
+  const declared = displayColumns(display);
+  return declared.length > 0 ? declared : projectedColumns(sql);
+}
+
 function isReadOnlySql(sql) {
   const withoutComments = String(sql).replace(/--.*$/gm, '').trim();
   const withoutIncludes = withoutComments.replace(
@@ -23,6 +152,7 @@ function collectStepSql(steps) {
         sql: step.sql,
         condition: typeof step.condition === 'string' ? step.condition : null,
         topLevelIndex,
+        requiredColumns: resultColumns(step.sql, step.display),
       });
       topLevelSqlIndexes.add(topLevelIndex);
     }
@@ -71,6 +201,24 @@ function skillSqlContract(definition) {
   };
   const stepSqlIds = sqlSteps.map((step) => step.id).filter(Boolean);
   const sqlIds = [...(hasRootSql ? ['root'] : []), ...stepSqlIds];
+  const sqlSourceSteps = [
+    ...(hasRootSql ? [{
+      id: 'root',
+      sha256: sqlSha256(definition.sql),
+      requiredColumns: resultColumns(definition.sql, definition.display),
+    }] : []),
+    ...sqlSteps.map((step) => ({
+      id: step.id,
+      sha256: sqlSha256(step.sql),
+      requiredColumns: step.requiredColumns,
+    })),
+  ];
+  const declaredModules = [...new Set(
+    (Array.isArray(definition?.prerequisites?.modules)
+      ? definition.prerequisites.modules
+      : [])
+      .filter((moduleName) => typeof moduleName === 'string' && moduleName.trim() !== ''),
+  )].sort();
   const forcedSqlStepIds = sqlSteps
       .filter((step) => step.condition && canForceProbe(step))
       .map((step) => step.id)
@@ -88,6 +236,8 @@ function skillSqlContract(definition) {
     steps,
     sqlSteps,
     sqlIds,
+    sqlSourceSteps,
+    declaredModules,
     forcedSqlStepIds,
     conditionOnlySqlStepIds,
     lastSqlTopLevelIndex,

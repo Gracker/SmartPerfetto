@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "3545492fc56cacbc73022aae8db4528c9c8f3fe54df733ff6273d95a416b2f55",
+    "sha256": "2a2d227148bcbf927d0acd3ca206fb2aaea0a8370a2a176f647b7310bba53c38",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -35,7 +35,8 @@
     "consent": "generated",
     "privacy_review": "not-applicable",
     "sanitization_review": "not-applicable",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R3"
   },
   "analysis": {
     "results": [
@@ -48,7 +49,8 @@
     "scenario_file": "scenario.json",
     "generator_version": 1,
     "seed": "rendering-jank-v1",
-    "output": "Trace/.generated/constructed/rendering-jank/trace.pftrace"
+    "output": "Trace/.generated/constructed/rendering-jank/trace.pftrace",
+    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
   },
   "coverage": {
     "skills": [
@@ -106,7 +108,7 @@
         "id": "execute-app_frame_production",
         "type": "skill",
         "target": "app_frame_production",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/app_frame_production.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -119,17 +121,28 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "app_production_stats",
+        "required_columns": [
+          "total_produced_frames",
+          "duration_ms",
+          "on_time_frames",
+          "janky_frames",
+          "app_jank_rate",
+          "production_fps",
+          "expected_fps",
+          "avg_frame_dur_ms",
+          "max_frame_dur_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-buffer_transaction_lifecycle",
         "type": "skill",
         "target": "buffer_transaction_lifecycle",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/buffer_transaction_lifecycle.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "apply_transaction_summary",
@@ -145,13 +158,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "apply_transaction_summary",
+        "required_columns": [
+          "total_apply_transactions",
+          "total_set_transaction_state",
+          "total_blast_bq",
+          "total_queue_buffer",
+          "avg_apply_to_latch_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-choreographer_module",
         "type": "skill",
         "target": "choreographer_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/framework/choreographer_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -175,13 +195,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "doframe_overview",
+        "required_columns": [
+          "total_frames",
+          "avg_dur_ms",
+          "max_dur_ms",
+          "min_dur_ms",
+          "jank_frames",
+          "severe_jank_frames",
+          "jank_rate_pct"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-chrome_scroll_jank_frame_timeline",
         "type": "skill",
         "target": "chrome_scroll_jank_frame_timeline",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/chrome_scroll_jank_frame_timeline.skill.yaml",
         "parameters": {
           "min_janky_frames": 1
@@ -202,13 +231,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "chrome_trace_availability",
+        "required_columns": [
+          "chrome_scroll_count",
+          "chrome_scroll_stats_count",
+          "chrome_scroll_v4_frame_count",
+          "chrome_scroll_v4_jank_count",
+          "extend_vsync_count",
+          "preferred_frame_timeline_count",
+          "status"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-consumer_jank_detection",
         "type": "skill",
         "target": "consumer_jank_detection",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/consumer_jank_detection.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -227,13 +265,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "consumer_jank_frames",
+        "required_columns": [
+          "frame_id",
+          "layer_name",
+          "ts_str",
+          "ts_sec",
+          "dur_ms",
+          "token_gap",
+          "vsync_missed",
+          "interval_ms",
+          "app_jank_type",
+          "jank_severity",
+          "delay_source"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-flutter_scrolling_analysis",
         "type": "skill",
         "target": "flutter_scrolling_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/flutter_scrolling_analysis.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -256,13 +307,23 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "flutter_frame_overview",
+        "required_columns": [
+          "total_frames",
+          "avg_frame_ms",
+          "max_frame_ms",
+          "min_frame_ms",
+          "jank_frames",
+          "reported_jank_frames",
+          "jank_rate_pct",
+          "estimated_fps"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-fpsgo_analysis",
         "type": "skill",
         "target": "fpsgo_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/fpsgo_analysis.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -275,14 +336,19 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "category",
+          "event_name",
+          "count",
+          "total_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-frame_blocking_calls",
         "type": "skill",
         "target": "frame_blocking_calls",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/frame_blocking_calls.skill.yaml",
         "parameters": {
           "process_name": "com.smartperfetto.fixture"
@@ -297,14 +363,25 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "frame_id",
+          "frame_ts",
+          "frame_dur_ms",
+          "jank_type",
+          "thread_role",
+          "thread_name",
+          "blocking_call",
+          "overlap_ms",
+          "call_dur_ms",
+          "call_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-frame_overrun_summary",
         "type": "skill",
         "target": "frame_overrun_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/frame_overrun_summary.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -317,13 +394,19 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "overrun_frames",
+        "required_columns": [
+          "frame_id",
+          "ts",
+          "dur_ms",
+          "overrun_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-frame_pipeline_variance",
         "type": "skill",
         "target": "frame_pipeline_variance",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/frame_pipeline_variance.skill.yaml",
         "parameters": {
           "transition_threshold_ms": 8
@@ -338,14 +421,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "total_frames",
+          "avg_frame_ms",
+          "stddev_ms",
+          "avg_delta_ms",
+          "high_variance_transitions",
+          "variance_level"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-frame_production_gap",
         "type": "skill",
         "target": "frame_production_gap",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/frame_production_gap.skill.yaml",
         "parameters": {
           "process_name": "com.smartperfetto.fixture"
@@ -362,13 +452,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "gap_summary",
+        "required_columns": [
+          "total_frames",
+          "total_gaps",
+          "ui_no_frame_count",
+          "rt_no_drawframe_count",
+          "sf_backpressure_count",
+          "max_gap_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-frame_ui_time_breakdown",
         "type": "skill",
         "target": "frame_ui_time_breakdown",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/frame_ui_time_breakdown.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -381,13 +479,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "ui_time",
+        "required_columns": [
+          "frame_id",
+          "ui_time_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-game_fps_analysis",
         "type": "skill",
         "target": "game_fps_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/game_fps_analysis.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -404,13 +506,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "detect_target_fps",
+        "required_columns": [
+          "detected_fps_mode",
+          "target_interval_ns",
+          "target_fps",
+          "frames_at_target",
+          "total_frames",
+          "target_hit_rate"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-game_main_loop_jank",
         "type": "skill",
         "target": "game_main_loop_jank",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/game_main_loop_jank.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -425,13 +535,25 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "engine_loop_summary",
+        "required_columns": [
+          "engine_family",
+          "phase",
+          "process_name",
+          "slice_count",
+          "total_dur_ms",
+          "avg_dur_ms",
+          "p95_dur_ms",
+          "max_dur_ms",
+          "over_budget_count",
+          "rating"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-gl_standalone_swap_jank",
         "type": "skill",
         "target": "gl_standalone_swap_jank",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/gl_standalone_swap_jank.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -446,13 +568,24 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "swap_interval_summary",
+        "required_columns": [
+          "process_name",
+          "thread_name",
+          "swap_count",
+          "target_interval_ms",
+          "avg_interval_ms",
+          "p95_interval_ms",
+          "max_interval_ms",
+          "missed_like_count",
+          "rating"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-gpu_render_in_range",
         "type": "skill",
         "target": "gpu_render_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/gpu_render_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -465,14 +598,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "operation",
+          "count",
+          "total_ms",
+          "max_ms",
+          "avg_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-input_to_frame_latency",
         "type": "skill",
         "target": "input_to_frame_latency",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/input_to_frame_latency.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -493,13 +632,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "vsync_period",
+        "required_columns": [
+          "vsync_period_ns",
+          "refresh_rate_hz"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-jank_frame_detail",
         "type": "skill",
         "target": "jank_frame_detail",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/jank_frame_detail.skill.yaml",
         "parameters": {
           "package": "com.smartperfetto.fixture",
@@ -560,6 +703,12 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "quadrant_analysis",
+        "required_columns": [
+          "quadrant",
+          "name",
+          "dur_ms",
+          "percentage"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
@@ -598,7 +747,7 @@
         "id": "execute-present_fence_timing",
         "type": "skill",
         "target": "present_fence_timing",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/present_fence_timing.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -611,17 +760,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "present_fence_stats",
+        "required_columns": [
+          "total_fences",
+          "avg_wait_ms",
+          "max_wait_ms",
+          "slow_fences_vsync",
+          "slow_rate_pct",
+          "vsync_period_ms",
+          "gpu_status"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-render_pipeline_latency",
         "type": "skill",
         "target": "render_pipeline_latency",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/render_pipeline_latency.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "root"
@@ -633,18 +791,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "stage",
+          "dur_ms",
+          "pct"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-render_thread_slices",
         "type": "skill",
         "target": "render_thread_slices",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/render_thread_slices.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "render_slices"
@@ -656,13 +818,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "render_slices",
+        "required_columns": [
+          "name",
+          "total_ms",
+          "count",
+          "max_ms",
+          "avg_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-rendering_pipeline_detection",
         "type": "skill",
         "target": "rendering_pipeline_detection",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/rendering_pipeline_detection.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -688,14 +857,24 @@
         "forced_sql_steps": [],
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
-        "semantic_step": "score_pipelines",
+        "semantic_step": "determine_pipeline",
+        "required_columns": [
+          "primary_pipeline_id",
+          "primary_rendering_type_id",
+          "primary_confidence",
+          "candidates_list",
+          "rendering_type_candidates_list",
+          "related_rendering_type_candidates_list",
+          "features_list",
+          "doc_path"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-rn_bridge_to_frame_jank",
         "type": "skill",
         "target": "rn_bridge_to_frame_jank",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/rn_bridge_to_frame_jank.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -708,13 +887,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "rn_bridge_frame_overlap",
+        "required_columns": [
+          "ts",
+          "dur_ns",
+          "bridge_dur_ms",
+          "phase",
+          "slice_name",
+          "thread_name",
+          "process_name",
+          "overlapped_frames",
+          "janky_frames",
+          "max_overlap_ms",
+          "max_frame_dur_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-rn_fabric_render_jank",
         "type": "skill",
         "target": "rn_fabric_render_jank",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/rn_fabric_render_jank.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -727,13 +919,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "fabric_frame_overlap",
+        "required_columns": [
+          "ts",
+          "dur_ns",
+          "dur_ms",
+          "phase",
+          "slice_name",
+          "thread_name",
+          "process_name",
+          "overlapped_frames",
+          "janky_frames",
+          "max_overlap_ms",
+          "severity"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-scroll_response_latency",
         "type": "skill",
         "target": "scroll_response_latency",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/scroll_response_latency.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -746,19 +951,25 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "gesture_ts",
+          "process_name",
+          "response_latency_ms",
+          "first_frame_dur_ms",
+          "rating"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-scroll_session_analysis",
         "type": "skill",
         "target": "scroll_session_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/scroll_session_analysis.skill.yaml",
         "parameters": {
           "session_id": 1,
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}",
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
           "touch_start_ts": "${trace_start}",
           "touch_end_ts": "${trace_end}",
           "fling_start_ts": "${trace_start}",
@@ -790,13 +1001,24 @@
           }
         ],
         "semantic_step": "full_session_stats",
+        "required_columns": [
+          "session_id",
+          "total_frames",
+          "janky_frames",
+          "jank_rate",
+          "avg_frame_ms",
+          "max_frame_ms",
+          "min_frame_ms",
+          "estimated_fps",
+          "duration_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-scrolling_analysis",
         "type": "skill",
         "target": "scrolling_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/scrolling_analysis.skill.yaml",
         "parameters": {
           "enable_expert_probes": true,
@@ -875,13 +1097,19 @@
           }
         ],
         "semantic_step": "vsync_config",
+        "required_columns": [
+          "refresh_rate_hz",
+          "vsync_period_ms",
+          "vsync_source",
+          "total_frames"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-sf_composition_in_range",
         "type": "skill",
         "target": "sf_composition_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/sf_composition_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -894,14 +1122,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "composition_type",
+          "count",
+          "total_ms",
+          "avg_ms",
+          "max_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-sf_frame_consumption",
         "type": "skill",
         "target": "sf_frame_consumption",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/sf_frame_consumption.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -914,17 +1148,32 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "sf_consumption_stats",
+        "required_columns": [
+          "total_consumed_frames",
+          "duration_ms",
+          "duration_sec",
+          "on_time_frames",
+          "janky_frames",
+          "jank_rate",
+          "avg_fps",
+          "median_fps",
+          "actual_fps",
+          "avg_interval_ms",
+          "median_interval_ms",
+          "min_interval_ms",
+          "max_interval_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-sf_layer_count_in_range",
         "type": "skill",
         "target": "sf_layer_count_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/sf_layer_count_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "layer_summary",
@@ -938,13 +1187,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "layer_summary",
+        "required_columns": [
+          "total_layers",
+          "app_layers",
+          "system_layers",
+          "avg_concurrent_layers",
+          "max_concurrent_layers"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-surfaceflinger_analysis",
         "type": "skill",
         "target": "surfaceflinger_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/surfaceflinger_analysis.skill.yaml",
         "parameters": {
           "slow_composition_multiplier": 1.5,
@@ -999,13 +1255,18 @@
           }
         ],
         "semantic_step": "vsync_config",
+        "required_columns": [
+          "refresh_rate_hz",
+          "vsync_period_ms",
+          "vsync_source"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-surfaceflinger_module",
         "type": "skill",
         "target": "surfaceflinger_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/framework/surfaceflinger_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1024,13 +1285,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "frame_overview",
+        "required_columns": [
+          "total_frames",
+          "jank_count",
+          "jank_rate",
+          "avg_fps",
+          "avg_frame_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-textureview_producer_frame_timing",
         "type": "skill",
         "target": "textureview_producer_frame_timing",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/textureview_producer_frame_timing.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1045,13 +1313,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "textureview_signal_summary",
+        "required_columns": [
+          "signal_role",
+          "process_name",
+          "thread_name",
+          "event_count",
+          "avg_dur_ms",
+          "p95_dur_ms",
+          "max_dur_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-vrr_detection",
         "type": "skill",
         "target": "vrr_detection",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/vrr_detection.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1068,17 +1345,24 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "vsync_interval_distribution",
+        "required_columns": [
+          "refresh_rate_bucket",
+          "frame_count",
+          "percentage",
+          "total_duration_sec",
+          "avg_interval_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-vsync_alignment_in_range",
         "type": "skill",
         "target": "vsync_alignment_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/vsync_alignment_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "root"
@@ -1090,14 +1374,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "metric",
+          "value"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-vsync_config",
         "type": "skill",
         "target": "vsync_config",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/vsync_config.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1110,13 +1397,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "detect_vsync_config",
+        "required_columns": [
+          "vsync_period_ns",
+          "refresh_rate_hz",
+          "vsync_period_ms",
+          "vsync_source",
+          "detected_refresh_rate"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-vsync_period_detection",
         "type": "skill",
         "target": "vsync_period_detection",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/vsync_period_detection.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1129,13 +1423,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "detect_vsync_period",
+        "required_columns": [
+          "vsync_period_ns",
+          "detected_refresh_rate_hz",
+          "measured_period_ns",
+          "detection_method",
+          "confidence",
+          "sample_count",
+          "theoretical_fps"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-vsync_phase_alignment",
         "type": "skill",
         "target": "vsync_phase_alignment",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/vsync_phase_alignment.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1152,13 +1455,18 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "vsync_timeline",
+        "required_columns": [
+          "vsync_count",
+          "period_ms",
+          "refresh_hz"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {
         "id": "execute-webview_drawfunctor_jank_chain",
         "type": "skill",
         "target": "webview_drawfunctor_jank_chain",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/webview_drawfunctor_jank_chain.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -1173,6 +1481,15 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "drawfunctor_signal_summary",
+        "required_columns": [
+          "phase",
+          "process_name",
+          "thread_name",
+          "slice_count",
+          "avg_dur_ms",
+          "p95_dur_ms",
+          "max_dur_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
       {

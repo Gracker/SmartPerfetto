@@ -7,7 +7,7 @@
       "id": "execute-ams_module",
       "type": "skill",
       "target": "ams_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/framework/ams_module.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -24,13 +24,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "startup_timing",
+      "required_columns": [
+        "package_name",
+        "launch_type",
+        "total_ms",
+        "ttid_ms",
+        "ttfd_ms",
+        "start_ts"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
       "id": "execute-art_module",
       "type": "skill",
       "target": "art_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/framework/art_module.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture"
@@ -51,13 +59,20 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "gc_overview",
+      "required_columns": [
+        "gc_type",
+        "gc_count",
+        "total_gc_ms",
+        "avg_gc_ms",
+        "max_gc_ms"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
       "id": "execute-code_pinpoint",
       "type": "skill",
       "target": "code_pinpoint",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/code_pinpoint.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -72,13 +87,19 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "hot_slices",
+      "required_columns": [
+        "process_name",
+        "thread_name",
+        "slice_name",
+        "dur_ms"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
       "id": "execute-compose_recomposition_hotspot",
       "type": "skill",
       "target": "compose_recomposition_hotspot",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/compose_recomposition_hotspot.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -101,13 +122,22 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "recomposition_overview",
+      "required_columns": [
+        "slice_name",
+        "process_name",
+        "count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
       "id": "execute-pipeline_4feature_scoring",
       "type": "skill",
       "target": "pipeline_4feature_scoring",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/pipeline_4feature_scoring.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -126,6 +156,11 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "producer_thread_signature",
+      "required_columns": [
+        "producer_thread_count",
+        "producer_thread_names",
+        "signature_type"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
@@ -228,7 +263,7 @@
       "id": "execute-pipeline_key_slices_overlay",
       "type": "skill",
       "target": "pipeline_key_slices_overlay",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/pipeline_key_slices_overlay.skill.yaml",
       "parameters": {
         "slice_names": "'Choreographer#doFrame','DrawFrame','queueBuffer','latchBuffer'"
@@ -243,6 +278,18 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "pipeline_key_slices_overlay",
+      "required_columns": [
+        "ts",
+        "dur",
+        "slice_name",
+        "dur_ms",
+        "thread_name",
+        "process_name",
+        "track_id",
+        "utid",
+        "pipeline_stage",
+        "description"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
@@ -337,7 +384,7 @@
       "id": "execute-systemui_module",
       "type": "skill",
       "target": "systemui_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/app/systemui_module.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -368,13 +415,18 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "systemui_process",
+      "required_columns": [
+        "upid",
+        "pid",
+        "process_name"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
       "id": "execute-third_party_module",
       "type": "skill",
       "target": "third_party_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/app/third_party_module.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture"
@@ -395,13 +447,19 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "thread_overview",
+      "required_columns": [
+        "thread_name",
+        "tid",
+        "cpu_time_ms",
+        "slice_count"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {
       "id": "execute-wms_module",
       "type": "skill",
       "target": "wms_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/framework/wms_module.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -422,6 +480,14 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "window_animation_overview",
+      "required_columns": [
+        "animation_type",
+        "animation_count",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "min_dur_ms",
+        "total_dur_ms"
+      ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
     },
     {

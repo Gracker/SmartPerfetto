@@ -3,6 +3,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 
 const {isReadOnlySql, skillSqlContract} = require('../lib/skill-sql-contract.cjs');
 
@@ -88,4 +89,53 @@ test('keeps root and step SQL visible so hybrid definitions can be rejected', ()
   assert.equal(contract.hasRootSql, true);
   assert.equal(contract.hasStepSql, true);
   assert.deepEqual(contract.sqlIds, ['root', 'hidden_step']);
+});
+
+test('records exact SQL hashes, declared modules, and result columns from source', () => {
+  const rootSql = 'SELECT 1 AS status';
+  const contract = skillSqlContract({
+    type: 'atomic',
+    prerequisites: {modules: ['android.frames.timeline']},
+    display: {
+      columns: [
+        {name: 'status', type: 'number'},
+        {name: 'label', type: 'string'},
+      ],
+    },
+    sql: rootSql,
+  });
+
+  assert.deepEqual(contract.declaredModules, ['android.frames.timeline']);
+  assert.deepEqual(contract.sqlSourceSteps, [{
+    id: 'root',
+    sha256: crypto.createHash('sha256').update(rootSql).digest('hex'),
+    requiredColumns: ['status', 'label'],
+  }]);
+});
+
+test('derives result columns from the outer SQL projection when display metadata is absent', () => {
+  const contract = skillSqlContract({
+    type: 'composite',
+    steps: [{
+      id: 'summary',
+      type: 'atomic',
+      sql: `
+        WITH source AS (
+          SELECT id, value FROM counter
+        )
+        SELECT
+          source.id,
+          ROUND(AVG(value), 2) AS avg_value,
+          COUNT(*) call_count,
+          'stable' AS status
+        FROM source
+        GROUP BY source.id
+      `,
+    }],
+  });
+
+  assert.deepEqual(
+    contract.sqlSourceSteps[0].requiredColumns,
+    ['id', 'avg_value', 'call_count', 'status'],
+  );
 });

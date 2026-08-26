@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "f28f29a672ea9aa39c16533feeb06e003b1ae29084374364250fd7736ac33c51",
+    "sha256": "39334b08e4c4ca595e004c28d7beed702d66dd93aebc6f848c3445f02fe65f45",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -35,7 +35,8 @@
     "consent": "generated",
     "privacy_review": "not-applicable",
     "sanitization_review": "not-applicable",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R3"
   },
   "analysis": {
     "results": [
@@ -48,7 +49,8 @@
     "scenario_file": "scenario.json",
     "generator_version": 1,
     "seed": "scheduler-cpu-contention-v1",
-    "output": "Trace/.generated/constructed/scheduler-cpu-contention/trace.pftrace"
+    "output": "Trace/.generated/constructed/scheduler-cpu-contention/trace.pftrace",
+    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
   },
   "coverage": {
     "skills": [
@@ -95,7 +97,7 @@
         "id": "execute-android_job_scheduler_events",
         "type": "skill",
         "target": "android_job_scheduler_events",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/android_job_scheduler_events.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -108,13 +110,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "job_events",
+        "required_columns": [
+          "ts",
+          "dur_ms",
+          "job_name",
+          "package_name",
+          "uid"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cache_miss_impact",
         "type": "skill",
         "target": "cache_miss_impact",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cache_miss_impact.skill.yaml",
         "parameters": {
           "high_impact_threshold": 500000,
@@ -130,14 +139,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "counter_name",
+          "samples",
+          "total_miss_delta",
+          "avg_miss_delta",
+          "peak_miss_delta",
+          "impact_level"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_analysis",
         "type": "skill",
         "target": "cpu_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/cpu_analysis.skill.yaml",
         "parameters": {
           "big_core_threshold_pct": 30,
@@ -190,17 +206,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "get_process",
+        "required_columns": [
+          "upid",
+          "pid",
+          "process_name"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_cluster_load_in_range",
         "type": "skill",
         "target": "cpu_cluster_load_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_cluster_load_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "init_cpu_topology",
@@ -213,13 +234,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cluster_load",
+        "required_columns": [
+          "cluster",
+          "core_count",
+          "running_ms",
+          "total_capacity_ms",
+          "load_pct",
+          "idle_pct",
+          "max_single_core_pct"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_cluster_mapping_view",
         "type": "skill",
         "target": "cpu_cluster_mapping_view",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_cluster_mapping_view.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -232,13 +262,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cluster_mapping",
+        "required_columns": [
+          "cpu",
+          "cluster_type"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_freq_residency_summary",
         "type": "skill",
         "target": "cpu_freq_residency_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_freq_residency_summary.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -251,17 +285,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "freq_residency",
+        "required_columns": [
+          "cluster_type",
+          "cpu_count",
+          "total_residency_sec",
+          "high_freq_residency_sec",
+          "high_freq_ratio_pct",
+          "weighted_avg_freq_mhz",
+          "max_freq_mhz"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_freq_timeline",
         "type": "skill",
         "target": "cpu_freq_timeline",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_freq_timeline.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "init_cpu_topology",
@@ -276,13 +319,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cpu_freq_summary",
+        "required_columns": [
+          "core_type",
+          "cpu_count",
+          "avg_freq_mhz",
+          "max_freq_mhz",
+          "min_freq_mhz",
+          "freq_changes",
+          "downclocks"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_idle_analysis",
         "type": "skill",
         "target": "cpu_idle_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_idle_analysis.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -295,14 +347,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "cpu",
+          "idle_state",
+          "entry_count",
+          "total_idle_ms",
+          "avg_idle_ms",
+          "max_idle_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_idle_state_residency",
         "type": "skill",
         "target": "cpu_idle_state_residency",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_idle_state_residency.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -315,17 +374,24 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "idle_residency",
+        "required_columns": [
+          "cpu",
+          "idle_state",
+          "total_time_ms",
+          "residency_pct",
+          "interval_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_load_in_range",
         "type": "skill",
         "target": "cpu_load_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_load_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "init_cpu_topology",
@@ -342,13 +408,19 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cpu_utilization",
+        "required_columns": [
+          "core_type",
+          "cpu_count",
+          "utilization_pct",
+          "total_time_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_module",
         "type": "skill",
         "target": "cpu_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/hardware/cpu_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -368,13 +440,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "frequency_overview",
+        "required_columns": [
+          "cpu",
+          "cluster",
+          "avg_freq_mhz",
+          "max_freq_mhz",
+          "min_freq_mhz"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_process_utilization_period",
         "type": "skill",
         "target": "cpu_process_utilization_period",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_process_utilization_period.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -387,13 +466,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "process_util",
+        "required_columns": [
+          "process_name",
+          "utilization"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_profiling",
         "type": "skill",
         "target": "cpu_profiling",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/deep/cpu_profiling.skill.yaml",
         "parameters": {
           "min_runtime_ms": 1
@@ -423,13 +506,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cpu_usage_overview",
+        "required_columns": [
+          "core_type",
+          "core_count",
+          "total_runtime_ms",
+          "total_slices",
+          "avg_capacity"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_slice_analysis",
         "type": "skill",
         "target": "cpu_slice_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_slice_analysis.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -443,13 +533,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cpu_time_by_core",
+        "required_columns": [
+          "thread_name",
+          "process_name",
+          "total_cpu_ms",
+          "big_core_ms",
+          "little_core_ms",
+          "slice_count",
+          "avg_slice_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_thread_utilization_period",
         "type": "skill",
         "target": "cpu_thread_utilization_period",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_thread_utilization_period.skill.yaml",
         "parameters": {
           "top_n": 30
@@ -464,17 +563,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "thread_util",
+        "required_columns": [
+          "process_name",
+          "thread_name",
+          "utilization"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_throttling_in_range",
         "type": "skill",
         "target": "cpu_throttling_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_throttling_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "init_cpu_topology",
@@ -487,13 +591,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "throttle_detection",
+        "required_columns": [
+          "core_type",
+          "start_freq_mhz",
+          "end_freq_mhz",
+          "min_freq_mhz",
+          "max_freq_mhz",
+          "freq_drop_pct",
+          "throttle_detected"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_time_per_frame",
         "type": "skill",
         "target": "cpu_time_per_frame",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_time_per_frame.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -506,13 +619,17 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "cpu_time",
+        "required_columns": [
+          "frame_id",
+          "cpu_time_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_topology_detection",
         "type": "skill",
         "target": "cpu_topology_detection",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_topology_detection.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -530,13 +647,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "detect_cpu_clusters",
+        "required_columns": [
+          "cpu",
+          "cluster_type",
+          "max_freq_mhz",
+          "capacity",
+          "topology_source",
+          "cluster_rank",
+          "cluster_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_topology_view",
         "type": "skill",
         "target": "cpu_topology_view",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_topology_view.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -569,13 +695,24 @@
           }
         ],
         "semantic_step": "read_topology",
+        "required_columns": [
+          "cpu_id",
+          "capacity",
+          "universe_source",
+          "max_freq_mhz",
+          "scale_bucket",
+          "core_type",
+          "topology_source",
+          "cluster_rank",
+          "cluster_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-cpu_utilization_per_period",
         "type": "skill",
         "target": "cpu_utilization_per_period",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/cpu_utilization_per_period.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -588,13 +725,18 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "system_util",
+        "required_columns": [
+          "ts",
+          "dur_ms",
+          "utilization"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-futex_wait_distribution",
         "type": "skill",
         "target": "futex_wait_distribution",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/futex_wait_distribution.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -607,14 +749,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "wait_type",
+          "events",
+          "avg_wait_ms",
+          "p95_wait_ms",
+          "max_wait_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-irq_analysis",
         "type": "skill",
         "target": "irq_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/irq_analysis.skill.yaml",
         "parameters": {
           "hard_irq_long_threshold_us": 1000,
@@ -658,13 +806,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "irq_overview",
+        "required_columns": [
+          "irq_type",
+          "irq_count",
+          "total_dur_ms",
+          "avg_dur_us",
+          "max_dur_us"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-linux_irq_summary",
         "type": "skill",
         "target": "linux_irq_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/linux_irq_summary.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -677,13 +832,19 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "irq_summary",
+        "required_columns": [
+          "name",
+          "count",
+          "total_dur_ms",
+          "avg_dur_us"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-linux_runqueue_depth_timeline",
         "type": "skill",
         "target": "linux_runqueue_depth_timeline",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/linux_runqueue_depth_timeline.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -698,13 +859,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "runqueue_pressure_summary",
+        "required_columns": [
+          "samples",
+          "avg_runnable",
+          "p95_runnable",
+          "max_runnable",
+          "pressure_samples"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-linux_sched_latency_distribution",
         "type": "skill",
         "target": "linux_sched_latency_distribution",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/linux_sched_latency_distribution.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -717,13 +885,23 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "sched_latency_distribution",
+        "required_columns": [
+          "process_name",
+          "thread_name",
+          "runnable_count",
+          "total_latency_ms",
+          "avg_latency_ms",
+          "p95_latency_ms",
+          "max_latency_ms",
+          "severe_waits"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-main_thread_sched_latency_in_range",
         "type": "skill",
         "target": "main_thread_sched_latency_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/main_thread_sched_latency_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -736,14 +914,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "thread_name",
+          "runnable_count",
+          "total_runnable_ms",
+          "max_latency_ms",
+          "avg_latency_ms",
+          "long_wait_count",
+          "severe_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-process_slice_cpu_hotspots",
         "type": "skill",
         "target": "process_slice_cpu_hotspots",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/process_slice_cpu_hotspots.skill.yaml",
         "parameters": {
           "thread_scope": "all",
@@ -760,14 +946,28 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "process_name",
+          "slice_name",
+          "count",
+          "thread_count",
+          "sample_threads",
+          "total_cpu_ms",
+          "total_wall_ms",
+          "avg_cpu_ms",
+          "max_cpu_ms",
+          "cpu_efficiency_pct",
+          "selected_cpu_share_pct",
+          "first_ts",
+          "last_ts"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-sched_latency_in_range",
         "type": "skill",
         "target": "sched_latency_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/sched_latency_in_range.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -780,14 +980,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "thread_name",
+          "runnable_count",
+          "total_runnable_ms",
+          "max_latency_ms",
+          "avg_latency_ms",
+          "long_wait_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-scheduler_module",
         "type": "skill",
         "target": "scheduler_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/kernel/scheduler_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -805,13 +1012,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "runnable_analysis",
+        "required_columns": [
+          "utid",
+          "thread_name",
+          "runnable_ms",
+          "runnable_count",
+          "avg_runnable_ms",
+          "max_runnable_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-scheduling_analysis",
         "type": "skill",
         "target": "scheduling_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/scheduling_analysis.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -824,14 +1039,23 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "thread_name",
+          "process_name",
+          "is_main_thread",
+          "running_ms",
+          "runnable_ms",
+          "sleeping_ms",
+          "max_runnable_ms",
+          "long_runnable_count"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-screen_off_background_cpu_attribution",
         "type": "skill",
         "target": "screen_off_background_cpu_attribution",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/screen_off_background_cpu_attribution.skill.yaml",
         "parameters": {
           "top_n": 30
@@ -846,17 +1070,25 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "screen_off_cpu",
+        "required_columns": [
+          "process_name",
+          "thread_name",
+          "screen_off_time_sec",
+          "runtime_ms",
+          "cpu_util_pct",
+          "evidence_status"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-selection_range_cpu_sched_summary",
         "type": "skill",
         "target": "selection_range_cpu_sched_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/selection_range_cpu_sched_summary.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "init_cpu_topology",
@@ -875,17 +1107,33 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "running_thread_quadrants",
+        "required_columns": [
+          "thread_name",
+          "process_name",
+          "tid",
+          "total_cpu_ms",
+          "q1_perf_running_ms",
+          "q2_little_running_ms",
+          "q3_runnable_ms",
+          "q4a_io_blocked_ms",
+          "q4b_sleeping_ms",
+          "perf_core_pct",
+          "running_cpus",
+          "running_core_types",
+          "migrations",
+          "cross_cluster_migrations"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-system_load_in_range",
         "type": "skill",
         "target": "system_load_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/system_load_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "root"
@@ -897,18 +1145,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "metric",
+          "value"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-task_migration_in_range",
         "type": "skill",
         "target": "task_migration_in_range",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/task_migration_in_range.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "init_cpu_topology",
@@ -921,13 +1172,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "migration_analysis",
+        "required_columns": [
+          "thread_name",
+          "migration_count",
+          "big_to_little",
+          "little_to_big",
+          "big_core_pct",
+          "unique_cpus"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-thread_affinity_violation",
         "type": "skill",
         "target": "thread_affinity_violation",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/thread_affinity_violation.skill.yaml",
         "parameters": {
           "migration_ratio_threshold": 25
@@ -942,19 +1201,27 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "process_name",
+          "thread_name",
+          "run_samples",
+          "distinct_cpus",
+          "migration_count",
+          "migration_ratio_pct",
+          "affinity_violation"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       },
       {
         "id": "execute-util_tracking_analysis",
         "type": "skill",
         "target": "util_tracking_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/util_tracking_analysis.skill.yaml",
         "parameters": {
           "package": "com.smartperfetto.fixture",
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}"
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}"
         },
         "required_steps": [
           "root"
@@ -966,7 +1233,12 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "offset_ms",
+          "cpu",
+          "running_ms",
+          "freq_mhz"
+        ],
         "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
       }
     ]

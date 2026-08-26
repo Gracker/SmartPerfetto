@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "d821be29b55da321f6c2578846bd8dc7acadee49d6be15757d2709c783b24246",
+    "sha256": "5cf7919777cff08e80a78832950e80de1cd0e55773f522b7f171fdbebb4c1d78",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -35,7 +35,8 @@
     "consent": "generated",
     "privacy_review": "not-applicable",
     "sanitization_review": "not-applicable",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R3"
   },
   "analysis": {
     "results": [
@@ -48,7 +49,8 @@
     "scenario_file": "scenario.json",
     "generator_version": 1,
     "seed": "power-thermal-v1",
-    "output": "Trace/.generated/constructed/power-thermal/trace.pftrace"
+    "output": "Trace/.generated/constructed/power-thermal/trace.pftrace",
+    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
   },
   "coverage": {
     "skills": [
@@ -79,7 +81,7 @@
         "id": "execute-android_dvfs_counter_stats",
         "type": "skill",
         "target": "android_dvfs_counter_stats",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/android_dvfs_counter_stats.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -92,13 +94,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "dvfs_stats",
+        "required_columns": [
+          "name",
+          "min",
+          "max",
+          "wgt_avg",
+          "observed_sec"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-battery_charge_timeline",
         "type": "skill",
         "target": "battery_charge_timeline",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/battery_charge_timeline.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -111,6 +120,13 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "battery_samples",
+        "required_columns": [
+          "ts",
+          "capacity_pct",
+          "charge_uah",
+          "voltage_uv",
+          "current_ua"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
@@ -143,7 +159,7 @@
         "id": "execute-battery_drain_rate_summary",
         "type": "skill",
         "target": "battery_drain_rate_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/battery_drain_rate_summary.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -156,13 +172,25 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "drain_rate",
+        "required_columns": [
+          "sample_count",
+          "duration_sec",
+          "capacity_delta_pct",
+          "drain_pct_per_hour",
+          "charge_delta_uah",
+          "avg_current_ua",
+          "avg_voltage_uv",
+          "avg_power_mw",
+          "charging_state",
+          "source_level"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-gpu_power_state_analysis",
         "type": "skill",
         "target": "gpu_power_state_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/gpu_power_state_analysis.skill.yaml",
         "parameters": {
           "transition_threshold_pct": 15
@@ -177,14 +205,23 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "gpu_id",
+          "samples",
+          "avg_freq_mhz",
+          "min_freq_mhz",
+          "max_freq_mhz",
+          "downshift_count",
+          "upshift_count",
+          "downshift_ratio_pct"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-mali_gpu_power_state",
         "type": "skill",
         "target": "mali_gpu_power_state",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/mali_gpu_power_state.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -197,6 +234,11 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "mali_state",
+        "required_columns": [
+          "ts",
+          "dur_ms",
+          "power_state"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
@@ -232,7 +274,7 @@
         "id": "execute-power_module",
         "type": "skill",
         "target": "power_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/hardware/power_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -257,13 +299,20 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "wakelock_overview",
+        "required_columns": [
+          "wakelock_event",
+          "event_count",
+          "total_ms",
+          "avg_ms",
+          "max_ms"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-power_rails_energy_breakdown",
         "type": "skill",
         "target": "power_rails_energy_breakdown",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/power_rails_energy_breakdown.skill.yaml",
         "parameters": {
           "top_n": 30
@@ -278,13 +327,23 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "rail_energy",
+        "required_columns": [
+          "power_rail_name",
+          "subsystem_name",
+          "raw_power_rail_name",
+          "energy_uws",
+          "energy_mwh",
+          "avg_power_mw",
+          "sample_coverage_pct",
+          "source_level"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-suspend_wakeup_analysis",
         "type": "skill",
         "target": "suspend_wakeup_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/suspend_wakeup_analysis.skill.yaml",
         "parameters": {
           "frequent_wakeup_critical": 50,
@@ -334,13 +393,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "suspend_overview",
+        "required_columns": [
+          "power_state",
+          "period_count",
+          "total_time_sec",
+          "avg_duration_sec",
+          "max_duration_sec",
+          "min_duration_sec"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-thermal_module",
         "type": "skill",
         "target": "thermal_module",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/modules/hardware/thermal_module.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -363,17 +430,26 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "temperature_overview",
+        "required_columns": [
+          "sensor_name",
+          "sample_count",
+          "min_temp",
+          "max_temp",
+          "avg_temp",
+          "temp_range",
+          "status"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-thermal_predictor",
         "type": "skill",
         "target": "thermal_predictor",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/thermal_predictor.skill.yaml",
         "parameters": {
-          "start_ts": "${trace_start}",
-          "end_ts": "${trace_end}",
+          "start_ts": "${fixture_start}",
+          "end_ts": "${fixture_end}",
           "high_drop_threshold_pct": 30,
           "medium_drop_threshold_pct": 15,
           "high_core_ratio_threshold_pct": 50,
@@ -390,14 +466,21 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "avg_start_freq_mhz",
+          "avg_end_freq_mhz",
+          "avg_drop_pct",
+          "throttled_core_ratio_pct",
+          "thermal_risk",
+          "prediction"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-thermal_throttling",
         "type": "skill",
         "target": "thermal_throttling",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/thermal_throttling.skill.yaml",
         "parameters": {
           "enable_expert_probes": true,
@@ -450,6 +533,15 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "thermal_overview",
+        "required_columns": [
+          "sensor_name",
+          "sample_count",
+          "min_temp_c",
+          "max_temp_c",
+          "avg_temp_c",
+          "temp_range_c",
+          "temp_severity"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
@@ -479,7 +571,7 @@
         "id": "execute-wakeup_frequency_summary",
         "type": "skill",
         "target": "wakeup_frequency_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/wakeup_frequency_summary.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -492,13 +584,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "wakeup_frequency",
+        "required_columns": [
+          "window_min",
+          "device_wakeup_count",
+          "device_wakeups_per_min",
+          "cpu_idle_exit_count",
+          "cpu_idle_exits_per_min",
+          "bad_wakeup_count",
+          "interpretation"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-wattson_app_startup_power",
         "type": "skill",
         "target": "wattson_app_startup_power",
-        "mode": "graceful_empty",
+        "mode": "deferred",
         "source_file": "backend/skills/atomic/wattson_app_startup_power.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -518,7 +619,7 @@
         "id": "execute-wattson_rails_power_breakdown",
         "type": "skill",
         "target": "wattson_rails_power_breakdown",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/wattson_rails_power_breakdown.skill.yaml",
         "parameters": {
           "top_n": 20
@@ -533,13 +634,22 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "rails_aggregation",
+        "required_columns": [
+          "subsystem",
+          "breakdown_type",
+          "component_id",
+          "total_energy_mws",
+          "energy_mwh",
+          "avg_power_mw",
+          "source_level"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {
         "id": "execute-wattson_thread_power_attribution",
         "type": "skill",
         "target": "wattson_thread_power_attribution",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/wattson_thread_power_attribution.skill.yaml",
         "parameters": {
           "top_n": 30
@@ -554,6 +664,14 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "thread_attribution",
+        "required_columns": [
+          "process_name",
+          "thread_name",
+          "total_cpu_mws",
+          "energy_mwh",
+          "avg_cpu_mw",
+          "source_level"
+        ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },
       {

@@ -9,17 +9,37 @@ const os = require('os');
 const path = require('path');
 const {pathToFileURL} = require('url');
 const { spawnSync } = require('child_process');
+const {createHash} = require('crypto');
 
 const backendRoot = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(backendRoot, '..');
 const mode = parseMode(process.argv.slice(2));
 const workRoot = fs.mkdtempSync(path.join(os.tmpdir(), `smartperfetto-cli-e2e-${mode}-`));
 const keepArtifacts = process.env.SMARTPERFETTO_CLI_E2E_KEEP === '1';
-const tracePath = path.join(repoRoot, 'perfetto/test/data/api31_startup_cold.perfetto-trace');
+const tracePath = resolveCatalogTracePath('android-startup-heavy');
 const traceProcessorPath = resolveTraceProcessorPath();
 const rawSecret = 'cli-e2e-secret-do-not-leak';
 
 let failure = false;
+
+function resolveCatalogTracePath(caseId) {
+  const catalogPath = path.join(repoRoot, 'Trace/catalog.json');
+  const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+  const entry = catalog.cases?.find((candidate) => candidate.id === caseId);
+  assert(entry, `Trace catalog case not found: ${caseId}`);
+  assert.equal(entry.kind, 'real', `CLI E2E case must be real: ${caseId}`);
+  assert(
+    entry.source?.evidence_tier === 'R1' || entry.source?.evidence_tier === 'R2',
+    `CLI E2E case must carry R1 or R2 evidence: ${caseId}`,
+  );
+  const caseDir = path.resolve(repoRoot, entry.case_dir);
+  const resolved = path.resolve(caseDir, entry.trace.file);
+  assert(resolved.startsWith(`${caseDir}${path.sep}`), `CLI E2E trace escapes case directory: ${caseId}`);
+  assertFile(resolved, 'catalog test trace');
+  const digest = createHash('sha256').update(fs.readFileSync(resolved)).digest('hex');
+  assert.equal(digest, entry.trace.sha256, `CLI E2E trace hash drift: ${caseId}`);
+  return resolved;
+}
 
 main()
   .then(() => {

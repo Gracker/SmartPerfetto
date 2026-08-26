@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "f00d779b7a75887416a4e564508903e4db87ee3caa8a7066ff1975c62c88031a",
+    "sha256": "c78cf7e452e06d046c44882361c65014c4a2af4f1cf256a156f751a2d5ff0e4c",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -35,7 +35,8 @@
     "consent": "generated",
     "privacy_review": "not-applicable",
     "sanitization_review": "not-applicable",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R3"
   },
   "analysis": {
     "results": [
@@ -48,7 +49,8 @@
     "scenario_file": "scenario.json",
     "generator_version": 1,
     "seed": "linux-system-state-v1",
-    "output": "Trace/.generated/constructed/linux-system-state/trace.pftrace"
+    "output": "Trace/.generated/constructed/linux-system-state/trace.pftrace",
+    "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
   },
   "coverage": {
     "skills": [
@@ -65,7 +67,7 @@
         "id": "execute-device_state_snapshot",
         "type": "skill",
         "target": "device_state_snapshot",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/composite/device_state_snapshot.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -80,13 +82,18 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "environment_snapshot",
+        "required_columns": [
+          "metric",
+          "value",
+          "ts"
+        ],
         "required_marker": "SmartPerfetto::CASE::linux-system-state"
       },
       {
         "id": "execute-linux_perf_counter_hotspots",
         "type": "skill",
         "target": "linux_perf_counter_hotspots",
-        "mode": "graceful_empty",
+        "mode": "deferred",
         "source_file": "backend/skills/atomic/linux_perf_counter_hotspots.skill.yaml",
         "parameters": {},
         "required_steps": [
@@ -106,7 +113,7 @@
         "id": "execute-linux_systemd_journald_analysis",
         "type": "skill",
         "target": "linux_systemd_journald_analysis",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/linux_systemd_journald_analysis.skill.yaml",
         "parameters": {
           "max_prio": 4,
@@ -122,14 +129,24 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "ts_str",
+          "prio_label",
+          "signal_type",
+          "tag",
+          "comm",
+          "systemd_unit",
+          "hostname",
+          "transport",
+          "msg_preview"
+        ],
         "required_marker": "SmartPerfetto::CASE::linux-system-state"
       },
       {
         "id": "execute-trace_state_track_summary",
         "type": "skill",
         "target": "trace_state_track_summary",
-        "mode": "execution",
+        "mode": "semantic",
         "source_file": "backend/skills/atomic/trace_state_track_summary.skill.yaml",
         "parameters": {
           "max_rows": 80
@@ -144,7 +161,18 @@
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "root",
-        "min_rows": 0,
+        "required_columns": [
+          "track_name",
+          "category",
+          "state_value",
+          "event_count",
+          "total_dur_ms",
+          "avg_dur_ms",
+          "max_dur_ms",
+          "first_ts",
+          "last_ts",
+          "share_pct"
+        ],
         "required_marker": "SmartPerfetto::CASE::linux-system-state"
       },
       {

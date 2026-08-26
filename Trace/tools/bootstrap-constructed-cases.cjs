@@ -11,6 +11,11 @@ const {skillSqlContract} = require('./lib/skill-sql-contract.cjs');
 
 const repoRoot = path.resolve(__dirname, '../..');
 const yaml = require(require.resolve('js-yaml', {paths: [path.join(repoRoot, 'backend')]}));
+const runtimeRevision = fs.readFileSync(
+  path.join(repoRoot, 'scripts/trace-processor-pin.env'),
+  'utf8',
+).match(/^PERFETTO_VERSION=([^\s#]+)$/m)?.[1];
+if (!runtimeRevision) throw new Error('scripts/trace-processor-pin.env has no PERFETTO_VERSION');
 
 const FAMILIES = [
   {
@@ -149,6 +154,7 @@ const SEMANTIC_STEP_OVERRIDES = new Map([
   ['android_heap_dominator_path_extract', 'dominator_paths'],
   ['gpu_compute_kernel_analysis', 'kernel_summary'],
   ['camera_trace_evidence', 'camera_slice_candidates'],
+  ['rendering_pipeline_detection', 'determine_pipeline'],
 ]);
 
 const REQUIRED_STEP_OVERRIDES = new Map([
@@ -180,14 +186,17 @@ const SEMANTIC_ASSERTION_OVERRIDES = new Map([
 ]);
 
 const EXPECTED_LIMITATIONS = new Map([
-  ['android_kernel_wakelock_summary', {mode: 'graceful_empty', reason: 'The current generator does not emit android_kernel_wakelock counter tracks.'}],
-  ['binder_root_cause', {mode: 'graceful_empty', reason: 'The fixture has blocking slices but no kernel Binder transaction packet chain.'}],
-  ['block_io_analysis', {mode: 'graceful_empty', reason: 'The fixture does not yet emit block_rq ftrace events.'}],
-  ['linux_perf_counter_hotspots', {mode: 'graceful_empty', reason: 'The fixture does not contain PMU perf sample/counter packets.'}],
-  ['native_heap_breakdown', {mode: 'graceful_empty', reason: 'The fixture does not contain heapprofd allocation packets.'}],
-  ['wattson_app_startup_power', {mode: 'graceful_empty', reason: 'Wattson startup attribution is device-model gated and unsupported by this base device.'}],
-  ['dmabuf_analysis', {mode: 'graceful_empty', reason: 'The SQL contract executes, but this fixture does not contain DMA-BUF allocation or residency events.'}],
-  ['gc_analysis', {mode: 'graceful_empty', reason: 'The SQL contract executes, but this fixture does not contain ART garbage-collection packets.'}],
+  ['android_kernel_wakelock_summary', {mode: 'deferred', reason: 'The current generator does not emit android_kernel_wakelock counter tracks.'}],
+  ['binder_root_cause', {mode: 'deferred', reason: 'The fixture has blocking slices but no kernel Binder transaction packet chain.'}],
+  ['block_io_analysis', {mode: 'deferred', reason: 'The fixture does not yet emit block_rq ftrace events.'}],
+  ['linux_perf_counter_hotspots', {mode: 'deferred', reason: 'The fixture does not contain PMU perf sample/counter packets.'}],
+  ['native_heap_breakdown', {mode: 'deferred', reason: 'The fixture does not contain heapprofd allocation packets.'}],
+  ['wattson_app_startup_power', {mode: 'deferred', reason: 'Wattson startup attribution is device-model gated and unsupported by this base device.'}],
+  ['dmabuf_analysis', {mode: 'deferred', reason: 'The SQL contract executes, but this fixture does not contain DMA-BUF allocation or residency events.'}],
+  ['page_fault_in_range', {mode: 'deferred', reason: 'The pinned trace schema requires sched_blocked_reason plus resolvable kernel symbols to populate thread_state.blocked_function for page-fault attribution.'}],
+  ['startup_main_thread_binder_blocking_in_range', {mode: 'deferred', reason: 'The current generator does not yet emit a paired kernel Binder transaction/reply chain inside the synthetic startup interval.'}],
+  ['startup_class_loading_in_range', {mode: 'deferred', reason: 'The current generator does not yet emit the system_server launch markers required for android_startups to associate L*; class-loading slices with the synthetic process.'}],
+  ['startup_thread_blocking_graph', {mode: 'deferred', reason: 'The current generator does not yet emit sched_wakeup relationships that populate thread_state.waker_utid for the synthetic startup threads.'}],
 ]);
 
 const ISOLATED_SQL_PROBES = new Map([
@@ -260,8 +269,8 @@ function parameterValue(input, identities) {
   if (name === 'startup_type' || name === 'launch_type') return 'cold';
   if (name === 'event_type') return 'tap';
   if (name === 'event_action') return 'ACTION_UP';
-  if (name === 'event_ts' || name.endsWith('start_ts')) return '${trace_start}';
-  if (name === 'event_end_ts' || name.endsWith('end_ts')) return '${trace_end}';
+  if (name === 'event_ts' || name.endsWith('start_ts')) return '${fixture_start}';
+  if (name === 'event_end_ts' || name.endsWith('end_ts')) return '${fixture_end}';
   if (name === 'pid' || name.endsWith('_pid')) return identities.processes.app;
   if (name === 'tid' || name.endsWith('_tid')) return identities.threads.main;
   if (name === 'upid') return '${fixture_upid}';
@@ -310,11 +319,13 @@ function skillExpectation(skill, family, identities) {
   if (hasRootSql) {
     const limitation = EXPECTED_LIMITATIONS.get(definition.name);
     const semanticAssertions = SEMANTIC_ASSERTION_OVERRIDES.get(definition.name);
+    const columns = contract.sqlSourceSteps.find((step) => step.id === 'root')?.requiredColumns ?? [];
+    const mode = limitation?.mode ?? (columns.length > 0 || semanticAssertions ? 'semantic' : 'execution');
     return {
       id: `execute-${definition.name}`,
       type: 'skill',
       target: definition.name,
-      mode: limitation?.mode ?? (semanticAssertions ? 'semantic' : 'execution'),
+      mode,
       source_file: path.relative(repoRoot, skill.filePath).split(path.sep).join('/'),
       parameters,
       required_steps: ['root'],
@@ -323,7 +334,7 @@ function skillExpectation(skill, family, identities) {
       isolated_sql_probes: [],
       expected_condition_skips: [],
       semantic_step: 'root',
-      ...(limitation || semanticAssertions ? {} : {min_rows: 0}),
+      ...(mode === 'semantic' && columns.length > 0 ? {required_columns: columns} : {}),
       ...(semanticAssertions ?? {}),
       ...(limitation ? {limitation_reason: limitation.reason} : {}),
       ...(limitation?.expected_error ? {expected_error: limitation.expected_error} : {}),
@@ -374,6 +385,9 @@ function skillExpectation(skill, family, identities) {
     }));
   const limitation = EXPECTED_LIMITATIONS.get(definition.name);
   const semanticAssertions = SEMANTIC_ASSERTION_OVERRIDES.get(definition.name);
+  const selectedStep = selectedStepIndex >= 0 ? steps[selectedStepIndex] : null;
+  const columns = contract.sqlSourceSteps.find((step) => step.id === selectedStep?.id)?.requiredColumns ?? [];
+  const mode = limitation?.mode ?? (columns.length > 0 || semanticAssertions ? 'semantic' : 'execution');
   return {
     id: `execute-${definition.name}`,
     type: 'skill',
@@ -382,7 +396,7 @@ function skillExpectation(skill, family, identities) {
     // does not prove that the returned values are semantically correct. Keep
     // that weaker contract explicit so the corpus cannot over-report semantic
     // coverage when no value assertion exists yet.
-    mode: limitation?.mode ?? (semanticAssertions ? 'semantic' : 'execution'),
+    mode,
     source_file: path.relative(repoRoot, skill.filePath).split(path.sep).join('/'),
     parameters,
     required_steps: requiredSteps,
@@ -391,6 +405,7 @@ function skillExpectation(skill, family, identities) {
     isolated_sql_probes: isolatedSqlProbes,
     expected_condition_skips: expectedConditionSkips,
     semantic_step: selectedStepIndex >= 0 ? steps[selectedStepIndex].id : null,
+    ...(mode === 'semantic' && columns.length > 0 ? {required_columns: columns} : {}),
     ...(semanticAssertions ?? {}),
     ...(limitation ? {limitation_reason: limitation.reason} : {}),
     ...(limitation?.expected_error ? {expected_error: limitation.expected_error} : {}),
@@ -475,6 +490,10 @@ function scenarioForFamily(family) {
   const familySignals = [];
   if (family.id === 'scheduler-cpu-contention') {
     familySignals.push(
+      {type: 'cpu-frequency', at_ns: '15000000', cpu_id: 0, value: 1200000, cpu: 0},
+      {type: 'sched-running', at_ns: '20000000', duration_ns: '80000000', thread: 'main', cpu: 0, end_state: 'S'},
+      {type: 'atrace-counter', at_ns: '30000000', process: 'app', thread: 'main', name: 'L3 cache misses', value: 100000},
+      {type: 'atrace-counter', at_ns: '80000000', process: 'app', thread: 'main', name: 'L3 cache misses', value: 350000},
       {type: 'cpu-frequency', at_ns: '520000000', cpu_id: 0, value: 1800000, cpu: 0},
       {type: 'irq-span', at_ns: '540000000', duration_ns: '4000000', irq: 42, name: 'synthetic_irq', cpu: 0},
       {
@@ -492,6 +511,7 @@ function scenarioForFamily(family) {
   if (family.id === 'rendering-jank') {
     familySignals.push(
       {type: 'frame-timeline', at_ns: '280000000', duration_ns: '160000000', process: 'app', cookie: 101, token: 201, display_frame_token: 301, layer_name: 'SyntheticJankLayer', jank_type: 64},
+      {type: 'atrace-slice', at_ns: '310000000', duration_ns: '30000000', process: 'app', thread: 'main', name: 'binder transaction'},
       {type: 'gpu-frequency', at_ns: '500000000', gpu_id: 0, value: 700000, cpu: 0},
     );
   }
@@ -510,7 +530,12 @@ function scenarioForFamily(family) {
   if (family.id === 'memory-gc-pressure') {
     familySignals.push(
       {type: 'process-stats', at_ns: '400000000', process: 'app', vm_rss_kb: 102400, rss_anon_kb: 81920, rss_file_kb: 20480, rss_shmem_kb: 1024, vm_swap_kb: 1024, vm_hwm_kb: 122880, oom_score_adj: 200},
+      {type: 'atrace-counter', at_ns: '500000000', process: 'app', thread: 'main', name: 'Heap size (KB)', value: 196608},
+      {type: 'sched-running', at_ns: '510000000', duration_ns: '80000000', thread: 'main', cpu: 0, end_state: 'S'},
+      {type: 'atrace-slice', at_ns: '520000000', duration_ns: '40000000', process: 'app', thread: 'main', name: 'Background concurrent copying GC'},
+      {type: 'atrace-counter', at_ns: '590000000', process: 'app', thread: 'main', name: 'Heap size (KB)', value: 131072},
       {type: 'process-stats', at_ns: '600000000', process: 'app', vm_rss_kb: 174080, rss_anon_kb: 133120, rss_file_kb: 40960, rss_shmem_kb: 2048, vm_swap_kb: 4096, vm_hwm_kb: 184320, oom_score_adj: 900},
+      {type: 'android-log', at_ns: '610000000', process: 'app', thread: 'main', log_id: 'MAIN', priority: 'WARN', tag: 'ActivityManager', message: 'ANR in com.smartperfetto.fixture: input dispatching timed out after GC pressure'},
       {type: 'atrace-slice', at_ns: '620000000', duration_ns: '1000000', process: 'app', thread: 'main', name: 'SI$com.smartperfetto.fixture.LeakedActivity.onDestroy'},
       {
         type: 'managed-heap-graph',
@@ -584,29 +609,42 @@ function scenarioForFamily(family) {
     );
   }
   if (family.id === 'binder-io-blocking') {
-    familySignals.push({
-      type: 'anr-event',
-      at_ns: '800000000',
-      process: 'system',
-      thread: 'system-main',
-      target_process: 'app',
-      error_id: 'smartperfetto-synthetic-anr',
-      subject: 'Input dispatching timed out waiting for com.smartperfetto.fixture',
-      cpu: 0,
-    });
+    familySignals.push(
+      {type: 'sched-running', at_ns: '50000000', duration_ns: '100000000', thread: 'main', cpu: 0, end_state: 'D'},
+      {
+        type: 'anr-event',
+        at_ns: '800000000',
+        process: 'system',
+        thread: 'system-main',
+        target_process: 'app',
+        error_id: 'smartperfetto-synthetic-anr',
+        subject: 'Input dispatching timed out waiting for com.smartperfetto.fixture',
+        cpu: 0,
+      },
+    );
+  }
+  if (family.id === 'startup-lifecycle') {
+    familySignals.push(
+      {type: 'sched-running', at_ns: '90000000', duration_ns: '150000000', thread: 'main', cpu: 0, end_state: 'S'},
+      {type: 'atrace-slice', at_ns: '110000000', duration_ns: '25000000', process: 'app', thread: 'main', name: 'Lcom/smartperfetto/fixture/HomeActivity;'},
+      {type: 'atrace-slice', at_ns: '145000000', duration_ns: '60000000', process: 'app', thread: 'main', name: 'inflate com.smartperfetto.fixture.activity_main'},
+    );
   }
   if (family.id === 'general-runtime-contracts') {
-    familySignals.push({
-      type: 'perf-sample',
-      at_ns: '700000000',
-      process: 'app',
-      thread: 'main',
-      function_name: 'SmartPerfettoSyntheticHotFunction',
-      module_name: 'libsmartperfetto_fixture.so',
-      sample_count: 12,
-      sample_interval_ns: '1000000',
-      cpu: 0,
-    });
+    familySignals.push(
+      {type: 'sched-running', at_ns: '50000000', duration_ns: '100000000', thread: 'main', cpu: 0, end_state: 'S'},
+      {
+        type: 'perf-sample',
+        at_ns: '700000000',
+        process: 'app',
+        thread: 'main',
+        function_name: 'SmartPerfettoSyntheticHotFunction',
+        module_name: 'libsmartperfetto_fixture.so',
+        sample_count: 12,
+        sample_interval_ns: '1000000',
+        cpu: 0,
+      },
+    );
   }
   return {
     schema_version: 1,
@@ -750,6 +788,7 @@ function main() {
         privacy_review: 'not-applicable',
         sanitization_review: 'not-applicable',
         publication: 'public',
+        evidence_tier: 'R3',
       },
       analysis: {results: ['analysis/expected.json'], logs: []},
       construction: {
@@ -758,6 +797,7 @@ function main() {
         generator_version: 1,
         seed: `${family.id}-v1`,
         output: `Trace/.generated/constructed/${family.id}/trace.pftrace`,
+        runtime_revision: runtimeRevision,
       },
       coverage: {
         skills: familySkills,

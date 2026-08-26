@@ -7,7 +7,7 @@
       "id": "execute-android_gpu_work_period_track",
       "type": "skill",
       "target": "android_gpu_work_period_track",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/android_gpu_work_period_track.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -20,13 +20,18 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "gpu_work",
+      "required_columns": [
+        "ts",
+        "dur_ms",
+        "uid"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {
       "id": "execute-gpu_analysis",
       "type": "skill",
       "target": "gpu_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/gpu_analysis.skill.yaml",
       "parameters": {
         "high_freq_threshold_pct": 70,
@@ -68,6 +73,17 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "gpu_freq_overview",
+      "required_columns": [
+        "gpu_id",
+        "weighted_avg_freq_mhz",
+        "max_freq_mhz",
+        "min_freq_mhz",
+        "max_freq_time_pct",
+        "freq_levels",
+        "freq_change_count",
+        "total_time_sec",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {
@@ -102,6 +118,14 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "kernel_summary",
+      "required_columns": [
+        "launch_id",
+        "kernel",
+        "ugpu",
+        "ts",
+        "dur_ns",
+        "compute_time_pct"
+      ],
       "min_rows": 2,
       "assertions": [
         {
@@ -121,7 +145,7 @@
       "id": "execute-gpu_freq_in_range",
       "type": "skill",
       "target": "gpu_freq_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/gpu_freq_in_range.skill.yaml",
       "parameters": {
         "low_freq_threshold_pct": 40
@@ -136,14 +160,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "gpu_id",
+        "avg_freq_mhz",
+        "max_freq_mhz",
+        "min_freq_mhz",
+        "freq_changes",
+        "low_freq_pct"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {
       "id": "execute-gpu_frequency_analysis",
       "type": "skill",
       "target": "gpu_frequency_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/gpu_frequency_analysis.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -156,14 +187,18 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "metric",
+        "value",
+        "assessment"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {
       "id": "execute-gpu_metrics",
       "type": "skill",
       "target": "gpu_metrics",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/gpu_metrics.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -184,13 +219,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "gpu_frequency",
+      "required_columns": [
+        "avg_freq_mhz",
+        "max_freq_mhz",
+        "min_freq_mhz",
+        "median_freq_mhz",
+        "sample_count",
+        "freq_counters"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {
       "id": "execute-gpu_module",
       "type": "skill",
       "target": "gpu_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/hardware/gpu_module.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -209,13 +252,19 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "gpu_frequency_overview",
+      "required_columns": [
+        "counter_name",
+        "avg_value",
+        "max_value",
+        "min_value"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {
       "id": "execute-gpu_v57_ai_diagnostics",
       "type": "skill",
       "target": "gpu_v57_ai_diagnostics",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/gpu_v57_ai_diagnostics.skill.yaml",
       "parameters": {
         "target_freq_ratio": 0.9,
@@ -267,6 +316,18 @@
         }
       ],
       "semantic_step": "gpu_inventory",
+      "required_columns": [
+        "machine_id",
+        "is_host",
+        "ugpu",
+        "gpu_index",
+        "vendor",
+        "name",
+        "model",
+        "architecture",
+        "uuid",
+        "pci_bdf"
+      ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
     {

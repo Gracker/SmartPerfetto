@@ -28,11 +28,31 @@
     "consent": "owner-approved",
     "privacy_review": "approved",
     "sanitization_review": "approved",
-    "publication": "public"
+    "publication": "public",
+    "evidence_tier": "R1"
   },
   "analysis": {
     "results": ["analysis/launch_light.pftrace.fps_report.txt"],
     "logs": []
   },
-  "coverage": {"skills": [], "strategies": [], "expectations": []}
+  "coverage": {
+    "skills": [],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "sql-smartperfetto-binder-victim-to-server-positive",
+        "type": "sql",
+        "target": "smartperfetto.binder.victim_to_server",
+        "mode": "semantic",
+        "source_file": "backend/sql/smartperfetto/binder/victim_to_server.sql",
+        "source_sha256": "d341de807918382d7d81eac563c401ac63e17ff7e6360f82d46f88cb09dfc8d9",
+        "query": "SELECT client_dur_ns, client_process, server_process, is_sync, binder_txn_id, binder_reply_id FROM smartperfetto_binder_victim_to_server WHERE is_sync = 1 AND client_dur_ns > 0 ORDER BY client_dur_ns DESC LIMIT 100",
+        "required_columns": ["client_dur_ns", "client_process", "server_process", "is_sync", "binder_txn_id", "binder_reply_id"],
+        "assertions": [
+          {"column": "client_dur_ns", "operator": "gt", "value": 0},
+          {"column": "binder_txn_id", "operator": "gt", "value": 0}
+        ]
+      }
+    ]
+  }
 }

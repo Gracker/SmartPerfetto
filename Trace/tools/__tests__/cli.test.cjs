@@ -33,6 +33,24 @@ function createIndexFixture() {
   );
   fs.mkdirSync(path.join(repoRoot, 'backend/skills'), {recursive: true});
   fs.mkdirSync(path.join(repoRoot, 'backend/strategies'), {recursive: true});
+  fs.mkdirSync(path.join(repoRoot, 'backend/data'), {recursive: true});
+  fs.mkdirSync(path.join(repoRoot, 'backend/sql/smartperfetto'), {recursive: true});
+  fs.mkdirSync(path.join(repoRoot, 'scripts'), {recursive: true});
+  writeJson(path.join(repoRoot, 'backend/data/perfettoSqlDocs.json'), {
+    version: 1,
+    generatedFrom: 'fixture-runtime',
+    modules: [],
+    entries: [],
+    symbolToModule: {},
+  });
+  writeJson(path.join(repoRoot, 'backend/sql/smartperfetto/PACKAGE.json'), {
+    packageVersion: '0.1.0',
+    symbols: [],
+  });
+  fs.writeFileSync(
+    path.join(repoRoot, 'scripts/trace-processor-pin.env'),
+    'PERFETTO_VERSION=fixture-runtime\n',
+  );
   const caseDir = path.join(repoRoot, 'Trace/real/android-startup');
   const trace = Buffer.from([0x0a, 0x00]);
   fs.mkdirSync(path.join(caseDir, 'analysis'), {recursive: true});
@@ -69,6 +87,7 @@ function createIndexFixture() {
       privacy_review: 'approved',
       sanitization_review: 'approved',
       publication: 'public',
+      evidence_tier: 'R1',
     },
     analysis: {results: ['analysis/result.txt'], logs: []},
     coverage: {skills: [], strategies: [], expectations: []},
@@ -130,6 +149,7 @@ test('imports real cases into ignored private staging with results and logs', ()
   });
 
   assert.equal(imported.manifest.source.publication, 'private');
+  assert.equal(imported.manifest.source.evidence_tier, 'R1');
   assert.equal(imported.caseDir, path.join(repoRoot, 'Trace/real/.private/typical-startup'));
   assert.ok(fs.existsSync(path.join(imported.caseDir, 'trace.pftrace')));
   assert.ok(fs.existsSync(path.join(imported.caseDir, 'analysis/results/analysis.json')));

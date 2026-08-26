@@ -3,6 +3,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 
 import {classifyScene} from '../../src/agentv3/sceneClassifier';
 import {loadStrategies} from '../../src/agentv3/strategyLoader';
@@ -11,16 +12,19 @@ import {createSkillEvaluator, type EvalStepResult, type SkillEvaluator} from '..
 type TokenContext = {
   trace_start: string;
   trace_end: string;
+  fixture_start: string;
+  fixture_end: string;
   fixture_upid: number;
   fixture_utid: number;
 };
 
 type CorpusExpectation = {
   id: string;
-  type: 'skill' | 'strategy';
+  type: 'skill' | 'strategy' | 'sql';
   target: string;
-  mode?: 'semantic' | 'execution' | 'graceful_empty' | 'unavailable' | 'definition';
+  mode?: 'semantic' | 'execution' | 'negative' | 'deferred' | 'graceful_empty' | 'unavailable' | 'definition';
   source_file?: string;
+  source_sha256?: string;
   parameters?: Record<string, unknown>;
   required_steps?: string[];
   required_sql_steps?: string[];
@@ -31,8 +35,10 @@ type CorpusExpectation = {
   semantic_step?: string;
   min_rows?: number;
   max_rows?: number;
+  required_columns?: string[];
   assertions?: CorpusValueAssertion[];
   limitation_reason?: string;
+  expected_empty_reason?: string;
   expected_error?: string;
   required_marker?: string;
   query?: string;
@@ -50,6 +56,8 @@ type CorpusCase = {
   kind: 'real' | 'constructed';
   case_dir: string;
   manifest_path: string;
+  trace: {file: string};
+  source: {evidence_tier: 'R1' | 'R2' | 'R3'};
   construction?: {output: string};
   coverage: {expectations: CorpusExpectation[]};
 };
@@ -62,6 +70,12 @@ export type CorpusRunResult = {
     isolated: string[];
     condition_skipped: string[];
     unavailable: string[];
+  };
+  correctness: {
+    positive: string[];
+    execution_only: string[];
+    negative: string[];
+    deferred: string[];
   };
   failures: Array<{case_id: string; target: string; reason: string}>;
 };
@@ -93,6 +107,8 @@ export function resolveParameterTokens(
   const tokenValues = new Map<string, unknown>([
     ['${trace_start}', context.trace_start],
     ['${trace_end}', context.trace_end],
+    ['${fixture_start}', context.fixture_start],
+    ['${fixture_end}', context.fixture_end],
     ['${fixture_upid}', context.fixture_upid],
     ['${fixture_utid}', context.fixture_utid],
   ]);
@@ -128,7 +144,7 @@ function assertionMatches(actual: unknown, assertion: CorpusValueAssertion): boo
 
 export function assertExpectationRows(
   rows: unknown[],
-  expectation: Pick<CorpusExpectation, 'target' | 'semantic_step' | 'min_rows' | 'max_rows' | 'assertions'>,
+  expectation: Pick<CorpusExpectation, 'target' | 'semantic_step' | 'min_rows' | 'max_rows' | 'required_columns' | 'assertions'>,
 ): void {
   const minRows = expectation.min_rows ?? 1;
   if (rows.length < minRows) {
@@ -136,6 +152,17 @@ export function assertExpectationRows(
   }
   if (expectation.max_rows !== undefined && rows.length > expectation.max_rows) {
     throw new Error(`result step returned ${rows.length} row(s), expected at most ${expectation.max_rows}: ${expectation.semantic_step ?? expectation.target}`);
+  }
+  const requiredColumns = expectation.required_columns ?? [];
+  const hasDeclaredShape = rows.some((row) =>
+    !!row
+    && typeof row === 'object'
+    && requiredColumns.every((column) => Object.prototype.hasOwnProperty.call(row, column)),
+  );
+  if (requiredColumns.length > 0 && !hasDeclaredShape) {
+    throw new Error(
+      `result is missing required columns ${requiredColumns.join(', ')}: ${expectation.semantic_step ?? expectation.target}`,
+    );
   }
   const assertions = expectation.assertions ?? [];
   if (assertions.length > 0) {
@@ -162,6 +189,22 @@ async function loadTokenContext(evaluator: SkillEvaluator): Promise<TokenContext
     SELECT
       printf('%d', trace_start()) AS trace_start,
       printf('%d', trace_end()) AS trace_end,
+      printf('%d', COALESCE((
+        SELECT MIN(s.ts)
+        FROM slice s
+        JOIN thread_track tt ON tt.id = s.track_id
+        JOIN thread t ON t.utid = tt.utid
+        JOIN process p ON p.upid = t.upid
+        WHERE p.name = 'com.smartperfetto.fixture'
+      ), trace_start())) AS fixture_start,
+      printf('%d', COALESCE((
+        SELECT MAX(s.ts + MAX(s.dur, 0))
+        FROM slice s
+        JOIN thread_track tt ON tt.id = s.track_id
+        JOIN thread t ON t.utid = tt.utid
+        JOIN process p ON p.upid = t.upid
+        WHERE p.name = 'com.smartperfetto.fixture'
+      ), trace_end())) AS fixture_end,
       COALESCE((SELECT upid FROM process WHERE name = 'com.smartperfetto.fixture' ORDER BY upid DESC LIMIT 1), 0) AS fixture_upid,
       COALESCE((
         SELECT t.utid FROM thread t
@@ -177,8 +220,10 @@ async function loadTokenContext(evaluator: SkillEvaluator): Promise<TokenContext
   return {
     trace_start: String(row[0]),
     trace_end: String(row[1]),
-    fixture_upid: Number(row[2]),
-    fixture_utid: Number(row[3]),
+    fixture_start: String(row[2]),
+    fixture_end: String(row[3]),
+    fixture_upid: Number(row[4]),
+    fixture_utid: Number(row[5]),
   };
 }
 
@@ -365,9 +410,15 @@ async function runSkillExpectation(
     return evidence;
   }
   if (!semanticResult) throw new Error(`semantic step was not executed: ${semanticStep}`);
-  if (expectation.mode === 'graceful_empty') {
+  if (
+    expectation.mode === 'graceful_empty'
+    || expectation.mode === 'negative'
+    || expectation.mode === 'deferred'
+  ) {
     if (semanticResult.data.length !== 0) {
-      throw new Error(`graceful-empty expectation unexpectedly returned ${semanticResult.data.length} row(s): ${semanticStep}`);
+      throw new Error(
+        `${expectation.mode} expectation unexpectedly returned ${semanticResult.data.length} row(s): ${semanticStep}`,
+      );
     }
     return evidence;
   }
@@ -390,6 +441,54 @@ async function runStrategyExpectation(
   }
 }
 
+function corpusTracePath(repoRoot: string, entry: CorpusCase): string {
+  if (entry.kind === 'constructed') {
+    if (!entry.construction?.output) throw new Error(`constructed case ${entry.id} has no output path`);
+    return path.resolve(repoRoot, entry.construction.output);
+  }
+  return path.resolve(repoRoot, entry.case_dir, entry.trace.file);
+}
+
+async function runSqlExpectation(
+  repoRoot: string,
+  evaluator: SkillEvaluator,
+  expectation: CorpusExpectation,
+): Promise<'positive' | 'negative'> {
+  await assertMarker(evaluator, expectation.required_marker);
+  if (!expectation.source_file || !expectation.source_sha256 || !expectation.query) {
+    throw new Error('canonical SQL expectation requires source_file, source_sha256, and query');
+  }
+  const packageRoot = path.resolve(repoRoot, 'backend/sql/smartperfetto');
+  const sourcePath = path.resolve(repoRoot, expectation.source_file);
+  if (!sourcePath.startsWith(`${packageRoot}${path.sep}`)) {
+    throw new Error(`canonical SQL source escapes backend/sql/smartperfetto: ${expectation.source_file}`);
+  }
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  const actualHash = crypto.createHash('sha256').update(source).digest('hex');
+  if (actualHash !== expectation.source_sha256) {
+    throw new Error(
+      `canonical SQL source hash mismatch: expected ${expectation.source_sha256}, got ${actualHash}`,
+    );
+  }
+  const sourceResult = await evaluator.executeSQL(source);
+  if (sourceResult.error) throw new Error(`canonical SQL source failed: ${sourceResult.error}`);
+  const queryResult = await evaluator.executeSQL(expectation.query);
+  if (queryResult.error) throw new Error(`canonical SQL query failed: ${queryResult.error}`);
+  const resultRows = queryResult.rows.map((row) => Object.fromEntries(
+    queryResult.columns.map((column, index) => [column, row[index]]),
+  ));
+  if (expectation.mode === 'negative') {
+    if (resultRows.length !== 0) {
+      throw new Error(
+        `negative SQL expectation unexpectedly returned ${resultRows.length} row(s): ${expectation.target}`,
+      );
+    }
+    return 'negative';
+  }
+  assertExpectationRows(resultRows, expectation);
+  return 'positive';
+}
+
 export async function runCorpusRegression(
   repoRoot: string,
   options: {
@@ -400,12 +499,13 @@ export async function runCorpusRegression(
 ): Promise<CorpusRunResult> {
   const corpus = loadCorpus(repoRoot);
   const selectedCases = corpus.cases.filter((entry) =>
-    entry.kind === 'constructed' && (!options.caseIds || options.caseIds.includes(entry.id)),
+    !options.caseIds || options.caseIds.includes(entry.id),
   );
   const targetFilter = options.targetIds ? new Set(options.targetIds) : null;
   const result: CorpusRunResult = {
     executed: [],
     sql: {normal: [], forced: [], isolated: [], condition_skipped: [], unavailable: []},
+    correctness: {positive: [], execution_only: [], negative: [], deferred: []},
     failures: [],
   };
 
@@ -414,7 +514,7 @@ export async function runCorpusRegression(
       !targetFilter || targetFilter.has(expectation.target),
     );
     if (expectations.length === 0) continue;
-    const tracePath = path.resolve(repoRoot, entry.construction!.output);
+    const tracePath = corpusTracePath(repoRoot, entry);
     if (!fs.existsSync(tracePath)) {
       for (const expectation of expectations) {
         result.failures.push({case_id: entry.id, target: expectation.target, reason: `materialized trace missing: ${tracePath}`});
@@ -442,6 +542,20 @@ export async function runCorpusRegression(
                 ...stepIds.map((stepId) => `${entry.id}:skill:${expectation.target}:${stepId}`),
               );
             }
+            if (expectation.mode === 'semantic') result.correctness.positive.push(executionKey);
+            else if (expectation.mode === 'execution') result.correctness.execution_only.push(executionKey);
+            else if (expectation.mode === 'negative' || expectation.mode === 'graceful_empty') {
+              result.correctness.negative.push(executionKey);
+            } else if (expectation.mode === 'deferred' || expectation.mode === 'unavailable') {
+              result.correctness.deferred.push(executionKey);
+            }
+          } else if (expectation.type === 'sql') {
+            const correctness = await runSqlExpectation(repoRoot, evaluator, expectation);
+            result.correctness[correctness].push(executionKey);
+            result.sql.normal.push(
+              `${entry.id}:sql:${expectation.target}:source`,
+              `${entry.id}:sql:${expectation.target}:query`,
+            );
           } else {
             await runStrategyExpectation(evaluator, expectation);
           }
@@ -459,13 +573,26 @@ export async function runCorpusRegression(
     }
 
     if (options.writeEvidence !== false) {
-      const evidencePath = path.join(repoRoot, 'Trace/.generated/constructed', entry.id, 'regression-result.json');
+      const evidencePath = path.join(
+        repoRoot,
+        'Trace/.generated',
+        entry.kind,
+        entry.id,
+        'regression-result.json',
+      );
+      fs.mkdirSync(path.dirname(evidencePath), {recursive: true});
       const caseEvidence = {
         schema_version: 1,
         case_id: entry.id,
         executed: result.executed.filter((key) => key.startsWith(`${entry.id}:`)),
         sql: Object.fromEntries(
           Object.entries(result.sql).map(([status, keys]) => [
+            status,
+            keys.filter((key) => key.startsWith(`${entry.id}:`)),
+          ]),
+        ),
+        correctness: Object.fromEntries(
+          Object.entries(result.correctness).map(([status, keys]) => [
             status,
             keys.filter((key) => key.startsWith(`${entry.id}:`)),
           ]),

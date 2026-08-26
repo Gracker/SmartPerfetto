@@ -14,6 +14,7 @@ const {
   resolveCaseTrace,
   validateCatalog,
 } = require('../lib/catalog.cjs');
+const {generatedFiles} = require('../lib/indexer.cjs');
 
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), {recursive: true});
@@ -28,6 +29,11 @@ function createFixture() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-catalog-'));
   const trace = Buffer.from([0x0a, 0x00]);
   const overlay = Buffer.from([0x0a, 0x00]);
+  const portableSql = [
+    'INCLUDE PERFETTO MODULE android.frames.timeline;',
+    'CREATE PERFETTO VIEW fixture_status AS SELECT 1 AS status;',
+    '',
+  ].join('\n');
 
   fs.cpSync(
     path.resolve(__dirname, '../../schema'),
@@ -39,14 +45,54 @@ function createFixture() {
   fs.mkdirSync(path.join(repoRoot, 'backend/skills/_template'), {recursive: true});
   fs.mkdirSync(path.join(repoRoot, 'backend/skills/pipelines'), {recursive: true});
   fs.mkdirSync(path.join(repoRoot, 'backend/strategies'), {recursive: true});
+  fs.mkdirSync(path.join(repoRoot, 'backend/data'), {recursive: true});
+  fs.mkdirSync(path.join(repoRoot, 'backend/sql/smartperfetto/test'), {recursive: true});
+  fs.mkdirSync(path.join(repoRoot, 'scripts'), {recursive: true});
+  writeJson(path.join(repoRoot, 'backend/data/perfettoSqlDocs.json'), {
+    version: 1,
+    generatedFrom: 'fixture-runtime',
+    modules: [{
+      package: 'android',
+      module: 'android.frames.timeline',
+      sourcePath: 'perfetto/src/trace_processor/perfetto_sql/stdlib/android/frames/timeline.sql',
+      symbols: ['actual_frame_timeline_slice'],
+    }],
+    entries: [],
+    symbolToModule: {},
+  });
+  fs.writeFileSync(
+    path.join(repoRoot, 'scripts/trace-processor-pin.env'),
+    'PERFETTO_VERSION=fixture-runtime\n',
+  );
+  fs.writeFileSync(
+    path.join(repoRoot, 'backend/sql/smartperfetto/test/status.sql'),
+    portableSql,
+  );
+  writeJson(path.join(repoRoot, 'backend/sql/smartperfetto/PACKAGE.json'), {
+    packageVersion: '0.1.0',
+    symbols: [{
+      name: 'smartperfetto.test.status',
+      sqlName: 'fixture_status',
+      kind: 'view',
+      module: 'test/status.sql',
+      dependencies: ['android.frames.timeline'],
+      stability: 'experimental',
+    }],
+  });
   fs.writeFileSync(
     path.join(repoRoot, 'backend/skills/atomic/cpu_probe.skill.yaml'),
     [
       'name: cpu_probe',
       'type: composite',
+      'prerequisites:',
+      '  modules: [android.frames.timeline]',
       'steps:',
       '  - id: summary',
       '    type: atomic',
+      '    display:',
+      '      columns:',
+      '        - name: status',
+      '          type: number',
       '    sql: SELECT 1 AS status',
       '',
     ].join('\n'),
@@ -99,6 +145,7 @@ function createFixture() {
       privacy_review: 'approved',
       sanitization_review: 'approved',
       publication: 'public',
+      evidence_tier: 'R1',
     },
     analysis: {results: ['analysis/result.json'], logs: []},
     coverage: {
@@ -106,6 +153,17 @@ function createFixture() {
       strategies: ['startup'],
       expectations: [
         {id: 'strategy-startup', type: 'strategy', target: 'startup', query: '分析启动性能'},
+        {
+          id: 'sql-fixture-status',
+          type: 'sql',
+          target: 'smartperfetto.test.status',
+          mode: 'semantic',
+          source_file: 'backend/sql/smartperfetto/test/status.sql',
+          source_sha256: sha256(portableSql),
+          query: 'SELECT status FROM fixture_status',
+          required_columns: ['status'],
+          assertions: [{column: 'status', operator: 'eq', value: 1}],
+        },
       ],
     },
   });
@@ -151,6 +209,7 @@ function createFixture() {
       privacy_review: 'not-applicable',
       sanitization_review: 'not-applicable',
       publication: 'public',
+      evidence_tier: 'R3',
     },
     analysis: {results: ['analysis/expected.json'], logs: []},
     construction: {
@@ -159,6 +218,7 @@ function createFixture() {
       generator_version: 1,
       seed: 'cpu-contention-v1',
       output: 'Trace/.generated/constructed/cpu-contention/trace.pftrace',
+      runtime_revision: 'fixture-runtime',
     },
     coverage: {
       skills: ['cpu_probe'],
@@ -175,6 +235,7 @@ function createFixture() {
           forced_sql_steps: [],
           expected_condition_skips: [],
           semantic_step: 'summary',
+          required_columns: ['status'],
           assertions: [{column: 'status', operator: 'eq', value: 'ok'}],
         },
       ],
@@ -358,14 +419,144 @@ test('does not count row-only execution as semantic coverage', () => {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   const expectation = manifest.coverage.expectations[0];
   delete expectation.assertions;
+  delete expectation.required_columns;
   writeJson(manifestPath, manifest);
 
   const validation = validateCatalog(fixture.repoRoot);
 
   assert.equal(validation.ok, false);
   assert.ok(validation.issues.some((issue) =>
-    issue.code === 'semantic-expectation-without-assertions',
+    issue.code === 'semantic-expectation-without-columns',
   ));
+});
+
+test('rejects positive expectations that explicitly allow zero rows', () => {
+  const fixture = createFixture();
+  const manifestPath = path.join(fixture.constructedDir, 'case.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  manifest.coverage.expectations[0].mode = 'execution';
+  manifest.coverage.expectations[0].min_rows = 0;
+  delete manifest.coverage.expectations[0].assertions;
+  writeJson(manifestPath, manifest);
+
+  const validation = validateCatalog(fixture.repoRoot);
+
+  assert.ok(validation.issues.some((issue) => issue.code === 'positive-expectation-allows-empty'));
+});
+
+test('requires semantic expectations to declare source-level result columns', () => {
+  const fixture = createFixture();
+  const manifestPath = path.join(fixture.constructedDir, 'case.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  delete manifest.coverage.expectations[0].required_columns;
+  writeJson(manifestPath, manifest);
+
+  const validation = validateCatalog(fixture.repoRoot);
+
+  assert.ok(validation.issues.some((issue) => issue.code === 'semantic-expectation-without-columns'));
+});
+
+test('derives exact Skill SQL provenance from the pinned runtime source index', () => {
+  const fixture = createFixture();
+  const validation = validateCatalog(fixture.repoRoot);
+
+  assert.equal(validation.coverage.sql_sources.runtime_revision, 'fixture-runtime');
+  assert.deepEqual(validation.coverage.positive.sql_skills, ['cpu_probe']);
+  assert.deepEqual(validation.coverage.deferred.skills, []);
+  assert.deepEqual(validation.coverage.sql_sources.skills, [{
+    target: 'cpu_probe',
+    source_file: 'backend/skills/atomic/cpu_probe.skill.yaml',
+    modules: [{
+      name: 'android.frames.timeline',
+      source_path: 'perfetto/src/trace_processor/perfetto_sql/stdlib/android/frames/timeline.sql',
+    }],
+    steps: [{
+      id: 'summary',
+      sha256: crypto.createHash('sha256').update('SELECT 1 AS status').digest('hex'),
+      required_columns: ['status'],
+    }],
+  }]);
+  assert.deepEqual(validation.coverage.sql_sources.portable, [{
+    target: 'smartperfetto.test.status',
+    source_file: 'backend/sql/smartperfetto/test/status.sql',
+    sql_name: 'fixture_status',
+    source_sha256: sha256(fs.readFileSync(
+      path.join(fixture.repoRoot, 'backend/sql/smartperfetto/test/status.sql'),
+    )),
+    modules: [{
+      name: 'android.frames.timeline',
+      source_path: 'perfetto/src/trace_processor/perfetto_sql/stdlib/android/frames/timeline.sql',
+    }],
+  }]);
+});
+
+test('never counts explicitly deferred SQL Skills as positive coverage', () => {
+  const repoRoot = path.resolve(__dirname, '../../..');
+  const validation = validateCatalog(repoRoot);
+  const positive = new Set(validation.coverage.positive.sql_skills);
+
+  assert.ok(validation.coverage.deferred.skills.length > 0);
+  for (const skill of validation.coverage.deferred.skills) {
+    assert.equal(positive.has(skill), false, `${skill} is both positive and deferred`);
+  }
+});
+
+test('rejects canonical SQL expectations whose source hash drifts from PACKAGE.json', () => {
+  const fixture = createFixture();
+  const manifestPath = path.join(fixture.realDir, 'case.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const expectation = manifest.coverage.expectations.find((item) => item.type === 'sql');
+  expectation.source_sha256 = '0'.repeat(64);
+  writeJson(manifestPath, manifest);
+
+  const validation = validateCatalog(fixture.repoRoot);
+
+  assert.ok(validation.issues.some((issue) => issue.code === 'portable-sql-source-mismatch'));
+});
+
+test('rejects evidence tiers and constructed runtime revisions that contradict the case kind', () => {
+  const fixture = createFixture();
+  const realManifestPath = path.join(fixture.realDir, 'case.json');
+  const realManifest = JSON.parse(fs.readFileSync(realManifestPath, 'utf8'));
+  realManifest.source.evidence_tier = 'R3';
+  writeJson(realManifestPath, realManifest);
+  const constructedManifestPath = path.join(fixture.constructedDir, 'case.json');
+  const constructedManifest = JSON.parse(fs.readFileSync(constructedManifestPath, 'utf8'));
+  constructedManifest.construction.runtime_revision = 'wrong-runtime';
+  writeJson(constructedManifestPath, constructedManifest);
+
+  const validation = validateCatalog(fixture.repoRoot);
+  const codes = validation.issues.map((issue) => issue.code);
+
+  assert.ok(codes.includes('case-evidence-tier-mismatch'));
+  assert.ok(codes.includes('constructed-runtime-revision-mismatch'));
+});
+
+test('repository binds every real trace to source-pinned canonical SQL expectations', () => {
+  const repoRoot = path.resolve(__dirname, '../../..');
+  const catalog = loadCatalog(repoRoot);
+  const realCases = catalog.cases.filter((entry) => entry.kind === 'real');
+
+  assert.equal(realCases.length, 6);
+  for (const entry of realCases) {
+    const sqlExpectations = entry.coverage.expectations.filter((item) => item.type === 'sql');
+    assert.ok(sqlExpectations.length > 0, `${entry.id} has no canonical SQL expectation`);
+    for (const expectation of sqlExpectations) {
+      assert.match(expectation.source_file, /^backend\/sql\/smartperfetto\/.+\.sql$/);
+      assert.match(expectation.source_sha256, /^[a-f0-9]{64}$/);
+      assert.ok(['semantic', 'negative'].includes(expectation.mode));
+    }
+  }
+});
+
+test('generated corpus index publishes evidence tiers and pinned SQL source coverage', () => {
+  const repoRoot = path.resolve(__dirname, '../../..');
+  const files = generatedFiles(repoRoot);
+  const readme = files.get(path.join(repoRoot, 'Trace/README.md'));
+
+  assert.match(readme, /Evidence tiers: R1=6, R2=0, R3=12/);
+  assert.match(readme, /Pinned Perfetto SQL source: `[a-f0-9]{40}`/);
+  assert.match(readme, /canonical portable SQL source checks/);
 });
 
 test('repository catalog preserves all six legacy trace fixtures and FPS reports', () => {

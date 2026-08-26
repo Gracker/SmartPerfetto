@@ -7,7 +7,7 @@
       "id": "execute-app_process_starts_summary",
       "type": "skill",
       "target": "app_process_starts_summary",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/app_process_starts_summary.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -20,13 +20,19 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "process_starts",
+      "required_columns": [
+        "process_name",
+        "process_start_ts",
+        "total_dur_ms",
+        "reason"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-launcher_module",
       "type": "skill",
       "target": "launcher_module",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/modules/app/launcher_module.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -53,13 +59,19 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "launcher_process",
+      "required_columns": [
+        "upid",
+        "pid",
+        "process_name",
+        "launcher_type"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_analysis",
       "type": "skill",
       "target": "startup_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/startup_analysis.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -90,13 +102,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "startup_quality",
+      "required_columns": [
+        "sample_count",
+        "blocker_count",
+        "warning_count",
+        "quality_status",
+        "issue_codes",
+        "quality_summary"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_binder_in_range",
       "type": "skill",
       "target": "startup_binder_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_binder_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -109,19 +129,28 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "server_process",
+        "aidl_name",
+        "call_count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "main_thread_calls",
+        "percent_of_startup"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_binder_pool_analysis",
       "type": "skill",
       "target": "startup_binder_pool_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_binder_pool_analysis.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -133,14 +162,18 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "metric",
+        "value",
+        "assessment"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_breakdown_in_range",
       "type": "skill",
       "target": "startup_breakdown_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_breakdown_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -153,14 +186,22 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "reason",
+        "count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "percent",
+        "category"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_class_loading_in_range",
       "type": "skill",
       "target": "startup_class_loading_in_range",
-      "mode": "execution",
+      "mode": "deferred",
       "source_file": "backend/skills/atomic/startup_class_loading_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -173,19 +214,19 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "limitation_reason": "The current generator does not yet emit the system_server launch markers required for android_startups to associate L*; class-loading slices with the synthetic process.",
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_cpu_placement_timeline",
       "type": "skill",
       "target": "startup_cpu_placement_timeline",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_cpu_placement_timeline.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -197,19 +238,27 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "bucket_idx",
+        "bucket_offset_ms",
+        "big_core_ms",
+        "little_core_ms",
+        "big_core_pct",
+        "used_cpus",
+        "core_types"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_critical_tasks",
       "type": "skill",
       "target": "startup_critical_tasks",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_critical_tasks.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -221,19 +270,34 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "thread_name",
+        "tid",
+        "role",
+        "total_cpu_ms",
+        "q1_big_running_ms",
+        "q2_little_running_ms",
+        "q3_runnable_ms",
+        "q4a_io_blocked_ms",
+        "q4b_sleeping_ms",
+        "total_ms",
+        "running_pct",
+        "big_core_pct",
+        "migrations",
+        "cross_cluster_migrations"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_detail",
       "type": "skill",
       "target": "startup_detail",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/startup_detail.skill.yaml",
       "parameters": {
         "startup_id": 1,
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}",
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}",
         "dur_ms": 1,
         "package": "com.smartperfetto.fixture",
         "startup_type": "cold"
@@ -260,13 +324,27 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "startup_info",
+      "required_columns": [
+        "startup_id",
+        "package",
+        "startup_type",
+        "type_display",
+        "dur_ms",
+        "ttid_ms",
+        "ttfd_ms",
+        "start_ts",
+        "end_ts",
+        "perfetto_start",
+        "perfetto_end",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_events_in_range",
       "type": "skill",
       "target": "startup_events_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_events_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -279,18 +357,32 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "startup_id",
+        "package",
+        "type_display",
+        "dur_ms",
+        "start_ts",
+        "end_ts",
+        "dur_ns",
+        "ttid_ms",
+        "ttfd_ms",
+        "rating",
+        "original_type",
+        "type_reclassified",
+        "type_confidence"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_freq_rampup",
       "type": "skill",
       "target": "startup_freq_rampup",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_freq_rampup.skill.yaml",
       "parameters": {
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -302,14 +394,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "core_type",
+        "early_avg_freq_mhz",
+        "steady_avg_freq_mhz",
+        "max_freq_mhz",
+        "rampup_pct",
+        "assessment"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_gc_in_range",
       "type": "skill",
       "target": "startup_gc_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_gc_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -322,19 +421,27 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "gc_type",
+        "thread_name",
+        "is_main_thread",
+        "count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "percent_of_startup"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_hot_slice_states",
       "type": "skill",
       "target": "startup_hot_slice_states",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_hot_slice_states.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -346,19 +453,29 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "slice_name",
+        "slice_dur_ms",
+        "slice_ts",
+        "state",
+        "state_dur_ms",
+        "state_pct",
+        "io_wait",
+        "evidence_strength",
+        "blocked_functions"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_jit_analysis",
       "type": "skill",
       "target": "startup_jit_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_jit_analysis.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -370,14 +487,18 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "metric",
+        "value",
+        "assessment"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_main_thread_binder_blocking_in_range",
       "type": "skill",
       "target": "startup_main_thread_binder_blocking_in_range",
-      "mode": "execution",
+      "mode": "deferred",
       "source_file": "backend/skills/atomic/startup_main_thread_binder_blocking_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -390,14 +511,14 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "limitation_reason": "The current generator does not yet emit a paired kernel Binder transaction/reply chain inside the synthetic startup interval.",
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_main_thread_file_io_in_range",
       "type": "skill",
       "target": "startup_main_thread_file_io_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_main_thread_file_io_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -410,14 +531,23 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "io_slice",
+        "thread_name",
+        "count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "percent_of_startup",
+        "startup_type"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_main_thread_slices_in_range",
       "type": "skill",
       "target": "startup_main_thread_slices_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_main_thread_slices_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -430,14 +560,25 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "slice_name",
+        "thread_name",
+        "count",
+        "total_dur_ms",
+        "self_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "percent_of_startup",
+        "self_percent",
+        "startup_type"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_main_thread_states_in_range",
       "type": "skill",
       "target": "startup_main_thread_states_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_main_thread_states_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -450,14 +591,23 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "state",
+        "state_desc",
+        "total_dur_ms",
+        "percent",
+        "count",
+        "io_wait",
+        "evidence_strength",
+        "blocked_functions"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_main_thread_sync_binder_in_range",
       "type": "skill",
       "target": "startup_main_thread_sync_binder_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_main_thread_sync_binder_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -470,14 +620,22 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "server_process",
+        "aidl_name",
+        "call_count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "percent_of_startup"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_sched_latency_in_range",
       "type": "skill",
       "target": "startup_sched_latency_in_range",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_sched_latency_in_range.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -490,14 +648,21 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "required_columns": [
+        "state",
+        "count",
+        "total_wait_ms",
+        "avg_wait_ms",
+        "max_wait_ms",
+        "severe_delays"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_slow_reasons",
       "type": "skill",
       "target": "startup_slow_reasons",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/startup_slow_reasons.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -514,18 +679,29 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "startup_overview",
+      "required_columns": [
+        "startup_id",
+        "package",
+        "startup_type",
+        "dur_ms",
+        "ttid_ms",
+        "ttfd_ms",
+        "ts",
+        "dur",
+        "upid"
+      ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {
       "id": "execute-startup_thread_blocking_graph",
       "type": "skill",
       "target": "startup_thread_blocking_graph",
-      "mode": "execution",
+      "mode": "deferred",
       "source_file": "backend/skills/atomic/startup_thread_blocking_graph.skill.yaml",
       "parameters": {
         "package": "com.smartperfetto.fixture",
-        "start_ts": "${trace_start}",
-        "end_ts": "${trace_end}"
+        "start_ts": "${fixture_start}",
+        "end_ts": "${fixture_end}"
       },
       "required_steps": [
         "root"
@@ -537,7 +713,7 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "root",
-      "min_rows": 0,
+      "limitation_reason": "The current generator does not yet emit sched_wakeup relationships that populate thread_state.waker_utid for the synthetic startup threads.",
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },
     {

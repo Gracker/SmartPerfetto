@@ -32,6 +32,17 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "camera_slice_candidates",
+      "required_columns": [
+        "ts",
+        "dur_ns",
+        "slice_name",
+        "process_name",
+        "thread_name",
+        "upid",
+        "utid",
+        "source",
+        "limitation"
+      ],
       "min_rows": 2,
       "assertions": [
         {
@@ -46,7 +57,7 @@
       "id": "execute-media_codec_activity",
       "type": "skill",
       "target": "media_codec_activity",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/media_codec_activity.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -61,13 +72,22 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "codec_activity_summary",
+      "required_columns": [
+        "phase",
+        "process_name",
+        "thread_name",
+        "slice_count",
+        "total_dur_ms",
+        "p95_dur_ms",
+        "max_dur_ms"
+      ],
       "required_marker": "SmartPerfetto::CASE::media-network-camera"
     },
     {
       "id": "execute-modem_network_correlation_summary",
       "type": "skill",
       "target": "modem_network_correlation_summary",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/modem_network_correlation_summary.skill.yaml",
       "parameters": {
         "top_n": 20
@@ -82,13 +102,23 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "modem_network_correlation",
+      "required_columns": [
+        "package_name",
+        "socket_uid",
+        "socket_tag",
+        "packet_count",
+        "bytes",
+        "cellular_uptime_sec",
+        "modem_energy_mwh",
+        "confidence"
+      ],
       "required_marker": "SmartPerfetto::CASE::media-network-camera"
     },
     {
       "id": "execute-network_analysis",
       "type": "skill",
       "target": "network_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/composite/network_analysis.skill.yaml",
       "parameters": {
         "heavy_traffic_critical_mb": 100,
@@ -139,6 +169,13 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "network_slice_overview",
+      "required_columns": [
+        "slice_name",
+        "count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms"
+      ],
       "required_marker": "SmartPerfetto::CASE::media-network-camera"
     },
     {
@@ -153,7 +190,7 @@
       "id": "execute-webview_v8_analysis",
       "type": "skill",
       "target": "webview_v8_analysis",
-      "mode": "execution",
+      "mode": "semantic",
       "source_file": "backend/skills/atomic/webview_v8_analysis.skill.yaml",
       "parameters": {},
       "required_steps": [
@@ -172,6 +209,15 @@
       "isolated_sql_probes": [],
       "expected_condition_skips": [],
       "semantic_step": "v8_gc_events",
+      "required_columns": [
+        "gc_type",
+        "process_name",
+        "count",
+        "total_dur_ms",
+        "avg_dur_ms",
+        "max_dur_ms",
+        "rating"
+      ],
       "required_marker": "SmartPerfetto::CASE::media-network-camera"
     },
     {

@@ -217,6 +217,14 @@
       "jank_type": 64
     },
     {
+      "type": "atrace-slice",
+      "at_ns": "310000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "thread": "main",
+      "name": "binder transaction"
+    },
+    {
       "type": "gpu-frequency",
       "at_ns": "500000000",
       "gpu_id": 0,
