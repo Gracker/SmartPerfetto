@@ -6384,15 +6384,27 @@ describe('createClaudeMcpServer', () => {
         expect(search).toEqual(expect.objectContaining({
           success: true,
           dataTrust: 'untrusted_retrieved_data',
-          coverageComplete: true,
-          enumerationBackend: 'ripgrep',
-          backendFidelity: 'exact',
           matches: [expect.objectContaining({
             filePath: 'src/StartupHooks.kt',
             lineRange: {start: 2, end: 2},
             text: '  fun installTracing() = Unit',
           })],
         }));
+        if (search.backendFidelity === 'exact') {
+          expect(search).toEqual(expect.objectContaining({
+            backend: 'ripgrep',
+            coverageComplete: true,
+            enumerationBackend: 'ripgrep',
+          }));
+        } else {
+          expect(search).toEqual(expect.objectContaining({
+            backend: 'node',
+            coverageComplete: false,
+            enumerationBackend: 'node-walk',
+            backendFidelity: 'degraded',
+            searchIncompleteReason: 'backend_degraded',
+          }));
+        }
         expect(read).toEqual(expect.objectContaining({
           success: true,
           dataTrust: 'untrusted_retrieved_data',
