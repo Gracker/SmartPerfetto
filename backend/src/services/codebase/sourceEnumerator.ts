@@ -8,7 +8,10 @@ import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 import type {PathSecurityGate} from './pathSecurityGate';
-import {readBoundedMetadataFile} from './boundedMetadataFile';
+import {
+  readBoundedMetadataFile,
+  SourceMetadataDeadlineExceededError,
+} from './boundedMetadataFile';
 import {
   hardenedGitEnvironment,
   hardenedGitPrefixArguments,
@@ -54,6 +57,7 @@ interface CollectedPaths {
 interface GitSubmodulePaths {
   paths: string[];
   complete: boolean;
+  reason?: 'time_budget' | 'traversal_error';
 }
 
 interface CandidateInspection {
@@ -183,7 +187,7 @@ export class SourceEnumerator {
     const submodules = await this.readGitSubmodulePaths(root, policy, startedAt + timeoutMs);
     const paths = [...rootPaths.paths];
     let complete = rootPaths.complete && submodules.complete;
-    let reason = rootPaths.reason ?? (submodules.complete ? undefined : 'traversal_error');
+    let reason = rootPaths.reason ?? submodules.reason;
     let stderrObserved = rootPaths.stderrObserved;
     for (const submodulePath of submodules.paths) {
       if (paths.length > this.maxVisitedEntries) {
@@ -283,7 +287,13 @@ export class SourceEnumerator {
       });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {paths: [], complete: true};
-      return {paths: [], complete: false};
+      return {
+        paths: [],
+        complete: false,
+        reason: error instanceof SourceMetadataDeadlineExceededError
+          ? 'time_budget'
+          : 'traversal_error',
+      };
     }
     const paths: string[] = [];
     let complete = true;

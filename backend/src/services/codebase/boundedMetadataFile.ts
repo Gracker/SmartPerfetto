@@ -37,11 +37,18 @@ interface BoundedMetadataFileInput {
   platform?: NodeJS.Platform;
 }
 
+export class SourceMetadataDeadlineExceededError extends Error {
+  constructor() {
+    super('source_metadata_time_budget');
+    this.name = 'SourceMetadataDeadlineExceededError';
+  }
+}
+
 async function readBoundedMetadataFileOperation(input: BoundedMetadataFileInput): Promise<string> {
   const platform = input.platform ?? process.platform;
   const assertWithinDeadline = (): void => {
     if (input.deadline !== undefined && Date.now() >= input.deadline) {
-      throw new Error('source_metadata_time_budget');
+      throw new SourceMetadataDeadlineExceededError();
     }
   };
   assertWithinDeadline();
@@ -101,7 +108,7 @@ export async function readBoundedMetadataFile(input: BoundedMetadataFileInput): 
     return await Promise.race([
       operation,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error('source_metadata_time_budget')), remainingMs);
+        timer = setTimeout(() => reject(new SourceMetadataDeadlineExceededError()), remainingMs);
       }),
     ]);
   } finally {

@@ -193,6 +193,7 @@ describe('SourceEnumerator', () => {
     const guardFailure = new Promise<never>((_resolve, reject) => {
       guard = setTimeout(() => reject(new Error('test_guard_timeout')), 300);
     });
+    const now = jest.spyOn(Date, 'now').mockReturnValue(0);
 
     try {
       const result = await Promise.race([
@@ -211,6 +212,7 @@ describe('SourceEnumerator', () => {
       }));
     } finally {
       if (guard) clearTimeout(guard);
+      now.mockRestore();
       open.mockRestore();
     }
   });
