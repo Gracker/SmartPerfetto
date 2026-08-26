@@ -193,6 +193,7 @@ describe('SourceEnumerator', () => {
     const guardFailure = new Promise<never>((_resolve, reject) => {
       guard = setTimeout(() => reject(new Error('test_guard_timeout')), 300);
     });
+    const now = jest.spyOn(Date, 'now').mockReturnValue(0);
 
     try {
       const result = await Promise.race([
@@ -211,6 +212,7 @@ describe('SourceEnumerator', () => {
       }));
     } finally {
       if (guard) clearTimeout(guard);
+      now.mockRestore();
       open.mockRestore();
     }
   });
@@ -318,6 +320,33 @@ describe('SourceEnumerator', () => {
       stat.mockRestore();
       if (!handleClosed) await originalClose().catch(() => undefined);
     }
+  });
+
+  it('reports traversal failure for an unsafe .gitmodules path', async () => {
+    const root = path.join(tmpDir, 'gitmodules-unsafe-path');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    fs.writeFileSync(path.join(root, '.gitmodules'), [
+      '[submodule "outside"]',
+      '  path = ../outside',
+      '  url = https://example.com/outside.git',
+      '',
+    ].join('\n'));
+    execFileSync('git', ['init', '-q'], {cwd: root});
+    execFileSync('git', ['add', 'Main.kt', '.gitmodules'], {cwd: root});
+
+    const result = await new SourceEnumerator({ripgrepPath: '__missing_rg__'}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      backend: 'git',
+      enumerationComplete: false,
+      deterministic: false,
+      incompleteReason: 'traversal_error',
+    }));
   });
 
   it('enumerates initialized git submodules in a second bounded pass', async () => {
