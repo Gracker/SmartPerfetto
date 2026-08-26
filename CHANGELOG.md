@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.8.1] - 2026-08-26
+
+### Added
+- Code-aware analysis can preview and register bounded app, AOSP/OEM, and
+  kernel source trees, search or read selected files without a prebuilt index,
+  and build optional indexed generations with explicit coverage metadata.
+- The AI Assistant now exposes codebase scope suggestions, language-consent
+  changes, active and pending generation status, downgrade confirmation,
+  maintenance warnings, audit details, and accessible operation feedback.
+
+### Changed
+- Trace-corpus verification now binds executable SQL to source-pinned
+  provenance, realistic constructed evidence, and semantic result assertions
+  instead of treating registration or row-only execution as correctness.
+- Local source selection, provider disclosure, Git/ripgrep/Node discovery, and
+  generation activation now share canonical policy and consent contracts across
+  CLI, API, MCP, reports, and the committed Perfetto frontend.
+
+### Fixed
+- Codebase reindex, candidate replacement, expiry, cleanup, deletion, and
+  provider-consent changes are fenced against stale generations and concurrent
+  requests without deleting active or in-flight source chunks.
+- Metadata reads, Git provenance, subprocess output, directory traversal, and
+  local RAG persistence now have bounded cross-platform deadlines and capacity;
+  Windows path casing, open flags, and Trace CLI expectations are portable.
+
 ## [1.8.0] - 2026-08-25
 
 ### Added
