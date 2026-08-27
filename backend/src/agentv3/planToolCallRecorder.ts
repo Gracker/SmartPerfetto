@@ -6,6 +6,8 @@ import {
   expectedCallMatchesRecord,
   expectedToolNames,
   formatExpectedCall,
+  getPlanToolCapability,
+  isControlCapableToolName,
   isEvidenceCapableToolName,
   phaseMatchesCall,
   type AnalysisPlanV3,
@@ -22,6 +24,7 @@ import {
   getSourceLookupCodeReferences,
   rememberSourceLookupCodeReferences,
   sourceLookupResultHasCodeReferences,
+  isSourceLookupToolName,
   type SourceLookupCodeReference,
 } from '../services/codebase/sourceLookupTools';
 
@@ -72,17 +75,29 @@ function shortToolName(toolName: string): string {
 function buildToolCallRecord(input: PlanToolCallRecorderInput): ToolCallRecord {
   const callSummary = summarizeToolCallInput(shortToolName(input.toolName), input.input);
   const success = extractToolCallSuccessFromResult(input.resultText);
-  const returnedCodeReferences = input.returnedCodeReferences ?? (
-    Boolean(input.returnedCodeReferenceHints?.length) ||
-    sourceLookupResultHasCodeReferences(input.toolName, input.resultText)
+  const planCapability = getPlanToolCapability(input.toolName);
+  const returnedCodeReferences = planCapability === 'evidence' && (
+    input.returnedCodeReferences ?? (
+      Boolean(input.returnedCodeReferenceHints?.length) ||
+      sourceLookupResultHasCodeReferences(input.toolName, input.resultText)
+    )
   );
   return {
     toolName: input.toolName,
     timestamp: input.timestamp ?? Date.now(),
+    ...(planCapability === 'evidence' ? {} : {planCapability}),
     ...(success === undefined ? {} : { success }),
     ...(returnedCodeReferences ? { returnedCodeReferences: true } : {}),
     ...callSummary,
   };
+}
+
+function findSourceControlPhase(plan: AnalysisPlanV3): PlanPhase | undefined {
+  const matches = plan.phases.filter(phase => [
+    ...(phase.expectedTools ?? []),
+    ...(phase.expectedCalls ?? []).map(call => call.tool),
+  ].some(isSourceLookupToolName));
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 function parseLeadingJsonObject(text: string): Record<string, unknown> | null {
@@ -193,13 +208,16 @@ export function recordPlanToolCall(
   }
   const shortName = shortToolName(input.toolName);
   const canSatisfyEvidence = isEvidenceCapableToolName(shortName);
+  const canControlPlan = isControlCapableToolName(shortName);
   const candidate = buildToolCallRecord(input);
 
   const expectedGapPhase = canSatisfyEvidence
     ? findBestPhaseForExpectedCallGap(plan, candidate, 'structured_only')
     : undefined;
   const toolReturnedPhaseId = extractPlanPhaseIdFromToolResult(input.resultText);
-  let matchedPhaseId = expectedGapPhase?.id;
+  let matchedPhaseId = canControlPlan
+    ? findSourceControlPhase(plan)?.id
+    : expectedGapPhase?.id;
 
   if (!matchedPhaseId && canSatisfyEvidence) {
     const returnedPhase = toolReturnedPhaseId
@@ -242,7 +260,9 @@ export function recordPlanOrPrePlanToolCall(
   }
 
   const shortName = shortToolName(input.toolName);
-  if (!isEvidenceCapableToolName(shortName)) return undefined;
+  if (!isEvidenceCapableToolName(shortName) && !isControlCapableToolName(shortName)) {
+    return undefined;
+  }
 
   if (!Array.isArray(tracker.prePlanToolCallLog)) {
     tracker.prePlanToolCallLog = [];
@@ -266,6 +286,17 @@ export function replayPrePlanToolCalls(tracker: AnalysisPlanTracker | null | und
 
   let replayed = 0;
   for (const candidate of prePlanToolCallLog) {
+    if (candidate.planCapability === 'control' || isControlCapableToolName(candidate.toolName)) {
+      plan.toolCallLog.push({
+        ...candidate,
+        matchedPhaseId: findSourceControlPhase(plan)?.id,
+      });
+      replayed++;
+      if (plan.toolCallLog.length > MAX_PLAN_TOOL_CALL_LOG) {
+        plan.toolCallLog.splice(0, plan.toolCallLog.length - MAX_PLAN_TOOL_CALL_LOG);
+      }
+      continue;
+    }
     const matchedPhase = findBestPhaseForExpectedCallGap(
       plan,
       candidate,

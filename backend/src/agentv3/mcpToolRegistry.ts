@@ -45,6 +45,7 @@ import {
   makeSparkProvenance,
   type McpPublicApiContract,
 } from '../types/sparkContracts';
+import {getPlanToolCapability, type PlanToolCapability} from './types';
 
 /** MCP tool name prefix — derived from the server name `'smartperfetto'`.
  * `claudeMcpServer.ts` exports the same constant; both files agree
@@ -72,9 +73,11 @@ export interface McpToolDefinition {
   summary?: string;
   /** Required env vars or capability flags. */
   requires?: string[];
+  /** Provider-neutral planning role derived from the canonical tool name. */
+  planCapability: PlanToolCapability;
 }
 
-export type McpToolRegistration = Omit<McpToolDefinition, 'shared'> & {
+export type McpToolRegistration = Omit<McpToolDefinition, 'shared' | 'planCapability'> & {
   shared?: SharedToolSpec;
 };
 
@@ -142,6 +145,7 @@ export class McpToolRegistry {
       exposure: runtimeShared.exposure,
       summary: runtimeShared.summary,
       requires: runtimeShared.requires,
+      planCapability: getPlanToolCapability(runtimeShared.name),
     });
   }
 

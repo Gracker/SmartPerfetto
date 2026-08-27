@@ -7,12 +7,14 @@ import {
   findCompletedPhaseEvidenceGaps,
   type PlanEvidenceGap,
 } from './planToolCallRecorder';
+import {isSourceLookupToolName} from '../services/codebase/sourceLookupTools';
 
 export interface AnalysisPlanCompletionStatus {
   complete: boolean;
   hasPlan: boolean;
   pendingPhases: PlanPhase[];
   evidenceGaps?: PlanEvidenceGap[];
+  sourceUseDecisionPending?: true;
 }
 
 export function hasAdequateClosedPhaseSummary(
@@ -43,10 +45,22 @@ export function getAnalysisPlanCompletionStatus(
     !hasAdequateClosedPhaseSummary(phase, options.minSummaryChars) ||
     evidenceGapPhaseIds.has(phase.id),
   );
+  const sourceUseDecisionPending = plan.sourceUseDecisionStatus === 'pending' ||
+    plan.sourceUseDecisionStatus === 'attempted';
+  if (sourceUseDecisionPending) {
+    const sourcePhases = plan.phases.filter(phase => [
+      ...(phase.expectedTools ?? []),
+      ...(phase.expectedCalls ?? []).map(call => call.tool),
+    ].some(isSourceLookupToolName));
+    if (sourcePhases.length === 1 && !pendingPhases.includes(sourcePhases[0])) {
+      pendingPhases.push(sourcePhases[0]);
+    }
+  }
   return {
-    complete: pendingPhases.length === 0,
+    complete: pendingPhases.length === 0 && !sourceUseDecisionPending,
     hasPlan: true,
     pendingPhases,
     ...(evidenceGaps.length > 0 ? { evidenceGaps } : {}),
+    ...(sourceUseDecisionPending ? {sourceUseDecisionPending: true as const} : {}),
   };
 }

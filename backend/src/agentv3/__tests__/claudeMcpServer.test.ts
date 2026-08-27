@@ -350,7 +350,7 @@ function createTestServer(options: {
     setRunManifestAttributionSink: jest.fn(),
   };
 
-  const { server, allowedTools, toolDefinitions } = createClaudeMcpServer({
+  const { server, allowedTools, toolDefinitions, sourceUse } = createClaudeMcpServer({
     traceId: 'test-trace-123',
     userQuery: options.userQuery,
     traceProcessorService: mockTpService as any,
@@ -404,6 +404,7 @@ function createTestServer(options: {
     tools,
     allowedTools,
     toolDefinitions,
+    sourceUse,
     analysisNotes,
     hypotheses,
     uncertaintyFlags,
@@ -878,6 +879,7 @@ describe('createClaudeMcpServer', () => {
 
       expect(tools.has('search_codebase')).toBe(true);
       expect(tools.has('read_codebase_file')).toBe(true);
+      expect(tools.has('record_source_use_decision')).toBe(true);
       expect(tools.has('execute_sql')).toBe(false);
       expect(tools.has('invoke_skill')).toBe(false);
       expect(tools.has('submit_plan')).toBe(false);
@@ -955,6 +957,7 @@ describe('createClaudeMcpServer', () => {
         'lookup_kernel_source',
         'resolve_symbol',
         'propose_patch',
+        'record_source_use_decision',
       ];
 
       for (const name of requiredTools) {
@@ -969,25 +972,25 @@ describe('createClaudeMcpServer', () => {
         label: 'full default',
         options: {},
         present: ['fetch_artifact', 'submit_plan', 'update_plan_phase', 'revise_plan'],
-        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source'],
+        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'record_source_use_decision'],
       },
       {
         label: 'full with code-aware disabled',
         options: { codeAwareMode: 'off', codebaseIds: ['app-codebase'] },
         present: ['fetch_artifact', 'submit_plan', 'update_plan_phase', 'revise_plan'],
-        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
+        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch', 'record_source_use_decision'],
       },
       {
         label: 'full with code-aware metadata',
         options: { codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'] },
-        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
+        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch', 'record_source_use_decision'],
         absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context'],
       },
       {
         label: 'full comparison',
         options: { referenceTraceId: 'reference-trace-456' },
         present: ['fetch_artifact', 'submit_plan', 'compare_skill', 'execute_sql_on', 'get_comparison_context'],
-        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source'],
+        absent: ['list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'record_source_use_decision'],
       },
       {
         label: 'lightweight broad request',
@@ -997,7 +1000,7 @@ describe('createClaudeMcpServer', () => {
           codeAwareMode: 'metadata_only',
           codebaseIds: ['app-codebase'],
         },
-        present: ['execute_sql', 'invoke_skill', 'lookup_sql_schema', 'fetch_artifact'],
+        present: ['execute_sql', 'invoke_skill', 'lookup_sql_schema', 'fetch_artifact', 'record_source_use_decision'],
         absent: ['submit_plan', 'update_plan_phase', 'compare_skill', 'execute_sql_on', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source'],
       },
     ])('keeps scoped registry expectations stable for $label', ({ options, present, absent }) => {
@@ -6332,6 +6335,335 @@ describe('createClaudeMcpServer', () => {
     });
   });
 
+  describe('source-use decision', () => {
+    it('creates pending state only from an active code-aware selection and returns defensive snapshots', () => {
+      expect(createTestServer().sourceUse.getSourceUseDecision()).toBeUndefined();
+      expect(createTestServer({
+        codeAwareMode: 'off',
+        codebaseIds: ['ignored-codebase'],
+      }).sourceUse.getSourceUseDecision()).toBeUndefined();
+      expect(createTestServer({
+        codeAwareMode: 'metadata_only',
+        codebaseIds: [],
+      }).sourceUse.getSourceUseDecision()).toBeUndefined();
+
+      const {sourceUse} = createTestServer({
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase', 'app-codebase'],
+      });
+      const first = sourceUse.getSourceUseDecision()!;
+      expect(first).toEqual({
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'metadata_only',
+        selectedCodebaseIds: ['app-codebase'],
+        status: 'pending',
+        attemptedTools: [],
+        queriedCodebaseIds: [],
+        usedCodebaseIds: [],
+        references: [],
+      });
+      (first.selectedCodebaseIds as string[]).push('mutated-outside');
+      expect(sourceUse.getSourceUseDecision()?.selectedCodebaseIds)
+        .toEqual(['app-codebase']);
+    });
+
+    it('caps metadata lookup at located and lets provider source bodies corroborate', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-source-use-levels-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'StartupHooks.kt'), 'class StartupHooks\n');
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const metadata = createTestServer({
+          codeAwareMode: 'metadata_only',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+        });
+        const provider = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+        });
+
+        await callTool(metadata.tools, 'read_codebase_file', {
+          file_path: 'src/StartupHooks.kt',
+        });
+        await callTool(provider.tools, 'read_codebase_file', {
+          file_path: 'src/StartupHooks.kt',
+        });
+
+        codebaseRegistry.activateIndexGeneration(ref.codebaseId, scope, ref.indexGeneration, {
+          lastIngestStatus: 'ok',
+          activeGeneration: 'codebase_2_indexed',
+          contentFingerprint: 'a'.repeat(64),
+          chunkCount: 1,
+        });
+        const ragStore = new RagStore(path.join(tmpDir, 'rag.json'));
+        ragStore.addChunk({
+          chunkId: 'indexed-startup-hooks',
+          kind: 'app_source',
+          registryOrigin: 'codebase_registry',
+          codebaseId: ref.codebaseId,
+          sourceGeneration: 'codebase_2_indexed',
+          uri: `codebase://${ref.codebaseId}/src/StartupHooks.kt`,
+          filePath: 'src/StartupHooks.kt',
+          lineRange: {start: 1, end: 1},
+          symbol: 'StartupHooks',
+          snippet: 'class StartupHooks',
+          indexedAt: Date.now(),
+        }, scope);
+        const indexed = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          ragStore,
+          knowledgeScope: scope,
+        });
+        await callTool(indexed.tools, 'lookup_app_source', {
+          query: 'StartupHooks',
+        });
+
+        expect(metadata.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+          status: 'located',
+          attemptedTools: ['read_codebase_file'],
+          queriedCodebaseIds: [ref.codebaseId],
+          usedCodebaseIds: [ref.codebaseId],
+          references: [expect.objectContaining({lookupKind: 'metadata'})],
+        }));
+        expect(provider.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+          status: 'corroborated',
+          attemptedTools: ['read_codebase_file'],
+          queriedCodebaseIds: [ref.codebaseId],
+          usedCodebaseIds: [ref.codebaseId],
+          references: [expect.objectContaining({lookupKind: 'body'})],
+        }));
+        expect(indexed.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+          status: 'corroborated',
+          references: [expect.objectContaining({lookupKind: 'indexed'})],
+        }));
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('marks incomplete coverage with bounded safe reasons and complete empty search as not found', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-source-use-coverage-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(
+          path.join(root, 'src', 'StartupHooks.kt'),
+          'SOURCE_USE_CANARY\nSOURCE_USE_CANARY\n',
+        );
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const incomplete = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+        });
+        const complete = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+        });
+
+        await callTool(incomplete.tools, 'search_codebase', {
+          query: 'SOURCE_USE_CANARY',
+          max_results: 1,
+        });
+        await callTool(complete.tools, 'search_codebase', {
+          query: 'NO_SUCH_SOURCE_USE_CANARY',
+        });
+
+        expect(incomplete.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+          status: 'search_incomplete',
+          reasonCode: 'search_incomplete',
+          coverageComplete: false,
+          incompleteReasons: expect.arrayContaining([expect.stringMatching(/^[a-z][a-z0-9_.:-]+$/)]),
+        }));
+        expect(complete.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+          status: 'not_found_complete',
+          reasonCode: 'not_found_complete',
+          coverageComplete: true,
+        }));
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('requires a bounded policy-valid explicit reason and rejects overwrite after lookup', async () => {
+      const explicit = createTestServer({
+        sceneType: 'general',
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase'],
+      });
+      expect(await callTool(explicit.tools, 'record_source_use_decision', {
+        status: 'not_needed',
+        reason: 'too short',
+      })).toEqual(expect.objectContaining({
+        success: false,
+        unsupportedReason: 'source_use_decision_reason_invalid',
+      }));
+      expect(await callTool(explicit.tools, 'record_source_use_decision', {
+        status: 'disallowed',
+        reason: 'The selected source is unavailable under the current policy boundary.',
+      })).toEqual(expect.objectContaining({
+        success: false,
+        unsupportedReason: 'source_use_decision_status_not_allowed',
+      }));
+      expect(await callTool(explicit.tools, 'record_source_use_decision', {
+        status: 'not_needed',
+        reason: 'The trace evidence is conclusive and requires no source investigation.',
+      })).toEqual(expect.objectContaining({
+        success: true,
+        status: 'not_needed',
+      }));
+      expect(explicit.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+        status: 'not_needed',
+        reasonCode: 'not_needed',
+      }));
+
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-source-use-conflict-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'StartupHooks.kt'), 'class StartupHooks\n');
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const afterLookup = createTestServer({
+          sceneType: 'general',
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+        });
+        await callTool(afterLookup.tools, 'read_codebase_file', {
+          file_path: 'src/StartupHooks.kt',
+        });
+
+        expect(await callTool(afterLookup.tools, 'record_source_use_decision', {
+          status: 'not_needed',
+          reason: 'The trace evidence is conclusive and requires no source investigation.',
+        })).toEqual(expect.objectContaining({
+          success: false,
+          unsupportedReason: 'source_use_decision_conflict',
+          currentStatus: 'corroborated',
+        }));
+        expect(afterLookup.sourceUse.getSourceUseDecision()?.status).toBe('corroborated');
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('activates the same non-waivable source aspect for submit and revise in code-aware Full', async () => {
+      const {tools, analysisPlan, sourceUse} = createTestServer({
+        sceneType: 'general',
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase'],
+      });
+      const rejected = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'trace',
+          name: 'Trace conclusion',
+          goal: 'Conclude from trace evidence only',
+          expectedTools: ['execute_sql'],
+          expectedCalls: [{tool: 'execute_sql'}],
+        }],
+        successCriteria: 'A source decision must not disappear from Full mode',
+      });
+      expect(rejected).toEqual(expect.objectContaining({
+        success: false,
+        nonWaivableMissingAspectIds: ['source_investigation_decision'],
+      }));
+
+      const accepted = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'source',
+          name: 'Source investigation',
+          goal: 'Search the selected source after collecting a trace anchor',
+          expectedTools: ['search_codebase'],
+          expectedCalls: [{tool: 'search_codebase'}],
+        }],
+        successCriteria: 'Resolve source use before the final answer',
+      });
+      expect(accepted.success).toBe(true);
+      expect(analysisPlan.current?.sourceUseDecisionStatus).toBe('pending');
+      expect(sourceUse.getSourceUseDecision()?.status).toBe('pending');
+
+      const revised = await callTool(tools, 'revise_plan', {
+        updatedPhases: [{
+          id: 'source',
+          name: 'Trace conclusion',
+          goal: 'Drop the source decision during revision',
+          expectedTools: ['execute_sql'],
+          expectedCalls: [{tool: 'execute_sql'}],
+        }],
+        reason: 'Attempt to remove the source-use hard gate after initial submission.',
+      });
+      expect(revised).toEqual(expect.objectContaining({
+        success: false,
+        nonWaivableMissingAspectIds: ['source_investigation_decision'],
+      }));
+    });
+
+    it('accepts a policy-valid explicit decision before plan submission and carries it into completion state', async () => {
+      const {tools, analysisPlan} = createTestServer({
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase'],
+      });
+      await callTool(tools, 'record_source_use_decision', {
+        status: 'unverified',
+        reason: 'No stable source anchor can be verified within the bounded analysis run.',
+      });
+      const submitted = await callTool(tools, 'submit_plan', {
+        phases: [{
+          id: 'trace',
+          name: 'Trace conclusion',
+          goal: 'Complete the trace-only conclusion after the explicit source decision',
+          expectedTools: ['execute_sql'],
+          expectedCalls: [{tool: 'execute_sql'}],
+        }],
+        successCriteria: 'The explicit source decision is preserved on the plan',
+      });
+
+      expect(submitted.success).toBe(true);
+      expect(analysisPlan.current?.sourceUseDecisionStatus).toBe('unverified');
+    });
+  });
+
   describe('on-demand codebase access', () => {
     it('registers provider-sent search bodies for outbound echo redaction', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-on-demand-search-echo-'));
@@ -6581,7 +6913,7 @@ describe('createClaudeMcpServer', () => {
           2,
           path.join(tmpDir, 'ledger.jsonl'),
         );
-        const {tools} = createTestServer({
+        const {tools, sourceUse} = createTestServer({
           codeAwareMode: 'metadata_only',
           codebaseIds: [refA.codebaseId, refB.codebaseId],
           codebaseRegistry,
@@ -6639,6 +6971,12 @@ describe('createClaudeMcpServer', () => {
           graph: {engine: 'gitnexus', freshness: 'stale', verificationRequired: true},
         }));
         expect(inspect.references[0].referenceId).toBe(`graph-${refB.codebaseId}`);
+        expect(sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+          status: 'located',
+          references: expect.arrayContaining([
+            expect.objectContaining({lookupKind: 'graph', codebaseId: refB.codebaseId}),
+          ]),
+        }));
         expect(ledger.getEntries()).toEqual(expect.arrayContaining([
           expect.objectContaining({
             toolName: 'search_codebase',

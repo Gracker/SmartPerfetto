@@ -8,6 +8,7 @@ import type { DetectedFocusApp } from './focusAppDetector';
 import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
+import type {SourceUseStatus} from '../services/codebase/sourceUseDecision';
 import type {CapabilityManifestResolutionV1} from '../types/capabilityManifest';
 
 // =============================================================================
@@ -334,6 +335,11 @@ export interface AnalysisPlanV3 {
   /** Agent-declared waivers for mandatory plan-template aspects. */
   waivers?: PlanAspectWaiver[];
   /**
+   * Bounded status-only marker used by provider-neutral completion gates.
+   * Full source references and free-text reasons stay outside the plan.
+   */
+  sourceUseDecisionStatus?: SourceUseStatus;
+  /**
    * Mandatory aspects the agent failed to cover *and* did not waive after
    * the hard-gate gave up enforcing (max attempts reached). Surfaced by
    * `verifyPlanAdherence` as an error so the final verifier still flags
@@ -371,12 +377,29 @@ const INFORMATIONAL_TOOL_NAMES = new Set([
   'write_analysis_note',
 ]);
 
+const CONTROL_TOOL_NAMES = new Set([
+  'record_source_use_decision',
+]);
+
+export type PlanToolCapability = 'evidence' | 'control' | 'informational';
+
+export function getPlanToolCapability(toolName: string): PlanToolCapability {
+  const shortName = shortToolName(toolName);
+  if (INFORMATIONAL_TOOL_NAMES.has(shortName)) return 'informational';
+  if (CONTROL_TOOL_NAMES.has(shortName)) return 'control';
+  return 'evidence';
+}
+
 export function isInformationalToolName(toolName: string): boolean {
-  return INFORMATIONAL_TOOL_NAMES.has(shortToolName(toolName));
+  return getPlanToolCapability(toolName) === 'informational';
+}
+
+export function isControlCapableToolName(toolName: string): boolean {
+  return getPlanToolCapability(toolName) === 'control';
 }
 
 export function isEvidenceCapableToolName(toolName: string): boolean {
-  return !isInformationalToolName(toolName);
+  return getPlanToolCapability(toolName) === 'evidence';
 }
 
 const ATTRIBUTION_SUPPORT_SKILL_IDS = new Set([
@@ -440,6 +463,8 @@ export function expectedToolNames(phase: PlanPhase): string[] {
 export interface ToolCallRecord {
   toolName: string;
   timestamp: number;
+  /** Provider-neutral plan role. Optional so older snapshots remain readable. */
+  planCapability?: PlanToolCapability;
   /** Explicit execution outcome when the runtime result exposed one. Failed calls remain auditable but never satisfy evidence gates. */
   success?: boolean;
   /** True only when a source lookup returned at least one locatable CodeRef; no source content is persisted here. */
