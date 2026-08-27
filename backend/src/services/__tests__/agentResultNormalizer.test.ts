@@ -526,6 +526,65 @@ describe('normalizeResultForReport', () => {
     expect(out.conclusionContract).toBe(contract);
   });
 
+  test('canonicalizes source provenance without putting it into the chat narrative', () => {
+    const r = makeResult({
+      conclusion: 'compact chat narrative',
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'Foo.run is compatible with the trace'}],
+        clusters: [],
+        evidenceChain: [],
+        claims: [{
+          id: 'claim-1',
+          text: 'Foo.run is compatible with the trace',
+          references: [{evidenceRefId: 'data:trace-1'}],
+        }],
+        sourceUseDecision: {
+          schemaVersion: 'source_use_decision@1',
+          codeAwareMode: 'provider_send',
+          selectedCodebaseIds: ['app-source'],
+          status: 'corroborated',
+          attemptedTools: ['read_codebase_file'],
+          queriedCodebaseIds: ['app-source'],
+          usedCodebaseIds: ['app-source'],
+          references: [{
+            id: 'model-controlled-id',
+            referenceId: 'lookup-1',
+            codebaseId: 'app-source',
+            filePath: 'src/main/Foo.kt',
+            lookupKind: 'body',
+            snippet: 'raw-source-canary',
+          } as any],
+        },
+        sourceReferences: [{
+          id: 'model-controlled-id',
+          referenceId: 'lookup-1',
+          codebaseId: 'app-source',
+          filePath: 'src/main/Foo.kt',
+          lookupKind: 'body',
+          text: 'raw-source-canary',
+        } as any],
+        sourceClaimBindings: [{
+          claimId: 'claim-1',
+          mechanismStatus: 'compatible',
+          sourceReferenceIds: ['model-controlled-id'],
+          traceEvidenceRefIds: ['data:trace-1'],
+          reason: 'raw-source-canary',
+        }],
+        uncertainties: [],
+        nextSteps: [],
+      },
+    });
+
+    const out = normalizeResultForReport(r);
+
+    expect(out.conclusion).toBe('compact chat narrative');
+    expect(out.conclusionContract?.sourceReferences?.[0]?.id).toMatch(/^source-ref-v1-/);
+    expect(JSON.stringify(out.conclusionContract)).not.toContain('model-controlled-id');
+    expect(JSON.stringify(out.conclusionContract)).not.toContain('raw-source-canary');
+  });
+
   test('derives claim provenance from unsanitized narrative while returning sanitized display text', () => {
     const r = makeResult({
       conclusion: [

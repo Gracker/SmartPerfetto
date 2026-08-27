@@ -233,6 +233,75 @@ describe('AnalysisResultSnapshotRepository', () => {
     ]);
   });
 
+  test('round-trips source-claim provenance through the existing conclusion JSON column', () => {
+    const sourceReference = {
+      id: 'source-ref-v1-aaaaaaaaaaaaaaaaaaaaaaaa',
+      referenceId: 'lookup-1',
+      codebaseId: 'app-source',
+      filePath: 'src/main/Foo.kt',
+      lookupKind: 'body',
+    };
+    const conclusionContract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [{rank: 1, statement: 'Foo.run matches trace evidence'}],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{
+        id: 'claim-1',
+        text: 'Foo.run matches trace evidence',
+        references: [{evidenceRefId: 'data:trace-1'}],
+      }],
+      sourceUseDecision: {
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['app-source'],
+        status: 'corroborated',
+        attemptedTools: ['read_codebase_file'],
+        queriedCodebaseIds: ['app-source'],
+        usedCodebaseIds: ['app-source'],
+        references: [sourceReference],
+      },
+      sourceReferences: [sourceReference],
+      sourceClaimBindings: [{
+        claimId: 'claim-1',
+        mechanismStatus: 'corroborated',
+        sourceReferenceIds: [sourceReference.id],
+        traceEvidenceRefIds: ['data:trace-1'],
+      }],
+      uncertainties: [],
+      nextSteps: [],
+    };
+    const repo = createAnalysisResultSnapshotRepository(db!);
+    repo.createSnapshot(snapshot({
+      id: 'snapshot-source-contract',
+      conclusionContract,
+    }));
+
+    const loaded = repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-source-contract',
+    );
+
+    expect(loaded?.conclusionContract).toEqual(conclusionContract);
+    const columns = db!.prepare(`PRAGMA table_info(analysis_result_snapshots)`).all() as Array<{name: string}>;
+    expect(columns.some(column => column.name === 'source_claim_bindings_json')).toBe(false);
+  });
+
+  test('keeps old snapshot rows without source fields byte-compatible', () => {
+    const legacyContract = {claims: [{id: 'Q1', text: 'legacy', references: []}]};
+    const repo = createAnalysisResultSnapshotRepository(db!);
+    repo.createSnapshot(snapshot({
+      id: 'snapshot-legacy-contract',
+      conclusionContract: legacyContract,
+    }));
+
+    expect(repo.getSnapshot(
+      {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'},
+      'snapshot-legacy-contract',
+    )?.conclusionContract).toEqual(legacyContract);
+  });
+
   test('round-trips Trace Summary attribution inside the existing summary JSON', () => {
     const repo = createAnalysisResultSnapshotRepository(db!);
     repo.createSnapshot(snapshot({

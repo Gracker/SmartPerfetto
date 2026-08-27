@@ -2834,4 +2834,85 @@ describe('final result quality gate', () => {
       outputLanguage: 'en',
     })).toBe(conclusion);
   });
+
+  it('surfaces source-binding downgrades without deleting verified trace conclusions', () => {
+    const sourceReference = {
+      id: 'source-ref-v1-aaaaaaaaaaaaaaaaaaaaaaaa',
+      referenceId: 'lookup-1',
+      codebaseId: 'app-source',
+      filePath: 'src/main/Foo.kt',
+      lookupKind: 'metadata' as const,
+    };
+    const sourceBoundResult = result({
+      conclusion: 'compact verified trace conclusion',
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'Foo.run 与 trace 阻塞事件一致'}],
+        clusters: [],
+        evidenceChain: [],
+        claims: [{
+          id: 'claim-1',
+          text: 'Foo.run 与 trace 阻塞事件一致',
+          references: [{evidenceRefId: 'data:trace-1'}],
+        }],
+        sourceUseDecision: {
+          schemaVersion: 'source_use_decision@1',
+          codeAwareMode: 'metadata_only',
+          selectedCodebaseIds: ['app-source'],
+          status: 'located',
+          attemptedTools: ['search_codebase'],
+          queriedCodebaseIds: ['app-source'],
+          usedCodebaseIds: ['app-source'],
+          references: [sourceReference],
+        },
+        sourceReferences: [sourceReference],
+        sourceClaimBindings: [{
+          claimId: 'claim-1',
+          mechanismStatus: 'corroborated',
+          sourceReferenceIds: [sourceReference.id],
+          traceEvidenceRefIds: ['data:trace-1'],
+        }],
+        uncertainties: [],
+        nextSteps: [],
+      },
+      claimSupport: [{
+        claimId: 'claim-1',
+        kind: 'causal',
+        text: 'Foo.run 与 trace 阻塞事件一致',
+        anchors: [],
+        supportLevel: 'verified',
+      }],
+      claimVerificationResult: {
+        schemaVersion: 'claim_verifier@1',
+        status: 'passed',
+        policy: 'record_only',
+        passed: true,
+        checkedClaimCount: 1,
+        unsupportedClaimCount: 0,
+        claimResults: [{
+          claimId: 'claim-1',
+          status: 'verified',
+          referenceResults: [{evidenceRefId: 'data:trace-1', status: 'matched'}],
+        }],
+        issues: [],
+      },
+    });
+
+    const issue = applyFinalResultQualityGate({
+      result: sourceBoundResult,
+      query: 'what is Foo.run?',
+    });
+
+    expect(issue?.code).toBe('source_claim_binding_invalid');
+    expect(sourceBoundResult.partial).toBe(true);
+    expect(sourceBoundResult.conclusion).toBe('compact verified trace conclusion');
+    expect(sourceBoundResult.claimSupport).toHaveLength(1);
+    expect(sourceBoundResult.claimVerificationResult?.status).toBe('passed');
+    expect(sourceBoundResult.conclusionContract?.sourceClaimBindings?.[0]?.mechanismStatus)
+      .toBe('compatible');
+    expect(sourceBoundResult.sourceClaimVerificationResult?.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'source_binding_strength_downgraded'}),
+    ]));
+  });
 });

@@ -802,4 +802,86 @@ describe('analysis result snapshot pipeline', () => {
       clearCodeAwareOutputGuards(sessionId);
     }
   });
+
+  test('keeps only sanitized source-claim provenance in completed snapshots', () => {
+    const snapshot = buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      traceId: 'trace-source',
+      sessionId: 'session-source',
+      runId: 'run-source',
+      query: 'analyze Foo.run',
+      conclusion: 'Foo.run matches the verified trace occurrence',
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'Foo.run matches the verified trace occurrence'}],
+        clusters: [],
+        evidenceChain: [],
+        claims: [{
+          id: 'claim-1',
+          text: 'Foo.run matches the verified trace occurrence',
+          references: [{evidenceRefId: 'data:trace-1'}],
+        }],
+        sourceUseDecision: {
+          schemaVersion: 'source_use_decision@1',
+          codeAwareMode: 'provider_send',
+          selectedCodebaseIds: ['app-source'],
+          status: 'corroborated',
+          attemptedTools: ['read_codebase_file'],
+          queriedCodebaseIds: ['app-source'],
+          usedCodebaseIds: ['app-source'],
+          references: [{
+            id: 'model-controlled-id',
+            referenceId: 'lookup-1',
+            codebaseId: 'app-source',
+            filePath: 'src/main/Foo.kt',
+            lookupKind: 'body',
+            rootPath: '/private/raw-root-canary',
+            snippet: 'raw-source-canary',
+          }],
+        },
+        sourceReferences: [{
+          id: 'model-controlled-id',
+          referenceId: 'lookup-1',
+          codebaseId: 'app-source',
+          filePath: 'src/main/Foo.kt',
+          lookupKind: 'body',
+          text: 'raw-source-canary',
+        }],
+        sourceClaimBindings: [{
+          claimId: 'claim-1',
+          mechanismStatus: 'compatible',
+          sourceReferenceIds: ['model-controlled-id'],
+          traceEvidenceRefIds: ['data:trace-1'],
+          reason: 'raw-source-canary',
+        }],
+        uncertainties: [],
+        nextSteps: [],
+      },
+      claimVerificationResult: {
+        schemaVersion: 'claim_verifier@1',
+        status: 'passed',
+        policy: 'record_only',
+        passed: true,
+        checkedClaimCount: 1,
+        unsupportedClaimCount: 0,
+        claimResults: [{
+          claimId: 'claim-1',
+          status: 'verified',
+          referenceResults: [{evidenceRefId: 'data:trace-1', status: 'matched'}],
+        }],
+        issues: [],
+      },
+    });
+
+    const contract = snapshot?.conclusionContract as any;
+    expect(contract.sourceReferences[0].id).toMatch(/^source-ref-v1-/);
+    expect(contract.sourceClaimBindings[0].sourceReferenceIds).toEqual([
+      contract.sourceReferences[0].id,
+    ]);
+    expect(JSON.stringify(contract)).not.toContain('model-controlled-id');
+    expect(JSON.stringify(contract)).not.toContain('raw-source-canary');
+    expect(JSON.stringify(contract)).not.toContain('/private/raw-root-canary');
+  });
 });

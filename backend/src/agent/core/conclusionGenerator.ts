@@ -51,6 +51,7 @@ import {
   buildConclusionScenePromptHints,
   type ConclusionScenePromptHints,
 } from './conclusionSceneTemplates';
+import {sanitizeConclusionSourceContract} from '../../services/codebase/sourceClaimVerifier';
 
 export interface ConclusionGenerationOptions {
   /**
@@ -2820,7 +2821,7 @@ function sanitizeConclusionContract(
       }
     : ((clusterPolicy || sceneId) ? { ...(clusterPolicy ? { clusterPolicy } : {}), ...(sceneId ? { sceneId } : {}) } : undefined);
 
-  return {
+  const sanitized: ConclusionContract = {
     schemaVersion: 'conclusion_contract_v1',
     mode: contract.mode,
     conclusions: conclusions.length > 0 ? conclusions : [{
@@ -2831,6 +2832,9 @@ function sanitizeConclusionContract(
     clusters,
     evidenceChain,
     ...(claims.length > 0 ? { claims } : {}),
+    ...(contract.sourceUseDecision ? {sourceUseDecision: contract.sourceUseDecision} : {}),
+    ...(contract.sourceReferences ? {sourceReferences: contract.sourceReferences} : {}),
+    ...(contract.sourceClaimBindings ? {sourceClaimBindings: contract.sourceClaimBindings} : {}),
     uncertainties,
     nextSteps,
     metadata: metadata && (
@@ -2842,6 +2846,7 @@ function sanitizeConclusionContract(
       ? metadata
       : undefined,
   };
+  return sanitizeConclusionSourceContract(sanitized);
 }
 
 function renderConclusionContract(
@@ -3016,6 +3021,9 @@ function parseJsonToConclusionContract(
   const uncertaintySource = readValueFromAliases(root, ['uncertainties', 'uncertainty', '不确定性与反例', '不确定性']);
   const nextStepSource = readValueFromAliases(root, ['next_steps', 'nextStep', 'next_step', '下一步']);
   const metadataSource = readValueFromAliases(root, ['metadata', 'analysis_metadata', '分析元数据']);
+  const sourceUseDecision = readValueFromAliases(root, ['sourceUseDecision', 'source_use_decision']);
+  const sourceReferences = readValueFromAliases(root, ['sourceReferences', 'source_references']);
+  const sourceClaimBindings = readValueFromAliases(root, ['sourceClaimBindings', 'source_claim_bindings']);
 
   const conclusions: ConclusionContractConclusionItem[] = [];
   if (Array.isArray(conclusionSource)) {
@@ -3127,6 +3135,13 @@ function parseJsonToConclusionContract(
     clusters,
     evidenceChain,
     claims,
+    ...(sourceUseDecision ? {sourceUseDecision: sourceUseDecision as ConclusionContract['sourceUseDecision']} : {}),
+    ...(Array.isArray(sourceReferences)
+      ? {sourceReferences: sourceReferences as ConclusionContract['sourceReferences']}
+      : {}),
+    ...(Array.isArray(sourceClaimBindings)
+      ? {sourceClaimBindings: sourceClaimBindings as ConclusionContract['sourceClaimBindings']}
+      : {}),
     uncertainties,
     nextSteps,
     metadata,

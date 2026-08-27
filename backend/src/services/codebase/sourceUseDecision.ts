@@ -155,6 +155,8 @@ const MAX_SOURCE_REFERENCE_ID_LENGTH = 256;
 const MAX_SOURCE_SYMBOL_LENGTH = 256;
 const MAX_SOURCE_TOOL_COUNT = 64;
 const MAX_SOURCE_INCOMPLETE_REASON_COUNT = 20;
+const MAX_SOURCE_CLAIM_BINDING_COUNT = 100;
+const MAX_SOURCE_BINDING_REFERENCE_COUNT = 100;
 const MAX_SOURCE_LINE = 2_147_483_647;
 const LEGACY_REFERENCE_ONLY_EXTENSIONS = ['.sql', '.md'] as const;
 const CODEBASE_KINDS = [
@@ -439,4 +441,47 @@ export function sanitizeSourceUseDecision(
     ...(incompleteReasons.length > 0 ? {incompleteReasons} : {}),
     references,
   };
+}
+
+export function sanitizeSourceClaimBindings(
+  value: unknown,
+  options: {
+    referenceIdAliases?: ReadonlyMap<string, string>;
+  } = {},
+): SourceClaimBindingV1[] {
+  if (!Array.isArray(value)) return [];
+  const bindings: SourceClaimBindingV1[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (!isRecord(candidate)) continue;
+    const claimId = strictIdentifier(candidate.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH);
+    const mechanismStatus = candidate.mechanismStatus === 'corroborated' ||
+      candidate.mechanismStatus === 'compatible' ||
+      candidate.mechanismStatus === 'ambiguous' ||
+      candidate.mechanismStatus === 'unverified'
+      ? candidate.mechanismStatus
+      : undefined;
+    if (!claimId || !mechanismStatus) continue;
+    const sourceReferenceIds = uniqueBoundedIdentifiers(
+      candidate.sourceReferenceIds,
+      MAX_SOURCE_BINDING_REFERENCE_COUNT,
+      MAX_SOURCE_REFERENCE_ID_LENGTH,
+    ).map(referenceId => options.referenceIdAliases?.get(referenceId) ?? referenceId);
+    const traceEvidenceRefIds = uniqueBoundedIdentifiers(
+      candidate.traceEvidenceRefIds,
+      MAX_SOURCE_BINDING_REFERENCE_COUNT,
+      MAX_SOURCE_REFERENCE_ID_LENGTH,
+    );
+    const key = JSON.stringify([claimId, mechanismStatus, sourceReferenceIds, traceEvidenceRefIds]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    bindings.push({
+      claimId,
+      mechanismStatus,
+      sourceReferenceIds,
+      traceEvidenceRefIds,
+    });
+    if (bindings.length >= MAX_SOURCE_CLAIM_BINDING_COUNT) break;
+  }
+  return bindings;
 }

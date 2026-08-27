@@ -99,6 +99,7 @@ import {
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {completeFinalReportCodeReferences} from '../../../services/codebase/codeReferenceContract';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
+import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
 import {providerSubprocessEnv} from '../../../services/providerManager/envIsolation';
 import type { RuntimeSelection } from '../../runtimeSelection';
@@ -330,6 +331,7 @@ interface OpenCodeAnalysisPreparation {
   analysisRunSpec: AnalysisRunSpec;
   comparisonIdentity?: FinalResultComparisonIdentity;
   quickMemoryContextCounts?: ReturnType<typeof buildQuickMemoryContextPayload>['counts'];
+  sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
 }
 
 export type OpenCodeEvent =
@@ -2801,6 +2803,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
+    attachSourceUseToAnalysisResult(result, prep.sourceUse);
     const wasPartialBeforeQualityGate = result.partial === true;
     const gateIssue = applyFinalResultQualityGate({
       result,
@@ -3111,7 +3114,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(options.referenceTraceId ? { referenceTraceId: options.referenceTraceId } : {}),
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     });
-    const { toolDefinitions } = createClaudeMcpServer({
+    const { toolDefinitions, sourceUse } = createClaudeMcpServer({
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
         : undefined,
@@ -3209,6 +3212,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         hypotheses,
         uncertaintyFlags,
         analysisRunSpec,
+        sourceUse,
         quickMemoryContextCounts: quickMemoryPayload.counts,
       };
     }
@@ -3288,6 +3292,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       hypotheses,
       uncertaintyFlags,
       analysisRunSpec,
+      sourceUse,
       ...(comparisonContext ? {
         comparisonIdentity: {
           currentPackageName: effectivePackageName,

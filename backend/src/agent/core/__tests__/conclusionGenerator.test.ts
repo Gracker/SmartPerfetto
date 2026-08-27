@@ -1308,4 +1308,68 @@ analysis_metadata:
     expect(conclusion).toContain('## 掉帧聚类（先看大头）');
     expect(conclusion).toContain('K1:');
   });
+
+  it('sanitizes typed source provenance while keeping chat markdown unchanged', () => {
+    const baseContract = {
+      schemaVersion: 'conclusion_contract_v1' as const,
+      mode: 'focused_answer' as const,
+      conclusions: [{rank: 1, statement: 'Foo.run 与 trace 阻塞事件一致'}],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{
+        id: 'claim-1',
+        text: 'Foo.run 与 trace 阻塞事件一致',
+        references: [{evidenceRefId: 'data:trace-1'}],
+      }],
+      uncertainties: [],
+      nextSteps: [],
+    };
+    const sourceContract = {
+      ...baseContract,
+      sourceUseDecision: {
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['app-source'],
+        status: 'corroborated',
+        attemptedTools: ['read_codebase_file'],
+        queriedCodebaseIds: ['app-source'],
+        usedCodebaseIds: ['app-source'],
+        references: [{
+          id: 'model-controlled-id',
+          referenceId: 'lookup-1',
+          codebaseId: 'app-source',
+          filePath: 'src/main/Foo.kt',
+          lookupKind: 'body',
+          rootPath: '/private/raw-root-canary',
+          snippet: 'raw-source-canary',
+        }],
+      },
+      sourceReferences: [{
+        id: 'model-controlled-id',
+        referenceId: 'lookup-1',
+        codebaseId: 'app-source',
+        filePath: 'src/main/Foo.kt',
+        lookupKind: 'body',
+        text: 'raw-source-canary',
+      }],
+      sourceClaimBindings: [{
+        claimId: 'claim-1',
+        mechanismStatus: 'corroborated',
+        sourceReferenceIds: ['model-controlled-id'],
+        traceEvidenceRefIds: ['data:trace-1'],
+        reason: 'raw-source-canary',
+      }],
+    };
+
+    const parsed = deriveConclusionContract(JSON.stringify(sourceContract));
+
+    expect(parsed?.sourceUseDecision?.references[0]?.id).toMatch(/^source-ref-v1-/);
+    expect(parsed?.sourceUseDecision?.references[0]?.id).not.toBe('model-controlled-id');
+    expect(parsed?.sourceReferences?.[0]?.id).toBe(parsed?.sourceUseDecision?.references[0]?.id);
+    expect(JSON.stringify(parsed)).not.toContain('/private/raw-root-canary');
+    expect(JSON.stringify(parsed)).not.toContain('raw-source-canary');
+    expect(renderConclusionContractMarkdown(parsed!)).toBe(
+      renderConclusionContractMarkdown(deriveConclusionContract(JSON.stringify(baseContract))!),
+    );
+  });
 });

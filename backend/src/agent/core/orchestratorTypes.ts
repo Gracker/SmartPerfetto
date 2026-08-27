@@ -225,6 +225,9 @@ export interface AnalysisResult {
   conclusionContract?: ConclusionContract;
   claimSupport?: ClaimSupportV1[];
   claimVerificationResult?: ClaimVerificationResult;
+  sourceUseDecision?: import('../../services/codebase/sourceUseDecision').SourceUseDecisionV1;
+  sourceReferences?: import('../../services/codebase/sourceUseDecision').SourceReferenceV1[];
+  sourceClaimVerificationResult?: import('../../services/codebase/sourceClaimVerifier').SourceClaimVerificationResult;
   identityResolutions?: IdentityResolutionV1[];
   confidence: number;
   rounds: number;

@@ -34,6 +34,12 @@ import {
   projectPrivateTerminationReason,
   projectPrivateUiActionProposals,
 } from './security/privateAnalysisProjection';
+import type {ConclusionContract} from '../agent/core/conclusionContract';
+import {
+  sanitizeConclusionSourceContract,
+  verifySourceClaimBindings,
+} from './codebase/sourceClaimVerifier';
+import {collectVerifiedTraceEvidenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
 
 export interface CompletedAnalysisSnapshotInput {
   tenantId?: string;
@@ -485,6 +491,24 @@ export function buildCompletedAnalysisResultSnapshot(
       ? input.traceSummary
       : storedAnalysisReceipt?.traceSummary,
   );
+  let conclusionContract = input.conclusionContract;
+  if (
+    conclusionContract &&
+    typeof conclusionContract === 'object' &&
+    !Array.isArray(conclusionContract) &&
+    (conclusionContract as Record<string, unknown>).schemaVersion === 'conclusion_contract_v1'
+  ) {
+    const sanitized = sanitizeConclusionSourceContract(conclusionContract as ConclusionContract);
+    const verification = verifySourceClaimBindings({
+      conclusionContract: sanitized,
+      verifiedTraceEvidenceRefIdsByClaimId: input.claimVerificationResult
+        ? collectVerifiedTraceEvidenceRefIdsByClaimId(input.claimVerificationResult)
+        : {},
+    });
+    conclusionContract = verification.status === 'not_checked'
+      ? sanitized
+      : {...sanitized, sourceClaimBindings: verification.bindings};
+  }
 
   return {
     id: `analysis-result-${crypto.randomUUID()}`,
@@ -509,7 +533,7 @@ export function buildCompletedAnalysisResultSnapshot(
       ...(traceSummary ? {traceSummary} : {}),
       ...(input.uiActionProposals && input.uiActionProposals.length > 0 ? { uiActionProposals: input.uiActionProposals } : {}),
     },
-    ...(input.conclusionContract ? { conclusionContract: input.conclusionContract } : {}),
+    ...(conclusionContract ? { conclusionContract } : {}),
     ...(input.claimSupport ? { claimSupport: input.claimSupport } : {}),
     ...(input.claimVerificationResult ? { claimVerificationResult: input.claimVerificationResult } : {}),
     ...(input.identityResolutions ? { identityResolutions: input.identityResolutions } : {}),

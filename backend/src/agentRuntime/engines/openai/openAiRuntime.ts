@@ -173,6 +173,7 @@ import {
   loadCodeReferenceContractPrompt,
 } from '../../../services/codebase/codeReferenceContract';
 import { extractSourceLookupCodeReferences } from '../../../services/codebase/sourceLookupTools';
+import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import { buildQuickProcessIdentityDirectAnswer } from '../../quickProcessIdentityDirectAnswer';
 import {
   buildQuickProcessIdentityEvidence,
@@ -1774,6 +1775,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           }
         }
         analysisAbortScope.throwIfAborted();
+        attachSourceUseToAnalysisResult(result, context.sourceUse);
         const gateIssue = applyFinalResultQualityGate({
           result,
           query,
@@ -2298,6 +2300,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         comparisonIdentity: undefined,
         directProcessIdentityAnswer,
         directTraceFactAnswer,
+        sourceUse: undefined,
       };
     }
 
@@ -2394,6 +2397,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
     let allowedTools: string[] = [];
     let tools: ReturnType<typeof createOpenAIToolsFromMcpDefinitions> = [];
+    let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
     if (!useEvidenceOnlyQuick) {
       await (skillRegistryReady ?? ensureSkillRegistryInitialized());
       const skillExecutor = createSkillExecutor(this.traceProcessorService);
@@ -2446,6 +2450,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       });
       allowedTools = mcp.allowedTools;
       tools = createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions);
+      sourceUse = mcp.sourceUse;
     }
 
     const systemPrompt = lightweight
@@ -2516,6 +2521,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       sessionMapKey,
       quickMemoryContextCounts: quickMemoryPayload?.counts,
       effectivePackageName,
+      sourceUse,
       ...(comparisonContext ? {
         comparisonIdentity: {
           currentPackageName: effectivePackageName,

@@ -9,6 +9,7 @@ import {
   QUICK_TRIAGE_MAX_CLAIMS,
 } from '../agentv3/quickAnswerContract';
 import { assessFinalReportContractCompleteness } from './finalReportContractGate';
+import {verifySourceClaimBindingsForResult} from './codebase/sourceClaimVerifier';
 
 export type FinalResultQualityIssueCode =
   | 'empty_conclusion'
@@ -20,6 +21,7 @@ export type FinalResultQualityIssueCode =
   | 'quick_verifier_failed'
   | 'scene_contract_incomplete'
   | 'comparison_identity_incomplete'
+  | 'source_claim_binding_invalid'
   | 'kernel_blocking_claim_boundary';
 
 export interface FinalResultQualityIssue {
@@ -1226,6 +1228,16 @@ export function assessFinalResultQuality(input: {
     };
   }
 
+  const sourceClaimVerification = result.sourceClaimVerificationResult ??
+    verifySourceClaimBindingsForResult(result);
+  const sourceClaimIssue = sourceClaimVerification?.issues[0];
+  if (sourceClaimIssue) {
+    return {
+      code: 'source_claim_binding_invalid',
+      message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} Source/Trace 机制绑定未通过严格核验：${sourceClaimIssue.message}`,
+    };
+  }
+
   if (looksLikePhaseSummaryFallback(conclusion)) {
     return {
       code: 'plan_summary_fallback',
@@ -1338,6 +1350,13 @@ export function applyFinalResultQualityGate(input: {
   sceneType?: string;
   comparisonIdentity?: FinalResultComparisonIdentity;
 }): FinalResultQualityIssue | undefined {
+  const sourceClaimVerification = verifySourceClaimBindingsForResult(input.result);
+  if (sourceClaimVerification) {
+    input.result.sourceClaimVerificationResult = sourceClaimVerification;
+    if (input.result.conclusionContract) {
+      input.result.conclusionContract.sourceClaimBindings = sourceClaimVerification.bindings;
+    }
+  }
   const issue = assessFinalResultQuality(input);
   if (!issue) return undefined;
 

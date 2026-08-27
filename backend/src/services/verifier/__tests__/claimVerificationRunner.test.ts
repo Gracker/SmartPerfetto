@@ -979,5 +979,8 @@ describe('runClaimVerification', () => {
 
     expect(result.claimSupport[0].supportLevel).toBe('verified');
     expect(result.claimVerificationResult.status).toBe('passed');
+    expect(result.verifiedTraceEvidenceRefIdsByClaimId).toEqual({
+      'claim-main-thread-blocked': ['data:skill:test'],
+    });
   });
 });

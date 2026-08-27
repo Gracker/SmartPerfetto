@@ -64,6 +64,7 @@ import {
   sanitizeCodeAwareText,
 } from '../../../services/security/codeAwareOutputRegistry';
 import { analysisContextUsesPrivateKnowledge } from '../../../services/resolvedAnalysisContext';
+import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
@@ -581,7 +582,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     const watchdogWarning: { current: string | null } = { current: null };
 
-    const { server: mcpServer, allowedTools: allowedToolNames } = isQuickMode
+    const { server: mcpServer, allowedTools: allowedToolNames, sourceUse } = isQuickMode
       ? createClaudeMcpServer({
           conversationTraceAttached: options?.assistantSurface === 'conversation'
             ? options.conversationTraceAttached === true
@@ -895,6 +896,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       }
 
       // Apply final result quality gate
+      attachSourceUseToAnalysisResult(result, sourceUse);
       applyFinalResultQualityGate({ result, query, sceneType });
 
       if (!privateAnalysisContext) {

@@ -3,6 +3,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {CaseKnowledgeReportRecommendation} from '../../types/caseKnowledge';
+import type {
+  SourceClaimBindingV1,
+  SourceReferenceV1,
+  SourceUseDecisionV1,
+} from '../../services/codebase/sourceUseDecision';
 
 export type ConclusionOutputMode = 'initial_report' | 'focused_answer' | 'need_input';
 export type ConclusionClusterOutputMode = 'required' | 'optional' | 'none';
@@ -95,6 +100,9 @@ export interface ConclusionContract {
   clusters: ConclusionContractClusterItem[];
   evidenceChain: ConclusionContractEvidenceItem[];
   claims?: ConclusionContractClaimItem[];
+  sourceUseDecision?: SourceUseDecisionV1;
+  sourceReferences?: SourceReferenceV1[];
+  sourceClaimBindings?: SourceClaimBindingV1[];
   /**
    * Curated case-library recommendations selected by a retrieval/citation path.
    * Report rendering consumes this structured projection; retrieval remains

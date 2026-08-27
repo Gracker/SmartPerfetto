@@ -38,6 +38,10 @@ import type {
   ConclusionOutputMode,
 } from '../agent/core/conclusionContract';
 import type { DataEnvelope, DataPayload } from '../types/dataContract';
+import {
+  sanitizeConclusionSourceContract,
+  verifySourceClaimBindingsForResult,
+} from './codebase/sourceClaimVerifier';
 
 interface ConclusionContractDeriveOptions {
   mode?: ConclusionOutputMode;
@@ -538,16 +542,39 @@ export function normalizeResultForReport(
   options: EvidenceBackedConclusionContractDeriveOptions = {},
 ): AnalysisResult {
   const normalizedConclusion = normalizeNarrativeForClient(result.conclusion);
-  const normalizedContract =
+  const derivedContract =
     deriveEvidenceBackedConclusionContractForNarrative(result.conclusion, options.dataEnvelopes, {
       existingContract: result.conclusionContract,
       mode: result.rounds > 1 ? 'focused_answer' : 'initial_report',
       ...options,
     }) || undefined;
+  let normalizedContract = derivedContract
+    ? sanitizeConclusionSourceContract(derivedContract, {
+        ...(result.sourceUseDecision
+          ? {actualSourceUseDecision: result.sourceUseDecision}
+          : {}),
+      })
+    : undefined;
+  let sourceClaimVerificationResult = result.sourceClaimVerificationResult;
+  if (normalizedContract) {
+    const resultWithNormalizedContract = {
+      ...result,
+      conclusionContract: normalizedContract,
+    };
+    const verification = verifySourceClaimBindingsForResult(resultWithNormalizedContract);
+    if (verification) {
+      sourceClaimVerificationResult = verification;
+      normalizedContract = {
+        ...normalizedContract,
+        sourceClaimBindings: verification.bindings,
+      };
+    }
+  }
 
   if (
     normalizedConclusion === result.conclusion &&
-    normalizedContract === result.conclusionContract
+    normalizedContract === result.conclusionContract &&
+    sourceClaimVerificationResult === result.sourceClaimVerificationResult
   ) {
     return result;
   }
@@ -555,5 +582,6 @@ export function normalizeResultForReport(
     ...result,
     conclusion: normalizedConclusion,
     conclusionContract: normalizedContract,
+    ...(sourceClaimVerificationResult ? {sourceClaimVerificationResult} : {}),
   };
 }

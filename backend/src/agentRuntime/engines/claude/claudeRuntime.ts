@@ -112,6 +112,7 @@ import {
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {completeFinalReportCodeReferences} from '../../../services/codebase/codeReferenceContract';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
+import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
 import { verifyConclusion, generateCorrectionPrompt, isConclusionIncomplete } from './claudeVerifier';
@@ -2503,6 +2504,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationReason,
         terminationMessage,
       };
+      attachSourceUseToAnalysisResult(finalAnalysisResult, ctx.sourceUse);
       const gateIssue = applyFinalResultQualityGate({ result: finalAnalysisResult, query, sceneType });
       if (gateIssue) {
         this.emitUpdate({
@@ -3206,6 +3208,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       let mcpServer: ReturnType<typeof createClaudeMcpServer>['server'] | undefined;
       let allowedTools: string[] = [];
+      let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
       if (!useEvidenceOnlyQuick) {
         await (skillRegistryReady ?? ensureSkillRegistryInitialized());
         const skillExecutor = createSkillExecutor(this.traceProcessorService);
@@ -3252,6 +3255,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         });
         mcpServer = mcp.server;
         allowedTools = mcp.allowedTools;
+        sourceUse = mcp.sourceUse;
       }
 
       const systemPrompt = buildQuickSystemPrompt({
@@ -3503,6 +3507,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           adaptiveRouting: analysisRunSpec.mode.adaptiveRouting,
         }),
       };
+      attachSourceUseToAnalysisResult(quickResult, sourceUse);
       const quickGateIssue = applyFinalResultQualityGate({ result: quickResult, query, sceneType });
       if (quickGateIssue) {
         this.emitUpdate({
@@ -4148,7 +4153,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 8: MCP server with all session-scoped state
     // P2-G1: Destructure to get both server and auto-derived allowedTools
     const fullNotesBudget = createRuntimeSkillNotesBudget(false);
-    const { server: mcpServer, allowedTools, toolDefinitions } = createClaudeMcpServer({
+    const { server: mcpServer, allowedTools, toolDefinitions, sourceUse } = createClaudeMcpServer({
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
         : undefined,
@@ -4275,6 +4280,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       analysisContextForRebuild, // Used by correction retry to rebuild prompt with reduced budget
       sessionMapKey, // Composite key for comparison mode session identity isolation
       analysisRunSpec: precomputed?.analysisRunSpec,
+      sourceUse,
     };
   }
 
