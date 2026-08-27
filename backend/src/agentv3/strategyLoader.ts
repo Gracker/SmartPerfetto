@@ -1128,6 +1128,25 @@ export function loadStrategyRegistry<T>(name: string): T | undefined {
   return parsed;
 }
 
+/** Load and validate a structured YAML asset from `backend/strategies/<name>.yaml`. */
+export function loadStrategyYaml<T>(
+  name: string,
+  parse: (value: unknown) => T,
+): T | undefined {
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) {
+    throw new Error(`strategy_yaml_invalid_name:${name}`);
+  }
+  const cacheKey = `yaml:${name}`;
+  if (registryCache.has(cacheKey) && !DEV_MODE) {
+    return registryCache.get(cacheKey) as T;
+  }
+  const filePath = path.join(STRATEGIES_DIR, `${name}.yaml`);
+  if (!fs.existsSync(filePath)) return undefined;
+  const parsed = parse(yaml.load(fs.readFileSync(filePath, 'utf-8')));
+  registryCache.set(cacheKey, parsed);
+  return parsed;
+}
+
 /**
  * Load a selection context template from `backend/strategies/selection-<kind>.template.md`.
  * Delegates to `loadPromptTemplate()` with the `selection-` prefix.

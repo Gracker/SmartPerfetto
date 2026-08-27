@@ -14,7 +14,11 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { getScenePlanTemplate } from '../scenePlanTemplates';
+import {
+  getScenePlanTemplate,
+  validatePlanAgainstSceneTemplate,
+} from '../scenePlanTemplates';
+import {loadSourceInvestigationPolicy} from '../sourceInvestigationPolicy';
 import { getPlanTemplate, invalidateStrategyCache, getRegisteredScenes } from '../strategyLoader';
 
 describe('plan_template frontmatter pipeline', () => {
@@ -118,5 +122,163 @@ describe('plan_template frontmatter pipeline', () => {
       // Either frontmatter, or legacy fallback, or undefined (opt-out) — all OK.
       expect(() => getScenePlanTemplate(def.scene)).not.toThrow();
     }
+  });
+
+  it('keeps trace-only plan validation byte-for-behavior unchanged for every discovered scene', () => {
+    const phases = [{
+      name: 'Trace evidence',
+      goal: 'Collect the scene-specific trace evidence required by the existing template',
+      expectedTools: ['invoke_skill'],
+    }];
+    const beforePolicyLoad = getRegisteredScenes().map(definition => ({
+      scene: definition.scene,
+      result: validatePlanAgainstSceneTemplate(phases, definition.scene),
+    }));
+
+    loadSourceInvestigationPolicy();
+
+    const afterPolicyLoad = getRegisteredScenes().map(definition => ({
+      scene: definition.scene,
+      result: validatePlanAgainstSceneTemplate(phases, definition.scene),
+    }));
+    expect(JSON.stringify(afterPolicyLoad)).toBe(JSON.stringify(beforePolicyLoad));
+    expect(JSON.stringify(afterPolicyLoad)).not.toContain('source_investigation_decision');
+    expect(validatePlanAgainstSceneTemplate([], 'general')).toEqual({
+      warnings: [],
+      missingAspectIds: [],
+    });
+  });
+
+  it('adds one non-waivable source-decision aspect only for code-aware Full plans', () => {
+    for (const definition of getRegisteredScenes()) {
+      const result = validatePlanAgainstSceneTemplate(
+        [],
+        definition.scene,
+        [{
+          aspectId: 'source_investigation_decision',
+          reason: 'The source phase is intentionally omitted despite being required by this code-aware Full plan.',
+        }],
+        {sourceInvestigation: {mode: 'code_aware_full'}},
+      );
+      expect(result.missingAspectIds.filter(
+        aspectId => aspectId === 'source_investigation_decision',
+      )).toHaveLength(1);
+      expect(result.nonWaivableMissingAspectIds).toContain(
+        'source_investigation_decision',
+      );
+    }
+  });
+
+  it('accepts either a source lookup path or an explicit decision record', () => {
+    const lookupPath = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Source lookup',
+        goal: 'Use search_codebase to investigate the trace-supported candidate',
+        expectedTools: ['search_codebase'],
+        expectedCalls: [{tool: 'search_codebase'}],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {mode: 'code_aware_full'}},
+    );
+    expect(lookupPath.missingAspectIds).not.toContain('source_investigation_decision');
+
+    const pinpointPath = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Trace-to-code pinpoint',
+        goal: 'Use the policy fallback Skill to produce a source investigation anchor',
+        expectedTools: ['invoke_skill'],
+        expectedCalls: [{tool: 'invoke_skill', skillId: 'code_pinpoint'}],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {mode: 'code_aware_full'}},
+    );
+    expect(pinpointPath.missingAspectIds).not.toContain(
+      'source_investigation_decision',
+    );
+
+    const explicitDecision = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Trace conclusion',
+        goal: 'Conclude after a separately recorded source-use decision',
+        expectedTools: [],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {
+        mode: 'code_aware_full',
+        decision: {
+          status: 'not_needed',
+          reason: 'The trace evidence is conclusive and exposes no implementation question requiring source investigation.',
+        },
+      }},
+    );
+    expect(explicitDecision.missingAspectIds).not.toContain(
+      'source_investigation_decision',
+    );
+  });
+
+  it.each([
+    ['not_needed', 'record_source_use_decision'],
+    ['unverified', 'record_source_use_decision'],
+    ['read_or_indexed_lookup', 'read_or_indexed_lookup'],
+    ['code_pinpoint', 'code_pinpoint'],
+  ])('does not accept policy vocabulary or fake raw tools: %s', (keyword, fakeTool) => {
+    const result = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Trace only',
+        goal: `Mention ${keyword} without declaring a source lookup or decision record`,
+        expectedTools: [fakeTool],
+        expectedCalls: [{tool: fakeTool}],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {mode: 'code_aware_full'}},
+    );
+    expect(result.missingAspectIds).toContain('source_investigation_decision');
+  });
+
+  it('rejects an underspecified explicit decision record', () => {
+    const result = validatePlanAgainstSceneTemplate(
+      [],
+      'general',
+      undefined,
+      {sourceInvestigation: {
+        mode: 'code_aware_full',
+        decision: {status: 'not_needed', reason: 'too short'},
+      }},
+    );
+    expect(result.missingAspectIds).toContain('source_investigation_decision');
+  });
+
+  it('re-applies the source-decision hard gate when a revised plan drops the phase', () => {
+    const initial = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Source decision',
+        goal: 'Search source after checking the trace anchors',
+        expectedTools: ['search_codebase'],
+        expectedCalls: [{tool: 'search_codebase'}],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {mode: 'code_aware_full'}},
+    );
+    expect(initial.missingAspectIds).not.toContain('source_investigation_decision');
+
+    const revised = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Trace conclusion',
+        goal: 'Summarize trace evidence without the required source decision phase',
+        expectedTools: [],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {mode: 'code_aware_full'}},
+    );
+    expect(revised.missingAspectIds).toContain('source_investigation_decision');
+    expect(revised.nonWaivableMissingAspectIds).toContain(
+      'source_investigation_decision',
+    );
   });
 });

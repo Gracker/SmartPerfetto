@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+schema_version: source_investigation_policy@1
+default:
+  eligible_anchors: [exact_symbol, app_owned_slice, native_frame, binder_descriptor, module_build_id]
+  target_domains: [app_source, aosp, kernel_source, oem_sdk]
+  fallback: [resolve_symbol, code_pinpoint, search_codebase, read_or_indexed_lookup]
+  stop_states: [not_needed, no_queryable_anchor, ambiguous_candidates, not_found_complete, search_incomplete, unverified]
+profiles:
+  startup:
+    anchors: [startup_slice, class_method, atrace_marker, main_thread_blocker]
+  scrolling:
+    anchors: [guilty_frame_slice, producer_symbol, render_thread_symbol, module_build_id]
+  anr:
+    anchors: [blocked_thread_symbol, lock_owner, binder_server, native_frame]
+  interaction:
+    anchors: [input_handler_slice, binder_descriptor, main_thread_symbol]
+  scroll_response:
+    anchors: [input_callback, first_frame_symbol, producer_symbol]

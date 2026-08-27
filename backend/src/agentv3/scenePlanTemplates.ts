@@ -18,6 +18,9 @@ import {
   getPlanTemplate as getPlanTemplateFromFrontmatter,
   getRegisteredScenes,
 } from './strategyLoader';
+import {buildSourceInvestigationPlanAspect} from './sourceInvestigationPolicy';
+import type {SourceInvestigationPlanAspect} from './sourceInvestigationPolicy';
+import {isSourceLookupToolName} from '../services/codebase/sourceLookupTools';
 import type { ExpectedCall } from './types';
 
 export interface ScenePlanTemplateAspect {
@@ -190,10 +193,22 @@ export interface PlanValidationOptions {
    * expectedCalls can cover the aspect.
    */
   triggerContext?: string | readonly string[];
+  /** Opt in only for a Full analysis with an authorized codebase selection. */
+  sourceInvestigation?: {
+    mode: 'code_aware_full';
+    /** A bounded decision already accepted by the source-use control surface. */
+    decision?: SourceInvestigationDecisionRecord;
+  };
+}
+
+export interface SourceInvestigationDecisionRecord {
+  status: string;
+  reason: string;
 }
 
 /** Minimum justification length for a waiver to be accepted. */
 export const MIN_WAIVER_REASON_CHARS = 50;
+const MIN_SOURCE_DECISION_REASON_CHARS = 30;
 
 function shortToolName(toolName: string): string {
   const MCP_PREFIX = 'mcp__smartperfetto__';
@@ -221,6 +236,27 @@ function uniqueExpectedCalls(calls: readonly ExpectedCall[]): ExpectedCall[] {
   });
 }
 
+function sourceAspectCovered(
+  aspect: SourceInvestigationPlanAspect,
+  declaredExpectedCalls: readonly ExpectedCall[],
+  decision: SourceInvestigationDecisionRecord | undefined,
+): boolean {
+  const structuredLookup = declaredExpectedCalls.some(call =>
+    isSourceLookupToolName(call.tool) ||
+    (
+      shortToolName(call.tool) === 'invoke_skill' &&
+      call.skillId !== undefined &&
+      aspect.fallbackIdentifiers.includes(call.skillId)
+    ),
+  );
+  if (structuredLookup) return true;
+  return Boolean(
+    decision &&
+    aspect.decisionStatuses.includes(decision.status) &&
+    decision.reason.trim().length >= MIN_SOURCE_DECISION_REASON_CHARS,
+  );
+}
+
 /**
  * Detect mandatory aspects of a scene's plan template that a submitted
  * `phases` array fails to mention. Returns empty arrays for scenes without
@@ -241,7 +277,18 @@ export function validatePlanAgainstSceneTemplate(
   options: PlanValidationOptions = {},
 ): PlanValidationResult {
   const template = scene ? getScenePlanTemplate(scene) : undefined;
-  if (!template) return { warnings: [], missingAspectIds: [] };
+  const mandatoryAspects = [...(template?.mandatoryAspects ?? [])];
+  let sourceAspect: SourceInvestigationPlanAspect | undefined;
+  if (scene && options.sourceInvestigation?.mode === 'code_aware_full') {
+    sourceAspect = buildSourceInvestigationPlanAspect(scene);
+    if (sourceAspect) {
+      if (mandatoryAspects.some(aspect => aspect.id === sourceAspect!.id)) {
+        throw new Error(`source_investigation_aspect_duplicate:${scene}`);
+      }
+      mandatoryAspects.push(sourceAspect);
+    }
+  }
+  if (mandatoryAspects.length === 0) return { warnings: [], missingAspectIds: [] };
 
   const planText = phases
     .map(p => `${p.name} ${p.goal} ${(p.expectedTools ?? []).join(' ')} ${(p.expectedCalls ?? []).map(formatExpectedCallForPlanText).join(' ')}`)
@@ -264,7 +311,7 @@ export function validatePlanAgainstSceneTemplate(
   const missingAspectIds: string[] = [];
   const nonWaivableMissingAspectIds: string[] = [];
   const missingAspectRequirements: NonNullable<PlanValidationResult['missingAspectRequirements']> = [];
-  for (const aspect of template.mandatoryAspects) {
+  for (const aspect of mandatoryAspects) {
     const aspectId = aspect.id || aspect.matchKeywords[0];
     const waivable = aspect.waivable !== false;
     if (waivable && acceptedWaiverIds.has(aspectId)) continue;
@@ -272,7 +319,13 @@ export function validatePlanAgainstSceneTemplate(
       !aspect.triggerKeywords!.some(kw => triggerText.includes(kw.toLowerCase()))) {
       continue;
     }
-    const covered = aspect.matchKeywords.some(kw => planText.includes(kw.toLowerCase()));
+    const covered = sourceAspect === aspect
+      ? sourceAspectCovered(
+          sourceAspect,
+          declaredExpectedCalls,
+          options.sourceInvestigation?.decision,
+        )
+      : aspect.matchKeywords.some(kw => planText.includes(kw.toLowerCase()));
     const matchedConditionalGroups = (aspect.conditionalRequiredExpectedCalls ?? [])
       .filter(group => group.triggerKeywords.some(keyword =>
         detectedContextText.includes(keyword.toLowerCase()),
