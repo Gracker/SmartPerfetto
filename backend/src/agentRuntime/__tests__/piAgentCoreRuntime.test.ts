@@ -782,6 +782,31 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(providerRuntimeLoader).toHaveBeenCalledTimes(1);
   });
 
+  it('passes the active code-aware mode and selected codebases into the Pi quick prompt', async () => {
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: jest.fn(loadFakePiProviderRuntime),
+      },
+    );
+
+    await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', {
+      analysisMode: 'fast',
+      assistantSurface: 'conversation',
+      conversationTraceAttached: true,
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['cb-pi-quick'],
+    });
+
+    const agent = FakePiAgent.instances[FakePiAgent.instances.length - 1]!;
+    expect(agent.state.systemPrompt).toContain('cb-pi-quick');
+    expect(agent.state.systemPrompt).toContain('provider_send');
+    expect(agent.state.systemPrompt).toContain('源码使用决策契约');
+  });
+
   it('reuses one provider/Models runtime across turns and replaces it after reset', async () => {
     const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
     const runtime = new PiAgentCoreRuntime(

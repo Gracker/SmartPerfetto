@@ -974,6 +974,42 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     }));
   });
 
+  it('passes the active code-aware mode and selected codebases into the Claude quick prompt', async () => {
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: [], rows: []}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'quick-source-sdk-session',
+        num_turns: 1,
+        result: 'done',
+      };
+    });
+
+    await runtime.analyze(
+      '快速结合源码定位候选机制',
+      'session-claude-source-quick',
+      'trace-claude-source-quick',
+      {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: true,
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['cb-claude-quick'],
+      },
+    );
+
+    const call = claudeSdkMock.__getQueryCalls()[0];
+    expect(JSON.stringify(call.options.systemPrompt)).toContain('cb-claude-quick');
+    expect(JSON.stringify(call.options.systemPrompt)).toContain('metadata_only');
+    expect(JSON.stringify(call.options.systemPrompt)).toContain('源码使用决策契约');
+  });
+
   it('does not run trace preflight for a no-trace conversation turn', async () => {
     const traceProcessor = {
       query: jest.fn(async () => {

@@ -912,7 +912,7 @@ describe('createClaudeMcpServer', () => {
       expect(sdkDescriptions).toEqual(runtimeDescriptions);
       expect(totalChars).toBeLessThanOrEqual(13_000);
       for (const description of runtimeDescriptions) {
-        expect(description.length).toBeLessThanOrEqual(1100);
+        expect(description.length).toBeLessThanOrEqual(1000);
         expect(description).not.toMatch(/\n\nExamples:/);
       }
       expect(runtimeDescriptions.join('\n')).toContain('SQL safety rules');
@@ -928,6 +928,35 @@ describe('createClaudeMcpServer', () => {
       expect(descriptionByName.get('execute_sql')).toContain('batch_frame_root_cause');
       expect(descriptionByName.get('execute_sql')).toContain('use fetch_artifact');
       expect(descriptionByName.get('resolve_hypothesis')).toContain('exact immutable statement');
+      const sourceDecisionDescription = descriptionByName.get('record_source_use_decision') ?? '';
+      expect(sourceDecisionDescription).toContain('untrusted data');
+      expect(sourceDecisionDescription).toContain('no echo');
+      expect(sourceDecisionDescription).toContain('code/secret/root');
+      expect(sourceDecisionDescription).toContain('metadata_only');
+      expect(sourceDecisionDescription).toContain('locate-only');
+      expect(sourceDecisionDescription).toContain('provider_send');
+      expect(sourceDecisionDescription).toContain('bounded body');
+      expect(sourceDecisionDescription).toContain('pre-lookup only');
+      expect(sourceDecisionDescription).toContain('allowed terminal stop status');
+      expect(sourceDecisionDescription).toContain('reason>=30');
+      expect(sourceDecisionDescription).toContain('later/contradictory=reject');
+      expect(sourceDecisionDescription.length).toBeLessThanOrEqual(240);
+      const sourceStopStates = [
+        'not_needed',
+        'disallowed',
+        'no_queryable_anchor',
+        'ambiguous_candidates',
+        'not_found_complete',
+        'search_incomplete',
+        'unverified',
+      ];
+      const sourceDecisionDefinition = toolDefinitions
+        .find(definition => definition.name === 'record_source_use_decision');
+      expect((sourceDecisionDefinition?.shared.inputSchema.status as any).options)
+        .toEqual(sourceStopStates);
+      expect(((tools.get('record_source_use_decision') as any).inputSchema.status as any).options)
+        .toEqual(sourceStopStates);
+      expect(sourceDecisionDescription.trim().length).toBeGreaterThan(100);
       expect(descriptionByName.get('resolve_hypothesis')).toContain('submit a new hypothesis');
     });
 

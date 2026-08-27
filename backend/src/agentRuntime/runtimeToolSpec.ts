@@ -48,7 +48,7 @@ export interface ClaudeSdkToolLike {
   handler: (args: Record<string, unknown>, extra: RuntimeToolExtra) => Promise<RuntimeToolResult>;
 }
 
-export const RUNTIME_TOOL_DESCRIPTION_MAX_CHARS = 1100;
+export const RUNTIME_TOOL_DESCRIPTION_MAX_CHARS = 1000;
 
 function normalizeRuntimeToolDescription(description: string): string {
   return description
@@ -106,17 +106,45 @@ function splitSentences(value: string): string[] {
 function truncateAtSentence(value: string, maxChars: number): string {
   if (value.length <= maxChars) return value;
   const sentences = splitSentences(value);
-  let output = '';
-  for (const sentence of sentences) {
-    const normalized = sentence.trim();
-    if (!normalized) continue;
-    const candidate = output ? `${output} ${normalized}` : normalized;
-    if (candidate.length > maxChars) break;
-    output = candidate;
+  if (sentences.length >= 2) {
+    const omission = ' … ';
+    const head = [sentences[0]];
+    const tail = [sentences[sentences.length - 1]];
+    let left = 1;
+    let right = sentences.length - 2;
+    const render = () => [
+      head.join(' '),
+      ...(left <= right ? [omission.trim()] : []),
+      tail.join(' '),
+    ].filter(Boolean).join(' ');
+
+    if (render().length <= maxChars) {
+      while (left <= right) {
+        let progressed = false;
+        const nextHead = sentences[left];
+        head.push(nextHead);
+        if (render().length <= maxChars) {
+          left++;
+          progressed = true;
+        } else {
+          head.pop();
+        }
+        if (left <= right) {
+          const nextTail = sentences[right];
+          tail.unshift(nextTail);
+          if (render().length <= maxChars) {
+            right--;
+            progressed = true;
+          } else {
+            tail.shift();
+          }
+        }
+        if (!progressed) break;
+      }
+      return render();
+    }
   }
-  return output.length >= Math.min(90, Math.floor(maxChars * 0.4))
-    ? output
-    : truncateAtWord(value, maxChars);
+  return truncateAtWord(value, maxChars);
 }
 
 function compactToolDescriptionParagraph(paragraph: string, maxChars: number): string {
@@ -129,7 +157,7 @@ function isImportantToolDescriptionParagraph(paragraph: string): boolean {
 
 function paragraphBudget(paragraph: string, index: number): number {
   if (index === 0) return 240;
-  if (/^SQL safety rules:/i.test(paragraph)) return 360;
+  if (/^SQL safety rules:/i.test(paragraph)) return 500;
   if (/^Don't use when:/i.test(paragraph)) return 220;
   if (/^Use when:/i.test(paragraph)) return 190;
   return 170;

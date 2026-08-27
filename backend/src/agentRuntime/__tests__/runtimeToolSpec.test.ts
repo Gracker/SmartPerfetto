@@ -5,6 +5,8 @@
 import { describe, expect, it, jest } from '@jest/globals';
 import { z } from 'zod';
 import {
+  RUNTIME_TOOL_DESCRIPTION_MAX_CHARS,
+  compactRuntimeToolDescription,
   createClaudeSdkToolFromSharedSpec,
   createJsonSchemaFromZodRawShape,
   normalizeRuntimeToolArgs,
@@ -29,6 +31,84 @@ function sdkTool(name: string) {
 }
 
 describe('SharedToolSpec', () => {
+  it('caps every provider-facing tool description at 1000 characters', () => {
+    const description = `Use when: ${'bounded runtime contract '.repeat(60)}`;
+    const compacted = compactRuntimeToolDescription(description);
+
+    expect(RUNTIME_TOOL_DESCRIPTION_MAX_CHARS).toBe(1000);
+    expect(compacted.length).toBeLessThanOrEqual(1000);
+    expect(compacted).toContain('Use when:');
+  });
+
+  it('keeps complete head and tail sentences while dropping an oversized important middle', () => {
+    const description = [
+      'Use when: The first complete sentence establishes the contract.',
+      ...Array.from({length: 12}, (_, index) => (
+        `Middle sentence ${index} carries deliberately repetitive detail that can be omitted safely.`
+      )),
+      'The final complete sentence preserves the terminal safety boundary.',
+    ].join(' ');
+
+    const compacted = compactRuntimeToolDescription(description);
+
+    expect(compacted.length).toBeLessThanOrEqual(RUNTIME_TOOL_DESCRIPTION_MAX_CHARS);
+    expect(compacted).toContain('Use when: The first complete sentence establishes the contract.');
+    expect(compacted).toContain('The final complete sentence preserves the terminal safety boundary.');
+    expect(compacted).not.toContain('Middle sentence 6');
+  });
+
+  it('keeps short descriptions byte-identical', () => {
+    const description = 'Short description with two sentences. Nothing needs compaction.';
+    expect(compactRuntimeToolDescription(description)).toBe(description);
+  });
+
+  it('does not split an identifier dot while preserving head and tail sentences', () => {
+    const description = [
+      'Use when: Read actual_frame_timeline_slice.upid before joining process.',
+      ...Array.from({length: 14}, (_, index) => (
+        `Middle identifier detail ${index} is intentionally repetitive and removable.`
+      )),
+      'The final sentence remains complete after compaction.',
+    ].join(' ');
+
+    const compacted = compactRuntimeToolDescription(description);
+
+    expect(compacted).toContain('actual_frame_timeline_slice.upid');
+    expect(compacted).toContain('The final sentence remains complete after compaction.');
+    expect(compacted).not.toContain('actual_frame_timeline_slice. upid');
+  });
+
+  it('keeps SQL safety head and tail sentences within its 500-character category budget', () => {
+    const sqlSafetyParagraph = [
+      'SQL safety rules: use s.name AS slice_name and qualified aliases so every joined column keeps an explicit owner.',
+      'FrameTimeline rows expose upid and require a process join before process_name can be treated as verified identity.',
+      ...Array.from({length: 6}, (_, index) => (
+        `Middle self-time detail ${index} is deliberately repetitive and removable under pressure.`
+      )),
+      'The main-thread column is is_main_thread and must remain explicit in the compact contract.',
+      'Use fetch_artifact for batch_frame_root_cause rows because skill artifacts are never SQL tables.',
+    ].join(' ');
+    const description = [
+      `Run SQL safely. ${'Introductory detail remains bounded. '.repeat(12)}`,
+      sqlSafetyParagraph,
+      `Additional paragraph. ${'Low priority context. '.repeat(30)}`,
+    ].join('\n\n');
+
+    const compacted = compactRuntimeToolDescription(description);
+    const sqlParagraph = compacted
+      .split('\n')
+      .find(paragraph => paragraph.startsWith('SQL safety rules:')) ?? '';
+
+    expect(sqlParagraph.length).toBeLessThanOrEqual(500);
+    expect(sqlParagraph).toContain('s.name AS slice_name');
+    expect(sqlParagraph).toContain('FrameTimeline rows expose upid');
+    expect(sqlParagraph).toContain('is_main_thread');
+    expect(sqlParagraph).toContain('batch_frame_root_cause');
+    expect(sqlParagraph).toContain('…');
+    expect(sqlParagraph).not.toContain('Middle self-time detail 3');
+    expect(sqlParagraph.indexOf('FrameTimeline')).toBeLessThan(sqlParagraph.indexOf('is_main_thread'));
+  });
+
   it('builds a shared tool body from the existing Claude SDK descriptor shape', async () => {
     const existing = sdkTool('invoke_skill');
     const shared = sharedToolSpecFromClaudeSdkTool(

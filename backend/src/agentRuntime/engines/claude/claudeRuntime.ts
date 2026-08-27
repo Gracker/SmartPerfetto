@@ -3266,6 +3266,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         ),
         quickMemoryContext,
         outputLanguage: outputLanguage,
+        codeAwareMode: options.codeAwareMode,
+        codebaseIds: options.codebaseIds,
       });
       const quickConversationContext = buildQuickConversationContext(previousTurns, outputLanguage);
 
@@ -4146,7 +4148,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 8: MCP server with all session-scoped state
     // P2-G1: Destructure to get both server and auto-derived allowedTools
     const fullNotesBudget = createRuntimeSkillNotesBudget(false);
-    const { server: mcpServer, allowedTools } = createClaudeMcpServer({
+    const { server: mcpServer, allowedTools, toolDefinitions } = createClaudeMcpServer({
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
         : undefined,
@@ -4204,6 +4206,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         architecture,
         packageName: effectivePackageName,
         allowedTools,
+        toolDefinitions,
+        codeAwareMode: options.codeAwareMode,
+        codebaseIds: options.codebaseIds,
+        outputLanguage: runtimeConfig.outputLanguage,
         subAgentModel: runtimeConfig.subAgentModel,
       });
     }

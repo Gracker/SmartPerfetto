@@ -17,7 +17,14 @@
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { SceneType } from '../../../agentv3/sceneClassifier';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
-import { MCP_NAME_PREFIX } from '../../../agentv3/claudeMcpServer';
+import type {OutputLanguage} from '../../../agentv3/outputLanguage';
+import {
+  MCP_NAME_PREFIX,
+  resolveMcpToolPlanCapability,
+  type McpToolDefinition,
+} from '../../../agentv3/mcpToolRegistry';
+import type {CodeAwareMode} from '../../../services/codebase/codeAwareFeature';
+import {loadSourceUseDecisionPrompt} from '../../../services/codebase/sourceUseDecision';
 
 /** Tools that are orchestrator-only — sub-agents collect evidence, not plan/hypothesize.
  * These are excluded when deriving sub-agent tools from the full allowedTools list. */
@@ -40,9 +47,20 @@ const ORCHESTRATOR_ONLY_TOOLS = new Set([
  * This ensures adding a new MCP tool automatically propagates to sub-agents
  * unless it is explicitly listed in ORCHESTRATOR_ONLY_TOOLS.
  */
-function deriveSubAgentTools(allowedTools: string[]): string[] {
+function deriveSubAgentTools(
+  allowedTools: string[],
+  toolDefinitions: readonly Pick<McpToolDefinition, 'name' | 'exposure' | 'planCapability'>[],
+  sourceContractAvailable: boolean,
+): string[] {
+  const definitions = new Map(toolDefinitions.map(definition => [definition.name, definition]));
   return allowedTools.filter(t => {
     const shortName = t.replace(MCP_NAME_PREFIX, '');
+    const definition = definitions.get(shortName);
+    if (!definition) return false;
+    if (resolveMcpToolPlanCapability(definition) === 'control') return false;
+    if (definition.exposure === 'requires_codebase_permission' && !sourceContractAvailable) {
+      return false;
+    }
     return !ORCHESTRATOR_ONLY_TOOLS.has(shortName);
   });
 }
@@ -53,6 +71,11 @@ export interface SubAgentContext {
   packageName?: string;
   /** Full allowedTools from createClaudeMcpServer — sub-agent tools are derived from this. */
   allowedTools?: string[];
+  /** Request-shaped registry definitions paired with allowedTools. */
+  toolDefinitions?: readonly Pick<McpToolDefinition, 'name' | 'exposure' | 'planCapability'>[];
+  codeAwareMode?: CodeAwareMode;
+  codebaseIds?: string[];
+  outputLanguage?: OutputLanguage;
   /** Override sub-agent model shorthand. Defaults to 'sonnet'.
    *  Accepted values: 'haiku' | 'sonnet' | 'opus' | 'inherit' (inherit from orchestrator).
    *  When using a third-party proxy, the proxy maps these shorthands to actual model names. */
@@ -222,9 +245,16 @@ export function buildAgentDefinitions(
   sceneType: SceneType,
   ctx?: SubAgentContext,
 ): Record<string, AgentDefinition> {
+  const sourceContract = loadSourceUseDecisionPrompt({
+    codeAwareMode: ctx?.codeAwareMode,
+    codebaseIds: ctx?.codebaseIds,
+    outputLanguage: ctx?.outputLanguage,
+  });
   // Auto-derive sub-agent tools from orchestrator's allowedTools, excluding orchestrator-only tools.
-  // Falls back to empty array if allowedTools not provided (sub-agents will have no tools — safe failure).
-  const subAgentTools = ctx?.allowedTools ? deriveSubAgentTools(ctx.allowedTools) : [];
+  // Missing registry metadata falls back to no tools so control/source capabilities fail closed.
+  const subAgentTools = ctx?.allowedTools && ctx.toolDefinitions
+    ? deriveSubAgentTools(ctx.allowedTools, ctx.toolDefinitions, Boolean(sourceContract))
+    : [];
   const agents: Record<string, AgentDefinition> = {};
 
   switch (sceneType) {
@@ -250,6 +280,12 @@ export function buildAgentDefinitions(
       agents['frame-expert'] = buildFrameExpert(subAgentTools, ctx);
       agents['system-expert'] = buildSystemExpert(subAgentTools, ctx);
       break;
+  }
+
+  if (sourceContract) {
+    for (const agent of Object.values(agents)) {
+      agent.prompt = `${agent.prompt}\n\n${sourceContract}`;
+    }
   }
 
   return agents;

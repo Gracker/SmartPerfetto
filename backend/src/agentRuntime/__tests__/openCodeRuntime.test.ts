@@ -2007,6 +2007,38 @@ describe('experimental OpenCode runtime contract', () => {
     ]));
   });
 
+  it('passes the active code-aware mode and selected codebases into the OpenCode quick prompt', async () => {
+    const record: {createOptions?: Record<string, unknown>; promptInput?: unknown; closeCount: number} = {
+      closeCount: 0,
+    };
+    const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+      selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+    }), {
+      env: {
+        SMARTPERFETTO_OPENCODE_MODEL_JSON: '{"providerID":"smartperfetto","modelID":"test-model"}',
+      },
+      moduleLoader: createFakeModuleLoader(record),
+    });
+
+    await runtime.analyze(
+      '快速结合源码定位候选机制',
+      'session-opencode-source-quick',
+      'trace-opencode',
+      {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: true,
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['cb-opencode-quick'],
+      },
+    );
+
+    const prompt = record.promptInput as {body?: {system?: string}} | undefined;
+    expect(prompt?.body?.system).toContain('cb-opencode-quick');
+    expect(prompt?.body?.system).toContain('metadata_only');
+    expect(prompt?.body?.system).toContain('源码使用决策契约');
+  });
+
   it('keeps private source sessions out of durable OpenCode state and removes temporary files', async () => {
     await withBackendDataDir(async dataDir => {
       const paths: {home?: string; config?: string; project?: string; env?: NodeJS.ProcessEnv} = {};

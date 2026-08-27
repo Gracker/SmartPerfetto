@@ -5,6 +5,9 @@
 import {createHash} from 'crypto';
 import * as path from 'path';
 
+import {DEFAULT_OUTPUT_LANGUAGE, type OutputLanguage} from '../../agentv3/outputLanguage';
+import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
+import type {CodeAwareMode} from './codeAwareFeature';
 import type {CodebaseKind} from './codebaseRegistry';
 import {sourceExtensionsForKind} from './sourceSelectionPolicy';
 
@@ -67,6 +70,85 @@ export interface SourceClaimBindingV1 {
 
 export const MAX_SOURCE_REFERENCE_COUNT = 100;
 export const MAX_SOURCE_REFERENCE_PATH_LENGTH = 512;
+
+const SOURCE_USE_TOOL_DESCRIPTION_START = '<!-- tool-description:start -->';
+const SOURCE_USE_TOOL_DESCRIPTION_END = '<!-- tool-description:end -->';
+const SOURCE_USE_TOOL_DESCRIPTION_MAX_CHARS = 240;
+
+interface RenderedSourceUseDecisionAsset {
+  prompt: string;
+  toolDescription: string;
+}
+
+function renderSourceUseDecisionAsset(input: {
+  codeAwareMode: Exclude<CodeAwareMode, 'off'>;
+  codebaseIds: readonly string[];
+  outputLanguage: OutputLanguage;
+}): RenderedSourceUseDecisionAsset {
+  const templateName = input.outputLanguage === 'en'
+    ? 'prompt-source-use-decision-en'
+    : 'prompt-source-use-decision-zh';
+  const template = loadPromptTemplate(templateName);
+  if (!template?.trim()) {
+    throw new Error(`Missing required source-use decision prompt template: ${templateName}`);
+  }
+  const rendered = renderTemplate(template, {
+    codeAwareMode: input.codeAwareMode,
+    codebaseIds: input.codebaseIds.join(', '),
+  });
+  const startCount = rendered.split(SOURCE_USE_TOOL_DESCRIPTION_START).length - 1;
+  const endCount = rendered.split(SOURCE_USE_TOOL_DESCRIPTION_END).length - 1;
+  if (startCount !== 1 || endCount !== 1) {
+    throw new Error(`Invalid source-use tool-description markers: ${templateName}`);
+  }
+  const descriptionStart = rendered.indexOf(SOURCE_USE_TOOL_DESCRIPTION_START);
+  const descriptionEnd = rendered.indexOf(SOURCE_USE_TOOL_DESCRIPTION_END);
+  if (descriptionEnd <= descriptionStart) {
+    throw new Error(`Invalid source-use tool-description marker order: ${templateName}`);
+  }
+  const toolDescription = rendered
+    .slice(descriptionStart + SOURCE_USE_TOOL_DESCRIPTION_START.length, descriptionEnd)
+    .trim();
+  if (!toolDescription || toolDescription.length > SOURCE_USE_TOOL_DESCRIPTION_MAX_CHARS) {
+    throw new Error(`Invalid source-use tool description length: ${templateName}`);
+  }
+  return {
+    toolDescription,
+    prompt: `${toolDescription}\n\n${rendered
+      .slice(descriptionEnd + SOURCE_USE_TOOL_DESCRIPTION_END.length)
+      .trim()}`.trim(),
+  };
+}
+
+export function loadSourceUseDecisionPrompt(input: {
+  codeAwareMode?: CodeAwareMode;
+  codebaseIds?: readonly string[];
+  outputLanguage?: OutputLanguage;
+}): string | undefined {
+  if (!input.codeAwareMode || input.codeAwareMode === 'off' || !input.codebaseIds?.length) {
+    return undefined;
+  }
+  return renderSourceUseDecisionAsset({
+    codeAwareMode: input.codeAwareMode,
+    codebaseIds: input.codebaseIds,
+    outputLanguage: input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
+  }).prompt;
+}
+
+export function loadSourceUseDecisionToolDescription(input: {
+  codeAwareMode?: CodeAwareMode;
+  codebaseIds?: readonly string[];
+  outputLanguage?: OutputLanguage;
+}): string | undefined {
+  if (!input.codeAwareMode || input.codeAwareMode === 'off' || !input.codebaseIds?.length) {
+    return undefined;
+  }
+  return renderSourceUseDecisionAsset({
+    codeAwareMode: input.codeAwareMode,
+    codebaseIds: input.codebaseIds,
+    outputLanguage: input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
+  }).toolDescription;
+}
 
 const MAX_SOURCE_IDENTIFIER_LENGTH = 160;
 const MAX_SOURCE_REFERENCE_ID_LENGTH = 256;

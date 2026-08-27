@@ -2461,6 +2461,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           ),
           quickMemoryContext,
           outputLanguage: config.outputLanguage,
+          codeAwareMode: options.codeAwareMode,
+          codebaseIds: options.codebaseIds,
         })
       : buildSystemPrompt({
           query,

@@ -259,6 +259,45 @@ function createTraceProcessorForOpenAiPrepareTest(): TraceProcessorForOpenAiTest
   } as unknown as TraceProcessorForOpenAiTest;
 }
 
+describe('OpenAIRuntime source-aware quick prompt wiring', () => {
+  it('passes the active code-aware mode and selected codebases into the quick prompt', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    jest.spyOn(runtime, 'detectArchitecture')
+      .mockResolvedValue({type: 'STANDARD', confidence: 0.9, evidence: []});
+    jest.spyOn(runtime, 'detectVendor').mockResolvedValue(null);
+    const sessionContext = createSessionContextForOpenAiPrepareTest();
+
+    const context = await runtime.prepareAnalysisContext(
+      '快速结合源码定位候选机制',
+      's-openai-source-quick',
+      'trace-openai-source-quick',
+      {
+        analysisMode: 'fast',
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['cb-openai-quick'],
+      },
+      {
+        config: createOpenAiConfigForTest(),
+        sceneType: 'general',
+        lightweight: true,
+        analysisRunSpec: createOpenAiAnalysisRunSpecForTest({
+          query: '快速结合源码定位候选机制',
+          sessionId: 's-openai-source-quick',
+          traceId: 'trace-openai-source-quick',
+          analysisMode: 'fast',
+        }),
+        sessionContext,
+        previousTurns: [],
+        skipQuickTracePreflightDetection: false,
+      },
+    );
+
+    expect(context.systemPrompt).toContain('cb-openai-quick');
+    expect(context.systemPrompt).toContain('metadata_only');
+    expect(context.systemPrompt).toContain('源码使用决策契约');
+  });
+});
+
 describe('OpenAIRuntime analysis cancellation scope', () => {
   it('aborts every provider request linked to the active analysis', () => {
     const scope = new __testing.RuntimeAnalysisAbortScope();

@@ -3,4 +3,6 @@
 
 ### CodeRef Location Contract
 
-If `search_codebase`, `read_codebase_file`, `lookup_app_source`, `lookup_aosp_source`, `lookup_kernel_source`, or `lookup_oem_sdk` successfully returns source CodeRefs, the final report must preserve at least one locatable reference, preferably `relative/path/File.kt:L10-L20`; a structured form containing both `filePath` and `lineRange` is also valid. A filename alone is insufficient. Cite only relative paths and line ranges actually returned by the tool. If `lineRange` is unavailable, state that the line number is unavailable and preserve `referenceId` or `chunkId` together with `filePath`; never invent line numbers. Source references explain candidate mechanisms and never replace evidence from the current trace.
+When `search_codebase`, `read_codebase_file`, or `lookup_*_source` successfully returns source CodeRefs, preserve at least one actual location, preferably `relative/path/File.kt:L10-L20`; a filename alone is insufficient. Without `lineRange`, state that line numbers are unavailable and keep `referenceId`/`chunkId` plus `filePath`; never invent lines.
+
+Trace evidence proves occurrence; source evidence explains implementation mechanism. Source claims cite returned CodeRefs; occurrence claims also cite current Trace/Skill/SQL evidence. Source location alone remains candidate/compatible/unverified, not a confirmed root cause.

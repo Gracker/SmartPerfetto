@@ -526,6 +526,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           focusMethod: focusAppMethod,
           selectionContext: options?.selectionContext,
           outputLanguage,
+          codeAwareMode: options?.codeAwareMode,
+          codebaseIds: options?.codebaseIds,
         })
       : buildSystemPrompt(analysisContext);
 

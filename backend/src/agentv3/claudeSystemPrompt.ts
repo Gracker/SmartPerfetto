@@ -23,6 +23,7 @@ import {
   renderTemplate,
 } from './strategyLoader';
 import {loadCodeReferenceContractPrompt} from '../services/codebase/codeReferenceContract';
+import {loadSourceUseDecisionPrompt} from '../services/codebase/sourceUseDecision';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import {
   QUICK_TRIAGE_MAX_CHINESE_CHARS,
@@ -729,6 +730,12 @@ export function buildSystemPromptParts(
         codebaseIds: context.codebaseIds.join(', '),
       }), false, { truncatable: true });
     }
+    const sourceUseDecision = loadSourceUseDecisionPrompt({
+      codeAwareMode: context.codeAwareMode,
+      codebaseIds: context.codebaseIds,
+      outputLanguage,
+    });
+    if (sourceUseDecision) push(3, 'source_use_decision', sourceUseDecision);
     push(3, 'code_reference_contract', loadCodeReferenceContractPrompt(outputLanguage));
   }
 
@@ -987,6 +994,8 @@ export function buildQuickSystemPrompt(opts: {
   runtimeEvidenceContext?: string;
   quickMemoryContext?: string;
   outputLanguage?: OutputLanguage;
+  codeAwareMode?: ClaudeAnalysisContext['codeAwareMode'];
+  codebaseIds?: string[];
 }): string {
   const template = loadPromptTemplate('prompt-quick');
   if (!template) {
@@ -1007,7 +1016,7 @@ export function buildQuickSystemPrompt(opts: {
     ? buildSelectionContextSection(opts.selectionContext)
     : '';
 
-  return renderTemplate(template, {
+  const prompt = renderTemplate(template, {
     outputLanguageSection,
     architectureContext,
     focusAppContext,
@@ -1018,4 +1027,15 @@ export function buildQuickSystemPrompt(opts: {
     quickTriageMaxFactBullets: QUICK_TRIAGE_MAX_FACT_BULLETS,
     quickTriageMaxClaims: QUICK_TRIAGE_MAX_CLAIMS,
   });
+  const sourceUseDecision = loadSourceUseDecisionPrompt({
+    codeAwareMode: opts.codeAwareMode,
+    codebaseIds: opts.codebaseIds,
+    outputLanguage: opts.outputLanguage,
+  });
+  if (!sourceUseDecision) return prompt;
+  return [
+    prompt,
+    sourceUseDecision,
+    loadCodeReferenceContractPrompt(opts.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE),
+  ].join('\n\n');
 }

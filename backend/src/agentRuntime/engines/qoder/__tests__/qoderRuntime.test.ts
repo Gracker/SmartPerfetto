@@ -458,6 +458,25 @@ describe('QoderRuntime', () => {
       expect(callArgs.hypotheses).toBeUndefined();
       expect(callArgs.uncertaintyFlags).toBeUndefined();
     });
+
+    it('passes the active code-aware mode and selected codebases into the Qoder quick prompt', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', result: 'done'},
+      ]));
+
+      await createRuntime().analyze('quick source lookup', 'session-1', 'trace-1', {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: true,
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['cb-qoder-quick'],
+      });
+
+      const callArgs = mockQuery.mock.calls[0][0] as any;
+      expect(callArgs.options.systemPrompt).toContain('cb-qoder-quick');
+      expect(callArgs.options.systemPrompt).toContain('provider_send');
+      expect(callArgs.options.systemPrompt).toContain('源码使用决策契约');
+    });
   });
 
   describe('result handling', () => {

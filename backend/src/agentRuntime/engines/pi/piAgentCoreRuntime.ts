@@ -2281,6 +2281,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           selectionContext: options.selectionContext,
           quickMemoryContext,
           outputLanguage,
+          codeAwareMode: options.codeAwareMode,
+          codebaseIds: options.codebaseIds,
         }),
         prompt,
         tools,

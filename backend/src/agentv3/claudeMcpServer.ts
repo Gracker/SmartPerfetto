@@ -182,6 +182,7 @@ import {PatchProposer} from '../services/codebase/patchProposer';
 import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import {
   SOURCE_USE_DECISION_SCHEMA_VERSION,
+  loadSourceUseDecisionToolDescription,
   sanitizeSourceIncompleteReason,
   sanitizeSourceReferences,
   sanitizeSourceUseDecision,
@@ -5006,9 +5007,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     {annotations: {readOnlyHint: true}},
   );
 
+  const recordSourceUseDecisionDescription = loadSourceUseDecisionToolDescription({
+    codeAwareMode,
+    codebaseIds,
+    outputLanguage,
+  });
+  if (sourceUseDecision && !recordSourceUseDecisionDescription) {
+    throw new Error('Missing required source-use decision prompt template');
+  }
   const recordSourceUseDecision = tool(
     'record_source_use_decision',
-    '',
+    recordSourceUseDecisionDescription ?? '',
     {
       status: z.enum([
         'not_needed',

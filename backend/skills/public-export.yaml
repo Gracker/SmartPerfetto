@@ -1431,6 +1431,12 @@ strategies:
   backend/strategies/prompt-code-reference-contract-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto source lookup tools and codebase-aware report orchestration
+  backend/strategies/prompt-source-use-decision-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
+  backend/strategies/prompt-source-use-decision-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
   backend/strategies/prompt-final-report-correction-system-en.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
