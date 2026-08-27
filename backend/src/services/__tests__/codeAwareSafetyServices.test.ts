@@ -23,6 +23,7 @@ import {
   clearAllCodeAwareOutputGuards,
   createCodeAwareStreamingTextProjection,
   registerCodeAwareCanary,
+  registerOnDemandSourceLookupForEcho,
   registerPrivateAnalysisQueryForEcho,
   sanitizeCodeAwareText,
 } from '../security/codeAwareOutputRegistry';
@@ -516,6 +517,36 @@ describe('filterRagLookup', () => {
       license: expect.anything(),
       attribution: expect.anything(),
     }));
+  });
+});
+
+describe('registerOnDemandSourceLookupForEcho', () => {
+  it('replaces provider-sent on-demand source text with its relative reference', () => {
+    const sourceBody = 'const ON_DEMAND_OUTPUT_GUARD_CANARY = true;';
+
+    registerOnDemandSourceLookupForEcho('session-on-demand-output', [
+      {
+        referenceId: 'source-on-demand-1',
+        codebaseId: 'cb-on-demand',
+        filePath: 'src/SourceGuard.kt',
+        lineRange: {start: 4, end: 4},
+        symbol: 'shouldNotBeUsedForOnDemandReplacement',
+        text: sourceBody,
+      },
+      {
+        referenceId: 'source-without-text',
+        codebaseId: 'cb-on-demand',
+        filePath: 'src/SourceGuard.kt',
+      },
+    ]);
+
+    const projected = sanitizeCodeAwareText(
+      'session-on-demand-output',
+      `Model echoed: ${sourceBody}`,
+    );
+
+    expect(projected).not.toContain('ON_DEMAND_OUTPUT_GUARD_CANARY');
+    expect(projected).toContain('[Code: source-on-demand-1 @ src/SourceGuard.kt:4-4]');
   });
 });
 

@@ -180,6 +180,7 @@ import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../services/codebase/patchProposer';
 import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import {OnDemandSourceAccessService} from '../services/codebase/onDemandSourceAccess';
+import {registerOnDemandSourceLookupForEcho} from '../services/security/codeAwareOutputRegistry';
 import {
   GitNexusCodeGraphNavigator,
   type CodeGraphNavigator,
@@ -4845,6 +4846,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           }))}],
         };
       }
+      if (result.success && codeAwareMode === 'provider_send') {
+        registerOnDemandSourceLookupForEcho(options.sessionId, result.matches);
+      }
       await recordOnDemandSourceLookup({
         toolName: 'search_codebase',
         codebaseId,
@@ -4908,6 +4912,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             unsupportedReason: 'budget_exceeded',
           }))}],
         };
+      }
+      if (result.success && codeAwareMode === 'provider_send' && result.reference) {
+        registerOnDemandSourceLookupForEcho(options.sessionId, [result.reference]);
       }
       await recordOnDemandSourceLookup({
         toolName: 'read_codebase_file',

@@ -229,6 +229,40 @@ export function registerCodeAwareLookupForEcho(sessionId: string | undefined, re
   }
 }
 
+export interface OnDemandEchoReference {
+  referenceId: string;
+  codebaseId: string;
+  filePath: string;
+  lineRange?: {start: number; end: number};
+  symbol?: string;
+  text?: string;
+}
+
+/**
+ * Registers provider-sent source returned by bounded on-demand tools. These
+ * references do not have RAG chunk ids, so use their stable reference ids for
+ * a relative CodeRef replacement instead of retaining source text in output.
+ */
+export function registerOnDemandSourceLookupForEcho(
+  sessionId: string | undefined,
+  references: readonly OnDemandEchoReference[],
+): void {
+  if (!sessionId) return;
+  for (const reference of references) {
+    if (!reference.text?.trim()) continue;
+    registerForSession(sessionId, {
+      kind: 'snippet',
+      snippet: reference.text,
+      ref: {
+        chunkId: reference.referenceId,
+        codebaseId: reference.codebaseId,
+        filePath: reference.filePath,
+        ...(reference.lineRange ? {lineRange: reference.lineRange} : {}),
+      },
+    });
+  }
+}
+
 export function registerCodeAwareCanary(sessionId: string | undefined, canary: string): void {
   if (!sessionId || !canary) return;
   registerForSession(sessionId, {kind: 'canary', canary});

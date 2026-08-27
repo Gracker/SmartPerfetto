@@ -26,6 +26,10 @@ import * as path from 'path';
 import type { AnalysisPlanV3, AnalysisNote, Hypothesis, TracePairContext, UncertaintyFlag } from '../types';
 import type { OutputLanguage } from '../outputLanguage';
 import {withEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
+import {
+  clearCodeAwareOutputGuards,
+  sanitizeCodeAwareText,
+} from '../../services/security/codeAwareOutputRegistry';
 
 // ── Mock dependencies ────────────────────────────────────────────────────
 
@@ -299,6 +303,7 @@ function createTestServer(options: {
   knowledgeSourceIds?: string[];
   analysisResultSnapshotRepository?: TraceSimilaritySnapshotRepository;
   knowledgeScope?: { tenantId: string; workspaceId: string; userId?: string };
+  sessionId?: string;
   tracePairContext?: TracePairContext;
   packageName?: string;
   referencePackageName?: string;
@@ -371,6 +376,7 @@ function createTestServer(options: {
     knowledgeSourceIds: options.knowledgeSourceIds,
     analysisResultSnapshotRepository: options.analysisResultSnapshotRepository,
     knowledgeScope: options.knowledgeScope,
+    sessionId: options.sessionId,
     outputLanguage: options.outputLanguage,
     conversationTraceAttached: options.conversationTraceAttached,
     ...(options.lightweight ? { lightweight: true } : { analysisPlan }),
@@ -6327,6 +6333,94 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('on-demand codebase access', () => {
+    it('registers provider-sent search bodies for outbound echo redaction', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-on-demand-search-echo-'));
+      const sessionId = 'on-demand-search-echo';
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        const sourceBody = 'const ON_DEMAND_SEARCH_ECHO_CANARY = true;';
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'SearchGuard.kt'), sourceBody);
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const {tools} = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+          sessionId,
+        });
+
+        const search = await callTool(tools, 'search_codebase', {
+          query: 'ON_DEMAND_SEARCH_ECHO_CANARY',
+        });
+        const reference = search.matches[0];
+        const projected = sanitizeCodeAwareText(sessionId, `Model echoed: ${reference.text}`);
+
+        expect(search).toEqual(expect.objectContaining({success: true}));
+        expect(projected).not.toContain('ON_DEMAND_SEARCH_ECHO_CANARY');
+        expect(projected).toContain(
+          `[Code: ${reference.referenceId} @ src/SearchGuard.kt:1-1]`,
+        );
+      } finally {
+        clearCodeAwareOutputGuards(sessionId);
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('registers provider-sent read bodies for outbound echo redaction', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-on-demand-read-echo-'));
+      const sessionId = 'on-demand-read-echo';
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        const sourceBody = 'const ON_DEMAND_READ_ECHO_CANARY = true;';
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'ReadGuard.kt'), sourceBody);
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const {tools} = createTestServer({
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          knowledgeScope: scope,
+          sessionId,
+        });
+
+        const read = await callTool(tools, 'read_codebase_file', {
+          file_path: 'src/ReadGuard.kt',
+        });
+        const reference = read.reference;
+        const projected = sanitizeCodeAwareText(sessionId, `Model echoed: ${reference.text}`);
+
+        expect(read).toEqual(expect.objectContaining({success: true}));
+        expect(projected).not.toContain('ON_DEMAND_READ_ECHO_CANARY');
+        expect(projected).toContain(
+          `[Code: ${reference.referenceId} @ src/ReadGuard.kt:1-1]`,
+        );
+      } finally {
+        clearCodeAwareOutputGuards(sessionId);
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
     it('searches and reads a selected local source tree without an active index', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-on-demand-source-'));
       try {
