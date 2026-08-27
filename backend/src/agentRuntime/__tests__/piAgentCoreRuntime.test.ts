@@ -24,6 +24,12 @@ import {
 } from '../piAgentCoreRuntime';
 import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import * as quickEvidenceDirectAnswer from '../quickEvidenceDirectAnswer';
+import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import {
+  createRuntimeSourceFinalizationFixture,
+  SOURCE_FINALIZATION_CANARY,
+  SOURCE_FINALIZATION_RAW_SOURCE,
+} from './sourceFinalizationFixture';
 
 async function loadFakePiProviderRuntime(
   config: {model: Record<string, unknown>},
@@ -793,7 +799,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       },
     );
 
-    await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', {
+    const result = await runtime.analyze('快速结合源码定位候选机制', 'session-pi-source-quick', 'trace-pi', {
       analysisMode: 'fast',
       assistantSurface: 'conversation',
       conversationTraceAttached: true,
@@ -805,6 +811,68 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(agent.state.systemPrompt).toContain('cb-pi-quick');
     expect(agent.state.systemPrompt).toContain('provider_send');
     expect(agent.state.systemPrompt).toContain('源码使用决策契约');
+    expect(result).toMatchObject({
+      success: false,
+      partial: true,
+      terminationReason: 'plan_incomplete',
+      sourceUseDecision: expect.objectContaining({status: 'pending'}),
+    });
+  });
+
+  it('returns real MCP source refs and does not carry the accessor into a later source-off run', async () => {
+    const sessionId = 'session-pi-source-finalization';
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId,
+    });
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: jest.fn(loadFakePiProviderRuntime),
+      },
+    );
+    const originalPrepare = (runtime as any).prepareAnalysis.bind(runtime);
+    jest.spyOn(runtime as any, 'prepareAnalysis').mockImplementation(async (...args: unknown[]) => {
+      const prepared = await originalPrepare(...args);
+      return args[0] === 'source terminal run'
+        ? {...prepared, sourceUse: fixture.sourceUse}
+        : prepared;
+    });
+    FakePiAgent.promptHandler = (_agent, input) => [{
+      role: 'assistant',
+      content: [{
+        type: 'text',
+        text: input.includes('source terminal run')
+          ? SOURCE_FINALIZATION_RAW_SOURCE
+          : 'public second run',
+      }],
+    }];
+    try {
+      const {decision} = await fixture.executeProviderSourceLookup();
+      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-pi', {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: true,
+        codeAwareMode: 'provider_send',
+        codebaseIds: [fixture.codebaseId],
+      });
+      const next = await runtime.analyze('public second run', sessionId, 'trace-pi', {
+        analysisMode: 'fast',
+        codeAwareMode: 'off',
+      });
+
+      expect(terminal.success).toBe(true);
+      expect(terminal.sourceUseDecision).toEqual(decision);
+      expect(terminal.sourceReferences).toEqual(decision.references);
+      expect(JSON.stringify(terminal)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(next.sourceUseDecision).toBeUndefined();
+      expect(next.sourceReferences).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it('reuses one provider/Models runtime across turns and replaces it after reset', async () => {

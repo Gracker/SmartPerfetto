@@ -64,7 +64,7 @@ import {
   sanitizeCodeAwareText,
 } from '../../../services/security/codeAwareOutputRegistry';
 import { analysisContextUsesPrivateKnowledge } from '../../../services/resolvedAnalysisContext';
-import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
+import {finalizeSourceAwareAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
@@ -896,7 +896,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       }
 
       // Apply final result quality gate
-      attachSourceUseToAnalysisResult(result, sourceUse);
+      finalizeSourceAwareAnalysisResult(result, sourceUse);
       applyFinalResultQualityGate({ result, query, sceneType });
 
       if (!privateAnalysisContext) {
@@ -952,7 +952,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
       const isAuthError = /auth|unauthorized|invalid.*token|access.*denied/i.test(errorMessage);
 
-      return {
+      return finalizeSourceAwareAnalysisResult({
         sessionId,
         success: false,
         findings: [],
@@ -975,7 +975,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
               `Authentication failed: ${safeErrorMessage}`,
             )
           : safeErrorMessage,
-      };
+      }, sourceUse);
     } finally {
       this.activeSessions.delete(sessionId);
     }

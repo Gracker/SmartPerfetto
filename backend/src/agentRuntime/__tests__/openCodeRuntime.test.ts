@@ -33,6 +33,12 @@ import type { RuntimeFactoryInput } from '../runtimeRegistry';
 import type { QueryResult, TraceInfo, TraceProcessorService } from '../../services/traceProcessorService';
 import { createTraceProcessorQueryCancelledError } from '../../services/traceProcessorCancellation';
 import * as quickEvidenceDirectAnswer from '../quickEvidenceDirectAnswer';
+import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import {
+  createRuntimeSourceFinalizationFixture,
+  SOURCE_FINALIZATION_CANARY,
+  SOURCE_FINALIZATION_RAW_SOURCE,
+} from './sourceFinalizationFixture';
 
 type FakeTraceProcessorService = TraceProcessorService & {
   query: jest.MockedFunction<(traceId: string, sql: string) => Promise<QueryResult>>;
@@ -189,13 +195,15 @@ function mockOpenCodePreparation(
   sceneType: 'scrolling' | 'startup' | 'anr',
   prompt: string,
   hypotheses: any[] = [],
+  sourceUse?: {getSourceUseDecision(): unknown},
+  quickMode = false,
 ): void {
   jest.spyOn(runtime as any, 'prepareAnalysis').mockResolvedValue({
     systemPrompt: 'SmartPerfetto system prompt',
     prompt,
     toolDefinitions: [],
     allowedToolNames: new Set<string>(),
-    quickMode: false,
+    quickMode,
     sceneType,
     packageName: 'com.example.app',
     sessionContext: {addTurn: jest.fn()},
@@ -204,7 +212,12 @@ function mockOpenCodePreparation(
     notes: [],
     hypotheses,
     uncertaintyFlags: [],
-    analysisRunSpec: {outputLanguage: 'zh-CN'},
+    analysisRunSpec: {
+      outputLanguage: 'zh-CN',
+      traceContext: {datasetCount: 0},
+      mode: {},
+    },
+    ...(sourceUse ? {sourceUse} : {}),
   });
 }
 
@@ -2020,7 +2033,7 @@ describe('experimental OpenCode runtime contract', () => {
       moduleLoader: createFakeModuleLoader(record),
     });
 
-    await runtime.analyze(
+    const result = await runtime.analyze(
       '快速结合源码定位候选机制',
       'session-opencode-source-quick',
       'trace-opencode',
@@ -2037,6 +2050,65 @@ describe('experimental OpenCode runtime contract', () => {
     expect(prompt?.body?.system).toContain('cb-opencode-quick');
     expect(prompt?.body?.system).toContain('metadata_only');
     expect(prompt?.body?.system).toContain('源码使用决策契约');
+    expect(result).toMatchObject({
+      success: false,
+      partial: true,
+      terminationReason: 'plan_incomplete',
+      sourceUseDecision: expect.objectContaining({status: 'pending'}),
+    });
+  });
+
+  it('returns real MCP source refs and starts the next OpenCode run without stale source state', async () => {
+    const sessionId = 'session-opencode-source-finalization';
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId,
+    });
+    const promptInputs: unknown[] = [];
+    const close = jest.fn();
+    const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+      selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+    }), {
+      env: {
+        SMARTPERFETTO_OPENCODE_MODEL_JSON:
+          '{"providerID":"smartperfetto","modelID":"test-model"}',
+      },
+      moduleLoader: createOpenCodeReportModuleLoader([
+        openCodeAssistantResponse('source-terminal', `## Final Report\n${SOURCE_FINALIZATION_RAW_SOURCE}`),
+        openCodeAssistantResponse('source-off', '## Final Report\npublic second run'),
+      ], promptInputs, close),
+    });
+    try {
+      const {decision} = await fixture.executeProviderSourceLookup();
+      mockOpenCodePreparation(
+        runtime,
+        null,
+        'startup',
+        'source terminal run',
+        [],
+        fixture.sourceUse,
+        true,
+      );
+      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-opencode', {
+        analysisMode: 'fast',
+        codeAwareMode: 'provider_send',
+        codebaseIds: [fixture.codebaseId],
+      });
+      mockOpenCodePreparation(runtime, null, 'startup', 'public second run', [], undefined, true);
+      const next = await runtime.analyze('public second run', sessionId, 'trace-opencode', {
+        analysisMode: 'fast',
+        codeAwareMode: 'off',
+      });
+
+      expect(terminal.success).toBe(true);
+      expect(terminal.sourceUseDecision).toEqual(decision);
+      expect(terminal.sourceReferences).toEqual(decision.references);
+      expect(JSON.stringify(terminal)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(next.sourceUseDecision).toBeUndefined();
+      expect(next.sourceReferences).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it('keeps private source sessions out of durable OpenCode state and removes temporary files', async () => {

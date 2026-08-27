@@ -173,7 +173,7 @@ import {
   loadCodeReferenceContractPrompt,
 } from '../../../services/codebase/codeReferenceContract';
 import { extractSourceLookupCodeReferences } from '../../../services/codebase/sourceLookupTools';
-import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
+import {finalizeSourceAwareAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import { buildQuickProcessIdentityDirectAnswer } from '../../quickProcessIdentityDirectAnswer';
 import {
   buildQuickProcessIdentityEvidence,
@@ -902,6 +902,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const config = options.outputLanguage
       ? {...resolvedConfig, outputLanguage: options.outputLanguage}
       : resolvedConfig;
+    let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
     const sceneType = classifyScene(query);
     const analysisAbortScope = new RuntimeAnalysisAbortScope();
     const unregisterAnalysisAbortHandle = this.registerAbortHandle(sessionId, analysisAbortScope);
@@ -1051,6 +1052,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         quickProcessIdentityPreEvidence: modeClassification.quickProcessIdentityPreEvidence,
         quickTraceFactPreEvidence: modeClassification.quickTraceFactPreEvidence,
       });
+      sourceUse = context.sourceUse;
       analysisAbortScope.throwIfAborted();
       const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
         query,
@@ -1775,7 +1777,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           }
         }
         analysisAbortScope.throwIfAborted();
-        attachSourceUseToAnalysisResult(result, context.sourceUse);
+        finalizeSourceAwareAnalysisResult(result, context.sourceUse);
         const gateIssue = applyFinalResultQualityGate({
           result,
           query,
@@ -1857,7 +1859,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           });
         } else if (error instanceof MaxTurnsExceededError) {
           const reportedRounds = inferReportedRounds();
-          return this.recordMaxTurnsPartialResult({
+          return finalizeSourceAwareAnalysisResult(this.recordMaxTurnsPartialResult({
             error,
             query,
             sessionId,
@@ -1873,7 +1875,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             frontendPrequeryInjected: analysisRunSpec.traceContext.datasetCount,
             codeAwareMode: options.codeAwareMode,
             knowledgeSourceIds: options.knowledgeSourceIds,
-          });
+          }), sourceUse);
         }
         const reportedRounds = inferReportedRounds();
         const recoverablePartial = this.recoverPartialResultAfterStreamTermination({
@@ -1893,7 +1895,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           knowledgeSourceIds: options.knowledgeSourceIds,
         });
         if (recoverablePartial) {
-          return recoverablePartial;
+          return finalizeSourceAwareAnalysisResult(recoverablePartial, sourceUse);
         }
         throw error;
       }
@@ -1905,7 +1907,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         content: { message: `AI analysis failed: ${message}` },
         timestamp: Date.now(),
       });
-      return {
+      return finalizeSourceAwareAnalysisResult({
         sessionId,
         success: false,
         findings: [],
@@ -1920,7 +1922,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         totalDurationMs: Date.now() - startTime,
         terminationReason: 'execution_error',
         terminationMessage: message,
-      };
+      }, sourceUse);
     } finally {
       unregisterAnalysisAbortHandle();
       this.activeAnalyses.delete(sessionId);

@@ -12,6 +12,12 @@ import { createAnalysisRunSpec } from '../../agentRuntime/analysisRunSpec';
 import type { QueryResult, TraceProcessorService } from '../../services/traceProcessorService';
 import {getSourceLookupCodeReferences} from '../../services/codebase/sourceLookupTools';
 import {assessFinalReportContractCompleteness} from '../../services/finalReportContractGate';
+import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import {
+  createRuntimeSourceFinalizationFixture,
+  SOURCE_FINALIZATION_CANARY,
+  SOURCE_FINALIZATION_RAW_SOURCE,
+} from '../../agentRuntime/__tests__/sourceFinalizationFixture';
 
 afterEach(() => {
   jest.restoreAllMocks();
@@ -130,6 +136,7 @@ type OpenAiPrepareContextForTest = {
 };
 
 type OpenAiRuntimeAnalysisResultForTest = {
+  success?: boolean;
   quickRun?: unknown;
   rounds?: number;
   conclusion?: string;
@@ -139,6 +146,8 @@ type OpenAiRuntimeAnalysisResultForTest = {
   partial?: boolean;
   terminationReason?: string;
   findings?: unknown[];
+  sourceUseDecision?: unknown;
+  sourceReferences?: unknown[];
 };
 
 type OpenAiRuntimeSnapshotForTest = {
@@ -3069,6 +3078,131 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(saveQuick).not.toHaveBeenCalled();
     expect(saveFull).not.toHaveBeenCalled();
     expect(promote).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenAIRuntime source finalization parity', () => {
+  function sdkStream(finalOutput: string, id: string) {
+    return {
+      currentTurn: 1,
+      finalOutput,
+      history: [{role: 'assistant', content: finalOutput}],
+      lastResponseId: id,
+      state: {},
+      completed: Promise.resolve(),
+      async *[Symbol.asyncIterator]() {},
+    };
+  }
+
+  function prepareRuntime(
+    runtime: OpenAiRuntimeTestAccess,
+    sourceUseForQuery: (query: string) => unknown,
+  ): void {
+    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: true,
+      source: 'user_explicit',
+      reason: 'Task 7 source finalization test',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    jest.spyOn(runtime, 'prepareAnalysisContext').mockImplementation(async (query: unknown) => ({
+      tools: [],
+      allowedTools: [],
+      systemPrompt: 'Task 7 system prompt',
+      sessionContext: {
+        addTurn: jest.fn(),
+        updateWorkingMemoryFromConclusion: jest.fn(),
+      },
+      previousTurns: [],
+      architecture: {type: 'Standard', confidence: 1, evidence: []},
+      hypotheses: [],
+      sessionMapKey: 'task7-source-finalization',
+      effectivePackageName: 'com.example.task7',
+      sourceUse: sourceUseForQuery(String(query)),
+    } as any));
+    jest.spyOn(runtime, 'recordPatternMemory').mockImplementation(() => undefined);
+  }
+
+  it('blocks a successful provider result while the real source accessor is pending', async () => {
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId: 'session-openai-pending',
+    });
+    const runtime = createOpenAiRuntimeForTest();
+    try {
+      jest.spyOn(Runner.prototype as any, 'run')
+        .mockResolvedValue(sdkStream('## Final Report\ndone', 'resp-task7-pending'));
+      prepareRuntime(runtime, () => fixture.sourceUse);
+
+      const result = await runtime.analyze(
+        'source pending run',
+        fixture.sessionId,
+        'trace-openai-task7',
+        {
+          analysisMode: 'fast',
+          providerId: null,
+          codeAwareMode: 'provider_send',
+          codebaseIds: [fixture.codebaseId],
+        },
+      );
+
+      expect(result).toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'plan_incomplete',
+        sourceUseDecision: expect.objectContaining({status: 'pending'}),
+      });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('returns real MCP source refs and starts the next OpenAI run without stale source state', async () => {
+    const sessionId = 'session-openai-source-finalization';
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId,
+    });
+    const runtime = createOpenAiRuntimeForTest();
+    try {
+      const {decision} = await fixture.executeProviderSourceLookup();
+      const streams = [
+        sdkStream(SOURCE_FINALIZATION_RAW_SOURCE, 'resp-task7-source'),
+        sdkStream('public second run', 'resp-task7-public'),
+      ];
+      jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async () => streams.shift()!);
+      prepareRuntime(runtime, query => query === 'source terminal run' ? fixture.sourceUse : undefined);
+
+      const terminal = await runtime.analyze(
+        'source terminal run',
+        sessionId,
+        'trace-openai-task7',
+        {
+          analysisMode: 'fast',
+          providerId: null,
+          codeAwareMode: 'provider_send',
+          codebaseIds: [fixture.codebaseId],
+        },
+      );
+      const next = await runtime.analyze(
+        'public second run',
+        sessionId,
+        'trace-openai-task7',
+        {analysisMode: 'fast', providerId: null, codeAwareMode: 'off'},
+      );
+
+      expect(terminal.success).toBe(true);
+      expect(terminal.sourceUseDecision).toEqual(decision);
+      expect(terminal.sourceReferences).toEqual(decision.references);
+      expect(JSON.stringify(terminal)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(next.sourceUseDecision).toBeUndefined();
+      expect(next.sourceReferences).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
   });
 });
 

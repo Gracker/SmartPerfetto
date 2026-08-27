@@ -18,6 +18,7 @@ import {
   collectMatchedTraceEvidenceRefIdsByClaimId,
   collectVerifiedTraceOccurrenceRefIdsByClaimId,
 } from '../verifier/claimVerificationRunner';
+import {sanitizeCodeAwareStructuredText} from '../security/codeAwareOutputRegistry';
 
 export type SourceClaimVerificationStatus = 'passed' | 'failed' | 'partial' | 'not_checked';
 
@@ -347,6 +348,75 @@ export function attachSourceUseToAnalysisResult(
     result.conclusionContract = sanitizeConclusionSourceContract(result.conclusionContract, {
       actualSourceUseDecision: actualDecision ?? null,
     });
+  }
+  return result;
+}
+
+/**
+ * Shared runtime boundary for source-aware analysis results. It binds the
+ * provider result to the actual MCP source ledger before applying the session
+ * echo guard to every model-authored result surface.
+ */
+export function finalizeSourceAwareAnalysisResult(
+  result: AnalysisResult,
+  sourceUse: SourceUseDecisionReader | undefined,
+): AnalysisResult {
+  const actualDecision = sanitizeSourceUseDecision(sourceUse?.getSourceUseDecision());
+  if (!actualDecision) return result;
+
+  attachSourceUseToAnalysisResult(result, {
+    getSourceUseDecision: () => actualDecision,
+  });
+  result.conclusion = sanitizeCodeAwareStructuredText(result.sessionId, result.conclusion);
+  result.findings = sanitizeCodeAwareStructuredText(result.sessionId, result.findings);
+  result.hypotheses = sanitizeCodeAwareStructuredText(result.sessionId, result.hypotheses);
+  if (result.terminationMessage !== undefined) {
+    result.terminationMessage = sanitizeCodeAwareStructuredText(
+      result.sessionId,
+      result.terminationMessage,
+    );
+  }
+  if (result.conclusionContract !== undefined) {
+    result.conclusionContract = sanitizeCodeAwareStructuredText(
+      result.sessionId,
+      result.conclusionContract,
+    );
+  }
+  if (result.claimSupport !== undefined) {
+    result.claimSupport = sanitizeCodeAwareStructuredText(result.sessionId, result.claimSupport);
+  }
+  if (result.claimVerificationResult !== undefined) {
+    result.claimVerificationResult = sanitizeCodeAwareStructuredText(
+      result.sessionId,
+      result.claimVerificationResult,
+    );
+  }
+  if (result.identityResolutions !== undefined) {
+    result.identityResolutions = sanitizeCodeAwareStructuredText(
+      result.sessionId,
+      result.identityResolutions,
+    );
+  }
+  if (result.smartScenePreview !== undefined) {
+    result.smartScenePreview = sanitizeCodeAwareStructuredText(
+      result.sessionId,
+      result.smartScenePreview,
+    );
+  }
+  if (result.uiActionProposals !== undefined) {
+    result.uiActionProposals = sanitizeCodeAwareStructuredText(
+      result.sessionId,
+      result.uiActionProposals,
+    );
+  }
+
+  if (
+    result.success &&
+    (actualDecision.status === 'pending' || actualDecision.status === 'attempted')
+  ) {
+    result.success = false;
+    result.partial = true;
+    result.terminationReason = 'plan_incomplete';
   }
   return result;
 }

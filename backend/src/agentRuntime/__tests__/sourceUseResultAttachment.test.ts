@@ -2,22 +2,152 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import fs from 'fs';
-import path from 'path';
+import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
+import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import {
+  finalizeSourceAwareAnalysisResult,
+  type SourceUseDecisionReader,
+} from '../../services/codebase/sourceClaimVerifier';
+import type {SourceUseDecisionV1} from '../../services/codebase/sourceUseDecision';
+import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
+import {
+  createRuntimeSourceFinalizationFixture,
+  createSourceAuthoredAnalysisResult,
+  SOURCE_FINALIZATION_CANARY,
+  SOURCE_FINALIZATION_RAW_SOURCE,
+} from './sourceFinalizationFixture';
 
-const RUNTIME_FILES = [
-  'engines/claude/claudeRuntime.ts',
-  'engines/openai/openAiRuntime.ts',
-  'engines/pi/piAgentCoreRuntime.ts',
-  'engines/opencode/openCodeRuntime.ts',
-  'engines/qoder/qoderRuntime.ts',
-] as const;
+function finalizeSourceResult(
+  result: AnalysisResult,
+  sourceUse: SourceUseDecisionReader | undefined,
+): AnalysisResult {
+  return finalizeSourceAwareAnalysisResult(result, sourceUse);
+}
 
-describe('runtime source-use result attachment', () => {
-  test.each(RUNTIME_FILES)('%s attaches the actual accessor through the shared finalizer', relativePath => {
-    const source = fs.readFileSync(path.join(__dirname, '..', relativePath), 'utf8');
+function plainResult(sessionId: string): AnalysisResult {
+  return {
+    sessionId,
+    success: true,
+    findings: [],
+    hypotheses: [],
+    conclusion: 'ordinary trace-only conclusion',
+    confidence: 0.8,
+    rounds: 1,
+    totalDurationMs: 10,
+  };
+}
 
-    expect(source).toContain('attachSourceUseToAnalysisResult');
-    expect(source).toMatch(/attachSourceUseToAnalysisResult\([^)]*sourceUse/s);
+describe('runtime source finalization behavior', () => {
+  test('leaves source-free results byte-for-behavior unchanged', () => {
+    const result = plainResult('session-source-free');
+    const before = structuredClone(result);
+
+    expect(finalizeSourceResult(result, undefined)).toBe(result);
+    expect(result).toEqual(before);
+  });
+
+  test.each(['pending', 'attempted'] as const)(
+    'blocks success while the actual source decision is %s',
+    status => {
+      const result = plainResult(`session-${status}`);
+      const decision: SourceUseDecisionV1 = {
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['codebase-task7'],
+        status,
+        attemptedTools: status === 'attempted' ? ['search_codebase'] : [],
+        queriedCodebaseIds: status === 'attempted' ? ['codebase-task7'] : [],
+        usedCodebaseIds: [],
+        references: [],
+      };
+
+      finalizeSourceResult(result, {getSourceUseDecision: () => decision});
+
+      expect(result).toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'plan_incomplete',
+        sourceUseDecision: expect.objectContaining({status}),
+      });
+      expect(result.terminationMessage).toBeUndefined();
+    },
+  );
+
+  test('uses a real zero-index MCP search/read transition and sanitizes every returned model surface', async () => {
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId: 'session-real-handler-finalization',
+    });
+    try {
+      expect(fixture.sourceUse.getSourceUseDecision()?.status).toBe('pending');
+      const {decision, reference} = await fixture.executeProviderSourceLookup();
+      expect(decision).toEqual(expect.objectContaining({
+        status: 'corroborated',
+        attemptedTools: expect.arrayContaining(['search_codebase', 'read_codebase_file']),
+        queriedCodebaseIds: [fixture.codebaseId],
+        usedCodebaseIds: [fixture.codebaseId],
+      }));
+      expect(reference).toEqual(expect.objectContaining({
+        codebaseId: fixture.codebaseId,
+        filePath: 'src/Task7Source.kt',
+        lookupKind: 'body',
+      }));
+
+      const result = createSourceAuthoredAnalysisResult(fixture.sessionId);
+      const finalized = finalizeSourceResult(result, fixture.sourceUse);
+      const serialized = JSON.stringify(finalized);
+
+      expect(finalized.success).toBe(true);
+      expect(finalized.sourceUseDecision).toEqual(decision);
+      expect(finalized.sourceReferences).toEqual(decision.references);
+      expect(serialized).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(serialized).not.toContain(SOURCE_FINALIZATION_RAW_SOURCE);
+      expect(finalized.findings[0]?.id).toBe('finding-task7');
+      expect(finalized.hypotheses[0]?.id).toBe('hypothesis-task7');
+      expect((finalized.findings[0]?.details as {traceId?: string}).traceId).toBe('trace-task7');
+
+      const answer = projectCodeAwareStreamingUpdate(
+        fixture.sessionId,
+        {type: 'answer_token', content: SOURCE_FINALIZATION_RAW_SOURCE, timestamp: 1},
+        true,
+        'en',
+      );
+      const conclusion = projectCodeAwareStreamingUpdate(
+        fixture.sessionId,
+        {
+          type: 'conclusion',
+          content: {conclusion: SOURCE_FINALIZATION_RAW_SOURCE, success: true},
+          timestamp: 2,
+        },
+        true,
+        'en',
+      );
+      expect(JSON.stringify({answer, conclusion})).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(answer.content).toEqual({suppressed: true});
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  test('does not reuse a terminal accessor when the next run has no source selection', async () => {
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId: 'session-terminal-run',
+    });
+    try {
+      await fixture.executeProviderSourceLookup();
+      const terminal = finalizeSourceResult(plainResult(fixture.sessionId), fixture.sourceUse);
+      const next = plainResult('session-source-off-run');
+      const before = structuredClone(next);
+
+      finalizeSourceResult(next, {getSourceUseDecision: () => undefined});
+
+      expect(terminal.sourceUseDecision?.status).toBe('corroborated');
+      expect(next).toEqual(before);
+      expect(next.sourceUseDecision).toBeUndefined();
+      expect(next.sourceReferences).toBeUndefined();
+    } finally {
+      fixture.cleanup();
+    }
   });
 });

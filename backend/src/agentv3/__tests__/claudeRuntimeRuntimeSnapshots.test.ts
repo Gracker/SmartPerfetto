@@ -27,6 +27,12 @@ import {
   withEvaluationTelemetry,
 } from '../../services/selfEvolution/evaluationTelemetry';
 import { ClaudeRuntime, __testing } from '../claudeRuntime';
+import * as claudeMcpServer from '../claudeMcpServer';
+import {
+  createRuntimeSourceFinalizationFixture,
+  SOURCE_FINALIZATION_CANARY,
+  SOURCE_FINALIZATION_RAW_SOURCE,
+} from '../../agentRuntime/__tests__/sourceFinalizationFixture';
 
 const claudeSdkMock = require('@anthropic-ai/claude-agent-sdk') as {
   __setQueryImplementation: (impl: (params: any) => AsyncIterable<any>) => void;
@@ -1819,7 +1825,12 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         userId: 'user-private',
       });
 
-      expect(result.success).toBe(true);
+      expect(result).toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'plan_incomplete',
+        sourceUseDecision: expect.objectContaining({status: 'pending'}),
+      });
       const [call] = claudeSdkMock.__getQueryCalls();
       expect(call.options.persistSession).toBe(false);
       expect(call.options.resume).toBeUndefined();
@@ -1828,6 +1839,178 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(JSON.stringify(Array.from((runtime as any).sessionMap.values())))
         .not.toContain('sdk-private-session-canary');
     } finally {
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it.each(['full', 'fast'] as const)(
+    'blocks successful Claude %s output while the real source accessor is pending',
+    async analysisMode => {
+      const sessionId = `session-claude-pending-${analysisMode}`;
+      const traceId = `trace-claude-pending-${analysisMode}`;
+      const originalCreateMcp = claudeMcpServer.createClaudeMcpServer;
+      const fixture = createRuntimeSourceFinalizationFixture({
+        createMcpServer: originalCreateMcp,
+        sessionId,
+      });
+      const createMcpSpy = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer')
+        .mockReturnValue(fixture.mcp);
+      const runtime = new ClaudeRuntime({
+        query: async () => ({columns: ['cnt'], rows: [[0]]}),
+        getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+      } as any, {
+        enableVerification: false,
+        enableSubAgents: false,
+      });
+      (runtime as any).architectureCache.set(traceId, {
+        type: 'STANDARD',
+        confidence: 0.9,
+        evidence: [],
+      });
+      claudeSdkMock.__setQueryImplementation(async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: `sdk-pending-${analysisMode}`,
+          num_turns: 1,
+          result: '## Final Report\nTask 7 pending source answer',
+        };
+      });
+
+      try {
+        const result = await runtime.analyze('source pending run', sessionId, traceId, {
+          analysisMode,
+          assistantSurface: analysisMode === 'fast' ? 'conversation' : undefined,
+          conversationTraceAttached: analysisMode === 'fast' ? true : undefined,
+          codeAwareMode: 'provider_send',
+          codebaseIds: [fixture.codebaseId],
+        });
+
+        expect(result).toMatchObject({
+          success: false,
+          partial: true,
+          terminationReason: 'plan_incomplete',
+          sourceUseDecision: expect.objectContaining({status: 'pending'}),
+        });
+      } finally {
+        createMcpSpy.mockRestore();
+        fixture.cleanup();
+        sessionContextManager.remove(sessionId);
+      }
+    },
+  );
+
+  it('finalizes a failed Claude quick result with the actual source accessor and echo guard', async () => {
+    const sessionId = 'session-claude-quick-error-finalization';
+    const traceId = 'trace-claude-quick-error-finalization';
+    const originalCreateMcp = claudeMcpServer.createClaudeMcpServer;
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: originalCreateMcp,
+      sessionId,
+    });
+    const createMcpSpy = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer')
+      .mockReturnValue(fixture.mcp);
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: ['cnt'], rows: [[0]]}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'error_during_execution',
+        errors: [SOURCE_FINALIZATION_RAW_SOURCE],
+      };
+    });
+
+    try {
+      const {decision} = await fixture.executeProviderSourceLookup();
+      const result = await runtime.analyze('source quick error run', sessionId, traceId, {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: true,
+        codeAwareMode: 'provider_send',
+        codebaseIds: [fixture.codebaseId],
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.terminationReason).toBe('execution_error');
+      expect(result.terminationMessage).toBeDefined();
+      expect(result.sourceUseDecision).toEqual(decision);
+      expect(result.sourceReferences).toEqual(decision.references);
+      expect(JSON.stringify(result)).not.toContain(SOURCE_FINALIZATION_CANARY);
+    } finally {
+      createMcpSpy.mockRestore();
+      fixture.cleanup();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('returns real MCP source refs and starts the next Claude run without stale source state', async () => {
+    const sessionId = 'session-claude-source-finalization';
+    const traceId = 'trace-claude-source-finalization';
+    const originalCreateMcp = claudeMcpServer.createClaudeMcpServer;
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: originalCreateMcp,
+      sessionId,
+    });
+    const createMcpSpy = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer')
+      .mockImplementation((options: any) => options.codeAwareMode === 'provider_send'
+        ? fixture.mcp
+        : originalCreateMcp(options));
+    const runtime = new ClaudeRuntime({
+      query: async () => ({columns: ['cnt'], rows: [[0]]}),
+      getTrace: () => ({traceOs: 'android', traceFormat: 'perfetto'}),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* ({prompt}: any) {
+      const sourceRun = String(prompt).includes('source terminal run');
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: sourceRun ? 'sdk-source-terminal' : 'sdk-source-off',
+        num_turns: 1,
+        result: sourceRun ? SOURCE_FINALIZATION_RAW_SOURCE : 'public second run',
+      };
+    });
+
+    try {
+      const {decision} = await fixture.executeProviderSourceLookup();
+      const terminal = await runtime.analyze('source terminal run', sessionId, traceId, {
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        conversationTraceAttached: true,
+        codeAwareMode: 'provider_send',
+        codebaseIds: [fixture.codebaseId],
+      });
+      const next = await runtime.analyze('public second run', sessionId, traceId, {
+        analysisMode: 'fast',
+        codeAwareMode: 'off',
+      });
+
+      expect(terminal.success).toBe(true);
+      expect(terminal.sourceUseDecision).toEqual(decision);
+      expect(terminal.sourceReferences).toEqual(decision.references);
+      expect(JSON.stringify(terminal)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(next.sourceUseDecision).toBeUndefined();
+      expect(next.sourceReferences).toBeUndefined();
+    } finally {
+      createMcpSpy.mockRestore();
+      fixture.cleanup();
       sessionContextManager.remove(sessionId);
     }
   });
@@ -1995,9 +2178,10 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       );
 
       expect(result).toMatchObject({
-        success: true,
+        success: false,
         partial: true,
-        terminationReason,
+        terminationReason: 'plan_incomplete',
+        sourceUseDecision: expect.objectContaining({status: 'pending'}),
       });
       expect(result.conclusion).toContain('TTID=1912ms');
       expect(JSON.stringify(result)).not.toContain(privateCanary);

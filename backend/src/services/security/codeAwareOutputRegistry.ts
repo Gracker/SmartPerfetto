@@ -19,6 +19,9 @@ const MAX_AGGREGATE_GUARD_PATTERN_BYTES = 64 * 1024 * 1024;
 const REVOKED_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const MAX_REVOKED_SESSION_MARKERS = 4_096;
 const PRIVATE_OUTPUT_SUPPRESSED = '[PRIVATE_OUTPUT_SUPPRESSED]';
+const MAX_STRUCTURED_TEXT_DEPTH = 24;
+const MAX_STRUCTURED_TEXT_ITEMS = 10_000;
+const MAX_STRUCTURED_TEXT_STRING_BYTES = 1024 * 1024;
 
 class SessionCodeAwareOutputGuard {
   private readonly registrations: GuardRegistration[] = [];
@@ -290,6 +293,76 @@ export function sanitizeCodeAwareText(sessionId: string | undefined, text: strin
   const guard = touchGuard(sessionId);
   if (!guard && sessionWasRevoked(sessionId)) return PRIVATE_OUTPUT_SUPPRESSED;
   return guard ? guard.projectComplete(text) : text;
+}
+
+function sanitizeStructuredTextValue(
+  sessionId: string | undefined,
+  value: unknown,
+  state: {items: number; seen: WeakSet<object>},
+  depth: number,
+): unknown {
+  if (depth > MAX_STRUCTURED_TEXT_DEPTH || state.items >= MAX_STRUCTURED_TEXT_ITEMS) {
+    return undefined;
+  }
+  state.items += 1;
+  if (typeof value === 'string') {
+    if (
+      value.length > MAX_STRUCTURED_TEXT_STRING_BYTES ||
+      Buffer.byteLength(value, 'utf8') > MAX_STRUCTURED_TEXT_STRING_BYTES
+    ) {
+      return PRIVATE_OUTPUT_SUPPRESSED;
+    }
+    return sanitizeCodeAwareText(sessionId, value);
+  }
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+  if (typeof value !== 'object') return undefined;
+  if (state.seen.has(value)) return undefined;
+  if (!Array.isArray(value)) {
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null) return undefined;
+  }
+
+  state.seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value
+        .map(item => sanitizeStructuredTextValue(sessionId, item, state, depth + 1))
+        .filter(item => item !== undefined);
+    }
+
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      const projected = sanitizeStructuredTextValue(sessionId, entry, state, depth + 1);
+      if (projected !== undefined) sanitized[key] = projected;
+    }
+    return sanitized;
+  } finally {
+    state.seen.delete(value);
+  }
+}
+
+/**
+ * Applies the session echo guard to every string in a model-authored value.
+ * Traversal is bounded and cycle-safe; ordinary serializable values retain
+ * their keys and byte-identical strings when no registered pattern matches.
+ */
+export function sanitizeCodeAwareStructuredText<T>(
+  sessionId: string | undefined,
+  value: T,
+): T {
+  return sanitizeStructuredTextValue(
+    sessionId,
+    value,
+    {items: 0, seen: new WeakSet<object>()},
+    0,
+  ) as T;
 }
 
 export interface CodeAwareStreamingTextProjection {

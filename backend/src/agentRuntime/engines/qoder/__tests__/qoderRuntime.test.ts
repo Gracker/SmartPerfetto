@@ -63,6 +63,7 @@ jest.mock('../../../../services/skillEngine/skillExecutor', () => ({
 jest.mock('../../../../services/skillEngine/skillLoader', () => ({
   ensureSkillRegistryInitialized: jest.fn<any>().mockResolvedValue(undefined),
   skillRegistry: {
+    isInitialized: jest.fn<any>().mockReturnValue(false),
     getAllSkills: jest.fn<any>().mockReturnValue([]),
     getFragmentCache: jest.fn<any>().mockReturnValue({}),
   },
@@ -101,14 +102,19 @@ jest.mock('../../claude/claudeVerifier', () => ({
   verifyConclusion: jest.fn<any>().mockResolvedValue({ heuristicIssues: [], llmIssues: [] }),
 }));
 
-jest.mock('../../../../services/security/codeAwareOutputRegistry', () => ({
-  sanitizeCodeAwareText: jest.fn<any>().mockImplementation((_sid: string, text: string) => text),
-  createCodeAwareStreamingTextProjection: jest.fn<any>().mockImplementation(() => ({
-    write: mockProjectionWrite,
-    flush: mockProjectionFlush,
-    projectComplete: mockProjectionProjectComplete,
-  })),
-}));
+jest.mock('../../../../services/security/codeAwareOutputRegistry', () => {
+  const actual = jest.requireActual<typeof import('../../../../services/security/codeAwareOutputRegistry')>(
+    '../../../../services/security/codeAwareOutputRegistry',
+  );
+  return {
+    ...actual,
+    createCodeAwareStreamingTextProjection: jest.fn<any>().mockImplementation(() => ({
+      write: mockProjectionWrite,
+      flush: mockProjectionFlush,
+      projectComplete: mockProjectionProjectComplete,
+    })),
+  };
+});
 
 jest.mock('../../../../agentv3/claudeFindingExtractor', () => ({
   extractFindingsFromText: jest.fn<any>().mockReturnValue([]),
@@ -127,6 +133,11 @@ import { createArchitectureDetector } from '../../../../agent/detectors/architec
 import { detectFocusApps } from '../../../../agentv3/focusAppDetector';
 import { probeTraceCompleteness } from '../../../../agentv3/traceCompletenessProber';
 import * as quickEvidenceDirectAnswer from '../../../quickEvidenceDirectAnswer';
+import {
+  createRuntimeSourceFinalizationFixture,
+  SOURCE_FINALIZATION_CANARY,
+  SOURCE_FINALIZATION_RAW_SOURCE,
+} from '../../../__tests__/sourceFinalizationFixture';
 
 function createRuntime(env: Record<string, string | undefined> = {}) {
   return new QoderRuntime({
@@ -527,6 +538,84 @@ describe('QoderRuntime', () => {
       expect(result.success).toBe(true);
       expect(result.rounds).toBe(5);
       expect(result.conclusion).toBe('## Final Report\nAnalysis complete');
+    });
+
+    it('blocks a successful SDK result while the real shared source accessor is pending', async () => {
+      const actualMcp = jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>(
+        '../../../../agentv3/claudeMcpServer',
+      );
+      const fixture = createRuntimeSourceFinalizationFixture({
+        createMcpServer: actualMcp.createClaudeMcpServer,
+        sessionId: 'session-1',
+      });
+      try {
+        mockCreateClaudeMcpServer.mockReturnValue(fixture.mcp);
+        mockQuery.mockReturnValue(createMockSdkStream([
+          {type: 'result', subtype: 'success', result: '## Final Report\ndone'},
+        ]));
+
+        const result = await createRuntime().analyze('test', 'session-1', 'trace-1', {
+          codeAwareMode: 'provider_send',
+          codebaseIds: [fixture.codebaseId],
+        });
+
+        expect(result).toMatchObject({
+          success: false,
+          partial: true,
+          terminationReason: 'plan_incomplete',
+          sourceUseDecision: expect.objectContaining({status: 'pending'}),
+        });
+      } finally {
+        fixture.cleanup();
+      }
+    });
+
+    it('finalizes from real MCP ledger state without SDK tool-result messages or stale carryover', async () => {
+      const actualMcp = jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>(
+        '../../../../agentv3/claudeMcpServer',
+      );
+      const fixture = createRuntimeSourceFinalizationFixture({
+        createMcpServer: actualMcp.createClaudeMcpServer,
+        sessionId: 'session-1',
+      });
+      try {
+        const {decision} = await fixture.executeProviderSourceLookup();
+        const sdkMessages = [
+          {type: 'assistant', message: {content: [{type: 'text', text: SOURCE_FINALIZATION_RAW_SOURCE}]}},
+          {type: 'result', subtype: 'success', result: SOURCE_FINALIZATION_RAW_SOURCE, num_turns: 1},
+        ];
+        expect(sdkMessages.every(message => message.type !== 'tool_result')).toBe(true);
+        mockCreateClaudeMcpServer
+          .mockReturnValueOnce(fixture.mcp)
+          .mockReturnValueOnce({
+            server: {name: 'smartperfetto'},
+            allowedTools: ['mcp__smartperfetto__query_trace'],
+            toolDefinitions: [],
+          });
+        mockQuery
+          .mockReturnValueOnce(createMockSdkStream(sdkMessages))
+          .mockReturnValueOnce(createMockSdkStream([
+            {type: 'result', subtype: 'success', result: 'public second run'},
+          ]));
+        const runtime = createRuntime();
+
+        const terminal = await runtime.analyze('source run', 'session-1', 'trace-1', {
+          codeAwareMode: 'provider_send',
+          codebaseIds: [fixture.codebaseId],
+        });
+        const next = await runtime.analyze('public run', 'session-1', 'trace-1', {
+          codeAwareMode: 'off',
+        });
+
+        expect(terminal.success).toBe(true);
+        expect(terminal.sourceUseDecision).toEqual(decision);
+        expect(terminal.sourceReferences).toEqual(decision.references);
+        expect(JSON.stringify(terminal)).not.toContain(SOURCE_FINALIZATION_CANARY);
+        expect(next.sourceUseDecision).toBeUndefined();
+        expect(next.sourceReferences).toBeUndefined();
+      } finally {
+        fixture.cleanup();
+      }
     });
 
     it('treats a success subtype carrying is_error as a failure', async () => {

@@ -28,7 +28,7 @@ import {
 } from '../../../services/rag/toolResultProjectionFilter';
 import { completeFinalReportCodeReferences } from '../../../services/codebase/codeReferenceContract';
 import { extractSourceLookupCodeReferences } from '../../../services/codebase/sourceLookupTools';
-import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
+import {finalizeSourceAwareAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import {
   createPiAgentCoreSnapshotEngineState,
   getPiAgentCoreSnapshotEngineState,
@@ -1681,7 +1681,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ? latestAssistant.errorMessage
       : analysisErrorMessage;
     if (stopReason === 'error' || stopReason === 'aborted' || errorMessage) {
-      return {
+      return finalizeSourceAwareAnalysisResult({
         sessionId,
         success: false,
         findings: [],
@@ -1692,7 +1692,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         totalDurationMs: Date.now() - startedAt,
         terminationReason: stopReason === 'aborted' ? 'timeout' : 'execution_error',
         terminationMessage: errorMessage || 'Pi Agent Core reported an execution error.',
-      };
+      }, prep.sourceUse);
     }
 
     const fallbackConclusionMessages = finalReportContinuationMessageBoundary === undefined
@@ -1877,7 +1877,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    attachSourceUseToAnalysisResult(result, prep.sourceUse);
+    finalizeSourceAwareAnalysisResult(result, prep.sourceUse);
     const wasPartialBeforeQualityGate = result.partial === true;
     const gateIssue = applyFinalResultQualityGate({
       result,

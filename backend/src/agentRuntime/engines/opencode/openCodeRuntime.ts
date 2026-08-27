@@ -99,7 +99,7 @@ import {
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {completeFinalReportCodeReferences} from '../../../services/codebase/codeReferenceContract';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
-import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
+import {finalizeSourceAwareAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
 import {providerSubprocessEnv} from '../../../services/providerManager/envIsolation';
 import type { RuntimeSelection } from '../../runtimeSelection';
@@ -2803,7 +2803,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    attachSourceUseToAnalysisResult(result, prep.sourceUse);
+    finalizeSourceAwareAnalysisResult(result, prep.sourceUse);
     const wasPartialBeforeQualityGate = result.partial === true;
     const gateIssue = applyFinalResultQualityGate({
       result,

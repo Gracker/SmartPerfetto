@@ -112,7 +112,7 @@ import {
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {completeFinalReportCodeReferences} from '../../../services/codebase/codeReferenceContract';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
-import {attachSourceUseToAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
+import {finalizeSourceAwareAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
 import { verifyConclusion, generateCorrectionPrompt, isConclusionIncomplete } from './claudeVerifier';
@@ -1089,6 +1089,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     let rounds = 0;
     let delegatedRetry = false;
     let outputLanguage = options.outputLanguage ?? this.config.outputLanguage;
+    let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
     const metricsCollector = new AgentMetricsCollector(sessionId);
     let interruptionRecoveryState: {
       streamStarted: boolean;
@@ -1359,6 +1360,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         runtimeConfig,
         analysisRunSpec,
       });
+      sourceUse = ctx.sourceUse;
 
       const {
         handleMessage: bridge,
@@ -2504,7 +2506,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationReason,
         terminationMessage,
       };
-      attachSourceUseToAnalysisResult(finalAnalysisResult, ctx.sourceUse);
+      finalizeSourceAwareAnalysisResult(finalAnalysisResult, ctx.sourceUse);
       const gateIssue = applyFinalResultQualityGate({ result: finalAnalysisResult, query, sceneType });
       if (gateIssue) {
         this.emitUpdate({
@@ -2699,7 +2701,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             },
             timestamp: Date.now(),
           });
-          return {
+          return finalizeSourceAwareAnalysisResult({
             sessionId,
             success: true,
             findings,
@@ -2711,7 +2713,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             partial: true,
             terminationReason,
             terminationMessage: errMsg,
-          };
+          }, sourceUse);
         }
       }
 
@@ -2747,7 +2749,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           },
           timestamp: Date.now(),
         });
-        return {
+        return finalizeSourceAwareAnalysisResult({
           sessionId,
           success: true, // partial success — downstream can check confidence < 1
           findings: safePartialFindings,
@@ -2762,7 +2764,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           partial: true,
           terminationReason: quotaExceeded ? 'max_budget_usd' : 'execution_error',
           terminationMessage: errMsg,
-        };
+        }, sourceUse);
       }
 
       this.emitUpdate({
@@ -2772,7 +2774,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         },
         timestamp: Date.now(),
       });
-      return {
+      return finalizeSourceAwareAnalysisResult({
         sessionId,
         success: false,
         findings: partialFindings,
@@ -2787,7 +2789,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         totalDurationMs: Date.now() - startTime,
         terminationReason: quotaExceeded ? 'max_budget_usd' : 'execution_error',
         terminationMessage: errMsg,
-      };
+      }, sourceUse);
     } finally {
       interruptionRecoveryState?.dispose();
       this.activeAnalyses.delete(sessionId);
@@ -2854,6 +2856,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage,
     } = precomputed;
     let delegatedRetry = false;
+    let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
 
     try {
       let effectivePackageName = options.packageName;
@@ -3208,7 +3211,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       let mcpServer: ReturnType<typeof createClaudeMcpServer>['server'] | undefined;
       let allowedTools: string[] = [];
-      let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
       if (!useEvidenceOnlyQuick) {
         await (skillRegistryReady ?? ensureSkillRegistryInitialized());
         const skillExecutor = createSkillExecutor(this.traceProcessorService);
@@ -3507,7 +3509,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           adaptiveRouting: analysisRunSpec.mode.adaptiveRouting,
         }),
       };
-      attachSourceUseToAnalysisResult(quickResult, sourceUse);
+      finalizeSourceAwareAnalysisResult(quickResult, sourceUse);
       const quickGateIssue = applyFinalResultQualityGate({ result: quickResult, query, sceneType });
       if (quickGateIssue) {
         this.emitUpdate({
@@ -3592,7 +3594,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         },
         timestamp: Date.now(),
       });
-      return {
+      return finalizeSourceAwareAnalysisResult({
         sessionId,
         success: false,
         findings: [],
@@ -3607,7 +3609,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         totalDurationMs: Date.now() - startTime,
         terminationReason: quotaExceeded ? 'max_budget_usd' : 'execution_error',
         terminationMessage: errMsg,
-      };
+      }, sourceUse);
     } finally {
       this.activeAnalyses.delete(sessionId);
       try {

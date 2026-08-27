@@ -26,6 +26,7 @@ import {
   registerCodeAwareCanary,
   registerOnDemandSourceLookupForEcho,
   registerPrivateAnalysisQueryForEcho,
+  sanitizeCodeAwareStructuredText,
   sanitizeCodeAwareText,
 } from '../security/codeAwareOutputRegistry';
 import {projectCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
@@ -697,6 +698,45 @@ describe('registerOnDemandSourceLookupForEcho', () => {
 });
 
 describe('code-aware output registry bounds', () => {
+  it('keeps ordinary structured values byte-for-shape identical including shared subobjects', () => {
+    const shared = {text: 'ordinary source-free text', traceId: 'trace-ordinary'};
+    const input = {
+      first: shared,
+      second: shared,
+      values: ['ordinary source-free text', 7, true, null],
+    };
+
+    expect(sanitizeCodeAwareStructuredText('session-no-guard', input)).toEqual(input);
+  });
+
+  it('bounds structured depth, item count, string size, and cycles without serialization', () => {
+    class ModelContainer {
+      constructor(readonly text: string) {}
+    }
+    const cyclic: Record<string, unknown> = {text: 'ordinary'};
+    cyclic.self = cyclic;
+    const oversized = 'x'.repeat(1024 * 1024 + 1);
+    const projected = sanitizeCodeAwareStructuredText('session-structured-bounds', {
+      cyclic,
+      oversized,
+      date: new Date(0),
+      bytes: Buffer.from('private bytes'),
+      instance: new ModelContainer('private class text'),
+      items: Array.from({length: 10_100}, (_, index) => `item-${index}`),
+    }) as {
+      cyclic: Record<string, unknown>;
+      oversized: string;
+      items: string[];
+    };
+
+    expect(projected.cyclic).toEqual({text: 'ordinary'});
+    expect(projected.oversized).toBe('[PRIVATE_OUTPUT_SUPPRESSED]');
+    expect(projected.items.length).toBeLessThanOrEqual(10_000);
+    expect(projected).not.toHaveProperty('date');
+    expect(projected).not.toHaveProperty('bytes');
+    expect(projected).not.toHaveProperty('instance');
+  });
+
   it('evicts least-recently-used guards and fails closed for their continuations', () => {
     registerCodeAwareCanary('guard-0', 'PRIVATE_CANARY_0');
     const inFlightProjection = createCodeAwareStreamingTextProjection(

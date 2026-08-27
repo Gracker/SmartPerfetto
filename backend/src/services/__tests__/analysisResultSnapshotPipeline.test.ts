@@ -14,6 +14,13 @@ import {
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../enterpriseDb';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/codeAwareOutputRegistry';
 import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
+import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import {finalizeSourceAwareAnalysisResult} from '../codebase/sourceClaimVerifier';
+import {
+  createRuntimeSourceFinalizationFixture,
+  createSourceAuthoredAnalysisResult,
+  SOURCE_FINALIZATION_CANARY,
+} from '../../agentRuntime/__tests__/sourceFinalizationFixture';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const tmpDirs: string[] = [];
@@ -866,6 +873,62 @@ describe('analysis result snapshot pipeline', () => {
       }
     } finally {
       clearCodeAwareOutputGuards(sessionId);
+    }
+  });
+
+  test('persists the same real-handler finalized result without raw source echo', async () => {
+    useTempEnterpriseDb();
+    const fixture = createRuntimeSourceFinalizationFixture({
+      createMcpServer: createClaudeMcpServer,
+      sessionId: 'session-task7-finalized-snapshot',
+    });
+    try {
+      const {decision} = await fixture.executeProviderSourceLookup();
+      const result = finalizeSourceAwareAnalysisResult(
+        createSourceAuthoredAnalysisResult(fixture.sessionId),
+        fixture.sourceUse,
+      );
+      const snapshot = persistCompletedAnalysisResultSnapshot({
+        tenantId: 'tenant-task7',
+        workspaceId: 'workspace-task7',
+        userId: 'user-task7',
+        traceId: 'trace-task7',
+        sessionId: fixture.sessionId,
+        runId: 'run-task7',
+        query: 'analyze Task7Source',
+        conclusion: result.conclusion,
+        conclusionContract: result.conclusionContract,
+        sourceUseDecision: result.sourceUseDecision,
+        confidence: result.confidence,
+        partial: result.partial,
+        terminationReason: result.terminationReason,
+        terminationMessage: result.terminationMessage,
+        privateKnowledge: true,
+        outputLanguage: 'en',
+      });
+
+      expect(result.sourceUseDecision).toEqual(decision);
+      expect(JSON.stringify(result)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect(JSON.stringify(snapshot)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      expect((snapshot?.conclusionContract as any)?.sourceUseDecision)
+        .toEqual(expect.objectContaining({
+          status: 'corroborated',
+          references: decision.references,
+        }));
+
+      const db = openEnterpriseDb();
+      try {
+        const row = db.prepare(`
+          SELECT summary_json, conclusion_contract_json
+          FROM analysis_result_snapshots
+          WHERE session_id = ?
+        `).get(fixture.sessionId);
+        expect(JSON.stringify(row)).not.toContain(SOURCE_FINALIZATION_CANARY);
+      } finally {
+        db.close();
+      }
+    } finally {
+      fixture.cleanup();
     }
   });
 
