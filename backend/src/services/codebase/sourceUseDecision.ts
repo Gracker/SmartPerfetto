@@ -285,22 +285,37 @@ export function sanitizeSourceIncompleteReason(value: unknown): string | undefin
     : undefined;
 }
 
-export function sanitizeSourceUseDecision(value: unknown): SourceUseDecisionV1 | undefined {
+export function sanitizeSourceUseDecision(
+  value: unknown,
+  currentSelectedCodebaseIds?: readonly string[],
+): SourceUseDecisionV1 | undefined {
   if (!isRecord(value) || value.schemaVersion !== SOURCE_USE_DECISION_SCHEMA_VERSION) {
     return undefined;
   }
   const codeAwareMode = value.codeAwareMode === 'metadata_only' || value.codeAwareMode === 'provider_send'
     ? value.codeAwareMode
     : undefined;
-  const status = typeof value.status === 'string' && SOURCE_USE_STATUSES.has(value.status as SourceUseStatus)
+  const declaredStatus = typeof value.status === 'string' && SOURCE_USE_STATUSES.has(value.status as SourceUseStatus)
     ? value.status as SourceUseStatus
     : undefined;
-  if (!codeAwareMode || !status) return undefined;
+  if (!codeAwareMode || !declaredStatus) return undefined;
+  const status = codeAwareMode === 'metadata_only' && declaredStatus === 'corroborated'
+    ? 'located'
+    : declaredStatus;
 
-  const selectedCodebaseIds = uniqueBoundedIdentifiers(
+  const declaredCodebaseIds = uniqueBoundedIdentifiers(
     value.selectedCodebaseIds,
     MAX_SOURCE_REFERENCE_COUNT,
   ).sort();
+  const currentSelection = currentSelectedCodebaseIds === undefined
+    ? undefined
+    : new Set(uniqueBoundedIdentifiers(
+      currentSelectedCodebaseIds,
+      MAX_SOURCE_REFERENCE_COUNT,
+    ));
+  const selectedCodebaseIds = currentSelection
+    ? declaredCodebaseIds.filter(codebaseId => currentSelection.has(codebaseId))
+    : declaredCodebaseIds;
   const selected = new Set(selectedCodebaseIds);
   const queriedCodebaseIds = uniqueBoundedIdentifiers(
     value.queriedCodebaseIds,
@@ -312,7 +327,8 @@ export function sanitizeSourceUseDecision(value: unknown): SourceUseDecisionV1 |
   ).filter(codebaseId => selected.has(codebaseId));
   const references = sanitizeSourceReferences(value.references)
     .filter(reference => selected.has(reference.codebaseId));
-  const reasonCode = typeof value.reasonCode === 'string' &&
+  const reasonCode = SOURCE_USE_REASON_CODES.has(status as NonNullable<SourceUseDecisionV1['reasonCode']>) &&
+    typeof value.reasonCode === 'string' &&
     SOURCE_USE_REASON_CODES.has(value.reasonCode as NonNullable<SourceUseDecisionV1['reasonCode']>)
     ? value.reasonCode as NonNullable<SourceUseDecisionV1['reasonCode']>
     : undefined;

@@ -428,14 +428,19 @@ export function getQoderSnapshotEngineState(
 function normalizeSourceUseSnapshotFields(
   rawSourceUseDecision: unknown,
   rawCodeLookupSummary: CodeLookupSummary | undefined,
+  currentSelectedCodebaseIds: readonly string[],
 ): {
   sourceUseDecision?: SourceUseDecisionV1;
   codeLookupSummary?: CodeLookupSummary;
 } {
   const summaryDecision = sanitizeSourceUseDecision(
     rawCodeLookupSummary?.sourceUseDecision,
+    currentSelectedCodebaseIds,
   );
-  const sourceUseDecision = sanitizeSourceUseDecision(rawSourceUseDecision) ?? summaryDecision;
+  const sourceUseDecision = sanitizeSourceUseDecision(
+    rawSourceUseDecision,
+    currentSelectedCodebaseIds,
+  ) ?? summaryDecision;
   if (!rawCodeLookupSummary) {
     return sourceUseDecision ? {sourceUseDecision} : {};
   }
@@ -523,7 +528,11 @@ export function normalizeSessionStateSnapshot(
   } = normalizedSnapshot;
   return {
     ...snapshotWithoutSourceUse,
-    ...normalizeSourceUseSnapshotFields(rawSourceUseDecision, rawCodeLookupSummary),
+    ...normalizeSourceUseSnapshotFields(
+      rawSourceUseDecision,
+      rawCodeLookupSummary,
+      normalizedSnapshot.codebaseIds ?? [],
+    ),
   };
 }
 
@@ -753,7 +762,11 @@ export function projectSessionFieldsForDurableSnapshot(
   } = fields;
   return {
     ...fieldsWithoutSourceUse,
-    ...normalizeSourceUseSnapshotFields(rawSourceUseDecision, rawCodeLookupSummary),
+    ...normalizeSourceUseSnapshotFields(
+      rawSourceUseDecision,
+      rawCodeLookupSummary,
+      fields.codebaseIds ?? [],
+    ),
     comparisonReportSection: undefined,
     conversationSteps: [],
     agentDialogue: [],

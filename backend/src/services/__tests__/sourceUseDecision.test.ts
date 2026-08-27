@@ -156,4 +156,29 @@ describe('source use decision contract', () => {
     });
     expect(JSON.stringify(decision)).not.toContain('PRIVATE_');
   });
+
+  it('caps metadata-only source decisions below corroborated', () => {
+    const decision = sanitizeSourceUseDecision({
+      schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+      codeAwareMode: 'metadata_only',
+      selectedCodebaseIds: ['codebase-a'],
+      status: 'corroborated',
+      reasonCode: 'search_incomplete',
+      attemptedTools: ['query_code_graph'],
+      queriedCodebaseIds: ['codebase-a'],
+      usedCodebaseIds: ['codebase-a'],
+      references: [{
+        referenceId: 'graph-ref',
+        codebaseId: 'codebase-a',
+        filePath: 'src/Main.kt',
+        lookupKind: 'graph',
+      }],
+    });
+
+    expect(decision).toEqual(expect.objectContaining({
+      codeAwareMode: 'metadata_only',
+      status: 'located',
+    }));
+    expect(decision).not.toHaveProperty('reasonCode');
+  });
 });

@@ -179,4 +179,72 @@ describe('private session snapshot provenance', () => {
     }));
     expect(JSON.stringify(normalized.sourceUseDecision)).not.toContain('PRIVATE_');
   });
+
+  it('partitions normalized decisions by the actual session codebase selection', () => {
+    const input = snapshot();
+    const decision = {
+      ...input.sourceUseDecision!,
+      selectedCodebaseIds: ['codebase-a', 'codebase-outside'],
+      queriedCodebaseIds: ['codebase-a', 'codebase-outside'],
+      usedCodebaseIds: ['codebase-a', 'codebase-outside'],
+      references: [
+        ...input.sourceUseDecision!.references,
+        {
+          referenceId: 'outside-ref',
+          codebaseId: 'codebase-outside',
+          filePath: 'src/Outside.kt',
+          lookupKind: 'body',
+        },
+      ],
+    };
+    input.sourceUseDecision = decision as any;
+    input.codeLookupSummary!.sourceUseDecision = decision as any;
+
+    const normalized = normalizeSessionStateSnapshot(input);
+
+    expect(normalized.sourceUseDecision?.selectedCodebaseIds).toEqual(['codebase-a']);
+    expect(normalized.sourceUseDecision?.queriedCodebaseIds).toEqual(['codebase-a']);
+    expect(normalized.sourceUseDecision?.usedCodebaseIds).toEqual(['codebase-a']);
+    expect(normalized.sourceUseDecision?.references).toEqual([
+      expect.objectContaining({codebaseId: 'codebase-a'}),
+    ]);
+    expect(normalized.codeLookupSummary?.sourceUseDecision)
+      .toEqual(normalized.sourceUseDecision);
+  });
+
+  it('projects one authoritative decision across top-level and summary fields', () => {
+    const input = snapshot();
+    input.sourceUseDecision = {
+      ...input.sourceUseDecision!,
+      selectedCodebaseIds: ['codebase-a', 'codebase-outside'],
+      queriedCodebaseIds: ['codebase-a', 'codebase-outside'],
+      usedCodebaseIds: ['codebase-a', 'codebase-outside'],
+      status: 'located',
+      reasonCode: undefined,
+      references: [{
+        referenceId: 'outside-ref',
+        codebaseId: 'codebase-outside',
+        filePath: 'src/Outside.kt',
+        lookupKind: 'body',
+      }],
+    } as any;
+    input.codeLookupSummary!.sourceUseDecision = {
+      ...input.codeLookupSummary!.sourceUseDecision!,
+      status: 'search_incomplete',
+      reasonCode: 'search_incomplete',
+    };
+
+    const projected = projectPrivateSessionStateSnapshot(input);
+
+    expect(projected.sourceUseDecision).toEqual(expect.objectContaining({
+      selectedCodebaseIds: ['codebase-a'],
+      queriedCodebaseIds: ['codebase-a'],
+      usedCodebaseIds: ['codebase-a'],
+      status: 'located',
+      references: [],
+    }));
+    expect(projected.sourceUseDecision).not.toHaveProperty('reasonCode');
+    expect(projected.codeLookupSummary?.sourceUseDecision)
+      .toEqual(projected.sourceUseDecision);
+  });
 });
