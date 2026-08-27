@@ -109,6 +109,21 @@ describe('codeReferenceContract', () => {
     })).toEqual([]);
   });
 
+  it('uses the canonical source-selection extensions for extracted references', () => {
+    expect(extractSourceLookupCodeReferences('search_codebase', {
+      matches: [
+        {referenceId: 'proto-ref', codebaseId: 'codebase-a', filePath: 'proto/events.proto'},
+        {referenceId: 'gradle-ref', codebaseId: 'codebase-a', filePath: 'build/settings.gradle'},
+        {referenceId: 'dtsi-ref', codebaseId: 'codebase-a', filePath: 'kernel/board.dtsi'},
+        {referenceId: 'text-ref', codebaseId: 'codebase-a', filePath: 'notes/private.txt'},
+      ],
+    })).toEqual([
+      expect.objectContaining({referenceId: 'proto-ref', filePath: 'proto/events.proto'}),
+      expect.objectContaining({referenceId: 'gradle-ref', filePath: 'build/settings.gradle'}),
+      expect.objectContaining({referenceId: 'dtsi-ref', filePath: 'kernel/board.dtsi'}),
+    ]);
+  });
+
   it('does not treat graph references as final source CodeRef evidence', () => {
     const graphResult = {
       success: true,

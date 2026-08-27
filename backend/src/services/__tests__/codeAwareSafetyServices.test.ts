@@ -12,6 +12,7 @@ import {makeSparkProvenance, type RagChunk, type RagRetrievalResult} from '../..
 import {createDataEnvelope} from '../../types/dataContract';
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../codebase/codeLookupLedger';
+import {SOURCE_USE_DECISION_SCHEMA_VERSION} from '../codebase/sourceUseDecision';
 import {filterRagLookup} from '../rag/lookupResponseFilter';
 import {SessionToolResultRegistry, projectedSidecarMissing} from '../rag/sessionToolResultRegistry';
 import {
@@ -248,6 +249,151 @@ describe('CodeLookupLedger', () => {
       patchCount: 0,
       referencedCodebaseIds: ['cb_old'],
     });
+  });
+
+  it('migrates old JSONL entries without restoring source decisions across authorization partitions', () => {
+    const ledgerPath = path.join(tmpDir, 'migrated-partition-ledger.jsonl');
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify({
+        turn: 1,
+        ts: 1714600000000,
+        toolName: 'search_codebase',
+        codebaseId: 'cb_legacy',
+        chunkIds: [],
+        consentApplied: true,
+        tokensSpent: 0,
+        outcome: 'success',
+        legacyPath: false,
+        query: 'PRIVATE_LEGACY_QUERY_CANARY',
+      }),
+      JSON.stringify({
+        turn: 2,
+        ts: 1714600000001,
+        toolName: 'read_codebase_file',
+        codebaseId: 'cb_old_partition',
+        chunkIds: [],
+        consentApplied: true,
+        tokensSpent: 1,
+        outcome: 'success',
+        legacyPath: false,
+        authorizationFingerprint: 'context-old',
+        sourceUseDecision: {
+          schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+          codeAwareMode: 'provider_send',
+          selectedCodebaseIds: ['cb_old_partition'],
+          status: 'located',
+          attemptedTools: ['read_codebase_file'],
+          queriedCodebaseIds: ['cb_old_partition'],
+          usedCodebaseIds: ['cb_old_partition'],
+          references: [],
+        },
+      }),
+    ].join('\n') + '\n');
+
+    const restored = CodeLookupLedger.restore(
+      'session-migrated-partition',
+      100,
+      1,
+      ledgerPath,
+      'context-new',
+    );
+
+    expect(restored.getEntries()).toEqual([]);
+    expect(restored.toSnapshotSummary()).toEqual({
+      lookupCount: 2,
+      patchCount: 0,
+      referencedCodebaseIds: ['cb_legacy', 'cb_old_partition'],
+    });
+    expect(JSON.stringify(restored)).not.toContain('PRIVATE_LEGACY_QUERY_CANARY');
+  });
+
+  it('persists only bounded source decisions and references in the active partition', async () => {
+    const ledgerPath = path.join(tmpDir, 'source-decision-ledger.jsonl');
+    const ledger = new CodeLookupLedger(
+      'session-source-decision',
+      100,
+      1,
+      ledgerPath,
+      'context-current',
+    );
+    ledger.record({
+      turn: 1,
+      ts: 1714600000000,
+      toolName: 'search_codebase',
+      codebaseId: 'cb_current',
+      chunkIds: [],
+      returnedReferenceCount: 1,
+      consentApplied: true,
+      tokensSpent: 2,
+      outcome: 'success',
+      legacyPath: false,
+      sourceReferences: [{
+        id: 'caller-controlled',
+        referenceId: 'source-safe',
+        codebaseId: 'cb_current',
+        filePath: 'src/Main.kt',
+        lineRange: {start: 4, end: 7},
+        lookupKind: 'body',
+        snippet: 'PRIVATE_REFERENCE_SNIPPET_CANARY',
+        rootPath: '/PRIVATE_REFERENCE_ROOT_CANARY',
+      }],
+      coverageComplete: false,
+      incompleteReason: 'backend_degraded',
+      sourceUseDecision: {
+        schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['cb_current'],
+        status: 'search_incomplete',
+        reasonCode: 'search_incomplete',
+        attemptedTools: ['search_codebase'],
+        queriedCodebaseIds: ['cb_current'],
+        usedCodebaseIds: ['cb_current'],
+        coverageComplete: false,
+        incompleteReasons: ['backend_degraded'],
+        references: [{
+          referenceId: 'source-safe',
+          codebaseId: 'cb_current',
+          filePath: 'src/Main.kt',
+          lineRange: {start: 4, end: 7},
+          lookupKind: 'body',
+        }],
+      },
+      query: 'PRIVATE_LEDGER_QUERY_CANARY',
+      text: 'PRIVATE_LEDGER_TEXT_CANARY',
+    } as any);
+    await ledger.flush();
+
+    const persisted = fs.readFileSync(ledgerPath, 'utf8');
+    const restored = CodeLookupLedger.restore(
+      'session-source-decision',
+      100,
+      1,
+      ledgerPath,
+      'context-current',
+    );
+
+    expect(persisted).not.toContain('PRIVATE_');
+    expect(restored.getEntries()[0]).toEqual(expect.objectContaining({
+      coverageComplete: false,
+      incompleteReason: 'backend_degraded',
+      sourceReferences: [expect.objectContaining({
+        id: expect.stringMatching(/^source-ref-v1-/),
+        codebaseId: 'cb_current',
+        filePath: 'src/Main.kt',
+      })],
+    }));
+    expect(restored.toSnapshotSummary()).toEqual(expect.objectContaining({
+      lookupCount: 1,
+      patchCount: 0,
+      referencedCodebaseIds: ['cb_current'],
+      usedCodebaseIds: ['cb_current'],
+      sourceUseDecision: expect.objectContaining({
+        schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+        status: 'search_incomplete',
+        incompleteReasons: ['backend_degraded'],
+        references: [expect.objectContaining({filePath: 'src/Main.kt'})],
+      }),
+    }));
   });
 });
 

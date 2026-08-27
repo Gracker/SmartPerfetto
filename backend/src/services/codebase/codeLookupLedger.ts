@@ -6,6 +6,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {backendLogPath} from '../../runtimePaths';
+import {
+  sanitizeSourceIncompleteReason,
+  sanitizeSourceReferences,
+  sanitizeSourceUseDecision,
+  type SourceReferenceV1,
+  type SourceUseDecisionV1,
+} from './sourceUseDecision';
 
 export type CodeLookupOutcome =
   | 'success'
@@ -39,6 +46,11 @@ export interface CodeLookupLedgerEntry {
   legacyPath: boolean;
   /** Non-secret authorization partition. Audit-only entries never grant capability across partitions. */
   authorizationFingerprint?: string;
+  /** Bounded, metadata-only references. Raw source and lookup inputs are never stored. */
+  sourceReferences?: SourceReferenceV1[];
+  coverageComplete?: boolean;
+  incompleteReason?: string;
+  sourceUseDecision?: SourceUseDecisionV1;
 }
 
 export interface CodeLookupSummary {
@@ -52,6 +64,70 @@ export interface CodeLookupSummary {
     knowledgeSourceId: string;
     sourceGenerations: string[];
   }>;
+  sourceUseDecision?: SourceUseDecisionV1;
+}
+
+function boundedLedgerString(value: unknown, maxLength = 256): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (
+    !normalized ||
+    normalized.length > maxLength ||
+    normalized.includes('/') ||
+    normalized.includes('\\') ||
+    normalized.includes('://') ||
+    /[\s\u0000-\u001f\u007f]/.test(normalized)
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function boundedChunkIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(chunkId => boundedLedgerString(chunkId))
+    .filter((chunkId): chunkId is string => Boolean(chunkId));
+}
+
+function normalizeLedgerEntry(
+  entry: Partial<CodeLookupLedgerEntry>,
+  authorizationFingerprint?: string,
+): CodeLookupLedgerEntry {
+  const sourceReferences = sanitizeSourceReferences(entry.sourceReferences);
+  const sourceUseDecision = sanitizeSourceUseDecision(entry.sourceUseDecision);
+  const incompleteReason = sanitizeSourceIncompleteReason(entry.incompleteReason);
+  const codebaseId = boundedLedgerString(entry.codebaseId);
+  const knowledgeSourceId = boundedLedgerString(entry.knowledgeSourceId);
+  const sourceGeneration = boundedLedgerString(entry.sourceGeneration);
+  const storedAuthorizationFingerprint = boundedLedgerString(
+    authorizationFingerprint ?? entry.authorizationFingerprint,
+  );
+  return {
+    turn: Number.isInteger(entry.turn) ? Number(entry.turn) : 0,
+    ts: Number.isFinite(entry.ts) && Number(entry.ts) > 0 ? Number(entry.ts) : Date.now(),
+    toolName: entry.toolName as CodeLookupLedgerEntry['toolName'],
+    ...(codebaseId ? {codebaseId} : {}),
+    ...(knowledgeSourceId ? {knowledgeSourceId} : {}),
+    ...(sourceGeneration ? {sourceGeneration} : {}),
+    chunkIds: boundedChunkIds(entry.chunkIds),
+    ...(Number.isInteger(entry.returnedReferenceCount) && Number(entry.returnedReferenceCount) >= 0
+      ? {returnedReferenceCount: Number(entry.returnedReferenceCount)}
+      : {}),
+    consentApplied: entry.consentApplied === true,
+    tokensSpent: Number.isFinite(entry.tokensSpent) ? Number(entry.tokensSpent) : 0,
+    outcome: entry.outcome as CodeLookupOutcome,
+    legacyPath: entry.legacyPath === true,
+    ...(storedAuthorizationFingerprint
+      ? {authorizationFingerprint: storedAuthorizationFingerprint}
+      : {}),
+    ...(sourceReferences.length > 0 ? {sourceReferences} : {}),
+    ...(typeof entry.coverageComplete === 'boolean'
+      ? {coverageComplete: entry.coverageComplete}
+      : {}),
+    ...(incompleteReason ? {incompleteReason} : {}),
+    ...(sourceUseDecision ? {sourceUseDecision} : {}),
+  };
 }
 
 function defaultLedgerPath(sessionId: string): string {
@@ -93,10 +169,7 @@ export class CodeLookupLedger {
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue;
       const parsed = JSON.parse(line) as Partial<CodeLookupLedgerEntry>;
-      const entry = {
-        ...parsed,
-        chunkIds: Array.isArray(parsed.chunkIds) ? parsed.chunkIds : [],
-      } as CodeLookupLedgerEntry;
+      const entry = normalizeLedgerEntry(parsed);
       ledger.auditEntries.push(entry);
       if (
         authorizationFingerprint === undefined ||
@@ -109,14 +182,7 @@ export class CodeLookupLedger {
   }
 
   record(entry: CodeLookupLedgerEntry): void {
-    const normalized: CodeLookupLedgerEntry = {
-      ...entry,
-      ts: entry.ts || Date.now(),
-      chunkIds: [...entry.chunkIds],
-      ...(this.authorizationFingerprint
-        ? {authorizationFingerprint: this.authorizationFingerprint}
-        : {}),
-    };
+    const normalized = normalizeLedgerEntry(entry, this.authorizationFingerprint);
     this.entries.push(normalized);
     this.auditEntries.push(normalized);
     this.appendQueue = this.appendQueue.then(async () => {
@@ -186,6 +252,10 @@ export class CodeLookupLedger {
       knowledgeSourceId,
       sourceGenerations: Array.from(generations).sort(),
     })).sort((left, right) => left.knowledgeSourceId.localeCompare(right.knowledgeSourceId));
+    const sourceUseDecision = [...this.entries]
+      .reverse()
+      .map(entry => sanitizeSourceUseDecision(entry.sourceUseDecision))
+      .find((decision): decision is SourceUseDecisionV1 => Boolean(decision));
     return {
       lookupCount: this.auditEntries.filter(entry => entry.toolName !== 'propose_patch').length,
       patchCount: this.auditEntries.filter(entry => entry.toolName === 'propose_patch').length,
@@ -194,6 +264,7 @@ export class CodeLookupLedger {
         ? {usedCodebaseIds: Array.from(usedCodebaseIds).sort()}
         : {}),
       ...(usedKnowledgeSources.length > 0 ? {usedKnowledgeSources} : {}),
+      ...(sourceUseDecision ? {sourceUseDecision} : {}),
     };
   }
 

@@ -13,6 +13,7 @@ import type {ClaimVerificationResult} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
 import {sanitizeCodeAwareText} from './codeAwareOutputRegistry';
 import type {CodeLookupSummary} from '../codebase/codeLookupLedger';
+import {sanitizeSourceUseDecision} from '../codebase/sourceUseDecision';
 import {isCodebaseKind} from '../codebase/codebaseRegistry';
 import {sanitizeStoredCapabilityManifestAttribution} from '../capabilityManifest';
 import {sanitizeStoredTraceSummaryAttribution} from '../traceSummaryAttribution';
@@ -94,12 +95,14 @@ function projectPrivateCodeLookupSummary(
     })
     .filter((value): value is NonNullable<typeof value> => Boolean(value))
     .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
+  const sourceUseDecision = sanitizeSourceUseDecision(summary.sourceUseDecision);
   return {
     lookupCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.lookupCount || 0))),
     patchCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.patchCount || 0))),
     referencedCodebaseIds,
     ...(usedCodebaseIds?.length ? {usedCodebaseIds} : {}),
     ...(usedKnowledgeSources?.length ? {usedKnowledgeSources} : {}),
+    ...(sourceUseDecision ? {sourceUseDecision} : {}),
   };
 }
 
@@ -417,6 +420,8 @@ export function projectPrivateSessionStateSnapshot(
   snapshot: SessionStateSnapshot,
 ): SessionStateSnapshot {
   const codeLookupSummary = projectPrivateCodeLookupSummary(snapshot.codeLookupSummary);
+  const sourceUseDecision = sanitizeSourceUseDecision(snapshot.sourceUseDecision) ??
+    codeLookupSummary?.sourceUseDecision;
   const codebaseSnapshot = projectPrivateCodebaseSnapshot(snapshot.codebaseSnapshot);
   const codebaseIds = projectPrivateIdList(snapshot.codebaseIds);
   const knowledgeSourceIds = projectPrivateIdList(snapshot.knowledgeSourceIds);
@@ -467,6 +472,7 @@ export function projectPrivateSessionStateSnapshot(
       ? {knowledgeSourceSnapshot: snapshot.knowledgeSourceSnapshot.map(item => ({...item}))}
       : {}),
     ...(codeLookupSummary ? {codeLookupSummary} : {}),
+    ...(sourceUseDecision ? {sourceUseDecision} : {}),
     runSequence: snapshot.runSequence,
     conversationOrdinal: snapshot.conversationOrdinal,
   };

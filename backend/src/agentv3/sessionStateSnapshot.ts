@@ -29,6 +29,10 @@ import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
 import type { CodeLookupSummary } from '../services/codebase/codeLookupLedger';
+import {
+  sanitizeSourceUseDecision,
+  type SourceUseDecisionV1,
+} from '../services/codebase/sourceUseDecision';
 import type { AgentRuntimeKind } from '../services/providerManager/types';
 import type {OutputLanguage} from './outputLanguage';
 
@@ -421,13 +425,41 @@ export function getQoderSnapshotEngineState(
   };
 }
 
+function normalizeSourceUseSnapshotFields(
+  rawSourceUseDecision: unknown,
+  rawCodeLookupSummary: CodeLookupSummary | undefined,
+): {
+  sourceUseDecision?: SourceUseDecisionV1;
+  codeLookupSummary?: CodeLookupSummary;
+} {
+  const summaryDecision = sanitizeSourceUseDecision(
+    rawCodeLookupSummary?.sourceUseDecision,
+  );
+  const sourceUseDecision = sanitizeSourceUseDecision(rawSourceUseDecision) ?? summaryDecision;
+  if (!rawCodeLookupSummary) {
+    return sourceUseDecision ? {sourceUseDecision} : {};
+  }
+  const {
+    sourceUseDecision: _rawSummaryDecision,
+    ...summaryWithoutSourceUse
+  } = rawCodeLookupSummary;
+  return {
+    ...(sourceUseDecision ? {sourceUseDecision} : {}),
+    codeLookupSummary: {
+      ...summaryWithoutSourceUse,
+      ...(sourceUseDecision ? {sourceUseDecision} : {}),
+    },
+  };
+}
+
 export function normalizeSessionStateSnapshot(
   snapshot: SessionStateSnapshot,
 ): SessionStateSnapshot {
-  if (snapshot.engineState) return snapshot;
+  let normalizedSnapshot = snapshot;
 
   const runtimeKind =
-    snapshot.agentRuntimeKind
+    snapshot.engineState?.kind
+    ?? snapshot.agentRuntimeKind
     ?? (
       snapshot.openAIHistory || snapshot.openAILastResponseId || snapshot.openAIRunState
         ? 'openai-agents-sdk'
@@ -439,8 +471,8 @@ export function normalizeSessionStateSnapshot(
         : undefined
     );
 
-  if (runtimeKind === 'claude-agent-sdk') {
-    return {
+  if (!snapshot.engineState && runtimeKind === 'claude-agent-sdk') {
+    normalizedSnapshot = {
       ...snapshot,
       engineState: createClaudeSnapshotEngineState({
         providerId: snapshot.agentRuntimeProviderId,
@@ -449,10 +481,8 @@ export function normalizeSessionStateSnapshot(
         sdkSessionMode: snapshot.sdkSessionMode,
       }),
     };
-  }
-
-  if (runtimeKind === 'openai-agents-sdk') {
-    return {
+  } else if (!snapshot.engineState && runtimeKind === 'openai-agents-sdk') {
+    normalizedSnapshot = {
       ...snapshot,
       engineState: createOpenAISnapshotEngineState({
         providerId: snapshot.agentRuntimeProviderId,
@@ -462,20 +492,16 @@ export function normalizeSessionStateSnapshot(
         runState: snapshot.openAIRunState,
       }),
     };
-  }
-
-  if (runtimeKind === 'pi-agent-core') {
-    return {
+  } else if (!snapshot.engineState && runtimeKind === 'pi-agent-core') {
+    normalizedSnapshot = {
       ...snapshot,
       engineState: createPiAgentCoreSnapshotEngineState({
         providerId: snapshot.agentRuntimeProviderId,
         providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
       }),
     };
-  }
-
-  if (runtimeKind === 'opencode') {
-    return {
+  } else if (!snapshot.engineState && runtimeKind === 'opencode') {
+    normalizedSnapshot = {
       ...snapshot,
       engineState: createOpenCodeSnapshotEngineState({
         providerId: snapshot.agentRuntimeProviderId,
@@ -484,7 +510,21 @@ export function normalizeSessionStateSnapshot(
     };
   }
 
-  return snapshot;
+  if (
+    normalizedSnapshot.sourceUseDecision === undefined &&
+    normalizedSnapshot.codeLookupSummary?.sourceUseDecision === undefined
+  ) {
+    return normalizedSnapshot;
+  }
+  const {
+    sourceUseDecision: rawSourceUseDecision,
+    codeLookupSummary: rawCodeLookupSummary,
+    ...snapshotWithoutSourceUse
+  } = normalizedSnapshot;
+  return {
+    ...snapshotWithoutSourceUse,
+    ...normalizeSourceUseSnapshotFields(rawSourceUseDecision, rawCodeLookupSummary),
+  };
 }
 
 // =============================================================================
@@ -619,6 +659,8 @@ export interface SessionStateSnapshot {
   }>;
   /** Append-only lookup ledger summary for this session. */
   codeLookupSummary?: CodeLookupSummary;
+  /** Canonical privacy-safe decision describing how selected source was used. */
+  sourceUseDecision?: SourceUseDecisionV1;
 
   // --- Artifact Store (optional, can be large) ---
   artifacts?: StoredArtifact[];
@@ -680,6 +722,7 @@ export interface SessionFieldsForSnapshot {
   knowledgeSourceIds?: string[];
   knowledgeSourceSnapshot?: SessionStateSnapshot['knowledgeSourceSnapshot'];
   codeLookupSummary?: CodeLookupSummary;
+  sourceUseDecision?: SourceUseDecisionV1;
   runSequence: number;
   conversationOrdinal: number;
   activeRun?: SnapshotRunContext;
@@ -703,8 +746,14 @@ export function projectSessionFieldsForDurableSnapshot(
   fields: SessionFieldsForSnapshot,
 ): SessionFieldsForSnapshot {
   if (!sessionFieldsUsePrivateKnowledge(fields)) return fields;
+  const {
+    sourceUseDecision: rawSourceUseDecision,
+    codeLookupSummary: rawCodeLookupSummary,
+    ...fieldsWithoutSourceUse
+  } = fields;
   return {
-    ...fields,
+    ...fieldsWithoutSourceUse,
+    ...normalizeSourceUseSnapshotFields(rawSourceUseDecision, rawCodeLookupSummary),
     comparisonReportSection: undefined,
     conversationSteps: [],
     agentDialogue: [],

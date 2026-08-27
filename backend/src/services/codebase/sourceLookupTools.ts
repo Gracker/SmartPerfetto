@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {normalizeSourceReferencePath} from './sourceUseDecision';
+
 const SOURCE_LOOKUP_TOOLS = new Set([
   'lookup_app_source',
   'lookup_aosp_source',
@@ -12,7 +14,6 @@ const SOURCE_LOOKUP_TOOLS = new Set([
 ]);
 
 const MAX_SOURCE_CODE_REFERENCES = 8;
-const CODE_FILE_PATH = /^[\w.-]+(?:\/[\w.-]+)*\.(?:kt|java|kts|xml|cpp|cc|c|h|hpp|m|mm|swift|rs|go|py|ts|tsx|js|jsx|sql|md)$/i;
 const sourceCodeReferencesByOwner = new WeakMap<object, SourceLookupCodeReference[]>();
 
 export interface SourceLookupCodeReference {
@@ -43,22 +44,7 @@ function parseJson(value: string): unknown {
 }
 
 function normalizeRelativeCodePath(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  let normalized = value.trim().replace(/\\/g, '/');
-  while (normalized.startsWith('./')) normalized = normalized.slice(2);
-  if (
-    !normalized ||
-    normalized.length > 512 ||
-    normalized.startsWith('/') ||
-    /^[a-z]:\//i.test(normalized) ||
-    normalized.includes('://') ||
-    /[\u0000-\u001f\u007f]/.test(normalized)
-  ) {
-    return undefined;
-  }
-  const segments = normalized.split('/');
-  if (segments.some(segment => !segment || segment === '.' || segment === '..')) return undefined;
-  return CODE_FILE_PATH.test(normalized) ? normalized : undefined;
+  return normalizeSourceReferencePath(value);
 }
 
 function normalizeChunkId(value: unknown): string | undefined {
