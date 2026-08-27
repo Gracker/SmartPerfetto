@@ -11,6 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.8.3] - 2026-08-27
+
+### Added
+- Codebase selections that expand after registration can now be explicitly
+  authorized from the AI Assistant with a confirmation that shows the current
+  include and exclude scope.
+
+### Changed
+- npm releases now use a hash-bound GitHub Actions Trusted Publishing workflow
+  with isolated OIDC credentials and an immutable public-release recovery path.
+
+### Fixed
+- Source enumeration and on-demand search now distinguish valid empty results,
+  partial traversal failures, and complete results across ripgrep, Git, and Node
+  backends without treating normal symlinks, sparse entries, deleted files, or
+  uninitialized submodules as permanent reindex failures.
+- Indexed code lookup now reapplies the current source selection and session
+  provider consent, while optional AOSP manifest failures degrade with visible
+  diagnostics instead of blocking an otherwise valid preview.
+
 ## [1.8.2] - 2026-08-26
 
 ### Fixed
