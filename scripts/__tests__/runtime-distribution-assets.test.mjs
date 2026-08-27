@@ -424,6 +424,14 @@ test('npm trusted publishing isolates release packaging from the OIDC publish cr
     'the npm trusted publishing workflow must exist',
   );
 
+  const backendPackage = JSON.parse(
+    readFileSync(join(root, 'backend/package.json'), 'utf8'),
+  );
+  assert.deepEqual(backendPackage.repository, {
+    type: 'git',
+    url: 'https://github.com/Gracker/SmartPerfetto',
+  });
+
   const workflow = readFileSync(workflowPath, 'utf8');
   const packageStart = workflow.indexOf('  package:');
   const publishStart = workflow.indexOf('  publish:');

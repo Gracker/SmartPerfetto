@@ -158,6 +158,9 @@ should use WSL2; native Windows users should use the portable package.
 ## npm CLI Invariants
 
 - `backend/package.json` package name is `@gracker/smartperfetto`.
+- `backend/package.json.repository.url` must be exactly
+  `https://github.com/Gracker/SmartPerfetto`; npm Sigstore provenance validates
+  this metadata against the GitHub Actions repository identity.
 - The package must expose both `smp` and `smartperfetto` bins.
 - `npm --prefix backend run cli:pack-check` must verify package contents before
   publish.

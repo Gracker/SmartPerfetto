@@ -1,7 +1,11 @@
 {
   "name": "@gracker/smartperfetto",
-  "version": "1.8.3",
+  "version": "1.8.4",
   "description": "SmartPerfetto CLI and backend runtime",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Gracker/SmartPerfetto"
+  },
   "main": "dist/index.js",
   "bin": {
     "smp": "dist/cli-user/bin.js",

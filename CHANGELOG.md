@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [1.8.4] - 2026-08-27
+
+### Fixed
+- npm packages now declare the exact SmartPerfetto GitHub repository metadata
+  required for Sigstore provenance validation during Trusted Publishing.
+
 ## [1.8.3] - 2026-08-27
 
 ### Added
