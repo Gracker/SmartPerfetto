@@ -2,11 +2,17 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { EnhancedSessionContext, sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import { SessionPersistenceService } from '../sessionPersistenceService';
 import { persistAgentTurn, refreshPersistedAgentSnapshot } from '../persistAgentSession';
 import { createDataEnvelope } from '../../types/dataContract';
+import {CodeLookupLedger} from '../codebase/codeLookupLedger';
+import {SOURCE_USE_DECISION_SCHEMA_VERSION} from '../codebase/sourceUseDecision';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/codeAwareOutputRegistry';
 
 describe('persistAgentTurn', () => {
@@ -19,6 +25,7 @@ describe('persistAgentTurn', () => {
     sessionContextManager.remove('session-continuity-breaks');
     sessionContextManager.remove('session-trace-summary-refresh');
     sessionContextManager.remove('session-private-durable');
+    sessionContextManager.remove('session-fingerprint-partition');
     clearCodeAwareOutputGuards('session-private-durable');
   });
 
@@ -529,6 +536,118 @@ describe('persistAgentTurn', () => {
     expect((saveSessionStateSnapshot.mock.calls[0] as unknown[])[2])
       .toEqual(expect.objectContaining({clearPrivateContext: true}));
     expect(JSON.stringify(appendMessages.mock.calls[0]?.[1])).not.toContain(canary);
+  });
+
+  it('persists only the current authorization-fingerprint source decision', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'persist-agent-fingerprint-'));
+    const ledgerPath = path.join(tmpDir, 'ledger.jsonl');
+    const sessionId = 'session-fingerprint-partition';
+    const traceId = 'trace-fingerprint-partition';
+    const codebaseId = 'shared-codebase';
+    const currentFingerprint = 'fingerprint-current';
+    const recordDecision = async (
+      fingerprint: string,
+      turn: number,
+      status: 'located' | 'search_incomplete',
+    ): Promise<void> => {
+      const ledger = new CodeLookupLedger(sessionId, 12_000, 2, ledgerPath, fingerprint);
+      ledger.record({
+        turn,
+        ts: turn,
+        toolName: 'search_codebase',
+        codebaseId,
+        chunkIds: [],
+        returnedReferenceCount: 1,
+        consentApplied: true,
+        tokensSpent: 1,
+        outcome: 'success',
+        legacyPath: false,
+        sourceUseDecision: {
+          schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+          codeAwareMode: 'provider_send',
+          selectedCodebaseIds: [codebaseId],
+          status,
+          ...(status === 'search_incomplete'
+            ? {
+                reasonCode: 'search_incomplete' as const,
+                coverageComplete: false,
+                incompleteReasons: ['backend_degraded'],
+              }
+            : {}),
+          attemptedTools: ['search_codebase'],
+          queriedCodebaseIds: [codebaseId],
+          usedCodebaseIds: [codebaseId],
+          references: [],
+        },
+      });
+      await ledger.flush();
+    };
+    await recordDecision(currentFingerprint, 1, 'located');
+    await recordDecision('fingerprint-old', 2, 'search_incomplete');
+
+    const restore = CodeLookupLedger.restore;
+    const restoreSpy = jest.spyOn(CodeLookupLedger, 'restore').mockImplementation(
+      (restoredSessionId, capTokens, capPatches, _sidecarPath, authorizationFingerprint) =>
+        restore(
+          restoredSessionId,
+          capTokens,
+          capPatches,
+          ledgerPath,
+          authorizationFingerprint,
+        ),
+    );
+    const saveSessionStateSnapshot = jest.fn(() => true);
+    jest.spyOn(SessionPersistenceService, 'getInstance').mockReturnValue({
+      saveSessionStateSnapshot,
+      appendMessages: jest.fn(),
+    } as any);
+    sessionContextManager.set(sessionId, traceId, new EnhancedSessionContext(sessionId, traceId));
+
+    try {
+      persistAgentTurn({
+        sessionId,
+        traceId,
+        query: 'analyze source',
+        result: {conclusion: 'done', totalDurationMs: 1},
+        session: {
+          createdAt: 1,
+          analysisContextFingerprint: currentFingerprint,
+          codeAwareMode: 'provider_send',
+          codebaseIds: [codebaseId],
+          result: {success: true},
+          orchestrator: {
+            takeSnapshot: jest.fn((_sessionId: string, _traceId: string, fields: any) => ({
+              version: 1,
+              snapshotTimestamp: 3,
+              sessionId,
+              traceId,
+              ...fields,
+              analysisNotes: [],
+              analysisPlan: null,
+              planHistory: [],
+              uncertaintyFlags: [],
+            })),
+          },
+        } as any,
+      });
+
+      const persisted = (saveSessionStateSnapshot.mock.calls[0] as unknown[])[1] as any;
+      expect(persisted.sourceUseDecision).toEqual(expect.objectContaining({
+        selectedCodebaseIds: [codebaseId],
+        status: 'located',
+      }));
+      expect(persisted.codeLookupSummary?.sourceUseDecision)
+        .toEqual(persisted.sourceUseDecision);
+      expect(restoreSpy).toHaveBeenCalledWith(
+        sessionId,
+        12_000,
+        2,
+        undefined,
+        currentFingerprint,
+      );
+    } finally {
+      fs.rmSync(tmpDir, {recursive: true, force: true});
+    }
   });
 
   it('passes CLI degraded lineage into the atomic session snapshot', () => {
