@@ -108,6 +108,23 @@ describe('AOSP manifest scope discovery', () => {
     }
   });
 
+  posixIt('distinguishes manifest access failures from an absent manifest', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aosp-manifest-access-'));
+    const root = path.join(tmpDir, 'root');
+    const manifestPath = path.join(root, '.repo', 'manifest.xml');
+    fs.mkdirSync(path.dirname(manifestPath), {recursive: true});
+    fs.writeFileSync(manifestPath, '<manifest />');
+    fs.chmodSync(path.dirname(manifestPath), 0o000);
+
+    try {
+      await expect(readAospManifestProjects(root, fs.realpathSync(root)))
+        .rejects.toThrow('aosp_manifest_discovery_failed');
+    } finally {
+      fs.chmodSync(path.dirname(manifestPath), 0o700);
+      fs.rmSync(tmpDir, {recursive: true, force: true});
+    }
+  });
+
   it('returns within a wall-clock timeout when filesystem metadata never resolves', async () => {
     const realpath = jest.spyOn(fs.promises, 'realpath')
       .mockImplementationOnce(async (..._args: any[]) => await new Promise<never>(() => {}));

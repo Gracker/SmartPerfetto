@@ -61,4 +61,14 @@ describe('codebase subprocess hardening', () => {
     }));
     expect(env.SECRET_TOKEN).toBeUndefined();
   });
+
+  it('uses the native Windows null device for git configuration and hooks', () => {
+    const args = hardenedGitPrefixArguments('C:\\repo', 'win32');
+    const env = hardenedGitEnvironment({PATH: 'C:\\Git\\bin'}, 'win32');
+
+    expect(args).toEqual(expect.arrayContaining([
+      'core.hooksPath=NUL',
+    ]));
+    expect(env.GIT_CONFIG_GLOBAL).toBe('NUL');
+  });
 });

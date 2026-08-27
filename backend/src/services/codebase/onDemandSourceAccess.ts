@@ -27,6 +27,7 @@ import {
   createSourceProviderPathPredicate,
 } from './sourceDisclosure';
 import {
+  sourceSelectionCanDescend,
   sourceSelectionForRef,
   sourceSelectionRipgrepArguments,
 } from './sourceSelectionPolicy';
@@ -44,7 +45,6 @@ const RIPGREP_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 const SUBPROCESS_TERMINATION_GRACE_MS = 250;
 const NODE_WALK_MAX_VISITED_ENTRIES = 20_000;
 const NODE_WALK_MAX_DIRECTORIES = 5_000;
-const HARD_SEARCH_EXCLUDE_DIRS = new Set(['.git', '.hg', '.svn', '.repo']);
 
 export type SourceSearchIncompleteReason =
   | 'enumeration_budget'
@@ -159,16 +159,6 @@ function pathHasPrefix(
   const comparableParent = comparable(parent);
   const comparableChild = comparable(child);
   return comparableChild === comparableParent || comparableChild.startsWith(`${comparableParent}/`);
-}
-
-function directoryCanContainPrefix(
-  directory: string,
-  prefixes: readonly string[],
-  platform: NodeJS.Platform,
-): boolean {
-  if (!directory || prefixes.length === 0) return true;
-  return prefixes.some(prefix =>
-    pathHasPrefix(directory, prefix, platform) || pathHasPrefix(prefix, directory, platform));
 }
 
 export class OnDemandSourceAccessService {
@@ -417,7 +407,7 @@ export class OnDemandSourceAccessService {
         return {
           success: true,
           codebaseId: input.codebaseId,
-          matches: result.matches,
+          matches: result.matches.slice(0, maxResults),
           truncated: result.truncated,
           backend: 'node',
           coverageComplete: result.coverageComplete,
@@ -540,8 +530,6 @@ export class OnDemandSourceAccessService {
           '--json',
           '--fixed-strings',
           '--line-number',
-          '--max-count',
-          '1',
           '--no-heading',
           '--color',
           'never',
@@ -660,13 +648,13 @@ export class OnDemandSourceAccessService {
         settled = true;
         clearTimeout(timeout);
         if (killTimer) clearTimeout(killTimer);
-        if (!intentionalCancel && code !== 0 && code !== 1) {
+        if (!intentionalCancel && code !== 0 && code !== 1 && code !== 2) {
           const error = new Error(`ripgrep_search_failed:${code ?? 'signal'}`) as NodeJS.ErrnoException;
           error.code = String(code ?? 'signal');
           reject(error);
           return;
         }
-        const reason = incompleteReason ?? (
+        const reason = incompleteReason ?? (code === 2 ? 'traversal_error' : undefined) ?? (
           stderrObserved || locatorReadError ? 'traversal_error' : undefined
         );
         resolve({
@@ -753,12 +741,12 @@ export class OnDemandSourceAccessService {
           }
           const relativePath = directory ? `${directory}/${entry.name}` : entry.name;
           if (entry.isDirectory()) {
-            if (
-              HARD_SEARCH_EXCLUDE_DIRS.has(this.platform === 'win32'
-                ? entry.name.toLocaleLowerCase('en-US')
-                : entry.name) ||
-              !directoryCanContainPrefix(relativePath, effectivePrefixes, this.platform)
-            ) continue;
+            if (!sourceSelectionCanDescend(
+              selectionPolicy,
+              relativePath,
+              this.platform,
+              effectivePrefixes,
+            )) continue;
             stack.push(relativePath);
             continue;
           }
@@ -805,12 +793,12 @@ export class OnDemandSourceAccessService {
                 lineRange: {start: lineNumber, end: lineNumber},
                 ...sourceTextForMode(lines[index]!, mode),
               });
-              if (matches.length >= maxResults) {
+              if (matches.length > maxResults) {
                 return {
-                  matches,
+                  matches: matches.slice(0, maxResults),
                   truncated: true,
                   coverageComplete: false,
-                  searchIncompleteReason: 'backend_degraded',
+                  searchIncompleteReason: 'enumeration_budget',
                 };
               }
             }

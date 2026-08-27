@@ -69,7 +69,12 @@ async function discoverAospManifestProjects(
   const normalizeIdentity = (value: string): string => process.platform === 'win32'
     ? path.resolve(value).toLocaleLowerCase('en-US')
     : path.resolve(value);
-  const repoRoot = await fsPromises.realpath(rootRealpath);
+  let repoRoot: string;
+  try {
+    repoRoot = await fsPromises.realpath(rootRealpath);
+  } catch {
+    throw new Error('codebase_root_realpath_drift');
+  }
   if (normalizeIdentity(repoRoot) !== normalizeIdentity(expectedRootRealpath)) {
     throw new Error('codebase_root_realpath_drift');
   }
@@ -77,8 +82,9 @@ async function discoverAospManifestProjects(
   let realManifest: string;
   try {
     realManifest = await fsPromises.realpath(manifestPath);
-  } catch {
-    return [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw new Error('aosp_manifest_discovery_failed');
   }
   const repoMetadataRoot = path.join(repoRoot, '.repo');
   const relative = path.relative(repoMetadataRoot, realManifest);
@@ -89,11 +95,24 @@ async function discoverAospManifestProjects(
     maxBytes: MAX_MANIFEST_BYTES,
     deadline,
   });
-  const rootAfterRead = await fsPromises.realpath(rootRealpath);
+  let rootAfterRead: string;
+  try {
+    rootAfterRead = await fsPromises.realpath(rootRealpath);
+  } catch {
+    throw new Error('codebase_root_realpath_drift');
+  }
   if (normalizeIdentity(rootAfterRead) !== normalizeIdentity(expectedRootRealpath)) {
     throw new Error('codebase_root_realpath_drift');
   }
-  const manifestAfterRead = await fsPromises.realpath(manifestPath);
+  let manifestAfterRead: string;
+  try {
+    manifestAfterRead = await fsPromises.realpath(manifestPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error('aosp_manifest_identity_changed');
+    }
+    throw new Error('aosp_manifest_discovery_failed');
+  }
   const afterRelative = path.relative(repoMetadataRoot, manifestAfterRead);
   if (
     normalizeIdentity(manifestAfterRead) !== normalizeIdentity(realManifest) ||

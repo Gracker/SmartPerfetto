@@ -20,6 +20,7 @@ import {
 } from './subprocessHardening';
 import {
   sourceSelectionAdmits,
+  sourceSelectionCanDescend,
   sourceSelectionGitPathspecs,
   sourceSelectionRipgrepArguments,
   type SourceSelectionIR,
@@ -31,7 +32,7 @@ export interface EnumerationResult {
   files: Array<{relativePath: string; sizeBytes: number}>;
   enumerationComplete: boolean;
   deterministic: boolean;
-  incompleteReason?: 'enumeration_budget' | 'time_budget' | 'traversal_error' | 'backend_degraded';
+  incompleteReason?: 'enumeration_budget' | 'time_budget' | 'traversal_error';
   skipped: Array<{relativePath: string; reason: string}>;
   skippedCount: number;
 }
@@ -52,6 +53,9 @@ interface CollectedPaths {
   complete: boolean;
   reason?: EnumerationResult['incompleteReason'];
   stderrObserved: boolean;
+  skipped?: Array<{relativePath: string; reason: string}>;
+  skippedCount?: number;
+  knownNonMaterializedPaths?: ReadonlySet<string>;
 }
 
 interface GitSubmodulePaths {
@@ -68,27 +72,6 @@ interface CandidateInspection {
 
 function normalizeRelative(value: string): string {
   return value.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+/g, '/');
-}
-
-function pathHasPrefix(prefix: string, candidate: string): boolean {
-  return candidate === prefix || candidate.startsWith(`${prefix}/`);
-}
-
-function directoryCanContain(
-  directory: string,
-  policy: SourceSelectionIR,
-  platform: NodeJS.Platform,
-): boolean {
-  const comparable = (value: string): string => platform === 'win32'
-    ? value.toLocaleLowerCase('en-US')
-    : value;
-  const comparableDirectory = comparable(directory);
-  const hardExcludes = new Set(policy.hardExcludeDirs.map(comparable));
-  const segments = comparableDirectory.split('/').filter(Boolean);
-  if (segments.some(segment => hardExcludes.has(segment))) return false;
-  if (policy.includePrefixes.length === 0) return true;
-  return policy.includePrefixes.map(comparable).some(prefix =>
-    pathHasPrefix(comparableDirectory, prefix) || pathHasPrefix(prefix, comparableDirectory));
 }
 
 export class SourceEnumerator {
@@ -149,7 +132,11 @@ export class SourceEnumerator {
           input.policy,
           normalizeRelative(candidate),
           this.platform,
-        ),
+        ) ? candidate : undefined,
+        {
+          completeExitCodes: [0, 1],
+          incompleteExitCodes: {2: 'traversal_error'},
+        },
       );
       return this.materializeCandidates(root, input.policy, 'ripgrep', 'exact', collected, deadline);
     } catch (error) {
@@ -186,6 +173,15 @@ export class SourceEnumerator {
     );
     const submodules = await this.readGitSubmodulePaths(root, policy, startedAt + timeoutMs);
     const paths = [...rootPaths.paths];
+    const skipped = [...(rootPaths.skipped ?? [])];
+    const knownNonMaterializedPaths = new Set(rootPaths.knownNonMaterializedPaths ?? []);
+    let skippedCount = rootPaths.skippedCount ?? 0;
+    const recordSkipped = (relativePath: string, skippedReason: string): void => {
+      skippedCount += 1;
+      if (skipped.length < this.maxSkippedDiagnostics) {
+        skipped.push({relativePath, reason: skippedReason});
+      }
+    };
     let complete = rootPaths.complete && submodules.complete;
     let reason = rootPaths.reason ??
       submodules.reason ??
@@ -205,14 +201,31 @@ export class SourceEnumerator {
       }
       const submoduleRoot = path.join(root, ...submodulePath.split('/'));
       try {
-        const stat = await fsPromises.lstat(submoduleRoot);
+        let stat;
+        try {
+          stat = await fsPromises.lstat(submoduleRoot);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            recordSkipped(submodulePath, 'submodule_not_initialized');
+            continue;
+          }
+          throw error;
+        }
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('submodule_unavailable');
         const real = await fsPromises.realpath(submoduleRoot);
         const relativeReal = path.relative(root, real);
         if (relativeReal.startsWith('..') || path.isAbsolute(relativeReal)) {
           throw new Error('submodule_outside_root');
         }
-        await fsPromises.lstat(path.join(submoduleRoot, '.git'));
+        try {
+          await fsPromises.lstat(path.join(submoduleRoot, '.git'));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+            recordSkipped(submodulePath, 'submodule_not_initialized');
+            continue;
+          }
+          throw error;
+        }
         const nested = await this.collectGitWorktreePaths(
           submoduleRoot,
           [':(literal).'],
@@ -229,6 +242,19 @@ export class SourceEnumerator {
         complete = complete && nested.complete;
         reason ??= nested.reason;
         stderrObserved = stderrObserved || nested.stderrObserved;
+        skippedCount += nested.skippedCount ?? 0;
+        for (const diagnostic of nested.skipped ?? []) {
+          if (skipped.length >= this.maxSkippedDiagnostics) break;
+          skipped.push({
+            relativePath: `${submodulePath}/${normalizeRelative(diagnostic.relativePath)}`,
+            reason: diagnostic.reason,
+          });
+        }
+        for (const relativePath of nested.knownNonMaterializedPaths ?? []) {
+          knownNonMaterializedPaths.add(
+            `${submodulePath}/${normalizeRelative(relativePath)}`,
+          );
+        }
       } catch {
         complete = false;
         reason ??= 'traversal_error';
@@ -244,20 +270,26 @@ export class SourceEnumerator {
       complete,
       ...(reason ? {reason} : {}),
       stderrObserved,
+      skipped,
+      skippedCount,
+      knownNonMaterializedPaths,
     };
   }
 
-  private collectGitWorktreePaths(
+  private async collectGitWorktreePaths(
     root: string,
     pathspecs: string[],
     timeoutMs: number,
     includeIgnored: boolean,
     acceptCandidate: (candidate: string) => boolean,
   ): Promise<CollectedPaths> {
-    return this.collectNullSeparated(
+    const startedAt = Date.now();
+    const gitPrefix = hardenedGitPrefixArguments(root, this.platform);
+    const environment = hardenedGitEnvironment(process.env, this.platform);
+    const collected = await this.collectNullSeparated(
       this.gitPath,
       [
-        ...hardenedGitPrefixArguments(root),
+        ...gitPrefix,
         'ls-files',
         '-z',
         '--cached',
@@ -267,10 +299,46 @@ export class SourceEnumerator {
         ...pathspecs,
       ],
       root,
-      hardenedGitEnvironment(),
+      environment,
       timeoutMs,
-      acceptCandidate,
+      candidate => acceptCandidate(candidate) ? candidate : undefined,
     );
+    const remaining = (): number => Math.max(1, timeoutMs - (Date.now() - startedAt));
+    const deleted = await this.collectNullSeparated(
+      this.gitPath,
+      [...gitPrefix, 'ls-files', '-z', '--deleted', '--', ...pathspecs],
+      root,
+      environment,
+      remaining(),
+      candidate => acceptCandidate(candidate) ? candidate : undefined,
+    );
+    const skipWorktree = await this.collectNullSeparated(
+      this.gitPath,
+      [...gitPrefix, 'ls-files', '-z', '-t', '--cached', '--', ...pathspecs],
+      root,
+      environment,
+      remaining(),
+      candidate => {
+        if (!candidate.startsWith('S ')) return undefined;
+        const relativePath = candidate.slice(2);
+        return acceptCandidate(relativePath) ? relativePath : undefined;
+      },
+    );
+    const deletedPaths = new Set(deleted.paths.map(normalizeRelative));
+    const skippedPaths = [...deletedPaths].sort();
+    const reason = collected.reason ?? deleted.reason ?? skipWorktree.reason;
+    return {
+      paths: collected.paths.filter(candidate => !deletedPaths.has(normalizeRelative(candidate))),
+      complete: collected.complete && deleted.complete && skipWorktree.complete,
+      ...(reason ? {reason} : {}),
+      stderrObserved: collected.stderrObserved || deleted.stderrObserved || skipWorktree.stderrObserved,
+      skipped: skippedPaths.slice(0, this.maxSkippedDiagnostics).map(relativePath => ({
+        relativePath,
+        reason: 'source_path_not_materialized',
+      })),
+      skippedCount: skippedPaths.length,
+      knownNonMaterializedPaths: new Set(skipWorktree.paths.map(normalizeRelative)),
+    };
   }
 
   private async readGitSubmodulePaths(
@@ -312,7 +380,7 @@ export class SourceEnumerator {
         complete = false;
         continue;
       }
-      if (directoryCanContain(candidate, policy, this.platform)) paths.push(candidate);
+      if (sourceSelectionCanDescend(policy, candidate, this.platform)) paths.push(candidate);
       if (paths.length > 256) return {paths: paths.slice(0, 256), complete: false};
     }
     return {paths: [...new Set(paths)].sort(), complete};
@@ -324,7 +392,11 @@ export class SourceEnumerator {
     cwd: string,
     env: NodeJS.ProcessEnv,
     timeoutMs: number,
-    acceptCandidate: (candidate: string) => boolean,
+    mapCandidate: (candidate: string) => string | undefined,
+    exitPolicy: {
+      completeExitCodes?: readonly number[];
+      incompleteExitCodes?: Readonly<Partial<Record<number, EnumerationResult['incompleteReason']>>>;
+    } = {},
   ): Promise<CollectedPaths> {
     return new Promise((resolve, reject) => {
       const child = spawn(command, args, {cwd, env, stdio: ['ignore', 'pipe', 'pipe']});
@@ -356,13 +428,12 @@ export class SourceEnumerator {
         while (separator >= 0 && !intentionalCancel) {
           const candidate = buffer.subarray(0, separator).toString('utf8');
           buffer = buffer.subarray(separator + 1);
-          if (candidate && acceptCandidate(candidate)) {
-            paths.push(candidate);
-          }
+          const accepted = candidate ? mapCandidate(candidate) : undefined;
+          if (accepted) paths.push(accepted);
           if (paths.length > this.maxVisitedEntries) terminate('enumeration_budget');
           separator = buffer.indexOf(0);
         }
-        if (buffer.length > 4096) terminate('enumeration_budget');
+        if (buffer.length > 16 * 1024) terminate('traversal_error');
       });
       child.stderr.on('data', () => {
         stderrObserved = true;
@@ -377,13 +448,23 @@ export class SourceEnumerator {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        if (!intentionalCancel && code !== 0) {
+        const completeExitCodes = exitPolicy.completeExitCodes ?? [0];
+        const incompleteExitCode = code === null
+          ? undefined
+          : exitPolicy.incompleteExitCodes?.[code];
+        if (
+          !intentionalCancel &&
+          !completeExitCodes.includes(code ?? -1) &&
+          !incompleteExitCode
+        ) {
           const error = new Error(`source_enumerator_failed:${code ?? 'signal'}`) as NodeJS.ErrnoException;
           error.code = String(code ?? 'signal');
           reject(error);
           return;
         }
-        const finalReason = reason ?? (stderrObserved ? 'traversal_error' : undefined);
+        const finalReason = reason ?? incompleteExitCode ?? (
+          stderrObserved || buffer.length > 0 ? 'traversal_error' : undefined
+        );
         resolve({
           paths,
           complete: finalReason === undefined,
@@ -405,8 +486,9 @@ export class SourceEnumerator {
     deadline: number,
   ): Promise<EnumerationResult> {
     const files: EnumerationResult['files'] = [];
-    const skipped: EnumerationResult['skipped'] = [];
-    let skippedCount = 0;
+    const skipped: EnumerationResult['skipped'] = [...(collected.skipped ?? [])]
+      .slice(0, this.maxSkippedDiagnostics);
+    let skippedCount = collected.skippedCount ?? 0;
     let traversalError = false;
     const recordSkipped = (relativePath: string, reason: string): void => {
       skippedCount += 1;
@@ -431,9 +513,16 @@ export class SourceEnumerator {
         if (inspected.file) files.push(inspected.file);
         if (inspected.reason) recordSkipped(candidate, inspected.reason);
         traversalError = traversalError || inspected.traversalError;
-      } catch {
-        traversalError = true;
-        recordSkipped(candidate, 'traversal_error');
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+          collected.knownNonMaterializedPaths?.has(candidate)
+        ) {
+          recordSkipped(candidate, 'source_path_not_materialized');
+        } else {
+          traversalError = true;
+          recordSkipped(candidate, 'traversal_error');
+        }
       }
       if (Date.now() >= deadline) {
         return {
@@ -470,7 +559,7 @@ export class SourceEnumerator {
     const absolute = path.join(root, ...relativePath.split('/'));
     const stat = await fsPromises.lstat(absolute);
     if (!stat.isFile() || stat.isSymbolicLink()) {
-      return {reason: 'source_path_not_regular_file', traversalError: true};
+      return {reason: 'source_path_not_regular_file', traversalError: false};
     }
     if (stat.size > maxFileBytes) {
       return {reason: 'source_file_too_large', traversalError: false};
@@ -533,7 +622,9 @@ export class SourceEnumerator {
         }
         const relativePath = directory ? `${directory}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
-          if (directoryCanContain(relativePath, policy, this.platform)) stack.push(relativePath);
+          if (sourceSelectionCanDescend(policy, relativePath, this.platform)) {
+            stack.push(relativePath);
+          }
           continue;
         }
         if (!entry.isFile() || !sourceSelectionAdmits(policy, relativePath, this.platform)) continue;
@@ -560,7 +651,7 @@ export class SourceEnumerator {
       }
     }
     files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-    return this.nodeResult(files, skipped, skippedCount, true, 'backend_degraded');
+    return this.nodeResult(files, skipped, skippedCount, true);
   }
 
   private nodeResult(
@@ -568,7 +659,7 @@ export class SourceEnumerator {
     skipped: EnumerationResult['skipped'],
     skippedCount: number,
     complete: boolean,
-    reason: EnumerationResult['incompleteReason'],
+    reason?: EnumerationResult['incompleteReason'],
   ): EnumerationResult {
     return {
       backend: 'node-walk',
@@ -576,7 +667,7 @@ export class SourceEnumerator {
       files,
       enumerationComplete: complete,
       deterministic: complete,
-      incompleteReason: reason,
+      ...(reason ? {incompleteReason: reason} : {}),
       skipped,
       skippedCount,
     };

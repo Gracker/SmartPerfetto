@@ -24,6 +24,82 @@ afterEach(() => {
 });
 
 describe('SourceEnumerator', () => {
+  const posixIt = process.platform === 'win32' ? it.skip : it;
+
+  function writeFakeEnumerator(name: string, source: string): string {
+    const executable = path.join(tmpDir, name);
+    fs.writeFileSync(executable, ['#!/usr/bin/env node', source, ''].join('\n'));
+    fs.chmodSync(executable, 0o755);
+    return executable;
+  }
+
+  posixIt('treats ripgrep exit 1 as a complete empty enumeration', async () => {
+    const root = path.join(tmpDir, 'empty-rg');
+    fs.mkdirSync(root, {recursive: true});
+    const ripgrepPath = writeFakeEnumerator('fake-empty-rg', 'process.exitCode = 1;');
+
+    const result = await new SourceEnumerator({ripgrepPath}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      backend: 'ripgrep',
+      enumerationComplete: true,
+      deterministic: true,
+      files: [],
+    }));
+  });
+
+  posixIt('preserves ripgrep exit 2 partial paths as incomplete traversal results', async () => {
+    const root = path.join(tmpDir, 'partial-rg');
+    fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'src', 'Main.kt'), 'class Main\n');
+    const ripgrepPath = writeFakeEnumerator('fake-partial-rg', [
+      "process.stdout.write(Buffer.from('src/Main.kt\\0'));",
+      'process.exitCode = 2;',
+    ].join('\n'));
+
+    const result = await new SourceEnumerator({ripgrepPath}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({
+        kind: 'app_source',
+        includePrefixes: ['src', 'missing'],
+      }),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      backend: 'ripgrep',
+      enumerationComplete: false,
+      deterministic: false,
+      incompleteReason: 'traversal_error',
+      files: [{relativePath: 'src/Main.kt', sizeBytes: expect.any(Number)}],
+    }));
+  });
+
+  posixIt('classifies an overlong unterminated path record as traversal failure', async () => {
+    const root = path.join(tmpDir, 'long-rg-record');
+    fs.mkdirSync(root, {recursive: true});
+    const ripgrepPath = writeFakeEnumerator('fake-long-rg', [
+      "process.stdout.write('x'.repeat(5000));",
+      'process.exitCode = 0;',
+    ].join('\n'));
+
+    const result = await new SourceEnumerator({ripgrepPath}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      backend: 'ripgrep',
+      enumerationComplete: false,
+      incompleteReason: 'traversal_error',
+    }));
+  });
+
   it('falls back to a bounded node walk and reports degraded fidelity', async () => {
     const root = path.join(tmpDir, 'repo');
     fs.mkdirSync(path.join(root, 'src'), {recursive: true});
@@ -93,6 +169,33 @@ describe('SourceEnumerator', () => {
 
     expect(result.enumerationComplete).toBe(true);
     expect(result.files.map(file => file.relativePath)).toEqual(['src/trace_processor/engine.cc']);
+  });
+
+  it('prunes unselected noise directories before they consume node-walk budgets', async () => {
+    const root = path.join(tmpDir, 'noise-budget');
+    fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+    fs.mkdirSync(path.join(root, 'node_modules', 'large'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'src', 'Main.kt'), 'class Main\n');
+    for (let index = 0; index < 30; index += 1) {
+      fs.writeFileSync(
+        path.join(root, 'node_modules', 'large', `Dependency${index}.ts`),
+        `export const dependency${index} = true;\n`,
+      );
+    }
+
+    const result = await new SourceEnumerator({
+      ripgrepPath: '__missing_rg__',
+      gitPath: '__missing_git__',
+      maxVisitedEntries: 8,
+    }).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result.enumerationComplete).toBe(true);
+    expect(result.incompleteReason).toBeUndefined();
+    expect(result.files.map(file => file.relativePath)).toEqual(['src/Main.kt']);
   });
 
   it.each([
@@ -438,7 +541,6 @@ describe('SourceEnumerator', () => {
     }));
   });
 
-  const posixIt = process.platform === 'win32' ? it.skip : it;
   posixIt.each([
     ['ripgrep', false],
     ['git', true],
@@ -450,6 +552,8 @@ describe('SourceEnumerator', () => {
     const disallowed = Array.from({length: 100}, (_, index) => `assets/blob-${index}.bin`);
     fs.writeFileSync(executable, [
       '#!/usr/bin/env node',
+      "const args = process.argv.slice(2);",
+      "if (args.includes('--deleted') || args.includes('-t')) process.exit(0);",
       `process.stdout.write(Buffer.from(${JSON.stringify([...disallowed, 'src/Main.kt'].join('\0') + '\0')}, 'utf8'));`,
     ].join('\n'));
     fs.chmodSync(executable, 0o755);
@@ -497,6 +601,121 @@ describe('SourceEnumerator', () => {
       enumerationComplete: false,
       incompleteReason: 'enumeration_budget',
     }));
+  });
+
+  posixIt('keeps tracked symlink exclusions complete in the git backend', async () => {
+    const root = path.join(tmpDir, 'git-symlink');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    fs.symlinkSync('Main.kt', path.join(root, 'Alias.kt'));
+    execFileSync('git', ['init', '-q'], {cwd: root});
+    execFileSync('git', ['add', 'Main.kt', 'Alias.kt'], {cwd: root});
+
+    const result = await new SourceEnumerator({ripgrepPath: '__missing_rg__'}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result.enumerationComplete).toBe(true);
+    expect(result.files.map(file => file.relativePath)).toEqual(['Main.kt']);
+    expect(result.skipped).toContainEqual({
+      relativePath: 'Alias.kt',
+      reason: 'source_path_not_regular_file',
+    });
+  });
+
+  posixIt.each([
+    ['deleted tracked file', false],
+    ['skip-worktree file', true],
+  ] as const)('keeps a %s as an explicit non-materialized git diagnostic', async (
+    _label,
+    skipWorktree,
+  ) => {
+    const root = path.join(tmpDir, `git-missing-${skipWorktree ? 'sparse' : 'deleted'}`);
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Keep.kt'), 'class Keep\n');
+    fs.writeFileSync(path.join(root, 'Missing.kt'), 'class Missing\n');
+    execFileSync('git', ['init', '-q'], {cwd: root});
+    execFileSync('git', ['add', 'Keep.kt', 'Missing.kt'], {cwd: root});
+    fs.unlinkSync(path.join(root, 'Missing.kt'));
+    if (skipWorktree) {
+      execFileSync('git', ['update-index', '--skip-worktree', 'Missing.kt'], {cwd: root});
+    }
+
+    const result = await new SourceEnumerator({ripgrepPath: '__missing_rg__'}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result.enumerationComplete).toBe(true);
+    expect(result.files.map(file => file.relativePath)).toEqual(['Keep.kt']);
+    expect(result.skipped).toContainEqual({
+      relativePath: 'Missing.kt',
+      reason: 'source_path_not_materialized',
+    });
+  });
+
+  posixIt('keeps a materialized skip-worktree source file in git enumeration', async () => {
+    const root = path.join(tmpDir, 'git-materialized-skip-worktree');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Present.kt'), 'class Present\n');
+    execFileSync('git', ['init', '-q'], {cwd: root});
+    execFileSync('git', ['add', 'Present.kt'], {cwd: root});
+    execFileSync('git', ['update-index', '--skip-worktree', 'Present.kt'], {cwd: root});
+
+    const result = await new SourceEnumerator({ripgrepPath: '__missing_rg__'}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result.enumerationComplete).toBe(true);
+    expect(result.files.map(file => file.relativePath)).toEqual(['Present.kt']);
+    expect(result.skipped).not.toContainEqual({
+      relativePath: 'Present.kt',
+      reason: 'source_path_not_materialized',
+    });
+  });
+
+  posixIt('keeps an uninitialized tracked submodule as a skipped diagnostic', async () => {
+    const child = path.join(tmpDir, 'uninitialized-child');
+    fs.mkdirSync(child, {recursive: true});
+    fs.writeFileSync(path.join(child, 'Child.kt'), 'class Child\n');
+    execFileSync('git', ['init', '-q'], {cwd: child});
+    execFileSync('git', ['add', 'Child.kt'], {cwd: child});
+    execFileSync(
+      'git',
+      ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-qm', 'child'],
+      {cwd: child},
+    );
+
+    const root = path.join(tmpDir, 'uninitialized-parent');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
+    execFileSync('git', ['init', '-q'], {cwd: root});
+    execFileSync('git', ['add', 'Main.kt'], {cwd: root});
+    execFileSync(
+      'git',
+      ['-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', child, 'vendor/child'],
+      {cwd: root},
+    );
+    execFileSync('git', ['add', '.gitmodules', 'vendor/child'], {cwd: root});
+    execFileSync('git', ['submodule', 'deinit', '-f', '--', 'vendor/child'], {cwd: root});
+
+    const result = await new SourceEnumerator({ripgrepPath: '__missing_rg__'}).enumerate({
+      rootRealpath: fs.realpathSync(root),
+      policy: buildSourceSelectionIR({kind: 'app_source'}),
+      gate: new PathSecurityGate({allowlistRoots: [root]}),
+    });
+
+    expect(result.enumerationComplete).toBe(true);
+    expect(result.files.map(file => file.relativePath)).toEqual(['Main.kt']);
+    expect(result.skipped).toContainEqual({
+      relativePath: 'vendor/child',
+      reason: 'submodule_not_initialized',
+    });
   });
 
   it('streams node fallback directories before applying the entry budget', async () => {

@@ -74,6 +74,21 @@ describe('smp codebase command handlers', () => {
     expect(fs.existsSync(path.join(sessionDir, 'codebase_registry.json'))).toBe(false);
   });
 
+  it('keeps the empty-selection code stable and prints an actionable explanation', async () => {
+    const emptyRoot = path.join(tmpDir, 'empty-repo');
+    fs.mkdirSync(emptyRoot, {recursive: true});
+
+    const code = await runCodebaseRegisterCommand({
+      rootPath: emptyRoot,
+      kind: 'app_source',
+      sessionDir,
+    });
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.join('\n')).toContain('effective_source_selection_empty');
+    expect(errorSpy.mock.calls.join('\n')).toMatch(/no source files.*filter|filter.*no source files/i);
+  });
+
   it.each([
     ['kernel_source', {pathFilters: ['drivers/android'] as string[]}, 'vendor'],
     ['kernel_source', {vendor: 'mtk'}, 'pathFilters'],
