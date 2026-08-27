@@ -521,7 +521,7 @@ describe('AppSourceIngester', () => {
     expect(narrowed.selectionPolicyRevision).toBe(2);
     expect(registry.get(ref.codebaseId)).toEqual(expect.objectContaining({
       activeIndexState: 'none',
-      reindexRequired: 'selection_scope_narrowed',
+      reindexRequired: 'selection_scope_changed',
     }));
     expect(store.listChunks({scope: ref})).toHaveLength(0);
   });

@@ -49,21 +49,27 @@ export function hardenedRipgrepPrefixArguments(maxFileBytes: number): string[] {
 
 export function hardenedGitEnvironment(
   source: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): NodeJS.ProcessEnv {
+  const nullDevice = platform === 'win32' ? 'NUL' : '/dev/null';
   return minimalSubprocessEnvironment(source, {
     GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_GLOBAL: nullDevice,
     GIT_OPTIONAL_LOCKS: '0',
     GIT_TERMINAL_PROMPT: '0',
   });
 }
 
-export function hardenedGitPrefixArguments(root: string): string[] {
+export function hardenedGitPrefixArguments(
+  root: string,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const nullDevice = platform === 'win32' ? 'NUL' : '/dev/null';
   return [
     '-c',
     'core.fsmonitor=false',
     '-c',
-    'core.hooksPath=/dev/null',
+    `core.hooksPath=${nullDevice}`,
     '-C',
     root,
   ];

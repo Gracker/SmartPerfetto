@@ -509,6 +509,42 @@ describe('Android Internals Wiki routes', () => {
 });
 
 describe('codebase routes', () => {
+  it('keeps AOSP preview available when optional manifest metadata is too large', async () => {
+    const root = path.join(tmpDir, 'aosp-large-manifest');
+    fs.mkdirSync(path.join(root, '.repo'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'Main.java'), 'class Main {}\n');
+    fs.writeFileSync(
+      path.join(root, '.repo', 'manifest.xml'),
+      `<manifest>${' '.repeat(4 * 1024 * 1024)}</manifest>`,
+    );
+
+    const response = await request(app)
+      .post('/api/rag/codebases/preview')
+      .send({rootPath: root, kind: 'aosp'});
+
+    expect(response.status).toBe(200);
+    expect(response.body.preview).toEqual(expect.objectContaining({
+      acceptedFileCount: 1,
+      manifestUnavailableReason: 'source_metadata_too_large',
+    }));
+  });
+
+  it('keeps the empty-selection error stable and adds a human-readable hint', async () => {
+    const root = path.join(tmpDir, 'empty-codebase');
+    fs.mkdirSync(root, {recursive: true});
+
+    const response = await request(app)
+      .post('/api/rag/codebases/register')
+      .send({rootPath: root, kind: 'app_source'});
+
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual(expect.objectContaining({
+      error: 'effective_source_selection_empty',
+      message: expect.stringMatching(/no source files/i),
+      hint: expect.stringMatching(/filter|path|extension/i),
+    }));
+  });
+
   it('selects, previews, and registers a local folder outside the configured allowlist', async () => {
     externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-selected-root-'));
     fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class SelectedMain\n');
@@ -1023,6 +1059,37 @@ describe('codebase routes', () => {
     const ambiguous = await request(app)
       .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeAvailableExtensions: true, sendToProvider: false});
+    expect(ambiguous.status).toBe(400);
+    expect(ambiguous.body.error).toContain('mutually exclusive');
+  });
+
+  it('explicitly authorizes the current selection scope and rejects ambiguous consent actions', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Expanded selection',
+      rootPath: tmpDir,
+      pathFilters: ['app'],
+      sendToProvider: true,
+      ...DEFAULT_SCOPE,
+    });
+    registry.updateSelectionPolicy(ref.codebaseId, DEFAULT_SCOPE, {
+      pathFilters: ['app', 'lib'],
+      excludeGlobs: [],
+    });
+
+    const response = await request(app)
+      .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeCurrentSelection: true});
+    const ambiguous = await request(app)
+      .patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
+      .send({authorizeCurrentSelection: true, authorizeAvailableExtensions: true});
+
+    expect(response.status).toBe(200);
+    expect(response.body.codebase).toMatchObject({providerGrantScopeCurrent: true});
+    expect(registry.get(ref.codebaseId, DEFAULT_SCOPE)?.consent.grant).toMatchObject({
+      includePrefixes: ['app', 'lib'],
+      excludeGlobs: [],
+    });
     expect(ambiguous.status).toBe(400);
     expect(ambiguous.body.error).toContain('mutually exclusive');
   });

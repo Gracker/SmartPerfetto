@@ -139,7 +139,10 @@ export interface CodebaseRef {
   pendingGeneration?: PendingCodebaseGeneration;
   lastAttemptCoverage?: IndexCoverage;
   maintenanceWarning?: 'inactive_chunk_cleanup_failed' | 'pending_generation_expired';
-  reindexRequired?: 'selection_scope_narrowed';
+  reindexRequired?:
+    | 'selection_scope_narrowed'
+    | 'selection_scope_changed'
+    | 'provider_language_scope_expanded';
   /** Git HEAD observed while the active generation was indexed, when available. */
   indexedRevision?: string;
   /** Whether the indexed checkout had uncommitted or untracked changes. */
@@ -169,11 +172,14 @@ export interface CodebaseRefSummary {
   commitHash?: string;
   vendor?: string;
   buildId?: string;
+  pathFilters?: string[];
+  excludeGlobs?: string[];
   indexGeneration: number;
   activeGeneration?: string;
   activeIndexState: 'active' | 'none';
   selectionPolicyRevision: number;
   grantRevision: number;
+  providerGrantScopeCurrent: boolean;
   availableNotConsentedExtensions: string[];
   activeIndexCoverage?: IndexCoverage;
   pendingGeneration?: PendingCodebaseGeneration;
@@ -294,6 +300,24 @@ function sameScope(ref: CodebaseRef, scope: CodebaseScope = {}): boolean {
     left.userId === right.userId;
 }
 
+function listsEqual(left?: readonly string[], right?: readonly string[]): boolean {
+  const normalizedLeft = left ?? [];
+  const normalizedRight = right ?? [];
+  return normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+export function codebaseProviderGrantScopeCurrent(ref: CodebaseRef): boolean {
+  const grant = effectiveConsentGrant(ref);
+  const selection = buildSourceSelectionIR({
+    kind: ref.kind,
+    includePrefixes: ref.pathFilters,
+    excludeGlobs: ref.excludeGlobs,
+  });
+  return listsEqual(grant.includePrefixes, selection.includePrefixes) &&
+    listsEqual(grant.excludeGlobs, selection.excludeGlobs);
+}
+
 function ingestLeaseKey(codebaseId: string, scope: CodebaseScope): string {
   const resolved = resolveCodebaseScope(scope);
   return [codebaseId, resolved.tenantId, resolved.workspaceId, resolved.userId].join('\0');
@@ -312,11 +336,14 @@ function toSummary(ref: CodebaseRef): CodebaseRefSummary {
     ...(ref.commitHash ? {commitHash: ref.commitHash} : {}),
     ...(ref.vendor ? {vendor: ref.vendor} : {}),
     ...(ref.buildId ? {buildId: ref.buildId} : {}),
+    ...(ref.pathFilters ? {pathFilters: [...ref.pathFilters]} : {}),
+    ...(ref.excludeGlobs ? {excludeGlobs: [...ref.excludeGlobs]} : {}),
     indexGeneration: ref.indexGeneration,
     ...(ref.activeGeneration ? {activeGeneration: ref.activeGeneration} : {}),
     activeIndexState: ref.activeIndexState ?? 'none',
     selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
     grantRevision: effectiveConsentGrant(ref).revision,
+    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref),
     availableNotConsentedExtensions: sourceExtensionsForKind(ref.kind)
       .filter(extension => !effectiveConsentGrant(ref).extensions.includes(extension)),
     ...(ref.activeIndexCoverage ? {activeIndexCoverage: ref.activeIndexCoverage} : {}),
@@ -659,12 +686,6 @@ export class CodebaseRegistry {
       if (existing.kind === 'kernel_source' && !pathFilters?.length) {
         throw new Error('kernel_source requires pathFilters');
       }
-      const listsEqual = (left?: readonly string[], right?: readonly string[]): boolean => {
-        const normalizedLeft = left ?? [];
-        const normalizedRight = right ?? [];
-        return normalizedLeft.length === normalizedRight.length &&
-          normalizedLeft.every((value, index) => value === normalizedRight[index]);
-      };
       if (
         listsEqual(existing.pathFilters, pathFilters) &&
         listsEqual(existing.excludeGlobs, excludeGlobs)
@@ -681,7 +702,7 @@ export class CodebaseRegistry {
         contentFingerprint: undefined,
         chunkCount: 0,
         pendingGeneration: undefined,
-        reindexRequired: 'selection_scope_narrowed',
+        reindexRequired: 'selection_scope_changed',
         updatedAt: Date.now(),
       };
     });
@@ -699,6 +720,8 @@ export class CodebaseRegistry {
       if (!existing.consent.sendToProvider) throw new Error('provider_send_consent_required');
       const now = Date.now();
       const grant = effectiveConsentGrant(existing);
+      const extensions = [...sourceExtensionsForKind(existing.kind)];
+      const scopeExpanded = extensions.some(extension => !grant.extensions.includes(extension));
       return {
         ...existing,
         consent: {
@@ -710,7 +733,52 @@ export class CodebaseRegistry {
             revision: grant.revision + 1,
             grantedAt: now,
             grantedBy: actor,
-            extensions: [...sourceExtensionsForKind(existing.kind)],
+            extensions,
+          },
+        },
+        pendingGeneration: undefined,
+        reindexRequired: scopeExpanded && activeCodebaseGeneration(existing)
+          ? 'provider_language_scope_expanded'
+          : existing.reindexRequired,
+        updatedAt: now,
+      };
+    });
+    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    return updated;
+  }
+
+  authorizeCurrentSelection(
+    codebaseId: string,
+    scope: CodebaseScope,
+    actor: string,
+  ): CodebaseRef {
+    const updated = this.mutate(codebaseId, scope, existing => {
+      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (!existing.consent.sendToProvider) throw new Error('provider_send_consent_required');
+      const now = Date.now();
+      const grant = effectiveConsentGrant(existing);
+      const selection = buildSourceSelectionIR({
+        kind: existing.kind,
+        includePrefixes: existing.pathFilters,
+        excludeGlobs: existing.excludeGlobs,
+      });
+      if (
+        listsEqual(grant.includePrefixes, selection.includePrefixes) &&
+        listsEqual(grant.excludeGlobs, selection.excludeGlobs)
+      ) return existing;
+      return {
+        ...existing,
+        consent: {
+          ...existing.consent,
+          consentedAt: now,
+          consentedBy: actor,
+          grant: {
+            ...grant,
+            revision: grant.revision + 1,
+            grantedAt: now,
+            grantedBy: actor,
+            includePrefixes: [...selection.includePrefixes],
+            excludeGlobs: [...selection.excludeGlobs],
           },
         },
         pendingGeneration: undefined,

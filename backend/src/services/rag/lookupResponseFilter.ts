@@ -9,6 +9,7 @@ import type {
 } from '../../types/sparkContracts';
 import {activeCodebaseGeneration, type CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
+import {sourceSelectionAdmits, sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
 import type {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {redactSecrets} from '../security/secretPatterns';
 import {registerCodeAwareLookupForEcho} from '../security/codeAwareOutputRegistry';
@@ -390,9 +391,46 @@ export async function filterRagLookup(
       continue;
     }
 
+    if (!chunk.filePath) {
+      hits.push({
+        chunkId: hit.chunkId,
+        score: hit.score,
+        metadata: metadata(chunk),
+        unsupportedReason: 'invalid_codebase_metadata',
+      });
+      ctx.ledger?.record({
+        turn: ctx.turn,
+        ts: Date.now(),
+        toolName: ctx.toolName,
+        codebaseId: chunk.codebaseId,
+        chunkIds: [],
+        consentApplied: false,
+        tokensSpent: 0,
+        outcome: 'rejected',
+        legacyPath: false,
+      });
+      continue;
+    }
+
+    if (!sourceSelectionAdmits(sourceSelectionForRef(ref), chunk.filePath)) {
+      ctx.ledger?.record({
+        turn: ctx.turn,
+        ts: Date.now(),
+        toolName: ctx.toolName,
+        codebaseId: chunk.codebaseId,
+        chunkIds: [],
+        consentApplied: false,
+        tokensSpent: 0,
+        outcome: 'rejected',
+        legacyPath: false,
+      });
+      continue;
+    }
+
     if (
       ref.consent.sendToProvider &&
-      (!chunk.filePath || !sourcePathAllowedForProvider(ref, chunk.filePath))
+      ctx.allowProviderSend !== false &&
+      !sourcePathAllowedForProvider(ref, chunk.filePath)
     ) {
       ctx.ledger?.record({
         turn: ctx.turn,

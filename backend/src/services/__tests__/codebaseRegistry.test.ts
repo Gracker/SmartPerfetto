@@ -77,6 +77,8 @@ describe('CodebaseRegistry', () => {
       kind: 'app_source',
       displayName: 'HighPerformance',
       rootPath: tmpDir,
+      pathFilters: ['src', 'lib'],
+      excludeGlobs: ['**/generated/**'],
       sendToProvider: true,
       userId: 'user-a',
     });
@@ -97,6 +99,8 @@ describe('CodebaseRegistry', () => {
     expect(summary.rootPath).toBeUndefined();
     expect(summary.eligibleForSendToProvider).toBe(true);
     expect(summary).toMatchObject({
+      pathFilters: ['lib', 'src'],
+      excludeGlobs: ['**/generated/**'],
       lastIngestStatus: 'ok',
       lastIngestAt: 123,
       lastIngestError: 'one file was skipped',
@@ -204,6 +208,59 @@ describe('CodebaseRegistry', () => {
     const updated = registry.authorizeAvailableExtensions(consented.codebaseId, {}, 'user');
     expect(updated.consent.sendToProvider).toBe(true);
     expect(updated.consent.grant!.revision).toBe(consented.consent.grant!.revision + 1);
+  });
+
+  it('explicitly authorizes the current selection scope without changing language consent', () => {
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'selection-consent.json'));
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Scoped app',
+      rootPath: tmpDir,
+      pathFilters: ['app'],
+      excludeGlobs: ['**/generated/**'],
+      sendToProvider: true,
+    });
+    const changed = registry.updateSelectionPolicy(ref.codebaseId, {}, {
+      pathFilters: ['app', 'lib'],
+      excludeGlobs: [],
+    });
+
+    expect(registry.list()[0]).toMatchObject({providerGrantScopeCurrent: false});
+    const previousExtensions = [...changed.consent.grant!.extensions];
+    const authorized = (registry as any).authorizeCurrentSelection(ref.codebaseId, {}, 'user');
+
+    expect(authorized.consent.grant).toMatchObject({
+      revision: changed.consent.grant!.revision + 1,
+      includePrefixes: ['app', 'lib'],
+      excludeGlobs: [],
+      extensions: previousExtensions,
+    });
+    expect(registry.list()[0]).toMatchObject({providerGrantScopeCurrent: true});
+  });
+
+  it('marks an active legacy index for rebuild after new languages are authorized', () => {
+    const registryPath = path.join(tmpDir, 'extension-reindex.json');
+    const registry = new CodebaseRegistry(registryPath);
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Legacy index',
+      rootPath: tmpDir,
+      sendToProvider: true,
+    });
+    registry.activateIndexGeneration(ref.codebaseId, {}, ref.indexGeneration, {
+      lastIngestStatus: 'ok',
+      activeGeneration: 'legacy-active',
+      contentFingerprint: 'legacy-content',
+      chunkCount: 1,
+    });
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+
+    const migrated = new CodebaseRegistry(registryPath);
+    const updated = migrated.authorizeAvailableExtensions(ref.codebaseId, {}, 'user');
+
+    expect(updated.reindexRequired).toBe('provider_language_scope_expanded');
   });
 
   it('accepts pending generations only while policy and grant revisions still match', () => {
@@ -474,7 +531,7 @@ describe('CodebaseRegistry', () => {
     expect(activeCodebaseGeneration(narrowed)).toBeUndefined();
     expect(narrowed.selectionPolicyRevision).toBe(2);
     expect(narrowed.indexGeneration).toBe(active.indexGeneration + 1);
-    expect(narrowed.reindexRequired).toBe('selection_scope_narrowed');
+    expect(narrowed.reindexRequired).toBe('selection_scope_changed');
     expect(narrowed.consent.grant?.revision).toBe(active.consent.grant?.revision);
     expect(() => registry.activateIndexGeneration(active.codebaseId, {}, active.indexGeneration, {
       lastIngestStatus: 'ok',

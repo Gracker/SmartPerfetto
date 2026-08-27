@@ -549,7 +549,7 @@ Base path: `/api/rag`
 | `GET` | `/codebases/:id/excerpt` | 读取已索引片段 |
 | `POST` | `/codebases/:id/reindex` | 重新索引 |
 | `GET` | `/codebases/:id/audit` | 索引审计 |
-| `PATCH` | `/codebases/:id/consent` | 显式授予或撤销 provider-send 同意 |
+| `PATCH` | `/codebases/:id/consent` | 三选一：设置 `sendToProvider`、用 `authorizeAvailableExtensions: true` 授权新语言，或用 `authorizeCurrentSelection: true` 授权当前路径范围 |
 | `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；立即撤销旧 active generation 并要求重建 |
 | `POST` | `/codebases/:id/pending/accept` | 回传 `candidateGenerationId`、`selectionPolicyRevision` 和 `grantRevision`，以 CAS 显式接受被截断的候选 generation |
 | `POST` | `/codebases/:id/pending/reject` | 回传 `candidateGenerationId`，以 CAS 拒绝候选 generation 并清理 staged chunks |
@@ -559,9 +559,17 @@ preview、register 和 reindex 共用同一份源码选择策略；响应会报�
 `enumerationBackend`、`backendFidelity`、`enumerationComplete`、`deterministic`、
 已枚举/已选择文件与字节数，以及明确的截断原因。Git ignore 只参与候选召回，
 不会扩大 provider 授权；最终源码正文必须同时满足当前 selection policy 与 consent grant。
+成功的 AOSP/OEM preview 在可选 manifest 元数据不可用时保留枚举结果，并返回
+`manifestUnavailableReason`；`codebase_root_realpath_drift` 仍然阻塞。注册项摘要通过
+`providerGrantScopeCurrent` 表明当前 path filter/exclude glob 是否与冻结授权一致。
+任何 selection 变化会把 `reindexRequired` 设为 `selection_scope_changed`；旧注册表中的
+`selection_scope_narrowed` 仍兼容读取。
 新版本增加的语言扩展默认显示为 `availableNotConsentedExtensions`，只有显式调用
 consent 接口并传 `authorizeAvailableExtensions: true` 才加入授权；该操作要求注册项已
-开启 provider-send，绝不会替用户开启正文发送权限。
+开启 provider-send，绝不会替用户开启正文发送权限。若已有活动索引，响应会把
+`reindexRequired` 设为 `provider_language_scope_expanded`。路径选择变更同样不会自动授权；
+`authorizeCurrentSelection: true` 只把当前 include prefixes/exclude globs 写入 consent grant，
+保留原语言授权。
 
 不完整或非确定性的枚举不会激活索引。确定性但被 file/byte budget 截断的重建在已有
 完整 active generation 时只写入 `pendingGeneration`；接受时必须回传列表/详情中的

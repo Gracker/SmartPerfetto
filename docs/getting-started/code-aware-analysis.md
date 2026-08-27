@@ -76,13 +76,13 @@ GitNexus 是独立的第三方可选工具。其[官方项目](https://github.co
 | `kernel_source` | binder/scheduler/mm/io 等 kernel 根因 | 源码文件夹、`vendor`、`path-filter`（CLI 重建也可传 `pathPrefix`）；license tag 可选 |
 | `oem_sdk` | OEM / chipset SDK 资料 | 源码文件夹、`vendor`、`licenseTag`；build ID 与路径范围可选 |
 
-源码枚举按 `ripgrep > git > node-walk` 的能力阶梯运行，并在 preview、CLI 与索引审计中返回实际 backend、fidelity 和 coverage。`.git`、`.hg`、`.svn`、`.repo` 与证书/密钥文件始终排除；`node_modules`、`build`、`Pods` 等噪声目录只有在 path filter 显式指向其中时才会进入候选集。AOSP preview 会读取有界的 `.repo/manifest.xml` 元数据，提供 project/group 范围按钮，但 `.repo` 对象库本身永不作为源码遍历。
+源码枚举按 `ripgrep > git > node-walk` 的能力阶梯运行，并在 preview、CLI 与索引审计中返回实际 backend、fidelity 和 coverage。`.git`、`.hg`、`.svn`、`.repo` 与证书/密钥文件始终排除；`node_modules`、`build`、`Pods` 等噪声目录只有在 path filter 显式指向其中时才会进入候选集。AOSP preview 会读取有界的 `.repo/manifest.xml` 元数据，提供 project/group 范围按钮，但 `.repo` 对象库本身永不作为源码遍历。Manifest 缺失表示没有可用的范围建议；读取、解析或身份校验失败会返回 `manifestUnavailableReason`，不会否决已经完成的文件枚举。只有 codebase root 身份漂移仍会阻止 preview。
 
-`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。授权是动态路径范围：当前 selection policy 与注册时冻结的 consent grant 永远取交集。产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言可以先用于 `metadata_only` 定位，但已有注册项必须显式点击“授权新语言”后才能发送正文。
+`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。授权是动态路径范围：当前 selection policy 与注册时冻结的 consent grant 永远取交集。扩大 path filter 或放宽 exclude glob 不会自动扩大 provider 授权；`providerGrantScopeCurrent=false` 时，新增范围先以 metadata-only 使用，用户可显式点击“授权当前范围”。产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言也可以先用于 `metadata_only` 定位，但已有注册项必须显式点击“授权新语言”后才能发送正文；授权新语言会在已有活动索引上提示重建，以补齐可能缺失的语言。
 
 索引覆盖被拆成独立状态。完整、确定性的候选可直接激活；若已有完整索引，新的确定性截断结果会进入 pending，用户可接受或丢弃，旧完整索引保持服务。枚举超时、遍历错误或不确定结果永不自动激活。索引仍是可选加速，pending 或失败不会阻止 live root 的按需搜索。
 
-Docker 镜像内安装 `ripgrep` 和 `git`。portable 不额外打包 ripgrep：它会在结果中报告 capability，并在缺少 rg/git 时使用有界 `node-walk`，标记 `backendFidelity=degraded`；不得把不完整覆盖表述为“源码中不存在”。
+Docker 镜像内安装 `ripgrep` 和 `git`。portable 不额外打包 ripgrep：它会在结果中报告 capability，并在缺少 rg/git 时使用有界 `node-walk`，标记 `backendFidelity=degraded`。完成的 node walk 不会伪装成枚举截断；后端 fidelity 与 coverage 完整性分别报告。不得把不完整覆盖表述为“源码中不存在”。
 
 提交版本不需要手动填写。每次建立索引时，SmartPerfetto 会从实际 checkout 自动读取
 Git `HEAD`，并单独记录工作区是否包含未提交或未跟踪修改；非 Git 目录使用内容指纹。

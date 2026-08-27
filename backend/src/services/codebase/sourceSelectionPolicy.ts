@@ -86,6 +86,10 @@ function pathHasPrefix(prefix: string, candidate: string): boolean {
   return candidate === prefix || candidate.startsWith(`${prefix}/`);
 }
 
+function escapeRipgrepGlobLiteral(value: string): string {
+  return value.replace(/[\\*?\[\]{}!]/g, character => `\\${character}`);
+}
+
 function pathSegmentMatches(pattern: string, candidate: string): boolean {
   let patternIndex = 0;
   let candidateIndex = 0;
@@ -257,6 +261,40 @@ export function sourceSelectionAdmits(
   return !compiled.excludeGlobs.some(glob => globMatches(glob, comparablePath));
 }
 
+export function sourceSelectionCanDescend(
+  policy: SourceSelectionIR,
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+  includePrefixes: readonly string[] = policy.includePrefixes,
+): boolean {
+  let relativeDirectory: string;
+  try {
+    relativeDirectory = normalizeRelative(value, 'source_directory_invalid');
+  } catch {
+    return false;
+  }
+  const compiled = compiledSelection(policy, platform);
+  const comparable = compiled.comparable;
+  const comparableDirectory = comparable(relativeDirectory);
+  const comparablePrefixes = includePrefixes.map(comparable);
+  const segments = relativeDirectory.split('/');
+  if (segments.some(segment => compiled.hardExcludes.has(comparable(segment)))) return false;
+  if (
+    comparablePrefixes.length > 0 &&
+    !comparablePrefixes.some(prefix =>
+      pathHasPrefix(comparableDirectory, prefix) || pathHasPrefix(prefix, comparableDirectory))
+  ) return false;
+  for (let index = 0; index < segments.length; index += 1) {
+    if (!compiled.noiseExcludes.has(comparable(segments[index]!))) continue;
+    const noisePath = comparable(segments.slice(0, index + 1).join('/'));
+    const explicitlyIncluded = comparablePrefixes.some(prefix =>
+      pathHasPrefix(noisePath, prefix));
+    if (!explicitlyIncluded) return false;
+  }
+  return !compiled.excludeGlobs.some(glob =>
+    glob[glob.length - 1] === '**' && globMatches(glob, comparableDirectory));
+}
+
 export function sourceSelectionGitPathspecs(
   policy: SourceSelectionIR,
   platform: NodeJS.Platform = process.platform,
@@ -274,18 +312,20 @@ export function sourceSelectionRipgrepArguments(
   const comparable = (value: string): string => platform === 'win32'
     ? value.toLocaleLowerCase('en-US')
     : value;
-  const overriddenNoise = new Set<string>();
-  for (const noise of policy.noiseExcludeDirs) {
-    if (policy.includePrefixes.some(prefix =>
-      prefix.split('/').map(comparable).includes(comparable(noise)))) {
-      overriddenNoise.add(noise);
-    }
-  }
+  const noiseGlobs = policy.noiseExcludeDirs.flatMap(noise => {
+    if (policy.includePrefixes.length === 0) return [`!**/${noise}/`];
+    const selectingPrefixes = policy.includePrefixes.filter(prefix =>
+      prefix.split('/').map(comparable).includes(comparable(noise)));
+    if (selectingPrefixes.length === 0) return [`!**/${noise}/`];
+    return policy.includePrefixes.flatMap(prefix => {
+      return selectingPrefixes.includes(prefix)
+        ? []
+        : [`!${escapeRipgrepGlobLiteral(prefix)}/**/${noise}/`];
+    });
+  });
   const globs = [
     ...policy.hardExcludeDirs.map(directory => `!**/${directory}/`),
-    ...policy.noiseExcludeDirs
-      .filter(directory => !overriddenNoise.has(directory))
-      .map(directory => `!**/${directory}/`),
+    ...noiseGlobs,
     ...policy.excludeGlobs.map(glob => `!${glob}`),
   ];
   const globOption = platform === 'win32' ? '--iglob' : '--glob';

@@ -47,6 +47,7 @@ import type {RagChunk, RagRetrievalResult, RagSourceKind} from '../types/sparkCo
 import {requireCodebaseScope} from '../services/auth/codebaseScopes';
 import {
   activeCodebaseGeneration,
+  codebaseProviderGrantScopeCurrent,
   codebaseRegistrationRequirements,
   codebaseRootAvailable,
   CodebaseRegistry,
@@ -170,6 +171,7 @@ function sanitizeCodebase(ref: CodebaseRef) {
       grantRevision: consent.grant?.revision ?? 1,
     },
     availableNotConsentedExtensions: availableNotConsentedExtensions(ref),
+    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref),
   };
 }
 
@@ -810,15 +812,24 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         expectedRootRealpath: rootRealpath,
         ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
       });
-      const manifestProjects = kind === 'aosp' || kind === 'oem_sdk'
-        ? await readAospManifestProjects(rootRealpath, rootRealpath)
-        : [];
+      let manifestProjects = [] as Awaited<ReturnType<typeof readAospManifestProjects>>;
+      let manifestUnavailableReason: string | undefined;
+      if (kind === 'aosp' || kind === 'oem_sdk') {
+        try {
+          manifestProjects = await readAospManifestProjects(rootRealpath, rootRealpath);
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          if (reason === 'codebase_root_realpath_drift') throw error;
+          manifestUnavailableReason = reason;
+        }
+      }
       const manifestGroups = [...new Set(manifestProjects.flatMap(project => project.groups))].sort();
       return res.json({
         success: true,
         preview: {
           ...sanitizeEnumeration(result),
           ...(manifestProjects.length > 0 ? {manifestProjects, manifestGroups} : {}),
+          ...(manifestUnavailableReason ? {manifestUnavailableReason} : {}),
         },
       });
     } catch (error) {
@@ -966,6 +977,8 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         return res.status(400).json({
           success: false,
           error: 'effective_source_selection_empty',
+          message: 'No source files matched the effective selection.',
+          hint: 'Check the path filters, exclude globs, ignored files, and supported extensions.',
           preview: sanitizeEnumeration(enumeration),
         });
       }
@@ -1169,29 +1182,31 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   });
 
   router.patch('/codebases/:id/consent', requireCodebaseScope('codebase:manage'), async (req, res) => {
-    if (
-      req.body?.authorizeAvailableExtensions === true &&
-      typeof req.body?.sendToProvider === 'boolean'
-    ) {
+    const authorizeAvailableExtensions = req.body?.authorizeAvailableExtensions === true;
+    const authorizeCurrentSelection = req.body?.authorizeCurrentSelection === true;
+    const updatesProviderConsent = typeof req.body?.sendToProvider === 'boolean';
+    const actionCount = Number(authorizeAvailableExtensions) +
+      Number(authorizeCurrentSelection) +
+      Number(updatesProviderConsent);
+    if (actionCount > 1) {
       return res.status(400).json({
         success: false,
-        error: '`authorizeAvailableExtensions` and `sendToProvider` are mutually exclusive',
+        error: '`authorizeAvailableExtensions`, `authorizeCurrentSelection`, and `sendToProvider` are mutually exclusive',
       });
     }
-    if (
-      req.body?.authorizeAvailableExtensions !== true &&
-      typeof req.body?.sendToProvider !== 'boolean'
-    ) {
+    if (actionCount !== 1) {
       return res.status(400).json({
         success: false,
-        error: '`sendToProvider` must be an explicit boolean',
+        error: 'exactly one consent action is required',
       });
     }
     const context = requireRequestContext(req);
     const scope = knowledgeScopeFromRequestContext(context);
     try {
-      const codebase = req.body?.authorizeAvailableExtensions === true
+      const codebase = authorizeAvailableExtensions
         ? registry.authorizeAvailableExtensions(routeParam(req.params.id), scope, context.userId)
+        : authorizeCurrentSelection
+          ? registry.authorizeCurrentSelection(routeParam(req.params.id), scope, context.userId)
         : registry.setProviderConsent(
             routeParam(req.params.id),
             scope,

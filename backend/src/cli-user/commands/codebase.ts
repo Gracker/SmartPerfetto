@@ -117,7 +117,10 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
     gate,
   });
   if (result.enumerationComplete && result.files.length === 0) {
-    console.error('blocked: effective_source_selection_empty');
+    console.error([
+      'blocked: effective_source_selection_empty',
+      'No source files matched the effective selection; check path filters, exclude globs, ignored files, and supported extensions.',
+    ].join(' - '));
     return 1;
   }
   if (args.dryRun) {

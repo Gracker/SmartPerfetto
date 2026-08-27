@@ -592,7 +592,7 @@ Base path: `/api/rag`
 | `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
 | `POST` | `/codebases/:id/reindex` | Reindex |
 | `GET` | `/codebases/:id/audit` | Index audit |
-| `PATCH` | `/codebases/:id/consent` | Explicitly grant or revoke provider-send consent |
+| `PATCH` | `/codebases/:id/consent` | Perform exactly one action: set `sendToProvider`, authorize new languages with `authorizeAvailableExtensions: true`, or authorize the current path scope with `authorizeCurrentSelection: true` |
 | `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs, immediately revoke the old active generation, and require reindexing |
 | `POST` | `/codebases/:id/pending/accept` | Echo `candidateGenerationId`, `selectionPolicyRevision`, and `grantRevision` to explicitly accept a truncated candidate generation with CAS |
 | `POST` | `/codebases/:id/pending/reject` | Echo `candidateGenerationId` to reject a candidate generation with CAS and remove its staged chunks |
@@ -604,11 +604,20 @@ responses report `enumerationBackend`, `backendFidelity`,
 counts, and an explicit truncation reason. Git ignore rules participate in
 candidate discovery only; they never expand provider authorization. Source
 text can leave the backend only when both the current selection policy and the
-consent grant admit its relative path. Extensions added by a later version are
+consent grant admit its relative path. A successful AOSP/OEM preview preserves
+enumeration when optional manifest metadata is unavailable and reports
+`manifestUnavailableReason`; `codebase_root_realpath_drift` still blocks. Codebase
+summaries expose `providerGrantScopeCurrent` to show whether the current path
+filters/exclude globs match the frozen grant. Any selection change sets
+`reindexRequired=selection_scope_changed`; the legacy
+`selection_scope_narrowed` value remains readable. Extensions added by a later version are
 reported as `availableNotConsentedExtensions` until the consent endpoint is
 called explicitly with `authorizeAvailableExtensions: true`. That operation
 requires existing provider-send consent and never turns source-text sending on
-for the user.
+for the user. With an active index it sets `reindexRequired` to
+`provider_language_scope_expanded`. Selection changes also never expand consent
+automatically; `authorizeCurrentSelection: true` copies only the current include
+prefixes and exclude globs into the grant and preserves language consent.
 
 Incomplete or nondeterministic enumeration cannot activate an index. A
 deterministic file/byte-budget truncation is staged as `pendingGeneration` when

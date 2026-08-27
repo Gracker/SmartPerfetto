@@ -63,6 +63,24 @@ describe('SourceSelectionPolicy', () => {
     ]));
   });
 
+  it('keeps noise exclusions scoped when only one include prefix selects dependency source', () => {
+    const policy = buildSourceSelectionIR({
+      kind: 'app_source',
+      includePrefixes: ['src', 'vendor/node_modules/custom'],
+    });
+
+    const args = sourceSelectionRipgrepArguments(policy);
+
+    expect(args).toEqual(expect.arrayContaining([
+      '--glob',
+      '!src/**/node_modules/',
+    ]));
+    expect(args).not.toEqual(expect.arrayContaining([
+      '--glob',
+      '!**/node_modules/',
+    ]));
+  });
+
   it('normalizes prefixes, restricts glob syntax, and projects one canonical IR', () => {
     const policy = buildSourceSelectionIR({
       kind: 'aosp',

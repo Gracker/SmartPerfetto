@@ -319,6 +319,82 @@ describe('filterRagLookup', () => {
     expect(ledger.getEntries()[0]?.outcome).toBe('consent_blocked');
   });
 
+  it('drops metadata-only indexed chunks outside the current selection policy', async () => {
+    const {codebaseId, sourceGeneration} = makeRegistry(false);
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].pathFilters = ['src'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+
+    const result = await filterRagLookup(
+      makeRawResult(makeChunk({
+        codebaseId,
+        sourceGeneration,
+        filePath: 'outside/MainActivity.kt',
+      })),
+      {
+        toolName: 'lookup_app_source',
+        turn: 1,
+        codebaseRegistry: new CodebaseRegistry(registryPath),
+        allowProviderSend: false,
+        knowledgeScope: CODEBASE_SCOPE,
+      },
+    );
+
+    expect(result.hits).toEqual([]);
+  });
+
+  it('keeps selected unconsented languages as metadata when provider send is disabled', async () => {
+    const {codebaseId, sourceGeneration} = makeRegistry(true);
+    const registryPath = path.join(tmpDir, 'registry.json');
+    const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+    envelope.codebases[0].consent.grant.extensions = ['.java', '.kt'];
+    fs.writeFileSync(registryPath, JSON.stringify(envelope));
+
+    const result = await filterRagLookup(
+      makeRawResult(makeChunk({
+        codebaseId,
+        sourceGeneration,
+        filePath: 'src/new_language.dart',
+        snippet: 'void metadataOnlyDart() {}',
+      })),
+      {
+        toolName: 'lookup_app_source',
+        turn: 1,
+        codebaseRegistry: new CodebaseRegistry(registryPath),
+        allowProviderSend: false,
+        knowledgeScope: CODEBASE_SCOPE,
+      },
+    );
+
+    expect(result.hits).toEqual([
+      expect.objectContaining({
+        unsupportedReason: 'provider_send_disabled_for_session',
+        metadata: expect.objectContaining({filePath: 'src/new_language.dart'}),
+      }),
+    ]);
+    expect(result.hits[0]).not.toHaveProperty('snippet');
+  });
+
+  it('fails closed when a registry-owned chunk has no relative file path', async () => {
+    const {registry, codebaseId, sourceGeneration} = makeRegistry(false);
+
+    const result = await filterRagLookup(
+      makeRawResult(makeChunk({codebaseId, sourceGeneration, filePath: undefined})),
+      {
+        toolName: 'lookup_app_source',
+        turn: 1,
+        codebaseRegistry: registry,
+        allowProviderSend: false,
+        knowledgeScope: CODEBASE_SCOPE,
+      },
+    );
+
+    expect(result.hits).toEqual([
+      expect.objectContaining({unsupportedReason: 'invalid_codebase_metadata'}),
+    ]);
+  });
+
   it('drops indexed chunks that fall outside the current selection and consent grant', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
     const registryPath = path.join(tmpDir, 'registry.json');

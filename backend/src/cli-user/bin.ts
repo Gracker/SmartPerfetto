@@ -133,7 +133,7 @@ function main(): void {
     notice.flush();
     process.exit(exitCode);
   };
-  const collectCodebaseId = (value: string, previous: string[] = []): string[] => [...previous, value];
+  const collectRepeatedOption = (value: string, previous: string[] = []): string[] => [...previous, value];
   const codeAwareMode = (value?: string): CodeAwareMode | undefined => {
     if (!value) return undefined;
     if (value === 'off' || value === 'metadata_only' || value === 'provider_send') return value;
@@ -146,8 +146,8 @@ function main(): void {
     .option('--format <format>', 'output format: text, json, ndjson')
     .option('--mode <mode>', 'analysis mode: fast, full, auto')
     .option('--code-aware <mode>', 'code-aware mode: off, metadata_only, provider_send')
-    .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectCodebaseId, [])
-    .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectCodebaseId, [])
+    .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectRepeatedOption, [])
+    .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectRepeatedOption, [])
     .action(async (trace: string, question: string[] | undefined, opts: { format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[] }) => {
       const g = globals();
       await runAndExit(() => runAnalyzeCommand({
@@ -172,8 +172,8 @@ function main(): void {
     .option('--format <format>', 'output format: text, json, ndjson')
     .option('--mode <mode>', 'analysis mode: fast, full, auto')
     .option('--code-aware <mode>', 'code-aware mode: off, metadata_only, provider_send')
-    .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectCodebaseId, [])
-    .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectCodebaseId, [])
+    .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectRepeatedOption, [])
+    .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectRepeatedOption, [])
     .action(async (trace: string, opts: { query?: string; format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[] }) => {
       const g = globals();
       const query = g.prompt ?? g.query ?? opts.query ?? DEFAULT_ANALYSIS_QUERY;
@@ -439,8 +439,8 @@ function main(): void {
     .command('preview <rootPath>')
     .description('preview files accepted by the path security gate')
     .option('--kind <kind>', 'codebase kind: app_source, aosp, kernel_source, oem_sdk', 'app_source')
-    .option('--path-filter <prefix>', 'relative path prefix; repeatable', collectCodebaseId, [])
-    .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectCodebaseId, [])
+    .option('--path-filter <prefix>', 'relative path prefix; repeatable', collectRepeatedOption, [])
+    .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectRepeatedOption, [])
     .action(async (rootPath: string, opts: {
       kind?: string;
       pathFilter?: string[];
@@ -463,8 +463,8 @@ function main(): void {
     .option('--kind <kind>', 'codebase kind: app_source, aosp, kernel_source, oem_sdk', 'app_source')
     .option('--name <name>', 'display name')
     .option('--send-to-provider', 'allow snippets to be sent when the session also uses provider_send mode', false)
-    .option('--path-filter <prefix>', 'relative path prefix to ingest; repeatable', collectCodebaseId, [])
-    .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectCodebaseId, [])
+    .option('--path-filter <prefix>', 'relative path prefix to ingest; repeatable', collectRepeatedOption, [])
+    .option('--exclude-glob <glob>', 'relative exclusion glob; repeatable', collectRepeatedOption, [])
     .option('--vendor <vendor>', 'vendor id for kernel/OEM codebases')
     .option('--build-id <id>', 'build id for source/symbol matching')
     .option('--commit <hash>', 'commit hash pinned to the registered source tree')

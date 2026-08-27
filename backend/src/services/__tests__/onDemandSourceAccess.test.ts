@@ -456,6 +456,106 @@ describe('OnDemandSourceAccessService', () => {
     expect(search.matches).toHaveLength(8);
   });
 
+  it('reports one-file multi-match truncation instead of false complete coverage', async () => {
+    if (process.platform === 'win32') return;
+    const repeated = path.join(root, 'app', 'src', 'Repeated.kt');
+    fs.writeFileSync(
+      repeated,
+      Array.from({length: 13}, (_, index) => `val repeatedNeedle${index} = Unit`).join('\n'),
+    );
+    const fakeRipgrep = path.join(tmpDir, 'fake-max-count-aware-rg');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/usr/bin/env node',
+      "const args = process.argv.slice(2);",
+      "const maxCountIndex = args.indexOf('--max-count');",
+      'const count = maxCountIndex >= 0 ? Number(args[maxCountIndex + 1]) : 13;',
+      'for (let index = 1; index <= count; index += 1) {',
+      "  process.stdout.write(JSON.stringify({type: 'match', data: {path: {text: 'app/src/Repeated.kt'}, line_number: index}}) + '\\n');",
+      '}',
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const ref = register();
+
+    const search = await service(fakeRipgrep).search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'repeatedNeedle',
+      mode: 'provider_send',
+      maxResults: 8,
+    });
+
+    expect(search.matches).toHaveLength(8);
+    expect(search.truncated).toBe(true);
+    expect(search.coverageComplete).toBe(false);
+    expect(search.searchIncompleteReason).toBe('enumeration_budget');
+  });
+
+  it('preserves ripgrep exit 2 matches with traversal-error coverage', async () => {
+    if (process.platform === 'win32') return;
+    const fakeRipgrep = path.join(tmpDir, 'fake-partial-search-rg');
+    fs.writeFileSync(fakeRipgrep, [
+      '#!/usr/bin/env node',
+      "process.stdout.write(JSON.stringify({type: 'match', data: {path: {text: 'app/src/MainActivity.kt'}, line_number: 4}}) + '\\n');",
+      'process.exitCode = 2;',
+      '',
+    ].join('\n'));
+    fs.chmodSync(fakeRipgrep, 0o700);
+    const ref = register();
+
+    const search = await service(fakeRipgrep).search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'loadTimeline',
+      mode: 'provider_send',
+    });
+
+    expect(search).toEqual(expect.objectContaining({
+      success: true,
+      coverageComplete: false,
+      searchIncompleteReason: 'traversal_error',
+      matches: [expect.objectContaining({filePath: 'app/src/MainActivity.kt'})],
+    }));
+  });
+
+  it('does not descend into unselected noise directories in the node fallback', async () => {
+    const unscopedRoot = path.join(tmpDir, 'unscoped');
+    fs.mkdirSync(path.join(unscopedRoot, 'src'), {recursive: true});
+    fs.mkdirSync(path.join(unscopedRoot, 'node_modules', 'dependency'), {recursive: true});
+    fs.writeFileSync(path.join(unscopedRoot, 'src', 'Main.kt'), 'val nodeNoiseNeedle = Unit\n');
+    fs.writeFileSync(
+      path.join(unscopedRoot, 'node_modules', 'dependency', 'Index.ts'),
+      'export const nodeNoiseNeedle = true;\n',
+    );
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Unscoped app',
+      rootPath: unscopedRoot,
+      sendToProvider: true,
+      ...scope,
+    });
+    const opened: string[] = [];
+    const originalOpendir = fs.promises.opendir.bind(fs.promises);
+    const opendir = jest.spyOn(fs.promises, 'opendir').mockImplementation(async (...args: any[]) => {
+      opened.push(String(args[0]));
+      return originalOpendir(args[0], args[1]);
+    });
+
+    try {
+      const search = await service('__smartperfetto_missing_rg__').search({
+        codebaseId: ref.codebaseId,
+        scope,
+        query: 'nodeNoiseNeedle',
+        mode: 'provider_send',
+      });
+
+      expect(search.matches.map(match => match.filePath)).toEqual(['src/Main.kt']);
+      expect(opened.some(directory => directory.includes('node_modules'))).toBe(false);
+    } finally {
+      opendir.mockRestore();
+    }
+  });
+
   it('starts ripgrep with a fixed argument vector and sanitized config environment', async () => {
     if (process.platform === 'win32') return;
     const config = path.join(tmpDir, 'ripgreprc');
@@ -597,7 +697,7 @@ describe('OnDemandSourceAccessService', () => {
       success: true,
       truncated: true,
       coverageComplete: false,
-      searchIncompleteReason: 'backend_degraded',
+      searchIncompleteReason: 'enumeration_budget',
       enumerationBackend: 'node-walk',
       backendFidelity: 'degraded',
     }));
