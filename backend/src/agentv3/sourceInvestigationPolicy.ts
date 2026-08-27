@@ -41,7 +41,6 @@ export interface SourceInvestigationPlanAspect {
   matchKeywords: string[];
   suggestion: string;
   waivable: false;
-  fallbackIdentifiers: readonly string[];
   decisionStatuses: readonly string[];
 }
 
@@ -195,7 +194,6 @@ export function buildSourceInvestigationPlanAspect(
       stop_states: policy.stopStates,
     }),
     waivable: false,
-    fallbackIdentifiers: policy.fallback,
     decisionStatuses: policy.stopStates,
   };
 }

@@ -242,12 +242,7 @@ function sourceAspectCovered(
   decision: SourceInvestigationDecisionRecord | undefined,
 ): boolean {
   const structuredLookup = declaredExpectedCalls.some(call =>
-    isSourceLookupToolName(call.tool) ||
-    (
-      shortToolName(call.tool) === 'invoke_skill' &&
-      call.skillId !== undefined &&
-      aspect.fallbackIdentifiers.includes(call.skillId)
-    ),
+    isSourceLookupToolName(call.tool),
   );
   if (structuredLookup) return true;
   return Boolean(

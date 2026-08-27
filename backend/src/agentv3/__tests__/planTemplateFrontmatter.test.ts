@@ -183,21 +183,6 @@ describe('plan_template frontmatter pipeline', () => {
     );
     expect(lookupPath.missingAspectIds).not.toContain('source_investigation_decision');
 
-    const pinpointPath = validatePlanAgainstSceneTemplate(
-      [{
-        name: 'Trace-to-code pinpoint',
-        goal: 'Use the policy fallback Skill to produce a source investigation anchor',
-        expectedTools: ['invoke_skill'],
-        expectedCalls: [{tool: 'invoke_skill', skillId: 'code_pinpoint'}],
-      }],
-      'general',
-      undefined,
-      {sourceInvestigation: {mode: 'code_aware_full'}},
-    );
-    expect(pinpointPath.missingAspectIds).not.toContain(
-      'source_investigation_decision',
-    );
-
     const explicitDecision = validatePlanAgainstSceneTemplate(
       [{
         name: 'Trace conclusion',
@@ -215,6 +200,28 @@ describe('plan_template frontmatter pipeline', () => {
       }},
     );
     expect(explicitDecision.missingAspectIds).not.toContain(
+      'source_investigation_decision',
+    );
+  });
+
+  it.each([
+    'read_or_indexed_lookup',
+    'resolve_symbol',
+    'code_pinpoint',
+  ])('does not accept invoke_skill fallback guidance as source lookup: %s', skillId => {
+    const result = validatePlanAgainstSceneTemplate(
+      [{
+        name: 'Trace anchor only',
+        goal: `Invoke ${skillId} without performing a source lookup`,
+        expectedTools: ['invoke_skill'],
+        expectedCalls: [{tool: 'invoke_skill', skillId}],
+      }],
+      'general',
+      undefined,
+      {sourceInvestigation: {mode: 'code_aware_full'}},
+    );
+    expect(result.missingAspectIds).toContain('source_investigation_decision');
+    expect(result.nonWaivableMissingAspectIds).toContain(
       'source_investigation_decision',
     );
   });
