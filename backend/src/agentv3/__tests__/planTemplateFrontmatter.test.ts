@@ -259,6 +259,24 @@ describe('plan_template frontmatter pipeline', () => {
     expect(result.missingAspectIds).toContain('source_investigation_decision');
   });
 
+  it('accepts a policy-backed disallowed decision with a bounded explicit reason', () => {
+    const result = validatePlanAgainstSceneTemplate(
+      [],
+      'general',
+      undefined,
+      {sourceInvestigation: {
+        mode: 'code_aware_full',
+        decision: {
+          status: 'disallowed',
+          reason: 'Provider consent does not authorize source-body access for this bounded analysis run.',
+        },
+      }},
+    );
+
+    expect(result.missingAspectIds).not.toContain('source_investigation_decision');
+    expect(result.nonWaivableMissingAspectIds ?? []).not.toContain('source_investigation_decision');
+  });
+
   it('re-applies the source-decision hard gate when a revised plan drops the phase', () => {
     const initial = validatePlanAgainstSceneTemplate(
       [{

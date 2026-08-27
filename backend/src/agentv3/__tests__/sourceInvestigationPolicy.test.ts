@@ -48,6 +48,7 @@ describe('source investigation policy', () => {
       ],
       stopStates: [
         'not_needed',
+        'disallowed',
         'no_queryable_anchor',
         'ambiguous_candidates',
         'not_found_complete',

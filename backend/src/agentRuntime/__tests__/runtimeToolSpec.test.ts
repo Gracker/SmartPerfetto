@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { describe, expect, it, jest } from '@jest/globals';
+import * as fs from 'fs';
+import * as path from 'path';
 import { z } from 'zod';
 import {
   RUNTIME_TOOL_DESCRIPTION_MAX_CHARS,
@@ -31,6 +33,19 @@ function sdkTool(name: string) {
 }
 
 describe('SharedToolSpec', () => {
+  it('is registered exactly once in the live backend test gate', () => {
+    const packageJson = JSON.parse(fs.readFileSync(
+      path.resolve(__dirname, '../../../package.json'),
+      'utf8',
+    )) as {scripts: Record<string, string>};
+    const suite = 'src/agentRuntime/__tests__/runtimeToolSpec.test.ts';
+
+    expect(packageJson.scripts['test:gate'].match(/npm run test:runtime-registry/g) ?? [])
+      .toHaveLength(1);
+    expect(packageJson.scripts['test:runtime-registry'].match(new RegExp(suite.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) ?? [])
+      .toHaveLength(1);
+  });
+
   it('caps every provider-facing tool description at 1000 characters', () => {
     const description = `Use when: ${'bounded runtime contract '.repeat(60)}`;
     const compacted = compactRuntimeToolDescription(description);

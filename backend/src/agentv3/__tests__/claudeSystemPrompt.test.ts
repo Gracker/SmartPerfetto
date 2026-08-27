@@ -115,6 +115,8 @@ describe('buildSystemPrompt', () => {
       ['missing', 'source contract without markers'],
       ['duplicate', '<!-- tool-description:start -->a<!-- tool-description:start -->b<!-- tool-description:end -->'],
       ['empty', '<!-- tool-description:start -->   <!-- tool-description:end -->'],
+      ['reversed', '<!-- tool-description:end -->valid body<!-- tool-description:start -->'],
+      ['over-budget', `<!-- tool-description:start -->${'x'.repeat(241)}<!-- tool-description:end -->`],
     ])('rejects a %s tool-description marker block', (_case, template) => {
       jest.mocked(loadPromptTemplate).mockReturnValueOnce(template);
       expect(() => loadSourceUseDecisionToolDescription(sourceContext)).toThrow();

@@ -6561,17 +6561,27 @@ describe('createClaudeMcpServer', () => {
         status: 'disallowed',
         reason: 'The selected source is unavailable under the current policy boundary.',
       })).toEqual(expect.objectContaining({
-        success: false,
-        unsupportedReason: 'source_use_decision_status_not_allowed',
+        success: true,
+        status: 'disallowed',
       }));
-      expect(await callTool(explicit.tools, 'record_source_use_decision', {
+      expect(explicit.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+        status: 'disallowed',
+        reasonCode: 'disallowed',
+      }));
+
+      const notNeeded = createTestServer({
+        sceneType: 'general',
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase'],
+      });
+      expect(await callTool(notNeeded.tools, 'record_source_use_decision', {
         status: 'not_needed',
         reason: 'The trace evidence is conclusive and requires no source investigation.',
       })).toEqual(expect.objectContaining({
         success: true,
         status: 'not_needed',
       }));
-      expect(explicit.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
+      expect(notNeeded.sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
         status: 'not_needed',
         reasonCode: 'not_needed',
       }));
@@ -6604,8 +6614,8 @@ describe('createClaudeMcpServer', () => {
         });
 
         expect(await callTool(afterLookup.tools, 'record_source_use_decision', {
-          status: 'not_needed',
-          reason: 'The trace evidence is conclusive and requires no source investigation.',
+          status: 'disallowed',
+          reason: 'Provider consent no longer authorizes source access after lookup already produced evidence.',
         })).toEqual(expect.objectContaining({
           success: false,
           unsupportedReason: 'source_use_decision_conflict',
