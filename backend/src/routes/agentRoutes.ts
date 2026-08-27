@@ -8275,6 +8275,7 @@ function ensureCompletedAnalysisFinalArtifacts(
           ? durableResultForClient.conclusion
           : input.normalizedConclusion,
         conclusionContract: durableResultForClient.conclusionContract,
+        sourceUseDecision: durableResultForClient.sourceUseDecision,
         claimSupport: durableResultForClient.claimSupport,
         claimVerificationResult: durableResultForClient.claimVerificationResult,
         identityResolutions: durableResultForClient.identityResolutions,

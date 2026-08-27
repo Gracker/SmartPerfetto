@@ -804,6 +804,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('keeps only sanitized source-claim provenance in completed snapshots', () => {
+    useTempEnterpriseDb();
     const actualSourceUseDecision = {
       schemaVersion: 'source_use_decision@1' as const,
       codeAwareMode: 'provider_send' as const,
@@ -822,9 +823,10 @@ describe('analysis result snapshot pipeline', () => {
         snippet: 'raw-source-canary',
       } as any],
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
+      userId: 'user-a',
       traceId: 'trace-source',
       sessionId: 'session-source',
       runId: 'run-source',
@@ -885,5 +887,61 @@ describe('analysis result snapshot pipeline', () => {
     expect(JSON.stringify(contract)).not.toContain('model-controlled-id');
     expect(JSON.stringify(contract)).not.toContain('raw-source-canary');
     expect(JSON.stringify(contract)).not.toContain('/private/raw-root-canary');
+
+    const db = openEnterpriseDb();
+    try {
+      const row = db.prepare(`
+        SELECT conclusion_contract_json AS conclusionContractJson
+        FROM analysis_result_snapshots
+        WHERE id = ?
+      `).get(snapshot!.id) as {conclusionContractJson: string};
+      expect(JSON.parse(row.conclusionContractJson)).toEqual(contract);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('keeps source-free completed snapshot contracts backward compatible', () => {
+    useTempEnterpriseDb();
+    const legacyContract = {
+      schemaVersion: 'conclusion_contract_v1' as const,
+      mode: 'focused_answer' as const,
+      conclusions: [{rank: 1, statement: 'Trace-only conclusion'}],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{id: 'claim-trace-only', text: 'Trace-only conclusion', references: []}],
+      uncertainties: [],
+      nextSteps: [],
+      metadata: {legacy: true},
+    };
+
+    const snapshot = persistCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+      traceId: 'trace-source-free',
+      sessionId: 'session-source-free',
+      runId: 'run-source-free',
+      query: 'trace-only analysis',
+      conclusion: 'Trace-only conclusion',
+      conclusionContract: legacyContract,
+    });
+
+    expect(snapshot?.conclusionContract).toEqual(legacyContract);
+    expect(snapshot?.conclusionContract).not.toHaveProperty('sourceUseDecision');
+    expect(snapshot?.conclusionContract).not.toHaveProperty('sourceReferences');
+    expect(snapshot?.conclusionContract).not.toHaveProperty('sourceClaimBindings');
+
+    const db = openEnterpriseDb();
+    try {
+      const row = db.prepare(`
+        SELECT conclusion_contract_json AS conclusionContractJson
+        FROM analysis_result_snapshots
+        WHERE id = ?
+      `).get(snapshot!.id) as {conclusionContractJson: string};
+      expect(JSON.parse(row.conclusionContractJson)).toEqual(legacyContract);
+    } finally {
+      db.close();
+    }
   });
 });

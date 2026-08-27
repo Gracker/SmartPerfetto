@@ -7,6 +7,7 @@ import {EventEmitter} from 'events';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import ts from 'typescript';
 import {
   agentRoutesPrivacyProjectionTestSeam,
   agentRoutesReceiptTestSeam,
@@ -24,9 +25,57 @@ import {routeAdaptiveEvidencePreflight} from '../../agentRuntime/adaptiveEvidenc
 
 const sessionId = 'private-route-projection';
 
+function completedSnapshotInputFromRoute(): ts.ObjectLiteralExpression | undefined {
+  const routePath = path.resolve(__dirname, '../agentRoutes.ts');
+  const sourceText = fs.readFileSync(routePath, 'utf8');
+  const sourceFile = ts.createSourceFile(
+    routePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const finalizer = sourceFile.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) &&
+      statement.name?.text === 'ensureCompletedAnalysisFinalArtifacts',
+  );
+  if (!finalizer) return undefined;
+
+  let snapshotInput: ts.ObjectLiteralExpression | undefined;
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === 'persistCompletedAnalysisResultSnapshot' &&
+      ts.isObjectLiteralExpression(node.arguments[0])
+    ) {
+      snapshotInput = node.arguments[0];
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(finalizer);
+  return snapshotInput;
+}
+
 afterEach(() => clearCodeAwareOutputGuards(sessionId));
 
 describe('agent route private projections', () => {
+  it('passes the durable actual source decision into completed snapshot persistence', () => {
+    const snapshotInput = completedSnapshotInputFromRoute();
+    const sourceUseDecision = snapshotInput?.properties.find(
+      (property): property is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(property) &&
+        property.name.getText() === 'sourceUseDecision',
+    );
+
+    expect(snapshotInput).toBeDefined();
+    expect(sourceUseDecision?.initializer.getText()).toBe(
+      'durableResultForClient.sourceUseDecision',
+    );
+  });
+
   it('whitelists stored capability attribution in private persisted SSE projection', () => {
     const canary = '/private/SSE_CAPABILITY_CANARY';
     const hash = 'a'.repeat(64);
