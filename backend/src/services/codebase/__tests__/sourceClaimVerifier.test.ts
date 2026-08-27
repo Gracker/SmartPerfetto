@@ -79,7 +79,8 @@ function verify(input: {
   sourceUseDecision?: SourceUseDecisionV1;
   claimText?: string;
   binding?: Record<string, unknown>;
-  traceIds?: Record<string, string[]>;
+  matchedTraceIds?: Record<string, string[]>;
+  verifiedOccurrenceTraceIds?: Record<string, string[]>;
 }) {
   const sourceReference = input.sourceReference ?? reference();
   const sourceUseDecision = input.sourceUseDecision ?? decision(sourceReference);
@@ -92,12 +93,16 @@ function verify(input: {
     sourceReferenceIds: [sourceReference.id],
     traceEvidenceRefIds: ['data:trace-1'],
   }];
+  const matchedTraceIds = input.matchedTraceIds ?? {
+    'claim-1': ['data:trace-1'],
+    'claim-2': ['data:trace-2'],
+  };
   return verifySourceClaimBindings({
     conclusionContract,
-    verifiedTraceEvidenceRefIdsByClaimId: input.traceIds ?? {
-      'claim-1': ['data:trace-1'],
-      'claim-2': ['data:trace-2'],
-    },
+    actualSourceUseDecision: sourceUseDecision,
+    matchedTraceEvidenceRefIdsByClaimId: matchedTraceIds,
+    verifiedTraceOccurrenceRefIdsByClaimId:
+      input.verifiedOccurrenceTraceIds ?? matchedTraceIds,
   });
 }
 
@@ -176,7 +181,8 @@ describe('verifySourceClaimBindings', () => {
     const sourceReference = reference();
     const result = verify({
       sourceReference,
-      traceIds: {'claim-1': [], 'claim-2': ['data:trace-2']},
+      matchedTraceIds: {'claim-1': [], 'claim-2': ['data:trace-2']},
+      verifiedOccurrenceTraceIds: {'claim-1': [], 'claim-2': ['data:trace-2']},
       binding: {
         claimId: 'claim-1',
         mechanismStatus: 'corroborated',
@@ -209,6 +215,46 @@ describe('verifySourceClaimBindings', () => {
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({code: 'source_binding_trace_cross_claim'}),
     ]));
+  });
+
+  test('accepts partial same-claim membership but downgrades corroboration without a verified occurrence', () => {
+    const result = verify({
+      matchedTraceIds: {'claim-1': ['data:trace-1']},
+      verifiedOccurrenceTraceIds: {'claim-1': []},
+    });
+
+    expect(result.status).toBe('partial');
+    expect(result.bindings[0]).toEqual(expect.objectContaining({
+      claimId: 'claim-1',
+      mechanismStatus: 'compatible',
+      traceEvidenceRefIds: ['data:trace-1'],
+    }));
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'source_binding_trace_occurrence_not_verified'}),
+    ]));
+  });
+
+  test('never verifies contract-declared source context without an actual accessor decision', () => {
+    const sourceReference = reference();
+    const fabricatedDecision = decision(sourceReference);
+    const conclusionContract = contract();
+    conclusionContract.sourceUseDecision = fabricatedDecision;
+    conclusionContract.sourceReferences = [sourceReference];
+    conclusionContract.sourceClaimBindings = [{
+      claimId: 'claim-1',
+      mechanismStatus: 'corroborated',
+      sourceReferenceIds: [sourceReference.id],
+      traceEvidenceRefIds: ['data:trace-1'],
+    }];
+
+    const result = verifySourceClaimBindings({
+      conclusionContract,
+      matchedTraceEvidenceRefIdsByClaimId: {'claim-1': ['data:trace-1']},
+      verifiedTraceOccurrenceRefIdsByClaimId: {'claim-1': ['data:trace-1']},
+    });
+
+    expect(result.status).toBe('not_checked');
+    expect(result.bindings).toEqual([]);
   });
 
   test('rejects negative source-absence claims when search coverage is incomplete', () => {
@@ -297,5 +343,96 @@ describe('attachSourceUseToAnalysisResult', () => {
     expect(analysisResult.sourceUseDecision).toEqual(actualDecision);
     expect(analysisResult.sourceReferences).toEqual([sourceReference]);
     expect(analysisResult.conclusionContract).toBeUndefined();
+  });
+
+  test('strips fabricated provider-send body provenance when no actual accessor exists', () => {
+    const sourceReference = reference('body');
+    const fabricatedDecision = decision(sourceReference);
+    const conclusionContract = contract();
+    conclusionContract.sourceUseDecision = fabricatedDecision;
+    conclusionContract.sourceReferences = [sourceReference];
+    conclusionContract.sourceClaimBindings = [{
+      claimId: 'claim-1',
+      mechanismStatus: 'corroborated',
+      sourceReferenceIds: [sourceReference.id],
+      traceEvidenceRefIds: ['data:trace-1'],
+    }];
+    const analysisResult: AnalysisResult = {
+      sessionId: 'session-no-accessor',
+      success: true,
+      findings: [],
+      hypotheses: [],
+      conclusion: 'chat stays byte-identical',
+      conclusionContract,
+      claimSupport: [{
+        claimId: 'claim-1',
+        kind: 'causal',
+        text: 'trace support remains',
+        anchors: [],
+        supportLevel: 'verified',
+      }],
+      claimVerificationResult: {
+        schemaVersion: 'claim_verifier@1',
+        status: 'passed',
+        policy: 'record_only',
+        passed: true,
+        checkedClaimCount: 1,
+        unsupportedClaimCount: 0,
+        claimResults: [{
+          claimId: 'claim-1',
+          status: 'verified',
+          referenceResults: [{evidenceRefId: 'data:trace-1', status: 'matched'}],
+        }],
+        issues: [],
+      },
+      confidence: 0.8,
+      rounds: 1,
+      totalDurationMs: 10,
+    };
+
+    attachSourceUseToAnalysisResult(analysisResult, undefined);
+
+    expect(analysisResult.conclusion).toBe('chat stays byte-identical');
+    expect(analysisResult.claimSupport).toHaveLength(1);
+    expect(analysisResult.claimVerificationResult?.status).toBe('passed');
+    expect(analysisResult.sourceUseDecision).toBeUndefined();
+    expect(analysisResult.sourceReferences).toBeUndefined();
+    expect(analysisResult.sourceClaimVerificationResult).toBeUndefined();
+    expect(analysisResult.conclusionContract).not.toHaveProperty('sourceUseDecision');
+    expect(analysisResult.conclusionContract).not.toHaveProperty('sourceReferences');
+    expect(analysisResult.conclusionContract).not.toHaveProperty('sourceClaimBindings');
+  });
+
+  test('clears stale source sidecars when a later run has no accessor', () => {
+    const sourceReference = reference();
+    const staleDecision = decision(sourceReference);
+    const analysisResult: AnalysisResult = {
+      sessionId: 'session-stale-source',
+      success: true,
+      findings: [],
+      hypotheses: [],
+      conclusion: 'new run conclusion',
+      conclusionContract: contract(),
+      sourceUseDecision: staleDecision,
+      sourceReferences: [sourceReference],
+      sourceClaimVerificationResult: {
+        schemaVersion: 'source_claim_verifier@1',
+        status: 'passed',
+        bindings: [],
+        issues: [],
+      },
+      confidence: 0.8,
+      rounds: 1,
+      totalDurationMs: 10,
+    };
+    analysisResult.conclusionContract!.sourceUseDecision = staleDecision;
+    analysisResult.conclusionContract!.sourceReferences = [sourceReference];
+
+    attachSourceUseToAnalysisResult(analysisResult, undefined);
+
+    expect(analysisResult.sourceUseDecision).toBeUndefined();
+    expect(analysisResult.sourceReferences).toBeUndefined();
+    expect(analysisResult.sourceClaimVerificationResult).toBeUndefined();
+    expect(JSON.stringify(analysisResult.conclusionContract)).not.toContain(sourceReference.id);
   });
 });

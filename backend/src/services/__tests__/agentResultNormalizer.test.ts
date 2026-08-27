@@ -576,6 +576,8 @@ describe('normalizeResultForReport', () => {
         nextSteps: [],
       },
     });
+    r.sourceUseDecision = r.conclusionContract!.sourceUseDecision;
+    r.sourceReferences = r.conclusionContract!.sourceReferences;
 
     const out = normalizeResultForReport(r);
 

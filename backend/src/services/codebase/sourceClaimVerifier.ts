@@ -14,7 +14,10 @@ import {
   type SourceReferenceV1,
   type SourceUseDecisionV1,
 } from './sourceUseDecision';
-import {collectVerifiedTraceEvidenceRefIdsByClaimId} from '../verifier/claimVerificationRunner';
+import {
+  collectMatchedTraceEvidenceRefIdsByClaimId,
+  collectVerifiedTraceOccurrenceRefIdsByClaimId,
+} from '../verifier/claimVerificationRunner';
 
 export type SourceClaimVerificationStatus = 'passed' | 'failed' | 'partial' | 'not_checked';
 
@@ -27,6 +30,7 @@ export interface SourceClaimVerificationIssue {
     | 'source_reference_outside_selection'
     | 'source_binding_trace_support_missing'
     | 'source_binding_trace_cross_claim'
+    | 'source_binding_trace_occurrence_not_verified'
     | 'source_absence_requires_complete_search'
     | 'source_binding_strength_downgraded';
   message: string;
@@ -86,33 +90,50 @@ function negativeSourceAbsenceClaim(value: string): boolean {
     /(?:no|not|never).{0,32}(?:source|code|implementation|function|method|class)/i.test(text);
 }
 
-function actualSourceContext(contract: ConclusionContract): {
-  decision?: SourceUseDecisionV1;
+function authoritativeSourceContext(
+  contract: ConclusionContract,
+  decision: SourceUseDecisionV1,
+): {
+  decision: SourceUseDecisionV1;
   references: SourceReferenceV1[];
   aliases: Map<string, string>;
   declaredReferences: SourceReferenceV1[];
 } {
   const rawDecision = contract.sourceUseDecision;
   const rawDecisionReferences = isRecord(rawDecision) ? rawDecision.references : undefined;
-  const sourceReferenceCandidates = boundedSourceReferenceCandidates(
+  const declaredCandidates = boundedSourceReferenceCandidates(
     rawDecisionReferences,
     contract.sourceReferences,
   );
-  const aliases = sourceReferenceAliases(sourceReferenceCandidates);
-  const decision = sanitizeSourceUseDecision(rawDecision);
-  const declaredReferences = sanitizeSourceReferences(sourceReferenceCandidates);
-  const returnedIds = new Set((decision?.references || []).map(reference => reference.id));
-  const references = declaredReferences.filter(reference => returnedIds.has(reference.id));
-  return {decision, references, aliases, declaredReferences};
+  const aliases = sourceReferenceAliases(declaredCandidates);
+  const declaredById = new Map(
+    sanitizeSourceReferences(declaredCandidates).map(reference => [reference.id, reference]),
+  );
+  for (const reference of decision.references) {
+    aliases.set(reference.id, reference.id);
+    declaredById.set(reference.id, reference);
+  }
+  return {
+    decision,
+    references: decision.references,
+    aliases,
+    declaredReferences: [...declaredById.values()],
+  };
 }
 
 export function sanitizeConclusionSourceContract(
   contract: ConclusionContract,
   options: {
-    actualSourceUseDecision?: SourceUseDecisionV1;
+    actualSourceUseDecision?: SourceUseDecisionV1 | null;
   } = {},
 ): ConclusionContract {
-  const rawDecision = options.actualSourceUseDecision ?? contract.sourceUseDecision;
+  const hasActualDecisionOverride = Object.prototype.hasOwnProperty.call(
+    options,
+    'actualSourceUseDecision',
+  );
+  const rawDecision = hasActualDecisionOverride
+    ? options.actualSourceUseDecision
+    : contract.sourceUseDecision;
   const rawDecisionReferences = isRecord(rawDecision) ? rawDecision.references : undefined;
   const aliases = sourceReferenceAliases(boundedSourceReferenceCandidates(
     rawDecisionReferences,
@@ -145,13 +166,16 @@ export function sanitizeConclusionSourceContract(
 
 export function verifySourceClaimBindings(input: {
   conclusionContract?: ConclusionContract | null;
-  verifiedTraceEvidenceRefIdsByClaimId?: Record<string, string[]>;
+  actualSourceUseDecision?: SourceUseDecisionV1;
+  matchedTraceEvidenceRefIdsByClaimId?: Record<string, string[]>;
+  verifiedTraceOccurrenceRefIdsByClaimId?: Record<string, string[]>;
 }): SourceClaimVerificationResult {
   const contract = input.conclusionContract;
-  if (!contract) {
+  const actualSourceUseDecision = sanitizeSourceUseDecision(input.actualSourceUseDecision);
+  if (!contract || !actualSourceUseDecision) {
     return {schemaVersion: 'source_claim_verifier@1', status: 'not_checked', bindings: [], issues: []};
   }
-  const context = actualSourceContext(contract);
+  const context = authoritativeSourceContext(contract, actualSourceUseDecision);
   const candidates = sanitizeSourceClaimBindings(contract.sourceClaimBindings, {
     referenceIdAliases: context.aliases,
   });
@@ -163,9 +187,10 @@ export function verifySourceClaimBindings(input: {
   const actualReferences = new Map(context.references.map(reference => [reference.id, reference]));
   const declaredReferences = new Map(context.declaredReferences.map(reference => [reference.id, reference]));
   const selectedCodebaseIds = new Set(context.decision.selectedCodebaseIds);
-  const traceIdsByClaim = input.verifiedTraceEvidenceRefIdsByClaimId || {};
+  const matchedTraceIdsByClaim = input.matchedTraceEvidenceRefIdsByClaimId || {};
+  const verifiedOccurrenceIdsByClaim = input.verifiedTraceOccurrenceRefIdsByClaimId || {};
   const allTraceOwners = new Map<string, Set<string>>();
-  for (const [claimId, traceIds] of Object.entries(traceIdsByClaim)) {
+  for (const [claimId, traceIds] of Object.entries(matchedTraceIdsByClaim)) {
     for (const traceId of traceIds) {
       const owners = allTraceOwners.get(traceId) ?? new Set<string>();
       owners.add(claimId);
@@ -226,7 +251,7 @@ export function verifySourceClaimBindings(input: {
       bindingReferences.push(actual);
     }
 
-    const allowedTraceIds = new Set(traceIdsByClaim[candidate.claimId] || []);
+    const allowedTraceIds = new Set(matchedTraceIdsByClaim[candidate.claimId] || []);
     for (const traceEvidenceRefId of candidate.traceEvidenceRefIds) {
       if (allowedTraceIds.has(traceEvidenceRefId)) continue;
       const belongsToOtherClaim = [...(allTraceOwners.get(traceEvidenceRefId) || [])]
@@ -250,7 +275,12 @@ export function verifySourceClaimBindings(input: {
     if (mechanismStatus === 'corroborated') {
       const hasProviderBody = context.decision.codeAwareMode === 'provider_send' &&
         bindingReferences.some(reference => reference.lookupKind === 'body' || reference.lookupKind === 'indexed');
-      const hasVerifiedTraceOccurrence = candidate.traceEvidenceRefIds.some(traceId => allowedTraceIds.has(traceId));
+      const verifiedOccurrenceIds = new Set(
+        verifiedOccurrenceIdsByClaim[candidate.claimId] || [],
+      );
+      const hasVerifiedTraceOccurrence = candidate.traceEvidenceRefIds.some(
+        traceId => verifiedOccurrenceIds.has(traceId),
+      );
       if (!hasProviderBody || !hasVerifiedTraceOccurrence) {
         mechanismStatus = 'compatible';
         issues.push({
@@ -258,7 +288,9 @@ export function verifySourceClaimBindings(input: {
           severity: 'warning',
           code: hasVerifiedTraceOccurrence
             ? 'source_binding_strength_downgraded'
-            : 'source_binding_trace_support_missing',
+            : candidate.traceEvidenceRefIds.length > 0
+              ? 'source_binding_trace_occurrence_not_verified'
+              : 'source_binding_trace_support_missing',
           message: hasVerifiedTraceOccurrence
             ? 'corroborated requires provider-send body or indexed source evidence'
             : 'corroborated requires a verified trace occurrence for the same claim',
@@ -284,9 +316,15 @@ export function verifySourceClaimBindingsForResult(
   if (!result.conclusionContract?.sourceClaimBindings?.length || !result.claimVerificationResult) {
     return undefined;
   }
+  const actualSourceUseDecision = sanitizeSourceUseDecision(result.sourceUseDecision);
+  if (!actualSourceUseDecision) return undefined;
   return verifySourceClaimBindings({
     conclusionContract: result.conclusionContract,
-    verifiedTraceEvidenceRefIdsByClaimId: collectVerifiedTraceEvidenceRefIdsByClaimId(
+    actualSourceUseDecision,
+    matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(
+      result.claimVerificationResult,
+    ),
+    verifiedTraceOccurrenceRefIdsByClaimId: collectVerifiedTraceOccurrenceRefIdsByClaimId(
       result.claimVerificationResult,
     ),
   });
@@ -297,6 +335,7 @@ export function attachSourceUseToAnalysisResult(
   sourceUse: SourceUseDecisionReader | undefined,
 ): AnalysisResult {
   const actualDecision = sanitizeSourceUseDecision(sourceUse?.getSourceUseDecision());
+  delete result.sourceClaimVerificationResult;
   if (actualDecision) {
     result.sourceUseDecision = actualDecision;
     result.sourceReferences = actualDecision.references;
@@ -306,7 +345,7 @@ export function attachSourceUseToAnalysisResult(
   }
   if (result.conclusionContract) {
     result.conclusionContract = sanitizeConclusionSourceContract(result.conclusionContract, {
-      ...(actualDecision ? {actualSourceUseDecision: actualDecision} : {}),
+      actualSourceUseDecision: actualDecision ?? null,
     });
   }
   return result;

@@ -2898,6 +2898,8 @@ describe('final result quality gate', () => {
         issues: [],
       },
     });
+    sourceBoundResult.sourceUseDecision = sourceBoundResult.conclusionContract!.sourceUseDecision;
+    sourceBoundResult.sourceReferences = sourceBoundResult.conclusionContract!.sourceReferences;
 
     const issue = applyFinalResultQualityGate({
       result: sourceBoundResult,

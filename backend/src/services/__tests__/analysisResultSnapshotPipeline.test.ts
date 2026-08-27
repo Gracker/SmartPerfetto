@@ -804,6 +804,24 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('keeps only sanitized source-claim provenance in completed snapshots', () => {
+    const actualSourceUseDecision = {
+      schemaVersion: 'source_use_decision@1' as const,
+      codeAwareMode: 'provider_send' as const,
+      selectedCodebaseIds: ['app-source'],
+      status: 'corroborated' as const,
+      attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['app-source'],
+      usedCodebaseIds: ['app-source'],
+      references: [{
+        id: 'model-controlled-id',
+        referenceId: 'lookup-1',
+        codebaseId: 'app-source',
+        filePath: 'src/main/Foo.kt',
+        lookupKind: 'body' as const,
+        rootPath: '/private/raw-root-canary',
+        snippet: 'raw-source-canary',
+      } as any],
+    };
     const snapshot = buildCompletedAnalysisResultSnapshot({
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -812,6 +830,7 @@ describe('analysis result snapshot pipeline', () => {
       runId: 'run-source',
       query: 'analyze Foo.run',
       conclusion: 'Foo.run matches the verified trace occurrence',
+      sourceUseDecision: actualSourceUseDecision,
       conclusionContract: {
         schemaVersion: 'conclusion_contract_v1',
         mode: 'focused_answer',
@@ -823,24 +842,7 @@ describe('analysis result snapshot pipeline', () => {
           text: 'Foo.run matches the verified trace occurrence',
           references: [{evidenceRefId: 'data:trace-1'}],
         }],
-        sourceUseDecision: {
-          schemaVersion: 'source_use_decision@1',
-          codeAwareMode: 'provider_send',
-          selectedCodebaseIds: ['app-source'],
-          status: 'corroborated',
-          attemptedTools: ['read_codebase_file'],
-          queriedCodebaseIds: ['app-source'],
-          usedCodebaseIds: ['app-source'],
-          references: [{
-            id: 'model-controlled-id',
-            referenceId: 'lookup-1',
-            codebaseId: 'app-source',
-            filePath: 'src/main/Foo.kt',
-            lookupKind: 'body',
-            rootPath: '/private/raw-root-canary',
-            snippet: 'raw-source-canary',
-          }],
-        },
+        sourceUseDecision: actualSourceUseDecision,
         sourceReferences: [{
           id: 'model-controlled-id',
           referenceId: 'lookup-1',

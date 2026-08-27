@@ -550,9 +550,7 @@ export function normalizeResultForReport(
     }) || undefined;
   let normalizedContract = derivedContract
     ? sanitizeConclusionSourceContract(derivedContract, {
-        ...(result.sourceUseDecision
-          ? {actualSourceUseDecision: result.sourceUseDecision}
-          : {}),
+        actualSourceUseDecision: result.sourceUseDecision ?? null,
       })
     : undefined;
   let sourceClaimVerificationResult = result.sourceClaimVerificationResult;

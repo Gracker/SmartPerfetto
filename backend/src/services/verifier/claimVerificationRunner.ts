@@ -33,21 +33,41 @@ export interface ClaimVerificationRunnerResult {
   claimSupport: ClaimSupportV1[];
   claimVerificationResult: ClaimVerificationResult;
   identityResolutions: IdentityResolutionV1[];
-  verifiedTraceEvidenceRefIdsByClaimId: Record<string, string[]>;
+  matchedTraceEvidenceRefIdsByClaimId: Record<string, string[]>;
+  verifiedTraceOccurrenceRefIdsByClaimId: Record<string, string[]>;
 }
 
-export function collectVerifiedTraceEvidenceRefIdsByClaimId(
+function collectMatchedTraceEvidenceRefIds(
   verification: ClaimVerificationResult,
+  allowedClaimStatuses: ReadonlySet<ClaimVerificationClaimStatus>,
 ): Record<string, string[]> {
   const result: Record<string, string[]> = {};
   for (const claim of verification.claimResults) {
-    if (claim.status !== 'verified' && claim.status !== 'partial') continue;
+    if (!allowedClaimStatuses.has(claim.status)) continue;
     const ids = [...new Set((claim.referenceResults || [])
       .filter(reference => reference.status === 'matched' && Boolean(reference.evidenceRefId))
       .map(reference => reference.evidenceRefId!))].sort();
     if (ids.length > 0) result[claim.claimId] = ids;
   }
   return result;
+}
+
+export function collectMatchedTraceEvidenceRefIdsByClaimId(
+  verification: ClaimVerificationResult,
+): Record<string, string[]> {
+  return collectMatchedTraceEvidenceRefIds(
+    verification,
+    new Set<ClaimVerificationClaimStatus>(['verified', 'partial']),
+  );
+}
+
+export function collectVerifiedTraceOccurrenceRefIdsByClaimId(
+  verification: ClaimVerificationResult,
+): Record<string, string[]> {
+  return collectMatchedTraceEvidenceRefIds(
+    verification,
+    new Set<ClaimVerificationClaimStatus>(['verified']),
+  );
 }
 
 function isIdentityResolution(value: unknown): value is IdentityResolutionV1 {
@@ -143,7 +163,10 @@ export function runClaimVerification(input: ClaimVerificationRunnerInput): Claim
     identityResolutions: collectIdentityResolutions(
       (input.dataEnvelopes || []).filter(envelope => validateDataEnvelope(envelope).length === 0),
     ),
-    verifiedTraceEvidenceRefIdsByClaimId: collectVerifiedTraceEvidenceRefIdsByClaimId(
+    matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(
+      claimVerificationResult,
+    ),
+    verifiedTraceOccurrenceRefIdsByClaimId: collectVerifiedTraceOccurrenceRefIdsByClaimId(
       claimVerificationResult,
     ),
   };

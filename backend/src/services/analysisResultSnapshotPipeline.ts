@@ -35,11 +35,15 @@ import {
   projectPrivateUiActionProposals,
 } from './security/privateAnalysisProjection';
 import type {ConclusionContract} from '../agent/core/conclusionContract';
+import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
 import {
   sanitizeConclusionSourceContract,
   verifySourceClaimBindings,
 } from './codebase/sourceClaimVerifier';
-import {collectVerifiedTraceEvidenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
+import {
+  collectMatchedTraceEvidenceRefIdsByClaimId,
+  collectVerifiedTraceOccurrenceRefIdsByClaimId,
+} from './verifier/claimVerificationRunner';
 
 export interface CompletedAnalysisSnapshotInput {
   tenantId?: string;
@@ -53,6 +57,7 @@ export interface CompletedAnalysisSnapshotInput {
   traceLabel?: string;
   conclusion?: string;
   conclusionContract?: unknown;
+  sourceUseDecision?: SourceUseDecisionV1;
   claimSupport?: import('../types/evidenceContract').ClaimSupportV1[];
   claimVerificationResult?: import('../types/claimVerification').ClaimVerificationResult;
   identityResolutions?: import('../types/identityContract').IdentityResolutionV1[];
@@ -498,11 +503,17 @@ export function buildCompletedAnalysisResultSnapshot(
     !Array.isArray(conclusionContract) &&
     (conclusionContract as Record<string, unknown>).schemaVersion === 'conclusion_contract_v1'
   ) {
-    const sanitized = sanitizeConclusionSourceContract(conclusionContract as ConclusionContract);
+    const sanitized = sanitizeConclusionSourceContract(conclusionContract as ConclusionContract, {
+      actualSourceUseDecision: input.sourceUseDecision ?? null,
+    });
     const verification = verifySourceClaimBindings({
       conclusionContract: sanitized,
-      verifiedTraceEvidenceRefIdsByClaimId: input.claimVerificationResult
-        ? collectVerifiedTraceEvidenceRefIdsByClaimId(input.claimVerificationResult)
+      actualSourceUseDecision: input.sourceUseDecision,
+      matchedTraceEvidenceRefIdsByClaimId: input.claimVerificationResult
+        ? collectMatchedTraceEvidenceRefIdsByClaimId(input.claimVerificationResult)
+        : {},
+      verifiedTraceOccurrenceRefIdsByClaimId: input.claimVerificationResult
+        ? collectVerifiedTraceOccurrenceRefIdsByClaimId(input.claimVerificationResult)
         : {},
     });
     conclusionContract = verification.status === 'not_checked'

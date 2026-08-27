@@ -2,10 +2,15 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { runClaimVerification } from '../claimVerificationRunner';
+import {
+  collectMatchedTraceEvidenceRefIdsByClaimId,
+  collectVerifiedTraceOccurrenceRefIdsByClaimId,
+  runClaimVerification,
+} from '../claimVerificationRunner';
 import { runDeterministicClaimVerifier } from '../deterministicClaimVerifier';
 import { createDataEnvelope } from '../../../types/dataContract';
 import type { ConclusionContract } from '../../../agent/core/conclusionContract';
+import type { ClaimVerificationResult } from '../../../types/claimVerification';
 import type { IdentityResolutionV1 } from '../../../types/identityContract';
 
 function contract(value: number): ConclusionContract {
@@ -979,8 +984,33 @@ describe('runClaimVerification', () => {
 
     expect(result.claimSupport[0].supportLevel).toBe('verified');
     expect(result.claimVerificationResult.status).toBe('passed');
-    expect(result.verifiedTraceEvidenceRefIdsByClaimId).toEqual({
+    expect(result.matchedTraceEvidenceRefIdsByClaimId).toEqual({
       'claim-main-thread-blocked': ['data:skill:test'],
     });
+    expect(result.verifiedTraceOccurrenceRefIdsByClaimId).toEqual({
+      'claim-main-thread-blocked': ['data:skill:test'],
+    });
+  });
+
+  it('separates partial matched membership from verified Trace occurrences', () => {
+    const verification: ClaimVerificationResult = {
+      schemaVersion: 'claim_verifier@1',
+      status: 'partial',
+      policy: 'record_only',
+      passed: false,
+      checkedClaimCount: 1,
+      unsupportedClaimCount: 0,
+      claimResults: [{
+        claimId: 'claim-main-thread-blocked',
+        status: 'partial',
+        referenceResults: [{evidenceRefId: 'data:skill:test', status: 'matched'}],
+      }],
+      issues: [],
+    };
+
+    expect(collectMatchedTraceEvidenceRefIdsByClaimId(verification)).toEqual({
+      'claim-main-thread-blocked': ['data:skill:test'],
+    });
+    expect(collectVerifiedTraceOccurrenceRefIdsByClaimId(verification)).toEqual({});
   });
 });
