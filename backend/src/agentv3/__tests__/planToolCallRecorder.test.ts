@@ -902,6 +902,111 @@ describe('recordPlanToolCall', () => {
     });
   });
 
+  it('returns the first existing plan phase when a pending source decision has no source phase', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [
+        {
+          id: 'trace-overview',
+          name: 'Trace overview',
+          goal: 'Collect the trace overview evidence',
+          expectedTools: ['execute_sql'],
+          status: 'completed',
+          completedAt: 100,
+          summary: 'Collected the trace overview evidence and closed the phase.',
+        },
+        {
+          id: 'conclusion',
+          name: 'Conclusion',
+          goal: 'Write the final conclusion',
+          expectedTools: [],
+          status: 'completed',
+          completedAt: 200,
+          summary: 'Prepared the final conclusion after the trace overview phase.',
+        },
+      ],
+      successCriteria: 'Never return an empty pending loop',
+      submittedAt: 1,
+      sourceUseDecisionStatus: 'pending',
+      toolCallLog: [{
+        toolName: 'execute_sql',
+        timestamp: 10,
+        success: true,
+        matchedPhaseId: 'trace-overview',
+      }],
+    };
+
+    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+      complete: false,
+      sourceUseDecisionPending: true,
+      pendingPhases: [plan.phases[0]],
+    });
+  });
+
+  it('returns every existing source candidate in plan order for a pending source decision', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [
+        {
+          id: 'source-search',
+          name: 'Source search',
+          goal: 'Search the selected source tree',
+          expectedTools: ['search_codebase'],
+          expectedCalls: [{tool: 'search_codebase'}],
+          status: 'completed',
+          completedAt: 100,
+          summary: 'Completed the bounded search against the selected source tree.',
+        },
+        {
+          id: 'trace-evidence',
+          name: 'Trace evidence',
+          goal: 'Collect the trace evidence',
+          expectedTools: ['execute_sql'],
+          status: 'completed',
+          completedAt: 200,
+          summary: 'Collected the trace evidence independently from source control.',
+        },
+        {
+          id: 'source-read',
+          name: 'Source read',
+          goal: 'Read the selected source file',
+          expectedTools: ['read_codebase_file'],
+          expectedCalls: [{tool: 'read_codebase_file'}],
+          status: 'completed',
+          completedAt: 300,
+          summary: 'Completed the bounded read against the selected source file.',
+        },
+      ],
+      successCriteria: 'Preserve every actionable source phase in plan order',
+      submittedAt: 1,
+      sourceUseDecisionStatus: 'attempted',
+      toolCallLog: [
+        {
+          toolName: 'search_codebase',
+          timestamp: 10,
+          success: true,
+          matchedPhaseId: 'source-search',
+        },
+        {
+          toolName: 'execute_sql',
+          timestamp: 20,
+          success: true,
+          matchedPhaseId: 'trace-evidence',
+        },
+        {
+          toolName: 'read_codebase_file',
+          timestamp: 30,
+          success: true,
+          matchedPhaseId: 'source-read',
+        },
+      ],
+    };
+
+    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+      complete: false,
+      sourceUseDecisionPending: true,
+      pendingPhases: [plan.phases[0], plan.phases[2]],
+    });
+  });
+
   it.each(['located', 'corroborated', 'not_needed', 'search_incomplete', 'unverified'])(
     'allows final completion after source use resolves as %s',
     status => {

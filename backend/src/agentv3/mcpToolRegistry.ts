@@ -74,12 +74,18 @@ export interface McpToolDefinition {
   /** Required env vars or capability flags. */
   requires?: string[];
   /** Provider-neutral planning role derived from the canonical tool name. */
-  planCapability: PlanToolCapability;
+  planCapability?: PlanToolCapability;
 }
 
 export type McpToolRegistration = Omit<McpToolDefinition, 'shared' | 'planCapability'> & {
   shared?: SharedToolSpec;
 };
+
+export function resolveMcpToolPlanCapability(
+  definition: Pick<McpToolDefinition, 'name' | 'planCapability'>,
+): PlanToolCapability {
+  return definition.planCapability ?? getPlanToolCapability(definition.name);
+}
 
 export interface ToolRequestScope {
   sessionId: string;

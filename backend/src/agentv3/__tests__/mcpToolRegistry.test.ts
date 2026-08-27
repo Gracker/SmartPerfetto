@@ -10,6 +10,7 @@ import {
   MCP_NAME_PREFIX,
   buildAllowedTools,
   filterByExposure,
+  resolveMcpToolPlanCapability,
   type McpToolDefinition,
   type McpToolRegistration,
 } from '../mcpToolRegistry';
@@ -28,6 +29,22 @@ function stub(name: string): unknown {
 }
 
 describe('McpToolRegistry — basic registration', () => {
+  it('accepts legacy exported definitions without plan capability and derives a safe default', () => {
+    const registry = new McpToolRegistry();
+    registry.registerSdk(stub('legacy'), 'legacy_runtime_tool', 'public');
+    const registered = registry.list()[0];
+    const legacyDefinition: McpToolDefinition = {
+      name: registered.name,
+      shared: registered.shared,
+      tool: registered.tool,
+      exposure: registered.exposure,
+    };
+
+    expect(legacyDefinition.planCapability).toBeUndefined();
+    expect(resolveMcpToolPlanCapability(legacyDefinition)).toBe('evidence');
+    expect(registry.list()[0].planCapability).toBe('evidence');
+  });
+
   it('register preserves insertion order', () => {
     const registry = new McpToolRegistry();
     registry.registerSdk(stub('a'), 'execute_sql', 'public');
