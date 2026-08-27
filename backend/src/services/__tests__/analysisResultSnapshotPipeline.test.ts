@@ -701,6 +701,9 @@ describe('analysis result snapshot pipeline', () => {
     useTempEnterpriseDb();
     const sessionId = 'session-private-snapshot';
     const canary = 'PRIVATE_SNAPSHOT_DB_CANARY';
+    const canaryCodebaseId = `private-${canary}`;
+    const rawRoot = `/private/root/${canary}`;
+    const rawSnippet = `private source snippet ${canary}`;
     registerCodeAwareCanary(sessionId, canary);
     try {
       const snapshot = persistCompletedAnalysisResultSnapshot({
@@ -713,9 +716,56 @@ describe('analysis result snapshot pipeline', () => {
         query: `query ${canary}`,
         traceLabel: `label ${canary}`,
         conclusion: `conclusion ${canary}`,
-        conclusionContract: {claims: [{statement: canary}]},
+        conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1',
+          mode: 'focused_answer',
+          conclusions: [{rank: 1, statement: `trace conclusion ${canary}`}],
+          clusters: [],
+          evidenceChain: [],
+          claims: [{id: 'claim-private', text: `trace claim ${canary}`, references: []}],
+          uncertainties: [],
+          nextSteps: [],
+        },
+        sourceUseDecision: {
+          schemaVersion: 'source_use_decision@1',
+          codeAwareMode: 'provider_send',
+          selectedCodebaseIds: ['app-safe', canaryCodebaseId],
+          status: 'located',
+          attemptedTools: ['read_codebase_file', `tool-${canary}`],
+          queriedCodebaseIds: ['app-safe', canaryCodebaseId],
+          usedCodebaseIds: ['app-safe', canaryCodebaseId],
+          references: [{
+            id: 'model-safe-id',
+            referenceId: 'lookup-safe',
+            codebaseId: 'app-safe',
+            filePath: 'src/Safe.kt',
+            lookupKind: 'body',
+          }, {
+            id: `model-${canary}`,
+            referenceId: `lookup-${canary}`,
+            codebaseId: canaryCodebaseId,
+            filePath: `src/${canary}.kt`,
+            sourceGeneration: `generation-${canary}`,
+            lookupKind: 'body',
+            rootPath: rawRoot,
+            snippet: rawSnippet,
+          } as any],
+        },
         claimSupport: [{claimId: canary}] as any,
-        claimVerificationResult: {status: canary} as any,
+        claimVerificationResult: {
+          schemaVersion: 'claim_verifier@1',
+          status: 'passed',
+          policy: 'record_only',
+          passed: true,
+          checkedClaimCount: 1,
+          unsupportedClaimCount: 0,
+          claimResults: [{
+            claimId: 'claim-private',
+            status: 'verified',
+            referenceResults: [],
+          }],
+          issues: [{message: canary}],
+        } as any,
         identityResolutions: [{identityRefId: canary}] as any,
         dataEnvelopes: [{
           ...envelope(),
@@ -777,6 +827,22 @@ describe('analysis result snapshot pipeline', () => {
       expect(snapshot?.capabilityManifest).toEqual(receiptCapabilityManifest);
       expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(receiptCapabilityManifest);
       expect(snapshot?.summary.analysisReceipt?.outputs).toEqual({});
+      const storedSourceDecision = (snapshot?.conclusionContract as any)?.sourceUseDecision;
+      expect(storedSourceDecision).toEqual(expect.objectContaining({
+        schemaVersion: 'source_use_decision@1',
+        selectedCodebaseIds: ['app-safe'],
+        queriedCodebaseIds: ['app-safe'],
+        usedCodebaseIds: ['app-safe'],
+        references: [expect.objectContaining({
+          codebaseId: 'app-safe',
+          filePath: 'src/Safe.kt',
+          referenceId: 'lookup-safe',
+        })],
+      }));
+      expect(storedSourceDecision.references[0]).not.toHaveProperty('rootPath');
+      expect(storedSourceDecision.references[0]).not.toHaveProperty('snippet');
+      expect(JSON.stringify(storedSourceDecision)).not.toContain(rawRoot);
+      expect(JSON.stringify(storedSourceDecision)).not.toContain(rawSnippet);
 
       const db = openEnterpriseDb();
       try {

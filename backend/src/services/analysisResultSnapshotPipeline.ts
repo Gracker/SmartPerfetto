@@ -35,7 +35,10 @@ import {
   projectPrivateUiActionProposals,
 } from './security/privateAnalysisProjection';
 import type {ConclusionContract} from '../agent/core/conclusionContract';
-import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
+import {
+  sanitizeSourceUseDecision,
+  type SourceUseDecisionV1,
+} from './codebase/sourceUseDecision';
 import {
   sanitizeConclusionSourceContract,
   verifySourceClaimBindings,
@@ -660,6 +663,11 @@ export function persistCompletedAnalysisResultSnapshot(
         }),
         conclusionContract: input.conclusionContract
           ? projectPrivateStructuredValue(input.sessionId, input.conclusionContract)
+          : undefined,
+        sourceUseDecision: input.sourceUseDecision
+          ? sanitizeSourceUseDecision(
+              projectPrivateStructuredValue(input.sessionId, input.sourceUseDecision),
+            )
           : undefined,
         claimSupport: projectPrivateClaimSupport(input.sessionId, input.claimSupport),
         claimVerificationResult: projectPrivateClaimVerification(
