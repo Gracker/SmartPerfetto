@@ -698,6 +698,94 @@ describe('registerOnDemandSourceLookupForEcho', () => {
 });
 
 describe('code-aware output registry bounds', () => {
+  it('never executes object getters or array accessor indices', () => {
+    let objectGetterReads = 0;
+    const objectInput: Record<string, unknown> = {safe: 'ordinary'};
+    Object.defineProperty(objectInput, 'incrementing', {
+      enumerable: true,
+      get: () => {
+        objectGetterReads += 1;
+        return 'must not be read';
+      },
+    });
+    Object.defineProperty(objectInput, 'throwing', {
+      enumerable: true,
+      get: () => {
+        throw new Error('object getter executed');
+      },
+    });
+
+    let objectProjected: Record<string, unknown> | undefined;
+    expect(() => {
+      objectProjected = sanitizeCodeAwareStructuredText('session-object-accessor', objectInput);
+    }).not.toThrow();
+    expect(objectGetterReads).toBe(0);
+    expect(objectProjected).toEqual({safe: 'ordinary'});
+
+    let arrayGetterReads = 0;
+    const arrayInput = ['safe'];
+    Object.defineProperty(arrayInput, 1, {
+      enumerable: true,
+      get: () => {
+        arrayGetterReads += 1;
+        throw new Error('array getter executed');
+      },
+    });
+    let arrayProjected: string[] | undefined;
+    expect(() => {
+      arrayProjected = sanitizeCodeAwareStructuredText('session-array-accessor', arrayInput);
+    }).not.toThrow();
+    expect(arrayGetterReads).toBe(0);
+    expect(arrayProjected).toHaveLength(2);
+    expect(arrayProjected?.[0]).toBe('safe');
+    expect(Object.prototype.hasOwnProperty.call(arrayProjected!, 1)).toBe(false);
+  });
+
+  it('drops dangerous keys without prototype mutation and preserves safe object prototypes', () => {
+    const ordinary: Record<string, unknown> = {safe: 'ordinary', nested: {value: 7}};
+    for (const key of ['__proto__', 'prototype', 'constructor']) {
+      Object.defineProperty(ordinary, key, {
+        value: {pollutedByTask7: key},
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    const originalObjectPrototype = Object.getPrototypeOf(ordinary);
+    const projectedOrdinary = sanitizeCodeAwareStructuredText(
+      'session-dangerous-keys',
+      ordinary,
+    ) as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(projectedOrdinary)).toBe(originalObjectPrototype);
+    expect(projectedOrdinary).toEqual({safe: 'ordinary', nested: {value: 7}});
+    expect(Object.prototype.hasOwnProperty.call(projectedOrdinary, '__proto__')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(projectedOrdinary, 'prototype')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(projectedOrdinary, 'constructor')).toBe(false);
+    expect((Object.prototype as {pollutedByTask7?: string}).pollutedByTask7).toBeUndefined();
+    expect(({} as {pollutedByTask7?: string}).pollutedByTask7).toBeUndefined();
+
+    const nullPrototype = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(nullPrototype, 'safe', {
+      value: 'null-prototype ordinary text',
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
+    Object.defineProperty(nullPrototype, '__proto__', {
+      value: {pollutedByTask7: 'null-prototype'},
+      enumerable: true,
+    });
+    const projectedNullPrototype = sanitizeCodeAwareStructuredText(
+      'session-null-prototype',
+      nullPrototype,
+    ) as Record<string, unknown>;
+
+    expect(Object.getPrototypeOf(projectedNullPrototype)).toBeNull();
+    expect(Reflect.ownKeys(projectedNullPrototype)).toEqual(['safe']);
+    expect(projectedNullPrototype.safe).toBe('null-prototype ordinary text');
+    expect((Object.prototype as {pollutedByTask7?: string}).pollutedByTask7).toBeUndefined();
+  });
+
   it('keeps ordinary structured values byte-for-shape identical including shared subobjects', () => {
     const shared = {text: 'ordinary source-free text', traceId: 'trace-ordinary'};
     const input = {

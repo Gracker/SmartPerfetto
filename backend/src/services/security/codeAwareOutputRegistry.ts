@@ -22,6 +22,12 @@ const PRIVATE_OUTPUT_SUPPRESSED = '[PRIVATE_OUTPUT_SUPPRESSED]';
 const MAX_STRUCTURED_TEXT_DEPTH = 24;
 const MAX_STRUCTURED_TEXT_ITEMS = 10_000;
 const MAX_STRUCTURED_TEXT_STRING_BYTES = 1024 * 1024;
+const DANGEROUS_STRUCTURED_TEXT_KEYS = new Set([
+  '__proto__',
+  'prototype',
+  'constructor',
+]);
+const STRUCTURED_TEXT_VALUE_DROPPED = Symbol('structured-text-value-dropped');
 
 class SessionCodeAwareOutputGuard {
   private readonly registrations: GuardRegistration[] = [];
@@ -300,9 +306,9 @@ function sanitizeStructuredTextValue(
   value: unknown,
   state: {items: number; seen: WeakSet<object>},
   depth: number,
-): unknown {
+): unknown | typeof STRUCTURED_TEXT_VALUE_DROPPED {
   if (depth > MAX_STRUCTURED_TEXT_DEPTH || state.items >= MAX_STRUCTURED_TEXT_ITEMS) {
-    return undefined;
+    return STRUCTURED_TEXT_VALUE_DROPPED;
   }
   state.items += 1;
   if (typeof value === 'string') {
@@ -322,25 +328,61 @@ function sanitizeStructuredTextValue(
   ) {
     return value;
   }
-  if (typeof value !== 'object') return undefined;
-  if (state.seen.has(value)) return undefined;
-  if (!Array.isArray(value)) {
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null) return undefined;
+  if (typeof value !== 'object') return STRUCTURED_TEXT_VALUE_DROPPED;
+  if (state.seen.has(value)) return STRUCTURED_TEXT_VALUE_DROPPED;
+  const isArray = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (!isArray && prototype !== Object.prototype && prototype !== null) {
+    return STRUCTURED_TEXT_VALUE_DROPPED;
   }
 
   state.seen.add(value);
   try {
-    if (Array.isArray(value)) {
-      return value
-        .map(item => sanitizeStructuredTextValue(sessionId, item, state, depth + 1))
-        .filter(item => item !== undefined);
+    const sanitized: Record<PropertyKey, unknown> | unknown[] = isArray
+      ? []
+      : Object.create(prototype);
+    for (const key of Reflect.ownKeys(value)) {
+      if (state.items >= MAX_STRUCTURED_TEXT_ITEMS) break;
+      if (isArray && key === 'length') continue;
+      state.items += 1;
+      if (
+        typeof key !== 'string' ||
+        DANGEROUS_STRUCTURED_TEXT_KEYS.has(key)
+      ) {
+        continue;
+      }
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (!descriptor?.enumerable || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+        continue;
+      }
+      const projected = sanitizeStructuredTextValue(
+        sessionId,
+        descriptor.value,
+        state,
+        depth + 1,
+      );
+      if (projected === STRUCTURED_TEXT_VALUE_DROPPED) continue;
+      Object.defineProperty(sanitized, key, {
+        value: projected,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
     }
-
-    const sanitized: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-      const projected = sanitizeStructuredTextValue(sessionId, entry, state, depth + 1);
-      if (projected !== undefined) sanitized[key] = projected;
+    if (isArray) {
+      const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+      if (
+        lengthDescriptor &&
+        Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value') &&
+        typeof lengthDescriptor.value === 'number'
+      ) {
+        Object.defineProperty(sanitized, 'length', {
+          value: Math.min(lengthDescriptor.value, MAX_STRUCTURED_TEXT_ITEMS),
+          enumerable: false,
+          configurable: false,
+          writable: true,
+        });
+      }
     }
     return sanitized;
   } finally {
@@ -357,12 +399,13 @@ export function sanitizeCodeAwareStructuredText<T>(
   sessionId: string | undefined,
   value: T,
 ): T {
-  return sanitizeStructuredTextValue(
+  const sanitized = sanitizeStructuredTextValue(
     sessionId,
     value,
     {items: 0, seen: new WeakSet<object>()},
     0,
-  ) as T;
+  );
+  return (sanitized === STRUCTURED_TEXT_VALUE_DROPPED ? undefined : sanitized) as T;
 }
 
 export interface CodeAwareStreamingTextProjection {
