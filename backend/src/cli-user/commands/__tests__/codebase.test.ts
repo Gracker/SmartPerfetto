@@ -203,6 +203,56 @@ describe('smp codebase command handlers', () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  it('sanitizes token-shaped diagnostics in CLI list/audit JSON and preserves known codes', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Diagnostic CLI',
+      rootPath: root,
+      rootRealpath: root,
+      ...DEFAULT_SCOPE,
+    });
+    const tokenCanary = 'CLI_TOKEN_SECRET_CANARY_123456';
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'failed',
+      lastIngestError: tokenCanary,
+    }, DEFAULT_SCOPE);
+
+    expect(await runCodebaseListCommand({
+      sessionDir,
+      managementService,
+      format: 'json',
+    })).toBe(0);
+    const listJson = String(logSpy.mock.calls[0]?.[0] ?? '');
+    expect(listJson).not.toContain(tokenCanary);
+    expect(listJson).toContain('codebase_operation_failed');
+
+    logSpy.mockClear();
+    expect(await runCodebaseAuditCommand({
+      codebaseId: ref.codebaseId,
+      sessionDir,
+      managementService,
+      format: 'json',
+    })).toBe(0);
+    const auditJson = String(logSpy.mock.calls[0]?.[0] ?? '');
+    expect(auditJson).not.toContain(tokenCanary);
+    expect(auditJson).toContain('codebase_operation_failed');
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'blocked_by_security',
+      lastIngestError: 'codebase_root_realpath_drift',
+    }, DEFAULT_SCOPE);
+    logSpy.mockClear();
+    expect(await runCodebaseAuditCommand({
+      codebaseId: ref.codebaseId,
+      sessionDir,
+      managementService,
+      format: 'json',
+    })).toBe(0);
+    expect(String(logSpy.mock.calls[0]?.[0] ?? ''))
+      .toContain('codebase_root_realpath_drift');
+  });
+
   it('uses service preview projection for AOSP manifest suggestions and degradation', async () => {
     fs.mkdirSync(path.join(root, '.repo'), {recursive: true});
     fs.writeFileSync(path.join(root, '.repo/manifest.xml'), [
@@ -481,14 +531,72 @@ describe('smp codebase command handlers', () => {
   });
 
   it.each([
-    [['codebase', 'selection', 'cb-test', '--help'], 0],
-    [['codebase', 'consent', 'cb-test', '--enable', '--disable'], 1],
-    [['codebase', 'authorize-extensions', 'cb-test', '--help'], 0],
-    [['codebase', 'authorize-selection', 'cb-test', '--help'], 0],
-    [['codebase', 'pending', 'cb-test', '--accept', '--reject', '--candidate', 'candidate'], 1],
-    [['codebase', 'audit', 'cb-test', '--help'], 0],
-    [['codebase', 'delete', 'cb-test'], 1],
-  ] as const)('parses codebase command %j with the expected exit status', (args, expectedStatus) => {
+    {
+      args: ['codebase', 'selection', 'cb-test', '--help'],
+      expectedStatus: 0,
+      stdout: /Usage:/,
+      stderr: /^$/,
+    },
+    {
+      args: ['codebase', 'consent', 'cb-test', '--enable', '--disable'],
+      expectedStatus: 2,
+      stdout: /^$/,
+      stderr: /cannot be used with option/i,
+    },
+    {
+      args: ['codebase', 'authorize-extensions', 'cb-test', '--help'],
+      expectedStatus: 0,
+      stdout: /Usage:/,
+      stderr: /^$/,
+    },
+    {
+      args: ['codebase', 'authorize-selection', 'cb-test', '--help'],
+      expectedStatus: 0,
+      stdout: /Usage:/,
+      stderr: /^$/,
+    },
+    {
+      args: ['codebase', 'pending', 'cb-test', '--accept', '--reject', '--candidate', 'candidate'],
+      expectedStatus: 2,
+      stdout: /^$/,
+      stderr: /cannot be used with option/i,
+    },
+    {
+      args: ['codebase', 'pending', 'cb-test', '--accept'],
+      expectedStatus: 2,
+      stdout: /^$/,
+      stderr: /required option.*candidate/i,
+    },
+    {
+      args: ['codebase', 'audit', 'cb-test', '--format', 'xml'],
+      expectedStatus: 2,
+      stdout: /^$/,
+      stderr: /invalid codebase output format/i,
+    },
+    {
+      args: ['codebase', 'audit', 'cb-test', '--help'],
+      expectedStatus: 0,
+      stdout: /Usage:/,
+      stderr: /^$/,
+    },
+    {
+      args: ['codebase', 'delete', 'cb-test'],
+      expectedStatus: 2,
+      stdout: /^$/,
+      stderr: /required option.*yes/i,
+    },
+    {
+      args: ['--version'],
+      expectedStatus: 0,
+      stdout: /^\d+\.\d+\.\d+\s*$/,
+      stderr: /^$/,
+    },
+  ])('parses codebase command $args with the expected exit status', ({
+    args,
+    expectedStatus,
+    stdout,
+    stderr,
+  }) => {
     const backendRoot = path.resolve(__dirname, '../../../..');
     const result = spawnSync(process.execPath, [
       path.join(backendRoot, 'node_modules/tsx/dist/cli.mjs'),
@@ -504,5 +612,7 @@ describe('smp codebase command handlers', () => {
     });
 
     expect(result.status).toBe(expectedStatus);
+    expect(result.stdout).toMatch(stdout);
+    expect(result.stderr).toMatch(stderr);
   });
 });

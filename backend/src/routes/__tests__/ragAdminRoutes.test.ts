@@ -542,6 +542,41 @@ describe('codebase routes', () => {
     expect(JSON.stringify(response.body)).not.toContain(root);
   });
 
+  it('independently sanitizes token-shaped diagnostics in list, detail, and audit JSON', async () => {
+    const ref = registry.register({
+      kind: 'app_source',
+      displayName: 'Diagnostic Route',
+      rootPath: tmpDir,
+      rootRealpath: tmpDir,
+      ...DEFAULT_SCOPE,
+    });
+    const tokenCanary = 'ROUTE_TOKEN_SECRET_CANARY_123456';
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'failed',
+      lastIngestError: tokenCanary,
+    }, DEFAULT_SCOPE);
+
+    const list = await request(app).get('/api/rag/codebases');
+    const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
+    const audit = await request(app).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
+    const unknown = JSON.stringify({list: list.body, detail: detail.body, audit: audit.body});
+
+    expect(list.status).toBe(200);
+    expect(detail.status).toBe(200);
+    expect(audit.status).toBe(200);
+    expect(unknown).not.toContain(tokenCanary);
+    expect(unknown).not.toContain('rootAuthorization');
+    expect(unknown).toContain('codebase_operation_failed');
+
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'blocked_by_security',
+      lastIngestError: 'codebase_root_realpath_drift',
+    }, DEFAULT_SCOPE);
+    const knownAudit = await request(app).get(`/api/rag/codebases/${ref.codebaseId}/audit`);
+    expect(knownAudit.body.audit.lastIngestError).toBe('codebase_root_realpath_drift');
+    expect(JSON.stringify(knownAudit.body)).not.toContain(tokenCanary);
+  });
+
   it('keeps AOSP preview available when optional manifest metadata is too large', async () => {
     const root = path.join(tmpDir, 'aosp-large-manifest');
     fs.mkdirSync(path.join(root, '.repo'), {recursive: true});

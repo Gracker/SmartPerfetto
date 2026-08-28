@@ -154,16 +154,42 @@ export interface CodebaseManagementDependencies {
   registry: CodebaseRegistry;
   store: RagStore;
   gate: PathSecurityGate;
-  sourceEnumerator?: SourceEnumerator;
+  sourceEnumerator?: CodebaseSourceEnumerator;
   readAospManifestProjects?: typeof readAospManifestProjects;
   now?: () => number;
 }
 
+export type CodebaseSourceEnumerator = Pick<SourceEnumerator, 'enumerate'>;
+
+const SAFE_OPERATIONAL_DIAGNOSTICS = new Set([
+  'codebase_deleting',
+  'codebase_index_generation_changed',
+  'codebase_reindex_in_progress',
+  'codebase_reindex_lease_lost',
+  'codebase_root_realpath_drift',
+  'enumeration_budget',
+  'pending_generation_expired',
+  'root_not_found',
+  'root_outside_allowlist',
+  'source_enumeration_incomplete',
+  'source_generation_empty',
+  'source_selection_empty',
+  'time_budget',
+  'traversal_error',
+]);
+
+const SAFE_OPERATIONAL_PREFIX_CATEGORIES = [
+  ['codebase_reindex_incomplete:', 'codebase_reindex_incomplete'],
+  ['inactive_chunk_cleanup_failed:', 'inactive_chunk_cleanup_failed'],
+  ['source_chunk_limit_exceeded:', 'source_chunk_limit_exceeded'],
+  ['staged_chunk_count_mismatch:', 'staged_chunk_count_mismatch'],
+] as const;
+
 function safeOperationalDiagnostic(value: string | undefined): string | undefined {
   if (!value) return undefined;
-  if (/^[a-zA-Z0-9_.:-]{1,256}$/.test(value)) return value;
-  if (value.startsWith('inactive_chunk_cleanup_failed:')) {
-    return 'inactive_chunk_cleanup_failed';
+  if (SAFE_OPERATIONAL_DIAGNOSTICS.has(value)) return value;
+  for (const [prefix, category] of SAFE_OPERATIONAL_PREFIX_CATEGORIES) {
+    if (value.startsWith(prefix)) return category;
   }
   return 'codebase_operation_failed';
 }
@@ -254,7 +280,7 @@ export class CodebaseManagementService {
   private readonly registry: CodebaseRegistry;
   private readonly store: RagStore;
   private readonly gate: PathSecurityGate;
-  private readonly sourceEnumerator: SourceEnumerator;
+  private readonly sourceEnumerator: CodebaseSourceEnumerator;
   private readonly manifestReader: typeof readAospManifestProjects;
   private readonly now: () => number;
 

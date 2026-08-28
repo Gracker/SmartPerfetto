@@ -171,7 +171,7 @@ describe('CodebaseManagementService', () => {
         enumerate: async () => {
           throw new Error(`source file not found below ${root}`);
         },
-      } as unknown as SourceEnumerator,
+      },
     });
 
     try {
@@ -309,6 +309,35 @@ describe('CodebaseManagementService', () => {
     expect(serialized).not.toContain(tmpDir);
     expect(serialized).not.toContain('secret-token');
     expect(serialized).not.toContain('rootAuthorization');
+  });
+
+  it('maps token-shaped secrets to a generic diagnostic and preserves finite safe codes', async () => {
+    const ref = registerApp('Diagnostic App');
+    const tokenCanary = 'TOKEN_SHAPED_SECRET_CANARY_123456';
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'failed',
+      lastIngestError: tokenCanary,
+    }, DEFAULT_SCOPE);
+
+    const unknown = JSON.stringify({
+      list: await service.list(DEFAULT_SCOPE),
+      detail: service.get(ref.codebaseId, DEFAULT_SCOPE),
+      audit: service.audit(ref.codebaseId, DEFAULT_SCOPE),
+    });
+    expect(unknown).not.toContain(tokenCanary);
+    expect(unknown).toContain('codebase_operation_failed');
+
+    registry.updateIngestStatus(ref.codebaseId, {
+      lastIngestStatus: 'blocked_by_security',
+      lastIngestError: 'codebase_root_realpath_drift',
+    }, DEFAULT_SCOPE);
+    const known = JSON.stringify({
+      list: await service.list(DEFAULT_SCOPE),
+      detail: service.get(ref.codebaseId, DEFAULT_SCOPE),
+      audit: service.audit(ref.codebaseId, DEFAULT_SCOPE),
+    });
+    expect(known).toContain('codebase_root_realpath_drift');
+    expect(known).not.toContain(tokenCanary);
   });
 
   it('deletes every scoped generation, resumes incomplete cleanup, and is idempotent', async () => {

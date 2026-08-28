@@ -11,7 +11,7 @@
  * even if some module has a stray setInterval / active handle we missed.
  */
 
-import {Command, Option} from 'commander';
+import {Command, CommanderError, Option} from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrap } from './bootstrap';
@@ -114,6 +114,7 @@ function main(): void {
   installFatalHandlers();
 
   const program = new Command();
+  program.exitOverride();
 
   program
     .name(programName())
@@ -925,6 +926,9 @@ function main(): void {
   });
 
   program.parseAsync(process.argv).catch((err: Error) => {
+    if (err instanceof CommanderError) {
+      process.exit(err.exitCode === 0 ? 0 : 2);
+    }
     console.error(`Fatal: ${err.message}`);
     if (process.env.DEBUG) console.error(err.stack);
     process.exit(2);
