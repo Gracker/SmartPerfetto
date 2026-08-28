@@ -1256,6 +1256,8 @@ describe('createClaudeMcpServer', () => {
         expect(envelope.meta.queryReview.source.evidenceRefId).toBe(
           envelope.meta.evidenceRefId,
         );
+        expect(envelope.meta.queryReview.purpose).toContain('returns value');
+        expect(envelope.meta.queryReview.purpose).not.toMatch(/[\u3400-\u9fff]/u);
       }
     });
 
@@ -1441,6 +1443,26 @@ describe('createClaudeMcpServer', () => {
       expect(analysisPlan.current?.phases.find(p => p.id === 'p1')?.status).toBe('in_progress');
       expect(analysisPlan.current?.phases.find(p => p.id === 'p4')?.status).toBe('pending');
     });
+  });
+
+  it('uses the live session language for emitted SQL query-review purpose', async () => {
+    const {tools, emittedUpdates} = createTestServer({
+      lightweight: true,
+      outputLanguage: 'en',
+    });
+
+    const result = await callTool(tools, 'execute_sql', {
+      sql: 'SELECT name FROM slice WHERE dur > 1000000',
+    });
+    const envelope = emittedUpdates
+      .filter((update: any) => update.type === 'data')
+      .flatMap((update: any) => update.content ?? [])
+      .find((candidate: any) => candidate.meta?.source === 'execute_sql');
+
+    expect(result.success).toBe(true);
+    expect(envelope?.meta?.queryReview?.purpose).toContain('Queries slice');
+    expect(envelope?.meta?.queryReview?.purpose).toContain('filters by dur > 1000000');
+    expect(envelope?.meta?.queryReview?.purpose).not.toMatch(/[\u3400-\u9fff]/u);
   });
 
   describe('phase attribution', () => {

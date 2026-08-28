@@ -135,6 +135,8 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
         displayName: 'Private Kernel',
         kind: 'kernel_source',
       }],
+      lookupCount: 2,
+      queriedCodebaseIds: ['private-app', 'private-kernel'],
       usedCodebaseIds: ['private-app'],
     });
     const html = new HTMLReportGenerator().generateAgentDrivenHTML({
@@ -243,6 +245,8 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
         codebaseId: 'bad-kind',
         displayName: 'Bad Kind',
       }],
+      lookupCount: 5,
+      queriedCodebaseIds: ['bad-kind', 'safe-app', 'url-name'],
       usedCodebaseIds: ['safe-app'],
     });
 

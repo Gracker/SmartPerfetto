@@ -15,6 +15,7 @@ import {
 import {
   introspectSqlForQueryReview,
   type SqlReviewOutputColumn,
+  type SqlReviewIntrospection,
 } from './sqlReviewIntrospector';
 
 export interface QueryReviewProducerInput {
@@ -49,6 +50,86 @@ export function queryReviewStableHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
 }
 
+const LOW_SIGNAL_QUERY_PURPOSE_PATTERNS = [
+  /执行(?:当前|参考)?\s*Trace\s*SQL，?验证(?:本阶段|对比)?(?:的)?(?:具体)?数据点。?/i,
+  /run sql on the (?:current|reference) trace to verify/i,
+  /调用 Skill .+收集本阶段结构化证据。?/i,
+  /run skill .+ to collect structured evidence for this phase/i,
+  /review the (?:executed sql|skill output) shape/i,
+];
+
+export function isLowSignalQueryPurpose(value: unknown): boolean {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return !text || LOW_SIGNAL_QUERY_PURPOSE_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function boundedPurposeItems(values: string[], limit: number, itemLimit: number): string[] {
+  return values
+    .map(value => value.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, limit)
+    .map(value => value.length <= itemLimit ? value : `${value.slice(0, itemLimit - 1)}…`);
+}
+
+export function buildObservedQueryPurpose(input: {
+  title?: string;
+  introspection: SqlReviewIntrospection;
+  outputLanguage: OutputLanguage;
+}): string {
+  const reads = boundedPurposeItems(
+    input.introspection.reads.map(read => read.table),
+    4,
+    48,
+  );
+  const filters = boundedPurposeItems(
+    input.introspection.filters.map(filter => filter.expression),
+    2,
+    96,
+  );
+  const outputs = boundedPurposeItems(
+    input.introspection.outputShape.map(column => column.name),
+    6,
+    48,
+  );
+  const clauses: string[] = [];
+  if (reads.length > 0) {
+    clauses.push(localize(
+      input.outputLanguage,
+      `查询 ${reads.join('、')}`,
+      `Queries ${reads.join(', ')}`,
+    ));
+  }
+  if (filters.length > 0) {
+    clauses.push(localize(
+      input.outputLanguage,
+      `筛选 ${filters.join('；')}`,
+      `filters by ${filters.join('; ')}`,
+    ));
+  }
+  if (outputs.length > 0) {
+    clauses.push(localize(
+      input.outputLanguage,
+      `返回 ${outputs.join('、')}`,
+      `returns ${outputs.join(', ')}`,
+    ));
+  }
+
+  const title = String(input.title || '').trim();
+  const subject = title
+    ? localize(input.outputLanguage, `“${title}”：`, `“${title}”: `)
+    : '';
+  if (clauses.length > 0) {
+    const separator = input.outputLanguage === 'en' ? '; ' : '；';
+    const terminator = input.outputLanguage === 'en' ? '.' : '。';
+    return `${subject}${clauses.join(separator)}${terminator}`;
+  }
+  return localize(
+    input.outputLanguage,
+    `${subject}展示本步骤实际返回的结构化结果。`,
+    `${subject}Shows the structured result returned by this step.`,
+  );
+}
+
 export function buildSqlQueryReview(input: BuildSqlQueryReviewInput): QueryReviewV1 | undefined {
   const outputLanguage = input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const introspection = introspectSqlForQueryReview({
@@ -76,6 +157,11 @@ export function buildSqlQueryReview(input: BuildSqlQueryReviewInput): QueryRevie
     artifactId: input.artifactId,
     sql: input.executableSql,
   })}`;
+  const requestedPurpose = input.purpose || input.producer?.producerReason;
+  const title = input.title || localize(outputLanguage, '已执行 SQL review', 'Executed SQL review');
+  const purpose = isLowSignalQueryPurpose(requestedPurpose)
+    ? buildObservedQueryPurpose({title, introspection, outputLanguage})
+    : requestedPurpose!;
 
   return sanitizeQueryReview({
     schemaVersion: QUERY_REVIEW_SCHEMA_VERSION,
@@ -90,12 +176,8 @@ export function buildSqlQueryReview(input: BuildSqlQueryReviewInput): QueryRevie
       paneSide: input.traceProvenance?.paneSide,
       traceId: input.traceProvenance?.traceId,
     },
-    title: input.title || localize(outputLanguage, '已执行 SQL review', 'Executed SQL review'),
-    purpose: input.purpose || input.producer?.producerReason || localize(
-      outputLanguage,
-      'Review 已执行 SQL 的来源表、过滤条件、输出形状和 guardrail 告警。',
-      'Review the executed SQL source tables, filters, output shape, and guardrail warnings.',
-    ),
+    title,
+    purpose,
     source: {
       artifactId: input.artifactId,
       evidenceRefId: input.evidenceRefId,

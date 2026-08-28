@@ -91,20 +91,52 @@ describe('HTMLReportGenerator code-aware rendering', () => {
         displayName: 'Kernel Source',
         kind: 'kernel_source',
       }],
+      lookupCount: 2,
+      queriedCodebaseIds: [
+        'codebase-app-1234567890',
+        'codebase-kernel-1234567890',
+      ],
       usedCodebaseIds: ['codebase-app-1234567890'],
-    };
+    } as any;
 
     const html = new HTMLReportGenerator().generateAgentDrivenHTML(data);
 
     expect(html).toContain('源码上下文');
     expect(html).toContain('已选择');
     expect(html).toContain('实际使用/查询到');
+    expect(html).toContain('本次查询 2 个源码库，1 个源码库成功返回引用');
     expect(html).toContain('Demo App');
     expect(html).toContain('Kernel Source');
     expect(html).toContain('codebase-app');
     expect(html).toContain('源码/图查询只定位候选机制');
     expect(html).not.toContain('/Users/chris');
     expect(html).not.toContain('raw source text');
+  });
+
+  it('distinguishes no source lookup from lookups that returned no references', () => {
+    const generator = new HTMLReportGenerator();
+    const noLookup = makeReportData({});
+    noLookup.sourceContext = {
+      selected: [{codebaseId: 'codebase-app-1234567890', displayName: 'Demo App'}],
+      lookupCount: 0,
+      queriedCodebaseIds: [],
+      usedCodebaseIds: [],
+    } as any;
+    const noLookupHtml = generator.generateAgentDrivenHTML(noLookup);
+    expect(noLookupHtml).toContain('本次分析未发起源码或图查询');
+    expect(noLookupHtml).toContain('源码上下文已接入');
+
+    const emptyLookup = makeReportData({});
+    emptyLookup.sourceContext = {
+      selected: [{codebaseId: 'codebase-app-1234567890', displayName: 'Demo App'}],
+      lookupCount: 2,
+      queriedCodebaseIds: ['codebase-app-1234567890'],
+      usedCodebaseIds: [],
+    } as any;
+    const emptyLookupHtml = generator.generateAgentDrivenHTML(emptyLookup);
+    expect(emptyLookupHtml).toContain('本次已查询 1 个源码库');
+    expect(emptyLookupHtml).toContain('没有成功返回源码或图引用');
+    expect(emptyLookupHtml).not.toContain('本次分析未发起源码或图查询');
   });
 
   it('leaves legacy reports without source context unchanged', () => {

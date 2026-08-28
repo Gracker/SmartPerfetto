@@ -2,7 +2,12 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+export const REPORT_MERMAID_ASSET_ROUTE = '/api/reports/assets/mermaid.min.js';
+export const REPORT_CAUSAL_MAP_MARKER = 'smartperfetto-report-mermaid-v2';
+export const REPORT_CAUSAL_MAP_STYLE_MARKER = 'smartperfetto-report-mermaid-style-v2';
+
 export const REPORT_CAUSAL_MAP_CSS = String.raw`
+/* ${REPORT_CAUSAL_MAP_STYLE_MARKER} */
 .mermaid-wrapper {
   margin: 12px 0 22px;
   overflow-x: auto;
@@ -403,6 +408,7 @@ pre.mermaid .cluster span {
 `;
 
 export const REPORT_CAUSAL_MAP_SCRIPT = String.raw`
+/* ${REPORT_CAUSAL_MAP_MARKER} */
 (function() {
   function decodeMermaidSource(text) {
     return String(text || '')
@@ -835,67 +841,85 @@ export const REPORT_CAUSAL_MAP_SCRIPT = String.raw`
     return root;
   }
 
-  var mermaidTargets = [];
+  var sourceEntries = [];
   document.querySelectorAll('pre.mermaid').forEach(function(el) {
     var originalSource = decodeMermaidSource(el.textContent || '');
-    var parsed = parseMermaidFlowSource(originalSource);
-    if (parsed) {
-      var wrapper = el.closest('.mermaid-wrapper') || el.parentElement;
-      if (wrapper) {
-        wrapper.innerHTML = '';
-        wrapper.appendChild(buildCausalMap(parsed, originalSource));
-        return;
-      }
-    }
-
-    el.textContent = originalSource;
-    el.setAttribute('data-render-mode', 'mermaid');
-    mermaidTargets.push(el);
+    sourceEntries.push({
+      el: el,
+      originalSource: originalSource,
+      parsed: parseMermaidFlowSource(originalSource),
+    });
   });
 
-  if (mermaidTargets.length > 0) {
-    if (typeof mermaid === 'undefined') {
-      console.error('[SmartPerfetto] Mermaid library is unavailable; showing the original diagram source.');
+  function renderFallback(entry) {
+    var el = entry.el;
+    var wrapper = el.closest('.mermaid-wrapper') || el.parentElement;
+    if (entry.parsed && wrapper) {
+      wrapper.innerHTML = '';
+      wrapper.appendChild(buildCausalMap(entry.parsed, entry.originalSource));
       return;
     }
-
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'neutral',
-      securityLevel: 'strict',
-      flowchart: {
-        useMaxWidth: true,
-        htmlLabels: false,
-        nodeSpacing: 48,
-        rankSpacing: 64,
-        padding: 18,
-        curve: 'linear'
-      },
-      themeVariables: {
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
-        fontSize: '15px',
-        lineColor: '#334155',
-        primaryColor: '#ffffff',
-        primaryTextColor: '#0f172a',
-        primaryBorderColor: '#94a3b8',
-        secondaryColor: '#f8fafc',
-        tertiaryColor: '#eff6ff',
-        clusterBkg: '#f8fafc',
-        clusterBorder: '#cbd5e1'
-      }
-    });
-
-    mermaid.run({ querySelector: 'pre.mermaid[data-render-mode="mermaid"]' }).then(function() {
-      document.querySelectorAll('pre.mermaid svg').forEach(function(svg) {
-        svg.style.width = '100%';
-        svg.style.maxWidth = '100%';
-        svg.style.height = 'auto';
-        svg.style.display = 'block';
-        svg.style.margin = '0 auto';
-      });
-    }).catch(function(err) {
-      console.error('[SmartPerfetto] Mermaid 渲染失败:', err);
-    });
+    el.textContent = entry.originalSource;
+    el.setAttribute('data-render-mode', 'source');
   }
+
+  var mermaidEntries = [];
+  sourceEntries.forEach(function(entry) {
+    var wrapper = entry.el.closest('.mermaid-wrapper') || entry.el.parentElement;
+    if (entry.parsed && wrapper) {
+      wrapper.innerHTML = '';
+      wrapper.appendChild(buildCausalMap(entry.parsed, entry.originalSource));
+      return;
+    }
+    entry.el.textContent = entry.originalSource;
+    entry.el.setAttribute('data-render-mode', 'mermaid');
+    mermaidEntries.push(entry);
+  });
+
+  if (mermaidEntries.length === 0) return;
+  if (typeof mermaid === 'undefined') {
+    console.error('[SmartPerfetto] Mermaid library is unavailable; using the offline diagram fallback.');
+    mermaidEntries.forEach(renderFallback);
+    return;
+  }
+
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'neutral',
+    securityLevel: 'strict',
+    flowchart: {
+      useMaxWidth: true,
+      htmlLabels: false,
+      nodeSpacing: 48,
+      rankSpacing: 64,
+      padding: 18,
+      curve: 'linear'
+    },
+    themeVariables: {
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif",
+      fontSize: '15px',
+      lineColor: '#334155',
+      primaryColor: '#ffffff',
+      primaryTextColor: '#0f172a',
+      primaryBorderColor: '#94a3b8',
+      secondaryColor: '#f8fafc',
+      tertiaryColor: '#eff6ff',
+      clusterBkg: '#f8fafc',
+      clusterBorder: '#cbd5e1'
+    }
+  });
+
+  mermaid.run({ querySelector: 'pre.mermaid[data-render-mode="mermaid"]' }).then(function() {
+    document.querySelectorAll('pre.mermaid svg').forEach(function(svg) {
+      svg.style.width = '100%';
+      svg.style.maxWidth = '100%';
+      svg.style.height = 'auto';
+      svg.style.display = 'block';
+      svg.style.margin = '0 auto';
+    });
+  }).catch(function(err) {
+    console.error('[SmartPerfetto] Mermaid 渲染失败，使用离线降级图:', err);
+    mermaidEntries.forEach(renderFallback);
+  });
 })();
 `;
