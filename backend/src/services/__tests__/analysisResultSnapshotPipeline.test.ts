@@ -911,11 +911,7 @@ describe('analysis result snapshot pipeline', () => {
       expect(result.sourceUseDecision).toEqual(decision);
       expect(JSON.stringify(result)).not.toContain(SOURCE_FINALIZATION_CANARY);
       expect(JSON.stringify(snapshot)).not.toContain(SOURCE_FINALIZATION_CANARY);
-      expect((snapshot?.conclusionContract as any)?.sourceUseDecision)
-        .toEqual(expect.objectContaining({
-          status: 'corroborated',
-          references: decision.references,
-        }));
+      expect((snapshot?.conclusionContract as any)?.sourceUseDecision).toEqual(decision);
 
       const db = openEnterpriseDb();
       try {
