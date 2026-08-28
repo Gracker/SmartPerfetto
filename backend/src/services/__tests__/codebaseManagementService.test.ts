@@ -144,6 +144,20 @@ describe('CodebaseManagementService', () => {
     await expect(degraded.preview({rootPath: root, kind: 'aosp'}, DEFAULT_SCOPE))
       .resolves.toMatchObject({manifestUnavailableReason: 'source_metadata_too_large'});
 
+    const secretCanary = 'secret_token_canary';
+    const unknown = new CodebaseManagementService({
+      registry,
+      store,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      sourceEnumerator: new SourceEnumerator(),
+      readAospManifestProjects: async () => {
+        throw new Error(secretCanary);
+      },
+    });
+    const unknownPreview = await unknown.preview({rootPath: root, kind: 'aosp'}, DEFAULT_SCOPE);
+    expect(unknownPreview.manifestUnavailableReason).toBe('aosp_manifest_discovery_failed');
+    expect(JSON.stringify(unknownPreview)).not.toContain(secretCanary);
+
     const drifted = new CodebaseManagementService({
       registry,
       store,

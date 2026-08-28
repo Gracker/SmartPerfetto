@@ -542,6 +542,51 @@ describe('codebase routes', () => {
     expect(JSON.stringify(response.body)).not.toContain(root);
   });
 
+  it('sanitizes manifest degradation reasons while keeping known codes and root drift', async () => {
+    const root = path.join(tmpDir, 'aosp-manifest-reason');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(path.join(root, 'Foo.java'), 'class Foo {}\n');
+    const requestPreview = async (reason: string) => {
+      const previewGate = new PathSecurityGate({allowlistRoots: [tmpDir]});
+      const previewService = new CodebaseManagementService({
+        registry,
+        store,
+        gate: previewGate,
+        sourceEnumerator: new SourceEnumerator(),
+        readAospManifestProjects: async () => {
+          throw new Error(reason);
+        },
+      });
+      const previewApp = express();
+      previewApp.use(express.json());
+      previewApp.use('/api/rag', createRagAdminRoutes(store, {
+        registry,
+        gate: previewGate,
+        codebaseManagementService: previewService,
+        directoryPicker,
+        externalKnowledgeRegistry,
+      }));
+      return request(previewApp)
+        .post('/api/rag/codebases/preview')
+        .send({rootPath: root, kind: 'aosp'});
+    };
+
+    const secretCanary = 'secret_token_canary';
+    const unknown = await requestPreview(secretCanary);
+    expect(unknown.status).toBe(200);
+    expect(unknown.body.preview.manifestUnavailableReason)
+      .toBe('aosp_manifest_discovery_failed');
+    expect(JSON.stringify(unknown.body)).not.toContain(secretCanary);
+
+    const known = await requestPreview('source_metadata_too_large');
+    expect(known.status).toBe(200);
+    expect(known.body.preview.manifestUnavailableReason).toBe('source_metadata_too_large');
+
+    const drift = await requestPreview('codebase_root_realpath_drift');
+    expect(drift.status).toBe(400);
+    expect(drift.body.error).toBe('codebase_root_realpath_drift');
+  });
+
   it('independently sanitizes token-shaped diagnostics in list, detail, and audit JSON', async () => {
     const ref = registry.register({
       kind: 'app_source',

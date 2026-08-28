@@ -185,6 +185,17 @@ const SAFE_OPERATIONAL_PREFIX_CATEGORIES = [
   ['staged_chunk_count_mismatch:', 'staged_chunk_count_mismatch'],
 ] as const;
 
+const SAFE_MANIFEST_UNAVAILABLE_REASONS = new Set([
+  'aosp_manifest_too_large',
+  'aosp_manifest_discovery_failed',
+  'aosp_manifest_outside_repo_metadata',
+  'aosp_manifest_identity_changed',
+  'source_metadata_time_budget',
+  'source_metadata_not_regular_file',
+  'source_metadata_too_large',
+  'source_metadata_identity_changed',
+]);
+
 function safeOperationalDiagnostic(value: string | undefined): string | undefined {
   if (!value) return undefined;
   if (SAFE_OPERATIONAL_DIAGNOSTICS.has(value)) return value;
@@ -652,7 +663,7 @@ export class CodebaseManagementService {
   }
 
   private safeMetadataReason(reason: string): string {
-    if (/^[a-z0-9_]{1,128}$/.test(reason)) return reason;
+    if (SAFE_MANIFEST_UNAVAILABLE_REASONS.has(reason)) return reason;
     return 'aosp_manifest_discovery_failed';
   }
 

@@ -277,6 +277,53 @@ describe('smp codebase command handlers', () => {
     expect(JSON.stringify(preview)).not.toContain(root);
   });
 
+  it('sanitizes CLI manifest degradation reasons while preserving known codes and root drift', async () => {
+    const previewServiceFor = (reason: string) => new CodebaseManagementService({
+      registry,
+      store,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      sourceEnumerator: new SourceEnumerator(),
+      readAospManifestProjects: async () => {
+        throw new Error(reason);
+      },
+    });
+
+    const secretCanary = 'secret_token_canary';
+    expect(await runCodebasePreviewCommand({
+      rootPath: root,
+      kind: 'aosp',
+      sessionDir,
+      managementService: previewServiceFor(secretCanary),
+    })).toBe(0);
+    const unknown = String(logSpy.mock.calls[0]?.[0] ?? '');
+    expect(JSON.parse(unknown).manifestUnavailableReason)
+      .toBe('aosp_manifest_discovery_failed');
+    expect(unknown).not.toContain(secretCanary);
+
+    logSpy.mockClear();
+    expect(await runCodebasePreviewCommand({
+      rootPath: root,
+      kind: 'aosp',
+      sessionDir,
+      managementService: previewServiceFor('source_metadata_too_large'),
+    })).toBe(0);
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? '')).manifestUnavailableReason)
+      .toBe('source_metadata_too_large');
+
+    logSpy.mockClear();
+    expect(await runCodebasePreviewCommand({
+      rootPath: root,
+      kind: 'aosp',
+      sessionDir,
+      managementService: previewServiceFor('codebase_root_realpath_drift'),
+    })).toBe(2);
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''))).toMatchObject({
+      success: false,
+      code: 'CODEBASE_ROOT_DRIFT',
+      error: 'codebase_root_realpath_drift',
+    });
+  });
+
   it('replaces selection intentionally and reports index invalidation in JSON', async () => {
     const ref = registry.register({
       kind: 'app_source',
