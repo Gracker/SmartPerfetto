@@ -47,16 +47,36 @@ describe('queryReviewBuilder', () => {
     expect(review?.allowedUse).toBe('review_metadata_only');
   });
 
-  it('localizes default review text and SQL limitations', () => {
+  it('describes the observed tables, filters, and output columns instead of repeating a generic purpose', () => {
     const review = buildSqlQueryReview({
       producerKind: 'execute_sql',
-      executableSql: 'SELECT * FROM slice JOIN thread_track USING (utid)',
+      executableSql: 'SELECT slice.name, slice.dur AS dur_ms FROM slice JOIN thread_track USING (utid) WHERE slice.dur > 1000000',
+      outputColumns: ['name', {name: 'dur_ms', type: 'duration'}],
+      producer: {
+        producerReason: '执行当前 Trace SQL，验证本阶段的具体数据点。',
+      },
       outputLanguage: 'zh-CN',
     });
 
     expect(review?.title).toBe('已执行 SQL review');
-    expect(review?.purpose).toContain('来源表');
+    expect(review?.purpose).toContain('slice');
+    expect(review?.purpose).toContain('thread_track');
+    expect(review?.purpose).toContain('slice.dur > 1000000');
+    expect(review?.purpose).toContain('name');
+    expect(review?.purpose).toContain('dur_ms');
+    expect(review?.purpose).not.toContain('验证本阶段的具体数据点');
     expect(review?.limitations.join('\n')).toContain('SQL 包含 JOIN');
-    expect(review?.limitations.join('\n')).toContain('SELECT *');
+  });
+
+  it('uses language-appropriate punctuation for English query purposes', () => {
+    const review = buildSqlQueryReview({
+      producerKind: 'execute_sql',
+      executableSql: 'SELECT name FROM slice WHERE dur > 1000000',
+      outputColumns: ['name'],
+      outputLanguage: 'en',
+    });
+
+    expect(review?.purpose).toContain('Queries slice; filters by dur > 1000000; returns name.');
+    expect(review?.purpose).not.toContain('；');
   });
 });

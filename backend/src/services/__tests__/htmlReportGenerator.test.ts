@@ -516,7 +516,7 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('execute_sql_on:1:params_hash:reference');
     expect(html).toContain('total_rows');
     expect(html).toContain('10');
-    expect(html).toContain('smartperfetto-report-layout-fix-v2');
+    expect(html).toContain('smartperfetto-report-layout-fix-v3');
     expect(html).toContain('grid-template-columns: repeat(auto-fit, minmax(180px, 1fr))');
     expect(html).toContain('.header .meta .badge');
     expect(html).toContain('.summary-box .metric-card .metric-label');
@@ -890,6 +890,107 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('SELECT slice_name, total_ms, self_ms FROM hot_slices');
   });
 
+  test('uses QueryReview purpose as the shared table-purpose contract', () => {
+    const generator = new HTMLReportGenerator();
+    const html = generator.generateAgentDrivenHTML({
+      traceId: 'trace-query-review-purpose',
+      query: '分析线程状态',
+      timestamp: Date.now(),
+      hypotheses: [],
+      dialogue: [],
+      dataEnvelopes: [makeEnvelopeWithQueryReview()],
+      result: {
+        sessionId: 'session-query-review-purpose',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'ok',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 100,
+      },
+    });
+
+    expect(html).toContain('用途: Review SQL output');
+    expect(html).not.toContain('验证综合结论里的具体数据点');
+  });
+
+  test('replaces legacy generic English Skill review purpose with observed output shape', () => {
+    const generator = new HTMLReportGenerator();
+    const envelope = makeEnvelopeWithQueryReview();
+    if (envelope.meta.queryReview) {
+      envelope.meta.queryReview.purpose =
+        'Run Skill startup_analysis to collect structured evidence for this phase.';
+    }
+    const html = generator.generateAgentDrivenHTML({
+      traceId: 'trace-legacy-query-review-purpose',
+      query: 'Analyze startup.',
+      timestamp: Date.now(),
+      outputLanguage: 'en',
+      hypotheses: [],
+      dialogue: [],
+      dataEnvelopes: [envelope],
+      result: {
+        sessionId: 'session-legacy-query-review-purpose',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'ok',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 100,
+      },
+    });
+
+    expect(html).toContain('dur_ms');
+    expect(html).not.toContain(
+      'Run Skill startup_analysis to collect structured evidence for this phase.',
+    );
+  });
+
+  test('makes legacy table purposes specific to the table title and returned columns', () => {
+    const generator = new HTMLReportGenerator();
+    const html = generator.generateAgentDrivenHTML({
+      traceId: 'trace-legacy-purpose',
+      query: '分析显示配置',
+      timestamp: Date.now(),
+      hypotheses: [],
+      dialogue: [],
+      dataEnvelopes: [{
+        meta: {
+          type: 'skill_result',
+          version: '2.0.0',
+          source: 'legacy_skill:display_config',
+          timestamp: Date.now(),
+        },
+        display: {
+          layer: 'overview',
+          format: 'table',
+          title: '显示配置',
+        },
+        data: {
+          columns: ['refresh_rate_hz', 'vsync_period_ns'],
+          rows: [[120, 8333333]],
+        },
+      } as DataEnvelope],
+      result: {
+        sessionId: 'session-legacy-purpose',
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'ok',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 100,
+      },
+    });
+
+    expect(html).toContain('“显示配置”');
+    expect(html).toContain('refresh_rate_hz');
+    expect(html).toContain('vsync_period_ns');
+    expect(html).not.toContain('提供本阶段判断所需的结构化数据');
+  });
+
   test('renders mermaid diagrams with stronger visual defaults for causal chains', () => {
     const generator = new HTMLReportGenerator();
     const html = generator.generateAgentDrivenHTML({
@@ -925,6 +1026,9 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain("textContent = '因果链流程图'");
     expect(html).toContain("textContent = '查看原始 Mermaid 图'");
     expect(html).toContain("querySelector: 'pre.mermaid[data-render-mode=\"mermaid\"]'");
+    expect(html).toContain('src="/api/reports/assets/mermaid.min.js"');
+    expect(html).toContain('smartperfetto-report-mermaid-v2');
+    expect(html).not.toContain('cdn.jsdelivr.net');
   });
 
   test('renders case recommendations with strong guidance and partial evidence gaps', () => {

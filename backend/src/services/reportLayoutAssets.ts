@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-export const REPORT_LAYOUT_FIX_MARKER = 'smartperfetto-report-layout-fix-v2';
+export const REPORT_LAYOUT_FIX_MARKER = 'smartperfetto-report-layout-fix-v3';
 
 export const REPORT_LAYOUT_FIX_CSS = `
 /* ${REPORT_LAYOUT_FIX_MARKER} */
@@ -45,32 +45,32 @@ export const REPORT_LAYOUT_FIX_CSS = `
   line-height: inherit;
 }
 .summary-box {
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
 }
 .summary-box > strong {
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
+  line-height: 1.4;
 }
 .summary-box .metrics-grid {
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 6px;
 }
 .summary-box .metric-card {
   min-height: 0;
-  padding: 10px 12px;
+  padding: 8px 10px;
   align-items: flex-start;
   text-align: left;
 }
 .summary-box .metric-card .metric-label {
   margin-bottom: 3px;
-  font-size: 12px;
-  line-height: 1.4;
+  font-size: 11px;
+  line-height: 1.35;
 }
 .summary-box .metric-card .metric-value {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  line-height: 1.4;
+  line-height: 1.35;
 }
 @media (max-width: 640px) {
   .metrics-grid { grid-template-columns: 1fr; }

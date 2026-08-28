@@ -44,6 +44,12 @@ describe('skillQueryReviewBuilder', () => {
     expect(review?.source.stepId).toBe('thread_states');
     expect(review?.reads.map(read => read.table)).toContain('thread_state');
     expect(review?.outputShape.map(column => column.name)).toEqual(['state', 'dur_ms']);
+    expect(review?.purpose).toContain('Thread states');
+    expect(review?.purpose).toContain('thread_state');
+    expect(review?.purpose).toContain('dur > 0');
+    expect(review?.purpose).toContain('state');
+    expect(review?.purpose).toContain('dur_ms');
+    expect(review?.purpose).not.toContain('Review the Skill output shape');
   });
 
   it('skips compare_skill producer contexts', () => {

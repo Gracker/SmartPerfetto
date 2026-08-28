@@ -22,7 +22,13 @@ import {
   enterpriseDbWritesEnabled,
   legacyFilesystemWritesEnabled,
 } from '../services/enterpriseMigration';
-import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from '../services/reportCausalMapAssets';
+import {
+  REPORT_CAUSAL_MAP_CSS,
+  REPORT_CAUSAL_MAP_MARKER,
+  REPORT_CAUSAL_MAP_SCRIPT,
+  REPORT_CAUSAL_MAP_STYLE_MARKER,
+  REPORT_MERMAID_ASSET_ROUTE,
+} from '../services/reportCausalMapAssets';
 import { REPORT_LAYOUT_FIX_CSS, REPORT_LAYOUT_FIX_MARKER } from '../services/reportLayoutAssets';
 import { localize, parseOutputLanguage } from '../agentv3/outputLanguage';
 import { backendLogPath } from '../runtimePaths';
@@ -46,10 +52,10 @@ import {
 const router = express.Router();
 
 const REPORTS_DIR = backendLogPath('reports');
-const REPORT_DOCUMENT_CSP = [
+export const REPORT_DOCUMENT_CSP = [
   "sandbox allow-scripts",
   "default-src 'none'",
-  "script-src 'unsafe-inline'",
+  "script-src 'self' 'unsafe-inline'",
   "style-src 'unsafe-inline'",
   'img-src data:',
   'font-src data:',
@@ -58,6 +64,63 @@ const REPORT_DOCUMENT_CSP = [
   "base-uri 'none'",
   "form-action 'none'",
 ].join('; ');
+
+function isRegularFileInside(root: string, candidate: string): string | undefined {
+  try {
+    const realRoot = fs.realpathSync.native(root);
+    const realCandidate = fs.realpathSync.native(candidate);
+    const relative = path.relative(realRoot, realCandidate);
+    if (
+      relative === '..' ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative) ||
+      !fs.statSync(realCandidate).isFile()
+    ) {
+      return undefined;
+    }
+    return realCandidate;
+  } catch {
+    return undefined;
+  }
+}
+
+export function resolveReportMermaidAssetPath(
+  packageRoot = process.env.SMARTPERFETTO_PACKAGE_ROOT || process.cwd(),
+): string | undefined {
+  const resolvedPackageRoot = path.resolve(packageRoot);
+  const packageRoots = Array.from(new Set([
+    resolvedPackageRoot,
+    path.basename(resolvedPackageRoot) === 'backend'
+      ? path.dirname(resolvedPackageRoot)
+      : resolvedPackageRoot,
+    path.resolve(__dirname, '../../..'),
+  ]));
+  const roots = packageRoots.flatMap(root => [
+    path.join(root, 'frontend'),
+    path.join(root, 'perfetto', 'out', 'ui', 'ui'),
+    root,
+  ]);
+  for (const root of roots) {
+    const direct = isRegularFileInside(root, path.join(root, 'assets', 'mermaid.min.js'));
+    if (direct) return direct;
+    let versions: fs.Dirent[];
+    try {
+      versions = fs.readdirSync(root, {withFileTypes: true})
+        .filter(entry => entry.isDirectory() && /^v[0-9]/.test(entry.name))
+        .sort((left, right) => right.name.localeCompare(left.name));
+    } catch {
+      continue;
+    }
+    for (const version of versions) {
+      const candidate = isRegularFileInside(
+        root,
+        path.join(root, version.name, 'assets', 'mermaid.min.js'),
+      );
+      if (candidate) return candidate;
+    }
+  }
+  return undefined;
+}
 
 function setReportDocumentSecurityHeaders(res: express.Response): void {
   res.setHeader('Content-Security-Policy', REPORT_DOCUMENT_CSP);
@@ -456,24 +519,65 @@ export function upgradeLegacyReportHtml(html: string): string {
     upgraded = injectReportStyle(upgraded, REPORT_LAYOUT_FIX_CSS);
   }
 
-  const shouldUpgradeMermaid =
-    upgraded.includes('<pre class="mermaid">') &&
-    !upgraded.includes('parseMermaidFlowSource(') &&
-    !upgraded.includes('class="causal-map"');
-  if (shouldUpgradeMermaid) {
-    upgraded = injectReportStyle(upgraded, LEGACY_MERMAID_UPGRADE_CSS);
+  const hasMermaid = upgraded.includes('<pre class="mermaid">');
+  if (hasMermaid) {
+    upgraded = upgraded.replace(
+      /<script\s+src=["']https:\/\/cdn\.jsdelivr\.net\/npm\/mermaid@[^"']+["']\s*><\/script>/gi,
+      `<script src="${REPORT_MERMAID_ASSET_ROUTE}"></script>`,
+    );
+    if (!upgraded.includes(REPORT_CAUSAL_MAP_STYLE_MARKER)) {
+      upgraded = injectReportStyle(upgraded, LEGACY_MERMAID_UPGRADE_CSS);
+    }
     upgraded = upgraded.replace(
       /<pre class="mermaid">([\s\S]*?)<\/pre>/g,
-      '<div class="mermaid-wrapper"><pre class="mermaid">$1</pre></div>',
+      (match, source, offset, full) => {
+        const prefix = String(full).slice(Math.max(0, Number(offset) - 64), Number(offset));
+        return prefix.endsWith('<div class="mermaid-wrapper">')
+          ? match
+          : `<div class="mermaid-wrapper"><pre class="mermaid">${source}</pre></div>`;
+      },
     );
-    upgraded = upgraded.replace(
-      /if \(typeof mermaid !== 'undefined'\) \{[\s\S]*?mermaid\.run\(\{ querySelector: 'pre\.mermaid' \}\);\s*\}/,
-      LEGACY_MERMAID_UPGRADE_SCRIPT.trim(),
-    );
+    if (!upgraded.includes(REPORT_CAUSAL_MAP_MARKER)) {
+      let replaced = false;
+      upgraded = upgraded.replace(/<script>([\s\S]*?)<\/script>/g, (scriptTag, body) => {
+        if (
+          replaced ||
+          !/parseMermaidFlowSource|document\.querySelectorAll\(['"]pre\.mermaid['"]\)|mermaid\.run\(\{\s*querySelector:\s*['"]pre\.mermaid['"]/.test(body)
+        ) {
+          return scriptTag;
+        }
+        replaced = true;
+        return `<script>\n${LEGACY_MERMAID_UPGRADE_SCRIPT}\n</script>`;
+      });
+      if (!replaced) {
+        upgraded = upgraded.replace(
+          '</body>',
+          `<script>\n${LEGACY_MERMAID_UPGRADE_SCRIPT}\n</script>\n</body>`,
+        );
+      }
+    }
+    if (!upgraded.includes(`src="${REPORT_MERMAID_ASSET_ROUTE}"`)) {
+      const assetTag = `<script src="${REPORT_MERMAID_ASSET_ROUTE}"></script>`;
+      const causalScriptIndex = upgraded.indexOf(`<script>\n${LEGACY_MERMAID_UPGRADE_SCRIPT}`);
+      upgraded = causalScriptIndex >= 0
+        ? `${upgraded.slice(0, causalScriptIndex)}${assetTag}\n${upgraded.slice(causalScriptIndex)}`
+        : upgraded.replace('</body>', `${assetTag}\n</body>`);
+    }
   }
 
   return upgraded;
 }
+
+router.get('/assets/mermaid.min.js', (_req, res) => {
+  const assetPath = resolveReportMermaidAssetPath();
+  if (!assetPath) {
+    return res.status(404).type('text/plain').send('Mermaid report asset is unavailable');
+  }
+  res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  return res.sendFile(assetPath);
+});
 
 /** Save a report to disk. Called externally when reports are generated. */
 export function persistReport(reportId: string, entry: PersistedReport): void {

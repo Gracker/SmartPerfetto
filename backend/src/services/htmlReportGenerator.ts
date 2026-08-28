@@ -29,7 +29,11 @@ import {
   type UiActionProposalV1,
 } from '../types/dataContract';
 import type { QueryReviewV1 } from '../types/queryReviewContract';
-import { REPORT_CAUSAL_MAP_CSS, REPORT_CAUSAL_MAP_SCRIPT } from './reportCausalMapAssets';
+import {
+  REPORT_CAUSAL_MAP_CSS,
+  REPORT_CAUSAL_MAP_SCRIPT,
+  REPORT_MERMAID_ASSET_ROUTE,
+} from './reportCausalMapAssets';
 import { REPORT_LAYOUT_FIX_CSS } from './reportLayoutAssets';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import type { ComparisonReportSection } from '../agentv3/sessionStateSnapshot';
@@ -51,6 +55,8 @@ export interface AgentReportSourceDescriptor {
 
 export interface AgentReportSourceContext {
   selected: AgentReportSourceDescriptor[];
+  lookupCount?: number;
+  queriedCodebaseIds?: string[];
   usedCodebaseIds?: string[];
 }
 
@@ -4428,6 +4434,14 @@ export class HTMLReportGenerator {
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       color: #64748b; word-break: break-word;
     }
+    .source-context-status {
+      margin: 0 0 12px; padding: 9px 11px; border-radius: 8px;
+      border: 1px solid #dbeafe; background: #eff6ff; color: #1e3a8a;
+      font-size: 12px; line-height: 1.5;
+    }
+    .source-context-status.empty {
+      border-color: #fde68a; background: #fffbeb; color: #78350f;
+    }
     .patch-status {
       display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: 11px; font-weight: 700; margin-left: 6px;
     }
@@ -4854,7 +4868,7 @@ export class HTMLReportGenerator {
       filterConversationTimeline(sectionId, phase, activeFilterBtn);
     }
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <script src="${REPORT_MERMAID_ASSET_ROUTE}"></script>
   <script>
     ${this.getLocalizedCausalMapScript(outputLanguage)}
   </script>
@@ -5228,6 +5242,8 @@ export class HTMLReportGenerator {
       .filter(source => source.codebaseId)
       .sort((left, right) => left.codebaseId.localeCompare(right.codebaseId));
     if (selected.length === 0) return '';
+    const queriedIds = new Set(sourceContext.queriedCodebaseIds ?? []);
+    const queried = selected.filter(source => queriedIds.has(source.codebaseId));
     const usedIds = new Set(sourceContext.usedCodebaseIds ?? []);
     const used = selected.filter(source => usedIds.has(source.codebaseId));
     const renderItem = (source: AgentReportSourceDescriptor) => {
@@ -5240,11 +5256,23 @@ export class HTMLReportGenerator {
           <div class="source-context-meta">${this.escapeHtml(kind)} · ${this.escapeHtml(shortId)}</div>
         </li>`;
     };
-    const emptyUsed = localize(
-      outputLanguage,
-      '本次没有返回源码或图引用的成功查询。',
-      'No successful lookup returned source or graph references in this run.',
-    );
+    const lookupStatus = queried.length === 0
+      ? localize(
+          outputLanguage,
+          '本次分析未发起源码或图查询；源码上下文已接入，但当前运行没有调用已选择源码库的查询工具。',
+          'No source or graph lookup was attempted in this analysis. Source context is connected, but this run did not query any selected codebase.',
+        )
+      : used.length === 0
+        ? localize(
+            outputLanguage,
+            `本次已查询 ${queried.length} 个源码库，但没有成功返回源码或图引用。`,
+            `This run queried ${queried.length} codebase(s), but no source or graph reference was returned successfully.`,
+          )
+        : localize(
+            outputLanguage,
+            `本次查询 ${queried.length} 个源码库，${used.length} 个源码库成功返回引用。`,
+            `This run queried ${queried.length} codebase(s); ${used.length} returned references successfully.`,
+          );
     return `
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '源码上下文', 'Source Context')}</h2>
@@ -5255,6 +5283,7 @@ export class HTMLReportGenerator {
           'Source and graph lookup only locate candidate mechanisms; Trace, Skill, and SQL evidence remain authoritative.',
         ))}
       </div>
+      <div class="source-context-status${used.length === 0 ? ' empty' : ''}">${this.escapeHtml(lookupStatus)}</div>
       <div class="source-context-grid">
         <div class="source-context-column">
           <div class="source-context-title">${localize(outputLanguage, '已选择', 'Selected')}</div>
@@ -5264,7 +5293,7 @@ export class HTMLReportGenerator {
           <div class="source-context-title">${localize(outputLanguage, '实际使用/查询到', 'Actually used/consulted')}</div>
           ${used.length
             ? `<ul class="source-context-list">${used.map(renderItem).join('')}</ul>`
-            : `<div class="empty-state">${this.escapeHtml(emptyUsed)}</div>`}
+            : `<div class="empty-state">${this.escapeHtml(lookupStatus)}</div>`}
         </div>
       </div>
     </div>`;
@@ -6062,9 +6091,14 @@ export class HTMLReportGenerator {
   ): string {
     const review = envelope.meta?.queryReview;
     if (!review) return '';
+    const displayTitle = String(envelope.display?.title || review.title || '').trim();
+    const purpose = this.isLowSignalEnvelopeReason(review.purpose)
+      ? this.describeReportEnvelopeShape(envelope, displayTitle, outputLanguage)
+      : review.purpose;
     const rows: Array<[string, unknown]> = [
       [localize(outputLanguage, 'Review ID', 'Review ID'), review.id],
       [localize(outputLanguage, '生产者', 'Producer'), review.producer.kind],
+      [localize(outputLanguage, '查询用途', 'Query purpose'), purpose],
       [localize(outputLanguage, '读取', 'Reads'), this.formatQueryReviewReads(review)],
       [localize(outputLanguage, '过滤', 'Filters'), review.filters.map(filter => filter.expression)],
       [localize(outputLanguage, '输出列', 'Output columns'), review.outputShape.map(column => column.name)],
@@ -6198,9 +6232,13 @@ export class HTMLReportGenerator {
     displayTitle: string,
     outputLanguage: OutputLanguage,
   ): string {
+    const queryReviewPurpose = String(envelope.meta?.queryReview?.purpose || '').trim();
     const producerReason = String(envelope.meta?.producerReason || '').trim();
     const toolNarration = String(envelope.meta?.toolNarration || '').trim();
     const inferred = this.inferReportEnvelopePurpose(envelope, displayTitle, outputLanguage);
+    if (queryReviewPurpose && !this.isLowSignalEnvelopeReason(queryReviewPurpose)) {
+      return queryReviewPurpose;
+    }
     if (producerReason && !this.isLowSignalEnvelopeReason(producerReason)) return producerReason;
     if (inferred) return inferred;
     if (toolNarration && !this.isLowSignalEnvelopeReason(toolNarration)) {
@@ -6425,17 +6463,30 @@ export class HTMLReportGenerator {
           'Checks whether WebView or rendering slices appear in the startup-to-TTID gap to avoid misclassifying the launch path.',
         );
       }
-      return localize(
-        outputLanguage,
-        '验证综合结论里的具体数据点，帮助确认命中的 slice、耗时和 self time 是否支撑当前根因判断。',
-        'Verifies concrete data points in the conclusion, checking whether matched slices, durations, and self time support the root-cause call.',
-      );
+      return this.describeReportEnvelopeShape(envelope, displayTitle, outputLanguage);
     }
 
+    return this.describeReportEnvelopeShape(envelope, displayTitle, outputLanguage);
+  }
+
+  private describeReportEnvelopeShape(
+    envelope: DataEnvelope,
+    displayTitle: string,
+    outputLanguage: OutputLanguage,
+  ): string {
+    const columns = this.getEnvelopeColumns(envelope).slice(0, 6);
+    const columnText = columns.join(outputLanguage === 'en' ? ', ' : '、');
+    if (columnText) {
+      return localize(
+        outputLanguage,
+        `“${displayTitle}”主要查看 ${columnText}；每行是本步骤返回的一条结构化记录。`,
+        `“${displayTitle}” primarily shows ${columnText}; each row is one structured record returned by this step.`,
+      );
+    }
     return localize(
       outputLanguage,
-      '提供本阶段判断所需的结构化数据，用来核对关键指标、实体和时间范围。',
-      'Provides structured data for this phase so key metrics, entities, and time windows can be checked.',
+      `“${displayTitle}”展示本步骤实际返回的结构化结果。`,
+      `“${displayTitle}” shows the structured result returned by this step.`,
     );
   }
 
@@ -6448,6 +6499,7 @@ export class HTMLReportGenerator {
     if (!text) return true;
     return (
       /^调用 Skill .+收集本阶段结构化证据。?$/.test(text) ||
+      /^Run Skill .+ to collect structured evidence for this phase\.?$/i.test(text) ||
       /^执行(?:当前|参考)?\s*Trace\s*SQL，?验证(?:本阶段|对比)?(?:的)?(?:具体)?数据点。?$/.test(text) ||
       /^执行当前 Trace SQL，验证本阶段的具体数据点。?$/.test(text)
     );

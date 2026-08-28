@@ -10,7 +10,13 @@ import {
   sanitizeQueryReview,
   type QueryReviewV1,
 } from '../../types/queryReviewContract';
-import { queryReviewStableHash, type QueryReviewProducerInput } from './queryReviewBuilder';
+import {parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
+import {
+  buildObservedQueryPurpose,
+  isLowSignalQueryPurpose,
+  queryReviewStableHash,
+  type QueryReviewProducerInput,
+} from './queryReviewBuilder';
 import {
   introspectSqlForQueryReview,
   type SqlReviewOutputColumn,
@@ -23,6 +29,7 @@ export interface BuildSkillQueryReviewInput {
   producer?: QueryReviewProducerInput;
   artifactId?: string;
   evidenceRefId?: string;
+  outputLanguage?: OutputLanguage;
 }
 
 export interface BuildSkillQueryReviewsInput {
@@ -54,10 +61,12 @@ function rowCountFromDisplayResult(displayResult: DisplayResult): number | undef
 export function buildSkillQueryReview(input: BuildSkillQueryReviewInput): QueryReviewV1 | undefined {
   if (input.producer?.sourceToolCallId?.startsWith('compare_skill')) return undefined;
 
+  const outputLanguage = input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const executableSql = typeof input.displayResult.sql === 'string' ? input.displayResult.sql : undefined;
   const introspection = introspectSqlForQueryReview({
     sql: executableSql,
     outputColumns: outputColumnsFromDisplayResult(input.displayResult),
+    outputLanguage,
   });
   const guardrails = executableSql
     ? analyzeSqlGuardrails(executableSql).map(issue => ({
@@ -83,6 +92,15 @@ export function buildSkillQueryReview(input: BuildSkillQueryReviewInput): QueryR
     artifactId: input.artifactId,
     queryHash,
   })}`;
+  const title = `${input.skillId}:${input.displayResult.stepId} review`;
+  const requestedPurpose = input.producer?.producerReason;
+  const purpose = isLowSignalQueryPurpose(requestedPurpose)
+    ? buildObservedQueryPurpose({
+        title: input.displayResult.title || input.displayResult.stepId,
+        introspection,
+        outputLanguage,
+      })
+    : requestedPurpose!;
 
   return sanitizeQueryReview({
     schemaVersion: QUERY_REVIEW_SCHEMA_VERSION,
@@ -97,8 +115,8 @@ export function buildSkillQueryReview(input: BuildSkillQueryReviewInput): QueryR
       paneSide: input.traceProvenance?.paneSide,
       traceId: input.traceProvenance?.traceId,
     },
-    title: `${input.skillId}:${input.displayResult.stepId} review`,
-    purpose: input.producer?.producerReason || 'Review the Skill output shape, producing SQL when available, and guardrail warnings.',
+    title,
+    purpose,
     source: {
       skillId: input.skillId,
       stepId: input.displayResult.stepId,

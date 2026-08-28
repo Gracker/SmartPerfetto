@@ -85,12 +85,22 @@ function safeSourceContext(
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
   if (selected.length === 0) return undefined;
   const selectedIds = new Set(selected.map(item => item.codebaseId));
+  const lookupCount = Math.max(
+    0,
+    Math.min(1_000_000, Math.floor(snapshot.codeLookupSummary?.lookupCount || 0)),
+  );
+  const queriedCodebaseIds = (snapshot.codeLookupSummary?.referencedCodebaseIds ?? [])
+    .map(safeReportSourceId)
+    .filter((id): id is string => typeof id === 'string' && selectedIds.has(id))
+    .sort();
   const usedCodebaseIds = (snapshot.codeLookupSummary?.usedCodebaseIds ?? [])
     .map(safeReportSourceId)
     .filter((id): id is string => typeof id === 'string' && selectedIds.has(id))
     .sort();
   return {
     selected,
+    lookupCount,
+    queriedCodebaseIds,
     usedCodebaseIds,
   };
 }

@@ -2,7 +2,12 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { upgradeLegacyReportHtml } from '../reportRoutes';
+import express from 'express';
+import request from 'supertest';
+
+import * as reportRoutes from '../reportRoutes';
+
+const {upgradeLegacyReportHtml} = reportRoutes;
 
 describe('upgradeLegacyReportHtml', () => {
   test('injects causal-map upgrader into legacy mermaid reports', () => {
@@ -31,6 +36,9 @@ A[foo] --> B[bar]</pre>
     expect(upgraded).toContain('因果链流程图');
     expect(upgraded).toContain('查看原始 Mermaid 图');
     expect(upgraded).toContain('pre.mermaid[data-render-mode="mermaid"]');
+    expect(upgraded).toContain('/api/reports/assets/mermaid.min.js');
+    expect(upgraded).toContain('smartperfetto-report-mermaid-v2');
+    expect(upgraded).not.toContain('cdn.jsdelivr.net');
     expect(upgraded).not.toContain("theme: 'default'");
   });
 
@@ -57,13 +65,17 @@ A[foo] --> B[bar]</pre>
 
     const upgraded = upgradeLegacyReportHtml(legacy);
     expect(upgraded).toContain('smartperfetto-report-layout-fix-v1');
-    expect(upgraded).toContain('smartperfetto-report-layout-fix-v2');
-    expect(upgraded.match(/smartperfetto-report-layout-fix-v2/g)).toHaveLength(1);
+    expect(upgraded).toContain('smartperfetto-report-layout-fix-v3');
+    expect(upgraded.match(/smartperfetto-report-layout-fix-v3/g)).toHaveLength(1);
     expect(upgraded).toContain('.metrics-grid');
     expect(upgraded).toContain('grid-template-columns: repeat(auto-fit, minmax(180px, 1fr))');
+    expect(upgraded).toContain('.summary-box > strong');
+    expect(upgraded).toContain('font-size: 13px');
+    expect(upgraded).toContain('.summary-box .metric-card .metric-label');
+    expect(upgraded).toContain('font-size: 11px');
     const upgradedAgain = upgradeLegacyReportHtml(upgraded);
     expect(upgradedAgain).toBe(upgraded);
-    expect(upgradedAgain.match(/smartperfetto-report-layout-fix-v2/g)).toHaveLength(1);
+    expect(upgradedAgain.match(/smartperfetto-report-layout-fix-v3/g)).toHaveLength(1);
   });
 
   test('removes the Mermaid library gate from persisted causal-map reports', () => {
@@ -103,7 +115,21 @@ A[foo] --> B[bar]</pre></div>
   });
 
   test('leaves already-upgraded reports unchanged', () => {
-    const html = '<html><body><script>function parseMermaidFlowSource(source) {}</script><div class="causal-map"></div></body></html>';
+    const html = '<html><body><script>/* smartperfetto-report-mermaid-v2 */ function parseMermaidFlowSource(source) {}</script><div class="causal-map"></div></body></html>';
     expect(upgradeLegacyReportHtml(html)).toBe(html);
+  });
+
+  test('serves the shipped Mermaid runtime through the same-origin report route', async () => {
+    expect((reportRoutes as any).REPORT_DOCUMENT_CSP).toContain("script-src 'self' 'unsafe-inline'");
+    const app = express();
+    app.use('/api/reports', reportRoutes.default);
+
+    const response = await request(app).get('/api/reports/assets/mermaid.min.js');
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('application/javascript');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.text.length).toBeGreaterThan(100_000);
+    expect(response.text).toContain('mermaid');
   });
 });

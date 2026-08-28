@@ -3409,6 +3409,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 truncated: false,
                 sqlRewrites,
                 toolName: 'execute_sql',
+                outputLanguage,
               },
             );
             updateSqlArtifactQueryReview(artifactStore, sqlArtifact, emittedEvidence.queryReview);
@@ -3466,6 +3467,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               sqlRewrites,
               toolName: 'execute_sql',
               rowCount: result.rows.length,
+              outputLanguage,
             },
           );
         }
@@ -3779,6 +3781,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               producer,
               artifactId: artId,
               evidenceRefId,
+              outputLanguage,
             });
             if (queryReview) {
               artifactStore.updateQueryReview(artId, queryReview);
@@ -3892,6 +3895,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             artifactIdsByDisplayIndex,
             queryReviewsByDisplayIndex,
             result.displayResults as SkillDisplayResult[],
+            outputLanguage,
           );
         }
 
@@ -7512,6 +7516,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 truncated: false,
                 sqlRewrites,
                 toolName: 'execute_sql_on',
+                outputLanguage,
               },
             );
             updateSqlArtifactQueryReview(artifactStore, sqlArtifact, emittedEvidence.queryReview);
@@ -7565,6 +7570,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               sqlRewrites,
               toolName: 'execute_sql_on',
               rowCount: result.rows.length,
+              outputLanguage,
             },
           );
         }
@@ -7896,6 +7902,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             undefined,
             undefined,
             currentResult.displayResults as SkillDisplayResult[],
+            outputLanguage,
           );
         }
         if (emitUpdate && localizedReferenceDisplayResults.length) {
@@ -7917,6 +7924,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             undefined,
             undefined,
             refResult.displayResults as SkillDisplayResult[],
+            outputLanguage,
           );
         }
 
@@ -8349,6 +8357,7 @@ function emitSqlDataEnvelope(
     sqlRewrites?: string[];
     toolName?: 'execute_sql' | 'execute_sql_on';
     rowCount?: number;
+    outputLanguage?: OutputLanguage;
   },
 ): { evidenceRefId: string; queryHash: string; queryReview?: QueryReviewV1 } {
   const { evidenceRefId, queryHash } = stableSqlEvidenceRefId(sql, columns, rows, traceProvenance, producer);
@@ -8368,6 +8377,7 @@ function emitSqlDataEnvelope(
     sqlRewrites: options?.sqlRewrites,
     stdlibInjectedModules,
     processIdentityWarning,
+    outputLanguage: options?.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
   });
   const envelope = createDataEnvelope(
     { columns, rows },
@@ -8428,6 +8438,7 @@ function emitSqlSummaryDataEnvelope(
     truncated?: boolean;
     sqlRewrites?: string[];
     toolName?: 'execute_sql' | 'execute_sql_on';
+    outputLanguage?: OutputLanguage;
   },
 ): { evidenceRefId: string; queryHash: string; queryReview?: QueryReviewV1 } {
   const { evidenceRefId, queryHash } = stableSqlEvidenceRefId(
@@ -8455,6 +8466,7 @@ function emitSqlSummaryDataEnvelope(
     stdlibInjectedModules,
     processIdentityWarning,
     title: `SQL Summary Review (${summary.totalRows} rows)`,
+    outputLanguage: options?.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
   });
   const envelope = createDataEnvelope(
     {
@@ -8602,6 +8614,7 @@ function emitSkillDataEnvelopes(
   artifactIdsByDisplayIndex?: ReadonlyArray<string | undefined>,
   queryReviewsByDisplayIndex?: ReadonlyArray<QueryReviewV1 | undefined>,
   evidenceSourceDisplayResults?: SkillDisplayResult[],
+  outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): void {
   const envelopes = displayResults
     .map((dr, index) => ({
@@ -8636,6 +8649,7 @@ function emitSkillDataEnvelopes(
             producer,
             artifactId,
             evidenceRefId,
+            outputLanguage,
           })
         : undefined;
       const withEvidence = {
