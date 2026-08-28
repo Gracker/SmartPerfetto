@@ -1332,6 +1332,8 @@ export interface ClaudeMcpServerOptions {
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
   /** Test hook / alternate registry. */
   codebaseRegistry?: CodebaseRegistry;
+  /** Test hook / deterministic on-demand source backend. */
+  onDemandSourceAccess?: Pick<OnDemandSourceAccessService, 'search' | 'read'>;
   /** Test hook / alternate code lookup ledger. */
   codeLookupLedger?: CodeLookupLedger;
   /** Test hook / alternate optional code graph navigator. */
@@ -1537,7 +1539,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const externalKnowledgeRegistry = options.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
   const codebaseRegistry = options.codebaseRegistry ?? getDefaultCodebaseRegistry();
-  const onDemandSourceAccess = new OnDemandSourceAccessService({registry: codebaseRegistry});
+  const onDemandSourceAccess = options.onDemandSourceAccess ??
+    new OnDemandSourceAccessService({registry: codebaseRegistry});
   const codeGraphNavigator = options.codeGraphNavigator ??
     new GitNexusCodeGraphNavigator({registry: codebaseRegistry});
   const ragStore = options.ragStore ?? getRagStore();
