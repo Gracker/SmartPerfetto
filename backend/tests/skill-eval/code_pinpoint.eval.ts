@@ -29,6 +29,32 @@ const NATIVE_SYMBOL_COLUMNS = [
   'sample_count',
 ] as const;
 
+function loadHotSlicesSql(): string {
+  const source = yaml.load(fs.readFileSync(
+    path.resolve(process.cwd(), 'skills/composite/code_pinpoint.skill.yaml'),
+    'utf8',
+  )) as any;
+  return source.steps.find((step: any) => step.id === 'hot_slices').sql;
+}
+
+function renderHotSlicesSql(
+  packageName: string,
+  startTs: number | null = null,
+  endTs: number | null = null,
+): string {
+  return loadHotSlicesSql()
+    .split('${package}').join(packageName.split("'").join("''"))
+    .split('${start_ts}').join(startTs === null ? 'NULL' : String(startTs))
+    .split('${end_ts}').join(endTs === null ? 'NULL' : String(endTs));
+}
+
+function objectRows(result: {columns: string[]; rows: unknown[][]; error?: string}): any[] {
+  expect(result.error).toBeUndefined();
+  return result.rows.map(row => Object.fromEntries(
+    result.columns.map((column, index) => [column, row[index]]),
+  ));
+}
+
 describe('code_pinpoint real Heavy trace semantics', () => {
   let evaluator: SkillEvaluator;
 
@@ -85,7 +111,10 @@ describe('code_pinpoint constructed trace semantics', () => {
 
     expect(result.success).toBe(true);
     expect(result.data.length).toBeGreaterThan(1);
-    expect(result.data.every(row => row.process_name === 'com.smartperfetto.fixture')).toBe(true);
+    expect(result.data.every(row =>
+      row.process_name === 'com.smartperfetto.fixture'
+      || row.process_name.startsWith('com.smartperfetto.fixture:'),
+    )).toBe(true);
     expect(Object.keys(result.data[0] ?? {})).toEqual(HOT_SLICE_COLUMNS);
 
     const chaosTask = result.data.find(row => row.slice_name === 'ChaosTask');
@@ -110,15 +139,59 @@ describe('code_pinpoint constructed trace semantics', () => {
 
   }, 60_000);
 
-  it('marks generic trace spans without fabricating a source query', async () => {
-    const result = await evaluator.executeStep('hot_slices', {
-      package: 'com.smartperfetto.fixture',
-    });
-    expect(result.data).toContainEqual(expect.objectContaining({
-      slice_name: 'GenericTraceSpan',
-      anchor_kind: 'generic_anchor_only',
-      source_query_hint: null,
-    }));
+  it('applies the bounded main-thread app-label policy without fixture special cases', async () => {
+    const expected = new Map<string, 'app_trace_label' | 'generic_anchor_only'>([
+      ['ChaosTask', 'app_trace_label'],
+      ['StartupLoadMarker', 'app_trace_label'],
+      ['WorkerLoadMarker', 'app_trace_label'],
+      ['Flutter::BeginFrame', 'generic_anchor_only'],
+      ['RN::FabricCommit', 'generic_anchor_only'],
+      ['WebView::DrawFun', 'generic_anchor_only'],
+      ['Choreographer#doFrame', 'generic_anchor_only'],
+      ['FabricMount::executeMount', 'generic_anchor_only'],
+      ['DrawFrame', 'generic_anchor_only'],
+      ['generic trace span', 'generic_anchor_only'],
+      ['Lcom/smartperfetto/fixture/Marker;', 'generic_anchor_only'],
+      ['lowercaseLabel', 'generic_anchor_only'],
+    ]);
+    const quotedNames = [...expected.keys()].map(name => `'${name.split("'").join("''")}'`).join(',');
+    const witnessRows = objectRows(await evaluator.executeSQL(`
+      INCLUDE PERFETTO MODULE slices.with_context;
+      SELECT id, ts, dur, name, thread_name, is_main_thread
+      FROM thread_slice
+      WHERE (
+        process_name = 'com.smartperfetto.fixture'
+        OR process_name = 'com.smartperfetto.fixture:worker'
+      )
+        AND name IN (${quotedNames})
+      ORDER BY ts, id
+    `));
+
+    for (const [sliceName, expectedKind] of expected) {
+      const witnesses = witnessRows.filter(row => row.name === sliceName);
+      const witness = sliceName === 'DrawFrame'
+        ? witnesses.find(row => row.is_main_thread === 0)
+        : witnesses[0];
+      expect(witness).toBeDefined();
+      const rows = objectRows(await evaluator.executeSQL(renderHotSlicesSql(
+        'com.smartperfetto.fixture',
+        Number(witness.ts),
+        Number(witness.ts) + Number(witness.dur),
+      )));
+      const classified = rows.find(row => row.slice_id === witness.id);
+      expect(classified).toEqual(expect.objectContaining({
+        slice_name: sliceName,
+        anchor_kind: expectedKind,
+        source_query_hint: expectedKind === 'app_trace_label' ? sliceName : null,
+      }));
+    }
+  }, 60_000);
+
+  it('treats package metacharacters literally instead of as GLOB syntax', async () => {
+    const rows = objectRows(await evaluator.executeSQL(
+      renderHotSlicesSql('com.smartperfetto.fixtur?'),
+    ));
+    expect(rows).toEqual([]);
   }, 60_000);
 
   it('resolves scoped sampled functions instead of a global frame inventory', async () => {

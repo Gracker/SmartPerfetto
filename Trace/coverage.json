@@ -6249,7 +6249,7 @@
         "steps": [
           {
             "id": "hot_slices",
-            "sha256": "458511d1d96e7fd5f273d775e6b25388e9f9d7171891f73dca3b112df969ec1c",
+            "sha256": "2c4947b0d7b740aa7e29433b475eb24a27058c01ed6eec379882614623543d43",
             "required_columns": [
               "slice_id",
               "ts",
@@ -6265,7 +6265,7 @@
           },
           {
             "id": "native_symbols",
-            "sha256": "de8ccf910eda9bcc41a931171d8422c9187bc1c8ffce4b2992891ef6bc0bb95e",
+            "sha256": "d3e32ce6d198f6e1283a96211f8f3b38ff980fa08263b9ec394a694cee9166a8",
             "required_columns": [
               "function_name",
               "module_name",

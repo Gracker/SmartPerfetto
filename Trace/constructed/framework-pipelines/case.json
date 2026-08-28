@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "27fc66551b4d8a26bb3290228dea7a0174ccb946e89a5aa6ab4641380c376eff",
+    "sha256": "2472d73dd70e3a358077bfcfa7bfbbfeb281b5e0b421a1251cbfd337369c3c57",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -162,7 +162,9 @@
         "target": "code_pinpoint",
         "mode": "semantic",
         "source_file": "backend/skills/composite/code_pinpoint.skill.yaml",
-        "parameters": {},
+        "parameters": {
+          "package": "com.smartperfetto.fixture"
+        },
         "required_steps": [
           "hot_slices",
           "native_symbols"
@@ -192,7 +194,7 @@
           {
             "column": "slice_name",
             "operator": "eq",
-            "value": "ChaosTask"
+            "value": "StartupLoadMarker"
           },
           {
             "column": "anchor_kind",
@@ -202,7 +204,7 @@
           {
             "column": "source_query_hint",
             "operator": "eq",
-            "value": "ChaosTask"
+            "value": "StartupLoadMarker"
           }
         ],
         "required_marker": "SmartPerfetto::CASE::framework-pipelines"

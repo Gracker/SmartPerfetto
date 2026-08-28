@@ -166,9 +166,9 @@ const SEMANTIC_ASSERTION_OVERRIDES = new Map([
   ['code_pinpoint', {
     min_rows: 1,
     assertions: [
-      {column: 'slice_name', operator: 'eq', value: 'ChaosTask'},
+      {column: 'slice_name', operator: 'eq', value: 'StartupLoadMarker'},
       {column: 'anchor_kind', operator: 'eq', value: 'app_trace_label'},
-      {column: 'source_query_hint', operator: 'eq', value: 'ChaosTask'},
+      {column: 'source_query_hint', operator: 'eq', value: 'StartupLoadMarker'},
     ],
   }],
   ['camera_trace_evidence', {
@@ -306,6 +306,9 @@ function skillExpectation(skill, family, identities) {
     parameters.pid = identities.processes.app;
     parameters.start_ts = '${trace_start}';
     parameters.end_ts = '${trace_end}';
+  }
+  if (definition.name === 'code_pinpoint') {
+    parameters.package = 'com.smartperfetto.fixture';
   }
   if (definition.name === 'scroll_session_analysis') {
     parameters.touch_start_ts = '${trace_start}';
@@ -628,15 +631,39 @@ function scenarioForFamily(family) {
       },
       {
         type: 'atrace-slice',
-        at_ns: '620000000',
+        at_ns: '610000000',
+        duration_ns: '75000000',
+        process: 'app',
+        thread: 'main',
+        name: 'StartupLoadMarker',
+      },
+      {
+        type: 'atrace-slice',
+        at_ns: '700000000',
         duration_ns: '70000000',
         process: 'app',
         thread: 'main',
-        name: 'GenericTraceSpan',
+        name: 'generic trace span',
+      },
+      {
+        type: 'atrace-slice',
+        at_ns: '780000000',
+        duration_ns: '10000000',
+        process: 'app',
+        thread: 'main',
+        name: 'Lcom/smartperfetto/fixture/Marker;',
+      },
+      {
+        type: 'atrace-slice',
+        at_ns: '800000000',
+        duration_ns: '10000000',
+        process: 'app',
+        thread: 'main',
+        name: 'lowercaseLabel',
       },
       {
         type: 'perf-sample',
-        at_ns: '720000000',
+        at_ns: '830000000',
         process: 'app',
         thread: 'main',
         function_name: 'SmartPerfettoFrameworkHotFunction',
@@ -644,6 +671,14 @@ function scenarioForFamily(family) {
         sample_count: 12,
         sample_interval_ns: '1000000',
         cpu: 0,
+      },
+      {
+        type: 'atrace-slice',
+        at_ns: '860000000',
+        duration_ns: '20000000',
+        process: 'app-child',
+        thread: 'child-main',
+        name: 'WorkerLoadMarker',
       },
     );
   }
@@ -693,6 +728,9 @@ function scenarioForFamily(family) {
         {id: 'app', name: 'com.smartperfetto.fixture', uid: 10999},
         {id: 'system', name: 'system_server', uid: 1000},
         {id: 'sf', name: '/system/bin/surfaceflinger', uid: 1000},
+        ...(family.id === 'framework-pipelines'
+          ? [{id: 'app-child', name: 'com.smartperfetto.fixture:worker', uid: 10999}]
+          : []),
       ],
       threads: [
         {id: 'main', process: 'app', name: 'main', is_main: true},
@@ -703,6 +741,9 @@ function scenarioForFamily(family) {
         {id: 'webview', process: 'app', name: 'CrRendererMain'},
         {id: 'system-main', process: 'system', name: 'android.fg', is_main: true},
         {id: 'sf-main', process: 'sf', name: 'surfaceflinger', is_main: true},
+        ...(family.id === 'framework-pipelines'
+          ? [{id: 'child-main', process: 'app-child', name: 'main', is_main: true}]
+          : []),
       ],
     },
     signals: [

@@ -74,7 +74,9 @@
       "target": "code_pinpoint",
       "mode": "semantic",
       "source_file": "backend/skills/composite/code_pinpoint.skill.yaml",
-      "parameters": {},
+      "parameters": {
+        "package": "com.smartperfetto.fixture"
+      },
       "required_steps": [
         "hot_slices",
         "native_symbols"
@@ -104,7 +106,7 @@
         {
           "column": "slice_name",
           "operator": "eq",
-          "value": "ChaosTask"
+          "value": "StartupLoadMarker"
         },
         {
           "column": "anchor_kind",
@@ -114,7 +116,7 @@
         {
           "column": "source_query_hint",
           "operator": "eq",
-          "value": "ChaosTask"
+          "value": "StartupLoadMarker"
         }
       ],
       "required_marker": "SmartPerfetto::CASE::framework-pipelines"
