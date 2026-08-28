@@ -205,7 +205,7 @@ describe('golden experiment manifest compiler', () => {
       profiles: [],
       createdAt: '2026-08-22T00:00:00.000Z',
     });
-    expect(manifest.cells).toHaveLength(12);
+    expect(manifest.cells).toHaveLength(13);
     expect(manifest.cells.every(cell =>
       cell.execution === 'deterministic_contract'
       && cell.profileId === null

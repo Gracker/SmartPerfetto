@@ -17,6 +17,33 @@ const runtimeRevision = fs.readFileSync(
 ).match(/^PERFETTO_VERSION=([^\s#]+)$/m)?.[1];
 if (!runtimeRevision) throw new Error('scripts/trace-processor-pin.env has no PERFETTO_VERSION');
 
+const SOURCE_ANALYSIS_FIXTURE_PATH = 'backend/tests/e2e/context-fixtures/app/StartupHooks.kt';
+
+function loadSourceAnalysisGroundTruth() {
+  const sourcePath = path.join(repoRoot, SOURCE_ANALYSIS_FIXTURE_PATH);
+  const source = fs.readFileSync(sourcePath, 'utf8');
+  const marker = source.match(/TRACE_SOURCE_MARKER\s*=\s*"([^"]+)"/)?.[1];
+  const lines = source.split(/\r?\n/);
+  const symbolLine = lines.findIndex((line) => /fun\s+initializeOnMainThread\s*\(/.test(line)) + 1;
+  if (!marker || symbolLine <= 0) {
+    throw new Error(`Invalid source-analysis fixture contract: ${SOURCE_ANALYSIS_FIXTURE_PATH}`);
+  }
+  return {
+    marker,
+    relativeSourcePath: SOURCE_ANALYSIS_FIXTURE_PATH,
+    symbol: 'StartupHooks.initializeOnMainThread',
+    lineRange: {start: symbolLine, end: symbolLine},
+    callChain: [
+      'Application.onCreate',
+      'StartupHooks.initializeOnMainThread',
+      'synchronous startup policy check',
+    ],
+    actionableSeam: 'Move synchronous startup policy work after the first-frame boundary.',
+  };
+}
+
+const sourceAnalysisGroundTruth = loadSourceAnalysisGroundTruth();
+
 const FAMILIES = [
   {
     id: 'startup-lifecycle',
@@ -145,6 +172,16 @@ const FAMILIES = [
       'verifier_misdiagnosis',
     ],
     signatures: ['SmartPerfetto::general-analysis', 'trace overview', 'comparison baseline'],
+  },
+  {
+    id: 'source-analysis-semantic',
+    title: 'Source analysis semantic ground truth',
+    scene: 'startup',
+    base: 'android-startup-light',
+    android: {release: '16', api_level: 36, device: 'Google raven base'},
+    skillPattern: /$^/,
+    strategies: [],
+    signatures: [],
   },
 ];
 
@@ -720,6 +757,16 @@ function scenarioForFamily(family) {
       },
     );
   }
+  if (family.id === 'source-analysis-semantic') {
+    familySignals.push({
+      type: 'atrace-slice',
+      at_ns: '120000000',
+      duration_ns: '42000000',
+      process: 'app',
+      thread: 'main',
+      name: sourceAnalysisGroundTruth.marker,
+    });
+  }
   return {
     schema_version: 1,
     clock: {anchor: 'trace-middle', duration_ns: '1000000000'},
@@ -833,11 +880,32 @@ function main() {
       }),
     ];
     const expectedPath = path.join(caseDir, 'analysis/expected.json');
+    const sourceTraceGroundTruth = family.id === 'source-analysis-semantic'
+      ? {
+          ...sourceAnalysisGroundTruth,
+          traceFacts: {
+            marker: sourceAnalysisGroundTruth.marker,
+            occurrence: true,
+            process: 'com.smartperfetto.fixture',
+            thread: 'main',
+            durationNs: 42000000,
+          },
+          trace: {
+            baseCaseId: family.base,
+            materialization: 'committed-base-plus-overlay',
+            baseSha256: build.provenance.base_sha256,
+            overlaySha256: build.provenance.overlay_sha256,
+            outputSha256: build.provenance.output_sha256,
+            runtimeRevision,
+          },
+        }
+      : undefined;
     writeJson(expectedPath, {
       schema_version: 1,
       case_id: family.id,
       marker: `SmartPerfetto::CASE::${family.id}`,
       expectations,
+      ...(sourceTraceGroundTruth ? {source_trace_ground_truth: sourceTraceGroundTruth} : {}),
     });
     writeJson(path.join(caseDir, 'case.json'), {
       schema_version: 1,

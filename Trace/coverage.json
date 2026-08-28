@@ -753,6 +753,7 @@
       "power-thermal",
       "rendering-jank",
       "scheduler-cpu-contention",
+      "source-analysis-semantic",
       "startup-lifecycle"
     ]
   },

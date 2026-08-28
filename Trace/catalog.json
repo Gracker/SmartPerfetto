@@ -8373,6 +8373,68 @@
     },
     {
       "schema_version": 1,
+      "id": "source-analysis-semantic",
+      "kind": "constructed",
+      "title": "Source analysis semantic ground truth",
+      "description": "Deterministic source analysis semantic ground truth signals over the android-startup-light real base trace.",
+      "scene": "startup",
+      "tags": [
+        "android",
+        "constructed",
+        "startup"
+      ],
+      "aliases": [],
+      "trace": {
+        "file": "trace.overlay.pftrace",
+        "format": "perfetto-protobuf",
+        "sha256": "3aa6460dde5cc6a6410732a76a183185ea0e13e9758d682e7fdbd00688a9774f",
+        "materialization": "base-plus-overlay"
+      },
+      "android": {
+        "release": "16",
+        "api_level": 36,
+        "device": "Google raven base",
+        "build_fingerprint": null,
+        "compatibility": {
+          "min_api": 35,
+          "max_api": 36
+        }
+      },
+      "source": {
+        "origin": "SmartPerfetto deterministic trace generator",
+        "captured_at": null,
+        "imported_at": "2026-07-13T00:00:00.000Z",
+        "license": "AGPL-3.0-or-later",
+        "consent": "generated",
+        "privacy_review": "not-applicable",
+        "sanitization_review": "not-applicable",
+        "publication": "public",
+        "evidence_tier": "R3"
+      },
+      "analysis": {
+        "results": [
+          "analysis/expected.json"
+        ],
+        "logs": []
+      },
+      "construction": {
+        "base_case_id": "android-startup-light",
+        "scenario_file": "scenario.json",
+        "generator_version": 1,
+        "seed": "source-analysis-semantic-v1",
+        "output": "Trace/.generated/constructed/source-analysis-semantic/trace.pftrace",
+        "runtime_revision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+      },
+      "coverage": {
+        "skills": [],
+        "strategies": [],
+        "expectations": []
+      },
+      "case_dir": "Trace/constructed/source-analysis-semantic",
+      "manifest_path": "Trace/constructed/source-analysis-semantic/case.json"
+    },
+    {
+      "schema_version": 1,
       "id": "startup-lifecycle",
       "kind": "constructed",
       "title": "Startup and process lifecycle",

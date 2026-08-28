@@ -17,6 +17,7 @@ import traceProcessorRoutes from '../routes/traceProcessorRoutes';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import { resolveAgentRuntimeSelection } from '../agentRuntime';
 import { getOpenAIRuntimeDiagnostics, hasOpenAICredentials } from '../agentOpenAI';
+import type {ConclusionContract} from '../agent/core/conclusionContract';
 import type { TraceDataset } from '../agent/core/orchestratorTypes';
 import type {
   SelectionContext,
@@ -32,6 +33,12 @@ import {
 import { writeTraceMetadata } from '../services/traceMetadataStore';
 import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {hasConcreteCodeReference} from '../services/codebase/codeReferenceContract';
+import {verifySourceClaimBindings} from '../services/codebase/sourceClaimVerifier';
+import {
+  collectMatchedTraceEvidenceRefIdsByClaimId,
+  collectVerifiedTraceOccurrenceRefIdsByClaimId,
+} from '../services/verifier/claimVerificationRunner';
+import type {ClaimVerificationResult} from '../types/claimVerification';
 import {
   privateProjectedSourceEventType,
   successfulCodeLookupToolCounts,
@@ -40,7 +47,7 @@ import {
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
 type SmartAction = 'preview' | 'analyze';
 
-interface VerifyOptions {
+export interface VerifyOptions {
   tracePath: string;
   referenceTracePath?: string;
   query: string;
@@ -75,6 +82,8 @@ interface VerifyOptions {
   knowledgeSourceIds: string[];
   /** Optional source root registered and indexed through the real admin API before analysis. */
   setupCodebaseRoot?: string;
+  /** Explicit setup behavior; omitted preserves the historical register-and-index path. */
+  setupCodebaseMode?: 'register-only' | 'register-and-index';
   /** Optional Wiki root registered and indexed through the real admin API before analysis. */
   setupKnowledgeRoot?: string;
   /**
@@ -172,6 +181,12 @@ interface SseSummary {
   claimVerifierIssueCount?: number;
   conclusionHasConcreteCodeRefs: boolean;
   analysisCompletedHasConcreteCodeRefs: boolean;
+  analysisCompletedSourceUseStatus?: string;
+  analysisCompletedSourceReferenceCount?: number;
+  analysisCompletedSourceBindingCount?: number;
+  analysisCompletedSourceClaimVerifierStatus?: string;
+  analysisCompletedSourceMechanismStatuses?: string[];
+  analysisCompletedSourceReferenceMembershipPassed?: boolean;
   analysisCompletedReportUrl?: string;
   analysisCompletedPartial?: boolean;
   analysisCompletedTerminationReason?: string;
@@ -236,6 +251,8 @@ function printUsage(): void {
   console.log('  --codebase-id <id>                 Registered codebase id to expose; repeatable');
   console.log('  --knowledge-source-id <id>         Registered private knowledge source id; repeatable');
   console.log('  --setup-codebase-root <path>       Register and index an app-source root before analysis');
+  console.log('  --setup-codebase-mode <register-only|register-and-index>');
+  console.log('                                      Select setup behavior (default: register-and-index)');
   console.log('  --setup-knowledge-root <path>      Register and index an Android Internals Wiki root before analysis');
   console.log('  --provider-id <id|env|null>        Provider id, or env/null to ignore active providers');
   console.log('  --require-code-ref                 Require source-level code refs in conclusion/analysis_completed text');
@@ -310,7 +327,7 @@ function parseSelectionContextArg(value: string): SelectionContext {
   return parsed as SelectionContext;
 }
 
-function parseArgs(argv: string[]): VerifyOptions {
+export function parseArgs(argv: string[]): VerifyOptions {
   const options: VerifyOptions = {
     tracePath: path.resolve(process.cwd(), DEFAULT_TRACE),
     query: DEFAULT_QUERY,
@@ -627,6 +644,20 @@ function parseArgs(argv: string[]): VerifyOptions {
       continue;
     }
 
+    if (arg === '--setup-codebase-mode') {
+      if (!next) {
+        throw new Error('--setup-codebase-mode requires a value');
+      }
+      if (next !== 'register-only' && next !== 'register-and-index') {
+        throw new Error(
+          `Invalid --setup-codebase-mode value: ${next} (expected register-only|register-and-index)`,
+        );
+      }
+      options.setupCodebaseMode = next;
+      i += 1;
+      continue;
+    }
+
     if (arg === '--setup-knowledge-root') {
       if (!next) {
         throw new Error('--setup-knowledge-root requires a value');
@@ -826,6 +857,10 @@ function parseArgs(argv: string[]): VerifyOptions {
     }
   }
 
+  if (options.setupCodebaseMode && !options.setupCodebaseRoot) {
+    throw new Error('--setup-codebase-mode requires --setup-codebase-root');
+  }
+
   return options;
 }
 
@@ -875,12 +910,17 @@ function createVerificationApp(): express.Express {
 async function postJsonOrThrow(
   baseUrl: string,
   route: string,
-  body: Record<string, unknown>,
+  body?: Record<string, unknown>,
+  method: 'GET' | 'POST' = 'POST',
 ): Promise<Record<string, unknown>> {
   const response = await fetch(`${baseUrl}${route}`, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify(body),
+    method,
+    ...(method === 'POST'
+      ? {
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body ?? {}),
+        }
+      : {}),
   });
   const payload = await response.json() as Record<string, unknown>;
   if (!response.ok || payload.success === false) {
@@ -889,9 +929,29 @@ async function postJsonOrThrow(
   return payload;
 }
 
-async function setupAnalysisContext(baseUrl: string, options: VerifyOptions): Promise<void> {
+type SetupRequest = typeof postJsonOrThrow;
+
+export interface AnalysisContextSetupResult {
+  codebases: Array<{
+    codebaseId: string;
+    setupMode: 'register-only' | 'register-and-index';
+    chunkCount: number;
+    activeIndexState: 'active' | 'none';
+    activeGeneration?: string;
+    pendingGeneration: boolean;
+    reindexRequests: number;
+  }>;
+}
+
+export async function setupAnalysisContext(
+  baseUrl: string,
+  options: VerifyOptions,
+  request: SetupRequest = postJsonOrThrow,
+): Promise<AnalysisContextSetupResult> {
+  const result: AnalysisContextSetupResult = {codebases: []};
   if (options.setupCodebaseRoot) {
-    const registration = await postJsonOrThrow(baseUrl, '/api/rag/codebases/register', {
+    const setupMode = options.setupCodebaseMode ?? 'register-and-index';
+    const registration = await request(baseUrl, '/api/rag/codebases/register', {
       kind: 'app_source',
       displayName: 'DeepSeek E2E App Source',
       rootPath: options.setupCodebaseRoot,
@@ -900,11 +960,66 @@ async function setupAnalysisContext(baseUrl: string, options: VerifyOptions): Pr
     const codebase = asRecord(registration.codebase);
     const codebaseId = typeof codebase?.codebaseId === 'string' ? codebase.codebaseId : '';
     if (!codebaseId) throw new Error('Context setup did not return a codebaseId');
-    await postJsonOrThrow(
+    let reindexRequests = 0;
+    if (setupMode === 'register-and-index') {
+      await request(
+        baseUrl,
+        `/api/rag/codebases/${encodeURIComponent(codebaseId)}/reindex`,
+        {},
+      );
+      reindexRequests = 1;
+    }
+
+    const auditPayload = await request(
       baseUrl,
-      `/api/rag/codebases/${encodeURIComponent(codebaseId)}/reindex`,
-      {},
+      `/api/rag/codebases/${encodeURIComponent(codebaseId)}/audit`,
+      undefined,
+      'GET',
     );
+    const audit = asRecord(auditPayload.audit);
+    if (!audit || audit.codebaseId !== codebaseId) {
+      throw new Error('Context setup audit did not return the registered codebase');
+    }
+    const chunkCount = typeof audit.chunkCount === 'number' ? audit.chunkCount : 0;
+    const activeIndexState: 'active' | 'none' = audit.activeIndexState === 'active'
+      ? 'active'
+      : 'none';
+    const activeGeneration = typeof audit.activeGeneration === 'string'
+      ? audit.activeGeneration
+      : undefined;
+    const pendingGeneration = Boolean(audit.pendingGeneration);
+    if (
+      setupMode === 'register-only' &&
+      (
+        chunkCount !== 0 ||
+        activeIndexState !== 'none' ||
+        activeGeneration !== undefined ||
+        pendingGeneration ||
+        reindexRequests !== 0
+      )
+    ) {
+      throw new Error('register-only setup returned an indexed or active audited codebase state');
+    }
+    if (
+      setupMode === 'register-and-index' &&
+      (
+        chunkCount <= 0 ||
+        activeIndexState !== 'active' ||
+        activeGeneration === undefined ||
+        pendingGeneration
+      )
+    ) {
+      throw new Error('register-and-index setup did not produce an active audited index');
+    }
+    result.codebases.push({
+      codebaseId,
+      setupMode,
+      chunkCount,
+      activeIndexState,
+      activeGeneration,
+      pendingGeneration,
+      reindexRequests,
+    });
     options.codebaseIds.push(codebaseId);
     options.codeAwareMode ??= 'provider_send';
   }
@@ -929,6 +1044,7 @@ async function setupAnalysisContext(baseUrl: string, options: VerifyOptions): Pr
 
   options.codebaseIds = Array.from(new Set(options.codebaseIds));
   options.knowledgeSourceIds = Array.from(new Set(options.knowledgeSourceIds));
+  return result;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -1351,6 +1467,44 @@ async function collectSseSummary(
               recordConclusionEvidence(summary, payload.conclusion, 'analysis_completed');
             }
             recordClaimVerifierSummary(summary, payload);
+            const conclusionContract = asRecord(payload?.conclusionContract);
+            const sourceUseDecision = asRecord(conclusionContract?.sourceUseDecision);
+            if (typeof sourceUseDecision?.status === 'string') {
+              summary.analysisCompletedSourceUseStatus = sourceUseDecision.status;
+            }
+            if (Array.isArray(sourceUseDecision?.references)) {
+              summary.analysisCompletedSourceReferenceCount = sourceUseDecision.references.length;
+            }
+            if (Array.isArray(conclusionContract?.sourceClaimBindings)) {
+              summary.analysisCompletedSourceBindingCount = conclusionContract.sourceClaimBindings.length;
+            }
+            const claimVerificationResult = asRecord(payload?.claimVerificationResult);
+            if (
+              conclusionContract?.schemaVersion === 'conclusion_contract_v1' &&
+              sourceUseDecision?.schemaVersion === 'source_use_decision@1' &&
+              claimVerificationResult?.schemaVersion === 'claim_verifier@1'
+            ) {
+              const typedContract = conclusionContract as unknown as ConclusionContract;
+              const typedClaimVerification = claimVerificationResult as unknown as ClaimVerificationResult;
+              const sourceClaimVerification = verifySourceClaimBindings({
+                conclusionContract: typedContract,
+                actualSourceUseDecision: typedContract.sourceUseDecision,
+                matchedTraceEvidenceRefIdsByClaimId:
+                  collectMatchedTraceEvidenceRefIdsByClaimId(typedClaimVerification),
+                verifiedTraceOccurrenceRefIdsByClaimId:
+                  collectVerifiedTraceOccurrenceRefIdsByClaimId(typedClaimVerification),
+              });
+              const returnedReferenceIds = new Set(
+                typedContract.sourceUseDecision?.references.map(reference => reference.id) ?? [],
+              );
+              summary.analysisCompletedSourceClaimVerifierStatus = sourceClaimVerification.status;
+              summary.analysisCompletedSourceMechanismStatuses = sourceClaimVerification.bindings
+                .map(binding => binding.mechanismStatus);
+              summary.analysisCompletedSourceReferenceMembershipPassed =
+                sourceClaimVerification.bindings.length > 0 &&
+                sourceClaimVerification.bindings.every(binding =>
+                  binding.sourceReferenceIds.every(referenceId => returnedReferenceIds.has(referenceId)));
+            }
             if (typeof payload?.reportUrl === 'string') {
               summary.analysisCompletedReportUrl = payload.reportUrl;
             }
@@ -1692,7 +1846,7 @@ async function main(): Promise<void> {
   let sessionId = '';
 
   try {
-    await setupAnalysisContext(baseUrl, options);
+    const setup = await setupAnalysisContext(baseUrl, options);
     traceId = await traceProcessorService.loadTraceFromFilePath(options.tracePath);
     await writeTraceMetadata({
       id: traceId,
@@ -2024,6 +2178,7 @@ async function main(): Promise<void> {
         codeAwareMode: options.codeAwareMode ?? 'off',
         codebaseIds: options.codebaseIds,
         knowledgeSourceIds: options.knowledgeSourceIds,
+        setup,
       },
       traceId,
       referenceTraceId: referenceTraceId || undefined,
@@ -2079,7 +2234,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  });
+}

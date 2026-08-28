@@ -16,4 +16,5 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 | [Power and thermal throttling](./power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
 | [Rendering pipeline jank](./rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 46 target(s) |
 | [Scheduler and CPU contention](./scheduler-cpu-contention/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 36 target(s) |
+| [Source analysis semantic ground truth](./source-analysis-semantic/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-light | 0 target(s) |
 | [Startup and process lifecycle](./startup-lifecycle/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 24 target(s) |

@@ -283,17 +283,17 @@ describe('golden trace deterministic scorer', () => {
 describe('golden trace registry compiler', () => {
   it('unifies the constructed catalog, scenarios, coverage, golden facts, and splits', () => {
     const registry = loadGoldenTraceRegistry();
-    expect(registry.cases).toHaveLength(12);
+    expect(registry.cases).toHaveLength(13);
     expect(registry.cases.flatMap(item => item.goldenPoints ?? []))
-      .toHaveLength(24);
+      .toHaveLength(27);
     expect(registry.cases.flatMap(item => item.groundTruth.requiredFacts)
       .filter(fact => fact.evaluation === 'semantic')).toHaveLength(0);
     expect(registry.cases.flatMap(item => item.groundTruth.requiredEvidence))
       .toHaveLength(256);
     expect(registry.cases.filter(item => item.split === 'train')).toHaveLength(6);
     expect(registry.cases.filter(item => item.split === 'validation')).toHaveLength(3);
-    expect(registry.cases.filter(item => item.split === 'holdout')).toHaveLength(3);
-    expect(new Set(registry.cases.map(item => item.caseId)).size).toBe(12);
+    expect(registry.cases.filter(item => item.split === 'holdout')).toHaveLength(4);
+    expect(new Set(registry.cases.map(item => item.caseId)).size).toBe(13);
     expect(new Set(registry.cases.flatMap(item =>
       item.groundTruth.requiredEvidence.map(evidence => evidence.locator))).size)
       .toBe(256);

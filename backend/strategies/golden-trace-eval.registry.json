@@ -146,6 +146,20 @@
       "createdAt": "2026-07-29T00:00:00.000Z"
     },
     {
+      "caseId": "synthetic-source-analysis-semantic-v1",
+      "catalogAlias": "source-analysis-semantic",
+      "query": "Diagnose the startup mechanism, separate trace facts from source explanation, and identify the exact source location, call chain, and actionable seam.",
+      "analysisMode": "full",
+      "expectedScene": "startup",
+      "goldenPoints": [
+        "Treat the trace marker occurrence and duration as trace-authoritative facts; a CodeRef alone cannot prove that the event occurred.",
+        "Identify StartupHooks.initializeOnMainThread in StartupHooks.kt with the exact generated line and call chain.",
+        "Map the trace marker to the source mechanism and recommend the bounded post-first-frame seam without exposing raw source text."
+      ],
+      "split": "holdout",
+      "createdAt": "2026-08-28T00:00:00.000Z"
+    },
+    {
       "caseId": "synthetic-startup-lifecycle-v1",
       "catalogAlias": "startup-lifecycle",
       "query": "Analyze application startup and explain the dominant lifecycle bottleneck.",

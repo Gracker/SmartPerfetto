@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "case_id": "source-analysis-semantic",
+  "marker": "SmartPerfetto::CASE::source-analysis-semantic",
+  "expectations": [],
+  "source_trace_ground_truth": {
+    "marker": "StartupHooks.initializeOnMainThread#before-first-frame-sync-policy",
+    "relativeSourcePath": "backend/tests/e2e/context-fixtures/app/StartupHooks.kt",
+    "symbol": "StartupHooks.initializeOnMainThread",
+    "lineRange": {
+      "start": 9,
+      "end": 9
+    },
+    "callChain": [
+      "Application.onCreate",
+      "StartupHooks.initializeOnMainThread",
+      "synchronous startup policy check"
+    ],
+    "actionableSeam": "Move synchronous startup policy work after the first-frame boundary.",
+    "traceFacts": {
+      "marker": "StartupHooks.initializeOnMainThread#before-first-frame-sync-policy",
+      "occurrence": true,
+      "process": "com.smartperfetto.fixture",
+      "thread": "main",
+      "durationNs": 42000000
+    },
+    "trace": {
+      "baseCaseId": "android-startup-light",
+      "materialization": "committed-base-plus-overlay",
+      "baseSha256": "6c5479fd1b765ee4d29692c43a8204b972bc0f97eb373aca98ea7e11e99fd8b4",
+      "overlaySha256": "3aa6460dde5cc6a6410732a76a183185ea0e13e9758d682e7fdbd00688a9774f",
+      "outputSha256": "8093caa2e207dfaea8df3f68fa9e055ae38e4e22b9797ba62e187c04ad368793",
+      "runtimeRevision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+    }
+  }
+}

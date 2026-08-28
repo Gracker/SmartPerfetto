@@ -19,7 +19,42 @@ const DEEPSEEK_RUNTIME_KINDS = [
   'pi-agent-core',
   'opencode',
 ];
+const ALL_RUNTIME_KINDS = [
+  'claude-agent-sdk',
+  ...DEEPSEEK_RUNTIME_KINDS,
+  'qoder-agent-sdk',
+];
 const CONTEXT_SUITE_NAMES = ['context-source', 'context-rag', 'context-combined'];
+const SEMANTIC_DELTA_SUITE = 'code-aware-semantic-delta';
+const SEMANTIC_DELTA_QUERIES = [
+  {
+    id: 'autonomous-diagnosis',
+    kind: 'autonomous-diagnosis',
+    text: '诊断这次启动变慢的主要机制，区分本次 Trace 事实与源码机制解释。',
+  },
+  {
+    id: 'quantitative-only',
+    kind: 'quantitative-only',
+    text: '这个 Trace 的启动区间持续多久？只回答 Trace 中的量化事实。',
+  },
+  {
+    id: 'explicit-source-location',
+    kind: 'explicit-source-location',
+    text: '指出本次启动标记对应的源码位置、调用链和最小可操作修改点。',
+  },
+];
+const SEMANTIC_DELTA_MARKER =
+  'StartupHooks.initializeOnMainThread#before-first-frame-sync-policy';
+const SEMANTIC_DELTA_TRACE =
+  '../Trace/.generated/constructed/source-analysis-semantic/trace.pftrace';
+const SEMANTIC_DELTA_SOURCE_ROOT = 'tests/e2e/context-fixtures/app';
+const SEMANTIC_DELTA_RELATIVE_SOURCE_PATH =
+  'backend/tests/e2e/context-fixtures/app/StartupHooks.kt';
+const SEMANTIC_DELTA_SOURCE_FILE = 'StartupHooks.kt';
+const SEMANTIC_DELTA_SOURCE_SYMBOL = 'StartupHooks.initializeOnMainThread';
+const SEMANTIC_DELTA_CALLER = 'Application.onCreate';
+const SEMANTIC_DELTA_ACTIONABLE_SEAM = 'avoid synchronous disk I/O before first frame';
+const PRIVATE_SOURCE_CANARY = 'SEMANTIC_DELTA_PRIVATE_SOURCE_CANARY_NEVER_EMIT';
 
 const suites = {
   startup: {
@@ -218,6 +253,11 @@ const suites = {
       '--forbid-degraded-fallback', 'partial_result_after_incomplete_plan',
     ],
   },
+  [SEMANTIC_DELTA_SUITE]: {
+    label: 'real-provider code-aware semantic delta gate',
+    output: 'test-output/code-aware-semantic-delta/real-provider',
+    args: [],
+  },
 };
 
 if (require.main === module) main();
@@ -233,7 +273,12 @@ function main() {
   assertFile(tsxCliPath, 'tsx CLI');
   assertFile(verifierPath, 'Agent SSE verifier');
 
-  const credential = resolveDeepseekCredential();
+  if (options.suite === SEMANTIC_DELTA_SUITE) {
+    const aggregate = runCodeAwareSemanticDeltaSuite(options);
+    if (aggregate.attemptFailureCount > 0) process.exitCode = 1;
+    return;
+  }
+
   const suiteNames = options.suite === 'all'
     ? ['startup', 'scrolling', 'external-issue', 'dual-trace', ...CONTEXT_SUITE_NAMES]
     : options.suite === 'context'
@@ -242,10 +287,14 @@ function main() {
   const runtimeKinds = resolveRuntimeKinds(options.runtime);
 
   for (const runtimeKind of runtimeKinds) {
+    const availability = realProviderAvailability(runtimeKind);
+    if (!availability.available) {
+      throw new Error(`REAL PROVIDER NOT AVAILABLE: ${runtimeKind}: ${availability.reason}`);
+    }
     for (const suiteName of suiteNames) {
       runSuite(
         suiteName,
-        credential,
+        availability,
         runtimeKind,
         runtimeKinds.length > 1 || options.runtime !== DEFAULT_RUNTIME,
         options.timeoutMs,
@@ -260,11 +309,16 @@ function parseArgs(argv) {
   let suite = 'all';
   let runtime = DEFAULT_RUNTIME;
   let timeoutMs = DEFAULT_TIMEOUT_MS;
+  let repeat = 1;
+  let outputDir = path.resolve(
+    backendRoot,
+    'test-output/code-aware-semantic-delta/real-provider',
+  );
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') {
-      return { suite, runtime, help: true };
+      return { suite, runtime, timeoutMs, repeat, outputDir, help: true };
     }
     if (arg === '--suite') {
       const value = argv[i + 1];
@@ -291,6 +345,22 @@ function parseArgs(argv) {
       i += 1;
       continue;
     }
+    if (arg === '--repeat') {
+      const value = Number(argv[i + 1]);
+      if (!Number.isInteger(value) || value <= 0) {
+        throw new Error('--repeat requires a positive integer');
+      }
+      repeat = value;
+      i += 1;
+      continue;
+    }
+    if (arg === '--output-dir') {
+      const value = argv[i + 1];
+      if (!value) throw new Error('--output-dir requires a value');
+      outputDir = path.resolve(backendRoot, value);
+      i += 1;
+      continue;
+    }
     if (!arg.startsWith('-')) {
       suite = parseSuite(arg);
       continue;
@@ -298,7 +368,11 @@ function parseArgs(argv) {
     throw new Error(`Unknown option: ${arg}`);
   }
 
-  return { suite, runtime, timeoutMs, help: false };
+  if (suite === SEMANTIC_DELTA_SUITE && repeat !== 5) {
+    throw new Error(`${SEMANTIC_DELTA_SUITE} requires --repeat 5`);
+  }
+
+  return { suite, runtime, timeoutMs, repeat, outputDir, help: false };
 }
 
 function parseSuite(value) {
@@ -310,6 +384,8 @@ function parseRuntime(value) {
   if (
     value === 'all' ||
     value === 'all-deepseek' ||
+    value === 'claude' ||
+    value === 'claude-agent-sdk' ||
     value === 'openai' ||
     value === 'openai-agents-sdk' ||
     value === 'pi' ||
@@ -321,12 +397,13 @@ function parseRuntime(value) {
     return value;
   }
   throw new Error(
-    `Invalid runtime: ${value}. Expected openai-agents-sdk, pi-agent-core, opencode, qoder-agent-sdk, or all-deepseek.`,
+    `Invalid runtime: ${value}. Expected claude-agent-sdk, openai-agents-sdk, pi-agent-core, opencode, qoder-agent-sdk, all, or all-deepseek.`,
   );
 }
 
 function resolveRuntimeKinds(value) {
   if (value === 'all' || value === 'all-deepseek') return DEEPSEEK_RUNTIME_KINDS;
+  if (value === 'claude') return ['claude-agent-sdk'];
   if (value === 'openai') return ['openai-agents-sdk'];
   if (value === 'pi') return ['pi-agent-core'];
   if (value === 'qoder') return ['qoder-agent-sdk'];
@@ -334,7 +411,7 @@ function resolveRuntimeKinds(value) {
 }
 
 function printUsage() {
-  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined] [--runtime openai-agents-sdk|pi-agent-core|opencode|qoder-agent-sdk|all-deepseek] [--timeout-ms <number>]');
+  console.log('Usage: node scripts/run-deepseek-agent-e2e.cjs [--suite all|context|startup|scrolling|external-issue|dual-trace|context-source|context-rag|context-combined|code-aware-semantic-delta] [--runtime claude-agent-sdk|openai-agents-sdk|pi-agent-core|opencode|qoder-agent-sdk|all|all-deepseek] [--timeout-ms <number>] [--repeat 5] [--output-dir <path>]');
   console.log('');
   console.log('Runs SmartPerfetto Agent SSE E2E with Deepseek-backed SmartPerfetto runtimes.');
   console.log('');
@@ -343,6 +420,442 @@ function printUsage() {
   console.log('Qoder receives DeepSeek through resolveModel BYOK and still requires QODER_PERSONAL_ACCESS_TOKEN or qodercli login.');
   console.log('BYOK does not replace Qoder authentication.');
   console.log(`Each real SSE scenario has a ${DEFAULT_TIMEOUT_MS}ms default timeout; use --timeout-ms to override it.`);
+  console.log('The code-aware semantic-delta suite requires --repeat 5 and writes paired-run plus aggregate JSON artifacts.');
+}
+
+function resolveSemanticRuntimeKinds(value) {
+  if (value === 'all') return ALL_RUNTIME_KINDS;
+  if (value === 'all-deepseek') return DEEPSEEK_RUNTIME_KINDS;
+  if (value === 'claude') return ['claude-agent-sdk'];
+  return resolveRuntimeKinds(value);
+}
+
+function concreteCredential(value) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized || /^(?:your_|replace|changeme|placeholder)/i.test(normalized)) return undefined;
+  return normalized;
+}
+
+function realProviderAvailability(runtimeKind, env = process.env, fileExists = fs.existsSync) {
+  const deepseekApiKey = concreteCredential(
+    env.DEEPSEEK_API_KEY || env.OPENAI_API_KEY,
+  );
+  if (DEEPSEEK_RUNTIME_KINDS.includes(runtimeKind)) {
+    return deepseekApiKey
+      ? {
+          available: true,
+          credentialKind: env.DEEPSEEK_API_KEY
+            ? 'DEEPSEEK_API_KEY'
+            : 'OPENAI_API_KEY',
+          apiKey: deepseekApiKey,
+        }
+      : {
+          available: false,
+          reason: 'DEEPSEEK_API_KEY_OR_OPENAI_API_KEY_MISSING',
+        };
+  }
+  if (runtimeKind === 'claude-agent-sdk') {
+    const claudeCredential = concreteCredential(
+      env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN || env.CLAUDE_CODE_OAUTH_TOKEN,
+    );
+    const bedrockConfigured = Boolean(
+      concreteCredential(env.AWS_BEARER_TOKEN_BEDROCK) ||
+      (concreteCredential(env.AWS_ACCESS_KEY_ID) &&
+        concreteCredential(env.AWS_SECRET_ACCESS_KEY)) ||
+      concreteCredential(env.AWS_PROFILE),
+    );
+    const localClaudeCredential = fileExists(
+      path.join(os.homedir(), '.claude', '.credentials.json'),
+    );
+    return claudeCredential || bedrockConfigured || localClaudeCredential
+      ? {
+          available: true,
+          credentialKind: claudeCredential
+            ? (env.ANTHROPIC_API_KEY
+                ? 'ANTHROPIC_API_KEY'
+                : env.ANTHROPIC_AUTH_TOKEN
+                  ? 'ANTHROPIC_AUTH_TOKEN'
+                  : 'CLAUDE_CODE_OAUTH_TOKEN')
+            : bedrockConfigured
+              ? 'AWS_BEDROCK_AUTH'
+              : 'CLAUDE_LOCAL_LOGIN',
+        }
+      : {
+          available: false,
+          reason: 'ANTHROPIC_OR_CLAUDE_LOCAL_AUTH_MISSING',
+        };
+  }
+  if (runtimeKind === 'qoder-agent-sdk') {
+    const qoderToken = concreteCredential(env.QODER_PERSONAL_ACCESS_TOKEN);
+    const qoderCliPath = concreteCredential(env.QODERCLI_PATH);
+    const missingReasons = [
+      ...(!deepseekApiKey ? ['DEEPSEEK_API_KEY_OR_OPENAI_API_KEY_MISSING'] : []),
+      ...(!qoderToken && !qoderCliPath
+        ? ['QODER_PERSONAL_ACCESS_TOKEN_OR_QODERCLI_PATH_MISSING']
+        : []),
+    ];
+    if (missingReasons.length > 0) {
+      return {
+        available: false,
+        reason: missingReasons.join(';'),
+      };
+    }
+    return {
+      available: true,
+      credentialKind: qoderToken ? 'QODER_PERSONAL_ACCESS_TOKEN' : 'QODERCLI_PATH',
+      apiKey: deepseekApiKey,
+    };
+  }
+  return {available: false, reason: 'UNSUPPORTED_RUNTIME'};
+}
+
+function buildSemanticChildEnv(runtimeKind, availability, isolatedRoot) {
+  if (runtimeKind !== 'claude-agent-sdk') {
+    return buildChildEnv(availability.apiKey, runtimeKind, isolatedRoot);
+  }
+  return {
+    ...process.env,
+    SMARTPERFETTO_AGENT_RUNTIME: 'claude-agent-sdk',
+    DOTENV_CONFIG_QUIET: 'true',
+    SMARTPERFETTO_BACKEND_DATA_DIR: path.join(isolatedRoot, 'data'),
+    SMARTPERFETTO_BACKEND_LOG_DIR: path.join(isolatedRoot, 'logs'),
+    SMARTPERFETTO_TRACE_UPLOAD_DIR: path.join(isolatedRoot, 'uploads', 'traces'),
+    SMARTPERFETTO_CODEBASE_ROOTS: path.join(
+      backendRoot,
+      'tests/e2e/context-fixtures/app',
+    ),
+  };
+}
+
+function semanticDeltaQueries() {
+  return SEMANTIC_DELTA_QUERIES.map(query => ({...query}));
+}
+
+function semanticConditionArgs(query, condition, outputPath, timeoutMs) {
+  const args = [
+    '--mode', 'full',
+    '--provider-id', 'env',
+    '--trace', SEMANTIC_DELTA_TRACE,
+    '--query', query.text,
+    '--output', outputPath,
+    '--timeout-ms', String(timeoutMs),
+    '--require-non-partial',
+    '--require-claim-verifier-ok',
+    '--require-text', SEMANTIC_DELTA_MARKER,
+    '--forbid-text', PRIVATE_SOURCE_CANARY,
+  ];
+  if (condition === 'A0') {
+    args.push(
+      '--code-aware', 'off',
+      '--forbid-text', SEMANTIC_DELTA_RELATIVE_SOURCE_PATH,
+      '--forbid-text', SEMANTIC_DELTA_SOURCE_FILE,
+      '--forbid-text', SEMANTIC_DELTA_SOURCE_SYMBOL,
+      '--forbid-text', SEMANTIC_DELTA_CALLER,
+      '--forbid-text', SEMANTIC_DELTA_ACTIONABLE_SEAM,
+      '--forbid-text', '[Code:',
+    );
+    return args;
+  }
+  args.push(
+    '--setup-codebase-root', SEMANTIC_DELTA_SOURCE_ROOT,
+    '--setup-codebase-mode', condition === 'A2' ? 'register-only' : 'register-and-index',
+    '--code-aware', 'provider_send',
+  );
+  if (query.kind !== 'quantitative-only') {
+    args.push(
+      '--require-code-ref',
+      '--require-text', SEMANTIC_DELTA_SOURCE_FILE,
+      '--require-text', SEMANTIC_DELTA_SOURCE_SYMBOL,
+      '--require-text', SEMANTIC_DELTA_CALLER,
+      '--require-text', SEMANTIC_DELTA_ACTIONABLE_SEAM,
+    );
+  }
+  return args;
+}
+
+function sanitizeDiagnostic(value) {
+  let sanitized = String(value || '').slice(0, 1000);
+  const sensitiveValues = [
+    process.env.DEEPSEEK_API_KEY,
+    process.env.OPENAI_API_KEY,
+    process.env.ANTHROPIC_API_KEY,
+    process.env.ANTHROPIC_AUTH_TOKEN,
+    process.env.CLAUDE_CODE_OAUTH_TOKEN,
+    process.env.QODER_PERSONAL_ACCESS_TOKEN,
+  ].map(concreteCredential).filter(Boolean);
+  for (const secret of sensitiveValues) sanitized = sanitized.split(secret).join('<redacted-secret>');
+  return sanitized
+    .split(backendRoot).join('<backend-root>')
+    .split(os.homedir()).join('<home>')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function evaluateSemanticConditionReport(input) {
+  const {report, query, condition, sourceRoot} = input;
+  const summary = report?.summary;
+  const serialized = report ? JSON.stringify(report) : '';
+  const privacyPassed = Boolean(report) &&
+    !serialized.includes(sourceRoot) &&
+    !serialized.includes(PRIVATE_SOURCE_CANARY) &&
+    !serialized.includes('val startupPolicy =');
+  const setup = report?.analysisContext?.setup?.codebases?.[0];
+  const provenancePassed = condition === 'A0'
+    ? Array.isArray(report?.analysisContext?.codebaseIds) &&
+      report.analysisContext.codebaseIds.length === 0
+    : condition === 'A2'
+      ? setup?.setupMode === 'register-only' &&
+        setup?.chunkCount === 0 &&
+        setup?.activeIndexState === 'none' &&
+        setup?.activeGeneration === undefined &&
+        setup?.pendingGeneration === false &&
+        setup?.reindexRequests === 0
+      : setup?.setupMode === 'register-and-index' &&
+        setup?.reindexRequests === 1 &&
+        setup?.chunkCount > 0 &&
+        setup?.activeIndexState === 'active' &&
+        typeof setup?.activeGeneration === 'string' &&
+        setup?.pendingGeneration === false;
+  const traceClaimPassed = summary?.claimVerifierStatus === 'passed' &&
+    summary?.claimVerifierPassed === true &&
+    (summary?.claimVerifierCheckedClaimCount || 0) > 0 &&
+    (summary?.claimVerifierUnsupportedClaimCount || 0) === 0;
+  const traceFactPassed =
+    summary?.requiredTextMatches?.[SEMANTIC_DELTA_MARKER] === true &&
+    traceClaimPassed;
+  const sourceToolCount = ['search_codebase', 'read_codebase_file', 'lookup_app_source']
+    .reduce((count, tool) => count + (summary?.toolCallCounts?.[tool] || 0), 0);
+  const forbiddenMatches = summary?.forbiddenTextMatches || {};
+  const sourceLeakFree = condition !== 'A0' || (
+    [
+      SEMANTIC_DELTA_RELATIVE_SOURCE_PATH,
+      SEMANTIC_DELTA_SOURCE_FILE,
+      SEMANTIC_DELTA_SOURCE_SYMBOL,
+      SEMANTIC_DELTA_CALLER,
+      SEMANTIC_DELTA_ACTIONABLE_SEAM,
+      '[Code:',
+    ].every(text => forbiddenMatches[text] !== true) &&
+    summary?.conclusionHasConcreteCodeRefs !== true &&
+    summary?.analysisCompletedHasConcreteCodeRefs !== true &&
+    (summary?.analysisCompletedSourceReferenceCount || 0) === 0 &&
+    (summary?.analysisCompletedSourceBindingCount || 0) === 0 &&
+    sourceToolCount === 0
+  );
+  const mechanismStatuses = Array.isArray(summary?.analysisCompletedSourceMechanismStatuses)
+    ? summary.analysisCompletedSourceMechanismStatuses
+    : [];
+  const sourceBindingPassed =
+    summary?.analysisCompletedSourceClaimVerifierStatus === 'passed' &&
+    summary?.analysisCompletedSourceReferenceMembershipPassed === true &&
+    mechanismStatuses.length > 0 &&
+    mechanismStatuses.every(status => status === 'corroborated' || status === 'compatible');
+  const sourceSemanticPassed = query?.kind === 'quantitative-only'
+    ? sourceToolCount === 0 &&
+      (
+        condition === 'A0' ||
+        (
+          summary?.analysisCompletedSourceUseStatus === 'not_needed' &&
+          summary?.analysisCompletedSourceReferenceCount === 0
+        )
+      )
+    : summary?.requiredTextMatches?.[SEMANTIC_DELTA_SOURCE_FILE] === true &&
+      summary?.requiredTextMatches?.[SEMANTIC_DELTA_SOURCE_SYMBOL] === true &&
+      summary?.requiredTextMatches?.[SEMANTIC_DELTA_CALLER] === true &&
+      summary?.requiredTextMatches?.[SEMANTIC_DELTA_ACTIONABLE_SEAM] === true &&
+      (
+        summary?.conclusionHasConcreteCodeRefs === true ||
+        summary?.analysisCompletedHasConcreteCodeRefs === true
+      ) &&
+      summary?.analysisCompletedSourceUseStatus === 'corroborated' &&
+      (summary?.analysisCompletedSourceReferenceCount || 0) > 0 &&
+      (summary?.analysisCompletedSourceBindingCount || 0) > 0 &&
+      sourceBindingPassed;
+  return {
+    privacyPassed,
+    provenancePassed,
+    traceFactPassed,
+    sourceLeakFree,
+    sourceBindingPassed,
+    sourceSemanticPassed,
+  };
+}
+
+function runSemanticCondition(input) {
+  const reportPath = path.join(input.attemptDir, input.query.id, `${input.condition}.json`);
+  const args = semanticConditionArgs(input.query, input.condition, reportPath, input.timeoutMs);
+  const result = spawnSync(process.execPath, [tsxCliPath, verifierPath, ...args], {
+    cwd: backendRoot,
+    env: buildSemanticChildEnv(input.runtimeKind, input.availability, input.isolatedRoot),
+    encoding: 'utf8',
+    timeout: input.timeoutMs + 60_000,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  const report = fs.existsSync(reportPath)
+    ? JSON.parse(fs.readFileSync(reportPath, 'utf8'))
+    : undefined;
+  const sourceRoot = path.resolve(backendRoot, SEMANTIC_DELTA_SOURCE_ROOT);
+  const evaluation = evaluateSemanticConditionReport({
+    report,
+    query: input.query,
+    condition: input.condition,
+    sourceRoot,
+  });
+  return {
+    queryId: input.query.id,
+    queryKind: input.query.kind,
+    condition: input.condition,
+    report: path.relative(input.outputDir, reportPath).split(path.sep).join('/'),
+    exitCode: result.status,
+    passed: result.status === 0 && report?.passed === true,
+    hardAssertions: {
+      privacyPassed: evaluation.privacyPassed,
+      provenancePassed: evaluation.provenancePassed,
+      traceFactPassed: evaluation.traceFactPassed,
+      sourceLeakFree: evaluation.sourceLeakFree,
+    },
+    sourceBindingPassed: evaluation.sourceBindingPassed,
+    sourceSemanticPassed: evaluation.sourceSemanticPassed,
+    diagnostic: result.status === 0
+      ? undefined
+      : sanitizeDiagnostic(result.stderr || result.stdout || result.error?.message),
+  };
+}
+
+function runSemanticPairedAttempt(input) {
+  const attemptDir = path.join(
+    input.outputDir,
+    input.runtimeKind,
+    `run-${String(input.attempt).padStart(2, '0')}`,
+  );
+  fs.mkdirSync(attemptDir, {recursive: true});
+  const isolatedRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), 'smartperfetto-semantic-delta-'),
+  );
+  try {
+    const queryRuns = semanticDeltaQueries().map(query => ({
+      query,
+      conditions: ['A0', 'A2', 'A3'].map(condition => runSemanticCondition({
+        ...input,
+        query,
+        condition,
+        attemptDir,
+        isolatedRoot,
+      })),
+    }));
+    const conditions = queryRuns.flatMap(run => run.conditions);
+    const hardPassed = conditions.every(condition =>
+      condition.passed && Object.values(condition.hardAssertions).every(Boolean));
+    const noTraceRegression = conditions.every(condition => condition.hardAssertions.traceFactPassed);
+    const sourceUpliftPassed = queryRuns
+      .filter(run => run.query.kind !== 'quantitative-only')
+      .every(run => {
+        const a0 = run.conditions.find(condition => condition.condition === 'A0');
+        const a2 = run.conditions.find(condition => condition.condition === 'A2');
+        const a3 = run.conditions.find(condition => condition.condition === 'A3');
+        return a0?.hardAssertions.sourceLeakFree === true &&
+          !a0?.sourceSemanticPassed &&
+          a2?.sourceSemanticPassed &&
+          a3?.sourceSemanticPassed;
+      });
+    const quantitativeNotNeededPassed = queryRuns
+      .filter(run => run.query.kind === 'quantitative-only')
+      .every(run => run.conditions.every(condition => condition.sourceSemanticPassed));
+    return {
+      schemaVersion: 'code_aware_semantic_delta_real_run@1',
+      runtime: input.runtimeKind,
+      attempt: input.attempt,
+      queries: queryRuns,
+      hardPassed,
+      noTraceRegression,
+      quantitativeNotNeededPassed,
+      sourceUpliftPassed: sourceUpliftPassed && quantitativeNotNeededPassed && noTraceRegression,
+    };
+  } finally {
+    fs.rmSync(isolatedRoot, {recursive: true, force: true});
+  }
+}
+
+function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), {recursive: true});
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function runCodeAwareSemanticDeltaSuite(options) {
+  fs.mkdirSync(options.outputDir, {recursive: true});
+  const runtimeKinds = resolveSemanticRuntimeKinds(options.runtime);
+  const runtimeResults = [];
+  let attemptFailureCount = 0;
+  for (const runtimeKind of runtimeKinds) {
+    const availability = realProviderAvailability(runtimeKind);
+    if (!availability.available) {
+      runtimeResults.push({
+        runtime: runtimeKind,
+        status: 'REAL PROVIDER NOT AVAILABLE',
+        reason: availability.reason,
+        attemptsRequired: options.repeat,
+        attemptsRun: 0,
+        hardPassCount: 0,
+        sourceUpliftPassCount: 0,
+      });
+      continue;
+    }
+    const records = [];
+    for (let attempt = 1; attempt <= options.repeat; attempt += 1) {
+      const record = runSemanticPairedAttempt({
+        runtimeKind,
+        attempt,
+        timeoutMs: options.timeoutMs,
+        outputDir: options.outputDir,
+        availability,
+      });
+      records.push(record);
+      writeJson(
+        path.join(
+          options.outputDir,
+          runtimeKind,
+          `paired-run-${String(attempt).padStart(2, '0')}.json`,
+        ),
+        record,
+      );
+    }
+    const hardPassCount = records.filter(record => record.hardPassed).length;
+    const sourceUpliftPassCount = records.filter(record => record.sourceUpliftPassed).length;
+    const passed = hardPassCount === options.repeat &&
+      sourceUpliftPassCount >= Math.ceil(options.repeat * 0.8);
+    if (!passed) attemptFailureCount += 1;
+    runtimeResults.push({
+      runtime: runtimeKind,
+      status: passed ? 'REAL PROVIDER PASSED' : 'REAL PROVIDER FAILED',
+      credentialKind: availability.credentialKind,
+      attemptsRequired: options.repeat,
+      attemptsRun: records.length,
+      hardPassCount,
+      sourceUpliftPassCount,
+      hardAcceptance: `${hardPassCount}/${options.repeat}`,
+      semanticAcceptance: `${sourceUpliftPassCount}/${options.repeat}`,
+    });
+  }
+  const aggregate = {
+    schemaVersion: 'code_aware_semantic_delta_real_aggregate@1',
+    suite: SEMANTIC_DELTA_SUITE,
+    repeat: options.repeat,
+    queries: semanticDeltaQueries(),
+    deterministicCoverage: {
+      A1: 'verify:code-aware-semantic-delta',
+      A4: 'verify:code-aware-semantic-delta',
+    },
+    hardRequirement: `${options.repeat}/${options.repeat}`,
+    semanticRequirement: `${Math.ceil(options.repeat * 0.8)}/${options.repeat}`,
+    runtimeResults,
+    attemptFailureCount,
+    completeAcceptance: runtimeResults.length > 0 &&
+      runtimeResults.every(runtime => runtime.status === 'REAL PROVIDER PASSED'),
+  };
+  writeJson(path.join(options.outputDir, 'aggregate.json'), aggregate);
+  console.log(JSON.stringify(aggregate, null, 2));
+  console.log(`Real-provider aggregate written to: ${path.join(options.outputDir, 'aggregate.json')}`);
+  return aggregate;
 }
 
 function loadBackendEnv() {
@@ -352,18 +865,7 @@ function loadBackendEnv() {
   require('dotenv').config({ path: envPath, quiet: true });
 }
 
-function resolveDeepseekCredential() {
-  const source = process.env.DEEPSEEK_API_KEY ? 'DEEPSEEK_API_KEY' : 'OPENAI_API_KEY';
-  const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
-  if (!apiKey || apiKey.trim() === '') {
-    throw new Error(
-      'DEEPSEEK_API_KEY or OPENAI_API_KEY is required. Use a local untracked env file or GitHub secret DEEPSEEK_API_KEY; do not commit provider keys.',
-    );
-  }
-  return { apiKey, source };
-}
-
-function runSuite(suiteName, credential, runtimeKind, runtimeSpecificOutput, timeoutMs) {
+function runSuite(suiteName, availability, runtimeKind, runtimeSpecificOutput, timeoutMs) {
   const suite = suites[suiteName];
   const suiteArgs = runtimeSpecificOutput
     ? withRuntimeOutputPath(suite.args, suite.output, runtimeKind)
@@ -372,13 +874,13 @@ function runSuite(suiteName, credential, runtimeKind, runtimeSpecificOutput, tim
   console.log(`\n[deepseek-e2e] suite=${suiteName} (${suite.label})`);
   console.log(`[deepseek-e2e] runtime=${runtimeKind}`);
   console.log(`[deepseek-e2e] output=${getOutputPathFromArgs(args) || suite.output}`);
-  console.log(`[deepseek-e2e] credential=${credential.source}`);
+  console.log(`[deepseek-e2e] credential=${availability.credentialKind}`);
 
   const isolatedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-deepseek-e2e-'));
   try {
     const result = spawnSync(process.execPath, [tsxCliPath, verifierPath, ...args], {
       cwd: backendRoot,
-      env: buildChildEnv(credential.apiKey, runtimeKind, isolatedRoot),
+      env: buildSemanticChildEnv(runtimeKind, availability, isolatedRoot),
       stdio: 'inherit',
     });
 
@@ -506,4 +1008,9 @@ function assertFile(filePath, label) {
 
 module.exports = {
   buildChildEnv,
+  evaluateSemanticConditionReport,
+  parseArgs,
+  realProviderAvailability,
+  semanticConditionArgs,
+  semanticDeltaQueries,
 };

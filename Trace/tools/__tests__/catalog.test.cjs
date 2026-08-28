@@ -554,7 +554,7 @@ test('generated corpus index publishes evidence tiers and pinned SQL source cove
   const files = generatedFiles(repoRoot);
   const readme = files.get(path.join(repoRoot, 'Trace/README.md'));
 
-  assert.match(readme, /Evidence tiers: R1=6, R2=0, R3=12/);
+  assert.match(readme, /Evidence tiers: R1=6, R2=0, R3=13/);
   assert.match(readme, /Pinned Perfetto SQL source: `[a-f0-9]{40}`/);
   assert.match(readme, /canonical portable SQL source checks/);
 });
