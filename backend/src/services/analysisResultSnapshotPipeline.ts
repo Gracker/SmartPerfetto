@@ -40,6 +40,7 @@ import {
   type SourceUseDecisionV1,
 } from './codebase/sourceUseDecision';
 import {
+  projectSafeSourceProvenance,
   sanitizeConclusionSourceContract,
   verifySourceClaimBindings,
 } from './codebase/sourceClaimVerifier';
@@ -519,9 +520,21 @@ export function buildCompletedAnalysisResultSnapshot(
         ? collectVerifiedTraceOccurrenceRefIdsByClaimId(input.claimVerificationResult)
         : {},
     });
-    conclusionContract = verification.status === 'not_checked'
+    const verifiedContract = verification.status === 'not_checked'
       ? sanitized
       : {...sanitized, sourceClaimBindings: verification.bindings};
+    const sourceProvenance = projectSafeSourceProvenance({
+      conclusionContract: verifiedContract,
+      actualSourceUseDecision: input.sourceUseDecision,
+    });
+    conclusionContract = sourceProvenance
+      ? {
+          ...verifiedContract,
+          sourceUseDecision: sourceProvenance.sourceUseDecision,
+          sourceReferences: sourceProvenance.sourceUseDecision.references,
+          sourceClaimBindings: sourceProvenance.sourceClaimBindings,
+        }
+      : verifiedContract;
   }
 
   return {

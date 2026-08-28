@@ -13,6 +13,7 @@
  * touches one place.
  */
 
+import * as fs from 'fs';
 import * as path from 'path';
 import type { CliPaths, SessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
@@ -28,13 +29,17 @@ import {
 } from '../io/sessionStore';
 import { upsertSession } from '../io/indexJson';
 import { appendTranscriptTurn } from '../io/transcriptWriter';
-import {parseOutputLanguage} from '../../agentv3/outputLanguage';
+import {localize, parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
 import {
   privateAnalysisFailureMessage,
   privateAnalysisQueryMessage,
   projectPrivateAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
 import {sanitizeCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
+import {
+  projectSafeSourceProvenance,
+  type SafeSourceProvenanceProjection,
+} from '../../services/codebase/sourceClaimVerifier';
 
 export interface CommitTurnInput {
   paths: CliPaths;
@@ -64,6 +69,7 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
   const { paths, sp, renderer, sessionId, turn, query, config, reportAppendix } = input;
   const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const rawConclusion = input.result.result.conclusion || '';
+  const inputSourceProvenance = sourceProvenanceForResult(input.result);
   const result: RunTurnOutput = input.result.privateKnowledge
     ? {
         ...input.result,
@@ -76,7 +82,7 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
   const durableQuery = result.privateKnowledge
     ? privateAnalysisQueryMessage(outputLanguage)
     : query;
-  const turnMarkdown = result.privateKnowledge
+  const baseTurnMarkdown = result.privateKnowledge
     ? sanitizeCodeAwareText(
         sessionId,
         replaceExact(
@@ -86,6 +92,10 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
         ),
       )
     : input.turnMarkdown;
+  const sourceProvenance = inputSourceProvenance ?? sourceProvenanceForResult(result);
+  const turnMarkdown = sourceProvenance
+    ? appendSourceProvenanceMarkdown(baseTurnMarkdown, sourceProvenance, outputLanguage)
+    : baseTurnMarkdown;
   const indexEntry = result.privateKnowledge
     ? {...input.indexEntry, firstQuery: durableQuery}
     : input.indexEntry;
@@ -115,7 +125,7 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
     ? (turnReportPath = writeTurnReportHtml(sp, turn, reportHtml || ''), writeReportHtml(sp, reportHtml || ''), sp.report)
     : `(report generation failed${result.reportError ? `: ${result.reportError}` : ''})`;
   assertCliReceiptPath(result, cliTurnPath);
-  writeAnalysisQualitySidecars(sp, turn, result);
+  writeAnalysisQualitySidecars(sp, turn, result, sourceProvenance);
 
   writeConfig(sp, config);
 
@@ -155,7 +165,12 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
   });
 }
 
-function writeAnalysisQualitySidecars(sp: SessionPaths, turn: number, result: RunTurnOutput): void {
+function writeAnalysisQualitySidecars(
+  sp: SessionPaths,
+  turn: number,
+  result: RunTurnOutput,
+  sourceProvenance: SafeSourceProvenanceProjection | undefined,
+): void {
   const turnPrefix = path.join(sp.turnsDir, String(turn).padStart(3, '0'));
   writeJsonFile(sp, sp.claimSupport, result.result.claimSupport || []);
   writeJsonFile(sp, `${turnPrefix}.claim-support.json`, result.result.claimSupport || []);
@@ -167,6 +182,81 @@ function writeAnalysisQualitySidecars(sp: SessionPaths, turn: number, result: Ru
   writeJsonFile(sp, `${turnPrefix}.analysis-receipt.json`, result.result.analysisReceipt || null);
   writeJsonFile(sp, path.join(sp.dir, 'ui-action-proposals.json'), result.result.uiActionProposals || []);
   writeJsonFile(sp, `${turnPrefix}.ui-action-proposals.json`, result.result.uiActionProposals || []);
+  writeSourceProvenanceSidecars(sp, turnPrefix, sourceProvenance);
+}
+
+function sourceProvenanceForResult(
+  result: RunTurnOutput,
+): SafeSourceProvenanceProjection | undefined {
+  const resultValue = result.result;
+  const hasActualDecision = Object.prototype.hasOwnProperty.call(
+    resultValue,
+    'sourceUseDecision',
+  );
+  return projectSafeSourceProvenance({
+    conclusionContract: resultValue.conclusionContract,
+    ...(hasActualDecision
+      ? {actualSourceUseDecision: resultValue.sourceUseDecision}
+      : {}),
+  });
+}
+
+function writeSourceProvenanceSidecars(
+  sp: SessionPaths,
+  turnPrefix: string,
+  provenance: SafeSourceProvenanceProjection | undefined,
+): void {
+  const latestDecisionPath = path.join(sp.dir, 'source-use-decision.json');
+  const latestBindingsPath = path.join(sp.dir, 'source-claim-bindings.json');
+  if (!provenance) {
+    for (const filePath of [latestDecisionPath, latestBindingsPath]) {
+      fs.rmSync(filePath, {force: true});
+    }
+    return;
+  }
+
+  writeJsonFile(sp, latestDecisionPath, provenance.sourceUseDecision);
+  writeJsonFile(sp, `${turnPrefix}.source-use-decision.json`, provenance.sourceUseDecision);
+  writeJsonFile(sp, latestBindingsPath, provenance.sourceClaimBindings);
+  writeJsonFile(sp, `${turnPrefix}.source-claim-bindings.json`, provenance.sourceClaimBindings);
+}
+
+function appendSourceProvenanceMarkdown(
+  markdown: string,
+  provenance: SafeSourceProvenanceProjection,
+  outputLanguage: OutputLanguage,
+): string {
+  const decision = provenance.sourceUseDecision;
+  const lines = [
+    localize(outputLanguage, '## 源码使用凭据', '## Source provenance'),
+    '',
+    `- schema: \`${decision.schemaVersion}\``,
+    `- mode: \`${decision.codeAwareMode}\``,
+    `- status: \`${decision.status}\``,
+    `- selected: ${markdownCodeList(decision.selectedCodebaseIds)}`,
+    `- queried: ${markdownCodeList(decision.queriedCodebaseIds)}`,
+    `- used: ${markdownCodeList(decision.usedCodebaseIds)}`,
+    ...(decision.reasonCode ? [`- reason: \`${decision.reasonCode}\``] : []),
+    ...(typeof decision.coverageComplete === 'boolean'
+      ? [`- coverageComplete: \`${decision.coverageComplete}\``]
+      : []),
+    ...(decision.incompleteReasons?.length
+      ? [`- incomplete: ${markdownCodeList(decision.incompleteReasons)}`]
+      : []),
+  ];
+  if (provenance.sourceClaimBindings.length > 0) {
+    lines.push('', localize(outputLanguage, '### 机制绑定', '### Mechanism bindings'), '');
+    for (const binding of provenance.sourceClaimBindings.slice(0, 20)) {
+      lines.push(
+        `- \`${binding.claimId}\` · \`${binding.mechanismStatus}\` · source=${markdownCodeList(binding.sourceReferenceIds)} · trace=${markdownCodeList(binding.traceEvidenceRefIds)}`,
+      );
+    }
+  }
+  return `${markdown.replace(/\s+$/u, '')}\n\n${lines.join('\n')}\n`;
+}
+
+function markdownCodeList(values: readonly string[]): string {
+  return values.length > 0 ? values.map(value => `\`${value}\``).join(', ') : '-';
 }
 
 function assertCliReceiptPath(result: RunTurnOutput, cliTurnPath: string): void {

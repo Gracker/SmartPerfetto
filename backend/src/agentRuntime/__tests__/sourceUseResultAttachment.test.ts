@@ -9,6 +9,7 @@ import {
   type SourceUseDecisionReader,
 } from '../../services/codebase/sourceClaimVerifier';
 import type {SourceUseDecisionV1} from '../../services/codebase/sourceUseDecision';
+import {sanitizeSourceReference} from '../../services/codebase/sourceUseDecision';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {
   createRuntimeSourceFinalizationFixture,
@@ -44,6 +45,69 @@ describe('runtime source finalization behavior', () => {
 
     expect(finalizeSourceResult(result, undefined)).toBe(result);
     expect(result).toEqual(before);
+  });
+
+  test('fails closed over fabricated source provenance when no current-run accessor exists', () => {
+    const sourceReference = sanitizeSourceReference({
+      referenceId: 'fabricated-lookup',
+      codebaseId: 'fabricated-app',
+      filePath: 'src/Fabricated.kt',
+      lookupKind: 'body',
+    })!;
+    const fabricatedDecision = {
+      schemaVersion: 'source_use_decision@1' as const,
+      codeAwareMode: 'provider_send' as const,
+      selectedCodebaseIds: ['fabricated-app'],
+      status: 'corroborated' as const,
+      attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['fabricated-app'],
+      usedCodebaseIds: ['fabricated-app'],
+      references: [{
+        ...sourceReference,
+        rootPath: '/Users/chris/SECRET_ROOT_CANARY',
+        snippet: 'SECRET_SNIPPET_CANARY',
+        query: 'SECRET_QUERY_CANARY',
+      } as any],
+    };
+    const result = plainResult('session-fabricated-no-accessor');
+    result.sourceUseDecision = fabricatedDecision;
+    result.sourceReferences = fabricatedDecision.references;
+    result.sourceClaimVerificationResult = {
+      schemaVersion: 'source_claim_verifier@1',
+      status: 'passed',
+      bindings: [],
+      issues: [],
+    };
+    result.conclusionContract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [],
+      clusters: [],
+      evidenceChain: [],
+      claims: [{id: 'claim-fabricated', text: 'trace fact', references: []}],
+      sourceUseDecision: fabricatedDecision,
+      sourceReferences: fabricatedDecision.references,
+      sourceClaimBindings: [{
+        claimId: 'claim-fabricated',
+        mechanismStatus: 'corroborated',
+        sourceReferenceIds: [sourceReference.id],
+        traceEvidenceRefIds: ['trace-evidence-fabricated'],
+        reason: 'SECRET_BINDING_REASON_CANARY',
+      }],
+      uncertainties: [],
+      nextSteps: [],
+    };
+
+    expect(finalizeSourceResult(result, undefined)).toBe(result);
+
+    expect(result.sourceUseDecision).toBeUndefined();
+    expect(result.sourceReferences).toBeUndefined();
+    expect(result.sourceClaimVerificationResult).toBeUndefined();
+    expect(result.conclusionContract).not.toHaveProperty('sourceUseDecision');
+    expect(result.conclusionContract).not.toHaveProperty('sourceReferences');
+    expect(result.conclusionContract).not.toHaveProperty('sourceClaimBindings');
+    expect(JSON.stringify(result)).not.toContain('SECRET_');
+    expect(JSON.stringify(result)).not.toContain('/Users/chris');
   });
 
   test.each(['pending', 'attempted'] as const)(

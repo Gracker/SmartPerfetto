@@ -10,6 +10,7 @@ jest.mock('../traceProcessorService', () => ({
 import {buildAgentDrivenReportData} from '../agentReportData';
 import {HTMLReportGenerator} from '../htmlReportGenerator';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/codeAwareOutputRegistry';
+import {sanitizeSourceReference} from '../codebase/sourceUseDecision';
 
 describe('buildAgentDrivenReportData private knowledge projection', () => {
   const baseResult = (sessionId: string) => ({
@@ -262,5 +263,105 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(html).not.toContain('Bad Space');
     expect(html).not.toContain('https://example.com/source');
     expect(JSON.stringify(report)).not.toContain('/Users/chris');
+  });
+
+  it('projects the canonical current-run source decision and claim bindings into report data', () => {
+    const reference = sanitizeSourceReference({
+      referenceId: 'lookup-1',
+      codebaseId: 'safe-app',
+      filePath: 'src/main/Foo.kt',
+      lineRange: {start: 10, end: 12},
+      symbol: 'Foo.run',
+      lookupKind: 'body',
+    })!;
+    const sourceUseDecision = {
+      schemaVersion: 'source_use_decision@1' as const,
+      codeAwareMode: 'provider_send' as const,
+      selectedCodebaseIds: ['safe-app'],
+      status: 'corroborated' as const,
+      attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['safe-app'],
+      usedCodebaseIds: ['safe-app'],
+      coverageComplete: true,
+      references: [reference],
+      rootPath: '/Users/chris/private-source',
+      query: 'SECRET_QUERY_CANARY',
+      snippet: 'SECRET_SNIPPET_CANARY',
+    } as any;
+    const sourceClaimBindings = [{
+      claimId: 'claim-1',
+      mechanismStatus: 'compatible' as const,
+      sourceReferenceIds: [reference.id],
+      traceEvidenceRefIds: ['trace-evidence-1'],
+      reason: 'SECRET_BINDING_REASON_CANARY',
+    }];
+    const report = buildAgentDrivenReportData({
+      session: {
+        sessionId: 'source-report-session',
+        traceId: 'trace-source-report',
+        query: 'analyze Foo.run',
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['safe-app'],
+        outputLanguage: 'en',
+        orchestrator: {},
+        hypotheses: [],
+        agentDialogue: [],
+        conversationSteps: [],
+        dataEnvelopes: [],
+        agentResponses: [],
+        runSequence: 1,
+        _lastSnapshot: {
+          codebaseSnapshot: [{
+            codebaseId: 'safe-app',
+            displayName: 'Safe App',
+            kind: 'app_source',
+            indexGeneration: 1,
+          }],
+          codeLookupSummary: {
+            lookupCount: 1,
+            patchCount: 0,
+            referencedCodebaseIds: ['safe-app'],
+            usedCodebaseIds: ['safe-app'],
+          },
+        },
+      } as any,
+      result: {
+        ...baseResult('source-report-session'),
+        sourceUseDecision,
+        conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1',
+          mode: 'focused_answer',
+          conclusions: [{rank: 1, statement: 'Foo.run is compatible with the trace.'}],
+          clusters: [],
+          evidenceChain: [],
+          claims: [{id: 'claim-1', text: 'Foo.run is compatible with the trace.', references: []}],
+          sourceUseDecision,
+          sourceReferences: [reference],
+          sourceClaimBindings,
+          uncertainties: [],
+          nextSteps: [],
+        },
+      },
+    });
+
+    expect(report.sourceContext).toEqual(expect.objectContaining({
+      sourceUseDecision: expect.objectContaining({
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['safe-app'],
+        queriedCodebaseIds: ['safe-app'],
+        usedCodebaseIds: ['safe-app'],
+        status: 'corroborated',
+        coverageComplete: true,
+      }),
+      sourceClaimBindings: [{
+        claimId: 'claim-1',
+        mechanismStatus: 'compatible',
+        sourceReferenceIds: [reference.id],
+        traceEvidenceRefIds: ['trace-evidence-1'],
+      }],
+    }));
+    expect(JSON.stringify(report.sourceContext)).not.toContain('/Users/chris');
+    expect(JSON.stringify(report.sourceContext)).not.toContain('SECRET_');
   });
 });

@@ -5,6 +5,7 @@
 import {describe, expect, it} from '@jest/globals';
 
 import {HTMLReportGenerator, type AgentDrivenReportData} from '../htmlReportGenerator';
+import {sanitizeSourceReference} from '../codebase/sourceUseDecision';
 
 function makeReportData(contract: unknown): AgentDrivenReportData {
   return {
@@ -137,6 +138,50 @@ describe('HTMLReportGenerator code-aware rendering', () => {
     expect(emptyLookupHtml).toContain('本次已查询 1 个源码库');
     expect(emptyLookupHtml).toContain('没有成功返回源码或图引用');
     expect(emptyLookupHtml).not.toContain('本次分析未发起源码或图查询');
+  });
+
+  it('renders canonical source-use status and mechanism bindings without model-authored source prose', () => {
+    const reference = sanitizeSourceReference({
+      referenceId: 'lookup-1',
+      codebaseId: 'codebase-app',
+      filePath: 'src/main/Foo.kt',
+      lookupKind: 'body',
+    })!;
+    const data = makeReportData({});
+    data.sourceContext = {
+      selected: [{codebaseId: 'codebase-app', displayName: 'Demo App', kind: 'app_source'}],
+      lookupCount: 1,
+      queriedCodebaseIds: ['codebase-app'],
+      usedCodebaseIds: ['codebase-app'],
+      sourceUseDecision: {
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['codebase-app'],
+        status: 'corroborated',
+        attemptedTools: ['read_codebase_file'],
+        queriedCodebaseIds: ['codebase-app'],
+        usedCodebaseIds: ['codebase-app'],
+        coverageComplete: true,
+        references: [reference],
+      },
+      sourceClaimBindings: [{
+        claimId: 'claim-1',
+        mechanismStatus: 'compatible',
+        sourceReferenceIds: [reference.id],
+        traceEvidenceRefIds: ['trace-evidence-1'],
+        reason: 'SECRET_BINDING_REASON_CANARY',
+      }],
+    } as any;
+
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML(data);
+
+    expect(html).toContain('source_use_decision@1');
+    expect(html).toContain('provider_send');
+    expect(html).toContain('corroborated');
+    expect(html).toContain('compatible');
+    expect(html).toContain('claim-1');
+    expect(html).toContain(reference.id);
+    expect(html).not.toContain('SECRET_BINDING_REASON_CANARY');
   });
 
   it('leaves legacy reports without source context unchanged', () => {

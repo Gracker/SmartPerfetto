@@ -41,6 +41,10 @@ import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { IdentityResolutionV1 } from '../types/identityContract';
 import type {BackgroundKnowledgeReference} from '../types/sparkContracts';
+import type {
+  SourceClaimBindingV1,
+  SourceUseDecisionV1,
+} from './codebase/sourceUseDecision';
 
 interface ClaimSourceLookupEntry {
   label: string;
@@ -58,6 +62,8 @@ export interface AgentReportSourceContext {
   lookupCount?: number;
   queriedCodebaseIds?: string[];
   usedCodebaseIds?: string[];
+  sourceUseDecision?: SourceUseDecisionV1;
+  sourceClaimBindings?: SourceClaimBindingV1[];
 }
 
 type ReportTraceSide = 'current' | 'reference';
@@ -5242,9 +5248,14 @@ export class HTMLReportGenerator {
       .filter(source => source.codebaseId)
       .sort((left, right) => left.codebaseId.localeCompare(right.codebaseId));
     if (selected.length === 0) return '';
-    const queriedIds = new Set(sourceContext.queriedCodebaseIds ?? []);
+    const decision = sourceContext.sourceUseDecision;
+    const queriedIds = new Set(
+      decision?.queriedCodebaseIds ?? sourceContext.queriedCodebaseIds ?? [],
+    );
     const queried = selected.filter(source => queriedIds.has(source.codebaseId));
-    const usedIds = new Set(sourceContext.usedCodebaseIds ?? []);
+    const usedIds = new Set(
+      decision?.usedCodebaseIds ?? sourceContext.usedCodebaseIds ?? [],
+    );
     const used = selected.filter(source => usedIds.has(source.codebaseId));
     const renderItem = (source: AgentReportSourceDescriptor) => {
       const shortId = source.codebaseId.slice(0, 12);
@@ -5273,6 +5284,35 @@ export class HTMLReportGenerator {
             `本次查询 ${queried.length} 个源码库，${used.length} 个源码库成功返回引用。`,
             `This run queried ${queried.length} codebase(s); ${used.length} returned references successfully.`,
           );
+    const decisionSummary = decision
+      ? [
+          decision.schemaVersion,
+          `mode=${decision.codeAwareMode}`,
+          `status=${decision.status}`,
+          ...(decision.reasonCode ? [`reason=${decision.reasonCode}`] : []),
+          ...(typeof decision.coverageComplete === 'boolean'
+            ? [`coverageComplete=${decision.coverageComplete}`]
+            : []),
+          ...(decision.incompleteReasons ?? []).map(reason => `incomplete=${reason}`),
+        ].map(item => `<code>${this.escapeHtml(item)}</code>`).join(' · ')
+      : '';
+    const bindings = sourceContext.sourceClaimBindings ?? [];
+    const visibleBindings = bindings.slice(0, 20);
+    const bindingsHtml = visibleBindings.length > 0
+      ? `<div class="source-context-column">
+          <div class="source-context-title">${localize(outputLanguage, '机制绑定', 'Mechanism bindings')}</div>
+          <ul class="source-context-list">
+            ${visibleBindings.map(binding => `
+              <li class="source-context-item">
+                <div class="source-context-name"><code>${this.escapeHtml(binding.claimId)}</code> · <code>${this.escapeHtml(binding.mechanismStatus)}</code></div>
+                <div class="source-context-meta">source=${binding.sourceReferenceIds.map(id => this.escapeHtml(id)).join(', ')} · trace=${binding.traceEvidenceRefIds.map(id => this.escapeHtml(id)).join(', ') || '-'}</div>
+              </li>`).join('')}
+          </ul>
+          ${bindings.length > visibleBindings.length
+            ? `<div class="empty-state">${this.escapeHtml(localize(outputLanguage, `另有 ${bindings.length - visibleBindings.length} 条绑定未展开`, `${bindings.length - visibleBindings.length} more bindings omitted`))}</div>`
+            : ''}
+        </div>`
+      : '';
     return `
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '源码上下文', 'Source Context')}</h2>
@@ -5284,6 +5324,7 @@ export class HTMLReportGenerator {
         ))}
       </div>
       <div class="source-context-status${used.length === 0 ? ' empty' : ''}">${this.escapeHtml(lookupStatus)}</div>
+      ${decisionSummary ? `<div class="source-context-status">${decisionSummary}</div>` : ''}
       <div class="source-context-grid">
         <div class="source-context-column">
           <div class="source-context-title">${localize(outputLanguage, '已选择', 'Selected')}</div>
@@ -5295,6 +5336,7 @@ export class HTMLReportGenerator {
             ? `<ul class="source-context-list">${used.map(renderItem).join('')}</ul>`
             : `<div class="empty-state">${this.escapeHtml(lookupStatus)}</div>`}
         </div>
+        ${bindingsHtml}
       </div>
     </div>`;
   }

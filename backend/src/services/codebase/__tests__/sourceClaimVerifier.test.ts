@@ -12,6 +12,7 @@ import {
 } from '../sourceUseDecision';
 import {
   attachSourceUseToAnalysisResult,
+  projectSafeSourceProvenance,
   verifySourceClaimBindings,
 } from '../sourceClaimVerifier';
 
@@ -289,6 +290,92 @@ describe('verifySourceClaimBindings', () => {
 
     expect(result.status).toBe('partial');
     expect(result.bindings[0]?.mechanismStatus).toBe('compatible');
+  });
+});
+
+describe('projectSafeSourceProvenance', () => {
+  test('keeps only canonical returned references and binding identifiers', () => {
+    const sourceReference = reference('body');
+    const sourceUseDecision = decision(sourceReference);
+    const conclusionContract = contract();
+    conclusionContract.sourceUseDecision = {
+      ...sourceUseDecision,
+      references: [{
+        ...sourceReference,
+        rootPath: '/Users/chris/private-source',
+        snippet: 'SECRET_SNIPPET_CANARY',
+        query: 'SECRET_QUERY_CANARY',
+      } as any],
+    };
+    conclusionContract.sourceReferences = conclusionContract.sourceUseDecision.references;
+    conclusionContract.sourceClaimBindings = [{
+      claimId: 'claim-1',
+      mechanismStatus: 'compatible',
+      sourceReferenceIds: [sourceReference.id],
+      traceEvidenceRefIds: ['data:trace-1'],
+      reason: 'SECRET_BINDING_REASON_CANARY',
+    }];
+
+    const projected = projectSafeSourceProvenance({
+      conclusionContract,
+      actualSourceUseDecision: conclusionContract.sourceUseDecision,
+    });
+
+    expect(projected).toEqual({
+      sourceUseDecision: expect.objectContaining({
+        schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+        status: 'corroborated',
+        references: [sourceReference],
+      }),
+      sourceClaimBindings: [{
+        claimId: 'claim-1',
+        mechanismStatus: 'compatible',
+        sourceReferenceIds: [sourceReference.id],
+        traceEvidenceRefIds: ['data:trace-1'],
+      }],
+    });
+    expect(JSON.stringify(projected)).not.toContain('/Users/chris');
+    expect(JSON.stringify(projected)).not.toContain('SECRET_');
+  });
+
+  test('drops body references and corroboration from metadata-only projections', () => {
+    const bodyReference = reference('body');
+    const metadataDecision = decision(bodyReference, {
+      codeAwareMode: 'metadata_only',
+      status: 'corroborated',
+    });
+    const conclusionContract = contract();
+    conclusionContract.sourceUseDecision = metadataDecision;
+    conclusionContract.sourceReferences = [bodyReference];
+    conclusionContract.sourceClaimBindings = [{
+      claimId: 'claim-1',
+      mechanismStatus: 'corroborated',
+      sourceReferenceIds: [bodyReference.id],
+      traceEvidenceRefIds: ['data:trace-1'],
+    }];
+
+    const projected = projectSafeSourceProvenance({conclusionContract});
+
+    expect(projected?.sourceUseDecision.status).toBe('located');
+    expect(projected?.sourceUseDecision.references).toEqual([]);
+    expect(projected?.sourceClaimBindings).toEqual([]);
+    expect(JSON.stringify(projected)).not.toContain('"mechanismStatus":"corroborated"');
+  });
+
+  test('fails closed when an explicit current-run decision is absent or invalid', () => {
+    const sourceReference = reference('body');
+    const conclusionContract = contract();
+    conclusionContract.sourceUseDecision = decision(sourceReference);
+    conclusionContract.sourceReferences = [sourceReference];
+
+    expect(projectSafeSourceProvenance({
+      conclusionContract,
+      actualSourceUseDecision: undefined,
+    })).toBeUndefined();
+    expect(projectSafeSourceProvenance({
+      conclusionContract,
+      actualSourceUseDecision: {schemaVersion: 'wrong'},
+    })).toBeUndefined();
   });
 });
 

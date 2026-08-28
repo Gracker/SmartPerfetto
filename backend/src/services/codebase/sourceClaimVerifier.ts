@@ -50,6 +50,11 @@ export interface SourceUseDecisionReader {
   getSourceUseDecision(): SourceUseDecisionV1 | undefined;
 }
 
+export interface SafeSourceProvenanceProjection {
+  sourceUseDecision: SourceUseDecisionV1;
+  sourceClaimBindings: SourceClaimBindingV1[];
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -162,6 +167,79 @@ export function sanitizeConclusionSourceContract(
     sourceUseDecision: decision,
     sourceReferences: references,
     ...(bindings.length > 0 ? {sourceClaimBindings: bindings} : {sourceClaimBindings: undefined}),
+  };
+}
+
+/**
+ * Project the canonical source-only portion of a completed conclusion contract.
+ * Output surfaces use this instead of copying model-authored contract objects.
+ */
+export function projectSafeSourceProvenance(input: {
+  conclusionContract?: unknown;
+  actualSourceUseDecision?: unknown;
+}): SafeSourceProvenanceProjection | undefined {
+  if (
+    !isRecord(input.conclusionContract) ||
+    input.conclusionContract.schemaVersion !== 'conclusion_contract_v1'
+  ) {
+    return undefined;
+  }
+
+  const hasActualDecision = Object.prototype.hasOwnProperty.call(
+    input,
+    'actualSourceUseDecision',
+  );
+  const actualDecision = hasActualDecision
+    ? sanitizeSourceUseDecision(input.actualSourceUseDecision)
+    : undefined;
+  if (hasActualDecision && !actualDecision) return undefined;
+
+  const contract = sanitizeConclusionSourceContract(
+    input.conclusionContract as unknown as ConclusionContract,
+    hasActualDecision
+      ? {actualSourceUseDecision: actualDecision ?? null}
+      : {},
+  );
+  const decision = sanitizeSourceUseDecision(contract.sourceUseDecision);
+  if (!decision) return undefined;
+
+  const references = decision.codeAwareMode === 'metadata_only'
+    ? decision.references.filter(reference =>
+        reference.lookupKind === 'metadata' || reference.lookupKind === 'graph')
+    : decision.references;
+  const referenceById = new Map(references.map(reference => [reference.id, reference]));
+  const claimIds = new Set(
+    (contract.claims || []).map((claim, index) => claim.id || `Q${index + 1}`),
+  );
+  const sourceClaimBindings = sanitizeSourceClaimBindings(contract.sourceClaimBindings)
+    .filter(binding =>
+      claimIds.has(binding.claimId) &&
+      binding.sourceReferenceIds.length > 0 &&
+      binding.sourceReferenceIds.every(referenceId => referenceById.has(referenceId)))
+    .map(binding => {
+      if (binding.mechanismStatus !== 'corroborated') return binding;
+      const hasBodyReference = binding.sourceReferenceIds.some(referenceId => {
+        const reference = referenceById.get(referenceId);
+        return reference?.lookupKind === 'body' || reference?.lookupKind === 'indexed';
+      });
+      return decision.codeAwareMode === 'provider_send' &&
+        hasBodyReference &&
+        binding.traceEvidenceRefIds.length > 0
+        ? binding
+        : {...binding, mechanismStatus: 'compatible' as const};
+    });
+  const reasonCode = decision.reasonCode === decision.status
+    ? decision.reasonCode
+    : undefined;
+  const {reasonCode: _declaredReasonCode, ...decisionWithoutReasonCode} = decision;
+
+  return {
+    sourceUseDecision: {
+      ...decisionWithoutReasonCode,
+      ...(reasonCode ? {reasonCode} : {}),
+      references,
+    },
+    sourceClaimBindings,
   };
 }
 
@@ -362,11 +440,14 @@ export function finalizeSourceAwareAnalysisResult(
   sourceUse: SourceUseDecisionReader | undefined,
 ): AnalysisResult {
   const actualDecision = sanitizeSourceUseDecision(sourceUse?.getSourceUseDecision());
+  attachSourceUseToAnalysisResult(
+    result,
+    actualDecision
+      ? {getSourceUseDecision: () => actualDecision}
+      : undefined,
+  );
   if (!actualDecision) return result;
 
-  attachSourceUseToAnalysisResult(result, {
-    getSourceUseDecision: () => actualDecision,
-  });
   result.conclusion = sanitizeCodeAwareStructuredText(result.sessionId, result.conclusion);
   result.findings = sanitizeCodeAwareStructuredText(result.sessionId, result.findings);
   result.hypotheses = sanitizeCodeAwareStructuredText(result.sessionId, result.hypotheses);

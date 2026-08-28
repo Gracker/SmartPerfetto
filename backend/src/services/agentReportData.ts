@@ -31,6 +31,11 @@ import {
 } from './security/privateAnalysisProjection';
 import type {SessionStateSnapshot} from '../agentv3/sessionStateSnapshot';
 import {isCodebaseKind} from './codebase/codebaseRegistry';
+import {
+  projectSafeSourceProvenance,
+  type SafeSourceProvenanceProjection,
+} from './codebase/sourceClaimVerifier';
+import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
 
 type AgentReportSourceContext = AgentDrivenReportData['sourceContext'];
 const MAX_REPORT_SOURCE_ID = 160;
@@ -68,9 +73,9 @@ function safeReportSourceDisplayName(value: unknown): string | undefined {
 
 function safeSourceContext(
   snapshot: Pick<SessionStateSnapshot, 'codebaseSnapshot' | 'codeLookupSummary'> | undefined,
+  provenance?: SafeSourceProvenanceProjection,
 ): AgentReportSourceContext | undefined {
-  if (!snapshot?.codebaseSnapshot?.length) return undefined;
-  const selected = snapshot.codebaseSnapshot
+  const descriptors = (snapshot?.codebaseSnapshot ?? [])
     .map(item => {
       const codebaseId = safeReportSourceId(item.codebaseId);
       if (!codebaseId) return undefined;
@@ -83,17 +88,25 @@ function safeSourceContext(
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const descriptorById = new Map(descriptors.map(item => [item.codebaseId, item]));
+  const selected = provenance
+    ? provenance.sourceUseDecision.selectedCodebaseIds.map(
+        codebaseId => descriptorById.get(codebaseId) ?? {codebaseId},
+      )
+    : descriptors;
   if (selected.length === 0) return undefined;
   const selectedIds = new Set(selected.map(item => item.codebaseId));
   const lookupCount = Math.max(
     0,
-    Math.min(1_000_000, Math.floor(snapshot.codeLookupSummary?.lookupCount || 0)),
+    Math.min(1_000_000, Math.floor(snapshot?.codeLookupSummary?.lookupCount || 0)),
   );
-  const queriedCodebaseIds = (snapshot.codeLookupSummary?.referencedCodebaseIds ?? [])
+  const queriedCodebaseIds = (provenance?.sourceUseDecision.queriedCodebaseIds ??
+    snapshot?.codeLookupSummary?.referencedCodebaseIds ?? [])
     .map(safeReportSourceId)
     .filter((id): id is string => typeof id === 'string' && selectedIds.has(id))
     .sort();
-  const usedCodebaseIds = (snapshot.codeLookupSummary?.usedCodebaseIds ?? [])
+  const usedCodebaseIds = (provenance?.sourceUseDecision.usedCodebaseIds ??
+    snapshot?.codeLookupSummary?.usedCodebaseIds ?? [])
     .map(safeReportSourceId)
     .filter((id): id is string => typeof id === 'string' && selectedIds.has(id))
     .sort();
@@ -102,6 +115,7 @@ function safeSourceContext(
     lookupCount,
     queriedCodebaseIds,
     usedCodebaseIds,
+    ...(provenance ?? {}),
   };
 }
 
@@ -118,6 +132,7 @@ interface ReportResultLike {
   hypotheses: AgentDrivenReportData['hypotheses'];
   conclusion: string;
   conclusionContract?: unknown;
+  sourceUseDecision?: SourceUseDecisionV1;
   claimSupport?: AgentDrivenReportData['result']['claimSupport'];
   claimVerificationResult?: AgentDrivenReportData['result']['claimVerificationResult'];
   identityResolutions?: AgentDrivenReportData['result']['identityResolutions'];
@@ -140,6 +155,10 @@ export function buildAgentDrivenReportData(
   input: BuildAgentReportDataInput,
 ): AgentDrivenReportData {
   const { session, result } = input;
+  const hasActualSourceUseDecision = Object.prototype.hasOwnProperty.call(
+    result,
+    'sourceUseDecision',
+  );
   const privateKnowledge = sessionUsesPrivateKnowledge(session);
   const outputLanguage = session.outputLanguage
     ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -200,6 +219,12 @@ export function buildAgentDrivenReportData(
   const hypotheses = privateKnowledge
     ? projectPrivateHypotheses(session.sessionId, session.hypotheses as any[])
     : session.hypotheses;
+  const sourceProvenance = projectSafeSourceProvenance({
+    conclusionContract: cumulativeResult.conclusionContract,
+    ...(hasActualSourceUseDecision
+      ? {actualSourceUseDecision: result.sourceUseDecision}
+      : {}),
+  });
 
   return {
     traceId: session.traceId,
@@ -241,6 +266,6 @@ export function buildAgentDrivenReportData(
         )
       : snapshot?.comparisonReportSection ?? session.comparisonReportSection,
     backgroundKnowledgeReferences: snapshot?.backgroundKnowledgeReferences,
-    sourceContext: safeSourceContext(snapshot),
+    sourceContext: safeSourceContext(snapshot, sourceProvenance),
   };
 }

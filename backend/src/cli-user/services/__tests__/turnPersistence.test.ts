@@ -12,6 +12,7 @@ import type { Renderer } from '../../repl/renderer';
 import type { RunTurnOutput } from '../cliAnalyzeService';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../../../services/security/codeAwareOutputRegistry';
 import {routeAdaptiveEvidencePreflight} from '../../../agentRuntime/adaptiveEvidenceRouter';
+import {sanitizeSourceReference} from '../../../services/codebase/sourceUseDecision';
 
 function rendererStub(): Renderer {
   return {
@@ -152,6 +153,262 @@ describe('commitTurnOutputs', () => {
       expect(turnActions).toEqual([expect.objectContaining({ kind: 'pin_evidence' })]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('writes canonical per-turn source provenance into JSON and Markdown without unsafe fields', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-source-provenance-'));
+    const paths = computePaths(home);
+    ensureLayout(paths);
+    const sessionId = 'session-source-provenance';
+    const sp = sessionPaths(paths, sessionId);
+    ensureSessionLayout(sp);
+    const reference = sanitizeSourceReference({
+      referenceId: 'lookup-1',
+      codebaseId: 'safe-app',
+      filePath: 'src/main/Foo.kt',
+      lookupKind: 'body',
+    })!;
+    const sourceUseDecision = {
+      schemaVersion: 'source_use_decision@1' as const,
+      codeAwareMode: 'provider_send' as const,
+      selectedCodebaseIds: ['safe-app'],
+      status: 'corroborated' as const,
+      attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['safe-app'],
+      usedCodebaseIds: ['safe-app'],
+      coverageComplete: true,
+      references: [{
+        ...reference,
+        rootPath: '/Users/chris/private-source',
+        snippet: 'SECRET_SNIPPET_CANARY',
+        query: 'SECRET_QUERY_CANARY',
+      } as any],
+    };
+    const result: RunTurnOutput = {
+      sessionId,
+      traceId: 'trace-source-provenance',
+      codeAwareMode: 'provider_send',
+      reportHtml: '<html><body>source report</body></html>',
+      result: {
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'Foo.run is compatible with the trace.',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 20,
+        sourceUseDecision,
+        sourceReferences: sourceUseDecision.references,
+        conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1',
+          mode: 'focused_answer',
+          conclusions: [{rank: 1, statement: 'Foo.run is compatible with the trace.'}],
+          clusters: [],
+          evidenceChain: [],
+          claims: [{id: 'claim-1', text: 'Foo.run is compatible with the trace.', references: []}],
+          sourceUseDecision,
+          sourceReferences: sourceUseDecision.references,
+          sourceClaimBindings: [{
+            claimId: 'claim-1',
+            mechanismStatus: 'compatible',
+            sourceReferenceIds: [reference.id],
+            traceEvidenceRefIds: ['trace-evidence-1'],
+            reason: 'SECRET_BINDING_REASON_CANARY',
+          }],
+          uncertainties: [],
+          nextSteps: [],
+        },
+      },
+    };
+
+    try {
+      commitTurnOutputs({
+        paths,
+        sp,
+        renderer: rendererStub(),
+        sessionId,
+        turn: 1,
+        query: 'analyze Foo.run',
+        result,
+        config: {
+          sessionId,
+          backendSessionId: sessionId,
+          tracePath: '/tmp/trace.perfetto-trace',
+          traceId: 'trace-source-provenance',
+          createdAt: 1,
+          lastTurnAt: 2,
+          turnCount: 1,
+        },
+        turnMarkdown: '# Turn 1\n\n## Conclusion\n\nFoo.run is compatible with the trace.\n',
+        indexEntry: {
+          sessionId,
+          createdAt: 1,
+          lastTurnAt: 2,
+          tracePath: '/tmp/trace.perfetto-trace',
+          traceFilename: 'trace.perfetto-trace',
+          firstQuery: 'analyze Foo.run',
+          turnCount: 1,
+          status: 'completed',
+        },
+      });
+
+      const latestDecisionPath = path.join(sp.dir, 'source-use-decision.json');
+      const latestBindingsPath = path.join(sp.dir, 'source-claim-bindings.json');
+      const turnDecisionPath = path.join(sp.turnsDir, '001.source-use-decision.json');
+      const turnBindingsPath = path.join(sp.turnsDir, '001.source-claim-bindings.json');
+      expect(fs.existsSync(latestDecisionPath)).toBe(true);
+      expect(fs.existsSync(latestBindingsPath)).toBe(true);
+      expect(fs.existsSync(turnDecisionPath)).toBe(true);
+      expect(fs.existsSync(turnBindingsPath)).toBe(true);
+      const storedDecision = JSON.parse(fs.readFileSync(turnDecisionPath, 'utf8'));
+      const storedBindings = JSON.parse(fs.readFileSync(turnBindingsPath, 'utf8'));
+      expect(storedDecision).toEqual(expect.objectContaining({
+        schemaVersion: 'source_use_decision@1',
+        codeAwareMode: 'provider_send',
+        selectedCodebaseIds: ['safe-app'],
+        queriedCodebaseIds: ['safe-app'],
+        usedCodebaseIds: ['safe-app'],
+        status: 'corroborated',
+      }));
+      expect(storedBindings).toEqual([{
+        claimId: 'claim-1',
+        mechanismStatus: 'compatible',
+        sourceReferenceIds: [reference.id],
+        traceEvidenceRefIds: ['trace-evidence-1'],
+      }]);
+      const markdown = fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf8');
+      expect(markdown).toContain('source_use_decision@1');
+      expect(markdown).toContain('provider_send');
+      expect(markdown).toContain('corroborated');
+      expect(markdown).toContain('compatible');
+      expect(markdown).toContain('claim-1');
+      const durableText = [storedDecision, storedBindings, markdown]
+        .map(value => JSON.stringify(value))
+        .join('\n');
+      expect(durableText).not.toContain('/Users/chris');
+      expect(durableText).not.toContain('SECRET_');
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
+    }
+  });
+
+  it('keeps source-free turns unchanged and clears only stale latest provenance', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-source-stale-'));
+    const paths = computePaths(home);
+    ensureLayout(paths);
+    const sessionId = 'session-source-stale';
+    const sp = sessionPaths(paths, sessionId);
+    ensureSessionLayout(sp);
+    const sourceFree: RunTurnOutput = {
+      sessionId,
+      traceId: 'trace-source-stale',
+      codeAwareMode: 'off',
+      result: {
+        sessionId,
+        success: true,
+        findings: [],
+        hypotheses: [],
+        conclusion: 'Trace-only conclusion.',
+        confidence: 0.8,
+        rounds: 1,
+        totalDurationMs: 20,
+      },
+    };
+    const input = (turn: number, result: RunTurnOutput, turnMarkdown: string) => ({
+      paths,
+      sp,
+      renderer: rendererStub(),
+      sessionId,
+      turn,
+      query: 'trace only',
+      result,
+      config: {
+        sessionId,
+        backendSessionId: sessionId,
+        tracePath: '/tmp/trace.perfetto-trace',
+        traceId: 'trace-source-stale',
+        createdAt: 1,
+        lastTurnAt: turn + 1,
+        turnCount: turn,
+      },
+      turnMarkdown,
+      indexEntry: {
+        sessionId,
+        createdAt: 1,
+        lastTurnAt: turn + 1,
+        tracePath: '/tmp/trace.perfetto-trace',
+        traceFilename: 'trace.perfetto-trace',
+        firstQuery: 'trace only',
+        turnCount: turn,
+        status: 'completed' as const,
+      },
+    });
+
+    try {
+      const legacyMarkdown = '# Turn 1\n\n## Conclusion\n\nTrace-only conclusion.\n';
+      commitTurnOutputs(input(1, sourceFree, legacyMarkdown));
+      expect(fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf8')).toBe(legacyMarkdown);
+      expect(fs.existsSync(path.join(sp.dir, 'source-use-decision.json'))).toBe(false);
+      expect(fs.existsSync(path.join(sp.dir, 'source-claim-bindings.json'))).toBe(false);
+
+      const reference = sanitizeSourceReference({
+        referenceId: 'lookup-stale',
+        codebaseId: 'safe-app',
+        filePath: 'src/main/Foo.kt',
+        lookupKind: 'body',
+      })!;
+      const withSource: RunTurnOutput = {
+        ...sourceFree,
+        codeAwareMode: 'provider_send',
+        result: {
+          ...sourceFree.result,
+          sourceUseDecision: {
+            schemaVersion: 'source_use_decision@1',
+            codeAwareMode: 'provider_send',
+            selectedCodebaseIds: ['safe-app'],
+            status: 'located',
+            attemptedTools: ['read_codebase_file'],
+            queriedCodebaseIds: ['safe-app'],
+            usedCodebaseIds: ['safe-app'],
+            references: [reference],
+          },
+          conclusionContract: {
+            schemaVersion: 'conclusion_contract_v1',
+            mode: 'focused_answer',
+            conclusions: [],
+            clusters: [],
+            evidenceChain: [],
+            sourceUseDecision: {
+              schemaVersion: 'source_use_decision@1',
+              codeAwareMode: 'provider_send',
+              selectedCodebaseIds: ['safe-app'],
+              status: 'located',
+              attemptedTools: ['read_codebase_file'],
+              queriedCodebaseIds: ['safe-app'],
+              usedCodebaseIds: ['safe-app'],
+              references: [reference],
+            },
+            sourceReferences: [reference],
+            uncertainties: [],
+            nextSteps: [],
+          },
+        },
+      };
+      commitTurnOutputs(input(2, withSource, '# Turn 2\n\n## Conclusion\n\nSource turn.\n'));
+      expect(fs.existsSync(path.join(sp.dir, 'source-use-decision.json'))).toBe(true);
+      expect(fs.existsSync(path.join(sp.turnsDir, '002.source-use-decision.json'))).toBe(true);
+
+      const sourceFreeMarkdown = '# Turn 3\n\n## Conclusion\n\nTrace-only again.\n';
+      commitTurnOutputs(input(3, sourceFree, sourceFreeMarkdown));
+      expect(fs.existsSync(path.join(sp.dir, 'source-use-decision.json'))).toBe(false);
+      expect(fs.existsSync(path.join(sp.dir, 'source-claim-bindings.json'))).toBe(false);
+      expect(fs.existsSync(path.join(sp.turnsDir, '003.source-use-decision.json'))).toBe(false);
+      expect(fs.readFileSync(path.join(sp.turnsDir, '003.md'), 'utf8')).toBe(sourceFreeMarkdown);
+      expect(fs.existsSync(path.join(sp.turnsDir, '002.source-use-decision.json'))).toBe(true);
+    } finally {
+      fs.rmSync(home, {recursive: true, force: true});
     }
   });
 

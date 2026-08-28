@@ -707,6 +707,7 @@ export class CliAnalyzeService {
           hypotheses: normalized.hypotheses,
           conclusion: normalized.conclusion,
           conclusionContract: normalized.conclusionContract,
+          sourceUseDecision: normalized.sourceUseDecision ?? result.sourceUseDecision,
           claimSupport: normalized.claimSupport ?? result.claimSupport,
           claimVerificationResult: normalized.claimVerificationResult ?? result.claimVerificationResult,
           identityResolutions: normalized.identityResolutions ?? result.identityResolutions,

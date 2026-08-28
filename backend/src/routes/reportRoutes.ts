@@ -576,7 +576,11 @@ router.get('/assets/mermaid.min.js', (_req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  return res.sendFile(assetPath);
+  // The repository's isolated worktrees live below a `.worktrees` segment.
+  // `sendFile` rejects such an already-validated absolute path unless dotfile
+  // traversal is explicitly allowed, even though the target itself is not a
+  // dotfile and `resolveReportMermaidAssetPath` has already fail-closed it.
+  return res.sendFile(assetPath, {dotfiles: 'allow'});
 });
 
 /** Save a report to disk. Called externally when reports are generated. */

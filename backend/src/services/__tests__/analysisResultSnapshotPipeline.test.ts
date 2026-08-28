@@ -16,6 +16,7 @@ import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../security/c
 import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
 import {finalizeSourceAwareAnalysisResult} from '../codebase/sourceClaimVerifier';
+import {sanitizeSourceReference} from '../codebase/sourceUseDecision';
 import {
   createRuntimeSourceFinalizationFixture,
   createSourceAuthoredAnalysisResult,
@@ -1072,5 +1073,60 @@ describe('analysis result snapshot pipeline', () => {
     } finally {
       db.close();
     }
+  });
+
+  test('does not persist body use or corroborated mechanisms for metadata-only source decisions', () => {
+    const bodyReference = sanitizeSourceReference({
+      referenceId: 'metadata-body-invalid',
+      codebaseId: 'app-source',
+      filePath: 'src/main/Foo.kt',
+      lookupKind: 'body',
+    })!;
+    const sourceUseDecision = {
+      schemaVersion: 'source_use_decision@1' as const,
+      codeAwareMode: 'metadata_only' as const,
+      selectedCodebaseIds: ['app-source'],
+      status: 'corroborated' as const,
+      attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['app-source'],
+      usedCodebaseIds: ['app-source'],
+      references: [bodyReference],
+    };
+    const snapshot = buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-metadata-only',
+      workspaceId: 'workspace-metadata-only',
+      traceId: 'trace-metadata-only',
+      sessionId: 'session-metadata-only',
+      runId: 'run-metadata-only',
+      query: 'metadata-only analysis',
+      conclusion: 'Trace-only mechanism result',
+      sourceUseDecision,
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [],
+        clusters: [],
+        evidenceChain: [],
+        claims: [{id: 'claim-1', text: 'Trace-only mechanism result', references: []}],
+        sourceUseDecision,
+        sourceReferences: [bodyReference],
+        sourceClaimBindings: [{
+          claimId: 'claim-1',
+          mechanismStatus: 'corroborated',
+          sourceReferenceIds: [bodyReference.id],
+          traceEvidenceRefIds: ['trace-evidence-1'],
+        }],
+        uncertainties: [],
+        nextSteps: [],
+      },
+    });
+
+    const storedContract = snapshot?.conclusionContract as any;
+    expect(storedContract.sourceUseDecision.status).toBe('located');
+    expect(storedContract.sourceUseDecision.references).toEqual([]);
+    expect(storedContract.sourceReferences).toEqual([]);
+    expect(storedContract.sourceClaimBindings).toEqual([]);
+    expect(JSON.stringify(storedContract)).not.toContain('"lookupKind":"body"');
+    expect(JSON.stringify(storedContract)).not.toContain('"mechanismStatus":"corroborated"');
   });
 });

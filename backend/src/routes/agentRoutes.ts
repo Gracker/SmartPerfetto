@@ -170,6 +170,12 @@ import {
 import { buildTraceContextDataEnvelopes, decorateTraceContextDatasets } from '../agentRuntime/traceContextEvidence';
 import {recordAdaptiveRoutingPostEvidenceBestEffort} from '../agentRuntime/adaptiveRoutingProjection';
 import type { ConclusionContract } from '../agent/core/conclusionContract';
+import {
+  projectSafeSourceProvenance,
+  sanitizeConclusionSourceContract,
+  type SafeSourceProvenanceProjection,
+} from '../services/codebase/sourceClaimVerifier';
+import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
 import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
@@ -1403,6 +1409,14 @@ function sanitizePersistedAnalysisCompletedEvent(
   const conclusion =
     typeof data?.conclusion === 'string' ? data.conclusion : typeof data?.answer === 'string' ? data.answer : '';
   if (!conclusion.trim() && !privateKnowledge) return event;
+  const {
+    conclusionContract,
+    sourceProvenance,
+    sourceProjectionApplied,
+  } = projectAnalysisCompletedConclusionContract(
+    data?.conclusionContract,
+    session.result?.sourceUseDecision,
+  );
 
   const result: AgentRuntimeAnalysisResult = {
     sessionId: session.sessionId,
@@ -1416,7 +1430,13 @@ function sanitizePersistedAnalysisCompletedEvent(
     partial: data?.partial === true ? true : undefined,
     terminationReason: data?.terminationReason,
     terminationMessage: data?.terminationMessage,
-    conclusionContract: data?.conclusionContract,
+    conclusionContract,
+    ...(sourceProvenance
+      ? {
+          sourceUseDecision: sourceProvenance.sourceUseDecision,
+          sourceReferences: sourceProvenance.sourceUseDecision.references,
+        }
+      : {}),
     claimSupport: data?.claimSupport,
     claimVerificationResult: data?.claimVerificationResult,
     identityResolutions: data?.identityResolutions,
@@ -1431,7 +1451,7 @@ function sanitizePersistedAnalysisCompletedEvent(
     sceneType: result.conclusionContract?.metadata?.sceneId ??
       resolveAnalysisResultSceneType(session.query, session.dataEnvelopes),
   });
-  if (!issue && !privateKnowledge) return event;
+  if (!issue && !privateKnowledge && !sourceProjectionApplied) return event;
   const outputLanguage = sessionOutputLanguage(session);
   const trustedPrivateProjection = privateKnowledge &&
     data?.privateProjectionVersion === PRIVATE_ANALYSIS_EVENT_PROJECTION_VERSION;
@@ -1516,6 +1536,7 @@ function sanitizePersistedAnalysisCompletedEvent(
       }
     : {
         ...data,
+        conclusionContract: durableResult.conclusionContract,
         confidence: durableResult.confidence,
         partial: durableResult.partial,
         terminationReason: durableResult.terminationReason,
@@ -8494,8 +8515,69 @@ function ensureCompletedAnalysisResultPayload(
  */
 function analysisCompletedData(
   data: AnalysisCompletedEvent['data'],
+  actualSourceUseDecision?: unknown,
 ): AnalysisCompletedEvent['data'] {
-  return data;
+  const projected = projectAnalysisCompletedConclusionContract(
+    data.conclusionContract,
+    actualSourceUseDecision,
+  );
+  return projected.sourceProjectionApplied
+    ? {...data, conclusionContract: projected.conclusionContract}
+    : data;
+}
+
+function projectAnalysisCompletedConclusionContract(
+  value: unknown,
+  actualSourceUseDecision?: unknown,
+): {
+  conclusionContract?: ConclusionContract;
+  sourceProvenance?: SafeSourceProvenanceProjection;
+  sourceProjectionApplied: boolean;
+} {
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    (value as Record<string, unknown>).schemaVersion !== 'conclusion_contract_v1'
+  ) {
+    return {
+      ...(value ? {conclusionContract: value as ConclusionContract} : {}),
+      sourceProjectionApplied: false,
+    };
+  }
+  const rawContract = value as ConclusionContract;
+  const actualDecision = sanitizeSourceUseDecision(actualSourceUseDecision);
+  const sourceProjectionApplied = Boolean(
+    rawContract.sourceUseDecision ||
+    rawContract.sourceReferences ||
+    rawContract.sourceClaimBindings ||
+    actualDecision,
+  );
+  const sanitizedContract = sanitizeConclusionSourceContract(rawContract, {
+    actualSourceUseDecision: actualDecision ?? null,
+  });
+  const sourceProvenance = actualDecision
+    ? projectSafeSourceProvenance({
+        conclusionContract: sanitizedContract,
+        actualSourceUseDecision: actualDecision,
+      })
+    : undefined;
+  if (!sourceProvenance) {
+    return {
+      conclusionContract: sanitizedContract,
+      sourceProjectionApplied,
+    };
+  }
+  return {
+    conclusionContract: {
+      ...sanitizedContract,
+      sourceUseDecision: sourceProvenance.sourceUseDecision,
+      sourceReferences: sourceProvenance.sourceUseDecision.references,
+      sourceClaimBindings: sourceProvenance.sourceClaimBindings,
+    },
+    sourceProvenance,
+    sourceProjectionApplied,
+  };
 }
 
 function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: string): BufferedSseEvent[] {
@@ -8696,7 +8778,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
           resultSnapshotId: finalArtifacts.resultSnapshotId,
           observability,
           terminalRunStatus: session.status === 'quota_exceeded' ? 'quota_exceeded' : 'completed',
-        }),
+        }, result.sourceUseDecision),
         timestamp: Date.now(),
       },
       completedRunId,
@@ -8842,6 +8924,7 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   buildConclusionEvidenceIndex,
   appendEvidenceIndexIfMissing,
   privateFeedbackResponse,
+  analysisCompletedData,
 };
 
 export const agentRoutesReceiptTestSeam = {
