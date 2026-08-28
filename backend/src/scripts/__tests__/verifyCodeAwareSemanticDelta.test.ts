@@ -146,6 +146,9 @@ describe('constructed source/trace ground truth', () => {
     expect(pkg.scripts['verify:code-aware-semantic-delta']).toContain(
       'npm run prepare:code-aware-semantic-delta',
     );
+    expect(pkg.scripts['verify:code-aware-semantic-delta']).toContain(
+      'src/services/__tests__/sourceProvenanceSurfaces.test.ts',
+    );
   });
 });
 
@@ -157,14 +160,16 @@ describe('deterministic code-aware semantic delta', () => {
 
       expect(summary).not.toHaveProperty('runtimes');
       expect(summary).not.toHaveProperty('surfaces');
+      expect(summary).not.toHaveProperty('blockedSurfaces');
       expect(summary).toMatchObject({
         schemaVersion: 'code_aware_semantic_delta_summary@2',
         evidenceKind: DETERMINISTIC_EVIDENCE_KIND,
         realProviderAcceptance: false,
         passed: true,
         queryCount: 3,
-        blockedSurfaces: {
-          status: 'BLOCKED_ON_TASK12_CANONICAL_COMMIT',
+        surfaceProof: {
+          gate: 'src/services/__tests__/sourceProvenanceSurfaces.test.ts',
+          status: 'invoked_by_registered_command',
           surfaces: ['report', 'cli', 'snapshot', 'web_receipt'],
         },
         runtimeProof: {

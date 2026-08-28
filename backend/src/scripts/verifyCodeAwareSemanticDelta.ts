@@ -129,8 +129,9 @@ export interface DeterministicVerificationSummary {
     gate: 'src/agentRuntime/__tests__/sourceUseResultAttachment.test.ts';
     status: 'invoked_by_registered_command';
   };
-  blockedSurfaces: {
-    status: 'BLOCKED_ON_TASK12_CANONICAL_COMMIT';
+  surfaceProof: {
+    gate: 'src/services/__tests__/sourceProvenanceSurfaces.test.ts';
+    status: 'invoked_by_registered_command';
     surfaces: ['report', 'cli', 'snapshot', 'web_receipt'];
   };
 }
@@ -800,8 +801,9 @@ export async function runDeterministicSemanticDeltaVerification(input: {
         gate: 'src/agentRuntime/__tests__/sourceUseResultAttachment.test.ts',
         status: 'invoked_by_registered_command',
       },
-      blockedSurfaces: {
-        status: 'BLOCKED_ON_TASK12_CANONICAL_COMMIT',
+      surfaceProof: {
+        gate: 'src/services/__tests__/sourceProvenanceSurfaces.test.ts',
+        status: 'invoked_by_registered_command',
         surfaces: ['report', 'cli', 'snapshot', 'web_receipt'],
       },
     };
