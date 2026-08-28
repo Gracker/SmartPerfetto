@@ -24,7 +24,6 @@ import {createRagAdminRoutes} from '../routes/ragAdminRoutes';
 import {CodebaseManagementService} from '../services/codebase/codebaseManagementService';
 import {CodebaseRegistry} from '../services/codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
-import {OnDemandSourceAccessService} from '../services/codebase/onDemandSourceAccess';
 import {PathSecurityGate} from '../services/codebase/pathSecurityGate';
 import {
   finalizeSourceAwareAnalysisResult,
@@ -39,6 +38,7 @@ import {clearCodeAwareOutputGuards} from '../services/security/codeAwareOutputRe
 import {projectCodeAwareStreamingUpdate} from '../services/security/codeAwareStreamingUpdateProjection';
 import {runClaimVerification} from '../services/verifier/claimVerificationRunner';
 import {getTraceProcessorPath} from '../services/workingTraceProcessor';
+import {DeterministicFixtureSourceAccessService} from '../testSupport/deterministicFixtureSourceAccess';
 import {createDataEnvelope} from '../types/dataContract';
 import {
   parseArgs as parseAgentSseArgs,
@@ -109,57 +109,6 @@ interface RagHarness {
   registry: CodebaseRegistry;
   store: RagStore;
   close(): Promise<void>;
-}
-
-const DETERMINISTIC_FIXTURE_MAX_FILES = 8;
-const DETERMINISTIC_FIXTURE_MAX_FILE_BYTES = 64 * 1024;
-
-function assertDeterministicFixtureCoverage(rootPath: string): void {
-  const entries = fs.readdirSync(rootPath, {withFileTypes: true});
-  if (
-    entries.length === 0 ||
-    entries.length > DETERMINISTIC_FIXTURE_MAX_FILES ||
-    entries.some(entry => !entry.isFile())
-  ) {
-    throw new Error('Deterministic source fixture must be a bounded flat regular-file root');
-  }
-  for (const entry of entries) {
-    const stat = fs.statSync(path.join(rootPath, entry.name));
-    if (!stat.isFile() || stat.size > DETERMINISTIC_FIXTURE_MAX_FILE_BYTES) {
-      throw new Error('Deterministic source fixture exceeds the exact traversal contract');
-    }
-  }
-}
-
-class DeterministicFixtureSourceAccessService extends OnDemandSourceAccessService {
-  constructor(private readonly fixtureRegistry: CodebaseRegistry) {
-    super({
-      registry: fixtureRegistry,
-      ripgrepPath: '__smartperfetto_deterministic_missing_rg__',
-    });
-  }
-
-  override async search(input: Parameters<OnDemandSourceAccessService['search']>[0]) {
-    const result = await super.search(input);
-    if (
-      result.backend !== 'node' ||
-      result.backendFidelity !== 'degraded' ||
-      result.searchIncompleteReason !== 'backend_degraded' ||
-      result.truncated ||
-      result.coverageComplete
-    ) {
-      return result;
-    }
-    const ref = this.fixtureRegistry.get(input.codebaseId, input.scope);
-    if (!ref) throw new Error('Deterministic source fixture registration is missing');
-    assertDeterministicFixtureCoverage(ref.rootRealpath);
-    return {
-      ...result,
-      coverageComplete: true,
-      searchIncompleteReason: undefined,
-      backendFidelity: 'exact' as const,
-    };
-  }
 }
 
 export interface DeterministicVerificationSummary {

@@ -267,6 +267,7 @@ import {RagStore} from '../../services/ragStore';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
+import type {OnDemandSourceAccessService} from '../../services/codebase/onDemandSourceAccess';
 import type {
   CodeGraphNavigationResult,
   CodeGraphNavigator,
@@ -279,6 +280,7 @@ import {
   sealEvaluationExposureReceipt,
   withEvaluationInjectionContext,
 } from '../../services/selfEvolution/evaluationInjectionContext';
+import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -296,6 +298,7 @@ function createTestServer(options: {
   codebaseRegistry?: any;
   codeLookupLedger?: CodeLookupLedger;
   codeGraphNavigator?: CodeGraphNavigator;
+  onDemandSourceAccess?: Pick<OnDemandSourceAccessService, 'search' | 'read'>;
   caseLibrary?: any;
   ragStore?: any;
   androidInternalsPackStore?: any;
@@ -369,6 +372,7 @@ function createTestServer(options: {
     codebaseRegistry: options.codebaseRegistry,
     codeLookupLedger: options.codeLookupLedger,
     codeGraphNavigator: options.codeGraphNavigator,
+    onDemandSourceAccess: options.onDemandSourceAccess,
     caseLibrary: options.caseLibrary,
     ragStore: options.ragStore,
     androidInternalsPackStore: options.androidInternalsPackStore ?? null,
@@ -6533,12 +6537,14 @@ describe('createClaudeMcpServer', () => {
           codeAwareMode: 'provider_send',
           codebaseIds: [ref.codebaseId],
           codebaseRegistry,
+          onDemandSourceAccess: new DeterministicFixtureSourceAccessService(codebaseRegistry),
           knowledgeScope: scope,
         });
         const complete = createTestServer({
           codeAwareMode: 'provider_send',
           codebaseIds: [ref.codebaseId],
           codebaseRegistry,
+          onDemandSourceAccess: new DeterministicFixtureSourceAccessService(codebaseRegistry),
           knowledgeScope: scope,
         });
 
@@ -6980,6 +6986,7 @@ describe('createClaudeMcpServer', () => {
           codebaseRegistry,
           codeGraphNavigator,
           codeLookupLedger: ledger,
+          onDemandSourceAccess: new DeterministicFixtureSourceAccessService(codebaseRegistry),
           knowledgeScope: scope,
         });
 
