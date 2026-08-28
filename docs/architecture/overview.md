@@ -155,6 +155,9 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
          -> request source allowlist + live registry consent/scope check
          -> active RAG generation -> bounded attributed background context
       （两种 Android Internals 来源都不是当前 trace 证据）
+      -> selected codebase + source-investigation policy
+         -> record_source_use_decision（查询前结构化 stop）
+         -> search_codebase / read_codebase_file（live root，不要求索引）
       -> resolve_symbol / lookup_app_source / lookup_aosp_source / lookup_kernel_source
          -> LookupResponseFilter -> CodeRef metadata
       -> propose_patch -> PatchProposer -> verified / sketch / unverified
@@ -163,6 +166,7 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
    raw runtime result -> agentResultNormalizer
       -> final_report_contract gate
       -> evidence contract / claim verification / identity resolutions
+      -> SourceUseDecision + source claim binding verification
       -> QueryReviewV1（查询可审查元数据，不是独立证据）
 
 5. 后端流式输出
@@ -170,7 +174,7 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
       -> frontend renders progress, tables, thought, answer tokens
 
 6. 结束与报告
-   conclusion -> analysis_completed -> sanitized CodeRef/patch metadata
+   conclusion -> analysis_completed -> canonical safe source/CodeRef/patch metadata
       -> AnalysisReceiptV2（包含 runManifestId）
       -> HTML report + CLI artifacts + analysis-result snapshot
       -> /api/reports/:id
@@ -180,8 +184,9 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 实际运行的 trace processor 身份和能力状态；当前 system prompt 与 visible chat 明确忽略
 这个 shadow snapshot。启用消费前，Claude/OpenAI 以 `traceId` 为键的缓存必须按
 trace + running-processor identity 重新键控或失效，避免复用旧 processor 的能力结果。
-HTML report、analysis-result snapshot 和 CLI 的持久化在下一任务接入，本阶段不改变这些
-输出合约。
+Source provenance 已通过同一 safe projector 接入初始/重放 SSE、HTML report、CLI
+JSON/Markdown/HTML、analysis-result snapshot 以及报告/snapshot API。Web chat 只保留不含
+`CodeRef` 的当前 run 回执。
 
 CLI `smp run` / `smp ask` / `smp compare` 复用同一 session、runtime、Skill、report
 和 trace_processor 路径；区别只是本地存储在 `~/.smartperfetto/`，输出可以是
@@ -223,7 +228,9 @@ private advisory。详见
 
 ## Codebase Import 四层边界
 
-源码导入分为四个不可折叠的层次：`PathSecurityGate` 负责 root/文件身份与有界安全读取；`SourceSelectionPolicy` 用 canonical IR 统一路径范围、扩展名与排除规则；`SourceEnumerator` 按 `ripgrep > git > node-walk` 生成不可信候选并报告 coverage；`sourceDisclosure` 在正文出口计算 selection policy 与冻结 consent grant 的交集。按需读取与索引 lookup 必须经过同一 disclosure 谓词，索引 active/pending generation 与 live root 可用性保持正交。
+源码导入分为四个不可折叠的层次：`PathSecurityGate` 负责 root/文件身份与有界安全读取；`SourceSelectionPolicy` 用 canonical IR 统一路径范围、扩展名与排除规则；`SourceEnumerator` 按 `ripgrep > git > node-walk` 生成不可信候选并报告 coverage；`sourceDisclosure` 在正文出口计算 selection policy 与冻结 consent grant 的交集。按需读取与索引 lookup 必须经过同一 disclosure 谓词，索引 active/pending generation 与 live root 可用性保持正交。注册只让 source 可选，并不自动附加到 session。
+
+源码使用还有第二条正交边界：`SourceUseDecisionV1` 记录 selected/queried/used、status 与 coverage；`SourceClaimBindingV1` 只把实现机制绑到同一 claim 的 trace 证据。Trace/Skill/SQL 证明发生，`CodeRef` 证明机制；后者不能单独提高现象或根因置信度。全部 registry-discovered 场景继承默认 source policy，启动、滑动、ANR、交互与滑动响应增加更具体锚点。
 
 ## Runtime 与 Provider 边界
 
@@ -250,6 +257,7 @@ SmartPerfetto 的最终回答不是单一 Markdown 字符串，而是一组共�
 | analysis-result snapshot | 多结果对比、历史回看 | 保存 conclusion contract、claim support、verification 和 identity metadata |
 | Query Review | AI panel、HTML report、Artifact | 说明实际查询的读取、过滤、输出和限制；固定为 review metadata，不能单独支撑诊断结论 |
 | Analysis Receipt | AI panel、HTML report、CLI、snapshot | 绑定 run/session/trace/runtime，汇总证据计数、claim audit、质量门禁和实际输出 |
+| Source Use Decision / Binding | AI panel 回执、HTML report、CLI、snapshot、API | 记录 selected/queried/used、status/coverage 和 trace-to-mechanism 绑定；Web 投影不保留 `CodeRef` |
 
 这些结构的字段和投影规则以
 [Data Contract](../../backend/docs/DATA_CONTRACT_DESIGN.md) 为准。不同表面可以压缩显示，

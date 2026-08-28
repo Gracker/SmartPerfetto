@@ -217,16 +217,38 @@ promotion / comparison bridge.
 
 ## Code-Aware Analysis
 
-Register and index a local codebase first, then explicitly expose it to an
-analysis session:
+Register a local codebase first, then explicitly expose it to an analysis
+session. Registration does not attach source automatically, and indexing is an
+optional accelerator:
 
 ```bash
 smp codebase preview /path/to/app --kind app_source --path-filter app/src/main/ --exclude-glob '**/generated/**'
 smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**' --dry-run
 smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**'
 smp codebase list
+smp codebase list --format json
+
+# Supplying both option families replaces both pathFilters and excludeGlobs
+smp codebase selection cb_xxx \
+  --path-filter app/src/main/ \
+  --exclude-glob '**/generated/**'
+
+# Provider-send consent and current-scope/new-language authorization
+smp codebase consent cb_xxx --enable
+smp codebase authorize-selection cb_xxx
+smp codebase authorize-extensions cb_xxx
+
+# Lifecycle audit, exact pending-candidate CAS, and deletion
+smp codebase audit cb_xxx --format json
+smp codebase pending cb_xxx --accept --candidate generation_xxx
+smp codebase pending cb_xxx --reject --candidate generation_xxx
+
+# Optional index for semantic/symbol lookup and patch workflows
 smp codebase reindex cb_xxx
 smp codebase symbols MainActivity --codebase-id cb_xxx
+
+# Destructive: retire the registration and remove all indexed generations
+smp codebase delete cb_xxx --yes
 
 smp run trace.perfetto-trace \
   --code-aware metadata_only \
@@ -249,6 +271,27 @@ enumeration backend, fidelity, completeness, and truncation reason. A bounded
 preview truncation remains a successful command rather than masquerading as a
 process failure. Portable packages do not bundle ripgrep and safely degrade in
 that order when it is unavailable.
+
+`selection` replaces only fields supplied explicitly: `--path-filter` replaces
+`pathFilters`, while `--exclude-glob` replaces `excludeGlobs`. An omitted field
+preserves its existing list; only a command containing both option families
+replaces both lists. An effective change advances the selection revision,
+invalidates the old active index, and may make the provider grant stale.
+`authorize-selection` grants only the current path scope;
+`authorize-extensions` grants only currently available new languages, and
+neither turns provider-send on. `pending` must echo the exact current candidate
+ID from `list` / `audit`. `delete` requires explicit `--yes`.
+
+CLI `reindex` accepts only a codebase ID and has no `pathPrefix` option. Manage
+path scope with `selection --path-filter`. Registration keeps `--commit` for
+legacy callers, but it is caller-supplied compatibility metadata. Every index
+derives the actual Git `HEAD`, worktree dirty state, and content fingerprint;
+those `audit` fields are the authoritative index provenance.
+
+Management-command exit codes are stable for automation: `0` success, `2`
+invalid input/selection, `3` codebase not found, `4` busy, missing consent, or
+pending CAS conflict, and `5` another management failure. `register`, `reindex`,
+and `symbols` retain their legacy `0/1` behavior.
 See [Code-Aware Analysis](../getting-started/code-aware-analysis.en.md).
 
 ## Trace Comparison
@@ -296,14 +339,25 @@ CLI files are stored under:
     ├── config.json
     ├── conclusion.md
     ├── report.html
+    ├── source-use-decision.json
+    ├── source-claim-bindings.json
     ├── ui-action-proposals.json
     ├── transcript.jsonl
     ├── stream.jsonl
     └── turns/
         ├── 001.md
+        ├── 001.source-use-decision.json
+        ├── 001.source-claim-bindings.json
         ├── 001.ui-action-proposals.json
         └── 001.html
 ```
+
+The source sidecars exist only when the turn has canonical safe source
+provenance. Latest files are replaced by later turns; a source-free turn clears
+stale latest sidecars but preserves historical per-turn files. JSON, Markdown,
+and HTML retain only safe decisions, relative `CodeRef` values, and mechanism
+bindings—never absolute roots, snippets, search queries, or free-text binding
+reasons.
 
 `ui-action-proposals.json` stores evidence links and UI proposal metadata for
 reports and later turns only. The CLI does not automatically execute timeline

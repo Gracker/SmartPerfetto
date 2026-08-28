@@ -66,8 +66,9 @@ POST /api/agent/v1/analyze
   -> createAgentOrchestrator()
   -> 选择 Claude / OpenAI / Pi / OpenCode / Qoder runtime
   -> 通过共享 MCP registry 调用 SQL、Skill、知识和计划工具
+  -> 已选源码：有界 lookup 或结构化 SourceUseDecision stop
   -> DataEnvelope + evidence/claim/identity sidecar
-  -> final result normalization / report contract gate
+  -> final result normalization / report contract + source claim-binding gate
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
@@ -206,6 +207,17 @@ SmartPerfetto 维护两类不同对比：
 模型提供 `CodeRef`；`provider_send` 还需要注册时同意和本次请求显式选择。原始源码
 不能写入 session、日志、SSE、报告或 export。
 
+注册只使代码库可选，不会自动附加。live root 的 `search_codebase` /
+`read_codebase_file` 不要求 active index；reindex 只是语义/符号检索和 patch 流程
+的可选加速。full 分析在已选源码且有可查询 trace 锚点时必须查询，否则在查询前
+记录结构化 stop status。`SourceUseDecisionV1` 记录 selected/queried/used、status 和 coverage。
+
+Trace/Skill/SQL 证明发生，`CodeRef` 证明机制。`SourceClaimBindingV1` 只允许
+`corroborated|compatible|ambiguous|unverified`；`corroborated` 要求同一 claim 的已验证
+trace occurrence 和 `provider_send` body/indexed 证据。`metadata_only` 只能 locate。一个
+canonical projector 负责 SSE、report、CLI、snapshot 和 API 的安全 provenance；Web 再缩减为
+当前 run 回执。
+
 ### Android Internals
 
 内置签名 Knowledge Pack 与私有 checkout 是两个来源：
@@ -272,6 +284,7 @@ persisted analysis_completed + RunManifest + optional snapshot
 | CLI artifact | turn、report、resume state 和机器可读输出 |
 | analysis-result snapshot | 标准指标、证据引用、comparison 输入 |
 | provider session snapshot | runtime/provider-specific 恢复状态 |
+| source provenance | 安全 SourceUseDecision、相对 `CodeRef` 与 trace-to-mechanism binding；Web 回执不保留 `CodeRef` |
 
 `final_report_contract`、normalizer 和质量门禁负责让各 runtime 收敛到共享结果语义，
 而不是用 provider-specific 字符串补丁修某一个出口。
@@ -303,6 +316,9 @@ npm run verify:pr
 cd backend
 npm run validate:skills
 npm run validate:strategies
+npm run test:report-contracts
+npm run test:source-claim-contract
+npm run verify:code-aware-semantic-delta
 npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
@@ -330,6 +346,7 @@ npm --prefix backend run verify:codebase-aware
 | 修改 DataEnvelope | backend source + generator + frontend generated types + consumers |
 | 修改 API contract | route/application service + tests + API 文档 |
 | 修改 AI Assistant UI | Perfetto plugin source + dev/browser test + `frontend/` prebuild |
+| 修改源码使用决策/结论 provenance | source policy + MCP ledger/finalizer + claim binding + report/CLI/snapshot/Web 投影 + 语义 gate |
 | 修改 runtime/provider | `agentRuntime/` + Provider Manager + session snapshot tests |
 | 修改 Self-Evolution | `services/selfEvolution/` + admin routes/UI + focused tests + current contract docs |
 | 修改 Agent 外部反馈 | `services/externalIssueReporting/` + agent route + AI plugin + Issue Form + `test:external-issue-reporting` |

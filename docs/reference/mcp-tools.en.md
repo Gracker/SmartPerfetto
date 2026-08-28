@@ -101,6 +101,7 @@ These tools enforce investigation discipline and reduce context size. Artifact s
 | `list_codebases` | List authorized codebases | Requires codebase permission |
 | `search_codebase` | Run a bounded text/symbol search in a registered live root | No SmartPerfetto index required; selected codebases and relative path prefixes only |
 | `read_codebase_file` | Read a bounded line range inside a registered root | `metadata_only` returns no text; `provider_send` still requires dual consent and redaction |
+| `record_source_use_decision` | Record a controlled terminal state before any source lookup | Accepts only policy-defined structured states and a bounded reason; it rejects later or contradictory decisions once lookup begins |
 | `query_code_graph` | Navigate related flows and symbols through an optional local graph | Metadata-only; returns a structured unavailable result when the graph cannot be used |
 | `inspect_code_symbol` | Inspect bounded relationships and locations for a candidate symbol | Metadata-only; relationships require bounded source verification |
 | `lookup_app_source` | Query app source | Must keep CodeRef filtering |
@@ -124,7 +125,23 @@ candidate discovery only; it is not authorization. Extensions introduced by a
 later release require explicit renewed authorization and are never inherited
 silently from an older consent.
 
+Full analysis with selected codebases makes source investigation a non-waivable
+plan aspect. When Trace/Skill/SQL provides a queryable anchor, the runtime must
+perform bounded lookup. When source is unnecessary, disallowed, lacks an
+anchor, or remains ambiguous, it must call `record_source_use_decision` before
+lookup. All 19 routable scenes currently discovered by the registry inherit
+the default policy; `startup`, `scrolling`, `anr`, `interaction`, and
+`scroll_response` add richer anchors.
+
 Graph tools return only `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. Registrations with `pathFilters` or `excludeGlobs` omit whole-repository process summaries whose path scope cannot be proven, while retaining authorized relative `CodeRef` values. Code-graph metadata is neither current-trace evidence nor verified source truth. Any relationship that affects a conclusion must be checked with bounded `read_codebase_file`; if the current permission mode blocks source reading, it must remain unverified. Absolute roots stay inside the backend trust boundary. When code-aware output reaches reports, exports, or snapshots, only safe names/IDs and relative `CodeRef` values may remain, never raw source. Do not validate only the live chat view.
+
+Source conclusions use dual evidence: Trace/Skill/SQL proves occurrence in the
+current trace, while a `CodeRef` proves implementation mechanism. A `CodeRef`
+alone cannot raise occurrence or root-cause confidence. Binding status is one
+of `corroborated`, `compatible`, `ambiguous`, or `unverified`.
+`corroborated` requires verified same-claim trace occurrence plus
+`provider_send` body/indexed evidence; `metadata_only` produces locate-only
+references.
 
 GitNexus is an independent optional third-party tool. Its [official project](https://github.com/abhigyanpatwari/GitNexus) and [npm package](https://www.npmjs.com/package/gitnexus) currently declare the [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE) license. Users must review the upstream terms before use. This is not legal advice.
 
@@ -143,7 +160,7 @@ Comparison tools are registered only when `referenceTraceId` and comparison cont
 1. Confirm scene, time range, process identity, and rendering architecture.
 2. Prefer matching Skills; use SQL for gaps or hypothesis validation.
 3. Use an optional code graph for candidate navigation only after trace/Skill/SQL points to an implementation; never substitute graph relationships for trace evidence.
-4. Narrow candidates with index-free `search_codebase`, then verify conclusion-bearing relationships with bounded `read_codebase_file` when consent permits.
+4. With selected source and a queryable anchor, narrow candidates with index-free `search_codebase`, then verify conclusion-bearing relationships with bounded `read_codebase_file` when consent permits; otherwise record a structured source-use stop decision first.
 5. Page large results through artifacts instead of filling agent context.
 6. Tie claims to trace evidence, Skill output, claim verification, or explicit uncertainty.
 7. Keep live chat readable while preserving audit evidence in reports, CLI artifacts, and snapshots.

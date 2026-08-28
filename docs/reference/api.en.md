@@ -382,8 +382,19 @@ new run in the same session receives `409 CANCELLATION_IN_PROGRESS` until the
 cancelled runtime exits, preventing old-run cleanup or continuity state from
 affecting the replacement run.
 
-The terminal `analysis_completed` event can include `analysisReceipt` and
-`uiActionProposals`. `uiActionProposals` only
+The terminal `analysis_completed` event can include `analysisReceipt`,
+`uiActionProposals`, and safely projected
+`conclusionContract.sourceUseDecision` / `sourceClaimBindings`.
+`sourceUseDecision` distinguishes selected, queried, and used codebases plus
+status/reason code and search coverage. `sourceClaimBindings` uses
+`corroborated|compatible|ambiguous|unverified` to bind an implementation
+mechanism to same-claim Trace evidence. A `CodeRef` explains mechanism and
+cannot raise occurrence or root-cause confidence alone. `metadata_only` is
+locate-only and cannot become `corroborated` merely by locating a file. The
+projection contains no absolute root, snippet, search query, or model-authored
+free-text binding reason.
+
+`uiActionProposals` only
 contains safe UI proposals derived from DataEnvelope evidence and column click
 metadata, such as navigating to a time range, opening an evidence table, or
 `pin_evidence`. The `pin_evidence` action only saves an evidence or result snapshot
@@ -590,7 +601,7 @@ Base path: `/api/rag`
 | `GET` | `/codebases/:id` | Codebase detail |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
 | `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
-| `POST` | `/codebases/:id/reindex` | Reindex |
+| `POST` | `/codebases/:id/reindex` | Reindex; the request body retains a bounded `pathPrefix` compatibility input, while CLI `reindex` has no such option |
 | `GET` | `/codebases/:id/audit` | Index audit |
 | `PATCH` | `/codebases/:id/consent` | Perform exactly one action: set `sendToProvider`, authorize new languages with `authorizeAvailableExtensions: true`, or authorize the current path scope with `authorizeCurrentSelection: true` |
 | `PATCH` | `/codebases/:id/selection` | Change include prefixes / exclude globs, immediately revoke the old active generation, and require reindexing |
@@ -618,6 +629,13 @@ for the user. With an active index it sets `reindexRequired` to
 `provider_language_scope_expanded`. Selection changes also never expand consent
 automatically; `authorizeCurrentSelection: true` copies only the current include
 prefixes and exclude globs into the grant and preserves language consent.
+
+`register` still accepts `commitHash` as registration compatibility metadata
+for legacy callers, but it is not authoritative index provenance. Every
+reindex reads Git `HEAD`, uncommitted/untracked state, and selected file
+content from the actual checkout to produce `indexedRevision`, `indexedDirty`,
+`commitProvenance`, and `contentFingerprint`. Those audit fields define the
+current index provenance.
 
 Incomplete or nondeterministic enumeration cannot activate an index. A
 deterministic file/byte-budget truncation is staged as `pendingGeneration` when
@@ -651,10 +669,11 @@ registration, consumes it after success, and keeps the original expiry for a
 retry if persistence fails. The
 credential is bound to tenant/workspace/user and cannot authorize another
 path. Docker, remote, or headless environments must use manual paths and
-`SMARTPERFETTO_CODEBASE_ROOTS`. `GET /codebases` and
-`GET /codebases/:id/audit` expose `rootAuthorization` as `native_picker` or
-`configured_allowlist` without returning absolute paths; deleting the codebase
-revokes the persistent authorization.
+`SMARTPERFETTO_CODEBASE_ROOTS`. The backend retains the authorization source
+for later reindex and deletion, but safe responses from `GET /codebases`,
+`GET /codebases/:id`, and `GET /codebases/:id/audit` expose neither
+`rootAuthorization`, absolute paths, nor raw operational errors. Deleting the
+codebase revokes the persistent directory authorization.
 
 See [Android Internals External Knowledge](../getting-started/android-internals-knowledge.en.md)
 for path allowlisting, the CC rights acknowledgement, revocable consent,

@@ -173,8 +173,9 @@ Follow-up questions reuse the current session. Switching between conversation, f
 ## Source And Android Internals Background
 
 - To map trace findings to local source, register through UI `Codebases` or
-  `smp codebase preview/register/reindex`, then select the codebase explicitly
-  for the analysis.
+  `smp codebase preview/register`, then select the codebase explicitly for the
+  analysis. A registered live root supports bounded search/read without an
+  index; `reindex` is optional acceleration.
 - The built-in Android Internals Knowledge Pack ships with the product. Use
   `smp knowledge-pack status`, or `update --check` to check without installing.
 - A private Android Internals checkout is separate from the built-in Pack and
@@ -185,6 +186,21 @@ Source and background knowledge do not replace current-trace SQL/Skill
 evidence. Code-Aware defaults to `CodeRef` metadata. See
 [Code-Aware](code-aware-analysis.en.md) and
 [Android Internals Knowledge](android-internals-knowledge.en.md).
+
+With source selected, full analysis first establishes occurrence with
+Trace/Skill/SQL. A queryable symbol, slice, Binder descriptor, or build-id
+anchor requires bounded source lookup; otherwise the run records a structured
+reason such as `not_needed`, `disallowed`, or `no_queryable_anchor`. The source
+receipt distinguishes selected, queried, and actually used codebases, search
+coverage, and a `corroborated|compatible|ambiguous|unverified` mechanism
+status. Trace proves what happened; a `CodeRef` explains how the implementation
+could cause it. A `CodeRef` alone cannot promote a trace occurrence to a
+verified root cause.
+
+Web chat keeps only a safe collapsible receipt with no file paths, source
+snippets, search query, or free-text reason. HTML reports, CLI artifacts, and
+snapshot/API surfaces may retain safe relative `CodeRef` values and bindings,
+but still contain no absolute root or source body.
 
 ## CLI Batch And Android Capture
 

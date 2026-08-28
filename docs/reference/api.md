@@ -350,8 +350,17 @@ curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
 取消终态可以先返回给客户端，但同一 session 的下一轮会在被取消的 runtime 真正退出前返回
 `409 CANCELLATION_IN_PROGRESS`，避免旧 run 的清理或会话状态污染新 run。
 
-终态 `analysis_completed` 事件可能携带 `analysisReceipt` 和
-`uiActionProposals`。`uiActionProposals` 只包含从
+终态 `analysis_completed` 事件可能携带 `analysisReceipt`、
+`uiActionProposals` 和经安全投影的 `conclusionContract.sourceUseDecision` /
+`sourceClaimBindings`。`sourceUseDecision` 区分 selected / queried / used codebase、
+status / reason code 和搜索 coverage；`sourceClaimBindings` 用
+`corroborated|compatible|ambiguous|unverified` 把实现机制与同一 claim 的
+Trace 证据绑定。`CodeRef` 只能解释机制，不能单独提高现象或根因
+置信度；`metadata_only` 为 locate-only，不会因为只定位到文件就升级为
+`corroborated`。投影不包含绝对 root、snippet、检索 query 或模型自由文本
+binding reason。
+
+`uiActionProposals` 只包含从
 DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转到时间范围、打开证据表
 或 `pin_evidence`。其中 `pin_evidence` 只把证据或结果快照收藏到当前 UI 会话并供 `/pins`
 查看，不会固定时间线泳道，也不会自动加入后续 AI 上下文。客户端必须等待用户点击后
@@ -547,7 +556,7 @@ Base path: `/api/rag`
 | `GET` | `/codebases/:id` | codebase 详情 |
 | `GET` | `/codebases/:id/symbols` | 符号解析 |
 | `GET` | `/codebases/:id/excerpt` | 读取已索引片段 |
-| `POST` | `/codebases/:id/reindex` | 重新索引 |
+| `POST` | `/codebases/:id/reindex` | 重新索引；request body 仍可用有界 `pathPrefix` 兼容输入，CLI `reindex` 无此选项 |
 | `GET` | `/codebases/:id/audit` | 索引审计 |
 | `PATCH` | `/codebases/:id/consent` | 三选一：设置 `sendToProvider`、用 `authorizeAvailableExtensions: true` 授权新语言，或用 `authorizeCurrentSelection: true` 授权当前路径范围 |
 | `PATCH` | `/codebases/:id/selection` | 修改 include prefix / exclude glob；立即撤销旧 active generation 并要求重建 |
@@ -571,6 +580,12 @@ consent 接口并传 `authorizeAvailableExtensions: true` 才加入授权；该�
 `authorizeCurrentSelection: true` 只把当前 include prefixes/exclude globs 写入 consent grant，
 保留原语言授权。
 
+`register` 仍接受 `commitHash` 作为旧调用方的注册兼容元数据，但它不是
+索引来源的权威证明。每次 reindex 从真实 checkout 读取 Git `HEAD`、未提交/
+未跟踪状态和所选文件内容，产生 `indexedRevision`、`indexedDirty`、
+`commitProvenance` 和 `contentFingerprint`。这些 audit 字段才是当前索引的来源
+契约。
+
 不完整或非确定性的枚举不会激活索引。确定性但被 file/byte budget 截断的重建在已有
 完整 active generation 时只写入 `pendingGeneration`；接受时必须回传列表/详情中的
 `candidateGenerationId`、`selectionPolicyRevision` 和 `grantRevision`，拒绝时必须回传
@@ -592,10 +607,10 @@ consent 接口并传 `authorizeAvailableExtensions: true` 才加入授权；该�
 preview 不消费授权；register 会在同步持久化期间独占该授权，成功后永久消费，
 持久化失败时保留原有效期供重试。凭证与
 tenant/workspace/user 绑定，不能授权其他路径；Docker、远程或无图形环境应使用
-手动路径和 `SMARTPERFETTO_CODEBASE_ROOTS`。`GET /codebases` 与
-`GET /codebases/:id/audit` 通过 `rootAuthorization` 返回
-`native_picker` 或 `configured_allowlist`，但不返回绝对路径；删除 codebase 会撤销
-该持久授权。
+手动路径和 `SMARTPERFETTO_CODEBASE_ROOTS`。后端会保留这项授权来源以支持后续
+reindex 与删除，但 `GET /codebases`、`GET /codebases/:id` 和
+`GET /codebases/:id/audit` 的安全管理响应都不暴露 `rootAuthorization`、绝对路径或原始
+运行时错误。删除 codebase 会撤销持久目录授权。
 
 Android Internals 接口的路径 allowlist、CC 权利确认、可撤销同意、请求级
 `options.knowledgeSourceIds` 和 Docker mount 流程见

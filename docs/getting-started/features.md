@@ -205,18 +205,20 @@ SmartPerfetto 把 Android Internals 背景知识分成两个明确来源：
 
 ## 9. Code-Aware 本机源码分析
 
-Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码注册给 SmartPerfetto。分析时模型默认只看到 `CodeRef` 元数据，不直接接触源码正文。
+Code-Aware Analysis 允许用户把本机 App、AOSP、kernel 或 OEM SDK 源码注册给 SmartPerfetto。注册只创建可选数据源，不会自动附加到 session。分析时模型默认只看到 `CodeRef` 元数据，不直接接触源码正文；不建索引也可以对 live root 做有界按需搜索/读取。
 
 入口：
 
-- AI Assistant 设置面板中的 `Codebases` 页：preview、register、reindex、audit。
-- CLI：`smp codebase preview/register/reindex/symbols`。
+- AI Assistant 设置面板中的 `Codebases` 页：preview/register、selection 与 provider consent、当前范围/新语言授权、pending accept/reject、reindex、audit 和 delete。
+- CLI：`smp codebase list/preview/register/selection/consent/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`。
 - 分析时显式传入 `--code-aware metadata_only` 和 `--codebase-id <id>`，或在 UI 中选择已注册代码库。
 
 效果：
 
 - 把调用栈、native frame 或 kernel symbol 映射到相对文件路径、行号和 symbol。
-- 报告展示 `CodeRef`，源码正文只通过受控 excerpt endpoint 临时读取。
+- 有可查询 trace 锚点时执行有界源码 lookup，否则保留结构化 non-use 原因；纯数量问题可为 `not_needed`。
+- Trace/Skill/SQL 证明发生，`CodeRef` 证明实现机制；结论用 `corroborated|compatible|ambiguous|unverified` 显示绑定强度。
+- Web 显示安全源码回执；HTML report、CLI、snapshot 和 API 共用同一 provenance 投影。源码正文只通过受控 excerpt endpoint 临时读取。
 - 未给 session 配置 codebase 时，普通 trace-only 分析路径保持不变。
 
 完整说明见 [Code-Aware Analysis](code-aware-analysis.md)。

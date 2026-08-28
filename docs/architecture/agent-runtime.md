@@ -122,6 +122,28 @@ OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`�
 
 当前注册的 production runtime 在 SmartPerfetto 边界上保持同一个产品合约：输入是同一份分析请求，输出归一化为同一组 SSE event、`AnalysisResult` 和 HTML report。它们的 SDK/server 机制并不相同：Claude runtime 使用 Claude SDK 的 in-process MCP server、tool allowlist、SDK session resume、verifier/sub-agent；OpenAI runtime 使用从同一工具注册表适配出来的 function tools，Responses API 通过 `previousResponseId` 恢复，Chat Completions-compatible provider 通过历史消息恢复；Pi Agent Core 使用 request-scoped native tools、共享系统 prompt、plan/hypothesis 工具和同一条 route-owned finalization/claim-verification/report 管线；OpenCode 使用加固隔离的 OpenCode server，并通过每次分析的 MCP bridge 暴露 request-scoped SmartPerfetto 工具，同时禁用或拒绝内建 project discovery、file、shell、web 和 edit tools；Qoder 通过 SDK in-process MCP bridge 复用共享工具，禁用 SDK built-in tools，并在 SSE 前使用共享 private-output guard 投影每个答案 token。模型的工具调用节奏、流式事件、恢复能力和成本/超时语义都可能不同。
 
+## 源码分析的 Runtime 一致性
+
+五个 production runtime 不各自实现一套源码规则。它们共用 strategy asset 中的
+source-use prompt、同一 MCP registry/handler 产生的实际
+`SourceUseDecisionV1`，并在每一个成功、partial、max-turn 或错误终态上调用
+`finalizeSourceAwareAnalysisResult`。没有当前 run accessor 时，模型自己编写的源码决策/绑定
+会被移除；决策仍为 `pending` 或 `attempted` 时，结果不能冒充成功。
+
+在 full 分析中，已选源码且有可查询 trace 锚点时，计划必须包含有界 lookup，或在
+lookup 前记录受控的 non-use status。Trace/Skill/SQL 证明发生，`CodeRef` 证明机制；
+`corroborated` 需要同一 claim 的 verified trace occurrence 和 `provider_send` body/indexed 证据。
+`metadata_only` 只能定位。
+
+路由层使用一个 canonical safe projector 把同一份决策/绑定送到初始与重放 SSE、
+HTML report、CLI JSON/Markdown/HTML、analysis-result snapshot 和报告/snapshot API。Web chat 再缩减
+为不含 `CodeRef` 的当前 run 回执。这些路径都不保留绝对 root、snippet、检索 query 或
+模型自由文本 binding reason。
+
+确定性五 runtime 执行/终态 gate 与 A0–A4 语义 gate 证明产品契约，不证明真实
+provider 的模型质量。真实 Claude、OpenAI、Pi、OpenCode 和 Qoder 必须在凭证可用时分别重复验收；
+不可用必须标记 `REAL PROVIDER NOT AVAILABLE`，不能被单测或确定性 fixture 替代。
+
 ## 分析模式
 
 | 模式 | 行为 |

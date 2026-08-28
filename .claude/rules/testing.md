@@ -52,7 +52,7 @@ A suite that is green locally but absent from `test:gate` counts as untested.
 | Self-Evolution control plane | `npm --prefix backend run test:self-evolution`, `npm --prefix backend run typecheck`, and scene trace regression; add the AI plugin UI gate when the panel changes. That script covers RBAC/scope isolation, disabled and dependency fail-closed cases, and fixed validation + holdout replay selection. It is wired into `test:gate`, so `npm run verify:pr` runs it too |
 | Agent-assisted external issue reporting | `npm --prefix backend run test:external-issue-reporting`, `npm --prefix backend run typecheck`, strategy validation, scene trace regression, AI plugin typecheck/unit tests, browser verification in `start-dev.sh`, and `./scripts/update-frontend.sh`; verify private/security fail-closed and that no GitHub write occurs |
 | Perfetto upstream sync, trace processor pin, SQL/stdlib index, or committed UI prebuild | Follow `.claude/rules/perfetto-sync.md`; normally `git diff --check`, `npm run check:frontend-prebuild`, `npm --prefix backend run cli:e2e`, scene trace regression, submodule remote reachability, and Skill/Strategy validation when those files changed |
-| Code-aware analysis, codebase registry, source ingestion, symbol resolution, or CodeRef report/export | `npm --prefix backend run verify:codebase-aware` plus `npm run verify:pr` before landing |
+| Code-aware analysis, codebase registry, source ingestion, symbol resolution, source-use decisions/bindings, or CodeRef report/export | `npm --prefix backend run verify:codebase-aware`, `npm --prefix backend run test:source-claim-contract`, `npm --prefix backend run test:report-contracts`, `npm --prefix backend run verify:code-aware-semantic-delta`, plus `npm run verify:pr` before landing |
 | npm CLI package/release | `npm --prefix backend run cli:pack-check` plus isolated install smoke |
 | Portable-impacting code or packaging | Focused launcher/packaging tests, shell and Node syntax/static checks, launcher cross-compile, full package build, package manifest verification, and `npm run verify:pr` before landing; exact-archive target-OS runtime smoke is additionally required for a public release |
 
@@ -484,6 +484,33 @@ current cross-runtime E2E artifact does not provide a common provider-reported
 input/output/cache/reasoning-token, TTFT, or cost receipt. Treat mode/model cost
 comparison as `NOT CONFIGURED` until those fields and the actual selected model
 are recorded; a 21/21 functional matrix is not an accuracy or token benchmark.
+
+## Code-Aware Semantic Delta
+
+The registered deterministic gate is:
+
+```bash
+npm --prefix backend run verify:code-aware-semantic-delta
+```
+
+It materializes the constructed source-analysis trace, runs the real trace
+processor, exercises production registration/audit, on-demand and indexed
+handlers, and verifies A0–A4 plus source-claim bindings. Its default artifact is
+`backend/test-output/code-aware-semantic-delta/deterministic-summary.json`.
+This is local deterministic evidence, not provider acceptance.
+
+With credentials safely available, run the separate repeated provider matrix:
+
+```bash
+node backend/scripts/run-deepseek-agent-e2e.cjs \
+  --suite code-aware-semantic-delta \
+  --runtime all \
+  --repeat 5
+```
+
+Report Claude, OpenAI, Pi, OpenCode, and Qoder independently. Missing auth must
+remain `REAL PROVIDER NOT AVAILABLE`; never replace it with a unit, fixture, or
+deterministic five-runtime execution result.
 
 ## Fixture Skip Behavior
 

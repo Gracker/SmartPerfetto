@@ -102,6 +102,7 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | `list_codebases` | 列出已授权代码库 | 需要 codebase permission |
 | `search_codebase` | 在已注册 live root 中做有界文本/symbol 搜索 | 不要求 SmartPerfetto 索引；只接受已选 codebase 和相对 path prefix |
 | `read_codebase_file` | 读取已注册 root 内的有界行范围 | `metadata_only` 不返回正文；`provider_send` 仍要求双重 consent 和脱敏 |
+| `record_source_use_decision` | 在任何源码 lookup 之前记录受控的终止状态 | 只允许 policy 中的结构化状态与有界原因；一旦 lookup 开始就不能回写矛盾决策 |
 | `query_code_graph` | 用可选本地代码图导航相关流程与 symbol | metadata-only；图不可用时返回结构化不可用结果 |
 | `inspect_code_symbol` | 查看候选 symbol 的有界关系与位置 | metadata-only；关系必须再由有界源码读取验证 |
 | `lookup_app_source` | 查询应用源码 | 输出需要 CodeRef 过滤 |
@@ -123,7 +124,19 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 候选召回；它不是授权。新版本新增的扩展名必须由用户再次授权，不能由旧 consent
 静默继承。
 
+已选 codebase 的 full 分析会把 source investigation 作为不可 waiver 的计划项。当
+Trace/Skill/SQL 已提供可查询锚点时，runtime 必须执行有界 lookup；如果没有必要、
+不允许、没有锚点或无法确定候选，必须在 lookup 前调用
+`record_source_use_decision`。当前 registry 发现的 19 个可路由场景全部继承默认
+policy，`startup`、`scrolling`、`anr`、`interaction` 和 `scroll_response` 增加更具体
+的锚点。
+
 图工具输出只包含 `codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 和 `graph.verificationRequired`。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，会省略无法证明路径范围的全仓 process 摘要，并保留已授权的相对 `CodeRef`。代码图元数据既不是当前 trace 证据，也不是已经核对的源码事实；任何影响结论的关系都必须再用有界 `read_codebase_file` 验证，当前权限不允许读取时必须保持未验证状态。绝对 root 始终留在后端信任边界内。Code-aware 输出会进入 report/export/snapshot 时，只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
+
+源码结论使用双证据：Trace/Skill/SQL 证明本次发生，`CodeRef` 证明实现机制。
+`CodeRef` 单独不能提高发生/根因置信度。绑定状态只能是 `corroborated`、
+`compatible`、`ambiguous` 或 `unverified`；`corroborated` 要求同一 claim 的已验证 trace 发生证据
+与 `provider_send` body/indexed 证据。`metadata_only` 只能产生 locate-only 引用。
 
 GitNexus 是独立的第三方可选工具，其[官方项目](https://github.com/abhigyanpatwari/GitNexus)和 [npm 包](https://www.npmjs.com/package/gitnexus)目前声明使用 [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE)。使用前必须自行审阅上游条款；这不是法律建议。
 
@@ -142,7 +155,7 @@ Comparison 工具只在请求包含 `referenceTraceId` 且 comparison context �
 1. 先确认场景、时间范围、进程身份和渲染架构。
 2. 有匹配 Skill 时优先 `invoke_skill`，用 SQL 补缺口或验证关键假设。
 3. Trace/Skill/SQL 已经指向具体实现时，才把可选代码图用于候选导航；不能用图关系替代 trace evidence。
-4. 用无索引 `search_codebase` 缩小范围，并在 consent 允许时用有界 `read_codebase_file` 核对影响结论的候选关系。
+4. 已选源码且有可查询锚点时，用无索引 `search_codebase` 缩小范围，并在 consent 允许时用有界 `read_codebase_file` 核对影响结论的候选关系；否则先记录结构化 source-use stop 决策。
 5. 大结果通过 artifact 分页，不要把完整表塞进 agent context。
 6. 结论必须能回到 trace evidence、Skill output、claim verification 或显式不确定性。
 7. Chat 可以简化展示，HTML report、CLI artifacts 和 snapshots 必须保留可审计证据。

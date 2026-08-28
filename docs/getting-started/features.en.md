@@ -215,18 +215,20 @@ See [Android Internals Knowledge Pack And Private Knowledge](android-internals-k
 
 ## 9. Code-Aware Local Source Analysis
 
-Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK source trees with SmartPerfetto. By default, the model sees only `CodeRef` metadata, not raw source text.
+Code-Aware Analysis lets users register local App, AOSP, kernel, or OEM SDK source trees with SmartPerfetto. Registration only creates a selectable source and never attaches it to a session automatically. By default, the model sees only `CodeRef` metadata, not raw source text. A live root supports bounded on-demand search/read without an index.
 
 Entry points:
 
-- `Codebases` tab in AI Assistant settings: preview, register, reindex, and audit.
-- CLI: `smp codebase preview/register/reindex/symbols`.
+- `Codebases` tab in AI Assistant settings: preview/register, selection and provider consent, current-scope/new-language authorization, pending accept/reject, reindex, audit, and delete.
+- CLI: `smp codebase list/preview/register/selection/consent/authorize-extensions/authorize-selection/pending/audit/delete/reindex/symbols`.
 - During analysis, explicitly pass `--code-aware metadata_only` and `--codebase-id <id>`, or choose a registered codebase in the UI.
 
 Output:
 
 - Maps call stacks, native frames, or kernel symbols to relative file paths, line ranges, and symbols.
-- Reports show `CodeRef` metadata; raw source text is fetched only through the controlled excerpt endpoint.
+- Performs bounded source lookup when a queryable trace anchor exists, or records a structured non-use reason; quantitative-only questions may be `not_needed`.
+- Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism; `corroborated|compatible|ambiguous|unverified` reports the binding strength.
+- Web shows a safe source receipt, while HTML reports, CLI, snapshots, and APIs reuse the same provenance projection. Raw source text is fetched only through the controlled excerpt endpoint.
 - If no codebase is configured for the session, the normal trace-only analysis path is unchanged.
 
 See [Code-Aware Analysis](code-aware-analysis.en.md) for the full workflow.

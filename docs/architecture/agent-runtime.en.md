@@ -179,6 +179,34 @@ id. A run authorized for private codebase or external knowledge never resumes
 or stores that opaque provider session, and its intermediate state is excluded
 from durable snapshots.
 
+## Source-Aware Runtime Parity
+
+The five production runtimes do not implement separate source policies. They
+share the strategy-owned source-use prompt, actual `SourceUseDecisionV1` state
+from the common MCP registry/handlers, and
+`finalizeSourceAwareAnalysisResult` on success, partial, max-turn, and error
+terminal paths. Without a current-run accessor, model-authored source decisions
+or bindings are removed. A `pending` or `attempted` decision cannot be
+presented as a successful result.
+
+In full analysis, selected source plus a queryable trace anchor requires a
+bounded lookup or a controlled non-use status recorded before lookup.
+Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism.
+`corroborated` requires verified same-claim trace occurrence plus
+`provider_send` body/indexed evidence; `metadata_only` is locate-only.
+
+One canonical safe projector carries the same decision and binding through
+initial and replayed SSE, HTML reports, CLI JSON/Markdown/HTML,
+analysis-result snapshots, and report/snapshot APIs. Web chat further reduces
+it to a current-run receipt without `CodeRef`. No surface retains absolute
+roots, snippets, search queries, or model-authored free-text binding reasons.
+
+The deterministic five-runtime execution/finalization gate and A0–A4 semantic
+gate prove the product contract, not real-provider model quality. Claude,
+OpenAI, Pi, OpenCode, and Qoder require separate repeated acceptance when
+credentials are available. Unavailable authentication is reported as
+`REAL PROVIDER NOT AVAILABLE` and cannot be replaced by unit tests or fixtures.
+
 ## Analysis Modes
 
 | Mode | Behavior |

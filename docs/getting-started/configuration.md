@@ -101,6 +101,21 @@ smp config init
 
 它会创建 `~/.smartperfetto/env`。没有显式传 `--env-file` 时，CLI 先读取包内/源码目录的 `backend/.env`，再读取 `~/.smartperfetto/env`，后者覆盖前者；如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。CLI 配置方式仍然遵守同一条规则：选择一个 runtime block，不要把所有 block 都打开。
 
+## Codebase 选择与 Provider 授权
+
+`Codebases` 页中的注册项不会自动附加到分析。用户必须在当前请求显式选择 codebase 和
+`metadata_only` / `provider_send` 模式。注册且仍可访问的 live root 无需索引就能有界搜索；
+reindex 是可选加速。
+
+`metadata_only` 只允许定位相对文件、行号和 `referenceId`。`provider_send` 要求注册时
+`sendToProvider` 已开启，并且目标路径同时位于当前 selection 与 consent grant 的交集内。
+放宽 path filter、exclude glob 或新增语言不会自动扩大 provider 授权；使用
+**授权当前范围** / **授权新语言** 显式更新 grant。
+
+成功的 selection、consent、授权、激活、reindex 或删除如果改变当前可用内容，Web UI 会退役
+旧 Agent session 并重置对话，防止新旧权限混用。详细管理、回执与证据语义见
+[Code-Aware Analysis](code-aware-analysis.md)。
+
 ## LLM 配置
 
 SmartPerfetto 后端支持这些 runtime path：

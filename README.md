@@ -45,6 +45,10 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   evidence-backed conclusions, follow-up questions, comparisons, and reports.
 - Uses deterministic YAML Skills and Markdown strategies so factual evidence,
   model interpretation, and report provenance remain separate.
+- Optionally selects registered local source per run, uses bounded on-demand
+  lookup without requiring an index, and separates trace occurrence from
+  `CodeRef` mechanism evidence in safe Web, report, CLI, snapshot, and API
+  provenance.
 - Sends UI selections as identity and time bounds only; the backend re-queries
   descriptive facts and runs `/anr` or `/jank` through the same evidence and
   verification pipeline.

@@ -174,6 +174,9 @@ metadata-only visibility.
          -> request source allowlist + live registry consent/scope check
          -> active RAG generation -> bounded attributed background context
       (neither Android Internals source is current-trace evidence)
+      -> selected codebase + source-investigation policy
+         -> record_source_use_decision (structured pre-lookup stop)
+         -> search_codebase / read_codebase_file (live root, no index required)
       -> resolve_symbol / lookup_app_source / lookup_aosp_source / lookup_kernel_source
          -> LookupResponseFilter -> CodeRef metadata
       -> propose_patch -> PatchProposer -> verified / sketch / unverified
@@ -182,6 +185,7 @@ metadata-only visibility.
    raw runtime result -> agentResultNormalizer
       -> final_report_contract gate
       -> evidence contract / claim verification / identity resolutions
+      -> SourceUseDecision + source-claim-binding verification
       -> QueryReviewV1 (review metadata, not standalone evidence)
 
 5. Backend streams output
@@ -189,7 +193,7 @@ metadata-only visibility.
       -> frontend renders progress, tables, thoughts, answer tokens
 
 6. Finish and report
-   conclusion -> analysis_completed -> sanitized CodeRef/patch metadata
+   conclusion -> analysis_completed -> canonical safe source/CodeRef/patch metadata
       -> AnalysisReceiptV2 (including runManifestId)
       -> HTML report + CLI artifacts + analysis-result snapshot
       -> /api/reports/:id
@@ -201,9 +205,10 @@ processor that is actually running, and the capability states. The current
 system prompt and visible chat intentionally ignore this shadow snapshot.
 Before activation, Claude/OpenAI caches keyed only by `traceId` must be re-keyed
 or invalidated by trace + running-processor identity so they cannot reuse
-capabilities from an older processor. HTML-report, analysis-result-snapshot,
-and CLI persistence are wired in the next task; this step does not change those
-output contracts.
+capabilities from an older processor. Source provenance is now routed through
+one safe projector across initial/replayed SSE, HTML reports, CLI
+JSON/Markdown/HTML, analysis-result snapshots, and report/snapshot APIs. Web
+chat keeps only a current-run receipt without `CodeRef`.
 
 CLI `smp run` / `smp ask` / `smp compare` reuse the same session, runtime,
 Skill, report, and trace-processor path. The difference is local storage under
@@ -256,7 +261,9 @@ private advisory. See
 
 ## Four-Layer Codebase Import Boundary
 
-Codebase import has four boundaries that must not collapse: `PathSecurityGate` owns root/file identity and bounded safe reads; `SourceSelectionPolicy` provides one canonical IR for path scope, extensions, and exclusions; `SourceEnumerator` produces untrusted candidates through `ripgrep > git > node-walk` and reports coverage; `sourceDisclosure` intersects the live selection policy with the frozen consent grant at every source-text exit. On-demand reads and indexed lookups share that disclosure predicate, while active/pending index generations remain orthogonal to live-root availability.
+Codebase import has four boundaries that must not collapse: `PathSecurityGate` owns root/file identity and bounded safe reads; `SourceSelectionPolicy` provides one canonical IR for path scope, extensions, and exclusions; `SourceEnumerator` produces untrusted candidates through `ripgrep > git > node-walk` and reports coverage; `sourceDisclosure` intersects the live selection policy with the frozen consent grant at every source-text exit. On-demand reads and indexed lookups share that disclosure predicate, while active/pending index generations remain orthogonal to live-root availability. Registration only makes source selectable and never attaches it to a session.
+
+Source use adds another orthogonal boundary. `SourceUseDecisionV1` records selected/queried/used IDs, status, and coverage. `SourceClaimBindingV1` binds only implementation mechanism to same-claim trace evidence. Trace/Skill/SQL proves occurrence and `CodeRef` proves mechanism; the latter cannot increase occurrence or root-cause confidence alone. Every registry-discovered scene inherits the default policy, with richer anchors for startup, scrolling, ANR, interaction, and scroll response.
 
 ## Runtime And Provider Boundaries
 
@@ -285,6 +292,7 @@ artifacts with different consumers:
 | Analysis-result snapshot | Multi-result comparison and later review | Stores conclusion contract, claim support, verification, and identity metadata |
 | Query Review | AI panel, HTML report, artifact | Explains actual reads, filters, outputs, and limitations; it remains review metadata and cannot independently support a diagnosis |
 | Analysis Receipt | AI panel, HTML report, CLI, snapshot | Binds run/session/trace/runtime and summarizes evidence counts, claim audit, quality gates, and actual outputs |
+| Source Use Decision / Binding | AI panel receipt, HTML report, CLI, snapshot, API | Records selected/queried/used IDs, status/coverage, and trace-to-mechanism bindings; the Web projection retains no `CodeRef` |
 
 See the [Data Contract](../../backend/docs/DATA_CONTRACT_DESIGN.en.md) for the
 field and projection rules. A surface may compact the display, but it must not

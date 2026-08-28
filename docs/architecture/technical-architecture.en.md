@@ -69,8 +69,9 @@ POST /api/agent/v1/analyze
   -> createAgentOrchestrator()
   -> select Claude / OpenAI / Pi / OpenCode / Qoder runtime
   -> use the shared MCP registry for SQL, Skills, knowledge, and planning
+  -> selected source: bounded lookup or structured SourceUseDecision stop
   -> DataEnvelope + evidence/claim/identity sidecars
-  -> final-result normalization / report-contract gate
+  -> final-result normalization / report-contract + source-claim-binding gate
   -> SSE chat projection + HTML report + snapshot + CLI artifact
 ```
 
@@ -227,6 +228,21 @@ Codebases pass through `PathSecurityGate` preview/register/reindex.
 registration consent and an explicit request mode. Raw source never belongs in
 sessions, logs, SSE, reports, or exports.
 
+Registration only makes a codebase selectable; it does not attach source.
+`search_codebase` / `read_codebase_file` work against a live root without an
+active index. Reindexing is optional acceleration for semantic/symbol lookup
+and patch workflows. Full analysis with selected source and a queryable trace
+anchor must perform lookup or record a structured stop status first.
+`SourceUseDecisionV1` records selected/queried/used IDs, status, and coverage.
+
+Trace/Skill/SQL proves occurrence, while `CodeRef` proves mechanism.
+`SourceClaimBindingV1` is limited to
+`corroborated|compatible|ambiguous|unverified`; `corroborated` requires verified
+same-claim trace occurrence plus `provider_send` body/indexed evidence.
+`metadata_only` is locate-only. One canonical projector provides safe
+provenance for SSE, reports, CLI, snapshots, and APIs; Web further reduces it
+to the current-run receipt.
+
 ### Android Internals
 
 The signed built-in Knowledge Pack and a private checkout are separate sources:
@@ -301,6 +317,7 @@ The final result is not one Markdown string:
 | CLI artifact | Turn, report, resume state, and machine-readable output |
 | Analysis-result snapshot | Standard metrics, evidence references, comparison input |
 | Provider session snapshot | Runtime/provider-specific resume state |
+| Source provenance | Safe SourceUseDecision, relative `CodeRef`, and trace-to-mechanism bindings; the Web receipt retains no `CodeRef` |
 
 `final_report_contract`, normalization, and quality gates converge provider
 outputs on shared semantics rather than patching one provider-specific string
@@ -337,6 +354,9 @@ Important focused entries:
 cd backend
 npm run validate:skills
 npm run validate:strategies
+npm run test:report-contracts
+npm run test:source-claim-contract
+npm run verify:code-aware-semantic-delta
 npm run test:self-evolution
 npm run test:scene-trace-regression
 npm run cli:pack-check
@@ -365,6 +385,7 @@ Additionally:
 | Change DataEnvelope | backend source + generator + generated frontend types + consumers |
 | Change API contract | route/application service + tests + API docs |
 | Change AI Assistant UI | Perfetto plugin + dev/browser test + `frontend/` prebuild |
+| Change source-use decisions/conclusion provenance | Source policy + MCP ledger/finalizer + claim binding + report/CLI/snapshot/Web projection + semantic gate |
 | Change runtime/provider | `agentRuntime/` + Provider Manager + session snapshot tests |
 | Change Self-Evolution | `services/selfEvolution/` + admin routes/UI + focused tests + current contract docs |
 | Change Agent external feedback | `services/externalIssueReporting/` + agent route + AI plugin + Issue Form + `test:external-issue-reporting` |

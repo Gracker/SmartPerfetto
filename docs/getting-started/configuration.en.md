@@ -113,6 +113,26 @@ smp config init
 
 It creates `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads package/source `backend/.env` first, then `~/.smartperfetto/env`, with the user file taking priority. If you pass `--env-file /path/to/env`, the CLI reads only that file. CLI configuration follows the same rule: choose one runtime block, not every block.
 
+## Codebase Selection And Provider Authorization
+
+Registrations on the `Codebases` tab never attach to analysis automatically.
+The user must explicitly select the codebase and `metadata_only` /
+`provider_send` mode for the current request. A reachable registered live root
+supports bounded search without an index; reindexing is optional acceleration.
+
+`metadata_only` can locate only relative files, line ranges, and `referenceId`
+values. `provider_send` requires registration-level `sendToProvider` consent,
+and the target path must be admitted by both the current selection and consent
+grant. Expanding path filters, relaxing exclude globs, or adding source
+languages never expands provider authorization automatically. Use **Authorize
+current scope** / **Authorize new languages** to update the grant explicitly.
+
+When successful selection, consent, authorization, activation, reindex, or
+deletion changes currently available content, the Web UI retires the old Agent
+session and resets conversation state so old and new authorization cannot mix.
+See [Code-Aware Analysis](code-aware-analysis.en.md) for management, receipts,
+and evidence semantics.
+
 ## LLM Configuration
 
 SmartPerfetto has these runtime paths:

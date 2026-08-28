@@ -205,15 +205,36 @@ workspace Batch Trace API 的显式 snapshot promotion / comparison bridge。
 
 ## Code-Aware Analysis
 
-先注册并索引本机代码库，再在分析 session 中显式选择 code-aware 模式：
+先注册本机代码库，再在分析 session 中显式选择 code-aware 模式。注册不会自动附加源码，建立索引也是可选加速项：
 
 ```bash
 smp codebase preview /path/to/app --kind app_source --path-filter app/src/main/ --exclude-glob '**/generated/**'
 smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**' --dry-run
 smp codebase register /path/to/app --kind app_source --name MyApp --path-filter app/src/main/ --exclude-glob '**/generated/**'
 smp codebase list
+smp codebase list --format json
+
+# 同时提供两类选项时，替换 pathFilters 和 excludeGlobs
+smp codebase selection cb_xxx \
+  --path-filter app/src/main/ \
+  --exclude-glob '**/generated/**'
+
+# provider-send 同意与当前范围/新语言授权
+smp codebase consent cb_xxx --enable
+smp codebase authorize-selection cb_xxx
+smp codebase authorize-extensions cb_xxx
+
+# 生命周期、精确 pending candidate 的 CAS 操作与删除
+smp codebase audit cb_xxx --format json
+smp codebase pending cb_xxx --accept --candidate generation_xxx
+smp codebase pending cb_xxx --reject --candidate generation_xxx
+
+# 可选：为语义/符号检索和 patch 工作流建立索引
 smp codebase reindex cb_xxx
 smp codebase symbols MainActivity --codebase-id cb_xxx
+
+# 破坏性操作：退役注册项并删除所有索引代次
+smp codebase delete cb_xxx --yes
 
 smp run trace.perfetto-trace \
   --code-aware metadata_only \
@@ -232,6 +253,17 @@ smp run trace.perfetto-trace \
 `preview` 和 `register --dry-run` 会输出实际使用的 `ripgrep → git → node-walk`
 枚举后端、fidelity、完整性和截断原因；截断只表示有界预览，不再用非零退出码冒充
 命令失败。portable 包不内置 ripgrep，缺失时按上述顺序安全降级。
+
+`selection` 只替换显式提供的字段：`--path-filter` 替换 `pathFilters`，
+`--exclude-glob` 替换 `excludeGlobs`；未提供的字段保留现有列表。两类选项都提供时才
+会同时替换两个列表。有效变更会递增 selection revision、使旧 active index 失效，并可能使
+provider grant 与当前范围不一致。`authorize-selection` 只授权当前路径范围；
+`authorize-extensions` 只授权当前可用新语言，两者都不会替用户开启 provider-send。`pending`
+必须传回 `list` / `audit` 中当前的精确 candidate ID。`delete` 必须显式传 `--yes`。
+
+CLI `reindex` 只接受 codebase ID，没有 `pathPrefix` 选项。路径范围用 `selection --path-filter` 管理。注册时的 `--commit` 仍为旧调用方保留，但只是 caller-supplied 兼容元数据；每次索引都会自动读取真实 Git `HEAD`、工作区 dirty 状态和内容指纹，并在 `audit` 中作为索引来源权威值。
+
+新管理命令的退出码是稳定机器契约：`0` 成功，`2` 输入/选择无效，`3` codebase 不存在，`4` 忙、授权不足或 pending CAS 冲突，`5` 其他管理失败。`register`、`reindex` 和 `symbols` 继续保留原有的 `0/1` 兼容语义。
 完整说明见 [Code-Aware Analysis](../getting-started/code-aware-analysis.md)。
 
 ## 双 Trace 对比
@@ -276,14 +308,20 @@ CLI 文件存储在：
     ├── config.json
     ├── conclusion.md
     ├── report.html
+    ├── source-use-decision.json
+    ├── source-claim-bindings.json
     ├── ui-action-proposals.json
     ├── transcript.jsonl
     ├── stream.jsonl
     └── turns/
         ├── 001.md
+        ├── 001.source-use-decision.json
+        ├── 001.source-claim-bindings.json
         ├── 001.ui-action-proposals.json
         └── 001.html
 ```
+
+两组 source sidecar 只在本轮有 canonical safe source provenance 时生成。最新文件会随新 turn 替换；一次无源码 turn 会清除过期的“最新” sidecar，但不删除历史 turn 文件。JSON、Markdown 和 HTML 只保留安全决策、相对 `CodeRef` 与 mechanism binding，不包含绝对 root、snippet、检索 query 或自由文本 binding reason。
 
 `ui-action-proposals.json` 只保存证据回链和 UI 提案元数据，用于报告/后续轮次
 追溯；CLI 不会自动执行跳转、打开表或固定证据。

@@ -156,7 +156,7 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 ## 源码与 Android Internals 背景
 
 - 要把 trace 结论映射到本机源码，先在 UI `Codebases` 或 CLI
-  `smp codebase preview/register/reindex` 注册，再在本次分析显式选择 codebase。
+  `smp codebase preview/register` 注册，再在本次分析显式选择 codebase。注册的 live root 无索引也能有界搜索/读取；`reindex` 只是可选加速。
 - 内置 Android Internals Knowledge Pack 随产品分发；用
   `smp knowledge-pack status` 查看版本，用 `update --check` 只检查更新。
 - 私有 Android Internals checkout 与内置 Pack 不同，必须配置路径 allowlist、
@@ -165,6 +165,10 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 源码和知识背景都不能替代当前 trace 的 SQL/Skill 证据。Code-Aware 默认只给模型
 `CodeRef`；完整边界见 [Code-Aware](code-aware-analysis.md) 和
 [Android Internals 知识](android-internals-knowledge.md)。
+
+选中源码后，full 分析会先用 Trace/Skill/SQL 确认发生事实。如果存在可查询的符号、slice、Binder 描述符或 build-id 锚点，它必须进行有界源码 lookup；否则留下 `not_needed`、`disallowed`、`no_queryable_anchor` 等结构化原因。分析结果中的源码回执会区分已选、已查询和实际使用的 codebase，并标明 coverage 与 `corroborated|compatible|ambiguous|unverified` 机制状态。Trace 证明“发生了什么”，`CodeRef` 解释“实现上为什么可能发生”；只有 `CodeRef` 时不能把 trace 现象升级为已验证根因。
+
+Web chat 只保留安全的折叠回执，不包含文件路径、源码片段、检索 query 或自由文本原因。HTML report、CLI artifact 和 snapshot/API 可保留安全的相对 `CodeRef` 与绑定，但同样不保留绝对 root 或源码正文。
 
 ## CLI Batch 与 Android Capture
 
