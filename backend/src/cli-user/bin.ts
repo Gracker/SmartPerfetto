@@ -11,7 +11,7 @@
  * even if some module has a stray setInterval / active handle we missed.
  */
 
-import { Command } from 'commander';
+import {Command, Option} from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrap } from './bootstrap';
@@ -39,12 +39,20 @@ import {
 } from './commands/capture';
 import { isCapturePresetId } from './services/captureConfig';
 import {
+  runCodebaseAuditCommand,
+  runCodebaseAuthorizeExtensionsCommand,
+  runCodebaseAuthorizeSelectionCommand,
+  runCodebaseConsentCommand,
+  runCodebaseDeleteCommand,
   runCodebaseListCommand,
+  runCodebasePendingCommand,
   runCodebasePreviewCommand,
   runCodebaseRegisterCommand,
   runCodebaseReindexCommand,
+  runCodebaseSelectionCommand,
   runCodebaseSymbolsCommand,
 } from './commands/codebase';
+import type {CodebaseOutputFormat} from './commands/codebase';
 import {
   runKnowledgePackStatusCommand,
   runKnowledgePackUpdateCommand,
@@ -381,11 +389,13 @@ function main(): void {
   codebaseCmd
     .command('list')
     .description('list registered codebases')
-    .action(async () => {
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (opts: {format: CodebaseOutputFormat}) => {
       const g = globals();
       await runAndExit(() => runCodebaseListCommand({
         envFile: g.envFile,
         sessionDir: g.sessionDir,
+        format: opts.format,
       }));
     });
 
@@ -496,6 +506,133 @@ function main(): void {
         commitHash: opts.commit,
         licenseTag: opts.license,
         dryRun: opts.dryRun,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('selection <codebaseId>')
+    .description('replace the registered source selection policy')
+    .option('--path-filter <prefix>', 'replacement relative path prefix; repeatable', collectRepeatedOption)
+    .option('--exclude-glob <glob>', 'replacement relative exclusion glob; repeatable', collectRepeatedOption)
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {
+      pathFilter?: string[];
+      excludeGlob?: string[];
+      format: CodebaseOutputFormat;
+    }) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseSelectionCommand({
+        codebaseId,
+        pathFilters: opts.pathFilter,
+        excludeGlobs: opts.excludeGlob,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('consent <codebaseId>')
+    .description('enable or disable provider-send consent')
+    .addOption(new Option('--enable', 'enable provider-send consent').conflicts('disable'))
+    .addOption(new Option('--disable', 'disable provider-send consent').conflicts('enable'))
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {
+      enable?: boolean;
+      disable?: boolean;
+      format: CodebaseOutputFormat;
+    }) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseConsentCommand({
+        codebaseId,
+        enable: opts.enable,
+        disable: opts.disable,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('authorize-extensions <codebaseId>')
+    .description('authorize every currently available source extension')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {format: CodebaseOutputFormat}) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseAuthorizeExtensionsCommand({
+        codebaseId,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('authorize-selection <codebaseId>')
+    .description('authorize the current source path selection')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {format: CodebaseOutputFormat}) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseAuthorizeSelectionCommand({
+        codebaseId,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('pending <codebaseId>')
+    .description('accept or reject an exact staged index candidate')
+    .addOption(new Option('--accept', 'accept the staged candidate').conflicts('reject'))
+    .addOption(new Option('--reject', 'reject the staged candidate').conflicts('accept'))
+    .requiredOption('--candidate <id>', 'exact pending candidate generation id')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {
+      accept?: boolean;
+      reject?: boolean;
+      candidate: string;
+      format: CodebaseOutputFormat;
+    }) => {
+      const g = globals();
+      await runAndExit(() => runCodebasePendingCommand({
+        codebaseId,
+        accept: opts.accept,
+        reject: opts.reject,
+        candidateId: opts.candidate,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('audit <codebaseId>')
+    .description('show safe codebase lifecycle and index audit state')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {format: CodebaseOutputFormat}) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseAuditCommand({
+        codebaseId,
+        format: opts.format,
+        envFile: g.envFile,
+        sessionDir: g.sessionDir,
+      }));
+    });
+
+  codebaseCmd
+    .command('delete <codebaseId>')
+    .description('delete a codebase registration and every indexed generation')
+    .requiredOption('--yes', 'confirm permanent codebase deletion')
+    .option('--format <format>', 'output format: table or json', parseCodebaseOutputFormat, 'table')
+    .action(async (codebaseId: string, opts: {yes: boolean; format: CodebaseOutputFormat}) => {
+      const g = globals();
+      await runAndExit(() => runCodebaseDeleteCommand({
+        codebaseId,
+        yes: opts.yes,
+        format: opts.format,
         envFile: g.envFile,
         sessionDir: g.sessionDir,
       }));
@@ -847,6 +984,11 @@ function parseCapturePreset(preset: string): CapturePresetId {
 function parseCodebaseKind(kind: string | undefined): 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk' {
   if (kind === 'app_source' || kind === 'aosp' || kind === 'kernel_source' || kind === 'oem_sdk') return kind;
   throw new Error(`Invalid codebase kind: ${kind}. Expected app_source, aosp, kernel_source, or oem_sdk.`);
+}
+
+function parseCodebaseOutputFormat(format: string): CodebaseOutputFormat {
+  if (format === 'table' || format === 'json') return format;
+  throw new Error(`Invalid codebase output format: ${format}. Expected table or json.`);
 }
 
 main();

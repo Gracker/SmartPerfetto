@@ -47,21 +47,20 @@ import type {RagChunk, RagRetrievalResult, RagSourceKind} from '../types/sparkCo
 import {requireCodebaseScope} from '../services/auth/codebaseScopes';
 import {
   activeCodebaseGeneration,
-  codebaseProviderGrantScopeCurrent,
   codebaseRegistrationRequirements,
-  codebaseRootAvailable,
   CodebaseRegistry,
-  PENDING_GENERATION_TTL_MS,
-  type CodebaseRef,
-  type CodebaseScope,
   isCodebaseKind,
 } from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {PathSecurityGate} from '../services/codebase/pathSecurityGate';
-import {SourceEnumerator, type EnumerationResult} from '../services/codebase/sourceEnumerator';
+import {SourceEnumerator} from '../services/codebase/sourceEnumerator';
 import {buildSourceSelectionIR} from '../services/codebase/sourceSelectionPolicy';
-import {availableNotConsentedExtensions} from '../services/codebase/sourceDisclosure';
-import {readAospManifestProjects} from '../services/codebase/aospManifest';
+import {
+  CodebaseManagementError,
+  CodebaseManagementService,
+  projectCodebaseEnumeration,
+  projectRegisteredCodebase,
+} from '../services/codebase/codebaseManagementService';
 import {
   isLocalDirectoryPickerRequest,
   NativeDirectoryPicker,
@@ -94,6 +93,7 @@ export interface RagAdminRouteServices {
   registry?: CodebaseRegistry;
   gate?: PathSecurityGate;
   sourceEnumerator?: SourceEnumerator;
+  codebaseManagementService?: CodebaseManagementService;
   appSourceIngester?: AppSourceIngester;
   aospSourceIngester?: AospSourceIngester;
   kernelSourceIngester?: KernelSourceIngester;
@@ -150,31 +150,6 @@ function sanitizeRetrieval(result: RagRetrievalResult): RagRetrievalResult {
   };
 }
 
-function sanitizeCodebase(ref: CodebaseRef) {
-  const {
-    rootPath: _rootPath,
-    rootRealpath: _rootRealpath,
-    rootAuthorization: _rootAuthorization,
-    consent,
-    ...rest
-  } = ref;
-  return {
-    ...rest,
-    grantRevision: consent.grant?.revision ?? 1,
-    rootAvailable: codebaseRootAvailable(ref),
-    eligibleForSendToProvider: consent.sendToProvider,
-    consent: {
-      sendToProvider: consent.sendToProvider,
-      consentedAt: consent.consentedAt,
-      consentedBy: consent.consentedBy,
-      consentHash: consent.consentHash,
-      grantRevision: consent.grant?.revision ?? 1,
-    },
-    availableNotConsentedExtensions: availableNotConsentedExtensions(ref),
-    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref),
-  };
-}
-
 function optionalRequestString(
   value: unknown,
   fieldName: string,
@@ -209,36 +184,6 @@ function sendDirectoryPickerError(
   });
 }
 
-function sanitizeEnumeration(result: EnumerationResult) {
-  const subtreeCounts = new Map<string, number>();
-  for (const file of result.files) {
-    const parts = file.relativePath.split('/');
-    const prefix = parts.slice(0, Math.min(2, Math.max(1, parts.length - 1))).join('/');
-    subtreeCounts.set(prefix, (subtreeCounts.get(prefix) ?? 0) + 1);
-  }
-  return {
-    blocked: false,
-    complete: result.enumerationComplete,
-    enumerationComplete: result.enumerationComplete,
-    ...(result.incompleteReason ? {truncationReason: result.incompleteReason} : {}),
-    acceptedFileCount: result.files.length,
-    filesEnumerated: result.files.length,
-    filesSelected: result.files.length,
-    bytesSelected: result.files.reduce((total, file) => total + file.sizeBytes, 0),
-    skippedFileCount: result.skippedCount,
-    acceptedFiles: result.files.slice(0, 200),
-    skippedFiles: result.skipped.slice(0, 200),
-    enumerationBackend: result.backend,
-    backendFidelity: result.fidelity,
-    deterministic: result.deterministic,
-    recommendedAction: result.incompleteReason === 'time_budget' ? 'narrow_scope' : undefined,
-    scopeSuggestions: [...subtreeCounts.entries()]
-      .map(([prefix, fileCount]) => ({prefix, fileCount}))
-      .sort((left, right) => right.fileCount - left.fileCount || left.prefix.localeCompare(right.prefix))
-      .slice(0, 12),
-  };
-}
-
 function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
   const {rootRealpath: _rootRealpath, scope: _scope, ...safeSource} = source;
   return safeSource;
@@ -270,6 +215,13 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     new AospSourceIngester(s, registry, gate, sourceEnumerator);
   const kernelSourceIngester = services.kernelSourceIngester ??
     new KernelSourceIngester(s, registry, gate, sourceEnumerator);
+  const codebaseManagementService = services.codebaseManagementService ??
+    new CodebaseManagementService({
+      registry,
+      store: s,
+      gate,
+      sourceEnumerator,
+    });
   const directoryPicker = services.directoryPicker ?? new NativeDirectoryPicker();
   const externalKnowledgeRegistry = services.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
@@ -289,47 +241,6 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     capabilityMapPath: path.join(backendRoot, 'knowledge/android-internals-capability-map.yaml'),
     skillsPath: path.join(backendRoot, 'skills'),
     fixtureManifestPath: path.join(backendRoot, 'skills/public-fixtures.yaml'),
-  };
-  const cleanupInactiveCodebaseChunks = async (
-    codebaseId: string,
-    scope: CodebaseScope,
-  ): Promise<CodebaseRef | undefined> => {
-    if (!registry.get(codebaseId, scope)) return undefined;
-    try {
-      await registry.withIngestLease(codebaseId, scope, lease => {
-        lease.assertHeld(true);
-        const current = registry.get(codebaseId, scope);
-        if (!current) return;
-        const preserved = [
-          activeCodebaseGeneration(current),
-          current.pendingGeneration?.candidateGenerationId,
-        ].filter((generation): generation is string => Boolean(generation));
-        s.removeCodebaseChunksExceptGeneration(codebaseId, preserved, scope);
-        lease.assertHeld(true);
-        if (current.maintenanceWarning === 'inactive_chunk_cleanup_failed') {
-          lease.updateIngestStatus({
-            lastIngestStatus: current.lastIngestStatus ?? 'ok',
-            maintenanceWarning: undefined,
-            lastIngestError: current.lastIngestError?.startsWith('inactive_chunk_cleanup_failed:')
-              ? undefined
-              : current.lastIngestError,
-          });
-        }
-      });
-    } catch (error) {
-      try {
-        const current = registry.get(codebaseId, scope);
-        if (!current) return undefined;
-        registry.updateIngestStatus(codebaseId, {
-          lastIngestStatus: current.lastIngestStatus ?? 'ok',
-          maintenanceWarning: 'inactive_chunk_cleanup_failed',
-          lastIngestError: `inactive_chunk_cleanup_failed:${error instanceof Error ? error.message : String(error)}`,
-        }, scope);
-      } catch {
-        // Keep the original state readable even if warning persistence also fails.
-      }
-    }
-    return registry.get(codebaseId, scope);
   };
   const symbolResolverFor = (scope: KnowledgeScope) => new SymbolResolver(s, scope, registry);
   const router = Router();
@@ -693,25 +604,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
 
   router.get('/codebases', requireCodebaseScope('codebase:read'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const now = Date.now();
-    for (const summary of registry.list(scope)) {
-      if (summary.maintenanceWarning === 'inactive_chunk_cleanup_failed') {
-        await cleanupInactiveCodebaseChunks(summary.codebaseId, scope);
-      }
-      const pending = summary.pendingGeneration;
-      if (!pending || now - pending.createdAt < PENDING_GENERATION_TTL_MS) continue;
-      registry.expirePendingGeneration(
-        summary.codebaseId,
-        scope,
-        pending.candidateGenerationId,
-        now,
-      );
-      await cleanupInactiveCodebaseChunks(summary.codebaseId, scope);
-    }
     res.json({
       success: true,
       featureEnabled: codeAwareFeatureEnabled(),
-      codebases: registry.list(scope),
+      codebases: await codebaseManagementService.list(scope),
     });
   });
 
@@ -797,60 +693,23 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const selectedRoot = directorySelectionId
         ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
         : undefined;
-      const rootRealpath = await gate.validateRoot(
-        rootPath,
-        selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
-      );
-      const result = await sourceEnumerator.enumerate({
-        rootRealpath,
-        policy: buildSourceSelectionIR({
-          kind,
-          includePrefixes: resolveSourcePathPatterns(pathFilters, 'pathFilters'),
-          excludeGlobs: resolveSourcePathPatterns(excludeGlobs, 'excludeGlobs'),
-        }),
-        gate,
-        expectedRootRealpath: rootRealpath,
-        ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
-      });
-      let manifestProjects = [] as Awaited<ReturnType<typeof readAospManifestProjects>>;
-      let manifestUnavailableReason: string | undefined;
-      if (kind === 'aosp' || kind === 'oem_sdk') {
-        try {
-          manifestProjects = await readAospManifestProjects(rootRealpath, rootRealpath);
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          if (reason === 'codebase_root_realpath_drift') throw error;
-          manifestUnavailableReason = reason;
-        }
-      }
-      const manifestGroups = [...new Set(manifestProjects.flatMap(project => project.groups))].sort();
       return res.json({
         success: true,
-        preview: {
-          ...sanitizeEnumeration(result),
-          ...(manifestProjects.length > 0 ? {manifestProjects, manifestGroups} : {}),
-          ...(manifestUnavailableReason ? {manifestUnavailableReason} : {}),
-        },
+        preview: await codebaseManagementService.preview({
+          rootPath,
+          kind,
+          pathFilters,
+          excludeGlobs,
+          ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
+        }, scope),
       });
     } catch (error) {
       if (error instanceof NativeDirectoryPickerError) {
         return sendDirectoryPickerError(res, error);
       }
+      const status = error instanceof CodebaseManagementError ? error.status : 400;
       const reason = error instanceof Error ? error.message : String(error);
-      if (reason === 'root_not_found' || reason === 'root_outside_allowlist') {
-        return res.json({
-          success: true,
-          preview: {
-            blocked: true,
-            blockedReason: reason,
-            acceptedFileCount: 0,
-            skippedFileCount: 0,
-            acceptedFiles: [],
-            skippedFiles: [],
-          },
-        });
-      }
-      return res.status(400).json({success: false, error: reason});
+      return res.status(status).json({success: false, error: reason});
     }
   });
 
@@ -979,7 +838,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           error: 'effective_source_selection_empty',
           message: 'No source files matched the effective selection.',
           hint: 'Check the path filters, exclude globs, ignored files, and supported extensions.',
-          preview: sanitizeEnumeration(enumeration),
+          preview: projectCodebaseEnumeration(enumeration),
         });
       }
       const register = () => registry.register({
@@ -1010,7 +869,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
             register,
           )
         : register();
-      res.json({success: true, codebase: sanitizeCodebase(ref), preview: sanitizeEnumeration(enumeration)});
+      res.json({
+        success: true,
+        codebase: projectRegisteredCodebase(ref),
+        preview: projectCodebaseEnumeration(enumeration),
+      });
     } catch (error) {
       if (error instanceof NativeDirectoryPickerError) {
         return sendDirectoryPickerError(res, error);
@@ -1022,11 +885,15 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   router.get('/codebases/:id', requireCodebaseScope('codebase:read'), (req, res) => {
     const codebaseId = routeParam(req.params.id);
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const ref = registry.get(codebaseId, scope);
-    if (!ref) {
-      return res.status(404).json({success: false, error: `Codebase '${codebaseId}' not found`});
+    try {
+      return res.json({success: true, codebase: codebaseManagementService.get(codebaseId, scope)});
+    } catch (error) {
+      const status = error instanceof CodebaseManagementError ? error.status : 500;
+      return res.status(status).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    res.json({success: true, codebase: sanitizeCodebase(ref)});
   });
 
   router.get('/codebases/:id/symbols', requireCodebaseScope('codebase:read'), (req, res) => {
@@ -1148,37 +1015,15 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   router.get('/codebases/:id/audit', requireCodebaseScope('codebase:read'), (req, res) => {
     const codebaseId = routeParam(req.params.id);
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const ref = registry.get(codebaseId, scope);
-    if (!ref) {
-      return res.status(404).json({success: false, error: `Codebase '${codebaseId}' not found`});
+    try {
+      return res.json({success: true, audit: codebaseManagementService.audit(codebaseId, scope)});
+    } catch (error) {
+      const status = error instanceof CodebaseManagementError ? error.status : 500;
+      return res.status(status).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
-    res.json({
-      success: true,
-      audit: {
-        codebaseId: ref.codebaseId,
-        kind: ref.kind,
-        rootAuthorization: ref.rootAuthorization ?? 'configured_allowlist',
-        indexGeneration: ref.indexGeneration,
-        activeGeneration: activeCodebaseGeneration(ref),
-        activeIndexState: ref.activeIndexState ?? 'none',
-        selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
-        grantRevision: ref.consent.grant?.revision ?? 1,
-        activeIndexCoverage: ref.activeIndexCoverage,
-        pendingGeneration: ref.pendingGeneration,
-        maintenanceWarning: ref.maintenanceWarning,
-        reindexRequired: ref.reindexRequired,
-        contentFingerprint: ref.contentFingerprint,
-        indexedRevision: ref.indexedRevision,
-        indexedDirty: ref.indexedDirty,
-        commitProvenance: ref.commitProvenance,
-        lastIngestAt: ref.lastIngestAt,
-        lastIngestStatus: ref.lastIngestStatus,
-        lastIngestError: ref.lastIngestError,
-        chunkCount: ref.chunkCount ?? 0,
-        blockedFileCount: ref.blockedFileCount ?? 0,
-        redactionHitCount: ref.redactionHitCount ?? 0,
-      },
-    });
   });
 
   router.patch('/codebases/:id/consent', requireCodebaseScope('codebase:manage'), async (req, res) => {
@@ -1204,20 +1049,30 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const scope = knowledgeScopeFromRequestContext(context);
     try {
       const codebase = authorizeAvailableExtensions
-        ? registry.authorizeAvailableExtensions(routeParam(req.params.id), scope, context.userId)
-        : authorizeCurrentSelection
-          ? registry.authorizeCurrentSelection(routeParam(req.params.id), scope, context.userId)
-        : registry.setProviderConsent(
+        ? await codebaseManagementService.authorizeAvailableExtensions(
             routeParam(req.params.id),
+            context.userId,
             scope,
+          )
+        : authorizeCurrentSelection
+          ? await codebaseManagementService.authorizeCurrentSelection(
+              routeParam(req.params.id),
+              context.userId,
+              scope,
+            )
+        : await codebaseManagementService.setConsent(
+            routeParam(req.params.id),
             req.body.sendToProvider,
             context.userId,
+            scope,
           );
-      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
-      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
+      return res.json({success: true, codebase});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return res.status(message.includes('not found') ? 404 : 409).json({
+      const status = error instanceof CodebaseManagementError
+        ? error.status
+        : message.includes('not found') ? 404 : 409;
+      return res.status(status).json({
         success: false,
         error: message,
       });
@@ -1228,48 +1083,15 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     try {
       const body = req.body ?? {};
-      const hasPathFilters = Object.prototype.hasOwnProperty.call(body, 'pathFilters');
-      const hasExcludeGlobs = Object.prototype.hasOwnProperty.call(body, 'excludeGlobs');
-      if (!hasPathFilters && !hasExcludeGlobs) throw new Error('selection_patch_empty');
       const codebaseId = routeParam(req.params.id);
-      const existing = registry.get(codebaseId, scope);
-      if (!existing) {
-        return res.status(404).json({success: false, error: `Codebase '${codebaseId}' not found`});
-      }
-      const pathFilters = hasPathFilters
-        ? resolveSourcePathPatterns(body.pathFilters, 'pathFilters')
-        : existing.pathFilters;
-      const excludeGlobs = hasExcludeGlobs
-        ? resolveSourcePathPatterns(body.excludeGlobs, 'excludeGlobs')
-        : existing.excludeGlobs;
-      const canonicalSelection = buildSourceSelectionIR({
-        kind: existing.kind,
-        includePrefixes: pathFilters,
-        excludeGlobs,
-      });
-      const canonicalPathFilters = canonicalSelection.includePrefixes.length > 0
-        ? canonicalSelection.includePrefixes
-        : undefined;
-      const canonicalExcludeGlobs = canonicalSelection.excludeGlobs.length > 0
-        ? canonicalSelection.excludeGlobs
-        : undefined;
-      if (
-        codebaseRegistrationRequirements(existing.kind).pathFilters &&
-        !canonicalPathFilters?.length
-      ) {
-        throw new Error('`pathFilters` is required for kernel_source codebases');
-      }
-      const codebase = registry.updateSelectionPolicy(codebaseId, scope, {
-        ...(hasPathFilters ? {pathFilters: canonicalPathFilters} : {}),
-        ...(hasExcludeGlobs ? {excludeGlobs: canonicalExcludeGlobs} : {}),
-      });
-      if (codebase.selectionPolicyRevision === existing.selectionPolicyRevision) {
-        throw new Error('selection_policy_unchanged');
-      }
-      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
-      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
+      const codebase = await codebaseManagementService.updateSelection(codebaseId, body, scope);
+      return res.json({success: true, codebase});
     } catch (error) {
-      return res.status(400).json({success: false, error: error instanceof Error ? error.message : String(error)});
+      const status = error instanceof CodebaseManagementError ? error.status : 400;
+      return res.status(status).json({
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   });
 
@@ -1290,23 +1112,17 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     try {
-      const codebase = registry.acceptPendingGeneration(
+      const codebase = await codebaseManagementService.acceptPending(
         routeParam(req.params.id),
-        scope,
-        selectionPolicyRevision,
-        grantRevision,
         candidateGenerationId,
+        scope,
+        {selectionPolicyRevision, grantRevision},
       );
-      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
-      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
+      return res.json({success: true, codebase});
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (message === 'pending_generation_expired') {
-        const codebaseId = routeParam(req.params.id);
-        registry.expirePendingGeneration(codebaseId, scope, candidateGenerationId, Date.now());
-        await cleanupInactiveCodebaseChunks(codebaseId, scope);
-      }
-      return res.status(409).json({success: false, error: message});
+      const status = error instanceof CodebaseManagementError ? error.status : 409;
+      return res.status(status).json({success: false, error: message});
     }
   });
 
@@ -1319,68 +1135,34 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       return res.status(400).json({success: false, error: (error as Error).message});
     }
     try {
-      const before = registry.get(routeParam(req.params.id), scope);
-      if (!before) return res.status(404).json({success: false, error: 'codebase_not_found'});
-      const codebase = registry.rejectPendingGeneration(
-        before.codebaseId,
-        scope,
+      const codebase = await codebaseManagementService.rejectPending(
+        routeParam(req.params.id),
         candidateGenerationId,
+        scope,
       );
-      const cleaned = await cleanupInactiveCodebaseChunks(codebase.codebaseId, scope) ?? codebase;
-      return res.json({success: true, codebase: sanitizeCodebase(cleaned)});
+      return res.json({success: true, codebase});
     } catch (error) {
-      return res.status(409).json({success: false, error: error instanceof Error ? error.message : String(error)});
+      const status = error instanceof CodebaseManagementError ? error.status : 409;
+      return res.status(status).json({
+        success: false,
+        error: error instanceof CodebaseManagementError && error.code === 'CODEBASE_NOT_FOUND'
+          ? 'codebase_not_found'
+          : error instanceof Error ? error.message : String(error),
+      });
     }
   });
 
   router.delete('/codebases/:id', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const codebaseId = routeParam(req.params.id);
-    const context = requireRequestContext(req);
-    const scope = knowledgeScopeFromRequestContext(context);
-    if (!registry.get(codebaseId, scope)) {
-      return res.json({
-        success: true,
-        codebaseId,
-        removedChunkCount: 0,
-        alreadyDeleted: true,
-      });
-    }
-    let deletionStarted = false;
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
     try {
-      return await registry.withIngestLease(codebaseId, scope, lease => {
-        lease.beginDeletion(context.userId);
-        deletionStarted = true;
-        const removedChunkCount = s.removeCodebaseChunks(codebaseId, scope);
-        lease.assertHeld();
-        lease.deleteRegistration();
-        return res.json({success: true, codebaseId, removedChunkCount});
-      }, 'delete');
+      return res.json({success: true, ...await codebaseManagementService.delete(codebaseId, scope)});
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message === 'codebase_reindex_in_progress' ||
-        message === 'codebase_reindex_lease_lost'
-      ) {
-        return res.status(409).json({
-          success: false,
-          code: 'CODEBASE_BUSY',
-          error: 'Codebase indexing is in progress; retry deletion after it finishes',
-        });
-      }
-      if (message.includes('not found')) {
-        return res.json({
-          success: true,
-          codebaseId,
-          removedChunkCount: 0,
-          alreadyDeleted: true,
-        });
-      }
-      return res.status(500).json({
+      const managementError = error instanceof CodebaseManagementError ? error : undefined;
+      return res.status(managementError?.status ?? 500).json({
         success: false,
-        code: deletionStarted ? 'CODEBASE_DELETE_INCOMPLETE' : 'CODEBASE_DELETE_FAILED',
-        error: deletionStarted
-          ? 'Codebase is retired from retrieval; retry deletion to finish physical cleanup'
-          : 'Codebase deletion failed',
+        code: managementError?.code ?? 'CODEBASE_DELETE_FAILED',
+        error: managementError?.message ?? 'Codebase deletion failed',
       });
     }
   });

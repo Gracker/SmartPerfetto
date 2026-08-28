@@ -20,6 +20,7 @@ import {
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {NativeDirectoryPicker} from '../../services/codebase/nativeDirectoryPicker';
 import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
+import {CodebaseManagementService} from '../../services/codebase/codebaseManagementService';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {AndroidInternalsWikiIngester} from '../../services/androidInternalsWiki/androidInternalsWikiIngester';
 
@@ -29,6 +30,7 @@ let registry: CodebaseRegistry;
 let externalKnowledgeRegistry: ExternalKnowledgeSourceRegistry;
 let app: express.Express;
 let directoryPicker: NativeDirectoryPicker;
+let codebaseManagementService: CodebaseManagementService;
 let pickerSelectedRoot: string;
 let pickerSelectionSequence: number;
 let externalPickerDir: string | undefined;
@@ -46,6 +48,12 @@ beforeEach(() => {
     path.join(tmpDir, 'external-knowledge-sources.json'),
   );
   const gate = new PathSecurityGate({allowlistRoots: [tmpDir]});
+  codebaseManagementService = new CodebaseManagementService({
+    registry,
+    store,
+    gate,
+    sourceEnumerator: new SourceEnumerator(),
+  });
   pickerSelectedRoot = tmpDir;
   pickerSelectionSequence = 0;
   directoryPicker = new NativeDirectoryPicker({
@@ -96,6 +104,7 @@ beforeEach(() => {
   app.use('/api/rag', createRagAdminRoutes(store, {
     registry,
     gate,
+    codebaseManagementService,
     directoryPicker,
     externalKnowledgeRegistry,
     androidInternalsWikiIngester: new AndroidInternalsWikiIngester(
@@ -509,6 +518,30 @@ describe('Android Internals Wiki routes', () => {
 });
 
 describe('codebase routes', () => {
+  it('uses the same safe preview projection as the management service', async () => {
+    const root = path.join(tmpDir, 'aosp-parity');
+    fs.mkdirSync(path.join(root, '.repo'), {recursive: true});
+    fs.mkdirSync(path.join(root, 'frameworks/base'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'frameworks/base/Foo.java'), 'class Foo {}\n');
+    fs.writeFileSync(path.join(root, '.repo/manifest.xml'), [
+      '<manifest>',
+      '  <project name="platform/frameworks/base" path="frameworks/base" groups="default,pdk" />',
+      '</manifest>',
+    ].join('\n'));
+
+    const expected = await codebaseManagementService.preview({
+      rootPath: root,
+      kind: 'aosp',
+    }, DEFAULT_SCOPE);
+    const response = await request(app)
+      .post('/api/rag/codebases/preview')
+      .send({rootPath: root, kind: 'aosp'});
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({success: true, preview: expected});
+    expect(JSON.stringify(response.body)).not.toContain(root);
+  });
+
   it('keeps AOSP preview available when optional manifest metadata is too large', async () => {
     const root = path.join(tmpDir, 'aosp-large-manifest');
     fs.mkdirSync(path.join(root, '.repo'), {recursive: true});
@@ -612,14 +645,16 @@ describe('codebase routes', () => {
     expect(listed.body.codebases).toEqual(expect.arrayContaining([
       expect.objectContaining({
         codebaseId: registered.body.codebase.codebaseId,
-        rootAuthorization: 'native_picker',
       }),
     ]));
+    expect(listed.body.codebases).toEqual(await codebaseManagementService.list(DEFAULT_SCOPE));
+    expect(JSON.stringify(listed.body)).not.toContain('rootAuthorization');
     const audit = await request(app)
       .get(`/api/rag/codebases/${registered.body.codebase.codebaseId}/audit`);
-    expect(audit.body.audit).toMatchObject({
-      rootAuthorization: 'native_picker',
-    });
+    expect(audit.body.audit).toEqual(
+      codebaseManagementService.audit(registered.body.codebase.codebaseId, DEFAULT_SCOPE),
+    );
+    expect(JSON.stringify(audit.body)).not.toContain('rootAuthorization');
 
     const reused = await request(app)
       .post('/api/rag/codebases/register')
