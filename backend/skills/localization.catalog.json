@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1226,
-    "explicitColumnCount": 3484
+    "explicitColumnCount": 3491
   },
   "skills": {
     "ams_module": {
@@ -8157,6 +8157,36 @@
             "en": "Code Pinpoint Candidates"
           },
           "columns": {
+            "slice_id": {
+              "label": {
+                "zh-CN": "SliceId",
+                "en": "Slice ID"
+              }
+            },
+            "ts": {
+              "label": {
+                "zh-CN": "Ts",
+                "en": "Timestamp"
+              }
+            },
+            "dur_ms": {
+              "label": {
+                "zh-CN": "Durms",
+                "en": "Duration"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "utid": {
+              "label": {
+                "zh-CN": "UTID",
+                "en": "UTID"
+              }
+            },
             "process_name": {
               "label": {
                 "zh-CN": "进程Name",
@@ -8175,21 +8205,46 @@
                 "en": "Slice"
               }
             },
-            "dur_ms": {
+            "anchor_kind": {
               "label": {
-                "zh-CN": "Durms",
-                "en": "Duration"
+                "zh-CN": "AnchorKind",
+                "en": "Anchor Kind"
+              }
+            },
+            "source_query_hint": {
+              "label": {
+                "zh-CN": "SourceQueryHint",
+                "en": "Source Query Hint"
               }
             }
           },
-          "synthesizeLabels": {}
+          "synthesizeLabels": {
+            "field:slice_name": {
+              "zh-CN": "Trace 锚点",
+              "en": "Slice Name"
+            },
+            "field:anchor_kind": {
+              "zh-CN": "锚点类型",
+              "en": "Anchor Kind"
+            },
+            "field:source_query_hint": {
+              "zh-CN": "源码检索词",
+              "en": "Source Query Hint"
+            }
+          }
         },
-        "native_modules": {
+        "native_symbols": {
           "title": {
-            "zh-CN": "NativeModules",
-            "en": "Native Module Hints"
+            "zh-CN": "NativeSymbols",
+            "en": "Native Symbol Anchors"
           },
           "columns": {
+            "function_name": {
+              "label": {
+                "zh-CN": "FunctionName",
+                "en": "Function"
+              }
+            },
             "module_name": {
               "label": {
                 "zh-CN": "ModuleName",
@@ -8202,14 +8257,31 @@
                 "en": "Build ID"
               }
             },
-            "frame_count": {
+            "sample_count": {
               "label": {
-                "zh-CN": "帧Count",
-                "en": "Frames"
+                "zh-CN": "SampleCount",
+                "en": "Samples"
               }
             }
           },
-          "synthesizeLabels": {}
+          "synthesizeLabels": {
+            "field:function_name": {
+              "zh-CN": "函数名",
+              "en": "Function Name"
+            },
+            "field:module_name": {
+              "zh-CN": "模块",
+              "en": "Module Name"
+            },
+            "field:build_id": {
+              "zh-CN": "BuildId",
+              "en": "Build ID"
+            },
+            "field:sample_count": {
+              "zh-CN": "采样数",
+              "en": "Sample Count"
+            }
+          }
         },
         "root": {
           "title": {

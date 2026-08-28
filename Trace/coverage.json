@@ -6249,21 +6249,28 @@
         "steps": [
           {
             "id": "hot_slices",
-            "sha256": "67b614dfa090dd8f99a281d5a68dbc4f9ae06b76105021a47b4767323b19ec6f",
+            "sha256": "458511d1d96e7fd5f273d775e6b25388e9f9d7171891f73dca3b112df969ec1c",
             "required_columns": [
+              "slice_id",
+              "ts",
+              "dur_ms",
+              "upid",
+              "utid",
               "process_name",
               "thread_name",
               "slice_name",
-              "dur_ms"
+              "anchor_kind",
+              "source_query_hint"
             ]
           },
           {
-            "id": "native_modules",
-            "sha256": "d1f7723b41646a57d51928c1b9aec895fb5a28cc3a676080a2cd242346fd44d7",
+            "id": "native_symbols",
+            "sha256": "de8ccf910eda9bcc41a931171d8422c9187bc1c8ffce4b2992891ef6bc0bb95e",
             "required_columns": [
+              "function_name",
               "module_name",
               "build_id",
-              "frame_count"
+              "sample_count"
             ]
           }
         ]

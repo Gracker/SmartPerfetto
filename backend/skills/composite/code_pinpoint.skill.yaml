@@ -3,7 +3,7 @@
 # This file is part of SmartPerfetto. See LICENSE for details.
 
 name: code_pinpoint
-version: "1.0"
+version: "1.1"
 type: composite
 tier: S
 
@@ -52,6 +52,24 @@ steps:
       layer: list
       title: "Code Pinpoint Candidates"
       columns:
+        - name: slice_id
+          label: "Slice ID"
+          type: number
+        - name: ts
+          label: "Timestamp"
+          type: timestamp
+          unit: ns
+          clickAction: navigate_timeline
+        - name: dur_ms
+          label: "Duration"
+          type: duration
+          unit: ms
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: utid
+          label: "UTID"
+          type: number
         - name: process_name
           label: "Process"
           type: string
@@ -61,51 +79,140 @@ steps:
         - name: slice_name
           label: "Slice"
           type: string
-        - name: dur_ms
-          label: "Duration"
-          type: duration
-          unit: ms
+        - name: anchor_kind
+          label: "Anchor Kind"
+          type: string
+        - name: source_query_hint
+          label: "Source Query Hint"
+          type: string
+    synthesize:
+      role: list
+      fields:
+        - key: slice_name
+          label: Trace 锚点
+        - key: anchor_kind
+          label: 锚点类型
+        - key: source_query_hint
+          label: 源码检索词
     sql: |
       INCLUDE PERFETTO MODULE slices.with_context;
 
       SELECT
+        id AS slice_id,
+        ts,
+        ROUND(dur / 1e6, 3) AS dur_ms,
+        upid,
+        utid,
         process_name,
         thread_name,
         name AS slice_name,
-        ROUND(dur / 1e6, 3) AS dur_ms
+        CASE
+          WHEN name = 'ChaosTask' THEN 'app_trace_label'
+          WHEN name GLOB 'L*;*'
+            OR name GLOB '*::*'
+            OR name GLOB '*#*'
+            THEN 'trace_symbol'
+          ELSE 'generic_anchor_only'
+        END AS anchor_kind,
+        CASE
+          WHEN name = 'ChaosTask'
+            OR name GLOB 'L*;*'
+            OR name GLOB '*::*'
+            OR name GLOB '*#*'
+            THEN name
+          ELSE NULL
+        END AS source_query_hint
       FROM thread_slice
       WHERE dur > 0
-        AND (${package} IS NULL OR process_name GLOB ${package} || '*')
+        AND (
+          '${package}' = ''
+          OR process_name = '${package}'
+          OR process_name GLOB '${package}:*'
+        )
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts + dur <= ${end_ts})
-      ORDER BY dur DESC
+      ORDER BY dur DESC, ts, id
       LIMIT 30;
 
-  - id: native_modules
+  - id: native_symbols
     type: atomic
-    name: "Native module / build-id 线索"
+    name: "Native symbol / module / build-id 线索"
     display:
       level: debug
       layer: deep
-      title: "Native Module Hints"
+      title: "Native Symbol Anchors"
       columns:
+        - name: function_name
+          label: "Function"
+          type: string
         - name: module_name
           label: "Module"
           type: string
         - name: build_id
           label: "Build ID"
           type: string
-        - name: frame_count
-          label: "Frames"
+        - name: sample_count
+          label: "Samples"
           type: number
+          format: compact
+    synthesize:
+      role: list
+      fields:
+        - key: function_name
+          label: 函数名
+        - key: module_name
+          label: 模块
+        - key: build_id
+          label: Build ID
+        - key: sample_count
+          label: 采样数
     optional: true
+    on_empty: "no_symbol_data: trace 中没有符合当前进程与时间窗的 CPU profiling 符号数据"
     sql: |
+      WITH
+      scoped_samples AS (
+        SELECT ps.callsite_id
+        FROM perf_sample ps
+        JOIN thread t ON t.utid = ps.utid
+        JOIN process p ON p.upid = t.upid
+        WHERE (
+          '${package}' = ''
+          OR p.name = '${package}'
+          OR p.name GLOB '${package}:*'
+        )
+          AND (${start_ts} IS NULL OR ps.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR ps.ts <= ${end_ts})
+      ),
+      resolved_samples AS (
+        SELECT
+          COALESCE(
+            (
+              SELECT symbol.name
+              FROM stack_profile_symbol symbol
+              WHERE symbol.symbol_set_id = frame.symbol_set_id
+              ORDER BY symbol.inlined DESC, symbol.id
+              LIMIT 1
+            ),
+            frame.deobfuscated_name,
+            frame.name
+          ) AS function_name,
+          mapping.name AS module_name,
+          mapping.build_id AS build_id
+        FROM scoped_samples sample
+        JOIN stack_profile_callsite callsite ON callsite.id = sample.callsite_id
+        JOIN stack_profile_frame frame ON frame.id = callsite.frame_id
+        JOIN stack_profile_mapping mapping ON mapping.id = frame.mapping
+      )
       SELECT
-        COALESCE(m.name, '(unknown)') AS module_name,
-        COALESCE(m.build_id, '') AS build_id,
-        COUNT(*) AS frame_count
-      FROM stack_profile_frame f
-      JOIN stack_profile_mapping m ON f.mapping = m.id
-      GROUP BY module_name, build_id
-      ORDER BY frame_count DESC
+        function_name,
+        module_name,
+        build_id,
+        COUNT(*) AS sample_count
+      FROM resolved_samples
+      WHERE function_name IS NOT NULL
+        AND function_name != ''
+        AND module_name IS NOT NULL
+        AND module_name != ''
+      GROUP BY function_name, module_name, build_id
+      ORDER BY sample_count DESC, function_name, module_name, build_id
       LIMIT 30;

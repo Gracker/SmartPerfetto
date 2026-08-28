@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "3218045053164aa342f1a70dc8bc684d41dfab7846ea0a814fb804622fc91ae4",
+    "sha256": "27fc66551b4d8a26bb3290228dea7a0174ccb946e89a5aa6ab4641380c376eff",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -165,21 +165,45 @@
         "parameters": {},
         "required_steps": [
           "hot_slices",
-          "native_modules"
+          "native_symbols"
         ],
         "required_sql_steps": [
           "hot_slices",
-          "native_modules"
+          "native_symbols"
         ],
         "forced_sql_steps": [],
         "isolated_sql_probes": [],
         "expected_condition_skips": [],
         "semantic_step": "hot_slices",
         "required_columns": [
+          "slice_id",
+          "ts",
+          "dur_ms",
+          "upid",
+          "utid",
           "process_name",
           "thread_name",
           "slice_name",
-          "dur_ms"
+          "anchor_kind",
+          "source_query_hint"
+        ],
+        "min_rows": 1,
+        "assertions": [
+          {
+            "column": "slice_name",
+            "operator": "eq",
+            "value": "ChaosTask"
+          },
+          {
+            "column": "anchor_kind",
+            "operator": "eq",
+            "value": "app_trace_label"
+          },
+          {
+            "column": "source_query_hint",
+            "operator": "eq",
+            "value": "ChaosTask"
+          }
         ],
         "required_marker": "SmartPerfetto::CASE::framework-pipelines"
       },

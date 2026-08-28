@@ -163,6 +163,14 @@ const REQUIRED_STEP_OVERRIDES = new Map([
 ]);
 
 const SEMANTIC_ASSERTION_OVERRIDES = new Map([
+  ['code_pinpoint', {
+    min_rows: 1,
+    assertions: [
+      {column: 'slice_name', operator: 'eq', value: 'ChaosTask'},
+      {column: 'anchor_kind', operator: 'eq', value: 'app_trace_label'},
+      {column: 'source_query_hint', operator: 'eq', value: 'ChaosTask'},
+    ],
+  }],
   ['camera_trace_evidence', {
     min_rows: 2,
     assertions: [
@@ -605,6 +613,37 @@ function scenarioForFamily(family) {
         grid: {x: 32, y: 1, z: 1},
         workgroup: {x: 16, y: 1, z: 1},
         args: {registers_per_thread: 16, shared_mem_static: 512, shared_mem_dynamic: 0, barriers_per_block: 1, waves_per_multiprocessor: 2},
+      },
+    );
+  }
+  if (family.id === 'framework-pipelines') {
+    familySignals.push(
+      {
+        type: 'atrace-slice',
+        at_ns: '520000000',
+        duration_ns: '80000000',
+        process: 'app',
+        thread: 'main',
+        name: 'ChaosTask',
+      },
+      {
+        type: 'atrace-slice',
+        at_ns: '620000000',
+        duration_ns: '70000000',
+        process: 'app',
+        thread: 'main',
+        name: 'GenericTraceSpan',
+      },
+      {
+        type: 'perf-sample',
+        at_ns: '720000000',
+        process: 'app',
+        thread: 'main',
+        function_name: 'SmartPerfettoFrameworkHotFunction',
+        module_name: 'libsmartperfetto_framework_fixture.so',
+        sample_count: 12,
+        sample_interval_ns: '1000000',
+        cpu: 0,
       },
     );
   }
