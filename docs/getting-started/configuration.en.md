@@ -650,3 +650,94 @@ Rate-limit state is lost after restart. For strict production quotas, add persis
 ## Runtime and Provider Boundary
 
 `SMARTPERFETTO_AGENT_RUNTIME` only selects the backend orchestration runtime and only accepts `claude-agent-sdk`, `openai-agents-sdk`, `pi-agent-core`, `opencode`, or `qoder-agent-sdk`. Do not put provider names here.
+
+## Runtime Concurrency Candidate Admission
+
+Shipped configuration admits no performance-concurrency candidate by default.
+Only maintainers who have completed the candidate's deterministic and real-
+provider A/B gates may set the following on the target backend process:
+
+```bash
+SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
+```
+
+The value accepts only a comma-separated list of `task4`, `task5`, `task6`,
+`task7`, `task8`, and `task9`. Leading, trailing, or item whitespace, duplicate
+items, empty items, unknown items, or any malformed value invalidate the whole
+setting and admit nothing. This is a maintainer deployment boundary, not a
+Provider Manager, UI, or provider-credential env option. Benchmark artifacts
+never edit or activate it automatically.
+
+- `task4`: reuse quick-evidence/focus preflight across all five runtimes.
+- `task5`: permit bounded overlap for marked commutative reads across all five runtimes; other tools stay exclusive.
+- `task6`: overlap independent Claude/OpenAI preflights.
+- `task7`: load independent Pi SDK/provider startup concurrently and enable quick parallel-batch scheduling; descriptor/tool gates still serialize exclusive work.
+- `task8`: observe OpenCode messages/status together with adaptive polling.
+- `task9`: overlap Qoder Skill-registry and SDK startup.
+
+Once `task5` is admitted, safe read concurrency is on by default. The following
+setting can only roll it back to exclusive execution; it cannot enable the
+branch without `task5` admission:
+
+```bash
+SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false
+```
+
+Current shipped defaults remain serial because genuine deterministic admission
+for all five adapters is `NOT CONFIGURED`, bounded real-provider base/candidate
+A/B has not run, and the admission conclusion is `INCONCLUSIVE`. Correctness
+and observability fixes such as the execution guard, processor-creation
+single-flight, failed-cache retry, cancellation cleanup, and internal
+performance receipts remain active independently of candidate admission.
+
+### Scoped Local Benchmark
+
+The benchmark accepts only two distinct explicit loopback HTTP origins with
+ports and never connects to remote hosts. First use an independent lifecycle
+controller to start base/candidate targets and produce a receipt that binds
+both target identities/config/source, distinct fresh data roots and sessions,
+per-pair cache reset, the cold/warm protocol, candidate fingerprint, and output
+nonce. Then run exactly one candidate:
+
+```bash
+cd backend
+npm run benchmark:agent-latency -- \
+  --base-url http://127.0.0.1:10000 \
+  --candidate-url http://127.0.0.1:10001 \
+  --runtime openai-agents-sdk \
+  --candidate task6 \
+  --candidate-config-fingerprint <lowercase-hex-fingerprint> \
+  --output-run-nonce <lowercase-hex-nonce> \
+  --output-dir test-output/runtime-concurrency/<fresh-run> \
+  --lifecycle-receipt /absolute/path/to/lifecycle-receipt.json
+```
+
+`--candidate` must match the runtime and appear together with its candidate
+fingerprint. An admissible real run requires a validated, fresh lifecycle
+receipt; a result without one can only remain serial/inconclusive.
+`--output-dir` must be a previously nonexistent path under
+`backend/test-output/runtime-concurrency/`. That tree is Git-ignored, and old
+output must never be reused.
+
+To inspect local credential/binary availability and the harness output boundary
+only, omit `--candidate`, candidate fingerprint, nonce, and lifecycle receipt.
+This diagnostic still requires both loopback URLs, a runtime, and a fresh output
+path, but it makes no target calls, produces no admission, and exits with a
+non-success admission status:
+
+```bash
+cd backend
+npm run benchmark:agent-latency -- \
+  --base-url http://127.0.0.1:10000 \
+  --candidate-url http://127.0.0.1:10001 \
+  --runtime openai-agents-sdk \
+  --output-dir test-output/runtime-concurrency/<fresh-diagnostic>
+```
+
+The RunManifest `RuntimePerformance` receipt is internal evidence. Public SSE
+does not include admission-grade model, provider snapshot, provider usage, or
+performance fields. Deterministic gates are not real-provider proof either:
+record unavailable credentials, SDKs, or local login state precisely as
+`NOT AVAILABLE` or `NOT CONFIGURED`. Qoder requires a PAT or local `qodercli`
+login in addition to a BYOK provider key; BYOK alone does not prove Qoder can
+run.

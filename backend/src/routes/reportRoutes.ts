@@ -580,7 +580,10 @@ router.get('/assets/mermaid.min.js', (_req, res) => {
   // `sendFile` rejects such an already-validated absolute path unless dotfile
   // traversal is explicitly allowed, even though the target itself is not a
   // dotfile and `resolveReportMermaidAssetPath` has already fail-closed it.
-  return res.sendFile(assetPath, {dotfiles: 'allow'});
+  return res.sendFile(assetPath, {dotfiles: 'allow'}, error => {
+    if (!error || res.headersSent) return;
+    res.status(404).type('text/plain').send('Mermaid report asset is unavailable');
+  });
 });
 
 /** Save a report to disk. Called externally when reports are generated. */

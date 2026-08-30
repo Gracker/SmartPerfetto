@@ -17,10 +17,11 @@
  *   - one place to derive an `McpToolAci[]` snapshot (used by M1
  *     to populate `McpPublicApiContract`)
  *
- * Critical invariant: this file changes NO runtime behavior. The
- * existing in-process SDK MCP server keeps registering the same
- * tools with the same short names; the registry is just the named
- * vehicle. Trace regression 6/6 PASS proves zero impact.
+ * Critical invariant: registration preserves each tool's canonical
+ * name, exposure, schema, and handler result. Runtime wrappers may
+ * coordinate admitted tool concurrency and record timing receipts;
+ * those policies come from the canonical `SharedToolSpec` rather
+ * than being re-decided by individual runtime adapters.
  *
  * Out of scope for M0:
  *   - stdio adapter (lands in M1 as `standaloneMcpServer.ts`)
@@ -37,8 +38,13 @@ import {
   compactSharedToolSpec,
   createClaudeSdkToolFromSharedSpec,
   sharedToolSpecFromClaudeSdkTool,
+  withRuntimeToolConcurrency,
   type SharedToolSpec,
 } from '../agentRuntime/runtimeToolSpec';
+import {
+  createRuntimeToolConcurrencyCoordinator,
+  type RuntimeToolConcurrencyCoordinator,
+} from '../agentRuntime/runtimeToolConcurrency';
 import {
   type McpToolAci,
   type McpToolExposure,
@@ -46,6 +52,7 @@ import {
   type McpPublicApiContract,
 } from '../types/sparkContracts';
 import {getPlanToolCapability, type PlanToolCapability} from './types';
+import type {RunManifestAttributionSink} from '../types/selfEvolution';
 
 /** MCP tool name prefix — derived from the server name `'smartperfetto'`.
  * `claudeMcpServer.ts` exports the same constant; both files agree
@@ -131,6 +138,17 @@ export function buildAllowedTools(
  */
 export class McpToolRegistry {
   private readonly entries: McpToolDefinition[] = [];
+  private readonly toolConcurrencyCoordinator: RuntimeToolConcurrencyCoordinator;
+  private readonly runManifestAttributionSink?: RunManifestAttributionSink;
+
+  constructor(options: {
+    toolConcurrencyCoordinator?: RuntimeToolConcurrencyCoordinator;
+    runManifestAttributionSink?: RunManifestAttributionSink;
+  } = {}) {
+    this.toolConcurrencyCoordinator = options.toolConcurrencyCoordinator
+      ?? createRuntimeToolConcurrencyCoordinator();
+    this.runManifestAttributionSink = options.runManifestAttributionSink;
+  }
 
   /** Add a tool to the registry. Does NOT prevent duplicates by
    * name; callers control ordering and uniqueness explicitly so the
@@ -143,7 +161,11 @@ export class McpToolRegistry {
       def.exposure,
       {summary: def.summary, requires: def.requires},
     );
-    const runtimeShared = compactSharedToolSpec(shared);
+    const runtimeShared = withRuntimeToolConcurrency(
+      compactSharedToolSpec(shared),
+      this.toolConcurrencyCoordinator,
+      {runManifestAttributionSink: this.runManifestAttributionSink},
+    );
     this.entries.push({
       name: runtimeShared.name,
       shared: runtimeShared,
@@ -162,7 +184,7 @@ export class McpToolRegistry {
     tool: unknown,
     name: string,
     exposure: McpToolExposure,
-    extras?: Pick<McpToolDefinition, 'summary' | 'requires'>,
+    extras?: Pick<McpToolDefinition, 'summary' | 'requires'> & Pick<SharedToolSpec, 'concurrency'>,
   ): void {
     this.register({
       tool,

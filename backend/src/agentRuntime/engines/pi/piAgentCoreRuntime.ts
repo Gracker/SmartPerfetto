@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 import type { IOrchestrator } from '../../../agent/core/orchestratorTypes';
 import type { AnalysisOptions, AnalysisResult } from '../../../agent/core/orchestratorTypes';
@@ -90,7 +91,11 @@ import {
   verifyConclusion,
 } from '../claude/claudeVerifier';
 import type { ClaimVerificationResult } from '../../../types/claimVerification';
-import type { RuntimeToolResult, SharedToolSpec } from '../../runtimeToolSpec';
+import type {
+  RuntimeToolConcurrencyPolicy,
+  RuntimeToolResult,
+  SharedToolSpec,
+} from '../../runtimeToolSpec';
 import {
   createJsonSchemaFromZodRawShape,
   normalizeRuntimeToolArgs,
@@ -122,17 +127,27 @@ import {
   shouldMarkQuickRunTriage,
   toProtocolHypothesis as toRuntimeProtocolHypothesis,
 } from '../../runtimeCommon';
+import {
+  createRuntimePerformanceRun,
+  runtimeOutcomeFromError,
+  type RuntimePerformanceOutcome,
+  type RuntimePerformanceRun,
+} from '../../runtimePerformance';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { assessFinalReportContractCompleteness } from '../../../services/finalReportContractGate';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
+import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {buildAdaptiveRoutingForQuickResolution} from '../../adaptiveRoutingProjection';
 import {resolveRuntimeFinalReportSceneType} from '../../finalReportSceneResolution';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
 import {loadRuntimePlanCompletionContinuationPrompt} from '../../planCompletionContinuation';
 import {
-  buildRuntimeQuickEvidenceDirectAnswer,
+  buildRuntimeQuickEvidenceAttempt,
+  selectReusableRuntimeQuickEvidenceAttempt,
   type RuntimeQuickEvidenceCounts,
   type RuntimeQuickEvidenceDirectAnswer,
+  type RuntimeQuickEvidenceAttempt,
 } from '../../quickEvidenceDirectAnswer';
 import {
   buildQuickDirectAcknowledgementAnalysisResult,
@@ -142,6 +157,13 @@ import {
   emitQuickDirectQualityGateIssue,
 } from '../../quickDirectResult';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
+import {
+  DEFAULT_EXTERNAL_TOOL_RESULT_MAX_CHARS,
+  DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+  DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+  summarizeExternalToolResult,
+  type RuntimeTimeoutKind,
+} from '../../runtimeLimits';
 import {
   createPiAgentCoreProviderRuntime,
   type PiAgentCoreProviderRuntimeLoader,
@@ -169,6 +191,14 @@ export const PI_AGENT_CORE_MODULE_PATH_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODULE
 export const PI_AGENT_CORE_FAKE_STREAM_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_FAKE_STREAM';
 export const PI_AGENT_CORE_MODEL_JSON_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_MODEL_JSON';
 export const PI_AGENT_CORE_SYSTEM_PROMPT_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_SYSTEM_PROMPT';
+export const PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_REQUEST_TIMEOUT_MS';
+export const PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS';
+export const PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV = 'SMARTPERFETTO_PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS';
+
+const AGENT_FULL_REQUEST_TIMEOUT_MS_ENV = 'AGENT_FULL_REQUEST_TIMEOUT_MS';
+const AGENT_STREAM_IDLE_TIMEOUT_MS_ENV = 'AGENT_STREAM_IDLE_TIMEOUT_MS';
+const PI_AGENT_CORE_PROVIDER_TEXT_MAX_CHARS = DEFAULT_EXTERNAL_TOOL_RESULT_MAX_CHARS;
+const PI_AGENT_CORE_DEFAULT_ABORT_JOIN_TIMEOUT_MS = 5_000;
 
 function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
@@ -326,7 +356,8 @@ export interface PiAgentCoreTool {
   label: string;
   description: string;
   parameters: Record<string, unknown>;
-  executionMode: 'sequential';
+  executionMode: PiAgentCoreNativeToolExecutionMode;
+  concurrency?: RuntimeToolConcurrencyPolicy;
   execute(
     toolCallId: string,
     params: unknown,
@@ -379,6 +410,166 @@ interface PiAnalysisPreparation {
 function truthyEnv(value: string | undefined): boolean {
   const normalized = value?.trim().toLowerCase();
   return normalized === '1' || normalized === 'true' || normalized === 'on' || normalized === 'yes';
+}
+
+function positiveIntegerEnv(env: EnvLike, keys: readonly string[], fallback: number): number {
+  for (const key of keys) {
+    const raw = env[key]?.trim();
+    if (!raw) continue;
+    const value = Number(raw);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  }
+  return fallback;
+}
+
+function resolvePiRuntimeTimeouts(env: EnvLike): {
+  requestTimeoutMs: number;
+  streamIdleTimeoutMs: number;
+  abortJoinTimeoutMs: number;
+} {
+  return {
+    requestTimeoutMs: positiveIntegerEnv(
+      env,
+      [PI_AGENT_CORE_REQUEST_TIMEOUT_MS_ENV, AGENT_FULL_REQUEST_TIMEOUT_MS_ENV],
+      DEFAULT_FULL_REQUEST_TIMEOUT_MS,
+    ),
+    streamIdleTimeoutMs: positiveIntegerEnv(
+      env,
+      [PI_AGENT_CORE_STREAM_IDLE_TIMEOUT_MS_ENV, AGENT_STREAM_IDLE_TIMEOUT_MS_ENV],
+      DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
+    ),
+    abortJoinTimeoutMs: positiveIntegerEnv(
+      env,
+      [PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV],
+      PI_AGENT_CORE_DEFAULT_ABORT_JOIN_TIMEOUT_MS,
+    ),
+  };
+}
+
+function stableFingerprintValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableFingerprintValue);
+  if (!value || typeof value !== 'object') return value;
+  const record = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(record).sort()) {
+    out[key] = stableFingerprintValue(record[key]);
+  }
+  return out;
+}
+
+function piRuntimeFingerprint(value: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(stableFingerprintValue(value)))
+    .digest('hex');
+}
+
+function moduleCacheKey(env: EnvLike): string {
+  return piRuntimeFingerprint({
+    modulePath: env[PI_AGENT_CORE_MODULE_PATH_ENV]?.trim() || 'default',
+  });
+}
+
+function providerCacheKey(config: PiAgentCoreModelConfig, env: EnvLike): string {
+  return piRuntimeFingerprint({
+    config,
+    resolvedApiKeyEnv: config.apiKeyEnv
+      ? {[config.apiKeyEnv]: env[config.apiKeyEnv]}
+      : undefined,
+  });
+}
+
+function buildPiTimeoutResult(input: {
+  sessionId: string;
+  startedAt: number;
+  timeoutKind: RuntimeTimeoutKind;
+  timeoutMs: number;
+  reason?: unknown;
+}): AnalysisResult {
+  const message = input.timeoutKind === 'stream_idle'
+    ? `Pi Agent Core provider stream idle timeout after ${input.timeoutMs}ms.`
+    : `Pi Agent Core request timeout after ${input.timeoutMs}ms.`;
+  const detail = input.reason instanceof Error
+    ? input.reason.message
+    : typeof input.reason === 'string' ? input.reason : undefined;
+  const terminationMessage = detail && detail !== message ? `${message} ${detail}` : message;
+  return {
+    sessionId: input.sessionId,
+    success: false,
+    findings: [],
+    hypotheses: [],
+    conclusion: terminationMessage,
+    confidence: 0,
+    rounds: 1,
+    totalDurationMs: Date.now() - input.startedAt,
+    partial: true,
+    terminationReason: 'timeout',
+    terminationMessage,
+  };
+}
+
+function createPiProviderIdleSupervisor(input: {
+  sessionId: string;
+  timeoutMs: number;
+  markTimeout: (kind: RuntimeTimeoutKind, timeoutMs: number) => void;
+  abort: () => void;
+}): {
+  readonly promise: Promise<never>;
+  start(): void;
+  pause(): void;
+  clear(): void;
+  onEvent(event: PiAgentCoreEvent): void;
+} {
+  let activeTools = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let rejectTimeout: ((error: Error) => void) | undefined;
+  let settled = false;
+  const promise = new Promise<never>((_, reject) => {
+    rejectTimeout = reject;
+  });
+  const clearTimer = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+  const schedule = () => {
+    if (settled) return;
+    clearTimer();
+    if (activeTools > 0) return;
+    timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      timer = undefined;
+      input.markTimeout('stream_idle', input.timeoutMs);
+      input.abort();
+      rejectTimeout?.(new Error(
+        `Pi Agent Core provider stream idle timeout after ${input.timeoutMs}ms`,
+      ));
+    }, input.timeoutMs);
+  };
+  return {
+    promise,
+    start: schedule,
+    pause: () => {
+      clearTimer();
+    },
+    clear: () => {
+      settled = true;
+      clearTimer();
+    },
+    onEvent: (event) => {
+      if (settled) return;
+      if (event.type === 'tool_execution_start') {
+        activeTools += 1;
+        clearTimer();
+        return;
+      }
+      if (event.type === 'tool_execution_end') {
+        activeTools = Math.max(0, activeTools - 1);
+        schedule();
+        return;
+      }
+      if (isPiAgentCoreProviderActivityEvent(event)) schedule();
+    },
+  };
 }
 
 export function getPiAgentCoreEngineCapabilities(
@@ -769,6 +960,92 @@ function extractPiAssistantErrorMessage(message: unknown): string | undefined {
   return errorMessage || `Pi Agent Core assistant stopped with ${stopReason || 'an execution error'}.`;
 }
 
+function hasPiAssistantMessageText(value: unknown): boolean {
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (!value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(hasPiAssistantMessageText);
+  const record = value as Record<string, unknown>;
+  if (record.type === 'text' && typeof record.text === 'string' && record.text.trim().length > 0) {
+    return true;
+  }
+  if (record.type === 'thinking' && typeof record.thinking === 'string' && record.thinking.trim().length > 0) {
+    return true;
+  }
+  return hasPiAssistantMessageText(record.content);
+}
+
+function hasNonBlankPiEventText(event: Record<string, unknown>): boolean {
+  return (typeof event.delta === 'string' && event.delta.trim().length > 0) ||
+    (typeof event.text === 'string' && event.text.trim().length > 0) ||
+    (typeof event.thinking === 'string' && event.thinking.trim().length > 0);
+}
+
+const PI_ASSISTANT_ACTIVITY_EVENT_TYPES = new Set([
+  'start',
+  'text_start',
+  'text_delta',
+  'text_end',
+  'thinking_start',
+  'thinking_delta',
+  'thinking_end',
+  'toolcall_start',
+  'toolcall_delta',
+  'toolcall_end',
+  'done',
+  'error',
+]);
+
+const PI_ASSISTANT_DELTA_ACTIVITY_EVENT_TYPES = new Set([
+  'text_delta',
+  'thinking_delta',
+  'toolcall_delta',
+]);
+
+const PI_ASSISTANT_VISIBLE_OUTPUT_EVENT_TYPES = new Set([
+  'text_delta',
+  'thinking_delta',
+]);
+
+export function isPiAgentCoreProviderActivityEvent(event: PiAgentCoreEvent): boolean {
+  if (event.type !== 'message_update') return false;
+  const assistantEvent = event.assistantMessageEvent;
+  if (!assistantEvent || typeof assistantEvent !== 'object') return false;
+  const assistantRecord = assistantEvent as Record<string, unknown>;
+  const eventType = typeof assistantRecord.type === 'string' ? assistantRecord.type : undefined;
+  if (!eventType) {
+    return typeof assistantRecord.text === 'string' && assistantRecord.text.trim().length > 0;
+  }
+  if (!PI_ASSISTANT_ACTIVITY_EVENT_TYPES.has(eventType)) return false;
+  return PI_ASSISTANT_DELTA_ACTIVITY_EVENT_TYPES.has(eventType)
+    ? hasNonBlankPiEventText(assistantRecord)
+    : true;
+}
+
+export function isPiAgentCoreVisibleOutputEvent(event: PiAgentCoreEvent): boolean {
+  if (event.type === 'message_update') {
+    const assistantEvent = event.assistantMessageEvent;
+    if (!assistantEvent || typeof assistantEvent !== 'object') return false;
+    const assistantRecord = assistantEvent as Record<string, unknown>;
+    const eventType = typeof assistantRecord.type === 'string' ? assistantRecord.type : undefined;
+    if (!eventType) {
+      return typeof assistantRecord.text === 'string' && assistantRecord.text.trim().length > 0;
+    }
+    return PI_ASSISTANT_VISIBLE_OUTPUT_EVENT_TYPES.has(eventType) &&
+      hasNonBlankPiEventText(assistantRecord);
+  }
+  if (event.type === 'agent_end' && Array.isArray(event.messages)) {
+    return event.messages.some(message => (
+      (message as {role?: unknown} | undefined)?.role === 'assistant' &&
+      hasPiAssistantMessageText(message)
+    ));
+  }
+  return false;
+}
+
+export function isPiAgentCoreProviderOutputEvent(event: PiAgentCoreEvent): boolean {
+  return isPiAgentCoreVisibleOutputEvent(event);
+}
+
 export function projectPiAgentCoreEventToStreamingUpdate(
   event: PiAgentCoreEvent,
   timestamp = Date.now(),
@@ -862,13 +1139,102 @@ export function projectPiAgentCoreEventToStreamingUpdate(
 
 function stringifyPiToolResult(result: RuntimeToolResult): Array<{ type: 'text'; text: string }> {
   const content = (result as { content?: Array<Record<string, unknown>> }).content;
-  if (!Array.isArray(content)) {
-    return [{ type: 'text', text: typeof result === 'string' ? result : JSON.stringify(result) }];
+  const providerFacingValue = Array.isArray(content)
+    ? content.map((block) => (
+      typeof block.text === 'string' ? block.text : block
+    )).join('\n')
+    : typeof result === 'string' ? result : result;
+  return [{
+    type: 'text',
+    text: summarizeExternalToolResult(
+      providerFacingValue,
+      PI_AGENT_CORE_PROVIDER_TEXT_MAX_CHARS,
+    ),
+  }];
+}
+
+export type PiAgentCoreNativeToolExecutionMode = 'sequential' | 'parallel';
+
+export function resolvePiAgentCoreNativeToolExecutionMode(input: {
+  quickMode: boolean;
+  tools: readonly {concurrency?: RuntimeToolConcurrencyPolicy}[];
+  env?: Record<string, string | undefined>;
+}): PiAgentCoreNativeToolExecutionMode {
+  if (
+    !isRuntimeCandidateAdmitted('task7', input.env)
+    || !input.quickMode
+    || input.tools.length === 0
+  ) return 'sequential';
+  return 'parallel';
+}
+
+function createPiAbortPromise(signal: AbortSignal): {promise: Promise<never>; clear(): void} {
+  if (signal.aborted) {
+    return {
+      promise: Promise.reject(signal.reason instanceof Error
+        ? signal.reason
+        : new Error(signal.reason ? String(signal.reason) : 'Pi Agent Core execution aborted')),
+      clear: () => undefined,
+    };
   }
-  return content.map((block) => ({
-    type: 'text' as const,
-    text: typeof block.text === 'string' ? block.text : JSON.stringify(block),
-  }));
+  let onAbort: (() => void) | undefined;
+  const promise = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason instanceof Error
+      ? signal.reason
+      : new Error(signal.reason ? String(signal.reason) : 'Pi Agent Core execution aborted'));
+    signal.addEventListener('abort', onAbort, {once: true});
+  });
+  return {
+    promise,
+    clear: () => {
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+async function joinPiPromptCleanup(
+  promptPromise: Promise<unknown>,
+  abortJoinTimeoutMs: number,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const cleanup = promptPromise.then(() => true, () => true);
+  const bounded = new Promise<false>(resolve => {
+    timer = setTimeout(() => resolve(false), abortJoinTimeoutMs);
+  });
+  try {
+    return await Promise.race([cleanup, bounded]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runPiProviderPromptWithSupervision(input: {
+  agent: PiAgentCoreAgent;
+  prompt: string;
+  providerIdle: ReturnType<typeof createPiProviderIdleSupervisor>;
+  executionLease: RuntimeExecutionLease;
+  abortJoinTimeoutMs: number;
+}): Promise<void> {
+  input.providerIdle.start();
+  const promptPromise = input.agent.prompt(input.prompt);
+  const abort = createPiAbortPromise(input.executionLease.signal);
+  void abort.promise.catch(() => undefined);
+  try {
+    await Promise.race([promptPromise, input.providerIdle.promise, abort.promise]);
+    input.providerIdle.pause();
+  } catch (error) {
+    input.agent.abort();
+    if (input.executionLease.signal.aborted) {
+      await promptPromise.catch(() => undefined);
+    } else if (
+      !(error instanceof Error && error.message.includes('provider stream idle timeout'))
+    ) {
+      input.providerIdle.pause();
+    }
+    throw error;
+  } finally {
+    abort.clear();
+  }
 }
 
 function normalizeStringArray(value: unknown): string[] | undefined {
@@ -940,7 +1306,8 @@ export function createPiAgentCoreToolFromSharedSpec(
     label: spec.summary || spec.name,
     description: spec.description,
     parameters: createJsonSchemaFromZodRawShape(spec.inputSchema),
-    executionMode: 'sequential',
+    executionMode: spec.concurrency?.mode === 'commutative_read' ? 'parallel' : 'sequential',
+    ...(spec.concurrency ? {concurrency: spec.concurrency} : {}),
     execute: async (toolCallId, params, signal, onUpdate) => {
       if (signal?.aborted) {
         return {
@@ -959,6 +1326,12 @@ export function createPiAgentCoreToolFromSharedSpec(
         signal,
         ...(options.extra && typeof options.extra === 'object' ? options.extra : {}),
       });
+      if (signal?.aborted) {
+        return {
+          content: [{ type: 'text', text: 'Tool execution aborted after handler completion.' }],
+          isError: true,
+        };
+      }
       const codeReferences = extractSourceLookupCodeReferences(spec.name, result);
       recordPlanOrPrePlanToolCall(options.analysisPlan, {
         toolName: spec.name,
@@ -1053,7 +1426,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   private readonly env: EnvLike;
   private readonly moduleLoader: PiAgentCoreModuleLoader;
   private readonly providerRuntimeLoader: PiAgentCoreProviderRuntimeLoader;
-  private providerRuntime: ReturnType<PiAgentCoreProviderRuntimeLoader> | undefined;
+  private readonly moduleRuntimeCache = new Map<string, ReturnType<PiAgentCoreModuleLoader>>();
+  private readonly providerRuntimeCache = new Map<string, ReturnType<PiAgentCoreProviderRuntimeLoader>>();
   private readonly activeAgents = new Map<string, PiAgentCoreAgent>();
   private readonly artifactStores = new Map<string, ArtifactStore>();
   private readonly sessionNotes = new Map<string, AnalysisNote[]>();
@@ -1062,6 +1436,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
   private readonly sessionOpaqueStates = new Map<string, PiAgentCoreOpaqueState>();
+  private readonly suppressedOpaqueStateSessions = new Set<string>();
+  private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
     private readonly traceProcessorService: TraceProcessorService,
@@ -1084,10 +1460,124 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ...options,
       analysisMode: resolveEffectiveAnalysisMode(options.analysisMode, options),
     };
-    const fakeStream = truthyEnv(this.env[PI_AGENT_CORE_FAKE_STREAM_ENV]);
-    return fakeStream
-      ? this.analyzeFakeStream(query, sessionId, traceId, options)
-      : this.analyzeWithSmartPerfettoTools(query, sessionId, traceId, options);
+    const executionLease = this.executionGuard.begin({
+      runtime: PI_AGENT_CORE_RUNTIME_KIND,
+      sessionId,
+      referenceTraceId: options.referenceTraceId,
+      runId: options.runId,
+    });
+    this.suppressedOpaqueStateSessions.delete(sessionId);
+    const startedAt = Date.now();
+    const runtimePerformance = createRuntimePerformanceRun(
+      options.runManifestAttributionSink,
+    );
+    const timeouts = resolvePiRuntimeTimeouts(this.env);
+    let runtimePerformanceOutcome: RuntimePerformanceOutcome = 'ok';
+    let result: AnalysisResult | undefined;
+    let analysis: Promise<AnalysisResult> | undefined;
+    let sourceUse: PiAnalysisPreparation['sourceUse'] | undefined;
+    let deferLeaseSettleToAnalysisCleanup = false;
+    let leaseSettled = false;
+    let timedOut: {kind: RuntimeTimeoutKind; timeoutMs: number} | undefined;
+    let requestTimer: ReturnType<typeof setTimeout> | undefined;
+    const settleLease = () => {
+      if (leaseSettled) return;
+      leaseSettled = true;
+      executionLease.settle();
+    };
+    const markTimeout = (kind: RuntimeTimeoutKind, timeoutMs: number) => {
+      timedOut ??= {kind, timeoutMs};
+    };
+    const requestTimeout = new Promise<never>((_, reject) => {
+      requestTimer = setTimeout(() => {
+        markTimeout('request', timeouts.requestTimeoutMs);
+        this.suppressedOpaqueStateSessions.add(sessionId);
+        void this.executionGuard
+          .abortSession(sessionId, `Pi Agent Core request timeout after ${timeouts.requestTimeoutMs}ms`)
+          .catch(() => undefined);
+        this.activeAgents.get(sessionId)?.abort();
+        reject(new Error(`Pi Agent Core request timeout after ${timeouts.requestTimeoutMs}ms`));
+      }, timeouts.requestTimeoutMs);
+    });
+    void requestTimeout.catch(() => undefined);
+    const executionAbort = createPiAbortPromise(executionLease.signal);
+    void executionAbort.promise.catch(() => undefined);
+    try {
+      executionLease.throwIfAborted();
+      const fakeStream = truthyEnv(this.env[PI_AGENT_CORE_FAKE_STREAM_ENV]);
+      analysis = fakeStream
+        ? this.analyzeFakeStream(
+          query,
+          sessionId,
+          traceId,
+          options,
+          executionLease,
+          runtimePerformance,
+          timeouts.streamIdleTimeoutMs,
+          timeouts.abortJoinTimeoutMs,
+          markTimeout,
+        )
+        : this.analyzeWithSmartPerfettoTools(
+          query,
+          sessionId,
+          traceId,
+          options,
+          executionLease,
+          runtimePerformance,
+          timeouts.streamIdleTimeoutMs,
+          timeouts.abortJoinTimeoutMs,
+          markTimeout,
+          currentSourceUse => {
+            sourceUse = currentSourceUse;
+          },
+        );
+      void analysis.catch(() => undefined);
+      result = await Promise.race([analysis, requestTimeout, executionAbort.promise]);
+      if (!(executionLease.signal.aborted && result.success === false)) {
+        executionLease.throwIfAborted();
+      }
+      runtimePerformanceOutcome = executionLease.signal.aborted
+        ? 'cancelled'
+        : result.success === false ? 'error' : 'ok';
+      return result;
+    } catch (error) {
+      runtimePerformanceOutcome = runtimeOutcomeFromError(
+        error,
+        executionLease.signal,
+      );
+      if (executionLease.signal.aborted) {
+        this.suppressedOpaqueStateSessions.add(sessionId);
+        if (analysis) {
+          const analysisCleanedUp = await joinPiPromptCleanup(analysis, timeouts.abortJoinTimeoutMs);
+          deferLeaseSettleToAnalysisCleanup = !analysisCleanedUp;
+        }
+        const timeout = timedOut ?? {kind: 'request' as const, timeoutMs: timeouts.requestTimeoutMs};
+        return finalizeSourceAwareAnalysisResult(buildPiTimeoutResult({
+          sessionId,
+          startedAt,
+          timeoutKind: timeout.kind,
+          timeoutMs: timeout.timeoutMs,
+          reason: error,
+        }), sourceUse);
+      }
+      throw error;
+    } finally {
+      executionAbort.clear();
+      if (requestTimer) clearTimeout(requestTimer);
+      const finalizationPhase = runtimePerformance.startPhase('finalization');
+      try {
+        if (deferLeaseSettleToAnalysisCleanup && analysis) {
+          void analysis
+            .finally(settleLease)
+            .catch(() => undefined);
+        } else {
+          settleLease();
+        }
+      } finally {
+        finalizationPhase.end(runtimePerformanceOutcome);
+        runtimePerformance.finalize(runtimePerformanceOutcome);
+      }
+    }
   }
 
   private getInitialMessagesForSession(sessionId: string): unknown[] {
@@ -1114,8 +1604,33 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   }
 
   private getProviderRuntime(modelConfig: PiAgentCoreModelConfig) {
-    this.providerRuntime ??= this.providerRuntimeLoader(modelConfig, this.env);
-    return this.providerRuntime;
+    const key = providerCacheKey(modelConfig, this.env);
+    const cached = this.providerRuntimeCache.get(key);
+    if (cached) return cached;
+    const loading = this.providerRuntimeLoader(modelConfig, this.env)
+      .catch((error) => {
+        if (this.providerRuntimeCache.get(key) === loading) {
+          this.providerRuntimeCache.delete(key);
+        }
+        throw error;
+      });
+    this.providerRuntimeCache.set(key, loading);
+    return loading;
+  }
+
+  private getPiAgentCoreModule() {
+    const key = moduleCacheKey(this.env);
+    const cached = this.moduleRuntimeCache.get(key);
+    if (cached) return cached;
+    const loading = this.moduleLoader(this.env)
+      .catch((error) => {
+        if (this.moduleRuntimeCache.get(key) === loading) {
+          this.moduleRuntimeCache.delete(key);
+        }
+        throw error;
+      });
+    this.moduleRuntimeCache.set(key, loading);
+    return loading;
   }
 
   private async analyzeFakeStream(
@@ -1123,10 +1638,17 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    executionLease: RuntimeExecutionLease,
+    runtimePerformance: RuntimePerformanceRun,
+    streamIdleTimeoutMs: number,
+    abortJoinTimeoutMs: number,
+    markTimeout: (kind: RuntimeTimeoutKind, timeoutMs: number) => void,
   ): Promise<AnalysisResult> {
+    executionLease.throwIfAborted();
     const startedAt = Date.now();
     const modelConfig = resolvePiAgentCoreModel(this.env, true);
-    const { Agent } = await this.moduleLoader(this.env);
+    const { Agent } = await this.getPiAgentCoreModule();
+    executionLease.throwIfAborted();
     const systemPrompt = this.env[PI_AGENT_CORE_SYSTEM_PROMPT_ENV] ?? '';
     const streamFn = createFakePiStream(
       this.selection.kind === PI_AGENT_CORE_RUNTIME_KIND
@@ -1154,11 +1676,34 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     });
     this.activeAgents.set(sessionId, agent);
 
+    const providerIdle = createPiProviderIdleSupervisor({
+      sessionId,
+      timeoutMs: streamIdleTimeoutMs,
+      markTimeout,
+      abort: () => {
+        this.suppressedOpaqueStateSessions.add(sessionId);
+        void this.executionGuard
+          .abortSession(sessionId, `Pi Agent Core provider stream idle timeout after ${streamIdleTimeoutMs}ms`)
+          .catch(() => undefined);
+        this.activeAgents.get(sessionId)?.abort();
+      },
+    });
+    void providerIdle.promise.catch(() => undefined);
+    let acceptingProviderEvents = true;
     const unsubscribe = agent.subscribe((event) => {
+      if (!acceptingProviderEvents || executionLease.signal.aborted) return;
+      providerIdle.onEvent(event);
       if (event.type === 'done') {
         recordEvaluationTokenDeltaIfPresent(event.message);
       }
       const update = projectPiAgentCoreEventToStreamingUpdate(event);
+      if (
+        isPiAgentCoreVisibleOutputEvent(event)
+        || update?.type === 'answer_token'
+        || update?.type === 'thought'
+      ) {
+        runtimePerformance.recordFirstOutput();
+      }
       if (update) this.emit('update', update);
     });
     try {
@@ -1175,13 +1720,31 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         timestamp: Date.now(),
       });
       commitEvaluationSdkHandoffIfActive();
-      await agent.prompt(query);
+      executionLease.throwIfAborted();
+      runtimePerformance.finishClassification('ok');
+      const providerPhase = runtimePerformance.startPhase('provider');
+      try {
+        await runPiProviderPromptWithSupervision({
+          agent,
+          prompt: query,
+          providerIdle,
+          executionLease,
+          abortJoinTimeoutMs,
+        });
+        providerPhase.end('ok');
+      } catch (error) {
+        providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+      executionLease.throwIfAborted();
     } finally {
-      if (privateAnalysisContext) {
+      acceptingProviderEvents = false;
+      if (privateAnalysisContext || executionLease.signal.aborted) {
         this.sessionOpaqueStates.delete(sessionId);
       } else {
         this.rememberOpaqueState(sessionId, agent);
       }
+      providerIdle.clear();
       unsubscribe();
       if (this.activeAgents.get(sessionId) === agent) {
         this.activeAgents.delete(sessionId);
@@ -1217,7 +1780,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    executionLease: RuntimeExecutionLease,
+    runtimePerformance: RuntimePerformanceRun,
+    streamIdleTimeoutMs: number,
+    abortJoinTimeoutMs: number,
+    markTimeout: (kind: RuntimeTimeoutKind, timeoutMs: number) => void,
+    onSourceUseReady: (sourceUse: PiAnalysisPreparation['sourceUse']) => void,
   ): Promise<AnalysisResult> {
+    executionLease.throwIfAborted();
     const startedAt = Date.now();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -1234,6 +1804,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       hasReferenceTrace: Boolean(options.referenceTraceId),
       previousTurns,
     });
+    runtimePerformance.finishClassification('ok');
     if (quickResolution.quickMode && quickResolution.quickAcknowledgementDirectAnswer) {
       const analysisRunSpec = createAnalysisRunSpec({
         query,
@@ -1261,11 +1832,24 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         sessionContext,
         previousTurns,
         analysisRunSpec,
+        executionLease,
+        runtimePerformance,
       });
     }
 
-    const directEvidenceAnswer = quickResolution.quickMode
-      ? await buildRuntimeQuickEvidenceDirectAnswer({
+    let quickEvidenceAttempt: RuntimeQuickEvidenceAttempt | undefined;
+    if (quickResolution.quickMode) {
+      const quickEvidencePhase = runtimePerformance.startPhase('quick_evidence');
+      const finishQuickEvidenceAsCancelled = () => {
+        try {
+          quickEvidencePhase.end('cancelled');
+        } catch {
+          // Runtime performance is internal observability only.
+        }
+      };
+      executionLease.signal.addEventListener('abort', finishQuickEvidenceAsCancelled, {once: true});
+      try {
+        quickEvidenceAttempt = await buildRuntimeQuickEvidenceAttempt({
           query,
           traceId,
           packageName: options.packageName,
@@ -1276,18 +1860,29 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           quickProcessIdentityPreEvidence: quickResolution.quickProcessIdentityPreEvidence,
           quickTraceFactPreEvidence: quickResolution.quickTraceFactPreEvidence,
           quickScrollingTriagePreEvidence: quickResolution.quickScrollingTriagePreEvidence,
-          emitUpdate: update => this.emit('update', update),
-        })
-      : undefined;
-    if (directEvidenceAnswer) {
+          emitUpdate: update => {
+            if (!executionLease.signal.aborted) this.emit('update', update);
+          },
+        });
+        executionLease.throwIfAborted();
+        quickEvidencePhase.end('ok');
+      } catch (error) {
+        quickEvidencePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      } finally {
+        executionLease.signal.removeEventListener('abort', finishQuickEvidenceAsCancelled);
+      }
+    }
+    executionLease.throwIfAborted();
+    if (quickEvidenceAttempt?.directAnswer) {
       const analysisRunSpec = createAnalysisRunSpec({
         query,
         sessionId,
         traceId,
         options: {
           ...options,
-          ...(directEvidenceAnswer.effectivePackageName ? {
-            packageName: directEvidenceAnswer.effectivePackageName,
+          ...(quickEvidenceAttempt.effectivePackageName ? {
+            packageName: quickEvidenceAttempt.effectivePackageName,
           } : {}),
         },
         runtimeSelection: this.selection,
@@ -1311,23 +1906,46 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         sessionContext,
         previousTurns,
         analysisRunSpec,
-        directAnswer: directEvidenceAnswer.directAnswer,
-        evidenceCounts: directEvidenceAnswer.evidenceCounts,
+        directAnswer: quickEvidenceAttempt.directAnswer,
+        evidenceCounts: quickEvidenceAttempt.evidenceCounts,
+        executionLease,
+        runtimePerformance,
       });
     }
 
     const modelConfig = resolvePiAgentCoreModel(this.env, false);
-    const [{Agent}, providerRuntime] = await Promise.all([
-      this.moduleLoader(this.env),
-      this.getProviderRuntime(modelConfig),
-    ]);
+    const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
+    let Agent: Awaited<ReturnType<PiAgentCoreModuleLoader>>['Agent'];
+    let providerRuntime: Awaited<ReturnType<PiAgentCoreProviderRuntimeLoader>>;
+    try {
+      if (isRuntimeCandidateAdmitted('task7', this.env)) {
+        const loaded = await Promise.all([
+          this.getPiAgentCoreModule(),
+          this.getProviderRuntime(modelConfig),
+        ]);
+        Agent = loaded[0].Agent;
+        providerRuntime = loaded[1];
+      } else {
+        Agent = (await this.getPiAgentCoreModule()).Agent;
+        providerRuntime = await this.getProviderRuntime(modelConfig);
+      }
+      sdkStartPhase.end('ok');
+    } catch (error) {
+      sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+      throw error;
+    }
+    executionLease.throwIfAborted();
     const prep = await this.prepareAnalysis(
       query,
       sessionId,
       traceId,
       options,
       piModelIdentity(modelConfig.model),
+      executionLease,
+      selectReusableRuntimeQuickEvidenceAttempt(quickEvidenceAttempt, this.env),
     );
+    onSourceUseReady(prep.sourceUse);
+    executionLease.throwIfAborted();
     const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
       query,
       initialSceneType: prep.sceneType,
@@ -1348,7 +1966,11 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       sessionId,
       streamFn: providerRuntime.streamFn,
-      toolExecution: 'sequential',
+      toolExecution: resolvePiAgentCoreNativeToolExecutionMode({
+        quickMode: prep.quickMode,
+        tools: prep.tools,
+        env: this.env,
+      }),
       transport: modelConfig.transport ?? 'auto',
       maxRetryDelayMs: modelConfig.maxRetryDelayMs,
       thinkingBudgets: modelConfig.thinkingBudgets,
@@ -1380,13 +2002,99 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     let analysisErrorMessage: string | undefined;
     let baseConclusion = '';
     let correctedConclusion: string | undefined;
+    const providerIdle = createPiProviderIdleSupervisor({
+      sessionId,
+      timeoutMs: streamIdleTimeoutMs,
+      markTimeout,
+      abort: () => {
+        this.suppressedOpaqueStateSessions.add(sessionId);
+        void this.executionGuard
+          .abortSession(sessionId, `Pi Agent Core provider stream idle timeout after ${streamIdleTimeoutMs}ms`)
+          .catch(() => undefined);
+        this.activeAgents.get(sessionId)?.abort();
+      },
+    });
+    void providerIdle.promise.catch(() => undefined);
+    const runProviderPrompt = async (prompt: string): Promise<void> => {
+      await runPiProviderPromptWithSupervision({
+        agent,
+        prompt,
+        providerIdle,
+        executionLease,
+        abortJoinTimeoutMs,
+      });
+    };
+    const repairFinalReportDeterministically = async (input: {
+      conclusion: string;
+      errorIssues?: VerificationIssue[];
+    }): Promise<string | undefined> => {
+      const contractIssue = assessFinalReportContractCompleteness({
+        conclusion: input.conclusion,
+        query,
+        sceneType: resolveFinalReportSceneType(),
+      });
+      const truncationIssue = findTruncationVerificationIssue(input.errorIssues ?? []);
+      if (!truncationIssue && !contractIssue?.missingSections.length) return undefined;
+
+      const repairedConclusion = repairTruncatedFinalReport({
+        conclusion: input.conclusion,
+        plan: prep.analysisPlan.current,
+        hypotheses: prep.hypotheses,
+        outputLanguage: prep.analysisRunSpec.outputLanguage,
+        recoveryKind: truncationIssue ? 'truncation' : 'missing_contract',
+        missingContractSections: contractIssue?.missingSections,
+      });
+      if (!repairedConclusion) return undefined;
+
+      executionLease.throwIfAborted();
+      const repairedIssues = await verifyPiAgentCoreConclusionForCorrection({
+        conclusion: repairedConclusion,
+        plan: prep.analysisPlan.current,
+        hypotheses: prep.hypotheses,
+        sceneType: resolveFinalReportSceneType(),
+        outputLanguage: prep.analysisRunSpec.outputLanguage,
+        query,
+        allowPersistentLearning: !privateAnalysisContext,
+        comparisonIdentity: prep.comparisonIdentity,
+      });
+      executionLease.throwIfAborted();
+      if (repairedIssues.some(issue => issue.severity === 'error')) return undefined;
+
+      this.emit('update', {
+        type: 'progress',
+        content: {
+          phase: 'concluding',
+          message: localize(
+            prep.analysisRunSpec.outputLanguage,
+            truncationIssue
+              ? '最终报告输出被截断，已先基于结构化证据本地补齐并重新验证。'
+              : '最终报告缺少必需结构，已先基于完成阶段的证据本地补齐并重新验证。',
+            truncationIssue
+              ? 'The final report output was truncated; it was locally closed from structured evidence and re-verified first.'
+              : 'The final report missed required structure; it was locally completed from finished-phase evidence and re-verified first.',
+          ),
+        },
+        timestamp: Date.now(),
+      });
+      return repairedConclusion;
+    };
+    let acceptingProviderEvents = true;
     const unsubscribe = agent.subscribe((event) => {
+      if (!acceptingProviderEvents || executionLease.signal.aborted) return;
+      providerIdle.onEvent(event);
       if (event.type === 'turn_end') rounds++;
       if (event.type === 'done') {
         recordEvaluationTokenDeltaIfPresent(event.message);
       }
       const update = projectPiAgentCoreEventToStreamingUpdate(event);
       if (correctionInProgress && update?.type === 'error') return;
+      if (
+        isPiAgentCoreVisibleOutputEvent(event)
+        || update?.type === 'answer_token'
+        || update?.type === 'thought'
+      ) {
+        runtimePerformance.recordFirstOutput();
+      }
       if (update) this.emit('update', update);
     });
 
@@ -1406,8 +2114,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         timestamp: Date.now(),
       });
       commitEvaluationSdkHandoffIfActive();
-      await agent.prompt(prep.prompt);
-      while (!prep.quickMode) {
+      executionLease.throwIfAborted();
+      const providerPhase = runtimePerformance.startPhase('provider');
+      try {
+        await runProviderPrompt(prep.prompt);
+        executionLease.throwIfAborted();
+        while (!prep.quickMode) {
         const latestAssistant = latestAssistantMessage(currentAnalysisMessages());
         const stopReason = typeof latestAssistant?.stopReason === 'string'
           ? latestAssistant.stopReason
@@ -1483,13 +2195,15 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         });
         commitEvaluationSdkHandoffIfActive();
         lastPlanCompletionMessageBoundary = agent.state.messages?.length ?? 0;
-        await agent.prompt(loadRuntimePlanCompletionContinuationPrompt({
+        executionLease.throwIfAborted();
+          await runProviderPrompt(loadRuntimePlanCompletionContinuationPrompt({
           planStatus,
           unresolvedHypotheses,
           outputLanguage: prep.analysisRunSpec.outputLanguage,
-        }));
-      }
-      while (finalReportContinuations < PI_AGENT_CORE_MAX_FINAL_REPORT_CONTINUATIONS) {
+          }));
+          executionLease.throwIfAborted();
+        }
+        while (finalReportContinuations < PI_AGENT_CORE_MAX_FINAL_REPORT_CONTINUATIONS) {
         const latestAssistant = latestAssistantMessage(currentAnalysisMessages());
         const stopReason = typeof latestAssistant?.stopReason === 'string'
           ? latestAssistant.stopReason
@@ -1503,6 +2217,15 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           selectAssistantConclusion(currentAnalysisMessages()),
         );
         const planStatus = getPiAgentCorePlanCompletionStatus(prep.analysisPlan.current);
+        if (planStatus.complete && candidateConclusion) {
+          correctedConclusion = await repairFinalReportDeterministically({
+            conclusion: candidateConclusion,
+          });
+          if (correctedConclusion) {
+            forceFinalReportContinuation = false;
+            break;
+          }
+        }
         const shouldContinueFinalReport = forceFinalReportContinuation ||
           shouldContinuePiAgentCoreFinalReportAfterPlanComplete({
           quickMode: prep.quickMode,
@@ -1533,7 +2256,14 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         });
         commitEvaluationSdkHandoffIfActive();
         finalReportContinuationMessageBoundary = agent.state.messages?.length ?? 0;
-        await agent.prompt(loadPiFinalReportContinuationPrompt(prep.analysisRunSpec.outputLanguage));
+        executionLease.throwIfAborted();
+          await runProviderPrompt(loadPiFinalReportContinuationPrompt(prep.analysisRunSpec.outputLanguage));
+          executionLease.throwIfAborted();
+        }
+        providerPhase.end('ok');
+      } catch (error) {
+        providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
       }
 
       analysisTerminalAssistant = latestAssistantMessage(currentAnalysisMessages());
@@ -1571,7 +2301,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }
 
         const correctionPlanStatus = getPiAgentCorePlanCompletionStatus(prep.analysisPlan.current);
-        if (!prep.quickMode && correctionPlanStatus.complete) {
+        if (!correctedConclusion && !prep.quickMode && correctionPlanStatus.complete) {
+          executionLease.throwIfAborted();
           const heuristicIssues = await verifyPiAgentCoreConclusionForCorrection({
             conclusion: baseConclusion,
             plan: prep.analysisPlan.current,
@@ -1582,9 +2313,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             allowPersistentLearning: !privateAnalysisContext,
             comparisonIdentity: prep.comparisonIdentity,
           });
+          executionLease.throwIfAborted();
           const errorIssues = heuristicIssues.filter(issue => issue.severity === 'error');
-          const shouldCorrect = errorIssues.length > 0 &&
-            !errorIssues.some(isTruncationVerificationIssue);
+          correctedConclusion = await repairFinalReportDeterministically({
+            conclusion: baseConclusion,
+            errorIssues,
+          });
+          const shouldCorrect = !correctedConclusion && errorIssues.length > 0;
           if (shouldCorrect) {
             this.emit('update', {
               type: 'progress',
@@ -1610,12 +2345,21 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
                 prep.analysisRunSpec.outputLanguage,
               );
               commitEvaluationSdkHandoffIfActive();
-              await agent.prompt(generateCorrectionPrompt(
-                heuristicIssues,
-                baseConclusion,
-                prep.analysisRunSpec.outputLanguage,
-                resolveFinalReportSceneType(),
-              ));
+              executionLease.throwIfAborted();
+              const correctionPhase = runtimePerformance.startPhase('correction');
+              try {
+                await runProviderPrompt(generateCorrectionPrompt(
+                  heuristicIssues,
+                  baseConclusion,
+                  prep.analysisRunSpec.outputLanguage,
+                  resolveFinalReportSceneType(),
+                ));
+                correctionPhase.end('ok');
+              } catch (error) {
+                correctionPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+                throw error;
+              }
+              executionLease.throwIfAborted();
 
               const correctionMessages = (agent.state.messages ?? [])
                 .slice(correctionMessageBoundary);
@@ -1635,6 +2379,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
                   selectAssistantConclusion(correctionMessages),
                 );
                 if (candidate && hasDeliverableFinalReportHeading(candidate)) {
+                  executionLease.throwIfAborted();
                   const candidateIssues = await verifyPiAgentCoreConclusionForCorrection({
                     conclusion: candidate,
                     plan: prep.analysisPlan.current,
@@ -1645,6 +2390,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
                     allowPersistentLearning: !privateAnalysisContext,
                     comparisonIdentity: prep.comparisonIdentity,
                   });
+                  executionLease.throwIfAborted();
                   if (!candidateIssues.some(issue => issue.severity === 'error')) {
                     correctedConclusion = candidate;
                   }
@@ -1662,11 +2408,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         }
       }
     } finally {
-      if (privateAnalysisContext) {
+      acceptingProviderEvents = false;
+      if (privateAnalysisContext || executionLease.signal.aborted) {
         this.sessionOpaqueStates.delete(sessionId);
       } else {
         this.rememberOpaqueState(sessionId, agent);
       }
+      providerIdle.clear();
       unsubscribe();
       if (this.activeAgents.get(sessionId) === agent) {
         this.activeAgents.delete(sessionId);
@@ -1690,8 +2438,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         confidence: 0,
         rounds: Math.max(rounds, 1),
         totalDurationMs: Date.now() - startedAt,
-        terminationReason: stopReason === 'aborted' ? 'timeout' : 'execution_error',
-        terminationMessage: errorMessage || 'Pi Agent Core reported an execution error.',
+        terminationReason: stopReason === 'aborted' || executionLease.signal.aborted ? 'timeout' : 'execution_error',
+        terminationMessage: errorMessage || (executionLease.signal.aborted
+          ? 'Pi Agent Core analysis aborted.'
+          : 'Pi Agent Core reported an execution error.'),
       }, prep.sourceUse);
     }
 
@@ -1799,7 +2549,17 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           allowPersistentLearning: !analysisContextUsesPrivateKnowledge(options),
         });
       };
-      let verification = await verifyCurrentConclusion();
+      executionLease.throwIfAborted();
+      const verificationPhase = runtimePerformance.startPhase('verification');
+      let verification: Awaited<ReturnType<typeof verifyCurrentConclusion>>;
+      try {
+        verification = await verifyCurrentConclusion();
+        verificationPhase.end('ok');
+      } catch (error) {
+        verificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+      executionLease.throwIfAborted();
       let verificationIssue = [
         ...verification.heuristicIssues,
         ...(verification.llmIssues || []),
@@ -1851,7 +2611,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             },
             timestamp: Date.now(),
           });
-          verification = await verifyCurrentConclusion();
+          executionLease.throwIfAborted();
+          const recoveryVerificationPhase = runtimePerformance.startPhase('verification');
+          try {
+            verification = await verifyCurrentConclusion();
+            recoveryVerificationPhase.end('ok');
+          } catch (error) {
+            recoveryVerificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+            throw error;
+          }
+          executionLease.throwIfAborted();
           verificationIssue = [
             ...verification.heuristicIssues,
             ...(verification.llmIssues || []),
@@ -1899,6 +2668,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       });
     }
 
+    executionLease.throwIfAborted();
     prep.sessionContext.addTurn(
       query,
       {
@@ -1936,6 +2706,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     analysisRunSpec: AnalysisRunSpec;
     directAnswer: RuntimeQuickEvidenceDirectAnswer;
     evidenceCounts: RuntimeQuickEvidenceCounts;
+    executionLease: RuntimeExecutionLease;
+    runtimePerformance: RuntimePerformanceRun;
   }): AnalysisResult {
     const quickBudget = resolveQuickTurnBudget({
       env: this.env,
@@ -1961,6 +2733,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       query: input.query,
       sceneType: input.sceneType,
     });
+    input.executionLease.throwIfAborted();
     input.sessionContext.addTurn(
       input.query,
       {
@@ -1979,6 +2752,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       result.findings,
     );
+    input.executionLease.throwIfAborted();
+    input.runtimePerformance.recordFirstOutput();
     emitQuickDirectAnswerEvents({
       emitUpdate: update => this.emit('update', update),
       result,
@@ -2000,6 +2775,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
     previousTurns: ConversationTurn[];
     analysisRunSpec: AnalysisRunSpec;
+    executionLease: RuntimeExecutionLease;
+    runtimePerformance: RuntimePerformanceRun;
   }): AnalysisResult {
     const quickBudget = resolveQuickTurnBudget({
       env: this.env,
@@ -2023,6 +2800,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       query: input.query,
       sceneType: input.sceneType,
     });
+    input.executionLease.throwIfAborted();
     input.sessionContext.addTurn(
       input.query,
       {
@@ -2041,6 +2819,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       },
       result.findings,
     );
+    input.executionLease.throwIfAborted();
+    input.runtimePerformance.recordFirstOutput();
     emitQuickDirectAnswerEvents({
       emitUpdate: update => this.emit('update', update),
       result,
@@ -2058,7 +2838,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions,
     model: string | undefined,
+    executionLease: RuntimeExecutionLease,
+    quickEvidenceAttempt?: RuntimeQuickEvidenceAttempt,
   ): Promise<PiAnalysisPreparation> {
+    executionLease.throwIfAborted();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const sceneType = classifyScene(query);
@@ -2075,12 +2858,15 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       previousTurns,
     });
     const quickMode = quickResolution.quickMode;
-    const focusResult = quickResolution.skipFocusDetection
+    const focusResult = quickEvidenceAttempt?.focusResult ?? (quickResolution.skipFocusDetection
       ? { apps: [], method: 'none' as const }
       : await detectFocusApps(this.traceProcessorService, traceId, {
           timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        });
-    const effectivePackageName = options.packageName || focusResult.primaryApp;
+        }));
+    executionLease.throwIfAborted();
+    const effectivePackageName = options.packageName
+      || quickEvidenceAttempt?.effectivePackageName
+      || focusResult.primaryApp;
     const analysisRunSpec = createAnalysisRunSpec({
       query,
       sessionId,
@@ -2099,6 +2885,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     });
 
     await ensureSkillRegistryInitialized();
+    executionLease.throwIfAborted();
     const skillExecutor = createSkillExecutor(this.traceProcessorService);
     const effectiveSkillRegistry =
       resolveEffectiveSkillRegistryForRuntime(skillRegistry);
@@ -2114,12 +2901,16 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           traceId,
           traceProcessorService: this.traceProcessorService,
           packageName: effectivePackageName,
+          signal: executionLease.signal,
         });
+        executionLease.throwIfAborted();
         if (architecture) setLruCacheEntry(this.architectureCache, traceId, architecture);
       } catch (err) {
+        executionLease.throwIfAborted();
         console.warn('[PiAgentCoreRuntime] Architecture detection failed:', (err as Error).message);
       }
     }
+    executionLease.throwIfAborted();
     if (architecture) {
       this.emit('update', {
         type: 'architecture_detected',
@@ -2136,7 +2927,9 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           traceId,
           architecture?.type,
         );
+        executionLease.throwIfAborted();
       } catch (err) {
+        executionLease.throwIfAborted();
         console.warn('[PiAgentCoreRuntime] Trace completeness probe failed:', (err as Error).message);
       }
     }
@@ -2149,6 +2942,31 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       : undefined;
     const entityStore = sessionContext.getEntityStore();
     const entityContext = buildEntityContext(entityStore);
+
+    const watchdogWarning: { current: string | null } = { current: null };
+    const knowledgeScope = analysisRunSpec.scopes.knowledge;
+    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+    const recentSqlErrors = loadLearnedSqlFixPairs(5, knowledgeScope, options);
+    const skillNotesBudget = createRuntimeSkillNotesBudget(quickMode);
+    const comparisonContext = await buildRuntimeTracePairComparisonContext({
+      traceProcessorService: this.traceProcessorService,
+      currentTraceId: traceId,
+      ...(options.referenceTraceId ? { referenceTraceId: options.referenceTraceId } : {}),
+      ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
+    });
+    executionLease.throwIfAborted();
+    let knowledgeBaseContext: string | undefined;
+    if (!quickMode) {
+      try {
+        const kb = await getExtendedKnowledgeBase();
+        executionLease.throwIfAborted();
+        knowledgeBaseContext = kb.getContextForAI(query, 8);
+      } catch {
+        executionLease.throwIfAborted();
+        // Non-fatal. Pi can still use lookup_sql_schema/knowledge tools.
+      }
+    }
+    executionLease.throwIfAborted();
 
     if (!this.artifactStores.has(sessionId)) {
       this.artifactStores.set(sessionId, new ArtifactStore());
@@ -2185,17 +3003,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId)!;
     uncertaintyFlags.splice(0);
 
-    const watchdogWarning: { current: string | null } = { current: null };
-    const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
-    const recentSqlErrors = loadLearnedSqlFixPairs(5, knowledgeScope, options);
-    const skillNotesBudget = createRuntimeSkillNotesBudget(quickMode);
-    const comparisonContext = await buildRuntimeTracePairComparisonContext({
-      traceProcessorService: this.traceProcessorService,
-      currentTraceId: traceId,
-      ...(options.referenceTraceId ? { referenceTraceId: options.referenceTraceId } : {}),
-      ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
-    });
     const { toolDefinitions, sourceUse } = createClaudeMcpServer({
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
@@ -2312,14 +3119,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       };
     }
 
-    let knowledgeBaseContext: string | undefined;
-    try {
-      const kb = await getExtendedKnowledgeBase();
-      knowledgeBaseContext = kb.getContextForAI(query, 8);
-    } catch {
-      // Non-fatal. Pi can still use lookup_sql_schema/knowledge tools.
-    }
-
     const patternContext = privateAnalysisContext
       ? undefined
       : buildPatternContextSection(traceFeatures, knowledgeScope);
@@ -2427,12 +3226,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
     const activeAgent = this.activeAgents.get(sessionId);
+    const activeAgentOpaque = activeAgent && !this.suppressedOpaqueStateSessions.has(sessionId)
+      ? createPiOpaqueStateFromMessages(activeAgent.state.messages)
+      : undefined;
     const opaque = privateKnowledge
       ? undefined
       : this.sessionOpaqueStates.get(sessionId)
-        ?? (activeAgent
-          ? createPiOpaqueStateFromMessages(activeAgent.state.messages)
-          : undefined);
+        ?? activeAgentOpaque;
     return {
       version: 1,
       snapshotTimestamp: Date.now(),
@@ -2486,23 +3286,33 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   }
 
   reset(): void {
+    this.executionGuard.clear();
     for (const agent of this.activeAgents.values()) {
       agent.reset();
     }
     this.activeAgents.clear();
     this.sessionOpaqueStates.clear();
+    this.suppressedOpaqueStateSessions.clear();
     this.architectureCache.clear();
-    this.providerRuntime = undefined;
+    this.providerRuntimeCache.clear();
+    this.moduleRuntimeCache.clear();
     this.removeAllListeners();
   }
 
   abortActiveRun(): void {
+    for (const sessionId of this.activeAgents.keys()) {
+      this.suppressedOpaqueStateSessions.add(sessionId);
+    }
     for (const agent of this.activeAgents.values()) {
       agent.abort();
     }
   }
 
   abortSession(sessionId: string): void {
+    this.suppressedOpaqueStateSessions.add(sessionId);
+    void this.executionGuard
+      .abortSession(sessionId, `Runtime analysis aborted for session ${sessionId}`)
+      .catch(() => undefined);
     this.activeAgents.get(sessionId)?.abort();
   }
 
@@ -2515,6 +3325,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
     this.sessionOpaqueStates.delete(sessionId);
+    this.suppressedOpaqueStateSessions.delete(sessionId);
   }
 }
 

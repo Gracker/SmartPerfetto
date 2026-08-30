@@ -132,4 +132,20 @@ A[foo] --> B[bar]</pre></div>
     expect(response.text.length).toBeGreaterThan(100_000);
     expect(response.text).toContain('mermaid');
   });
+  test('preserves static-file byte range semantics for the Mermaid runtime route', async () => {
+    const app = express();
+    app.use('/api/reports', reportRoutes.default);
+
+    const response = await request(app)
+      .get('/api/reports/assets/mermaid.min.js')
+      .set('Range', 'bytes=0-15');
+
+    expect(response.status).toBe(206);
+    expect(response.headers['content-type']).toContain('application/javascript');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
+    expect(response.headers['cache-control']).toBe('private, max-age=3600');
+    expect(response.headers['accept-ranges']).toBe('bytes');
+    expect(response.headers['content-range']).toMatch(/^bytes 0-15\/\d+$/);
+    expect(response.text).toHaveLength(16);
+  });
 });

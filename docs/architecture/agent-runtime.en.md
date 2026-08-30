@@ -106,6 +106,10 @@ for the user-visible contract.
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
 | `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode server/runtime adapter and request-scoped MCP bridge |
 | `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder SDK adapter, stream projection, and session isolation |
+| `backend/src/agentRuntime/runtimeExecutionGuard.ts` | Runtime/session single-active execution, cancellation, and stale-settle isolation |
+| `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
+| `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
+| `backend/src/agentRuntime/runtimeToolConcurrency.ts` | Request-scoped fair read/write scheduling with an exclusive default |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto tool implementation and composition |
 | `backend/src/agentv3/mcpToolRegistry.ts` | Tool descriptors, exposure levels, and allowlists |
 | `backend/src/services/agentResultNormalizer.ts` | Shared final result, client projection, and report-data boundary |
@@ -145,6 +149,56 @@ and streaming mechanics differ.
 The tool surface is not a fixed-size list. Quick/full mode, artifact store
 availability, codebase permission, `referenceTraceId`, comparison context, and
 runtime allowlists shape the request-visible set.
+
+## Concurrency, Observability, And Admission
+
+Concurrency fails closed by default. A runtime/session permits only one active
+analysis execution. Tools are exclusive unless a commutative read is explicitly
+marked and admitted for the current request. Each trace processor instance
+still has one SQL worker, so tool overlap cannot execute same-trace/processor SQL
+concurrently; work on different processors/traces or admitted read-only
+preparation may overlap. Processor creation and recovery are single-flight, and
+a cancelled stale execution cannot overwrite newer session state.
+
+The backend records real phase spans, first output, tool scheduler wait, and SQL
+queue/execution timing in the internal `RunManifest.performance` field. This
+`RuntimePerformance` receipt is not projected into public SSE. The public stream
+also does not expose admission-grade model, provider snapshot, provider usage,
+or performance fields. The receipt supports internal attribution and controlled
+benchmarks; by itself it does not prove real-provider speed or accuracy.
+
+Performance branches are controlled by the strict maintainer-only
+`SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` boundary and default to no admitted
+candidates. The value may contain only a comma-separated, whitespace-free,
+duplicate-free list from `task4` through `task9`. Whitespace, an unknown item, a
+duplicate, or any malformed value invalidates the whole setting. It is not a
+Provider Manager, UI, or provider env option, and benchmark artifacts never
+activate it automatically:
+
+| Candidate | Scope |
+|---|---|
+| `task4` | Reuse one quick-evidence/focus preflight across all five runtimes |
+| `task5` | Use bounded fair overlap for explicitly commutative read tools across all five runtimes; all other tools remain exclusive |
+| `task6` | Overlap independent Claude/OpenAI preflight DAG nodes |
+| `task7` | Load independent Pi SDK/provider startup concurrently and enable quick parallel-batch scheduling; descriptor/tool gates still serialize exclusive work |
+| `task8` | Read OpenCode messages/status together and use adaptive polling |
+| `task9` | Overlap Qoder Skill-registry and SDK startup |
+
+After `task5` is admitted, its safe-read policy is enabled by default.
+`SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false` is a rollback to exclusive
+execution; it cannot bypass a missing `task5` admission. Cache single-flight,
+execution isolation, cancellation cleanup, receipts, and deterministic repairs
+are correctness/observability foundations and remain active independently of
+performance-candidate admission.
+
+Shipped defaults remain serial: genuine deterministic admission harnesses for
+all five adapters are `NOT CONFIGURED`, and bounded real-provider base/candidate
+A/B has not run, so performance/accuracy admission is `INCONCLUSIVE`. Synthetic
+scorer data validates scoring mechanics only and cannot enable a candidate.
+When real-provider validation cannot run, record `NOT AVAILABLE` or
+`NOT CONFIGURED` precisely. Qoder needs a PAT or local `qodercli` login in
+addition to BYOK. Unit, type, build, and deterministic gates are not substitutes
+for real-provider evidence.
 
 The Pi Agent Core real-model path reuses SmartPerfetto scene strategies, system
 prompt assembly, SQL/Skill tools, planning/hypothesis tools, artifacts, and the

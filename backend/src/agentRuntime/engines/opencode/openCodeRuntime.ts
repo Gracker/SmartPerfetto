@@ -105,6 +105,12 @@ import {providerSubprocessEnv} from '../../../services/providerManager/envIsolat
 import type { RuntimeSelection } from '../../runtimeSelection';
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
+import {
+  createRuntimePerformanceRun,
+  runtimeOutcomeFromError,
+  type RuntimePerformanceOutcome,
+  type RuntimePerformanceRun,
+} from '../../runtimePerformance';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
   buildQuickConversationContext,
@@ -125,14 +131,18 @@ import {
 } from '../../runtimeCommon';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
+import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {buildAdaptiveRoutingForQuickResolution} from '../../adaptiveRoutingProjection';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
 import {resolveRuntimeFinalReportSceneType} from '../../finalReportSceneResolution';
 import {loadRuntimePlanCompletionContinuationPrompt} from '../../planCompletionContinuation';
 import {
-  buildRuntimeQuickEvidenceDirectAnswer,
+  buildRuntimeQuickEvidenceAttempt,
+  selectReusableRuntimeQuickEvidenceAttempt,
   type RuntimeQuickEvidenceCounts,
   type RuntimeQuickEvidenceDirectAnswer,
+  type RuntimeQuickEvidenceAttempt,
 } from '../../quickEvidenceDirectAnswer';
 import {
   buildQuickDirectAcknowledgementAnalysisResult,
@@ -149,6 +159,7 @@ import {
 import { isTraceProcessorQueryCancelledError } from '../../../services/traceProcessorCancellation';
 import { backendDataPath } from '../../../runtimePaths';
 import {diagnosticLogIdentity} from '../../../utils/logger';
+import {canonicalContentHash} from '../../../services/selfEvolution/canonicalJson';
 import {
   EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
@@ -177,8 +188,16 @@ export const OPENCODE_REAL_ANALYSIS_ENV = 'SMARTPERFETTO_OPENCODE_REAL_ANALYSIS'
 
 const DEFAULT_SERVER_TIMEOUT_MS = 15_000;
 const DEFAULT_PROMPT_TIMEOUT_MS = 20 * 60_000;
-const PROMPT_POLL_INTERVAL_MS = 1_000;
+const PROMPT_POLL_INITIAL_INTERVAL_MS = 100;
+const PROMPT_POLL_MAX_INTERVAL_MS = 1_000;
+const OPENCODE_MESSAGE_WINDOW_INITIAL_LIMIT = 50;
+const OPENCODE_MESSAGE_WINDOW_MAX_LIMIT = 1_000;
 const DEFAULT_MCP_TIMEOUT_MS = 5_000;
+/** Lower bound shared by the OpenCode client, bridge child, and parent handler. */
+export const OPENCODE_MCP_TIMEOUT_MIN_MS = 100;
+/** Upper bound prevents accidental multi-hour bridge leases from malformed input. */
+export const OPENCODE_MCP_TIMEOUT_MAX_MS = 300_000;
+const OPENCODE_BRIDGE_TIMEOUT_MS_ENV = 'SMARTPERFETTO_OPENCODE_BRIDGE_TIMEOUT_MS';
 const STANDALONE_MCP_NAME = 'smartperfetto';
 const OPENCODE_MAX_PLAN_COMPLETION_CONTINUATIONS = 2;
 const OPENCODE_MAX_HYPOTHESIS_RESOLUTION_CONTINUATIONS = 1;
@@ -295,10 +314,12 @@ interface OpenCodeActiveSession {
 }
 
 export type OpenCodeSdkModuleLoader = (env: EnvLike) => Promise<OpenCodeSdkModule>;
+type OpenCodeBridgeStarter = typeof startOpenCodeMcpBridge;
 
 export interface OpenCodeRuntimeOptions {
   env?: EnvLike;
   moduleLoader?: OpenCodeSdkModuleLoader;
+  bridgeStarter?: OpenCodeBridgeStarter;
 }
 
 interface OpenCodeSessionDirs {
@@ -357,6 +378,18 @@ function numericEnv(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function resolveOpenCodeMcpTimeoutMs(value: string | number | undefined): number {
+  if (typeof value === 'string' && !/^(?:0|[1-9]\d*)$/.test(value)) {
+    return DEFAULT_MCP_TIMEOUT_MS;
+  }
+  const parsed = typeof value === 'number' ? value : value === undefined ? Number.NaN : Number(value);
+  return Number.isSafeInteger(parsed) &&
+    parsed >= OPENCODE_MCP_TIMEOUT_MIN_MS &&
+    parsed <= OPENCODE_MCP_TIMEOUT_MAX_MS
+    ? parsed
+    : DEFAULT_MCP_TIMEOUT_MS;
 }
 
 function parseCommandJson(value: string | undefined): string[] | undefined {
@@ -450,7 +483,7 @@ export function getOpenCodeRuntimeDiagnostics(
     serverPort: numericEnv(env[OPENCODE_SERVER_PORT_ENV]),
     serverTimeoutMs: numericEnv(env[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS,
     standaloneMcpEnabled,
-    standaloneMcpTimeoutMs: numericEnv(env[OPENCODE_MCP_TIMEOUT_MS_ENV]) ?? DEFAULT_MCP_TIMEOUT_MS,
+    standaloneMcpTimeoutMs: resolveOpenCodeMcpTimeoutMs(env[OPENCODE_MCP_TIMEOUT_MS_ENV]),
   };
 }
 
@@ -513,7 +546,7 @@ export function createOpenCodeStandaloneMcpConfig(
     [STANDALONE_MCP_NAME]: {
       type: 'local',
       enabled: true,
-      timeout: numericEnv(env[OPENCODE_MCP_TIMEOUT_MS_ENV]) ?? DEFAULT_MCP_TIMEOUT_MS,
+      timeout: resolveOpenCodeMcpTimeoutMs(env[OPENCODE_MCP_TIMEOUT_MS_ENV]),
       command,
       environment: {
         SMARTPERFETTO_STANDALONE_MCP: '1',
@@ -538,11 +571,14 @@ export function createOpenCodeHardenedConfig(
         [STANDALONE_MCP_NAME]: {
           type: 'local',
           enabled: true,
-          timeout: numericEnv(env[OPENCODE_MCP_TIMEOUT_MS_ENV]) ?? DEFAULT_MCP_TIMEOUT_MS,
+          timeout: resolveOpenCodeMcpTimeoutMs(bridge.requestTimeoutMs),
           command: resolveOpenCodeBridgeCommand(env),
           environment: {
             SMARTPERFETTO_OPENCODE_BRIDGE_PORT: String(bridge.port),
             SMARTPERFETTO_OPENCODE_BRIDGE_TOKEN: bridge.token,
+            [OPENCODE_BRIDGE_TIMEOUT_MS_ENV]: String(
+              resolveOpenCodeMcpTimeoutMs(bridge.requestTimeoutMs),
+            ),
           },
         },
       }
@@ -748,6 +784,29 @@ type OpenCodeBridgeUpdateEmitter = (update: StreamingUpdate) => void;
 interface OpenCodeBridgeDispatchOptions {
   getSignal?: () => AbortSignal | undefined;
   analysisPlan?: { current: AnalysisPlanV3 | null };
+  isDeliverable?: () => boolean;
+  timeoutMs?: number;
+}
+
+function openCodeBridgeAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfOpenCodeBridgeUndeliverable(options: OpenCodeBridgeDispatchOptions): void {
+  if (options.getSignal?.()?.aborted || options.isDeliverable?.() === false) {
+    throw openCodeBridgeAbortError('OpenCode SmartPerfetto MCP bridge request is no longer deliverable');
+  }
+}
+
+function emitOpenCodeBridgeUpdateIfDeliverable(
+  emitUpdate: OpenCodeBridgeUpdateEmitter | undefined,
+  options: OpenCodeBridgeDispatchOptions,
+  update: StreamingUpdate,
+): void {
+  if (options.getSignal?.()?.aborted || options.isDeliverable?.() === false) return;
+  emitUpdate?.(update);
 }
 
 function summarizeOpenCodeToolResult(result: unknown): string {
@@ -809,6 +868,7 @@ export async function dispatchOpenCodeBridgeRequest(
     };
   }
   if (req.method === 'tools/call') {
+    throwIfOpenCodeBridgeUndeliverable(options);
     const params = (req.params ?? {}) as { name?: string; arguments?: unknown };
     if (!params.name || typeof params.name !== 'string') {
       return rpcError(id, RPC_ERROR_CODES.INVALID_PARAMS, '`name` is required');
@@ -820,7 +880,7 @@ export async function dispatchOpenCodeBridgeRequest(
     const args = normalizeRuntimeToolArgs(params.arguments ?? {}) as Record<string, unknown>;
     const taskId = String(id ?? `${params.name}-${Date.now()}`);
     try {
-      emitUpdate?.({
+      emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {
         type: 'agent_task_dispatched',
         content: {
           taskId,
@@ -835,8 +895,10 @@ export async function dispatchOpenCodeBridgeRequest(
         normalizeRuntimeToolExtra({
           runtime: OPENCODE_RUNTIME_KIND,
           signal: options.getSignal?.(),
+          toolCallId: taskId,
         }),
       );
+      throwIfOpenCodeBridgeUndeliverable(options);
       const resultText = summarizeOpenCodeToolResult(
         projectToolResultForExternalSurface(definition.name, result),
       );
@@ -848,7 +910,7 @@ export async function dispatchOpenCodeBridgeRequest(
         returnedCodeReferences: codeReferences.length > 0,
         returnedCodeReferenceHints: codeReferences,
       });
-      emitUpdate?.({
+      emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {
         type: 'agent_response',
         content: {
           taskId,
@@ -861,7 +923,14 @@ export async function dispatchOpenCodeBridgeRequest(
       if (isTraceProcessorQueryCancelledError(err)) {
         throw err;
       }
-      emitUpdate?.({
+      if (
+        (err instanceof Error && err.name === 'AbortError') ||
+        options.getSignal?.()?.aborted ||
+        options.isDeliverable?.() === false
+      ) {
+        throw openCodeBridgeAbortError('OpenCode SmartPerfetto MCP bridge request was aborted');
+      }
+      emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {
         type: 'agent_response',
         content: {
           taskId,
@@ -882,6 +951,7 @@ export async function dispatchOpenCodeBridgeRequest(
 interface OpenCodeMcpBridgeHandle {
   port: number;
   token: string;
+  requestTimeoutMs: number;
   getDiagnostics(): OpenCodeMcpBridgeDiagnostics;
   close(): Promise<void>;
 }
@@ -899,20 +969,28 @@ function startOpenCodeMcpBridge(
   options: OpenCodeBridgeDispatchOptions = {},
 ): Promise<OpenCodeMcpBridgeHandle> {
   const token = crypto.randomBytes(24).toString('hex');
+  const requestTimeoutMs = resolveOpenCodeMcpTimeoutMs(options.timeoutMs);
   const diagnostics: OpenCodeMcpBridgeDiagnostics = {
     connectionCount: 0,
     requestCount: 0,
   };
+  const sockets = new Set<net.Socket>();
+  const activeRequestControllers = new Set<AbortController>();
+  let closePromise: Promise<void> | undefined;
   const server = net.createServer((socket) => {
     diagnostics.connectionCount += 1;
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
     socket.setEncoding('utf-8');
-    socket.setTimeout(5_000, () => {
+    socket.setTimeout(requestTimeoutMs, () => {
       diagnostics.lastError = 'bridge_handshake_timeout';
       socket.destroy();
     });
     let buffer = '';
     let bufferedBytes = 0;
+    let requestStarted = false;
     socket.on('data', (chunk: string) => {
+      if (requestStarted) return;
       buffer += chunk;
       bufferedBytes += Buffer.byteLength(chunk, 'utf8');
       if (bufferedBytes > 64 * 1024) {
@@ -922,6 +1000,7 @@ function startOpenCodeMcpBridge(
       }
       const newline = buffer.indexOf('\n');
       if (newline < 0) return;
+      requestStarted = true;
       socket.setTimeout(0);
       const line = buffer.slice(0, newline);
       buffer = buffer.slice(newline + 1);
@@ -936,17 +1015,55 @@ function startOpenCodeMcpBridge(
           }
           diagnostics.requestCount += 1;
           diagnostics.lastMethod = envelope.request.method;
-          const response = await dispatchOpenCodeBridgeRequest(
-            definitions,
-            envelope.request,
-            emitUpdate,
-            options,
+          const requestController = new AbortController();
+          activeRequestControllers.add(requestController);
+          let requestSettled = false;
+          const outerSignal = options.getSignal?.();
+          const abortRequest = () => {
+            if (!requestSettled) requestController.abort();
+          };
+          outerSignal?.addEventListener('abort', abortRequest, {once: true});
+          if (outerSignal?.aborted) requestController.abort();
+          socket.once('close', abortRequest);
+          socket.once('error', abortRequest);
+          const deadline = setTimeout(() => {
+            if (requestSettled) return;
+            diagnostics.lastError = 'bridge_request_timeout';
+            requestController.abort();
+            socket.destroy();
+          }, requestTimeoutMs);
+          const isDeliverable = () => (
+            !requestController.signal.aborted &&
+            !socket.destroyed &&
+            socket.writable
           );
-          if (response) socket.write(`${JSON.stringify(response)}\n`);
+          let response: JsonRpcResponse | null;
+          try {
+            response = await dispatchOpenCodeBridgeRequest(
+              definitions,
+              envelope.request,
+              emitUpdate,
+              {
+                ...options,
+                getSignal: () => requestController.signal,
+                isDeliverable,
+              },
+            );
+          } finally {
+            requestSettled = true;
+            clearTimeout(deadline);
+            activeRequestControllers.delete(requestController);
+            outerSignal?.removeEventListener('abort', abortRequest);
+          }
+          if (response && isDeliverable()) socket.write(`${JSON.stringify(response)}\n`);
           socket.end();
         } catch (error) {
           diagnostics.lastError = error instanceof Error ? error.message : String(error);
-          if (isTraceProcessorQueryCancelledError(error)) {
+          if (
+            isTraceProcessorQueryCancelledError(error) ||
+            (error instanceof Error && error.name === 'AbortError') ||
+            socket.destroyed
+          ) {
             socket.end();
             return;
           }
@@ -970,10 +1087,18 @@ function startOpenCodeMcpBridge(
       resolve({
         port: address.port,
         token,
+        requestTimeoutMs,
         getDiagnostics: () => ({...diagnostics}),
-        close: () => new Promise<void>((closeResolve, closeReject) => {
-          server.close(err => err ? closeReject(err) : closeResolve());
-        }),
+        close: () => {
+          if (!closePromise) {
+            for (const controller of activeRequestControllers) controller.abort();
+            for (const socket of sockets) socket.destroy();
+            closePromise = new Promise<void>((closeResolve, closeReject) => {
+              server.close(err => err ? closeReject(err) : closeResolve());
+            });
+          }
+          return closePromise;
+        },
       });
     });
   });
@@ -1603,38 +1728,126 @@ function getOpenCodeAssistantMessages(value: unknown): Record<string, unknown>[]
   return messages;
 }
 
-function getOpenCodeAssistantMessageSignature(message: Record<string, unknown>): string {
+interface OpenCodeAssistantMessageWatermark {
+  id?: string;
+  signature: string;
+}
+
+function getOpenCodeAssistantMessageId(message: Record<string, unknown>): string | undefined {
   const info = isRecord(message.info) ? message.info : message;
-  const id = typeof info.id === 'string'
+  return typeof info.id === 'string'
     ? info.id
     : typeof message.id === 'string'
       ? message.id
       : undefined;
-  if (id) return `id:${id}`;
+}
 
+function projectOpenCodeStructuredValue(value: unknown): unknown {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(entry => projectOpenCodeStructuredValue(entry));
+  }
+  if (!isRecord(value)) {
+    return String(value);
+  }
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort()
+      .filter(key => value[key] !== undefined)
+      .map(key => [key, projectOpenCodeStructuredValue(value[key])]),
+  );
+}
+
+function getOpenCodeAssistantStructuredContent(message: Record<string, unknown>): unknown {
+  const structured: Record<string, unknown> = {};
+  if ('parts' in message) {
+    structured.parts = projectOpenCodeStructuredValue(message.parts);
+  }
+  if ('content' in message) {
+    structured.content = projectOpenCodeStructuredValue(message.content);
+  }
+  if (Object.keys(structured).length === 0) {
+    structured.text = extractTextParts(message).trim();
+  }
+  return structured;
+}
+
+function getOpenCodeAssistantMessageSignature(message: Record<string, unknown>): string {
+  const info = isRecord(message.info) ? message.info : message;
+  const id = getOpenCodeAssistantMessageId(message) ?? '';
   const time = isRecord(info.time) ? info.time : undefined;
   const completed = typeof time?.completed === 'number' ? time.completed : '';
   const finish = typeof info.finish === 'string' ? info.finish : '';
-  return `content:${completed}:${finish}:${extractTextParts(message).trim()}`;
+  const digest = canonicalContentHash({
+    id,
+    completed,
+    finish,
+    structuredContent: getOpenCodeAssistantStructuredContent(message),
+  });
+  return `sha256:${digest}`;
+}
+
+function createOpenCodeAssistantMessageWatermark(
+  message: Record<string, unknown> | undefined,
+): OpenCodeAssistantMessageWatermark | undefined {
+  return message ? {
+    id: getOpenCodeAssistantMessageId(message),
+    signature: getOpenCodeAssistantMessageSignature(message),
+  } : undefined;
 }
 
 function getOpenCodeAssistantMessagesAfterBaseline(
   messagesResponse: unknown,
-  baselineSignatures: readonly string[],
+  baselineWatermark: OpenCodeAssistantMessageWatermark | undefined,
 ): Record<string, unknown>[] {
   const messages = getOpenCodeAssistantMessages(messagesResponse);
-  if (baselineSignatures.length === 0) return messages;
+  if (!baselineWatermark) return [...messages].reverse();
 
-  const lastBaselineSignature = baselineSignatures[baselineSignatures.length - 1];
-  let lastBaselineIndex = -1;
-  messages.forEach((message, index) => {
-    if (getOpenCodeAssistantMessageSignature(message) === lastBaselineSignature) {
-      lastBaselineIndex = index;
-    }
-  });
+  const baselineIndex = messages.findIndex(
+    message => getOpenCodeAssistantMessageSignature(message) === baselineWatermark.signature,
+  );
+  if (baselineIndex >= 0) return messages.slice(0, baselineIndex).reverse();
+  if (baselineWatermark.id) {
+    const reusedIdIndex = messages.findIndex(
+      message => getOpenCodeAssistantMessageId(message) === baselineWatermark.id,
+    );
+    if (reusedIdIndex >= 0) return messages.slice(0, reusedIdIndex + 1).reverse();
+  }
+  return [...messages].reverse();
+}
 
-  if (lastBaselineIndex >= 0) return messages.slice(lastBaselineIndex + 1);
-  return messages.slice(Math.min(baselineSignatures.length, messages.length));
+function hasOpenCodeAssistantBaselineBoundary(
+  messagesResponse: unknown,
+  baselineWatermark: OpenCodeAssistantMessageWatermark,
+): boolean {
+  const messages = getOpenCodeAssistantMessages(messagesResponse);
+  return messages.some(message => (
+    getOpenCodeAssistantMessageSignature(message) === baselineWatermark.signature ||
+    Boolean(
+      baselineWatermark.id &&
+      getOpenCodeAssistantMessageId(message) === baselineWatermark.id,
+    )
+  ));
+}
+
+function getOpenCodeRawMessageWindowCount(messagesResponse: unknown): number {
+  if (Array.isArray(messagesResponse)) return messagesResponse.length;
+  if (!isRecord(messagesResponse)) return 0;
+  for (const key of ['messages', 'items', 'result']) {
+    if (Array.isArray(messagesResponse[key])) return messagesResponse[key].length;
+  }
+  return 0;
+}
+
+function nextOpenCodeMessageWindowLimit(limit: number): number {
+  return Math.min(OPENCODE_MESSAGE_WINDOW_MAX_LIMIT, limit * 2);
 }
 
 function openCodeAssistantMessagesResponse(messages: Record<string, unknown>[]): unknown {
@@ -1662,7 +1875,9 @@ function isOpenCodeAssistantMessageComplete(message: Record<string, unknown> | u
   if (info.error !== undefined) {
     throw new Error(`OpenCode assistant message failed: ${describeOpenCodeSdkError(info.error)}`);
   }
-  if (typeof info.finish === 'string' && info.finish.trim()) return true;
+  if (typeof info.finish === 'string' && info.finish.trim()) {
+    return info.finish.trim() !== 'tool-calls';
+  }
   const time = isRecord(info.time) ? info.time : undefined;
   return typeof time?.completed === 'number';
 }
@@ -1681,6 +1896,109 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function openCodePromptAbortError(): Error {
+  const error = new Error('OpenCode prompt aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+function openCodePromptTimeoutError(timeoutMs: number): Error {
+  return new Error(`OpenCode prompt timed out after ${timeoutMs}ms`);
+}
+
+function throwIfOpenCodePromptStopped(options: {
+  signal?: AbortSignal;
+  isAborted?: () => boolean;
+  deadlineAt: number;
+  timeoutMs: number;
+}): void {
+  if (options.signal?.aborted || options.isAborted?.()) {
+    throw openCodePromptAbortError();
+  }
+  if (Date.now() >= options.deadlineAt) {
+    throw openCodePromptTimeoutError(options.timeoutMs);
+  }
+}
+
+function awaitOpenCodePromptOperation<T>(
+  operation: () => Promise<T> | T,
+  options: {
+    signal?: AbortSignal;
+    isAborted?: () => boolean;
+    deadlineAt: number;
+    timeoutMs: number;
+  },
+): Promise<T> {
+  throwIfOpenCodePromptStopped(options);
+  const remainingMs = Math.max(1, options.deadlineAt - Date.now());
+  const operationPromise = Promise.resolve().then(operation);
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      options.signal?.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(openCodePromptAbortError()));
+    const timer = setTimeout(() => {
+      finish(() => reject(openCodePromptTimeoutError(options.timeoutMs)));
+    }, remainingMs);
+    options.signal?.addEventListener('abort', onAbort, {once: true});
+    if (options.signal?.aborted || options.isAborted?.()) {
+      onAbort();
+    }
+    operationPromise.then(
+      value => finish(() => {
+        try {
+          throwIfOpenCodePromptStopped(options);
+          resolve(value);
+        } catch (error) {
+          reject(error);
+        }
+      }),
+      error => finish(() => reject(error)),
+    );
+  });
+}
+
+async function resolveOpenCodeCurrentTurnMessages(options: {
+  initialMessagesResponse: unknown;
+  baselineWatermark: OpenCodeAssistantMessageWatermark | undefined;
+  fetchWindow: (limit: number) => Promise<unknown>;
+}): Promise<Record<string, unknown>[]> {
+  let messagesResponse = options.initialMessagesResponse;
+  let limit = OPENCODE_MESSAGE_WINDOW_INITIAL_LIMIT;
+  while (true) {
+    if (
+      !options.baselineWatermark ||
+      hasOpenCodeAssistantBaselineBoundary(messagesResponse, options.baselineWatermark)
+    ) {
+      return getOpenCodeAssistantMessagesAfterBaseline(
+        messagesResponse,
+        options.baselineWatermark,
+      );
+    }
+
+    const rawWindowCount = getOpenCodeRawMessageWindowCount(messagesResponse);
+    if (rawWindowCount < limit) {
+      return getOpenCodeAssistantMessagesAfterBaseline(
+        messagesResponse,
+        options.baselineWatermark,
+      );
+    }
+    if (limit >= OPENCODE_MESSAGE_WINDOW_MAX_LIMIT) {
+      throw new Error(
+        `OpenCode current-turn history exceeded the bounded ${OPENCODE_MESSAGE_WINDOW_MAX_LIMIT}-message window`,
+      );
+    }
+
+    limit = nextOpenCodeMessageWindowLimit(limit);
+    messagesResponse = await options.fetchWindow(limit);
+  }
+}
+
 export async function runOpenCodePrompt(
   opencode: OpenCodeInstance,
   promptInput: OpenCodePromptInput,
@@ -1689,55 +2007,125 @@ export async function runOpenCodePrompt(
     projectDir: string;
     timeoutMs: number;
     isAborted?: () => boolean;
+    signal?: AbortSignal;
+    onFirstAssistantMessage?: () => void;
+    resumedSession?: boolean;
+    pollDelay?: (ms: number) => Promise<void>;
+    adaptiveObservation?: boolean;
   },
 ): Promise<{ promptResponse?: unknown; messagesResponse?: unknown }> {
-  const { sessionId, projectDir, timeoutMs, isAborted } = options;
+  const {
+    sessionId,
+    projectDir,
+    timeoutMs,
+    isAborted,
+    signal,
+    onFirstAssistantMessage,
+    resumedSession = true,
+    pollDelay = delay,
+    adaptiveObservation = isRuntimeCandidateAdmitted('task8'),
+  } = options;
+  const deadlineAt = Date.now() + timeoutMs;
+  const waitOptions = {signal, isAborted, deadlineAt, timeoutMs};
+  const awaitOperation = <T>(operation: () => Promise<T> | T): Promise<T> =>
+    awaitOpenCodePromptOperation(operation, waitOptions);
+  const throwIfStopped = (): void => throwIfOpenCodePromptStopped(waitOptions);
+  const fetchMessagesWindow = async (limit: number, context = 'OpenCode messages'): Promise<unknown> =>
+    unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
+      path: {id: sessionId},
+      query: {directory: projectDir, limit, order: 'desc'},
+    })), context);
+  const recordFirstAssistantMessage = (): void => {
+    try {
+      onFirstAssistantMessage?.();
+    } catch {
+      // Runtime performance is internal observability only.
+    }
+  };
   if (opencode.client.session.promptAsync && opencode.client.session.messages) {
-    if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-    const baselineMessagesResponse = unwrapSdkData(await opencode.client.session.messages({
-      path: { id: sessionId },
-      query: { directory: projectDir, limit: 50, order: 'asc' },
-    }), 'OpenCode messages');
-    if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-    const baselineSignatures = getOpenCodeAssistantMessages(baselineMessagesResponse)
-      .map(getOpenCodeAssistantMessageSignature);
+    throwIfStopped();
+    const baselineMessagesResponse = resumedSession
+      ? unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
+          path: {id: sessionId},
+          query: {directory: projectDir, limit: 1, order: 'desc'},
+        })), 'OpenCode messages')
+      : undefined;
+    throwIfStopped();
+    const baselineWatermark = createOpenCodeAssistantMessageWatermark(
+      getOpenCodeAssistantMessages(baselineMessagesResponse)[0],
+    );
 
     commitEvaluationSdkHandoffIfActive();
     assertSdkSuccess(
-      await opencode.client.session.promptAsync(promptInput),
+      await awaitOperation(() => opencode.client.session.promptAsync!(promptInput)),
       'OpenCode async prompt',
     );
-    const startedAt = Date.now();
     let messagesResponse: unknown;
-    while (Date.now() - startedAt < timeoutMs) {
-      if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-      await delay(PROMPT_POLL_INTERVAL_MS);
-      if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-      messagesResponse = unwrapSdkData(await opencode.client.session.messages({
-        path: { id: sessionId },
-        query: { directory: projectDir, limit: 50, order: 'asc' },
-      }), 'OpenCode messages');
-      if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-      const newAssistantMessages = getOpenCodeAssistantMessagesAfterBaseline(
-        messagesResponse,
-        baselineSignatures,
-      );
+    let firstAssistantMessageObserved = false;
+    let pollIntervalMs = adaptiveObservation
+      ? PROMPT_POLL_INITIAL_INTERVAL_MS
+      : PROMPT_POLL_MAX_INTERVAL_MS;
+    while (true) {
+      throwIfStopped();
+      const readMessages = () => opencode.client.session.messages!({
+          path: {id: sessionId},
+          query: {directory: projectDir, limit: OPENCODE_MESSAGE_WINDOW_INITIAL_LIMIT, order: 'desc'},
+        });
+      const readStatus = () => opencode.client.session.status
+          ? opencode.client.session.status({query: {directory: projectDir}})
+          : Promise.resolve(undefined);
+      let rawMessagesResponse: unknown;
+      let statusResponse: unknown;
+      if (adaptiveObservation) {
+        [rawMessagesResponse, statusResponse] = await awaitOperation(() => Promise.all([
+          readMessages(),
+          readStatus(),
+        ]));
+      } else {
+        rawMessagesResponse = await awaitOperation(readMessages);
+        statusResponse = await awaitOperation(readStatus);
+      }
+      messagesResponse = unwrapSdkData(rawMessagesResponse, 'OpenCode messages');
+      throwIfStopped();
+      const newAssistantMessages = await resolveOpenCodeCurrentTurnMessages({
+        initialMessagesResponse: messagesResponse,
+        baselineWatermark,
+        fetchWindow: limit => fetchMessagesWindow(limit),
+      });
+      if (!firstAssistantMessageObserved && newAssistantMessages.length > 0) {
+        firstAssistantMessageObserved = true;
+        recordFirstAssistantMessage();
+      }
       const currentTurnMessagesResponse = openCodeAssistantMessagesResponse(newAssistantMessages);
       const latestAssistant = newAssistantMessages[newAssistantMessages.length - 1];
       const latestAssistantComplete = isOpenCodeAssistantMessageComplete(latestAssistant);
-      if (opencode.client.session.status) {
-        const statusResponse = await opencode.client.session.status({
-          query: { directory: projectDir },
-        });
-        if (isAborted?.()) throw new Error('OpenCode prompt aborted');
+      if (statusResponse !== undefined) {
+        throwIfStopped();
         assertSdkSuccess(statusResponse, 'OpenCode session status');
         const sessionStatus = getOpenCodeSessionStatus(statusResponse, sessionId);
         if (
           sessionStatus === 'idle' &&
           extractOpenCodeAssistantText(currentTurnMessagesResponse)
         ) {
-          recordOpenCodeAssistantUsage(newAssistantMessages);
-          return { messagesResponse: currentTurnMessagesResponse };
+          const finalMessagesResponse = await fetchMessagesWindow(
+            OPENCODE_MESSAGE_WINDOW_INITIAL_LIMIT,
+            'OpenCode final messages',
+          );
+          throwIfStopped();
+          const finalAssistantMessages = await resolveOpenCodeCurrentTurnMessages({
+            initialMessagesResponse: finalMessagesResponse,
+            baselineWatermark,
+            fetchWindow: limit => fetchMessagesWindow(limit, 'OpenCode final messages'),
+          });
+          const latestCanonical = finalAssistantMessages[finalAssistantMessages.length - 1];
+          if (
+            latestCanonical &&
+            isOpenCodeAssistantMessageComplete(latestCanonical) &&
+            extractOpenCodeAssistantText(openCodeAssistantMessagesResponse(finalAssistantMessages))
+          ) {
+            recordOpenCodeAssistantUsage(finalAssistantMessages);
+            return {messagesResponse: openCodeAssistantMessagesResponse(finalAssistantMessages)};
+          }
         }
         if (sessionStatus === 'unknown' && latestAssistantComplete) {
           recordOpenCodeAssistantUsage(newAssistantMessages);
@@ -1747,38 +2135,47 @@ export async function runOpenCodePrompt(
         recordOpenCodeAssistantUsage(newAssistantMessages);
         return { messagesResponse: currentTurnMessagesResponse };
       }
+      const remainingMs = Math.max(1, deadlineAt - Date.now());
+      await awaitOperation(() => pollDelay(Math.min(pollIntervalMs, remainingMs)));
+      if (adaptiveObservation) {
+        pollIntervalMs = Math.min(PROMPT_POLL_MAX_INTERVAL_MS, pollIntervalMs * 2);
+      }
     }
-    throw new Error(`OpenCode prompt timed out after ${timeoutMs}ms`);
   }
 
-  if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-  const baselineMessagesResponse = opencode.client.session.messages
-    ? unwrapSdkData(await opencode.client.session.messages({
+  throwIfStopped();
+  const baselineMessagesResponse = resumedSession && opencode.client.session.messages
+    ? unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
         path: { id: sessionId },
-        query: { directory: projectDir, limit: 50, order: 'asc' },
-      }), 'OpenCode messages')
+        query: { directory: projectDir, limit: 1, order: 'desc' },
+      })), 'OpenCode messages')
     : undefined;
-  if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-  const baselineSignatures = getOpenCodeAssistantMessages(baselineMessagesResponse)
-    .map(getOpenCodeAssistantMessageSignature);
-  commitEvaluationSdkHandoffIfActive();
-  const promptResponse = unwrapSdkData(await opencode.client.session.prompt(promptInput), 'OpenCode prompt');
-  if (isAborted?.()) throw new Error('OpenCode prompt aborted');
-  const allMessagesResponse = opencode.client.session.messages
-    ? unwrapSdkData(await opencode.client.session.messages({
-        path: { id: sessionId },
-        query: { directory: projectDir, limit: 50, order: 'asc' },
-      }), 'OpenCode messages')
-    : undefined;
-  const currentTurnMessages = getOpenCodeAssistantMessagesAfterBaseline(
-    allMessagesResponse,
-    baselineSignatures,
+  throwIfStopped();
+  const baselineWatermark = createOpenCodeAssistantMessageWatermark(
+    getOpenCodeAssistantMessages(baselineMessagesResponse)[0],
   );
+  commitEvaluationSdkHandoffIfActive();
+  const promptResponse = unwrapSdkData(
+    await awaitOperation(() => opencode.client.session.prompt(promptInput)),
+    'OpenCode prompt',
+  );
+  throwIfStopped();
+  const allMessagesResponse = opencode.client.session.messages
+    ? await fetchMessagesWindow(OPENCODE_MESSAGE_WINDOW_INITIAL_LIMIT)
+    : undefined;
+  const currentTurnMessages = await resolveOpenCodeCurrentTurnMessages({
+    initialMessagesResponse: allMessagesResponse,
+    baselineWatermark,
+    fetchWindow: limit => fetchMessagesWindow(limit),
+  });
   const messagesResponse = openCodeAssistantMessagesResponse(currentTurnMessages);
   const promptAssistantMessages = getOpenCodeAssistantMessages(promptResponse);
   const observedAssistantMessages = promptAssistantMessages.length > 0
     ? promptAssistantMessages
     : currentTurnMessages.slice(-1);
+  if (observedAssistantMessages.length > 0) {
+    recordFirstAssistantMessage();
+  }
   recordOpenCodeAssistantUsage(observedAssistantMessages);
   return { promptResponse, messagesResponse };
 }
@@ -1908,6 +2305,7 @@ function loadOpenCodeFinalReportContinuationPrompt(
 export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   private readonly env: EnvLike;
   private readonly moduleLoader: OpenCodeSdkModuleLoader;
+  private readonly bridgeStarter: OpenCodeBridgeStarter;
   private readonly selection: RuntimeSelection<OpenCodeRuntimeKind>;
   private currentSessionId?: string;
   private currentServer?: OpenCodeServerHandle;
@@ -1919,6 +2317,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
   private readonly sessionOpaqueStates = new Map<string, OpenCodeOpaqueState>();
+  private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
     private readonly input: RuntimeFactoryInput,
@@ -1927,6 +2326,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     super();
     this.env = options.env ?? input.env ?? process.env;
     this.moduleLoader = options.moduleLoader ?? loadOpenCodeSdkModule;
+    this.bridgeStarter = options.bridgeStarter ?? startOpenCodeMcpBridge;
     this.selection = input.selection as RuntimeSelection<OpenCodeRuntimeKind>;
   }
 
@@ -2039,21 +2439,86 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(options ?? {}),
       analysisMode: resolveEffectiveAnalysisMode(options?.analysisMode, options ?? {}),
     };
-    if (
-      this.selection.kind === OPENCODE_RUNTIME_KIND ||
-      truthyEnv(this.env[OPENCODE_REAL_ANALYSIS_ENV])
-    ) {
-      return this.analyzeWithSmartPerfettoTools(query, sessionId, traceId, options ?? {});
+    const executionLease = this.executionGuard.begin({
+      runtime: OPENCODE_RUNTIME_KIND,
+      sessionId,
+      referenceTraceId: options.referenceTraceId,
+      runId: options.runId,
+    });
+    const runtimePerformance = createRuntimePerformanceRun(
+      options.runManifestAttributionSink,
+    );
+    let runtimePerformanceOutcome: RuntimePerformanceOutcome = 'ok';
+    let result: AnalysisResult | undefined;
+    try {
+      executionLease.throwIfAborted();
+      if (
+        this.selection.kind === OPENCODE_RUNTIME_KIND ||
+        truthyEnv(this.env[OPENCODE_REAL_ANALYSIS_ENV])
+      ) {
+        result = await this.analyzeWithSmartPerfettoTools(
+          query,
+          sessionId,
+          traceId,
+          options ?? {},
+          executionLease,
+          runtimePerformance,
+        );
+        executionLease.throwIfAborted();
+        runtimePerformanceOutcome = executionLease.signal.aborted
+          ? 'cancelled'
+          : result.success === false ? 'error' : 'ok';
+        return result;
+      }
+      result = await this.analyzeHiddenSmoke(query, sessionId, traceId, options ?? {}, executionLease, runtimePerformance);
+      executionLease.throwIfAborted();
+      runtimePerformanceOutcome = executionLease.signal.aborted
+        ? 'cancelled'
+        : result.success === false ? 'error' : 'ok';
+      return result;
+    } catch (error) {
+      runtimePerformanceOutcome = runtimeOutcomeFromError(
+        error,
+        executionLease.signal,
+      );
+      throw error;
+    } finally {
+      const finalizationPhase = runtimePerformance.startPhase('finalization');
+      try {
+        executionLease.settle();
+      } finally {
+        finalizationPhase.end(runtimePerformanceOutcome);
+        runtimePerformance.finalize(runtimePerformanceOutcome);
+      }
     }
+  }
 
+  private async analyzeHiddenSmoke(
+    query: string,
+    sessionId: string,
+    traceId: string,
+    options: AnalysisOptions,
+    executionLease: RuntimeExecutionLease,
+    runtimePerformance: RuntimePerformanceRun,
+  ): Promise<AnalysisResult> {
     const startedAt = Date.now();
+    executionLease.throwIfAborted();
     this.emitUpdate({
       type: 'progress',
       content: 'Starting experimental OpenCode hidden runtime smoke',
       timestamp: Date.now(),
     });
 
-    const sdk = await this.moduleLoader(this.env);
+    const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
+    let sdk: Awaited<ReturnType<OpenCodeSdkModuleLoader>>;
+    try {
+      sdk = await this.moduleLoader(this.env);
+      sdkStartPhase.end('ok');
+    } catch (error) {
+      sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+      throw error;
+    }
+    executionLease.throwIfAborted();
     const privateKnowledge = analysisContextUsesPrivateKnowledge(options ?? {});
     const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
@@ -2071,6 +2536,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         timeout,
         config: createOpenCodeHardenedConfig([], this.env),
       });
+      executionLease.throwIfAborted();
       activeSession = {
         server: opencode.server,
         client: opencode.client,
@@ -2081,6 +2547,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         configDir: dirs.configDir,
       };
       this.activeSessions.set(sessionId, activeSession);
+      executionLease.throwIfAborted();
       this.currentServer = opencode.server;
       const openCodeSessionId = await this.resolveOpenCodeSessionId(
         opencode.client,
@@ -2090,7 +2557,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
-      unwrapSdkData(await opencode.client.session.prompt({
+      executionLease.throwIfAborted();
+      runtimePerformance.finishClassification('ok');
+      const providerPhase = runtimePerformance.startPhase('provider');
+      try {
+        unwrapSdkData(await opencode.client.session.prompt({
         path: { id: openCodeSessionId },
         query: { directory: dirs.projectDir },
         body: {
@@ -2099,9 +2570,15 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           tools: createOpenCodeToolAllowlist(),
           parts: [{ type: 'text', text: buildSmokePrompt(query, traceId, options) }],
         },
-      }), 'OpenCode hidden prompt');
+        }), 'OpenCode hidden prompt');
+        providerPhase.end('ok');
+      } catch (error) {
+        providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+      executionLease.throwIfAborted();
     } finally {
-      if (activeSession && !privateKnowledge) {
+      if (activeSession && !privateKnowledge && !executionLease.signal.aborted) {
         this.sessionOpaqueStates.set(sessionId, createOpenCodeOpaqueState(
           activeSession.openCodeSessionId,
           dirs,
@@ -2144,8 +2621,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionId: string,
     traceId: string,
     options: AnalysisOptions,
+    executionLease: RuntimeExecutionLease,
+    runtimePerformance: RuntimePerformanceRun,
   ): Promise<AnalysisResult> {
     const startedAt = Date.now();
+    executionLease.throwIfAborted();
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const sceneType = classifyScene(query);
@@ -2161,6 +2641,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       hasReferenceTrace: Boolean(options.referenceTraceId),
       previousTurns,
     });
+    runtimePerformance.finishClassification('ok');
     if (quickResolution.quickMode && quickResolution.quickAcknowledgementDirectAnswer) {
       const analysisRunSpec = createAnalysisRunSpec({
         query,
@@ -2188,11 +2669,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         sessionContext,
         previousTurns,
         analysisRunSpec,
+        executionLease,
+        runtimePerformance,
       });
     }
 
-    const directEvidenceAnswer = quickResolution.quickMode
-      ? await buildRuntimeQuickEvidenceDirectAnswer({
+    let quickEvidenceAttempt: RuntimeQuickEvidenceAttempt | undefined;
+    if (quickResolution.quickMode) {
+      const quickEvidencePhase = runtimePerformance.startPhase('quick_evidence');
+      try {
+        quickEvidenceAttempt = await buildRuntimeQuickEvidenceAttempt({
           query,
           traceId,
           packageName: options.packageName,
@@ -2204,17 +2690,23 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           quickTraceFactPreEvidence: quickResolution.quickTraceFactPreEvidence,
           quickScrollingTriagePreEvidence: quickResolution.quickScrollingTriagePreEvidence,
           emitUpdate: update => this.emitUpdate(update),
-        })
-      : undefined;
-    if (directEvidenceAnswer) {
+        });
+        quickEvidencePhase.end('ok');
+      } catch (error) {
+        quickEvidencePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+    }
+    executionLease.throwIfAborted();
+    if (quickEvidenceAttempt?.directAnswer) {
       const analysisRunSpec = createAnalysisRunSpec({
         query,
         sessionId,
         traceId,
         options: {
           ...options,
-          ...(directEvidenceAnswer.effectivePackageName ? {
-            packageName: directEvidenceAnswer.effectivePackageName,
+          ...(quickEvidenceAttempt.effectivePackageName ? {
+            packageName: quickEvidenceAttempt.effectivePackageName,
           } : {}),
         },
         runtimeSelection: this.selection,
@@ -2238,12 +2730,23 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         sessionContext,
         previousTurns,
         analysisRunSpec,
-        directAnswer: directEvidenceAnswer.directAnswer,
-        evidenceCounts: directEvidenceAnswer.evidenceCounts,
+        directAnswer: quickEvidenceAttempt.directAnswer,
+        evidenceCounts: quickEvidenceAttempt.evidenceCounts,
+        executionLease,
+        runtimePerformance,
       });
     }
 
-    const sdk = await this.moduleLoader(this.env);
+    const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
+    let sdk: Awaited<ReturnType<OpenCodeSdkModuleLoader>>;
+    try {
+      sdk = await this.moduleLoader(this.env);
+      sdkStartPhase.end('ok');
+    } catch (error) {
+      sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+      throw error;
+    }
+    executionLease.throwIfAborted();
     const modelConfig = resolveOpenCodeModelConfig(this.env, this.selection, this.input.providerScope);
     const prep = await this.prepareAnalysis(
       query,
@@ -2251,26 +2754,42 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       traceId,
       options,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
+        selectReusableRuntimeQuickEvidenceAttempt(quickEvidenceAttempt, this.env),
     );
+    executionLease.throwIfAborted();
     const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
       query,
       initialSceneType: prep.sceneType,
       plan: prep.analysisPlan.current,
     });
     const abortController = new AbortController();
-    const bridge = await startOpenCodeMcpBridge(
+    const mcpTimeout = resolveOpenCodeMcpTimeoutMs(this.env[OPENCODE_MCP_TIMEOUT_MS_ENV]);
+    const bridge = await this.bridgeStarter(
       prep.toolDefinitions,
       update => this.emitUpdate(update),
       {
         getSignal: () => abortController.signal,
         analysisPlan: prep.quickMode ? undefined : prep.analysisPlan,
+        timeoutMs: mcpTimeout,
       },
     );
+    try {
+      executionLease.throwIfAborted();
+    } catch (error) {
+      await bridge.close().catch(() => undefined);
+      throw error;
+    }
     const privateKnowledge = analysisContextUsesPrivateKnowledge(options);
     const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
     );
+    try {
+      executionLease.throwIfAborted();
+    } catch (error) {
+      await bridge.close().catch(() => undefined);
+      throw error;
+    }
     const port = numericEnv(this.env[OPENCODE_SERVER_PORT_ENV]);
     const timeout = numericEnv(this.env[OPENCODE_SERVER_TIMEOUT_MS_ENV]) ?? DEFAULT_SERVER_TIMEOUT_MS;
     const promptTimeout = numericEnv(this.env[OPENCODE_PROMPT_TIMEOUT_MS_ENV]) ?? DEFAULT_PROMPT_TIMEOUT_MS;
@@ -2287,6 +2806,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     let finalReportContinuationQualified = false;
     let finalReportContinuationFailureMessage: string | undefined;
     let activeSession: OpenCodeActiveSession | undefined;
+    let bridgeOwnedByActiveSession = false;
+    let unownedOpenCodeInstance: OpenCodeInstance | undefined;
     const projectConclusionText = (text: string): string => {
       let candidate = sanitizeOpenCodeConclusionText(text);
       if (!candidate) return '';
@@ -2351,7 +2872,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           modelConfig,
         ),
       });
+      unownedOpenCodeInstance = opencode;
+      executionLease.throwIfAborted();
       await assertOpenCodeMcpReady(opencode.client, dirs.projectDir, () => bridge.getDiagnostics());
+      executionLease.throwIfAborted();
       activeSession = {
         server: opencode.server,
         client: opencode.client,
@@ -2362,7 +2886,10 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         homeDir: dirs.homeDir,
         configDir: dirs.configDir,
       };
+      bridgeOwnedByActiveSession = true;
+      unownedOpenCodeInstance = undefined;
       this.activeSessions.set(sessionId, activeSession);
+      executionLease.throwIfAborted();
       this.currentServer = opencode.server;
       const openCodeSessionId = await this.resolveOpenCodeSessionId(
         opencode.client,
@@ -2372,6 +2899,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
+      executionLease.throwIfAborted();
       this.emitUpdate({
         type: 'progress',
         content: {
@@ -2388,28 +2916,48 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       if (!promptSession) {
         throw new Error('OpenCode active session was not registered before prompt execution');
       }
-      const runAnalysisPrompt = (text: string) => runOpenCodePrompt(opencode, {
-        path: {id: openCodeSessionId},
-        query: {directory: dirs.projectDir},
-        body: {
-          model: modelConfig.model,
-          agent: 'smartperfetto',
-          system: prep.systemPrompt,
-          tools: createOpenCodeToolAllowlist(
-            createOpenCodeMcpToolNames(Array.from(prep.allowedToolNames)),
+      let resumedPromptSession = Boolean(
+        restoredOpenCodeSessionId && openCodeSessionId === restoredOpenCodeSessionId,
+      );
+      const runAnalysisPrompt = async (text: string) => {
+        const promptResult = await runOpenCodePrompt(opencode, {
+          path: {id: openCodeSessionId},
+          query: {directory: dirs.projectDir},
+          body: {
+            model: modelConfig.model,
+            agent: 'smartperfetto',
+            system: prep.systemPrompt,
+            tools: createOpenCodeToolAllowlist(
+              createOpenCodeMcpToolNames(Array.from(prep.allowedToolNames)),
+            ),
+            parts: [{type: 'text', text}],
+          },
+        }, {
+          sessionId: openCodeSessionId,
+          projectDir: dirs.projectDir,
+          timeoutMs: promptTimeout,
+          resumedSession: resumedPromptSession,
+          signal: promptSession.abortController?.signal,
+          isAborted: () => (
+            this.activeSessions.get(sessionId) === promptSession &&
+            promptSession.aborted
           ),
-          parts: [{type: 'text', text}],
-        },
-      }, {
-        sessionId: openCodeSessionId,
-        projectDir: dirs.projectDir,
-        timeoutMs: promptTimeout,
-        isAborted: () => (
-          this.activeSessions.get(sessionId) === promptSession &&
-          promptSession.aborted
-        ),
-      });
-      const promptResult = await runAnalysisPrompt(prep.prompt);
+          onFirstAssistantMessage: () => runtimePerformance.recordFirstOutput(),
+          adaptiveObservation: isRuntimeCandidateAdmitted('task8', this.env),
+        });
+        resumedPromptSession = true;
+        return promptResult;
+      };
+      const providerPhase = runtimePerformance.startPhase('provider');
+      let promptResult: Awaited<ReturnType<typeof runAnalysisPrompt>>;
+      try {
+        promptResult = await runAnalysisPrompt(prep.prompt);
+        providerPhase.end('ok');
+      } catch (error) {
+        providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+      executionLease.throwIfAborted();
       promptResponse = promptResult.promptResponse;
       messagesResponse = promptResult.messagesResponse;
       conclusion = projectAssistantConclusion(messagesResponse, promptResponse);
@@ -2454,6 +3002,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
               outputLanguage: prep.analysisRunSpec.outputLanguage,
             }),
           );
+          executionLease.throwIfAborted();
           const continuationConclusion = projectAssistantConclusion(
             continuationResult.messagesResponse,
             continuationResult.promptResponse,
@@ -2549,6 +3098,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
               initialQualityIssue,
             ),
           );
+          executionLease.throwIfAborted();
           const continuationConclusion = projectAssistantConclusion(
             continuationResult.messagesResponse,
             continuationResult.promptResponse,
@@ -2593,13 +3143,19 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         }
       }
     } finally {
-      if (activeSession && !privateKnowledge) {
+      if (activeSession && !privateKnowledge && !executionLease.signal.aborted) {
         this.sessionOpaqueStates.set(sessionId, createOpenCodeOpaqueState(
           activeSession.openCodeSessionId,
           dirs,
         ));
       }
       await this.closeSessionHandle(sessionId, activeSession);
+      if (!activeSession && unownedOpenCodeInstance) {
+        await Promise.resolve(unownedOpenCodeInstance.server.close()).catch(() => undefined);
+      }
+      if (!bridgeOwnedByActiveSession) {
+        await bridge.close().catch(() => undefined);
+      }
       if (ephemeralRoot) fs.rmSync(ephemeralRoot, {recursive: true, force: true});
     }
 
@@ -2724,7 +3280,17 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           allowPersistentLearning: !analysisContextUsesPrivateKnowledge(options),
         });
       };
-      let verification = await verifyCurrentConclusion();
+      executionLease.throwIfAborted();
+      const verificationPhase = runtimePerformance.startPhase('verification');
+      let verification: Awaited<ReturnType<typeof verifyCurrentConclusion>>;
+      try {
+        verification = await verifyCurrentConclusion();
+        verificationPhase.end('ok');
+      } catch (error) {
+        verificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+      executionLease.throwIfAborted();
       let verificationIssue = [
         ...verification.heuristicIssues,
         ...(verification.llmIssues || []),
@@ -2777,7 +3343,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
             },
             timestamp: Date.now(),
           });
-          verification = await verifyCurrentConclusion();
+          executionLease.throwIfAborted();
+          const recoveryVerificationPhase = runtimePerformance.startPhase('verification');
+          try {
+            verification = await verifyCurrentConclusion();
+            recoveryVerificationPhase.end('ok');
+          } catch (error) {
+            recoveryVerificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+            throw error;
+          }
+          executionLease.throwIfAborted();
           verificationIssue = [
             ...verification.heuristicIssues,
             ...(verification.llmIssues || []),
@@ -2825,6 +3400,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       });
     }
 
+    executionLease.throwIfAborted();
     prep.sessionContext.addTurn(
       query,
       {
@@ -2862,6 +3438,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     analysisRunSpec: AnalysisRunSpec;
     directAnswer: RuntimeQuickEvidenceDirectAnswer;
     evidenceCounts: RuntimeQuickEvidenceCounts;
+    executionLease: RuntimeExecutionLease;
+    runtimePerformance: RuntimePerformanceRun;
   }): AnalysisResult {
     const quickBudget = resolveQuickTurnBudget({
       env: this.env,
@@ -2887,6 +3465,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       query: input.query,
       sceneType: input.sceneType,
     });
+    input.executionLease.throwIfAborted();
     input.sessionContext.addTurn(
       input.query,
       {
@@ -2905,6 +3484,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       },
       result.findings,
     );
+    input.executionLease.throwIfAborted();
+    input.runtimePerformance.recordFirstOutput();
     emitQuickDirectAnswerEvents({
       emitUpdate: update => this.emitUpdate(update),
       result,
@@ -2926,6 +3507,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
     previousTurns: ConversationTurn[];
     analysisRunSpec: AnalysisRunSpec;
+    executionLease: RuntimeExecutionLease;
+    runtimePerformance: RuntimePerformanceRun;
   }): AnalysisResult {
     const quickBudget = resolveQuickTurnBudget({
       env: this.env,
@@ -2949,6 +3532,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       query: input.query,
       sceneType: input.sceneType,
     });
+    input.executionLease.throwIfAborted();
     input.sessionContext.addTurn(
       input.query,
       {
@@ -2967,6 +3551,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       },
       result.findings,
     );
+    input.executionLease.throwIfAborted();
+    input.runtimePerformance.recordFirstOutput();
     emitQuickDirectAnswerEvents({
       emitUpdate: update => this.emitUpdate(update),
       result,
@@ -2984,6 +3570,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions,
     model: string,
+    quickEvidenceAttempt?: RuntimeQuickEvidenceAttempt,
   ): Promise<OpenCodeAnalysisPreparation> {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -3001,12 +3588,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       previousTurns,
     });
     const quickMode = quickResolution.quickMode;
-    const focusResult = quickResolution.skipFocusDetection
+    const focusResult = quickEvidenceAttempt?.focusResult ?? (quickResolution.skipFocusDetection
       ? { apps: [], method: 'none' as const }
       : await detectFocusApps(this.input.traceProcessorService, traceId, {
           timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        });
-    const effectivePackageName = options.packageName || focusResult.primaryApp;
+        }));
+    const effectivePackageName = options.packageName
+      || quickEvidenceAttempt?.effectivePackageName
+      || focusResult.primaryApp;
     const analysisRunSpec = createAnalysisRunSpec({
       query,
       sessionId,
@@ -3303,6 +3892,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   }
 
   reset(): void {
+    this.executionGuard.clear();
     this.currentSessionId = undefined;
     void this.abortAllSessions();
     this.sessionOpaqueStates.clear();
@@ -3322,6 +3912,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   }
 
   async abortSession(sessionId: string): Promise<void> {
+    await this.executionGuard.abortSession(sessionId);
     const handle = this.activeSessions.get(sessionId);
     if (!handle) return;
     handle.aborted = true;

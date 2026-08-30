@@ -175,6 +175,49 @@ describe('RunManifestBuilder', () => {
     expect(Object.isFrozen(manifest.skills)).toBe(true);
   });
 
+  it('omits the optional performance receipt when no performance was recorded', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+
+    expect(builder.seal()).not.toHaveProperty('performance');
+  });
+
+  it('seals a privacy-safe immutable performance receipt before the run manifest closes', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+
+    const phase = builder.runtimePerformanceRecorder.startPhase('classification');
+    phase.end();
+    builder.runtimePerformanceRecorder.recordTool({
+      toolCallId: 'raw-tool-call-id',
+      mode: 'exclusive',
+      schedulerWaitMs: 0,
+      durationMs: 2,
+      outcome: 'ok',
+    });
+
+    const manifest = builder.seal();
+
+    expect(manifest.performance).toEqual({
+      schemaVersion: 1,
+      phases: [expect.objectContaining({
+        name: 'classification',
+        outcome: 'ok',
+      })],
+      tools: [expect.objectContaining({
+        mode: 'exclusive',
+        toolCallIdHash: expect.stringMatching(/^sha256:/),
+      })],
+      sql: [],
+    });
+    expect(JSON.stringify(manifest.performance)).not.toContain('raw-tool-call-id');
+    expect(Object.isFrozen(manifest.performance)).toBe(true);
+    expect(Object.isFrozen(manifest.performance?.phases)).toBe(true);
+    expect(() => builder.runtimePerformanceRecorder.recordFirstOutput()).toThrow(
+      'runtime_performance_already_sealed:record_first_output',
+    );
+  });
+
   it('records zero-turn quick runs and closes pending terminal invocations as errors', () => {
     const builder = createBuilder();
     builder.recordSkillRegistry({

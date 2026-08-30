@@ -23,6 +23,7 @@ import { jest, describe, it, expect } from '@jest/globals';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import net from 'net';
 import type { AnalysisPlanV3, AnalysisNote, Hypothesis, TracePairContext, UncertaintyFlag } from '../types';
 import type { OutputLanguage } from '../outputLanguage';
 import {withEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
@@ -253,6 +254,9 @@ import {
   loadLearnedSqlFixPairs,
   normalizeOptionalToolString,
 } from '../claudeMcpServer';
+import {resolveRuntimeToolConcurrencyPolicy} from '../../agentRuntime/runtimeToolConcurrency';
+import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../../agentRuntime/runtimeCandidateAdmission';
+import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import { ArtifactStore } from '../artifactStore';
 import { createArchitectureDetector } from '../../agent/detectors/architectureDetector';
 import { createSkillAnalysisAdapter } from '../../services/skillEngine/skillAnalysisAdapter';
@@ -281,10 +285,21 @@ import {
   withEvaluationInjectionContext,
 } from '../../services/selfEvolution/evaluationInjectionContext';
 import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 type ToolDef = { name: string; description?: string; schema?: Record<string, any>; handler: (...args: any[]) => any };
+
+function createDeferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return {promise, resolve, reject};
+}
 
 function createTestServer(options: {
   referenceTraceId?: string;
@@ -311,6 +326,7 @@ function createTestServer(options: {
   packageName?: string;
   referencePackageName?: string;
   outputLanguage?: OutputLanguage;
+  runManifestAttributionSink?: RunManifestAttributionSink;
 } = {}) {
   const analysisNotes: AnalysisNote[] = [];
   const hypotheses: Hypothesis[] = [];
@@ -353,6 +369,7 @@ function createTestServer(options: {
     setRunManifestAttributionSink: jest.fn(),
   };
 
+  const artifactStore = new ArtifactStore() as any;
   const { server, allowedTools, toolDefinitions, sourceUse } = createClaudeMcpServer({
     traceId: 'test-trace-123',
     userQuery: options.userQuery,
@@ -362,7 +379,7 @@ function createTestServer(options: {
     hypotheses,
     uncertaintyFlags,
     watchdogWarning,
-    artifactStore: new ArtifactStore() as any,
+    artifactStore,
     packageName: options.packageName,
     emitUpdate: (u: any) => emittedUpdates.push(u),
     sceneType: options.sceneType,
@@ -382,6 +399,7 @@ function createTestServer(options: {
     knowledgeScope: options.knowledgeScope,
     sessionId: options.sessionId,
     outputLanguage: options.outputLanguage,
+    runManifestAttributionSink: options.runManifestAttributionSink,
     conversationTraceAttached: options.conversationTraceAttached,
     ...(options.lightweight ? { lightweight: true } : { analysisPlan }),
     ...(options.referenceTraceId ? {
@@ -417,6 +435,52 @@ function createTestServer(options: {
     emittedUpdates,
     mockTpService,
     mockSkillExecutor,
+    artifactStore,
+  };
+}
+
+function createNoopAttributionSink(
+  runtimePerformanceRecorder = createRuntimePerformanceRecorder(),
+): RunManifestAttributionSink {
+  return {
+    identity: {
+      runId: 'run-claude-mcp-test',
+      sessionId: 'session-claude-mcp-test',
+      scope: {tenantId: 'tenant-test', workspaceId: 'workspace-test'},
+    },
+    runtimePerformanceRecorder,
+    recordScene: jest.fn(),
+    recordRuntime: jest.fn(),
+    recordMode: jest.fn(),
+    recordAdaptiveRouting: jest.fn(),
+    recordCapabilityManifest: jest.fn(),
+    recordSkillRegistry: jest.fn(),
+    startSkillInvocation: jest.fn(() => 'skill-invocation-test'),
+    finishSkillInvocation: jest.fn(),
+    recordUnknownSkillInvocation: jest.fn(),
+    recordSqlStatement: jest.fn(),
+    recordPromptTemplate: jest.fn(),
+    recordInjection: jest.fn(),
+    recordToolAllowlist: jest.fn(),
+    recordTurn: jest.fn(),
+  };
+}
+
+function createRuntimeRegistrySnapshotForTest() {
+  return {
+    scope: {tenantId: 'tenant-test', workspaceId: 'workspace-test'},
+    baseSkillRegistryFingerprint: 'base-skills-test',
+    baseStrategyRegistryFingerprint: 'base-strategies-test',
+    overlayGeneration: 'overlay-test',
+    skillRegistry: {
+      registryFingerprint: 'registry-test',
+      overlayGeneration: 'overlay-test',
+      getAllSkills: jest.fn(() => []),
+      getFragmentCache: jest.fn(() => new Map()),
+      getSkill: jest.fn(() => undefined),
+      getVendorOverride: jest.fn(() => undefined),
+    },
+    strategyRegistry: {} as never,
   };
 }
 
@@ -726,6 +790,52 @@ describe('createClaudeMcpServer', () => {
       expect(allowedTools.length).toBe(tools.size);
     });
 
+    it('keeps allowedTools and toolDefinitions correlated while effective concurrency stays admission-gated', () => {
+      const { allowedTools, toolDefinitions } = createTestServer({
+        referenceTraceId: 'reference-trace-456',
+        codeAwareMode: 'metadata_only',
+        codebaseIds: ['app-codebase'],
+      });
+
+      expect(allowedTools).toEqual(toolDefinitions.map(definition => MCP_NAME_PREFIX + definition.name));
+
+      const declaredSafeReads = toolDefinitions
+        .filter(definition => definition.shared.concurrency?.mode === 'commutative_read')
+        .map(definition => definition.name)
+        .sort();
+      expect(declaredSafeReads).toEqual(['list_stdlib_modules', 'lookup_sql_schema']);
+
+      const defaultEffectiveModes = new Map(toolDefinitions.map(definition => [
+        definition.name,
+        resolveRuntimeToolConcurrencyPolicy(
+          definition.name,
+          definition.shared.concurrency,
+        ).policy.mode,
+      ]));
+      expect([...defaultEffectiveModes.values()].every(mode => mode === 'exclusive')).toBe(true);
+
+      const admittedEffectiveModes = new Map(toolDefinitions.map(definition => [
+        definition.name,
+        resolveRuntimeToolConcurrencyPolicy(
+          definition.name,
+          definition.shared.concurrency,
+          {[SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV]: 'task5'},
+        ).policy.mode,
+      ]));
+      const admittedSafeReads = [...admittedEffectiveModes.entries()]
+        .filter(([, mode]) => mode === 'commutative_read')
+        .map(([name]) => name)
+        .sort();
+
+      expect(admittedSafeReads).toEqual(declaredSafeReads);
+      for (const definition of toolDefinitions) {
+        expect(admittedEffectiveModes.get(definition.name)).toBeDefined();
+        if (!admittedSafeReads.includes(definition.name)) {
+          expect(admittedEffectiveModes.get(definition.name)).toBe('exclusive');
+        }
+      }
+    });
+
     it('should register all expected tools', () => {
       const { tools } = createTestServer();
       const expected = [
@@ -862,6 +972,119 @@ describe('createClaudeMcpServer', () => {
       ]);
       expect(allowedTools).toContain(MCP_NAME_PREFIX + 'fetch_artifact');
       expect(tools.has('submit_plan')).toBe(false);
+    });
+
+    it('audits first-wave safe reads as bounded metadata-only handlers', async () => {
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const runManifestAttributionSink = createNoopAttributionSink(runtimePerformanceRecorder);
+      const mutationSinkSpies = [
+        runManifestAttributionSink.recordScene,
+        runManifestAttributionSink.recordRuntime,
+        runManifestAttributionSink.recordMode,
+        runManifestAttributionSink.recordAdaptiveRouting,
+        runManifestAttributionSink.recordCapabilityManifest,
+        runManifestAttributionSink.recordSkillRegistry,
+        runManifestAttributionSink.startSkillInvocation,
+        runManifestAttributionSink.finishSkillInvocation,
+        runManifestAttributionSink.recordUnknownSkillInvocation,
+        runManifestAttributionSink.recordSqlStatement,
+        runManifestAttributionSink.recordPromptTemplate,
+        runManifestAttributionSink.recordInjection,
+        runManifestAttributionSink.recordToolAllowlist,
+        runManifestAttributionSink.recordTurn,
+      ].filter(Boolean) as jest.Mock[];
+      const codeLookupLedger = {
+        recordSearch: jest.fn(),
+        recordRead: jest.fn(),
+        recordGraphQuery: jest.fn(),
+        recordSymbolInspection: jest.fn(),
+      };
+      const ragStore = {
+        search: jest.fn(),
+        addDocument: jest.fn(),
+      };
+      const caseLibrary = {
+        recallSimilarCases: jest.fn(),
+        recallSimilarResults: jest.fn(),
+      };
+      const externalKnowledgeRegistry = {
+        listSources: jest.fn(),
+        search: jest.fn(),
+      };
+      const getSnapshot = jest.fn(() => null);
+      const listSnapshots = jest.fn(() => []);
+      const analysisResultSnapshotRepository = {
+        getSnapshot,
+        listSnapshots,
+      } as unknown as TraceSimilaritySnapshotRepository;
+      const server = withEffectiveRuntimeRegistrySnapshot(
+        createRuntimeRegistrySnapshotForTest() as never,
+        () => createTestServer({
+          codeLookupLedger: codeLookupLedger as never,
+          ragStore: ragStore as never,
+          caseLibrary: caseLibrary as never,
+          externalKnowledgeRegistry: externalKnowledgeRegistry as never,
+          analysisResultSnapshotRepository,
+          runManifestAttributionSink,
+        }),
+      );
+      const { tools, toolDefinitions, mockTpService, mockSkillExecutor, artifactStore } = server;
+      const safeReadDefinitions = toolDefinitions.filter(definition =>
+        ['lookup_sql_schema', 'list_stdlib_modules'].includes(definition.name));
+
+      expect(safeReadDefinitions.map(definition => definition.name).sort())
+        .toEqual(['list_stdlib_modules', 'lookup_sql_schema']);
+      expect(safeReadDefinitions.every(definition =>
+        definition.shared.concurrency?.mode === 'commutative_read')).toBe(true);
+      mockTpService.query.mockClear();
+      mockSkillExecutor.execute.mockClear();
+      mockSkillExecutor.executeCompositeSkill.mockClear();
+      artifactStore.store.mockClear();
+      artifactStore.fetch.mockClear();
+      for (const spy of mutationSinkSpies) spy.mockClear();
+
+      await callTool(tools, 'lookup_sql_schema', { keyword: 'frame' });
+      await callTool(tools, 'list_stdlib_modules', { namespace: 'android' });
+
+      expect(mockTpService.query).not.toHaveBeenCalled();
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+      expect(mockSkillExecutor.executeCompositeSkill).not.toHaveBeenCalled();
+      expect(artifactStore.store).not.toHaveBeenCalled();
+      expect(artifactStore.fetch).not.toHaveBeenCalled();
+      expect(codeLookupLedger.recordSearch).not.toHaveBeenCalled();
+      expect(codeLookupLedger.recordRead).not.toHaveBeenCalled();
+      expect(codeLookupLedger.recordGraphQuery).not.toHaveBeenCalled();
+      expect(codeLookupLedger.recordSymbolInspection).not.toHaveBeenCalled();
+      expect(ragStore.search).not.toHaveBeenCalled();
+      expect(ragStore.addDocument).not.toHaveBeenCalled();
+      expect(caseLibrary.recallSimilarCases).not.toHaveBeenCalled();
+      expect(caseLibrary.recallSimilarResults).not.toHaveBeenCalled();
+      expect(externalKnowledgeRegistry.listSources).not.toHaveBeenCalled();
+      expect(externalKnowledgeRegistry.search).not.toHaveBeenCalled();
+      expect(getSnapshot).not.toHaveBeenCalled();
+      expect(listSnapshots).not.toHaveBeenCalled();
+      for (const spy of mutationSinkSpies) expect(spy).not.toHaveBeenCalled();
+      expect(runtimePerformanceRecorder.seal().tools).toHaveLength(2);
+    });
+
+    it('binds explicit run manifest timing sink into detached MCP tool callbacks', async () => {
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const runManifestAttributionSink = createNoopAttributionSink(runtimePerformanceRecorder);
+      const { tools } = withEffectiveRuntimeRegistrySnapshot(
+        createRuntimeRegistrySnapshotForTest() as never,
+        () => createTestServer({runManifestAttributionSink}),
+      );
+
+      await callTool(tools, 'lookup_sql_schema', { keyword: 'frame' });
+
+      expect(runtimePerformanceRecorder.seal().tools).toEqual([
+        expect.objectContaining({
+          mode: 'exclusive',
+          schedulerWaitMs: 0,
+          fallbackReason: 'commutative_read_not_admitted',
+          outcome: 'ok',
+        }),
+      ]);
     });
 
     it('exposes no Trace tools for a no-Trace conversation', () => {
@@ -4031,6 +4254,80 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('submit_plan', () => {
+    it.each(['disconnect', 'deadline'] as const)(
+      'does not mutate or emit a plan when OpenCode %s aborts deferred registry binding',
+      async abortKind => {
+        const registryStarted = createDeferred<void>();
+        const releaseRegistry = createDeferred<Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>>();
+        (getWorkspaceSkillRegistry as jest.MockedFunction<typeof getWorkspaceSkillRegistry>)
+          .mockImplementationOnce(async () => {
+            registryStarted.resolve();
+            return releaseRegistry.promise;
+          });
+        const testServer = createTestServer({
+          knowledgeScope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+        });
+        const {__testing: openCodeTesting} = await import(
+          '../../agentRuntime/engines/opencode/openCodeRuntime'
+        );
+        const bridge = await openCodeTesting.startOpenCodeMcpBridge(
+          testServer.toolDefinitions.filter(definition => definition.name === 'submit_plan'),
+          undefined,
+          {timeoutMs: 100},
+        );
+        const socket = net.createConnection({host: '127.0.0.1', port: bridge.port});
+        try {
+          await new Promise<void>((resolve, reject) => {
+            socket.once('connect', resolve);
+            socket.once('error', reject);
+          });
+          socket.write(`${JSON.stringify({
+            token: bridge.token,
+            request: {
+              jsonrpc: '2.0',
+              id: `submit-plan-${abortKind}`,
+              method: 'tools/call',
+              params: {
+                name: 'submit_plan',
+                arguments: {
+                  phases: [{id: 'p1', name: 'Collect', goal: 'Collect evidence', expectedTools: []}],
+                  successCriteria: 'Complete the analysis',
+                },
+              },
+            },
+          })}\n`);
+          await registryStarted.promise;
+          if (abortKind === 'disconnect') {
+            socket.destroy();
+            await new Promise(resolve => setTimeout(resolve, 50));
+          } else {
+            await new Promise(resolve => setTimeout(resolve, 150));
+          }
+          releaseRegistry.resolve({
+            registry: {
+              registryFingerprint: 'deferred-registry',
+              getAllSkills: jest.fn(() => []),
+              getFragmentCache: jest.fn(() => new Map()),
+              getSkill: jest.fn(() => undefined),
+              getVendorOverride: jest.fn(() => undefined),
+            },
+            registryFingerprint: 'deferred-registry',
+            enabledPacks: [],
+            getSkillOrigin: jest.fn(() => ({origin: 'built_in'})),
+          } as unknown as Awaited<ReturnType<typeof getWorkspaceSkillRegistry>>);
+          await new Promise(resolve => setImmediate(resolve));
+          await new Promise(resolve => setImmediate(resolve));
+
+          expect(testServer.analysisPlan.current).toBeNull();
+          expect(testServer.emittedUpdates.filter(update => update.type === 'plan_submitted'))
+            .toEqual([]);
+        } finally {
+          socket.destroy();
+          await bridge.close();
+        }
+      },
+    );
+
     it('should create a plan with phases', async () => {
       const { tools, analysisPlan } = createTestServer();
       const result = await callTool(tools, 'submit_plan', {

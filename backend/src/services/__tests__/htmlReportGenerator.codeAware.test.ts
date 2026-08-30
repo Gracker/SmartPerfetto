@@ -183,7 +183,6 @@ describe('HTMLReportGenerator code-aware rendering', () => {
     expect(html).toContain(reference.id);
     expect(html).not.toContain('SECRET_BINDING_REASON_CANARY');
   });
-
   it('leaves legacy reports without source context unchanged', () => {
     const html = new HTMLReportGenerator().generateAgentDrivenHTML(makeReportData({}));
 

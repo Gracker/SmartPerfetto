@@ -15,6 +15,25 @@ const RPC_ERROR_CODES = {
 
 const port = Number.parseInt(process.env.SMARTPERFETTO_OPENCODE_BRIDGE_PORT || '', 10);
 const token = process.env.SMARTPERFETTO_OPENCODE_BRIDGE_TOKEN || '';
+const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const MIN_REQUEST_TIMEOUT_MS = 100;
+const MAX_REQUEST_TIMEOUT_MS = 300_000;
+
+function resolveRequestTimeoutMs(value) {
+  if (typeof value !== 'string' || !/^(?:0|[1-9]\d*)$/.test(value)) {
+    return DEFAULT_REQUEST_TIMEOUT_MS;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) &&
+    parsed >= MIN_REQUEST_TIMEOUT_MS &&
+    parsed <= MAX_REQUEST_TIMEOUT_MS
+    ? parsed
+    : DEFAULT_REQUEST_TIMEOUT_MS;
+}
+
+const requestTimeoutMs = resolveRequestTimeoutMs(
+  process.env.SMARTPERFETTO_OPENCODE_BRIDGE_TIMEOUT_MS,
+);
 
 function rpcError(id, code, message) {
   return {jsonrpc: '2.0', id, error: {code, message}};
@@ -41,7 +60,7 @@ function forwardToParent(request) {
     };
 
     socket.setEncoding('utf-8');
-    socket.setTimeout(30_000, () => {
+    socket.setTimeout(requestTimeoutMs, () => {
       finish(rpcError(
         request.id ?? null,
         RPC_ERROR_CODES.INTERNAL_ERROR,

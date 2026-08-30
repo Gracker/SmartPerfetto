@@ -4,6 +4,10 @@
 
 import type {ApplicationBuildIdentity} from '../services/applicationUpdate/types';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
+import type {
+  RuntimePerformanceReceiptV1,
+  RuntimePerformanceRecorder,
+} from '../agentRuntime/runtimePerformance';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 import type {AdaptiveRoutingReceiptV1} from './adaptiveRouting';
 import type {
@@ -247,6 +251,7 @@ export interface RunManifestV1 {
   adaptiveRouting?: AdaptiveRoutingReceiptV1;
   capabilityFlags: string[];
   capabilityManifest?: CapabilityManifestAttributionV1;
+  performance?: RuntimePerformanceReceiptV1;
 
   referenceTraceId?: string;
   comparisonIdentity?: string;
@@ -1235,6 +1240,7 @@ export interface RunManifestSceneAttribution {
  */
 export interface RunManifestAttributionSink {
   readonly identity: RunManifestIdentity;
+  readonly runtimePerformanceRecorder?: RuntimePerformanceRecorder;
   recordScene(input: RunManifestSceneAttribution): void;
   recordRuntime(input: RunManifestRuntimeAttribution): void;
   recordMode(input: {

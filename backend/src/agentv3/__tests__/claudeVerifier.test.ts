@@ -15,7 +15,7 @@
  * The generateCorrectionPrompt helper is also tested.
  */
 
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
 import type { Finding } from '../../agent/types';
 import type { AnalysisPlanV3, Hypothesis } from '../types';
 
@@ -38,6 +38,23 @@ jest.mock('fs', () => {
   };
 });
 
+jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
+  query: jest.fn(() => ({
+    [Symbol.asyncIterator]: async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '[]',
+      };
+    },
+    close: jest.fn(),
+  })),
+}));
+
+const claudeSdkMock = require('@anthropic-ai/claude-agent-sdk') as {
+  query: jest.Mock;
+};
+
 import {
   verifyHeuristic,
   verifyPlanAdherence,
@@ -51,9 +68,18 @@ import {
   parseVerifierJsonIssues,
 } from '../claudeVerifier';
 import { extractFindingsFromText } from '../claudeFindingExtractor';
+import { getProviderService, resetProviderService } from '../../services/providerManager';
 
 const mockFs = require('fs') as jest.Mocked<typeof import('fs')>;
 const actualFs = jest.requireActual<typeof import('fs')>('fs');
+
+function restoreEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
 
 beforeEach(() => {
   (mockFs.existsSync as jest.Mock).mockImplementation((...args: unknown[]) => {
@@ -69,6 +95,11 @@ beforeEach(() => {
   (mockFs.writeFileSync as jest.Mock).mockClear();
   (mockFs.renameSync as jest.Mock).mockClear();
   (mockFs.mkdirSync as jest.Mock).mockClear();
+});
+
+afterEach(() => {
+  resetProviderService();
+  claudeSdkMock.query.mockClear();
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────
@@ -1703,6 +1734,67 @@ describe('verifyConclusion progress output', () => {
 
     expect(result.passed).toBe(false);
     expect(emitted.filter(update => update.type === 'progress')).toHaveLength(0);
+  });
+
+  it('uses the request-pinned Claude provider env and light model for LLM verification', async () => {
+    const original = {
+      anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      claudeModel: process.env.CLAUDE_MODEL,
+      claudeLightModel: process.env.CLAUDE_LIGHT_MODEL,
+      claudeBinaryPath: process.env.CLAUDE_BINARY_PATH,
+    };
+    process.env.ANTHROPIC_BASE_URL = 'https://global-verifier.example/v1';
+    process.env.ANTHROPIC_API_KEY = 'sk-global-verifier';
+    process.env.CLAUDE_MODEL = 'global-claude-main';
+    process.env.CLAUDE_LIGHT_MODEL = 'global-claude-light';
+    process.env.CLAUDE_BINARY_PATH = '/tmp/global-verifier-claude';
+    try {
+      const provider = getProviderService().create({
+        name: 'Pinned Claude verifier provider',
+        category: 'official',
+        type: 'anthropic',
+        models: {
+          primary: 'provider-claude-main',
+          light: 'provider-claude-verifier',
+        },
+        connection: {
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://provider-claude-verifier.example/v1',
+          claudeApiKey: 'sk-provider-verifier',
+        },
+        tuning: {
+          verifierTimeoutMs: 23_456,
+        },
+      });
+
+      await verifyConclusion([], 'short', {
+        enableLLM: true,
+        lightModel: 'provider-claude-verifier',
+        verifierTimeoutMs: 23_456,
+        providerId: provider.id,
+      } as any);
+
+      expect(claudeSdkMock.query).toHaveBeenCalledTimes(1);
+      const call = claudeSdkMock.query.mock.calls[0]?.[0] as any;
+      expect(call.options.model).toBe('provider-claude-verifier');
+      expect(call.options.pathToClaudeCodeExecutable).toBe('/tmp/global-verifier-claude');
+      expect(call.options.env.CLAUDE_MODEL).toBe('provider-claude-main');
+      expect(call.options.env.CLAUDE_LIGHT_MODEL).toBe('provider-claude-verifier');
+      expect(call.options.env.ANTHROPIC_BASE_URL).toBe('https://provider-claude-verifier.example/v1');
+      expect(call.options.env.ANTHROPIC_API_KEY).toBe('sk-provider-verifier');
+      expect(process.env.ANTHROPIC_BASE_URL).toBe('https://global-verifier.example/v1');
+      expect(process.env.ANTHROPIC_API_KEY).toBe('sk-global-verifier');
+      expect(process.env.CLAUDE_MODEL).toBe('global-claude-main');
+      expect(process.env.CLAUDE_LIGHT_MODEL).toBe('global-claude-light');
+      expect(process.env.CLAUDE_BINARY_PATH).toBe('/tmp/global-verifier-claude');
+    } finally {
+      restoreEnvValue('ANTHROPIC_BASE_URL', original.anthropicBaseUrl);
+      restoreEnvValue('ANTHROPIC_API_KEY', original.anthropicApiKey);
+      restoreEnvValue('CLAUDE_MODEL', original.claudeModel);
+      restoreEnvValue('CLAUDE_LIGHT_MODEL', original.claudeLightModel);
+      restoreEnvValue('CLAUDE_BINARY_PATH', original.claudeBinaryPath);
+    }
   });
 });
 

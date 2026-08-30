@@ -16,6 +16,7 @@
 
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import { createSdkEnv, getSdkBinaryOption, type ClaudeAgentConfig } from './claudeConfig';
+import type { ProviderScope } from '../services/providerManager';
 import {
   SCROLLING_TRIAGE_LOOKUP_REASON,
   shouldUseQuickScrollingTriageIntent,
@@ -273,15 +274,21 @@ export function classifyQueryComplexityLocal(
 }
 
 /** Classify query complexity using local safety rules + semantic AI classification. */
+type QueryComplexityClassifierConfig =
+  Pick<ClaudeAgentConfig, 'lightModel' | 'classifierTimeoutMs'> & {
+    providerId?: string | null;
+    providerScope?: ProviderScope;
+  };
+
 export async function classifyQueryComplexity(
   input: ComplexityClassifierInput,
-  config?: Pick<ClaudeAgentConfig, 'lightModel' | 'classifierTimeoutMs'>,
+  config?: QueryComplexityClassifierConfig,
 ): Promise<{ complexity: QueryComplexity; reason: string; source: 'hard_rule' | 'ai' }> {
   const local = classifyQueryComplexityLocal(input);
   if (local) return local;
 
   try {
-    const aiResult = await classifyWithHaiku(input, config?.lightModel, config?.classifierTimeoutMs);
+    const aiResult = await classifyWithHaiku(input, config);
     console.log(`[ComplexityClassifier] AI → ${aiResult.complexity}: ${aiResult.reason}`);
     return { ...aiResult, source: 'ai' };
   } catch (err) {
@@ -594,18 +601,17 @@ function successfulSdkResultText(message: unknown): string | undefined {
  */
 async function classifyWithHaiku(
   input: ComplexityClassifierInput,
-  model?: string,
-  timeoutMs?: number,
+  options?: QueryComplexityClassifierConfig,
 ): Promise<{ complexity: QueryComplexity; reason: string }> {
   const prompt = buildComplexityClassifierPrompt(input);
 
   // Default 30s; Haiku usually finishes in 1-2s, but non-Haiku light models can need longer.
-  const CLASSIFY_TIMEOUT_MS = timeoutMs ?? 30_000;
-  const sdkEnv = createSdkEnv();
+  const CLASSIFY_TIMEOUT_MS = options?.classifierTimeoutMs ?? 30_000;
+  const sdkEnv = createSdkEnv(options?.providerId, options?.providerScope);
   const stream = sdkQuery({
     prompt,
     options: {
-      model: model ?? 'claude-haiku-4-5',
+      model: options?.lightModel ?? 'claude-haiku-4-5',
       maxTurns: 1,
       settingSources: [],
       tools: [],

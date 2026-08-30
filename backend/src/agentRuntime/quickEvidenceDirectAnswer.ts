@@ -19,6 +19,7 @@ import {
 } from '../agentv3/focusAppDetector';
 import { localize, type OutputLanguage } from '../agentv3/outputLanguage';
 import type { TraceProcessorService } from '../services/traceProcessorService';
+import type { DataEnvelope } from '../types/dataContract';
 import { buildFocusAppEvidencePayload } from './focusAppEvidence';
 import {
   buildQuickFocusAppDirectAnswer,
@@ -40,9 +41,11 @@ import {
 } from './quickScrollingTriageDirectAnswer';
 import {
   buildQuickTraceFactEvidence,
+  joinRuntimeEvidenceContexts,
   shouldSkipFocusDetectionForQuickTraceFactEvidence,
   shouldUseTraceFactEvidenceOnlyQuickAnalysis,
 } from './quickTraceFactEvidence';
+import {isRuntimeCandidateAdmitted} from './runtimeCandidateAdmission';
 
 export type RuntimeQuickEvidenceDirectAnswer =
   QuickFocusAppDirectAnswer |
@@ -53,6 +56,36 @@ export type RuntimeQuickEvidenceDirectAnswer =
 export interface RuntimeQuickEvidenceCounts {
   currentRunDataEnvelopes: number;
   citedEvidenceRefs: number;
+}
+
+export interface RuntimeQuickEvidenceAttempt {
+  directAnswer?: RuntimeQuickEvidenceDirectAnswer;
+  focusResult: FocusAppDetectionResult;
+  effectivePackageName?: string;
+  evidenceCounts: RuntimeQuickEvidenceCounts;
+  runtimeEvidenceContext?: string;
+}
+
+export interface RuntimeQuickEvidenceInput {
+  query: string;
+  traceId: string;
+  packageName?: string;
+  selectionContext?: AnalysisOptions['selectionContext'];
+  traceProcessorService: TraceProcessorService;
+  outputLanguage: OutputLanguage;
+  quickFocusAppPreEvidence: boolean;
+  quickProcessIdentityPreEvidence: boolean;
+  quickTraceFactPreEvidence: boolean;
+  quickScrollingTriagePreEvidence: boolean;
+  focusResult?: FocusAppDetectionResult;
+  emitUpdate: (update: StreamingUpdate) => void;
+}
+
+export function selectReusableRuntimeQuickEvidenceAttempt(
+  attempt: RuntimeQuickEvidenceAttempt | undefined,
+  env: Record<string, string | undefined> = process.env,
+): RuntimeQuickEvidenceAttempt | undefined {
+  return isRuntimeCandidateAdmitted('task4', env) ? attempt : undefined;
 }
 
 export function countRuntimeQuickEvidenceCitedRefs(answer: RuntimeQuickEvidenceDirectAnswer): number {
@@ -160,24 +193,101 @@ export function combineRuntimeQuickEvidenceDirectAnswers(input: {
   };
 }
 
-export async function buildRuntimeQuickEvidenceDirectAnswer(input: {
-  query: string;
-  traceId: string;
-  packageName?: string;
-  selectionContext?: AnalysisOptions['selectionContext'];
-  traceProcessorService: TraceProcessorService;
+function buildEnvelopePromptContext(input: {
+  title: string;
+  envelopes?: DataEnvelope[];
   outputLanguage: OutputLanguage;
-  quickFocusAppPreEvidence: boolean;
-  quickProcessIdentityPreEvidence: boolean;
-  quickTraceFactPreEvidence: boolean;
-  quickScrollingTriagePreEvidence: boolean;
-  focusResult?: FocusAppDetectionResult;
-  emitUpdate: (update: StreamingUpdate) => void;
-}): Promise<{
-  directAnswer: RuntimeQuickEvidenceDirectAnswer;
-  effectivePackageName?: string;
-  evidenceCounts: RuntimeQuickEvidenceCounts;
-} | undefined> {
+}): string | undefined {
+  const envelope = input.envelopes?.find(candidate =>
+    Array.isArray(candidate.data?.columns) &&
+    Array.isArray(candidate.data?.rows) &&
+    candidate.data.rows.length > 0);
+  if (!envelope) return undefined;
+
+  const allColumns = envelope.data.columns ?? [];
+  const allRows = envelope.data.rows ?? [];
+  const columns = allColumns.slice(0, 8);
+  if (columns.length === 0) return undefined;
+  const columnIndexes = columns.map(column => allColumns.indexOf(column));
+  const header = `| ${columns.join(' | ')} |`;
+  const separator = `| ${columns.map(() => '---').join(' | ')} |`;
+  const rows = allRows.slice(0, 3).map(row =>
+    `| ${columnIndexes.map(index => String(row[index] ?? '')).join(' | ')} |`);
+  const sourceLines = [
+    envelope.meta.evidenceRefId ? `- evidence_ref_id: \`${envelope.meta.evidenceRefId}\`` : undefined,
+    envelope.meta.sourceToolCallId ? `- source_tool_call_id: \`${envelope.meta.sourceToolCallId}\`` : undefined,
+  ].filter(Boolean).join('\n');
+
+  return [
+    input.title,
+    sourceLines,
+    '',
+    header,
+    separator,
+    ...rows,
+  ].filter(line => line !== undefined).join('\n');
+}
+
+function runtimeRefKind(ref: string): string {
+  const parts = ref.split(':');
+  if (parts[0] === 'data' && parts[1] === 'runtime_trace_fact' && parts[2]) {
+    return parts[2];
+  }
+  if (parts[0] === 'data' && parts[1]) {
+    return parts.slice(1, 3).filter(Boolean).join(':');
+  }
+  return 'runtime_context';
+}
+
+export function sanitizeRuntimeQuickEvidenceRoutingContext(
+  context: string | undefined,
+  outputLanguage: OutputLanguage,
+): string | undefined {
+  if (!context?.trim()) return undefined;
+
+  const contextKinds = Array.from(new Set(
+    [...context.matchAll(/\bdata:runtime_[A-Za-z0-9_:.:-]+/g)]
+      .map(match => runtimeRefKind(match[0])),
+  ));
+  const sanitizedLines = context
+    .split(/\r?\n/)
+    .map(line => {
+      if (
+        /当前\s*Trace\s*运行时预证据/i.test(line) ||
+        /Current\s+Trace\s+Runtime\s+Evidence/i.test(line) ||
+        /runtime\s+pre-evidence/i.test(line) ||
+        /current-run\s+DataEnvelope/i.test(line) ||
+        /本轮\s*DataEnvelope/i.test(line)
+      ) {
+        return undefined;
+      }
+      const withoutKeyValues = line
+        .replace(/\b(?:evidence_ref_id|source_tool_call_id|evidenceRefId|sourceToolCallId)\b\s*[:=]\s*`?[^`\s;,)]+`?/gi, '')
+        .replace(/`?\bdata:runtime_[A-Za-z0-9_:.:-]+`?/g, '')
+        .replace(/\b(?:evidence_ref_id|source_tool_call_id|evidenceRefId|sourceToolCallId)\b/gi, '')
+        .replace(/[ \t]+$/g, '');
+      return withoutKeyValues.trim() ? withoutKeyValues : undefined;
+    })
+    .filter((line): line is string => line !== undefined);
+  if (sanitizedLines.length === 0 && contextKinds.length === 0) return undefined;
+
+  const header = localize(
+    outputLanguage,
+    '## 非引用运行时路由上下文（仅用于选择包名、范围和下一步查询；禁止作为证据引用）',
+    '## Non-citable runtime routing context (for package, scope, and next-query routing only; do not cite as evidence)',
+  );
+  const kindLines = contextKinds.map(kind => `- context_kind: \`${kind}\``);
+  return [
+    header,
+    ...kindLines,
+    kindLines.length > 0 ? '' : undefined,
+    ...sanitizedLines,
+  ].filter((line): line is string => line !== undefined).join('\n');
+}
+
+export async function buildRuntimeQuickEvidenceAttempt(
+  input: RuntimeQuickEvidenceInput,
+): Promise<RuntimeQuickEvidenceAttempt | undefined> {
   if (
     !input.quickFocusAppPreEvidence &&
     !input.quickProcessIdentityPreEvidence &&
@@ -196,7 +306,12 @@ export async function buildRuntimeQuickEvidenceDirectAnswer(input: {
     && shouldSkipFocusDetectionForQuickTraceFactEvidence(input.query)
   ));
   const focusResult = input.focusResult ?? (skipFocusEvidence
-    ? { apps: [], primaryApp: undefined, method: 'none' as const }
+    ? {
+        apps: [],
+        primaryApp: undefined,
+        method: 'none' as const,
+        timeRange: selectionTimeRange,
+      }
     : await detectFocusApps(input.traceProcessorService, input.traceId, {
         timeRange: selectionTimeRange,
       }));
@@ -282,18 +397,43 @@ export async function buildRuntimeQuickEvidenceDirectAnswer(input: {
     scrollingTriageAnswer: directScrollingTriageAnswer,
     outputLanguage: input.outputLanguage,
   });
-  const hasRequiredEvidence =
-    (!input.quickFocusAppPreEvidence || Boolean(directFocusAppAnswer)) &&
-    (!input.quickProcessIdentityPreEvidence || processIdentityEvidenceOnly) &&
-    (!input.quickTraceFactPreEvidence || traceFactEvidenceOnly) &&
-    (!input.quickScrollingTriagePreEvidence || Boolean(directScrollingTriageAnswer));
-  if (!directAnswer || !hasRequiredEvidence) return undefined;
-
   const currentRunDataEnvelopes =
     (focusEvidencePayload?.envelope ? 1 : 0) +
     (processIdentityEvidence?.envelopes.length ?? 0) +
     (traceFactEvidence?.envelopes.length ?? 0) +
     (scrollingTriageEvidence?.envelopes.length ?? 0);
+  const hasRequiredEvidence =
+    (!input.quickFocusAppPreEvidence || Boolean(directFocusAppAnswer)) &&
+    (!input.quickProcessIdentityPreEvidence || processIdentityEvidenceOnly) &&
+    (!input.quickTraceFactPreEvidence || traceFactEvidenceOnly) &&
+    (!input.quickScrollingTriagePreEvidence || Boolean(directScrollingTriageAnswer));
+  if (!directAnswer || !hasRequiredEvidence) {
+    return {
+      directAnswer: undefined,
+      focusResult,
+      effectivePackageName,
+      evidenceCounts: {
+        currentRunDataEnvelopes: 0,
+        citedEvidenceRefs: 0,
+      },
+      runtimeEvidenceContext: sanitizeRuntimeQuickEvidenceRoutingContext(
+        joinRuntimeEvidenceContexts(
+          processIdentityEvidence?.promptContext,
+          traceFactEvidence?.promptContext,
+          buildEnvelopePromptContext({
+            title: localize(
+              input.outputLanguage,
+              '运行时滑动概览预取证据（未发布，仅供模型提示使用）',
+              'Runtime scrolling overview pre-evidence (unpublished, prompt-only)',
+            ),
+            envelopes: scrollingTriageEvidence?.envelopes,
+            outputLanguage: input.outputLanguage,
+          }),
+        ),
+        input.outputLanguage,
+      ),
+    };
+  }
 
   if (focusEvidencePayload?.envelope) {
     input.emitUpdate({
@@ -326,10 +466,27 @@ export async function buildRuntimeQuickEvidenceDirectAnswer(input: {
 
   return {
     directAnswer,
+    focusResult,
     effectivePackageName,
     evidenceCounts: {
       currentRunDataEnvelopes,
       citedEvidenceRefs: countRuntimeQuickEvidenceCitedRefs(directAnswer),
     },
+  };
+}
+
+export async function buildRuntimeQuickEvidenceDirectAnswer(
+  input: RuntimeQuickEvidenceInput,
+): Promise<{
+  directAnswer: RuntimeQuickEvidenceDirectAnswer;
+  effectivePackageName?: string;
+  evidenceCounts: RuntimeQuickEvidenceCounts;
+} | undefined> {
+  const attempt = await buildRuntimeQuickEvidenceAttempt(input);
+  if (!attempt?.directAnswer) return undefined;
+  return {
+    directAnswer: attempt.directAnswer,
+    effectivePackageName: attempt.effectivePackageName,
+    evidenceCounts: attempt.evidenceCounts,
   };
 }

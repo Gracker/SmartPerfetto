@@ -6097,7 +6097,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       success_criteria: z.string().optional().describe('Alias for successCriteria for OpenAI-compatible callers.'),
       waivers: PLAN_WAIVERS_ARG_SCHEMA.optional().describe('Optional opt-outs for scene-template aspects when the trace genuinely cannot support them.'),
     },
-    async (args: any) => {
+    async (args: any, extra?: unknown) => {
+      const signal = getRuntimeToolSignal(extra);
+      throwIfTraceProcessorQueryCancelled(signal);
       const phaseInputs = parseToolArrayInput<PlanPhaseToolInput>(
         readAliasedField(args, ['phases', 'phase_list', 'phaseList']),
       );
@@ -6204,6 +6206,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
 
       const expectedSkillRegistry = await bindSkillRuntimeRegistry();
+      throwIfTraceProcessorQueryCancelled(signal);
       const unavailableExpectedSkills = collectUnavailableExpectedSkillErrors(
         normalizedPhases,
         expectedSkillRegistry,
@@ -8074,7 +8077,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // re-deciding policy. Registration order is preserved exactly to
   // keep SDK behavior identical to the pre-refactor toolEntries
   // array — trace regression validates that.
-  const registry = new McpToolRegistry();
+  const registry = new McpToolRegistry({runManifestAttributionSink});
 
   if (options.lightweight) {
     // Lightweight mode: core data-access tools only — no planning,
@@ -8086,7 +8089,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (!isConversation || options.conversationTraceAttached) {
       registry.registerSdk(executeSql, 'execute_sql', 'public');
       registry.registerSdk(invokeSkill, 'invoke_skill', 'public');
-      registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public');
+      registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
+        concurrency: {mode: 'commutative_read'},
+      });
       if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public');
     }
     if (isConversation) {
@@ -8108,9 +8113,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     registry.registerSdk(invokeSkill, 'invoke_skill', 'public');
     registry.registerSdk(listSkills, 'list_skills', 'public');
     registry.registerSdk(detectArchitecture, 'detect_architecture', 'public');
-    registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public');
+    registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
+      concurrency: {mode: 'commutative_read'},
+    });
     registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public');
-    registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public');
+    registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public', {
+      concurrency: {mode: 'commutative_read'},
+    });
     registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public');
     registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public');
     registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public');

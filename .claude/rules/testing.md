@@ -346,6 +346,84 @@ agent result normalization, evidence/claim verification, identity resolution,
 analysis-result snapshots, CLI turn persistence, or visible-vs-report
 projection behavior.
 
+## Runtime Concurrency And Latency Admission
+
+Concurrency changes must prove the serial default and each explicitly admitted
+branch. Run the focused default-off/admitted-on gate from `backend/`:
+
+```bash
+npm run test:runtime-registry
+npx jest --runInBand --forceExit \
+  src/agentRuntime/__tests__/quickEvidenceDirectAnswer.test.ts \
+  src/agentRuntime/__tests__/runtimeCandidateAdmission.test.ts \
+  src/agentRuntime/__tests__/runtimeToolConcurrency.test.ts \
+  src/agentRuntime/__tests__/runtimeToolConcurrencyAdapters.test.ts \
+  src/agentv3/__tests__/claudeRuntimeRuntimeSnapshots.test.ts \
+  src/agentOpenAI/__tests__/openAiRuntime.test.ts \
+  src/agentRuntime/__tests__/piAgentCoreRuntime.test.ts \
+  src/agentRuntime/__tests__/openCodeRuntime.test.ts \
+  src/agentRuntime/engines/qoder/__tests__/qoderRuntime.test.ts \
+  src/scripts/__tests__/benchmarkAgentRuntimeLatency.test.ts
+npx jest --runInBand --forceExit \
+  src/services/__tests__/traceProcessorLeaseProcessorRouting.test.ts \
+  src/services/__tests__/traceProcessorSqlWorker.test.ts \
+  src/services/__tests__/workingTraceProcessor.enterpriseIsolation.test.ts
+npm run typecheck
+npm run build
+```
+
+These suites must cover absent/invalid admission, admitted behavior,
+cancellation/late settle, cache failure retry, same-processor SQL serialization,
+tool fallback receipts, and all five adapter projections. Also run
+`npm run test:analysis-accuracy`; before a PR use the normal `npm run verify:pr`
+gate rather than substituting this focused list.
+
+`SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` admits only `task4` through `task9`
+and defaults to none. Unknown, duplicate, whitespace-bearing, empty, or malformed
+values must fail closed as a whole. `SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false`
+may roll admitted `task5` back to exclusive execution but must not activate it.
+Keep tools exclusive by default and same-trace/processor SQL on one worker.
+
+For an admissible real benchmark, a reviewed lifecycle controller must provide
+two distinct loopback targets, separate fresh data roots/sessions, target
+identity/config/source hashes, pair reset receipts, cold/warm ordering, a
+candidate fingerprint, and an output nonce. The output path must be new and
+inside the Git-ignored `backend/test-output/runtime-concurrency/` tree:
+
+```bash
+npm run benchmark:agent-latency -- \
+  --base-url http://127.0.0.1:10000 \
+  --candidate-url http://127.0.0.1:10001 \
+  --runtime openai-agents-sdk \
+  --candidate task6 \
+  --candidate-config-fingerprint <lowercase-hex-fingerprint> \
+  --output-run-nonce <lowercase-hex-nonce> \
+  --output-dir test-output/runtime-concurrency/<fresh-run> \
+  --lifecycle-receipt /absolute/path/to/lifecycle-receipt.json
+```
+
+Omitting `--candidate`, its fingerprint, nonce, and lifecycle receipt is an
+availability diagnostic only. It makes no target calls, produces no admission,
+and exits non-successfully for admission. A run without the verified lifecycle
+receipt remains serial/inconclusive. Targets must be explicit `http` loopback
+origins with ports; redirects, credentials, remote hosts, reused output, and
+symlinked output paths fail closed.
+
+Admission requires no semantic/evidence/identity/quality-gate regression plus
+either at least 15% median total improvement or at least 30% improvement in the
+candidate's mapped target phase. A latency regression is material only when it
+is both greater than 5% and greater than 250 ms. Real measurement uses three
+paired repetitions and treats p95 as inconclusive; deterministic p95 requires
+30 genuine-adapter repetitions. Synthetic scorer fixtures are non-admissible.
+
+The internal `RunManifest.performance` receipt is not public SSE. Current SSE
+does not provide admission-grade model, provider snapshot, usage, or performance
+fields, so bounded real-provider admission remains `INCONCLUSIVE` until a
+reviewed harness supplies them. Record missing real credentials/runtime as
+`NOT AVAILABLE` or missing harness/configuration as `NOT CONFIGURED`; never
+equate deterministic gates with authenticated E2E. Qoder BYOK also requires a
+PAT or locally authenticated `qodercli`.
+
 ## Agent SSE E2E
 
 Run Agent SSE e2e when changing startup, scrolling, Flutter, strategy prompt,

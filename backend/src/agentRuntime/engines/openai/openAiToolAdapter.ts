@@ -28,6 +28,15 @@ function getSharedToolSpec(definition: McpToolDefinition): SharedToolSpec {
   }
 }
 
+function extractOpenAIToolCallId(details: unknown): string | undefined {
+  const value = details as {
+    toolCall?: { id?: unknown };
+    toolCallId?: unknown;
+  } | undefined;
+  const candidate = value?.toolCall?.id ?? value?.toolCallId;
+  return typeof candidate === 'string' && candidate.trim() ? candidate : undefined;
+}
+
 /**
  * Adapts SmartPerfetto's existing in-process Claude MCP tool registry to
  * OpenAI Agents SDK function tools. The SmartPerfetto tool contract remains
@@ -47,9 +56,11 @@ export function createOpenAIToolsFromMcpDefinitions(
         const normalizedArgs = normalizeRuntimeToolArgs(args) as Record<string, unknown>;
         const contextSignal = (runContext?.context as { signal?: AbortSignal } | undefined)?.signal;
         const signal = details?.signal || contextSignal;
+        const toolCallId = extractOpenAIToolCallId(details);
         const result = await shared.handler(normalizedArgs, normalizeRuntimeToolExtra({
           runtime: 'openai-agents-sdk',
           signal,
+          toolCallId,
         }));
         return stringifyRuntimeToolResult(result);
       },

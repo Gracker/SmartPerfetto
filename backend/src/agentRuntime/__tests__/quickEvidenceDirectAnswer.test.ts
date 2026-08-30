@@ -2,14 +2,17 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it } from '@jest/globals';
+import { describe, expect, it, jest } from '@jest/globals';
 
 import type { ConclusionContract } from '../../agent/core/conclusionContract';
 import { runClaimVerification } from '../../services/verifier/claimVerificationRunner';
 import type { DataEnvelope } from '../../types/dataContract';
 import {
+  buildRuntimeQuickEvidenceAttempt,
+  buildRuntimeQuickEvidenceDirectAnswer,
   combineRuntimeQuickEvidenceDirectAnswers,
   countRuntimeQuickEvidenceCitedRefs,
+  selectReusableRuntimeQuickEvidenceAttempt,
   type RuntimeQuickEvidenceDirectAnswer,
 } from '../quickEvidenceDirectAnswer';
 
@@ -200,5 +203,263 @@ describe('combineRuntimeQuickEvidenceDirectAnswers', () => {
       checkedClaimCount: 2,
       unsupportedClaimCount: 0,
     }));
+  });
+});
+
+describe('buildRuntimeQuickEvidenceAttempt', () => {
+  it('keeps valid partial trace evidence private when required quick evidence is incomplete', async () => {
+    const updates: unknown[] = [];
+    const traceProcessorService = {
+      query: jest.fn(async (_traceId: string, sql: string) => {
+        if (sql.includes('android_battery_stats_event_slices')) {
+          return {
+            columns: ['package_name', 'total_duration_ns', 'switch_count'],
+            rows: [['com.example.app', 2_000_000_000, 2]],
+            durationMs: 1,
+          };
+        }
+        if (sql.includes('runtime_frame_metrics')) {
+          return {
+            columns: [
+              'package_name',
+              'process_names',
+              'upid_count',
+              'total_frames',
+              'window_start_ns',
+              'window_end_ns',
+              'duration_s',
+              'fps',
+              'source_table',
+            ],
+            rows: [[
+              'com.example.app',
+              'com.example.app',
+              1,
+              120,
+              100,
+              200,
+              0.0000001,
+              58,
+              'actual_frame_timeline_slice',
+            ]],
+            durationMs: 1,
+          };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }),
+    };
+
+    const attempt = await buildRuntimeQuickEvidenceAttempt({
+      query: '滑动 FPS 是多少？',
+      traceId: 'trace-quick-private-partial',
+      traceProcessorService: traceProcessorService as any,
+      outputLanguage: 'zh-CN',
+      quickFocusAppPreEvidence: true,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: true,
+      quickScrollingTriagePreEvidence: false,
+      emitUpdate: update => updates.push(update),
+    });
+
+    expect(attempt).toMatchObject({
+      directAnswer: undefined,
+      effectivePackageName: 'com.example.app',
+      evidenceCounts: {
+        currentRunDataEnvelopes: 0,
+        citedEvidenceRefs: 0,
+      },
+    });
+    expect(attempt?.runtimeEvidenceContext).toContain('非引用运行时路由上下文');
+    expect(attempt?.runtimeEvidenceContext).toContain('frame_metrics');
+    expect(attempt?.runtimeEvidenceContext).toContain('| fps |');
+    expect(attempt?.runtimeEvidenceContext).toContain('| 58 |');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('evidence_ref_id');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('source_tool_call_id');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('evidenceRefId');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('sourceToolCallId');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('data:runtime_trace_fact');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('运行时预证据');
+    expect(attempt?.runtimeEvidenceContext).not.toContain('Current Trace Runtime Evidence');
+    expect(updates).toHaveLength(0);
+  });
+
+  it('keeps selection time range on skip-focus explicit package trace facts', async () => {
+    const traceProcessorService = {
+      query: jest.fn(async () => {
+        throw new Error('skip-focus selection duration should not query trace processor');
+      }),
+    };
+
+    const attempt = await buildRuntimeQuickEvidenceAttempt({
+      query: '选区持续多久？',
+      traceId: 'trace-quick-selection-explicit-package',
+      packageName: 'com.example.app',
+      selectionContext: {
+        kind: 'area',
+        source: 'area_selection',
+        startNs: 100,
+        endNs: 250,
+      },
+      traceProcessorService: traceProcessorService as any,
+      outputLanguage: 'zh-CN',
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: true,
+      quickScrollingTriagePreEvidence: false,
+      emitUpdate: jest.fn(),
+    });
+
+    expect(attempt?.focusResult).toMatchObject({
+      apps: [],
+      method: 'none',
+      timeRange: { startNs: 100, endNs: 250 },
+    });
+    expect(attempt?.directAnswer?.conclusion).toContain('duration_ns');
+    expect(attempt?.directAnswer?.conclusion).toContain('value=`150`');
+    expect(traceProcessorService.query).not.toHaveBeenCalled();
+  });
+
+  it('preserves the direct-answer wrapper shape on successful quick evidence', async () => {
+    const updates: unknown[] = [];
+    const traceProcessorService = {
+      query: jest.fn(async (_traceId: string, sql: string) => {
+        if (sql.includes('android_battery_stats_event_slices')) {
+          return {
+            columns: ['package_name', 'total_duration_ns', 'switch_count'],
+            rows: [['com.example.app', 2_000_000_000, 2]],
+            durationMs: 1,
+          };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }),
+    };
+    const baseInput = {
+      query: '当前焦点应用是什么？',
+      traceId: 'trace-quick-attempt-direct',
+      traceProcessorService: traceProcessorService as any,
+      outputLanguage: 'zh-CN' as const,
+      quickFocusAppPreEvidence: true,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+      emitUpdate: (update: unknown) => updates.push(update),
+    };
+
+    const attempt = await buildRuntimeQuickEvidenceAttempt(baseInput);
+    const wrapper = await buildRuntimeQuickEvidenceDirectAnswer({
+      ...baseInput,
+      traceId: 'trace-quick-wrapper-direct',
+    });
+
+    expect(attempt?.directAnswer).toBeDefined();
+    expect(attempt?.focusResult).toMatchObject({
+      primaryApp: 'com.example.app',
+      method: 'battery_stats',
+    });
+    expect(wrapper).toMatchObject({
+      directAnswer: {
+        confidence: attempt?.directAnswer?.confidence,
+      },
+      effectivePackageName: 'com.example.app',
+      evidenceCounts: attempt?.evidenceCounts,
+    });
+    expect(wrapper?.directAnswer.conclusion).toContain('com.example.app');
+    expect((wrapper as any).focusResult).toBeUndefined();
+    expect(updates).toHaveLength(2);
+  });
+
+  it('returns reusable focus state without publishing incomplete direct evidence', async () => {
+    const updates: unknown[] = [];
+    const sqlQueries: string[] = [];
+    const traceProcessorService = {
+      query: jest.fn(async (_traceId: string, sql: string) => {
+        sqlQueries.push(sql);
+        if (sql.includes('android_battery_stats_event_slices')) {
+          return {
+            columns: ['package_name', 'total_duration_ns', 'switch_count'],
+            rows: [['com.example.app', 2_000_000_000, 2]],
+            durationMs: 1,
+          };
+        }
+        if (sql.includes('runtime_frame_metrics')) {
+          return {
+            columns: [
+              'package_name',
+              'process_names',
+              'upid_count',
+              'total_frames',
+              'window_start_ns',
+              'window_end_ns',
+              'duration_s',
+              'fps',
+              'source_table',
+            ],
+            rows: [],
+            durationMs: 1,
+          };
+        }
+        throw new Error(`Unexpected SQL: ${sql}`);
+      }),
+    };
+
+    const attempt = await buildRuntimeQuickEvidenceAttempt({
+      query: '滑动 FPS 是多少？',
+      traceId: 'trace-quick-attempt',
+      selectionContext: { kind: 'area', startNs: 100, endNs: 200 },
+      traceProcessorService: traceProcessorService as any,
+      outputLanguage: 'zh-CN',
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: true,
+      quickScrollingTriagePreEvidence: false,
+      emitUpdate: update => updates.push(update),
+    });
+
+    expect(attempt).toMatchObject({
+      directAnswer: undefined,
+      effectivePackageName: 'com.example.app',
+      focusResult: {
+        primaryApp: 'com.example.app',
+        method: 'battery_stats',
+        timeRange: { startNs: 100, endNs: 200 },
+      },
+      evidenceCounts: {
+        currentRunDataEnvelopes: 0,
+        citedEvidenceRefs: 0,
+      },
+    });
+    expect(traceProcessorService.query).toHaveBeenCalledTimes(2);
+    expect(sqlQueries.filter(sql => sql.includes('android_battery_stats_event_slices'))).toHaveLength(1);
+    expect(sqlQueries.filter(sql => sql.includes('runtime_frame_metrics'))).toHaveLength(1);
+    expect(updates).toHaveLength(0);
+
+    const wrapper = await buildRuntimeQuickEvidenceDirectAnswer({
+      query: '滑动 FPS 是多少？',
+      traceId: 'trace-quick-attempt-wrapper',
+      selectionContext: { kind: 'area', startNs: 100, endNs: 200 },
+      traceProcessorService: traceProcessorService as any,
+      outputLanguage: 'zh-CN',
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: true,
+      quickScrollingTriagePreEvidence: false,
+      emitUpdate: update => updates.push(update),
+    });
+    expect(wrapper).toBeUndefined();
+  });
+
+  it('keeps failed-attempt routing reuse default-off and enables it only for Task 4 admission', () => {
+    const attempt = {
+      focusResult: {apps: [], method: 'none' as const},
+      effectivePackageName: 'com.example.app',
+      evidenceCounts: {currentRunDataEnvelopes: 0, citedEvidenceRefs: 0},
+    };
+    expect(selectReusableRuntimeQuickEvidenceAttempt(attempt, {})).toBeUndefined();
+    expect(selectReusableRuntimeQuickEvidenceAttempt(attempt, {
+      SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES: 'task4',
+    })).toBe(attempt);
+    expect(selectReusableRuntimeQuickEvidenceAttempt(attempt, {
+      SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES: 'task5',
+    })).toBeUndefined();
   });
 });

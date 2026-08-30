@@ -67,6 +67,12 @@ import { analysisContextUsesPrivateKnowledge } from '../../../services/resolvedA
 import {finalizeSourceAwareAnalysisResult} from '../../../services/codebase/sourceClaimVerifier';
 import type { RuntimeSelection } from '../../runtimeSelection';
 import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtimeRegistry';
+import {
+  createRuntimePerformanceRun,
+  runtimeOutcomeFromError,
+  type RuntimePerformanceOutcome,
+  type RuntimePerformanceRun,
+} from '../../runtimePerformance';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
   createRuntimeSkillNotesBudget,
@@ -82,12 +88,16 @@ import {
 } from '../../runtimePromptContext';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
+import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
+import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {buildAdaptiveRoutingForQuickResolution} from '../../adaptiveRoutingProjection';
 import {resetPrePlanToolCallsForNewRun} from '../../../agentv3/planToolCallRecorder';
 import {
-  buildRuntimeQuickEvidenceDirectAnswer,
+  buildRuntimeQuickEvidenceAttempt,
+  selectReusableRuntimeQuickEvidenceAttempt,
   type RuntimeQuickEvidenceCounts,
   type RuntimeQuickEvidenceDirectAnswer,
+  type RuntimeQuickEvidenceAttempt,
 } from '../../quickEvidenceDirectAnswer';
 import {
   buildQuickDirectEvidenceAnalysisResult,
@@ -187,7 +197,7 @@ interface QoderSdkModule {
 // Helpers
 // ---------------------------------------------------------------------------
 
-import { loadQoderSdkModule } from './qoderSdkLoader';
+import { loadQoderSdkModule, resetQoderSdkModuleCache } from './qoderSdkLoader';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -245,6 +255,27 @@ function describeQoderSdkError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function buildQoderCancelledResult(
+  sessionId: string,
+  startedAt: number,
+  outputLanguage: OutputLanguage,
+): AnalysisResult {
+  const message = localize(outputLanguage, '分析已中止。', 'Analysis was aborted.');
+  return {
+    sessionId,
+    success: false,
+    findings: [],
+    hypotheses: [],
+    conclusion: message,
+    confidence: 0,
+    rounds: 0,
+    totalDurationMs: Date.now() - startedAt,
+    partial: true,
+    terminationReason: 'timeout',
+    terminationMessage: message,
+  };
+}
+
 const QODER_LIGHT_MODEL_PURPOSES = new Set([
   'compact',
   'compression',
@@ -281,6 +312,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
   private readonly sessionOpaqueStates = new Map<string, QoderOpaqueState>();
+  private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
     private readonly input: RuntimeFactoryInput,
@@ -301,22 +333,95 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options?: AnalysisOptions,
   ): Promise<AnalysisResult> {
-    const startTime = Date.now();
-    const traceProcessorService = options?.traceProcessorService ?? this.input.traceProcessorService;
+    const normalizedOptions = options ?? {};
+    const executionLease = this.executionGuard.begin({
+      runtime: QODER_AGENT_RUNTIME_KIND,
+      sessionId,
+      referenceTraceId: normalizedOptions.referenceTraceId,
+      runId: normalizedOptions.runId,
+    });
+    const runtimePerformance = createRuntimePerformanceRun(
+      normalizedOptions.runManifestAttributionSink,
+    );
+    const analysisStartedAt = Date.now();
+    const sessionState: QoderActiveSession = {
+      abortController: new AbortController(),
+      aborted: false,
+      assistantText: '',
+      toolCallCount: 0,
+    };
+    this.activeSessions.set(sessionId, sessionState);
+    let runtimePerformanceOutcome: RuntimePerformanceOutcome = 'ok';
+    let result: AnalysisResult | undefined;
+    try {
+      result = await this.analyzeGuarded(
+        query,
+        sessionId,
+        traceId,
+        normalizedOptions,
+        executionLease,
+        runtimePerformance,
+        sessionState,
+      );
+      runtimePerformanceOutcome = executionLease.signal.aborted
+        ? 'cancelled'
+        : result.success === false ? 'error' : 'ok';
+      return result;
+    } catch (error) {
+      runtimePerformanceOutcome = runtimeOutcomeFromError(
+        error,
+        executionLease.signal,
+      );
+      if (runtimePerformanceOutcome === 'cancelled') {
+        result = buildQoderCancelledResult(
+          sessionId,
+          analysisStartedAt,
+          normalizedOptions.outputLanguage
+            ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
+        );
+        return result;
+      }
+      throw error;
+    } finally {
+      const finalizationPhase = runtimePerformance.startPhase('finalization');
+      try {
+        if (this.activeSessions.get(sessionId) === sessionState) {
+          this.activeSessions.delete(sessionId);
+        }
+        executionLease.settle();
+      } finally {
+        finalizationPhase.end(runtimePerformanceOutcome);
+        runtimePerformance.finalize(runtimePerformanceOutcome);
+      }
+    }
+  }
 
-    // Ensure skill registry is ready
-    await ensureSkillRegistryInitialized();
+  private async analyzeGuarded(
+    query: string,
+    sessionId: string,
+    traceId: string,
+    options: AnalysisOptions,
+    executionLease: RuntimeExecutionLease,
+    runtimePerformance: RuntimePerformanceRun,
+    sessionState: QoderActiveSession,
+  ): Promise<AnalysisResult> {
+    executionLease.throwIfAborted();
+    const startTime = Date.now();
+    const traceProcessorService = options.traceProcessorService ?? this.input.traceProcessorService;
 
     // Scene classification
     const sceneType = classifyScene(query);
     const outputLanguage = options?.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-    const packageName = options?.packageName;
+    const packageName = options.packageName?.trim() || undefined;
     const normalizedOptions = options ?? {};
     const deferTracePreflightToModel = options?.assistantSurface === 'conversation';
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
     const privateAnalysisContext = analysisContextUsesPrivateKnowledge(normalizedOptions);
+    if (privateAnalysisContext) {
+      this.sessionOpaqueStates.delete(sessionId);
+    }
     const knowledgeScope = knowledgeScopeFromAnalysisOptions(normalizedOptions);
 
     const quickModeResolution = resolveRuntimeQuickMode({
@@ -329,8 +434,32 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       hasReferenceTrace: Boolean(options?.referenceTraceId),
       previousTurns,
     });
-    const directEvidenceAnswer = quickModeResolution.quickMode
-      ? await buildRuntimeQuickEvidenceDirectAnswer({
+    runtimePerformance.finishClassification('ok');
+    const task9Admitted = isRuntimeCandidateAdmitted('task9', this.env);
+    let skillRegistryReady: Promise<void> | undefined;
+    const initializeSkillRegistry = (): Promise<void> => {
+      if (skillRegistryReady) return skillRegistryReady;
+      const skillRegistryPhase = runtimePerformance.startPhase('skill_registry');
+      skillRegistryReady = (async () => {
+        try {
+          await ensureSkillRegistryInitialized();
+          executionLease.throwIfAborted();
+          skillRegistryPhase.end('ok');
+        } catch (error) {
+          skillRegistryPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+          throw error;
+        }
+      })();
+      return skillRegistryReady;
+    };
+    if (!task9Admitted) {
+      await initializeSkillRegistry();
+    }
+    let quickEvidenceAttempt: RuntimeQuickEvidenceAttempt | undefined;
+    if (quickModeResolution.quickMode) {
+      const quickEvidencePhase = runtimePerformance.startPhase('quick_evidence');
+      try {
+        quickEvidenceAttempt = await buildRuntimeQuickEvidenceAttempt({
           query,
           traceId,
           packageName,
@@ -342,13 +471,20 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           quickTraceFactPreEvidence: quickModeResolution.quickTraceFactPreEvidence,
           quickScrollingTriagePreEvidence: quickModeResolution.quickScrollingTriagePreEvidence,
           emitUpdate: update => this.emitUpdate(update),
-        })
-      : undefined;
-    if (directEvidenceAnswer) {
+        });
+        executionLease.throwIfAborted();
+        quickEvidencePhase.end('ok');
+      } catch (error) {
+        quickEvidencePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
+    }
+    executionLease.throwIfAborted();
+    if (quickEvidenceAttempt?.directAnswer) {
       const directOptions = {
         ...normalizedOptions,
-        ...(directEvidenceAnswer.effectivePackageName ? {
-          packageName: directEvidenceAnswer.effectivePackageName,
+        ...(quickEvidenceAttempt.effectivePackageName ? {
+          packageName: quickEvidenceAttempt.effectivePackageName,
         } : {}),
       };
       const directAnalysisRunSpec = createAnalysisRunSpec({
@@ -378,58 +514,124 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         sessionContext,
         previousTurns,
         analysisRunSpec: directAnalysisRunSpec,
-        directAnswer: directEvidenceAnswer.directAnswer,
-        evidenceCounts: directEvidenceAnswer.evidenceCounts,
+        directAnswer: quickEvidenceAttempt.directAnswer,
+        evidenceCounts: quickEvidenceAttempt.evidenceCounts,
         persistSessionTurn: !privateAnalysisContext,
+        executionLease,
+        runtimePerformance,
       });
     }
+
+    const reusableQuickEvidenceAttempt = selectReusableRuntimeQuickEvidenceAttempt(
+      quickEvidenceAttempt,
+      this.env,
+    );
+
+    let sdkModulePromise: Promise<QoderSdkModule> | undefined;
+    const startSdkModuleLoad = (): Promise<QoderSdkModule> => {
+      if (sdkModulePromise) return sdkModulePromise;
+      const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
+      let sdkStartPhaseEnded = false;
+      const finishSdkStartPhase = (outcome: RuntimePerformanceOutcome) => {
+        if (sdkStartPhaseEnded) return;
+        sdkStartPhaseEnded = true;
+        sdkStartPhase.end(outcome);
+      };
+      const onSdkLoadAbort = () => finishSdkStartPhase('cancelled');
+      executionLease.signal.addEventListener('abort', onSdkLoadAbort, {once: true});
+      let sdkModuleLoad: Promise<QoderSdkModule>;
+      try {
+        sdkModuleLoad = loadQoderSdkModule(this.env) as Promise<QoderSdkModule>;
+      } catch (error) {
+        finishSdkStartPhase(runtimeOutcomeFromError(error, executionLease.signal));
+        sdkModuleLoad = Promise.reject(error);
+      }
+      sdkModulePromise = sdkModuleLoad.then(
+        sdk => {
+          executionLease.signal.removeEventListener('abort', onSdkLoadAbort);
+          finishSdkStartPhase(executionLease.signal.aborted ? 'cancelled' : 'ok');
+          return sdk;
+        },
+        error => {
+          executionLease.signal.removeEventListener('abort', onSdkLoadAbort);
+          finishSdkStartPhase(runtimeOutcomeFromError(error, executionLease.signal));
+          throw error;
+        },
+      );
+      void sdkModulePromise.catch(() => undefined);
+      return sdkModulePromise;
+    };
+    if (task9Admitted) startSdkModuleLoad();
+
+    const effectivePackageName = packageName ?? reusableQuickEvidenceAttempt?.effectivePackageName;
 
     // Architecture detection
     let architecture: ArchitectureInfo | undefined;
     if (!deferTracePreflightToModel) {
+      const architecturePhase = runtimePerformance.startPhase('architecture');
       try {
         const detector = createArchitectureDetector();
-        architecture = await detector.detect({
+        const detectedArchitecture = await detector.detect({
           traceId,
           traceProcessorService,
-          packageName,
+          packageName: effectivePackageName,
         });
+        executionLease.throwIfAborted();
+        architecture = detectedArchitecture;
         this.architectureCache.set(traceId, architecture);
-      } catch {
+        architecturePhase.end('ok');
+      } catch (error) {
+        architecturePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        executionLease.throwIfAborted();
         // Non-fatal — architecture detection is optional
       }
     }
+    executionLease.throwIfAborted();
 
     // Focus app detection
     let focusApps: DetectedFocusApp[] = [];
     let focusAppMethod: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none' = 'none';
     if (!deferTracePreflightToModel) {
+      const focusPhase = runtimePerformance.startPhase('focus');
       try {
-        const focusResult = await detectFocusApps(
-          traceProcessorService,
-          traceId,
-          { timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined },
-        );
+        const focusResult = reusableQuickEvidenceAttempt?.focusResult
+          ?? await detectFocusApps(
+            traceProcessorService,
+            traceId,
+            { timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined },
+          );
+        executionLease.throwIfAborted();
         focusApps = focusResult.apps;
         focusAppMethod = focusResult.method;
-      } catch {
+        focusPhase.end('ok');
+      } catch (error) {
+        focusPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        executionLease.throwIfAborted();
         // Non-fatal
       }
     }
+    executionLease.throwIfAborted();
 
     // Probe trace completeness
     let traceCompleteness: Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
     if (!deferTracePreflightToModel) {
+      const completenessPhase = runtimePerformance.startPhase('completeness');
       try {
-        traceCompleteness = await probeTraceCompleteness(
+        const detectedTraceCompleteness = await probeTraceCompleteness(
           traceProcessorService,
           traceId,
           architecture?.type,
         );
-      } catch {
+        executionLease.throwIfAborted();
+        traceCompleteness = detectedTraceCompleteness;
+        completenessPhase.end('ok');
+      } catch (error) {
+        completenessPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        executionLease.throwIfAborted();
         // Non-fatal
       }
     }
+    executionLease.throwIfAborted();
 
     const analysisRunSpec = createAnalysisRunSpec({
       query,
@@ -460,23 +662,30 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const referenceTraceId = options?.referenceTraceId;
     let comparisonContext: import('../../../agentv3/types').ComparisonContext | undefined;
     if (referenceTraceId) {
+      const comparisonPhase = runtimePerformance.startPhase('comparison');
       try {
-        comparisonContext = await buildRuntimeTracePairComparisonContext({
+        const detectedComparisonContext = await buildRuntimeTracePairComparisonContext({
           traceProcessorService,
           currentTraceId: traceId,
           referenceTraceId,
           tracePairContext: options?.tracePairContext,
         });
-      } catch {
+        executionLease.throwIfAborted();
+        comparisonContext = detectedComparisonContext;
+        comparisonPhase.end('ok');
+      } catch (error) {
+        comparisonPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        executionLease.throwIfAborted();
         // Non-fatal — comparison context is best-effort
       }
     }
+    executionLease.throwIfAborted();
 
     // Build system prompt
     const traceFeatures = extractTraceFeatures({
       sceneType,
       architectureType: architecture?.type,
-      packageName,
+      packageName: effectivePackageName,
     });
 
     // Shared mutable notes reference (used by both system prompt and MCP tools)
@@ -488,7 +697,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     const analysisContext: ClaudeAnalysisContext = {
       query,
-      packageName,
+      packageName: effectivePackageName,
       sceneType,
       architecture,
       focusApps,
@@ -522,7 +731,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const systemPrompt = quickModeResolution.quickMode
       ? buildQuickSystemPrompt({
           architecture,
-          packageName,
+          packageName: effectivePackageName,
           focusApps,
           focusMethod: focusAppMethod,
           selectionContext: options?.selectionContext,
@@ -536,6 +745,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const finalSystemPrompt = this.config.systemPrompt
       ? `${this.config.systemPrompt}\n\n${systemPrompt}`
       : systemPrompt;
+
+    await initializeSkillRegistry();
+    executionLease.throwIfAborted();
 
     // Build MCP tools
     const skillExecutor = createSkillExecutor(traceProcessorService);
@@ -592,7 +804,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           traceId,
           traceProcessorService,
           skillExecutor,
-          packageName,
+          packageName: effectivePackageName,
           emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
           artifactStore,
           recentSqlErrors,
@@ -618,7 +830,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           userQuery: query,
           traceProcessorService,
           skillExecutor,
-          packageName,
+          packageName: effectivePackageName,
           emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
           analysisNotes: notes,
           artifactStore,
@@ -654,25 +866,23 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
-    // Create abort controller
-    const abortController = new AbortController();
-    const sessionState: QoderActiveSession = {
-      abortController,
-      aborted: false,
-      assistantText: '',
-      toolCallCount: 0,
-    };
-    this.activeSessions.set(sessionId, sessionState);
+    const { abortController } = sessionState;
 
     const maxTurns = quickModeResolution.quickMode
       ? this.config.quickMaxTurns
       : this.config.maxTurns;
 
+    let q: QoderQueryLike | undefined;
+    let answerProjection: ReturnType<typeof createCodeAwareStreamingTextProjection> | undefined;
+    let emitProjectionTail = false;
+
     try {
       const resolveModel = this.createModelPolicy();
 
-      // Load the Qoder SDK module
-      const sdk = await loadQoderSdkModule(this.env) as unknown as QoderSdkModule;
+      // The import started immediately after the deterministic quick path
+      // missed, so it overlaps only with independent trace preflight.
+      const sdk = await startSdkModuleLoad();
+      executionLease.throwIfAborted();
 
       // Resolve auth
       const auth = this.resolveAuth(sdk);
@@ -711,10 +921,23 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         resolveModel,
       };
 
-      // Execute the query with timeout
+      answerProjection = createCodeAwareStreamingTextProjection(sessionId, 'qoder-answer');
+      const activeAnswerProjection = answerProjection;
+
+      // Execute the query with timeout. Provider timing includes synchronous
+      // query creation because this is the first provider-owned operation.
+      const providerPhase = runtimePerformance.startPhase('provider');
       commitEvaluationSdkHandoffIfActive();
-      const q = sdk.query({ prompt: fullPrompt, options: sdkOptions });
+      executionLease.throwIfAborted();
+      try {
+        q = sdk.query({ prompt: fullPrompt, options: sdkOptions });
+      } catch (error) {
+        providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
       sessionState.sdkQuery = q;
+      const sdkQuery = q;
+      executionLease.throwIfAborted();
 
       let assistantText = '';
       let sdkFinalResultText = '';
@@ -724,14 +947,22 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         errors: 'Qoder SDK stream ended without a result message',
       };
       let timedOut = false;
-      const answerProjection = createCodeAwareStreamingTextProjection(sessionId, 'qoder-answer');
 
       const perTurnMs = isQuickMode ? this.config.quickPerTurnMs : this.config.fullPerTurnMs;
       const timeoutMs = maxTurns * perTurnMs;
+      const timeoutText = localize(
+        outputLanguage,
+        `Qoder SDK 分析在 ${timeoutMs}ms 后超时。`,
+        `Qoder SDK analysis timed out after ${timeoutMs}ms.`,
+      );
 
       const processStream = async () => {
-        for await (const message of q) {
-          if (sessionState.aborted) break;
+        for await (const message of sdkQuery) {
+          if (sessionState.aborted) {
+            executionLease.throwIfAborted();
+            return;
+          }
+          executionLease.throwIfAborted();
 
           const msgType = getMessageType(message);
 
@@ -739,9 +970,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             const text = extractAssistantText(message);
             if (text) {
               assistantText += text;
-              sessionState.assistantText = answerProjection.projectComplete(assistantText);
-              const projectedText = answerProjection.write(text);
+              const projectedText = activeAnswerProjection.write(text);
               if (projectedText) {
+                runtimePerformance.recordFirstOutput();
                 this.emitUpdate({
                   type: 'answer_token',
                   content: projectedText,
@@ -793,35 +1024,64 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutTimer = setTimeout(() => {
+          const timeoutError = new Error('Qoder SDK analysis timed out');
           timedOut = true;
-          q.interrupt().catch(() => undefined);
-          q.close().catch(() => undefined);
-          reject(new Error('Qoder SDK analysis timed out'));
+          sessionState.aborted = true;
+          void this.executionGuard.abortSession(sessionId, timeoutError).catch(() => undefined);
+          void sdkQuery.interrupt().catch(() => undefined);
+          reject(timeoutError);
         }, timeoutMs);
         if (typeof timeoutTimer === 'object' && 'unref' in timeoutTimer) timeoutTimer.unref();
       });
+      void timeoutPromise.catch(() => undefined);
 
+      let onExecutionAbort: (() => void) | undefined;
+      const abortPromise = new Promise<never>((_, reject) => {
+        onExecutionAbort = () => {
+          const reason = executionLease.signal.reason;
+          reject(reason instanceof Error ? reason : new Error('Qoder SDK analysis aborted'));
+        };
+        if (executionLease.signal.aborted) {
+          onExecutionAbort();
+        } else {
+          executionLease.signal.addEventListener('abort', onExecutionAbort, { once: true });
+        }
+      });
+      void abortPromise.catch(() => undefined);
+
+      const streamPromise = processStream();
+      void streamPromise.catch(() => undefined);
       try {
-        await Promise.race([processStream(), timeoutPromise]);
+        await Promise.race([streamPromise, timeoutPromise, abortPromise]);
+        providerPhase.end('ok');
       } catch (timeoutError) {
+        providerPhase.end(runtimeOutcomeFromError(timeoutError, executionLease.signal));
         if (!timedOut) throw timeoutError;
       } finally {
         if (timeoutTimer !== undefined) clearTimeout(timeoutTimer);
+        if (onExecutionAbort) {
+          executionLease.signal.removeEventListener('abort', onExecutionAbort);
+        }
       }
-
-      await q.close().catch(() => undefined);
-
-      const finalProjectedToken = answerProjection.flush();
-      if (finalProjectedToken) {
-        this.emitUpdate({
-          type: 'answer_token',
-          content: finalProjectedToken,
-          timestamp: Date.now(),
-        });
+      if (timedOut) {
+        return finalizeSourceAwareAnalysisResult({
+          sessionId,
+          success: false,
+          findings: [],
+          hypotheses: [],
+          conclusion: timeoutText,
+          confidence: 0,
+          rounds: 0,
+          totalDurationMs: Date.now() - startTime,
+          partial: true,
+          terminationReason: 'timeout',
+          terminationMessage: timeoutText,
+        }, sourceUse);
       }
+      executionLease.throwIfAborted();
 
       // Apply code-aware sanitization
-      assistantText = sanitizeCodeAwareText(sessionId, sdkFinalResultText || assistantText);
+      assistantText = activeAnswerProjection.projectComplete(sdkFinalResultText || assistantText);
       sessionState.assistantText = assistantText;
       const sdkErrorText = sanitizeCodeAwareText(
         sessionId,
@@ -836,9 +1096,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       const hasFinalReport = hasDeliverableFinalReportHeading(assistantText);
 
       let terminationReason: string | undefined;
-      if (timedOut) {
-        terminationReason = 'timeout';
-      } else if (!sdkResultMeta.success) {
+      if (!sdkResultMeta.success) {
         terminationReason = sdkResultMeta.subtype === 'error_max_turns' ? 'max_turns' : 'execution_error';
       } else if (!hasFinalReport) {
         terminationReason = 'max_turns';
@@ -846,24 +1104,25 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
       const result: AnalysisResult = {
         sessionId,
-        success: sdkResultMeta.success && !timedOut,
+        success: sdkResultMeta.success,
         findings,
         hypotheses: hypotheses.map(hypothesis => toProtocolHypothesis(hypothesis, QODER_AGENT_RUNTIME_KIND)),
-        conclusion: sdkResultMeta.success
-          ? assistantText
-          : sdkErrorText,
+        conclusion: sdkResultMeta.success ? assistantText : sdkErrorText,
         confidence: sdkResultMeta.success ? 0.75 : 0,
         rounds: sdkResultMeta.numTurns ?? (sessionState.toolCallCount > 0 ? Math.ceil(sessionState.toolCallCount / 3) : 1),
         totalDurationMs,
-        partial: !hasFinalReport || !sdkResultMeta.success || timedOut,
+        partial: !hasFinalReport || !sdkResultMeta.success,
         terminationReason: terminationReason as AnalysisResult['terminationReason'],
         terminationMessage: sdkResultMeta.success ? undefined : sdkErrorText,
       };
-
       // Verify conclusion (non-fatal)
       if (!quickModeResolution.quickMode) {
         try {
-          const verification = await verifyConclusion(findings, assistantText, {
+          executionLease.throwIfAborted();
+          const verificationPhase = runtimePerformance.startPhase('verification');
+          let verification: Awaited<ReturnType<typeof verifyConclusion>>;
+          try {
+            verification = await verifyConclusion(findings, assistantText, {
             emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
             enableLLM: false,
             plan: planState.current,
@@ -872,6 +1131,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             query,
             emitIssueProgress: false,
           });
+            verificationPhase.end('ok');
+          } catch (error) {
+            verificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+            throw error;
+          }
+          executionLease.throwIfAborted();
           const verificationIssue = [
             ...verification.heuristicIssues,
             ...(verification.llmIssues || []),
@@ -891,15 +1156,18 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             }
           }
         } catch {
+          executionLease.throwIfAborted();
           // Non-fatal — verification is best-effort
         }
       }
 
       // Apply final result quality gate
+      executionLease.throwIfAborted();
       finalizeSourceAwareAnalysisResult(result, sourceUse);
       applyFinalResultQualityGate({ result, query, sceneType });
 
       if (!privateAnalysisContext) {
+        executionLease.throwIfAborted();
         sessionContext.addTurn(
           query,
           {
@@ -924,33 +1192,39 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       }
 
       // Update session state
+      executionLease.throwIfAborted();
       notes.push(
         { section: 'observation', content: `Analysis completed: ${findings.length} findings`, priority: 'low', timestamp: Date.now() },
       );
+      emitProjectionTail = result.success && !privateAnalysisContext;
 
       return result;
     } catch (error) {
       const totalDurationMs = Date.now() - startTime;
       const errorMessage = describeQoderSdkError(error);
       const safeErrorMessage = sanitizeCodeAwareText(sessionId, errorMessage);
+      const isAborted = sessionState.aborted
+        || executionLease.signal.aborted
+        || (error instanceof Error && error.name === 'AbortError')
+        || isTraceProcessorQueryCancelledError(error);
 
       // Clear stale session on missing-conversation errors so next call starts fresh
       if (/No conversation found with session ID/i.test(errorMessage)) {
         this.sessionOpaqueStates.delete(sessionId);
       }
 
-      // Emit error event
-      this.emitUpdate({
-        type: 'error',
-        content: { message: safeErrorMessage },
-        timestamp: Date.now(),
-      });
-
-      const isAborted = sessionState.aborted
-        || (error instanceof Error && error.name === 'AbortError')
-        || isTraceProcessorQueryCancelledError(error);
+      if (isAborted) {
+        this.sessionOpaqueStates.delete(sessionId);
+      } else {
+        this.emitUpdate({
+          type: 'error',
+          content: { message: safeErrorMessage },
+          timestamp: Date.now(),
+        });
+      }
 
       const isAuthError = /auth|unauthorized|invalid.*token|access.*denied/i.test(errorMessage);
+      const abortedMessage = localize(outputLanguage, '分析已中止。', 'Analysis was aborted.');
 
       return finalizeSourceAwareAnalysisResult({
         sessionId,
@@ -958,7 +1232,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         findings: [],
         hypotheses: [],
         conclusion: isAborted
-          ? localize(outputLanguage, '分析已中止。', 'Analysis was aborted.')
+          ? abortedMessage
           : localize(
               outputLanguage,
               `Qoder Agent SDK 分析失败：${safeErrorMessage}`,
@@ -967,8 +1241,11 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         confidence: 0,
         rounds: 0,
         totalDurationMs,
-        terminationReason: 'execution_error',
-        terminationMessage: isAuthError
+        partial: true,
+        terminationReason: isAborted ? 'timeout' : 'execution_error',
+        terminationMessage: isAborted
+          ? abortedMessage
+          : isAuthError
           ? localize(
               outputLanguage,
               `认证失败：${safeErrorMessage}`,
@@ -977,7 +1254,22 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           : safeErrorMessage,
       }, sourceUse);
     } finally {
-      this.activeSessions.delete(sessionId);
+      sessionState.sdkQuery = undefined;
+      await q?.close().catch(() => undefined);
+      let projectedTail = '';
+      try {
+        projectedTail = answerProjection?.flush() ?? '';
+      } catch {
+        // Projection cleanup is fail-closed and must not replace the analysis result.
+      }
+      if (emitProjectionTail && projectedTail && !executionLease.signal.aborted) {
+        runtimePerformance.recordFirstOutput();
+        this.emitUpdate({
+          type: 'answer_token',
+          content: projectedTail,
+          timestamp: Date.now(),
+        });
+      }
     }
   }
 
@@ -1029,10 +1321,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   // -------------------------------------------------------------------------
 
   reset(): void {
+    this.executionGuard.clear();
+    resetQoderSdkModuleCache();
     for (const [, session] of this.activeSessions) {
       session.aborted = true;
       session.abortController.abort();
-      session.sdkQuery?.close().catch(() => undefined);
+      session.sdkQuery?.interrupt().catch(() => undefined);
     }
     this.activeSessions.clear();
     this.sessionNotes.clear();
@@ -1045,16 +1339,17 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   }
 
   async abortSession(sessionId: string): Promise<void> {
+    this.sessionOpaqueStates.delete(sessionId);
+    await this.executionGuard.abortSession(sessionId);
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
     session.aborted = true;
     session.abortController.abort();
     await session.sdkQuery?.interrupt().catch(() => undefined);
-    await session.sdkQuery?.close().catch(() => undefined);
-    this.activeSessions.delete(sessionId);
   }
 
   cleanupSession(sessionId: string): void {
+    void this.abortSession(sessionId);
     this.sessionNotes.delete(sessionId);
     this.sessionPlans.delete(sessionId);
     this.sessionHypotheses.delete(sessionId);
@@ -1178,6 +1473,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     directAnswer: RuntimeQuickEvidenceDirectAnswer;
     evidenceCounts: RuntimeQuickEvidenceCounts;
     persistSessionTurn: boolean;
+    executionLease: RuntimeExecutionLease;
+    runtimePerformance: RuntimePerformanceRun;
   }): AnalysisResult {
     const quickBudget = resolveQuickTurnBudget({
       env: this.env,
@@ -1205,6 +1502,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       sceneType: input.sceneType,
     });
     if (input.persistSessionTurn) {
+      input.executionLease.throwIfAborted();
       input.sessionContext.addTurn(
         input.query,
         {
@@ -1224,6 +1522,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         result.findings,
       );
     }
+    input.executionLease.throwIfAborted();
+    input.runtimePerformance.recordFirstOutput();
     emitQuickDirectAnswerEvents({
       emitUpdate: update => this.emitUpdate(update),
       result,

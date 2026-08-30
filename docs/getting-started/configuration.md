@@ -605,3 +605,60 @@ SMARTPERFETTO_USAGE_WINDOW_MS=86400000
 ## Runtime 与 Provider 的边界
 
 `SMARTPERFETTO_AGENT_RUNTIME` 只表示后端编排 runtime，只接受 `claude-agent-sdk`、`openai-agents-sdk`、`pi-agent-core`、`opencode` 或 `qoder-agent-sdk`。Provider 名称不能写在这里：例如 DeepSeek 应配置为 Claude/Anthropic-compatible provider，OpenAI/Ollama 应配置为 OpenAI Agents SDK provider，Pi Agent Core/OpenCode/Qoder 应配置为 custom provider 或对应 env block。
+
+## Runtime 并发候选准入
+
+发布配置默认不启用任何性能并发候选。只有维护者完成对应的确定性与真实 provider A/B 后，才可在目标 backend 进程上设置：
+
+```bash
+SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES=task4,task6
+```
+
+该变量只接受 `task4`、`task5`、`task6`、`task7`、`task8`、`task9` 的逗号列表。值不能包含前后或分项空白、重复项、空项或未知项；任一问题都会让整个值 fail closed 为“无候选获准”。它是维护者部署边界，不属于 Provider Manager、UI 或 provider credential env。benchmark 产物也不会自动修改或激活它。
+
+- `task4`：五个 runtime 复用 quick evidence/focus 预取。
+- `task5`：五个 runtime 允许已标记的可交换只读工具做有界重叠；其余工具仍独占。
+- `task6`：Claude/OpenAI 重叠独立 preflight。
+- `task7`：Pi 并发加载独立 SDK/provider，并在 quick 模式启用 parallel batch 调度；descriptor/tool gate 仍串行独占工作。
+- `task8`：OpenCode 并行观察 messages/status 并自适应轮询。
+- `task9`：Qoder 重叠 Skill registry 与 SDK 启动。
+
+`task5` 已获准时，安全只读并发默认开启；下面的变量只能把它回滚为独占，不能在缺少 `task5` 准入时强行开启：
+
+```bash
+SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false
+```
+
+当前发布默认保持串行，因为五个真实 adapter 的确定性准入为 `NOT CONFIGURED`，真实 provider base/candidate A/B 尚未执行，准入结论为 `INCONCLUSIVE`。执行 guard、processor 创建 single-flight、缓存失败重试、取消清理和内部性能 receipt 等 correctness/observability 修复不受候选开关影响。
+
+### 有范围的本地 benchmark
+
+benchmark 只接受两个不同的显式 loopback HTTP origin（含端口），不会连接远端主机。先由独立 lifecycle controller 启动 base/candidate，生成绑定两端 identity/config/source、不同且 fresh 的 data root/session、逐 pair cache reset、cold/warm protocol、候选指纹和 output nonce 的 receipt，再运行单一候选：
+
+```bash
+cd backend
+npm run benchmark:agent-latency -- \
+  --base-url http://127.0.0.1:10000 \
+  --candidate-url http://127.0.0.1:10001 \
+  --runtime openai-agents-sdk \
+  --candidate task6 \
+  --candidate-config-fingerprint <lowercase-hex-fingerprint> \
+  --output-run-nonce <lowercase-hex-nonce> \
+  --output-dir test-output/runtime-concurrency/<fresh-run> \
+  --lifecycle-receipt /absolute/path/to/lifecycle-receipt.json
+```
+
+`--candidate` 必须与 runtime 匹配，并与 candidate fingerprint 同时出现。用于准入的真实运行必须提供经过校验且未过期的 lifecycle receipt；没有 receipt 的结果只能保持串行/不确定。`--output-dir` 必须是 `backend/test-output/runtime-concurrency/` 下尚不存在的新路径，该目录已被 Git ignore，不能复用旧结果。
+
+如只需确认本机凭据/二进制可用性与 harness 写盘边界，省略 `--candidate`、candidate fingerprint、nonce 和 lifecycle receipt。该 diagnostic 仍要求两个 loopback URL、runtime 和 fresh output path，但不会调用任何 target、不会生成 admission，并会以非成功准入状态退出：
+
+```bash
+cd backend
+npm run benchmark:agent-latency -- \
+  --base-url http://127.0.0.1:10000 \
+  --candidate-url http://127.0.0.1:10001 \
+  --runtime openai-agents-sdk \
+  --output-dir test-output/runtime-concurrency/<fresh-diagnostic>
+```
+
+RunManifest 内的 `RuntimePerformance` receipt 是内部证据；公开 SSE 不包含可用于准入的 model、provider snapshot、provider usage 或 performance 字段。确定性 gate 也不等于真实 provider：若凭据、SDK 或本地登录态不可用，分别记录 `NOT AVAILABLE` 或 `NOT CONFIGURED`。Qoder 除 BYOK provider key 外还必须有 PAT 或本机 `qodercli` 登录态；BYOK 本身不能证明 Qoder 可运行。

@@ -2,8 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { describe, expect, it, jest } from '@jest/globals';
+import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import {EventEmitter} from 'events';
+import {spawn as spawnChildProcess} from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -39,11 +40,31 @@ import {
   SOURCE_FINALIZATION_CANARY,
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from './sourceFinalizationFixture';
+import {createRuntimePerformanceRecorder} from '../runtimePerformance';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+import * as evaluationRuntimeHooks from '../../services/selfEvolution/evaluationRuntimeHooks';
+
+const mockClaudeVerifierVerifyConclusion = jest.fn();
+jest.mock('../engines/claude/claudeVerifier', () => {
+  const actual = jest.requireActual('../engines/claude/claudeVerifier') as any;
+  return {
+    ...actual,
+    verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
+  };
+});
 
 type FakeTraceProcessorService = TraceProcessorService & {
   query: jest.MockedFunction<(traceId: string, sql: string) => Promise<QueryResult>>;
   getTrace: jest.MockedFunction<(traceId: string) => TraceInfo>;
 };
+
+beforeEach(() => {
+  const actualVerifier = jest.requireActual('../engines/claude/claudeVerifier') as any;
+  mockClaudeVerifierVerifyConclusion.mockReset();
+  mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
+    actualVerifier.verifyConclusion(...args)
+  ));
+});
 
 function createFakeTraceProcessorService(): FakeTraceProcessorService {
   return {
@@ -95,6 +116,46 @@ async function withBackendDataDir<T>(fn: (dir: string) => Promise<T>): Promise<T
     else process.env.SMARTPERFETTO_BACKEND_DATA_DIR = previous;
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function createNoopAttributionSink(
+  runtimePerformanceRecorder = createRuntimePerformanceRecorder(),
+): RunManifestAttributionSink {
+  return {
+    identity: {
+      runId: 'run-opencode-test',
+      sessionId: 'session-opencode',
+      scope: {
+        tenantId: 'tenant-test',
+        workspaceId: 'workspace-test',
+      },
+    },
+    runtimePerformanceRecorder,
+    recordScene: jest.fn(),
+    recordRuntime: jest.fn(),
+    recordMode: jest.fn(),
+    recordAdaptiveRouting: jest.fn(),
+    recordCapabilityManifest: jest.fn(),
+    recordSkillRegistry: jest.fn(),
+    startSkillInvocation: jest.fn(() => 'skill-invocation-test'),
+    finishSkillInvocation: jest.fn(),
+    recordUnknownSkillInvocation: jest.fn(),
+    recordSqlStatement: jest.fn(),
+    recordPromptTemplate: jest.fn(),
+    recordInjection: jest.fn(),
+    recordToolAllowlist: jest.fn(),
+    recordTurn: jest.fn(),
+  };
 }
 
 function createFakeModuleLoader(record: {
@@ -498,6 +559,283 @@ describe('experimental OpenCode runtime contract', () => {
     ]);
   });
 
+  it('threads one configured request deadline through the OpenCode client and bridge child', () => {
+    const config = createOpenCodeHardenedConfig([], {
+      SMARTPERFETTO_OPENCODE_MCP_TIMEOUT_MS: '7777',
+    }, {
+      port: 43123,
+      token: 'bridge-token',
+      requestTimeoutMs: 7777,
+      getDiagnostics: () => ({connectionCount: 0, requestCount: 0}),
+      close: async () => undefined,
+    } as any);
+
+    expect(config.mcp).toEqual({
+      smartperfetto: expect.objectContaining({
+        timeout: 7777,
+        environment: expect.objectContaining({
+          SMARTPERFETTO_OPENCODE_BRIDGE_TIMEOUT_MS: '7777',
+        }),
+      }),
+    });
+  });
+
+  it('strictly bounds OpenCode MCP timeouts for env and injected bridge contracts', async () => {
+    expect(getOpenCodeRuntimeDiagnostics({
+      SMARTPERFETTO_OPENCODE_MCP_TIMEOUT_MS: '100',
+    }).standaloneMcpTimeoutMs).toBe(100);
+    expect(getOpenCodeRuntimeDiagnostics({
+      SMARTPERFETTO_OPENCODE_MCP_TIMEOUT_MS: '300000',
+    }).standaloneMcpTimeoutMs).toBe(300_000);
+
+    for (const invalid of ['100ms', '1.5', '-1', '0', '99', '300001', '999999999999999999999']) {
+      expect(getOpenCodeRuntimeDiagnostics({
+        SMARTPERFETTO_OPENCODE_MCP_TIMEOUT_MS: invalid,
+      }).standaloneMcpTimeoutMs).toBe(5_000);
+    }
+
+    for (const invalid of [Number.NaN, -1, 0, 99, 300_001, 1.5]) {
+      const bridge = await openCodeTesting.startOpenCodeMcpBridge([], undefined, {
+        timeoutMs: invalid,
+      } as any);
+      expect(bridge.requestTimeoutMs).toBe(5_000);
+      await bridge.close();
+    }
+  });
+
+  it('makes the bridge child reject partial numeric timeout strings', async () => {
+    const sockets = new Set<net.Socket>();
+    const parent = net.createServer(socket => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.once('data', chunk => {
+        setTimeout(() => {
+          if (!socket.destroyed) {
+            socket.write(`${JSON.stringify({jsonrpc: '2.0', id: 'strict-child', result: {ok: true}})}\n`);
+          }
+        }, 150);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      parent.once('error', reject);
+      parent.listen(0, '127.0.0.1', resolve);
+    });
+    const address = parent.address();
+    if (!address || typeof address === 'string') throw new Error('test parent bridge did not bind');
+    const command = openCodeTesting.resolveOpenCodeBridgeCommand({});
+    const child = spawnChildProcess(command[0]!, command.slice(1), {
+      env: {
+        ...process.env,
+        SMARTPERFETTO_OPENCODE_BRIDGE_PORT: String(address.port),
+        SMARTPERFETTO_OPENCODE_BRIDGE_TOKEN: 'bridge-token',
+        SMARTPERFETTO_OPENCODE_BRIDGE_TIMEOUT_MS: '40ms',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    try {
+      const output = new Promise<string>((resolve, reject) => {
+        let buffer = '';
+        const timer = setTimeout(() => reject(new Error('strict child timeout test stalled')), 1_000);
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', chunk => {
+          buffer += chunk;
+          const newline = buffer.indexOf('\n');
+          if (newline < 0) return;
+          clearTimeout(timer);
+          resolve(buffer.slice(0, newline));
+        });
+      });
+      child.stdin.write(`${JSON.stringify({jsonrpc: '2.0', id: 'strict-child', method: 'tools/list'})}\n`);
+      await expect(output).resolves.toContain('"ok":true');
+    } finally {
+      child.kill();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => parent.close(() => resolve()));
+    }
+  });
+
+  it('makes the bridge child honor the request-scoped parent deadline', async () => {
+    const sockets = new Set<net.Socket>();
+    const parent = net.createServer(socket => {
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('data', () => undefined);
+    });
+    await new Promise<void>((resolve, reject) => {
+      parent.once('error', reject);
+      parent.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = parent.address();
+    if (!address || typeof address === 'string') throw new Error('test parent bridge did not bind');
+    const command = openCodeTesting.resolveOpenCodeBridgeCommand({});
+    const child = spawnChildProcess(command[0]!, command.slice(1), {
+      env: {
+        ...process.env,
+        SMARTPERFETTO_OPENCODE_BRIDGE_PORT: String(address.port),
+        SMARTPERFETTO_OPENCODE_BRIDGE_TOKEN: 'bridge-token',
+        SMARTPERFETTO_OPENCODE_BRIDGE_TIMEOUT_MS: '100',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    try {
+      const output = new Promise<string>((resolve, reject) => {
+        let buffer = '';
+        const timer = setTimeout(() => reject(new Error('bridge child missed configured deadline')), 750);
+        child.stdout.setEncoding('utf8');
+        child.stdout.on('data', chunk => {
+          buffer += chunk;
+          const newline = buffer.indexOf('\n');
+          if (newline < 0) return;
+          clearTimeout(timer);
+          resolve(buffer.slice(0, newline));
+        });
+        child.once('error', error => {
+          clearTimeout(timer);
+          reject(error);
+        });
+      });
+      child.stdin.write(`${JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'deadline-child',
+        method: 'tools/list',
+      })}\n`);
+
+      await expect(output).resolves.toContain('bridge request timed out');
+    } finally {
+      child.kill();
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>(resolve => parent.close(() => resolve()));
+    }
+  });
+
+  it('aborts a parent bridge handler on disconnect and records no ghost success attribution', async () => {
+    const handlerStarted = createDeferred<void>();
+    const releaseHandler = createDeferred<void>();
+    const handlerAborted = createDeferred<void>();
+    const updates: any[] = [];
+    let handlerSignal: AbortSignal | undefined;
+    const plan = {phases: [], successCriteria: '', submittedAt: 1, toolCallLog: []} as any;
+    const bridge = await openCodeTesting.startOpenCodeMcpBridge([{
+      name: 'smartperfetto_query_trace',
+      exposure: 'internal',
+      tool: {},
+      shared: {
+        name: 'smartperfetto_query_trace',
+        description: 'Run a trace query',
+        exposure: 'internal',
+        inputSchema: {},
+        handler: jest.fn(async (_args: unknown, extra: any) => {
+          handlerSignal = extra.signal;
+          handlerSignal?.addEventListener('abort', () => handlerAborted.resolve(), {once: true});
+          handlerStarted.resolve();
+          await releaseHandler.promise;
+          return {content: [{type: 'text', text: 'late success must be discarded'}]};
+        }),
+      },
+    } as any], update => updates.push(update), {
+      analysisPlan: {current: plan},
+      timeoutMs: 1_000,
+    } as any);
+    const socket = net.createConnection({host: '127.0.0.1', port: bridge.port});
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      socket.write(`${JSON.stringify({
+        token: bridge.token,
+        request: {
+          jsonrpc: '2.0',
+          id: 'disconnect-call',
+          method: 'tools/call',
+          params: {name: 'smartperfetto_query_trace', arguments: {sql: 'select 1'}},
+        },
+      })}\n`);
+      await handlerStarted.promise;
+      const closed = new Promise<void>(resolve => socket.once('close', () => resolve()));
+      socket.destroy();
+      await closed;
+      await Promise.race([
+        handlerAborted.promise,
+        new Promise<void>(resolve => setTimeout(resolve, 500)),
+      ]);
+      expect(handlerSignal?.aborted).toBe(true);
+      releaseHandler.resolve();
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(plan.toolCallLog).toEqual([]);
+      expect(updates.filter(update => update.type === 'agent_response')).toEqual([]);
+    } finally {
+      releaseHandler.resolve();
+      socket.destroy();
+      await bridge.close();
+    }
+  });
+
+  it('aborts a deadline-expired bridge handler before late success can create evidence', async () => {
+    const handlerStarted = createDeferred<void>();
+    const deadlineObserved = createDeferred<boolean>();
+    const releaseHandler = createDeferred<void>();
+    const updates: any[] = [];
+    const plan = {phases: [], successCriteria: '', submittedAt: 1, toolCallLog: []} as any;
+    const bridge = await openCodeTesting.startOpenCodeMcpBridge([{
+      name: 'smartperfetto_query_trace',
+      exposure: 'internal',
+      tool: {},
+      shared: {
+        name: 'smartperfetto_query_trace',
+        description: 'Run a trace query',
+        exposure: 'internal',
+        inputSchema: {},
+        handler: jest.fn(async (_args: unknown, extra: any) => {
+          handlerStarted.resolve();
+          if (!extra.signal) {
+            deadlineObserved.resolve(false);
+          } else if (extra.signal.aborted) {
+            deadlineObserved.resolve(true);
+          } else {
+            extra.signal.addEventListener('abort', () => deadlineObserved.resolve(true), {once: true});
+          }
+          await releaseHandler.promise;
+          return {content: [{type: 'text', text: 'late deadline success'}]};
+        }),
+      },
+    } as any], update => updates.push(update), {
+      analysisPlan: {current: plan},
+      timeoutMs: 100,
+    } as any);
+    const socket = net.createConnection({host: '127.0.0.1', port: bridge.port});
+    try {
+      await new Promise<void>((resolve, reject) => {
+        socket.once('connect', resolve);
+        socket.once('error', reject);
+      });
+      socket.write(`${JSON.stringify({
+        token: bridge.token,
+        request: {
+          jsonrpc: '2.0',
+          id: 'deadline-call',
+          method: 'tools/call',
+          params: {name: 'smartperfetto_query_trace', arguments: {sql: 'select 1'}},
+        },
+      })}\n`);
+      await handlerStarted.promise;
+      await expect(Promise.race([
+        deadlineObserved.promise,
+        new Promise<boolean>(resolve => setTimeout(() => resolve(false), 500)),
+      ])).resolves.toBe(true);
+      releaseHandler.resolve();
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(plan.toolCallLog).toEqual([]);
+      expect(updates.filter(update => update.type === 'agent_response')).toEqual([]);
+    } finally {
+      releaseHandler.resolve();
+      socket.destroy();
+      await bridge.close();
+    }
+  });
+
   it('closes unauthenticated MCP bridge clients before they can buffer an oversized frame', async () => {
     const bridge = await openCodeTesting.startOpenCodeMcpBridge([]);
     const socket = net.createConnection({host: '127.0.0.1', port: bridge.port});
@@ -660,10 +998,765 @@ describe('experimental OpenCode runtime contract', () => {
     expect(promptAsync).toHaveBeenCalledTimes(1);
     expect(messages).toHaveBeenCalledWith({
       path: { id: 'ses-opencode' },
-      query: { directory: '/tmp/project', limit: 50, order: 'asc' },
+      query: { directory: '/tmp/project', limit: 50, order: 'desc' },
     });
     expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('异步最终报告');
   });
+
+  it('observes a new OpenCode session immediately without a baseline fetch or initial delay', async () => {
+    const promptAsync = jest.fn(async () => ({response: {status: 204}}));
+    const messages = jest.fn(async () => ({data: [{
+      info: {role: 'assistant', finish: 'stop', id: 'msg-immediate'},
+      parts: [{type: 'text', text: '立即完成的报告'}],
+    }]}));
+    const status = jest.fn(async () => ({data: {'ses-opencode': {type: 'idle'}}}));
+    const pollDelay = jest.fn(async () => undefined);
+
+    const result = await runOpenCodePrompt({
+      client: {session: {prompt: jest.fn(), promptAsync, messages, status}},
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '分析启动性能'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+      pollDelay,
+    } as any);
+
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(pollDelay).not.toHaveBeenCalled();
+    expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('立即完成的报告');
+  });
+
+  it('performs a canonical final messages fetch after idle wins the concurrent observation race', async () => {
+    const intermediate = {
+      info: {role: 'assistant', finish: 'tool-calls', id: 'msg-tool'},
+      parts: [{type: 'text', text: '并发观察时仍是工具调用'}],
+    };
+    const final = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-final'},
+      parts: [{type: 'text', text: 'idle 后规范读取到的最终报告'}],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [final, intermediate]});
+
+    const result = await runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({response: {status: 204}})),
+          messages,
+          status: jest.fn(async () => ({data: {'ses-opencode': {type: 'idle'}}})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '分析启动性能'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+      pollDelay: async () => undefined,
+    } as any);
+
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(extractOpenCodeAssistantText(result.messagesResponse))
+      .toBe('idle 后规范读取到的最终报告');
+  });
+
+  it('keeps polling through multiple lagging idle canonical fetches without duplicate usage', async () => {
+    const intermediate = {
+      info: {
+        role: 'assistant',
+        finish: 'tool-calls',
+        id: 'msg-tool',
+        usage: {outputTokens: 1},
+      },
+      parts: [{type: 'text', text: 'canonical 仍滞后'}],
+    };
+    const final = {
+      info: {
+        role: 'assistant',
+        finish: 'stop',
+        id: 'msg-final',
+        usage: {outputTokens: 2},
+      },
+      parts: [{type: 'text', text: '多次滞后后最终报告'}],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [final, intermediate]})
+      .mockResolvedValue({data: [final, intermediate]});
+    const status = jest.fn(async () => ({data: {'ses-opencode': {type: 'idle'}}}));
+    const onFirstAssistantMessage = jest.fn();
+    const usageSpy = jest.spyOn(evaluationRuntimeHooks, 'recordEvaluationTokenDeltaIfPresent')
+      .mockImplementation(() => undefined);
+    try {
+      const result = await runOpenCodePrompt({
+        client: {
+          session: {
+            prompt: jest.fn(),
+            promptAsync: jest.fn(async () => ({response: {status: 204}})),
+            messages,
+            status,
+          },
+        },
+        server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+      } as any, {
+        path: {id: 'ses-opencode'},
+        query: {directory: '/tmp/project'},
+        body: {parts: [{type: 'text', text: '分析启动性能'}]},
+      }, {
+        sessionId: 'ses-opencode',
+        projectDir: '/tmp/project',
+        timeoutMs: 5_000,
+        resumedSession: false,
+        pollDelay: async () => undefined,
+        onFirstAssistantMessage,
+      });
+
+      expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('多次滞后后最终报告');
+      expect(messages).toHaveBeenCalledTimes(4);
+      expect(status).toHaveBeenCalledTimes(2);
+      expect(onFirstAssistantMessage).toHaveBeenCalledTimes(1);
+      expect(usageSpy).toHaveBeenCalledTimes(2);
+      expect(usageSpy.mock.calls).toEqual([
+        [{outputTokens: 1}],
+        [{outputTokens: 2}],
+      ]);
+    } finally {
+      usageSpy.mockRestore();
+    }
+  });
+
+  it('backs incomplete OpenCode polling off from 100ms toward the bounded 1s ceiling', async () => {
+    const promptAsync = jest.fn(async () => ({response: {status: 204}}));
+    const intermediate = {
+      info: {role: 'assistant', finish: 'tool-calls', id: 'msg-tool'},
+      parts: [{type: 'text', text: '正在调用工具'}],
+    };
+    const final = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-final'},
+      parts: [{type: 'text', text: '最终报告'}],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [final, intermediate]})
+      .mockResolvedValue({data: [final, intermediate]});
+    const status = jest.fn<any>()
+      .mockResolvedValueOnce({data: {'ses-opencode': {type: 'busy'}}})
+      .mockResolvedValueOnce({data: {'ses-opencode': {type: 'busy'}}})
+      .mockResolvedValueOnce({data: {'ses-opencode': {type: 'busy'}}})
+      .mockResolvedValueOnce({data: {'ses-opencode': {type: 'idle'}}});
+    const delays: number[] = [];
+
+    const result = await runOpenCodePrompt({
+      client: {session: {prompt: jest.fn(), promptAsync, messages, status}},
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '分析启动性能'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+      pollDelay: async (ms: number) => { delays.push(ms); },
+      adaptiveObservation: true,
+    } as any);
+
+    expect(delays).toEqual([100, 200, 400]);
+    expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('最终报告');
+  });
+
+  it('starts independent OpenCode messages and status observations concurrently', async () => {
+    const messagesStarted = createDeferred<void>();
+    const statusStarted = createDeferred<void>();
+    const releaseObservation = createDeferred<void>();
+    const promptAsync = jest.fn(async () => ({response: {status: 204}}));
+    const messages = jest.fn(async () => {
+      messagesStarted.resolve();
+      await releaseObservation.promise;
+      return {data: [{
+        info: {role: 'assistant', finish: 'stop', id: 'msg-concurrent'},
+        parts: [{type: 'text', text: '并发观察完成'}],
+      }]};
+    });
+    const status = jest.fn(async () => {
+      statusStarted.resolve();
+      await releaseObservation.promise;
+      return {data: {'ses-opencode': {type: 'idle'}}};
+    });
+
+    const pending = runOpenCodePrompt({
+      client: {session: {prompt: jest.fn(), promptAsync, messages, status}},
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '分析启动性能'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+      adaptiveObservation: true,
+    } as any);
+
+    await Promise.all([messagesStarted.promise, statusStarted.promise]);
+    releaseObservation.resolve();
+    await expect(pending).resolves.toMatchObject({
+      messagesResponse: {data: [expect.objectContaining({info: expect.objectContaining({id: 'msg-concurrent'})})]},
+    });
+  });
+
+  it('observes OpenCode messages then status sequentially with conservative polling by default', async () => {
+    const firstMessages = createDeferred<void>();
+    const messagesStarted = createDeferred<void>();
+    const statusStarted = createDeferred<void>();
+    let messageCalls = 0;
+    const messages = jest.fn(async () => {
+      messageCalls += 1;
+      if (messageCalls === 1) {
+        messagesStarted.resolve();
+        await firstMessages.promise;
+      }
+      return {data: [{
+        info: {role: 'assistant', finish: 'stop', id: 'msg-serial'},
+        parts: [{type: 'text', text: '串行观察完成'}],
+      }]};
+    });
+    const status = jest.fn(async () => {
+      statusStarted.resolve();
+      return {data: {'ses-opencode': {type: 'idle'}}};
+    });
+
+    const pending = runOpenCodePrompt({
+      client: {session: {prompt: jest.fn(), promptAsync: jest.fn(async () => ({})), messages, status}},
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '分析启动性能'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+    });
+
+    await messagesStarted.promise;
+    expect(status).not.toHaveBeenCalled();
+    firstMessages.resolve();
+    await statusStarted.promise;
+    await expect(pending).resolves.toMatchObject({
+      messagesResponse: {data: [expect.objectContaining({info: expect.objectContaining({id: 'msg-serial'})})]},
+    });
+  });
+
+  it('uses a durable latest-message watermark when resumed history exceeds fifty messages', async () => {
+    const oldMessages = Array.from({length: 75}, (_, index) => ({
+      info: {role: 'assistant', finish: 'stop', id: `msg-old-${index + 1}`},
+      parts: [{type: 'text', text: `旧报告 ${index + 1}`}],
+    }));
+    const newMessage = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-new'},
+      parts: [{type: 'text', text: '本轮超过五十条历史后的新报告'}],
+    };
+    const promptAsync = jest.fn(async () => ({response: {status: 204}}));
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [oldMessages[oldMessages.length - 1]]})
+      .mockResolvedValue({data: [newMessage, ...oldMessages.slice(-49).reverse()]});
+    const status = jest.fn(async () => ({data: {'ses-opencode': {type: 'idle'}}}));
+
+    const result = await runOpenCodePrompt({
+      client: {session: {prompt: jest.fn(), promptAsync, messages, status}},
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: true,
+      pollDelay: async () => undefined,
+    } as any);
+
+    expect(messages.mock.calls[0]?.[0]).toEqual({
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project', limit: 1, order: 'desc'},
+    });
+    expect(extractOpenCodeAssistantText(result.messagesResponse))
+      .toBe('本轮超过五十条历史后的新报告');
+  });
+
+  it('expands a displaced resumed watermark and returns all sixty current-turn messages once', async () => {
+    const baseline = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-baseline'},
+      parts: [{type: 'text', text: '上一轮报告'}],
+    };
+    const currentMessages = Array.from({length: 60}, (_, index) => ({
+      info: {
+        role: 'assistant',
+        finish: 'stop',
+        id: `msg-current-${index + 1}`,
+        usage: {ordinal: index + 1},
+      },
+      parts: [{type: 'text', text: `本轮消息 ${index + 1}`}],
+    }));
+    const descendingCurrent = [...currentMessages].reverse();
+    const requestedLimits: number[] = [];
+    const messages = jest.fn(async (input: any) => {
+      const limit = input.query.limit as number;
+      requestedLimits.push(limit);
+      if (limit === 1) return {data: [baseline]};
+      if (limit === 50) return {data: descendingCurrent.slice(0, 50)};
+      return {data: [...descendingCurrent, baseline]};
+    });
+    const onFirstAssistantMessage = jest.fn();
+    const usageSpy = jest.spyOn(evaluationRuntimeHooks, 'recordEvaluationTokenDeltaIfPresent')
+      .mockImplementation(() => undefined);
+    try {
+      const result = await runOpenCodePrompt({
+        client: {
+          session: {
+            prompt: jest.fn(),
+            promptAsync: jest.fn(async () => ({})),
+            messages,
+            status: jest.fn(async () => ({data: {'ses-opencode': {type: 'idle'}}})),
+          },
+        },
+        server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+      } as any, {
+        path: {id: 'ses-opencode'},
+        query: {directory: '/tmp/project'},
+        body: {parts: [{type: 'text', text: '继续分析'}]},
+      }, {
+        sessionId: 'ses-opencode',
+        projectDir: '/tmp/project',
+        timeoutMs: 5_000,
+        resumedSession: true,
+        onFirstAssistantMessage,
+      });
+
+      const returned = (result.messagesResponse as any).data;
+      expect(returned).toHaveLength(60);
+      expect(returned.map((message: any) => message.info.id)).toEqual(
+        currentMessages.map(message => message.info.id),
+      );
+      expect(requestedLimits).toEqual([1, 50, 100, 50, 100]);
+      expect(onFirstAssistantMessage).toHaveBeenCalledTimes(1);
+      expect(usageSpy).toHaveBeenCalledTimes(60);
+      expect(usageSpy.mock.calls.map(call => call[0])).toEqual(
+        currentMessages.map(message => message.info.usage),
+      );
+    } finally {
+      usageSpy.mockRestore();
+    }
+  });
+
+  it('fails closed when a resumed watermark remains displaced beyond the bounded maximum window', async () => {
+    const baseline = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-baseline-overflow'},
+      parts: [{type: 'text', text: '上一轮报告'}],
+    };
+    const overflowing = Array.from({length: 1_100}, (_, index) => ({
+      info: {role: 'assistant', finish: 'stop', id: `msg-overflow-${index + 1}`},
+      parts: [{type: 'text', text: `overflow ${index + 1}`}],
+    })).reverse();
+    const requestedLimits: number[] = [];
+    const messages = jest.fn(async (input: any) => {
+      const limit = input.query.limit as number;
+      requestedLimits.push(limit);
+      if (limit === 1) return {data: [baseline]};
+      return {data: overflowing.slice(0, limit)};
+    });
+
+    await expect(runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({})),
+          messages,
+          status: jest.fn(async () => ({data: {'ses-other': {type: 'idle'}}})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: true,
+    })).rejects.toThrow('OpenCode current-turn history exceeded the bounded 1000-message window');
+
+    expect(requestedLimits).toEqual([1, 50, 100, 200, 400, 800, 1000]);
+  });
+
+  it('treats a reused assistant ID with changed content as a new current-turn message', async () => {
+    const baseline = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-reused', time: {completed: 10}},
+      parts: [{type: 'text', text: '旧内容'}],
+    };
+    const changed = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-reused', time: {completed: 20}},
+      parts: [{type: 'text', text: '复用 ID 后的新内容'}],
+    };
+    const older = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-older', time: {completed: 1}},
+      parts: [{type: 'text', text: '更旧内容'}],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [baseline]})
+      .mockResolvedValueOnce({data: [changed, older]});
+
+    const result = await runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({})),
+          messages,
+          status: jest.fn(async () => ({data: {'ses-other': {type: 'idle'}}})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: true,
+      pollDelay: async () => undefined,
+    });
+
+    expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('复用 ID 后的新内容');
+  });
+
+  it('treats changed tool or reasoning parts as new even when visible text and envelope identity match', async () => {
+    const baseline = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-structured', time: {completed: 10}},
+      parts: [
+        {type: 'text', text: '相同可见文本'},
+        {type: 'reasoning', text: '旧推理'},
+        {type: 'tool', name: 'invoke_skill', state: {input: {skillId: 'old_skill'}}},
+      ],
+    };
+    const changed = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-structured', time: {completed: 10}},
+      parts: [
+        {type: 'text', text: '相同可见文本'},
+        {type: 'reasoning', text: '新推理'},
+        {type: 'tool', name: 'invoke_skill', state: {input: {skillId: 'new_skill'}}},
+      ],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [baseline]})
+      .mockResolvedValue({data: [changed]});
+
+    const result = await runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({})),
+          messages,
+          status: jest.fn(async () => ({data: {'ses-other': {type: 'idle'}}})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: true,
+      pollDelay: async () => undefined,
+    });
+
+    expect((result.messagesResponse as any).data).toEqual([changed]);
+  });
+
+  it('ignores an identical duplicate watermark but still accepts a later missing-ID message', async () => {
+    const baseline = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-identical', time: {completed: 10}},
+      parts: [{type: 'text', text: '完全相同'}],
+    };
+    const missingIdFinal = {
+      info: {role: 'assistant', finish: 'stop', time: {completed: 30}},
+      parts: [{type: 'text', text: '没有 ID 的本轮最终报告'}],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [baseline]})
+      .mockResolvedValueOnce({data: [baseline]})
+      .mockResolvedValueOnce({data: [missingIdFinal, baseline]});
+    const status = jest.fn(async () => ({data: {'ses-other': {type: 'idle'}}}));
+    const onFirstAssistantMessage = jest.fn();
+
+    const result = await runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({})),
+          messages,
+          status,
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: true,
+      pollDelay: async () => undefined,
+      onFirstAssistantMessage,
+    });
+
+    expect(messages).toHaveBeenCalledTimes(3);
+    expect(onFirstAssistantMessage).toHaveBeenCalledTimes(1);
+    expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('没有 ID 的本轮最终报告');
+  });
+
+  it("does not treat finish:'tool-calls' as terminal while target status is unknown", async () => {
+    const intermediate = {
+      info: {role: 'assistant', finish: 'tool-calls', id: 'msg-tool'},
+      parts: [{type: 'text', text: '先调用工具'}],
+    };
+    const final = {
+      info: {role: 'assistant', finish: 'stop', id: 'msg-final'},
+      parts: [{type: 'text', text: '工具完成后的最终报告'}],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({data: [intermediate]})
+      .mockResolvedValueOnce({data: [final, intermediate]});
+    const status = jest.fn(async () => ({data: {'ses-other': {type: 'idle'}}}));
+
+    const result = await runOpenCodePrompt({
+      client: {session: {prompt: jest.fn(), promptAsync: jest.fn(async () => ({})), messages, status}},
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+      pollDelay: async () => undefined,
+    } as any);
+
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('工具完成后的最终报告');
+  });
+
+  it('rejects promptly when aborted during the 1s adaptive polling backoff', async () => {
+    const abort = new AbortController();
+    const reachedOneSecondBackoff = createDeferred<void>();
+    const releaseBackoff = createDeferred<void>();
+    const intermediate = {
+      info: {role: 'assistant', finish: 'tool-calls', id: 'msg-tool'},
+      parts: [{type: 'text', text: '仍在执行'}],
+    };
+    const pollDelay = jest.fn(async (ms: number) => {
+      if (ms < 1_000) return;
+      reachedOneSecondBackoff.resolve();
+      await releaseBackoff.promise;
+    });
+    const pending = runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({})),
+          messages: jest.fn(async () => ({data: [intermediate]})),
+          status: jest.fn(async () => ({data: {'ses-opencode': {type: 'busy'}}})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      resumedSession: false,
+      signal: abort.signal,
+      pollDelay,
+      adaptiveObservation: true,
+    } as any);
+    try {
+      await reachedOneSecondBackoff.promise;
+      abort.abort(new Error('user cancelled'));
+      const outcome = await Promise.race([
+        pending.then(() => 'resolved', error => error),
+        new Promise(resolve => setTimeout(() => resolve('still-pending'), 250)),
+      ]);
+      expect(outcome).toMatchObject({name: 'AbortError'});
+    } finally {
+      releaseBackoff.resolve();
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it('uses one absolute deadline to terminate a hung messages endpoint and observes late rejection', async () => {
+    const hungMessages = createDeferred<unknown>();
+    const pending = runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(async () => ({})),
+          messages: jest.fn(() => hungMessages.promise),
+          status: jest.fn(async () => ({data: {'ses-opencode': {type: 'busy'}}})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 50,
+      resumedSession: false,
+    });
+    try {
+      await expect(Promise.race([
+        pending,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('outer-test-timeout')), 500)),
+      ])).rejects.toThrow('OpenCode prompt timed out after 50ms');
+    } finally {
+      hungMessages.reject(new Error('late endpoint rejection'));
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it('applies the same absolute deadline while promptAsync itself is hung', async () => {
+    const hungPrompt = createDeferred<unknown>();
+    const pending = runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync: jest.fn(() => hungPrompt.promise),
+          messages: jest.fn(async () => ({data: []})),
+        },
+      },
+      server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+    } as any, {
+      path: {id: 'ses-opencode'},
+      query: {directory: '/tmp/project'},
+      body: {parts: [{type: 'text', text: '继续分析'}]},
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 50,
+      resumedSession: false,
+    });
+    try {
+      await expect(Promise.race([
+        pending,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('outer-test-timeout')), 500)),
+      ])).rejects.toThrow('OpenCode prompt timed out after 50ms');
+    } finally {
+      hungPrompt.reject(new Error('late prompt rejection'));
+      await pending.catch(() => undefined);
+    }
+  });
+
+  it('calls onFirstAssistantMessage before async prompt completion when the first assistant message is observed', async () => {
+    let clock = 0;
+    const observations: string[] = [];
+    const promptAsync = jest.fn(async (_input?: unknown) => ({ response: { status: 204 } }));
+    const intermediateAssistant = {
+      info: { role: 'assistant', finish: 'tool-calls', id: 'msg-intermediate' },
+      parts: [{ type: 'text', text: '先提交计划。' }],
+    };
+    const finalAssistant = {
+      info: { role: 'assistant', finish: 'stop', id: 'msg-final' },
+      parts: [{ type: 'text', text: '完整最终报告' }],
+    };
+    const messages = jest.fn<any>()
+      .mockResolvedValueOnce({ data: [] })
+      .mockImplementationOnce(async () => {
+        clock = 10;
+        return { data: [intermediateAssistant] };
+      })
+      .mockImplementationOnce(async () => {
+        clock = 30;
+        return { data: [finalAssistant, intermediateAssistant] };
+      })
+      .mockResolvedValue({ data: [finalAssistant, intermediateAssistant] });
+    const status = jest.fn<any>()
+      .mockImplementationOnce(async () => {
+        observations.push(`status:${clock}`);
+        return { data: { 'ses-opencode': { type: 'busy' } } };
+      })
+      .mockImplementationOnce(async () => {
+        observations.push(`status:${clock}`);
+        return { data: { 'ses-opencode': { type: 'idle' } } };
+      });
+    const onFirstAssistantMessage = jest.fn(() => observations.push(`first:${clock}`));
+
+    const result = await runOpenCodePrompt({
+      client: {
+        session: {
+          prompt: jest.fn(),
+          promptAsync,
+          messages,
+          status,
+        },
+      },
+      server: { url: 'http://127.0.0.1:4106', close: jest.fn() },
+    } as any, {
+      path: { id: 'ses-opencode' },
+      query: { directory: '/tmp/project' },
+      body: { parts: [{ type: 'text', text: '分析启动性能' }] },
+    }, {
+      sessionId: 'ses-opencode',
+      projectDir: '/tmp/project',
+      timeoutMs: 5_000,
+      onFirstAssistantMessage,
+    } as any);
+    observations.push(`complete:${clock}`);
+
+    expect(extractOpenCodeAssistantText(result.messagesResponse)).toBe('完整最终报告');
+    expect(onFirstAssistantMessage).toHaveBeenCalledTimes(1);
+    expect(observations).toEqual([
+      'status:10',
+      'first:10',
+      'status:30',
+      'complete:30',
+    ]);
+  }, 10_000);
 
   it('waits for the target OpenCode session to become idle after an intermediate message completes', async () => {
     const promptAsync = jest.fn(async (_input?: unknown) => ({ response: { status: 204 } }));
@@ -678,7 +1771,7 @@ describe('experimental OpenCode runtime contract', () => {
     const messages = jest.fn<any>()
       .mockResolvedValueOnce({ data: [] })
       .mockResolvedValueOnce({ data: [intermediateAssistant] })
-      .mockResolvedValueOnce({ data: [intermediateAssistant, finalAssistant] });
+      .mockResolvedValue({ data: [finalAssistant, intermediateAssistant] });
     const status = jest.fn<any>()
       .mockResolvedValueOnce({ data: { 'ses-opencode': { type: 'busy' } } })
       .mockResolvedValueOnce({ data: { 'ses-opencode': { type: 'idle' } } });
@@ -704,7 +1797,7 @@ describe('experimental OpenCode runtime contract', () => {
     });
 
     expect(status).toHaveBeenCalledTimes(2);
-    expect(messages).toHaveBeenCalledTimes(3);
+    expect(messages).toHaveBeenCalledTimes(4);
     expect((result.messagesResponse as any).data.at(-1)).toEqual(finalAssistant);
   }, 10_000);
 
@@ -757,7 +1850,7 @@ describe('experimental OpenCode runtime contract', () => {
     const messages = jest.fn<any>()
       .mockResolvedValueOnce({ data: [oldAssistant] })
       .mockResolvedValueOnce({ data: [oldAssistant] })
-      .mockResolvedValueOnce({ data: [oldAssistant, newAssistant] });
+      .mockResolvedValueOnce({ data: [newAssistant, oldAssistant] });
 
     const result = await runOpenCodePrompt({
       client: {
@@ -799,7 +1892,7 @@ describe('experimental OpenCode runtime contract', () => {
     const prompt = jest.fn(async () => ({data: newAssistant}));
     const messages = jest.fn<any>()
       .mockResolvedValueOnce({data: [oldAssistant]})
-      .mockResolvedValueOnce({data: [oldAssistant, newAssistant]});
+      .mockResolvedValueOnce({data: [newAssistant, oldAssistant]});
 
     const result = await runOpenCodePrompt({
       client: {session: {prompt, messages}},
@@ -858,7 +1951,11 @@ describe('experimental OpenCode runtime contract', () => {
     });
     expect(handler).toHaveBeenCalledWith(
       { sql: 'select 1' },
-      { runtime: 'opencode', signal: controller.signal },
+      expect.objectContaining({
+        runtime: 'opencode',
+        signal: controller.signal,
+        toolCallId: 'tool-call-1',
+      }),
     );
     expect(updates).toEqual([
       expect.objectContaining({
@@ -2389,7 +3486,7 @@ describe('experimental OpenCode runtime contract', () => {
     });
     const directEvidence = jest.spyOn(
       quickEvidenceDirectAnswer,
-      'buildRuntimeQuickEvidenceDirectAnswer',
+      'buildRuntimeQuickEvidenceAttempt',
     );
 
     try {
@@ -2465,6 +3562,75 @@ describe('experimental OpenCode runtime contract', () => {
     expect(sqlQueries.some(sql => sql.includes('runtime_frame_metrics'))).toBe(true);
     expect(sqlQueries.some(sql => sql.includes('android_battery_stats_event_slices'))).toBe(false);
     expect(sqlQueries.some(sql => sql.includes('android_oom_adj_intervals'))).toBe(false);
+  });
+
+  it('reuses quick-evidence focus state on fallback without repeating OpenCode preflight queries', async () => {
+    const traceProcessorService = createFakeTraceProcessorService();
+    const sqlQueries: string[] = [];
+    traceProcessorService.query.mockImplementation(async (_traceId: string, sql: string) => {
+      sqlQueries.push(sql);
+      if (sql.includes('android_battery_stats_event_slices')) {
+        return {
+          columns: ['package_name', 'total_duration_ns', 'switch_count'],
+          rows: [['com.example.app', 2_000_000_000, 2]],
+          durationMs: 1,
+        };
+      }
+      if (sql.includes('runtime_frame_metrics')) {
+        return {
+          columns: [
+            'package_name',
+            'process_names',
+            'upid_count',
+            'total_frames',
+            'window_start_ns',
+            'window_end_ns',
+            'duration_s',
+            'fps',
+            'source_table',
+          ],
+          rows: [],
+          durationMs: 1,
+        };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const attemptSpy = jest.spyOn(quickEvidenceDirectAnswer, 'buildRuntimeQuickEvidenceAttempt');
+    const record: { createOptions?: Record<string, unknown>; promptInput?: unknown; closeCount: number } = {
+      closeCount: 0,
+    };
+    const moduleLoader = createFakeModuleLoader(record);
+    const runtime = new OpenCodeRuntime(
+      createFakeRuntimeInput({
+        traceProcessorService,
+        selection: { kind: OPENCODE_RUNTIME_KIND, source: 'env' },
+      }),
+      {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON: '{"providerID":"smartperfetto","modelID":"test-model"}',
+          SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES: 'task4',
+        },
+        moduleLoader,
+      },
+    );
+    runtime.restoreArchitectureCache('trace-opencode-reused-quick-attempt', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+
+    await runtime.analyze(
+      '滑动 FPS 是多少？',
+      'session-opencode-reused-quick-attempt',
+      'trace-opencode-reused-quick-attempt',
+    );
+
+    expect(attemptSpy).toHaveBeenCalledTimes(1);
+    expect(moduleLoader).toHaveBeenCalledTimes(1);
+    expect(record.promptInput).toBeDefined();
+    expect(sqlQueries.filter(sql => sql.includes('android_battery_stats_event_slices'))).toHaveLength(1);
+    expect(sqlQueries.filter(sql => sql.includes('runtime_frame_metrics'))).toHaveLength(1);
+    expect(sqlQueries.filter(sql => sql.includes('android_oom_adj_intervals'))).toHaveLength(0);
   });
 
   it('answers acknowledgement follow-ups directly without loading the OpenCode SDK', async () => {
@@ -2630,6 +3796,517 @@ describe('experimental OpenCode runtime contract', () => {
       });
       expect(restoredRecord.homeAtCreate).toBe(opaque?.homeDir);
       expect(restoredRecord.configAtCreate).toBe(opaque?.configDir);
+    });
+  });
+
+  it('rejects same-session direct overlap before OpenCode provider work starts', async () => {
+    await withBackendDataDir(async () => {
+      const releasePrompt = createDeferred<unknown>();
+      const moduleLoader: OpenCodeSdkModuleLoader = async () => ({
+        createOpencodeWithEnv: jest.fn(async () => ({
+          server: {url: 'http://127.0.0.1:4106', close: jest.fn(() => undefined)},
+          client: {
+            session: {
+              create: jest.fn(async () => ({ data: { id: 'ses-opencode-overlap' } })),
+              prompt: jest.fn(async () => {
+                await releasePrompt.promise;
+                return { data: { info: { role: 'user' }, parts: [] } };
+              }),
+            },
+          },
+        })),
+      });
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput(), { moduleLoader });
+
+      const first = runtime.analyze('first', 'session-opencode-overlap', 'trace-opencode', {
+        runId: 'run-1',
+        referenceTraceId: 'ref-1',
+      });
+      await Promise.resolve();
+      const second = runtime.analyze('second', 'session-opencode-overlap', 'trace-opencode', {
+        runId: 'run-2',
+        referenceTraceId: 'ref-2',
+      });
+
+      releasePrompt.resolve(undefined);
+      await expect(second).rejects.toThrow(/already in progress/i);
+      await expect(first).resolves.toMatchObject({ success: true });
+    });
+  });
+
+  it('allows different OpenCode sessions to run independently even with matching trace input', async () => {
+    await withBackendDataDir(async () => {
+      let createdSessionOrdinal = 0;
+      const moduleLoader: OpenCodeSdkModuleLoader = async () => ({
+        createOpencodeWithEnv: jest.fn(async () => ({
+          server: {url: 'http://127.0.0.1:4106', close: jest.fn(() => undefined)},
+          client: {
+            session: {
+              create: jest.fn(async () => ({
+                data: { id: `ses-opencode-isolated-${++createdSessionOrdinal}` },
+              })),
+              prompt: jest.fn(async () => openCodeAssistantResponse(
+                `msg-opencode-isolated-${createdSessionOrdinal}`,
+                'OpenCode isolated completed',
+              )),
+            },
+          },
+        })),
+      });
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput(), { moduleLoader });
+
+      await expect(Promise.all([
+        runtime.analyze('first', 'session-opencode-isolated-1', 'trace-opencode', {
+          runId: 'run-1',
+          referenceTraceId: 'ref-1',
+        }),
+        runtime.analyze('second', 'session-opencode-isolated-2', 'trace-opencode', {
+          runId: 'run-2',
+          referenceTraceId: 'ref-2',
+        }),
+      ])).resolves.toEqual([
+        expect.objectContaining({ success: true }),
+        expect.objectContaining({ success: true }),
+      ]);
+    });
+  });
+
+  it('does not record first output when OpenCode completes without an assistant message', async () => {
+    await withBackendDataDir(async () => {
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const promptInputs: unknown[] = [];
+      const close = jest.fn();
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: createOpenCodeReportModuleLoader([
+          {data: {info: {role: 'user'}, parts: [{type: 'text', text: 'no assistant yet'}]}},
+          {data: {info: {role: 'user'}, parts: [{type: 'text', text: 'still no assistant'}]}},
+        ], promptInputs, close),
+      });
+      mockOpenCodePreparation(runtime, {
+        phases: [{id: 'p1', name: 'evidence', status: 'completed', summary: 'evidence complete'}],
+        successCriteria: 'done',
+        submittedAt: 1,
+        toolCallLog: [],
+      }, 'scrolling', '分析滑动性能');
+
+      await expect(runtime.analyze('分析滑动性能', 'session-opencode-no-output', 'trace-opencode', {
+        analysisMode: 'full',
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      })).resolves.toMatchObject({success: true});
+
+      const receipt = runtimePerformanceRecorder.seal();
+      expect(receipt.firstOutputMs).toBeUndefined();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({name: 'finalization', outcome: 'ok'}),
+      ]));
+    });
+  });
+
+  it('records first output when OpenCode observes an assistant message', async () => {
+    await withBackendDataDir(async () => {
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const promptInputs: unknown[] = [];
+      const close = jest.fn();
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: createOpenCodeReportModuleLoader([
+          openCodeAssistantResponse('msg-opencode-output', [
+            '# Final Report',
+            '',
+            '## 综合结论',
+            'OpenCode delivered assistant output.',
+          ].join('\n')),
+        ], promptInputs, close),
+      });
+      mockOpenCodePreparation(runtime, {
+        phases: [{id: 'p1', name: 'evidence', status: 'completed', summary: 'evidence complete'}],
+        successCriteria: 'done',
+        submittedAt: 1,
+        toolCallLog: [],
+      }, 'scrolling', '分析滑动性能');
+
+      await expect(runtime.analyze('分析滑动性能', 'session-opencode-output', 'trace-opencode', {
+        analysisMode: 'full',
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      })).resolves.toMatchObject({success: true});
+
+      const receipt = runtimePerformanceRecorder.seal();
+      expect(receipt.firstOutputMs).toEqual(expect.any(Number));
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({name: 'provider', outcome: 'ok'}),
+        expect.objectContaining({name: 'finalization', outcome: 'ok'}),
+      ]));
+    });
+  });
+
+  it('records OpenCode finalization exactly once on provider execution error', async () => {
+    await withBackendDataDir(async () => {
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const promptInputs: unknown[] = [];
+      const close = jest.fn();
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: createOpenCodeReportModuleLoader([
+          new Error('opencode provider failed'),
+        ], promptInputs, close),
+      });
+      mockOpenCodePreparation(runtime, {
+        phases: [{id: 'p1', name: 'evidence', status: 'completed', summary: 'evidence complete'}],
+        successCriteria: 'done',
+        submittedAt: 1,
+        toolCallLog: [],
+      }, 'scrolling', '分析滑动性能');
+
+      await expect(runtime.analyze('分析滑动性能', 'session-opencode-error', 'trace-opencode', {
+        analysisMode: 'full',
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      })).rejects.toThrow('opencode provider failed');
+
+      const receipt = runtimePerformanceRecorder.seal();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'error'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({name: 'provider', outcome: 'error'}),
+      ]));
+    });
+  });
+
+  it('does not publish an OpenCode turn when cancelled during final verification', async () => {
+    await withBackendDataDir(async () => {
+      const sessionId = 'session-opencode-verification-cancel';
+      const traceId = 'trace-opencode';
+      const verificationStarted = createDeferred<void>();
+      const releaseVerification = createDeferred<void>();
+      mockClaudeVerifierVerifyConclusion.mockImplementationOnce(async () => {
+        verificationStarted.resolve();
+        await releaseVerification.promise;
+        return {
+          passed: true,
+          heuristicIssues: [],
+          llmIssues: [],
+          durationMs: 1,
+        };
+      });
+      const addTurn = jest.fn();
+      const promptInputs: unknown[] = [];
+      const close = jest.fn();
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const completedPlan = createCompletedScrollingPlanWithFinalPhase();
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: createOpenCodeReportModuleLoader([
+          openCodeAssistantResponse('verified', [
+            '## 综合结论',
+            'OpenCode verification cancellation should not publish a durable turn.',
+            '',
+            '## 峰值/口径指标',
+            '真实掉帧 0 帧；最长帧 12ms。',
+            '',
+            '## 全帧根因分布',
+            '| 根因 | 帧数 | 占比 |',
+            '| --- | ---: | ---: |',
+            '| none | 0 | 0% |',
+            '',
+            '## 代表帧分析',
+            '无代表性超预算帧。',
+            '',
+            '## 优化建议',
+            '保持当前实现并持续监控。',
+          ].join('\n')),
+        ], promptInputs, close),
+      });
+      mockOpenCodePreparation(
+        runtime,
+        completedPlan,
+        'scrolling',
+        '分析滑动性能',
+      );
+      jest.spyOn(runtime as any, 'prepareAnalysis').mockResolvedValue({
+        systemPrompt: 'SmartPerfetto system prompt',
+        prompt: '分析滑动性能',
+        toolDefinitions: [],
+        allowedToolNames: new Set<string>(),
+        quickMode: false,
+        sceneType: 'scrolling',
+        packageName: 'com.example.app',
+        sessionContext: {addTurn},
+        previousTurns: [],
+        analysisPlan: {current: completedPlan, history: []},
+        notes: [],
+        hypotheses: [],
+        uncertaintyFlags: [],
+        analysisRunSpec: {outputLanguage: 'zh-CN', traceContext: {datasetCount: 0}, mode: {adaptiveRouting: undefined}},
+      });
+
+      const analysis = runtime.analyze('分析滑动性能', sessionId, traceId, {
+        analysisMode: 'full',
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      });
+      await verificationStarted.promise;
+      const promptCountAtCancellation = promptInputs.length;
+      await runtime.abortSession(sessionId);
+      releaseVerification.resolve();
+
+      await expect(analysis).rejects.toThrow(/aborted|cancelled/i);
+      expect(promptInputs).toHaveLength(promptCountAtCancellation);
+      expect(addTurn).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      const receipt = runtimePerformanceRecorder.seal();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'cancelled'}));
+    });
+  });
+
+  it('closes the OpenCode bridge when cancelled after bridge creation before provider startup', async () => {
+    await withBackendDataDir(async () => {
+      const sessionId = 'session-opencode-bridge-cancel';
+      const closeBridge = jest.fn(async () => undefined);
+      const createOpencodeWithEnv = jest.fn(async () => ({
+        server: {url: 'http://127.0.0.1:4106', close: jest.fn(() => undefined)},
+        client: {
+          session: {
+            create: jest.fn(async () => ({data: {id: 'ses-opencode-bridge-cancel'}})),
+            prompt: jest.fn(async () => openCodeAssistantResponse('unexpected', 'unexpected')),
+          },
+        },
+      }));
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: jest.fn(async () => ({createOpencodeWithEnv})),
+        bridgeStarter: jest.fn(async () => ({
+          port: 49001,
+          token: 'bridge-token',
+          close: closeBridge,
+          getDiagnostics: () => ({
+            connectionCount: 0,
+            requestCount: 0,
+            lastMethod: undefined,
+            lastError: undefined,
+          }),
+        })),
+      } as any);
+      mockOpenCodeScrollingPreparation(runtime, createCompletedScrollingPlanWithFinalPhase());
+      const originalResolveSessionDirs = (runtime as any).resolveSessionDirs.bind(runtime);
+      jest.spyOn(runtime as any, 'resolveSessionDirs').mockImplementation((...args: unknown[]) => {
+        const resolved = originalResolveSessionDirs(...args);
+        void (runtime as any).executionGuard.abortSession(sessionId);
+        return resolved;
+      });
+
+      await expect(runtime.analyze('分析滑动性能', sessionId, 'trace-opencode', {
+        analysisMode: 'full',
+      })).rejects.toThrow(/aborted|cancelled/i);
+      expect(createOpencodeWithEnv).not.toHaveBeenCalled();
+      expect(closeBridge).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('closes the OpenCode provider and bridge when an SDK endpoint hangs past the prompt deadline', async () => {
+    await withBackendDataDir(async () => {
+      const hungPrompt = createDeferred<unknown>();
+      const closeServer = jest.fn(() => undefined);
+      const closeBridge = jest.fn(async () => undefined);
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_REAL_ANALYSIS: 'true',
+          SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: '50',
+          SMARTPERFETTO_OPENCODE_MODEL_JSON: '{"providerID":"test","modelID":"test"}',
+        },
+        moduleLoader: jest.fn(async () => ({
+          createOpencodeWithEnv: jest.fn(async () => ({
+            server: {url: 'http://127.0.0.1:4106', close: closeServer},
+            client: {
+              mcp: {status: jest.fn(async () => ({data: {smartperfetto: {status: 'connected'}}}))},
+              session: {
+                create: jest.fn(async () => ({data: {id: 'ses-opencode-timeout'}})),
+                prompt: jest.fn(async () => ({})),
+                promptAsync: jest.fn(() => hungPrompt.promise),
+                messages: jest.fn(async () => ({data: []})),
+              },
+            },
+          })),
+        })),
+        bridgeStarter: jest.fn(async () => ({
+          port: 43123,
+          token: 'bridge-token',
+          requestTimeoutMs: 5_000,
+          getDiagnostics: () => ({connectionCount: 0, requestCount: 0}),
+          close: closeBridge,
+        })),
+      });
+      mockOpenCodeScrollingPreparation(runtime, createCompletedScrollingPlanWithFinalPhase());
+
+      const analysis = runtime.analyze(
+        '分析滑动性能',
+        'session-opencode-provider-timeout',
+        'trace-opencode',
+        {analysisMode: 'full'},
+      );
+      try {
+        await expect(Promise.race([
+          analysis,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('outer-test-timeout')), 500)),
+        ])).rejects.toThrow('OpenCode prompt timed out after 50ms');
+        expect(closeServer).toHaveBeenCalledTimes(1);
+        expect(closeBridge).toHaveBeenCalledTimes(1);
+      } finally {
+        hungPrompt.reject(new Error('late provider rejection'));
+        await analysis.catch(() => undefined);
+      }
+    });
+  });
+
+  it('closes OpenCode server and bridge when cancelled while provider instance creation settles', async () => {
+    await withBackendDataDir(async () => {
+      const sessionId = 'session-opencode-create-cancel';
+      const createStarted = createDeferred<void>();
+      const releaseCreate = createDeferred<void>();
+      const closeBridge = jest.fn(async () => undefined);
+      const closeServer = jest.fn(() => undefined);
+      const createOpencodeWithEnv = jest.fn(async () => {
+        createStarted.resolve();
+        await releaseCreate.promise;
+        return {
+          server: {url: 'http://127.0.0.1:4106', close: closeServer},
+          client: {
+            mcp: {
+              status: jest.fn(async () => ({data: {smartperfetto: {status: 'connected'}}})),
+            },
+            session: {
+              create: jest.fn(async () => ({data: {id: 'ses-opencode-create-cancel'}})),
+              prompt: jest.fn(async () => openCodeAssistantResponse('unexpected', 'unexpected')),
+            },
+          },
+        };
+      });
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: jest.fn(async () => ({createOpencodeWithEnv})),
+        bridgeStarter: jest.fn(async () => ({
+          port: 49002,
+          token: 'bridge-token',
+          close: closeBridge,
+          getDiagnostics: () => ({
+            connectionCount: 0,
+            requestCount: 0,
+            lastMethod: undefined,
+            lastError: undefined,
+          }),
+        })),
+      } as any);
+      mockOpenCodeScrollingPreparation(runtime, createCompletedScrollingPlanWithFinalPhase());
+
+      const analysis = runtime.analyze('分析滑动性能', sessionId, 'trace-opencode', {
+        analysisMode: 'full',
+      });
+      await createStarted.promise;
+      await runtime.abortSession(sessionId);
+      releaseCreate.resolve();
+
+      await expect(analysis).rejects.toThrow(/aborted|cancelled/i);
+      expect(createOpencodeWithEnv).toHaveBeenCalledTimes(1);
+      expect(closeServer).toHaveBeenCalledTimes(1);
+      expect(closeBridge).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('closes OpenCode server and bridge when cancelled during MCP readiness before ownership registration', async () => {
+    await withBackendDataDir(async () => {
+      const sessionId = 'session-opencode-readiness-cancel';
+      const readinessStarted = createDeferred<void>();
+      const releaseReadiness = createDeferred<void>();
+      const closeBridge = jest.fn(async () => undefined);
+      const closeServer = jest.fn(() => undefined);
+      const status = jest.fn(async () => {
+        readinessStarted.resolve();
+        await releaseReadiness.promise;
+        return {data: {smartperfetto: {status: 'connected'}}};
+      });
+      const createOpencodeWithEnv = jest.fn(async () => ({
+        server: {url: 'http://127.0.0.1:4106', close: closeServer},
+        client: {
+          mcp: {status},
+          session: {
+            create: jest.fn(async () => ({data: {id: 'ses-opencode-readiness-cancel'}})),
+            prompt: jest.fn(async () => openCodeAssistantResponse('unexpected', 'unexpected')),
+          },
+        },
+      }));
+      const runtime = new OpenCodeRuntime(createFakeRuntimeInput({
+        selection: {kind: OPENCODE_RUNTIME_KIND, source: 'env'},
+      }), {
+        env: {
+          SMARTPERFETTO_OPENCODE_MODEL_JSON:
+            '{"providerID":"smartperfetto","modelID":"test-model"}',
+        },
+        moduleLoader: jest.fn(async () => ({createOpencodeWithEnv})),
+        bridgeStarter: jest.fn(async () => ({
+          port: 49003,
+          token: 'bridge-token',
+          close: closeBridge,
+          getDiagnostics: () => ({
+            connectionCount: 0,
+            requestCount: 1,
+            lastMethod: 'mcp.status',
+            lastError: undefined,
+          }),
+        })),
+      } as any);
+      mockOpenCodeScrollingPreparation(runtime, createCompletedScrollingPlanWithFinalPhase());
+
+      const analysis = runtime.analyze('分析滑动性能', sessionId, 'trace-opencode', {
+        analysisMode: 'full',
+      });
+      await readinessStarted.promise;
+      await runtime.abortSession(sessionId);
+      releaseReadiness.resolve();
+
+      await expect(analysis).rejects.toThrow(/aborted|cancelled/i);
+      expect(createOpencodeWithEnv).toHaveBeenCalledTimes(1);
+      expect(status).toHaveBeenCalledTimes(1);
+      expect(closeServer).toHaveBeenCalledTimes(1);
+      expect(closeBridge).toHaveBeenCalledTimes(1);
     });
   });
 
