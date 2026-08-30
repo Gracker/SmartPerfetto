@@ -45,7 +45,11 @@ import {
 } from '../../../agentv3/claudeSystemPrompt';
 import { loadPromptTemplate, renderTemplate } from '../../../agentv3/strategyLoader';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
-import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
+import {
+  detectFocusApps,
+  focusAppTimeRangeFromSelection,
+  type FocusAppDetectionResult,
+} from '../../../agentv3/focusAppDetector';
 import { classifyScene, type SceneType } from '../../../agentv3/sceneClassifier';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {resolveEffectiveAnalysisMode} from '../../../services/effectiveAnalysisMode';
@@ -118,6 +122,7 @@ import {
 } from './mimoReasoningCompat';
 import { createOpenAIToolsFromMcpDefinitions } from './openAiToolAdapter';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
+import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {
   assessFinalResultComparisonIdentity,
   assessFinalResultQuality,
@@ -164,6 +169,14 @@ import {
 } from '../../analysisRunSpec';
 import {buildAdaptiveRoutingForModeDecision} from '../../adaptiveRoutingProjection';
 import type { RuntimeSelection } from '../../runtimeSelection';
+import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
+import {
+  createRuntimePerformanceRun,
+  runtimeOutcomeFromError,
+  type RuntimePerformanceOutcome,
+  type RuntimePerformanceRun,
+} from '../../runtimePerformance';
+import { OPENAI_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
 import { resolveRuntimeFinalReportSceneType } from '../../finalReportSceneResolution';
 import {reconcileDeliveredFinalReportPhase} from '../../finalReportPhaseReconciliation';
 import { buildFocusAppEvidencePayload } from '../../focusAppEvidence';
@@ -187,10 +200,13 @@ import {
   shouldUseTraceFactEvidenceOnlyQuickAnalysis,
 } from '../../quickTraceFactEvidence';
 import {
-  buildRuntimeQuickEvidenceDirectAnswer,
+  buildRuntimeQuickEvidenceAttempt,
+  selectReusableRuntimeQuickEvidenceAttempt,
   countRuntimeQuickEvidenceCitedRefs,
+  sanitizeRuntimeQuickEvidenceRoutingContext,
   type RuntimeQuickEvidenceCounts,
   type RuntimeQuickEvidenceDirectAnswer,
+  type RuntimeQuickEvidenceAttempt,
 } from '../../quickEvidenceDirectAnswer';
 import {
   buildQuickDirectAcknowledgementAnalysisResult,
@@ -781,6 +797,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionMap = new Map<string, OpenAISessionEntry>();
   private readonly activeAnalyses = new Set<string>();
   private readonly activeAbortHandles = new Map<string, Set<RuntimeAbortHandle>>();
+  private readonly executionGuard = new RuntimeExecutionGuard();
 
   private readonly runtimeSelection: RuntimeSelection;
 
@@ -842,7 +859,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     sessionMapKey: string;
     errorMessage: string;
     outputLanguage: OutputLanguage;
-  }): Promise<AnalysisResult> {
+  }): Promise<void> {
     this.forgetOpenAILastResponseId(params.sessionMapKey, params.errorMessage);
     this.emitUpdate({
       type: 'degraded',
@@ -858,8 +875,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       },
       timestamp: Date.now(),
     });
-    this.activeAnalyses.delete(params.sessionId);
-    return this.analyze(params.query, params.sessionId, params.traceId, params.options);
   }
 
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
@@ -888,10 +903,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       ...options,
       analysisMode: resolveEffectiveAnalysisMode(options.analysisMode, options),
     };
-    if (this.activeAnalyses.has(sessionId)) {
-      throw new Error(`Analysis already in progress for session ${sessionId}`);
-    }
-    this.activeAnalyses.add(sessionId);
+    const executionLease = this.executionGuard.begin({
+      runtime: OPENAI_AGENT_RUNTIME_KIND,
+      sessionId,
+      referenceTraceId: options.referenceTraceId,
+      runId: options.runId,
+    });
+    const runtimePerformance = createRuntimePerformanceRun(
+      options.runManifestAttributionSink,
+    );
+    let runtimePerformanceOutcome: RuntimePerformanceOutcome = 'ok';
 
     const startTime = Date.now();
     let accumulatedAnswer = '';
@@ -903,8 +924,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : resolvedConfig;
     const sceneType = classifyScene(query);
     const analysisAbortScope = new RuntimeAnalysisAbortScope();
+    const bridgeExecutionAbort = () => analysisAbortScope.abort();
+    if (executionLease.signal.aborted) {
+      bridgeExecutionAbort();
+    } else {
+      executionLease.signal.addEventListener('abort', bridgeExecutionAbort, { once: true });
+    }
     const unregisterAnalysisAbortHandle = this.registerAbortHandle(sessionId, analysisAbortScope);
     try {
+      executionLease.throwIfAborted();
       const modeClassification = await this.classifyModeForRequest(
         query,
         sessionId,
@@ -914,6 +942,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         config,
         analysisAbortScope.signal,
       );
+      executionLease.throwIfAborted();
       analysisAbortScope.throwIfAborted();
       const quickMode = modeClassification.quickMode;
       const inferReportedRounds = (visibleText?: string) => {
@@ -968,6 +997,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             enforcement: 'turn_cap',
           })
         : undefined;
+      runtimePerformance.finishClassification('ok');
 
       if (quickMode && quickBudget && modeClassification.quickAcknowledgementDirectAnswer) {
         analysisAbortScope.throwIfAborted();
@@ -995,6 +1025,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           previousTurnCount: previousTurns.length,
           quickMode,
         });
+        runtimePerformance.recordFirstOutput();
         emitQuickDirectAnswerEvents({
           emitUpdate: update => this.emitUpdate(update),
           result,
@@ -1006,8 +1037,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         return result;
       }
 
-      const directEvidenceAnswer = quickMode && quickBudget
-        ? await buildRuntimeQuickEvidenceDirectAnswer({
+      let quickEvidenceAttempt: RuntimeQuickEvidenceAttempt | undefined;
+      if (quickMode && quickBudget) {
+        const quickEvidencePhase = runtimePerformance.startPhase('quick_evidence');
+        try {
+          quickEvidenceAttempt = await buildRuntimeQuickEvidenceAttempt({
             query,
             traceId,
             packageName: options.packageName,
@@ -1019,10 +1053,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             quickTraceFactPreEvidence: modeClassification.quickTraceFactPreEvidence,
             quickScrollingTriagePreEvidence: modeClassification.quickScrollingTriagePreEvidence,
             emitUpdate: update => this.emitUpdate(update),
-          })
-        : undefined;
+          });
+          quickEvidencePhase.end('ok');
+        } catch (error) {
+          quickEvidencePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+          throw error;
+        }
+      }
       analysisAbortScope.throwIfAborted();
-      if (quickBudget && directEvidenceAnswer) {
+      if (quickBudget && quickEvidenceAttempt?.directAnswer) {
         return this.buildDirectQuickEvidenceResult({
           query,
           sessionId,
@@ -1034,8 +1073,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           previousTurns,
           analysisRunSpec,
           quickBudget,
-          directAnswer: directEvidenceAnswer.directAnswer,
-          evidenceCounts: directEvidenceAnswer.evidenceCounts,
+          directAnswer: quickEvidenceAttempt.directAnswer,
+          evidenceCounts: quickEvidenceAttempt.evidenceCounts,
+          runtimePerformance,
         });
       }
 
@@ -1049,7 +1089,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         skipQuickTracePreflightDetection: modeClassification.skipQuickTracePreflightDetection,
         quickProcessIdentityPreEvidence: modeClassification.quickProcessIdentityPreEvidence,
         quickTraceFactPreEvidence: modeClassification.quickTraceFactPreEvidence,
+        quickEvidenceAttempt: selectReusableRuntimeQuickEvidenceAttempt(quickEvidenceAttempt),
+        executionLease,
+        runtimePerformance,
       });
+      executionLease.throwIfAborted();
       analysisAbortScope.throwIfAborted();
       const resolveFinalReportSceneType = () => resolveRuntimeFinalReportSceneType({
         query,
@@ -1100,6 +1144,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           packageName: context.effectivePackageName,
           options,
         });
+        runtimePerformance.recordFirstOutput();
         emitQuickDirectAnswerEvents({
           emitUpdate: update => this.emitUpdate(update),
           result,
@@ -1114,7 +1159,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const promptPrefix = analysisRunSpec.traceContext.promptSection;
       const effectivePrompt = promptPrefix ? `${promptPrefix}\n\n${query}` : query;
       const sessionEntry = this.sessionMap.get(context.sessionMapKey);
-      const runInput = resolveOpenAIRunInput({
+      let runInput = resolveOpenAIRunInput({
         quickMode,
         config,
         sessionEntry,
@@ -1122,13 +1167,17 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         previousTurns: context.previousTurns,
         allowRemotePersistence: !analysisContextUsesPrivateKnowledge(options),
       });
-      const input = runInput.input;
       const selectedModel = quickMode ? config.lightModel : config.model;
 
       analysisAbortScope.throwIfAborted();
+      const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
       setTracingDisabled(true);
-      const provider = shouldUseMimoReasoningContentCompat(config)
-        ? new OpenAIProvider({
+      let provider: OpenAIProvider;
+      let runner: Runner;
+      let agent: Agent;
+      try {
+        provider = shouldUseMimoReasoningContentCompat(config)
+          ? new OpenAIProvider({
             openAIClient: new OpenAI({
               apiKey: config.apiKey,
               baseURL: config.baseURL,
@@ -1136,30 +1185,35 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             }),
             useResponses: false,
           })
-        : new OpenAIProvider({
+          : new OpenAIProvider({
             apiKey: config.apiKey,
             baseURL: config.baseURL,
             useResponses: config.protocol === 'responses',
           });
-      const runner = new Runner({
-        modelProvider: provider,
-        tracingDisabled: true,
-        traceIncludeSensitiveData: false,
-        workflowName: 'SmartPerfetto Analysis',
-        toolExecution: { maxFunctionToolConcurrency: 1 },
-      });
-      const agent = new Agent({
-        name: 'SmartPerfetto',
-        instructions: context.systemPrompt,
-        model: selectedModel,
-        tools: context.tools,
-        toolUseBehavior: 'run_llm_again',
-        modelSettings: buildOpenAIModelSettings(
-          config,
-          selectedModel,
-          !analysisContextUsesPrivateKnowledge(options),
-        ),
-      });
+        runner = new Runner({
+          modelProvider: provider,
+          tracingDisabled: true,
+          traceIncludeSensitiveData: false,
+          workflowName: 'SmartPerfetto Analysis',
+          toolExecution: { maxFunctionToolConcurrency: 1 },
+        });
+        agent = new Agent({
+          name: 'SmartPerfetto',
+          instructions: context.systemPrompt,
+          model: selectedModel,
+          tools: context.tools,
+          toolUseBehavior: 'run_llm_again',
+          modelSettings: buildOpenAIModelSettings(
+            config,
+            selectedModel,
+            !analysisContextUsesPrivateKnowledge(options),
+          ),
+        });
+        sdkStartPhase.end('ok');
+      } catch (error) {
+        sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+        throw error;
+      }
 
       let activeController: AbortController | undefined;
       const timeoutMs = quickMode
@@ -1199,8 +1253,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         },
       });
       let currentPreviousResponseId = runInput.previousResponseId;
+      for (;;) {
+      let currentInput: string | AgentInputItem[] = runInput.input;
       try {
-        let currentInput: string | AgentInputItem[] = input;
         let conclusion = '';
         let finalHistory: AgentInputItem[] | undefined;
         let finalLastResponseId: string | undefined;
@@ -1336,6 +1391,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
           let streamCompleted = false;
           try {
+            const providerPhase = runtimePerformance.startPhase('provider');
             try {
               stream = await Promise.race([
                 runStream(),
@@ -1354,6 +1410,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                       quickMode,
                       answerStreamFilter,
                       answerTextProjection,
+                      runtimePerformance,
                       toolInputsByTaskId,
                       tracePairContext: options.tracePairContext,
                       onToolCalled: () => {
@@ -1384,6 +1441,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 } finally {
                   const projectedTail = answerTextProjection?.flush() ?? '';
                   if (projectedTail) {
+                    runtimePerformance.recordFirstOutput();
                     this.emitUpdate({
                       type: 'answer_token',
                       content: {token: projectedTail},
@@ -1397,7 +1455,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 providerIdleTimeout.promise,
                 requestTimeout.promise,
               ]);
+              providerPhase.end(streamCompleted ? 'ok' : timedOut ? 'cancelled' : 'ok');
             } catch (error) {
+              providerPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
               if (timedOut) {
                 markTimeoutPartial(this.getPlanCompletionStatus(sessionId, quickMode));
                 break;
@@ -1499,7 +1559,13 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               sceneType: finalReportSceneType,
               comparisonIdentity: context.comparisonIdentity,
             });
-            const shouldRequestFinalReport = this.shouldRequestFinalReportAfterPlanComplete({
+            const canRequestFinalReportAfterPlanComplete =
+              !quickMode &&
+              planStatus.complete &&
+              !timedOut &&
+              finalReportContinuations < OPENAI_MAX_FINAL_REPORT_CONTINUATIONS;
+            const shouldRequestFinalReport =
+              this.shouldRequestFinalReportAfterPlanComplete({
               sessionId,
               quickMode,
               planStatus,
@@ -1512,7 +1578,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               sceneType: finalReportSceneType,
               comparisonIdentity: context.comparisonIdentity,
               qualityIssue: finalReportQualityIssue,
-            });
+              }) ||
+              (canRequestFinalReportAfterPlanComplete && Boolean(finalReportQualityIssue));
             if (shouldRequestFinalReport && streamHistory.length > 0 && !streamHistoryWithinBudget) {
               markHistoryLimitPartial();
               break;
@@ -1693,7 +1760,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               allowPersistentLearning: !analysisContextUsesPrivateKnowledge(options),
             });
           };
-          let verification = await verifyCurrentConclusion();
+          const verificationPhase = runtimePerformance.startPhase('verification');
+          let verification: Awaited<ReturnType<typeof verifyCurrentConclusion>>;
+          try {
+            verification = await verifyCurrentConclusion();
+            verificationPhase.end('ok');
+          } catch (error) {
+            verificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+            throw error;
+          }
           analysisAbortScope.throwIfAborted();
           let verificationIssue = [
             ...verification.heuristicIssues,
@@ -1840,11 +1915,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           },
         );
       } catch (error) {
-        requestTimeout.clear();
-        await provider.close().catch(() => undefined);
-        analysisAbortScope.throwIfAborted();
         if (currentPreviousResponseId && isMissingOpenAIPreviousResponseError(error, currentPreviousResponseId)) {
-          return await this.retryWithoutPreviousResponse({
+          await this.retryWithoutPreviousResponse({
             query,
             sessionId,
             traceId,
@@ -1853,7 +1925,22 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             errorMessage: formatOpenAIError(error),
             outputLanguage: config.outputLanguage,
           });
-        } else if (error instanceof MaxTurnsExceededError) {
+          runInput = resolveOpenAIRunInput({
+            quickMode,
+            config,
+            sessionEntry: this.sessionMap.get(context.sessionMapKey),
+            effectivePrompt,
+            previousTurns: context.previousTurns,
+            allowRemotePersistence: !analysisContextUsesPrivateKnowledge(options),
+          });
+          currentInput = runInput.input;
+          currentPreviousResponseId = runInput.previousResponseId;
+          continue;
+        }
+        requestTimeout.clear();
+        await provider.close().catch(() => undefined);
+        analysisAbortScope.throwIfAborted();
+        if (error instanceof MaxTurnsExceededError) {
           const reportedRounds = inferReportedRounds();
           return this.recordMaxTurnsPartialResult({
             error,
@@ -1895,7 +1982,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         }
         throw error;
       }
+      }
     } catch (error) {
+      runtimePerformanceOutcome = runtimeOutcomeFromError(
+        error,
+        executionLease.signal,
+      );
       analysisAbortScope.throwIfAborted();
       const message = compactProviderErrorMessage(error);
       this.emitUpdate({
@@ -1920,12 +2012,21 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         terminationMessage: message,
       };
     } finally {
-      unregisterAnalysisAbortHandle();
-      this.activeAnalyses.delete(sessionId);
+      const finalizationPhase = runtimePerformance.startPhase('finalization');
+      try {
+        executionLease.signal.removeEventListener('abort', bridgeExecutionAbort);
+        unregisterAnalysisAbortHandle();
+        this.activeAnalyses.delete(sessionId);
+        executionLease.settle();
+      } finally {
+        finalizationPhase.end(runtimePerformanceOutcome);
+        runtimePerformance.finalize(runtimePerformanceOutcome);
+      }
     }
   }
 
   reset(): void {
+    this.executionGuard.clear();
     this.abortAllSessions();
     this.architectureCache.clear();
     this.vendorCache.clear();
@@ -1957,6 +2058,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   }
 
   abortSession(sessionId: string): void {
+    void this.executionGuard.abortSession(sessionId);
     const handles = this.activeAbortHandles.get(sessionId);
     if (!handles) return;
     for (const handle of Array.from(handles)) {
@@ -2140,15 +2242,72 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       skipQuickTracePreflightDetection: boolean;
       quickProcessIdentityPreEvidence?: boolean;
       quickTraceFactPreEvidence?: boolean;
+      quickEvidenceAttempt?: RuntimeQuickEvidenceAttempt;
+      executionLease?: RuntimeExecutionLease;
+      runtimePerformance?: RuntimePerformanceRun;
     },
   ) {
     const { config, sceneType, lightweight, analysisRunSpec, sessionContext } = runtime;
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    let effectivePackageName = options.packageName;
+    const reusableQuickEvidenceAttempt = runtime.quickEvidenceAttempt;
+    const executionLease = runtime.executionLease;
+    const runtimePerformance = runtime.runtimePerformance;
+    const widenedPreflightDagAdmitted = isRuntimeCandidateAdmitted('task6');
+    const startedPreflights: Promise<unknown>[] = [];
+    const trackPreflight = <T>(promise: Promise<T>): Promise<T> => {
+      startedPreflights.push(promise.then(
+        () => undefined,
+        () => undefined,
+      ));
+      return promise;
+    };
+    let serializedPreflightTail: Promise<void> = Promise.resolve();
+    const schedulePreflight = <T>(work: () => Promise<T>): Promise<T> => {
+      const promise = widenedPreflightDagAdmitted
+        ? Promise.resolve().then(work)
+        : serializedPreflightTail.then(work);
+      if (!widenedPreflightDagAdmitted) {
+        serializedPreflightTail = promise.then(
+          () => undefined,
+          () => undefined,
+        );
+      }
+      return trackPreflight(promise);
+    };
+    const settleStartedPreflights = async (): Promise<void> => {
+      await Promise.allSettled(startedPreflights);
+    };
+    const throwIfPreflightAborted = async (): Promise<void> => {
+      if (!executionLease?.signal.aborted) return;
+      await settleStartedPreflights();
+      executionLease.throwIfAborted();
+    };
+    const runPreflightPhase = <T>(
+      phaseName: Parameters<RuntimePerformanceRun['startPhase']>[0],
+      work: () => Promise<T>,
+    ): Promise<T> => {
+      const phase = runtimePerformance?.startPhase(phaseName);
+      return schedulePreflight(async () => {
+        try {
+          executionLease?.throwIfAborted();
+          const value = await work();
+          phase?.end(executionLease?.signal.aborted ? 'cancelled' : 'ok');
+          return value;
+        } catch (error) {
+          phase?.end(runtimeOutcomeFromError(error, executionLease?.signal));
+          throw error;
+        }
+      });
+    };
+    let effectivePackageName = options.packageName ?? reusableQuickEvidenceAttempt?.effectivePackageName;
 
     const skipQuickTracePreflight = lightweight && runtime.skipQuickTracePreflightDetection;
-    const quickProcessIdentityPreEvidence = lightweight && !!runtime.quickProcessIdentityPreEvidence;
-    const quickTraceFactPreEvidence = lightweight && !!runtime.quickTraceFactPreEvidence;
+    const quickProcessIdentityPreEvidence = lightweight
+      && !!runtime.quickProcessIdentityPreEvidence
+      && !reusableQuickEvidenceAttempt;
+    const quickTraceFactPreEvidence = lightweight
+      && !!runtime.quickTraceFactPreEvidence
+      && !reusableQuickEvidenceAttempt;
     const skipFocusDetectionForQuickTraceFact = !!effectivePackageName
       ? (quickProcessIdentityPreEvidence || quickTraceFactPreEvidence)
       : quickTraceFactPreEvidence
@@ -2156,11 +2315,25 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         && shouldSkipFocusDetectionForQuickTraceFactEvidence(query);
     const skipFocusDetection =
       skipQuickTracePreflight || skipFocusDetectionForQuickTraceFact;
-    const focusResult = skipFocusDetection
-      ? { apps: [], primaryApp: undefined, method: 'none' as const }
-      : await detectFocusApps(this.traceProcessorService, traceId, {
-          timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        });
+    const selectionTimeRange = focusAppTimeRangeFromSelection(options.selectionContext);
+    const focusPhase = runtimePerformance?.startPhase('focus');
+    let focusResult: FocusAppDetectionResult;
+    try {
+      focusResult = reusableQuickEvidenceAttempt?.focusResult ?? (skipFocusDetection
+        ? {
+            apps: [],
+            primaryApp: undefined,
+            method: 'none' as const,
+            timeRange: selectionTimeRange,
+          }
+        : await detectFocusApps(this.traceProcessorService, traceId, {
+            timeRange: selectionTimeRange,
+          }));
+      focusPhase?.end(executionLease?.signal.aborted ? 'cancelled' : 'ok');
+    } catch (error) {
+      focusPhase?.end(runtimeOutcomeFromError(error, executionLease?.signal));
+      throw error;
+    }
     if (!effectivePackageName && focusResult.primaryApp) {
       effectivePackageName = focusResult.primaryApp;
       this.emitUpdate({
@@ -2180,7 +2353,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const quickProcessIdentityExecutor = quickProcessIdentityPreEvidence
       ? createQuickProcessIdentitySkillExecutor(this.traceProcessorService)
       : undefined;
-    const focusEvidencePayload = lightweight && !skipFocusDetection
+    const focusEvidencePayload = lightweight && !skipFocusDetection && !reusableQuickEvidenceAttempt
       ? buildFocusAppEvidencePayload(focusResult, traceId, 'current', config.outputLanguage)
       : undefined;
     if (focusEvidencePayload?.envelope) {
@@ -2213,18 +2386,56 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : Promise.resolve(undefined);
     const architecturePromise = skipQuickTracePreflight
       ? Promise.resolve(undefined)
-      : this.detectArchitecture(traceId, effectivePackageName);
+      : runPreflightPhase('architecture', () => this.detectArchitecture(traceId, effectivePackageName));
     const detectedVendorPromise = skipQuickTracePreflight
       ? Promise.resolve(null)
-      : this.detectVendor(traceId);
-    const traceCompletenessPromise = architecturePromise
-      .then(architecture => lightweight ? undefined : this.detectCompleteness(traceId, architecture));
+      : schedulePreflight(() => {
+          executionLease?.throwIfAborted();
+          return this.detectVendor(traceId);
+        });
+    const traceCompletenessPromise = lightweight
+      ? Promise.resolve(undefined)
+      : runPreflightPhase('completeness', async () => this.detectCompleteness(
+          traceId,
+          await architecturePromise,
+        ));
+    const referenceTraceId = options.referenceTraceId;
+    const fullModeComparisonContextPromise = referenceTraceId && !lightweight
+      ? runPreflightPhase('comparison', () => this.buildComparisonContext(traceId, referenceTraceId, config.outputLanguage, options.tracePairContext))
+      : undefined;
+    const fullModeSkillRegistryReady = !lightweight
+      ? runPreflightPhase('skill_registry', async () => {
+          await ensureSkillRegistryInitialized();
+        })
+      : undefined;
+    const fullModeKnowledgeBaseContextPromise = !lightweight
+      ? runPreflightPhase('knowledge', async () => {
+          try {
+            const kb = await getExtendedKnowledgeBase();
+            return kb.getContextForAI(query, 8);
+          } catch {
+            return undefined;
+          }
+        })
+      : undefined;
 
-    let [architecture, detectedVendor, traceCompleteness] = await Promise.all([
-      architecturePromise,
-      detectedVendorPromise,
-      traceCompletenessPromise,
-    ]);
+    let architecture: Awaited<ReturnType<OpenAIRuntime['detectArchitecture']>>;
+    let detectedVendor: Awaited<ReturnType<OpenAIRuntime['detectVendor']>>;
+    let traceCompleteness: Awaited<ReturnType<OpenAIRuntime['detectCompleteness']>>;
+    try {
+      [architecture, detectedVendor, traceCompleteness] = await Promise.all([
+        architecturePromise,
+        detectedVendorPromise,
+        traceCompletenessPromise,
+      ]);
+    } catch (error) {
+      if (executionLease?.signal.aborted) {
+        await settleStartedPreflights();
+        executionLease.throwIfAborted();
+      }
+      throw error;
+    }
+    await throwIfPreflightAborted();
 
     const previousTurns = runtime.previousTurns;
     let traceFeatures: ReturnType<typeof extractTraceFeatures> | undefined;
@@ -2283,6 +2494,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const directQuickAnswer = directProcessIdentityAnswer ?? directTraceFactAnswer;
 
     if (directQuickAnswer) {
+      await throwIfPreflightAborted();
+      executionLease?.throwIfAborted();
       const { hypotheses } = this.resetAnalysisSessionState(sessionId);
       return {
         systemPrompt: '',
@@ -2320,6 +2533,22 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     }
     sqlErrors ??= [];
 
+    const shouldBuildComparisonContext = !!referenceTraceId && (!lightweight || !useEvidenceOnlyQuick);
+    const [comparisonContext, knowledgeBaseContext] = await Promise.all([
+      shouldBuildComparisonContext
+        ? (fullModeComparisonContextPromise
+            ?? this.buildComparisonContext(traceId, referenceTraceId!, config.outputLanguage, options.tracePairContext))
+        : Promise.resolve(undefined),
+      !lightweight
+        ? (fullModeKnowledgeBaseContextPromise ?? Promise.resolve(undefined))
+        : Promise.resolve(undefined),
+    ]);
+    if (!useEvidenceOnlyQuick) {
+      await (fullModeSkillRegistryReady ?? Promise.resolve());
+    }
+    await throwIfPreflightAborted();
+    executionLease?.throwIfAborted();
+
     const {
       artifactStore,
       notes,
@@ -2334,23 +2563,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : undefined;
     const entityStore = sessionContext.getEntityStore();
     const entityContext = this.buildEntityContext(entityStore);
-    const referenceTraceId = options.referenceTraceId;
-    const shouldBuildComparisonContext = !!referenceTraceId && (!lightweight || !useEvidenceOnlyQuick);
-    const comparisonContext = shouldBuildComparisonContext
-      ? await this.buildComparisonContext(traceId, referenceTraceId, config.outputLanguage, options.tracePairContext)
-      : undefined;
     const skillRegistryReady = !useEvidenceOnlyQuick
-      ? ensureSkillRegistryInitialized()
+      ? (fullModeSkillRegistryReady ?? ensureSkillRegistryInitialized())
       : undefined;
-    let knowledgeBaseContext: string | undefined;
-    if (!lightweight) {
-      try {
-        const kb = await getExtendedKnowledgeBase();
-        knowledgeBaseContext = kb.getContextForAI(query, 8);
-      } catch {
-        // Optional context only.
-      }
-    }
     const traceInfo = lightweight ? undefined : this.traceProcessorService.getTrace(traceId);
 
     if (skipQuickTracePreflight && !useEvidenceOnlyQuick) {
@@ -2456,6 +2671,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           focusMethod: promptFocusResult.method,
           selectionContext: options.selectionContext,
           runtimeEvidenceContext: joinRuntimeEvidenceContexts(
+            sanitizeRuntimeQuickEvidenceRoutingContext(
+              reusableQuickEvidenceAttempt?.runtimeEvidenceContext,
+              config.outputLanguage,
+            ),
             processIdentityEvidence?.promptContext,
             traceFactEvidence?.promptContext,
           ),
@@ -3410,6 +3629,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       quickMode: boolean;
       answerStreamFilter: OpenAiReasoningFilterState;
       answerTextProjection?: CodeAwareStreamingTextProjection;
+      runtimePerformance?: RuntimePerformanceRun;
       toolInputsByTaskId: Map<string, { toolName: string; args: Record<string, unknown> }>;
       tracePairContext?: TracePairContext;
       onToolCalled?: () => void;
@@ -3428,6 +3648,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         if (!delta) return '';
         const projected = streamContext.answerTextProjection?.write(delta) ?? delta;
         if (projected) {
+          streamContext.runtimePerformance?.recordFirstOutput();
           this.emitUpdate({type: 'answer_token', content: {token: projected}, timestamp: now});
         }
         return delta;
@@ -3512,6 +3733,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         ? rawItem.content.map((c: any) => c.text).filter(Boolean).join('\n')
         : undefined;
       if (text) {
+        streamContext.runtimePerformance?.recordFirstOutput();
         this.emitUpdate({
           type: 'thought',
           content: {thought: streamContext.answerTextProjection?.projectComplete(text) ?? text},
@@ -3590,6 +3812,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     quickBudget: ReturnType<typeof resolveQuickTurnBudget>;
     directAnswer: RuntimeQuickEvidenceDirectAnswer;
     evidenceCounts: RuntimeQuickEvidenceCounts;
+    runtimePerformance: RuntimePerformanceRun;
   }): AnalysisResult {
     const result = buildQuickDirectEvidenceAnalysisResult({
       query: input.query,
@@ -3617,6 +3840,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       previousTurnCount: input.previousTurns.length,
       quickMode: true,
     });
+    input.runtimePerformance.recordFirstOutput();
     emitQuickDirectAnswerEvents({
       emitUpdate: update => this.emitUpdate(update),
       result,

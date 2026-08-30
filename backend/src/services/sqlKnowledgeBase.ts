@@ -1256,13 +1256,26 @@ export function createExtendedKnowledgeBase(perfettoPath = DEFAULT_PERFETTO_PATH
 
 // Singleton instance
 let extendedInstance: ExtendedSqlKnowledgeBase | null = null;
+let extendedInstanceInit: Promise<ExtendedSqlKnowledgeBase> | null = null;
 
 export async function getExtendedKnowledgeBase(): Promise<ExtendedSqlKnowledgeBase> {
-  if (!extendedInstance) {
-    extendedInstance = createExtendedKnowledgeBase();
-    await extendedInstance.initialize();
+  if (extendedInstance) return extendedInstance;
+
+  if (!extendedInstanceInit) {
+    const instance = createExtendedKnowledgeBase();
+    extendedInstanceInit = (async () => {
+      try {
+        await instance.initialize();
+        extendedInstance = instance;
+        return instance;
+      } catch (error) {
+        extendedInstanceInit = null;
+        throw error;
+      }
+    })();
   }
-  return extendedInstance;
+
+  return extendedInstanceInit;
 }
 
 export default SqlKnowledgeBase;

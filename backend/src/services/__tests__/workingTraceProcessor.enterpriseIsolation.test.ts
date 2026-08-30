@@ -26,12 +26,28 @@ import {
   TraceProcessorFactory,
   WorkingTraceProcessor,
 } from '../workingTraceProcessor';
+import {
+  TraceProcessorService,
+  type TraceProcessor,
+} from '../traceProcessorService';
 
 function okResult(rows: unknown[][] = []): QueryResult {
   return {
     columns: rows[0]?.map((_, index) => `c${index}`) ?? [],
     rows,
     durationMs: 1,
+  };
+}
+
+function fakeServiceProcessor(id: string, traceId: string): TraceProcessor {
+  return {
+    id,
+    traceId,
+    status: 'ready',
+    activeQueries: 0,
+    query: jest.fn(async () => okResult([[id]])),
+    queryRaw: jest.fn(async (body: Buffer) => Buffer.from(`${id}:${body.toString('utf8')}`)),
+    destroy: jest.fn(),
   };
 }
 
@@ -263,6 +279,63 @@ describe('WorkingTraceProcessor enterprise isolation anchors', () => {
       await expect(TraceProcessorFactory.create('trace-admission', tracePath))
         .rejects.toMatchObject({ name: 'TraceProcessorAdmissionError' });
       expect(TraceProcessorFactory.get('trace-admission')).toBeUndefined();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('shares failed creation for one lease key while an independent key can install a processor', async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-tp-create-failure-'));
+    try {
+      const traceId = 'trace-create-failure';
+      const tracePath = path.join(tmpDir, `${traceId}.trace`);
+      await fs.writeFile(tracePath, 'trace bytes');
+
+      const service = new TraceProcessorService(tmpDir);
+      await service.initializeUploadWithId(traceId, 'trace-create-failure.trace', 11, tracePath);
+
+      const failingGate = deferred<TraceProcessor>();
+      const independent = fakeServiceProcessor('independent-processor', traceId);
+      const replacement = fakeServiceProcessor('replacement-processor', traceId);
+      const createSpy = jest
+        .spyOn(TraceProcessorFactory, 'create')
+        .mockImplementation(async (_traceId, _tracePath, options) => {
+          if (options?.processorKey === `${traceId}:lease:lease-independent`) {
+            return independent as any;
+          }
+          if (options?.processorKey === `${traceId}:lease:lease-failing`) {
+            return failingGate.promise as Promise<any>;
+          }
+          throw new Error(`unexpected processor key ${options?.processorKey}`);
+        });
+
+      const firstFailure = service.ensureProcessorForLease(traceId, 'lease-failing', 'isolated');
+      const secondFailure = service.ensureProcessorForLease(traceId, 'lease-failing', 'isolated');
+      const independentCreate = service.ensureProcessorForLease(traceId, 'lease-independent', 'isolated');
+
+      await flushPromises();
+      expect(createSpy).toHaveBeenCalledTimes(2);
+      await expect(independentCreate).resolves.toBe(independent);
+
+      failingGate.reject(new Error('spawn failed'));
+      await expect(firstFailure).rejects.toThrow('spawn failed');
+      await expect(secondFailure).rejects.toThrow('spawn failed');
+
+      createSpy.mockImplementation(async (_traceId, _tracePath, options) => {
+        if (options?.processorKey === `${traceId}:lease:lease-failing`) {
+          return replacement as any;
+        }
+        if (options?.processorKey === `${traceId}:lease:lease-independent`) {
+          return independent as any;
+        }
+        throw new Error(`unexpected processor key ${options?.processorKey}`);
+      });
+
+      await expect(service.ensureProcessorForLease(traceId, 'lease-failing', 'isolated'))
+        .resolves.toBe(replacement);
+
+      expect((service as any).processors.get(`${traceId}:lease:lease-failing`)).toBe(replacement);
+      expect((service as any).processors.get(`${traceId}:lease:lease-independent`)).toBe(independent);
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }

@@ -17,16 +17,38 @@ import {SECRET_STORE_MASTER_KEY_ENV} from '../../services/providerManager/localS
 import { saveClaudeSessionMapToRuntimeSnapshots } from '../../services/runtimeSnapshotStore';
 import type { TraceProcessorService } from '../../services/traceProcessorService';
 import * as quickEvidenceDirectAnswer from '../../agentRuntime/quickEvidenceDirectAnswer';
+import * as runtimePromptContext from '../../agentRuntime/runtimePromptContext';
+import {createRuntimePerformanceRecorder, createRuntimePerformanceRun} from '../../agentRuntime/runtimePerformance';
 import {evaluationRuntimeCapabilities} from '../../services/selfEvolution/evaluationRuntimeCapabilities';
+import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
+import * as skillLoader from '../../services/skillEngine/skillLoader';
+import * as skillAnalysisAdapter from '../../services/skillEngine/skillAnalysisAdapter';
+import {
+  withEffectiveRuntimeRegistrySnapshot,
+  type EffectiveRuntimeRegistrySnapshot,
+} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {
   clearCodeAwareOutputGuards,
   registerCodeAwareCanary,
 } from '../../services/security/codeAwareOutputRegistry';
+import * as focusAppDetector from '../focusAppDetector';
+import * as architectureDetector from '../../agent/detectors/architectureDetector';
+import * as traceCompletenessProber from '../traceCompletenessProber';
 import {
   snapshotEvaluationUsageReceipt,
   withEvaluationTelemetry,
 } from '../../services/selfEvolution/evaluationTelemetry';
 import { ClaudeRuntime, __testing } from '../claudeRuntime';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+
+const mockClaudeVerifierVerifyConclusion = jest.fn();
+jest.mock('../../agentRuntime/engines/claude/claudeVerifier', () => {
+  const actual = jest.requireActual('../../agentRuntime/engines/claude/claudeVerifier') as any;
+  return {
+    ...actual,
+    verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
+  };
+});
 
 const claudeSdkMock = require('@anthropic-ai/claude-agent-sdk') as {
   __setQueryImplementation: (impl: (params: any) => AsyncIterable<any>) => void;
@@ -43,6 +65,7 @@ const originalEnv = {
   secretStoreMasterKey: process.env[SECRET_STORE_MASTER_KEY_ENV],
   precompactThreshold: process.env.CLAUDE_PRECOMPACT_THRESHOLD,
   precompactWarnEnabled: process.env.CLAUDE_PRECOMPACT_WARN_ENABLED,
+  admittedRuntimeCandidates: process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES,
 };
 
 let tmpDir: string | undefined;
@@ -68,7 +91,87 @@ function runtimeSnapshotCount(): number {
   }
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function createNoopAttributionSink(
+  runtimePerformanceRecorder = createRuntimePerformanceRecorder(),
+): RunManifestAttributionSink {
+  return {
+    identity: {
+      runId: 'run-claude-test',
+      sessionId: 'session-claude',
+      scope: {
+        tenantId: 'tenant-test',
+        workspaceId: 'workspace-test',
+      },
+    },
+    runtimePerformanceRecorder,
+    recordScene: jest.fn(),
+    recordRuntime: jest.fn(),
+    recordMode: jest.fn(),
+    recordAdaptiveRouting: jest.fn(),
+    recordCapabilityManifest: jest.fn(),
+    recordSkillRegistry: jest.fn(),
+    startSkillInvocation: jest.fn(() => 'skill-invocation-test'),
+    finishSkillInvocation: jest.fn(),
+    recordUnknownSkillInvocation: jest.fn(),
+    recordSqlStatement: jest.fn(),
+    recordPromptTemplate: jest.fn(),
+    recordInjection: jest.fn(),
+    recordToolAllowlist: jest.fn(),
+    recordTurn: jest.fn(),
+  };
+}
+
+function createEffectiveRuntimeRegistrySnapshot(): EffectiveRuntimeRegistrySnapshot {
+  const skillRegistry = {
+    registryFingerprint: 'registry-test',
+    overlayGeneration: 'overlay-test',
+    isInitialized: () => true as const,
+    getSkill: () => undefined,
+    getAllSkills: () => [],
+    getFragmentCache: () => new Map<string, string>(),
+    getSkillOrigin: () => undefined,
+    getAppliedOverlayIds: () => [],
+    getVendorOverride: () => undefined,
+    getVendorOverridesForSkill: () => [],
+    getVendorOverrideLoadIssues: () => [],
+    findMatchingSkill: () => undefined,
+  };
+  return {
+    scope: {tenantId: 'tenant-test', workspaceId: 'workspace-test'},
+    baseSkillRegistryFingerprint: 'base-skills-test',
+    baseStrategyRegistryFingerprint: 'base-strategies-test',
+    overlayGeneration: 'overlay-test',
+    skillRegistry,
+    strategyRegistry: {
+      registryFingerprint: 'strategy-registry-test',
+      overlayGeneration: 'overlay-test',
+      getStrategy: () => undefined,
+      getAllStrategies: () => [],
+    },
+    skillNotes: {
+      registryFingerprint: 'skill-notes-test',
+      getSkillNotes: () => [],
+      getSkillIds: () => [],
+    },
+  };
+}
+
 beforeEach(async () => {
+  const actualVerifier = jest.requireActual('../../agentRuntime/engines/claude/claudeVerifier') as any;
+  mockClaudeVerifierVerifyConclusion.mockReset();
+  mockClaudeVerifierVerifyConclusion.mockImplementation((...args: unknown[]) => (
+    actualVerifier.verifyConclusion(...args)
+  ));
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-claude-runtime-snapshot-'));
   dbPath = path.join(tmpDir, 'enterprise.sqlite');
   process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
@@ -98,6 +201,10 @@ afterEach(async () => {
   restoreEnvValue(SECRET_STORE_MASTER_KEY_ENV, originalEnv.secretStoreMasterKey);
   restoreEnvValue('CLAUDE_PRECOMPACT_THRESHOLD', originalEnv.precompactThreshold);
   restoreEnvValue('CLAUDE_PRECOMPACT_WARN_ENABLED', originalEnv.precompactWarnEnabled);
+  restoreEnvValue(
+    'SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES',
+    originalEnv.admittedRuntimeCandidates,
+  );
   resetProviderService();
   if (tmpDir) {
     await fs.rm(tmpDir, { recursive: true, force: true });
@@ -1273,7 +1380,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   it('skips architecture preflight when shared quick direct evidence answers', async () => {
     const directEvidence = jest.spyOn(
       quickEvidenceDirectAnswer,
-      'buildRuntimeQuickEvidenceDirectAnswer',
+      'buildRuntimeQuickEvidenceAttempt',
     );
     directEvidence.mockImplementation(async input => {
       input.emitUpdate({
@@ -1345,6 +1452,10 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
             },
           },
         },
+        focusResult: {
+          apps: [],
+          method: 'none',
+        },
         effectivePackageName: 'com.example.app',
         evidenceCounts: {
           currentRunDataEnvelopes: 1,
@@ -1402,7 +1513,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   it('keeps Claude mixed trace-fact plus scrolling quick evidence in the shared direct builder', async () => {
     const directEvidence = jest.spyOn(
       quickEvidenceDirectAnswer,
-      'buildRuntimeQuickEvidenceDirectAnswer',
+      'buildRuntimeQuickEvidenceAttempt',
     );
     directEvidence.mockImplementation(async input => {
       expect(input.quickTraceFactPreEvidence).toBe(true);
@@ -1451,6 +1562,10 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
               claimVerificationScope: 'explicit_claims',
             },
           },
+        },
+        focusResult: {
+          apps: [],
+          method: 'none',
         },
         evidenceCounts: {
           currentRunDataEnvelopes: 2,
@@ -1559,6 +1674,163 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(call.options.systemPrompt).toContain('结束时间:** 200 ns');
   });
 
+  it('reuses real quick-evidence attempt state on Claude fallback without publishing pre-model evidence', async () => {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task4';
+    const updates: Array<{ type?: string; content?: unknown }> = [];
+    const focusSqlKinds: string[] = [];
+    const traceFactSqlKinds: string[] = [];
+    let now = 0;
+    const traceProcessor = {
+      query: jest.fn(async (_traceId: string, sql: string) => {
+        const fromFocusDetector = new Error().stack?.includes('focusAppDetector') === true;
+        if (
+          fromFocusDetector &&
+          sql.includes('android_battery_stats_event_slices') &&
+          sql.includes('GROUP BY str_value')
+        ) {
+          focusSqlKinds.push('battery');
+          now = 5;
+          return {
+            columns: ['package_name', 'total_duration_ns', 'switch_count'],
+            rows: [],
+            durationMs: 1,
+          };
+        }
+        if (
+          fromFocusDetector &&
+          sql.includes('android_oom_adj_intervals') &&
+          sql.includes('WITH foreground_intervals')
+        ) {
+          focusSqlKinds.push('oom_adj');
+          now = 10;
+          return {
+            columns: ['package_name', 'total_duration_ns', 'switch_count'],
+            rows: [],
+            durationMs: 1,
+          };
+        }
+        if (sql.includes('runtime_frame_metrics')) {
+          traceFactSqlKinds.push('runtime_frame_metrics');
+          now = 20;
+          return {
+            columns: [
+              'package_name',
+              'process_names',
+              'upid_count',
+              'total_frames',
+              'window_start_ns',
+              'window_end_ns',
+              'duration_s',
+              'fps',
+              'source_table',
+            ],
+            rows: [[
+              'com.frame.app',
+              'com.frame.app',
+              1,
+              120,
+              100,
+              200,
+              0.0000001,
+              58,
+              'actual_frame_timeline_slice',
+            ]],
+            durationMs: 1,
+          };
+        }
+        if (
+          fromFocusDetector &&
+          sql.includes('actual_frame_timeline_slice') &&
+          sql.includes('WITH frame_packages')
+        ) {
+          focusSqlKinds.push('frame_timeline');
+          now = 15;
+          return {
+            columns: ['package_name', 'total_duration_ns', 'frame_count'],
+            rows: [['com.frame.app', 1_250_000_000, 3]],
+            durationMs: 1,
+          };
+        }
+        return { columns: [], rows: [], durationMs: 1 };
+      }),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    runtime.on('update', update => updates.push(update));
+    (runtime as any).architectureCache.set('trace-claude-reused-quick-attempt', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      expect(updates.map(update => update.type)).not.toContain('data');
+      expect(updates.map(update => update.type)).not.toContain('conclusion');
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'quick-reused-sdk-session',
+        num_turns: 1,
+        result: '## Final Report\nfallback',
+      };
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder({now: () => now});
+
+    try {
+      const result = await withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze(
+          '应用包名和 FPS 是多少？',
+          'session-claude-reused-quick-attempt',
+          'trace-claude-reused-quick-attempt',
+          {
+            analysisMode: 'fast',
+            runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+          },
+        ),
+      );
+
+      expect(focusSqlKinds).toEqual(['battery', 'oom_adj', 'frame_timeline']);
+      expect(traceFactSqlKinds).toEqual(['runtime_frame_metrics']);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+      const [call] = claudeSdkMock.__getQueryCalls();
+      expect(call.options.systemPrompt).toContain('com.frame.app');
+      expect(call.options.systemPrompt).toContain('非引用运行时路由上下文');
+      expect(call.options.systemPrompt).toContain('frame_metrics');
+      expect(call.options.systemPrompt).toContain('| fps |');
+      expect(call.options.systemPrompt).not.toContain('data:runtime_trace_fact');
+      const routingContext = call.options.systemPrompt.slice(
+        call.options.systemPrompt.indexOf('非引用运行时路由上下文'),
+      );
+      expect(routingContext).not.toContain('evidence_ref_id');
+      expect(routingContext).not.toContain('source_tool_call_id');
+      expect(routingContext).not.toContain('evidenceRefId');
+      expect(routingContext).not.toContain('sourceToolCallId');
+      expect(routingContext).not.toContain('Current Trace Runtime Evidence');
+      expect(result.conclusion).toContain('## Final Report');
+      const receipt = runtimePerformanceRecorder.seal();
+      expect(receipt.phases.filter(phase => phase.name === 'focus')).toHaveLength(1);
+      const focusPhase = receipt.phases.find(phase => phase.name === 'focus');
+      const classificationPhase = receipt.phases.find(phase => phase.name === 'classification');
+      expect(focusPhase).toBeDefined();
+      expect(classificationPhase).toBeDefined();
+      expect(focusPhase!.startOffsetMs).toBeLessThanOrEqual(
+        classificationPhase!.startOffsetMs + classificationPhase!.durationMs,
+      );
+      expect(focusPhase!.startOffsetMs + focusPhase!.durationMs).toBeGreaterThan(
+        classificationPhase!.startOffsetMs + classificationPhase!.durationMs,
+      );
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'focus', outcome: 'ok' }),
+        expect.objectContaining({ name: 'quick_evidence', outcome: 'ok' }),
+        expect.objectContaining({ name: 'provider', outcome: 'ok' }),
+      ]));
+    } finally {
+      sessionContextManager.remove('session-claude-reused-quick-attempt');
+    }
+  });
+
   it('does not answer selected-range process identity questions from global runtime pre-evidence', async () => {
     const traceProcessor = {
       query: jest.fn(async () => ({ columns: [], rows: [], durationMs: 1 })),
@@ -1610,6 +1882,560 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(call.options.systemPrompt).toContain('结束时间:** 200 ns');
   });
 
+  it('passes selection time range into Claude skip-focus explicit-package quick evidence', async () => {
+    const traceProcessor = {
+      query: jest.fn(async () => {
+        throw new Error('explicit-package selected duration should not query trace processor');
+      }),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    const attemptSpy = jest.spyOn(quickEvidenceDirectAnswer, 'buildRuntimeQuickEvidenceAttempt');
+
+    try {
+      const result = await runtime.analyze(
+        '选区持续多久？',
+        'session-claude-selection-explicit-package',
+        'trace-claude-selection-explicit-package',
+        {
+          analysisMode: 'fast',
+          packageName: 'com.example.app',
+          selectionContext: {
+            kind: 'area',
+            source: 'area_selection',
+            startNs: 100,
+            endNs: 250,
+          },
+        },
+      );
+
+      expect(result.rounds).toBe(0);
+      expect(result.conclusion).toContain('duration_ns');
+      expect(result.conclusion).toContain('value=`150`');
+      expect(traceProcessor.query).not.toHaveBeenCalled();
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(0);
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+      expect(attemptSpy.mock.calls[0][0].focusResult).toMatchObject({
+        method: 'none',
+        timeRange: { startNs: 100, endNs: 250 },
+      });
+    } finally {
+      attemptSpy.mockRestore();
+      sessionContextManager.remove('session-claude-selection-explicit-package');
+    }
+  });
+
+  it('records Claude performance receipt from actual provider output and finalization', async () => {
+    const traceId = 'trace-claude-performance';
+    const traceProcessor = {
+      query: jest.fn(async () => ({ columns: ['cnt'], rows: [[0]], durationMs: 1 })),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      })),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [{type: 'text', text: '## 综合结论\nClaude provider output.'}],
+        },
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-claude-performance',
+        num_turns: 1,
+        result: '## 综合结论\nClaude provider output.',
+      };
+    });
+
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    await expect(withEffectiveRuntimeRegistrySnapshot(
+      createEffectiveRuntimeRegistrySnapshot(),
+      () => runtime.analyze('分析启动性能', 'session-claude-performance', traceId, {
+        analysisMode: 'full',
+        packageName: 'com.example.app',
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      }),
+    )).resolves.toMatchObject({sessionId: 'session-claude-performance'});
+
+    const receipt = runtimePerformanceRecorder.seal();
+    expect(receipt.firstOutputMs).toEqual(expect.any(Number));
+    const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+    expect(finalizationPhases).toHaveLength(1);
+    expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+    expect(receipt.phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({name: 'provider', outcome: 'ok'}),
+      expect.objectContaining({name: 'finalization', outcome: 'ok'}),
+    ]));
+  });
+
+  it('starts Claude full comparison, registry, and SQL knowledge before current architecture/vendor settle and records preflight phases once', async () => {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task6';
+    const traceId = 'trace-claude-overlap-current';
+    const referenceTraceId = 'trace-claude-overlap-reference';
+    const sessionId = 'session-claude-overlap-preflight';
+    const traceProcessor = {
+      query: jest.fn(async () => ({ columns: [], rows: [], durationMs: 1 })),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      })),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+
+    const architectureStarted = createDeferred<void>();
+    const releaseArchitecture = createDeferred<any>();
+    const releaseVendor = createDeferred<{ vendor: string }>();
+    const releaseCompleteness = createDeferred<any>();
+    const releaseRegistry = createDeferred<void>();
+    const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
+    const releaseComparison = createDeferred<any>();
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    const runtimePerformance = createRuntimePerformanceRun(createNoopAttributionSink(runtimePerformanceRecorder));
+    const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
+      .mockReturnValue({
+        detect: jest.fn(async ({traceId: requestedTraceId}: {traceId: string}) => {
+          if (requestedTraceId === traceId) {
+            architectureStarted.resolve();
+            return releaseArchitecture.promise;
+          }
+          return { type: 'STANDARD', confidence: 0.8, evidence: [] };
+        }),
+      } as any);
+    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
+      .mockReturnValue({
+        ensureInitialized: jest.fn(async () => undefined),
+        detectVendor: jest.fn(async () => releaseVendor.promise),
+      } as any);
+    const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
+      .mockImplementation(async () => releaseCompleteness.promise);
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockImplementation(async () => releaseRegistry.promise);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockImplementation(async () => releaseKnowledge.promise as any);
+    const comparisonSpy = jest.spyOn(runtimePromptContext, 'buildRuntimeTracePairComparisonContext')
+      .mockImplementation(async () => releaseComparison.promise);
+
+    const preparePromise = (runtime as any).prepareAnalysisContext(
+      '分析两条 trace 的启动差异',
+      sessionId,
+      traceId,
+      {
+        analysisMode: 'full',
+        packageName: 'com.current.app',
+        referenceTraceId,
+      },
+      {
+        focusResult: {
+          apps: [],
+          primaryApp: undefined,
+          method: 'none',
+        },
+        previousTurns: [],
+        sceneType: 'startup',
+        runtimePerformance,
+      },
+    );
+
+    try {
+      await architectureStarted.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(registrySpy).toHaveBeenCalledTimes(1);
+      expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+      expect(comparisonSpy).toHaveBeenCalledTimes(1);
+      expect(adapterSpy).not.toHaveBeenCalled();
+      expect(completenessSpy).not.toHaveBeenCalled();
+    } finally {
+      releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
+      releaseVendor.resolve({ vendor: 'xiaomi' });
+      releaseCompleteness.resolve(undefined);
+      releaseRegistry.resolve();
+      releaseKnowledge.resolve({ getContextForAI: () => 'SQL knowledge overlap context' });
+      releaseComparison.resolve({
+        currentPackageName: 'com.current.app',
+        referencePackageName: 'com.reference.app',
+        commonCapabilities: [],
+        capabilityDiff: { currentOnly: [], referenceOnly: [] },
+      });
+      await preparePromise;
+      const phases = runtimePerformanceRecorder.seal().phases;
+      for (const phaseName of ['architecture', 'completeness', 'comparison', 'skill_registry', 'knowledge']) {
+        expect(phases.filter(phase => phase.name === phaseName)).toHaveLength(1);
+      }
+      expect(phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'architecture', outcome: 'ok' }),
+        expect.objectContaining({ name: 'completeness', outcome: 'ok' }),
+        expect.objectContaining({ name: 'comparison', outcome: 'ok' }),
+        expect.objectContaining({ name: 'skill_registry', outcome: 'ok' }),
+        expect.objectContaining({ name: 'knowledge', outcome: 'ok' }),
+      ]));
+      architectureSpy.mockRestore();
+      adapterSpy.mockRestore();
+      completenessSpy.mockRestore();
+      registrySpy.mockRestore();
+      knowledgeSpy.mockRestore();
+      comparisonSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('runs the widened Claude preflight operations sequentially by default', async () => {
+    delete process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES;
+    const traceId = 'trace-claude-serial-preflight';
+    const sessionId = 'session-claude-serial-preflight';
+    const traceProcessor = {
+      query: jest.fn(async () => ({columns: [], rows: [], durationMs: 1})),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+      })),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    const releaseRegistry = createDeferred<void>();
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockImplementation(async () => releaseRegistry.promise);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockResolvedValue({getContextForAI: () => 'serial knowledge'} as any);
+    const architectureDetect = jest.fn(async () => ({type: 'STANDARD', confidence: 0.9, evidence: []}));
+    const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
+      .mockReturnValue({detect: architectureDetect} as any);
+    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
+      .mockReturnValue({
+        ensureInitialized: jest.fn(async () => undefined),
+        detectVendor: jest.fn(async () => ({vendor: 'xiaomi'})),
+      } as any);
+    const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
+      .mockResolvedValue(undefined as any);
+
+    const pending = (runtime as any).prepareAnalysisContext(
+      '分析启动性能',
+      sessionId,
+      traceId,
+      {analysisMode: 'full', packageName: 'com.example.app'},
+      {
+        focusResult: {apps: [], primaryApp: undefined, method: 'none'},
+        previousTurns: [],
+        sceneType: 'startup',
+      },
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(registrySpy).toHaveBeenCalledTimes(1);
+    expect(knowledgeSpy).not.toHaveBeenCalled();
+    expect(architectureDetect).not.toHaveBeenCalled();
+
+    releaseRegistry.resolve();
+    await pending;
+    expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+    expect(architectureDetect).toHaveBeenCalledTimes(1);
+    expect(adapterSpy).toHaveBeenCalledTimes(1);
+    expect(completenessSpy).toHaveBeenCalledTimes(1);
+    expect(registrySpy.mock.invocationCallOrder[0]).toBeLessThan(knowledgeSpy.mock.invocationCallOrder[0]);
+    expect(knowledgeSpy.mock.invocationCallOrder[0]).toBeLessThan(architectureDetect.mock.invocationCallOrder[0]);
+
+    architectureSpy.mockRestore();
+    adapterSpy.mockRestore();
+    completenessSpy.mockRestore();
+    registrySpy.mockRestore();
+    knowledgeSpy.mockRestore();
+    sessionContextManager.remove(sessionId);
+  });
+
+  it('settles Claude overlapped full preflights before cancellation returns without session state writes', async () => {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task6';
+    const traceId = 'trace-claude-cancel-current';
+    const referenceTraceId = 'trace-claude-cancel-reference';
+    const sessionId = 'session-claude-cancel-preflight';
+    const traceProcessor = {
+      query: jest.fn(async () => ({ columns: [], rows: [], durationMs: 1 })),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      })),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    const abortController = new AbortController();
+    const abortError = new Error('cancelled by Claude preflight barrier test');
+    const executionLease = {
+      key: { runtime: 'claude-agent', sessionId, referenceTraceId },
+      signal: abortController.signal,
+      throwIfAborted: () => {
+        if (abortController.signal.aborted) throw abortError;
+      },
+      settle: jest.fn(),
+    };
+    const architectureStarted = createDeferred<void>();
+    const comparisonStarted = createDeferred<void>();
+    const releaseArchitecture = createDeferred<any>();
+    const releaseVendor = createDeferred<{ vendor: string }>();
+    const releaseCompleteness = createDeferred<any>();
+    const releaseRegistry = createDeferred<void>();
+    const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
+    const releaseComparison = createDeferred<any>();
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
+      .mockReturnValue({
+        detect: jest.fn(async ({traceId: requestedTraceId}: {traceId: string}) => {
+          if (requestedTraceId === traceId) {
+            architectureStarted.resolve();
+            return releaseArchitecture.promise;
+          }
+          return { type: 'STANDARD', confidence: 0.8, evidence: [] };
+        }),
+      } as any);
+    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
+      .mockReturnValue({
+        ensureInitialized: jest.fn(async () => undefined),
+        detectVendor: jest.fn(async () => releaseVendor.promise),
+      } as any);
+    const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
+      .mockImplementation(async () => releaseCompleteness.promise);
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockImplementation(async () => releaseRegistry.promise);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockImplementation(async () => releaseKnowledge.promise as any);
+    const comparisonSpy = jest.spyOn(runtimePromptContext, 'buildRuntimeTracePairComparisonContext')
+      .mockImplementation(async () => {
+        comparisonStarted.resolve();
+        return releaseComparison.promise;
+      });
+
+    const preparePromise = (runtime as any).prepareAnalysisContext(
+      '取消前的两条 trace 启动差异',
+      sessionId,
+      traceId,
+      {
+        analysisMode: 'full',
+        packageName: 'com.current.app',
+        referenceTraceId,
+      },
+      {
+        focusResult: {
+          apps: [],
+          primaryApp: undefined,
+          method: 'none',
+        },
+        previousTurns: [],
+        sceneType: 'startup',
+        executionLease,
+      },
+    );
+
+    try {
+      await Promise.all([architectureStarted.promise, comparisonStarted.promise]);
+      abortController.abort(abortError);
+      releaseRegistry.reject(new Error('registry rejected after cancellation'));
+      releaseKnowledge.reject(new Error('knowledge rejected after cancellation'));
+      releaseComparison.reject(new Error('comparison rejected after cancellation'));
+      releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
+      await Promise.resolve();
+      releaseVendor.resolve({ vendor: 'xiaomi' });
+      releaseCompleteness.resolve(undefined);
+
+      await expect(preparePromise).rejects.toThrow(abortError.message);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(unhandledRejections).toHaveLength(0);
+      expect(registrySpy).toHaveBeenCalledTimes(1);
+      expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+      expect(comparisonSpy).toHaveBeenCalledTimes(1);
+      expect(completenessSpy).toHaveBeenCalledTimes(1);
+      expect((runtime as any).artifactStores.has(sessionId)).toBe(false);
+      expect((runtime as any).sessionPlans.has(sessionId)).toBe(false);
+      expect((runtime as any).sessionNotes.has(sessionId)).toBe(false);
+      expect((runtime as any).sessionHypotheses.has(sessionId)).toBe(false);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      architectureSpy.mockRestore();
+      adapterSpy.mockRestore();
+      completenessSpy.mockRestore();
+      registrySpy.mockRestore();
+      knowledgeSpy.mockRestore();
+      comparisonSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('records focus:error when Claude focus detection unexpectedly rejects and provider policy remains graceful', async () => {
+    const sessionId = 'session-claude-focus-rejection';
+    const traceId = 'trace-claude-focus-rejection';
+    const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')
+      .mockRejectedValueOnce(new Error('synthetic unexpected focus rejection'));
+    const traceProcessor = {
+      query: jest.fn(async () => ({ columns: ['cnt'], rows: [[0]], durationMs: 1 })),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      })),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-claude-focus-rejection',
+        num_turns: 1,
+        result: '## 综合结论\nProvider still runs after focus detection degrades gracefully.',
+      };
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    try {
+      const result = await withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze('分析启动性能', sessionId, traceId, {
+          analysisMode: 'full',
+          runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+        }),
+      );
+
+      expect(result.success).toBe(true);
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+      const receipt = runtimePerformanceRecorder.seal();
+      const focusPhases = receipt.phases.filter(phase => phase.name === 'focus');
+      const providerPhases = receipt.phases.filter(phase => phase.name === 'provider');
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(focusPhases).toHaveLength(1);
+      expect(focusPhases[0]).toEqual(expect.objectContaining({outcome: 'error'}));
+      expect(providerPhases).toHaveLength(1);
+      expect(providerPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+    } finally {
+      focusSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('records focus:cancelled and publishes no Claude state when cancellation arrives while focus is active', async () => {
+    const sessionId = 'session-claude-focus-live-cancel';
+    const traceId = 'trace-claude-focus-live-cancel';
+    const focusStarted = createDeferred<void>();
+    const releaseFocus = createDeferred<focusAppDetector.FocusAppDetectionResult>();
+    const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')
+      .mockImplementationOnce(async () => {
+        focusStarted.resolve();
+        return releaseFocus.promise;
+      });
+    const runtime = new ClaudeRuntime({
+      query: jest.fn(async () => ({ columns: ['cnt'], rows: [[0]], durationMs: 1 })),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      })),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      throw new Error('provider must not start after focus cancellation');
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    try {
+      const analysis = withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze('分析启动性能', sessionId, traceId, {
+          analysisMode: 'full',
+          runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+        }),
+      );
+      await focusStarted.promise;
+      runtime.abortSession(sessionId);
+      releaseFocus.resolve({ apps: [], method: 'none' });
+
+      const result = await analysis;
+      expect(result.success).toBe(false);
+      expect(result.terminationMessage).toMatch(/aborted|cancelled/i);
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(0);
+      const turns = sessionContextManager.getOrCreate(sessionId, traceId).getAllTurns?.() ?? [];
+      expect(turns).toHaveLength(0);
+      expect((runtime as any).sessionMap.get(sessionId)).toBeUndefined();
+      expect(runtimeSnapshotCount()).toBe(0);
+      const receipt = runtimePerformanceRecorder.seal();
+      expect(receipt.phases.filter(phase => phase.name === 'focus')).toEqual([
+        expect.objectContaining({outcome: 'cancelled'}),
+      ]);
+      expect(receipt.phases.filter(phase => phase.name === 'provider')).toHaveLength(0);
+      expect(receipt.phases.filter(phase => phase.name === 'finalization')).toEqual([
+        expect.objectContaining({outcome: 'cancelled'}),
+      ]);
+    } finally {
+      focusSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
   it('passes stable and volatile full-mode prompt blocks through the Claude cache boundary', async () => {
     const runtime = new ClaudeRuntime({
       query: async () => ({ columns: ['cnt'], rows: [[0]] }),
@@ -1657,6 +2483,448 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     expect(blocks.slice(0, boundaryIndex).join('\n\n')).toContain('SmartPerfetto');
     expect(blocks.slice(boundaryIndex + 1).join('\n\n')).toContain('用户选区上下文');
     expect(call.options.persistSession).toBe(true);
+  });
+
+  it('rejects same-session direct overlap even when run and reference ids differ', async () => {
+    const runtime = new ClaudeRuntime({
+      query: async () => ({ columns: ['cnt'], rows: [[0]] }),
+      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set('trace-claude-overlap', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    const releaseSdk = createDeferred<void>();
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      await releaseSdk.promise;
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-claude-overlap',
+        num_turns: 1,
+        result: [
+          '## 综合结论',
+          '',
+          'Claude overlap first run completed.',
+          '',
+          '## 关键证据链',
+          '',
+          '- The first run held the runtime session lease.',
+          '',
+          '## 优化建议',
+          '',
+          '- Reject overlapping direct callers.',
+        ].join('\n'),
+      };
+    });
+
+    const first = runtime.analyze('first', 'session-claude-overlap', 'trace-claude-overlap', {
+      analysisMode: 'full',
+      packageName: 'com.example.app',
+      runId: 'run-1',
+      referenceTraceId: 'ref-1',
+    });
+    await Promise.resolve();
+    const second = runtime.analyze('second', 'session-claude-overlap', 'trace-claude-overlap', {
+      analysisMode: 'full',
+      packageName: 'com.example.app',
+      runId: 'run-2',
+      referenceTraceId: 'ref-2',
+    });
+
+    await expect(second).rejects.toThrow(/already in progress/i);
+    releaseSdk.resolve();
+    await expect(first).resolves.toMatchObject({ success: true });
+  });
+
+  it('allows different sessions to run independently', async () => {
+    const runtime = new ClaudeRuntime({
+      query: async () => ({ columns: ['cnt'], rows: [[0]] }),
+      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set('trace-claude-isolated', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: `sdk-claude-${Math.random().toString(36).slice(2)}`,
+        num_turns: 1,
+        result: [
+          '## 综合结论',
+          '',
+          'Claude isolated session completed.',
+          '',
+          '## 关键证据链',
+          '',
+          '- Different logical sessions use independent leases.',
+          '',
+          '## 优化建议',
+          '',
+          '- Keep concurrent sessions independent.',
+        ].join('\n'),
+      };
+    });
+
+    await expect(Promise.all([
+      runtime.analyze('first', 'session-claude-isolated-1', 'trace-claude-isolated', {
+        analysisMode: 'full',
+        packageName: 'com.example.app',
+      }),
+      runtime.analyze('second', 'session-claude-isolated-2', 'trace-claude-isolated', {
+        analysisMode: 'full',
+        packageName: 'com.example.app',
+      }),
+    ])).resolves.toEqual([
+      expect.objectContaining({ success: true }),
+      expect.objectContaining({ success: true }),
+    ]);
+  });
+
+  it('recovers a missing SDK conversation inside the active guard lease', async () => {
+    const runtime = new ClaudeRuntime({
+      query: async () => ({ columns: ['cnt'], rows: [[0]] }),
+      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set('trace-claude-retry-guard', {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    (runtime as any).sessionMap.set('session-claude-retry-guard', {
+      sdkSessionId: 'sdk-missing',
+      updatedAt: Date.now(),
+      mode: 'full',
+    });
+    const updates: any[] = [];
+    runtime.on('update', update => updates.push(update));
+    const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')
+      .mockResolvedValue({
+        apps: [{ packageName: 'com.example.app', processName: 'com.example.app', score: 1 }],
+        primaryApp: 'com.example.app',
+        method: 'process_track',
+      } as any);
+    const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
+      .mockResolvedValue(undefined as any);
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockResolvedValue(undefined);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockResolvedValue({ getContextForAI: () => 'SQL knowledge missing conversation context' } as any);
+    let sdkCalls = 0;
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      sdkCalls += 1;
+      if (sdkCalls === 1) {
+        yield {
+          type: 'result',
+          subtype: 'error_during_execution',
+          errors: [{ message: 'No conversation found with session ID: sdk-missing' }],
+          session_id: 'sdk-missing',
+          num_turns: 1,
+        };
+        return;
+      }
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-recovered',
+        num_turns: 1,
+        result: [
+          '## 综合结论',
+          '',
+          'Claude missing SDK conversation recovery stayed inside the original guard lease.',
+          '',
+          '## 关键证据链',
+          '',
+          '- Local persisted context was reused without public analyze re-entry.',
+          '',
+          '## 优化建议',
+          '',
+          '- Continue with the recovered SDK session.',
+        ].join('\n'),
+      };
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    try {
+      const result = await withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze(
+          '继续分析启动性能',
+          'session-claude-retry-guard',
+          'trace-claude-retry-guard',
+          {
+            analysisMode: 'full',
+            packageName: 'com.example.app',
+            runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+          },
+        ),
+      );
+
+      expect(result.success).toBe(true);
+      const calls = claudeSdkMock.__getQueryCalls();
+      expect(calls).toHaveLength(2);
+      expect(calls[0].options.resume).toBe('sdk-missing');
+      expect(calls[1].options.resume).toBeUndefined();
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(completenessSpy).toHaveBeenCalledTimes(1);
+      expect(registrySpy).toHaveBeenCalled();
+      expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+      const phases = runtimePerformanceRecorder.seal().phases;
+      for (const phaseName of [
+        'classification',
+        'focus',
+        'architecture',
+        'completeness',
+        'skill_registry',
+        'knowledge',
+        'sdk_start',
+        'finalization',
+      ]) {
+        expect(phases.filter(phase => phase.name === phaseName)).toHaveLength(1);
+      }
+      expect(phases.filter(phase => phase.name === 'provider')).toEqual([
+        expect.objectContaining({ name: 'provider', outcome: 'error' }),
+        expect.objectContaining({ name: 'provider', outcome: 'ok' }),
+      ]);
+      expect((runtime as any).sessionMap.get('session-claude-retry-guard')).toEqual(expect.objectContaining({
+        sdkSessionId: 'sdk-recovered',
+        mode: 'full',
+      }));
+      expect(updates).toContainEqual(expect.objectContaining({
+        type: 'degraded',
+        content: expect.objectContaining({
+          fallback: 'fresh_sdk_session_after_missing_conversation',
+        }),
+      }));
+    } finally {
+      focusSpy.mockRestore();
+      completenessSpy.mockRestore();
+      registrySpy.mockRestore();
+      knowledgeSpy.mockRestore();
+      sessionContextManager.remove('session-claude-retry-guard');
+    }
+  });
+
+  it('does not start a second Claude provider when cancelled during missing SDK recovery', async () => {
+    const sessionId = 'session-claude-retry-cancel';
+    const traceId = 'trace-claude-retry-cancel';
+    const runtime = new ClaudeRuntime({
+      query: async () => ({ columns: ['cnt'], rows: [[0]] }),
+      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    (runtime as any).sessionMap.set(sessionId, {
+      sdkSessionId: 'sdk-missing',
+      updatedAt: Date.now(),
+      mode: 'full',
+    });
+    const originalRetryWithoutSdkResume = (runtime as any).retryWithoutSdkResume.bind(runtime);
+    jest.spyOn(runtime as any, 'retryWithoutSdkResume').mockImplementation(async (params: unknown) => {
+      await originalRetryWithoutSdkResume(params);
+      await (runtime as any).executionGuard.abortSession(sessionId);
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'error_during_execution',
+        errors: [{ message: 'No conversation found with session ID: sdk-missing' }],
+        session_id: 'sdk-missing',
+        num_turns: 1,
+      };
+    });
+
+    const result = await runtime.analyze(
+      '继续分析启动性能',
+      sessionId,
+      traceId,
+      {
+        analysisMode: 'full',
+        packageName: 'com.example.app',
+      },
+    );
+    expect(result.success).toBe(false);
+    expect(result.terminationMessage).toMatch(/aborted|cancelled/i);
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+  });
+
+  it('does not publish a Claude turn or correction when cancelled during final verification', async () => {
+    const sessionId = 'session-claude-verification-cancel';
+    const traceId = 'trace-claude-verification-cancel';
+    const verificationStarted = createDeferred<void>();
+    const releaseVerification = createDeferred<void>();
+    mockClaudeVerifierVerifyConclusion.mockImplementationOnce(async () => {
+      verificationStarted.resolve();
+      await releaseVerification.promise;
+      return {
+        passed: true,
+        heuristicIssues: [],
+        llmIssues: [],
+        durationMs: 1,
+      };
+    });
+    const runtime = new ClaudeRuntime({
+      query: async () => ({ columns: ['cnt'], rows: [[0]] }),
+      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+    } as any, {
+      enableVerification: true,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-claude-verification-cancel',
+        num_turns: 1,
+        result: [
+          '## 综合结论',
+          '',
+          'Claude verification cancellation should not publish a durable turn.',
+          '',
+          '## 关键证据链',
+          '',
+          '- Verification is paused by the test before publication.',
+          '',
+          '## 优化建议',
+          '',
+          '- Do not publish after cancellation.',
+        ].join('\n'),
+      };
+    });
+
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    const analysis = withEffectiveRuntimeRegistrySnapshot(
+      createEffectiveRuntimeRegistrySnapshot(),
+      () => runtime.analyze('分析启动性能', sessionId, traceId, {
+        analysisMode: 'full',
+        packageName: 'com.example.app',
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      }),
+    );
+    await verificationStarted.promise;
+    runtime.abortSession(sessionId);
+    releaseVerification.resolve();
+
+    const result = await analysis;
+    expect(result.success).toBe(false);
+    expect(result.terminationMessage).toMatch(/aborted|cancelled/i);
+    expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+    const turns = sessionContextManager.getOrCreate(sessionId, traceId).getAllTurns?.() ?? [];
+    expect(turns).toHaveLength(0);
+    const receipt = runtimePerformanceRecorder.seal();
+    const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+    expect(finalizationPhases).toHaveLength(1);
+    expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'cancelled'}));
+    sessionContextManager.remove(sessionId);
+  });
+
+  it('does not mutate Claude plan, notes, or snapshot state when cancelled after provider loop closes', async () => {
+    const sessionId = 'session-claude-post-loop-cancel';
+    const traceId = 'trace-claude-post-loop-cancel';
+    const runtime = new ClaudeRuntime({
+      query: async () => ({ columns: ['cnt'], rows: [[0]] }),
+      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+    } as any, {
+      enableVerification: false,
+      enableSubAgents: false,
+    });
+    (runtime as any).architectureCache.set(traceId, {
+      type: 'STANDARD',
+      confidence: 0.9,
+      evidence: [],
+    });
+    const plan = {
+      phases: [{
+        id: 'final',
+        name: '综合结论',
+        goal: '输出最终报告',
+        expectedTools: [],
+        status: 'pending',
+      }],
+      successCriteria: '输出最终报告',
+      submittedAt: Date.now(),
+      toolCallLog: [],
+    };
+    const originalPrepare = (runtime as any).prepareAnalysisContext.bind(runtime);
+    jest.spyOn(runtime as any, 'prepareAnalysisContext').mockImplementation(async (...args: unknown[]) => {
+      const ctx = await originalPrepare(...args);
+      ctx.analysisPlan.current = plan;
+      (runtime as any).sessionPlans.set(sessionId, ctx.analysisPlan);
+      (runtime as any).sessionNotes.set(sessionId, []);
+      return ctx;
+    });
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield { type: 'system', subtype: 'compact_boundary' };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        session_id: 'sdk-claude-post-loop-cancel',
+        num_turns: 1,
+        result: [
+          '## 综合结论',
+          '',
+          'Claude post-loop cancellation should not mutate plan or recovery notes.',
+          '',
+          '## 关键证据链',
+          '',
+          '- Provider loop completed before cancellation.',
+          '',
+          '## 优化建议',
+          '',
+          '- Stop before durable post-loop state mutation.',
+        ].join('\n'),
+      };
+      queueMicrotask(() => {
+        void runtime.abortSession(sessionId);
+      });
+    });
+
+    const result = await runtime.analyze('分析启动性能', sessionId, traceId, {
+      analysisMode: 'full',
+      packageName: 'com.example.app',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.terminationMessage).toMatch(/aborted|cancelled/i);
+    expect((runtime.getSessionPlan(sessionId)?.phases[0] as any)?.status).toBe('pending');
+    expect(runtime.getSessionNotes(sessionId)).toHaveLength(0);
+    const snapshot = runtime.takeSnapshot(sessionId, traceId, {
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      runSequence: 0,
+      conversationOrdinal: 0,
+    } as any);
+    expect((snapshot.analysisPlan?.phases[0] as any)?.status).toBe('pending');
+    expect(snapshot.analysisNotes).toEqual([]);
+    sessionContextManager.remove(sessionId);
   });
 
   it('uses the request language throughout the full path without mutating runtime defaults', async () => {
@@ -1846,12 +3114,19 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       };
     });
 
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
     try {
-      const result = await runtime.analyze(
-        '分析启动性能',
-        sessionId,
-        'trace-generic-stream-failure',
-        {analysisMode: 'full'},
+      const result = await withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze(
+          '分析启动性能',
+          sessionId,
+          'trace-generic-stream-failure',
+          {
+            analysisMode: 'full',
+            runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+          },
+        ),
       );
 
       expect(result).toMatchObject({
@@ -1866,6 +3141,13 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           fallback: 'partial_result_after_stream_termination',
         }),
       }));
+      const receipt = runtimePerformanceRecorder.seal();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'error'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({name: 'provider', outcome: 'error'}),
+      ]));
     } finally {
       sessionContextManager.remove(sessionId);
     }
@@ -2229,75 +3511,360 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   });
 
   it('uses scoped Claude provider tuning when preparing full SDK options', async () => {
-    const svc = getProviderService();
-    const provider = svc.create({
-      name: 'Scoped Claude Provider',
-      category: 'official',
-      type: 'anthropic',
-      models: {
-        primary: 'provider-claude-main',
-        light: 'provider-claude-light',
-        subAgent: 'provider-claude-subagent',
-      },
-      connection: {
-        agentRuntime: 'claude-agent-sdk',
-        claudeApiKey: 'sk-provider-claude',
-      },
-      tuning: {
-        maxTurns: 4,
-        fullPerTurnMs: 10000,
-        effort: 'max',
-        enableSubAgents: true,
-        enableVerification: false,
-      },
-    });
-    svc.activate(provider.id);
+    const original = {
+      anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      claudeModel: process.env.CLAUDE_MODEL,
+      claudeLightModel: process.env.CLAUDE_LIGHT_MODEL,
+      claudeBinaryPath: process.env.CLAUDE_BINARY_PATH,
+    };
+    process.env.ANTHROPIC_BASE_URL = 'https://global-main.example/v1';
+    process.env.ANTHROPIC_API_KEY = 'sk-global-main';
+    process.env.CLAUDE_MODEL = 'global-claude-main';
+    process.env.CLAUDE_LIGHT_MODEL = 'global-claude-light';
+    process.env.CLAUDE_BINARY_PATH = '/tmp/global-main-claude';
+    try {
+      const svc = getProviderService();
+      const provider = svc.create({
+        name: 'Scoped Claude Provider',
+        category: 'official',
+        type: 'anthropic',
+        models: {
+          primary: 'provider-claude-main',
+          light: 'provider-claude-light',
+          subAgent: 'provider-claude-subagent',
+        },
+        connection: {
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://provider-main.example/v1',
+          claudeApiKey: 'sk-provider-claude',
+        },
+        tuning: {
+          maxTurns: 4,
+          fullPerTurnMs: 10000,
+          effort: 'max',
+          enableSubAgents: true,
+          enableVerification: false,
+        },
+      });
+      svc.activate(provider.id);
 
-    const runtime = new ClaudeRuntime({
-      query: async () => ({ columns: [], rows: [] }),
-      getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
-    } as any, {
+      const runtime = new ClaudeRuntime({
+        query: async () => ({ columns: [], rows: [] }),
+        getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+      } as any, {
+        enableVerification: false,
+        enableSubAgents: false,
+        model: 'base-claude-main',
+        maxTurns: 60,
+        effort: 'low',
+      });
+      (runtime as any).architectureCache.set('trace-provider', {
+        type: 'STANDARD',
+        confidence: 0.9,
+        evidence: [],
+      });
+      claudeSdkMock.__setQueryImplementation(async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'sdk-provider-session',
+          num_turns: 1,
+          result: [
+            '## 综合结论',
+            'Scoped provider tuning was applied to the Claude full analysis path.',
+            '',
+            '## 证据',
+            '- Provider-specific model, effort, maxTurns, and sub-agent config were used.',
+          ].join('\n'),
+        };
+      });
+
+      const result = await runtime.analyze('分析 UI 卡顿', 'session-provider', 'trace-provider', {
+        analysisMode: 'full',
+        packageName: 'com.example.app',
+      });
+
+      expect(result.success).toBe(true);
+      const [call] = claudeSdkMock.__getQueryCalls();
+      expect(call.options.model).toBe('provider-claude-main');
+      expect(call.options.maxTurns).toBe(4);
+      expect(call.options.effort).toBe('max');
+      expect(call.options.pathToClaudeCodeExecutable).toBe('/tmp/global-main-claude');
+      expect(call.options.env.CLAUDE_MODEL).toBe('provider-claude-main');
+      expect(call.options.env.CLAUDE_LIGHT_MODEL).toBe('provider-claude-light');
+      expect(call.options.env.ANTHROPIC_BASE_URL).toBe('https://provider-main.example/v1');
+      expect(call.options.env.ANTHROPIC_API_KEY).toBe('sk-provider-claude');
+      expect(call.options.agents).toBeDefined();
+      expect(call.options.tools).toEqual(['Agent']);
+      expect(call.options.allowedTools).toContain('Agent');
+      expect(JSON.stringify(call.options.agents)).toContain('provider-claude-subagent');
+      expect(process.env.ANTHROPIC_BASE_URL).toBe('https://global-main.example/v1');
+      expect(process.env.ANTHROPIC_API_KEY).toBe('sk-global-main');
+      expect(process.env.CLAUDE_MODEL).toBe('global-claude-main');
+      expect(process.env.CLAUDE_LIGHT_MODEL).toBe('global-claude-light');
+      expect(process.env.CLAUDE_BINARY_PATH).toBe('/tmp/global-main-claude');
+    } finally {
+      restoreEnvValue('ANTHROPIC_BASE_URL', original.anthropicBaseUrl);
+      restoreEnvValue('ANTHROPIC_API_KEY', original.anthropicApiKey);
+      restoreEnvValue('CLAUDE_MODEL', original.claudeModel);
+      restoreEnvValue('CLAUDE_LIGHT_MODEL', original.claudeLightModel);
+      restoreEnvValue('CLAUDE_BINARY_PATH', original.claudeBinaryPath);
+    }
+  });
+
+  it('uses scoped Claude provider tuning for SDK correction retries without mutating process.env', async () => {
+    const original = {
+      anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      claudeModel: process.env.CLAUDE_MODEL,
+      claudeLightModel: process.env.CLAUDE_LIGHT_MODEL,
+      claudeBinaryPath: process.env.CLAUDE_BINARY_PATH,
+    };
+    process.env.ANTHROPIC_BASE_URL = 'https://global-correction.example/v1';
+    process.env.ANTHROPIC_API_KEY = 'sk-global-correction';
+    process.env.CLAUDE_MODEL = 'global-claude-main';
+    process.env.CLAUDE_LIGHT_MODEL = 'global-claude-light';
+    process.env.CLAUDE_BINARY_PATH = '/tmp/global-correction-claude';
+    try {
+      const svc = getProviderService();
+      const provider = svc.create({
+        name: 'Scoped Claude Correction Provider',
+        category: 'official',
+        type: 'anthropic',
+        models: {
+          primary: 'provider-claude-correction-main',
+          light: 'provider-claude-correction-light',
+        },
+        connection: {
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://provider-correction.example/v1',
+          claudeApiKey: 'sk-provider-correction',
+        },
+        tuning: {
+          maxTurns: 4,
+          fullPerTurnMs: 10000,
+          effort: 'max',
+          enableVerification: true,
+          enableSubAgents: false,
+        },
+      });
+      svc.activate(provider.id);
+
+      const runtime = new ClaudeRuntime({
+        query: async () => ({ columns: [], rows: [] }),
+        getTrace: () => ({ traceOs: 'android', traceFormat: 'perfetto' }),
+      } as any, {
+        enableVerification: true,
+        enableSubAgents: false,
+        model: 'base-claude-main',
+        maxTurns: 60,
+        effort: 'low',
+      });
+      (runtime as any).architectureCache.set('trace-provider-correction', {
+        type: 'STANDARD',
+        confidence: 0.9,
+        evidence: [],
+      });
+      let sdkCallCount = 0;
+      claudeSdkMock.__setQueryImplementation(async function* () {
+        sdkCallCount += 1;
+        yield {
+          type: 'result',
+          subtype: 'success',
+          session_id: 'sdk-provider-correction-session',
+          num_turns: 1,
+          result: sdkCallCount === 1
+            ? '## 综合结论\nInitial provider conclusion requires correction.'
+            : [
+                '## 综合结论',
+                'Corrected provider conclusion.',
+                '',
+                '## 证据',
+                '- Correction retry used the pinned provider SDK options.',
+              ].join('\n'),
+        };
+      });
+      mockClaudeVerifierVerifyConclusion
+        .mockResolvedValueOnce({
+          passed: false,
+          heuristicIssues: [{
+            type: 'final_report_contract',
+            severity: 'error',
+            message: 'missing required final report evidence',
+          }],
+          llmIssues: [],
+          durationMs: 1,
+        })
+        .mockResolvedValueOnce({
+          passed: true,
+          heuristicIssues: [],
+          llmIssues: [],
+          durationMs: 1,
+        });
+
+      const result = await runtime.analyze(
+        '分析 UI 卡顿并补齐报告',
+        'session-provider-correction',
+        'trace-provider-correction',
+        {
+          analysisMode: 'full',
+          packageName: 'com.example.app',
+        },
+      );
+
+      expect(result.success).toBe(true);
+      const calls = claudeSdkMock.__getQueryCalls();
+      expect(calls).toHaveLength(2);
+      const correctionCall = calls[1];
+      expect(correctionCall.options.model).toBe('provider-claude-correction-main');
+      expect(correctionCall.options.pathToClaudeCodeExecutable).toBe('/tmp/global-correction-claude');
+      expect(correctionCall.options.env.CLAUDE_MODEL).toBe('provider-claude-correction-main');
+      expect(correctionCall.options.env.CLAUDE_LIGHT_MODEL).toBe('provider-claude-correction-light');
+      expect(correctionCall.options.env.ANTHROPIC_BASE_URL).toBe('https://provider-correction.example/v1');
+      expect(correctionCall.options.env.ANTHROPIC_API_KEY).toBe('sk-provider-correction');
+      expect(process.env.ANTHROPIC_BASE_URL).toBe('https://global-correction.example/v1');
+      expect(process.env.ANTHROPIC_API_KEY).toBe('sk-global-correction');
+      expect(process.env.CLAUDE_MODEL).toBe('global-claude-main');
+      expect(process.env.CLAUDE_LIGHT_MODEL).toBe('global-claude-light');
+      expect(process.env.CLAUDE_BINARY_PATH).toBe('/tmp/global-correction-claude');
+    } finally {
+      restoreEnvValue('ANTHROPIC_BASE_URL', original.anthropicBaseUrl);
+      restoreEnvValue('ANTHROPIC_API_KEY', original.anthropicApiKey);
+      restoreEnvValue('CLAUDE_MODEL', original.claudeModel);
+      restoreEnvValue('CLAUDE_LIGHT_MODEL', original.claudeLightModel);
+      restoreEnvValue('CLAUDE_BINARY_PATH', original.claudeBinaryPath);
+    }
+  });
+
+  it('records Claude preflight phases once while the provider SDK retries once', async () => {
+    const sessionId = 'session-claude-provider-retry-phases';
+    const traceId = 'trace-claude-provider-retry-phases';
+    const referenceTraceId = 'trace-claude-provider-retry-reference';
+    const traceProcessor = {
+      query: jest.fn(async () => ({ columns: [], rows: [], durationMs: 1 })),
+      getTrace: jest.fn(() => ({
+        id: traceId,
+        filename: 'trace.pftrace',
+        size: 1,
+        uploadTime: new Date(),
+        status: 'ready',
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      })),
+    };
+    const runtime = new ClaudeRuntime(traceProcessor as any, {
       enableVerification: false,
       enableSubAgents: false,
-      model: 'base-claude-main',
-      maxTurns: 60,
-      effort: 'low',
     });
-    (runtime as any).architectureCache.set('trace-provider', {
-      type: 'STANDARD',
-      confidence: 0.9,
-      evidence: [],
-    });
+    const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')
+      .mockResolvedValue({
+        apps: [{ packageName: 'com.example.app', processName: 'com.example.app', score: 1 }],
+        primaryApp: 'com.example.app',
+        method: 'process_track',
+      } as any);
+    const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
+      .mockReturnValue({
+        detect: jest.fn(async () => ({ type: 'STANDARD', confidence: 0.9, evidence: [] })),
+      } as any);
+    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
+      .mockReturnValue({
+        ensureInitialized: jest.fn(async () => undefined),
+        detectVendor: jest.fn(async () => ({ vendor: 'xiaomi' })),
+      } as any);
+    const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
+      .mockResolvedValue(undefined as any);
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockResolvedValue(undefined);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockResolvedValue({ getContextForAI: () => 'SQL knowledge retry context' } as any);
+    const comparisonSpy = jest.spyOn(runtimePromptContext, 'buildRuntimeTracePairComparisonContext')
+      .mockResolvedValue({
+        currentPackageName: 'com.example.app',
+        referencePackageName: 'com.example.reference',
+        commonCapabilities: [],
+        capabilityDiff: { currentOnly: [], referenceOnly: [] },
+      } as any);
+    let providerAttempts = 0;
     claudeSdkMock.__setQueryImplementation(async function* () {
+      providerAttempts += 1;
+      if (providerAttempts === 1) {
+        throw new Error('503 service unavailable');
+      }
       yield {
         type: 'result',
         subtype: 'success',
-        session_id: 'sdk-provider-session',
+        session_id: 'sdk-provider-retry-phases',
         num_turns: 1,
-        result: [
-          '## 综合结论',
-          'Scoped provider tuning was applied to the Claude full analysis path.',
-          '',
-          '## 证据',
-          '- Provider-specific model, effort, maxTurns, and sub-agent config were used.',
-        ].join('\n'),
+        result: '## 综合结论\nClaude provider retry recovered.\n\n## 证据\n- Retry path preserved preflight receipt phases.',
       };
     });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
 
-    const result = await runtime.analyze('分析 UI 卡顿', 'session-provider', 'trace-provider', {
-      analysisMode: 'full',
-      packageName: 'com.example.app',
-    });
+    try {
+      const result = await withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshot(),
+        () => runtime.analyze(
+          '对比两条 trace 的启动差异',
+          sessionId,
+          traceId,
+          {
+            analysisMode: 'full',
+            packageName: 'com.example.app',
+            referenceTraceId,
+            runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+          },
+        ),
+      );
+      expect(result).toMatchObject({ success: true });
 
-    expect(result.success).toBe(true);
-    const [call] = claudeSdkMock.__getQueryCalls();
-    expect(call.options.model).toBe('provider-claude-main');
-    expect(call.options.maxTurns).toBe(4);
-    expect(call.options.effort).toBe('max');
-    expect(call.options.env.ANTHROPIC_API_KEY).toBe('sk-provider-claude');
-    expect(call.options.agents).toBeDefined();
-    expect(call.options.tools).toEqual(['Agent']);
-    expect(call.options.allowedTools).toContain('Agent');
-    expect(JSON.stringify(call.options.agents)).toContain('provider-claude-subagent');
+      expect(providerAttempts).toBe(2);
+      expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(architectureSpy).toHaveBeenCalledTimes(1);
+      expect(adapterSpy).toHaveBeenCalledTimes(1);
+      expect(completenessSpy).toHaveBeenCalledTimes(1);
+      expect(registrySpy).toHaveBeenCalledTimes(1);
+      expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+      expect(comparisonSpy).toHaveBeenCalledTimes(1);
+
+      const phases = runtimePerformanceRecorder.seal().phases;
+      for (const phaseName of [
+        'classification',
+        'focus',
+        'architecture',
+        'completeness',
+        'comparison',
+        'skill_registry',
+        'knowledge',
+        'sdk_start',
+        'finalization',
+      ]) {
+        expect(phases.filter(phase => phase.name === phaseName)).toHaveLength(1);
+      }
+      expect(phases.filter(phase => phase.name === 'provider')).toEqual([
+        expect.objectContaining({ name: 'provider', outcome: 'error' }),
+        expect.objectContaining({ name: 'provider', outcome: 'ok' }),
+      ]);
+      expect(phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'classification', outcome: 'ok' }),
+        expect.objectContaining({ name: 'focus', outcome: 'ok' }),
+        expect.objectContaining({ name: 'architecture', outcome: 'ok' }),
+        expect.objectContaining({ name: 'completeness', outcome: 'ok' }),
+        expect.objectContaining({ name: 'comparison', outcome: 'ok' }),
+        expect.objectContaining({ name: 'skill_registry', outcome: 'ok' }),
+        expect.objectContaining({ name: 'knowledge', outcome: 'ok' }),
+        expect.objectContaining({ name: 'finalization', outcome: 'ok' }),
+      ]));
+    } finally {
+      focusSpy.mockRestore();
+      architectureSpy.mockRestore();
+      adapterSpy.mockRestore();
+      completenessSpy.mockRestore();
+      registrySpy.mockRestore();
+      knowledgeSpy.mockRestore();
+      comparisonSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
   });
 });

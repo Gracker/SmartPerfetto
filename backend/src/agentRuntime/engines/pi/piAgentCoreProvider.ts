@@ -24,6 +24,7 @@ import {
   piStreamEnvKeys,
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
+import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 
 type EnvLike = Record<string, string | undefined>;
 
@@ -349,6 +350,29 @@ async function loadProviderStreams(
   return (factory as () => ProviderStreams)();
 }
 
+export async function loadPiProviderRuntimeModules(
+  api: SupportedPiApi,
+  env: EnvLike,
+  moduleLoader: (specifier: string) => Promise<unknown> = importEsmModule,
+): Promise<{
+  piAi: PiAiModule;
+  catalog: PiAiProviderCatalogModule;
+  providerStreams: ProviderStreams;
+}> {
+  if (isRuntimeCandidateAdmitted('task7', env)) {
+    const [piAi, catalog, providerStreams] = await Promise.all([
+      moduleLoader('@earendil-works/pi-ai') as Promise<PiAiModule>,
+      moduleLoader('@earendil-works/pi-ai/providers/all') as Promise<PiAiProviderCatalogModule>,
+      loadProviderStreams(api, moduleLoader),
+    ]);
+    return {piAi, catalog, providerStreams};
+  }
+  const piAi = await moduleLoader('@earendil-works/pi-ai') as PiAiModule;
+  const catalog = await moduleLoader('@earendil-works/pi-ai/providers/all') as PiAiProviderCatalogModule;
+  const providerStreams = await loadProviderStreams(api, moduleLoader);
+  return {piAi, catalog, providerStreams};
+}
+
 export async function createPiAgentCoreProviderRuntime(
   config: PiAgentCoreModelConfig,
   env: EnvLike,
@@ -367,11 +391,11 @@ export async function createPiAgentCoreProviderRuntime(
   const authEnv = {...capturedEnv, ...credentialEnv};
   assertSafeBedrockCredentialSnapshot(api, authEnv);
 
-  const piAi = await moduleLoader('@earendil-works/pi-ai') as PiAiModule;
-  const [catalog, providerStreams] = await Promise.all([
-    moduleLoader('@earendil-works/pi-ai/providers/all') as Promise<PiAiProviderCatalogModule>,
-    loadProviderStreams(api, moduleLoader),
-  ]);
+  const {piAi, catalog, providerStreams} = await loadPiProviderRuntimeModules(
+    api,
+    env,
+    moduleLoader,
+  );
   const credentials = new piAi.InMemoryCredentialStore();
   const builtinProvider = catalog.builtinProviders().find(candidate => candidate.id === providerId);
   const baseAuth = builtinProvider?.auth ?? {

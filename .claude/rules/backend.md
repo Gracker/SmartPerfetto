@@ -120,6 +120,46 @@ Tool visibility is request-shaped:
 - External/public contracts should be derived from the registry view, not from
   an old static tool list.
 
+## Runtime Concurrency Invariants
+
+- `runtimeExecutionGuard.ts` owns runtime/session single-active execution.
+  Cancellation may signal cleanup immediately, but ownership is retained until
+  the outer execution settles; a stale token must never publish newer session
+  state.
+- `TraceProcessorSqlWorker` remains a single worker per processor key. Do not
+  introduce same-trace SQL parallelism. Different processor keys may progress
+  independently.
+- Runtime tools are exclusive by default. Only registry-declared commutative
+  reads may use `runtimeToolConcurrency.ts`, and only after `task5` admission.
+  Keep the fair reader/writer ordering, request scope, cancellation, bounded
+  parallelism, and re-entrancy rejection intact.
+- `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` is a maintainer-only fail-closed
+  boundary for `task4` through `task9`. It is not Provider Manager/UI/provider
+  configuration. Do not infer it from credentials, benchmark artifacts, or
+  persisted sessions, and do not auto-activate candidates.
+- `SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false` is a rollback after `task5`
+  admission. It must never bypass absent admission.
+- Keep correctness and observability behavior outside the performance gates:
+  processor/cache single-flight and failed-load retry, cancellation cleanup,
+  runtime execution isolation, deterministic repairs, and internal receipts
+  must work with no candidates admitted.
+
+`RuntimePerformance` is internal RunManifest data. Record real phase spans,
+first output, tool scheduling, and SQL queue/execution timing without exposing
+raw SQL, processor identifiers, secrets, or unbounded provider content. Do not
+add model, provider snapshot, usage, or performance fields to public SSE as an
+incidental benchmark shortcut; any public contract expansion needs its own
+privacy and compatibility review.
+
+The candidate scopes are durable architecture boundaries: `task4` reuses quick
+evidence; `task5` admits commutative reads; `task6` overlaps Claude/OpenAI
+preflights; `task7` overlaps independent Pi startup and enables quick parallel
+batch scheduling without bypassing descriptor/tool exclusivity; `task8`
+uses OpenCode adaptive observation; and `task9` overlaps Qoder registry/SDK
+startup. Shipped defaults remain serial until genuine five-adapter
+deterministic admission and bounded real-provider A/B are available. Synthetic
+scorer fixtures test scoring mechanics only.
+
 ## Self-Evolution Control Plane
 
 - `backend/src/services/selfEvolution/` owns manifests, feedback isolation,

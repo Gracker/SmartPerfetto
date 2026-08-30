@@ -37,14 +37,20 @@ import {
   compactSharedToolSpec,
   createClaudeSdkToolFromSharedSpec,
   sharedToolSpecFromClaudeSdkTool,
+  withRuntimeToolConcurrency,
   type SharedToolSpec,
 } from '../agentRuntime/runtimeToolSpec';
+import {
+  createRuntimeToolConcurrencyCoordinator,
+  type RuntimeToolConcurrencyCoordinator,
+} from '../agentRuntime/runtimeToolConcurrency';
 import {
   type McpToolAci,
   type McpToolExposure,
   makeSparkProvenance,
   type McpPublicApiContract,
 } from '../types/sparkContracts';
+import type {RunManifestAttributionSink} from '../types/selfEvolution';
 
 /** MCP tool name prefix — derived from the server name `'smartperfetto'`.
  * `claudeMcpServer.ts` exports the same constant; both files agree
@@ -122,6 +128,17 @@ export function buildAllowedTools(
  */
 export class McpToolRegistry {
   private readonly entries: McpToolDefinition[] = [];
+  private readonly toolConcurrencyCoordinator: RuntimeToolConcurrencyCoordinator;
+  private readonly runManifestAttributionSink?: RunManifestAttributionSink;
+
+  constructor(options: {
+    toolConcurrencyCoordinator?: RuntimeToolConcurrencyCoordinator;
+    runManifestAttributionSink?: RunManifestAttributionSink;
+  } = {}) {
+    this.toolConcurrencyCoordinator = options.toolConcurrencyCoordinator
+      ?? createRuntimeToolConcurrencyCoordinator();
+    this.runManifestAttributionSink = options.runManifestAttributionSink;
+  }
 
   /** Add a tool to the registry. Does NOT prevent duplicates by
    * name; callers control ordering and uniqueness explicitly so the
@@ -134,7 +151,11 @@ export class McpToolRegistry {
       def.exposure,
       {summary: def.summary, requires: def.requires},
     );
-    const runtimeShared = compactSharedToolSpec(shared);
+    const runtimeShared = withRuntimeToolConcurrency(
+      compactSharedToolSpec(shared),
+      this.toolConcurrencyCoordinator,
+      {runManifestAttributionSink: this.runManifestAttributionSink},
+    );
     this.entries.push({
       name: runtimeShared.name,
       shared: runtimeShared,
@@ -152,7 +173,7 @@ export class McpToolRegistry {
     tool: unknown,
     name: string,
     exposure: McpToolExposure,
-    extras?: Pick<McpToolDefinition, 'summary' | 'requires'>,
+    extras?: Pick<McpToolDefinition, 'summary' | 'requires'> & Pick<SharedToolSpec, 'concurrency'>,
   ): void {
     this.register({
       tool,

@@ -4,8 +4,13 @@
 
 import fs from 'fs';
 import path from 'path';
+import {performance as nodePerformance} from 'perf_hooks';
 import { Worker } from 'worker_threads';
 import { traceProcessorConfig } from '../config';
+import type {
+  RuntimePerformanceOutcome,
+  RuntimePerformanceRecorder,
+} from '../agentRuntime/runtimePerformance';
 import {
   decodeQueryResult,
   encodeQueryArgs,
@@ -21,6 +26,7 @@ import {
   throwIfTraceProcessorQueryCancelled,
 } from './traceProcessorCancellation';
 import type { QueryResult } from './workingTraceProcessor';
+import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
 
 const IS_TEST_ENV = process.env.NODE_ENV === 'test' || process.env.JEST_WORKER_ID !== undefined;
 
@@ -42,6 +48,7 @@ export interface TraceProcessorBoundedQueryOptions
 export interface TraceProcessorSqlWorkerOptions {
   processorId: string;
   traceId: string;
+  processorKey?: string;
   port: number;
   hostname?: string;
   forceInline?: boolean;
@@ -59,6 +66,9 @@ interface QueueTask {
   queueTimer?: NodeJS.Timeout;
   signal?: AbortSignal;
   maxResponseBytes?: number;
+  queuedAtMs: number;
+  runtimePerformanceRecorder?: RuntimePerformanceRecorder;
+  runtimePerformanceRecorded?: boolean;
   onAbort?: () => void;
   resolve: (body: Buffer) => void;
   reject: (error: Error) => void;
@@ -118,6 +128,7 @@ function resolveWorkerThreadPath(): { filename: string; execArgv: string[] } {
 export class TraceProcessorSqlWorker {
   private readonly processorId: string;
   private readonly traceId: string;
+  private readonly processorKey: string;
   private readonly port: number;
   private readonly hostname: string;
   private readonly forceInline: boolean;
@@ -139,6 +150,7 @@ export class TraceProcessorSqlWorker {
   constructor(options: TraceProcessorSqlWorkerOptions) {
     this.processorId = options.processorId;
     this.traceId = options.traceId;
+    this.processorKey = options.processorKey ?? options.traceId;
     this.port = options.port;
     this.hostname = options.hostname || '127.0.0.1';
     this.forceInline = options.forceInline ?? IS_TEST_ENV;
@@ -265,6 +277,9 @@ export class TraceProcessorSqlWorker {
         deadlineAt: Date.now() + timeoutMs,
         signal: options.signal,
         maxResponseBytes: options.maxResponseBytes,
+        queuedAtMs: nodePerformance.now(),
+        runtimePerformanceRecorder:
+          currentRunManifestAttributionSink()?.runtimePerformanceRecorder,
         resolve,
         reject,
       };
@@ -334,26 +349,38 @@ export class TraceProcessorSqlWorker {
   }
 
   private async runTask(task: QueueTask): Promise<Buffer> {
-    throwIfTraceProcessorQueryCancelled(task.signal);
-    const remainingTimeoutMs = task.deadlineAt - Date.now();
-    if (remainingTimeoutMs <= 0) throw new TraceProcessorSqlDeadlineExceededError();
-    const request: TraceProcessorHttpRpcRequest = {
-      hostname: this.hostname,
-      port: this.port,
-      body: task.body,
-      timeoutMs: remainingTimeoutMs,
-      signal: task.signal,
-      maxResponseBytes: task.maxResponseBytes,
-    };
+    const executionStartedAtMs = nodePerformance.now();
+    try {
+      throwIfTraceProcessorQueryCancelled(task.signal);
+      const remainingTimeoutMs = task.deadlineAt - Date.now();
+      if (remainingTimeoutMs <= 0) {
+        throw new TraceProcessorSqlDeadlineExceededError();
+      }
+      const request: TraceProcessorHttpRpcRequest = {
+        hostname: this.hostname,
+        port: this.port,
+        body: task.body,
+        timeoutMs: remainingTimeoutMs,
+        signal: task.signal,
+        maxResponseBytes: task.maxResponseBytes,
+      };
 
-    if (this.forceInline || this.rawExecutor) {
-      return raceWithTraceProcessorCancellation(
-        (this.rawExecutor || executeTraceProcessorHttpRpcRaw)(request),
-        task.signal,
+      const response = this.forceInline || this.rawExecutor
+        ? await raceWithTraceProcessorCancellation(
+            (this.rawExecutor || executeTraceProcessorHttpRpcRaw)(request),
+            task.signal,
+          )
+        : await this.postToWorker(task, remainingTimeoutMs);
+      this.recordSqlPerformance(task, executionStartedAtMs, 'ok');
+      return response;
+    } catch (error) {
+      this.recordSqlPerformance(
+        task,
+        executionStartedAtMs,
+        isTraceProcessorQueryCancelledError(error) ? 'cancelled' : 'error',
       );
+      throw error;
     }
-
-    return this.postToWorker(task, remainingTimeoutMs);
   }
 
   private ensureWorker(): Worker {
@@ -443,6 +470,7 @@ export class TraceProcessorSqlWorker {
       queue.splice(index, 1);
       this.queuedBytes -= task.body.byteLength;
       this.cleanupQueuedTask(task);
+      this.recordSqlPerformance(task, nodePerformance.now(), 'cancelled', 0);
       task.reject(createTraceProcessorQueryCancelledError(task.signal?.reason));
       return;
     }
@@ -456,6 +484,7 @@ export class TraceProcessorSqlWorker {
       queue.splice(index, 1);
       this.queuedBytes -= task.body.byteLength;
       this.cleanupQueuedTask(task);
+      this.recordSqlPerformance(task, nodePerformance.now(), 'error', 0);
       task.reject(new TraceProcessorSqlDeadlineExceededError());
       return;
     }
@@ -479,5 +508,30 @@ export class TraceProcessorSqlWorker {
     if (!pending.signal || !pending.onAbort) return;
     pending.signal.removeEventListener('abort', pending.onAbort);
     pending.onAbort = undefined;
+  }
+
+  private recordSqlPerformance(
+    task: QueueTask,
+    executionStartedAtMs: number,
+    outcome: RuntimePerformanceOutcome,
+    executionMs = nodePerformance.now() - executionStartedAtMs,
+  ): void {
+    if (task.runtimePerformanceRecorded) return;
+    task.runtimePerformanceRecorded = true;
+    const recorder = task.runtimePerformanceRecorder;
+    if (!recorder) return;
+    try {
+      recorder.recordSql({
+        processorKey: this.processorKey,
+        priority: task.priority,
+        queueWaitMs: executionStartedAtMs - task.queuedAtMs,
+        executionMs,
+        outcome,
+      });
+    } catch {
+      // Performance receipts are internal observability only; SQL behavior must
+      // not change because a run manifest was already sealed or diagnostics
+      // were rejected.
+    }
   }
 }

@@ -8,6 +8,25 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { McpToolExposure } from '../types/sparkContracts';
+import type {RunManifestAttributionSink} from '../types/selfEvolution';
+import {runtimeOutcomeFromError} from './runtimePerformance';
+import {
+  currentRunManifestAttributionSink,
+  resolveRunManifestAttributionSink,
+} from '../services/selfEvolution/runManifestLifecycle';
+import {
+  resolveRuntimeToolConcurrencyPolicy,
+  type RuntimeToolConcurrencyCoordinator,
+  type RuntimeToolConcurrencyPolicy,
+  type RuntimeToolScheduling,
+} from './runtimeToolConcurrency';
+
+export type {
+  RuntimeToolConcurrencyCoordinator,
+  RuntimeToolConcurrencyMode,
+  RuntimeToolConcurrencyPolicy,
+  RuntimeToolScheduling,
+} from './runtimeToolConcurrency';
 
 type ClaudeSdkToolHandler = SdkMcpToolDefinition['handler'];
 export type RuntimeToolResult = Awaited<ReturnType<ClaudeSdkToolHandler>>;
@@ -17,6 +36,8 @@ export interface RuntimeToolExtra {
   runtime?: string;
   toolCallId?: string;
   signal?: AbortSignal;
+  runManifestAttributionSink?: RunManifestAttributionSink;
+  runtimeToolScheduling?: RuntimeToolScheduling;
   [key: string]: unknown;
 }
 
@@ -38,6 +59,44 @@ export interface SharedToolSpec {
   summary?: string;
   requires?: string[];
   annotations?: RuntimeToolAnnotations;
+  concurrency?: RuntimeToolConcurrencyPolicy;
+}
+
+const TIMED_SHARED_TOOL_HANDLER = Symbol('TIMED_SHARED_TOOL_HANDLER');
+const RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY = '__smartperfettoRuntimeToolTimingSuppressed';
+
+type TimedRuntimeToolHandler = RuntimeToolHandler & {
+  [TIMED_SHARED_TOOL_HANDLER]?: true;
+};
+
+type RuntimeToolTimingSinkResolution =
+  | {kind: 'resolved'; sink: RunManifestAttributionSink}
+  | {kind: 'none'}
+  | {kind: 'suppressed'};
+
+type RuntimeToolTimingSuppressedExtra = RuntimeToolExtra & {
+  [RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]?: true;
+};
+
+function hasSuppressedRuntimeToolTiming(normalizedExtra: RuntimeToolExtra): boolean {
+  return (normalizedExtra as RuntimeToolTimingSuppressedExtra)[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY] === true;
+}
+
+function resolveRuntimeToolTimingSink(
+  normalizedExtra: RuntimeToolExtra,
+): RuntimeToolTimingSinkResolution {
+  if (hasSuppressedRuntimeToolTiming(normalizedExtra)) {
+    return {kind: 'suppressed'};
+  }
+  try {
+    const sink = resolveRunManifestAttributionSink(
+      normalizedExtra.runManifestAttributionSink,
+      currentRunManifestAttributionSink(),
+    );
+    return sink ? {kind: 'resolved', sink} : {kind: 'none'};
+  } catch {
+    return {kind: 'suppressed'};
+  }
 }
 
 export interface ClaudeSdkToolLike {
@@ -165,7 +224,97 @@ export function compactRuntimeToolDescription(description: string): string {
 
 export function compactSharedToolSpec(spec: SharedToolSpec): SharedToolSpec {
   const description = compactRuntimeToolDescription(spec.description);
-  return description === spec.description ? spec : { ...spec, description };
+  const timedSpec = withRuntimeToolTiming(spec);
+  return description === timedSpec.description ? timedSpec : { ...timedSpec, description };
+}
+
+export function withRuntimeToolTiming(spec: SharedToolSpec): SharedToolSpec {
+  const handler = spec.handler as TimedRuntimeToolHandler;
+  if (handler[TIMED_SHARED_TOOL_HANDLER]) return spec;
+
+  const timedHandler: TimedRuntimeToolHandler = async (args, extra) => {
+    const normalizedExtra = normalizeRuntimeToolExtra(extra);
+    const timingSinkResolution = resolveRuntimeToolTimingSink(normalizedExtra);
+    const recorder = timingSinkResolution.kind === 'resolved'
+      ? timingSinkResolution.sink.runtimePerformanceRecorder
+      : undefined;
+    const toolCallId = typeof normalizedExtra.toolCallId === 'string'
+      && normalizedExtra.toolCallId.trim()
+      ? normalizedExtra.toolCallId
+      : undefined;
+    const scheduling = normalizedExtra.runtimeToolScheduling;
+    const effectivePolicy = scheduling?.policy
+      ?? resolveRuntimeToolConcurrencyPolicy(spec.name, spec.concurrency).policy;
+    let timing: ReturnType<NonNullable<typeof recorder>['startTool']> | undefined;
+    try {
+      timing = recorder?.startTool(
+        toolCallId,
+        effectivePolicy.mode,
+        scheduling?.schedulerWaitMs ?? 0,
+        scheduling?.fallbackReason,
+      );
+    } catch {
+      timing = undefined;
+    }
+    try {
+      const result = await handler(args, normalizedExtra);
+      const outcome = normalizedExtra.signal?.aborted
+        ? 'cancelled'
+        : (result as {isError?: unknown} | undefined)?.isError === true
+          ? 'error'
+          : 'ok';
+      try {
+        timing?.end(outcome);
+      } catch {
+        // Runtime performance is internal observability only.
+      }
+      return result;
+    } catch (error) {
+      try {
+        timing?.end(runtimeOutcomeFromError(error, normalizedExtra.signal));
+      } catch {
+        // Preserve the original tool failure.
+      }
+      throw error;
+    }
+  };
+  timedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
+  return {...spec, handler: timedHandler};
+}
+
+export function withRuntimeToolConcurrency(
+  spec: SharedToolSpec,
+  coordinator: RuntimeToolConcurrencyCoordinator,
+  options: {
+    runManifestAttributionSink?: RunManifestAttributionSink;
+  } = {},
+): SharedToolSpec {
+  const timedSpec = withRuntimeToolTiming(spec);
+  const timedHandler = timedSpec.handler;
+  const coordinatedHandler: TimedRuntimeToolHandler = async (args, extra) => {
+    const normalizedExtra = normalizeRuntimeToolExtra(extra);
+    const timingSinkResolution: RuntimeToolTimingSinkResolution = options.runManifestAttributionSink
+      ? {kind: 'resolved', sink: options.runManifestAttributionSink}
+      : resolveRuntimeToolTimingSink(normalizedExtra);
+    const runManifestAttributionSink = timingSinkResolution.kind === 'resolved'
+      ? timingSinkResolution.sink
+      : undefined;
+    return coordinator.run({
+      toolName: timedSpec.name,
+      policy: timedSpec.concurrency,
+      signal: normalizedExtra.signal,
+      execute: scheduling => timedHandler(args, {
+        ...normalizedExtra,
+        ...(timingSinkResolution.kind === 'suppressed'
+          ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
+          : {}),
+        runManifestAttributionSink,
+        runtimeToolScheduling: scheduling,
+      }),
+    });
+  };
+  coordinatedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
+  return {...timedSpec, handler: coordinatedHandler};
 }
 
 export function isClaudeSdkToolLike(value: unknown): value is ClaudeSdkToolLike {
@@ -182,12 +331,12 @@ export function sharedToolSpecFromClaudeSdkTool(
   name: string,
   sdkTool: unknown,
   exposure: McpToolExposure,
-  extras: Pick<SharedToolSpec, 'summary' | 'requires'> = {},
+  extras: Pick<SharedToolSpec, 'summary' | 'requires' | 'concurrency'> = {},
 ): SharedToolSpec {
   if (!isClaudeSdkToolLike(sdkTool)) {
     throw new Error(`Cannot build shared tool spec for ${name}: unsupported SDK descriptor shape`);
   }
-  return {
+  return withRuntimeToolTiming({
     name,
     description: sdkTool.description,
     exposure,
@@ -195,25 +344,29 @@ export function sharedToolSpecFromClaudeSdkTool(
     handler: sdkTool.handler,
     annotations: sdkTool.annotations,
     ...extras,
-  };
+  });
 }
 
 export function createClaudeSdkToolFromSharedSpec(
   spec: SharedToolSpec,
 ): SdkMcpToolDefinition {
+  const timedSpec = withRuntimeToolTiming(spec);
   const sdkTool = createClaudeSdkTool(
-    spec.name,
-    spec.description,
-    spec.inputSchema,
-    async (args, extra) => spec.handler(
-      args as Record<string, unknown>,
-      normalizeRuntimeToolExtra(extra),
-    ),
-    spec.annotations ? { annotations: spec.annotations } : undefined,
+    timedSpec.name,
+    timedSpec.description,
+    timedSpec.inputSchema,
+    async (args, extra) => {
+      const normalizedExtra = normalizeRuntimeToolExtra(extra);
+      return timedSpec.handler(
+        args as Record<string, unknown>,
+        normalizedExtra,
+      );
+    },
+    timedSpec.annotations ? { annotations: timedSpec.annotations } : undefined,
   );
   return Object.assign(sdkTool, {
-    inputSchema: spec.inputSchema,
-    annotations: spec.annotations,
+    inputSchema: timedSpec.inputSchema,
+    annotations: timedSpec.annotations,
   });
 }
 

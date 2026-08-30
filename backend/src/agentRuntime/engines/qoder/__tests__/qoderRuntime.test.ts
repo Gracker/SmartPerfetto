@@ -26,6 +26,24 @@ function createMockSdkStream(messages: unknown[]) {
   };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitForMockQuery(): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (mockQuery.mock.calls.length > 0) return;
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+  throw new Error('Timed out waiting for Qoder SDK query to start');
+}
+
 const mockSdkModule = {
   query: mockQuery,
   qodercliAuth: jest.fn().mockReturnValue({ type: 'qodercli' }),
@@ -36,6 +54,9 @@ const mockSdkModule = {
 
 const mockRegisterSkills = jest.fn();
 const mockSetFragmentRegistry = jest.fn();
+const mockEnsureSkillRegistryInitialized = jest.fn<any>().mockResolvedValue(undefined);
+const mockLoadQoderSdkModule = jest.fn<any>().mockResolvedValue(mockSdkModule);
+const mockResetQoderSdkModuleCache = jest.fn();
 const mockCreateClaudeMcpServer = jest.fn().mockReturnValue({
   server: { name: 'smartperfetto' },
   allowedTools: ['mcp__smartperfetto__query_trace'],
@@ -49,7 +70,8 @@ const mockBuildQuickConversationContext = jest.fn<any>().mockReturnValue(undefin
 const mockFormatTraceContext = jest.fn<any>().mockReturnValue('');
 
 jest.mock('../qoderSdkLoader', () => ({
-  loadQoderSdkModule: jest.fn<any>().mockResolvedValue(mockSdkModule),
+  loadQoderSdkModule: (...args: unknown[]) => mockLoadQoderSdkModule(...args),
+  resetQoderSdkModuleCache: () => mockResetQoderSdkModuleCache(),
 }));
 
 jest.mock('../../../../services/skillEngine/skillExecutor', () => ({
@@ -61,7 +83,7 @@ jest.mock('../../../../services/skillEngine/skillExecutor', () => ({
 }));
 
 jest.mock('../../../../services/skillEngine/skillLoader', () => ({
-  ensureSkillRegistryInitialized: jest.fn<any>().mockResolvedValue(undefined),
+  ensureSkillRegistryInitialized: (...args: unknown[]) => mockEnsureSkillRegistryInitialized(...args),
   skillRegistry: {
     getAllSkills: jest.fn<any>().mockReturnValue([]),
     getFragmentCache: jest.fn<any>().mockReturnValue({}),
@@ -79,9 +101,15 @@ jest.mock('../../../../agent/detectors/architectureDetector', () => ({
   }),
 }));
 
-jest.mock('../../../../agentv3/focusAppDetector', () => ({
-  detectFocusApps: jest.fn<any>().mockResolvedValue({ apps: [], method: 'none' }),
-}));
+jest.mock('../../../../agentv3/focusAppDetector', () => {
+  const actual = jest.requireActual<typeof import('../../../../agentv3/focusAppDetector')>(
+    '../../../../agentv3/focusAppDetector',
+  );
+  return {
+    ...actual,
+    detectFocusApps: jest.fn<any>().mockResolvedValue({ apps: [], method: 'none' }),
+  };
+});
 
 jest.mock('../../../../agentv3/traceCompletenessProber', () => ({
   probeTraceCompleteness: jest.fn<any>().mockResolvedValue({
@@ -127,21 +155,60 @@ import { createArchitectureDetector } from '../../../../agent/detectors/architec
 import { detectFocusApps } from '../../../../agentv3/focusAppDetector';
 import { probeTraceCompleteness } from '../../../../agentv3/traceCompletenessProber';
 import * as quickEvidenceDirectAnswer from '../../../quickEvidenceDirectAnswer';
+import {createRuntimePerformanceRecorder} from '../../../runtimePerformance';
+import type {RunManifestAttributionSink} from '../../../../types/selfEvolution';
 
-function createRuntime(env: Record<string, string | undefined> = {}) {
+function createRuntime(
+  env: Record<string, string | undefined> = {},
+  traceProcessorService: { query: (...args: any[]) => Promise<unknown> } = {
+    query: jest.fn(async () => undefined),
+  },
+) {
   return new QoderRuntime({
     env: {
       QODER_PERSONAL_ACCESS_TOKEN: 'test-token',
       ...env,
     },
     selection: { kind: 'qoder-agent-sdk', source: 'env' },
-    traceProcessorService: { query: jest.fn() },
+    traceProcessorService,
   } as any);
+}
+
+function createNoopAttributionSink(
+  runtimePerformanceRecorder = createRuntimePerformanceRecorder(),
+): RunManifestAttributionSink {
+  return {
+    identity: {
+      runId: 'run-test',
+      sessionId: 'session-1',
+      scope: {
+        tenantId: 'tenant-test',
+        workspaceId: 'workspace-test',
+      },
+    },
+    runtimePerformanceRecorder,
+    recordScene: jest.fn(),
+    recordRuntime: jest.fn(),
+    recordMode: jest.fn(),
+    recordAdaptiveRouting: jest.fn(),
+    recordCapabilityManifest: jest.fn(),
+    recordSkillRegistry: jest.fn(),
+    startSkillInvocation: jest.fn(() => 'skill-invocation-test'),
+    finishSkillInvocation: jest.fn(),
+    recordUnknownSkillInvocation: jest.fn(),
+    recordSqlStatement: jest.fn(),
+    recordPromptTemplate: jest.fn(),
+    recordInjection: jest.fn(),
+    recordToolAllowlist: jest.fn(),
+    recordTurn: jest.fn(),
+  };
 }
 
 describe('QoderRuntime', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockEnsureSkillRegistryInitialized.mockResolvedValue(undefined);
+    mockLoadQoderSdkModule.mockResolvedValue(mockSdkModule);
     sessionContextManager.remove('session-1');
     mockProjectionWrite.mockImplementation(text => text);
     mockProjectionFlush.mockReturnValue('');
@@ -216,7 +283,10 @@ describe('QoderRuntime', () => {
         QODER_BYOK_BASE_URL: 'https://api.deepseek.com/v1',
         QODER_BYOK_STYLE: 'openai',
       });
-      await runtime.analyze('test', 'session-1', 'trace-1');
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      await runtime.analyze('test', 'session-1', 'trace-1', {
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      });
 
       const callArgs = mockQuery.mock.calls[0][0] as any;
       expect(callArgs.options.model).toBe('deepseek-main');
@@ -232,6 +302,15 @@ describe('QoderRuntime', () => {
       expect(callArgs.options.resolveModel({ purpose: 'title' })).toEqual({
         model: expect.objectContaining({ model: 'deepseek-light' }),
       });
+      const receipt = runtimePerformanceRecorder.seal();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({name: 'sdk_start', outcome: 'ok'}),
+        expect.objectContaining({name: 'skill_registry', outcome: 'ok'}),
+        expect.objectContaining({name: 'provider', outcome: 'ok'}),
+      ]));
     });
 
     it('fails closed before query when Qoder BYOK configuration is incomplete', async () => {
@@ -265,7 +344,7 @@ describe('QoderRuntime', () => {
     it('answers the issue #235 query without preflight detection or a Qoder SDK call', async () => {
       const directEvidenceSpy = jest.spyOn(
         quickEvidenceDirectAnswer,
-        'buildRuntimeQuickEvidenceDirectAnswer',
+        'buildRuntimeQuickEvidenceAttempt',
       ).mockResolvedValueOnce({
         directAnswer: {
           conclusion: 'The 5 longest process slices are backed by deterministic trace evidence.',
@@ -295,6 +374,10 @@ describe('QoderRuntime', () => {
           currentRunDataEnvelopes: 1,
           citedEvidenceRefs: 1,
         },
+        focusResult: {
+          apps: [],
+          method: 'none',
+        },
       } as any);
       try {
         const updates: any[] = [];
@@ -318,6 +401,8 @@ describe('QoderRuntime', () => {
         expect(createSkillExecutor).not.toHaveBeenCalled();
         expect(mockCreateClaudeMcpServer).not.toHaveBeenCalled();
         expect(mockQuery).not.toHaveBeenCalled();
+        expect(mockEnsureSkillRegistryInitialized).toHaveBeenCalledTimes(1);
+        expect(mockLoadQoderSdkModule).not.toHaveBeenCalled();
         expect(result).toEqual(expect.objectContaining({
           success: true,
           rounds: 0,
@@ -344,10 +429,122 @@ describe('QoderRuntime', () => {
       }
     });
 
+    it('rejects same-session direct overlap before Qoder provider work starts', async () => {
+      const comparisonStarted = createDeferred<void>();
+      const releaseComparison = createDeferred<void>();
+      mockBuildComparisonContext.mockImplementationOnce(async () => {
+        comparisonStarted.resolve();
+        await releaseComparison.promise;
+        return undefined;
+      });
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: 'Qoder overlap first completed.' },
+      ]));
+      const runtime = createRuntime();
+      const first = runtime.analyze(
+        'summarize top-5 longest process slices',
+        'session-qoder-overlap',
+        'trace-1',
+        { runId: 'run-1', referenceTraceId: 'ref-1' },
+      );
+      await comparisonStarted.promise;
+      const second = runtime.analyze(
+        'summarize top-5 longest process slices',
+        'session-qoder-overlap',
+        'trace-1',
+        { runId: 'run-2', referenceTraceId: 'ref-2' },
+      );
+
+      await expect(second).rejects.toThrow(/already in progress/i);
+      expect(mockQuery).not.toHaveBeenCalled();
+      releaseComparison.resolve();
+      await expect(first).resolves.toMatchObject({ success: true });
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+    });
+
+    it('allows different Qoder sessions to run independently even with matching trace input', async () => {
+      mockQuery.mockImplementation(() => createMockSdkStream([
+        { type: 'result', subtype: 'success', result: 'Qoder isolated completed.' },
+      ]));
+      const runtime = createRuntime();
+
+      await expect(Promise.all([
+        runtime.analyze(
+          'summarize top-5 longest process slices',
+          'session-qoder-isolated-1',
+          'trace-1',
+          { runId: 'run-1', referenceTraceId: 'ref-1' },
+        ),
+        runtime.analyze(
+          'summarize top-5 longest process slices',
+          'session-qoder-isolated-2',
+          'trace-1',
+          { runId: 'run-2', referenceTraceId: 'ref-2' },
+        ),
+      ])).resolves.toEqual([
+        expect.objectContaining({ success: true }),
+        expect.objectContaining({ success: true }),
+      ]);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops after cancelled Qoder preflight without provider or snapshot publication', async () => {
+      const preflightStarted = createDeferred<void>();
+      const releasePreflight = createDeferred<any>();
+      const directEvidenceSpy = jest.spyOn(
+        quickEvidenceDirectAnswer,
+        'buildRuntimeQuickEvidenceAttempt',
+      ).mockImplementation(async () => {
+        preflightStarted.resolve();
+        await releasePreflight.promise;
+        return undefined;
+      });
+      try {
+        const runtime = createRuntime();
+        const analysis = runtime.analyze(
+          'summarize top-5 longest process slices',
+          'session-qoder-cancel-preflight',
+          'trace-1',
+        );
+
+        await preflightStarted.promise;
+        await runtime.abortSession('session-qoder-cancel-preflight');
+        releasePreflight.resolve(undefined);
+
+        await expect(analysis).resolves.toMatchObject({
+          success: false,
+          partial: true,
+          terminationReason: 'timeout',
+        });
+        expect(mockQuery).not.toHaveBeenCalled();
+        const snapshot = runtime.takeSnapshot(
+          'session-qoder-cancel-preflight',
+          'trace-1',
+          {
+            conversationSteps: [],
+            queryHistory: [],
+            conclusionHistory: [],
+            agentDialogue: [],
+            agentResponses: [],
+            dataEnvelopes: [],
+            hypotheses: [],
+            runSequence: 1,
+            conversationOrdinal: 0,
+          } as any,
+        ) as any;
+        expect(snapshot.engineState?.qoder?.opaque).toEqual({
+          version: 1,
+          degradedReason: 'state_unavailable',
+        });
+      } finally {
+        directEvidenceSpy.mockRestore();
+      }
+    });
+
     it('falls back to the normal Qoder path when deterministic evidence is unavailable', async () => {
       const directEvidenceSpy = jest.spyOn(
         quickEvidenceDirectAnswer,
-        'buildRuntimeQuickEvidenceDirectAnswer',
+        'buildRuntimeQuickEvidenceAttempt',
       ).mockResolvedValueOnce(undefined);
       mockQuery.mockReturnValue(createMockSdkStream([
         { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
@@ -370,10 +567,275 @@ describe('QoderRuntime', () => {
         );
         expect(createSkillExecutor).toHaveBeenCalled();
         expect(mockCreateClaudeMcpServer).toHaveBeenCalled();
+        expect(mockEnsureSkillRegistryInitialized).toHaveBeenCalledTimes(1);
+        expect(mockLoadQoderSdkModule).toHaveBeenCalledTimes(1);
         expect(mockQuery).toHaveBeenCalledTimes(1);
         expect(result.conclusion).toBe('## Final Report\nfallback');
       } finally {
         directEvidenceSpy.mockRestore();
+      }
+    });
+
+    it('reuses real quick-evidence focus state on fallback without repeating Qoder focus detection', async () => {
+      const detect = jest.fn<any>().mockResolvedValue({ type: 'COMPOSE' });
+      const actualFocusAppDetector = jest.requireActual<typeof import('../../../../agentv3/focusAppDetector')>(
+        '../../../../agentv3/focusAppDetector',
+      );
+      jest.mocked(detectFocusApps).mockImplementationOnce(
+        actualFocusAppDetector.detectFocusApps as any,
+      );
+      const updates: Array<{ type?: string; content?: unknown }> = [];
+      const focusSqlKinds: string[] = [];
+      const traceFactSqlKinds: string[] = [];
+      const traceProcessorService = {
+        query: jest.fn(async (_traceId: string, sql: string) => {
+          const fromFocusDetector = new Error().stack?.includes('focusAppDetector') === true;
+          if (
+            fromFocusDetector &&
+            sql.includes('android_battery_stats_event_slices') &&
+            sql.includes('GROUP BY str_value')
+          ) {
+            focusSqlKinds.push('battery');
+            return {
+              columns: ['package_name', 'total_duration_ns', 'switch_count'],
+              rows: [],
+              durationMs: 1,
+            };
+          }
+          if (
+            fromFocusDetector &&
+            sql.includes('android_oom_adj_intervals') &&
+            sql.includes('WITH foreground_intervals')
+          ) {
+            focusSqlKinds.push('oom_adj');
+            return {
+              columns: ['package_name', 'total_duration_ns', 'switch_count'],
+              rows: [],
+              durationMs: 1,
+            };
+          }
+          if (sql.includes('runtime_frame_metrics')) {
+            traceFactSqlKinds.push('runtime_frame_metrics');
+            return {
+              columns: [
+                'package_name',
+                'process_names',
+                'upid_count',
+                'total_frames',
+                'window_start_ns',
+                'window_end_ns',
+                'duration_s',
+                'fps',
+                'source_table',
+              ],
+              rows: [],
+              durationMs: 1,
+            };
+          }
+          if (
+            fromFocusDetector &&
+            sql.includes('actual_frame_timeline_slice') &&
+            sql.includes('WITH frame_packages')
+          ) {
+            focusSqlKinds.push('frame_timeline');
+            return {
+              columns: ['package_name', 'total_duration_ns', 'frame_count'],
+              rows: [['com.frame.app', 1_250_000_000, 3]],
+              durationMs: 1,
+            };
+          }
+          return { columns: [], rows: [], durationMs: 1 };
+        }),
+      };
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
+      ]));
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({ detect } as any);
+      try {
+        const runtime = createRuntime({
+          SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES: 'task4',
+        }, traceProcessorService);
+        runtime.on('update', update => updates.push(update));
+        mockQuery.mockImplementationOnce(() => {
+          expect(updates.map(update => update.type)).not.toContain('data');
+          expect(updates.map(update => update.type)).not.toContain('conclusion');
+          return createMockSdkStream([
+            { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
+          ]);
+        });
+        const result = await runtime.analyze(
+          '滑动 FPS 是多少？',
+          'session-qoder-reused-quick-attempt',
+          'trace-1',
+        );
+
+        expect(detectFocusApps).toHaveBeenCalledTimes(1);
+        expect(focusSqlKinds).toEqual(['battery', 'oom_adj', 'frame_timeline']);
+        expect(traceFactSqlKinds).toEqual(['runtime_frame_metrics']);
+        expect(detect).toHaveBeenCalledWith(expect.objectContaining({
+          traceId: 'trace-1',
+          packageName: 'com.frame.app',
+        }));
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        expect(result.conclusion).toBe('## Final Report\nfallback');
+      } finally {
+        sessionContextManager.remove('session-qoder-reused-quick-attempt');
+      }
+    });
+
+    it('starts the SDK load after a quick miss while independent trace preflight is pending', async () => {
+      const directEvidenceSpy = jest.spyOn(
+        quickEvidenceDirectAnswer,
+        'buildRuntimeQuickEvidenceAttempt',
+      ).mockResolvedValueOnce(undefined);
+      const sdkLoad = createDeferred<typeof mockSdkModule>();
+      const architectureStarted = createDeferred<void>();
+      const releaseArchitecture = createDeferred<void>();
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({
+        detect: jest.fn(async () => {
+          architectureStarted.resolve();
+          await releaseArchitecture.promise;
+          return { type: 'pixel' };
+        }),
+      } as any);
+      mockLoadQoderSdkModule.mockReturnValueOnce(sdkLoad.promise);
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
+      ]));
+      try {
+        const analysis = createRuntime({
+          SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES: 'task9',
+        }).analyze(
+          'summarize top-5 longest process slices',
+          'session-qoder-sdk-overlap',
+          'trace-1',
+        );
+
+        await architectureStarted.promise;
+        expect(mockLoadQoderSdkModule).toHaveBeenCalledTimes(1);
+        expect(mockQuery).not.toHaveBeenCalled();
+
+        sdkLoad.resolve(mockSdkModule);
+        releaseArchitecture.resolve();
+        await expect(analysis).resolves.toMatchObject({ success: true });
+      } finally {
+        sdkLoad.resolve(mockSdkModule);
+        releaseArchitecture.resolve();
+        directEvidenceSpy.mockRestore();
+        sessionContextManager.remove('session-qoder-sdk-overlap');
+      }
+    });
+
+    it('defers the Qoder SDK load until trace preflight settles when Task 9 is not admitted', async () => {
+      const directEvidenceSpy = jest.spyOn(
+        quickEvidenceDirectAnswer,
+        'buildRuntimeQuickEvidenceAttempt',
+      ).mockResolvedValueOnce(undefined);
+      const architectureStarted = createDeferred<void>();
+      const releaseArchitecture = createDeferred<void>();
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({
+        detect: jest.fn(async () => {
+          architectureStarted.resolve();
+          await releaseArchitecture.promise;
+          return {type: 'pixel'};
+        }),
+      } as any);
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', result: '## Final Report\nfallback'},
+      ]));
+      const analysis = createRuntime().analyze(
+        'summarize top-5 longest process slices',
+        'session-qoder-sdk-serial',
+        'trace-1',
+      );
+      try {
+        await architectureStarted.promise;
+        expect(mockEnsureSkillRegistryInitialized).toHaveBeenCalledTimes(1);
+        expect(mockLoadQoderSdkModule).not.toHaveBeenCalled();
+
+        releaseArchitecture.resolve();
+        await expect(analysis).resolves.toMatchObject({success: true});
+        expect(mockLoadQoderSdkModule).toHaveBeenCalledTimes(1);
+      } finally {
+        releaseArchitecture.resolve();
+        directEvidenceSpy.mockRestore();
+        sessionContextManager.remove('session-qoder-sdk-serial');
+      }
+    });
+
+    it('does not publish architecture cache state when cancellation lands during detection', async () => {
+      const architectureStarted = createDeferred<void>();
+      const releaseArchitecture = createDeferred<void>();
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({
+        detect: jest.fn(async () => {
+          architectureStarted.resolve();
+          await releaseArchitecture.promise;
+          return { type: 'compose' };
+        }),
+      } as any);
+      const runtime = createRuntime();
+      const analysis = runtime.analyze(
+        'perform a full startup analysis',
+        'session-qoder-architecture-cancel',
+        'trace-architecture-cancel',
+        { analysisMode: 'full' },
+      );
+
+      await architectureStarted.promise;
+      await runtime.abortSession('session-qoder-architecture-cancel');
+      releaseArchitecture.resolve();
+
+      await expect(analysis).resolves.toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'timeout',
+      });
+      expect(runtime.getCachedArchitecture('trace-architecture-cancel')).toBeUndefined();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('uses quick-evidence package state when the requested package is empty', async () => {
+      const directEvidenceSpy = jest.spyOn(
+        quickEvidenceDirectAnswer,
+        'buildRuntimeQuickEvidenceAttempt',
+      ).mockResolvedValueOnce({
+        effectivePackageName: 'com.quick.effective',
+        focusResult: {
+          apps: [],
+          method: 'frame_timeline',
+        },
+        evidenceCounts: {
+          currentRunDataEnvelopes: 0,
+          citedEvidenceRefs: 0,
+        },
+      } as any);
+      const architectureDetect = jest.fn<any>().mockResolvedValue({ type: 'COMPOSE' });
+      jest.mocked(createArchitectureDetector).mockReturnValueOnce({
+        detect: architectureDetect,
+      } as any);
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\nfallback' },
+      ]));
+      try {
+        await createRuntime({
+          SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES: 'task4',
+        }).analyze(
+          '滑动 FPS 是多少？',
+          'session-qoder-empty-package',
+          'trace-1',
+          { packageName: '   ' },
+        );
+
+        expect(detectFocusApps).not.toHaveBeenCalled();
+        expect(architectureDetect).toHaveBeenCalledWith(expect.objectContaining({
+          packageName: 'com.quick.effective',
+        }));
+        expect(mockCreateClaudeMcpServer).toHaveBeenCalledWith(expect.objectContaining({
+          packageName: 'com.quick.effective',
+        }));
+      } finally {
+        directEvidenceSpy.mockRestore();
+        sessionContextManager.remove('session-qoder-empty-package');
       }
     });
   });
@@ -546,6 +1008,191 @@ describe('QoderRuntime', () => {
       ]));
     });
 
+    it('writes assistant chunks incrementally and sanitizes the complete final answer exactly once', async () => {
+      const chunks = ['## Final', ' Report\nfirst ', 'second'];
+      const finalText = chunks.join('');
+      mockProjectionWrite.mockImplementation(text => `<${text}>`);
+      mockProjectionFlush.mockReturnValue('<tail>');
+      mockProjectionProjectComplete.mockImplementation(text => `SANITIZED:${text}`);
+      mockQuery.mockReturnValue(createMockSdkStream([
+        ...chunks.map(text => ({
+          type: 'assistant',
+          message: { content: [{ type: 'text', text }] },
+        })),
+        { type: 'result', subtype: 'success', result: finalText },
+      ]));
+      const updates: any[] = [];
+      const runtime = createRuntime();
+      runtime.on('update', update => updates.push(update));
+
+      const result = await runtime.analyze('test', 'session-qoder-linear-projection', 'trace-1');
+
+      expect(mockProjectionWrite.mock.calls.map(call => call[0])).toEqual(chunks);
+      expect(mockProjectionProjectComplete).toHaveBeenCalledTimes(1);
+      expect(mockProjectionProjectComplete).toHaveBeenCalledWith(finalText);
+      expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
+      expect(mockClose).toHaveBeenCalledTimes(1);
+      expect(updates
+        .filter(update => update.type === 'answer_token')
+        .map(update => update.content)
+        .join('')).toBe(chunks.map(text => `<${text}>`).join('') + '<tail>');
+      expect(result.conclusion).toBe(`SANITIZED:${finalText}`);
+    });
+
+    it('closes once and discards the projection tail after an iterator error', async () => {
+      mockProjectionFlush.mockReturnValue('must-not-be-emitted');
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } };
+          throw new Error('iterator exploded');
+        },
+        interrupt: mockInterrupt,
+        close: mockClose,
+      });
+      const updates: any[] = [];
+      const runtime = createRuntime();
+      runtime.on('update', update => updates.push(update));
+
+      const result = await runtime.analyze('test', 'session-qoder-iterator-error', 'trace-1');
+
+      expect(result).toMatchObject({ success: false, terminationReason: 'execution_error' });
+      expect(mockClose).toHaveBeenCalledTimes(1);
+      expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
+      expect(updates).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'must-not-be-emitted' }),
+      ]));
+    });
+
+    it('closes once and returns the timeout result shape on deadline', async () => {
+      mockProjectionFlush.mockReturnValue('must-not-be-emitted');
+      mockQuery.mockReturnValue({
+        [Symbol.asyncIterator]() {
+          return { next: () => new Promise(() => undefined) };
+        },
+        interrupt: mockInterrupt,
+        close: mockClose,
+      });
+      const updates: any[] = [];
+      const runtime = createRuntime({
+        QODER_MAX_TURNS: '1',
+        QODER_FULL_PER_TURN_MS: '1',
+      });
+      runtime.on('update', update => updates.push(update));
+
+      const result = await runtime.analyze(
+        'test',
+        'session-qoder-timeout-cleanup',
+        'trace-1',
+        { analysisMode: 'full' },
+      );
+
+      expect(result).toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'timeout',
+      });
+      expect(result.terminationMessage).toMatch(/超时|timed out/i);
+      expect(mockInterrupt).toHaveBeenCalledTimes(1);
+      expect(mockClose).toHaveBeenCalledTimes(1);
+      expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
+      expect(updates).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: 'must-not-be-emitted' }),
+      ]));
+    });
+
+    it.each([
+      {
+        label: 'assistant output',
+        lateMessage: {
+          type: 'assistant',
+          message: { content: [{ type: 'text', text: 'late-answer-canary' }] },
+        },
+      },
+      {
+        label: 'opaque init and progress',
+        lateMessage: {
+          type: 'system',
+          subtype: 'init',
+          session_id: 'late-opaque-canary',
+        },
+      },
+    ])('fences late $label from a timed-out iterator after same-session reuse', async ({ lateMessage }) => {
+      const releaseLateIterator = createDeferred<void>();
+      const oldClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+      const newClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
+      const oldInterrupt = jest.fn<() => Promise<void>>()
+        .mockRejectedValue(new Error('interrupt rejection is observed'));
+      mockQuery
+        .mockReturnValueOnce({
+          async *[Symbol.asyncIterator]() {
+            await releaseLateIterator.promise;
+            yield lateMessage;
+          },
+          interrupt: oldInterrupt,
+          close: oldClose,
+        })
+        .mockReturnValueOnce({
+          async *[Symbol.asyncIterator]() {
+            yield { type: 'result', subtype: 'success', result: '## Final Report\nnew run' };
+          },
+          interrupt: jest.fn<() => Promise<void>>().mockResolvedValue(undefined),
+          close: newClose,
+        });
+      const updates: any[] = [];
+      const runtime = createRuntime({
+        QODER_MAX_TURNS: '1',
+        QODER_FULL_PER_TURN_MS: '1',
+      });
+      runtime.on('update', update => updates.push(update));
+
+      await expect(runtime.analyze(
+        'first',
+        'session-qoder-timeout-late-iterator',
+        'trace-1',
+        { analysisMode: 'full' },
+      )).resolves.toMatchObject({
+        success: false,
+        terminationReason: 'timeout',
+      });
+      await expect(runtime.analyze(
+        'second',
+        'session-qoder-timeout-late-iterator',
+        'trace-1',
+        { analysisMode: 'full' },
+      )).resolves.toMatchObject({ success: true });
+
+      releaseLateIterator.resolve();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise(resolve => setTimeout(resolve, 0));
+
+      expect(oldInterrupt).toHaveBeenCalledTimes(1);
+      expect(oldClose).toHaveBeenCalledTimes(1);
+      expect(newClose).toHaveBeenCalledTimes(1);
+      expect(mockProjectionWrite).not.toHaveBeenCalledWith('late-answer-canary');
+      expect(JSON.stringify(updates)).not.toContain('late-answer-canary');
+      expect(runtime.getSdkSessionId('session-qoder-timeout-late-iterator')).toBeUndefined();
+      expect(runtime.getSessionNotes('session-qoder-timeout-late-iterator')).toHaveLength(1);
+    });
+
+    it('discards the final projection tail for a successful private run', async () => {
+      mockProjectionFlush.mockReturnValue('private-tail-canary');
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'assistant', message: { content: [{ type: 'text', text: 'safe partial' }] } },
+        { type: 'result', subtype: 'success', result: '## Final Report\nprivate result' },
+      ]));
+      const updates: any[] = [];
+      const runtime = createRuntime();
+      runtime.on('update', update => updates.push(update));
+
+      await expect(runtime.analyze('private', 'session-qoder-private-tail', 'trace-1', {
+        knowledgeSourceIds: ['private-wiki'],
+      })).resolves.toMatchObject({ success: true });
+
+      expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(updates)).not.toContain('private-tail-canary');
+      expect(runtime.getSdkSessionId('session-qoder-private-tail')).toBeUndefined();
+    });
+
     it('returns hypotheses written through the shared MCP state', async () => {
       mockCreateClaudeMcpServer.mockImplementationOnce((input: any) => {
         input.hypotheses.push({
@@ -613,28 +1260,165 @@ describe('QoderRuntime', () => {
       });
 
       const runtime = createRuntime();
-      const result = await runtime.analyze('test', 'session-1', 'trace-1');
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const result = await runtime.analyze('test', 'session-1', 'trace-1', {
+        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+      });
 
       expect(result.success).toBe(false);
       expect(result.terminationReason).toBe('execution_error');
       expect(result.terminationMessage).toContain('Unauthorized: invalid access token');
+      const receipt = runtimePerformanceRecorder.seal();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'error'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({name: 'sdk_start', outcome: 'ok'}),
+        expect.objectContaining({name: 'provider', outcome: 'error'}),
+      ]));
     });
 
     it('handles user cancellation via abortSession without throwing', async () => {
-      const messages = [
-        { type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } },
-        { type: 'result', subtype: 'success', result: 'partial' },
-      ];
-      mockQuery.mockReturnValue(createMockSdkStream(messages));
+      const releaseStream = createDeferred<void>();
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } };
+          await releaseStream.promise;
+          yield { type: 'result', subtype: 'success', result: 'partial' };
+        },
+        interrupt: mockInterrupt,
+        close: mockClose,
+      });
 
       const runtime = createRuntime();
-      const resultPromise = runtime.analyze('test', 'session-1', 'trace-1');
+      const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+      const attributionSink = createNoopAttributionSink(runtimePerformanceRecorder);
+      const resultPromise = runtime.analyze('test', 'session-1', 'trace-1', {
+        analysisMode: 'full',
+        runManifestAttributionSink: attributionSink,
+      });
+      await waitForMockQuery();
       await runtime.abortSession('session-1');
+      releaseStream.resolve();
       const result = await resultPromise;
 
       // Regardless of timing, the result should be returned without throwing
       expect(result).toBeDefined();
       expect(result.sessionId).toBe('session-1');
+      expect(result).toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'timeout',
+      });
+      expect(mockClose).toHaveBeenCalledTimes(1);
+      expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
+      const receipt = runtimePerformanceRecorder.seal();
+      const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+      expect(finalizationPhases).toHaveLength(1);
+      expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'cancelled'}));
+      expect(receipt.phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          name: 'finalization',
+          outcome: 'cancelled',
+        }),
+      ]));
+    });
+
+    it('invalidates Qoder opaque state when cancelled after SDK init before provider completion', async () => {
+      const initObserved = createDeferred<void>();
+      const releaseStream = createDeferred<void>();
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-qoder-cancel-after-init' };
+          initObserved.resolve();
+          await releaseStream.promise;
+          yield { type: 'result', subtype: 'success', result: '## Final Report\nlate result' };
+        },
+        interrupt: mockInterrupt,
+        close: mockClose,
+      });
+
+      const runtime = createRuntime();
+      const analysis = runtime.analyze('test', 'session-qoder-init-cancel', 'trace-1', {
+        analysisMode: 'full',
+      });
+      await initObserved.promise;
+      await runtime.abortSession('session-qoder-init-cancel');
+      releaseStream.resolve();
+      await expect(analysis).resolves.toMatchObject({
+        sessionId: 'session-qoder-init-cancel',
+        success: false,
+      });
+
+      const snapshot = runtime.takeSnapshot('session-qoder-init-cancel', 'trace-1', {
+        agentRuntimeProviderId: 'prov-1',
+        agentRuntimeProviderSnapshotHash: 'hash-1',
+        conversationSteps: [],
+        queryHistory: [],
+        conclusionHistory: [],
+        agentDialogue: [],
+        agentResponses: [],
+        dataEnvelopes: [],
+        runSequence: 0,
+        conversationOrdinal: 0,
+      } as any);
+
+      if (snapshot.engineState?.kind !== 'qoder-agent-sdk') {
+        throw new Error('expected qoder snapshot engine state');
+      }
+      expect(snapshot.engineState.qoder.opaque).toEqual({
+        version: 1,
+        degradedReason: 'state_unavailable',
+      });
+    });
+
+    it('invalidates Qoder opaque state before abortSession returns while the provider stream is unsettled', async () => {
+      const initObserved = createDeferred<void>();
+      const releaseStream = createDeferred<void>();
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'system', subtype: 'init', session_id: 'sdk-qoder-immediate-abort' };
+          initObserved.resolve();
+          await releaseStream.promise;
+          yield { type: 'result', subtype: 'success', result: '## Final Report\nlate result' };
+        },
+        interrupt: mockInterrupt,
+        close: mockClose,
+      });
+
+      const runtime = createRuntime();
+      const analysis = runtime.analyze('test', 'session-qoder-immediate-abort', 'trace-1', {
+        analysisMode: 'full',
+      });
+      await initObserved.promise;
+      await runtime.abortSession('session-qoder-immediate-abort');
+
+      const snapshot = runtime.takeSnapshot('session-qoder-immediate-abort', 'trace-1', {
+        agentRuntimeProviderId: 'prov-1',
+        agentRuntimeProviderSnapshotHash: 'hash-1',
+        conversationSteps: [],
+        queryHistory: [],
+        conclusionHistory: [],
+        agentDialogue: [],
+        agentResponses: [],
+        dataEnvelopes: [],
+        runSequence: 0,
+        conversationOrdinal: 0,
+      } as any);
+
+      if (snapshot.engineState?.kind !== 'qoder-agent-sdk') {
+        throw new Error('expected qoder snapshot engine state');
+      }
+      expect(snapshot.engineState.qoder.opaque).toEqual({
+        version: 1,
+        degradedReason: 'state_unavailable',
+      });
+
+      releaseStream.resolve();
+      await expect(analysis).resolves.toMatchObject({
+        sessionId: 'session-qoder-immediate-abort',
+        success: false,
+      });
     });
   });
 
@@ -755,6 +1539,33 @@ describe('QoderRuntime', () => {
       expect(publicCallArgs.options.resume).toBeUndefined();
     });
 
+    it('discards an existing public opaque session before a private run', async () => {
+      mockQuery
+        .mockReturnValueOnce(createMockSdkStream([
+          { type: 'system', subtype: 'init', session_id: 'public-sdk-session' },
+          { type: 'result', subtype: 'success', result: 'done' },
+        ]))
+        .mockReturnValueOnce(createMockSdkStream([
+          { type: 'system', subtype: 'init', session_id: 'private-sdk-session' },
+          { type: 'result', subtype: 'success', result: 'private done' },
+        ]))
+        .mockReturnValueOnce(createMockSdkStream([
+          { type: 'result', subtype: 'success', result: 'public again' },
+        ]));
+
+      const runtime = createRuntime();
+      await runtime.analyze('public', 'session-qoder-private-discard', 'trace-1');
+      expect(runtime.getSdkSessionId('session-qoder-private-discard')).toBe('public-sdk-session');
+
+      await runtime.analyze('private', 'session-qoder-private-discard', 'trace-1', {
+        knowledgeSourceIds: ['private-wiki'],
+      });
+      expect(runtime.getSdkSessionId('session-qoder-private-discard')).toBeUndefined();
+
+      await runtime.analyze('public again', 'session-qoder-private-discard', 'trace-1');
+      expect((mockQuery.mock.calls[2][0] as any).options.resume).toBeUndefined();
+    });
+
     it('clears stale session on missing-conversation error', async () => {
       const messages1 = [
         { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },
@@ -837,6 +1648,44 @@ describe('QoderRuntime', () => {
       expect(snapshot.conversationSteps).toEqual([]);
       expect(snapshot.agentDialogue).toEqual([]);
       expect(snapshot.agentResponses).toEqual([]);
+    });
+  });
+
+  describe('lifecycle', () => {
+    it('invalidates the runtime SDK loader cache on reset', () => {
+      const runtime = createRuntime();
+
+      runtime.reset();
+
+      expect(mockResetQoderSdkModuleCache).toHaveBeenCalledTimes(1);
+    });
+
+    it('invalidates an analysis waiting on SDK load when the session is cleaned up', async () => {
+      const sdkLoad = createDeferred<typeof mockSdkModule>();
+      mockLoadQoderSdkModule.mockReturnValueOnce(sdkLoad.promise);
+      mockQuery.mockReturnValue(createMockSdkStream([
+        { type: 'result', subtype: 'success', result: '## Final Report\nlate' },
+      ]));
+      const runtime = createRuntime();
+      const analysis = runtime.analyze(
+        'perform a full startup analysis',
+        'session-qoder-cleanup-pending-sdk',
+        'trace-1',
+        { analysisMode: 'full' },
+      );
+      while (mockLoadQoderSdkModule.mock.calls.length === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+
+      runtime.cleanupSession('session-qoder-cleanup-pending-sdk');
+      sdkLoad.resolve(mockSdkModule);
+
+      await expect(analysis).resolves.toMatchObject({
+        success: false,
+        partial: true,
+        terminationReason: 'timeout',
+      });
+      expect(mockQuery).not.toHaveBeenCalled();
     });
   });
 });

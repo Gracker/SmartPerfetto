@@ -99,6 +99,10 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/agentRuntime/engines/pi/piAgentCoreRuntime.ts` | Pi Agent Core runtime adapter |
 | `backend/src/agentRuntime/engines/opencode/openCodeRuntime.ts` | OpenCode server/runtime adapter 与 request-scoped MCP bridge |
 | `backend/src/agentRuntime/engines/qoder/qoderRuntime.ts` | Qoder Agent SDK adapter、流式投影和 session 隔离 |
+| `backend/src/agentRuntime/runtimeExecutionGuard.ts` | runtime/session 单活执行、取消与 stale settle 隔离 |
+| `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | 维护者控制的并发候选准入边界 |
+| `backend/src/agentRuntime/runtimePerformance.ts` | RunManifest 内部阶段、工具与 SQL 排队/执行耗时 receipt |
+| `backend/src/agentRuntime/runtimeToolConcurrency.ts` | request-scoped 公平读写调度与默认独占策略 |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具注册，仍是工具单一事实源 |
 | `backend/src/agentv3/mcpToolRegistry.ts` | 工具 descriptor、exposure level 和 allowlist 单一事实源 |
 | `backend/src/services/agentResultNormalizer.ts` | 统一 final result、client projection 和 report data 边界 |
@@ -121,6 +125,27 @@ Claude runtime 直接把这些工具暴露为 in-process MCP server。
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
 当前注册的 production runtime 在 SmartPerfetto 边界上保持同一个产品合约：输入是同一份分析请求，输出归一化为同一组 SSE event、`AnalysisResult` 和 HTML report。它们的 SDK/server 机制并不相同：Claude runtime 使用 Claude SDK 的 in-process MCP server、tool allowlist、SDK session resume、verifier/sub-agent；OpenAI runtime 使用从同一工具注册表适配出来的 function tools，Responses API 通过 `previousResponseId` 恢复，Chat Completions-compatible provider 通过历史消息恢复；Pi Agent Core 使用 request-scoped native tools、共享系统 prompt、plan/hypothesis 工具和同一条 route-owned finalization/claim-verification/report 管线；OpenCode 使用加固隔离的 OpenCode server，并通过每次分析的 MCP bridge 暴露 request-scoped SmartPerfetto 工具，同时禁用或拒绝内建 project discovery、file、shell、web 和 edit tools；Qoder 通过 SDK in-process MCP bridge 复用共享工具，禁用 SDK built-in tools，并在 SSE 前使用共享 private-output guard 投影每个答案 token。模型的工具调用节奏、流式事件、恢复能力和成本/超时语义都可能不同。
+
+## 并发、观测与准入
+
+并发默认 fail closed。一个 runtime/session 同时只允许一个分析执行；工具默认独占，只有显式标记且已准入的可交换只读工具可在同一 request 内重叠。每个 trace processor 实例仍由一个 SQL worker 串行执行查询，因此同一 trace/processor 的 SQL 不会因为工具并发而同时进入 processor；不同 processor/trace 或已准入的纯读准备工作可以重叠。processor 创建与恢复使用 single-flight，取消后旧执行不能覆盖新 session state。
+
+后端把真实阶段、first output、工具调度等待，以及 SQL 排队/执行耗时记录到内部 `RunManifest.performance`。该 `RuntimePerformance` receipt 不进入公开 SSE；公开流也不提供可用于准入的 model、provider snapshot、provider usage 或 performance 字段。它用于内部归因和受控 benchmark，不能单独证明真实 provider 的速度或准确性。
+
+性能分支由严格的维护者开关 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` 控制；默认没有任何候选获准。值只能是无空白、无重复的 `task4` 到 `task9` 逗号列表，任意空白、未知项、重复项或格式错误都会让整项 fail closed。它不是 Provider Manager、UI 或 provider env，也不会从 benchmark artifact 自动激活：
+
+| 候选 | 范围 |
+|---|---|
+| `task4` | 五个 runtime 复用一次 quick evidence/focus 预取结果 |
+| `task5` | 五个 runtime 的显式可交换只读工具使用有界公平并发；其余工具仍独占 |
+| `task6` | Claude/OpenAI 的独立 preflight DAG 重叠 |
+| `task7` | Pi 并发加载独立 SDK/provider，并在 quick 模式启用 parallel batch 调度；descriptor/tool gate 仍串行独占工作 |
+| `task8` | OpenCode 并行读取消息/状态并使用自适应轮询 |
+| `task9` | Qoder 的 Skill registry 与 SDK 启动重叠 |
+
+`task5` 获准后默认启用其安全只读策略；`SMARTPERFETTO_SAFE_TOOL_CONCURRENCY=false` 只是回滚到独占执行，不能在缺少 `task5` 准入时绕过边界。缓存 single-flight、执行隔离、取消清理、receipt 和确定性修复属于 correctness/observability 基础能力，不依赖性能候选开关。
+
+当前发布默认仍是串行策略：五个真实 adapter 的确定性准入 harness 为 `NOT CONFIGURED`，真实 provider 的有界 base/candidate A/B 尚未执行，因此速度/准确性准入结论是 `INCONCLUSIVE`。合成 scorer 只能验证计分器机械逻辑，不能批准候选默认开启。真实 provider 不可用时必须分别记录 `NOT AVAILABLE` 或 `NOT CONFIGURED`；尤其 Qoder 除 BYOK 外还需要 PAT 或本机 `qodercli` 登录态。单元测试、typecheck、build 和确定性 gate 都不能替代真实 provider 结果。
 
 ## 分析模式
 

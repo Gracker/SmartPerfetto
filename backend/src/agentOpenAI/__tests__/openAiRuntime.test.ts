@@ -7,14 +7,32 @@ import { OpenAIChatCompletionsModel, Runner, withTrace } from '@openai/agents';
 import { OpenAIRuntime, __testing } from '../openAiRuntime';
 import type { AnalysisPlanV3, PlanPhase } from '../../agentv3/types';
 import type { OpenAIAgentConfig } from '../../agentRuntime/engines/openai/openAiConfig';
+import * as quickEvidenceDirectAnswer from '../../agentRuntime/quickEvidenceDirectAnswer';
 import * as patternMemory from '../../agentv3/analysisPatternMemory';
+import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
+import * as skillLoader from '../../services/skillEngine/skillLoader';
+import * as focusAppDetector from '../../agentv3/focusAppDetector';
 import { createAnalysisRunSpec } from '../../agentRuntime/analysisRunSpec';
+import {
+  withEffectiveRuntimeRegistrySnapshot,
+  type EffectiveRuntimeRegistrySnapshot,
+} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
+import {createRuntimePerformanceRecorder, createRuntimePerformanceRun} from '../../agentRuntime/runtimePerformance';
+import type { ArchitectureInfo } from '../../agent/detectors/types';
 import type { QueryResult, TraceProcessorService } from '../../services/traceProcessorService';
 import {getSourceLookupCodeReferences} from '../../services/codebase/sourceLookupTools';
 import {assessFinalReportContractCompleteness} from '../../services/finalReportContractGate';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+
+const originalAdmittedRuntimeCandidates = process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES;
 
 afterEach(() => {
   jest.restoreAllMocks();
+  if (originalAdmittedRuntimeCandidates === undefined) {
+    delete process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES;
+  } else {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = originalAdmittedRuntimeCandidates;
+  }
 });
 
 function phase(id: string, status: PlanPhase['status']): PlanPhase {
@@ -87,6 +105,7 @@ type OpenAiStreamContextForTest = {
   sessionId: string;
   quickMode: boolean;
   answerStreamFilter: ReturnType<typeof __testing.createOpenAiReasoningFilterState>;
+  runtimePerformance?: ReturnType<typeof createRuntimePerformanceRecorder>;
   toolInputsByTaskId: Map<string, { toolName: string; args: Record<string, unknown> }>;
   onSuppressedAnswerDelta?: (delta: string) => void;
 };
@@ -130,6 +149,7 @@ type OpenAiPrepareContextForTest = {
 };
 
 type OpenAiRuntimeAnalysisResultForTest = {
+  success?: boolean;
   quickRun?: unknown;
   rounds?: number;
   conclusion?: string;
@@ -189,6 +209,7 @@ type OpenAiRuntimeTestAccess = {
     sessionId: string,
     handle: {readonly aborted: boolean; abort(): void},
   ) => () => void;
+  abortSession: (sessionId: string) => void;
   resetAnalysisSessionState: (sessionId: string) => unknown;
   sessionPlans: Map<string, {
     current: AnalysisPlanV3 | null;
@@ -252,6 +273,16 @@ function createRuntimeWithUpdates(): {
   return { runtime, updates };
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function createTraceProcessorForOpenAiPrepareTest(): TraceProcessorForOpenAiTest {
   return {
     query: jest.fn<TraceQueryForOpenAiTest>(async () => ({ columns: [], rows: [], durationMs: 0 })),
@@ -259,7 +290,301 @@ function createTraceProcessorForOpenAiPrepareTest(): TraceProcessorForOpenAiTest
   } as unknown as TraceProcessorForOpenAiTest;
 }
 
+function createNoopAttributionSink(
+  runtimePerformanceRecorder = createRuntimePerformanceRecorder(),
+): RunManifestAttributionSink {
+  return {
+    identity: {
+      runId: 'run-openai-test',
+      sessionId: 'session-openai',
+      scope: {
+        tenantId: 'tenant-test',
+        workspaceId: 'workspace-test',
+      },
+    },
+    runtimePerformanceRecorder,
+    recordScene: jest.fn(),
+    recordRuntime: jest.fn(),
+    recordMode: jest.fn(),
+    recordAdaptiveRouting: jest.fn(),
+    recordCapabilityManifest: jest.fn(),
+    recordSkillRegistry: jest.fn(),
+    startSkillInvocation: jest.fn(() => 'skill-invocation-test'),
+    finishSkillInvocation: jest.fn(),
+    recordUnknownSkillInvocation: jest.fn(),
+    recordSqlStatement: jest.fn(),
+    recordPromptTemplate: jest.fn(),
+    recordInjection: jest.fn(),
+    recordToolAllowlist: jest.fn(),
+    recordTurn: jest.fn(),
+  };
+}
+
+function createEffectiveRuntimeRegistrySnapshotForOpenAiTest(): EffectiveRuntimeRegistrySnapshot {
+  const skillRegistry = {
+    registryFingerprint: 'registry-test',
+    overlayGeneration: 'overlay-test',
+    isInitialized: () => true as const,
+    getSkill: () => undefined,
+    getAllSkills: () => [],
+    getFragmentCache: () => new Map<string, string>(),
+    getSkillOrigin: () => undefined,
+    getAppliedOverlayIds: () => [],
+    getVendorOverride: () => undefined,
+    getVendorOverridesForSkill: () => [],
+    getVendorOverrideLoadIssues: () => [],
+    findMatchingSkill: () => undefined,
+  };
+  return {
+    scope: {tenantId: 'tenant-test', workspaceId: 'workspace-test'},
+    baseSkillRegistryFingerprint: 'base-skills-test',
+    baseStrategyRegistryFingerprint: 'base-strategies-test',
+    overlayGeneration: 'overlay-test',
+    skillRegistry,
+    strategyRegistry: {
+      registryFingerprint: 'strategy-registry-test',
+      overlayGeneration: 'overlay-test',
+      getStrategy: () => undefined,
+      getAllStrategies: () => [],
+    },
+    skillNotes: {
+      registryFingerprint: 'skill-notes-test',
+      getSkillNotes: () => [],
+      getSkillIds: () => [],
+    },
+  };
+}
+
 describe('OpenAIRuntime analysis cancellation scope', () => {
+  function installMinimalFullOpenAiHarness(runtime: OpenAiRuntimeTestAccess) {
+    jest.spyOn(Runner.prototype as any, 'run')
+      .mockImplementation(async () => ({
+        currentTurn: 1,
+        finalOutput: startupFinalReportForReconciliation(),
+        history: [{ role: 'assistant', content: startupFinalReportForReconciliation() }],
+        lastResponseId: `resp-${Math.random().toString(36).slice(2)}`,
+        state: {},
+        completed: Promise.resolve(),
+        async *[Symbol.asyncIterator]() {},
+      }));
+    jest.spyOn(runtime, 'prepareAnalysisContext').mockResolvedValue({
+      tools: [],
+      allowedTools: [],
+      systemPrompt: 'test system prompt',
+      sessionContext: {
+        addTurn: jest.fn(),
+        updateWorkingMemoryFromConclusion: jest.fn(),
+      },
+      previousTurns: [],
+      architecture: { type: 'Standard', confidence: 1, evidence: [] },
+      hypotheses: [],
+      sessionMapKey: 'session-openai-guard',
+      effectivePackageName: 'com.example.demo',
+    } as any);
+    jest.spyOn(runtime, 'recordPatternMemory').mockImplementation(() => undefined);
+    jest.spyOn(runtime, 'getPlanCompletionStatus').mockReturnValue({
+      complete: true,
+      incomplete: [],
+      totalPhases: 1,
+      completedPhases: 1,
+      skippedPhases: 0,
+      pendingPhases: 0,
+      failedPhases: 0,
+      runningPhases: 0,
+      toolCalls: 1,
+      expectedToolCalls: 1,
+    });
+    jest.spyOn(runtime, 'shouldRequestFinalReportAfterPlanComplete').mockReturnValue(false);
+  }
+
+  it('rejects same-session direct overlap even when run and reference ids differ', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    installMinimalFullOpenAiHarness(runtime);
+    const releaseClassifier = createDeferred<OpenAiModeClassificationForTest>();
+    jest.spyOn(runtime, 'classifyModeForRequest').mockImplementation(async () => releaseClassifier.promise);
+
+    const first = runtime.analyze('first', 'session-openai-overlap', 'trace-openai', {
+      analysisMode: 'full',
+      providerId: null,
+      runId: 'run-1',
+      referenceTraceId: 'ref-1',
+    });
+    await Promise.resolve();
+    const second = runtime.analyze('second', 'session-openai-overlap', 'trace-openai', {
+      analysisMode: 'full',
+      providerId: null,
+      runId: 'run-2',
+      referenceTraceId: 'ref-2',
+    });
+
+    await expect(second).rejects.toThrow(/already in progress/i);
+    releaseClassifier.resolve({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    await expect(first).resolves.toMatchObject({ success: true });
+  });
+
+  it('allows different sessions to run independently', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    installMinimalFullOpenAiHarness(runtime);
+    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+
+    await expect(Promise.all([
+      runtime.analyze('first', 'session-openai-isolated-1', 'trace-openai', { analysisMode: 'full', providerId: null }),
+      runtime.analyze('second', 'session-openai-isolated-2', 'trace-openai', { analysisMode: 'full', providerId: null }),
+    ])).resolves.toEqual([
+      expect.objectContaining({ success: true }),
+      expect.objectContaining({ success: true }),
+    ]);
+  });
+
+  it('records OpenAI analyze finalization exactly once on success', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    installMinimalFullOpenAiHarness(runtime);
+    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    await expect(runtime.analyze('analyze startup', 'session-openai-performance', 'trace-openai', {
+      analysisMode: 'full',
+      providerId: null,
+      runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+    })).resolves.toMatchObject({success: true});
+
+    const receipt = runtimePerformanceRecorder.seal();
+    const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+    expect(finalizationPhases).toHaveLength(1);
+    expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'ok'}));
+    expect(receipt.phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({name: 'provider', outcome: 'ok'}),
+    ]));
+  });
+
+  it('records OpenAI analyze finalization exactly once on execution error', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    installMinimalFullOpenAiHarness(runtime);
+    jest.spyOn(Runner.prototype as any, 'run').mockRejectedValueOnce(new Error('provider failed'));
+    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    await expect(runtime.analyze('analyze startup', 'session-openai-performance-error', 'trace-openai', {
+      analysisMode: 'full',
+      providerId: null,
+      runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+    })).resolves.toMatchObject({
+      success: false,
+      terminationReason: 'execution_error',
+    });
+
+    const receipt = runtimePerformanceRecorder.seal();
+    const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+    expect(finalizationPhases).toHaveLength(1);
+    expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'error'}));
+    expect(receipt.phases).toEqual(expect.arrayContaining([
+      expect.objectContaining({name: 'provider', outcome: 'error'}),
+    ]));
+  });
+
+  it('records OpenAI analyze finalization exactly once on live cancellation', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    installMinimalFullOpenAiHarness(runtime);
+    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    const providerStarted = createDeferred<void>();
+    const providerAborted = createDeferred<void>();
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[2] as {signal?: AbortSignal};
+      const signal = options.signal;
+      providerStarted.resolve();
+      const waitForAbort = new Promise<never>((_resolve, reject) => {
+        const abort = () => {
+          providerAborted.resolve();
+          reject(new Error('Analysis aborted'));
+        };
+        if (signal?.aborted) {
+          abort();
+          return;
+        }
+        signal?.addEventListener('abort', abort, {once: true});
+      });
+      return {
+        currentTurn: 1,
+        finalOutput: '',
+        history: [],
+        lastResponseId: 'resp-live-cancel',
+        state: {},
+        completed: waitForAbort.catch(() => undefined),
+        async *[Symbol.asyncIterator]() {
+          await waitForAbort;
+        },
+      };
+    });
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    const analysis = runtime.analyze('analyze startup', 'session-openai-performance-cancel', 'trace-openai', {
+      analysisMode: 'full',
+      providerId: null,
+      runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+    });
+    await providerStarted.promise;
+    runtime.abortSession('session-openai-performance-cancel');
+    await providerAborted.promise;
+
+    await expect(analysis).rejects.toThrow(/aborted/i);
+
+    const receipt = runtimePerformanceRecorder.seal();
+    const finalizationPhases = receipt.phases.filter(phase => phase.name === 'finalization');
+    expect(finalizationPhases).toHaveLength(1);
+    expect(finalizationPhases[0]).toEqual(expect.objectContaining({outcome: 'cancelled'}));
+    expect(receipt.phases.filter(phase => phase.name === 'classification')).toEqual([
+      expect.objectContaining({outcome: 'ok'}),
+    ]);
+    expect(receipt.phases.filter(phase => phase.name === 'provider')).toEqual([
+      expect.objectContaining({outcome: 'cancelled'}),
+    ]);
+  });
+
   it('aborts every provider request linked to the active analysis', () => {
     const scope = new __testing.RuntimeAnalysisAbortScope();
     const first = scope.createLinkedController();
@@ -748,6 +1073,252 @@ describe('OpenAIRuntime quick mode classification metadata', () => {
     expect(runtime.sessionSqlErrors.has('s-openai-preflight-identity')).toBe(true);
   });
 
+  it('starts OpenAI reference comparison before current architecture-driven completeness settles', async () => {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task6';
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    const runtime = createOpenAiRuntimeForTest(traceProcessor);
+    const architectureStarted = createDeferred<void>();
+    const releaseArchitecture = createDeferred<ArchitectureInfo>();
+    const releaseCompleteness = createDeferred<undefined>();
+    const releaseComparison = createDeferred<any>();
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    const runtimePerformance = createRuntimePerformanceRun(createNoopAttributionSink(runtimePerformanceRecorder));
+    const detectArchitecture = jest.spyOn(runtime, 'detectArchitecture')
+      .mockImplementation(async () => {
+        architectureStarted.resolve();
+        return releaseArchitecture.promise;
+      });
+    const detectVendor = jest.spyOn(runtime, 'detectVendor')
+      .mockResolvedValue('xiaomi');
+    const detectCompleteness = jest.spyOn(runtime as any, 'detectCompleteness')
+      .mockImplementation(async () => releaseCompleteness.promise);
+    const buildComparisonContext = jest.spyOn(runtime as any, 'buildComparisonContext')
+      .mockImplementation(async () => releaseComparison.promise);
+    const sessionContext = createSessionContextForOpenAiPrepareTest();
+
+    const preparePromise = runtime.prepareAnalysisContext(
+      '对比两条 trace 的启动差异',
+      's-openai-preflight-overlap',
+      'trace-openai-preflight-overlap-current',
+      {
+        analysisMode: 'full',
+        packageName: 'com.current.app',
+        referenceTraceId: 'trace-openai-preflight-overlap-reference',
+      },
+      {
+        config: { outputLanguage: 'zh-CN' },
+        sceneType: 'startup',
+        lightweight: false,
+        analysisRunSpec: createOpenAiAnalysisRunSpecForTest({
+          query: '对比两条 trace 的启动差异',
+          sessionId: 's-openai-preflight-overlap',
+          traceId: 'trace-openai-preflight-overlap-current',
+          analysisMode: 'full',
+        }),
+        sessionContext,
+        previousTurns: [],
+        skipQuickTracePreflightDetection: false,
+        runtimePerformance,
+      },
+    );
+
+    try {
+      await architectureStarted.promise;
+      await Promise.resolve();
+
+      expect(buildComparisonContext).toHaveBeenCalledTimes(1);
+      expect(detectCompleteness).not.toHaveBeenCalled();
+    } finally {
+      releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
+      releaseCompleteness.resolve(undefined);
+      releaseComparison.resolve({
+        currentPackageName: 'com.current.app',
+        referencePackageName: 'com.reference.app',
+        commonCapabilities: [],
+        capabilityDiff: { currentOnly: [], referenceOnly: [] },
+      });
+      await preparePromise;
+      const phases = runtimePerformanceRecorder.seal().phases;
+      for (const phaseName of ['architecture', 'completeness', 'comparison', 'skill_registry', 'knowledge']) {
+        expect(phases.filter(phase => phase.name === phaseName)).toHaveLength(1);
+      }
+      expect(phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'architecture', outcome: 'ok' }),
+        expect.objectContaining({ name: 'completeness', outcome: 'ok' }),
+        expect.objectContaining({ name: 'comparison', outcome: 'ok' }),
+        expect.objectContaining({ name: 'skill_registry', outcome: 'ok' }),
+        expect.objectContaining({ name: 'knowledge', outcome: 'ok' }),
+      ]));
+      detectArchitecture.mockRestore();
+      detectVendor.mockRestore();
+      detectCompleteness.mockRestore();
+      buildComparisonContext.mockRestore();
+    }
+  });
+
+  it('runs the widened OpenAI preflight operations sequentially by default', async () => {
+    delete process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES;
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    const runtime = createOpenAiRuntimeForTest(traceProcessor);
+    const releaseArchitecture = createDeferred<ArchitectureInfo>();
+    const architectureStarted = createDeferred<void>();
+    const detectArchitecture = jest.spyOn(runtime, 'detectArchitecture')
+      .mockImplementation(async () => {
+        architectureStarted.resolve();
+        return releaseArchitecture.promise;
+      });
+    const detectVendor = jest.spyOn(runtime, 'detectVendor').mockResolvedValue('xiaomi');
+    const detectCompleteness = jest.spyOn(runtime as any, 'detectCompleteness').mockResolvedValue(undefined);
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized').mockResolvedValue(undefined);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockResolvedValue({getContextForAI: () => 'serial knowledge'} as any);
+    const sessionContext = createSessionContextForOpenAiPrepareTest();
+
+    const pending = runtime.prepareAnalysisContext(
+      '分析启动性能',
+      's-openai-serial-preflight',
+      'trace-openai-serial-preflight',
+      {analysisMode: 'full', packageName: 'com.example.app'},
+      {
+        config: {outputLanguage: 'zh-CN'},
+        sceneType: 'startup',
+        lightweight: false,
+        analysisRunSpec: createOpenAiAnalysisRunSpecForTest({
+          query: '分析启动性能',
+          sessionId: 's-openai-serial-preflight',
+          traceId: 'trace-openai-serial-preflight',
+          analysisMode: 'full',
+        }),
+        sessionContext,
+        previousTurns: [],
+        skipQuickTracePreflightDetection: false,
+      },
+    );
+    await architectureStarted.promise;
+    expect(detectVendor).not.toHaveBeenCalled();
+    expect(detectCompleteness).not.toHaveBeenCalled();
+    expect(registrySpy).not.toHaveBeenCalled();
+    expect(knowledgeSpy).not.toHaveBeenCalled();
+
+    releaseArchitecture.resolve({type: 'STANDARD', confidence: 0.9, evidence: []});
+    await pending;
+    expect(detectVendor).toHaveBeenCalledTimes(1);
+    expect(detectCompleteness).toHaveBeenCalledTimes(1);
+    expect(registrySpy).toHaveBeenCalledTimes(1);
+    expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+    expect(detectArchitecture.mock.invocationCallOrder[0]).toBeLessThan(detectVendor.mock.invocationCallOrder[0]);
+    expect(detectVendor.mock.invocationCallOrder[0]).toBeLessThan(detectCompleteness.mock.invocationCallOrder[0]);
+  });
+
+  it('settles OpenAI overlapped full preflights before cancellation returns without session state writes', async () => {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task6';
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    const runtime = createOpenAiRuntimeForTest(traceProcessor);
+    const sessionId = 's-openai-cancel-preflight';
+    const abortController = new AbortController();
+    const abortError = new Error('cancelled by OpenAI preflight barrier test');
+    const executionLease = {
+      key: { runtime: 'openai-agent', sessionId, referenceTraceId: 'trace-openai-cancel-reference' },
+      signal: abortController.signal,
+      throwIfAborted: () => {
+        if (abortController.signal.aborted) throw abortError;
+      },
+      settle: jest.fn(),
+    };
+    const architectureStarted = createDeferred<void>();
+    const comparisonStarted = createDeferred<void>();
+    const releaseArchitecture = createDeferred<ArchitectureInfo>();
+    const releaseVendor = createDeferred<string | null>();
+    const releaseCompleteness = createDeferred<undefined>();
+    const releaseComparison = createDeferred<any>();
+    const releaseRegistry = createDeferred<void>();
+    const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    const detectArchitecture = jest.spyOn(runtime, 'detectArchitecture')
+      .mockImplementation(async () => {
+        architectureStarted.resolve();
+        return releaseArchitecture.promise;
+      });
+    const detectVendor = jest.spyOn(runtime, 'detectVendor')
+      .mockImplementation(async () => releaseVendor.promise);
+    const detectCompleteness = jest.spyOn(runtime as any, 'detectCompleteness')
+      .mockImplementation(async () => releaseCompleteness.promise);
+    const buildComparisonContext = jest.spyOn(runtime as any, 'buildComparisonContext')
+      .mockImplementation(async () => {
+        comparisonStarted.resolve();
+        return releaseComparison.promise;
+      });
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockImplementation(async () => releaseRegistry.promise);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockImplementation(async () => releaseKnowledge.promise as any);
+    const sessionContext = createSessionContextForOpenAiPrepareTest();
+
+    const preparePromise = runtime.prepareAnalysisContext(
+      '取消前的两条 trace 启动差异',
+      sessionId,
+      'trace-openai-cancel-current',
+      {
+        analysisMode: 'full',
+        packageName: 'com.current.app',
+        referenceTraceId: 'trace-openai-cancel-reference',
+      },
+      {
+        config: { outputLanguage: 'zh-CN' },
+        sceneType: 'startup',
+        lightweight: false,
+        analysisRunSpec: createOpenAiAnalysisRunSpecForTest({
+          query: '取消前的两条 trace 启动差异',
+          sessionId,
+          traceId: 'trace-openai-cancel-current',
+          analysisMode: 'full',
+        }),
+        sessionContext,
+        previousTurns: [],
+        skipQuickTracePreflightDetection: false,
+        executionLease,
+      },
+    );
+
+    try {
+      await Promise.all([architectureStarted.promise, comparisonStarted.promise]);
+      abortController.abort(abortError);
+      releaseRegistry.reject(new Error('registry rejected after cancellation'));
+      releaseKnowledge.reject(new Error('knowledge rejected after cancellation'));
+      releaseComparison.reject(new Error('comparison rejected after cancellation'));
+      releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
+      releaseVendor.resolve('xiaomi');
+      await Promise.resolve();
+      releaseCompleteness.resolve(undefined);
+
+      await expect(preparePromise).rejects.toThrow(abortError.message);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(unhandledRejections).toHaveLength(0);
+      expect(detectArchitecture).toHaveBeenCalledTimes(1);
+      expect(detectVendor).toHaveBeenCalledTimes(1);
+      expect(detectCompleteness).toHaveBeenCalledTimes(1);
+      expect(buildComparisonContext).toHaveBeenCalledTimes(1);
+      expect(registrySpy).toHaveBeenCalledTimes(1);
+      expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+      expect((runtime as any).artifactStores.has(sessionId)).toBe(false);
+      expect((runtime as any).sessionPlans.has(sessionId)).toBe(false);
+      expect((runtime as any).sessionNotes.has(sessionId)).toBe(false);
+      expect((runtime as any).sessionHypotheses.has(sessionId)).toBe(false);
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+      detectArchitecture.mockRestore();
+      detectVendor.mockRestore();
+      detectCompleteness.mockRestore();
+      buildComparisonContext.mockRestore();
+      registrySpy.mockRestore();
+      knowledgeSpy.mockRestore();
+    }
+  });
+
   it('uses trace fact pre-evidence without loading quick tools when evidence is complete', async () => {
     const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
     traceProcessor.query.mockImplementation(async (_traceId: string, sql: string) => {
@@ -1143,6 +1714,141 @@ describe('OpenAIRuntime quick mode classification metadata', () => {
     expect(context.systemPrompt).not.toContain('runtime_trace_fact:cpu_core_count');
   });
 
+  it('reuses quick-evidence focus state on fallback without repeating OpenAI preflight queries', async () => {
+    process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task4';
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    const sqlQueries: string[] = [];
+    traceProcessor.query.mockImplementation(async (_traceId: string, sql: string) => {
+      sqlQueries.push(sql);
+      if (sql.includes('android_battery_stats_event_slices')) {
+        return {
+          columns: ['package_name', 'total_duration_ns', 'switch_count'],
+          rows: [['com.example.app', 2_000_000_000, 2]],
+          durationMs: 1,
+        };
+      }
+      if (sql.includes('runtime_frame_metrics')) {
+        return {
+          columns: [
+            'package_name',
+            'process_names',
+            'upid_count',
+            'total_frames',
+            'window_start_ns',
+            'window_end_ns',
+            'duration_s',
+            'fps',
+            'source_table',
+          ],
+          rows: [],
+          durationMs: 1,
+        };
+      }
+      throw new Error(`Unexpected SQL: ${sql}`);
+    });
+    const runtime = createOpenAiRuntimeForTest(traceProcessor);
+    const attemptSpy = jest.spyOn(quickEvidenceDirectAnswer, 'buildRuntimeQuickEvidenceAttempt');
+    const detectArchitecture = jest.spyOn(runtime, 'detectArchitecture')
+      .mockResolvedValue({ type: 'Standard', confidence: 0.9, evidence: [] });
+    jest.spyOn(runtime, 'detectVendor').mockResolvedValue('xiaomi');
+    jest.spyOn(Runner.prototype as any, 'run').mockImplementation(async () => ({
+      currentTurn: 1,
+      finalOutput: '## Final Report\nfallback',
+      history: [{ role: 'assistant', content: '## Final Report\nfallback' }],
+      lastResponseId: 'resp-quick-fallback',
+      state: {},
+      completed: Promise.resolve(),
+      async *[Symbol.asyncIterator]() {},
+    }));
+
+    const result = await runtime.analyze(
+      '滑动 FPS 是多少？',
+      's-openai-reused-quick-attempt',
+      'trace-openai-reused-quick-attempt',
+    );
+
+    expect(result.conclusion).toBe('## Final Report\nfallback');
+    expect(attemptSpy).toHaveBeenCalledTimes(1);
+    expect(sqlQueries.filter(sql => sql.includes('android_battery_stats_event_slices'))).toHaveLength(1);
+    expect(sqlQueries.filter(sql => sql.includes('runtime_frame_metrics'))).toHaveLength(1);
+    expect(detectArchitecture).toHaveBeenCalledWith(
+      'trace-openai-reused-quick-attempt',
+      'com.example.app',
+    );
+  });
+
+  it('injects unpublished quick-evidence attempt context into OpenAI fallback prompts without re-querying', async () => {
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    traceProcessor.query.mockImplementation(async (_traceId: string, sql: string) => {
+      throw new Error(`OpenAI fallback should reuse quick attempt evidence, not re-query: ${sql}`);
+    });
+    const runtime = createOpenAiRuntimeForTest(traceProcessor);
+    const runtimeWithPrivates = runtime as unknown as {
+      detectArchitecture: (...args: unknown[]) => Promise<unknown>;
+      detectVendor: (...args: unknown[]) => Promise<unknown>;
+      prepareAnalysisContext: (...args: unknown[]) => Promise<{ systemPrompt: string }>;
+    };
+    const detectArchitecture = jest.spyOn(runtimeWithPrivates, 'detectArchitecture')
+      .mockResolvedValue({ type: 'Standard', confidence: 0.9, evidence: [] });
+    jest.spyOn(runtimeWithPrivates, 'detectVendor').mockResolvedValue('xiaomi');
+    const sessionContext = createSessionContextForOpenAiPrepareTest();
+
+    const context = await runtimeWithPrivates.prepareAnalysisContext(
+      '滑动 FPS 是多少？',
+      's-openai-private-quick-attempt',
+      'trace-openai-private-quick-attempt',
+      { analysisMode: 'fast' },
+      {
+        config: { outputLanguage: 'zh-CN' },
+        sceneType: 'scrolling',
+        lightweight: true,
+        analysisRunSpec: createOpenAiAnalysisRunSpecForTest({
+          query: '滑动 FPS 是多少？',
+          sessionId: 's-openai-private-quick-attempt',
+          traceId: 'trace-openai-private-quick-attempt',
+          analysisMode: 'fast',
+        }),
+        sessionContext,
+        previousTurns: [],
+        skipQuickTracePreflightDetection: true,
+        quickTraceFactPreEvidence: true,
+        quickEvidenceAttempt: {
+          focusResult: {
+            apps: [{
+              packageName: 'com.example.app',
+              totalDurationNs: 2_000_000_000,
+              switchCount: 2,
+            }],
+            primaryApp: 'com.example.app',
+            method: 'frame_timeline',
+          },
+          effectivePackageName: 'com.example.app',
+          evidenceCounts: {
+            currentRunDataEnvelopes: 0,
+            citedEvidenceRefs: 0,
+          },
+          runtimeEvidenceContext: 'PRIVATE_RUNTIME_TRACE_FACT_CONTEXT fps=58 evidence_ref_id=data:runtime_trace_fact:frame_metrics:test',
+        },
+      },
+    );
+
+    expect(traceProcessor.query).not.toHaveBeenCalled();
+    expect(detectArchitecture).toHaveBeenCalledWith(
+      'trace-openai-private-quick-attempt',
+      'com.example.app',
+    );
+    expect(context.systemPrompt).toContain('PRIVATE_RUNTIME_TRACE_FACT_CONTEXT');
+    expect(context.systemPrompt).toContain('fps=58');
+    expect(context.systemPrompt).not.toContain('data:runtime_trace_fact');
+    const routingContext = context.systemPrompt.slice(
+      context.systemPrompt.indexOf('PRIVATE_RUNTIME_TRACE_FACT_CONTEXT'),
+    );
+    expect(routingContext).not.toContain('evidence_ref_id');
+    expect(routingContext).not.toContain('source_tool_call_id');
+    expect(routingContext).not.toContain('evidenceRefId');
+    expect(routingContext).not.toContain('sourceToolCallId');
+  });
+
   it('keeps vendor and architecture preflight for diagnostic fast context', async () => {
     const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
     const runtime = createOpenAiRuntimeForTest(traceProcessor);
@@ -1511,6 +2217,30 @@ describe('OpenAIRuntime plan completion guard', () => {
       type: 'answer_token',
       content: { token: '## 综合结论\n\nFrame 卡顿来自主线程长时间 Sleeping。' },
     }));
+  });
+
+  it('records first output when an OpenAI reasoning thought is emitted before answer text', () => {
+    const { runtime, updates } = createRuntimeWithUpdates();
+    const recorder = createRuntimePerformanceRecorder();
+    const context = streamContext('s-thought-first', false);
+    context.runtimePerformance = recorder;
+
+    const delta = runtime.handleStreamEvent({
+      type: 'run_item_stream_event',
+      name: 'reasoning_item_created',
+      item: {
+        rawItem: {
+          content: [{text: 'I need to inspect the trace plan first.'}],
+        },
+      },
+    }, 'zh-CN', context);
+
+    expect(delta).toBe('');
+    expect(updates).toContainEqual(expect.objectContaining({
+      type: 'thought',
+      content: {thought: 'I need to inspect the trace plan first.'},
+    }));
+    expect(recorder.seal().firstOutputMs).toEqual(expect.any(Number));
   });
 
   it('keeps quick-mode answer streaming unchanged', () => {
@@ -2590,7 +3320,7 @@ describe('OpenAIRuntime plan completion guard', () => {
         if (!stream) throw new Error('unexpected third OpenAI prompt');
         return stream;
       });
-    jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+    const classifySpy = jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
       quickMode: false,
       source: 'user_explicit',
       reason: 'test full mode',
@@ -2617,6 +3347,19 @@ describe('OpenAIRuntime plan completion guard', () => {
       effectivePackageName: 'com.example.demo',
     } as any);
     jest.spyOn(runtime, 'recordPatternMemory').mockImplementation(() => undefined);
+    jest.spyOn(runtime, 'getPlanCompletionStatus').mockReturnValue({
+      complete: true,
+      incomplete: [],
+      totalPhases: 1,
+      completedPhases: 1,
+      skippedPhases: 0,
+      pendingPhases: 0,
+      failedPhases: 0,
+      runningPhases: 0,
+      toolCalls: 1,
+      expectedToolCalls: 1,
+    });
+    jest.spyOn(runtime, 'shouldRequestFinalReportAfterPlanComplete').mockReturnValue(false);
 
     const result = await runtime.analyze(
       '请调用 anr_analysis 检查这个启动 Trace 是否包含 ANR。',
@@ -3288,6 +4031,232 @@ describe('OpenAIRuntime previous response recovery', () => {
       lastResponseId: undefined,
       runState: undefined,
     }));
+  });
+
+  it('recovers a missing previous response inside the active guard lease', async () => {
+    const runtime = createOpenAiRuntimeForTest();
+    const updates: OpenAiStreamingUpdateForTest[] = [];
+    runtime.on('update', update => updates.push(update));
+    runtime.sessionMap.set('s-openai-retry-guard', {
+      history: [{ role: 'user', content: 'previous local question' }],
+      lastResponseId: 'resp_missing',
+      updatedAt: Date.now(),
+    });
+
+    const successStream = {
+      currentTurn: 1,
+      finalOutput: startupFinalReportForReconciliation(),
+      history: [{ role: 'assistant', content: startupFinalReportForReconciliation() }],
+      lastResponseId: 'resp_recovered',
+      state: {},
+      completed: Promise.resolve(),
+      async *[Symbol.asyncIterator]() {},
+    };
+    const runSpy = jest.spyOn(Runner.prototype as any, 'run')
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[2] as { previousResponseId?: string } | undefined;
+        if (options?.previousResponseId === 'resp_missing') {
+          throw new Error('No response found with id resp_missing');
+        }
+        return successStream;
+      });
+    const classifySpy = jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    const addTurn = jest.fn();
+    jest.spyOn(runtime, 'prepareAnalysisContext').mockResolvedValue({
+      tools: [],
+      allowedTools: [],
+      systemPrompt: 'test system prompt',
+      sessionContext: {
+        addTurn,
+        updateWorkingMemoryFromConclusion: jest.fn(),
+      },
+      previousTurns: [],
+      architecture: { type: 'Standard', confidence: 1, evidence: [] },
+      hypotheses: [],
+      sessionMapKey: 's-openai-retry-guard',
+      effectivePackageName: 'com.example.demo',
+    } as any);
+    jest.spyOn(runtime, 'recordPatternMemory').mockImplementation(() => undefined);
+
+    const result = await runtime.analyze(
+      '分析启动性能',
+      's-openai-retry-guard',
+      'trace-openai-retry-guard',
+      { analysisMode: 'full', providerId: null },
+    );
+
+    expect(result.success).toBe(true);
+    expect(classifySpy).toHaveBeenCalledTimes(1);
+    expect(runSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(runSpy.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+      previousResponseId: 'resp_missing',
+    }));
+    expect(runSpy.mock.calls[1]?.[2]).not.toHaveProperty('previousResponseId');
+    expect((runtime.sessionMap.get('s-openai-retry-guard') as OpenAiSessionMapEntryForTest)?.lastResponseId)
+      .toBe('resp_recovered');
+    expect(updates).toContainEqual(expect.objectContaining({
+      type: 'degraded',
+      content: expect.objectContaining({
+        fallback: 'fresh_openai_run_after_missing_previous_response',
+      }),
+    }));
+  });
+
+  it('records OpenAI preflight phases once while previous response recovery retries the provider once', async () => {
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    const runtime = createOpenAiRuntimeForTest(traceProcessor);
+    const sessionId = 's-openai-retry-phases';
+    const traceId = 'trace-openai-retry-phases';
+    const referenceTraceId = 'trace-openai-retry-reference';
+    runtime.restoreSessionMapping(sessionId, 'resp_missing_retry_phases', referenceTraceId);
+
+    const focusSpy = jest.spyOn(focusAppDetector, 'detectFocusApps')
+      .mockResolvedValue({
+        apps: [{ packageName: 'com.example.app', processName: 'com.example.app', score: 1 }],
+        primaryApp: 'com.example.app',
+        method: 'process_track',
+      } as any);
+    const classifySpy = jest.spyOn(runtime, 'classifyModeForRequest').mockResolvedValue({
+      quickMode: false,
+      source: 'user_explicit',
+      reason: 'test full mode',
+      skipQuickTracePreflightDetection: false,
+      quickAcknowledgementDirectAnswer: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+    });
+    const architectureSpy = jest.spyOn(runtime, 'detectArchitecture')
+      .mockResolvedValue({ type: 'STANDARD', confidence: 0.9, evidence: [] });
+    const vendorSpy = jest.spyOn(runtime, 'detectVendor')
+      .mockResolvedValue('xiaomi');
+    const completenessSpy = jest.spyOn(runtime as any, 'detectCompleteness')
+      .mockResolvedValue(undefined);
+    const comparisonSpy = jest.spyOn(runtime as any, 'buildComparisonContext')
+      .mockResolvedValue({
+        currentPackageName: 'com.example.app',
+        referencePackageName: 'com.example.reference',
+        commonCapabilities: [],
+        capabilityDiff: { currentOnly: [], referenceOnly: [] },
+      });
+    const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
+      .mockResolvedValue(undefined);
+    const knowledgeSpy = jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase')
+      .mockResolvedValue({ getContextForAI: () => 'OpenAI retry knowledge context' } as any);
+    const successStream = {
+      currentTurn: 1,
+      finalOutput: startupFinalReportForReconciliation(),
+      history: [{ role: 'assistant', content: startupFinalReportForReconciliation() }],
+      lastResponseId: 'resp_recovered_retry_phases',
+      state: {},
+      completed: Promise.resolve(),
+      async *[Symbol.asyncIterator]() {},
+    };
+    const runSpy = jest.spyOn(Runner.prototype as any, 'run')
+      .mockImplementation(async (...args: unknown[]) => {
+        const options = args[2] as { previousResponseId?: string } | undefined;
+        if (options?.previousResponseId === 'resp_missing_retry_phases') {
+          throw new Error('No response found with id resp_missing_retry_phases');
+        }
+        return successStream;
+      });
+    jest.spyOn(runtime, 'recordPatternMemory').mockImplementation(() => undefined);
+    jest.spyOn(runtime, 'getPlanCompletionStatus').mockReturnValue({
+      complete: true,
+      incomplete: [],
+      totalPhases: 1,
+      completedPhases: 1,
+      skippedPhases: 0,
+      pendingPhases: 0,
+      failedPhases: 0,
+      runningPhases: 0,
+      toolCalls: 1,
+      expectedToolCalls: 1,
+    });
+    jest.spyOn(runtime as any, 'assessFinalReportQualityIssue').mockReturnValue(undefined);
+    jest.spyOn(runtime, 'shouldRequestFinalReportAfterPlanComplete').mockReturnValue(false);
+    const runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+
+    try {
+      const result = await withEffectiveRuntimeRegistrySnapshot(
+        createEffectiveRuntimeRegistrySnapshotForOpenAiTest(),
+        () => runtime.analyze(
+          '对比两条 trace 的启动差异',
+          sessionId,
+          traceId,
+          {
+            analysisMode: 'full',
+            providerId: null,
+            packageName: 'com.example.app',
+            referenceTraceId,
+            runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+          },
+        ),
+      );
+      expect(result).toMatchObject({ success: true });
+
+      expect(classifySpy).toHaveBeenCalledTimes(1);
+      expect(focusSpy).toHaveBeenCalledTimes(1);
+      expect(architectureSpy).toHaveBeenCalledTimes(1);
+      expect(vendorSpy).toHaveBeenCalledTimes(1);
+      expect(completenessSpy).toHaveBeenCalledTimes(1);
+      expect(comparisonSpy).toHaveBeenCalledTimes(1);
+      expect(registrySpy).toHaveBeenCalledTimes(1);
+      expect(knowledgeSpy).toHaveBeenCalledTimes(1);
+      expect(runSpy).toHaveBeenCalledTimes(2);
+      expect(runSpy.mock.calls[0]?.[2]).toEqual(expect.objectContaining({
+        previousResponseId: 'resp_missing_retry_phases',
+      }));
+      expect(runSpy.mock.calls[1]?.[2]).not.toHaveProperty('previousResponseId');
+
+      const phases = runtimePerformanceRecorder.seal().phases;
+      for (const phaseName of [
+        'classification',
+        'focus',
+        'architecture',
+        'completeness',
+        'comparison',
+        'skill_registry',
+        'knowledge',
+        'sdk_start',
+        'finalization',
+      ]) {
+        expect(phases.filter(phase => phase.name === phaseName)).toHaveLength(1);
+      }
+      expect(phases.filter(phase => phase.name === 'provider')).toEqual([
+        expect.objectContaining({ outcome: 'error' }),
+        expect.objectContaining({ outcome: 'ok' }),
+      ]);
+      expect(phases).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'classification', outcome: 'ok' }),
+        expect.objectContaining({ name: 'focus', outcome: 'ok' }),
+        expect.objectContaining({ name: 'architecture', outcome: 'ok' }),
+        expect.objectContaining({ name: 'completeness', outcome: 'ok' }),
+        expect.objectContaining({ name: 'comparison', outcome: 'ok' }),
+        expect.objectContaining({ name: 'skill_registry', outcome: 'ok' }),
+        expect.objectContaining({ name: 'knowledge', outcome: 'ok' }),
+        expect.objectContaining({ name: 'finalization', outcome: 'ok' }),
+      ]));
+    } finally {
+      focusSpy.mockRestore();
+      classifySpy.mockRestore();
+      architectureSpy.mockRestore();
+      vendorSpy.mockRestore();
+      completenessSpy.mockRestore();
+      comparisonSpy.mockRestore();
+      registrySpy.mockRestore();
+      knowledgeSpy.mockRestore();
+      runSpy.mockRestore();
+    }
   });
 
   it('does not persist stale OpenAI response mappings into snapshots', () => {

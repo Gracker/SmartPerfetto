@@ -663,6 +663,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     this.sqlWorker = new TraceProcessorSqlWorker({
       processorId: this.id,
       traceId: this.traceId,
+      processorKey: this.processorKey,
       port: this._httpPort,
     });
   }
@@ -1319,6 +1320,10 @@ export class TraceProcessorFactory {
     return this.processors.get(processorKey);
   }
 
+  static hasProcessorReference(processor: ManagedTraceProcessor): boolean {
+    return Array.from(this.processors.values()).some(candidate => candidate === processor);
+  }
+
   static remove(processorKey: string): boolean {
     const processor = this.processors.get(processorKey);
     if (processor) {
@@ -1463,6 +1468,7 @@ export class ExternalRpcProcessor extends EventEmitter implements TraceProcessor
     this.sqlWorker = new TraceProcessorSqlWorker({
       processorId: this.id,
       traceId: this.traceId,
+      processorKey: this.traceId,
       port: this._httpPort,
       forceInline: IS_TEST_ENV,
       rawExecutor: IS_TEST_ENV

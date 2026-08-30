@@ -576,7 +576,10 @@ router.get('/assets/mermaid.min.js', (_req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  return res.sendFile(assetPath);
+  return res.sendFile(assetPath, {dotfiles: 'allow'}, error => {
+    if (!error || res.headersSent) return;
+    res.status(404).type('text/plain').send('Mermaid report asset is unavailable');
+  });
 });
 
 /** Save a report to disk. Called externally when reports are generated. */

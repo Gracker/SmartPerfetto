@@ -7,7 +7,11 @@ import { AsyncLocalStorage } from 'async_hooks';
 import fs from 'fs';
 import path from 'path';
 import { uuidv4 } from '../utils/uuid';
-import { WorkingTraceProcessor, TraceProcessorFactory } from './workingTraceProcessor';
+import {
+  ExternalRpcProcessor,
+  WorkingTraceProcessor,
+  TraceProcessorFactory,
+} from './workingTraceProcessor';
 import type {
   TraceProcessorBoundedQueryOptions,
   TraceProcessorQueryOptions,
@@ -116,6 +120,14 @@ export interface TraceProcessorLeaseSnapshot {
 const DEFAULT_LEASE_RESTART_BACKOFF_MS = [1000, 5000, 15000];
 const DEFAULT_LEASE_RESTART_JITTER_MS = 250;
 const LEASE_RESTART_CONFLICT_STATES = new Set<TraceProcessorLeaseState>(['draining', 'released', 'failed']);
+type LeaseRestartOwnerToken = symbol;
+
+class LeaseProcessorRestartCancelledError extends Error {
+  constructor(processorKey: string) {
+    super(`Lease processor restart cancelled for ${processorKey}`);
+    this.name = 'LeaseProcessorRestartCancelledError';
+  }
+}
 
 function recordRunManifestSqlStatements(sql: string, success: boolean): void {
   const sink = currentRunManifestAttributionSink();
@@ -132,13 +144,29 @@ function recordRunManifestSqlStatements(sql: string, success: boolean): void {
 export class TraceProcessorService extends EventEmitter {
   private traces: Map<string, TraceInfo> = new Map();
   private traceSources = new WeakMap<TraceInfo, 'local_file' | 'external_rpc'>();
+  /** Deletion tombstones block same-id registration and disk reload until teardown settles. */
+  private traceDeletionInProgress: Map<string, Promise<void>> = new Map();
   private processors: Map<string, TraceProcessor> = new Map();
+  /** Service-level mapping owner; shared external processors may expose another alias's traceId. */
+  private processorTraceIds: Map<string, string> = new Map();
   private uploads: Map<string, any> = new Map();
   private uploadDir: string;
   /** Guards against concurrent auto-recovery for the same trace. */
   private recoveryInProgress: Map<string, Promise<TraceProcessor>> = new Map();
+  /** Single-flight processor creation per processor key. */
+  private processorCreationInProgress: Map<string, Promise<TraceProcessor>> = new Map();
+  /** Trace object that owns each creation, so delete/re-register cannot inherit stale work. */
+  private processorCreationOwners: Map<string, TraceInfo> = new Map();
+  /** Prevent duplicate destroy calls when deletion races a late factory resolution. */
+  private discardedProcessors = new WeakSet<TraceProcessor>();
   /** Single lease supervisor per processor key; holders wait instead of retrying. */
   private leaseRestartInProgress: Map<string, Promise<TraceProcessor>> = new Map();
+  /** Exact trace ownership for restart keys; processor keys are not parsed. */
+  private leaseRestartTraceIds: Map<string, string> = new Map();
+  /** Synchronous per-key sentinel allowing only the restart owner to create replacement processors. */
+  private leaseRestartOwnerTokens: Map<string, LeaseRestartOwnerToken> = new Map();
+  /** Cancellation marker for cleanup of the exact in-flight restart owner. */
+  private leaseRestartCancelledOwnerTokens: Map<string, LeaseRestartOwnerToken> = new Map();
   private readonly queryLeaseContext =
     new AsyncLocalStorage<TraceProcessorLeaseQueryContext | TraceProcessorLeaseQueryContextMap>();
 
@@ -161,6 +189,9 @@ export class TraceProcessorService extends EventEmitter {
     traceInfo: TraceInfo,
     source: 'local_file' | 'external_rpc',
   ): void {
+    if (this.traceDeletionInProgress.has(traceInfo.id)) {
+      throw new Error(`Trace ${traceInfo.id} deletion in progress`);
+    }
     this.traces.set(traceInfo.id, traceInfo);
     this.traceSources.set(traceInfo, source);
   }
@@ -171,6 +202,43 @@ export class TraceProcessorService extends EventEmitter {
     mode: TraceProcessorLeaseMode | string = 'shared',
   ): string {
     return traceProcessorProcessorKey(traceId, leaseId, mode);
+  }
+
+  private discardProcessor(processorKey: string, processor: TraceProcessor): void {
+    if (this.processors.get(processorKey) === processor) {
+      this.processors.delete(processorKey);
+      this.processorTraceIds.delete(processorKey);
+    }
+    if (this.discardedProcessors.has(processor)) return;
+
+    if (TraceProcessorFactory.get(processorKey) === processor) {
+      if (!(processor instanceof ExternalRpcProcessor)) {
+        this.discardedProcessors.add(processor);
+      }
+      TraceProcessorFactory.remove(processorKey);
+      return;
+    }
+    if (
+      processor instanceof ExternalRpcProcessor
+      && TraceProcessorFactory.hasProcessorReference(processor)
+    ) {
+      return;
+    }
+    this.discardedProcessors.add(processor);
+    try {
+      processor.destroy();
+    } catch {
+      // Best-effort teardown for a factory result that lost trace ownership.
+    }
+  }
+
+  private publishProcessor(
+    processorKey: string,
+    traceId: string,
+    processor: TraceProcessor,
+  ): void {
+    this.processors.set(processorKey, processor);
+    this.processorTraceIds.set(processorKey, traceId);
   }
 
   public runWithLease<T>(
@@ -388,6 +456,7 @@ export class TraceProcessorService extends EventEmitter {
   private async processTrace(traceId: string): Promise<void> {
     const trace = this.traces.get(traceId);
     if (!trace) return;
+    const traceIsCurrent = () => this.traces.get(traceId) === trace;
 
     try {
       // Detect trace format and OS before creating processor
@@ -405,19 +474,29 @@ export class TraceProcessorService extends EventEmitter {
           trace.traceFormat = 'unknown';
         }
       }
+      if (!traceIsCurrent()) return;
 
       // Create a processor instance
       const processor = await this.createProcessor(traceId);
-      this.processors.set(traceId, processor);
+      if (!traceIsCurrent()) {
+        this.discardProcessor(traceId, processor);
+        return;
+      }
+      this.publishProcessor(traceId, traceId, processor);
 
       // Extract metadata
       const metadata = await this.extractMetadata(processor);
+      if (!traceIsCurrent()) {
+        this.discardProcessor(traceId, processor);
+        return;
+      }
       trace.metadata = metadata;
 
       trace.status = 'ready';
       this.emit('trace-processed', trace);
       this.emit('trace-status-changed', trace);
     } catch (error: any) {
+      if (!traceIsCurrent()) return;
       console.error(`[TraceProcessorService] Failed to process trace ${traceId}:`, error.message);
       trace.status = 'error';
       trace.error = error.message;
@@ -433,20 +512,61 @@ export class TraceProcessorService extends EventEmitter {
   private async createProcessor(
     traceId: string,
     leaseContext?: Pick<TraceProcessorLeaseQueryContext, 'leaseId' | 'mode'>,
+    restartOwnerToken?: LeaseRestartOwnerToken,
   ): Promise<TraceProcessor> {
+    const traceOwner = this.traces.get(traceId);
+    if (!traceOwner) {
+      throw new Error(`Trace ${traceId} not found`);
+    }
     const filePath = this.getTraceFilePath(traceId);
     const processorKey = this.processorKeyForLease(traceId, leaseContext?.leaseId, leaseContext?.mode);
+    const restartInProgress = this.leaseRestartInProgress.get(processorKey);
+    const restartOwner = this.leaseRestartOwnerTokens.get(processorKey);
+    if (restartInProgress && restartOwner !== restartOwnerToken) {
+      return restartInProgress;
+    }
 
-    const processor = await TraceProcessorFactory.create(traceId, filePath, {
+    const inProgress = this.processorCreationInProgress.get(processorKey);
+    if (inProgress) {
+      if (this.processorCreationOwners.get(processorKey) === traceOwner) {
+        return inProgress;
+      }
+      try {
+        await inProgress;
+      } catch {
+        // The stale trace owner retains cleanup responsibility. A replacement
+        // trace with the same id may create only after that work settles.
+      }
+      if (this.traces.get(traceId) !== traceOwner) {
+        throw new Error(`Trace ${traceId} changed during processor creation`);
+      }
+      return this.createProcessor(traceId, leaseContext, restartOwnerToken);
+    }
+
+    const creation = TraceProcessorFactory.create(traceId, filePath, {
       processorKey,
       leaseId: leaseContext?.leaseId,
       leaseMode: leaseContext?.mode ?? 'shared',
+    }).then(processor => {
+      if (this.traces.get(traceId) !== traceOwner) {
+        this.discardProcessor(processorKey, processor);
+        throw new Error(`Trace ${traceId} changed during processor creation`);
+      }
+      this.publishProcessor(processorKey, traceId, processor);
+      return processor;
     });
 
-    // Store reference
-    this.processors.set(processorKey, processor);
+    this.processorCreationInProgress.set(processorKey, creation);
+    this.processorCreationOwners.set(processorKey, traceOwner);
 
-    return processor;
+    try {
+      return await creation;
+    } finally {
+      if (this.processorCreationInProgress.get(processorKey) === creation) {
+        this.processorCreationInProgress.delete(processorKey);
+        this.processorCreationOwners.delete(processorKey);
+      }
+    }
   }
 
   /**
@@ -785,6 +905,9 @@ export class TraceProcessorService extends EventEmitter {
    */
   public async registerExternalRpc(traceId: string, port: number, traceName: string): Promise<void> {
     console.log(`[TraceProcessorService] Registering external RPC: ${traceId} on port ${port}`);
+    if (this.processorCreationInProgress.has(traceId)) {
+      throw new Error(`Processor creation already in progress for trace ${traceId}`);
+    }
 
     const now = new Date();
     // Create a trace info entry for this external connection
@@ -800,11 +923,26 @@ export class TraceProcessorService extends EventEmitter {
     this.storeTraceInfo(traceInfo, 'external_rpc');
 
     // Create a proxy processor that uses the existing HTTP RPC connection
-    const processor = await TraceProcessorFactory.createFromExternalRpc(traceId, port);
-    this.processors.set(traceId, processor);
+    const creation = TraceProcessorFactory.createFromExternalRpc(traceId, port);
+    this.processorCreationInProgress.set(traceId, creation);
+    this.processorCreationOwners.set(traceId, traceInfo);
 
-    console.log(`[TraceProcessorService] External RPC registered successfully: ${traceId}`);
-    this.emit('trace-processed', traceInfo);
+    try {
+      const processor = await creation;
+      if (this.traces.get(traceId) !== traceInfo) {
+        this.discardProcessor(traceId, processor);
+        throw new Error(`Trace ${traceId} changed during processor creation`);
+      }
+      this.publishProcessor(traceId, traceId, processor);
+
+      console.log(`[TraceProcessorService] External RPC registered successfully: ${traceId}`);
+      this.emit('trace-processed', traceInfo);
+    } finally {
+      if (this.processorCreationInProgress.get(traceId) === creation) {
+        this.processorCreationInProgress.delete(traceId);
+        this.processorCreationOwners.delete(traceId);
+      }
+    }
   }
 
   /**
@@ -812,6 +950,7 @@ export class TraceProcessorService extends EventEmitter {
    * This is useful after server restart when traces are on disk but not loaded
    */
   public async loadTraceFromDisk(traceId: string): Promise<TraceInfo | undefined> {
+    if (this.traceDeletionInProgress.has(traceId)) return undefined;
     // Already in memory
     if (this.traces.has(traceId)) {
       return this.traces.get(traceId);
@@ -873,7 +1012,7 @@ export class TraceProcessorService extends EventEmitter {
 
       // Create processor
       const processor = await this.createProcessor(traceId);
-      this.processors.set(traceId, processor);
+      this.publishProcessor(traceId, traceId, processor);
 
       console.log(`[TraceProcessorService] Loaded trace from disk: ${traceId}`);
       return traceInfo;
@@ -887,6 +1026,7 @@ export class TraceProcessorService extends EventEmitter {
    * Get or load trace - checks memory first, then tries to load from disk
    */
   public async getOrLoadTrace(traceId: string): Promise<TraceInfo | undefined> {
+    if (this.traceDeletionInProgress.has(traceId)) return undefined;
     const trace = this.getTrace(traceId);
     if (trace) {
       return trace;
@@ -900,7 +1040,16 @@ export class TraceProcessorService extends EventEmitter {
     mode: TraceProcessorLeaseMode | string,
     leaseScope?: EnterpriseRepositoryScope,
   ): Promise<TraceProcessor> {
+    if (this.traceDeletionInProgress.has(traceId)) {
+      throw new Error(`Trace ${traceId} deletion in progress`);
+    }
     const key = this.processorKeyForLease(traceId, leaseId, mode);
+    const restartInProgress = this.leaseRestartInProgress.get(key);
+    if (restartInProgress) {
+      console.log(`[TraceProcessorService] Waiting for lease supervisor restart of ${key}`);
+      return restartInProgress;
+    }
+
     const existing = this.processors.get(key);
     if (existing && existing.status === 'ready') {
       this.touchTrace(traceId);
@@ -953,9 +1102,26 @@ export class TraceProcessorService extends EventEmitter {
       return inProgress;
     }
 
-    const restart = this.runLeaseRestartSupervisor(traceId, leaseContext, processorKey)
+    const restartOwnerToken: LeaseRestartOwnerToken = Symbol(processorKey);
+    this.leaseRestartOwnerTokens.set(processorKey, restartOwnerToken);
+    this.leaseRestartTraceIds.set(processorKey, traceId);
+
+    let restart: Promise<TraceProcessor>;
+    restart = Promise.resolve()
+      .then(() => this.runLeaseRestartSupervisor(traceId, leaseContext, processorKey, restartOwnerToken))
       .finally(() => {
-        this.leaseRestartInProgress.delete(processorKey);
+        if (this.leaseRestartInProgress.get(processorKey) === restart) {
+          this.leaseRestartInProgress.delete(processorKey);
+        }
+        if (this.leaseRestartOwnerTokens.get(processorKey) === restartOwnerToken) {
+          this.leaseRestartOwnerTokens.delete(processorKey);
+        }
+        if (this.leaseRestartCancelledOwnerTokens.get(processorKey) === restartOwnerToken) {
+          this.leaseRestartCancelledOwnerTokens.delete(processorKey);
+        }
+        if (this.leaseRestartTraceIds.get(processorKey) === traceId) {
+          this.leaseRestartTraceIds.delete(processorKey);
+        }
       });
     this.leaseRestartInProgress.set(processorKey, restart);
     return restart;
@@ -965,25 +1131,37 @@ export class TraceProcessorService extends EventEmitter {
     traceId: string,
     leaseContext: TraceProcessorLeaseQueryContext,
     processorKey: string,
+    restartOwnerToken: LeaseRestartOwnerToken,
   ): Promise<TraceProcessor> {
     const backoffMs = this.leaseRestartPolicy.backoffMs ?? DEFAULT_LEASE_RESTART_BACKOFF_MS;
     const attempts = Math.max(1, backoffMs.length);
     let lastError: unknown;
 
     console.warn(`[TraceProcessorService] Lease processor crashed; supervisor restarting ${processorKey}`);
+    this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
     this.markLeaseCrashedForRestart(leaseContext);
 
     for (let attempt = 0; attempt < attempts; attempt++) {
       const delayMs = this.restartBackoffDelayMs(backoffMs, attempt);
       if (delayMs > 0) {
         await this.restartSleep(delayMs);
+        this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
       }
 
+      await this.waitForProcessorCreationBeforeRestart(processorKey);
+      this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
       this.markLeaseRestarting(leaseContext);
+      this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
       this.destroyProcessorForRestart(processorKey);
+      this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
 
       try {
-        const processor = await this.createProcessor(traceId, leaseContext);
+        const processor = await this.createProcessor(traceId, leaseContext, restartOwnerToken);
+        if (this.isLeaseRestartCancelled(processorKey, restartOwnerToken)) {
+          this.destroyProcessorForRestart(processorKey);
+          throw new LeaseProcessorRestartCancelledError(processorKey);
+        }
+        this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
         this.markLeaseReadyAfterRestart(leaseContext);
         console.log(
           `[TraceProcessorService] Lease processor restart succeeded for ${processorKey} ` +
@@ -991,6 +1169,10 @@ export class TraceProcessorService extends EventEmitter {
         );
         return processor;
       } catch (error: any) {
+        this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
+        if (error instanceof LeaseProcessorRestartCancelledError) {
+          throw error;
+        }
         lastError = error;
         console.warn(
           `[TraceProcessorService] Lease processor restart failed for ${processorKey} ` +
@@ -999,8 +1181,36 @@ export class TraceProcessorService extends EventEmitter {
       }
     }
 
+    this.throwIfLeaseRestartCancelled(processorKey, restartOwnerToken);
     this.markLeaseFailedAfterRestart(leaseContext);
     throw lastError instanceof Error ? lastError : new Error(String(lastError || 'Lease processor restart failed'));
+  }
+
+  private isLeaseRestartCancelled(
+    processorKey: string,
+    restartOwnerToken: LeaseRestartOwnerToken,
+  ): boolean {
+    return this.leaseRestartCancelledOwnerTokens.get(processorKey) === restartOwnerToken;
+  }
+
+  private throwIfLeaseRestartCancelled(
+    processorKey: string,
+    restartOwnerToken: LeaseRestartOwnerToken,
+  ): void {
+    if (this.isLeaseRestartCancelled(processorKey, restartOwnerToken)) {
+      throw new LeaseProcessorRestartCancelledError(processorKey);
+    }
+  }
+
+  private async waitForProcessorCreationBeforeRestart(processorKey: string): Promise<void> {
+    const inProgress = this.processorCreationInProgress.get(processorKey);
+    if (!inProgress) return;
+    try {
+      await inProgress;
+    } catch {
+      // The creator owns cleanup for its failed initializing processor; the
+      // restart supervisor owns the replacement attempt after it settles.
+    }
   }
 
   private restartBackoffDelayMs(backoffMs: number[], attemptIndex: number): number {
@@ -1024,6 +1234,7 @@ export class TraceProcessorService extends EventEmitter {
   private destroyProcessorForRestart(processorKey: string): void {
     const processor = this.processors.get(processorKey);
     this.processors.delete(processorKey);
+    this.processorTraceIds.delete(processorKey);
     if (TraceProcessorFactory.remove(processorKey)) return;
     try {
       processor?.destroy();
@@ -1078,24 +1289,84 @@ export class TraceProcessorService extends EventEmitter {
    * Delete a trace
    */
   public async deleteTrace(traceId: string): Promise<void> {
+    const inProgress = this.traceDeletionInProgress.get(traceId);
+    if (inProgress) return inProgress;
+
     const trace = this.traces.get(traceId);
     if (!trace) return;
 
+    const deletion = this.performTraceDeletion(traceId, trace);
+    this.traceDeletionInProgress.set(traceId, deletion);
+    try {
+      await deletion;
+    } finally {
+      if (this.traceDeletionInProgress.get(traceId) === deletion) {
+        this.traceDeletionInProgress.delete(traceId);
+      }
+    }
+  }
+
+  private async performTraceDeletion(traceId: string, trace: TraceInfo): Promise<void> {
+    // Invalidate trace identity before any asynchronous teardown. Creators
+    // capture the TraceInfo object and must discard results once it is no
+    // longer the current instance for this id.
+    const filePath = trace.filePath || path.join(this.uploadDir, `${traceId}.trace`);
+    const traceSource = this.traceSources.get(trace) ?? 'local_file';
+    this.traces.delete(traceId);
+
+    const pendingCreations = Array.from(this.processorCreationInProgress.entries())
+      .filter(([processorKey]) => this.processorCreationOwners.get(processorKey) === trace);
+    const processorKeys = new Set<string>([
+      traceId,
+      ...pendingCreations.map(([processorKey]) => processorKey),
+      ...Array.from(this.processors.entries())
+        .filter(([processorKey, processor]) =>
+          this.processorTraceIds.get(processorKey) === traceId
+          || (!this.processorTraceIds.has(processorKey) && processor.traceId === traceId))
+        .map(([processorKey]) => processorKey),
+      ...Array.from(this.leaseRestartInProgress.keys())
+        .filter(processorKey => this.leaseRestartTraceIds.get(processorKey) === traceId),
+    ]);
+
+    for (const processorKey of processorKeys) {
+      const restartOwnerToken = this.leaseRestartOwnerTokens.get(processorKey);
+      if (restartOwnerToken) {
+        this.leaseRestartCancelledOwnerTokens.set(processorKey, restartOwnerToken);
+      }
+      const processor = this.processors.get(processorKey)
+        ?? TraceProcessorFactory.get(processorKey);
+      if (processor) {
+        this.discardProcessor(processorKey, processor);
+      }
+    }
+
+    // Deletion is a lifecycle barrier: it does not report completion while a
+    // creator can still publish a processor for the invalidated TraceInfo.
+    await Promise.allSettled(pendingCreations.map(([, creation]) => creation));
+
     // Destroy all processors for this trace, including isolated lease processors.
     for (const [processorKey, processor] of Array.from(this.processors.entries())) {
-      if (processor.traceId !== traceId) continue;
-      TraceProcessorFactory.remove(processorKey);
-      this.processors.delete(processorKey);
+      const processorTraceId = this.processorTraceIds.get(processorKey) ?? processor.traceId;
+      if (processorTraceId !== traceId) continue;
+      this.discardProcessor(processorKey, processor);
     }
 
     // Delete file
-    const filePath = this.getTraceFilePath(traceId);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (error) {
+      // Restore a fresh TraceInfo identity so callers can retry deletion while
+      // every async task that captured the invalidated object stays stale.
+      if (!this.traces.has(traceId)) {
+        const restoredTrace = {...trace};
+        this.traces.set(traceId, restoredTrace);
+        this.traceSources.set(restoredTrace, traceSource);
+      }
+      throw error;
     }
 
-    // Remove from memory
-    this.traces.delete(traceId);
     this.emit('trace-deleted', traceId);
   }
 
@@ -1103,11 +1374,13 @@ export class TraceProcessorService extends EventEmitter {
     const traceIdSet = new Set(traceIds);
     let cleaned = 0;
     for (const [processorKey, processor] of Array.from(this.processors.entries())) {
-      if (!traceIdSet.has(processor.traceId)) continue;
+      const processorTraceId = this.processorTraceIds.get(processorKey) ?? processor.traceId;
+      if (!traceIdSet.has(processorTraceId)) continue;
       if (!TraceProcessorFactory.remove(processorKey)) {
         processor.destroy();
       }
       this.processors.delete(processorKey);
+      this.processorTraceIds.delete(processorKey);
       cleaned++;
     }
     return cleaned;
@@ -1120,13 +1393,18 @@ export class TraceProcessorService extends EventEmitter {
   ): boolean {
     const processorKey = this.processorKeyForLease(traceId, leaseId, mode);
     const processor = this.processors.get(processorKey);
-    if (!processor) return false;
-    if (!TraceProcessorFactory.remove(processorKey)) {
+    const restartOwnerToken = this.leaseRestartOwnerTokens.get(processorKey);
+    if (restartOwnerToken) {
+      this.leaseRestartCancelledOwnerTokens.set(processorKey, restartOwnerToken);
+    }
+
+    const removedFactoryProcessor = TraceProcessorFactory.remove(processorKey);
+    if (!removedFactoryProcessor && processor) {
       processor.destroy();
     }
     this.processors.delete(processorKey);
-    this.leaseRestartInProgress.delete(processorKey);
-    return true;
+    this.processorTraceIds.delete(processorKey);
+    return Boolean(processor || removedFactoryProcessor || restartOwnerToken || this.leaseRestartInProgress.has(processorKey));
   }
 
   /**

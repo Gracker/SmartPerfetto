@@ -707,6 +707,9 @@ export function createSdkEnv(
     ? svc.getEnvForProvider(provider.id, providerScope)
     : null;
   const env = mergeIsolatedProviderEnv(process.env, providerEnv);
+  if (providerEnv && process.env.CLAUDE_BINARY_PATH && !providerEnv.CLAUDE_BINARY_PATH) {
+    env.CLAUDE_BINARY_PATH = process.env.CLAUDE_BINARY_PATH;
+  }
 
   delete env.CLAUDECODE;
   delete env.CLAUDE_CODE_ENTRYPOINT;

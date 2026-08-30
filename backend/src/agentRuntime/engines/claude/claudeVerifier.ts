@@ -20,6 +20,7 @@ import * as path from 'path';
 import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { createSdkEnv, getSdkBinaryOption } from './claudeConfig';
+import type { ProviderScope } from '../../../services/providerManager';
 import type { Finding, StreamingUpdate } from '../../../agent/types';
 import type { VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis, ToolCallRecord } from '../../../agentv3/types';
 import { expectedCallMatchesRecord, expectedToolNames, formatExpectedCall } from '../../../agentv3/types';
@@ -886,7 +887,12 @@ export function parseVerifierJsonIssues(result: string): VerificationIssue[] {
 export async function verifyWithLLM(
   findings: Finding[],
   conclusion: string,
-  options?: { model?: string; timeoutMs?: number },
+  options?: {
+    model?: string;
+    timeoutMs?: number;
+    providerId?: string | null;
+    providerScope?: ProviderScope;
+  },
 ): Promise<VerificationIssue[] | undefined> {
   // Default 60s; Haiku usually finishes in 2-5s, but slower LLMs need more headroom.
   const VERIFY_TIMEOUT_MS = options?.timeoutMs ?? 60_000;
@@ -920,7 +926,7 @@ ${conclusionPreview}${truncationNote}
 [{"type": "missing_evidence", "severity": "warning", "message": "..."}]
 \`\`\``;
 
-    const sdkEnv = createSdkEnv();
+    const sdkEnv = createSdkEnv(options?.providerId, options?.providerScope);
     const stream = sdkQuery({
       prompt,
       options: {
@@ -1231,6 +1237,10 @@ export async function verifyConclusion(
     emitIssueProgress?: boolean;
     /** Allow global/cross-session learned verifier patterns to be read and updated. */
     allowPersistentLearning?: boolean;
+    /** Request-pinned Provider Manager profile for auxiliary verifier calls. */
+    providerId?: string | null;
+    /** Tenant/workspace scope for request-pinned provider resolution. */
+    providerScope?: ProviderScope;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
@@ -1305,7 +1315,12 @@ export async function verifyConclusion(
 
   let llmIssues: VerificationIssue[] | undefined;
   if (enableLLM && !canSkipLLM) {
-    llmIssues = await verifyWithLLM(findings, conclusion, { model: options.lightModel, timeoutMs: options.verifierTimeoutMs });
+    llmIssues = await verifyWithLLM(findings, conclusion, {
+      model: options.lightModel,
+      timeoutMs: options.verifierTimeoutMs,
+      providerId: options.providerId,
+      providerScope: options.providerScope,
+    });
   } else if (enableLLM && canSkipLLM) {
     console.log(
       `[Verifier] LLM verification skipped: errors=${hasErrors}, highRiskWarnings=${hasHighRiskWarnings}, ` +

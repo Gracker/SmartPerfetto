@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import { createHash } from 'crypto';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
@@ -20,27 +21,48 @@ export interface QoderSdkModule {
   ProtocolVersionMismatchError?: new () => Error;
 }
 
+export type QoderSdkModuleImporter = (specifier: string) => Promise<unknown>;
+
 const importEsmModule = new Function(
   'specifier',
   'return import(specifier);',
-) as (specifier: string) => Promise<unknown>;
+) as QoderSdkModuleImporter;
 
-export async function loadQoderSdkModule(
-  env: EnvLike = process.env,
-): Promise<QoderSdkModule> {
+interface QoderSdkModuleCacheEntry {
+  key: string;
+  generation: number;
+  promise: Promise<QoderSdkModule>;
+}
+
+let moduleCacheEntry: QoderSdkModuleCacheEntry | undefined;
+let moduleCacheGeneration = 0;
+
+function resolveQoderSdkSpecifiers(env: EnvLike): string[] {
   const configuredPath = env[QODER_SDK_MODULE_PATH_ENV]?.trim();
-  const specifiers = configuredPath
+  const candidates = configuredPath
     ? [path.isAbsolute(configuredPath) ? pathToFileURL(configuredPath).href : configuredPath]
     : [
         '@qoder-ai/qoder-agent-sdk',
         pathToFileURL(getLocalQoderSdkModulePath()).href,
       ];
+  return [...new Set(candidates)];
+}
 
+function moduleCacheKey(specifiers: readonly string[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify(specifiers))
+    .digest('hex');
+}
+
+async function importQoderSdkModule(
+  specifiers: readonly string[],
+  importer: QoderSdkModuleImporter,
+): Promise<QoderSdkModule> {
   let module: Partial<QoderSdkModule> | undefined;
   let lastError: unknown;
-  for (const specifier of [...new Set(specifiers)]) {
+  for (const specifier of specifiers) {
     try {
-      module = await importEsmModule(specifier) as Partial<QoderSdkModule>;
+      module = await importer(specifier) as Partial<QoderSdkModule>;
       break;
     } catch (error) {
       lastError = error;
@@ -59,4 +81,38 @@ export async function loadQoderSdkModule(
     throw new Error('Qoder Agent SDK module does not export query()');
   }
   return module as QoderSdkModule;
+}
+
+export function resetQoderSdkModuleCache(): void {
+  moduleCacheGeneration += 1;
+  moduleCacheEntry = undefined;
+}
+
+export function loadQoderSdkModule(
+  env: EnvLike = process.env,
+  importer: QoderSdkModuleImporter = importEsmModule,
+): Promise<QoderSdkModule> {
+  const specifiers = resolveQoderSdkSpecifiers(env);
+  const key = moduleCacheKey(specifiers);
+  if (moduleCacheEntry?.key === key) return moduleCacheEntry.promise;
+  if (moduleCacheEntry) {
+    moduleCacheGeneration += 1;
+  }
+
+  const generation = moduleCacheGeneration;
+  const entry: QoderSdkModuleCacheEntry = {
+    key,
+    generation,
+    promise: importQoderSdkModule(specifiers, importer),
+  };
+  moduleCacheEntry = entry;
+  void entry.promise.catch(() => {
+    if (
+      moduleCacheGeneration === entry.generation
+      && moduleCacheEntry === entry
+    ) {
+      moduleCacheEntry = undefined;
+    }
+  });
+  return entry.promise;
 }

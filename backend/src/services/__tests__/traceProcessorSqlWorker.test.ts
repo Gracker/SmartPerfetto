@@ -2,7 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import {createHash} from 'crypto';
+import {performance as nodePerformance} from 'perf_hooks';
 import http from 'http';
 import {
   decodeQueryArgsSql,
@@ -15,6 +17,11 @@ import {
   TraceProcessorSqlWorker,
 } from '../traceProcessorSqlWorker';
 import { isTraceProcessorQueryCancelledError } from '../traceProcessorCancellation';
+import {
+  RunManifestLifecycle,
+  withRunManifestLifecycle,
+} from '../selfEvolution/runManifestLifecycle';
+import type {RunManifestStore} from '../selfEvolution/runManifestStore';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -35,6 +42,37 @@ function encodedSqlResult(sql: string): Buffer {
   return encodeQueryResult({
     columnNames: ['sql'],
     rows: [[sql]],
+  });
+}
+
+function expectedRuntimeHash(value: string, salt = ''): string {
+  return `sha256:${createHash('sha256')
+    .update(salt)
+    .update('\0')
+    .update(value.trim())
+    .digest('hex')
+    .slice(0, 32)}`;
+}
+
+function runManifestLifecycle(runId: string): RunManifestLifecycle {
+  const store = {
+    append: jest.fn(),
+    pin: jest.fn(),
+    unpin: jest.fn(),
+  } as unknown as RunManifestStore;
+  return new RunManifestLifecycle({
+    runId,
+    sessionId: `session-${runId}`,
+    scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+    runtime: 'qoder-agent-sdk',
+    providerId: null,
+    outputLanguage: 'en',
+    analysisMode: 'auto',
+    skillRegistry: {
+      registryFingerprint: 'registry-a',
+      skills: [],
+    },
+    store,
   });
 }
 
@@ -299,6 +337,222 @@ describe('TraceProcessorSqlWorker', () => {
 
     gates.get('SELECT first')!.resolve(encodedSqlResult('SELECT first'));
     await expect(first).resolves.toMatchObject({ rows: [['SELECT first']] });
+  });
+
+  it('attributes SQL queue and execution timing to the run active at enqueue time', async () => {
+    const started: string[] = [];
+    const gates = new Map<string, ReturnType<typeof deferred<Buffer>>>();
+    const runA = runManifestLifecycle('run-sql-performance-a');
+    const runB = runManifestLifecycle('run-sql-performance-b');
+
+    worker = new TraceProcessorSqlWorker({
+      processorId: 'processor-performance',
+      traceId: 'trace-performance',
+      port: 1,
+      forceInline: true,
+      rawExecutor: async request => {
+        const sql = decodeQueryArgsSql(request.body);
+        started.push(sql);
+        const gate = gates.get(sql) || deferred<Buffer>();
+        gates.set(sql, gate);
+        return gate.promise;
+      },
+    });
+
+    const first = withRunManifestLifecycle(runA, () =>
+      worker!.query('SELECT run_a', {priority: 'p2'}));
+    await flushPromises();
+    const second = withRunManifestLifecycle(runB, () =>
+      worker!.query('SELECT run_b', {priority: 'p0'}));
+    await flushPromises();
+
+    expect(started).toEqual(['SELECT run_a']);
+    gates.get('SELECT run_a')!.resolve(encodedSqlResult('SELECT run_a'));
+    await expect(first).resolves.toMatchObject({rows: [['SELECT run_a']]});
+    await flushPromises();
+    expect(started).toEqual(['SELECT run_a', 'SELECT run_b']);
+    gates.get('SELECT run_b')!.resolve(encodedSqlResult('SELECT run_b'));
+    await expect(second).resolves.toMatchObject({rows: [['SELECT run_b']]});
+
+    const manifestA = runA.sealOnceAndPersist();
+    const manifestB = runB.sealOnceAndPersist();
+
+    expect(manifestA.performance?.sql).toEqual([
+      expect.objectContaining({
+        processorKeyHash: expectedRuntimeHash('trace-performance'),
+        priority: 'p2',
+        outcome: 'ok',
+      }),
+    ]);
+    expect(manifestB.performance?.sql).toEqual([
+      expect.objectContaining({
+        processorKeyHash: expectedRuntimeHash('trace-performance'),
+        priority: 'p0',
+        outcome: 'ok',
+      }),
+    ]);
+    const sqlA = manifestA.performance?.sql[0];
+    const sqlB = manifestB.performance?.sql[0];
+    expect(sqlA?.queueWaitMs).toEqual(expect.any(Number));
+    expect(sqlA?.executionMs).toEqual(expect.any(Number));
+    expect(sqlB?.queueWaitMs).toEqual(expect.any(Number));
+    expect(sqlB?.executionMs).toEqual(expect.any(Number));
+    expect(sqlA?.queueWaitMs).toBeGreaterThanOrEqual(0);
+    expect(sqlA?.executionMs).toBeGreaterThanOrEqual(0);
+    expect(sqlB?.queueWaitMs).toBeGreaterThanOrEqual(0);
+    expect(sqlB?.executionMs).toBeGreaterThanOrEqual(0);
+    expect(JSON.stringify(manifestA.performance)).not.toContain('processor-performance');
+    expect(JSON.stringify(manifestA.performance)).not.toContain('trace-performance');
+    expect(JSON.stringify(manifestB.performance)).not.toContain('SELECT run');
+    runA.dispose();
+    runB.dispose();
+  });
+
+  it('records distinct queued wait and execution durations from monotonic boundaries', async () => {
+    let monotonicNow = 100;
+    const nowSpy = jest.spyOn(nodePerformance, 'now').mockImplementation(() => monotonicNow);
+    const started: string[] = [];
+    const gates = new Map<string, ReturnType<typeof deferred<Buffer>>>();
+    const run = runManifestLifecycle('run-sql-controlled-timing');
+
+    worker = new TraceProcessorSqlWorker({
+      processorId: 'processor-controlled-timing',
+      traceId: 'trace-controlled-timing',
+      port: 1,
+      forceInline: true,
+      rawExecutor: async request => {
+        const sql = decodeQueryArgsSql(request.body);
+        started.push(sql);
+        const gate = gates.get(sql) || deferred<Buffer>();
+        gates.set(sql, gate);
+        return gate.promise;
+      },
+    });
+
+    try {
+      const first = withRunManifestLifecycle(run, () =>
+        worker!.query('SELECT first', {priority: 'p2'}));
+      await flushPromises();
+      expect(started).toEqual(['SELECT first']);
+
+      monotonicNow = 150;
+      const second = withRunManifestLifecycle(run, () =>
+        worker!.query('SELECT second', {priority: 'p2'}));
+      await flushPromises();
+      expect(started).toEqual(['SELECT first']);
+
+      monotonicNow = 250;
+      gates.get('SELECT first')!.resolve(encodedSqlResult('SELECT first'));
+      await expect(first).resolves.toMatchObject({rows: [['SELECT first']]});
+      await flushPromises();
+      expect(started).toEqual(['SELECT first', 'SELECT second']);
+
+      monotonicNow = 290;
+      gates.get('SELECT second')!.resolve(encodedSqlResult('SELECT second'));
+      await expect(second).resolves.toMatchObject({rows: [['SELECT second']]});
+
+      const receipt = run.sealOnceAndPersist().performance?.sql ?? [];
+      expect(receipt).toHaveLength(2);
+      expect(receipt[1]).toEqual(expect.objectContaining({
+        queueWaitMs: 100,
+        executionMs: 40,
+        outcome: 'ok',
+      }));
+      expect(receipt[1].queueWaitMs).not.toBe(receipt[1].executionMs);
+    } finally {
+      nowSpy.mockRestore();
+      run.dispose();
+    }
+  });
+
+  it('records queued SQL cancellation without executing the cancelled query', async () => {
+    const started: string[] = [];
+    const gates = new Map<string, ReturnType<typeof deferred<Buffer>>>();
+    const run = runManifestLifecycle('run-sql-performance-cancel');
+
+    worker = new TraceProcessorSqlWorker({
+      processorId: 'processor-performance-cancel',
+      traceId: 'trace-performance-cancel',
+      port: 1,
+      forceInline: true,
+      rawExecutor: async request => {
+        const sql = decodeQueryArgsSql(request.body);
+        started.push(sql);
+        const gate = gates.get(sql) || deferred<Buffer>();
+        gates.set(sql, gate);
+        return gate.promise;
+      },
+    });
+
+    const first = withRunManifestLifecycle(run, () =>
+      worker!.query('SELECT running'));
+    await flushPromises();
+    const controller = new AbortController();
+    const queued = withRunManifestLifecycle(run, () =>
+      worker!.query('SELECT cancelled', {signal: controller.signal}));
+    await flushPromises();
+
+    controller.abort();
+    await expectCancelled(queued);
+    gates.get('SELECT running')!.resolve(encodedSqlResult('SELECT running'));
+    await expect(first).resolves.toMatchObject({rows: [['SELECT running']]});
+
+    const manifest = run.sealOnceAndPersist();
+
+    expect(started).toEqual(['SELECT running']);
+    expect(manifest.performance?.sql).toEqual([
+      expect.objectContaining({outcome: 'cancelled', executionMs: 0}),
+      expect.objectContaining({outcome: 'ok'}),
+    ]);
+    for (const sql of manifest.performance?.sql ?? []) {
+      expect(sql.queueWaitMs).toEqual(expect.any(Number));
+      expect(sql.executionMs).toEqual(expect.any(Number));
+      expect(sql.queueWaitMs).toBeGreaterThanOrEqual(0);
+      expect(sql.executionMs).toBeGreaterThanOrEqual(0);
+    }
+    run.dispose();
+  });
+
+  it('records isolated and shared processor key hashes from the exact canonical owner keys', async () => {
+    const run = runManifestLifecycle('run-sql-performance-keys');
+    const sharedWorker = new TraceProcessorSqlWorker({
+      processorId: 'processor-shared',
+      traceId: 'trace-shared',
+      processorKey: 'trace-shared',
+      port: 1,
+      forceInline: true,
+      rawExecutor: async request =>
+        encodedSqlResult(decodeQueryArgsSql(request.body)),
+    });
+    const isolatedWorker = new TraceProcessorSqlWorker({
+      processorId: 'processor-isolated',
+      traceId: 'trace-isolated',
+      processorKey: 'trace-isolated:lease:lease-a',
+      port: 1,
+      forceInline: true,
+      rawExecutor: async request =>
+        encodedSqlResult(decodeQueryArgsSql(request.body)),
+    });
+
+    await withRunManifestLifecycle(run, () =>
+      sharedWorker.query('SELECT shared'));
+    await withRunManifestLifecycle(run, () =>
+      isolatedWorker.query('SELECT isolated'));
+
+    const manifest = run.sealOnceAndPersist();
+
+    expect(manifest.performance?.sql.map(item => item.processorKeyHash)).toEqual([
+      expectedRuntimeHash('trace-shared'),
+      expectedRuntimeHash('trace-isolated:lease:lease-a'),
+    ]);
+    expect(JSON.stringify(manifest.performance)).not.toContain('processor-shared');
+    expect(JSON.stringify(manifest.performance)).not.toContain('processor-isolated');
+    expect(JSON.stringify(manifest.performance)).not.toContain('trace-shared');
+    expect(JSON.stringify(manifest.performance)).not.toContain('trace-isolated');
+    expect(JSON.stringify(manifest.performance)).not.toContain('lease-a');
+    sharedWorker.destroy();
+    isolatedWorker.destroy();
+    run.dispose();
   });
 
   it('rejects a running task on abort and drains the next task', async () => {

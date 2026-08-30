@@ -14,7 +14,7 @@
  *   - Priority: pure acknowledgement runs before comparison; bounded diagnosis goes through semantic AI classification
  */
 
-import { jest, describe, it, expect } from '@jest/globals';
+import { jest, describe, it, expect, afterEach } from '@jest/globals';
 
 // Mock the Claude Agent SDK so no real network calls happen.
 // Returns 'full' from Haiku fallback unless the prompt clearly asks for a
@@ -44,12 +44,30 @@ jest.mock('@anthropic-ai/claude-agent-sdk', () => ({
   })),
 }));
 
+const claudeSdkMock = require('@anthropic-ai/claude-agent-sdk') as {
+  query: jest.Mock;
+};
+
 import {
   classifyQueryComplexity,
   isAcknowledgementFollowupReason,
 } from '../queryComplexityClassifier';
 import { SCROLLING_TRIAGE_LOOKUP_REASON } from '../quickScrollingTriageIntent';
 import type { ComplexityClassifierInput } from '../types';
+import { getProviderService, resetProviderService } from '../../services/providerManager';
+
+afterEach(() => {
+  resetProviderService();
+  claudeSdkMock.query.mockClear();
+});
+
+function restoreEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}
 
 /** Build a ComplexityClassifierInput with sensible defaults; override only what the test cares about. */
 function makeInput(override: Partial<ComplexityClassifierInput>): ComplexityClassifierInput {
@@ -169,6 +187,75 @@ describe('classifyQueryComplexity — keyword pre-filter', () => {
     expect(result.complexity).toBe('full');
     expect(result.source).toBe('ai');
     expect(result.reason).toMatch(/ai-fallback-mock/);
+  });
+});
+
+describe('classifyQueryComplexity — pinned Claude provider context', () => {
+  it('uses the request-pinned Claude provider env and light model for semantic classifier calls', async () => {
+    const original = {
+      anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+      anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+      claudeModel: process.env.CLAUDE_MODEL,
+      claudeLightModel: process.env.CLAUDE_LIGHT_MODEL,
+      claudeBinaryPath: process.env.CLAUDE_BINARY_PATH,
+    };
+    process.env.ANTHROPIC_BASE_URL = 'https://global-classifier.example/v1';
+    process.env.ANTHROPIC_API_KEY = 'sk-global-classifier';
+    process.env.CLAUDE_MODEL = 'global-claude-main';
+    process.env.CLAUDE_LIGHT_MODEL = 'global-claude-light';
+    process.env.CLAUDE_BINARY_PATH = '/tmp/global-classifier-claude';
+    try {
+      const provider = getProviderService().create({
+        name: 'Pinned Claude classifier provider',
+        category: 'official',
+        type: 'anthropic',
+        models: {
+          primary: 'provider-claude-main',
+          light: 'provider-claude-classifier',
+        },
+        connection: {
+          agentRuntime: 'claude-agent-sdk',
+          claudeBaseUrl: 'https://provider-claude-classifier.example/v1',
+          claudeApiKey: 'sk-provider-classifier',
+        },
+        tuning: {
+          classifierTimeoutMs: 12_345,
+        },
+      });
+
+      const result = await classifyQueryComplexity(
+        makeInput({
+          query: '分析这个 trace 中掉帧的根因，并给出证据链',
+          sceneType: 'scrolling',
+        }),
+        {
+          lightModel: 'provider-claude-classifier',
+          classifierTimeoutMs: 12_345,
+          providerId: provider.id,
+        } as any,
+      );
+
+      expect(result.source).toBe('ai');
+      expect(claudeSdkMock.query).toHaveBeenCalledTimes(1);
+      const call = claudeSdkMock.query.mock.calls[0]?.[0] as any;
+      expect(call.options.model).toBe('provider-claude-classifier');
+      expect(call.options.pathToClaudeCodeExecutable).toBe('/tmp/global-classifier-claude');
+      expect(call.options.env.CLAUDE_MODEL).toBe('provider-claude-main');
+      expect(call.options.env.CLAUDE_LIGHT_MODEL).toBe('provider-claude-classifier');
+      expect(call.options.env.ANTHROPIC_BASE_URL).toBe('https://provider-claude-classifier.example/v1');
+      expect(call.options.env.ANTHROPIC_API_KEY).toBe('sk-provider-classifier');
+      expect(process.env.ANTHROPIC_BASE_URL).toBe('https://global-classifier.example/v1');
+      expect(process.env.ANTHROPIC_API_KEY).toBe('sk-global-classifier');
+      expect(process.env.CLAUDE_MODEL).toBe('global-claude-main');
+      expect(process.env.CLAUDE_LIGHT_MODEL).toBe('global-claude-light');
+      expect(process.env.CLAUDE_BINARY_PATH).toBe('/tmp/global-classifier-claude');
+    } finally {
+      restoreEnvValue('ANTHROPIC_BASE_URL', original.anthropicBaseUrl);
+      restoreEnvValue('ANTHROPIC_API_KEY', original.anthropicApiKey);
+      restoreEnvValue('CLAUDE_MODEL', original.claudeModel);
+      restoreEnvValue('CLAUDE_LIGHT_MODEL', original.claudeLightModel);
+      restoreEnvValue('CLAUDE_BINARY_PATH', original.claudeBinaryPath);
+    }
   });
 });
 

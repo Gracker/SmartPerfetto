@@ -26,6 +26,10 @@ import {
   immutableCanonicalSnapshot,
 } from './canonicalJson';
 import {parseAdaptiveRoutingReceipt} from '../../agentRuntime/adaptiveEvidenceRouter';
+import {
+  createRuntimePerformanceRecorder,
+  type RuntimePerformanceRecorder,
+} from '../../agentRuntime/runtimePerformance';
 import type {AdaptiveRoutingReceiptV1} from '../../types/adaptiveRouting';
 
 export interface CreateRunManifestBuilderInput {
@@ -75,6 +79,7 @@ function copySkillDefinition(
 
 export class RunManifestBuilder implements RunManifestAttributionSink {
   readonly identity: RunManifestIdentity;
+  readonly runtimePerformanceRecorder: RuntimePerformanceRecorder;
 
   private readonly runManifestId: string;
   private readonly startedAt: number;
@@ -117,6 +122,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     this.startedAt = input.startedAt ?? Date.now();
     this.now = input.now ?? Date.now;
     this.onDiagnostic = input.onDiagnostic;
+    this.runtimePerformanceRecorder = createRuntimePerformanceRecorder();
     this.actor = input.userId ? {userId: input.userId} : undefined;
     this.runtime = {
       runtime: input.runtime,
@@ -442,6 +448,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       throw new Error('run_manifest_registry_not_recorded');
     }
     const sealedAt = this.now();
+    const performance = this.runtimePerformanceRecorder.hasRecordedData
+      ? this.runtimePerformanceRecorder.seal()
+      : undefined;
     const manifest: RunManifestV1 = {
       schemaVersion: 1,
       runManifestId: this.runManifestId,
@@ -486,6 +495,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       ...(this.capabilityManifest
         ? {capabilityManifest: this.capabilityManifest}
         : {}),
+      ...(performance ? {performance} : {}),
       ...(this.referenceTraceId ? {referenceTraceId: this.referenceTraceId} : {}),
       ...(this.comparisonIdentity
         ? {comparisonIdentity: this.comparisonIdentity}

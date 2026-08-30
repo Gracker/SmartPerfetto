@@ -32,6 +32,16 @@ import {
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 let tmpDir: string;
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return {promise, resolve, reject};
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'scoped-knowledge-batch-'));
   process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
@@ -287,5 +297,56 @@ describe('scoped knowledge bulk writes', () => {
       codebaseId: 'codebase-a',
       knowledgeSourceId: 'source-a',
     })).toThrow('Exactly one');
+  });
+});
+
+describe('SQL knowledge singleton initialization', () => {
+  it('waits on the same in-flight extended knowledge initialization for concurrent first callers', async () => {
+    await jest.isolateModulesAsync(async () => {
+      const sqlKnowledge = await import('../sqlKnowledgeBase');
+      const initializeGate = createDeferred<void>();
+      let initializeCalls = 0;
+      jest.spyOn(sqlKnowledge.ExtendedSqlKnowledgeBase.prototype, 'initialize')
+        .mockImplementation(async () => {
+          initializeCalls += 1;
+          await initializeGate.promise;
+        });
+
+      let secondResolved = false;
+      const first = sqlKnowledge.getExtendedKnowledgeBase();
+      const second = sqlKnowledge.getExtendedKnowledgeBase()
+        .then(() => {
+          secondResolved = true;
+        });
+
+      await Promise.resolve();
+
+      expect(initializeCalls).toBe(1);
+      expect(secondResolved).toBe(false);
+
+      initializeGate.resolve();
+      await expect(Promise.all([first, second])).resolves.toBeDefined();
+      expect(secondResolved).toBe(true);
+    });
+  });
+
+  it('clears failed extended knowledge initialization so the next caller retries', async () => {
+    await jest.isolateModulesAsync(async () => {
+      const sqlKnowledge = await import('../sqlKnowledgeBase');
+      let initializeCalls = 0;
+      jest.spyOn(sqlKnowledge.ExtendedSqlKnowledgeBase.prototype, 'initialize')
+        .mockImplementation(async () => {
+          initializeCalls += 1;
+          if (initializeCalls === 1) {
+            throw new Error('synthetic knowledge init failure');
+          }
+        });
+
+      await expect(sqlKnowledge.getExtendedKnowledgeBase())
+        .rejects.toThrow('synthetic knowledge init failure');
+      await expect(sqlKnowledge.getExtendedKnowledgeBase())
+        .resolves.toBeInstanceOf(sqlKnowledge.ExtendedSqlKnowledgeBase);
+      expect(initializeCalls).toBe(2);
+    });
   });
 });
