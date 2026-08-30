@@ -907,6 +907,79 @@ describe('enterprise trace metadata routes', () => {
     });
   });
 
+  it('preserves UTF-8 upload names and repairs legacy mojibake in trace catalog responses', async () => {
+    const app = makeApp();
+    const filename = '直播跳转卡顿 修改后.perfetto';
+    const uploadRes = await ssoHeaders(
+      request(app)
+        .post('/api/traces/upload')
+        .attach('file', Buffer.from('trace-content'), filename),
+    );
+
+    expect(uploadRes.status).toBe(200);
+    expect(uploadRes.body.trace.filename).toBe(filename);
+    const traceId = uploadRes.body.trace.id as string;
+    expect(fakeTraceProcessorService.initializeUploadWithId).toHaveBeenCalledWith(
+      traceId,
+      filename,
+      'trace-content'.length,
+      expect.any(String),
+    );
+    expect(JSON.parse(readTraceAsset(traceId)!.metadata_json)).toEqual(
+      expect.objectContaining({filename}),
+    );
+
+    const legacyFilename = Buffer.from('对比基准.perfetto', 'utf8').toString('latin1');
+    await writeTraceMetadata({
+      id: 'legacy-mojibake-trace',
+      filename: legacyFilename,
+      size: 24,
+      uploadedAt: new Date().toISOString(),
+      status: 'ready',
+      path: path.join(
+        dataDir,
+        'tenant-a',
+        'workspace-a',
+        'traces',
+        'legacy-mojibake-trace.trace',
+      ),
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+    });
+    await writeTraceMetadata({
+      id: 'latin1-trace',
+      filename: 'café.perfetto',
+      size: 24,
+      uploadedAt: new Date().toISOString(),
+      status: 'ready',
+      path: path.join(
+        dataDir,
+        'tenant-a',
+        'workspace-a',
+        'traces',
+        'latin1-trace.trace',
+      ),
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+    });
+
+    const listRes = await ssoHeaders(request(app).get('/api/traces'));
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.traces).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'legacy-mojibake-trace',
+        filename: '对比基准.perfetto',
+      }),
+      expect.objectContaining({
+        id: 'latin1-trace',
+        filename: 'café.perfetto',
+      }),
+      expect.objectContaining({id: traceId, filename}),
+    ]));
+  });
+
   it('reports trace_processor startup failures without creating a frontend lease', async () => {
     const app = makeApp();
     const sourceTracePath = path.join(tmpDir, 'tp-failure.trace');
