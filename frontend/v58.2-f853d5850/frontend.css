@@ -10877,6 +10877,24 @@ tr.detail-row .expanded-empty.compact .empty-sections {
   padding: 8px 12px;
 }
 
+.ai-message-content.ai-message-content-summary {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ai-message-content.ai-message-content-summary h2 {
+  margin: 4px 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.ai-message-content.ai-message-content-summary h3 {
+  margin: 5px 0 3px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.ai-message-content.ai-message-content-summary p {
+  margin: 3px 0;
+}
+
 .ai-severity-badge {
   display: inline-block;
   padding: 2px 8px;
