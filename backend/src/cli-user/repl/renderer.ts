@@ -152,6 +152,22 @@ export function createRenderer(opts: RendererOptions): Renderer {
         // framed block — printConclusion() handles the formatted version.
         return;
       }
+      case 'analysis_source_enrichment_started': {
+        console.log(`${dim('›')} ${cyan('[source]')} ${dim('source supplement started')}`);
+        return;
+      }
+      case 'analysis_source_enrichment_completed': {
+        const message = typeof content.message === 'string' ? content.message : '';
+        const metrics = content.metrics || {};
+        console.log(`\n${cyan('源码补充')}`);
+        if (message) console.log(message);
+        console.log(dim(`${metrics.searchCalls || 0} searches · ${metrics.readCalls || 0} reads · ${metrics.durationMs || 0}ms`));
+        return;
+      }
+      case 'analysis_source_enrichment_failed': {
+        console.log(`${yellow('!')} source supplement failed; primary analysis remains available`);
+        return;
+      }
       case 'error': {
         console.error(red(`✗ ${content.message || 'unknown error'}`));
         return;

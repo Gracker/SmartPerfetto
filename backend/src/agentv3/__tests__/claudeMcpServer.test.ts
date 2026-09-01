@@ -329,10 +329,10 @@ function createTestServer(options: {
   outputLanguage?: OutputLanguage;
   runManifestAttributionSink?: RunManifestAttributionSink;
   sourceUsePolicy?: {
-    phase: 'explicit' | 'automatic_enrichment';
-    maxSearchCalls: number;
-    maxReadCalls: number;
-    maxDurationMs: number;
+    phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
+    maxSearchCalls?: number;
+    maxReadCalls?: number;
+    maxDurationMs?: number;
   };
 } = {}) {
   const analysisNotes: AnalysisNote[] = [];
@@ -7132,6 +7132,50 @@ describe('createClaudeMcpServer', () => {
           maxReadCalls: 2,
           maxDurationMs: 6_000,
         },
+      });
+
+      expect([...tools.keys()].sort()).toEqual([
+        'list_codebases',
+        'read_codebase_file',
+        'search_codebase',
+      ]);
+    });
+
+    it('keeps Full trace tools while limiting explicit source access to list/search/read', () => {
+      const {tools} = createTestServer({
+        lightweight: false,
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['app-codebase'],
+        sourceUsePolicy: {
+          phase: 'explicit',
+          maxSearchCalls: 1,
+          maxReadCalls: 2,
+          maxDurationMs: 6_000,
+        },
+      });
+
+      expect(tools.has('execute_sql')).toBe(true);
+      expect(tools.has('invoke_skill')).toBe(true);
+      expect(tools.has('list_codebases')).toBe(true);
+      expect(tools.has('search_codebase')).toBe(true);
+      expect(tools.has('read_codebase_file')).toBe(true);
+      expect(tools.has('query_code_graph')).toBe(false);
+      expect(tools.has('inspect_code_symbol')).toBe(false);
+      expect(tools.has('lookup_app_source')).toBe(false);
+      expect(tools.has('lookup_kernel_source')).toBe(false);
+      expect(tools.has('resolve_symbol')).toBe(false);
+      expect(tools.has('propose_patch')).toBe(false);
+      expect(tools.has('query_perfetto_source')).toBe(false);
+      expect(tools.has('lookup_aosp_source')).toBe(false);
+      expect(tools.has('lookup_oem_sdk')).toBe(false);
+    });
+
+    it.each([true, false])('keeps deep source supplements source-only (lightweight=%s)', lightweight => {
+      const {tools} = createTestServer({
+        lightweight,
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['app-codebase'],
+        sourceUsePolicy: {phase: 'deep_enrichment'},
       });
 
       expect([...tools.keys()].sort()).toEqual([

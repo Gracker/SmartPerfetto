@@ -310,7 +310,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     ['source only', ['cb-cli'], undefined],
     ['RAG only', undefined, ['wiki-cli']],
     ['source and RAG', ['cb-cli'], ['wiki-cli']],
-  ] as const)('marks %s private before session preparation logs the query', async (
+  ] as const)('keeps ordinary %s source authorization dormant during session preparation', async (
     _label,
     codebaseIds,
     knowledgeSourceIds,
@@ -348,10 +348,8 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(mockPrepareSession).toHaveBeenCalledWith(expect.objectContaining({
       query: 'PRIVATE_PREPARE_QUERY_CANARY',
       options: expect.objectContaining({
-        ...(codebaseIds ? {
-          codeAwareMode: 'metadata_only',
-          codebaseIds: ['cb-cli'],
-        } : {codeAwareMode: 'off'}),
+        codeAwareMode: 'off',
+        ...(codebaseIds ? {codebaseIds: undefined} : {}),
         ...(knowledgeSourceIds ? {knowledgeSourceIds: ['wiki-cli']} : {}),
       }),
     }));

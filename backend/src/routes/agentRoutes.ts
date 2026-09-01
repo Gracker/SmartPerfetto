@@ -126,6 +126,7 @@ import { StreamProjector, SSE_RING_BUFFER_SIZE, type BufferedSseEvent } from '..
 import {
   appendReplayableSseEvent,
   hasTerminalReplayAfter,
+  isTerminalSseEvent,
   parseLastEventId,
   TERMINAL_SSE_EVENT_TYPES,
 } from '../assistant/stream/sessionSseReplay';
@@ -176,6 +177,17 @@ import {
   type SafeSourceProvenanceProjection,
 } from '../services/codebase/sourceClaimVerifier';
 import {sanitizeSourceUseDecision} from '../services/codebase/sourceUseDecision';
+import {
+  projectPrimaryAnalysisOptions,
+  resolveAnalysisSourceActivation,
+  type AnalysisSourceActivation,
+} from '../services/codebase/analysisSourceActivationPolicy';
+import {resetRuntimeForSourceActivation} from '../services/codebase/analysisSourceContextTransition';
+import {
+  cancelAnalysisSourceSupplement,
+  runAnalysisSourceSupplement,
+  type AnalysisSourceSupplementMetrics,
+} from '../services/codebase/analysisSourceSupplement';
 import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
@@ -509,6 +521,7 @@ function startSessionRun(
     turn: nextSequence,
     query,
     timestamp: Date.now(),
+    sourceDerived: session.sourceActivation === 'bounded_explicit' ? true : undefined,
   });
 
   // Inject turn boundary marker for multi-turn conversations
@@ -695,7 +708,32 @@ function cleanupSessionBestEffort(sessionId: string, session: AnalysisSession, c
   }
 }
 
+async function resetSessionRuntimeForSourceActivation(
+  session: AnalysisSession,
+  query: string,
+  nextActivation: AnalysisSourceActivation,
+): Promise<void> {
+  const previousActivation = session.sourceActivation;
+  const resetQuery = await resetRuntimeForSourceActivation({
+    orchestrator: session.orchestrator,
+    sessionId: session.sessionId,
+    query,
+    previousActivation,
+    nextActivation,
+    queryHistory: session.queryHistory,
+    conclusionHistory: session.conclusionHistory,
+  });
+  if (!resetQuery) return;
+  session.agentQuery = resetQuery;
+  session.logger.info('AgentRoutes', 'Reset provider runtime after source activation changed', {
+    sessionId: session.sessionId,
+    previousActivation,
+    nextActivation,
+  });
+}
+
 async function abortAndCleanupSession(sessionId: string, session: AnalysisSession, component: string): Promise<void> {
+  await cancelActiveAnalysisSourceEnrichment(session, 'session_cancelled');
   await abortSessionBestEffort(session, component);
   cleanupSessionBestEffort(sessionId, session, component);
   revokeCodeAwareOutputGuards(sessionId);
@@ -834,7 +872,13 @@ type CancelSessionRunResult = {
   session: AnalysisSession;
   runId: string;
   runStatus?: AnalyzeSessionRunContext['status'];
-  outcome: 'cancelled' | 'already_cancelled' | 'run_not_found' | 'run_not_active' | 'run_not_cancellable';
+  outcome:
+    | 'cancelled'
+    | 'source_enrichment_cancelled'
+    | 'already_cancelled'
+    | 'run_not_found'
+    | 'run_not_active'
+    | 'run_not_cancellable';
   reason?: string;
 };
 
@@ -852,6 +896,20 @@ async function cancelSessionRun(
       session,
       runId,
       outcome: 'run_not_found',
+    };
+  }
+  if (
+    session.analysisSourceEnrichment?.status === 'running' &&
+    session.analysisSourceEnrichment.runId === runId
+  ) {
+    await cancelActiveAnalysisSourceEnrichment(session, reason);
+    session.lastActivityAt = Date.now();
+    return {
+      session,
+      runId,
+      runStatus: targetRun.status,
+      outcome: 'source_enrichment_cancelled',
+      reason,
     };
   }
   if (isSessionRunCancelled(session, runId) || targetRun.status === 'cancelled') {
@@ -942,6 +1000,17 @@ function readRequiredCancellationRunId(value: unknown): string | undefined {
 function sendCancelSessionRunResult(res: express.Response, result: CancelSessionRunResult): express.Response {
   const { session, runId, runStatus, outcome, reason } = result;
   switch (outcome) {
+    case 'source_enrichment_cancelled':
+      return res.json({
+        success: true,
+        sessionId: session.sessionId,
+        runId,
+        status: 'source_enrichment_cancelled',
+        primaryRunStatus: runStatus,
+        sessionStatus: session.status,
+        outcome,
+        reason,
+      });
     case 'cancelled':
     case 'already_cancelled':
       return res.json({
@@ -1040,6 +1109,21 @@ interface AnalysisSession {
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
   analysisContextFingerprint?: string;
+  sourceAuthorization?: {
+    codeAwareMode: Exclude<import('../services/codebase/codeAwareFeature').CodeAwareMode, 'off'>;
+    codebaseIds: string[];
+    analysisContextFingerprint: string;
+  };
+  sourceActivation?: AnalysisSourceActivation;
+  analysisSourceEnrichment?: {
+    runId: string;
+    status: 'running' | 'completed' | 'failed' | 'cancelled';
+    startedAt: number;
+    completedAt?: number;
+    message?: string;
+    metrics?: AnalysisSourceSupplementMetrics;
+    errorCode?: 'analysis_source_enrichment_failed';
+  };
   androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
   referenceTraceId?: string;
@@ -1095,13 +1179,19 @@ interface AnalysisSession {
   cancelledRuns?: Record<string, CancelledRunRecord>;
   runSseState?: Record<string, RunScopedSseReplayState>;
   /** Cross-turn query history — appended on each turn, never overwritten */
-  queryHistory: Array<{ turn: number; query: string; timestamp: number }>;
+  queryHistory: Array<{
+    turn: number;
+    query: string;
+    timestamp: number;
+    sourceDerived?: boolean;
+  }>;
   /** Cross-turn conclusion history — appended after each turn completes */
   conclusionHistory: Array<{
     turn: number;
     conclusion: string;
     confidence: number;
     timestamp: number;
+    sourceDerived?: boolean;
   }>;
   /** F3: Monotonic SSE event counter for replay on reconnect */
   sseEventSeq: number;
@@ -1599,7 +1689,7 @@ function replayPersistedAgentEvents(
       res.write(`data: ${replayEvent.eventData}\n\n`);
       replayed++;
       lastCursor = event.cursor;
-      if (TERMINAL_SSE_EVENT_TYPES.has(event.eventType)) {
+      if (isTerminalSseEvent(replayEvent.eventType, replayEvent.eventData)) {
         includesTerminal = true;
       }
     } catch {
@@ -1658,6 +1748,125 @@ function writeBufferedSessionEvent(res: express.Response, event: BufferedSseEven
   res.write(`data: ${event.eventData}\n\n`);
 }
 
+function appendAnalysisSourceEventToCompletedCache(
+  session: AnalysisSession,
+  runId: string,
+  event: BufferedSseEvent,
+): void {
+  const runCache = (session as any).completedAnalysisSseEventsByRunId?.[runId] as
+    | {events?: BufferedSseEvent[]}
+    | undefined;
+  if (runCache?.events && !runCache.events.includes(event)) runCache.events.push(event);
+  const sessionCache = (session as any).completedAnalysisSseEvents as BufferedSseEvent[] | undefined;
+  if (sessionCache && !sessionCache.includes(event)) sessionCache.push(event);
+}
+
+function publishAnalysisSourceEvent(
+  session: AnalysisSession,
+  runId: string,
+  eventType: string,
+  payload: Record<string, unknown>,
+): BufferedSseEvent {
+  const event = appendAndPersistReplayableSessionEvent(
+    session,
+    eventType,
+    {
+      type: eventType,
+      architecture: 'agent-driven',
+      ...buildStreamObservability(session, runId),
+      ...payload,
+      timestamp: Date.now(),
+    },
+    runId,
+  );
+  appendAnalysisSourceEventToCompletedCache(session, runId, event);
+  for (const client of filterSseClientsForRun(session.sseClients, runId)) {
+    try {
+      writeBufferedSessionEvent(client, event);
+    } catch {
+      assistantAppService.removeSseClient(session.sessionId, client);
+    }
+  }
+  return event;
+}
+
+function finishAnalysisSourceEventStream(session: AnalysisSession, runId: string): void {
+  publishAnalysisSourceEvent(session, runId, 'end', {});
+}
+
+async function cancelActiveAnalysisSourceEnrichment(
+  session: AnalysisSession,
+  reason: string,
+): Promise<boolean> {
+  const state = session.analysisSourceEnrichment;
+  if (!state || state.status !== 'running') return false;
+  state.status = 'cancelled';
+  state.completedAt = Date.now();
+  await cancelAnalysisSourceSupplement(
+    session.orchestrator,
+    session.sessionId,
+    state.runId,
+  );
+  publishAnalysisSourceEvent(session, state.runId, 'analysis_source_enrichment_cancelled', {
+    reason,
+  });
+  finishAnalysisSourceEventStream(session, state.runId);
+  return true;
+}
+
+function startAnalysisSourceEnrichment(
+  session: AnalysisSession,
+  input: {
+    runId: string;
+    traceId: string;
+    question: string;
+    primaryConclusion: string;
+  },
+): void {
+  const state = session.analysisSourceEnrichment;
+  const authorization = session.sourceAuthorization;
+  if (!state || state.runId !== input.runId || state.status !== 'running' || !authorization) return;
+  publishAnalysisSourceEvent(session, input.runId, 'analysis_source_enrichment_started', {});
+  void runAnalysisSourceSupplement({
+    orchestrator: session.orchestrator,
+    sessionId: session.sessionId,
+    runId: input.runId,
+    traceId: input.traceId,
+    question: input.question,
+    primaryConclusion: input.primaryConclusion,
+    analysisOptions: {
+      providerId: session.providerId,
+      outputLanguage: sessionOutputLanguage(session),
+      codeAwareMode: authorization.codeAwareMode,
+      codebaseIds: authorization.codebaseIds,
+      analysisContextFingerprint: authorization.analysisContextFingerprint,
+      tenantId: session.tenantId,
+      workspaceId: session.workspaceId,
+      userId: session.userId,
+    },
+  }).then(outcome => {
+    if (session.analysisSourceEnrichment !== state || state.status !== 'running') return;
+    state.status = 'completed';
+    state.completedAt = Date.now();
+    state.message = outcome.message;
+    state.metrics = outcome.metrics;
+    publishAnalysisSourceEvent(session, input.runId, 'analysis_source_enrichment_completed', {
+      message: outcome.message,
+      metrics: outcome.metrics,
+    });
+    finishAnalysisSourceEventStream(session, input.runId);
+  }).catch(() => {
+    if (session.analysisSourceEnrichment !== state || state.status !== 'running') return;
+    state.status = 'failed';
+    state.completedAt = Date.now();
+    state.errorCode = 'analysis_source_enrichment_failed';
+    publishAnalysisSourceEvent(session, input.runId, 'analysis_source_enrichment_failed', {
+      errorCode: state.errorCode,
+    });
+    finishAnalysisSourceEventStream(session, input.runId);
+  });
+}
+
 function loadPersistedCompletedAnalysisSseEvents(session: AnalysisSession, runId?: string): BufferedSseEvent[] {
   const scope = agentEventScopeFromSession(session, runId);
   if (!scope) return [];
@@ -1667,6 +1876,10 @@ function loadPersistedCompletedAnalysisSseEvents(session: AnalysisSession, runId
         event.eventType === 'snapshot_created' ||
         event.eventType === 'progress' ||
         event.eventType === 'analysis_completed' ||
+        event.eventType === 'analysis_source_enrichment_started' ||
+        event.eventType === 'analysis_source_enrichment_completed' ||
+        event.eventType === 'analysis_source_enrichment_failed' ||
+        event.eventType === 'analysis_source_enrichment_cancelled' ||
         event.eventType === 'analysis_cancelled' ||
         event.eventType === 'scene_reconstruction_completed' ||
         event.eventType === 'end',
@@ -2466,6 +2679,21 @@ async function handleAnalyzeRequest(
         .json(analysisContextAuthorization.payload);
       return;
     }
+    const sourceActivation = resolveAnalysisSourceActivation({
+      query,
+      analysisMode: options.analysisMode,
+      codeAwareMode: options.codeAwareMode,
+      codebaseIds: options.codebaseIds,
+    });
+    const authorizedCodebaseSelection =
+      options.codeAwareMode &&
+      options.codeAwareMode !== 'off' &&
+      options.codebaseIds?.length
+        ? {
+            codeAwareMode: options.codeAwareMode,
+            codebaseIds: [...options.codebaseIds],
+          }
+        : undefined;
 
     if (requestedSessionId && !requestedSessionIsVisible(requestedSessionId, requestContext)) {
       sendResourceNotFound(res, 'Session not found');
@@ -2602,7 +2830,11 @@ async function handleAnalyzeRequest(
       createSessionLogger,
       sessionPersistenceService: SessionPersistenceService.getInstance(),
       buildRecoveredResultFromContext,
-      onSessionSecurityCleanup: revokeCodeAwareOutputGuards,
+      onSessionSecurityCleanup: sessionId => {
+        revokeCodeAwareOutputGuards(sessionId);
+        const active = assistantAppService.getSession(sessionId);
+        if (active) void cancelActiveAnalysisSourceEnrichment(active, 'analysis_context_changed');
+      },
     });
 
     let sessionId: string;
@@ -2614,7 +2846,13 @@ async function handleAnalyzeRequest(
         options,
         knowledgeScopeFromRequestContext(requestContext),
       );
-      (options as AnalysisOptions).analysisContextFingerprint = analysisContextFingerprint;
+      options = projectPrimaryAnalysisOptions(
+        {
+          ...options,
+          analysisContextFingerprint,
+        } as AnalysisOptions,
+        sourceActivation,
+      ) as ReturnType<typeof normalizeAnalyzeOptions>;
       const availablePack = getDefaultAndroidInternalsPackResolver().resolve();
       if (availablePack) {
         (options as AnalysisOptions).androidInternalsPackPin = {
@@ -2684,6 +2922,15 @@ async function handleAnalyzeRequest(
       sessionForRun.referenceTraceId = effectiveReferenceTraceId;
       sessionForRun.comparisonSource = 'raw_trace_pair';
     }
+    await cancelActiveAnalysisSourceEnrichment(sessionForRun, 'superseded_by_new_analysis');
+    await resetSessionRuntimeForSourceActivation(sessionForRun, query, sourceActivation);
+    sessionForRun.sourceActivation = sourceActivation;
+    sessionForRun.sourceAuthorization = authorizedCodebaseSelection
+      ? {
+          ...authorizedCodebaseSelection,
+          analysisContextFingerprint: sessionForRun.analysisContextFingerprint as string,
+        }
+      : undefined;
     sessionForRun.codeAwareMode = options.codeAwareMode;
     sessionForRun.codebaseIds = Array.isArray(options.codebaseIds) ? options.codebaseIds : undefined;
     sessionForRun.knowledgeSourceIds = Array.isArray(options.knowledgeSourceIds)
@@ -3197,7 +3444,12 @@ function handleSessionStream(
     ...buildStreamObservability(session, streamRunId),
   });
 
-  if (lastEventId !== null && (streamStatus === 'completed' || streamStatus === 'quota_exceeded')) {
+  const sourceEnrichmentRunning = session.analysisSourceEnrichment?.status === 'running';
+  if (
+    lastEventId !== null &&
+    !sourceEnrichmentRunning &&
+    (streamStatus === 'completed' || streamStatus === 'quota_exceeded')
+  ) {
     recoverResultForSessionIfNeeded(sessionId, session);
     if (session.result) {
       sendAgentDrivenResult(res, session, streamRunId);
@@ -3272,9 +3524,11 @@ function handleSessionStream(
     recoverResultForSessionIfNeeded(sessionId, session);
     if (session.result) {
       sendAgentDrivenResult(res, session, streamRunId);
-      res.end();
-      assistantAppService.removeSseClient(sessionId, res);
-      return;
+      if (!sourceEnrichmentRunning) {
+        res.end();
+        assistantAppService.removeSseClient(sessionId, res);
+        return;
+      }
     }
   }
 
@@ -3323,6 +3577,9 @@ function handleSessionStream(
   req.on('close', () => {
     console.log(`[AgentRoutes] SSE client disconnected for ${sessionId}`);
     assistantAppService.removeSseClient(sessionId, res);
+    if (session.sseClients.length === 0 && session.analysisSourceEnrichment?.status === 'running') {
+      void cancelActiveAnalysisSourceEnrichment(session, 'client_disconnected');
+    }
   });
 
   // Handle write errors (EPIPE when client disconnects mid-write).
@@ -5726,7 +5983,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
             knowledgeSourceIds: Array.isArray(options.knowledgeSourceIds)
               ? options.knowledgeSourceIds
               : undefined,
-            analysisContextFingerprint: session.analysisContextFingerprint,
+            sourceUsePolicy: options.sourceUsePolicy,
+            analysisContextFingerprint: options.analysisContextFingerprint,
             androidInternalsPackPin: session.androidInternalsPackPin,
             tenantId: session.tenantId,
             workspaceId: session.workspaceId,
@@ -5743,8 +6001,8 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     if (session.analysisContextFingerprint && sessionUsesPrivateKnowledge(session)) {
       assertCurrentAnalysisContextAuthorization(
         {
-          codeAwareMode: session.codeAwareMode,
-          codebaseIds: session.codebaseIds,
+          codeAwareMode: session.sourceAuthorization?.codeAwareMode ?? session.codeAwareMode,
+          codebaseIds: session.sourceAuthorization?.codebaseIds ?? session.codebaseIds,
           knowledgeSourceIds: session.knowledgeSourceIds,
         },
         options.knowledgeScope ?? {
@@ -5909,6 +6167,17 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       });
     }
 
+    const shouldStartDeepSourceEnrichment =
+      result.success &&
+      session.sourceActivation === 'deep_supplement' &&
+      Boolean(session.sourceAuthorization);
+    if (shouldStartDeepSourceEnrichment) {
+      session.analysisSourceEnrichment = {
+        runId: runIdForAnalysis,
+        status: 'running',
+        startedAt: Date.now(),
+      };
+    }
     completeAgentDrivenSessionWithResult({
       sessionId,
       query,
@@ -5919,6 +6188,18 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       runId: runIdForAnalysis,
       logComponent: 'AgentDrivenAnalysis',
     });
+    if (shouldStartDeepSourceEnrichment) {
+      session.orchestrator.off('update', handleUpdate);
+      if (session.orchestratorUpdateHandler === handleUpdate) {
+        session.orchestratorUpdateHandler = undefined;
+      }
+      startAnalysisSourceEnrichment(session, {
+        runId: runIdForAnalysis,
+        traceId,
+        question: query,
+        primaryConclusion: result.conclusion,
+      });
+    }
   } catch (error: any) {
     const privateKnowledge = sessionUsesPrivateKnowledge(session);
     const authorizationChanged = error instanceof AnalysisContextAuthorizationChangedError ||
@@ -8776,6 +9057,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
                   })
             : undefined,
           resultSnapshotId: finalArtifacts.resultSnapshotId,
+          sourceEnrichmentPending: session.analysisSourceEnrichment?.status === 'running',
           observability,
           terminalRunStatus: session.status === 'quota_exceeded' ? 'quota_exceeded' : 'completed',
         }, result.sourceUseDecision),
@@ -8825,17 +9107,19 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
     );
   }
 
-  events.push(
-    appendAndPersistReplayableSessionEvent(
-      session,
-      'end',
-      {
-        timestamp: Date.now(),
-        ...observability,
-      },
-      completedRunId,
-    ),
-  );
+  if (session.analysisSourceEnrichment?.status !== 'running') {
+    events.push(
+      appendAndPersistReplayableSessionEvent(
+        session,
+        'end',
+        {
+          timestamp: Date.now(),
+          ...observability,
+        },
+        completedRunId,
+      ),
+    );
+  }
   if (completedRunId) {
     sseCache[completedRunId] = {
       events,
@@ -8935,6 +9219,13 @@ export const agentRoutesReceiptTestSeam = {
 export const agentRoutesSmartPreviewSelectionTestSeam = {
   hasSession: (sessionId: string) => Boolean(assistantAppService.getSession(sessionId)),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
+};
+
+export const agentRoutesCancellationTestSeam = {
+  setSession: (sessionId: string, session: AnalysisSession) =>
+    assistantAppService.setSession(sessionId, session),
+  deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
+  cancelSessionRun,
 };
 
 export default router;

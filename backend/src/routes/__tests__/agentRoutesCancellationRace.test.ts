@@ -31,7 +31,7 @@ import {
   type TraceProcessor,
 } from '../../services/traceProcessorService';
 import { ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata } from '../../services/traceMetadataStore';
-import agentRoutes from '../agentRoutes';
+import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
 
 const envKeys = [
   'SMARTPERFETTO_API_KEY',
@@ -98,6 +98,69 @@ afterEach(() => {
 });
 
 describe('agent analyze cancellation races', () => {
+  it('cancels detached source enrichment without changing the completed primary run', async () => {
+    const sessionId = 'session-source-enrichment-cancel';
+    const runId = `${sessionId}:1`;
+    const abortSession = jest.fn();
+    const cleanupSession = jest.fn();
+    const run = {
+      runId,
+      requestId: 'request-source-enrichment-cancel',
+      sequence: 1,
+      query: '完整审查源码',
+      startedAt: Date.now(),
+      completedAt: Date.now(),
+      status: 'completed' as const,
+    };
+    const session = {
+      sessionId,
+      status: 'completed' as const,
+      createdAt: Date.now(),
+      lastActivityAt: Date.now(),
+      traceId: 'trace-source-enrichment-cancel',
+      query: run.query,
+      sseClients: [],
+      sseEventSeq: 0,
+      sseEventBuffer: [],
+      runSequence: 1,
+      activeRun: run,
+      lastRun: run,
+      runRegistry: {[runId]: run},
+      analysisSourceEnrichment: {
+        runId,
+        status: 'running' as const,
+        startedAt: Date.now(),
+      },
+      orchestrator: {abortSession, cleanupSession},
+      logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn()},
+    } as any;
+    agentRoutesCancellationTestSeam.setSession(sessionId, session);
+    try {
+      const result = await agentRoutesCancellationTestSeam.cancelSessionRun(
+        sessionId,
+        runId,
+        'cancel source supplement',
+      );
+
+      expect(result).toMatchObject({
+        outcome: 'source_enrichment_cancelled',
+        runStatus: 'completed',
+      });
+      expect(session.status).toBe('completed');
+      expect(run.status).toBe('completed');
+      expect(session.analysisSourceEnrichment.status).toBe('cancelled');
+      expect(abortSession).toHaveBeenCalledWith(
+        `${sessionId}:${runId}:analysis-source-enrichment`,
+      );
+      expect(session.sseEventBuffer.map((event: any) => event.eventType)).toEqual([
+        'analysis_source_enrichment_cancelled',
+        'end',
+      ]);
+    } finally {
+      agentRoutesCancellationTestSeam.deleteSession(sessionId);
+    }
+  });
+
   it('persists terminal attribution when the runtime fails', async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-agent-runtime-failure-'));
     const app = makeApp();

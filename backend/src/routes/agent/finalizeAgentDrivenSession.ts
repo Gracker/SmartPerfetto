@@ -8,6 +8,7 @@ import type {
   StreamingUpdate,
 } from '../../agent';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
+import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import {
   completeFinalResultComparisonIdentity,
   type FinalResultComparisonIdentity,
@@ -18,7 +19,14 @@ type SessionStatus = 'pending' | 'running' | 'awaiting_user' | 'completed' | 'fa
 interface FinalizeSessionLike {
   result?: AgentRuntimeAnalysisResult;
   hypotheses: Hypothesis[];
-  conclusionHistory: Array<{ turn: number; conclusion: string; confidence: number; timestamp: number }>;
+  conclusionHistory: Array<{
+    turn: number;
+    conclusion: string;
+    confidence: number;
+    timestamp: number;
+    sourceDerived?: boolean;
+  }>;
+  sourceActivation?: AnalysisSourceActivation;
   runSequence?: number;
   activeRun?: { runId?: string; requestId?: string; sequence?: number };
   lastRun?: { runId?: string; requestId?: string; sequence?: number };
@@ -181,6 +189,7 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
       conclusion: result.conclusion,
       confidence: result.confidence ?? 0,
       timestamp: Date.now(),
+      sourceDerived: session.sourceActivation === 'bounded_explicit' ? true : undefined,
     });
   }
 

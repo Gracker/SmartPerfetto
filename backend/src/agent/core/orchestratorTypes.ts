@@ -349,12 +349,12 @@ export interface AnalysisOptions {
   codebaseIds?: string[];
   /** Explicit external knowledge-source allowlist for this analysis session. */
   knowledgeSourceIds?: string[];
-  /** Internal conversation-only source phase and hard tool budget. */
+  /** Internal source phase and optional hard tool budget. */
   sourceUsePolicy?: {
-    phase: 'explicit' | 'automatic_enrichment';
-    maxSearchCalls: number;
-    maxReadCalls: number;
-    maxDurationMs: number;
+    phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
+    maxSearchCalls?: number;
+    maxReadCalls?: number;
+    maxDurationMs?: number;
   };
   /** Internal non-secret partition for source/RAG capability continuity. */
   analysisContextFingerprint?: string;

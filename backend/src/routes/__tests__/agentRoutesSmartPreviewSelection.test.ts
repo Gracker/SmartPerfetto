@@ -115,7 +115,7 @@ describe('Smart preview selection binding', () => {
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app-source'],
     }, {
-      analysisMode: 'full',
+      analysisMode: 'fast',
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app-source'],
     }],

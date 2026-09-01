@@ -18,6 +18,7 @@ describe('dataContract column inference', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../dataContract.ts'), 'utf8');
 
     expect(source).toContain("terminalRunStatus?: 'completed' | 'quota_exceeded'");
+    expect(source).toContain('sourceEnrichmentPending?: boolean');
   });
 
   it('infers start timestamp columns as range-navigable', () => {

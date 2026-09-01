@@ -17,12 +17,11 @@ export interface AnalysisModeContext {
 export function analysisContextRequiresFullMode(context: AnalysisModeContext): boolean {
   return Boolean(
     context.referenceTraceId ||
-    (context.codeAwareMode !== 'off' && context.codebaseIds?.length) ||
     context.knowledgeSourceIds?.length,
   );
 }
 
-/** Source/RAG and dual-trace capabilities are unavailable in lightweight runtimes. */
+/** Private RAG and dual-trace capabilities remain full-runtime only. */
 export function resolveEffectiveAnalysisMode(
   requested: AnalysisOptions['analysisMode'],
   context: AnalysisModeContext,
@@ -41,7 +40,7 @@ export interface SmartDeepDiveAnalysisContext {
 /**
  * Preserve the exact private-context allowlists when Smart Profile hands its
  * selected scenes to the full agent runtime. Smart deep dives default to full;
- * an explicit fast request remains fast only when no full-only context exists.
+ * an explicit fast request remains fast unless RAG or comparison needs full.
  */
 export function buildSmartDeepDiveAnalysisContext(
   requested: AnalysisOptions['analysisMode'],

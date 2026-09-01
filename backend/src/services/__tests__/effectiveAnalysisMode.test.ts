@@ -28,8 +28,8 @@ describe('effective analysis mode', () => {
 
   it.each([
     ['trace only', {}, false, 'fast'],
-    ['codebase ids with implicit metadata mode', {codebaseIds: ['app']}, true, 'full'],
-    ['provider source', {codeAwareMode: 'provider_send', codebaseIds: ['app']}, true, 'full'],
+    ['codebase ids with implicit metadata mode', {codebaseIds: ['app']}, false, 'fast'],
+    ['provider source', {codeAwareMode: 'provider_send', codebaseIds: ['app']}, false, 'fast'],
     ['private RAG only', {knowledgeSourceIds: ['wiki']}, true, 'full'],
     ['source and private RAG', {
       codeAwareMode: 'provider_send',
@@ -62,7 +62,7 @@ describe('effective analysis mode', () => {
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app'],
     }, {
-      analysisMode: 'full',
+      analysisMode: 'fast',
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app'],
     }],

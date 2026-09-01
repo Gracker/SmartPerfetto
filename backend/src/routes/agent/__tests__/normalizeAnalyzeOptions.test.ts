@@ -135,8 +135,8 @@ describe('normalizeAnalyzeOptions', () => {
 
   it.each([
     ['neither', {}, 'auto', undefined, undefined, undefined],
-    ['source metadata', {codeAwareMode: 'metadata_only', codebaseIds: ['app']}, 'full', 'metadata_only', ['app'], undefined],
-    ['source provider send', {codeAwareMode: 'provider_send', codebaseIds: ['app']}, 'full', 'provider_send', ['app'], undefined],
+    ['source metadata', {codeAwareMode: 'metadata_only', codebaseIds: ['app']}, 'auto', 'metadata_only', ['app'], undefined],
+    ['source provider send', {codeAwareMode: 'provider_send', codebaseIds: ['app']}, 'auto', 'provider_send', ['app'], undefined],
     ['RAG only', {knowledgeSourceIds: ['wiki']}, 'full', undefined, undefined, ['wiki']],
     ['source plus RAG', {codeAwareMode: 'provider_send', codebaseIds: ['app'], knowledgeSourceIds: ['wiki']}, 'full', 'provider_send', ['app'], ['wiki']],
   ])('normalizes the Smart context matrix: %s', (
@@ -309,7 +309,7 @@ describe('normalizeAnalyzeOptions', () => {
       {analysisMode: 'fast', codebaseIds: ['app-source']},
       {endpoint: '/analyze', hasReferenceTraceId: false},
     )).toEqual({
-      analysisMode: 'full',
+      analysisMode: 'fast',
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app-source'],
     });
