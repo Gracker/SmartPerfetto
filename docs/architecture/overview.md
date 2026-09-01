@@ -105,6 +105,9 @@ Web UI 的两个 AI 入口共享同一鉴权边界，但不共享 trace 前置�
 
 - `/assistant` 的 `ConversationPage` 是 Conversation-first 入口；没有加载 Trace 时也能进行
   普通多轮对话，附加 Trace 后才进入 trace-aware 对话。
+- 已授权源码与本轮实际使用源码是两个状态。普通对话 run 保持源码 dormant，先完成并展示
+  主回答；只有显式源码意图或 Trace 给出窄代码锚点时才进入有界源码阶段。自动源码补充
+  通过独立 SSE 生命周期追加，不进入后续 dormant 主对话历史，失败也不改变主 run 状态。
 - 已加载 Trace 的 `AIPanel`、侧边栏和浮窗共享当前页面、当前 Trace 的
   `AnalysisBackendConnection`。后台上传完成只产生连接候选；只有 scoped lease 对应的
   native processor 状态为 ready，AI 分析才可使用该后端。

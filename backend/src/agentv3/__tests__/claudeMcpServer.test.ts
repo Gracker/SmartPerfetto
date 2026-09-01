@@ -31,6 +31,7 @@ import {
   clearCodeAwareOutputGuards,
   sanitizeCodeAwareText,
 } from '../../services/security/codeAwareOutputRegistry';
+import {projectPrivateStructuredValue} from '../../services/security/privateAnalysisProjection';
 
 // ── Mock dependencies ────────────────────────────────────────────────────
 
@@ -327,6 +328,12 @@ function createTestServer(options: {
   referencePackageName?: string;
   outputLanguage?: OutputLanguage;
   runManifestAttributionSink?: RunManifestAttributionSink;
+  sourceUsePolicy?: {
+    phase: 'explicit' | 'automatic_enrichment';
+    maxSearchCalls: number;
+    maxReadCalls: number;
+    maxDurationMs: number;
+  };
 } = {}) {
   const analysisNotes: AnalysisNote[] = [];
   const hypotheses: Hypothesis[] = [];
@@ -401,6 +408,7 @@ function createTestServer(options: {
     outputLanguage: options.outputLanguage,
     runManifestAttributionSink: options.runManifestAttributionSink,
     conversationTraceAttached: options.conversationTraceAttached,
+    sourceUsePolicy: options.sourceUsePolicy,
     ...(options.lightweight ? { lightweight: true } : { analysisPlan }),
     ...(options.referenceTraceId ? {
       referenceTraceId: options.referenceTraceId,
@@ -7029,6 +7037,110 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('on-demand codebase access', () => {
+    it('exposes only bounded source tools and enforces one search plus two reads', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-bounded-source-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'StartupHooks.kt'), [
+          'class StartupHooks {',
+          '  fun installTracing() = Unit',
+          '}',
+        ].join('\n'));
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({
+          kind: 'app_source',
+          displayName: 'App',
+          rootPath: root,
+          rootAuthorization: 'native_picker',
+          pathFilters: ['src'],
+          sendToProvider: true,
+          ...scope,
+        });
+        const ledger = new CodeLookupLedger(
+          'bounded-source-test',
+          12_000,
+          2,
+          path.join(tmpDir, 'ledger.jsonl'),
+        );
+        const {tools} = createTestServer({
+          lightweight: true,
+          conversationTraceAttached: false,
+          codeAwareMode: 'provider_send',
+          codebaseIds: [ref.codebaseId],
+          codebaseRegistry,
+          codeLookupLedger: ledger,
+          knowledgeScope: scope,
+          sourceUsePolicy: {
+            phase: 'explicit',
+            maxSearchCalls: 1,
+            maxReadCalls: 2,
+            maxDurationMs: 6_000,
+          },
+        });
+
+        expect([...tools.keys()].sort()).toEqual([
+          'list_codebases',
+          'read_codebase_file',
+          'search_codebase',
+        ]);
+        expect(await callTool(tools, 'search_codebase', {
+          query: 'installTracing',
+        })).toEqual(expect.objectContaining({success: true}));
+        expect(await callTool(tools, 'search_codebase', {
+          query: 'StartupHooks',
+        })).toEqual(expect.objectContaining({
+          success: false,
+          unsupportedReason: 'source_search_budget_exceeded',
+        }));
+
+        for (let i = 0; i < 2; i++) {
+          expect(await callTool(tools, 'read_codebase_file', {
+            file_path: 'src/StartupHooks.kt',
+            start_line: 1,
+            max_lines: 3,
+          })).toEqual(expect.objectContaining({success: true}));
+        }
+        expect(await callTool(tools, 'read_codebase_file', {
+          file_path: 'src/StartupHooks.kt',
+          start_line: 1,
+          max_lines: 3,
+        })).toEqual(expect.objectContaining({
+          success: false,
+          unsupportedReason: 'source_read_budget_exceeded',
+        }));
+        expect(ledger.getEntries()).toEqual(expect.arrayContaining([
+          expect.objectContaining({toolName: 'search_codebase', outcome: 'success'}),
+          expect.objectContaining({toolName: 'search_codebase', outcome: 'budget_exceeded'}),
+          expect.objectContaining({toolName: 'read_codebase_file', outcome: 'budget_exceeded'}),
+        ]));
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('keeps trace-attached automatic enrichment source-only', () => {
+      const {tools} = createTestServer({
+        lightweight: true,
+        conversationTraceAttached: true,
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['app-codebase'],
+        sourceUsePolicy: {
+          phase: 'automatic_enrichment',
+          maxSearchCalls: 1,
+          maxReadCalls: 2,
+          maxDurationMs: 6_000,
+        },
+      });
+
+      expect([...tools.keys()].sort()).toEqual([
+        'list_codebases',
+        'read_codebase_file',
+        'search_codebase',
+      ]);
+    });
+
     it('registers provider-sent search bodies for outbound echo redaction', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-on-demand-search-echo-'));
       const sessionId = 'on-demand-search-echo';
@@ -7111,6 +7223,14 @@ describe('createClaudeMcpServer', () => {
         expect(projected).toContain(
           `[Code: ${reference.referenceId} @ src/ReadGuard.kt:1-1]`,
         );
+        const sourceSupplementEvent = projectPrivateStructuredValue(sessionId, {
+          type: 'source_enrichment_completed',
+          message: `Source supplement echoed: ${reference.text}`,
+        });
+        expect(JSON.stringify(sourceSupplementEvent)).not.toContain(
+          'ON_DEMAND_READ_ECHO_CANARY',
+        );
+        expect(sourceSupplementEvent.message).toContain('[Code:');
       } finally {
         clearCodeAwareOutputGuards(sessionId);
         fs.rmSync(tmpDir, {recursive: true, force: true});

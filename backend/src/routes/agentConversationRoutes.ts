@@ -43,7 +43,6 @@ import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore
 import {
   privateAnalysisFailureMessage,
   privateAnalysisQueryMessage,
-  sessionUsesPrivateKnowledge,
 } from '../services/security/privateAnalysisProjection';
 import {readTraceMetadataForContext} from '../services/traceMetadataStore';
 import {getTraceProcessorService} from '../services/traceProcessorService';
@@ -52,9 +51,43 @@ import {resolveProviderRuntimeSnapshot} from '../services/providerManager/provid
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions} from './agent/normalizeAnalyzeOptions';
+import {resolvePrimaryConversationSourceUse} from '../assistant/runtime/conversationSourcePolicy';
 
 const CONVERSATION_RUN_HEARTBEAT_MS = 30_000;
 const heartbeatTimers = new Map<string, NodeJS.Timeout>();
+
+export function shouldCloseConversationStream(input: {
+  eventType?: string;
+  enrichmentPending?: boolean;
+  replay?: boolean;
+  primarySettled?: boolean;
+  enrichmentStatus?: 'running' | 'completed' | 'failed' | 'cancelled';
+}): boolean {
+  if (input.replay) {
+    if (!input.primarySettled) return false;
+    return input.enrichmentStatus !== 'running';
+  }
+  if (input.eventType === 'run_completed') return input.enrichmentPending !== true;
+  return input.eventType === 'run_failed' ||
+    input.eventType === 'source_enrichment_completed' ||
+    input.eventType === 'source_enrichment_failed' ||
+    input.eventType === 'source_enrichment_cancelled';
+}
+
+export function conversationRunUsesPrivateKnowledge(
+  session: Pick<ConversationSession, 'codeAwareMode' | 'codebaseIds' | 'knowledgeSourceIds'>,
+  run: Pick<ConversationRun, 'sourceUseMode'>,
+): boolean {
+  return Boolean(
+    session.knowledgeSourceIds?.length ||
+    (
+      run.sourceUseMode === 'explicit' &&
+      session.codeAwareMode &&
+      session.codeAwareMode !== 'off' &&
+      session.codebaseIds?.length
+    ),
+  );
+}
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -86,7 +119,7 @@ function runScope(
     traceId: session.traceContext.kind === 'attached'
       ? session.traceContext.traceId
       : `conversation-no-trace:${session.sessionId}`,
-    query: sessionUsesPrivateKnowledge(session)
+    query: conversationRunUsesPrivateKnowledge(session, run)
       ? privateAnalysisQueryMessage(session.outputLanguage ?? configuredOutputLanguage())
       : run.query,
     mode: 'conversation',
@@ -104,7 +137,7 @@ function settleRun(session: ConversationSession, run: ConversationRun): void {
       : run.outcome?.kind === 'needs_user_input'
         ? 'awaiting_user'
         : 'completed';
-  const error = run.error && sessionUsesPrivateKnowledge(session)
+  const error = run.error && conversationRunUsesPrivateKnowledge(session, run)
     ? privateAnalysisFailureMessage(session.outputLanguage ?? configuredOutputLanguage())
     : run.error;
   persistAnalysisRunState(runScope(session, run), status, {error});
@@ -220,7 +253,16 @@ async function startConversation(req: express.Request, res: express.Response): P
         .json(analysisContextAuthorization.payload);
       return;
     }
-    privateKnowledge = Boolean(options.codebaseIds?.length || options.knowledgeSourceIds?.length);
+    privateKnowledge = Boolean(
+      options.knowledgeSourceIds?.length ||
+      (
+        options.codebaseIds?.length &&
+        resolvePrimaryConversationSourceUse({
+          query,
+          hasAuthorizedCodebase: true,
+        }) === 'explicit'
+      ),
+    );
     const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
       options,
       knowledgeScopeFromRequestContext(requestContext),
@@ -318,6 +360,9 @@ async function startConversation(req: express.Request, res: express.Response): P
     }
     if (existing?.activeRun) {
       await conversationSessionService.cancelRun(existing.sessionId, existing.activeRun.runId);
+    }
+    if (existing) {
+      await conversationSessionService.cancelSourceEnrichments(existing.sessionId);
     }
     // Resolve immediately before the synchronous startTurn boundary. Any
     // awaited Trace load or cancellation above may have allowed a Provider
@@ -470,7 +515,12 @@ function streamConversation(req: express.Request, res: express.Response): void {
       return;
     }
     sendRunEvent(event);
-    if (event.type === 'run_completed' || event.type === 'run_failed') close();
+    if (shouldCloseConversationStream({
+      eventType: event.type,
+      enrichmentPending: event.type === 'run_completed'
+        ? event.enrichmentPending
+        : undefined,
+    })) close();
   });
   const heartbeat = setInterval(() => send('heartbeat', {timestamp: Date.now()}), 15_000);
   heartbeat.unref?.();
@@ -483,7 +533,13 @@ function streamConversation(req: express.Request, res: express.Response): void {
   for (const event of pendingLiveEvents.sort((left, right) => left.seqId - right.seqId)) {
     sendRunEvent(event);
   }
-  if (run.outcome || run.error) close();
+  if (shouldCloseConversationStream({
+    replay: true,
+    primarySettled: Boolean(run.outcome || run.error),
+    enrichmentStatus: run.sourceEnrichment?.status ?? (
+      run.sourceEnrichmentPending ? 'running' : undefined
+    ),
+  })) close();
 }
 
 async function cancelConversation(req: express.Request, res: express.Response): Promise<void> {

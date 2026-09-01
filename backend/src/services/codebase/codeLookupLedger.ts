@@ -42,6 +42,8 @@ export interface CodeLookupLedgerEntry {
   returnedReferenceCount?: number;
   consentApplied: boolean;
   tokensSpent: number;
+  /** Local tool wall time only; never includes model text or source content. */
+  durationMs?: number;
   outcome: CodeLookupOutcome;
   legacyPath: boolean;
   /** Non-secret authorization partition. Audit-only entries never grant capability across partitions. */
@@ -116,6 +118,9 @@ function normalizeLedgerEntry(
       : {}),
     consentApplied: entry.consentApplied === true,
     tokensSpent: Number.isFinite(entry.tokensSpent) ? Number(entry.tokensSpent) : 0,
+    ...(Number.isFinite(entry.durationMs)
+      ? {durationMs: Math.max(0, Math.floor(Number(entry.durationMs)))}
+      : {}),
     outcome: entry.outcome as CodeLookupOutcome,
     legacyPath: entry.legacyPath === true,
     ...(storedAuthorizationFingerprint

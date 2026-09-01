@@ -11,6 +11,8 @@ export type ConversationTraceContext =
 export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
+  /** Source-derived assistant text stays out of later dormant primary prompts. */
+  sourceDerived?: boolean;
 }
 
 export interface ConversationEvidenceRef {
@@ -45,6 +47,15 @@ export type ConversationRuntimeOutcome =
 
 const CONTROL_MARKER_RE =
   /<!--\s*smartperfetto:conversation-control\s+(\{[\s\S]*\})\s*-->\s*$/;
+
+const INTERNAL_TOOL_PROTOCOL_PATTERNS = [
+  /DSML[^>]*(?:tools?_calling|tool_calls?|invoke)/i,
+  /<\/?(?:tool_calls?|tool_use|function_calls?|invoke)(?:\s|>)/i,
+];
+
+export function containsInternalToolProtocol(text: string): boolean {
+  return INTERNAL_TOOL_PROTOCOL_PATTERNS.some(pattern => pattern.test(text));
+}
 
 function normalizeEvidence(value: unknown): ConversationEvidenceRef[] {
   if (!Array.isArray(value)) return [];

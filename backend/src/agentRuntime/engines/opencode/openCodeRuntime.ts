@@ -3734,6 +3734,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      sourceUsePolicy: options.sourceUsePolicy,
       analysisContextFingerprint: options.analysisContextFingerprint,
       androidInternalsPackPin: options.androidInternalsPackPin,
       referenceTraceId: options.referenceTraceId,

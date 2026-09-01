@@ -42,6 +42,16 @@ export function stringifySdkToolResult(result: unknown): string {
   return typeof result === 'string' ? result : JSON.stringify(result);
 }
 
+export function isSdkToolResultFailure(result: unknown, isError?: boolean): boolean {
+  if (isError === true) return true;
+  if (result && typeof result === 'object') {
+    const record = result as {success?: unknown; isError?: unknown};
+    if (record.success === false || record.isError === true) return true;
+  }
+  const text = stringifySdkToolResult(result);
+  return /(?:\\?")success(?:\\?")\s*:\s*false|(?:\\?")isError(?:\\?")\s*:\s*true/.test(text);
+}
+
 /** Return type for createSseBridge — message handler + accumulated answer accessor. */
 export interface SseBridge {
   handleMessage: (msg: any) => void;

@@ -91,6 +91,12 @@ optional `native_symbols` step extracts function, module, and build-id values
 from CPU-profile samples. Both narrow search and never replace current-trace
 evidence or the later bounded source verification.
 
+Automatic Web-conversation enrichment has a stricter tool surface: only
+`list_codebases`, `search_codebase`, and `read_codebase_file` are exposed.
+Graph, indexed lookup, Trace, shell, and patch tools are unavailable. An
+ordinary dormant primary analysis receives no source tools, so repository size
+cannot add model turns to the primary answer.
+
 `query_code_graph` and `inspect_code_symbol` return metadata only: `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. They never return raw source text or absolute roots. When a registration uses `pathFilters` or `excludeGlobs`, SmartPerfetto omits whole-repository process summaries whose path scope cannot be proven; authorized relative `CodeRef` values remain available. If GitNexus is missing, unavailable, incompatible, times out, or fails, the graph tool returns a structured unavailable result (`success=false` plus `unsupportedReason`). A stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues through the existing `search_codebase` / `read_codebase_file` path, so registration, selection, and trace analysis remain available. SmartPerfetto does not install, bundle, redistribute, or automatically create or refresh a GitNexus index.
 
 GitNexus is an independent optional third-party tool. Its [official project](https://github.com/abhigyanpatwari/GitNexus) and [npm package](https://www.npmjs.com/package/gitnexus) currently declare the [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE) license. Review the upstream terms and confirm that your intended use is permitted before enabling it, especially for commercial use. This is not legal advice.

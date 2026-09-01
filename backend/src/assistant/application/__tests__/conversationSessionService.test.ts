@@ -279,6 +279,109 @@ describe('ConversationSessionService', () => {
     expect(events.map(event => event.seqId)).toEqual([1, 2, 3]);
   });
 
+  it('completes the primary run before starting independent source enrichment', async () => {
+    const enrichment = deferred<{
+      message: string;
+      evidence: Array<{id: string; label: string}>;
+      metrics: {searchCalls: number; readCalls: number; durationMs: number};
+    }>();
+    const adapter: ConversationRuntimeAdapter = {
+      resolvePrimarySourceUse: jest.fn((_query: string): 'dormant' => 'dormant'),
+      shouldStartSourceEnrichment: jest.fn(() => true),
+      run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({
+        kind: 'answered',
+        message: 'Primary trace answer',
+        evidence: [{id: 'trace-1', label: 'Foo::bar', source: 'sql'}],
+      })),
+      runSourceEnrichment: jest.fn(async () => enrichment.promise),
+      cancel: jest.fn(async () => undefined),
+      cancelSourceEnrichment: jest.fn(async () => undefined),
+    };
+    const service = createService(adapter);
+    const receipt = service.startTurn({
+      query: 'Why is startup slow?',
+      traceContext: {kind: 'attached', traceId: 'trace-1'},
+      runtimeOptions: {
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['private-app'],
+      },
+    });
+    const eventTypes: string[] = [];
+    service.subscribe(receipt.sessionId, event => eventTypes.push(event.type));
+
+    await expect(receipt.completion).resolves.toMatchObject({
+      message: 'Primary trace answer',
+    });
+    expect(service.getSession(receipt.sessionId)).toMatchObject({
+      status: 'completed',
+      activeRun: undefined,
+    });
+    expect(eventTypes.indexOf('run_completed')).toBeGreaterThanOrEqual(0);
+    expect(eventTypes.indexOf('source_enrichment_started'))
+      .toBeGreaterThan(eventTypes.indexOf('run_completed'));
+    expect(eventTypes).not.toContain('source_enrichment_completed');
+
+    enrichment.resolve({
+      message: 'Source supplement',
+      evidence: [{id: 'source-1', label: 'Foo.kt:L10-L12'}],
+      metrics: {searchCalls: 1, readCalls: 2, durationMs: 40},
+    });
+    const run = service.getSession(receipt.sessionId)?.runs[0];
+    await run?.sourceEnrichment?.completion;
+    expect(run?.sourceEnrichment).toMatchObject({
+      status: 'completed',
+      message: 'Source supplement',
+    });
+    expect(eventTypes[eventTypes.length - 1]).toBe('source_enrichment_completed');
+  });
+
+  it('marks explicit source history and excludes automatic enrichment from history', async () => {
+    const enrichment = deferred<{
+      message: string;
+      evidence: Array<{id: string; label: string}>;
+      metrics: {searchCalls: number; readCalls: number; durationMs: number};
+    }>();
+    let turn = 0;
+    const inputs: ConversationRuntimeInput[] = [];
+    const adapter: ConversationRuntimeAdapter = {
+      resolvePrimarySourceUse: jest.fn((query: string): 'explicit' | 'dormant' => (
+        query.includes('源码') ? 'explicit' : 'dormant'
+      )),
+      shouldStartSourceEnrichment: jest.fn((
+        _input: ConversationRuntimeInput,
+        outcome: ConversationRuntimeOutcome,
+      ) => outcome.message === 'trace answer'),
+      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+        inputs.push(input);
+        turn += 1;
+        return {kind: 'answered', message: turn === 1 ? 'source answer' : turn === 2 ? 'trace answer' : 'next answer'};
+      }),
+      runSourceEnrichment: jest.fn(async () => enrichment.promise),
+      cancel: jest.fn(async () => undefined),
+      cancelSourceEnrichment: jest.fn(async () => undefined),
+    };
+    const service = createService(adapter);
+    const first = service.startTurn({query: '看看源码里的 Foo::bar'});
+    await first.completion;
+    const second = service.startTurn({sessionId: first.sessionId, query: '分析启动'});
+    await second.completion;
+    enrichment.resolve({
+      message: 'automatic supplement',
+      evidence: [],
+      metrics: {searchCalls: 1, readCalls: 0, durationMs: 5},
+    });
+    await service.getSession(first.sessionId)?.runs[1].sourceEnrichment?.completion;
+    const third = service.startTurn({sessionId: first.sessionId, query: '继续'});
+    await third.completion;
+
+    expect(inputs[1].history).toEqual(expect.arrayContaining([
+      expect.objectContaining({content: 'source answer', sourceDerived: true}),
+    ]));
+    expect(inputs[2].history).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({content: 'automatic supplement'}),
+    ]));
+  });
+
   it('does not start model work when run reservation fails', () => {
     const adapter: ConversationRuntimeAdapter = {
       run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({

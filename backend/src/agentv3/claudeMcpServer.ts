@@ -1326,6 +1326,13 @@ export interface ClaudeMcpServerOptions {
   codebaseIds?: string[];
   /** Private external-knowledge source ids whitelisted for this analysis session. */
   knowledgeSourceIds?: string[];
+  /** Conversation-only hard source tool budget. Omitted for existing analysis behavior. */
+  sourceUsePolicy?: {
+    phase: 'explicit' | 'automatic_enrichment';
+    maxSearchCalls: number;
+    maxReadCalls: number;
+    maxDurationMs: number;
+  };
   /** Non-secret authorization partition for active lookup/patch capability state. */
   analysisContextFingerprint?: string;
   /** Test hook / alternate private external-knowledge registry. */
@@ -5124,6 +5131,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     tokensSpent: number;
     returnedReferenceCount: number;
     outcome: 'success' | 'budget_exceeded' | 'consent_blocked' | 'rejected';
+    durationMs?: number;
   }): Promise<void> => {
     codeLookupLedger?.record({
       turn: 0,
@@ -5133,11 +5141,38 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       chunkIds: [],
       consentApplied: codeAwareMode === 'provider_send',
       tokensSpent: input.tokensSpent,
+      ...(input.durationMs !== undefined ? {durationMs: input.durationMs} : {}),
       outcome: input.outcome,
       legacyPath: false,
       returnedReferenceCount: input.returnedReferenceCount,
     });
     await codeLookupLedger?.flush();
+  };
+  const sourceUsePolicy = options.sourceUsePolicy;
+  let sourceBudgetStartedAt: number | undefined;
+  let sourceSearchCalls = 0;
+  let sourceReadCalls = 0;
+  const consumeSourceBudget = (
+    kind: 'search' | 'read',
+  ): 'source_search_budget_exceeded' | 'source_read_budget_exceeded' | 'source_deadline_exceeded' | undefined => {
+    if (!sourceUsePolicy) return undefined;
+    const now = Date.now();
+    sourceBudgetStartedAt ??= now;
+    if (now - sourceBudgetStartedAt >= sourceUsePolicy.maxDurationMs) {
+      return 'source_deadline_exceeded';
+    }
+    if (kind === 'search') {
+      if (sourceSearchCalls >= sourceUsePolicy.maxSearchCalls) {
+        return 'source_search_budget_exceeded';
+      }
+      sourceSearchCalls += 1;
+      return undefined;
+    }
+    if (sourceReadCalls >= sourceUsePolicy.maxReadCalls) {
+      return 'source_read_budget_exceeded';
+    }
+    sourceReadCalls += 1;
+    return undefined;
   };
   const graphMetadataTokens = (result: {
     references?: unknown[];
@@ -5191,6 +5226,27 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      const sourceBudgetStop = consumeSourceBudget('search');
+      if (sourceBudgetStop) {
+        await recordOnDemandSourceLookup({
+          toolName: 'search_codebase',
+          codebaseId,
+          tokensSpent: 0,
+          returnedReferenceCount: 0,
+          outcome: 'budget_exceeded',
+          durationMs: 0,
+        });
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+            success: false,
+            codebaseId,
+            matches: [],
+            truncated: false,
+            unsupportedReason: sourceBudgetStop,
+          }))}],
+        };
+      }
+      const sourceLookupStartedAt = Date.now();
       const result = await onDemandSourceAccess.search({
         codebaseId,
         scope: knowledgeScope ?? {},
@@ -5214,6 +5270,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           tokensSpent: 0,
           returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
+          durationMs: Date.now() - sourceLookupStartedAt,
         });
         return {
           content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
@@ -5244,6 +5301,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         outcome: result.success
           ? 'success'
           : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+        durationMs: Date.now() - sourceLookupStartedAt,
       });
       assertPrivateAnalysisContextCurrent();
       return {
@@ -5274,6 +5332,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      const sourceBudgetStop = consumeSourceBudget('read');
+      if (sourceBudgetStop) {
+        await recordOnDemandSourceLookup({
+          toolName: 'read_codebase_file',
+          codebaseId,
+          tokensSpent: 0,
+          returnedReferenceCount: 0,
+          outcome: 'budget_exceeded',
+          durationMs: 0,
+        });
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+            success: false,
+            codebaseId,
+            truncated: false,
+            unsupportedReason: sourceBudgetStop,
+          }))}],
+        };
+      }
+      const sourceLookupStartedAt = Date.now();
       const result = await onDemandSourceAccess.read({
         codebaseId,
         scope: knowledgeScope ?? {},
@@ -5296,6 +5374,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           tokensSpent: 0,
           returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
+          durationMs: Date.now() - sourceLookupStartedAt,
         });
         return {
           content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
@@ -5318,6 +5397,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         outcome: result.success
           ? 'success'
           : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+        durationMs: Date.now() - sourceLookupStartedAt,
       });
       assertPrivateAnalysisContextCurrent();
       return {
@@ -8086,7 +8166,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     // `invoke_skill` returns artifact references, so `fetch_artifact` must
     // stay available or lightweight models try to query artifact IDs as SQL.
     const isConversation = options.conversationTraceAttached !== undefined;
-    if (!isConversation || options.conversationTraceAttached) {
+    const automaticSourceOnly = sourceUsePolicy?.phase === 'automatic_enrichment';
+    if ((!isConversation || options.conversationTraceAttached) && !automaticSourceOnly) {
       registry.registerSdk(executeSql, 'execute_sql', 'public');
       registry.registerSdk(invokeSkill, 'invoke_skill', 'public');
       registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
@@ -8095,17 +8176,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public');
     }
     if (isConversation) {
-      if (knowledgeSourceIds.length > 0) {
+      if (knowledgeSourceIds.length > 0 && !automaticSourceOnly) {
         registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public');
       }
       registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission');
       registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission');
       registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission');
-      registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission');
-      registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission');
-      registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission');
-      registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission');
-      registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission');
+      if (!sourceUsePolicy) {
+        registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission');
+        registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission');
+        registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission');
+        registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission');
+        registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission');
+      }
     }
   } else {
     // Full mode: all always-on tools + conditional tools.
@@ -8160,11 +8243,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal');
   }
 
-  registry.registerSdk(
-    recordSourceUseDecision,
-    'record_source_use_decision',
-    'requires_codebase_permission',
-  );
+  if (!sourceUsePolicy) {
+    registry.registerSdk(
+      recordSourceUseDecision,
+      'record_source_use_decision',
+      'requires_codebase_permission',
+    );
+  }
 
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
