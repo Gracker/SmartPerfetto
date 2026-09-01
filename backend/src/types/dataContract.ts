@@ -1152,6 +1152,8 @@ export interface AnalysisCompletedEvent {
     analysisReceipt?: AnalysisReceipt;
     uiActionProposals?: UiActionProposalV1[];
     smartScenePreview?: import('../agent/scene/types').SmartScenePreviewPayload;
+    /** Primary result is terminal, but a separate source supplement is still running. */
+    sourceEnrichmentPending?: boolean;
     terminalRunStatus?: 'completed' | 'quota_exceeded';
     findings: AnalysisCompletedFinding[];
     resultContract?: import('../assistant/contracts/assistantResultContract').AssistantResultContract;

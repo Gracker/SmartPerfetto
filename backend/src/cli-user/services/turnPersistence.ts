@@ -19,6 +19,7 @@ import type { CliPaths, SessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionIndexEntry } from '../types';
 import type { RunTurnOutput } from './cliAnalyzeService';
+import type {AnalysisSourceSupplementOutcome} from '../../services/codebase/analysisSourceSupplement';
 import {
   writeConfig,
   writeConclusion,
@@ -162,6 +163,41 @@ export function commitTurnOutputs(input: CommitTurnInput): void {
     sessionDir: sp.dir,
     sessionId,
     success: result.result.success,
+  });
+}
+
+export function commitSourceSupplementOutput(input: {
+  sp: SessionPaths;
+  renderer: Renderer;
+  sessionId: string;
+  turn: number;
+  supplement: AnalysisSourceSupplementOutcome;
+}): void {
+  const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+  const safeSupplement = {
+    message: sanitizeCodeAwareText(input.sessionId, input.supplement.message),
+    metrics: {...input.supplement.metrics},
+  };
+  const turnPrefix = path.join(input.sp.turnsDir, String(input.turn).padStart(3, '0'));
+  const turnPath = `${turnPrefix}.md`;
+  const current = fs.existsSync(turnPath) ? fs.readFileSync(turnPath, 'utf8').trimEnd() : '';
+  const heading = localize(outputLanguage, '源码补充', 'Source supplement');
+  const metrics = localize(
+    outputLanguage,
+    `${safeSupplement.metrics.searchCalls} 次搜索 / ${safeSupplement.metrics.readCalls} 次读取 / ${safeSupplement.metrics.durationMs}ms`,
+    `${safeSupplement.metrics.searchCalls} searches / ${safeSupplement.metrics.readCalls} reads / ${safeSupplement.metrics.durationMs}ms`,
+  );
+  writeTurnMarkdown(
+    input.sp,
+    input.turn,
+    `${current}\n\n## ${heading}\n\n${safeSupplement.message}\n\n_${metrics}_\n`,
+  );
+  writeJsonFile(input.sp, path.join(input.sp.dir, 'source-supplement.json'), safeSupplement);
+  writeJsonFile(input.sp, `${turnPrefix}.source-supplement.json`, safeSupplement);
+  input.renderer.onEvent({
+    type: 'analysis_source_enrichment_completed',
+    content: safeSupplement,
+    timestamp: Date.now(),
   });
 }
 

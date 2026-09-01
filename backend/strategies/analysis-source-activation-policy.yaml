@@ -1,0 +1,25 @@
+schema_version: analysis_source_activation_policy@1
+
+bounded_explicit:
+  max_search_calls: 1
+  max_read_calls: 2
+  max_duration_ms: 6000
+
+safe_replay:
+  max_turns: 6
+  max_chars_per_entry: 1200
+
+intent:
+  explicit_patterns:
+    - '(?:源码|代码)(?:文件|路径|位置|实现|调用|逻辑|里|中|级)?'
+    - '(?:(?:哪个|具体)(?:函数|类)(?:实现|调用|处理|负责|在哪|位置|路径|调用链)?|(?:函数|方法|类)(?:实现|调用|处理|负责|在哪|位置|路径|调用链))'
+    - '(?:调用链|代码路径|实现在哪|哪一行|定位到代码)'
+    - '\b(?:source\s+(?:code|file)|code\s+path|call\s+(?:graph|chain)|which\s+(?:function|method|class)|where\s+is\s+.+implemented|implementation)\b'
+    - '\b(?:(?:pasted|this|that|the)\s+)?source(?:\s+(?:line|snippet|tree|repository|repo))?\b'
+  explicit_case_sensitive_patterns:
+    - '\b[A-Za-z_$][\w$]*(?:::|#)[A-Za-z_$][\w$]*\b'
+    - '\b[a-z][a-z0-9_$]*(?:[A-Z][A-Za-z0-9_$]*){2,}\b'
+  deep_patterns:
+    - '(?:深入|深度|完整|全面|彻底)(?:分析|审查|检查|研究|阅读|排查)?(?:这份|整个|全部|所有)?(?:源码|代码|代码库)'
+    - '(?:源码|代码|代码库)(?:做|进行|来)?(?:深入|深度|完整|全面|彻底)(?:分析|审查|检查|研究|阅读|排查)'
+    - '\b(?:deep|thorough|complete|comprehensive|full)\s+(?:source|code|codebase|repository|repo)\s+(?:analysis|audit|review|inspection)\b'

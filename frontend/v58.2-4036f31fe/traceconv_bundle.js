@@ -25,7 +25,7 @@
 	}) : target, mod));
 	//#endregion
 	//#region \0perfetto:version:ui/src/virtual/version
-	var VERSION = "v58.2-f853d5850";
+	var VERSION = "v58.2-4036f31fe";
 	//#endregion
 	//#region ../../ui/src/base/utils.ts
 	function exists(value) {
@@ -735,8 +735,8 @@
 							$parts$jscomp$1_path$jscomp$11$$ = $parts$jscomp$1_path$jscomp$11$$.split("/");
 							for (var $parent$jscomp$10$$ = $root$jscomp$4$$, $i$jscomp$13$$ = 0; $i$jscomp$13$$ < $parts$jscomp$1_path$jscomp$11$$.length - 1; $i$jscomp$13$$++) {
 								var $curr$$ = $parts$jscomp$1_path$jscomp$11$$.slice(0, $i$jscomp$13$$ + 1).join("/");
-								let $$jscomp$logical$assign$tmp410084597$3$$, $$jscomp$logical$assign$tmpindex410084597$3$$;
-								($$jscomp$logical$assign$tmp410084597$3$$ = $createdParents$$)[$$jscomp$logical$assign$tmpindex410084597$3$$ = $curr$$] || ($$jscomp$logical$assign$tmp410084597$3$$[$$jscomp$logical$assign$tmpindex410084597$3$$] = $WORKERFS$$.createNode($parent$jscomp$10$$, $parts$jscomp$1_path$jscomp$11$$[$i$jscomp$13$$], $WORKERFS$$.$DIR_MODE$, 0));
+								let $$jscomp$logical$assign$tmp301936253$3$$, $$jscomp$logical$assign$tmpindex301936253$3$$;
+								($$jscomp$logical$assign$tmp301936253$3$$ = $createdParents$$)[$$jscomp$logical$assign$tmpindex301936253$3$$ = $curr$$] || ($$jscomp$logical$assign$tmp301936253$3$$[$$jscomp$logical$assign$tmpindex301936253$3$$] = $WORKERFS$$.createNode($parent$jscomp$10$$, $parts$jscomp$1_path$jscomp$11$$[$i$jscomp$13$$], $WORKERFS$$.$DIR_MODE$, 0));
 								$parent$jscomp$10$$ = $createdParents$$[$curr$$];
 							}
 							return $parent$jscomp$10$$;
@@ -1713,10 +1713,10 @@
 					$createDevice$($parent$jscomp$31_path$jscomp$42$$, $mode$jscomp$42_name$jscomp$103$$, $input$jscomp$11$$, $output$jscomp$4$$) {
 						$parent$jscomp$31_path$jscomp$42$$ = $PATH$join2$$("string" == typeof $parent$jscomp$31_path$jscomp$42$$ ? $parent$jscomp$31_path$jscomp$42$$ : $JSCompiler_StaticMethods_getPath$$($parent$jscomp$31_path$jscomp$42$$), $mode$jscomp$42_name$jscomp$103$$);
 						$mode$jscomp$42_name$jscomp$103$$ = $FS_getMode$$(!!$input$jscomp$11$$, !!$output$jscomp$4$$);
-						var $$jscomp$logical$assign$tmp410084597$6_dev$jscomp$11$$;
-						($$jscomp$logical$assign$tmp410084597$6_dev$jscomp$11$$ = $FS$$.$createDevice$).$major$ ?? ($$jscomp$logical$assign$tmp410084597$6_dev$jscomp$11$$.$major$ = 64);
-						$$jscomp$logical$assign$tmp410084597$6_dev$jscomp$11$$ = $FS$$.$makedev$($FS$$.$createDevice$.$major$++, 0);
-						$JSCompiler_StaticMethods_registerDevice$$($$jscomp$logical$assign$tmp410084597$6_dev$jscomp$11$$, {
+						var $$jscomp$logical$assign$tmp301936253$6_dev$jscomp$11$$;
+						($$jscomp$logical$assign$tmp301936253$6_dev$jscomp$11$$ = $FS$$.$createDevice$).$major$ ?? ($$jscomp$logical$assign$tmp301936253$6_dev$jscomp$11$$.$major$ = 64);
+						$$jscomp$logical$assign$tmp301936253$6_dev$jscomp$11$$ = $FS$$.$makedev$($FS$$.$createDevice$.$major$++, 0);
+						$JSCompiler_StaticMethods_registerDevice$$($$jscomp$logical$assign$tmp301936253$6_dev$jscomp$11$$, {
 							open($stream$jscomp$45$$) {
 								$stream$jscomp$45$$.seekable = !1;
 							},
@@ -1748,7 +1748,7 @@
 								return $i$jscomp$17$$;
 							}
 						});
-						return $JSCompiler_StaticMethods_mkdev$$($parent$jscomp$31_path$jscomp$42$$, $mode$jscomp$42_name$jscomp$103$$, $$jscomp$logical$assign$tmp410084597$6_dev$jscomp$11$$);
+						return $JSCompiler_StaticMethods_mkdev$$($parent$jscomp$31_path$jscomp$42$$, $mode$jscomp$42_name$jscomp$103$$, $$jscomp$logical$assign$tmp301936253$6_dev$jscomp$11$$);
 					},
 					$createLazyFile$($parent$jscomp$32_stream_ops$$, $name$jscomp$104$$, $url$jscomp$29$$, $canRead$jscomp$6$$, $canWrite$jscomp$6$$) {
 						function $writeChunks$$($contents$jscomp$5_stream$jscomp$49$$, $buffer$jscomp$31$$, $offset$jscomp$42$$, $length$jscomp$34_size$jscomp$25$$, $position$jscomp$11$$) {

@@ -44,13 +44,26 @@ describe('session SSE replay state', () => {
     const state = createState();
     appendReplayableSseEvent(state, 'progress', {step: 1});
     appendReplayableSseEvent(state, 'analysis_completed', {
-      reportUrl: '/api/reports/report-a',
+      data: {
+        reportUrl: '/api/reports/report-a',
+        sourceEnrichmentPending: true,
+      },
     });
+    expect(hasTerminalReplayAfter(state, 0)).toBe(false);
     appendReplayableSseEvent(state, 'end', {timestamp: 123});
 
     expect(hasTerminalReplayAfter(state, 0)).toBe(true);
     expect(hasTerminalReplayAfter(state, 2)).toBe(true);
     expect(hasTerminalReplayAfter(state, 3)).toBe(false);
+  });
+
+  it('keeps ordinary analysis_completed as a terminal reconnect boundary', () => {
+    const state = createState();
+    appendReplayableSseEvent(state, 'analysis_completed', {
+      data: {reportUrl: '/api/reports/report-a'},
+    });
+
+    expect(hasTerminalReplayAfter(state, 0)).toBe(true);
   });
 
   it('treats analysis_cancelled as a terminal reconnect boundary', () => {

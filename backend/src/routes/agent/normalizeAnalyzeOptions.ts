@@ -143,13 +143,10 @@ export function normalizeAnalyzeOptions(
   }
   if (codeAwareMode) normalized.codeAwareMode = codeAwareMode;
 
-  // Source-backed context and comparison are full-analysis capabilities. The
-  // lightweight registry does not expose the necessary source/comparison
-  // tools, so both explicit fast and auto must resolve to full here.
+  // Source authorization is independent from per-run source activation. Only
+  // comparison and private RAG remain intrinsically full-analysis contexts.
   normalized.analysisMode = resolveEffectiveAnalysisMode(normalized.analysisMode, {
     referenceTraceId: ctx.hasReferenceTraceId ? ctx.referenceTraceId ?? 'reference' : undefined,
-    codeAwareMode,
-    codebaseIds,
     knowledgeSourceIds,
   });
 

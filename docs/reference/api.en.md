@@ -312,8 +312,13 @@ permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
 replay or durable persistence.
 
-Terminal SSE events are `run_completed` and `run_failed`. Reconnecting clients
-can send `Last-Event-ID` or the `lastEventId` query parameter; replay uses
+`run_completed` means the primary answer is ready for immediate display and
+contains `enrichmentPending`. When it is `false`, the stream closes. When it is
+`true`, the stream continues with `source_enrichment_started` and closes after
+`source_enrichment_completed`, `source_enrichment_failed`, or
+`source_enrichment_cancelled`. A source terminal event never changes the
+primary run's completed status. Primary failures still end with `run_failed`.
+Reconnecting clients can send `Last-Event-ID` or the `lastEventId` query parameter; replay uses
 monotonic event ids for deduplication. `full-handoff` succeeds only after a
 `recommend_full` outcome; otherwise it returns
 `409 FULL_ANALYSIS_NOT_RECOMMENDED`.

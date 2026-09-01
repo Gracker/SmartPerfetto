@@ -6601,6 +6601,32 @@ kbd.pf-keycap.pf-spacing-large {
   font-size: 12px;
 }
 
+.ai-conversation-source-enrichment {
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid var(--chat-border);
+  color: var(--chat-text-secondary);
+  font-size: 12px;
+}
+.ai-conversation-source-enrichment summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.ai-conversation-source-enrichment-content {
+  margin-top: 8px;
+  color: var(--chat-text);
+  font-size: 13px;
+}
+
+.ai-conversation-source-enrichment.is-running {
+  border-left-color: var(--chat-accent, #0b57d0);
+}
+
+.ai-conversation-source-enrichment.is-muted {
+  opacity: 0.8;
+}
+
 .ai-conversation-page-empty {
   max-width: 520px;
   margin: 18vh auto 0;

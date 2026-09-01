@@ -19,6 +19,20 @@ export const TERMINAL_SSE_EVENT_TYPES = new Set([
   'end',
 ]);
 
+export function isTerminalSseEvent(eventType: string, eventData?: string): boolean {
+  if (eventType !== 'analysis_completed') return TERMINAL_SSE_EVENT_TYPES.has(eventType);
+  if (!eventData) return true;
+  try {
+    const payload = JSON.parse(eventData) as Record<string, unknown>;
+    const data = payload.data && typeof payload.data === 'object'
+      ? payload.data as Record<string, unknown>
+      : payload;
+    return data.sourceEnrichmentPending !== true;
+  } catch {
+    return true;
+  }
+}
+
 export function parseLastEventId(
   headerValue: unknown,
   legacyQueryValue?: unknown
@@ -61,6 +75,6 @@ export function hasTerminalReplayAfter(
 ): boolean {
   return state.sseEventBuffer.some(
     event =>
-      event.seqId > lastEventId && TERMINAL_SSE_EVENT_TYPES.has(event.eventType)
+      event.seqId > lastEventId && isTerminalSseEvent(event.eventType, event.eventData)
   );
 }

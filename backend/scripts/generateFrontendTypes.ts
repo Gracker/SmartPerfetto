@@ -81,7 +81,14 @@ console.log('Reading backend data contract...');
 const backendContent = fs.readFileSync(backendContractPath, 'utf-8');
 const conclusionContractContent = fs.readFileSync(conclusionContractPath, 'utf-8')
   .trim()
-  .replace(/import type \{CaseKnowledgeReportRecommendation\} from '..\/..\/types\/caseKnowledge';\n\n?/, '');
+  .replace(/import type \{CaseKnowledgeReportRecommendation\} from '..\/..\/types\/caseKnowledge';\n\n?/, '')
+  .replace(
+    /import type \{\s*SourceClaimBindingV1,\s*SourceReferenceV1,\s*SourceUseDecisionV1,\s*\} from '..\/..\/services\/codebase\/sourceUseDecision';\n\n?/,
+    '',
+  )
+  .replace(/SourceUseDecisionV1/g, 'Record<string, unknown>')
+  .replace(/SourceReferenceV1/g, 'Record<string, unknown>')
+  .replace(/SourceClaimBindingV1/g, 'Record<string, unknown>');
 const evidenceContractContent = fs.readFileSync(evidenceContractPath, 'utf-8').trim();
 const claimVerificationContent = fs.readFileSync(claimVerificationPath, 'utf-8').trim();
 const identityContractContent = fs.readFileSync(identityContractPath, 'utf-8')

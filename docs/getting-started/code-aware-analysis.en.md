@@ -44,24 +44,25 @@ Registered codebases and knowledge sources are never exposed to a session automa
 | Current selection | Effective behavior |
 |---|---|
 | No IDs | Normal trace-only path; `fast` can remain lightweight |
-| `--codebase-id` only | Defaults to `metadata_only` and uses the full analysis runtime |
-| `--code-aware metadata_only` + codebase ID | Uses `CodeRef` metadata only, with the full runtime |
-| `--code-aware provider_send` + codebase ID | Sends filtered snippets only after dual consent, with the full runtime |
+| `--codebase-id` only | Authorizes `metadata_only` by default; ordinary questions keep source dormant and preserve the requested Fast/Auto/Full mode |
+| `--code-aware metadata_only` + codebase ID | Explicit source questions use metadata-only `CodeRef` values with at most 1 search, 2 reads, and 6 seconds |
+| `--code-aware provider_send` + codebase ID | Explicit source questions may send filtered text after dual consent, under the same 1/2/6-second budget |
 | `--code-aware off` + codebase ID | Invalid input; the source selection is rejected instead of silently ignored |
 | `--knowledge-source-id` only | Uses the authorized private external RAG source and the full runtime |
-| Codebase ID + knowledge source ID | Uses source and external RAG together under the same privacy projection and full runtime |
+| Codebase ID + knowledge source ID | External RAG still requires the full runtime; source activation remains query-driven |
 
 A source codebase needs only a live registered root. Missing active generations or indexed chunks do not block analysis. External knowledge remains RAG-backed and still requires consent plus a completed index. If the registered source path is moved, unmounted, or deleted, Web/CLI returns `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`; restore that path or register it again.
 
-“Full runtime” means that an explicit `--analysis-mode fast` is resolved to `full` whenever source, private RAG, or a reference trace is selected, so capabilities are not silently dropped by a lightweight path. `provider_send` requires two independent authorizations: `--send-to-provider` at codebase registration and `--code-aware provider_send` for the current run.
+Selecting source no longer forces `--analysis-mode fast|auto` to `full`. Reference traces and private RAG remain full-runtime capabilities. `provider_send` requires two independent authorizations: `--send-to-provider` at codebase registration and `--code-aware provider_send` for the current run.
 
 ## When Source Is Used
 
-Selecting source does not mean every question must read code. Full analysis establishes trace facts with Trace, Skills, and SQL first, then applies this contract:
+Selecting source establishes authorization; it does not inject source into every run. Web, API, CLI, and all five production runtimes share one activation policy:
 
-- With a selected codebase and a queryable trace anchor, the run must perform a bounded source search/read or record a structured stop reason with `record_source_use_decision` before lookup. It cannot silently skip source because it merely seems unnecessary.
-- A trace-only quantitative question may record `not_needed` without calling source tools. A run with no usable anchor records `no_queryable_anchor`; a permission boundary records `disallowed`.
-- Every one of the 19 routable scenes currently discovered by the strategy registry inherits the default policy from `source-investigation-policy.yaml`. Tests iterate the registry instead of maintaining a second scene list. `startup`, `scrolling`, `anr`, `interaction`, and `scroll_response` add richer anchor profiles.
+- Ordinary Fast/Auto/Full questions keep source dormant: no source tools are registered, no model turns are added, and repository size stays off the primary critical path.
+- Explicit requests for source files, functions, implementation, or call paths expose only `list_codebases`, `search_codebase`, and `read_codebase_file`. The source budget is 1 search, 2 reads, and 6 seconds. Full still retains Trace, Skill, and SQL tools.
+- Only an explicitly Full request for a deep or complete source review starts a detached deep-source supplement after the primary Full conclusion. The primary conclusion, HTML report, and analysis snapshot are already fixed; cancellation or failure never rewrites them. Web messages and CLI `source-supplement.json` persist the supplement separately.
+- A source-activation transition resets provider/runtime context and replays only bounded, safe, non-source-derived text while preserving UI history.
 
 Each run retains `SourceUseDecisionV1`:
 
@@ -90,6 +91,12 @@ trace labels to source-query hints; other slices remain generic anchors. Its
 optional `native_symbols` step extracts function, module, and build-id values
 from CPU-profile samples. Both narrow search and never replace current-trace
 evidence or the later bounded source verification.
+
+Automatic Web-conversation enrichment has a stricter tool surface: only
+`list_codebases`, `search_codebase`, and `read_codebase_file` are exposed.
+Graph, indexed lookup, Trace, shell, and patch tools are unavailable. An
+ordinary dormant primary analysis receives no source tools, so repository size
+cannot add model turns to the primary answer.
 
 `query_code_graph` and `inspect_code_symbol` return metadata only: `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. They never return raw source text or absolute roots. When a registration uses `pathFilters` or `excludeGlobs`, SmartPerfetto omits whole-repository process summaries whose path scope cannot be proven; authorized relative `CodeRef` values remain available. If GitNexus is missing, unavailable, incompatible, times out, or fails, the graph tool returns a structured unavailable result (`success=false` plus `unsupportedReason`). A stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues through the existing `search_codebase` / `read_codebase_file` path, so registration, selection, and trace analysis remain available. SmartPerfetto does not install, bundle, redistribute, or automatically create or refresh a GitNexus index.
 

@@ -1305,6 +1305,33 @@ describe('code-aware streaming application boundary', () => {
     expect(conclusion.content.confidence).toBe(0.8);
   });
 
+  it('allows only sanitized source supplement text and numeric metrics', () => {
+    registerCodeAwareCanary('session-stream', 'SOURCE_SUPPLEMENT_PRIVATE_CANARY');
+    const projected = projectCodeAwareStreamingUpdate(
+      'session-stream',
+      {
+        type: 'analysis_source_enrichment_completed',
+        content: {
+          message: 'before SOURCE_SUPPLEMENT_PRIVATE_CANARY after',
+          metrics: {searchCalls: 3, readCalls: 7, durationMs: 9000},
+          rawToolPayload: 'PRIVATE_TOOL_PAYLOAD_CANARY',
+        },
+        timestamp,
+      },
+      true,
+      'en',
+    );
+
+    expect(projected.type).toBe('analysis_source_enrichment_completed');
+    expect(projected.content.message).not.toContain('SOURCE_SUPPLEMENT_PRIVATE_CANARY');
+    expect(projected.content.metrics).toEqual({
+      searchCalls: 3,
+      readCalls: 7,
+      durationMs: 9000,
+    });
+    expect(projected.content).not.toHaveProperty('rawToolPayload');
+  });
+
   it('fails closed when one long-lived session exceeds the guard pattern budget', () => {
     for (let index = 0; index <= 200; index++) {
       registerCodeAwareCanary('session-overflow', `canary-${index}`);

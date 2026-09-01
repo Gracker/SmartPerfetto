@@ -10,7 +10,13 @@ import {sanitizeCodeAwareText} from './codeAwareOutputRegistry';
 import {projectPrivateDataEnvelope} from './privateAnalysisProjection';
 import {validateDataEnvelope} from '../../types/dataContract';
 
-type PrivateEventPolicy = 'deterministic' | 'suppress' | 'answer' | 'conclusion' | 'error';
+type PrivateEventPolicy =
+  | 'deterministic'
+  | 'suppress'
+  | 'answer'
+  | 'conclusion'
+  | 'source_supplement'
+  | 'error';
 
 const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy> = {
   data: 'deterministic',
@@ -60,6 +66,10 @@ const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy
   scene_story_dropped: 'suppress',
   scene_story_report_ready: 'suppress',
   scene_story_smart_eta_refined: 'suppress',
+  analysis_source_enrichment_started: 'deterministic',
+  analysis_source_enrichment_completed: 'source_supplement',
+  analysis_source_enrichment_failed: 'deterministic',
+  analysis_source_enrichment_cancelled: 'deterministic',
 };
 
 function privateDegradedFallback(
@@ -191,6 +201,36 @@ export function projectCodeAwareStreamingUpdate(
         ...(typeof content.confidence === 'number' && Number.isFinite(content.confidence)
           ? {confidence: content.confidence}
           : {}),
+      },
+    };
+  }
+  if (policy === 'source_supplement') {
+    const content = update.content && typeof update.content === 'object'
+      ? update.content as Record<string, unknown>
+      : {};
+    const metrics = content.metrics && typeof content.metrics === 'object'
+      ? content.metrics as Record<string, unknown>
+      : {};
+    const safeMetric = (key: string): number | undefined => {
+      const value = metrics[key];
+      return typeof value === 'number' && Number.isFinite(value) && value >= 0
+        ? value
+        : undefined;
+    };
+    const searchCalls = safeMetric('searchCalls');
+    const readCalls = safeMetric('readCalls');
+    const durationMs = safeMetric('durationMs');
+    return {
+      ...update,
+      content: {
+        ...(typeof content.message === 'string'
+          ? {message: sanitizeCodeAwareText(sessionId, content.message)}
+          : {}),
+        metrics: {
+          ...(searchCalls !== undefined ? {searchCalls} : {}),
+          ...(readCalls !== undefined ? {readCalls} : {}),
+          ...(durationMs !== undefined ? {durationMs} : {}),
+        },
       },
     };
   }

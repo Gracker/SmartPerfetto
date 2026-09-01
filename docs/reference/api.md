@@ -289,7 +289,11 @@ user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 
 codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
 provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
 
-SSE 终态是 `run_completed` 或 `run_failed`。客户端重连可发送 `Last-Event-ID`，或使用
+`run_completed` 表示主回答已经完成并可立即展示；它包含 `enrichmentPending`。该值为
+`false` 时流立即结束，为 `true` 时流继续发送 `source_enrichment_started`，并在
+`source_enrichment_completed`、`source_enrichment_failed` 或
+`source_enrichment_cancelled` 后结束。源码补充终态不会改写主 run 的 completed 状态。
+主分析失败仍以 `run_failed` 结束。客户端重连可发送 `Last-Event-ID`，或使用
 `lastEventId` query；服务端按单调 `id` 去重重放。只有 outcome 为 `recommend_full` 时，
 `full-handoff` 才返回交接，否则返回 `409 FULL_ANALYSIS_NOT_RECOMMENDED`。
 

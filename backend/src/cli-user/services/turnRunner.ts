@@ -26,7 +26,7 @@ import { ensureSessionLayout, sessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionLineage, CliTranscriptTurn } from '../types';
 import type { CliAnalyzeService, RunTurnOutput } from './cliAnalyzeService';
-import { commitTurnOutputs } from './turnPersistence';
+import {commitSourceSupplementOutput, commitTurnOutputs} from './turnPersistence';
 import { loadSession } from '../io/sessionStore';
 import { readIndex } from '../io/indexJson';
 import { appendStreamEvent } from '../io/transcriptWriter';
@@ -202,6 +202,7 @@ export async function startSession(
       status: result.result.success ? 'completed' : 'failed',
     },
   });
+  await completeSourceSupplement(ctx, sp, result, 1);
 
   return {
     sessionId: resolvedSessionId,
@@ -383,6 +384,7 @@ export async function continueSession(
       status: result.result.success ? 'completed' : 'failed',
     },
   });
+  await completeSourceSupplement(ctx, sp, result, nextTurn);
 
   if (degraded) {
     const notice = buildLineageNotice(updatedConfig.lineage);
@@ -396,6 +398,40 @@ export async function continueSession(
     success: result.result.success,
     degraded,
   };
+}
+
+async function completeSourceSupplement(
+  ctx: TurnRunnerContext,
+  sp: SessionPaths,
+  result: RunTurnOutput,
+  turn: number,
+): Promise<void> {
+  if (!result.sourceSupplementTask) return;
+  const supplement = await result.sourceSupplementTask;
+  if (!supplement) {
+    const failed = {
+      type: 'analysis_source_enrichment_failed' as const,
+      content: {errorCode: 'analysis_source_enrichment_failed'},
+      timestamp: Date.now(),
+    };
+    ctx.renderer.onEvent(failed);
+    appendStreamEvent(sp.stream, failed);
+    return;
+  }
+  result.sourceSupplement = supplement;
+  const completed = {
+    type: 'analysis_source_enrichment_completed' as const,
+    content: supplement,
+    timestamp: Date.now(),
+  };
+  appendStreamEvent(sp.stream, completed);
+  commitSourceSupplementOutput({
+    sp,
+    renderer: ctx.renderer,
+    sessionId: result.sessionId,
+    turn,
+    supplement,
+  });
 }
 
 function isTraceIdMismatchError(err: unknown): boolean {

@@ -13,6 +13,13 @@ import type {
   ConversationTraceContext,
   FullAnalysisHandoff,
 } from '../contracts/conversationContract';
+import {
+  ConversationSourceEnrichmentCoordinator,
+  type ConversationSourceEnrichmentEvent,
+  type ConversationSourceEnrichmentOutcome,
+  type ConversationSourceEnrichmentState,
+} from './conversationSourceEnrichmentCoordinator';
+import type {PrimaryConversationSourceUse} from '../runtime/conversationSourcePolicy';
 
 export type {
   ConversationEvidenceRef,
@@ -32,8 +39,21 @@ export interface ConversationRuntimeInput {
   onUpdate?(update: unknown): void;
 }
 
+export interface ConversationSourceEnrichmentRuntimeInput extends ConversationRuntimeInput {
+  primaryOutcome: ConversationRuntimeOutcome;
+}
+
 export interface ConversationRuntimeAdapter {
   run(input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome>;
+  resolvePrimarySourceUse?(query: string): PrimaryConversationSourceUse;
+  shouldStartSourceEnrichment?(
+    input: ConversationRuntimeInput,
+    outcome: ConversationRuntimeOutcome,
+  ): boolean;
+  runSourceEnrichment?(
+    input: ConversationSourceEnrichmentRuntimeInput,
+  ): Promise<ConversationSourceEnrichmentOutcome>;
+  cancelSourceEnrichment?(sessionId: string, runId: string): Promise<void>;
   cancel(sessionId: string, runId: string): Promise<void>;
   dispose?(): void | Promise<void>;
 }
@@ -41,8 +61,15 @@ export interface ConversationRuntimeAdapter {
 type ConversationSessionEventPayload =
   | {type: 'run_started'; sessionId: string; runId: string}
   | {type: 'runtime_update'; sessionId: string; runId: string; update: unknown}
-  | {type: 'run_completed'; sessionId: string; runId: string; outcome: ConversationRuntimeOutcome}
-  | {type: 'run_failed'; sessionId: string; runId: string; error: string};
+  | {
+      type: 'run_completed';
+      sessionId: string;
+      runId: string;
+      outcome: ConversationRuntimeOutcome;
+      enrichmentPending: boolean;
+    }
+  | {type: 'run_failed'; sessionId: string; runId: string; error: string}
+  | ConversationSourceEnrichmentEvent;
 
 export type ConversationSessionEvent = ConversationSessionEventPayload & {seqId: number};
 
@@ -57,6 +84,9 @@ export interface ConversationRun {
   completion: Promise<ConversationRuntimeOutcome>;
   events: ConversationSessionEvent[];
   lifecycleSettled?: boolean;
+  sourceUseMode?: PrimaryConversationSourceUse;
+  sourceEnrichmentPending?: boolean;
+  sourceEnrichment?: ConversationSourceEnrichmentState;
 }
 
 export interface ConversationSession extends ManagedAssistantSession {
@@ -81,6 +111,10 @@ export interface ConversationSession extends ManagedAssistantSession {
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceAuthorization?: {
+    codeAwareMode: NonNullable<AnalysisOptions['codeAwareMode']>;
+    codebaseIds: string[];
+  };
 }
 
 export interface StartConversationTurnInput {
@@ -166,6 +200,7 @@ export class ConversationSessionService {
   private readonly onRunStarted?: ConversationSessionServiceDeps['onRunStarted'];
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
   private readonly listeners = new Map<string, Set<(event: ConversationSessionEvent) => void>>();
+  private readonly sourceEnrichmentCoordinator: ConversationSourceEnrichmentCoordinator;
   private nextEventSeqId = 0;
 
   constructor(deps: ConversationSessionServiceDeps) {
@@ -175,6 +210,23 @@ export class ConversationSessionService {
     this.cancelSettleTimeoutMs = deps.cancelSettleTimeoutMs ?? 120_000;
     this.onRunStarted = deps.onRunStarted;
     this.onRunSettled = deps.onRunSettled;
+    this.sourceEnrichmentCoordinator = new ConversationSourceEnrichmentCoordinator({
+      now: this.now,
+      onEvent: (event) => {
+        const terminal = event.type !== 'source_enrichment_started';
+        const run = this.sessions.getSession(event.sessionId)?.runs.find(
+          candidate => candidate.runId === event.runId,
+        );
+        if (run) {
+          run.sourceEnrichment = this.sourceEnrichmentCoordinator.get(event.runId);
+          if (terminal) {
+            run.sourceEnrichmentPending = false;
+          }
+        }
+        this.publish(event.sessionId, event);
+        if (terminal) this.sourceEnrichmentCoordinator.remove(event.runId);
+      },
+    });
   }
 
   getSession(sessionId: string): ConversationSession | undefined {
@@ -243,6 +295,16 @@ export class ConversationSessionService {
         ...(input.runtimeOptions?.knowledgeSourceIds?.length
           ? {knowledgeSourceIds: [...input.runtimeOptions.knowledgeSourceIds]}
           : {}),
+        ...(input.runtimeOptions?.codeAwareMode &&
+          input.runtimeOptions.codeAwareMode !== 'off' &&
+          input.runtimeOptions.codebaseIds?.length
+          ? {
+              sourceAuthorization: {
+                codeAwareMode: input.runtimeOptions.codeAwareMode,
+                codebaseIds: [...input.runtimeOptions.codebaseIds],
+              },
+            }
+          : {}),
       };
       this.sessions.setSession(sessionId, session);
     }
@@ -284,6 +346,7 @@ export class ConversationSessionService {
     session.lastActivityAt = this.now();
 
     const runId = this.createId('run');
+    const sourceUseMode = session.runtime.resolvePrimarySourceUse?.(query) ?? 'dormant';
     const runtimeInput: ConversationRuntimeInput = {
       sessionId: session.sessionId,
       runId,
@@ -305,6 +368,7 @@ export class ConversationSessionService {
       startedAt: this.now(),
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
+      sourceUseMode,
     };
     session.activeRun = run;
     session.runs.push(run);
@@ -329,7 +393,11 @@ export class ConversationSessionService {
       sessionId: session.sessionId,
       runId,
     });
-    session.history.push({role: 'user', content: query});
+    session.history.push({
+      role: 'user',
+      content: query,
+      ...(sourceUseMode === 'explicit' ? {sourceDerived: true} : {}),
+    });
 
     let runtimeCompletion: Promise<ConversationRuntimeOutcome>;
     try {
@@ -340,13 +408,36 @@ export class ConversationSessionService {
     const completion = runtimeCompletion
       .then((outcome) => {
         this.completeRun(session!, run, outcome);
+        const enrichmentPending = Boolean(
+          session!.runtime.runSourceEnrichment &&
+          session!.runtime.shouldStartSourceEnrichment?.(runtimeInput, outcome),
+        );
+        run.sourceEnrichmentPending = enrichmentPending;
         this.settleRun(session!, run);
         this.publish(session!.sessionId, {
           type: 'run_completed',
           sessionId: session!.sessionId,
           runId,
           outcome,
+          enrichmentPending,
         });
+        if (enrichmentPending) {
+          queueMicrotask(() => {
+            if (!run.sourceEnrichmentPending || !session!.runtime.runSourceEnrichment) return;
+            run.sourceEnrichment = this.sourceEnrichmentCoordinator.start({
+              sessionId: session!.sessionId,
+              runId,
+              execute: () => session!.runtime.runSourceEnrichment!({
+                ...runtimeInput,
+                primaryOutcome: outcome,
+              }),
+              cancel: () => session!.runtime.cancelSourceEnrichment?.(
+                session!.sessionId,
+                runId,
+              ) ?? Promise.resolve(),
+            });
+          });
+        }
         return outcome;
       })
       .catch((error: unknown) => {
@@ -395,6 +486,15 @@ export class ConversationSessionService {
     if (!session) throw new Error(`Conversation session not found: ${sessionId}`);
     const run = session.activeRun;
     if (!run || run.runId !== runId) {
+      const completedRun = session.runs.find(candidate => candidate.runId === runId);
+      if (
+        completedRun?.sourceEnrichmentPending ||
+        completedRun?.sourceEnrichment?.status === 'running'
+      ) {
+        await this.sourceEnrichmentCoordinator.cancel(runId);
+        completedRun.sourceEnrichmentPending = false;
+        return completedRun.outcome ?? {kind: 'cancelled', message: ''};
+      }
       throw new Error(`Active conversation run not found: ${runId}`);
     }
     await session.runtime.cancel(sessionId, runId);
@@ -413,6 +513,16 @@ export class ConversationSessionService {
     } finally {
       if (timeout) clearTimeout(timeout);
     }
+  }
+
+  async cancelSourceEnrichments(sessionId: string): Promise<void> {
+    const session = this.sessions.getSession(sessionId);
+    if (!session) return;
+    await Promise.all(session.runs.map(async (run) => {
+      if (!run.sourceEnrichmentPending && run.sourceEnrichment?.status !== 'running') return;
+      run.sourceEnrichmentPending = false;
+      await this.sourceEnrichmentCoordinator.cancel(run.runId);
+    }));
   }
 
   buildFullAnalysisHandoff(sessionId: string): FullAnalysisHandoff | undefined {
@@ -452,6 +562,14 @@ export class ConversationSessionService {
         const cancel = activeRun
           ? session.runtime.cancel(sessionId, activeRun.runId)
           : Promise.resolve();
+        for (const run of session.runs) {
+          if (run.sourceEnrichmentPending || run.sourceEnrichment?.status === 'running') {
+            void this.sourceEnrichmentCoordinator.cancel(run.runId)
+              .finally(() => this.sourceEnrichmentCoordinator.remove(run.runId));
+          } else {
+            this.sourceEnrichmentCoordinator.remove(run.runId);
+          }
+        }
         void Promise.resolve(cancel)
           .catch(() => undefined)
           .finally(() => Promise.resolve(session.runtime.dispose?.()).catch(() => undefined));
@@ -470,7 +588,11 @@ export class ConversationSessionService {
     run.completedAt = completedAt;
     run.status = outcome.kind === 'cancelled' ? 'cancelled' : 'completed';
     if (outcome.message.trim()) {
-      session.history.push({role: 'assistant', content: outcome.message});
+      session.history.push({
+        role: 'assistant',
+        content: outcome.message,
+        ...(run.sourceUseMode === 'explicit' ? {sourceDerived: true} : {}),
+      });
     }
     appendUniqueEvidence(session.evidence, outcome.evidence);
     session.lastActivityAt = completedAt;

@@ -3,11 +3,18 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { describe, expect, it, jest } from '@jest/globals';
-import { createSseBridge } from '../claudeSseBridge';
+import { createSseBridge, isSdkToolResultFailure } from '../claudeSseBridge';
 import {__testing as claudeRuntimeTesting} from '../../agentRuntime/engines/claude/claudeRuntime';
 import type { StreamingUpdate } from '../../agent/types';
 
 describe('createSseBridge', () => {
+  it('detects plain and string-escaped MCP failures for metrics', () => {
+    expect(isSdkToolResultFailure({success: false})).toBe(true);
+    expect(isSdkToolResultFailure('{"success":false}')).toBe(true);
+    expect(isSdkToolResultFailure('"{\\"success\\":false}"')).toBe(true);
+    expect(isSdkToolResultFailure({success: true})).toBe(false);
+  });
+
   it('does not emit a terminal error for SDK max-turn results', () => {
     const updates: StreamingUpdate[] = [];
     const bridge = createSseBridge((update) => updates.push(update));

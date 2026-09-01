@@ -37,6 +37,7 @@ import {
 import {
   createSseBridge,
   extractSdkToolResultBlocks,
+  isSdkToolResultFailure,
   stringifySdkToolResult,
 } from './claudeSseBridge';
 import {
@@ -1892,9 +1893,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               if (currentTurnMetrics) {
                 currentTurnMetrics.toolResultPayloadBytes += Buffer.byteLength(resultStr, 'utf-8');
               }
-              const isFailed = observed.isError === true ||
-                resultStr.includes('"success":false') ||
-                resultStr.includes('"isError":true');
+              const isFailed = isSdkToolResultFailure(observed.result, observed.isError);
               const matchedTool = findToolCallForResult(observed.toolUseId);
               if (matchedTool) {
                 matchedTool.success = !isFailed;
@@ -3440,6 +3439,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           codeAwareMode: options.codeAwareMode,
           codebaseIds: options.codebaseIds,
           knowledgeSourceIds: options.knowledgeSourceIds,
+          sourceUsePolicy: options.sourceUsePolicy,
           analysisContextFingerprint: options.analysisContextFingerprint,
           androidInternalsPackPin: options.androidInternalsPackPin,
         });
@@ -3550,6 +3550,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       let quickRounds = 0;
       let terminationReason: AnalysisResult['terminationReason'];
       let terminationMessage: string | undefined;
+      const quickToolCalls: Array<{
+        id?: string;
+        name: string;
+        startedAt: number;
+        completed: boolean;
+      }> = [];
 
       // Quick path per-turn budget from env CLAUDE_QUICK_PER_TURN_MS (default 40s/turn).
       const timeoutMs = quickConfig.maxTurns * quickConfig.quickPathPerTurnMs;
@@ -3575,6 +3581,37 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if (sdkResultError) throw new Error(sdkResultError);
 
           try { bridge(msg); } catch { /* non-fatal */ }
+
+          if (msg.type === 'assistant' && Array.isArray((msg as any).message?.content)) {
+            for (const block of (msg as any).message.content) {
+              if (block?.type !== 'tool_use' || typeof block.name !== 'string') continue;
+              quickToolCalls.push({
+                id: typeof block.id === 'string' ? block.id : undefined,
+                name: block.name.replace(MCP_NAME_PREFIX, ''),
+                startedAt: Date.now(),
+                completed: false,
+              });
+            }
+          }
+          if (msg.type === 'user' && (msg as any).tool_use_result !== undefined) {
+            const resultBlocks = extractSdkToolResultBlocks(msg);
+            const observedResults = resultBlocks.length > 0
+              ? resultBlocks
+              : [{result: (msg as any).tool_use_result, isError: undefined, toolUseId: undefined}];
+            for (const observed of observedResults) {
+              const matched = observed.toolUseId
+                ? quickToolCalls.find(call => call.id === observed.toolUseId && !call.completed)
+                : [...quickToolCalls].reverse().find(call => !call.completed);
+              if (!matched) continue;
+              matched.completed = true;
+              const failed = isSdkToolResultFailure(observed.result, observed.isError);
+              metricsCollector.recordToolFromStream(
+                matched.name,
+                Date.now() - matched.startedAt,
+                !failed,
+              );
+            }
+          }
 
           if (msg.type === 'result') {
             quickRounds = (msg as any).num_turns || quickRounds;
@@ -4495,6 +4532,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      sourceUsePolicy: options.sourceUsePolicy,
       analysisContextFingerprint: options.analysisContextFingerprint,
       androidInternalsPackPin: options.androidInternalsPackPin,
     });

@@ -114,6 +114,12 @@ share a trace prerequisite:
 - `/assistant` hosts the Conversation-first `ConversationPage`. It supports
   ordinary multi-turn conversation without a loaded trace and becomes
   trace-aware only after the user attaches one.
+- Authorized source and source actually used by the current run are separate
+  states. Ordinary conversation runs keep source dormant and publish the
+  primary answer first. Only explicit source intent or a narrow Trace-backed
+  code anchor enters the bounded source phase. Automatic source supplements use
+  an independent SSE lifecycle, stay out of later dormant prompt history, and
+  cannot change the primary run status on failure.
 - With a loaded trace, `AIPanel`, the sidebar, and the floating window share the
   page- and trace-scoped `AnalysisBackendConnection`. A completed background
   upload creates only a connection candidate; AI analysis can use the backend

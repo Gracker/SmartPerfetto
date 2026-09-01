@@ -44,24 +44,25 @@ npm run cli:dev -- run --format json \
 | 本次选择 | 有效行为 |
 |---|---|
 | 不传任何 ID | 普通 trace-only；`fast` 可以保持轻量路径 |
-| 只传 `--codebase-id` | 默认 `metadata_only`，并切换到完整分析 runtime |
-| `--code-aware metadata_only` + codebase ID | 只使用 `CodeRef` 元数据，完整分析 runtime |
-| `--code-aware provider_send` + codebase ID | 仅双重授权通过时发送筛选后的片段，完整分析 runtime |
+| 只传 `--codebase-id` | 默认授权 `metadata_only`；普通问题保持源码 dormant，并保留请求的 Fast/Auto/Full 模式 |
+| `--code-aware metadata_only` + codebase ID | 明确问源码时只使用 `CodeRef` 元数据，最多 1 次搜索、2 次读取、6 秒 |
+| `--code-aware provider_send` + codebase ID | 明确问源码且双重授权通过时发送筛选后的片段，仍受 1/2/6 秒预算约束 |
 | `--code-aware off` + codebase ID | 输入无效，直接拒绝，不静默忽略源码配置 |
 | 只传 `--knowledge-source-id` | 使用已授权的私有外部 RAG，完整分析 runtime |
-| codebase ID + knowledge source ID | 源码与外部 RAG 同时参与，同一隐私投影和完整分析 runtime |
+| codebase ID + knowledge source ID | 外部 RAG 仍使用完整分析 runtime；源码是否启用继续由本轮问题决定 |
 
 源码 codebase 只要求已注册根目录仍可访问；缺少 active generation 或索引分片不会阻止分析。外部知识源仍是 RAG 数据源，因此仍要求已授权且索引完成。注册路径被移动、卸载或删除时，Web/CLI 会返回 `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE`，恢复原路径或重新注册即可。
 
-这里的“完整分析 runtime”意味着即使显式请求 `--analysis-mode fast`，只要选择了源码、私有 RAG 或 reference trace，系统也会解析为 `full`，避免在轻量路径里静默丢失能力。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
+选择源码不再把 `--analysis-mode fast|auto` 强制升级为 `full`。只有 reference trace 与私有 RAG 仍要求完整分析 runtime。`provider_send` 需要两层授权：注册 codebase 时启用 `--send-to-provider`，且本次分析显式选择 `--code-aware provider_send`。
 
 ## 什么时候使用源码
 
-选中源码并不意味着每个问题都必须读代码。完整分析会先用 Trace、Skill 和 SQL 建立事实锚点，然后按下面的契约决定：
+选中源码只建立授权，不会把源码注入每次分析。所有入口和五种生产 runtime 共用同一份激活策略：
 
-- 已选 codebase 且存在可查询的 trace 锚点时，必须执行一次有界源码检索/读取，或在查询前用 `record_source_use_decision` 记录结构化的终止原因。不能只因为“感觉不需要”就静默跳过。
-- 只问 trace 中数量事实的问题可记录 `not_needed`，且不调用源码工具。没有可查询锚点时记录 `no_queryable_anchor`；权限不允许时记录 `disallowed`。
-- 当前 strategy registry 发现的 19 个可路由场景都通过 `source-investigation-policy.yaml` 继承同一份默认策略；测试按 registry 遍历，而不维护第二份场景清单。`startup`、`scrolling`、`anr`、`interaction` 和 `scroll_response` 还有更具体的锚点配置。
+- 普通 Fast/Auto/Full 问题保持源码 dormant：不注册源码工具，不增加模型轮次，代码库大小不进入主分析关键路径。
+- 明确要求源码文件、函数、实现或调用链时，开放 `list_codebases`、`search_codebase` 和 `read_codebase_file`。源码预算固定为 1 次搜索、2 次读取、6 秒；Full 仍可正常使用 Trace、Skill 和 SQL。
+- 只有显式 Full 且明确要求“深入源码”或“完整审查源码”时，才会在主 Full 结论完成后启动独立深度源码补充。主结论、HTML 报告和 analysis snapshot 已先固化；补充可取消、失败不回写主结论，并单独持久化到 Web 消息或 CLI `source-supplement.json`。
+- 源码激活状态改变时会重置 provider/runtime 上下文，只回放有界、非源码派生的安全文本；UI 历史保留。
 
 每次分析保留 `SourceUseDecisionV1`：
 
@@ -85,6 +86,8 @@ npm run cli:dev -- run --format json \
 结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。`SourceClaimBindingV1.mechanismStatus` 只允许 `corroborated`、`compatible`、`ambiguous` 或 `unverified`；其中 `corroborated` 要求同一 claim 同时具有已核验的 trace 发生证据和 `provider_send` 正文/索引证据。`metadata_only` 只能定位，不能把机制升级为 `corroborated`。
 
 `code_pinpoint` Skill 可以先从 trace 中产生更稳定的源码候选锚点：`hot_slices` 只把符合保守规则的 App 主线程 Trace label 升级为 source query hint，其他 slice 只作 generic anchor；可选的 `native_symbols` 从 CPU profiling 样本提取 function/module/build-id。两者都只缩小查询范围，不代替当前 trace 证据或后续有界源码核对。
+
+Web 对话的自动源码补充使用更严格的工具面：只开放 `list_codebases`、`search_codebase` 和 `read_codebase_file`，不开放代码图、索引检索、Trace、shell 或 patch 工具。普通 dormant 主分析不会获得任何源码工具，因此代码库大小不会增加主分析的模型轮次。
 
 `query_code_graph` 和 `inspect_code_symbol` 只返回元数据：`codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 与 `graph.verificationRequired`，不返回源码正文或绝对根目录。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，SmartPerfetto 会省略无法证明路径范围的全仓 process 摘要，仍保留已通过授权过滤的相对 `CodeRef`。GitNexus 未安装、不可用、版本不兼容、超时或调用失败时，图工具会返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；索引陈旧时只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都会继续使用现有 `search_codebase` / `read_codebase_file` 路径，注册、选择和 trace 分析不会因此失败。SmartPerfetto 不会安装、打包、再分发 GitNexus，也不会自动创建或刷新它的索引。
 

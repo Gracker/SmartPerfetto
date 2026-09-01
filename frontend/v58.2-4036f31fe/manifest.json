@@ -66,8 +66,8 @@
     "assets/syntaqlite-runtime.wasm": "sha256-rymPrQywyrLfwImv3w7MeC9SknAnSrwUapCs/gXHGzQ=",
     "assets/syntaqlite-sqlite.wasm": "sha256-0Akn1jjTzlZ5ezEEJJivWFKbtnRG8+gRP33goqAgzK4=",
     "engine_bundle.js": "sha256-r/W7QakwZsl2iNZMtXK5kPhtHpsUNV71P0pBoZWxiPs=",
-    "frontend.css": "sha256-dHOlmBCR3dDfANSgNpeasgNR6U66kbwzeiKBDEwfLVk=",
-    "frontend_bundle.js": "sha256-SmXTIesGwXb1Mai9rY5dbeBthUO+sYlntbkw9DVfRP4=",
+    "frontend.css": "sha256-GOMxjbbBrby/STIcGQYTiYwwoHwvwi4H98RVimE5iB4=",
+    "frontend_bundle.js": "sha256-afAe+aUPev5RDA+9FNkuVI704JnnxzIZsfKS7gIqz28=",
     "proto_utils.wasm": "sha256-vL5CqcAuJZrIM/D9hEBFQUMDnDLat5AX/BzCw9dRr2Y=",
     "stdlib_docs.json": "sha256-jnDx6Ba0/0oAaYkHawDwiPuqGFHog1ycCEGwtLQCih8=",
     "syntaqlite-runtime.js": "sha256-k65PBT3SCzKxcfUPDeAO37YJmry4U129q25VvIFUZlE=",
@@ -76,6 +76,6 @@
     "trace_processor.wasm": "sha256-dt4CScASF9l+CuZqHg/QMBaxcG4jSYZPdJppyGV0og0=",
     "trace_processor_memory64.wasm": "sha256-ecAAwQ8qnfPpH2ozsXqJEKE20PInbuAM6yC8OM6JSK0=",
     "traceconv.wasm": "sha256-IRfL5nX5klRYW7kgK2plaeonbpIMwFUcUfPLzkSs70U=",
-    "traceconv_bundle.js": "sha256-ZQFrQwGzszFMxPnjNkkKS9Or3xfVmOeSQYbgkBVYsDQ="
+    "traceconv_bundle.js": "sha256-N6rNk0Chin4gm6WfqaSWGWRdlm7xjKH0KVtXR4QqyAE="
   }
 }

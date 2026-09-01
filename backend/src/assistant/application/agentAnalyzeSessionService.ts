@@ -44,6 +44,7 @@ import {
 import {
   registerSessionBackgroundKnowledgeReferences,
 } from '../../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 
 export interface AnalyzeSessionConversationStep {
   eventId: string;
@@ -104,6 +105,12 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   codeAwareMode?: import('../../services/codebase/codeAwareFeature').CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceAuthorization?: {
+    codeAwareMode: Exclude<import('../../services/codebase/codeAwareFeature').CodeAwareMode, 'off'>;
+    codebaseIds: string[];
+    analysisContextFingerprint: string;
+  };
+  sourceActivation?: AnalysisSourceActivation;
   /** Original user query plus internal continuity preamble for the runtime only. */
   agentQuery?: string;
   /** Append-only provider/runtime continuity breaks that forced fresh SDK context. */
@@ -132,9 +139,20 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   activeRun?: AnalyzeSessionRunContext;
   lastRun?: AnalyzeSessionRunContext;
   /** Cross-turn query history — appended on each turn, never overwritten */
-  queryHistory?: Array<{ turn: number; query: string; timestamp: number }>;
+  queryHistory?: Array<{
+    turn: number;
+    query: string;
+    timestamp: number;
+    sourceDerived?: boolean;
+  }>;
   /** Cross-turn conclusion history — appended after each turn completes */
-  conclusionHistory?: Array<{ turn: number; conclusion: string; confidence: number; timestamp: number }>;
+  conclusionHistory?: Array<{
+    turn: number;
+    conclusion: string;
+    confidence: number;
+    timestamp: number;
+    sourceDerived?: boolean;
+  }>;
 }
 
 interface SessionContextManagerLike {

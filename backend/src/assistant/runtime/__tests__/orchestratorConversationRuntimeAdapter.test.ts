@@ -207,4 +207,211 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     expect(JSON.stringify(outcome)).not.toContain(previousPrivateQuery);
     expect(outcome.message).toContain('[PRIVATE_QUERY_REFERENCE]');
   });
+
+  it('keeps authorized source dormant for ordinary analysis questions', async () => {
+    let receivedOptions: AnalysisOptions | undefined;
+    const emitter = new EventEmitter() as unknown as IOrchestrator;
+    emitter.analyze = jest.fn(async (_query, _sessionId, _traceId, options = {}) => {
+      receivedOptions = options;
+      emitter.emit('update', {
+        type: 'progress',
+        content: {message: 'trace-first progress'},
+        timestamp: Date.now(),
+      });
+      return result('先基于 Trace 回答');
+    });
+    emitter.reset = jest.fn();
+    emitter.abortSession = jest.fn();
+    const updates: unknown[] = [];
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {
+      analysisOptions: {
+        outputLanguage: 'zh-CN',
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['private-app'],
+        analysisContextFingerprint: 'authorized-source-fingerprint',
+      },
+    });
+
+    await adapter.run({
+      sessionId: 'conversation-dormant',
+      runId: 'run-dormant',
+      query: '为什么这次启动很慢？',
+      history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-1'},
+      onUpdate: update => updates.push(update),
+    });
+
+    expect(receivedOptions).toMatchObject({
+      codeAwareMode: 'off',
+      assistantSurface: 'conversation',
+    });
+    expect(receivedOptions?.codebaseIds).toBeUndefined();
+    expect(receivedOptions?.analysisContextFingerprint).toBeUndefined();
+    expect(updates).toContainEqual(expect.objectContaining({
+      type: 'progress',
+      content: {message: 'trace-first progress'},
+    }));
+  });
+
+  it('uses the bounded source policy for an explicit source question', async () => {
+    let receivedOptions: AnalysisOptions | undefined;
+    const orchestrator = createOrchestrator(async (options) => {
+      receivedOptions = options;
+      return result('源码回答');
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {
+      analysisOptions: {
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['private-app'],
+      },
+    });
+
+    await adapter.run({
+      sessionId: 'conversation-explicit',
+      runId: 'run-explicit',
+      query: '结合源码看看 Foo::bar 的调用链',
+      history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-1'},
+    });
+
+    expect(receivedOptions).toMatchObject({
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['private-app'],
+      sourceUsePolicy: {
+        phase: 'explicit',
+        maxSearchCalls: 1,
+        maxReadCalls: 2,
+        maxDurationMs: 6_000,
+      },
+    });
+  });
+
+  it('does not inject source-derived history into a dormant primary analysis', async () => {
+    let receivedQuery = '';
+    const emitter = new EventEmitter() as unknown as IOrchestrator;
+    emitter.analyze = jest.fn(async (query: string) => {
+      receivedQuery = query;
+      return result('trace answer');
+    });
+    emitter.reset = jest.fn();
+    emitter.abortSession = jest.fn();
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {
+      analysisOptions: {
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['private-app'],
+      },
+    });
+
+    await adapter.run({
+      sessionId: 'conversation-history',
+      runId: 'run-history',
+      query: '继续分析启动耗时',
+      history: [
+        {role: 'user', content: '上一轮普通问题'},
+        {role: 'assistant', content: '普通 Trace 回答'},
+        {role: 'assistant', content: 'PRIVATE_SOURCE_DERIVED_CANARY', sourceDerived: true},
+      ],
+      traceContext: {kind: 'attached', traceId: 'trace-1'},
+    });
+
+    expect(receivedQuery).toContain('普通 Trace 回答');
+    expect(receivedQuery).not.toContain('PRIVATE_SOURCE_DERIVED_CANARY');
+  });
+
+  it('never returns internal tool protocol text as a user answer', async () => {
+    const orchestrator = createOrchestrator(async () => result(
+      '<｜｜DSML｜｜tools_calling><｜｜DSML｜｜invoke name="bash">secret</｜｜DSML｜｜invoke>',
+    ));
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+
+    const outcome = await adapter.run({
+      sessionId: 'conversation-protocol',
+      runId: 'run-protocol',
+      query: '请搜索实现',
+      history: [],
+      traceContext: {kind: 'none'},
+    });
+
+    expect(outcome.kind).toBe('needs_user_input');
+    expect(outcome.message).not.toContain('DSML');
+    expect(outcome.message).not.toContain('invoke');
+  });
+
+  it('starts automatic source enrichment only for a narrow trace-backed anchor', () => {
+    const adapter = new OrchestratorConversationRuntimeAdapter(
+      createOrchestrator(async () => result('answer')),
+      {
+        analysisOptions: {
+          codeAwareMode: 'provider_send',
+          codebaseIds: ['private-app'],
+        },
+      },
+    );
+    const input = {
+      sessionId: 'conversation-auto',
+      runId: 'run-auto',
+      query: '为什么启动慢？',
+      history: [],
+      traceContext: {kind: 'attached' as const, traceId: 'trace-1'},
+    };
+
+    expect(adapter.shouldStartSourceEnrichment(input, {
+      kind: 'answered',
+      message: 'trace answer',
+      evidence: [{id: 'ev-1', label: 'Foo::bar', source: 'sql'}],
+    })).toBe(true);
+    expect(adapter.shouldStartSourceEnrichment(input, {
+      kind: 'answered',
+      message: 'trace answer',
+      evidence: [{id: 'ev-2', label: 'Main thread busy', source: 'sql'}],
+    })).toBe(false);
+  });
+
+  it('runs automatic source enrichment with a distinct bounded runtime phase', async () => {
+    const received: Array<{sessionId: string; options: AnalysisOptions; query: string}> = [];
+    const emitter = new EventEmitter() as unknown as IOrchestrator;
+    emitter.analyze = jest.fn(async (query, sessionId, _traceId, options = {}) => {
+      received.push({query, sessionId, options});
+      return result('补充定位到 Foo.kt:L10-L12');
+    });
+    emitter.reset = jest.fn();
+    emitter.abortSession = jest.fn();
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {
+      analysisOptions: {
+        outputLanguage: 'zh-CN',
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['private-app'],
+      },
+    });
+
+    const outcome = await adapter.runSourceEnrichment({
+      sessionId: 'conversation-auto',
+      runId: 'run-auto',
+      query: '为什么启动慢？',
+      history: [],
+      traceContext: {kind: 'attached', traceId: 'trace-1'},
+      primaryOutcome: {
+        kind: 'answered',
+        message: 'Trace 指向 Foo::bar',
+        evidence: [{id: 'ev-1', label: 'Foo::bar', source: 'sql'}],
+      },
+    });
+
+    expect(received[0]).toMatchObject({
+      sessionId: 'conversation-auto:run-auto:source-enrichment',
+      options: {
+        codeAwareMode: 'provider_send',
+        codebaseIds: ['private-app'],
+        analysisMode: 'fast',
+        assistantSurface: 'conversation',
+        sourceUsePolicy: {
+          phase: 'automatic_enrichment',
+          maxSearchCalls: 1,
+          maxReadCalls: 2,
+          maxDurationMs: 6_000,
+        },
+      },
+    });
+    expect(outcome.message).toContain('Foo.kt:L10-L12');
+  });
 });
